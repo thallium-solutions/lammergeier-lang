@@ -1,0 +1,24 @@
+# Rosetta Code: Accumulator factory
+# https://rosettacode.org/wiki/Accumulator_factory
+# Uses a class to simulate closure-based accumulator
+# expect: 10
+# expect: 15
+# expect: 20
+
+class Accumulator {
+    func init(self, initial: int) {
+        self.value: int = initial
+    }
+
+    func add(self, n: int) -> int {
+        self.value += n
+        return self.value
+    }
+}
+
+func main() {
+    acc: Accumulator = Accumulator(0)
+    print(acc.add(10))
+    print(acc.add(5))
+    print(acc.add(5))
+}

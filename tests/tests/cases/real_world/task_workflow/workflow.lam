@@ -1,0 +1,44 @@
+class Task {
+    func init(self, id: str, priority: int, estimate: int) {
+        self.id: str = id
+        self.priority: int = priority
+        self.estimate: int = estimate
+    }
+}
+
+class Workflow {
+    func init(self) {
+        self.backlog: list[Task] = []
+        self.ready: list[Task] = []
+        self.done: list[str] = []
+        self.tags: dict[str, bool] = {}
+    }
+
+    func add(self, task: Task, tag: str) {
+        self.backlog.append(task)
+        self.tags[tag] = true
+    }
+
+    func promote(self, minPriority: int) {
+        for task in self.backlog {
+            if task.priority >= minPriority {
+                self.ready.append(task)
+            }
+        }
+    }
+
+    func completeNext(self) -> Task {
+        task: Task = self.ready[0]
+        self.ready = self.ready[1:]
+        self.done.append(task.id)
+        return task
+    }
+
+    func completedCount(self) -> int {
+        return len(self.done)
+    }
+}
+
+func main() {
+    pass
+}

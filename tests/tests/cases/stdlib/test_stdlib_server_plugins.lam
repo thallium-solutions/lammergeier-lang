@@ -1,0 +1,144 @@
+# Test: lamserver_plugins (requestLog, rateLimit, compress).
+#
+# Verifies each plugin's contract:
+#   * ``rateLimit``: Nth+1 request to the same X-Forwarded-For origin
+#     yields 429 + Retry-After + the configured message; a different
+#     origin gets a fresh budget.
+#   * ``compress``: bodies above the threshold are gzip-encoded only
+#     when ``Accept-Encoding: gzip`` is set; the round-trip decodes
+#     back to the original bytes; ``Vary: Accept-Encoding`` is added.
+#   * ``requestLog``: emits "[test] METHOD /path -> STATUS (Nms)" to
+#     stderr (not asserted directly here — its output goes to stderr
+#     and the test runner only matches stdout).
+#
+# All assertions run via Server.inject so the test stays hermetic.
+#
+# expect: r1 status: 200
+# expect: r2 status: 200
+# expect: r3 status: 429
+# expect: r3 body: slow down
+# expect: r3 retry: 60
+# expect: r4 status: 200
+# expect: gz status: 200
+# expect: gz encoding: gzip
+# expect: gz vary: Accept-Encoding
+# expect: gz decoded len: 2048
+# expect: no gz encoding: ''
+
+from lamserver import Server, Request, Response
+from lamserver_plugins import requestLog, rateLimit, compress
+
+go! {
+    import (
+        "bytes"
+        "compress/gzip"
+        "io"
+        "strings"
+    )
+
+    func gunzip(s string) string {
+        r, err := gzip.NewReader(strings.NewReader(s))
+        if err != nil { return "ERR-decode" }
+        defer r.Close()
+        var b bytes.Buffer
+        if _, err := io.Copy(&b, r); err != nil { return "ERR-copy" }
+        return b.String()
+    }
+}
+
+func helloHandler(req: Request, res: Response) {
+    res.text("hello")
+}
+
+func bigHandler(req: Request, res: Response) {
+    big: str = ""
+    go! {
+        big = strings.Repeat("a", 2048)
+    }
+    res.text(big)
+}
+
+func main() {
+    srv: Server = Server()
+    requestLog(srv, "[test]")
+    rateLimit(srv, 2, 60000, "slow down")
+    compress(srv, 512)
+
+    srv.get("/hi", helloHandler)
+    srv.get("/big", bigHandler)
+
+    h: dict[str, str] = {}
+    h["X-Forwarded-For"] = "1.2.3.4"
+
+    r1: dict[str, any] = srv.inject("GET", "/hi", "", h)
+    r1s: any = r1["status"]
+    print(f"r1 status: {r1s}")
+
+    r2: dict[str, any] = srv.inject("GET", "/hi", "", h)
+    r2s: any = r2["status"]
+    print(f"r2 status: {r2s}")
+
+    r3: dict[str, any] = srv.inject("GET", "/hi", "", h)
+    r3s: any = r3["status"]
+    r3b: any = r3["body"]
+    r3headers: any = r3["headers"]
+    r3retry: str = ""
+    go! {
+        if hh, ok := r3headers.(map[string]string); ok {
+            r3retry = hh["Retry-After"]
+        }
+    }
+    print(f"r3 status: {r3s}")
+    print(f"r3 body: {r3b}")
+    print(f"r3 retry: {r3retry}")
+
+    h2: dict[str, str] = {}
+    h2["X-Forwarded-For"] = "5.6.7.8"
+    r4: dict[str, any] = srv.inject("GET", "/hi", "", h2)
+    r4s: any = r4["status"]
+    print(f"r4 status: {r4s}")
+
+    h3: dict[str, str] = {}
+    h3["X-Forwarded-For"] = "9.9.9.9"
+    h3["Accept-Encoding"] = "gzip"
+    rg: dict[str, any] = srv.inject("GET", "/big", "", h3)
+    rgs: any = rg["status"]
+    rgb: any = rg["body"]
+    rgheaders: any = rg["headers"]
+    rgEnc: str = ""
+    rgVary: str = ""
+    go! {
+        if hh, ok := rgheaders.(map[string]string); ok {
+            rgEnc = hh["Content-Encoding"]
+            rgVary = hh["Vary"]
+        }
+    }
+    print(f"gz status: {rgs}")
+    print(f"gz encoding: {rgEnc}")
+    print(f"gz vary: {rgVary}")
+
+    rgBodyStr: str = ""
+    go! {
+        if b, ok := rgb.(string); ok {
+            rgBodyStr = b
+        }
+    }
+    decoded: str = ""
+    go! {
+        decoded = gunzip(rgBodyStr)
+    }
+    decodedLen: int = len(decoded)
+    print(f"gz decoded len: {decodedLen}")
+
+    h4: dict[str, str] = {}
+    h4["X-Forwarded-For"] = "9.9.9.10"
+    rn: dict[str, any] = srv.inject("GET", "/big", "", h4)
+    rnheaders: any = rn["headers"]
+    rnEnc: str = ""
+    go! {
+        if hh, ok := rnheaders.(map[string]string); ok {
+            rnEnc = hh["Content-Encoding"]
+        }
+    }
+    print(f"no gz encoding: '{rnEnc}'")
+}

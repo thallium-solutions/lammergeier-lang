@@ -1,0 +1,13 @@
+# Test: ternary in loops and conditions
+# expect: even
+# expect: odd
+# expect: even
+# expect: odd
+# expect: even
+
+func main() {
+    for i in range(5) {
+        label: str = "even" if i % 2 == 0 else "odd"
+        print(label)
+    }
+}

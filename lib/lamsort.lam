@@ -1,0 +1,86 @@
+# Lammergeier standard library: sort utilities
+# Import with: from lamsort import Sort
+
+go! {
+    import "sort"
+}
+
+class Sort {
+    static func ints(arr: list[int]) -> list[int] {
+        go! {
+            result := make([]int, len(arr))
+            copy(result, arr)
+            sort.Ints(result)
+            return result
+        }
+    }
+
+    static func strings(arr: list[str]) -> list[str] {
+        go! {
+            result := make([]string, len(arr))
+            copy(result, arr)
+            sort.Strings(result)
+            return result
+        }
+    }
+
+    static func reverseInts(arr: list[int]) -> list[int] {
+        go! {
+            result := make([]int, len(arr))
+            for i, v := range arr {
+                result[len(arr)-1-i] = v
+            }
+            return result
+        }
+    }
+
+    static func reverseStrings(arr: list[str]) -> list[str] {
+        go! {
+            result := make([]string, len(arr))
+            for i, v := range arr {
+                result[len(arr)-1-i] = v
+            }
+            return result
+        }
+    }
+
+    static func isSorted(arr: list[int]) -> bool {
+        go! {
+            return sort.IntsAreSorted(arr)
+        }
+    }
+
+    static func floats(arr: list[float]) -> list[float] {
+        go! {
+            result := make([]float64, len(arr))
+            copy(result, arr)
+            sort.Float64s(result)
+            return result
+        }
+    }
+
+    static func reverseFloats(arr: list[float]) -> list[float] {
+        go! {
+            result := make([]float64, len(arr))
+            for i, v := range arr {
+                result[len(arr)-1-i] = v
+            }
+            return result
+        }
+    }
+
+    static func reverse(arr: list[any]) -> list[any] {
+        #- Reverse any list without sorting. -#
+        go! {
+            result := make([]interface{}, len(arr))
+            for i, v := range arr {
+                result[len(arr)-1-i] = v
+            }
+            return result
+        }
+    }
+}
+
+func main() {
+    pass
+}

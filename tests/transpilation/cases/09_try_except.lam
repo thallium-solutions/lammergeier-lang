@@ -1,0 +1,16 @@
+# Transpilation: try/catch becomes a closure with defer + recover.
+# expect-go: defer func()
+# expect-go: if r := recover(); r != nil
+# expect-go: panic
+
+func risky() {
+    raise ValueError("boom")
+}
+
+func main() {
+    try {
+        risky()
+    } catch ValueError as e {
+        print("got", e)
+    }
+}

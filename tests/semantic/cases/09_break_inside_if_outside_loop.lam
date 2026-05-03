@@ -1,0 +1,11 @@
+# `break` is illegal even inside an `if` if the enclosing scope is
+# not a loop.
+# expect-error: `break` outside of a loop
+
+func main() {
+    if 1 == 1 {
+        if 2 == 2 {
+            break
+        }
+    }
+}

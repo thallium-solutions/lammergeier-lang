@@ -1,0 +1,32 @@
+# expect: Hello, Alice!
+# expect: Hi, Bob!
+# expect: area: 50
+# expect: area: 25
+# expect: Greeting from World
+
+func greet(name: str, greeting: str = "Hello") -> str {
+    return f"{greeting}, {name}!"
+}
+
+func area(width: int, height: int = 10) -> int {
+    return width * height
+}
+
+class Greeter {
+    func init(self, prefix: str = "Greeting") {
+        self.prefix: str = prefix
+    }
+
+    func say(self, target: str = "World") -> str {
+        return f"{self.prefix} from {target}"
+    }
+}
+
+func main() {
+    print(greet("Alice"))
+    print(greet("Bob", "Hi"))
+    print(f"area: {area(5)}")
+    print(f"area: {area(5, 5)}")
+    g: Greeter = Greeter()
+    print(g.say())
+}

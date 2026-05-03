@@ -1,0 +1,1534 @@
+# Lammergeier standard library — relational database access.
+#
+# Supports SQLite (pure-Go ``modernc.org/sqlite``), MySQL
+# (``go-sql-driver/mysql``), and PostgreSQL (``lib/pq``) out of the
+# box. Connection pooling is built into Go's ``database/sql`` and is
+# exposed here through ``Db.setPool(maxOpen, maxIdle, idleSec,
+# lifetimeSec)``. Automatic reconnection is layered on top: any query
+# that fails with a transient driver error (closed connection, bad
+# connection, server gone away …) is retried up to ``maxRetries``
+# times with exponential backoff.
+#
+# A Knex.js-style chainable query builder is provided via
+# ``Db.table(name)`` (returns a ``QueryBuilder``) for SELECT / INSERT
+# / UPDATE / DELETE construction.
+#
+# Quick start::
+#
+#     from lamdb import Db, QueryBuilder
+#
+#     db: Db = Db.connect("sqlite", ":memory:")
+#     db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+#
+#     # Raw SQL with positional parameters (driver-agnostic ``?``).
+#     db.exec("INSERT INTO users (name, age) VALUES (?, ?)", ["alice", 30])
+#
+#     # Knex-style builder.
+#     rows: list[dict[str, any]] = db.table("users")
+#         .select("id", "name")
+#         .where("age", ">", 18)
+#         .orderBy("name", "asc")
+#         .limit(10)
+#         .get()
+#
+#     # Insert / update / delete return the affected-row count.
+#     n: int = db.table("users").insert({"name": "bob", "age": 42})
+#     n2: int = db.table("users").where("id", 1).update({"age": 31})
+#     n3: int = db.table("users").where("id", 1).delete()
+#
+# Driver compatibility notes:
+#   * SQLite uses ``?`` placeholders and ``[INTEGER PRIMARY KEY
+#     AUTOINCREMENT]``.
+#   * MySQL uses ``?`` placeholders and ``[INT AUTO_INCREMENT]``.
+#   * Postgres uses ``$1``, ``$2`` placeholders and ``SERIAL``. The
+#     query builder rewrites ``?`` → ``$1``/``$2``/… automatically
+#     when the driver is ``postgres``.
+#
+# The library never silently swallows errors — driver-level failures
+# bubble up via ``panic`` for ergonomic call sites that don't want to
+# care, and via ``try*`` siblings (``Db.tryConnect``,
+# ``Db.tryExec`` etc.) returning ``Result`` for code that does.
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "database/sql"
+        "errors"
+        "fmt"
+        "strings"
+        "strconv"
+        "sync"
+        "time"
+
+        _ "github.com/lib/pq"
+        _ "github.com/go-sql-driver/mysql"
+        _ "modernc.org/sqlite"
+    )
+
+    // ─── Driver normalisation ─────────────────────────────────
+    // Lam users pick a friendly driver name; we map it to the
+    // ``database/sql`` driver name and DSN format.
+    func lamDbResolveDriver(driver string) string {
+        switch strings.ToLower(driver) {
+        case "sqlite", "sqlite3":
+            return "sqlite"
+        case "mysql", "mariadb":
+            return "mysql"
+        case "postgres", "postgresql", "pg":
+            return "postgres"
+        default:
+            return driver
+        }
+    }
+
+    // ─── Placeholder rewriting ────────────────────────────────
+    // SQLite and MySQL use ``?`` placeholders. Postgres expects
+    // ``$1``, ``$2``, … so when the dialect is postgres we rewrite
+    // every unquoted ``?`` to ``$N`` (where N is its 1-based index).
+    func lamDbRewritePlaceholders(query, dialect string) string {
+        if dialect != "postgres" {
+            return query
+        }
+        var b strings.Builder
+        n := 0
+        inSingle := false
+        inDouble := false
+        for i := 0; i < len(query); i++ {
+            ch := query[i]
+            switch {
+            case ch == '\'' && !inDouble:
+                inSingle = !inSingle
+                b.WriteByte(ch)
+            case ch == '"' && !inSingle:
+                inDouble = !inDouble
+                b.WriteByte(ch)
+            case ch == '?' && !inSingle && !inDouble:
+                n++
+                b.WriteString("$")
+                b.WriteString(strconv.Itoa(n))
+            default:
+                b.WriteByte(ch)
+            }
+        }
+        return b.String()
+    }
+
+    // ─── Transient error detection ────────────────────────────
+    // A transient error is one that the driver/DB might recover
+    // from on retry: closed connection, broken pipe, server
+    // restart. We check both ``sql.ErrConnDone`` /
+    // ``driver.ErrBadConn`` (via ``database/sql/driver``) plus a
+    // string-pattern fallback for vendor-specific messages.
+    func lamDbIsTransient(err error) bool {
+        if err == nil {
+            return false
+        }
+        if errors.Is(err, sql.ErrConnDone) {
+            return true
+        }
+        msg := strings.ToLower(err.Error())
+        for _, pat := range []string{
+            "bad connection",
+            "broken pipe",
+            "connection refused",
+            "connection reset",
+            "server has gone away",
+            "server closed the connection",
+            "timeout",
+            "no such host",
+            "i/o timeout",
+            "tls handshake",
+        } {
+            if strings.Contains(msg, pat) {
+                return true
+            }
+        }
+        return false
+    }
+}
+
+class Db {
+    #- Pooled connection handle around a ``*sql.DB``. Goroutine-safe
+       (the underlying ``database/sql`` pool is). Every query method
+       has a ``try`` sibling that returns ``Result``. -#
+
+    func __init__(self) {
+        self.driver: str = ""
+        self.dsn: str = ""
+        self.handle: any = None      # *sql.DB
+        self.maxRetries: int = 3
+        self.retryBaseMs: int = 50
+    }
+
+    static func connect(driver: str, dsn: str) -> Db {
+        #- Open a new database connection. Panics on failure; use
+           ``tryConnect`` for a Result-returning variant. -#
+        db: Db = Db()
+        db.driver = ""
+        go! {
+            db.Driver = lamDbResolveDriver(driver)
+        }
+        db.dsn = dsn
+        go! {
+            handle, err := sql.Open(db.Driver, dsn)
+            if err != nil {
+                panic(fmt.Sprintf("db: cannot open %s: %v", db.Driver, err))
+            }
+            // Sane defaults — overridable via ``setPool``.
+            handle.SetMaxOpenConns(25)
+            handle.SetMaxIdleConns(5)
+            handle.SetConnMaxIdleTime(5 * time.Minute)
+            handle.SetConnMaxLifetime(30 * time.Minute)
+            if err := handle.Ping(); err != nil {
+                panic(fmt.Sprintf("db: cannot ping %s: %v", db.Driver, err))
+            }
+            db.Handle = handle
+        }
+        return db
+    }
+
+    static func tryConnect(driver: str, dsn: str) -> Result {
+        #- Result-returning variant of ``connect``. -#
+        go! {
+            d := lamDbResolveDriver(driver)
+            handle, err := sql.Open(d, dsn)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbConnectError", err.Error(), nil))
+            }
+            handle.SetMaxOpenConns(25)
+            handle.SetMaxIdleConns(5)
+            handle.SetConnMaxIdleTime(5 * time.Minute)
+            handle.SetConnMaxLifetime(30 * time.Minute)
+            if err := handle.Ping(); err != nil {
+                handle.Close()
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbConnectError", err.Error(), nil))
+            }
+            db := &Db{Driver: d, Dsn: dsn, Handle: handle, MaxRetries: 3, RetryBaseMs: 50}
+            return LAMMERGEIER.Result.Ok(db)
+        }
+    }
+
+    func setPool(self, maxOpen: int, maxIdle: int, idleSec: int, lifetimeSec: int) {
+        #- Tune the underlying connection pool. ``maxOpen`` caps the
+           number of concurrent connections, ``maxIdle`` how many to
+           keep warm, ``idleSec``/``lifetimeSec`` recycle stale
+           connections. Passing ``0`` for any value uses the Go
+           default. -#
+        go! {
+            handle, ok := self.Handle.(*sql.DB)
+            if !ok { return }
+            handle.SetMaxOpenConns(maxOpen)
+            handle.SetMaxIdleConns(maxIdle)
+            if idleSec > 0 {
+                handle.SetConnMaxIdleTime(time.Duration(idleSec) * time.Second)
+            }
+            if lifetimeSec > 0 {
+                handle.SetConnMaxLifetime(time.Duration(lifetimeSec) * time.Second)
+            }
+        }
+    }
+
+    func setRetries(self, maxRetries: int, baseMs: int) {
+        #- Configure transient-error retry behaviour. ``maxRetries`` is
+           the number of *retries* (not total attempts); ``baseMs`` is
+           the starting backoff window which doubles on every
+           subsequent retry. -#
+        self.maxRetries = maxRetries
+        self.retryBaseMs = baseMs
+    }
+
+    func close(self) {
+        go! {
+            if h, ok := self.Handle.(*sql.DB); ok {
+                h.Close()
+            }
+        }
+    }
+
+    func ping(self) -> bool {
+        ok: bool = false
+        go! {
+            if h, hok := self.Handle.(*sql.DB); hok {
+                if err := h.Ping(); err == nil {
+                    ok = true
+                }
+            }
+        }
+        return ok
+    }
+
+    func driverName(self) -> str {
+        return self.driver
+    }
+
+    func raw(self) -> any {
+        #- Escape hatch — returns the underlying ``*sql.DB`` for
+           scenarios the wrapper doesn't cover (savepoints, listen/
+           notify, copy-from, etc.). -#
+        return self.handle
+    }
+
+    # ── Raw SQL ────────────────────────────────────────────────
+    func exec(self, query: str, params: list[any] = []) -> int {
+        #- Execute an INSERT / UPDATE / DELETE / DDL statement.
+           Returns affected-row count. Retries on transient errors. -#
+        affected: int = 0
+        go! {
+            handle, _ := self.Handle.(*sql.DB)
+            q := lamDbRewritePlaceholders(query, self.Driver)
+            args := make([]interface{}, len(params))
+            for i, p := range params { args[i] = p }
+            attempts := self.MaxRetries + 1
+            var lastErr error
+            for k := 0; k < attempts; k++ {
+                res, err := handle.Exec(q, args...)
+                if err == nil {
+                    n, _ := res.RowsAffected()
+                    affected = int(n)
+                    lastErr = nil
+                    break
+                }
+                lastErr = err
+                if !lamDbIsTransient(err) {
+                    break
+                }
+                time.Sleep(time.Duration(self.RetryBaseMs<<k) * time.Millisecond)
+            }
+            if lastErr != nil {
+                panic(fmt.Sprintf("db: exec failed: %v", lastErr))
+            }
+        }
+        return affected
+    }
+
+    func tryExec(self, query: str, params: list[any] = []) -> Result {
+        go! {
+            handle, _ := self.Handle.(*sql.DB)
+            q := lamDbRewritePlaceholders(query, self.Driver)
+            args := make([]interface{}, len(params))
+            for i, p := range params { args[i] = p }
+            attempts := self.MaxRetries + 1
+            var lastErr error
+            var affected int64
+            for k := 0; k < attempts; k++ {
+                res, err := handle.Exec(q, args...)
+                if err == nil {
+                    affected, _ = res.RowsAffected()
+                    lastErr = nil
+                    break
+                }
+                lastErr = err
+                if !lamDbIsTransient(err) { break }
+                time.Sleep(time.Duration(self.RetryBaseMs<<k) * time.Millisecond)
+            }
+            if lastErr != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", lastErr.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(int(affected))
+        }
+    }
+
+    func query(self, query: str, params: list[any] = []) -> list[dict[str, any]] {
+        #- Run a SELECT and return all rows as a list of dicts keyed
+           by column name. Values come back as ``interface{}`` so a
+           caller can decide how to coerce them (most drivers return
+           ``string``/``int64``/``float64``/``[]byte``/``time.Time``). -#
+        out: list[dict[str, any]] = []
+        go! {
+            handle, _ := self.Handle.(*sql.DB)
+            q := lamDbRewritePlaceholders(query, self.Driver)
+            args := make([]interface{}, len(params))
+            for i, p := range params { args[i] = p }
+            attempts := self.MaxRetries + 1
+            var lastErr error
+            for k := 0; k < attempts; k++ {
+                rows, err := handle.Query(q, args...)
+                if err == nil {
+                    cols, _ := rows.Columns()
+                    for rows.Next() {
+                        vals := make([]interface{}, len(cols))
+                        ptrs := make([]interface{}, len(cols))
+                        for i := range vals { ptrs[i] = &vals[i] }
+                        if err := rows.Scan(ptrs...); err != nil {
+                            rows.Close()
+                            lastErr = err
+                            break
+                        }
+                        row := map[string]interface{}{}
+                        for i, c := range cols {
+                            // SQLite returns []byte for TEXT in some
+                            // build modes — coerce to string here so
+                            // Lam-side comparisons work intuitively.
+                            if b, ok := vals[i].([]byte); ok {
+                                row[c] = string(b)
+                            } else {
+                                row[c] = vals[i]
+                            }
+                        }
+                        out = append(out, row)
+                    }
+                    rows.Close()
+                    lastErr = nil
+                    break
+                }
+                lastErr = err
+                if !lamDbIsTransient(err) { break }
+                time.Sleep(time.Duration(self.RetryBaseMs<<k) * time.Millisecond)
+            }
+            if lastErr != nil {
+                panic(fmt.Sprintf("db: query failed: %v", lastErr))
+            }
+        }
+        return out
+    }
+
+    func first(self, query: str, params: list[any] = []) -> dict[str, any] {
+        #- Run a SELECT and return only the first row (``{}`` if no
+           rows were returned). Equivalent to
+           ``query(...).first_or({})``. -#
+        rows: list[dict[str, any]] = self.query(query, params)
+        if len(rows) == 0 {
+            empty: dict[str, any] = {}
+            return empty
+        }
+        return rows[0]
+    }
+
+    func scalar(self, query: str, params: list[any] = []) -> any {
+        #- Run a SELECT and return the first column of the first row.
+           Useful for aggregations like ``SELECT COUNT(*)``. -#
+        rows: list[dict[str, any]] = self.query(query, params)
+        if len(rows) == 0 {
+            return None
+        }
+        first_: dict[str, any] = rows[0]
+        out: any = None
+        go! {
+            for _, v := range first_ {
+                out = v
+                break
+            }
+        }
+        return out
+    }
+
+    # ── Transactions ───────────────────────────────────────────
+    func transaction(self, fn: any) -> bool {
+        #- Run ``fn(tx: Tx)`` in a transaction. Commits on success,
+           rolls back on panic / explicit ``tx.rollback()``. Returns
+           ``true`` on commit, ``false`` if the user code rolled back
+           manually. Re-raises any panic *after* the rollback so
+           callers can still see the original error. -#
+        ok: bool = false
+        go! {
+            handle, _ := self.Handle.(*sql.DB)
+            tx, err := handle.Begin()
+            if err != nil {
+                panic(fmt.Sprintf("db: cannot begin transaction: %v", err))
+            }
+            txObj := &Tx{Conn: tx, Driver: self.Driver, RolledBack: false, Committed: false}
+            // Run user code, recovering panics so we always rollback.
+            defer func() {
+                if r := recover(); r != nil {
+                    tx.Rollback()
+                    panic(r)
+                }
+                if !txObj.RolledBack && !txObj.Committed {
+                    if err := tx.Commit(); err == nil {
+                        ok = true
+                        txObj.Committed = true
+                    }
+                }
+            }()
+            if cb, isFn := fn.(func(*Tx)); isFn {
+                cb(txObj)
+            }
+        }
+        return ok
+    }
+
+    func begin(self) -> Tx {
+        #- Open an explicit transaction. The caller owns the
+           lifecycle: call ``tx.commit()`` or ``tx.rollback()``
+           exactly once. For most code, ``transaction(fn)`` is
+           safer because it rolls back automatically on panic. -#
+        txObj: Tx = Tx()
+        go! {
+            handle, _ := self.Handle.(*sql.DB)
+            tx, err := handle.Begin()
+            if err != nil {
+                panic(fmt.Sprintf("db: cannot begin transaction: %v", err))
+            }
+            txObj.Conn = tx
+            txObj.Driver = self.Driver
+        }
+        return txObj
+    }
+
+    # ── Knex-style query builder ───────────────────────────────
+    func table(self, name: str) -> QueryBuilder {
+        #- Open a fluent query builder targeting ``name``. Chain
+           ``select``/``where``/``orderBy``/``limit``/``offset`` and
+           terminate with ``get``/``first``/``count``/``insert``/
+           ``update``/``delete``. -#
+        qb: QueryBuilder = QueryBuilder()
+        qb.db = self
+        qb.driver = self.driver
+        qb.tableName = name
+        return qb
+    }
+}
+
+class Tx {
+    #- Active transaction handle yielded by ``Db.transaction``. -#
+
+    func __init__(self) {
+        self.conn: any = None       # *sql.Tx
+        self.driver: str = ""
+        self.rolledBack: bool = false
+        self.committed: bool = false
+    }
+
+    func exec(self, query: str, params: list[any] = []) -> int {
+        affected: int = 0
+        go! {
+            tx, _ := self.Conn.(*sql.Tx)
+            q := lamDbRewritePlaceholders(query, self.Driver)
+            args := make([]interface{}, len(params))
+            for i, p := range params { args[i] = p }
+            res, err := tx.Exec(q, args...)
+            if err != nil {
+                panic(fmt.Sprintf("tx: exec failed: %v", err))
+            }
+            n, _ := res.RowsAffected()
+            affected = int(n)
+        }
+        return affected
+    }
+
+    func query(self, query: str, params: list[any] = []) -> list[dict[str, any]] {
+        out: list[dict[str, any]] = []
+        go! {
+            tx, _ := self.Conn.(*sql.Tx)
+            q := lamDbRewritePlaceholders(query, self.Driver)
+            args := make([]interface{}, len(params))
+            for i, p := range params { args[i] = p }
+            rows, err := tx.Query(q, args...)
+            if err != nil {
+                panic(fmt.Sprintf("tx: query failed: %v", err))
+            }
+            cols, _ := rows.Columns()
+            for rows.Next() {
+                vals := make([]interface{}, len(cols))
+                ptrs := make([]interface{}, len(cols))
+                for i := range vals { ptrs[i] = &vals[i] }
+                rows.Scan(ptrs...)
+                row := map[string]interface{}{}
+                for i, c := range cols {
+                    if b, ok := vals[i].([]byte); ok {
+                        row[c] = string(b)
+                    } else {
+                        row[c] = vals[i]
+                    }
+                }
+                out = append(out, row)
+            }
+            rows.Close()
+        }
+        return out
+    }
+
+    func rollback(self) {
+        go! {
+            tx, _ := self.Conn.(*sql.Tx)
+            tx.Rollback()
+            self.RolledBack = true
+        }
+    }
+
+    func commit(self) {
+        go! {
+            tx, _ := self.Conn.(*sql.Tx)
+            if err := tx.Commit(); err == nil {
+                self.Committed = true
+            }
+        }
+    }
+
+    # ── Savepoints (SQLite, MySQL ≥5.6, Postgres) ──────────────
+    func savepoint(self, savepointName: str) {
+        #- Mark a point inside the transaction that can be rolled
+           back to without aborting the whole transaction. ``name``
+           must be a SQL identifier; we forward it verbatim. -#
+        go! {
+            tx, _ := self.Conn.(*sql.Tx)
+            if _, err := tx.Exec("SAVEPOINT " + savepointName); err != nil {
+                panic(fmt.Sprintf("tx: savepoint failed: %v", err))
+            }
+        }
+    }
+
+    func rollbackTo(self, savepointName: str) {
+        #- Rewind state to the named savepoint. The transaction
+           stays open afterwards — the caller can keep going,
+           savepoint again, or commit/rollback normally. -#
+        go! {
+            tx, _ := self.Conn.(*sql.Tx)
+            if _, err := tx.Exec("ROLLBACK TO SAVEPOINT " + savepointName); err != nil {
+                panic(fmt.Sprintf("tx: rollback to savepoint failed: %v", err))
+            }
+        }
+    }
+
+    func releaseSavepoint(self, savepointName: str) {
+        #- Drop the named savepoint, locking in everything done
+           since it was created. -#
+        go! {
+            tx, _ := self.Conn.(*sql.Tx)
+            if _, err := tx.Exec("RELEASE SAVEPOINT " + savepointName); err != nil {
+                panic(fmt.Sprintf("tx: release savepoint failed: %v", err))
+            }
+        }
+    }
+
+    func table(self, name: str) -> QueryBuilder {
+        #- Fluent builder bound to *this* transaction. Every
+           terminal call (``get``, ``insert``, ``update``, …) runs
+           through the transaction's connection, so its writes
+           are atomic with the rest of the transaction. -#
+        qb: QueryBuilder = QueryBuilder()
+        qb.tx = self
+        qb.tableName = name
+        qb.driver = self.driver
+        return qb
+    }
+}
+
+class QueryBuilder {
+    #- Fluent SQL builder modelled on knex.js. Each method returns
+       ``self`` so chains compose (also across newlines)::
+
+           rows: list[dict[str, any]] = db.table("users")
+               .select("id", "name")
+               .where("age", ">", 18)
+               .orderBy("name")
+               .limit(10)
+               .get()
+
+       Method semantics:
+         * ``select(*cols)``   — defaults to ``*`` if never called.
+         * ``where(col, op, val)`` — three-arg form. Two-arg shorthand
+           ``where(col, val)`` becomes ``col = val``. Successive calls
+           AND together.
+         * ``orWhere(col, op, val)`` — OR-joined predicate.
+         * ``whereIn(col, values)`` / ``whereNotIn`` — list membership.
+         * ``whereNull(col)`` / ``whereNotNull(col)``.
+         * ``orderBy(col, dir="asc")`` / ``limit(n)`` / ``offset(n)``.
+         * ``join(other, on)`` / ``leftJoin`` / ``rightJoin``.
+         * ``groupBy(*cols)`` / ``having(col, op, val)``.
+
+       Terminal methods:
+         * ``get()``                — list of dicts.
+         * ``first()``              — first dict or ``{}``.
+         * ``count()``              — integer (uses ``COUNT(*)``).
+         * ``insert(record)``       — affected count for one record.
+         * ``insertMany(records)``  — affected count for a batch.
+         * ``update(record)``       — affected count.
+         * ``delete()``             — affected count.
+         * ``toSql()``              — preview the assembled SQL +
+           parameter list without executing. -#
+
+    func __init__(self) {
+        self.db: Db = None
+        self.tx: Tx = None              # set when bound to a transaction.
+        self.driver: str = ""           # mirrored from db/tx for placeholder rewriting.
+        self.tableName: str = ""
+        self.cols: list[str] = []
+        self.conds: list[any] = []        # list of [logic, sqlFragment, paramList]
+        self.orderClauses: list[str] = []
+        self.groupCols: list[str] = []
+        self.havingFragment: str = ""
+        self.havingParams: list[any] = []
+        self.limitN: int = -1
+        self.offsetN: int = -1
+        self.joins: list[str] = []
+        self.distinctOn: bool = false
+        self.lockMode: str = ""           # ``""``, ``FOR UPDATE``, ``FOR SHARE``.
+        self.returningCols: list[str] = []
+    }
+
+    func select(self, cols: list[any]) -> QueryBuilder {
+        #- Add columns to the SELECT list. The list is ``list[any]``
+           rather than ``list[str]`` only because Lam list literals
+           are erased to ``[]interface{}`` at the call site; values
+           are coerced to strings internally. -#
+        go! {
+            for _, c := range cols {
+                if cs, ok := c.(string); ok {
+                    s.Cols = append(s.Cols, cs)
+                }
+            }
+        }
+        return self
+    }
+
+    func where(self, col: str, op: str, val: any) -> QueryBuilder {
+        #- ``WHERE col op ?`` with operator and value. Use
+           ``whereEq`` when ``op`` is ``=`` to skip the operator
+           argument. Successive ``where`` calls are AND-joined. -#
+        frag: str = ""
+        go! {
+            frag = fmt.Sprintf("%s %s ?", col, op)
+        }
+        params: list[any] = [val]
+        self.conds.append(["AND", frag, params])
+        return self
+    }
+
+    func whereEq(self, col: str, val: any) -> QueryBuilder {
+        #- Two-arg shorthand for the common ``WHERE col = ?`` case. -#
+        return self.where(col, "=", val)
+    }
+
+    func orWhere(self, col: str, op: str, val: any) -> QueryBuilder {
+        frag: str = ""
+        go! {
+            frag = fmt.Sprintf("%s %s ?", col, op)
+        }
+        params: list[any] = [val]
+        self.conds.append(["OR", frag, params])
+        return self
+    }
+
+    func orWhereEq(self, col: str, val: any) -> QueryBuilder {
+        return self.orWhere(col, "=", val)
+    }
+
+    func whereIn(self, col: str, values: list[any]) -> QueryBuilder {
+        n: int = len(values)
+        if n == 0 {
+            self.conds.append(["AND", "1=0", []])
+            return self
+        }
+        frag: str = ""
+        go! {
+            placeholders := strings.Repeat("?,", n)
+            placeholders = placeholders[:len(placeholders)-1]
+            frag = fmt.Sprintf("%s IN (%s)", col, placeholders)
+        }
+        self.conds.append(["AND", frag, values])
+        return self
+    }
+
+    func whereNotIn(self, col: str, values: list[any]) -> QueryBuilder {
+        n: int = len(values)
+        if n == 0 {
+            self.conds.append(["AND", "1=1", []])
+            return self
+        }
+        frag: str = ""
+        go! {
+            placeholders := strings.Repeat("?,", n)
+            placeholders = placeholders[:len(placeholders)-1]
+            frag = fmt.Sprintf("%s NOT IN (%s)", col, placeholders)
+        }
+        self.conds.append(["AND", frag, values])
+        return self
+    }
+
+    func whereNull(self, col: str) -> QueryBuilder {
+        frag: str = ""
+        go! { frag = fmt.Sprintf("%s IS NULL", col) }
+        self.conds.append(["AND", frag, []])
+        return self
+    }
+
+    func whereNotNull(self, col: str) -> QueryBuilder {
+        frag: str = ""
+        go! { frag = fmt.Sprintf("%s IS NOT NULL", col) }
+        self.conds.append(["AND", frag, []])
+        return self
+    }
+
+    func whereBetween(self, col: str, low: any, high: any) -> QueryBuilder {
+        #- ``WHERE col BETWEEN ? AND ?``. Successive ``where*`` calls
+           AND-join. Pair with ``orWhereBetween`` for OR logic. -#
+        frag: str = ""
+        go! { frag = fmt.Sprintf("%s BETWEEN ? AND ?", col) }
+        params: list[any] = [low, high]
+        self.conds.append(["AND", frag, params])
+        return self
+    }
+
+    func whereNotBetween(self, col: str, low: any, high: any) -> QueryBuilder {
+        frag: str = ""
+        go! { frag = fmt.Sprintf("%s NOT BETWEEN ? AND ?", col) }
+        params: list[any] = [low, high]
+        self.conds.append(["AND", frag, params])
+        return self
+    }
+
+    func whereLike(self, col: str, pattern: str) -> QueryBuilder {
+        #- ``WHERE col LIKE ?`` — pattern uses SQL wildcards (``%``,
+           ``_``). Driver-specific escape rules apply. -#
+        frag: str = ""
+        go! { frag = fmt.Sprintf("%s LIKE ?", col) }
+        params: list[any] = [pattern]
+        self.conds.append(["AND", frag, params])
+        return self
+    }
+
+    func whereNotLike(self, col: str, pattern: str) -> QueryBuilder {
+        frag: str = ""
+        go! { frag = fmt.Sprintf("%s NOT LIKE ?", col) }
+        params: list[any] = [pattern]
+        self.conds.append(["AND", frag, params])
+        return self
+    }
+
+    func whereRaw(self, fragment: str, params: list[any] = []) -> QueryBuilder {
+        #- Append a raw SQL fragment to the WHERE clause. Bound
+           parameters in ``params`` are substituted in order for
+           any ``?`` placeholders in ``fragment``. -#
+        self.conds.append(["AND", fragment, params])
+        return self
+    }
+
+    func orWhereRaw(self, fragment: str, params: list[any] = []) -> QueryBuilder {
+        self.conds.append(["OR", fragment, params])
+        return self
+    }
+
+    func distinct(self) -> QueryBuilder {
+        #- Toggle ``SELECT DISTINCT``. Affects the very next
+           terminal call. -#
+        self.distinctOn = true
+        return self
+    }
+
+    func selectRaw(self, fragment: str) -> QueryBuilder {
+        #- Append a raw expression to the SELECT list (e.g.
+           ``selectRaw("COUNT(*) AS cnt")``). The fragment is
+           emitted verbatim — make sure it's safe SQL. -#
+        self.cols.append(fragment)
+        return self
+    }
+
+    func returning(self, cols: list[any]) -> QueryBuilder {
+        #- Postgres-only. Add a ``RETURNING`` clause to the next
+           ``insert``/``update``/``delete``. Other drivers ignore
+           the request silently — call ``query()`` after a raw
+           ``INSERT ... RETURNING`` if you need cross-driver
+           portability. -#
+        go! {
+            for _, c := range cols {
+                if cs, ok := c.(string); ok {
+                    s.ReturningCols = append(s.ReturningCols, cs)
+                }
+            }
+        }
+        return self
+    }
+
+    func forUpdate(self) -> QueryBuilder {
+        #- Append ``FOR UPDATE`` to the next ``get``/``first`` so
+           the rows are write-locked until the surrounding
+           transaction completes. SQLite ignores the hint. -#
+        self.lockMode = "FOR UPDATE"
+        return self
+    }
+
+    func forShare(self) -> QueryBuilder {
+        #- Append ``FOR SHARE`` (Postgres) / ``LOCK IN SHARE MODE``
+           (MySQL) for a read-lock. SQLite ignores. -#
+        self.lockMode = "FOR SHARE"
+        return self
+    }
+
+    func orderBy(self, col: str, dir_: str = "asc") -> QueryBuilder {
+        clause: str = ""
+        go! {
+            d := strings.ToUpper(dir_)
+            if d != "ASC" && d != "DESC" { d = "ASC" }
+            clause = fmt.Sprintf("%s %s", col, d)
+        }
+        self.orderClauses.append(clause)
+        return self
+    }
+
+    func groupBy(self, cols: list[any]) -> QueryBuilder {
+        go! {
+            for _, c := range cols {
+                if cs, ok := c.(string); ok {
+                    s.GroupCols = append(s.GroupCols, cs)
+                }
+            }
+        }
+        return self
+    }
+
+    func having(self, col: str, op: str, val: any) -> QueryBuilder {
+        go! {
+            self.HavingFragment = fmt.Sprintf("%s %s ?", col, op)
+        }
+        self.havingParams.append(val)
+        return self
+    }
+
+    func limit(self, n: int) -> QueryBuilder {
+        self.limitN = n
+        return self
+    }
+
+    func offset(self, n: int) -> QueryBuilder {
+        self.offsetN = n
+        return self
+    }
+
+    func join(self, other: str, leftCol: str, rightCol: str) -> QueryBuilder {
+        clause: str = ""
+        go! {
+            clause = fmt.Sprintf("INNER JOIN %s ON %s = %s", other, leftCol, rightCol)
+        }
+        self.joins.append(clause)
+        return self
+    }
+
+    func leftJoin(self, other: str, leftCol: str, rightCol: str) -> QueryBuilder {
+        clause: str = ""
+        go! {
+            clause = fmt.Sprintf("LEFT JOIN %s ON %s = %s", other, leftCol, rightCol)
+        }
+        self.joins.append(clause)
+        return self
+    }
+
+    func rightJoin(self, other: str, leftCol: str, rightCol: str) -> QueryBuilder {
+        clause: str = ""
+        go! {
+            clause = fmt.Sprintf("RIGHT JOIN %s ON %s = %s", other, leftCol, rightCol)
+        }
+        self.joins.append(clause)
+        return self
+    }
+
+    func toSql(self) -> dict[str, any] {
+        #- Render the SELECT with its parameter list. Useful for
+           debugging / logging / EXPLAIN. -#
+        sql_: str = ""
+        params: list[any] = []
+        go! {
+            cols := "*"
+            if len(s.Cols) > 0 {
+                cols = strings.Join(s.Cols, ", ")
+            }
+            var b strings.Builder
+            b.WriteString("SELECT ")
+            if s.DistinctOn {
+                b.WriteString("DISTINCT ")
+            }
+            b.WriteString(cols)
+            b.WriteString(" FROM ")
+            b.WriteString(s.TableName)
+            for _, j := range s.Joins {
+                b.WriteString(" ")
+                b.WriteString(j)
+            }
+            collected := []interface{}{}
+            if len(s.Conds) > 0 {
+                b.WriteString(" WHERE ")
+                for i, raw := range s.Conds {
+                    triple, _ := raw.([]interface{})
+                    logic, _ := triple[0].(string)
+                    frag, _ := triple[1].(string)
+                    listv, _ := triple[2].([]interface{})
+                    if i > 0 {
+                        b.WriteString(" ")
+                        b.WriteString(logic)
+                        b.WriteString(" ")
+                    }
+                    b.WriteString(frag)
+                    collected = append(collected, listv...)
+                }
+            }
+            if len(s.GroupCols) > 0 {
+                b.WriteString(" GROUP BY ")
+                b.WriteString(strings.Join(s.GroupCols, ", "))
+            }
+            if s.HavingFragment != "" {
+                b.WriteString(" HAVING ")
+                b.WriteString(s.HavingFragment)
+                collected = append(collected, s.HavingParams...)
+            }
+            if len(s.OrderClauses) > 0 {
+                b.WriteString(" ORDER BY ")
+                b.WriteString(strings.Join(s.OrderClauses, ", "))
+            }
+            if s.LimitN >= 0 {
+                b.WriteString(fmt.Sprintf(" LIMIT %d", s.LimitN))
+            }
+            if s.OffsetN >= 0 {
+                b.WriteString(fmt.Sprintf(" OFFSET %d", s.OffsetN))
+            }
+            if s.LockMode != "" {
+                // SQLite has neither FOR UPDATE nor FOR SHARE.
+                if s.Driver != "sqlite" {
+                    if s.Driver == "mysql" && s.LockMode == "FOR SHARE" {
+                        b.WriteString(" LOCK IN SHARE MODE")
+                    } else {
+                        b.WriteString(" ")
+                        b.WriteString(s.LockMode)
+                    }
+                }
+            }
+            sql_ = b.String()
+            params = collected
+        }
+        out: dict[str, any] = {}
+        out["sql"] = sql_
+        out["params"] = params
+        return out
+    }
+
+    func _runQuery(self, sqlText: str, params: list[any]) -> list[dict[str, any]] {
+        #- Internal: run a SELECT through the bound transaction
+           (when ``self.tx`` is set) or through the underlying
+           ``Db`` connection. -#
+        if self.tx != None {
+            return self.tx.query(sqlText, params)
+        }
+        return self.db.query(sqlText, params)
+    }
+
+    func _runExec(self, sqlText: str, params: list[any]) -> int {
+        if self.tx != None {
+            return self.tx.exec(sqlText, params)
+        }
+        return self.db.exec(sqlText, params)
+    }
+
+    func get(self) -> list[dict[str, any]] {
+        plan: dict[str, any] = self.toSql()
+        sqlText: str = ""
+        params: list[any] = []
+        go! {
+            if v, ok := plan["sql"].(string); ok { sqlText = v }
+            if p, ok := plan["params"].([]interface{}); ok { params = p }
+        }
+        return self._runQuery(sqlText, params)
+    }
+
+    func first(self) -> dict[str, any] {
+        self.limitN = 1
+        rows: list[dict[str, any]] = self.get()
+        if len(rows) == 0 {
+            empty: dict[str, any] = {}
+            return empty
+        }
+        return rows[0]
+    }
+
+    func count(self) -> int {
+        savedCols: list[str] = self.cols
+        self.cols = ["COUNT(*) AS cnt"]
+        plan: dict[str, any] = self.toSql()
+        self.cols = savedCols
+        sqlText: str = ""
+        params: list[any] = []
+        go! {
+            if v, ok := plan["sql"].(string); ok { sqlText = v }
+            if p, ok := plan["params"].([]interface{}); ok { params = p }
+        }
+        rows: list[dict[str, any]] = self._runQuery(sqlText, params)
+        if len(rows) == 0 {
+            return 0
+        }
+        first_: dict[str, any] = rows[0]
+        n: int = 0
+        go! {
+            if v, ok := first_["cnt"]; ok {
+                switch x := v.(type) {
+                case int:    n = x
+                case int64:  n = int(x)
+                case float64: n = int(x)
+                case string:
+                    if i, err := strconv.Atoi(x); err == nil { n = i }
+                }
+            }
+        }
+        return n
+    }
+
+    func insert(self, record: dict[str, any]) -> int {
+        sqlText: str = ""
+        params: list[any] = []
+        go! {
+            keys := []string{}
+            placeholders := []string{}
+            vals := []interface{}{}
+            for k, v := range record {
+                keys = append(keys, k)
+                placeholders = append(placeholders, "?")
+                vals = append(vals, v)
+            }
+            sqlText = fmt.Sprintf(
+                "INSERT INTO %s (%s) VALUES (%s)",
+                s.TableName,
+                strings.Join(keys, ", "),
+                strings.Join(placeholders, ", "),
+            )
+            if len(s.ReturningCols) > 0 && s.Driver == "postgres" {
+                sqlText += " RETURNING " + strings.Join(s.ReturningCols, ", ")
+            }
+            params = vals
+        }
+        if len(self.returningCols) > 0 and self.driver == "postgres" {
+            rows: list[dict[str, any]] = self._runQuery(sqlText, params)
+            return len(rows)
+        }
+        return self._runExec(sqlText, params)
+    }
+
+    func insertReturning(self, record: dict[str, any]) -> list[dict[str, any]] {
+        #- Postgres-only: INSERT and return the rows the database
+           generated. Combine with ``returning(cols)`` to pick which
+           columns come back. Other drivers return ``[]``. -#
+        if self.driver != "postgres" {
+            empty: list[dict[str, any]] = []
+            return empty
+        }
+        sqlText: str = ""
+        params: list[any] = []
+        go! {
+            keys := []string{}
+            placeholders := []string{}
+            vals := []interface{}{}
+            for k, v := range record {
+                keys = append(keys, k)
+                placeholders = append(placeholders, "?")
+                vals = append(vals, v)
+            }
+            sqlText = fmt.Sprintf(
+                "INSERT INTO %s (%s) VALUES (%s)",
+                s.TableName,
+                strings.Join(keys, ", "),
+                strings.Join(placeholders, ", "),
+            )
+            ret := "*"
+            if len(s.ReturningCols) > 0 {
+                ret = strings.Join(s.ReturningCols, ", ")
+            }
+            sqlText += " RETURNING " + ret
+            params = vals
+        }
+        return self._runQuery(sqlText, params)
+    }
+
+    func insertMany(self, records: list[dict[str, any]]) -> int {
+        n: int = len(records)
+        if n == 0 {
+            return 0
+        }
+        sqlText: str = ""
+        params: list[any] = []
+        go! {
+            // ``records`` is already []map[string]interface{} so no
+            // type assertion is needed on element access.
+            firstRow := records[0]
+            keys := []string{}
+            for k := range firstRow {
+                keys = append(keys, k)
+            }
+            rowPlaceholders := "(" + strings.Repeat("?,", len(keys))
+            rowPlaceholders = rowPlaceholders[:len(rowPlaceholders)-1] + ")"
+            allPlaceholders := []string{}
+            vals := []interface{}{}
+            for _, rec := range records {
+                allPlaceholders = append(allPlaceholders, rowPlaceholders)
+                for _, k := range keys {
+                    vals = append(vals, rec[k])
+                }
+            }
+            sqlText = fmt.Sprintf(
+                "INSERT INTO %s (%s) VALUES %s",
+                s.TableName,
+                strings.Join(keys, ", "),
+                strings.Join(allPlaceholders, ", "),
+            )
+            params = vals
+        }
+        return self._runExec(sqlText, params)
+    }
+
+    func update(self, record: dict[str, any]) -> int {
+        sqlText: str = ""
+        params: list[any] = []
+        go! {
+            sets := []string{}
+            vals := []interface{}{}
+            for k, v := range record {
+                sets = append(sets, fmt.Sprintf("%s = ?", k))
+                vals = append(vals, v)
+            }
+            var b strings.Builder
+            b.WriteString(fmt.Sprintf("UPDATE %s SET %s", s.TableName, strings.Join(sets, ", ")))
+            if len(s.Conds) > 0 {
+                b.WriteString(" WHERE ")
+                for i, raw := range s.Conds {
+                    triple, _ := raw.([]interface{})
+                    logic, _ := triple[0].(string)
+                    frag, _ := triple[1].(string)
+                    listv, _ := triple[2].([]interface{})
+                    if i > 0 {
+                        b.WriteString(" ")
+                        b.WriteString(logic)
+                        b.WriteString(" ")
+                    }
+                    b.WriteString(frag)
+                    vals = append(vals, listv...)
+                }
+            }
+            sqlText = b.String()
+            params = vals
+        }
+        return self._runExec(sqlText, params)
+    }
+
+    func delete(self) -> int {
+        sqlText: str = ""
+        params: list[any] = []
+        go! {
+            var b strings.Builder
+            b.WriteString(fmt.Sprintf("DELETE FROM %s", s.TableName))
+            vals := []interface{}{}
+            if len(s.Conds) > 0 {
+                b.WriteString(" WHERE ")
+                for i, raw := range s.Conds {
+                    triple, _ := raw.([]interface{})
+                    logic, _ := triple[0].(string)
+                    frag, _ := triple[1].(string)
+                    listv, _ := triple[2].([]interface{})
+                    if i > 0 {
+                        b.WriteString(" ")
+                        b.WriteString(logic)
+                        b.WriteString(" ")
+                    }
+                    b.WriteString(frag)
+                    vals = append(vals, listv...)
+                }
+            }
+            sqlText = b.String()
+            params = vals
+        }
+        return self._runExec(sqlText, params)
+    }
+
+    # ── Aggregations ──────────────────────────────────────────
+    func _aggregate(self, expr: str) -> any {
+        #- Run a single-column aggregate (``SUM``, ``AVG``, …) and
+           return the scalar value, coerced to the closest Lam
+           type (``int`` / ``float`` / ``str`` / ``None``). -#
+        savedCols: list[str] = self.cols
+        self.cols = [expr + " AS agg"]
+        plan: dict[str, any] = self.toSql()
+        self.cols = savedCols
+        sqlText: str = ""
+        params: list[any] = []
+        go! {
+            if v, ok := plan["sql"].(string); ok { sqlText = v }
+            if p, ok := plan["params"].([]interface{}); ok { params = p }
+        }
+        rows: list[dict[str, any]] = self._runQuery(sqlText, params)
+        if len(rows) == 0 {
+            return None
+        }
+        first_: dict[str, any] = rows[0]
+        out: any = None
+        go! {
+            if v, ok := first_["agg"]; ok {
+                out = v
+            }
+        }
+        return out
+    }
+
+    func sum(self, col: str) -> any {
+        #- ``SELECT SUM(col)``. Returns ``None`` if no rows. -#
+        return self._aggregate("SUM(" + col + ")")
+    }
+
+    func avg(self, col: str) -> any {
+        return self._aggregate("AVG(" + col + ")")
+    }
+
+    func min(self, col: str) -> any {
+        return self._aggregate("MIN(" + col + ")")
+    }
+
+    func max(self, col: str) -> any {
+        return self._aggregate("MAX(" + col + ")")
+    }
+
+    func exists(self) -> bool {
+        #- ``true`` iff at least one row matches. Cheaper than
+           ``count() > 0`` because we ``LIMIT 1``. -#
+        savedLimit: int = self.limitN
+        self.limitN = 1
+        rows: list[dict[str, any]] = self.get()
+        self.limitN = savedLimit
+        return len(rows) > 0
+    }
+
+    func pluck(self, col: str) -> list[any] {
+        #- Project a single column out of every row. Equivalent to
+           ``[r[col] for r in this.select(col).get()]``. -#
+        savedCols: list[str] = self.cols
+        self.cols = [col]
+        rows: list[dict[str, any]] = self.get()
+        self.cols = savedCols
+        out: list[any] = []
+        go! {
+            for _, r := range rows {
+                if v, ok := r[col]; ok {
+                    out = append(out, v)
+                }
+            }
+        }
+        return out
+    }
+
+    func paginate(self, page: int, perPage: int) -> dict[str, any] {
+        #- Convenience wrapper around ``limit`` + ``offset`` that
+           also runs a sibling ``COUNT(*)`` so the caller can render
+           page navigation. ``page`` is 1-indexed. The returned
+           dict has keys ``data``, ``total``, ``page``, ``perPage``,
+           and ``lastPage``. -#
+        if page < 1 {
+            page = 1
+        }
+        if perPage < 1 {
+            perPage = 15
+        }
+        total: int = self.count()
+        self.limitN = perPage
+        self.offsetN = (page - 1) * perPage
+        rows: list[dict[str, any]] = self.get()
+        lastPage: int = 1
+        if total > 0 {
+            lastPage = (total + perPage - 1) / perPage
+        }
+        out: dict[str, any] = {}
+        out["data"] = rows
+        out["total"] = total
+        out["page"] = page
+        out["perPage"] = perPage
+        out["lastPage"] = lastPage
+        return out
+    }
+
+    # ── Mutating shortcuts ────────────────────────────────────
+    func increment(self, col: str, n: int = 1) -> int {
+        #- ``UPDATE ... SET col = col + ?`` against the current
+           WHERE clause. -#
+        return self._adjust(col, n, "+")
+    }
+
+    func decrement(self, col: str, n: int = 1) -> int {
+        return self._adjust(col, n, "-")
+    }
+
+    func _adjust(self, col: str, n: int, op: str) -> int {
+        sqlText: str = ""
+        params: list[any] = []
+        go! {
+            var b strings.Builder
+            b.WriteString(fmt.Sprintf("UPDATE %s SET %s = %s %s ?", s.TableName, col, col, op))
+            vals := []interface{}{n}
+            if len(s.Conds) > 0 {
+                b.WriteString(" WHERE ")
+                for i, raw := range s.Conds {
+                    triple, _ := raw.([]interface{})
+                    logic, _ := triple[0].(string)
+                    frag, _ := triple[1].(string)
+                    listv, _ := triple[2].([]interface{})
+                    if i > 0 {
+                        b.WriteString(" ")
+                        b.WriteString(logic)
+                        b.WriteString(" ")
+                    }
+                    b.WriteString(frag)
+                    vals = append(vals, listv...)
+                }
+            }
+            sqlText = b.String()
+            params = vals
+        }
+        return self._runExec(sqlText, params)
+    }
+
+    func upsert(self, record: dict[str, any], conflictCols: list[any], updateCols: list[any] = []) -> int {
+        #- INSERT a row, falling back to UPDATE on conflict against
+           ``conflictCols``. Driver dialects:
+
+             * SQLite + Postgres: ``ON CONFLICT (cols) DO UPDATE SET ...``.
+             * MySQL: ``ON DUPLICATE KEY UPDATE ...`` (``conflictCols``
+               is informational; MySQL detects the conflicting key
+               itself).
+
+           When ``updateCols`` is empty every column from ``record``
+           except those in ``conflictCols`` is updated. -#
+        sqlText: str = ""
+        params: list[any] = []
+        go! {
+            keys := []string{}
+            placeholders := []string{}
+            vals := []interface{}{}
+            for k, v := range record {
+                keys = append(keys, k)
+                placeholders = append(placeholders, "?")
+                vals = append(vals, v)
+            }
+            // Resolve which columns to UPDATE on conflict.
+            conflictSet := map[string]struct{}{}
+            for _, c := range conflictCols {
+                if cs, ok := c.(string); ok {
+                    conflictSet[cs] = struct{}{}
+                }
+            }
+            updates := []string{}
+            for _, c := range updateCols {
+                if cs, ok := c.(string); ok {
+                    updates = append(updates, cs)
+                }
+            }
+            if len(updates) == 0 {
+                for _, k := range keys {
+                    if _, isConflict := conflictSet[k]; !isConflict {
+                        updates = append(updates, k)
+                    }
+                }
+            }
+            base := fmt.Sprintf(
+                "INSERT INTO %s (%s) VALUES (%s)",
+                s.TableName,
+                strings.Join(keys, ", "),
+                strings.Join(placeholders, ", "),
+            )
+            switch s.Driver {
+            case "mysql":
+                if len(updates) > 0 {
+                    parts := []string{}
+                    for _, c := range updates {
+                        parts = append(parts, fmt.Sprintf("%s = VALUES(%s)", c, c))
+                    }
+                    base += " ON DUPLICATE KEY UPDATE " + strings.Join(parts, ", ")
+                }
+            default: // sqlite + postgres
+                conflictCSV := []string{}
+                for _, c := range conflictCols {
+                    if cs, ok := c.(string); ok {
+                        conflictCSV = append(conflictCSV, cs)
+                    }
+                }
+                base += " ON CONFLICT (" + strings.Join(conflictCSV, ", ") + ") "
+                if len(updates) == 0 {
+                    base += "DO NOTHING"
+                } else {
+                    parts := []string{}
+                    for _, c := range updates {
+                        parts = append(parts, fmt.Sprintf("%s = excluded.%s", c, c))
+                    }
+                    base += "DO UPDATE SET " + strings.Join(parts, ", ")
+                }
+            }
+            sqlText = base
+            params = vals
+        }
+        return self._runExec(sqlText, params)
+    }
+
+    func firstOrCreate(self, lookup: dict[str, any], extra: dict[str, any] = {}) -> dict[str, any] {
+        #- Return the first row matching ``lookup`` if one exists;
+           otherwise INSERT a row composed of ``lookup`` ⊕ ``extra``
+           and return that. The lookup keys become equality
+           predicates. Pair with a transaction for a race-free
+           upsert. -#
+        for k, v in lookup {
+            self.whereEq(k, v)
+        }
+        existing: dict[str, any] = self.first()
+        if len(existing) > 0 {
+            return existing
+        }
+        record: dict[str, any] = {}
+        for k, v in lookup {
+            record[k] = v
+        }
+        for k, v in extra {
+            record[k] = v
+        }
+        # Reset conditions so insert() doesn't try to honour them.
+        cleared: list[any] = []
+        self.conds = cleared
+        self.insert(record)
+        return record
+    }
+
+    func updateOrCreate(self, lookup: dict[str, any], values: dict[str, any]) -> dict[str, any] {
+        #- Upsert by composition: if a row matches ``lookup``, apply
+           ``values`` via UPDATE; otherwise INSERT ``lookup`` ⊕
+           ``values``. Returns the resulting row. -#
+        for k, v in lookup {
+            self.whereEq(k, v)
+        }
+        existing: dict[str, any] = self.first()
+        if len(existing) > 0 {
+            self.update(values)
+            for k, v in values {
+                existing[k] = v
+            }
+            return existing
+        }
+        record: dict[str, any] = {}
+        for k, v in lookup {
+            record[k] = v
+        }
+        for k, v in values {
+            record[k] = v
+        }
+        cleared: list[any] = []
+        self.conds = cleared
+        self.insert(record)
+        return record
+    }
+
+    func truncate(self) {
+        #- ``DELETE FROM table`` (portable). On Postgres / MySQL we
+           emit ``TRUNCATE TABLE`` which resets identity counters
+           atomically; SQLite uses the DELETE form because it lacks
+           TRUNCATE. -#
+        sqlText: str = ""
+        go! {
+            switch s.Driver {
+            case "postgres", "mysql":
+                sqlText = "TRUNCATE TABLE " + s.TableName
+            default:
+                sqlText = "DELETE FROM " + s.TableName
+            }
+        }
+        empty: list[any] = []
+        self._runExec(sqlText, empty)
+    }
+}
+
+go! {
+    // Compile-time silence for the unused sync import (kept so future
+    // additions like prepared-statement caching can pull it in
+    // without re-shuffling imports).
+    var _ sync.Mutex
+}
+
+func main() {
+    pass
+}

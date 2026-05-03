@@ -1,0 +1,12 @@
+# Test: dict comprehension from list
+# expect: 1
+# expect: 4
+# expect: 9
+
+func main() {
+    nums: list[int] = [1, 2, 3]
+    sq: dict[int, int] = {n: n * n for n in nums}
+    for n in nums {
+        print(sq[n])
+    }
+}

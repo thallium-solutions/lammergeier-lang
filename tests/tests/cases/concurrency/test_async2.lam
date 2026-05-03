@@ -1,0 +1,17 @@
+# Test: Multiple async operations
+# expect: 10
+# expect: 20
+# expect: 30
+
+async func double(x: int) -> int {
+    return x * 2
+}
+
+func main() {
+    a: int = await double(5)
+    b: int = await double(10)
+    c: int = await double(15)
+    print(a)
+    print(b)
+    print(c)
+}

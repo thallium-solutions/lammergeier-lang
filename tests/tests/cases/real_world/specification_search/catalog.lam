@@ -1,0 +1,63 @@
+class ProductDoc {
+    func init(self, sku: str, title: str, category: str, cents: int, active: bool) {
+        self.sku: str = sku
+        self.title: str = title
+        self.category: str = category
+        self.cents: int = cents
+        self.active: bool = active
+    }
+}
+
+class ProductSpec {
+    func init(self, category: str = "*", minCents: int = 0, maxCents: int = 999999, activeOnly: bool = true, text: str = "") {
+        self.category: str = category
+        self.minCents: int = minCents
+        self.maxCents: int = maxCents
+        self.activeOnly: bool = activeOnly
+        self.text: str = text
+    }
+
+    func matches(self, doc: ProductDoc) -> bool {
+        if self.activeOnly and not doc.active {
+            return false
+        }
+        if self.category != "*" and doc.category != self.category {
+            return false
+        }
+        if doc.cents < self.minCents or doc.cents > self.maxCents {
+            return false
+        }
+        if self.text != "" {
+            title: str = doc.title.lower()
+            needle: str = self.text.lower()
+            if not title.contains(needle) {
+                return false
+            }
+        }
+        return true
+    }
+}
+
+class ProductCatalog {
+    func init(self) {
+        self.docs: list[ProductDoc] = []
+    }
+
+    func add(self, doc: ProductDoc) {
+        self.docs.append(doc)
+    }
+
+    func search(self, spec: ProductSpec) -> list[ProductDoc] {
+        out: list[ProductDoc] = []
+        for doc in self.docs {
+            if spec.matches(doc) {
+                out.append(doc)
+            }
+        }
+        return out
+    }
+}
+
+func main() {
+    pass
+}

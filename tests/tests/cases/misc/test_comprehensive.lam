@@ -1,0 +1,93 @@
+# Test: Comprehensive mix - many patterns combined
+# expect: 1
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 5
+# expect: 8
+# expect: 13
+# expect: 21
+# expect: 34
+# expect: 55
+# expect: sum=385
+# expect: fizz_count=6
+# expect: class_total=165
+# expect: nested_result=50
+# expect: mix_ok
+
+func fib_seq(n: int) -> int {
+    if n <= 1 {
+        return 1
+    }
+    return fib_seq(n - 1) + fib_seq(n - 2)
+}
+
+func count_fizz(limit: int) -> int {
+    count: int = 0
+    i: int = 0
+    for i in range(1, limit + 1) {
+        if i % 3 == 0 {
+            count = count + 1
+        }
+    }
+    return count
+}
+
+class Accumulator {
+    func __init__(self, initial: int) {
+        self.total: int = initial
+    }
+
+    func add(self, x: int) {
+        self.total = self.total + x
+    }
+
+    func get(self) -> int {
+        return self.total
+    }
+}
+
+func nested_compute(x: int) -> int {
+    result: int = 0
+    i: int = 0
+    j: int = 0
+    for i in range(x) {
+        for j in range(x) {
+            if (i + j) % 2 == 0 {
+                result = result + 1
+            }
+        }
+    }
+    return result
+}
+
+func main() {
+    # Fibonacci sequence
+    i: int = 0
+    for i in range(10) {
+        print(fib_seq(i))
+    }
+
+    # Sum of squares
+    total: int = 0
+    for i in range(1, 11) {
+        total = total + i * i
+    }
+    print(f"sum={total}")
+
+    # FizzBuzz count
+    print(f"fizz_count={count_fizz(20)}")
+
+    # Class accumulator
+    acc: Accumulator = Accumulator(0)
+    for i in range(1, 11) {
+        acc.add(i * 3)
+    }
+    print(f"class_total={acc.get()}")
+
+    # Nested loops
+    print(f"nested_result={nested_compute(10)}")
+
+    # Final
+    print("mix_ok")
+}

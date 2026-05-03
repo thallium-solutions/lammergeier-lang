@@ -1,0 +1,13 @@
+# expect-error: duplicate class `Point`
+
+class Point {
+    x: int = 0
+}
+
+class Point {
+    y: int = 0
+}
+
+func main() {
+    print(0)
+}

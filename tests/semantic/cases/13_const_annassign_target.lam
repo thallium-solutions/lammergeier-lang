@@ -1,0 +1,7 @@
+# expect-error: cannot reassign constant `W`
+# expect-error: line 6
+
+const W = 0
+func main() {
+    W: int = 7
+}

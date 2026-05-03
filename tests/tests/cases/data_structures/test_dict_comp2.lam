@@ -1,0 +1,11 @@
+# Test: dict comprehension with filter
+# expect: 0
+# expect: 4
+# expect: 16
+
+func main() {
+    even_sq: dict[int, int] = {i: i * i for i in range(6) if i % 2 == 0}
+    print(even_sq[0])
+    print(even_sq[2])
+    print(even_sq[4])
+}

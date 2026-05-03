@@ -1,0 +1,50 @@
+# Test: Matrix-like operations using nested lists
+# expect: 1
+# expect: 5
+# expect: 9
+# expect: trace: 15
+# expect: row0: 6
+# expect: row1: 15
+# expect: row2: 24
+# expect: col0: 12
+# expect: col1: 15
+# expect: col2: 18
+# expect: matrix_ok
+
+func main() {
+    # 3x3 matrix diagonal
+    go! {
+        matrix := [][]int{
+            {1, 2, 3},
+            {4, 5, 6},
+            {7, 8, 9},
+        }
+        // Diagonal
+        for i := 0; i < 3; i++ {
+            fmt.Println(matrix[i][i])
+        }
+        // Trace
+        trace := 0
+        for i := 0; i < 3; i++ {
+            trace += matrix[i][i]
+        }
+        fmt.Println(fmt.Sprintf("trace: %d", trace))
+        // Row sums
+        for i := 0; i < 3; i++ {
+            sum := 0
+            for j := 0; j < 3; j++ {
+                sum += matrix[i][j]
+            }
+            fmt.Println(fmt.Sprintf("row%d: %d", i, sum))
+        }
+        // Column sums
+        for j := 0; j < 3; j++ {
+            sum := 0
+            for i := 0; i < 3; i++ {
+                sum += matrix[i][j]
+            }
+            fmt.Println(fmt.Sprintf("col%d: %d", j, sum))
+        }
+    }
+    print("matrix_ok")
+}

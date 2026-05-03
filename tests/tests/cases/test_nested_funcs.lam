@@ -1,0 +1,29 @@
+# expect: hi
+# expect: 15
+# expect: 20
+
+func outer() {
+    func inner() {
+        print("hi")
+    }
+    inner()
+}
+
+func adder(base: int) -> int {
+    func add(x: int) -> int {
+        return base + x
+    }
+    return add(5)
+}
+
+func twoNested() -> int {
+    func first(n: int) -> int { return n + 1 }
+    func second(n: int) -> int { return n * 2 }
+    return second(first(9))
+}
+
+func main() {
+    outer()
+    print(adder(10))
+    print(twoNested())
+}

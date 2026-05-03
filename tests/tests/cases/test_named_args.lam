@@ -1,0 +1,45 @@
+# expect: hello, world;
+# expect: hello, alice;
+# expect: hello, world;hello, world;hello, world;
+# expect: hello, bob;hello, bob;
+# expect: User alice, guest.
+# expect: Hi alice, guest.
+# expect: User alice, guest!
+# expect: Hello alice, guest!
+# expect: * bob, admin.
+
+func greet(name: str = "world", times: int = 1) -> str {
+    out: str = ""
+    for i in range(times) {
+        out = out + "hello, " + name + ";"
+    }
+    return out
+}
+
+class User {
+    func init(self, name: str = "anon", age: int = 0, role: str = "guest") {
+        self.name: str = name
+        self.age: int = age
+        self.role: str = role
+    }
+
+    func describe(self, prefix: str = "User", suffix: str = ".") -> str {
+        return prefix + " " + self.name + ", " + self.role + suffix
+    }
+}
+
+func main() {
+    print(greet())
+    print(greet(name="alice"))
+    print(greet(times=3))
+    print(greet(name="bob", times=2))
+
+    u: User = User(name="alice", age=30)
+    print(u.describe())
+    print(u.describe(prefix="Hi"))
+    print(u.describe(suffix="!"))
+    print(u.describe(prefix="Hello", suffix="!"))
+
+    u2: User = User(role="admin", name="bob")
+    print(u2.describe(prefix="*"))
+}

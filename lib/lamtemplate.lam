@@ -1,0 +1,305 @@
+# Lammergeier standard library: text & HTML templating.
+#
+# Thin wrapper around Go's ``text/template`` and ``html/template``.
+# The HTML variant autoescapes interpolations so user-supplied data
+# can't break out of an attribute or inject ``<script>`` tags — use
+# it for anything rendered into a browser, and use ``Template``
+# (plain text) for emails, CLI output, config files, and so on.
+#
+# Usage::
+#
+#     from lamtemplate import Template, HtmlTemplate
+#
+#     t: Template = Template()
+#     t.parse("Hello, {{.Name}}! You have {{.Count}} messages.")
+#     out: str = t.render({"Name": "Alice", "Count": 3})
+#
+# Both classes expose::
+#
+#     parse(source: str)            -> Result
+#     parseFile(path: str)          -> Result
+#     render(data: dict[str, any])  -> str       # empty on failure
+#     tryRender(data)               -> Result    # preserves error
+#
+# Multi-template files (``{{define "..."}}...{{end}}``) are supported
+# via ``parseFiles(paths)`` and rendered with ``renderNamed(name, data)``.
+#
+# Built-in functions you get for free from Go's template package::
+#
+#     {{len .Items}}   {{index .Map "key"}}   {{if .Ok}}...{{end}}
+#     {{range .Rows}}  {{.Field}}  {{end}}
+#     {{printf "%.2f" .Price}}
+#
+# Additional helpers registered on every template:
+#
+#     {{upper .S}}       — strings.ToUpper
+#     {{lower .S}}       — strings.ToLower
+#     {{title .S}}       — strings.Title (deprecated but handy)
+#     {{trim .S}}        — strings.TrimSpace
+#     {{replace .S a b}} — strings.ReplaceAll
+#     {{join .L sep}}    — strings.Join on a []string / []any
+#     {{default v x}}    — returns ``x`` unless it's zero, else ``v``
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "bytes"
+        "fmt"
+        "html/template"
+        "os"
+        "path/filepath"
+        "strings"
+        texttemplate "text/template"
+    )
+
+    // lamTemplateFuncs returns the shared helper map used by both
+    // plain-text and HTML templates. Keep it in sync between the
+    // two so template authors can swap engines freely.
+    func lamTemplateFuncs() map[string]interface{} {
+        return map[string]interface{}{
+            "upper":   strings.ToUpper,
+            "lower":   strings.ToLower,
+            "title":   strings.Title,
+            "trim":    strings.TrimSpace,
+            "replace": func(s, old, new string) string {
+                return strings.ReplaceAll(s, old, new)
+            },
+            "join": func(sep string, v interface{}) string {
+                switch xs := v.(type) {
+                case []string:
+                    return strings.Join(xs, sep)
+                case []interface{}:
+                    parts := make([]string, len(xs))
+                    for i, x := range xs { parts[i] = fmt.Sprint(x) }
+                    return strings.Join(parts, sep)
+                default:
+                    return fmt.Sprint(v)
+                }
+            },
+            "default": func(def, v interface{}) interface{} {
+                if v == nil { return def }
+                switch x := v.(type) {
+                case string:
+                    if x == "" { return def }
+                case int:
+                    if x == 0 { return def }
+                case float64:
+                    if x == 0 { return def }
+                case bool:
+                    if !x { return def }
+                }
+                return v
+            },
+        }
+    }
+}
+
+class Template {
+    #- Plain-text template. Use for emails, config files, CLI output.
+       **Do not** use for rendering into HTML — use ``HtmlTemplate``
+       instead so interpolations are properly autoescaped. -#
+
+    func __init__(self) {
+        self._tpl: any = None
+    }
+
+    func parse(self, source: str) -> Result {
+        #- Parse ``source`` as the sole template in this object. A
+           second call to ``parse`` replaces the previous template. -#
+        go! {
+            t := texttemplate.New("lam").Funcs(lamTemplateFuncs())
+            parsed, err := t.Parse(source)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
+            }
+            s._tpl = parsed
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func parseFile(self, path: str) -> Result {
+        #- Parse a template file. The template's name is the file's
+           base name (``filepath.Base``) — relevant only for
+           ``renderNamed``. -#
+        go! {
+            data, err := os.ReadFile(path)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
+            }
+            t := texttemplate.New(filepath.Base(path)).Funcs(lamTemplateFuncs())
+            parsed, err := t.Parse(string(data))
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
+            }
+            s._tpl = parsed
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func parseFiles(self, paths: list[str]) -> Result {
+        #- Parse multiple template files into one registry so
+           ``{{template "name"}}`` includes can cross-reference
+           them. Render a specific one via ``renderNamed``. -#
+        go! {
+            if len(paths) == 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", "parseFiles: empty paths", nil))
+            }
+            first := filepath.Base(paths[0])
+            t := texttemplate.New(first).Funcs(lamTemplateFuncs())
+            parsed, err := t.ParseFiles(paths...)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
+            }
+            s._tpl = parsed
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func render(self, data: dict[str, any]) -> str {
+        #- Render the default template with ``data``. Returns empty
+           string on error — prefer ``tryRender`` when you need to
+           distinguish rendering failure from an intentionally empty
+           template. -#
+        out: str = ""
+        go! {
+            if s._tpl == nil { return "" }
+            t := s._tpl.(*texttemplate.Template)
+            var buf bytes.Buffer
+            if err := t.Execute(&buf, data); err == nil {
+                out = buf.String()
+            }
+        }
+        return out
+    }
+
+    func tryRender(self, data: dict[str, any]) -> Result {
+        #- Render and return a ``Result``. Surfaces the underlying
+           template error for debugging. -#
+        go! {
+            if s._tpl == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", "no template parsed", nil))
+            }
+            t := s._tpl.(*texttemplate.Template)
+            var buf bytes.Buffer
+            if err := t.Execute(&buf, data); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(buf.String())
+        }
+    }
+
+    func renderNamed(self, name: str, data: dict[str, any]) -> str {
+        #- Render a named template (registered via ``parseFiles`` or
+           a ``{{define "name"}}...{{end}}`` block). Empty string on
+           error. -#
+        out: str = ""
+        go! {
+            if s._tpl == nil { return "" }
+            t := s._tpl.(*texttemplate.Template)
+            var buf bytes.Buffer
+            if err := t.ExecuteTemplate(&buf, name, data); err == nil {
+                out = buf.String()
+            }
+        }
+        return out
+    }
+}
+
+class HtmlTemplate {
+    #- HTML template with contextual autoescaping. **Always** use
+       this class when the output is destined for a browser —
+       ``Template`` will happily emit ``<script>`` tags verbatim. -#
+
+    func __init__(self) {
+        self._tpl: any = None
+    }
+
+    func parse(self, source: str) -> Result {
+        go! {
+            t := template.New("lam").Funcs(template.FuncMap(lamTemplateFuncs()))
+            parsed, err := t.Parse(source)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
+            }
+            s._tpl = parsed
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func parseFile(self, path: str) -> Result {
+        go! {
+            data, err := os.ReadFile(path)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
+            }
+            t := template.New(filepath.Base(path)).Funcs(template.FuncMap(lamTemplateFuncs()))
+            parsed, err := t.Parse(string(data))
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
+            }
+            s._tpl = parsed
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func parseFiles(self, paths: list[str]) -> Result {
+        go! {
+            if len(paths) == 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", "parseFiles: empty paths", nil))
+            }
+            first := filepath.Base(paths[0])
+            t := template.New(first).Funcs(template.FuncMap(lamTemplateFuncs()))
+            parsed, err := t.ParseFiles(paths...)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
+            }
+            s._tpl = parsed
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func render(self, data: dict[str, any]) -> str {
+        out: str = ""
+        go! {
+            if s._tpl == nil { return "" }
+            t := s._tpl.(*template.Template)
+            var buf bytes.Buffer
+            if err := t.Execute(&buf, data); err == nil {
+                out = buf.String()
+            }
+        }
+        return out
+    }
+
+    func tryRender(self, data: dict[str, any]) -> Result {
+        go! {
+            if s._tpl == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", "no template parsed", nil))
+            }
+            t := s._tpl.(*template.Template)
+            var buf bytes.Buffer
+            if err := t.Execute(&buf, data); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(buf.String())
+        }
+    }
+
+    func renderNamed(self, name: str, data: dict[str, any]) -> str {
+        out: str = ""
+        go! {
+            if s._tpl == nil { return "" }
+            t := s._tpl.(*template.Template)
+            var buf bytes.Buffer
+            if err := t.ExecuteTemplate(&buf, name, data); err == nil {
+                out = buf.String()
+            }
+        }
+        return out
+    }
+}
+
+func main() {
+    pass
+}

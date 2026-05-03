@@ -1,0 +1,409 @@
+# Lammergeier standard library: HTTP/networking utilities
+# Import with: from lamhttp import Http
+#
+# The historical ``get``/``post`` family returns the response body as
+# a string and silently maps network failures to ``""``. The ``try*``
+# siblings (``tryGet``, ``tryPost``, ``tryPostJson``) return a
+# ``Result[str]`` so callers can distinguish "empty body" from "server
+# unreachable":
+#
+#     body: str = Http.tryGet(url)?
+#     body: str = Http.tryGet(url).unwrapOr("")     # legacy behaviour
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "fmt"
+        "io"
+        "net/http"
+        "strings"
+        "time"
+    )
+}
+
+class Http {
+    static func get(url: str) -> str {
+        go! {
+            resp, err := http.Get(url)
+            if err != nil {
+                return ""
+            }
+            defer resp.Body.Close()
+            body, _ := io.ReadAll(resp.Body)
+            return string(body)
+        }
+    }
+
+    static func tryGet(url: str) -> Result {
+        #- GET ``url`` and return the response body. Returns
+           ``Result.Ok(str)`` on a successful HTTP exchange, or
+           ``Result.Err(Error("HttpError", ...))`` if the request
+           couldn't even be made (DNS failure, connection refused,
+           etc.). Non-2xx responses are still ``Ok`` — inspect the
+           body or use ``tryStatusCode`` if the status matters. -#
+        go! {
+            resp, err := http.Get(url)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "HttpError",
+                    fmt.Sprintf("GET %q: %v", url, err),
+                    nil,
+                ))
+            }
+            defer resp.Body.Close()
+            body, err := io.ReadAll(resp.Body)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "HttpError",
+                    fmt.Sprintf("GET %q: read body: %v", url, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(body))
+        }
+    }
+
+    static func statusCode(url: str) -> int {
+        go! {
+            resp, err := http.Get(url)
+            if err != nil {
+                return 0
+            }
+            defer resp.Body.Close()
+            return resp.StatusCode
+        }
+    }
+
+    static func post(url: str, contentType: str, body: str) -> str {
+        go! {
+            resp, err := http.Post(url, contentType, strings.NewReader(body))
+            if err != nil {
+                return ""
+            }
+            defer resp.Body.Close()
+            respBody, _ := io.ReadAll(resp.Body)
+            return string(respBody)
+        }
+    }
+
+    static func tryPost(url: str, contentType: str, body: str) -> Result {
+        #- POST ``body`` to ``url`` with the given content type.
+           Returns ``Result.Ok(responseBody)`` or
+           ``Result.Err(Error("HttpError", ...))``. -#
+        go! {
+            resp, err := http.Post(url, contentType, strings.NewReader(body))
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "HttpError",
+                    fmt.Sprintf("POST %q: %v", url, err),
+                    nil,
+                ))
+            }
+            defer resp.Body.Close()
+            respBody, err := io.ReadAll(resp.Body)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "HttpError",
+                    fmt.Sprintf("POST %q: read body: %v", url, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(respBody))
+        }
+    }
+
+    static func postJson(url: str, jsonBody: str) -> str {
+        #- Shorthand for post(url, "application/json", jsonBody). -#
+        return Http.post(url, "application/json", jsonBody)
+    }
+
+    static func tryPostJson(url: str, jsonBody: str) -> Result {
+        #- Shorthand for ``tryPost(url, "application/json", jsonBody)``. -#
+        return Http.tryPost(url, "application/json", jsonBody)
+    }
+
+    static func getHeader(url: str, header: str) -> str {
+        go! {
+            resp, err := http.Get(url)
+            if err != nil { return "" }
+            defer resp.Body.Close()
+            return resp.Header.Get(header)
+        }
+    }
+
+    static func getWithHeaders(url: str, headers: dict[str, str]) -> str {
+        #- GET with custom request headers (e.g. Authorization). -#
+        go! {
+            req, err := http.NewRequest("GET", url, nil)
+            if err != nil { return "" }
+            for k, v := range headers {
+                req.Header.Set(k, v)
+            }
+            client := &http.Client{Timeout: 30 * time.Second}
+            resp, err := client.Do(req)
+            if err != nil { return "" }
+            defer resp.Body.Close()
+            body, _ := io.ReadAll(resp.Body)
+            return string(body)
+        }
+    }
+
+    static func serve(port: int, handler: any) -> HttpServer {
+        #- Start a blocking HTTP server on `:port`. `handler` must be a
+           `func(method str, path str, body str) -> str` that returns the
+           response body. For more control drop into go! with net/http. -#
+        go! {
+            mux := http.NewServeMux()
+            mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+                body, _ := io.ReadAll(r.Body)
+                r.Body.Close()
+                var resp string
+                if fn, ok := handler.(func(string, string, string) string); ok {
+                    resp = fn(r.Method, r.URL.Path, string(body))
+                } else {
+                    resp = ""
+                }
+                fmt.Fprint(w, resp)
+            })
+            srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux}
+            lamSrv := NewHttpServer()
+            lamSrv.Raw = srv
+            go func() {
+                srv.ListenAndServe()
+            }()
+            // give the server a moment to start listening
+            time.Sleep(50 * time.Millisecond)
+            return lamSrv
+        }
+    }
+}
+
+class HttpServer {
+    #- Handle returned by Http.serve. Call .close() to stop the server. -#
+
+    func __init__(self) {
+        self.raw: any = None
+    }
+
+    func close(self) {
+        go! {
+            if s.Raw != nil {
+                s.Raw.(*http.Server).Close()
+                s.Raw = nil
+            }
+        }
+    }
+}
+
+# ── Expanded verbs on the static Http class. These cover the rest
+#    of the common-method surface (HEAD, PUT, DELETE, PATCH) for
+#    one-shot calls that don't need a reusable client.
+go! {
+    // Run a request with an arbitrary verb, optional body, and
+    // optional headers. The default client has a 30s timeout to
+    // keep hung peers from leaking goroutines.
+    func lamHttpDoVerb(method, url, contentType, body string, headers map[string]string) (string, int, error) {
+        var rdr io.Reader
+        if body != "" {
+            rdr = strings.NewReader(body)
+        }
+        req, err := http.NewRequest(method, url, rdr)
+        if err != nil { return "", 0, err }
+        if contentType != "" {
+            req.Header.Set("Content-Type", contentType)
+        }
+        for k, v := range headers {
+            req.Header.Set(k, v)
+        }
+        client := &http.Client{Timeout: 30 * time.Second}
+        resp, err := client.Do(req)
+        if err != nil { return "", 0, err }
+        defer resp.Body.Close()
+        b, err := io.ReadAll(resp.Body)
+        if err != nil { return "", resp.StatusCode, err }
+        return string(b), resp.StatusCode, nil
+    }
+}
+
+class HttpResponse {
+    #- Result of a request from ``HttpClient`` or ``Http.request``.
+       ``status`` is the HTTP status code (0 if the request never
+       reached the server). ``body`` is the response body as a
+       string. ``error`` is set on transport-level failures only
+       (DNS, refused, timeout) — non-2xx HTTP responses are NOT
+       errors. -#
+
+    func __init__(self, status: int = 0, body: str = "", error: str = "") {
+        self.status: int = status
+        self.body: str = body
+        self.error: str = error
+    }
+
+    func ok(self) -> bool {
+        #- True if the request completed (no transport error) and
+           the status code is in the 2xx range. -#
+        return self.error == "" and self.status >= 200 and self.status < 300
+    }
+}
+
+class HttpClient {
+    #- Reusable HTTP client with a base URL, default headers, and
+       a configurable timeout. Use one client per logical "API I'm
+       talking to" — the default headers are the right place to
+       hang an Authorization token, an API key, a User-Agent, etc.
+
+       Usage::
+
+           api: HttpClient = HttpClient("https://api.example.com")
+           api.setHeader("Authorization", "Bearer xyz")
+           api.setTimeoutMs(5000)
+
+           res: HttpResponse = api.get("/users/42")
+           if res.ok() {
+               body = res.body
+           }
+
+       Method paths can be absolute (``https://...``) or relative
+       to the configured base URL. -#
+
+    func __init__(self, baseUrl: str = "", timeoutMs: int = 30000) {
+        self.baseUrl: str = baseUrl
+        self.timeoutMs: int = timeoutMs
+        self.headers: dict[str, str] = {}
+    }
+
+    func setHeader(self, name: str, value: str) {
+        self.headers[name] = value
+    }
+
+    func removeHeader(self, name: str) {
+        go! {
+            delete(s.Headers, name)
+        }
+    }
+
+    func setTimeoutMs(self, ms: int) {
+        self.timeoutMs = ms
+    }
+
+    func _resolveUrl(self, path: str) -> str {
+        out: str = ""
+        bu: str = self.baseUrl
+        go! {
+            // The composition is wrapped in an immediately-invoked
+            // func literal so the early-return shortcuts apply only
+            // to this composition step — bare ``return`` here would
+            // exit the surrounding Lam method and skip the trailing
+            // ``return out`` that the lowering inserts.
+            out = func() string {
+                // Absolute URL → use as-is.
+                if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+                    return path
+                }
+                if path == "" { return bu }
+                if bu == "" { return path }
+                // Compose with baseUrl, normalising the slash.
+                if strings.HasSuffix(bu, "/") && strings.HasPrefix(path, "/") {
+                    return bu[:len(bu)-1] + path
+                }
+                if !strings.HasSuffix(bu, "/") && !strings.HasPrefix(path, "/") {
+                    return bu + "/" + path
+                }
+                return bu + path
+            }()
+        }
+        return out
+    }
+
+    func _do(self, method: str, path: str, contentType: str, body: str) -> HttpResponse {
+        url: str = self._resolveUrl(path)
+        merged: dict[str, str] = {}
+        for k, v in self.headers {
+            merged[k] = v
+        }
+        if contentType != "" {
+            hasCT: bool = false
+            go! {
+                if _, ok := merged["Content-Type"]; ok { hasCT = true }
+            }
+            if not hasCT {
+                merged["Content-Type"] = contentType
+            }
+        }
+        timeoutMs: int = self.timeoutMs
+
+        status: int = 0
+        respBody: str = ""
+        errMsg: str = ""
+        go! {
+            var rdr io.Reader
+            if body != "" {
+                rdr = strings.NewReader(body)
+            }
+            req, err := http.NewRequest(method, url, rdr)
+            if err != nil {
+                errMsg = err.Error()
+            } else {
+                for k, v := range merged {
+                    req.Header.Set(k, v)
+                }
+                client := &http.Client{
+                    Timeout: time.Duration(timeoutMs) * time.Millisecond,
+                }
+                if resp, err := client.Do(req); err != nil {
+                    errMsg = err.Error()
+                } else {
+                    defer resp.Body.Close()
+                    status = resp.StatusCode
+                    if b, err := io.ReadAll(resp.Body); err == nil {
+                        respBody = string(b)
+                    } else {
+                        errMsg = err.Error()
+                    }
+                }
+            }
+        }
+        return HttpResponse(status, respBody, errMsg)
+    }
+
+    func get(self, path: str) -> HttpResponse {
+        return self._do("GET", path, "", "")
+    }
+
+    func head(self, path: str) -> HttpResponse {
+        return self._do("HEAD", path, "", "")
+    }
+
+    func delete(self, path: str) -> HttpResponse {
+        return self._do("DELETE", path, "", "")
+    }
+
+    func post(self, path: str, contentType: str, body: str) -> HttpResponse {
+        return self._do("POST", path, contentType, body)
+    }
+
+    func postJson(self, path: str, jsonBody: str) -> HttpResponse {
+        return self._do("POST", path, "application/json", jsonBody)
+    }
+
+    func put(self, path: str, contentType: str, body: str) -> HttpResponse {
+        return self._do("PUT", path, contentType, body)
+    }
+
+    func putJson(self, path: str, jsonBody: str) -> HttpResponse {
+        return self._do("PUT", path, "application/json", jsonBody)
+    }
+
+    func patch(self, path: str, contentType: str, body: str) -> HttpResponse {
+        return self._do("PATCH", path, contentType, body)
+    }
+
+    func patchJson(self, path: str, jsonBody: str) -> HttpResponse {
+        return self._do("PATCH", path, "application/json", jsonBody)
+    }
+}
+
+func main() {
+    pass
+}

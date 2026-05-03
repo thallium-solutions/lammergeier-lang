@@ -1,0 +1,7 @@
+# expect-error: cannot reassign constant `X`
+# expect-error: line 6
+
+const X = 1
+func main() {
+    X = 2
+}

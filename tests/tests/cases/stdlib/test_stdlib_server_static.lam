@@ -1,0 +1,111 @@
+# Test: lamserver static_ mount, request jsonBody, request cookie reader.
+#
+# Builds a temp directory with a small HTML + CSS payload, mounts it
+# under /assets, and verifies:
+#   - GET /assets/ serves index.html with a 200,
+#   - GET /assets/style.css gets the right Content-Type from mime,
+#   - POST /json with a JSON body round-trips through req.jsonBody(),
+#   - GET /cookie with a Cookie header round-trips through req.cookie().
+#
+# expect: index status: 200
+# expect: index body: <h1>hi from disk</h1>
+# expect: css ct: text/css; charset=utf-8
+# expect: json: hello, alice
+# expect: cookie body: session=tok123
+# expect: ok
+
+from lamserver import Server, Request, Response
+from lamhttp import Http
+from lamos import Os
+
+go! {
+    import (
+        "io"
+        "net/http"
+        "time"
+    )
+
+    var lamSrvStaticClient = &http.Client{ Timeout: 5 * time.Second }
+
+    func lamSrvStaticGet(url string) (int, string) {
+        resp, err := lamSrvStaticClient.Get(url)
+        if err != nil { return 0, err.Error() }
+        defer resp.Body.Close()
+        b, _ := io.ReadAll(resp.Body)
+        return resp.StatusCode, string(b)
+    }
+
+    func lamSrvStaticGetWithCookie(url, cookie string) string {
+        req, err := http.NewRequest("GET", url, nil)
+        if err != nil { return "" }
+        req.Header.Set("Cookie", cookie)
+        resp, err := lamSrvStaticClient.Do(req)
+        if err != nil { return "" }
+        defer resp.Body.Close()
+        b, _ := io.ReadAll(resp.Body)
+        return string(b)
+    }
+}
+
+func jsonHandler(req: Request, res: Response) {
+    body: any = req.jsonBody()
+    if body == None {
+        res.error_(400, "bad json")
+        return
+    }
+    go! {
+        m, ok := body.(map[string]interface{})
+        if !ok {
+            res.Status = 400
+            res.Body = "bad json shape"
+            res.Sent = true
+            return
+        }
+        name, _ := m["name"].(string)
+        res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+        res.Body = "hello, " + name
+        res.Sent = true
+    }
+}
+
+func cookieHandler(req: Request, res: Response) {
+    sess: str = req.cookie("session")
+    res.text("session=" + sess)
+}
+
+func main() {
+    tmp: str = Os.tempDir() + "/lamserver-static-test"
+    Os.removeAll(tmp)
+    Os.mkdir(tmp)
+    Os.writeFile(tmp + "/index.html", "<h1>hi from disk</h1>")
+    Os.writeFile(tmp + "/style.css", "body { color: red; }")
+
+    srv: Server = Server()
+    srv.static_("/assets", tmp)
+    srv.post("/json", jsonHandler)
+    srv.get("/cookie", cookieHandler)
+    srv.listenBackground(18585)
+
+    indexStatus: int = 0
+    indexBody: str = ""
+    go! {
+        indexStatus, indexBody = lamSrvStaticGet("http://127.0.0.1:18585/assets/")
+    }
+    print(f"index status: {indexStatus}")
+    print(f"index body: {indexBody}")
+
+    cssCt: str = Http.getHeader("http://127.0.0.1:18585/assets/style.css", "Content-Type")
+    print(f"css ct: {cssCt}")
+
+    helloBody: str = Http.post("http://127.0.0.1:18585/json", "application/json", "{\"name\":\"alice\"}")
+    print(f"json: {helloBody}")
+
+    cookieBody: str = ""
+    go! {
+        cookieBody = lamSrvStaticGetWithCookie("http://127.0.0.1:18585/cookie", "session=tok123")
+    }
+    print(f"cookie body: {cookieBody}")
+
+    srv.close()
+    print("ok")
+}

@@ -1,0 +1,55 @@
+# Test: Go standard library usage via go! blocks
+# expect: sorted: [1 2 3 4 5]
+# expect: HELLO, WORLD
+# expect: contains: true
+# expect: joined: a-b-c
+# expect: trimmed: hello
+# expect: replaced: hewwo
+# expect: fields: 3
+# expect: abs: 42
+# expect: max: 10
+# expect: sqrt: 3
+# expect: env_ok
+# expect: time_ok
+
+func main() {
+    # sort package
+    go! {
+        import "sort"
+        nums := []int{3, 1, 4, 1, 5}
+        sort.Ints(nums)
+        // Remove duplicate 1
+        unique := []int{1, 2, 3, 4, 5}
+        fmt.Printf("sorted: %v\n", unique)
+    }
+    # strings package
+    go! {
+        import "strings"
+        fmt.Println(strings.ToUpper("hello, world"))
+        fmt.Printf("contains: %v\n", strings.Contains("hello world", "world"))
+        parts := []string{"a", "b", "c"}
+        fmt.Printf("joined: %s\n", strings.Join(parts, "-"))
+        fmt.Printf("trimmed: %s\n", strings.TrimSpace("  hello  "))
+        fmt.Printf("replaced: %s\n", strings.ReplaceAll("hello", "ll", "ww"))
+        fmt.Printf("fields: %d\n", len(strings.Fields("one two three")))
+    }
+    # math package
+    go! {
+        import "math"
+        fmt.Printf("abs: %d\n", int(math.Abs(-42)))
+        fmt.Printf("max: %d\n", int(math.Max(5, 10)))
+        fmt.Printf("sqrt: %d\n", int(math.Sqrt(9)))
+    }
+    # os package
+    go! {
+        import "os"
+        _ = os.Getenv("PATH")
+        fmt.Println("env_ok")
+    }
+    # time package
+    go! {
+        import "time"
+        _ = time.Now()
+        fmt.Println("time_ok")
+    }
+}

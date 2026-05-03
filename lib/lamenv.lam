@@ -1,0 +1,512 @@
+# Lammergeier standard library: environment variables, dotenv parsing,
+# and unified config-file loading.
+#
+# Import with: ``from lamenv import Env, Dotenv, Config``.
+#
+# - ``Env`` wraps the ``os`` package for plain process-environment
+#   reads and writes.
+# - ``Dotenv`` parses ``.env`` files into a ``dict[str, str]`` and
+#   can apply them to ``os.Environ`` (with or without overriding
+#   existing values). It supports the modern feature set most
+#   ``.env`` parsers expose: ``export`` prefix, quoted values with
+#   escapes, ``${VAR}`` / ``$VAR`` interpolation, inline ``#``
+#   comments outside of quotes, and multi-line triple-quoted
+#   values.
+# - ``Config`` chooses the right decoder for a path based on its
+#   extension (``.env``, ``.json``, ``.yaml`` / ``.yml``,
+#   ``.toml``) and merges the result into a single ``dict``,
+#   later sources overriding earlier ones.
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "fmt"
+        "os"
+        "path/filepath"
+        "strings"
+    )
+}
+
+class Env {
+    static func get(key: str) -> str {
+        #- Return the value of ``key`` or an empty string when it's
+           not set. Use :meth:`has` to disambiguate "unset" from
+           "empty string". -#
+        go! {
+            return os.Getenv(key)
+        }
+    }
+
+    static func getOr(key: str, fallback: str) -> str {
+        #- Return ``key``'s value, or ``fallback`` if it is unset
+           OR explicitly empty. -#
+        go! {
+            val := os.Getenv(key)
+            if val == "" {
+                return fallback
+            }
+            return val
+        }
+    }
+
+    static func set(key: str, val: str) {
+        go! {
+            os.Setenv(key, val)
+        }
+    }
+
+    static func unset(key: str) {
+        go! {
+            os.Unsetenv(key)
+        }
+    }
+
+    static func has(key: str) -> bool {
+        go! {
+            _, ok := os.LookupEnv(key)
+            return ok
+        }
+    }
+
+    static func all() -> dict[str, any] {
+        #- Snapshot of the current environment as a plain dict. -#
+        out: dict[str, any] = {}
+        go! {
+            for _, line := range os.Environ() {
+                eq := strings.IndexByte(line, '=')
+                if eq < 0 {
+                    continue
+                }
+                out[line[:eq]] = line[eq+1:]
+            }
+        }
+        return out
+    }
+}
+
+class Dotenv {
+    #- ``.env`` parser & applier.
+
+       Use :meth:`parse` for a *pure* parse (returns the key/value
+       map without touching the process environment) and
+       :meth:`load` / :meth:`loadOverride` to also publish the
+       results into ``os.Environ``. Variable interpolation
+       (``${OTHER}`` / ``$OTHER``) honours both already-loaded
+       entries from the same file and the live process
+       environment, with file-local entries winning. -#
+
+    static func parse(text: str) -> dict[str, any] {
+        out: dict[str, any] = {}
+        go! {
+            lamEnvParseDotenv(text, out)
+        }
+        return out
+    }
+
+    static func parseFile(path: str) -> dict[str, any] {
+        text: str = ""
+        ok: bool = false
+        go! {
+            data, err := os.ReadFile(path)
+            if err == nil {
+                text = string(data)
+                ok = true
+            }
+        }
+        if not ok {
+            return {}
+        }
+        return Dotenv.parse(text)
+    }
+
+    static func load(path: str) -> int {
+        #- Parse ``path`` and copy each entry into ``os.Environ``.
+           Existing variables are *kept* — a key already present in
+           the environment is not overwritten. Returns the count of
+           entries actually published. -#
+        return Dotenv.applyToEnv(Dotenv.parseFile(path), false)
+    }
+
+    static func loadOverride(path: str) -> int {
+        #- Same as :meth:`load`, but file entries always win. -#
+        return Dotenv.applyToEnv(Dotenv.parseFile(path), true)
+    }
+
+    static func applyToEnv(entries: dict[str, any], override_: bool) -> int {
+        n: int = 0
+        go! {
+            for k, v := range entries {
+                vs, _ := v.(string)
+                if !override_ {
+                    if _, exists := os.LookupEnv(k); exists {
+                        continue
+                    }
+                }
+                os.Setenv(k, vs)
+                n++
+            }
+        }
+        return n
+    }
+}
+
+class Config {
+    #- Decode a config file based on its extension and return a
+       ``dict[str, any]``.
+
+       Supported extensions: ``.env``, ``.json``, ``.yaml`` /
+       ``.yml``, ``.toml``. The function returns a ``Result`` so
+       you can branch on failure cleanly:
+
+           cfg = Config.tryLoad("app.toml")
+           if cfg.ok() { use(cfg.value) } else { print(cfg.error) }
+
+       Use :meth:`merge` to combine multiple sources (defaults +
+       env-specific override + ``.env`` secrets):
+
+           cfg = Config.merge([
+               Config.load("config/defaults.yaml"),
+               Config.load("config/" + env + ".yaml"),
+               Dotenv.parseFile(".env"),
+           ])
+    -#
+
+    static func tryLoad(path: str) -> Result {
+        go! {
+            ext := strings.ToLower(filepath.Ext(path))
+            if ext == ".env" {
+                return LAMMERGEIER.Result.Ok(Dotenv_parseFile(path))
+            }
+            data, err := os.ReadFile(path)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ConfigError",
+                    fmt.Sprintf("config: cannot read %q: %v", path, err),
+                    nil,
+                ))
+            }
+            m := map[string]interface{}{}
+            switch ext {
+            case ".json":
+                if err := lamEnvJSONUnmarshal(data, &m); err != nil {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ConfigError",
+                        fmt.Sprintf("config: %q: %v", path, err),
+                        nil,
+                    ))
+                }
+            case ".yaml", ".yml":
+                if err := lamEnvYAMLUnmarshal(data, &m); err != nil {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ConfigError",
+                        fmt.Sprintf("config: %q: %v", path, err),
+                        nil,
+                    ))
+                }
+            case ".toml":
+                if err := lamEnvTOMLDecode(string(data), &m); err != nil {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ConfigError",
+                        fmt.Sprintf("config: %q: %v", path, err),
+                        nil,
+                    ))
+                }
+            default:
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ConfigError",
+                    fmt.Sprintf("config: unsupported extension %q for %q", ext, path),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(m)
+        }
+    }
+
+    static func load(path: str) -> dict[str, any] {
+        #- Like :meth:`tryLoad` but returns an empty dict on any
+           failure. Convenient for "best effort" loads where a
+           missing optional file shouldn't crash. -#
+        go! {
+            r := Config_tryLoad(path)
+            if r == nil || !r.Ok() {
+                return map[string]interface{}{}
+            }
+            if m, ok := r.Value.(map[string]interface{}); ok {
+                return m
+            }
+            if m, ok := r.Value.(map[interface{}]interface{}); ok {
+                out := make(map[string]interface{}, len(m))
+                for k, v := range m {
+                    if ks, ok := k.(string); ok {
+                        out[ks] = v
+                    }
+                }
+                return out
+            }
+            return map[string]interface{}{}
+        }
+    }
+
+    static func merge(sources: list[any]) -> dict[str, any] {
+        #- Merge a list of dict-shaped sources into a single dict.
+           Later entries override earlier ones; nested dicts are
+           merged shallowly (key-by-key) rather than replaced. -#
+        out: dict[str, any] = {}
+        go! {
+            for _, src := range sources {
+                lamEnvMergeInto(out, src)
+            }
+        }
+        return out
+    }
+}
+
+go! {
+    // ── .env tokenizer ─────────────────────────────────────────
+    //
+    // Supports:
+    //   - blank lines and ``# ...`` line comments
+    //   - optional ``export `` prefix
+    //   - quoted values (single, double, triple-double)
+    //   - escape sequences inside double quotes (\n, \t, \r, \\, \", \$)
+    //   - ``${VAR}`` / ``$VAR`` interpolation against already-loaded
+    //     entries plus the live process environment
+    //   - inline ``#`` comments outside of quotes
+    func lamEnvParseDotenv(src string, out map[string]interface{}) {
+        i := 0
+        n := len(src)
+        for i < n {
+            // Skip whitespace and blank lines
+            for i < n && (src[i] == ' ' || src[i] == '\t' || src[i] == '\r' || src[i] == '\n') {
+                i++
+            }
+            if i >= n {
+                break
+            }
+            if src[i] == '#' {
+                for i < n && src[i] != '\n' {
+                    i++
+                }
+                continue
+            }
+            // Optional ``export `` prefix
+            if i+7 <= n && src[i:i+7] == "export " {
+                i += 7
+                for i < n && (src[i] == ' ' || src[i] == '\t') {
+                    i++
+                }
+            }
+            // Key
+            keyStart := i
+            for i < n && (src[i] == '_' ||
+                (src[i] >= 'A' && src[i] <= 'Z') ||
+                (src[i] >= 'a' && src[i] <= 'z') ||
+                (src[i] >= '0' && src[i] <= '9' && i > keyStart) ||
+                src[i] == '.') {
+                i++
+            }
+            if i == keyStart {
+                // Not a valid key — skip this line.
+                for i < n && src[i] != '\n' {
+                    i++
+                }
+                continue
+            }
+            key := src[keyStart:i]
+            for i < n && (src[i] == ' ' || src[i] == '\t') {
+                i++
+            }
+            if i >= n || src[i] != '=' {
+                // Bare line (e.g. ``KEY`` with no value) — store empty.
+                out[key] = ""
+                for i < n && src[i] != '\n' {
+                    i++
+                }
+                continue
+            }
+            i++ // consume '='
+            for i < n && (src[i] == ' ' || src[i] == '\t') {
+                i++
+            }
+            // Value
+            var value string
+            if i+3 <= n && src[i:i+3] == "\"\"\"" {
+                i += 3
+                start := i
+                for i+3 <= n && src[i:i+3] != "\"\"\"" {
+                    i++
+                }
+                value = lamEnvUnescapeDouble(src[start:i])
+                if i+3 <= n {
+                    i += 3
+                }
+            } else if i < n && (src[i] == '"' || src[i] == '\'') {
+                quote := src[i]
+                i++
+                start := i
+                for i < n && src[i] != quote {
+                    if src[i] == '\\' && i+1 < n {
+                        i += 2
+                        continue
+                    }
+                    i++
+                }
+                raw := src[start:i]
+                if quote == '"' {
+                    value = lamEnvUnescapeDouble(raw)
+                } else {
+                    value = raw
+                }
+                if i < n && src[i] == quote {
+                    i++
+                }
+            } else {
+                start := i
+                for i < n && src[i] != '\n' {
+                    if src[i] == '#' {
+                        // Trim trailing whitespace, then bail.
+                        break
+                    }
+                    i++
+                }
+                value = strings.TrimRight(src[start:i], " \t")
+                // Skip the comment, if any
+                for i < n && src[i] != '\n' {
+                    i++
+                }
+            }
+            value = lamEnvInterpolate(value, out)
+            out[key] = value
+        }
+    }
+
+    func lamEnvUnescapeDouble(s string) string {
+        var sb strings.Builder
+        i := 0
+        for i < len(s) {
+            if s[i] == '\\' && i+1 < len(s) {
+                switch s[i+1] {
+                case 'n':
+                    sb.WriteByte('\n')
+                case 'r':
+                    sb.WriteByte('\r')
+                case 't':
+                    sb.WriteByte('\t')
+                case '\\':
+                    sb.WriteByte('\\')
+                case '"':
+                    sb.WriteByte('"')
+                case '$':
+                    sb.WriteByte('$')
+                default:
+                    sb.WriteByte(s[i])
+                    sb.WriteByte(s[i+1])
+                }
+                i += 2
+                continue
+            }
+            sb.WriteByte(s[i])
+            i++
+        }
+        return sb.String()
+    }
+
+    func lamEnvInterpolate(s string, scope map[string]interface{}) string {
+        var sb strings.Builder
+        i := 0
+        for i < len(s) {
+            if s[i] == '$' && i+1 < len(s) {
+                if s[i+1] == '{' {
+                    end := i + 2
+                    for end < len(s) && s[end] != '}' {
+                        end++
+                    }
+                    name := s[i+2 : end]
+                    sb.WriteString(lamEnvLookup(name, scope))
+                    if end < len(s) {
+                        i = end + 1
+                    } else {
+                        i = end
+                    }
+                    continue
+                }
+                if (s[i+1] >= 'A' && s[i+1] <= 'Z') ||
+                    (s[i+1] >= 'a' && s[i+1] <= 'z') || s[i+1] == '_' {
+                    end := i + 1
+                    for end < len(s) && ((s[end] >= 'A' && s[end] <= 'Z') ||
+                        (s[end] >= 'a' && s[end] <= 'z') ||
+                        (s[end] >= '0' && s[end] <= '9') || s[end] == '_') {
+                        end++
+                    }
+                    name := s[i+1 : end]
+                    sb.WriteString(lamEnvLookup(name, scope))
+                    i = end
+                    continue
+                }
+            }
+            sb.WriteByte(s[i])
+            i++
+        }
+        return sb.String()
+    }
+
+    func lamEnvLookup(name string, scope map[string]interface{}) string {
+        if v, ok := scope[name]; ok {
+            if s, ok := v.(string); ok {
+                return s
+            }
+        }
+        return os.Getenv(name)
+    }
+
+    func lamEnvMergeInto(dst map[string]interface{}, src interface{}) {
+        switch m := src.(type) {
+        case map[string]interface{}:
+            for k, v := range m {
+                dst[k] = v
+            }
+        case map[interface{}]interface{}:
+            for k, v := range m {
+                if ks, ok := k.(string); ok {
+                    dst[ks] = v
+                }
+            }
+        case map[string]string:
+            for k, v := range m {
+                dst[k] = v
+            }
+        }
+    }
+}
+
+# JSON / YAML / TOML wrappers — kept as tiny helper functions so the
+# Config decoder can call them without dragging the per-format
+# decoders into ``lamenv``'s top-level imports. Each wrapper just
+# delegates to the upstream decoder.
+
+go! {
+    import (
+        "encoding/json"
+
+        toml "github.com/BurntSushi/toml"
+        yaml "gopkg.in/yaml.v3"
+    )
+
+    func lamEnvJSONUnmarshal(b []byte, v interface{}) error {
+        return json.Unmarshal(b, v)
+    }
+
+    func lamEnvYAMLUnmarshal(b []byte, v interface{}) error {
+        return yaml.Unmarshal(b, v)
+    }
+
+    func lamEnvTOMLDecode(s string, v interface{}) error {
+        _, err := toml.Decode(s, v)
+        return err
+    }
+}
+
+func main() {
+    pass
+}

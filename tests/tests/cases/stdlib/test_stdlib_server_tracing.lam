@@ -1,0 +1,116 @@
+# Test: lamserver_plugins.tracing — W3C Trace Context propagation.
+#
+# expect: fresh-echo-has-tp: true
+# expect: fresh-tp-format-ok: true
+# expect: fresh-trace-len: 32
+# expect: fresh-span-len: 16
+# expect: inbound-same-trace: true
+# expect: inbound-new-span: true
+# expect: state-propagated: vendor=abc
+# expect: echo-off-no-header: true
+
+from lamserver import Server, Request, Response
+from lamserver_plugins import tracing
+
+go! {
+    import (
+        "strings"
+    )
+}
+
+# Handler that grabs the current trace IDs out of req.Ctx and stuffs
+# them into the response body so the test can assert on them.
+func traceDump(req: Request, res: Response) {
+    tp: str = ""
+    tid: str = ""
+    sid: str = ""
+    go! {
+        if v, ok := req.Ctx["__lamTraceParent"].(string); ok { tp = v }
+        if v, ok := req.Ctx["__lamTraceId"].(string); ok { tid = v }
+        if v, ok := req.Ctx["__lamSpanId"].(string); ok { sid = v }
+    }
+    res.text(f"{tp}|{tid}|{sid}")
+}
+
+func main() {
+    # ── case 1: fresh (no inbound context) — plugin mints IDs.
+    srv: Server = Server()
+    tracing(srv)
+    srv.get("/t", traceDump)
+
+    r1: dict[str, any] = srv.inject("GET", "/t")
+    h1: any = r1["headers"]
+    echoedTp: str = ""
+    go! {
+        if hh, ok := h1.(map[string]string); ok { echoedTp = hh["traceparent"] }
+    }
+    echoPresent: bool = echoedTp != ""
+    print(f"fresh-echo-has-tp: {echoPresent}")
+
+    # traceparent format: "00-<32hex>-<16hex>-<2hex>".
+    formatOk: bool = false
+    tidLen: int = 0
+    sidLen: int = 0
+    go! {
+        parts := strings.Split(echoedTp, "-")
+        if len(parts) == 4 && parts[0] == "00" && parts[3] == "01" {
+            formatOk = true
+            tidLen = len(parts[1])
+            sidLen = len(parts[2])
+        }
+    }
+    print(f"fresh-tp-format-ok: {formatOk}")
+    print(f"fresh-trace-len: {tidLen}")
+    print(f"fresh-span-len: {sidLen}")
+
+    # ── case 2: inbound traceparent — preserved traceID, fresh spanID.
+    inboundTid: str = "4bf92f3577b34da6a3ce929d0e0e4736"
+    inboundSid: str = "00f067aa0ba902b7"
+    inboundTp: str = f"00-{inboundTid}-{inboundSid}-01"
+    hdrs: dict[str, str] = {}
+    hdrs["traceparent"] = inboundTp
+    hdrs["tracestate"] = "vendor=abc"
+
+    r2: dict[str, any] = srv.inject("GET", "/t", "", hdrs)
+    b2: any = r2["body"]
+    seenTid: str = ""
+    seenSid: str = ""
+    go! {
+        if s, ok := b2.(string); ok {
+            parts := strings.Split(s, "|")
+            if len(parts) == 3 {
+                seenTid = strings.Split(parts[0], "-")[1]
+                seenSid = parts[2]
+            }
+        }
+    }
+    sameTrace: bool = seenTid == inboundTid
+    newSpan: bool = false
+    if seenSid != inboundSid and seenSid != "" { newSpan = true }
+    print(f"inbound-same-trace: {sameTrace}")
+    print(f"inbound-new-span: {newSpan}")
+
+    h2: any = r2["headers"]
+    echoedState: str = ""
+    go! {
+        if hh, ok := h2.(map[string]string); ok { echoedState = hh["tracestate"] }
+    }
+    print(f"state-propagated: {echoedState}")
+
+    # ── case 3: echoHeader=false disables response mirroring.
+    srv2: Server = Server()
+    tracing(srv2, false)
+    srv2.get("/t", traceDump)
+    r3: dict[str, any] = srv2.inject("GET", "/t")
+    h3: any = r3["headers"]
+    missing: bool = false
+    go! {
+        if hh, ok := h3.(map[string]string); ok {
+            _, has := hh["traceparent"]
+            missing = !has
+        } else {
+            missing = true
+        }
+    }
+    print(f"echo-off-no-header: {missing}")
+}

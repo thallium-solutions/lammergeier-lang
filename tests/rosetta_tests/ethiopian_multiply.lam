@@ -1,0 +1,19 @@
+# Rosetta Code: Ethiopian multiplication
+# https://rosettacode.org/wiki/Ethiopian_multiplication
+# expect: 578
+
+func ethiopian_multiply(a: int, b: int) -> int {
+    result: int = 0
+    while a >= 1 {
+        if a % 2 != 0 {
+            result += b
+        }
+        a = a / 2
+        b = b * 2
+    }
+    return result
+}
+
+func main() {
+    print(ethiopian_multiply(17, 34))
+}

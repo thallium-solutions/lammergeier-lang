@@ -1,0 +1,24 @@
+# Test: Fmt standard library
+# expect: 2a
+# expect: 101010
+# expect: 3.14
+# expect: Alice is 30 years old
+# expect: hello world
+# expect: ...42...
+# expect: ___42
+# expect: 42___
+# expect: fmt_ok
+
+from lamfmt import Fmt
+
+func main() {
+    print(Fmt.hex(42))
+    print(Fmt.binary(42))
+    print(Fmt.formatFloat(3.14159, 2))
+    print(Fmt.sprintf("%s is %d years old", "Alice", 30))
+    Fmt.println("hello", "world")
+    print(Fmt.center("42", 8, "."))
+    print(Fmt.padLeft("42", 5, "_"))
+    print(Fmt.padRight("42", 5, "_"))
+    print("fmt_ok")
+}

@@ -1,0 +1,9 @@
+[library]
+name        = "@acme/lamcolor"
+version     = "0.2.0"
+description = "ANSI colour helpers — scoped-name seed for the registry."
+license     = "MIT"
+authors     = ["Lam Example <libs@lammergeier.dev>"]
+
+[compatibility]
+lamc = "*"

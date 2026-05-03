@@ -1,0 +1,19 @@
+# Transpilation: ``throw`` is parsed identically to ``raise``;
+# both arms of the grammar produce a ``raise_stmt`` AST node, and
+# both lower to a Go ``panic(...)``. The two functions below should
+# emit the same panic body.
+
+# expect-go: panic(fmt.Sprintf("ValueError: %v", "via-throw"))
+# expect-go: panic(fmt.Sprintf("ValueError: %v", "via-raise"))
+
+func via_throw() {
+    throw ValueError("via-throw")
+}
+
+func via_raise() {
+    raise ValueError("via-raise")
+}
+
+func main() {
+    print("ok")
+}

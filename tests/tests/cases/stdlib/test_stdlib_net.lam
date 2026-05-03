@@ -1,0 +1,85 @@
+# Test: lamnet Net — DNS helpers, reachability, TCP loopback round-trip
+# expect: PASS 1 hostname non-empty
+# expect: PASS 2 lookupHost localhost
+# expect: PASS 3 lookupHost invalid
+# expect: PASS 4 lookupAddr loopback
+# expect: PASS 5 isReachable false
+# expect: PASS 6 listen port positive
+# expect: PASS 7 isReachable true
+# expect: PASS 8 tcp round-trip
+# expect: PASS 9 tcp binary payload
+# expect: PASS 10 listener closed
+# expect: 10 passed, 0 failed, 10 total
+
+from lamnet import Net
+from lamnet import TcpConn
+from lamnet import TcpListener
+from lamtest import Test
+
+go! {
+    import "net"
+}
+
+func main() {
+    # 1. hostname
+    Test.assertTrue(len(Net.hostname()) > 0, "1 hostname non-empty")
+
+    # 2. localhost always resolves — returns at least one address
+    addrs: list[str] = Net.lookupHost("localhost")
+    Test.assertTrue(len(addrs) > 0, "2 lookupHost localhost")
+
+    # 3. invalid names return empty (no panic)
+    bogus: list[str] = Net.lookupHost("this-host-does-not-exist-12345.invalid")
+    Test.assertLen(bogus, 0, "3 lookupHost invalid")
+
+    # 4. Reverse DNS on loopback resolves to at least one name
+    names: list[str] = Net.lookupAddr("127.0.0.1")
+    Test.assertTrue(len(names) > 0, "4 lookupAddr loopback")
+
+    # 5. Unlikely-to-be-open port on loopback
+    Test.assertFalse(Net.isReachable("127.0.0.1", 1, 100), "5 isReachable false")
+
+    # 6. Listener on ephemeral port
+    listener: TcpListener = Net.listenTcp(0)
+    port: int = listener.port()
+    Test.assertTrue(port > 0, "6 listen port positive")
+
+    # 7. Now the port IS reachable
+    Test.assertTrue(Net.isReachable("127.0.0.1", port, 500), "7 isReachable true")
+
+    # 8-9. TCP loopback round-trip — accept in goroutine, dial from main.
+    # The loop keeps accepting until the listener is closed in test 10.
+    go! {
+        go func() {
+            for {
+                server, err := listener.Raw.(net.Listener).Accept()
+                if err != nil { return }
+                buf := make([]byte, 64)
+                n, _ := server.Read(buf)
+                if n > 0 {
+                    server.Write([]byte("echo:" + string(buf[:n])))
+                }
+                server.Close()
+            }
+        }()
+    }
+
+    conn: TcpConn = Net.dialTcp("127.0.0.1", port, 1000)
+    conn.send("ping")
+    reply: str = conn.recv(64)
+    conn.close()
+    Test.assertEqual(reply, "echo:ping", "8 tcp round-trip")
+
+    # 9. Binary-ish payload (utf-8 multibyte) survives the round trip
+    conn2: TcpConn = Net.dialTcp("127.0.0.1", port, 1000)
+    conn2.send("🪶")
+    reply2: str = conn2.recv(64)
+    conn2.close()
+    Test.assertEqual(reply2, "echo:🪶", "9 tcp binary payload")
+
+    # 10. Once closed, the listener stops being reachable
+    listener.close()
+    Test.assertFalse(Net.isReachable("127.0.0.1", port, 100), "10 listener closed")
+
+    Test.summary()
+}

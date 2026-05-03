@@ -1,0 +1,18 @@
+# expect: inserted: 1
+# expect: db_test_ok
+
+from lamdb import Db
+
+func main() {
+    db: Db = Db.connect("sqlite", ":memory:")
+
+    db.exec("DROP TABLE IF EXISTS lam_test")
+    db.exec("CREATE TABLE lam_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+
+    n: int = db.exec("INSERT INTO lam_test (name) VALUES ('hello')")
+    print(f"inserted: {n}")
+
+    db.exec("DROP TABLE lam_test")
+    db.close()
+    print("db_test_ok")
+}

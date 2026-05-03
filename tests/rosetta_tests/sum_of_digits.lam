@@ -1,0 +1,22 @@
+# Rosetta Code: Sum of digits
+# https://rosettacode.org/wiki/Sum_of_digits_of_an_integer
+# expect: 1
+# expect: 10
+# expect: 6
+# expect: 45
+
+func sum_digits(n: int) -> int {
+    total: int = 0
+    while n > 0 {
+        total += n % 10
+        n = n / 10
+    }
+    return total
+}
+
+func main() {
+    print(sum_digits(1))
+    print(sum_digits(1234))
+    print(sum_digits(123))
+    print(sum_digits(123456789))
+}

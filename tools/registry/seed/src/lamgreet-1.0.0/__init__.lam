@@ -1,0 +1,11 @@
+# Minimal demo library: one public function, no dependencies. Ships
+# as a seed in the local dev registry so ``lamc install lamgreet``
+# works out of the box against the docker-compose registry.
+
+func hello(name: str) -> str {
+    return f"hello, {name}!"
+}
+
+func shout(name: str) -> str {
+    return hello(name).upper()
+}

@@ -1,0 +1,63 @@
+# Test: Strings standard library (OOP)
+# expect: HELLO
+# expect: hello
+# expect: true
+# expect: hello world
+# expect: abcabc
+# expect: 2
+# expect: padLeft: 00042
+# expect: padRight: 42...
+# expect: splitLines: 3
+# expect: replaceFirst: baa
+# expect: startsWith: true
+# expect: endsWith: true
+# expect: isBlank: true
+# expect: isBlank_x: false
+# expect: indent: > a
+# expect: indent: > b
+# expect: indent: 
+# expect: indent: > c
+# expect: dedent: hi
+# expect: dedent: there
+# expect: strings_ok
+
+from lamstrings import Strings
+
+func main() {
+    print(Strings.toUpper("hello"))
+    print(Strings.toLower("HELLO"))
+    if Strings.contains("hello world", "world") {
+        print("true")
+    }
+    print(Strings.trim("  hello world  "))
+    print(Strings.repeat("abc", 2))
+    print(Strings.count("abracadabra", "bra"))
+
+    pl: str = Strings.padLeft("42", 5, "0")
+    pr: str = Strings.padRight("42", 5, ".")
+    print(f"padLeft: {pl}")
+    print(f"padRight: {pr}")
+    lines: list[str] = Strings.splitLines("a\nb\nc")
+    print(f"splitLines: {len(lines)}")
+    rf: str = Strings.replaceFirst("aaa", "a", "b")
+    print(f"replaceFirst: {rf}")
+    sw: bool = Strings.startsWith("hello world", "hello")
+    ew: bool = Strings.endsWith("hello world", "world")
+    ib: bool = Strings.isBlank("   ")
+    ibx: bool = Strings.isBlank("x")
+    print(f"startsWith: {sw}")
+    print(f"endsWith: {ew}")
+    print(f"isBlank: {ib}")
+    print(f"isBlank_x: {ibx}")
+
+    indented: str = Strings.indent("a\nb\n\nc", "> ")
+    for line in Strings.splitLines(indented) {
+        print(f"indent: {line}")
+    }
+    dedented: str = Strings.dedent("    hi\n    there")
+    for line in Strings.splitLines(dedented) {
+        print(f"dedent: {line}")
+    }
+
+    print("strings_ok")
+}

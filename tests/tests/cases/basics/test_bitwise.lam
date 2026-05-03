@@ -1,0 +1,50 @@
+# Test: Bitwise operators
+# expect: 1
+# expect: 7
+# expect: 6
+# expect: -6
+# expect: 20
+# expect: 2
+# expect: 7
+# expect: 255
+# expect: 0
+# expect: bit_ok
+
+func main() {
+    a: int = 5
+    b: int = 3
+
+    # AND
+    print(a & b)
+
+    # OR
+    print(a | b)
+
+    # XOR
+    print(a ^ b)
+
+    # NOT (bitwise complement)
+    print(~a)
+
+    # Left shift
+    print(a << 2)
+
+    # Right shift
+    print(a >> 1)
+
+    # Compound bitwise
+    c: int = (a | b) & 0xFF
+    print(c)
+
+    # Mask operations
+    mask: int = 0xFF
+    val: int = 0xABFF
+    result: int = val & mask
+    print(result)
+
+    # Clear bits
+    cleared: int = 0xFF & ~0xFF
+    print(cleared)
+
+    print("bit_ok")
+}

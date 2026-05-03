@@ -1,0 +1,19 @@
+# Rosetta Code: Even or odd
+# https://rosettacode.org/wiki/Even_or_odd
+# expect: even
+# expect: odd
+# expect: even
+# expect: odd
+# expect: even
+
+func even_or_odd(n: int) -> str {
+    return "even" if n % 2 == 0 else "odd"
+}
+
+func main() {
+    print(even_or_odd(0))
+    print(even_or_odd(1))
+    print(even_or_odd(2))
+    print(even_or_odd(3))
+    print(even_or_odd(4))
+}

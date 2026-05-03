@@ -1,0 +1,123 @@
+# Test: lamxml — encode / decode / DOM walk.
+#
+# Covers:
+#   * Encoding a nested map (root + scalars).
+#   * Decoding a hand-written XML doc via ``Xml.decode`` (shape-
+#     shifted form: pure-text → string, mixed → map).
+#   * ``Xml.parse`` builds an XmlNode tree with attrs / text /
+#     children / find / findAll.
+#   * tryDecode / tryParse return ``Err`` on malformed input.
+#
+# expect: enc-prefix-ok: true
+# expect: enc-name-ok: true
+# expect: dom-root-tag: catalog
+# expect: dom-book-count: 2
+# expect: dom-first-title: Refactoring
+# expect: dom-second-title: Domain Driven Design
+# expect: dom-attr-id: bk-1
+# expect: dom-attr-default: unknown
+# expect: dom-find-author: Martin Fowler
+# expect: shape-decode-pages: 432
+# expect: shape-decode-title: Refactoring
+# expect: bad-decode-iserr: true
+# expect: bad-parse-iserr: true
+
+from lamxml import Xml, XmlNode
+from lamerrors import Result
+
+go! {
+    import "strings"
+}
+
+func main() {
+    # ── encode ──
+    payload: dict[str, any] = {}
+    payload["name"] = "alice"
+    payload["age"] = 30
+    enc: str = Xml.encode(payload, "person")
+    encPrefix: bool = false
+    encName: bool = false
+    go! {
+        encPrefix = strings.HasPrefix(enc, "<person>")
+        encName = strings.Contains(enc, "<name>alice</name>")
+    }
+    print(f"enc-prefix-ok: {encPrefix}")
+    print(f"enc-name-ok: {encName}")
+
+    # ── parse / DOM walk ──
+    src: str = "<catalog><book id=\"bk-1\"><title>Refactoring</title><author>Martin Fowler</author><pages>432</pages></book><book><title>Domain Driven Design</title><author>Eric Evans</author></book></catalog>"
+    root: any = Xml.parse(src)
+    rootTag: str = ""
+    bookCount: int = 0
+    title1: str = ""
+    title2: str = ""
+    attrId: str = ""
+    attrDefault: str = ""
+    findAuthor: str = ""
+    go! {
+        if rn, ok := root.(*XmlNode); ok {
+            rootTag = rn.Tag
+            books := rn.FindAll("book")
+            bookCount = len(books)
+            if len(books) > 0 {
+                if b, ok := books[0].(*XmlNode); ok {
+                    if t := b.Find("title"); t != nil {
+                        if tn, ok := t.(*XmlNode); ok {
+                            title1 = tn.Text
+                        }
+                    }
+                    attrId = b.Attr("id", "missing")
+                    attrDefault = b.Attr("nope", "unknown")
+                    if a := b.Find("author"); a != nil {
+                        if an, ok := a.(*XmlNode); ok {
+                            findAuthor = an.Text
+                        }
+                    }
+                }
+            }
+            if len(books) > 1 {
+                if b, ok := books[1].(*XmlNode); ok {
+                    if t := b.Find("title"); t != nil {
+                        if tn, ok := t.(*XmlNode); ok {
+                            title2 = tn.Text
+                        }
+                    }
+                }
+            }
+        }
+    }
+    print(f"dom-root-tag: {rootTag}")
+    print(f"dom-book-count: {bookCount}")
+    print(f"dom-first-title: {title1}")
+    print(f"dom-second-title: {title2}")
+    print(f"dom-attr-id: {attrId}")
+    print(f"dom-attr-default: {attrDefault}")
+    print(f"dom-find-author: {findAuthor}")
+
+    # ── shape-shifted decode ──
+    decoded: any = Xml.decode(src)
+    pages: str = ""
+    title3: str = ""
+    go! {
+        if cat, ok := decoded.(map[string]interface{}); ok {
+            if booksAny, ok := cat["book"]; ok {
+                if list, ok := booksAny.([]interface{}); ok && len(list) > 0 {
+                    if first, ok := list[0].(map[string]interface{}); ok {
+                        if p, ok := first["pages"].(string); ok { pages = p }
+                        if t, ok := first["title"].(string); ok { title3 = t }
+                    }
+                }
+            }
+        }
+    }
+    print(f"shape-decode-pages: {pages}")
+    print(f"shape-decode-title: {title3}")
+
+    # ── error paths ──
+    bad: Result = Xml.tryDecode("<broken")
+    badIsErr: bool = not bad.ok()
+    print(f"bad-decode-iserr: {badIsErr}")
+    bad2: Result = Xml.tryParse("<broken<>>")
+    bad2IsErr: bool = not bad2.ok()
+    print(f"bad-parse-iserr: {bad2IsErr}")
+}

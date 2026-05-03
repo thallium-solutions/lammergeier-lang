@@ -1,0 +1,62 @@
+# Test: safe navigation (?.) and null-coalescing (??) operators.
+# expect: name=Ada
+# expect: missing=<nil>
+# expect: email=ada@example.com
+# expect: fallback=default@example.com
+# expect: chained=42
+# expect: coalesce-chain=second
+# expect: call-safe=ADA
+# expect: call-miss=<nil>
+# expect: nested-coalesce=42
+
+class User {
+    func init(self, name: str, email: str) {
+        self.name: str = name
+        self.email: str = email
+    }
+
+    func upper_name(self) -> str {
+        return self.name.upper()
+    }
+}
+
+func main() {
+    user: User = User("Ada", "ada@example.com")
+    missing: User = None
+
+    # 1. safe navigation on a live object returns the field.
+    n = user?.name
+    print(f"name={n}")
+
+    # 2. safe navigation on nil returns <nil>.
+    m = missing?.name
+    print(f"missing={m}")
+
+    # 3. safe nav followed by ?? fallback gives the real value.
+    email = user?.email ?? "default@example.com"
+    print(f"email={email}")
+
+    # 4. safe nav on nil + ?? returns the fallback.
+    fallback = missing?.email ?? "default@example.com"
+    print(f"fallback={fallback}")
+
+    # 5. ?? prefers the first non-nil.
+    chained = None ?? 42
+    print(f"chained={chained}")
+
+    # 6. ?? with multiple operands folds left-to-right.
+    cc = None ?? "second" ?? "third"
+    print(f"coalesce-chain={cc}")
+
+    # 7. safe method call on a live object.
+    called = user?.upper_name()
+    print(f"call-safe={called}")
+
+    # 8. safe method call on nil returns <nil>.
+    called_miss = missing?.upper_name()
+    print(f"call-miss={called_miss}")
+
+    # 9. nested ?? inside expression.
+    value = (missing?.name ?? None) ?? 42
+    print(f"nested-coalesce={value}")
+}

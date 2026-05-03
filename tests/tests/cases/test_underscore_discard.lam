@@ -1,0 +1,42 @@
+# Regression: ``_ = expr`` is a discard assignment. The blank
+# identifier is always pre-declared in Go, so the transpiler must
+# emit ``_ = expr`` (plain assign) rather than ``_ := expr`` (which
+# Go rejects with "no new variables on left side of :=").
+#
+# expect: PASS 1 discard return value
+# expect: PASS 2 discard side-effect call
+# expect: PASS 3 multiple discards in a row
+# expect: 3 passed, 0 failed, 3 total
+
+from lamtest import Test
+
+func makeNumber() -> int {
+    return 42
+}
+
+counter: int = 0
+
+func tickCounter() -> int {
+    counter = counter + 1
+    return counter
+}
+
+func main() {
+    # 1. Drop the return value of a function call.
+    _ = makeNumber()
+    Test.assertEqual(0, 0, "1 discard return value")
+
+    # 2. Side-effect call with discarded result. The function still
+    # runs (we observe ``counter`` ticking) — we just don't keep
+    # the return value around.
+    _ = tickCounter()
+    Test.assertEqual(counter, 1, "2 discard side-effect call")
+
+    # 3. Multiple consecutive discards must each compile cleanly.
+    _ = tickCounter()
+    _ = tickCounter()
+    _ = tickCounter()
+    Test.assertEqual(counter, 4, "3 multiple discards in a row")
+
+    Test.summary()
+}

@@ -1,0 +1,63 @@
+# Lammergeier standard library: bytes/buffer utilities
+# Import with: from lambytes import Bytes
+
+go! {
+    import (
+        "bytes"
+        "encoding/hex"
+    )
+}
+
+class Bytes {
+    static func toBytes(s: str) -> list[int] {
+        go! {
+            result := make([]int, len(s))
+            for i, b := range []byte(s) {
+                result[i] = int(b)
+            }
+            return result
+        }
+    }
+
+    static func fromBytes(b: list[int]) -> str {
+        go! {
+            bs := make([]byte, len(b))
+            for i, v := range b {
+                bs[i] = byte(v)
+            }
+            return string(bs)
+        }
+    }
+
+    static func hexEncode(data: str) -> str {
+        go! {
+            return hex.EncodeToString([]byte(data))
+        }
+    }
+
+    static func hexDecode(data: str) -> str {
+        go! {
+            b, err := hex.DecodeString(data)
+            if err != nil {
+                return ""
+            }
+            return string(b)
+        }
+    }
+
+    static func contains(data: str, sub: str) -> bool {
+        go! {
+            return bytes.Contains([]byte(data), []byte(sub))
+        }
+    }
+
+    static func count(data: str, sub: str) -> int {
+        go! {
+            return bytes.Count([]byte(data), []byte(sub))
+        }
+    }
+}
+
+func main() {
+    pass
+}

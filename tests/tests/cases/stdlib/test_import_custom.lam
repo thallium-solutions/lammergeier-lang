@@ -1,0 +1,12 @@
+# Test: import custom library
+# expect: 10
+# expect: Hello, World!
+# expect: 7
+
+from myhelper import double, greet, add
+
+func main() {
+    print(double(5))
+    print(greet("World"))
+    print(add(3, 4))
+}

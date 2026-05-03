@@ -1,0 +1,134 @@
+# Lammergeier standard library: RFC 4122 UUIDs (v4 and v7).
+# Import with: from lamuuid import Uuid
+#
+#     from lamuuid import Uuid
+#
+#     id: str = Uuid.v4()              # 550e8400-e29b-41d4-a716-446655440000
+#     ordered: str = Uuid.v7()         # k-sortable, embeds creation timestamp
+#     ok: bool = Uuid.isValid(id)      # syntactic check (regex + variant bits)
+#
+# Both v4 and v7 are returned as the 36-character canonical hyphenated
+# representation. v4 uses ``crypto/rand``; v7 mixes a millisecond Unix
+# timestamp with random bits as per the (now-final) RFC 9562 draft —
+# very useful when you need IDs that sort by creation time, e.g. as
+# database primary keys.
+
+go! {
+    import (
+        "crypto/rand"
+        "encoding/hex"
+        "fmt"
+        "regexp"
+        "sync"
+        "time"
+    )
+}
+
+go! {
+    var lamUuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+    // v7 needs a monotonic millisecond clock. Two requests within the
+    // same millisecond increment a counter so the sequence stays
+    // strictly increasing within a process.
+    var lamUuidV7Mu sync.Mutex
+    var lamUuidV7LastMs int64
+    var lamUuidV7Counter uint16
+}
+
+class Uuid {
+    #- Static-only namespace; instantiate purely as ``Uuid.v4()`` etc. -#
+
+    static func v4() -> str {
+        #- Cryptographically-random RFC 4122 v4 UUID. Bits 6-7 of byte 8
+           are set to ``10`` (variant) and bits 12-15 of byte 6 are set
+           to ``0100`` (version 4). -#
+        go! {
+            buf := make([]byte, 16)
+            if _, err := rand.Read(buf); err != nil {
+                panic(fmt.Sprintf("Uuid.v4: %v", err))
+            }
+            buf[6] = (buf[6] & 0x0f) | 0x40 // version 4
+            buf[8] = (buf[8] & 0x3f) | 0x80 // variant 10xx
+            return formatUuid(buf)
+        }
+    }
+
+    static func v7() -> str {
+        #- Time-ordered v7 UUID. The high 48 bits are the current Unix
+           timestamp in milliseconds; the remaining bits are random
+           with the standard variant + version markers. -#
+        go! {
+            buf := make([]byte, 16)
+            if _, err := rand.Read(buf); err != nil {
+                panic(fmt.Sprintf("Uuid.v7: %v", err))
+            }
+
+            lamUuidV7Mu.Lock()
+            ms := time.Now().UnixMilli()
+            if ms <= lamUuidV7LastMs {
+                lamUuidV7Counter++
+                ms = lamUuidV7LastMs
+            } else {
+                lamUuidV7LastMs = ms
+                lamUuidV7Counter = 0
+            }
+            ctr := lamUuidV7Counter
+            lamUuidV7Mu.Unlock()
+
+            // 48-bit timestamp (big-endian)
+            buf[0] = byte(ms >> 40)
+            buf[1] = byte(ms >> 32)
+            buf[2] = byte(ms >> 24)
+            buf[3] = byte(ms >> 16)
+            buf[4] = byte(ms >> 8)
+            buf[5] = byte(ms)
+            // 12-bit counter for monotonic-within-ms ordering, with
+            // version 7 in the upper nibble.
+            buf[6] = 0x70 | byte((ctr>>8)&0x0f)
+            buf[7] = byte(ctr)
+            // Variant 10xx
+            buf[8] = (buf[8] & 0x3f) | 0x80
+            return formatUuid(buf)
+        }
+    }
+
+    static func nil_() -> str {
+        #- The all-zero (``"nil"``) UUID. Trailing underscore so it
+           doesn't collide with the Go zero-value keyword. -#
+        return "00000000-0000-0000-0000-000000000000"
+    }
+
+    static func isValid(s: str) -> bool {
+        go! {
+            return lamUuidRe.MatchString(s)
+        }
+    }
+
+    static func parse(s: str) -> bytes {
+        #- Decode a canonical-form UUID into its 16 raw bytes. Panics
+           on malformed input — guard with ``isValid`` first if the
+           caller can supply garbage. -#
+        go! {
+            if !lamUuidRe.MatchString(s) {
+                panic(fmt.Sprintf("Uuid.parse: %q is not a valid UUID", s))
+            }
+            stripped := s[:8] + s[9:13] + s[14:18] + s[19:23] + s[24:]
+            decoded, err := hex.DecodeString(stripped)
+            if err != nil {
+                panic(fmt.Sprintf("Uuid.parse: %v", err))
+            }
+            return decoded
+        }
+    }
+}
+
+go! {
+    func formatUuid(buf []byte) string {
+        return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+            buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
+    }
+}
+
+func main() {
+    pass
+}

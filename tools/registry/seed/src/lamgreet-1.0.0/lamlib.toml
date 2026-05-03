@@ -1,0 +1,9 @@
+[library]
+name        = "lamgreet"
+version     = "1.0.0"
+description = "Tiny greeter library — registry seed for lamc install demos."
+license     = "MIT"
+authors     = ["Lam Example <libs@lammergeier.dev>"]
+
+[compatibility]
+lamc = "*"

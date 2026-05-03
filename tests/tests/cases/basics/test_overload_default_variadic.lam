@@ -1,0 +1,40 @@
+# expect: describe(1): one arg: hello
+# expect: describe(2): two args: hello world
+# expect: log default: [INFO] test message
+# expect: log custom: [ERROR] bad thing
+# expect: variadic sum: 10
+
+# Overloaded: same name, different arities
+func describe(a: str) -> str {
+    return f"one arg: {a}"
+}
+
+func describe(a: str, b: str) -> str {
+    return f"two args: {a} {b}"
+}
+
+# Default params (NOT overloaded — just one function)
+func log(msg: str, level: str = "INFO") -> str {
+    return f"[{level}] {msg}"
+}
+
+# Variadic (NOT overloaded — absorbs any number of args)
+func total(*nums: int) -> int {
+    s: int = 0
+    for n in nums {
+        s = s + n
+    }
+    return s
+}
+
+func main() {
+    d1: str = describe("hello")
+    d2: str = describe("hello", "world")
+    print(f"describe(1): {d1}")
+    print(f"describe(2): {d2}")
+    r1: str = log("test message")
+    print(f"log default: {r1}")
+    r2: str = log("bad thing", "ERROR")
+    print(f"log custom: {r2}")
+    print(f"variadic sum: {total(1, 2, 3, 4)}")
+}

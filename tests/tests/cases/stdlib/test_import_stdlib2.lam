@@ -1,0 +1,12 @@
+# Test: import stdlib math wrapper
+# expect: 42
+# expect: 123
+
+from lamconv import Conv
+
+func main() {
+    a: str = Conv.toString(42)
+    b: int = Conv.toInt("123")
+    print(a)
+    print(b)
+}

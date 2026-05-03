@@ -1,0 +1,12 @@
+# Test: ternary with int values
+# expect: 10
+# expect: 5
+
+func bigger(a: int, b: int) -> int {
+    return a if a > b else b
+}
+
+func main() {
+    print(bigger(10, 5))
+    print(bigger(3, 5))
+}

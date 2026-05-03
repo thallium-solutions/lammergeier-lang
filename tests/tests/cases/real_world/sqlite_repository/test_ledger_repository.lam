@@ -1,0 +1,29 @@
+# Real-world mini project: repository pattern with ledger invariants.
+# expect: alice_start=1250
+# expect: bob_start=300
+# expect: transfer_ok=true
+# expect: alice_after=950
+# expect: bob_after=600
+# expect: overdraft_ok=false
+# expect: entry_count=5
+
+from repository import LedgerRepository
+
+func main() {
+    repo: LedgerRepository = LedgerRepository()
+    repo.add("alice", 1000)
+    repo.add("alice", 250)
+    repo.add("bob", 300)
+
+    print(f"alice_start={repo.balance('alice')}")
+    print(f"bob_start={repo.balance('bob')}")
+
+    moved: bool = repo.transfer("alice", "bob", 300)
+    print(f"transfer_ok={moved}")
+    print(f"alice_after={repo.balance('alice')}")
+    print(f"bob_after={repo.balance('bob')}")
+
+    overdraft: bool = repo.transfer("alice", "bob", 5000)
+    print(f"overdraft_ok={overdraft}")
+    print(f"entry_count={repo.count()}")
+}

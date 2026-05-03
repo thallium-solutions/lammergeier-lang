@@ -1,0 +1,15 @@
+# Test: enumerate with accumulation
+# expect: total_index=6
+# expect: last=d
+
+func main() {
+    data: list[str] = ["a", "b", "c", "d"]
+    total: int = 0
+    last: str = ""
+    for i, val in enumerate(data) {
+        total += i
+        last = val
+    }
+    print(f"total_index={total}")
+    print(f"last={last}")
+}

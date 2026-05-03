@@ -1,0 +1,34 @@
+# expect: {"name":"Alice","age":30}
+# expect: Alice
+# expect: 30
+# expect: Bob
+# expect: 25
+
+from lamjson import Json
+
+class Person {
+    func init(self, name: str, age: int) {
+        self.name: str = name
+        self.age: int = age
+    }
+}
+
+func main() {
+    p: Person = Person("Alice", 30)
+    jsonStr: str = Json.encode(p)
+    print(jsonStr)
+
+    # Decode back into a new Person
+    p2: Person = Person("", 0)
+    Json.decodeInto(jsonStr, p2)
+    print(p2.name)
+    print(p2.age)
+
+    # Encode/decode another
+    p3: Person = Person("Bob", 25)
+    json3: str = Json.encode(p3)
+    p4: Person = Person("", 0)
+    Json.decodeInto(json3, p4)
+    print(p4.name)
+    print(p4.age)
+}

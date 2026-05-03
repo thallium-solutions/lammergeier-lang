@@ -1,0 +1,15 @@
+# String concatenation — worst case because Lam currently lowers
+# ``a + b`` on strings to naive Go concatenation. Once a stdlib
+# ``strings.Builder`` shortcut lands this benchmark should drop
+# sharply; until then it anchors the baseline.
+
+func main() {
+    s: str = ""
+    for i in range(10000) {
+        s = s + "x"
+    }
+    # 10 000 x's — sanity-check the final length.
+    if len(s) != 10000 {
+        print("unreachable")
+    }
+}

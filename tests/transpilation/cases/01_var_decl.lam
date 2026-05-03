@@ -1,0 +1,11 @@
+# Transpilation: typed variable declarations map to `var name type = ...`.
+# expect-go: var x int = 10
+# expect-go: var name string = "Alice"
+# expect-go: var items []int = []int{1, 2, 3}
+
+func main() {
+    x: int = 10
+    name: str = "Alice"
+    items: list[int] = [1, 2, 3]
+    print(x, name, len(items))
+}

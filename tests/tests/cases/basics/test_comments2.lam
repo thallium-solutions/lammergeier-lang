@@ -1,0 +1,28 @@
+# Test: comments in classes and functions
+# expect: Rex 5
+# expect: done
+
+# Class comment
+class Dog {
+    # init comment
+    func init(self, name: str, age: int) {
+        # set fields
+        self.name: str = name  # name field
+        self.age: int = age    # age field
+    }
+
+    # method comment
+    func describe(self) -> str {
+        # return description
+        return f"{self.name} {self.age}"
+    }
+}
+
+# main function comment
+func main() {
+    # create dog
+    d: Dog = Dog("Rex", 5)
+    # print it
+    print(d.describe())
+    print("done")
+}

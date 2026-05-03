@@ -1,0 +1,68 @@
+# Test: lamerrors.Result + lamerrors.Error.
+# Covers Ok/Err construction, ok() / .value / .error inspection,
+# unwrap() success, unwrapOr() fallback, unwrap() panic on error,
+# and Error rendering with and without a cause.
+#
+# expect: ok=true err=<nil> val=10
+# expect: ok=false val=<nil>
+# expect: bad-error-render: DivByZero: denominator was 0
+# expect: unwrapOr_ok=42
+# expect: unwrapOr_err=-1
+# expect: unwrap_ok=hello
+# expect: unwrap_panic_caught: RuntimeError: unwrap on error result: just-a-string
+# expect: chained: ParseError: bad json (cause: IOError: read failed)
+# expect: errors_ok
+
+from lamerrors import Result, Error
+
+func divide(a: int, b: int) -> Result {
+    if b == 0 {
+        return Result.Err(Error("DivByZero", "denominator was 0"))
+    }
+    return Result.Ok(a / b)
+}
+
+func tryUnwrapOnErr() {
+    # Isolated so the function-level recover doesn't intercept main's
+    # subsequent statements (a known transpiler quirk for
+    # multi-try/catch in a single function).
+    try {
+        broken: Result = Result.Err("just-a-string")  # error may be any value
+        broken.unwrap()
+    } catch e {
+        print(f"unwrap_panic_caught: {e}")
+    }
+}
+
+func main() {
+    # --- Inspect a success result ---------------------------
+    r: Result = divide(20, 2)
+    print(f"ok={r.ok()} err={r.error} val={r.value}")
+
+    # --- Inspect an error result ----------------------------
+    bad: Result = divide(1, 0)
+    print(f"ok={bad.ok()} val={bad.value}")
+    # ``.error`` is typed ``any``; format it via f-string so Go's
+    # default stringer fires (which calls Error.__str__ -> String()).
+    print(f"bad-error-render: {bad.error}")
+
+    # --- unwrapOr never panics ------------------------------
+    ok42: Result = Result.Ok(42)
+    print(f"unwrapOr_ok={ok42.unwrapOr(-1)}")
+    print(f"unwrapOr_err={bad.unwrapOr(-1)}")
+
+    # --- unwrap returns value on success --------------------
+    okHello: Result = Result.Ok("hello")
+    s = okHello.unwrap()
+    print(f"unwrap_ok={s}")
+
+    # --- unwrap panics on error (in helper) -----------------
+    tryUnwrapOnErr()
+
+    # --- Error chaining via cause ---------------------------
+    inner: Error = Error("IOError", "read failed")
+    outer: Error = Error("ParseError", "bad json", inner)
+    print(f"chained: {outer}")
+
+    print("errors_ok")
+}

@@ -1,0 +1,16 @@
+# lamhash — SHA-256 many small payloads. Go's crypto/sha256 allocates
+# per call; any future work on reusing the hasher (e.g. a pool) should
+# show a clear drop here.
+
+from lamhash import Hash
+
+func main() {
+    total: int = 0
+    for i in range(100000) {
+        digest: str = Hash.sha256(f"payload-{i}-{i * 2}")
+        total = total + len(digest)
+    }
+    if total == 0 {
+        print("unreachable")
+    }
+}

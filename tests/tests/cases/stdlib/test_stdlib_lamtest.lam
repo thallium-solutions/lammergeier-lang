@@ -1,0 +1,58 @@
+# Test: lamtest framework — simple → complex coverage
+# expect: tests
+# expect: PASS 1 assertTrue minimal
+# expect: PASS 2 assertFalse minimal
+# expect: PASS 3 assertEqual ints
+# expect: PASS 4 assertEqual strings
+# expect: PASS 5 assertNotEqual
+# expect: PASS 6 assertNil
+# expect: PASS 7 assertNotNil
+# expect: PASS 8 assertLen list
+# expect: PASS 9 assertLen string
+# expect: PASS 10 assertContains list
+# expect: PASS 11 assertContains substring
+# expect: PASS 12 assertContains map key
+# expect: PASS 13 assertAlmostEqual
+# expect: PASS 14 passed counter
+# expect: 14 passed, 0 failed, 14 total
+
+from lamtest import Test
+
+func main() {
+    Test.describe("tests")
+
+    # 1. minimal
+    Test.assertTrue(true, "1 assertTrue minimal")
+    # 2. minimal negative
+    Test.assertFalse(false, "2 assertFalse minimal")
+    # 3. ordinary equality
+    Test.assertEqual(1 + 1, 2, "3 assertEqual ints")
+    # 4. string equality
+    Test.assertEqual("hi " + "there", "hi there", "4 assertEqual strings")
+    # 5. inequality
+    Test.assertNotEqual(1, 2, "5 assertNotEqual")
+    # 6. nil
+    empty: any = None
+    Test.assertNil(empty, "6 assertNil")
+    # 7. not nil
+    s: any = "value"
+    Test.assertNotNil(s, "7 assertNotNil")
+    # 8. length of list
+    xs: list[int] = [1, 2, 3, 4]
+    Test.assertLen(xs, 4, "8 assertLen list")
+    # 9. length of string
+    Test.assertLen("hello", 5, "9 assertLen string")
+    # 10. list containment
+    Test.assertContains(xs, 3, "10 assertContains list")
+    # 11. substring
+    Test.assertContains("Lammergeier", "merge", "11 assertContains substring")
+    # 12. map key
+    scores: dict[str, int] = {"alice": 9, "bob": 7}
+    Test.assertContains(scores, "bob", "12 assertContains map key")
+    # 13. float almost-equal with default tolerance
+    Test.assertAlmostEqual(0.1 + 0.2, 0.3, 0.0001, "13 assertAlmostEqual")
+    # 14. passed counter reflects state (must itself pass)
+    Test.assertTrue(Test.passed() >= 13, "14 passed counter")
+
+    Test.summary()
+}

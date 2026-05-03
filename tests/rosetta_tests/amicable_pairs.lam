@@ -1,0 +1,39 @@
+# Rosetta Code: Amicable pairs
+# https://rosettacode.org/wiki/Amicable_pairs
+# expect: 220 284
+# expect: 1184 1210
+# expect: 2620 2924
+# expect: 5020 5564
+# expect: 6232 6368
+# expect: 10744 10856
+# expect: 12285 14595
+# expect: 17296 18416
+
+func sum_divisors(n: int) -> int {
+    if n <= 1 {
+        return 0
+    }
+    total: int = 1
+    i: int = 2
+    while i * i <= n {
+        if n % i == 0 {
+            total += i
+            if i != n / i {
+                total += n / i
+            }
+        }
+        i += 1
+    }
+    return total
+}
+
+func main() {
+    for a in range(2, 20000) {
+        b: int = sum_divisors(a)
+        if b > a and b < 20000 {
+            if sum_divisors(b) == a {
+                print(f"{a} {b}")
+            }
+        }
+    }
+}

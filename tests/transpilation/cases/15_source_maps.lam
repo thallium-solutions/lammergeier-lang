@@ -1,0 +1,14 @@
+# Transpilation: every statement emits a ``//line <source>:N`` pragma
+# and multi-line IIFE expansions (list comprehensions) are repinned so
+# each internal Go line still reports the original Lam source line.
+# expect-go: //line
+# expect-go: .lam:10
+# expect-go: .lam:11
+# expect-go: .lam:12
+# expect-go: .lam:13
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    doubled: list[int] = [x * 2 for x in xs]
+    print(doubled)
+}

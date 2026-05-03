@@ -1,0 +1,52 @@
+# Rosetta Code: Attractive numbers
+# https://rosettacode.org/wiki/Attractive_numbers
+# expect: 4 6 8 9 10 12 14 15 18 20
+
+func count_prime_factors(n: int) -> int {
+    count: int = 0
+    d: int = 2
+    while d * d <= n {
+        while n % d == 0 {
+            count += 1
+            n = n / d
+        }
+        d += 1
+    }
+    if n > 1 {
+        count += 1
+    }
+    return count
+}
+
+func is_prime(n: int) -> bool {
+    if n < 2 {
+        return false
+    }
+    i: int = 2
+    while i * i <= n {
+        if n % i == 0 {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+func main() {
+    result: str = ""
+    count: int = 0
+    for n in range(2, 30) {
+        pf: int = count_prime_factors(n)
+        if is_prime(pf) {
+            if count > 0 {
+                result = result + " "
+            }
+            result = result + f"{n}"
+            count += 1
+            if count >= 10 {
+                break
+            }
+        }
+    }
+    print(result)
+}

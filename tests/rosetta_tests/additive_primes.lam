@@ -1,0 +1,41 @@
+# Rosetta Code: Additive primes
+# https://rosettacode.org/wiki/Additive_primes
+# expect: 2 3 5 7 11 23 29 41 43 47 61 67 83 89
+
+func is_prime(n: int) -> bool {
+    if n < 2 {
+        return false
+    }
+    i: int = 2
+    while i * i <= n {
+        if n % i == 0 {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+func digit_sum(n: int) -> int {
+    total: int = 0
+    while n > 0 {
+        total += n % 10
+        n = n / 10
+    }
+    return total
+}
+
+func main() {
+    result: str = ""
+    first: bool = true
+    for n in range(2, 100) {
+        if is_prime(n) and is_prime(digit_sum(n)) {
+            if not first {
+                result = result + " "
+            }
+            result = result + f"{n}"
+            first = false
+        }
+    }
+    print(result)
+}

@@ -1,0 +1,17 @@
+# Test: while-else with break - else should NOT run
+# expect: found 5
+# expect: done
+
+func main() {
+    i: int = 0
+    while i < 10 {
+        if i == 5 {
+            print(f"found {i}")
+            break
+        }
+        i += 1
+    } else {
+        print("never broke")
+    }
+    print("done")
+}

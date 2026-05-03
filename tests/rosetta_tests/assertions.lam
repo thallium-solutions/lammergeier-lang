@@ -1,0 +1,15 @@
+# Rosetta Code: Assertions
+# https://rosettacode.org/wiki/Assertions
+# expect: 42 is positive: pass
+# expect: 0 is zero: pass
+
+func main() {
+    x: int = 42
+    if x > 0 {
+        print(f"{x} is positive: pass")
+    }
+    y: int = 0
+    if y == 0 {
+        print(f"{y} is zero: pass")
+    }
+}

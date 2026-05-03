@@ -1,0 +1,35 @@
+# Real-world mini project: event-sourced aggregate with replay and audit hash.
+# expect: alice_balance=650
+# expect: bob_balance=350
+# expect: overdraft=false
+# expect: events=6
+# expect: replay_alice=650
+# expect: audit_has_rejected=true
+# expect: hash_len=64
+
+from wallet import WalletAggregate, WalletEvent
+from lamhash import Hash
+from lamstrings import Strings
+
+func main() {
+    wallet: WalletAggregate = WalletAggregate()
+    wallet.deposit("alice", 1000)
+    wallet.deposit("bob", 200)
+    wallet.transfer("alice", "bob", 150)
+    wallet.withdraw("alice", 200)
+    overdraft: bool = wallet.withdraw("bob", 900)
+
+    copy: WalletAggregate = WalletAggregate()
+    copy.replay(wallet.events)
+
+    audit: str = wallet.auditLog()
+    digest: str = Hash.sha256(audit)
+
+    print(f"alice_balance={wallet.balance('alice')}")
+    print(f"bob_balance={wallet.balance('bob')}")
+    print(f"overdraft={overdraft}")
+    print(f"events={len(wallet.events)}")
+    print(f"replay_alice={copy.balance('alice')}")
+    print(f"audit_has_rejected={Strings.contains(audit, 'rejected:bob:900')}")
+    print(f"hash_len={len(digest)}")
+}

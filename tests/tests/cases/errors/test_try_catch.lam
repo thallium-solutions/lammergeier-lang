@@ -1,0 +1,13 @@
+# Test: Try/catch (using catch keyword) with finally
+# expect: caught error
+# expect: cleanup done
+
+func main() {
+    try {
+        panic("test error")
+    } catch e {
+        print("caught error")
+    } finally {
+        print("cleanup done")
+    }
+}

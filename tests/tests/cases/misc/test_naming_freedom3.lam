@@ -1,0 +1,19 @@
+# Test: Naming - underscored class methods and fields preserved
+# expect: my_data: 100
+# expect: processed: 200
+
+class data_processor {
+    func __init__(self, my_data: int) {
+        self.my_data: int = my_data
+    }
+
+    func process_data(self) -> int {
+        return self.my_data * 2
+    }
+}
+
+func main() {
+    p: data_processor = data_processor(100)
+    print(f"my_data: {p.my_data}")
+    print(f"processed: {p.process_data()}")
+}

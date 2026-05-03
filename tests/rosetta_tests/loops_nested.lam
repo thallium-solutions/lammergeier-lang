@@ -1,0 +1,18 @@
+# Rosetta Code: Loops/Nested
+# https://rosettacode.org/wiki/Loops/Nested
+# expect: 1*1=1 1*2=2 1*3=3
+# expect: 2*1=2 2*2=4 2*3=6
+# expect: 3*1=3 3*2=6 3*3=9
+
+func main() {
+    for i in range(1, 4) {
+        line: str = ""
+        for j in range(1, 4) {
+            if j > 1 {
+                line = line + " "
+            }
+            line = line + f"{i}*{j}={i * j}"
+        }
+        print(line)
+    }
+}

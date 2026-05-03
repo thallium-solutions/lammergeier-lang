@@ -1,0 +1,274 @@
+# Lammergeier standard library: lightweight test framework
+# Import with: from lamtest import Test
+#
+# Usage:
+#     from lamtest import Test
+#
+#     func main() {
+#         Test.assertEqual(1 + 1, 2, "basic arithmetic")
+#         Test.assertTrue("foo".startsWith("f"))
+#         Test.assertContains([1, 2, 3], 2)
+#         Test.summary()     # prints totals, exits non-zero on failure
+#     }
+#
+# All assertions are side-effecting — they print "PASS"/"FAIL <msg>" lines
+# and track running totals in module-level state. `Test.summary()` prints
+# a one-line recap and calls `os.Exit(1)` if any assertion failed, which
+# makes the framework usable both interactively and as a test runner.
+
+go! {
+    import (
+        "fmt"
+        "os"
+        "reflect"
+    )
+
+    var lamTestPassed int
+    var lamTestFailed int
+    var lamTestDescribe string
+}
+
+class Test {
+    static func assertTrue(cond: bool, msg: str = "") -> bool {
+        #- Pass if `cond` is true. Returns the condition value. -#
+        go! {
+            if cond {
+                lamTestPassed++
+                if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
+                return true
+            }
+            lamTestFailed++
+            if msg != "" { fmt.Println("FAIL", msg) } else { fmt.Println("FAIL (assertTrue)") }
+            return false
+        }
+    }
+
+    static func assertFalse(cond: bool, msg: str = "") -> bool {
+        go! {
+            if !cond {
+                lamTestPassed++
+                if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
+                return true
+            }
+            lamTestFailed++
+            if msg != "" { fmt.Println("FAIL", msg) } else { fmt.Println("FAIL (assertFalse)") }
+            return false
+        }
+    }
+
+    static func assertEqual(actual: any, expected: any, msg: str = "") -> bool {
+        #- Deep equality using reflect.DeepEqual. -#
+        go! {
+            if reflect.DeepEqual(actual, expected) {
+                lamTestPassed++
+                if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
+                return true
+            }
+            lamTestFailed++
+            detail := fmt.Sprintf("expected %v got %v", expected, actual)
+            if msg != "" {
+                fmt.Println("FAIL", msg, "-", detail)
+            } else {
+                fmt.Println("FAIL", detail)
+            }
+            return false
+        }
+    }
+
+    static func assertNotEqual(actual: any, expected: any, msg: str = "") -> bool {
+        go! {
+            if !reflect.DeepEqual(actual, expected) {
+                lamTestPassed++
+                if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
+                return true
+            }
+            lamTestFailed++
+            detail := fmt.Sprintf("values unexpectedly equal: %v", actual)
+            if msg != "" {
+                fmt.Println("FAIL", msg, "-", detail)
+            } else {
+                fmt.Println("FAIL", detail)
+            }
+            return false
+        }
+    }
+
+    static func assertNil(value: any, msg: str = "") -> bool {
+        go! {
+            if value == nil {
+                lamTestPassed++
+                if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
+                return true
+            }
+            lamTestFailed++
+            detail := fmt.Sprintf("expected nil got %v", value)
+            if msg != "" {
+                fmt.Println("FAIL", msg, "-", detail)
+            } else {
+                fmt.Println("FAIL", detail)
+            }
+            return false
+        }
+    }
+
+    static func assertNotNil(value: any, msg: str = "") -> bool {
+        go! {
+            if value != nil {
+                lamTestPassed++
+                if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
+                return true
+            }
+            lamTestFailed++
+            if msg != "" { fmt.Println("FAIL", msg, "- got nil") } else { fmt.Println("FAIL (got nil)") }
+            return false
+        }
+    }
+
+    static func assertLen(coll: any, expected: int, msg: str = "") -> bool {
+        #- Works for strings, lists/slices, maps, channels. -#
+        go! {
+            v := reflect.ValueOf(coll)
+            var got int
+            switch v.Kind() {
+            case reflect.String, reflect.Slice, reflect.Array, reflect.Map, reflect.Chan:
+                got = v.Len()
+            default:
+                lamTestFailed++
+                if msg != "" {
+                    fmt.Println("FAIL", msg, "- assertLen: unsupported kind", v.Kind())
+                } else {
+                    fmt.Println("FAIL assertLen: unsupported kind", v.Kind())
+                }
+                return false
+            }
+            if got == expected {
+                lamTestPassed++
+                if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
+                return true
+            }
+            lamTestFailed++
+            detail := fmt.Sprintf("expected length %d got %d", expected, got)
+            if msg != "" {
+                fmt.Println("FAIL", msg, "-", detail)
+            } else {
+                fmt.Println("FAIL", detail)
+            }
+            return false
+        }
+    }
+
+    static func assertContains(coll: any, needle: any, msg: str = "") -> bool {
+        #- Substring test for strings, element test for lists, key test for maps. -#
+        go! {
+            v := reflect.ValueOf(coll)
+            found := false
+            switch v.Kind() {
+            case reflect.String:
+                if s, ok := coll.(string); ok {
+                    if n, ok := needle.(string); ok {
+                        for i := 0; i+len(n) <= len(s); i++ {
+                            if s[i:i+len(n)] == n { found = true; break }
+                        }
+                    }
+                }
+            case reflect.Slice, reflect.Array:
+                for i := 0; i < v.Len(); i++ {
+                    if reflect.DeepEqual(v.Index(i).Interface(), needle) { found = true; break }
+                }
+            case reflect.Map:
+                for _, k := range v.MapKeys() {
+                    if reflect.DeepEqual(k.Interface(), needle) { found = true; break }
+                }
+            }
+            if found {
+                lamTestPassed++
+                if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
+                return true
+            }
+            lamTestFailed++
+            detail := fmt.Sprintf("%v not found in %v", needle, coll)
+            if msg != "" {
+                fmt.Println("FAIL", msg, "-", detail)
+            } else {
+                fmt.Println("FAIL", detail)
+            }
+            return false
+        }
+    }
+
+    static func assertAlmostEqual(a: float, b: float, tolerance: float = 0.000001, msg: str = "") -> bool {
+        go! {
+            diff := a - b
+            if diff < 0 { diff = -diff }
+            if diff <= tolerance {
+                lamTestPassed++
+                if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
+                return true
+            }
+            lamTestFailed++
+            detail := fmt.Sprintf("|%g - %g| = %g > %g", a, b, diff, tolerance)
+            if msg != "" {
+                fmt.Println("FAIL", msg, "-", detail)
+            } else {
+                fmt.Println("FAIL", detail)
+            }
+            return false
+        }
+    }
+
+    static func fail(msg: str = "") {
+        go! {
+            lamTestFailed++
+            if msg != "" { fmt.Println("FAIL", msg) } else { fmt.Println("FAIL") }
+        }
+    }
+
+    static func pass(msg: str = "") {
+        go! {
+            lamTestPassed++
+            if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
+        }
+    }
+
+    static func describe(name: str) {
+        #- Print a group heading. Purely cosmetic, but useful in longer suites. -#
+        go! {
+            lamTestDescribe = name
+            fmt.Println(name)
+        }
+    }
+
+    static func passed() -> int {
+        go! { return lamTestPassed }
+    }
+
+    static func failed() -> int {
+        go! { return lamTestFailed }
+    }
+
+    static func reset() {
+        #- Zero out the running totals. Rarely needed outside test harnesses. -#
+        go! {
+            lamTestPassed = 0
+            lamTestFailed = 0
+            lamTestDescribe = ""
+        }
+    }
+
+    static func summary() -> int {
+        #- Print totals and return the number of failures. Exits the process
+           with status 1 when any assertion failed. -#
+        go! {
+            total := lamTestPassed + lamTestFailed
+            fmt.Printf("%d passed, %d failed, %d total\n", lamTestPassed, lamTestFailed, total)
+            if lamTestFailed > 0 {
+                os.Exit(1)
+            }
+            return lamTestFailed
+        }
+    }
+}
+
+func main() {
+    pass
+}

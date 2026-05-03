@@ -1,0 +1,27 @@
+# expect: alice
+# expect: 30
+# expect: admin
+# expect: alice
+# expect: 25
+# expect: dev
+
+func makeUser(name: str, age: int, role: str) -> dict[str, any] {
+    return {"name": name, "age": age, "role": role}
+}
+
+func main() {
+    user = {"name": "alice", "age": 30, "role": "admin"}
+    {name, age} = user
+    print(name)
+    print(age)
+
+    # Rename form: ``key: localName``
+    {role: userRole, name: userName} = user
+    print(userRole)
+    print(userName)
+
+    # RHS may be any expression that evaluates to a dict-shaped value.
+    {age: bobAge, role: bobRole} = makeUser("bob", 25, "dev")
+    print(bobAge)
+    print(bobRole)
+}

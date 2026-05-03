@@ -1,0 +1,119 @@
+# Test: lamactor — Mailbox + ActorSystem.
+#
+# expect: counter-after-3-tells: 3
+# expect: counter-ask: 5
+# expect: greeter-ask: hello bob
+# expect: mailbox-recv: payload-1
+# expect: mailbox-tryrecv-empty: yes
+# expect: error-recovered: ok
+# expect: stopped-actor-tell-isalive: false
+# expect: shutdown-num-actors: 0
+
+from lamactor import Mailbox, ActorRef, ActorSystem
+
+class Counter {
+    func __init__(self) {
+        self.n: int = 0
+    }
+
+    func onMessage(self, msg: any) -> any {
+        if msg == "inc" {
+            self.n = self.n + 1
+            return self.n
+        }
+        if msg == "get" {
+            return self.n
+        }
+        return None
+    }
+}
+
+class Greeter {
+    func onMessage(self, msg: any) -> any {
+        return "hello " + str(msg)
+    }
+}
+
+class Flaky {
+    func __init__(self) {
+        self.recovered: bool = false
+    }
+
+    func onMessage(self, msg: any) -> any {
+        if msg == "boom" {
+            go! { panic("intentional") }
+        }
+        if msg == "ping" {
+            return "ok"
+        }
+        return None
+    }
+
+    func onError(self, err: any) -> bool {
+        self.recovered = true
+        # Returning True keeps the actor alive after a panic.
+        return true
+    }
+}
+
+func main() {
+    sys: ActorSystem = ActorSystem()
+
+    # ── Counter: tell + ask + state mutation across messages.
+    counter: Counter = Counter()
+    cref: ActorRef = sys.spawn(counter)
+    cref.tell("inc")
+    cref.tell("inc")
+    cref.tell("inc")
+    # Drain via ask so we know all three tells were processed.
+    after3: any = cref.ask("get", 1000)
+    print("counter-after-3-tells: " + str(after3))
+    cref.tell("inc")
+    cref.tell("inc")
+    asked: any = cref.ask("get", 1000)
+    print("counter-ask: " + str(asked))
+
+    # ── Greeter: ask returns the handler's value.
+    gref: ActorRef = sys.spawn(Greeter())
+    gv: any = gref.ask("bob", 1000)
+    print("greeter-ask: " + str(gv))
+
+    # ── Mailbox: standalone use, both blocking and non-blocking.
+    mb: Mailbox = Mailbox(8)
+    mb.send("payload-1")
+    msg: any = mb.recv()
+    print("mailbox-recv: " + str(msg))
+    empty: any = mb.tryRecv()
+    if empty == None {
+        print("mailbox-tryrecv-empty: yes")
+    } else {
+        print("mailbox-tryrecv-empty: no")
+    }
+    mb.close()
+
+    # ── Recover from a panic via onError. The actor stays alive
+    # because Flaky.onError returns True.
+    flaky: Flaky = Flaky()
+    fref: ActorRef = sys.spawn(flaky)
+    fref.tell("boom")
+    # Give the dispatch loop a moment to process the panic.
+    pong: any = fref.ask("ping", 1000)
+    if pong == "ok" and flaky.recovered {
+        print("error-recovered: ok")
+    } else {
+        print("error-recovered: FAIL")
+    }
+
+    # ── Stopped actor still answers isAlive() correctly.
+    stopRef: ActorRef = sys.spawn(Greeter())
+    stopRef.stop()
+    if stopRef.isAlive() {
+        print("stopped-actor-tell-isalive: true")
+    } else {
+        print("stopped-actor-tell-isalive: false")
+    }
+
+    # ── Shutdown drains everyone.
+    sys.shutdown(2000)
+    print("shutdown-num-actors: " + str(sys.numActors()))
+}

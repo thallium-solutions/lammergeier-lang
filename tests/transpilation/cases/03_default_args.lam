@@ -1,0 +1,12 @@
+# Transpilation: default args are injected at the call site, not baked
+# into the Go signature (Go has no default parameters).
+# expect-go: func Greet(greeting string, name string) string
+# expect-go: Greet("hello", "world")
+
+func greet(greeting: str = "hello", name: str = "world") -> str {
+    return greeting + ", " + name
+}
+
+func main() {
+    print(greet())
+}

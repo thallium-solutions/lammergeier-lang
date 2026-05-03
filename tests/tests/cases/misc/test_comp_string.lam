@@ -1,0 +1,12 @@
+# Test: List comprehension with string type
+# expect: HELLO
+# expect: WORLD
+# expect: 2
+
+func main() {
+    words: list[str] = ["hello", "world"]
+    for w: str in words {
+        print(w.upper())
+    }
+    print(len(words))
+}

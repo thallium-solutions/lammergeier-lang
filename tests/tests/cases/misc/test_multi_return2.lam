@@ -1,0 +1,92 @@
+# Test: Multiple return values and tuple unpacking
+# expect: 3
+# expect: 1
+# expect: 1
+# expect: 10
+# expect: 0
+# expect: 100
+# expect: 5
+# expect: 2
+# expect: 50
+# expect: -50
+# expect: hello
+# expect: 5
+# expect: multi_ok
+
+func divide(a: int, b: int) -> (int, int) {
+    return a / b, a % b
+}
+
+func swap(a: int, b: int) -> (int, int) {
+    return b, a
+}
+
+func min_max(a: int, b: int, c: int) -> (int, int) {
+    lo: int = a
+    hi: int = a
+    if b < lo {
+        lo = b
+    }
+    if c < lo {
+        lo = c
+    }
+    if b > hi {
+        hi = b
+    }
+    if c > hi {
+        hi = c
+    }
+    return lo, hi
+}
+
+func compute(x: int) -> (int, int) {
+    return x * 10, 0 - x * 10
+}
+
+func describe(s: str) -> (str, int) {
+    return s, len(s)
+}
+
+func main() {
+    # Basic multi-return
+    q: int = 0
+    r: int = 0
+    q, r = divide(10, 3)
+    print(q)
+    print(r)
+
+    # Swap
+    a: int = 0
+    b: int = 0
+    a, b = swap(10, 1)
+    print(a)
+    print(b)
+
+    # Min/max
+    lo: int = 0
+    hi: int = 0
+    lo, hi = min_max(50, 0, 100)
+    print(lo)
+    print(hi)
+
+    # Three calls
+    q, r = divide(17, 3)
+    print(q)
+    print(r)
+
+    # Compute
+    pos: int = 0
+    neg: int = 0
+    pos, neg = compute(5)
+    print(pos)
+    print(neg)
+
+    # String info
+    word: str = ""
+    n: int = 0
+    word, n = describe("hello")
+    print(word)
+    print(n)
+
+    print("multi_ok")
+}

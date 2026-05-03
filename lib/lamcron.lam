@@ -1,0 +1,220 @@
+# Lammergeier standard library — cron-style scheduler.
+#
+# Thin wrapper around ``github.com/robfig/cron/v3`` — the de-facto
+# Go cron library. It gives us a battle-tested parser (standard
+# 5-field expressions, optional seconds, ``@hourly`` / ``@every 30s``
+# descriptors, timezone support) and a thread-safe scheduler, so
+# this module is intentionally small: create, schedule, start, stop.
+#
+#     from lamcron import Cron
+#
+#     # Fire every minute.
+#     c: Cron = Cron.new()
+#     id: int = c.schedule("* * * * *", lambda: print("tick"))
+#     c.start()                          # non-blocking — the scheduler
+#                                        # runs in its own goroutine
+#     # …do other work…
+#     c.stop()                           # waits for in-flight jobs
+#
+#     # Second-resolution via the "with-seconds" factory.
+#     fast: Cron = Cron.newWithSeconds()
+#     fast.schedule("*/5 * * * * *", jobFn)   # every 5 seconds
+#     fast.start()
+#
+#     # Descriptor-style expressions work with either factory.
+#     fast.schedule("@every 2s", ping)
+#
+# Callback shape: any zero-arg function — ``lambda: ...``, a named
+# function, or any Lam callable — is accepted. The scheduler
+# recovers panics inside a job and logs them to stderr so one
+# misbehaving callback can't take the whole scheduler down.
+
+go! {
+    import (
+        "fmt"
+        "sync"
+
+        cron "github.com/robfig/cron/v3"
+    )
+
+    // ``robfig/cron`` exposes a callback-shaped AddFunc API, but
+    // callers routinely want the safety of panic-recovering job
+    // wrappers. We install one shared wrapper so every scheduled
+    // function benefits without the call-site having to remember
+    // the idiom.
+    //
+    // The wrapper accepts every callable shape Lam is likely to
+    // produce: bare ``func()``, ``func() interface{}`` (common for
+    // lambdas), and the occasional ``func() error`` from authors
+    // porting Go code verbatim.
+    func lamCronWrap(fn interface{}) func() {
+        return func() {
+            defer func() {
+                if r := recover(); r != nil {
+                    // Stick to stderr; ``log`` would force a dep
+                    // on every user program even when they don't
+                    // care about cron diagnostics.
+                    fmt.Printf("[lamcron] job panicked: %v\n", r)
+                }
+            }()
+            switch f := fn.(type) {
+            case func():
+                f()
+            case func() interface{}:
+                f()
+            case func() error:
+                if err := f(); err != nil {
+                    fmt.Printf("[lamcron] job returned error: %v\n", err)
+                }
+            default:
+                fmt.Printf("[lamcron] job has unsupported signature %T\n", fn)
+            }
+        }
+    }
+
+    // A tiny container around *cron.Cron so we can track whether
+    // the scheduler has been started — calling ``Start`` twice on
+    // the underlying library is a no-op but hiding the state
+    // here keeps the Lam surface honest.
+    type lamCronHandle struct {
+        mu      sync.Mutex
+        c       *cron.Cron
+        started bool
+    }
+}
+
+class Cron {
+    #- A cron scheduler. Construct with :py:meth:`new` (5-field,
+       minute-resolution) or :py:meth:`newWithSeconds` (6-field,
+       second-resolution). The two forms have identical runtime
+       behaviour — only the parser differs. -#
+
+    func __init__(self) {
+        self._handle: any = None
+    }
+
+    static func new() -> Cron {
+        #- Create a fresh scheduler that accepts standard 5-field
+           cron expressions (``min hour dom mon dow``) and ``@``
+           descriptors (``@daily``, ``@every 1m``, …). -#
+        c: Cron = Cron()
+        go! {
+            c._handle = &lamCronHandle{c: cron.New()}
+        }
+        return c
+    }
+
+    static func newWithSeconds() -> Cron {
+        #- Create a scheduler that accepts 6-field expressions with
+           an explicit seconds field, e.g. ``*/5 * * * * *``. Useful
+           when you want sub-minute resolution without polling. -#
+        c: Cron = Cron()
+        go! {
+            c._handle = &lamCronHandle{
+                c: cron.New(cron.WithSeconds()),
+            }
+        }
+        return c
+    }
+
+    func schedule(self, expr: str, fn: any) -> int {
+        #- Register ``fn`` to run whenever ``expr`` next fires.
+           Returns the entry ID assigned by the scheduler — pass it
+           to :py:meth:`remove` to cancel the job later.
+
+           Raises (panics) on malformed expressions; the error from
+           ``cron.Parse`` propagates with the offending input
+           inlined so the caller can fix their schedule string. -#
+        entryId: int = 0
+        go! {
+            h := s._handle.(*lamCronHandle)
+            h.mu.Lock()
+            defer h.mu.Unlock()
+            id, err := h.c.AddFunc(expr, lamCronWrap(fn))
+            if err != nil {
+                panic(fmt.Sprintf("lamcron: bad schedule %q: %v", expr, err))
+            }
+            entryId = int(id)
+        }
+        return entryId
+    }
+
+    func remove(self, entryId: int) {
+        #- Cancel a previously scheduled entry. Idempotent — passing
+           an unknown or already-removed ID is a silent no-op. -#
+        go! {
+            h := s._handle.(*lamCronHandle)
+            h.mu.Lock()
+            defer h.mu.Unlock()
+            h.c.Remove(cron.EntryID(entryId))
+        }
+    }
+
+    func start(self) {
+        #- Start ticking. Non-blocking — the scheduler runs in its
+           own goroutine so callers can continue their program.
+           Calling ``start`` twice is a no-op. -#
+        go! {
+            h := s._handle.(*lamCronHandle)
+            h.mu.Lock()
+            defer h.mu.Unlock()
+            if h.started {
+                return
+            }
+            h.c.Start()
+            h.started = true
+        }
+    }
+
+    func stop(self) {
+        #- Stop accepting new job firings and block until every
+           in-flight job finishes. Once stopped, a scheduler can
+           be restarted by calling :py:meth:`start` again; entries
+           persist across the restart. -#
+        go! {
+            h := s._handle.(*lamCronHandle)
+            h.mu.Lock()
+            wasStarted := h.started
+            h.started = false
+            h.mu.Unlock()
+            if !wasStarted {
+                return
+            }
+            // ``Stop`` returns a ``context.Context`` that is ``Done``
+            // once running jobs finish — block on it so callers
+            // can rely on ``stop()`` being synchronous.
+            ctx := h.c.Stop()
+            <-ctx.Done()
+        }
+    }
+
+    func entryIds(self) -> list[int] {
+        #- Snapshot of the scheduler's current entry IDs, in the
+           order ``robfig/cron`` maintains them internally. Useful
+           for iterating over all jobs to ``remove`` them during
+           shutdown. -#
+        out: list[int] = []
+        go! {
+            h := s._handle.(*lamCronHandle)
+            h.mu.Lock()
+            defer h.mu.Unlock()
+            for _, e := range h.c.Entries() {
+                out = append(out, int(e.ID))
+            }
+        }
+        return out
+    }
+
+    func count(self) -> int {
+        #- Number of currently-scheduled entries. Handy for tests
+           and readiness checks. -#
+        n: int = 0
+        go! {
+            h := s._handle.(*lamCronHandle)
+            h.mu.Lock()
+            defer h.mu.Unlock()
+            n = len(h.c.Entries())
+        }
+        return n
+    }
+}

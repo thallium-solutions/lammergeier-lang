@@ -1,0 +1,34 @@
+class User {
+    func init(self, id: int, email: str, role: str, password: str) {
+        self.id: int = id
+        self.email: str = email
+        self.role: str = role
+        self.password: str = password
+    }
+
+    func isAdmin(self) -> bool {
+        return self.role == "admin"
+    }
+}
+
+class UserStore {
+    func init(self) {
+        self.users: dict[str, User] = {}
+    }
+
+    func add(self, id: int, email: str, role: str, password: str) {
+        self.users[email] = User(id, email, role, password)
+    }
+
+    func authenticate(self, email: str, password: str) -> User {
+        user: User = self.users[email]
+        if user.password == password {
+            return user
+        }
+        return None
+    }
+}
+
+func main() {
+    pass
+}

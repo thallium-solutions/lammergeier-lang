@@ -1,0 +1,19 @@
+# Test: Multidimensional list comprehension via nested loops
+# expect: 0,0
+# expect: 0,1
+# expect: 0,2
+# expect: 1,0
+# expect: 1,1
+# expect: 1,2
+# expect: total=6
+
+func main() {
+    total: int = 0
+    for i: int in range(2) {
+        for j: int in range(3) {
+            print(f"{i},{j}")
+            total += 1
+        }
+    }
+    print(f"total={total}")
+}

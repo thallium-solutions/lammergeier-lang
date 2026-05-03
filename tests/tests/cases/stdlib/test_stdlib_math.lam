@@ -1,0 +1,30 @@
+# Test: Math standard library (OOP)
+# expect: pi: 3.141592653589793
+# expect: sqrt: 5
+# expect: floor: 3
+# expect: ceil: 4
+# expect: pow: 8
+# expect: abs: 5.5
+# expect: gcd: 6
+# expect: lcm: 12
+# expect: trunc: 3
+# expect: copysign: -3
+# expect: cbrt: 3
+# expect: math_ok
+
+from lammath import Math
+
+func main() {
+    print(f"pi: {Math.pi()}")
+    print(f"sqrt: {Math.sqrt(25.0)}")
+    print(f"floor: {Math.floor(3.7)}")
+    print(f"ceil: {Math.ceil(3.2)}")
+    print(f"pow: {Math.pow(2.0, 3.0)}")
+    print(f"abs: {Math.absVal(-5.5)}")
+    print(f"gcd: {Math.gcd(12, 18)}")
+    print(f"lcm: {Math.lcm(4, 6)}")
+    print(f"trunc: {Math.trunc(3.7)}")
+    print(f"copysign: {Math.copysign(3.0, -1.0)}")
+    print(f"cbrt: {Math.cbrt(27.0)}")
+    print("math_ok")
+}

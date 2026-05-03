@@ -1,0 +1,15 @@
+# Test: tpyre standard library
+# expect: true
+# expect: 123
+# expect: re_ok
+
+from lamre import Re
+
+func main() {
+    if Re.match("^[a-z]+$", "hello") {
+        print("true")
+    }
+    found: str = Re.find("[0-9]+", "abc123def")
+    print(found)
+    print("re_ok")
+}

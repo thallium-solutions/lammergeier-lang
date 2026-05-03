@@ -1,0 +1,32 @@
+# Rosetta Code: Fibonacci sequence
+# https://rosettacode.org/wiki/Fibonacci_sequence
+# expect: 0
+# expect: 1
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 5
+# expect: 8
+# expect: 13
+# expect: 21
+# expect: 34
+
+func fibonacci(n: int) -> int {
+    if n <= 1 {
+        return n
+    }
+    a: int = 0
+    b: int = 1
+    for i in range(2, n + 1) {
+        temp: int = a + b
+        a = b
+        b = temp
+    }
+    return b
+}
+
+func main() {
+    for i in range(10) {
+        print(fibonacci(i))
+    }
+}

@@ -1,0 +1,76 @@
+# Test: lamtemplate — text & HTML templating.
+#
+# expect: text-greet: Hello, Alice! 3 messages.
+# expect: text-helpers: HI THERE,hi there,Hi There,hi-there
+# expect: text-default-empty: fallback
+# expect: text-default-real: real-val
+# expect: html-escape-raw: <b>bold</b>
+# expect: html-escape-rendered: &lt;b&gt;bold&lt;/b&gt;
+# expect: named-ok: named-block-123
+# expect: bad-parse-err: true
+
+from lamtemplate import Template, HtmlTemplate
+from lamerrors import Result
+
+func main() {
+    # ── Plain text template.
+    t: Template = Template()
+    pr: Result = t.parse("Hello, {{.Name}}! {{.Count}} messages.")
+    if not pr.ok() {
+        print("parse-fail")
+        return
+    }
+    data: dict[str, any] = {}
+    data["Name"] = "Alice"
+    data["Count"] = 3
+    print(f"text-greet: {t.render(data)}")
+
+    # ── Helpers: upper / lower / title / replace.
+    t2: Template = Template()
+    t2.parse("{{upper .S}},{{lower .S}},{{title .S}},{{replace .S \" \" \"-\"}}")
+    d2: dict[str, any] = {}
+    d2["S"] = "hi there"
+    print(f"text-helpers: {t2.render(d2)}")
+
+    # ── default helper.
+    t3: Template = Template()
+    t3.parse("{{default \"fallback\" .V}}")
+    e1: dict[str, any] = {}
+    e1["V"] = ""
+    print(f"text-default-empty: {t3.render(e1)}")
+    e2: dict[str, any] = {}
+    e2["V"] = "real-val"
+    print(f"text-default-real: {t3.render(e2)}")
+
+    # ── HTML autoescape.
+    raw: str = "<b>bold</b>"
+    # First a plain-text template — outputs raw HTML verbatim.
+    pt: Template = Template()
+    pt.parse("{{.H}}")
+    ptd: dict[str, any] = {}
+    ptd["H"] = raw
+    print(f"html-escape-raw: {pt.render(ptd)}")
+    # Then an HTML template — same payload gets escaped.
+    ht: HtmlTemplate = HtmlTemplate()
+    ht.parse("{{.H}}")
+    htd: dict[str, any] = {}
+    htd["H"] = raw
+    print(f"html-escape-rendered: {ht.render(htd)}")
+
+    # ── Named templates via define/end.
+    t4: Template = Template()
+    pr4: Result = t4.parse("{{define \"block\"}}named-block-{{.N}}{{end}}{{template \"block\" .}}")
+    if not pr4.ok() {
+        print("named-parse-fail")
+        return
+    }
+    d4: dict[str, any] = {}
+    d4["N"] = 123
+    print(f"named-ok: {t4.render(d4)}")
+
+    # ── Bad template → Err.
+    t5: Template = Template()
+    bad: Result = t5.parse("{{.unclosed")
+    badOk: bool = not bad.ok()
+    print(f"bad-parse-err: {badOk}")
+}

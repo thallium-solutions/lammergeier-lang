@@ -1,0 +1,103 @@
+# Integration test: lamcron scheduled-job helper.
+#
+# Drives the "happy path" of the Cron class against a tight
+# schedule (``*/1 * * * * *`` — every second, with a seconds field)
+# so the test fires 2-3 times within ~2.5s and completes reliably
+# even on slow CI.
+#
+# expect: count-zero: 0
+# expect: started-nonzero: true
+# expect: entries-one: true
+# expect: remove-empty: true
+# expect: restart-ok: true
+# expect: invalid-expr: caught
+
+from lamcron import Cron
+from lamtime import Time
+
+class Counter {
+    #- Tiny mutable cell so the scheduled lambda has somewhere to
+       stash its tick-count. A plain ``int`` in ``main`` wouldn't
+       survive the lambda capture boundary. -#
+    func __init__(self) {
+        self.n: int = 0
+    }
+    func tick(self) -> int {
+        self.n = self.n + 1
+        return self.n
+    }
+    func value(self) -> int {
+        return self.n
+    }
+}
+
+func main() {
+    c: Cron = Cron.newWithSeconds()
+
+    # Before ``start`` the scheduler is quiescent.
+    print("count-zero: " + str(c.count()))
+
+    ctr: Counter = Counter()
+    id: int = c.schedule("* * * * * *", lambda: ctr.tick())
+
+    c.start()
+    # Two full seconds is enough to observe at least one tick;
+    # waiting 2.3s keeps us comfortably inside the window even if
+    # the scheduler's 0.x-second phase lands unfavourably.
+    Time.sleepMs(2300)
+    c.stop()
+
+    if ctr.value() > 0 {
+        print("started-nonzero: true")
+    } else {
+        print("started-nonzero: false (got " + str(ctr.value()) + ")")
+    }
+
+    if c.count() == 1 and len(c.entryIds()) == 1 {
+        print("entries-one: true")
+    } else {
+        print("entries-one: false")
+    }
+
+    c.remove(id)
+    if c.count() == 0 and len(c.entryIds()) == 0 {
+        print("remove-empty: true")
+    } else {
+        print("remove-empty: false")
+    }
+
+    # Restart path: schedule a fresh job, start again, observe
+    # that the counter keeps climbing.
+    before: int = ctr.value()
+    c.schedule("* * * * * *", lambda: ctr.tick())
+    c.start()
+    Time.sleepMs(1300)
+    c.stop()
+    if ctr.value() > before {
+        print("restart-ok: true")
+    } else {
+        print("restart-ok: false (" + str(before) + " → " + str(ctr.value()) + ")")
+    }
+
+    # Malformed expression must surface as a panic caught by
+    # ``try/catch``. The function-scoped ``defer recover()`` that
+    # backs Lam's try/catch aborts the enclosing function on
+    # recovery, so we isolate this check in its own helper and
+    # print both branches from inside the try / catch blocks
+    # directly — a ``return caught`` pattern would capture
+    # ``caught`` *before* the deferred recover updates it.
+    _checkInvalidExpr()
+}
+
+func _checkInvalidExpr() {
+    #- Print ``invalid-expr: caught`` iff ``Cron.schedule`` panics
+       on an unparseable expression, ``invalid-expr: missed``
+       otherwise. -#
+    c: Cron = Cron.newWithSeconds()
+    try {
+        c.schedule("this is not a cron expression", lambda: 0)
+        print("invalid-expr: missed")
+    } catch _ {
+        print("invalid-expr: caught")
+    }
+}

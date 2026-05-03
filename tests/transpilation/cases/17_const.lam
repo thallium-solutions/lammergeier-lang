@@ -1,0 +1,23 @@
+# Transpilation: ``const NAME [: TYPE] = EXPR`` lowers to a Go ``var``.
+# Immutability is enforced by the semantic checker; we use Go ``var``
+# (not ``const``) so the RHS may be any Lam expression.
+#
+# Check:
+#   - typed top-level const: ``var PI float64 = 3.14``
+#   - inferred top-level const: ``var COUNT int = 10``
+#   - typed local const inside a function
+#   - inferred local const (literal RHS → typed ``var``)
+
+# expect-go: var PI float64 = 3.14
+# expect-go: var COUNT int = 10
+# expect-go: var greeting string = "hello"
+# expect-go: var limit int = COUNT * 2
+
+const PI: float = 3.14
+const COUNT = 10
+
+func main() {
+    const greeting = "hello"
+    const limit: int = COUNT * 2
+    print(PI, COUNT, greeting, limit)
+}

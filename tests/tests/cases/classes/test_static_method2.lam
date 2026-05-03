@@ -1,0 +1,25 @@
+# Test: Static method and naming together
+# expect: 6
+# expect: value: 42
+
+class MathHelper {
+    static func multiply(a: int, b: int) -> int {
+        return a * b
+    }
+}
+
+class Config {
+    func __init__(self, val: int) {
+        self.val: int = val
+    }
+
+    func get_value(self) -> int {
+        return self.val
+    }
+}
+
+func main() {
+    print(MathHelper.multiply(2, 3))
+    c: Config = Config(42)
+    print(f"value: {c.get_value()}")
+}

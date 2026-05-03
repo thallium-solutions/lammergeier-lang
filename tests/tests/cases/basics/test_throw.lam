@@ -1,0 +1,15 @@
+# Test: ``throw`` is an alias for ``raise``. Both spellings should
+# produce the same panic; the catch block sees the same message.
+# expect: caught_throw: ValueError: from-throw
+
+func only_throw() {
+    throw ValueError("from-throw")
+}
+
+func main() {
+    try {
+        only_throw()
+    } catch e {
+        print(f"caught_throw: {e}")
+    }
+}

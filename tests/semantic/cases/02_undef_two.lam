@@ -1,0 +1,8 @@
+# Two independent undefined refs are reported in one pass.
+# expect-error: undefined name `alpha`
+# expect-error: undefined name `beta`
+
+func main() {
+    x: int = alpha + beta
+    print(x)
+}

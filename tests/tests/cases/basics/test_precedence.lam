@@ -1,0 +1,65 @@
+# Test: Operator precedence and complex expressions
+# expect: 14
+# expect: 20
+# expect: 7
+# expect: 1
+# expect: 9
+# expect: 2
+# expect: 25
+# expect: 0
+# expect: true
+# expect: false
+# expect: true
+# expect: true
+# expect: false
+# expect: true
+# expect: 6
+# expect: -4
+# expect: 30
+# expect: 3
+# expect: 100
+# expect: 1
+# expect: prec_ok
+
+func main() {
+    # Basic precedence: * before +
+    print(2 + 3 * 4)
+    # Parentheses override
+    print((2 + 3) * 4)
+    # Division and addition
+    print(10 / 2 + 2)
+    # Modulo
+    print(10 % 3)
+    # Chained operations
+    print(1 + 2 * 3 + 4 / 2)
+    # Integer division
+    print(5 / 2)
+    # Power-like (manual)
+    x: int = 5
+    print(x * x)
+    # Negative modulo
+    print(10 % 5)
+    # Boolean with comparison
+    print(3 > 2 and 5 > 4)
+    print(3 > 2 and 5 < 4)
+    # Or logic
+    print(False or True)
+    # Complex boolean
+    print(1 < 2 and 3 < 4 and 5 < 6)
+    print(1 < 2 and 3 > 4 and 5 < 6)
+    # Not
+    print(not False)
+    # Negative number ops
+    a: int = -2
+    b: int = 3
+    print(a + b + 5)
+    print(a * b + 2)
+    print(a * b * (0 - 5))
+    # Floor division
+    print(7 / 2)
+    # Large expression
+    print((5 + 5) * (2 + 8))
+    # Chained modulo
+    print(100 % 99)
+    print("prec_ok")
+}

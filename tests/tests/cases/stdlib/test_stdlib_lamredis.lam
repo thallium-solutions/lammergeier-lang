@@ -1,0 +1,241 @@
+# Integration test: lamredis exercises strings, counters, lists,
+# hashes, sets, sorted sets, scan, pub/sub, pipeline, and TTL
+# semantics against a live Redis server.
+#
+# expect: ping: PONG
+# expect: get-missing: <empty>
+# expect: set-and-get: hello
+# expect: setnx-first: true
+# expect: setnx-second: false
+# expect: get-after-setnx: hello
+# expect: ttl-set: true
+# expect: ttl-positive: true
+# expect: persist: true
+# expect: ttl-after-persist: -1
+# expect: exists: 1
+# expect: delete: 1
+# expect: exists-after-delete: 0
+# expect: incr: 1
+# expect: incrBy-5: 6
+# expect: decr: 5
+# expect: counter-final: 5
+# expect: rpush-len: 3
+# expect: lrange: a,b,c
+# expect: lpop: a
+# expect: rpop: c
+# expect: llen-after-pops: 1
+# expect: hset-1: 1
+# expect: hgetAll-name: alice
+# expect: hgetAll-tier: gold
+# expect: hexists-name: true
+# expect: hexists-missing: false
+# expect: hincrBy: 7
+# expect: hkeys-count: 3
+# expect: hdel-count: 1
+# expect: sadd: 3
+# expect: scard: 3
+# expect: sismember-go: true
+# expect: sismember-php: false
+# expect: smembers-count: 3
+# expect: srem: 1
+# expect: zadd-alice: 1
+# expect: zincrBy-alice: 105
+# expect: zscore-bob: 90
+# expect: zrange-top: alice
+# expect: zrem: 1
+# expect: zcard: 1
+# expect: scan-found: 1
+# expect: pubsub-message: hello-subscribers
+# expect: pipeline-get: pipeval
+# expect: pipeline-incr: 11
+# expect: type-string: string
+# expect: type-missing: none
+
+from lamredis import Redis, PubSub
+
+func main() {
+    r: Redis = Redis.connect("localhost:6379", password="redispass123")
+    r.flushDb()
+
+    pong: str = r.ping()
+    print("ping: " + pong)
+
+    # ── Strings ──────────────────────────────────────────────
+    missing: str = r.get("does-not-exist")
+    if len(missing) == 0 {
+        print("get-missing: <empty>")
+    } else {
+        print("get-missing: " + missing)
+    }
+    r.set("greeting", "hello")
+    print("set-and-get: " + r.get("greeting"))
+
+    # ── SETNX semantics ──────────────────────────────────────
+    first: bool = r.setNx("nx-key", "hello")
+    second: bool = r.setNx("nx-key", "world")
+    print("setnx-first: " + str(first))
+    print("setnx-second: " + str(second))
+    print("get-after-setnx: " + r.get("nx-key"))
+
+    # ── TTL / persist ────────────────────────────────────────
+    ok: bool = r.expire("greeting", 60)
+    print("ttl-set: " + str(ok))
+    t: int = r.ttl("greeting")
+    if t > 0 {
+        print("ttl-positive: true")
+    } else {
+        print("ttl-positive: false")
+    }
+    persisted: bool = r.persist("greeting")
+    print("persist: " + str(persisted))
+    print("ttl-after-persist: " + str(r.ttl("greeting")))
+
+    # ── EXISTS / DELETE ──────────────────────────────────────
+    print("exists: " + str(r.exists(["greeting"])))
+    print("delete: " + str(r.delete(["greeting"])))
+    print("exists-after-delete: " + str(r.exists(["greeting"])))
+
+    # ── Counters ─────────────────────────────────────────────
+    print("incr: " + str(r.incr("counter")))
+    print("incrBy-5: " + str(r.incrBy("counter", 5)))
+    print("decr: " + str(r.decr("counter")))
+    print("counter-final: " + r.get("counter"))
+
+    # ── Lists ────────────────────────────────────────────────
+    pushed: int = r.rpush("queue", ["a", "b", "c"])
+    print("rpush-len: " + str(pushed))
+    rng: list[str] = r.lrange("queue", 0, -1)
+    joined: str = ""
+    for i in range(len(rng)) {
+        if i > 0 {
+            joined = joined + "," + rng[i]
+        } else {
+            joined = rng[i]
+        }
+    }
+    print("lrange: " + joined)
+    print("lpop: " + r.lpop("queue"))
+    print("rpop: " + r.rpop("queue"))
+    print("llen-after-pops: " + str(r.llen("queue")))
+
+    # ── Hashes ───────────────────────────────────────────────
+    n: int = r.hset("user:1", "name", "alice")
+    print("hset-1: " + str(n))
+    fields: dict[str, any] = {}
+    fields["tier"] = "gold"
+    fields["score"] = 5
+    r.hsetMap("user:1", fields)
+    profile: dict[str, str] = r.hgetAll("user:1")
+    print("hgetAll-name: " + profile["name"])
+    print("hgetAll-tier: " + profile["tier"])
+    print("hexists-name: " + str(r.hexists("user:1", "name")))
+    print("hexists-missing: " + str(r.hexists("user:1", "nope")))
+    incremented: int = r.hincrBy("user:1", "score", 2)
+    print("hincrBy: " + str(incremented))
+    keys: list[str] = r.hkeys("user:1")
+    print("hkeys-count: " + str(len(keys)))
+    print("hdel-count: " + str(r.hdel("user:1", ["name"])))
+
+    # ── Sets ─────────────────────────────────────────────────
+    added: int = r.sadd("tags", ["go", "rust", "lam"])
+    print("sadd: " + str(added))
+    print("scard: " + str(r.scard("tags")))
+    print("sismember-go: " + str(r.sismember("tags", "go")))
+    print("sismember-php: " + str(r.sismember("tags", "php")))
+    print("smembers-count: " + str(len(r.smembers("tags"))))
+    print("srem: " + str(r.srem("tags", ["go"])))
+
+    # ── Sorted sets ──────────────────────────────────────────
+    print("zadd-alice: " + str(r.zadd("scores", 100.0, "alice")))
+    r.zadd("scores", 90.0, "bob")
+    newScore: float = r.zincrBy("scores", 5.0, "alice")
+    print("zincrBy-alice: " + str(int(newScore)))
+    print("zscore-bob: " + str(int(r.zscore("scores", "bob"))))
+    top: list[dict[str, any]] = r.zrangeWithScores("scores", -1, -1)
+    member: str = ""
+    go! {
+        if len(top) > 0 {
+            if m, ok := top[0]["member"].(string); ok {
+                member = m
+            }
+        }
+    }
+    print("zrange-top: " + member)
+    print("zrem: " + str(r.zrem("scores", ["bob"])))
+    print("zcard: " + str(r.zcard("scores")))
+
+    # ── SCAN ─────────────────────────────────────────────────
+    r.set("scan:k1", "1")
+    r.set("scan:k2", "2")
+    cursorRes: dict[str, any] = r.scan(0, "scan:*", 100)
+    found: int = 0
+    go! {
+        if ks, ok := cursorRes["keys"].([]string); ok {
+            found = len(ks)
+        }
+    }
+    if found >= 1 {
+        print("scan-found: 1")
+    } else {
+        print("scan-found: 0")
+    }
+
+    # ── Pub/Sub ──────────────────────────────────────────────
+    # ``subscribe`` waits for the SUBSCRIBE confirmation before
+    # returning, so a publish on the same client is guaranteed to
+    # arrive at this PubSub instance. We use a separate publisher
+    # client to drive the test more realistically and to avoid any
+    # ambiguity about connection reuse.
+    ps: PubSub = r.subscribe(["events"])
+    ps.setTimeout(3000)
+    publisher: Redis = Redis.connect("localhost:6379", password="redispass123")
+    publisher.publish("events", "hello-subscribers")
+    publisher.close()
+    msg: str = ps.next()
+    if len(msg) > 0 {
+        print("pubsub-message: " + msg)
+    } else {
+        print("pubsub-message: <timeout>")
+    }
+    ps.close()
+
+    # ── Pipeline ─────────────────────────────────────────────
+    r.set("pipekey", "pipeval")
+    r.set("counter2", "10")
+    cmd1: dict[str, any] = {}
+    cmd1["cmd"] = "GET"
+    cmd1args: list[any] = []
+    cmd1args.append("pipekey")
+    cmd1["args"] = cmd1args
+    cmd2: dict[str, any] = {}
+    cmd2["cmd"] = "INCR"
+    cmd2args: list[any] = []
+    cmd2args.append("counter2")
+    cmd2["args"] = cmd2args
+    pipe: list[dict[str, any]] = []
+    pipe.append(cmd1)
+    pipe.append(cmd2)
+    results: list[any] = r.pipeline(pipe)
+    pipeGet: str = ""
+    pipeIncr: str = ""
+    go! {
+        if len(results) > 0 {
+            pipeGet = fmt.Sprintf("%v", results[0])
+        }
+        if len(results) > 1 {
+            pipeIncr = fmt.Sprintf("%v", results[1])
+        }
+    }
+    print("pipeline-get: " + pipeGet)
+    print("pipeline-incr: " + pipeIncr)
+
+    # ── TYPE ─────────────────────────────────────────────────
+    print("type-string: " + r.type_("pipekey"))
+    print("type-missing: " + r.type_("never-existed"))
+
+    # ── Cleanup ──────────────────────────────────────────────
+    r.flushDb()
+    r.close()
+}
+
+go! { import "fmt" }

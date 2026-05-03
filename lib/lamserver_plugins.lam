@@ -1,0 +1,1502 @@
+# Lammergeier standard library: ready-made plugins for ``lamserver``.
+# Import with::
+#
+#     from lamserver import Server, Request, Response
+#     from lamserver_plugins import requestLog, rateLimit, compress
+#
+# The plugins follow the simplest plugin convention this language can
+# offer cleanly: each is a top-level ``func(srv: Server, …config)``
+# that mutates ``srv`` to add hooks. There is no factory layer and no
+# closure wrapping, so plugins always type-check correctly through
+# Lam's static-typed bridge to Go.
+#
+# Pattern::
+#
+#     srv: Server = Server()
+#     requestLog(srv)                          # plain
+#     rateLimit(srv, max=100, windowMs=60000)  # config via kwargs
+#     compress(srv, minBytes=512)
+#     srv.listen(8080)
+#
+# Authoring your own plugin? See ``docs/server_plugins.md`` for a
+# walkthrough that mirrors how these built-ins are structured.
+
+from lamserver import Server, Request, Response
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "bytes"
+        "compress/gzip"
+        "crypto/rand"
+        "crypto/sha256"
+        "encoding/hex"
+        "fmt"
+        "net"
+        "net/http"
+        "os"
+        "strings"
+        "sync"
+        "sync/atomic"
+        "time"
+    )
+
+    // ─── requestLog state ───────────────────────────────────────
+    // We piggy-back on ``req.Ctx`` to carry the start time from
+    // ``onRequest`` to ``onResponse`` rather than maintaining a
+    // separate map keyed on the Request pointer; this keeps the
+    // logger goroutine-safe without any sync overhead.
+    const lamReqLogKey = "__lamReqLogStart"
+
+    // ─── rateLimit state ────────────────────────────────────────
+    // One ``rateLimitState`` per ``rateLimit`` plugin registration,
+    // captured by the generated hook closures.
+    type rateLimitState struct {
+        mu      sync.Mutex
+        max     int
+        window  time.Duration
+        visits  map[string][]time.Time
+        message string
+    }
+
+    func newRateLimitState(max int, windowMs int, message string) *rateLimitState {
+        return &rateLimitState{
+            max:     max,
+            window:  time.Duration(windowMs) * time.Millisecond,
+            visits:  map[string][]time.Time{},
+            message: message,
+        }
+    }
+
+    // ``check`` returns true if the caller is within the budget,
+    // false if they've exceeded it. Side-effect: prunes stale
+    // timestamps and appends ``now`` for the caller.
+    func (st *rateLimitState) check(key string, now time.Time) (bool, int) {
+        st.mu.Lock()
+        defer st.mu.Unlock()
+        cutoff := now.Add(-st.window)
+        list := st.visits[key]
+        // Drop everything older than the window.
+        kept := list[:0]
+        for _, t := range list {
+            if t.After(cutoff) {
+                kept = append(kept, t)
+            }
+        }
+        if len(kept) >= st.max {
+            // Even rejected requests get recorded so a relentless
+            // client can't reset the window by overshooting.
+            st.visits[key] = kept
+            return false, st.max
+        }
+        kept = append(kept, now)
+        st.visits[key] = kept
+        return true, st.max - len(kept)
+    }
+
+    // Strip the port off ``addr`` so 127.0.0.1:54321 collapses to
+    // 127.0.0.1. Falls back to the unmodified string for IPv6 hosts
+    // without a port.
+    func lamRateLimitKey(req *Request) string {
+        // Prefer the X-Forwarded-For chain when present so reverse
+        // proxies don't bottleneck every client to the proxy IP.
+        for k, v := range req.Headers {
+            if strings.EqualFold(k, "X-Forwarded-For") && v != "" {
+                if i := strings.Index(v, ","); i > 0 {
+                    return strings.TrimSpace(v[:i])
+                }
+                return strings.TrimSpace(v)
+            }
+        }
+        host, _, err := net.SplitHostPort(req.RemoteAddr)
+        if err != nil {
+            return req.RemoteAddr
+        }
+        return host
+    }
+}
+
+func requestLog(srv: Server, label: str = "[req]") {
+    #- Plugin: structured per-request log line. Records the
+       request method/path on ``onRequest`` and emits
+
+           [req] METHOD /path -> STATUS (Nms)
+
+       on ``onResponse``. Honours ``srv.debug`` for whether to
+       include the remote address. Uses ``stderr`` so logs don't
+       interleave with the program's normal output.
+
+       Customisation:
+         * ``label`` prefix (default ``"[req]"``)
+
+       For a JSON-formatted logger, copy this plugin and swap the
+       ``fmt.Fprintf`` for an ``encoding/json`` payload. -#
+    go! {
+        local := srv
+
+        onReq := func(req *Request, res *Response) {
+            req.Ctx[lamReqLogKey] = time.Now()
+        }
+
+        onResp := func(req *Request, res *Response) {
+            startVal, ok := req.Ctx[lamReqLogKey]
+            if !ok { return }
+            start, ok := startVal.(time.Time)
+            if !ok { return }
+            elapsed := time.Since(start)
+            ms := float64(elapsed.Microseconds()) / 1000.0
+            if local.Debug {
+                fmt.Fprintf(os.Stderr,
+                    "%s %s %s -> %d (%.2fms) from=%s\n",
+                    label, req.Method, req.Path, res.Status, ms, req.RemoteAddr,
+                )
+            } else {
+                fmt.Fprintf(os.Stderr,
+                    "%s %s %s -> %d (%.2fms)\n",
+                    label, req.Method, req.Path, res.Status, ms,
+                )
+            }
+        }
+
+        local.OnRequestHooks = append(local.OnRequestHooks, onReq)
+        local.OnResponseHooks = append(local.OnResponseHooks, onResp)
+    }
+}
+
+func rateLimit(srv: Server, max: int = 100, windowMs: int = 60000, message: str = "rate limit exceeded") {
+    #- Plugin: in-memory sliding-window rate limit. Each unique
+       client IP gets ``max`` requests per ``windowMs`` milliseconds.
+       Excess requests are short-circuited with ``429 Too Many
+       Requests`` and an ``X-RateLimit-Remaining: 0`` header.
+
+       Defaults: 100 req per 60_000 ms.
+
+       Trade-offs:
+         * Memory: O(unique IPs in active window). Tune
+           ``windowMs`` and run behind a proxy if you need bounded
+           memory under attack.
+         * Persistence: in-process only. For multi-instance
+           deployments use a Redis-backed limiter (see the
+           plugin guide for a starting point).
+         * Bypass: trusts ``X-Forwarded-For`` if present. If your
+           proxy chain is untrusted, strip that header in an
+           earlier ``onRequest`` hook. -#
+    go! {
+        st := newRateLimitState(max, windowMs, message)
+
+        guard := func(req *Request, res *Response) {
+            key := lamRateLimitKey(req)
+            ok, remaining := st.check(key, time.Now())
+            if !ok {
+                res.Status = 429
+                res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+                res.Headers["X-RateLimit-Limit"] = fmt.Sprintf("%d", st.max)
+                res.Headers["X-RateLimit-Remaining"] = "0"
+                res.Headers["Retry-After"] = fmt.Sprintf(
+                    "%d", int(st.window.Seconds()),
+                )
+                res.Body = st.message
+                res.Sent = true
+                return
+            }
+            res.Headers["X-RateLimit-Limit"] = fmt.Sprintf("%d", st.max)
+            res.Headers["X-RateLimit-Remaining"] = fmt.Sprintf("%d", remaining)
+        }
+
+        srv.OnRequestHooks = append(srv.OnRequestHooks, guard)
+    }
+}
+
+func compress(srv: Server, minBytes: int = 1024) {
+    #- Plugin: gzip-compress responses when the client advertises
+       ``Accept-Encoding: gzip``. Handles three shapes:
+
+         * **Buffered bodies** (``res.text`` / ``res.json`` / …).
+           Compressed in place if the body is at least ``minBytes``.
+
+         * **Streaming bodies** (``res.streamFile`` / handlers that
+           set ``res.StreamHandler``). The plugin wraps the
+           ``http.ResponseWriter`` with a gzip encoder; the handler
+           writes plain bytes and they're compressed on the fly.
+           ``minBytes`` does *not* apply here — the plugin can't
+           know the size before the handler runs — but the Vary /
+           Content-Encoding headers are only added once a gzip
+           wrap is actually performed.
+
+         * **SSE streams** (``res.sseHandler``). Skipped: gzip
+           framing interacts badly with SSE's event-boundary flushes
+           and intermediaries often reject it.
+
+       Sets ``Content-Encoding: gzip`` + ``Vary: Accept-Encoding``
+       and deletes any pre-set ``Content-Length`` so the runtime
+       re-derives it from the compressed payload. -#
+    go! {
+        threshold := minBytes
+
+        wantsGzip := func(req *Request) bool {
+            for k, v := range req.Headers {
+                if strings.EqualFold(k, "Accept-Encoding") {
+                    return strings.Contains(strings.ToLower(v), "gzip")
+                }
+            }
+            return false
+        }
+
+        onResp := func(req *Request, res *Response) {
+            // Hijacked connections own their own writer; keep hands off.
+            if res.Hijacked { return }
+            // SSE must not be gzipped — flush boundaries matter and
+            // some proxies drop the event-stream mime type after
+            // compression. Pass-through.
+            if res.SseHandler != nil { return }
+            if !wantsGzip(req) { return }
+            if existing, ok := res.Headers["Content-Encoding"]; ok && existing != "" {
+                // Don't double-encode. Whoever set it owns the body.
+                return
+            }
+
+            // ── Streaming path: wrap the writer.
+            if res.StreamHandler != nil {
+                if orig, ok := res.StreamHandler.(func(http.ResponseWriter)); ok {
+                    res.Headers["Content-Encoding"] = "gzip"
+                    res.Headers["Vary"] = "Accept-Encoding"
+                    delete(res.Headers, "Content-Length")
+                    res.StreamHandler = func(w http.ResponseWriter) {
+                        gz := gzip.NewWriter(w)
+                        defer gz.Close()
+                        gw := &lamGzipRW{ResponseWriter: w, gz: gz}
+                        orig(gw)
+                    }
+                }
+                return
+            }
+
+            // ── Buffered path: compress res.Body if big enough.
+            if len(res.Body) < threshold { return }
+            var buf bytes.Buffer
+            w := gzip.NewWriter(&buf)
+            if _, err := w.Write([]byte(res.Body)); err != nil { return }
+            if err := w.Close(); err != nil { return }
+            res.Body = buf.String()
+            res.Headers["Content-Encoding"] = "gzip"
+            res.Headers["Vary"] = "Accept-Encoding"
+            delete(res.Headers, "Content-Length")
+        }
+
+        srv.OnResponseHooks = append(srv.OnResponseHooks, onResp)
+    }
+}
+
+func helmet(srv: Server) {
+    #- Plugin: Helmet-style security-header defaults. Sets a sane
+       baseline that protects against the most common browser-side
+       attacks. Headers added (only if the handler hasn't already
+       set them):
+
+         * ``X-Content-Type-Options: nosniff`` — disables MIME-sniffing.
+         * ``X-Frame-Options: DENY`` — defeats clickjacking via iframes.
+         * ``X-XSS-Protection: 0`` — disables broken legacy XSS auditor.
+         * ``Referrer-Policy: no-referrer`` — strips ``Referer`` on
+           outbound requests.
+         * ``Strict-Transport-Security: max-age=31536000; includeSubDomains``
+           — only over HTTPS connections.
+         * ``Content-Security-Policy: default-src 'self'`` — opt-in
+           strict CSP. Override on a per-route basis if your app needs
+           inline scripts / external CDNs.
+
+       Designed to be additive: a handler that sets a stricter
+       ``Content-Security-Policy`` keeps its value. -#
+    go! {
+        local := srv
+
+        defaults := map[string]string{
+            "X-Content-Type-Options":    "nosniff",
+            "X-Frame-Options":           "DENY",
+            "X-XSS-Protection":          "0",
+            "Referrer-Policy":           "no-referrer",
+            "Content-Security-Policy":   "default-src 'self'",
+        }
+
+        onResp := func(req *Request, res *Response) {
+            for k, v := range defaults {
+                if _, exists := res.Headers[k]; !exists {
+                    res.Headers[k] = v
+                }
+            }
+            // HSTS only makes sense over HTTPS.
+            if scheme, ok := req.Ctx["__lamReqScheme"].(string); ok && scheme == "https" {
+                if _, exists := res.Headers["Strict-Transport-Security"]; !exists {
+                    res.Headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+                }
+            }
+        }
+
+        local.OnResponseHooks = append(local.OnResponseHooks, onResp)
+    }
+}
+
+func etag(srv: Server) {
+    #- Plugin: weak ETag generation + ``If-None-Match`` short-circuit.
+       For every non-streaming GET response, computes a SHA-256 of the
+       body, sets ``ETag: W/"<short-hex>"``, and — if the request
+       carried a matching ``If-None-Match`` — replaces the body with
+       a ``304 Not Modified`` response (saving bandwidth).
+
+       Skips: streaming responses, SSE, hijacked connections (their
+       bytes aren't materialised in ``res.Body``), and any response
+       the handler already tagged. -#
+    go! {
+        onResp := func(req *Request, res *Response) {
+            if res.StreamHandler != nil || res.SseHandler != nil || res.Hijacked {
+                return
+            }
+            if !strings.EqualFold(req.Method, "GET") && !strings.EqualFold(req.Method, "HEAD") {
+                return
+            }
+            if res.Status != 0 && res.Status != 200 {
+                return
+            }
+            if _, exists := res.Headers["ETag"]; exists {
+                // Honour what the handler already set, but still
+                // attempt a cache match against it.
+            } else {
+                sum := sha256.Sum256([]byte(res.Body))
+                tag := "W/\"" + hex.EncodeToString(sum[:8]) + "\""
+                res.Headers["ETag"] = tag
+            }
+            // Compare against If-None-Match (any of the comma-separated
+            // values; trim quoting/weak-prefix on each side for parity).
+            inm := ""
+            for k, v := range req.Headers {
+                if strings.EqualFold(k, "If-None-Match") { inm = v; break }
+            }
+            if inm == "" { return }
+            tag := res.Headers["ETag"]
+            for _, cand := range strings.Split(inm, ",") {
+                if strings.TrimSpace(cand) == tag {
+                    res.Status = 304
+                    res.Body = ""
+                    delete(res.Headers, "Content-Type")
+                    delete(res.Headers, "Content-Length")
+                    return
+                }
+            }
+        }
+        srv.OnResponseHooks = append(srv.OnResponseHooks, onResp)
+    }
+}
+
+func healthcheck(srv: Server, livePath: str = "/healthz", readyPath: str = "/readyz") {
+    #- Plugin: registers ``GET livePath`` (always 200 + ``ok``) and
+       ``GET readyPath`` (200 + ``ready`` once you flip the ready
+       gate). Useful for Kubernetes-style liveness / readiness probes.
+
+       Ready gate::
+
+           healthcheck(srv)
+           # …warm caches, run migrations…
+           markReady(srv)  # see below
+
+       Cluster operators usually point ``livenessProbe`` at ``/healthz``
+       and ``readinessProbe`` at ``/readyz`` — flipping the ready gate
+       at startup forces the load balancer to wait until the process
+       is actually serving traffic. -#
+    go! {
+        // Default to "ready" when no warm-up is needed; users that
+        // want a strict gate call markReady(srv) explicitly.
+        var ready int32 = 1
+        srv.Ctx = ensureCtx(srv.Ctx)
+        srv.Ctx["__lamReadyGate"] = &ready
+
+        liveHandler := func(req *Request, res *Response) {
+            res.Status = 200
+            res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+            res.Headers["Cache-Control"] = "no-store"
+            res.Body = "ok"
+            res.Sent = true
+        }
+        readyHandler := func(req *Request, res *Response) {
+            gate := atomic.LoadInt32(&ready)
+            res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+            res.Headers["Cache-Control"] = "no-store"
+            if gate == 1 {
+                res.Status = 200
+                res.Body = "ready"
+            } else {
+                res.Status = 503
+                res.Body = "not ready"
+            }
+            res.Sent = true
+        }
+
+        srv.Routes = append(srv.Routes,
+            lamCompileRoute("GET", livePath, liveHandler),
+            lamCompileRoute("GET", readyPath, readyHandler),
+        )
+    }
+}
+
+func markReady(srv: Server) {
+    #- Flip a ``healthcheck``-installed readiness gate to "ready".
+       Idempotent. -#
+    go! {
+        if gate, ok := srv.Ctx["__lamReadyGate"].(*int32); ok {
+            atomic.StoreInt32(gate, 1)
+        }
+    }
+}
+
+func markNotReady(srv: Server) {
+    #- Flip the readiness gate back to "not ready" — useful during
+       graceful-shutdown to drain traffic before exiting. -#
+    go! {
+        if gate, ok := srv.Ctx["__lamReadyGate"].(*int32); ok {
+            atomic.StoreInt32(gate, 0)
+        }
+    }
+}
+
+func metrics(srv: Server, path: str = "/metrics") {
+    #- Plugin: exposes Prometheus-style text-format metrics at ``path``
+       and tracks per-method-and-status counters + a request-duration
+       histogram in process memory. The exposition format is the
+       OpenMetrics-compatible ``text/plain; version=0.0.4`` body
+       Prometheus scrapes.
+
+       Metrics:
+         * ``http_requests_total{method=...,status=...}`` (counter)
+         * ``http_request_duration_seconds_bucket{le=...}`` (histogram)
+         * ``http_request_duration_seconds_sum`` / ``_count``
+         * ``process_uptime_seconds`` (gauge)
+
+       The plugin's own ``path`` is excluded from the counters so
+       scraping doesn't inflate them.
+
+       Intentionally not pluggable: it's the simplest possible
+       in-process exporter, fits in ~80 lines, and is just for
+       observability bootstrapping. For richer metrics, drop into a
+       ``go!`` block with the official ``client_golang`` library. -#
+    go! {
+        type metricsState struct {
+            mu       sync.Mutex
+            counters map[string]int64
+            buckets  []float64
+            histogram []int64 // counts in each bucket; len = len(buckets)+1 (the +Inf bucket)
+            durSum   float64
+            durCount int64
+            startedAt time.Time
+        }
+        st := &metricsState{
+            counters: map[string]int64{},
+            buckets:  []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+            startedAt: time.Now(),
+        }
+        st.histogram = make([]int64, len(st.buckets)+1)
+
+        observe := func(method string, status int, durSec float64) {
+            st.mu.Lock()
+            defer st.mu.Unlock()
+            key := fmt.Sprintf("%s|%d", strings.ToUpper(method), status)
+            st.counters[key]++
+            placed := false
+            for i, le := range st.buckets {
+                if durSec <= le {
+                    st.histogram[i]++
+                    placed = true
+                }
+            }
+            if !placed {
+                st.histogram[len(st.buckets)]++
+            }
+            st.durSum += durSec
+            st.durCount++
+        }
+
+        const startKey = "__lamMetricsStart"
+
+        onReq := func(req *Request, res *Response) {
+            if req.Path == path { return }
+            req.Ctx[startKey] = time.Now()
+        }
+        onResp := func(req *Request, res *Response) {
+            if req.Path == path { return }
+            startVal, ok := req.Ctx[startKey]
+            if !ok { return }
+            start, ok := startVal.(time.Time)
+            if !ok { return }
+            observe(req.Method, res.Status, time.Since(start).Seconds())
+        }
+
+        // Render metrics in OpenMetrics text format.
+        render := func() string {
+            st.mu.Lock()
+            defer st.mu.Unlock()
+            var b strings.Builder
+            b.WriteString("# HELP http_requests_total Total HTTP requests, partitioned by method and status\n")
+            b.WriteString("# TYPE http_requests_total counter\n")
+            for k, v := range st.counters {
+                parts := strings.SplitN(k, "|", 2)
+                fmt.Fprintf(&b, "http_requests_total{method=%q,status=%q} %d\n", parts[0], parts[1], v)
+            }
+            b.WriteString("# HELP http_request_duration_seconds Request latency histogram\n")
+            b.WriteString("# TYPE http_request_duration_seconds histogram\n")
+            cumulative := int64(0)
+            for i, le := range st.buckets {
+                cumulative += st.histogram[i]
+                fmt.Fprintf(&b, "http_request_duration_seconds_bucket{le=\"%g\"} %d\n", le, cumulative)
+            }
+            cumulative += st.histogram[len(st.buckets)]
+            fmt.Fprintf(&b, "http_request_duration_seconds_bucket{le=\"+Inf\"} %d\n", cumulative)
+            fmt.Fprintf(&b, "http_request_duration_seconds_sum %g\n", st.durSum)
+            fmt.Fprintf(&b, "http_request_duration_seconds_count %d\n", st.durCount)
+            b.WriteString("# HELP process_uptime_seconds Seconds since the server started\n")
+            b.WriteString("# TYPE process_uptime_seconds gauge\n")
+            fmt.Fprintf(&b, "process_uptime_seconds %g\n", time.Since(st.startedAt).Seconds())
+            return b.String()
+        }
+
+        scrapeHandler := func(req *Request, res *Response) {
+            res.Status = 200
+            res.Headers["Content-Type"] = "text/plain; version=0.0.4; charset=utf-8"
+            res.Body = render()
+            res.Sent = true
+        }
+
+        srv.OnRequestHooks = append(srv.OnRequestHooks, onReq)
+        srv.OnResponseHooks = append(srv.OnResponseHooks, onResp)
+        srv.Routes = append(srv.Routes, lamCompileRoute("GET", path, scrapeHandler))
+    }
+}
+
+class CircuitBreaker {
+    #- Hystrix-style circuit breaker. Wrap downstream calls (HTTP,
+       database, anything that can fail) so a string of failures
+       trips the breaker and fails fast for ``cooldownMs`` instead
+       of hammering the failing dependency.
+
+       States:
+         * CLOSED — calls pass through; failures increment a counter.
+         * OPEN   — every call fails immediately with ``circuit open``
+                    until ``cooldownMs`` elapses.
+         * HALF_OPEN — a single probe call is allowed; success closes
+                    the circuit, failure re-opens it.
+
+       Usage::
+
+           cb: CircuitBreaker = CircuitBreaker(threshold=5, cooldownMs=2000)
+           res: Result = cb.callFn(myDownstreamFn)
+           if res.isErr() {
+               // ``cb.state()`` is "open" once we've tripped.
+           }
+
+       Configurable via constructor:
+         * ``threshold`` — consecutive failures before opening (default 5).
+         * ``cooldownMs`` — milliseconds the breaker stays open (default 1000).
+    -#
+
+    func __init__(self, threshold: int = 5, cooldownMs: int = 1000) {
+        self.threshold: int = threshold
+        self.cooldownMs: int = cooldownMs
+        self.failures: int = 0
+        # Internal state machine. Lowering goes through ``go!`` helpers
+        # so we can use proper sync.Mutex semantics.
+        self._state: any = None
+        go! {
+            s._state = newCircuitState()
+        }
+    }
+
+    func state(self) -> str {
+        #- One of ``"closed"``, ``"open"``, ``"half-open"``. -#
+        go! {
+            cs := s._state.(*circuitState)
+            cs.mu.Lock()
+            defer cs.mu.Unlock()
+            cs.tickLocked(s.CooldownMs)
+            return cs.state
+        }
+    }
+
+    func callFn(self, fn: any) -> any {
+        #- Run ``fn`` (zero-arg, no return) under breaker control.
+           Returns a ``Result`` — ``Ok(None)`` on success,
+           ``Err(...)`` if the circuit was open or ``fn`` panicked.
+
+           The breaker advances state automatically after each call. -#
+        go! {
+            cs := s._state.(*circuitState)
+            // Refresh state — may transition OPEN → HALF_OPEN if the
+            // cooldown window has elapsed.
+            cs.mu.Lock()
+            cs.tickLocked(s.CooldownMs)
+            if cs.state == "open" {
+                cs.mu.Unlock()
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("CircuitOpen", "circuit open", nil))
+            }
+            cs.mu.Unlock()
+
+            // Run ``fn``; convert panics to errors.
+            var failed bool
+            var failMsg string
+            func() {
+                defer func() {
+                    if rec := recover(); rec != nil {
+                        failed = true
+                        failMsg = fmt.Sprintf("%v", rec)
+                    }
+                }()
+                if f, ok := fn.(func()); ok {
+                    f()
+                } else {
+                    failed = true
+                    failMsg = "CircuitBreaker.callFn: fn must be func() -> None"
+                }
+            }()
+
+            cs.mu.Lock()
+            defer cs.mu.Unlock()
+            if failed {
+                cs.failures++
+                if cs.state == "half-open" || cs.failures >= s.Threshold {
+                    cs.state = "open"
+                    cs.openedAt = time.Now()
+                }
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("CircuitFailed", failMsg, nil))
+            }
+            // Success: close the breaker (also reset half-open state).
+            cs.failures = 0
+            cs.state = "closed"
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+}
+
+func serverTiming(srv: Server) {
+    #- Plugin: emit an RFC 8290 ``Server-Timing`` header reporting
+       per-request latency (the ``total`` metric) plus any
+       application-level marks the handler logged via
+       ``req.ctx["__lamSrvTimingMarks"]``.
+
+       Adding a custom mark from a handler::
+
+           start := time.Now()
+           db.query(...)
+           ms := float64(time.Since(start).Microseconds()) / 1000.0
+           req.ctx["__lamSrvTimingMarks"] = append(
+               req.ctx["__lamSrvTimingMarks"].([]string),
+               fmt.Sprintf("db;dur=%.2f", ms),
+           )
+
+       The plugin records the request start in ``onRequest`` and
+       writes the header in ``onSend``. -#
+    go! {
+        const startKey = "__lamSrvTimingStart"
+        const marksKey = "__lamSrvTimingMarks"
+
+        onReq := func(req *Request, res *Response) {
+            req.Ctx[startKey] = time.Now()
+            // Pre-allocate the marks slice so handlers can ``append``
+            // without first asserting the type.
+            if _, ok := req.Ctx[marksKey]; !ok {
+                req.Ctx[marksKey] = []string{}
+            }
+        }
+
+        onSend := func(req *Request, res *Response) {
+            if res.Headers == nil { res.Headers = map[string]string{} }
+            startVal, ok := req.Ctx[startKey]
+            if !ok { return }
+            start, ok := startVal.(time.Time)
+            if !ok { return }
+            ms := float64(time.Since(start).Microseconds()) / 1000.0
+            entries := []string{fmt.Sprintf("total;dur=%.2f", ms)}
+            if marks, ok := req.Ctx[marksKey].([]string); ok {
+                entries = append(entries, marks...)
+            }
+            existing := res.Headers["Server-Timing"]
+            if existing != "" {
+                entries = append([]string{existing}, entries...)
+            }
+            res.Headers["Server-Timing"] = strings.Join(entries, ", ")
+        }
+
+        srv.OnRequestHooks = append(srv.OnRequestHooks, onReq)
+        srv.OnSendHooks = append(srv.OnSendHooks, onSend)
+    }
+}
+
+func tracing(srv: Server, echoHeader: bool = true) {
+    #- Plugin: W3C Trace Context propagation (traceparent +
+       tracestate). Reads inbound trace context if present,
+       generates a fresh one per request otherwise, and exposes it
+       to handlers on ``req.ctx["__lamTraceParent"]`` /
+       ``req.ctx["__lamTraceState"]`` plus the parsed
+       ``__lamTraceId`` / ``__lamSpanId``.
+
+       Handlers reading the current trace use the
+       ``req.traceId()`` / ``req.spanId()`` helpers (set up by this
+       plugin as request decorators) or reach into ``req.ctx``
+       directly.
+
+       If ``echoHeader`` is ``true`` (default) the chosen
+       traceparent is mirrored back as a response header so
+       debugging / curl-style clients can see it. Production
+       deployments may turn this off (``tracing(srv, false)``).
+
+       Spec reference: https://www.w3.org/TR/trace-context/ -#
+    go! {
+        canonicalParent := "traceparent"
+        canonicalState := "tracestate"
+
+        parseParent := func(v string) (traceID, spanID string, ok bool) {
+            // Valid traceparent: "00-<32hex>-<16hex>-<2hex>".
+            parts := strings.Split(v, "-")
+            if len(parts) != 4 { return "", "", false }
+            if len(parts[1]) != 32 || len(parts[2]) != 16 { return "", "", false }
+            return parts[1], parts[2], true
+        }
+
+        genHex := func(n int) string {
+            b := make([]byte, n/2)
+            if _, err := rand.Read(b); err != nil {
+                // Fallback: zero-fill (still valid hex, loses
+                // uniqueness — only hits on catastrophic entropy
+                // failure).
+                return strings.Repeat("0", n)
+            }
+            return hex.EncodeToString(b)
+        }
+
+        onReq := func(req *Request, res *Response) {
+            parent := ""
+            state := ""
+            for k, v := range req.Headers {
+                if strings.EqualFold(k, canonicalParent) && parent == "" {
+                    parent = v
+                }
+                if strings.EqualFold(k, canonicalState) && state == "" {
+                    state = v
+                }
+            }
+            var traceID, spanID string
+            var ok bool
+            if parent != "" {
+                traceID, spanID, ok = parseParent(parent)
+            }
+            if !ok {
+                // No inbound context — mint a new one.
+                traceID = genHex(32)
+                spanID = genHex(16)
+                parent = "00-" + traceID + "-" + spanID + "-01"
+            } else {
+                // Preserve the incoming traceID; generate a fresh
+                // spanID representing the current service's span.
+                spanID = genHex(16)
+                parent = "00-" + traceID + "-" + spanID + "-01"
+            }
+            req.Ctx["__lamTraceParent"] = parent
+            req.Ctx["__lamTraceId"] = traceID
+            req.Ctx["__lamSpanId"] = spanID
+            if state != "" {
+                req.Ctx["__lamTraceState"] = state
+            }
+        }
+
+        onSend := func(req *Request, res *Response) {
+            if !echoHeader { return }
+            if res.Headers == nil { res.Headers = map[string]string{} }
+            if parent, ok := req.Ctx["__lamTraceParent"].(string); ok && parent != "" {
+                if _, has := res.Headers[canonicalParent]; !has {
+                    res.Headers[canonicalParent] = parent
+                }
+            }
+            if state, ok := req.Ctx["__lamTraceState"].(string); ok && state != "" {
+                if _, has := res.Headers[canonicalState]; !has {
+                    res.Headers[canonicalState] = state
+                }
+            }
+        }
+
+        srv.OnRequestHooks = append(srv.OnRequestHooks, onReq)
+        srv.OnSendHooks = append(srv.OnSendHooks, onSend)
+
+        // Decorators for handler ergonomics. Handlers that want a
+        // trace ID can call ``req.dec("traceId")`` or the short
+        // helpers that the dispatcher surfaces.
+        if srv.Decorators == nil { srv.Decorators = map[string]interface{}{} }
+        srv.Decorators["_tracingEnabled"] = true
+    }
+}
+
+func idempotency(srv: Server, header: str = "Idempotency-Key", ttlSec: int = 300) {
+    #- Plugin: cache responses keyed by the ``Idempotency-Key`` header
+       and replay them on duplicate requests. Mirrors Stripe's
+       idempotency contract.
+
+       Scope: only ``POST`` / ``PUT`` / ``PATCH`` are cached (the
+       verbs that mutate). Cached entries expire after ``ttlSec``
+       seconds. The cache is in-memory and per-process — replicate
+       it across nodes with a shared store (Redis/etc.) if you run
+       behind a load balancer.
+
+       Replays send the original status / headers / body verbatim
+       and add ``X-Idempotency-Replay: 1`` so the client can tell
+       it's a cache hit. -#
+    go! {
+        store := newIdemStore(time.Duration(ttlSec) * time.Second)
+        canonical := header
+
+        onReq := func(req *Request, res *Response) {
+            method := strings.ToUpper(req.Method)
+            if method != "POST" && method != "PUT" && method != "PATCH" { return }
+            key := ""
+            for k, v := range req.Headers {
+                if strings.EqualFold(k, canonical) && v != "" {
+                    key = v
+                    break
+                }
+            }
+            if key == "" { return }
+            // Cache hit: replay the saved response and short-circuit.
+            if hit := store.get(key); hit != nil {
+                res.Status = hit.status
+                if res.Headers == nil { res.Headers = map[string]string{} }
+                for k, v := range hit.headers { res.Headers[k] = v }
+                res.Headers["X-Idempotency-Replay"] = "1"
+                res.Body = hit.body
+                res.Sent = true
+                return
+            }
+            // Miss: stash the key so onSend can persist the response.
+            req.Ctx["__lamIdemKey"] = key
+        }
+
+        onSend := func(req *Request, res *Response) {
+            keyVal, ok := req.Ctx["__lamIdemKey"]
+            if !ok { return }
+            key, ok := keyVal.(string)
+            if !ok || key == "" { return }
+            // Don't cache 5xx — those should be retried.
+            if res.Status >= 500 { return }
+            hCopy := map[string]string{}
+            for k, v := range res.Headers { hCopy[k] = v }
+            store.put(key, &idemEntry{
+                status:  res.Status,
+                headers: hCopy,
+                body:    res.Body,
+            })
+        }
+
+        srv.OnRequestHooks = append(srv.OnRequestHooks, onReq)
+        srv.OnSendHooks = append(srv.OnSendHooks, onSend)
+    }
+}
+
+func requestId(srv: Server, header: str = "X-Request-Id") {
+    #- Plugin: assign a request ID to every request and echo it back
+       in the response.
+
+       Behaviour:
+         * On ``onRequest``, look for ``header`` (case-insensitively)
+           in the inbound request. If present, that ID is preserved
+           verbatim (so traces from upstream proxies survive). If
+           missing, a fresh ID is generated via ``lamGenReqId`` —
+           process-monotonic + 4 random hex bytes.
+         * The chosen ID is stashed via ``req.setId(...)`` and
+           echoed back as ``header`` on the outgoing response in an
+           ``onSend`` hook (so any handler-set value still wins if
+           it was set explicitly).
+
+       Pairs naturally with ``requestLog`` — that plugin reads
+       ``req.id()`` if a request-ID is set, so installing both gives
+       you correlated request lines in stderr. -#
+    go! {
+        canonical := header
+        onReq := func(req *Request, res *Response) {
+            existing := ""
+            for k, v := range req.Headers {
+                if strings.EqualFold(k, canonical) && v != "" {
+                    existing = v
+                    break
+                }
+            }
+            if existing == "" {
+                existing = lamGenReqId()
+            }
+            req.Ctx["__lamReqId"] = existing
+        }
+        onSend := func(req *Request, res *Response) {
+            if res.Headers == nil { res.Headers = map[string]string{} }
+            // Don't clobber a value the handler set explicitly.
+            if _, has := res.Headers[canonical]; has { return }
+            if id, ok := req.Ctx["__lamReqId"].(string); ok && id != "" {
+                res.Headers[canonical] = id
+            }
+        }
+        srv.OnRequestHooks = append(srv.OnRequestHooks, onReq)
+        srv.OnSendHooks = append(srv.OnSendHooks, onSend)
+    }
+}
+
+go! {
+    // Helper used by ``healthcheck`` to make sure ``Server.Ctx`` is
+    // a usable map even on freshly-constructed servers (in tests
+    // some callers may have nil'd it out for paranoia).
+    func ensureCtx(m map[string]interface{}) map[string]interface{} {
+        if m == nil { return map[string]interface{}{} }
+        return m
+    }
+
+    // ─── gzip stream adapter ────────────────────────────────────
+    // Wraps an ``http.ResponseWriter`` so that Write() calls funnel
+    // into a ``gzip.Writer``. Header() + WriteHeader() delegate to
+    // the underlying writer so the handler can still set response
+    // headers (though in practice the dispatcher has already
+    // committed them by the time the stream handler runs). Flush()
+    // flushes the gzip encoder first, then the underlying flusher
+    // (if any) so interactive clients see data promptly.
+    type lamGzipRW struct {
+        http.ResponseWriter
+        gz *gzip.Writer
+    }
+
+    func (g *lamGzipRW) Write(p []byte) (int, error) {
+        return g.gz.Write(p)
+    }
+
+    func (g *lamGzipRW) Flush() {
+        _ = g.gz.Flush()
+        if fl, ok := g.ResponseWriter.(http.Flusher); ok { fl.Flush() }
+    }
+
+    // ─── circuit breaker state ───────────────────────────────────
+    type circuitState struct {
+        mu       sync.Mutex
+        state    string    // "closed" | "open" | "half-open"
+        failures int
+        openedAt time.Time
+    }
+
+    func newCircuitState() *circuitState {
+        return &circuitState{state: "closed"}
+    }
+
+    // tickLocked transitions OPEN → HALF_OPEN once the cooldown has
+    // elapsed. Caller must hold ``mu``.
+    func (c *circuitState) tickLocked(cooldownMs int) {
+        if c.state != "open" { return }
+        if time.Since(c.openedAt) >= time.Duration(cooldownMs)*time.Millisecond {
+            c.state = "half-open"
+            c.failures = 0
+        }
+    }
+
+    // ─── idempotency store ───────────────────────────────────────
+    // Tiny TTL-aware response cache used by the ``idempotency``
+    // plugin. Goroutine-safe; entries are evicted lazily on lookup
+    // when ``time.Now()`` exceeds the saved expiry.
+    type idemEntry struct {
+        status  int
+        headers map[string]string
+        body    string
+        expiry  time.Time
+    }
+
+    type idemStore struct {
+        mu  sync.Mutex
+        ttl time.Duration
+        m   map[string]*idemEntry
+    }
+
+    func newIdemStore(ttl time.Duration) *idemStore {
+        return &idemStore{ttl: ttl, m: map[string]*idemEntry{}}
+    }
+
+    func (s *idemStore) get(key string) *idemEntry {
+        s.mu.Lock()
+        defer s.mu.Unlock()
+        e, ok := s.m[key]
+        if !ok { return nil }
+        if time.Now().After(e.expiry) {
+            delete(s.m, key)
+            return nil
+        }
+        return e
+    }
+
+    func (s *idemStore) put(key string, e *idemEntry) {
+        s.mu.Lock()
+        defer s.mu.Unlock()
+        e.expiry = time.Now().Add(s.ttl)
+        s.m[key] = e
+    }
+}
+
+# ─── Auth plugins ─────────────────────────────────────────────────
+
+func basicAuth(srv: Server, users: dict[str, str], realm: str = "Restricted") {
+    #- Plugin: HTTP Basic authentication. ``users`` maps usernames
+       to plain-text passwords; failed or absent credentials get a
+       401 with the ``WWW-Authenticate: Basic realm="..."`` header
+       so a browser will prompt for creds. On a successful match the
+       username is stashed on ``req.ctx["user"]`` for downstream
+       handlers. Use over TLS only — Basic sends creds in
+       (base64-encoded) plaintext. -#
+    go! {
+        // Copy into a local Go map so the closure doesn't share
+        // state with the caller's instance. ``users`` already has a
+        // concrete ``map[string]string`` Go type.
+        creds := map[string]string{}
+        for k, v := range users {
+            creds[k] = v
+        }
+        hook := func(req *Request, res *Response) {
+            auth := ""
+            for k, v := range req.Headers {
+                if strings.EqualFold(k, "Authorization") {
+                    auth = v
+                    break
+                }
+            }
+            const prefix = "Basic "
+            if !strings.HasPrefix(auth, prefix) {
+                lamServerBasicChallenge(res, realm)
+                return
+            }
+            raw, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
+            if err != nil {
+                lamServerBasicChallenge(res, realm)
+                return
+            }
+            idx := strings.IndexByte(string(raw), ':')
+            if idx < 0 {
+                lamServerBasicChallenge(res, realm)
+                return
+            }
+            user, pass := string(raw[:idx]), string(raw[idx+1:])
+            want, ok := creds[user]
+            if !ok || subtle.ConstantTimeCompare([]byte(want), []byte(pass)) != 1 {
+                lamServerBasicChallenge(res, realm)
+                return
+            }
+            req.Ctx["user"] = user
+        }
+        srv.OnRequestHooks = append(srv.OnRequestHooks, hook)
+    }
+}
+
+func bearerAuth(srv: Server, verify: any, header: str = "Authorization") {
+    #- Plugin: Bearer-token authentication. ``verify`` is a
+       ``func(token: str) -> any`` (or plain Go func returning
+       ``(claims, ok)``): return a truthy value for a valid token
+       (stashed on ``req.ctx["user"]``), return ``None`` / ``false``
+       to reject. Rejections produce a 401 with no body.
+
+       Works against JWTs, opaque session IDs, or any string
+       bearer scheme — the plugin only cares about the
+       ``Bearer <token>`` framing. -#
+    go! {
+        hook := func(req *Request, res *Response) {
+            raw := ""
+            for k, v := range req.Headers {
+                if strings.EqualFold(k, header) {
+                    raw = v
+                    break
+                }
+            }
+            const prefix = "Bearer "
+            if !strings.HasPrefix(raw, prefix) {
+                lamServerBearerChallenge(res)
+                return
+            }
+            token := strings.TrimSpace(raw[len(prefix):])
+            if token == "" {
+                lamServerBearerChallenge(res)
+                return
+            }
+            out := lamServerCallVerify(verify, token)
+            if out == nil {
+                lamServerBearerChallenge(res)
+                return
+            }
+            if b, ok := out.(bool); ok && !b {
+                lamServerBearerChallenge(res)
+                return
+            }
+            req.Ctx["user"] = out
+        }
+        srv.OnRequestHooks = append(srv.OnRequestHooks, hook)
+    }
+}
+
+func ipFilter(srv: Server, allow: list[str] = [], deny: list[str] = []) {
+    #- Plugin: allow/deny access by client IP (CIDR or exact). If
+       ``allow`` is non-empty the request must match one of its
+       entries; anything in ``deny`` is rejected afterwards. Both
+       lists accept IPv4/IPv6 literals and CIDR blocks
+       (``10.0.0.0/8``, ``::1/128``, …).
+
+       The filter runs against ``req.realIP()`` so it plays nice
+       with ``Server.trustProxy(...)``. -#
+    go! {
+        allowNets, _ := lamServerParseCIDRs(allow)
+        denyNets, _ := lamServerParseCIDRs(deny)
+        hook := func(req *Request, res *Response) {
+            ip := net.ParseIP(lamPluginClientIP(req))
+            if ip == nil {
+                res.Status = 403
+                res.Body = "ip filter: unknown peer"
+                res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+                res.Sent = true
+                return
+            }
+            if len(allowNets) > 0 && !lamServerIPMatch(ip, allowNets) {
+                res.Status = 403
+                res.Body = "ip filter: not allowed"
+                res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+                res.Sent = true
+                return
+            }
+            if lamServerIPMatch(ip, denyNets) {
+                res.Status = 403
+                res.Body = "ip filter: denied"
+                res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+                res.Sent = true
+                return
+            }
+        }
+        srv.OnRequestHooks = append(srv.OnRequestHooks, hook)
+    }
+}
+
+func cacheControl(srv: Server, directive: str = "no-store", ifMissing: bool = true) {
+    #- Plugin: default ``Cache-Control`` for every response. Set
+       ``ifMissing=False`` to overwrite an existing header on the
+       response; the default leaves explicit handler values alone.
+
+       Common directives:
+         * ``"no-store"``                  — don't cache anywhere.
+         * ``"public, max-age=31536000"``   — static asset (1 year).
+         * ``"private, max-age=0, must-revalidate"`` — revalidate
+           every request but allow a 304. -#
+    go! {
+        hook := func(req *Request, res *Response) {
+            if res.Headers == nil { res.Headers = map[string]string{} }
+            if ifMissing {
+                if _, has := res.Headers["Cache-Control"]; has { return }
+            }
+            res.Headers["Cache-Control"] = directive
+        }
+        srv.OnSendHooks = append(srv.OnSendHooks, hook)
+    }
+}
+
+func session(srv: Server, secret: str, cookieName: str = "sid", maxAge: int = 86400,
+              secure: bool = false, sameSite: str = "Lax") {
+    #- Plugin: in-memory signed-cookie sessions. On every request:
+
+         * If the ``cookieName`` cookie is present and its signature
+           verifies, its session map is loaded onto
+           ``req.ctx["session"]``.
+         * If it's absent or tampered, a fresh empty session is
+           created (no cookie is sent yet).
+
+       After the handler runs, if ``req.ctx["session"]`` is a dict
+       with contents, it is serialised (JSON), signed, and set as a
+       ``HttpOnly`` ``Secure``-optional cookie.
+
+       The store is process-local and does not persist across
+       restarts; use a real session store for production
+       deployments — this plugin is for demos and single-process
+       apps. -#
+    go! {
+        store := newLamSessionStore()
+        onReq := func(req *Request, res *Response) {
+            raw := lamPluginCookie(req, cookieName)
+            if raw == "" {
+                req.Ctx["session"] = map[string]interface{}{}
+                req.Ctx["__lamSessionSid"] = ""
+                return
+            }
+            sid, ok := lamCookieVerify(raw, secret)
+            if !ok {
+                req.Ctx["session"] = map[string]interface{}{}
+                req.Ctx["__lamSessionSid"] = ""
+                return
+            }
+            req.Ctx["__lamSessionSid"] = sid
+            req.Ctx["session"] = store.load(sid)
+        }
+        onSend := func(req *Request, res *Response) {
+            data, _ := req.Ctx["session"].(map[string]interface{})
+            sid, _ := req.Ctx["__lamSessionSid"].(string)
+            if len(data) == 0 {
+                if sid != "" { store.forget(sid) }
+                return
+            }
+            if sid == "" {
+                sid = lamGenReqId() + lamGenReqId()
+            }
+            store.save(sid, data)
+            signed := sid + "." + lamCookieSign(sid, secret)
+            cookie := lamServerBuildCookie(
+                cookieName, signed, "/", maxAge, "", secure, true, sameSite)
+            res.Headers["Set-Cookie"] = lamServerAppendCookie(
+                res.Headers["Set-Cookie"], cookie)
+        }
+        srv.OnRequestHooks = append(srv.OnRequestHooks, onReq)
+        srv.OnSendHooks = append(srv.OnSendHooks, onSend)
+    }
+}
+
+func csrf(srv: Server, secret: str, cookieName: str = "csrf",
+          headerName: str = "X-CSRF-Token", safeMethods: list[str] = ["GET", "HEAD", "OPTIONS"]) {
+    #- Plugin: double-submit-cookie CSRF protection. Each response
+       gets a fresh ``cookieName`` cookie carrying an
+       HMAC-signed token; unsafe methods (``POST`` / ``PUT`` /
+       ``PATCH`` / ``DELETE``) must echo the same token back in
+       ``headerName``. A mismatch is rejected with 403.
+
+       Pair with the ``session`` plugin for multi-step forms:
+       browsers carry the cookie for you, your client-side code
+       reads it and sends it back as the header. -#
+    go! {
+        safe := map[string]bool{}
+        for _, m := range safeMethods {
+            safe[strings.ToUpper(m)] = true
+        }
+        onReq := func(req *Request, res *Response) {
+            if safe[strings.ToUpper(req.Method)] { return }
+            got := ""
+            for k, v := range req.Headers {
+                if strings.EqualFold(k, headerName) {
+                    got = v
+                    break
+                }
+            }
+            have := lamPluginCookie(req, cookieName)
+            if got == "" || have == "" {
+                res.Status = 403
+                res.Body = "csrf: token missing"
+                res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+                res.Sent = true
+                return
+            }
+            if _, ok := lamCookieVerify(have, secret); !ok {
+                res.Status = 403
+                res.Body = "csrf: cookie invalid"
+                res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+                res.Sent = true
+                return
+            }
+            if subtle.ConstantTimeCompare([]byte(got), []byte(have)) != 1 {
+                res.Status = 403
+                res.Body = "csrf: token mismatch"
+                res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+                res.Sent = true
+                return
+            }
+        }
+        onSend := func(req *Request, res *Response) {
+            if res.Headers == nil { res.Headers = map[string]string{} }
+            // Reuse an already-issued token if the browser sent one;
+            // otherwise mint a fresh one. Always refresh the cookie
+            // so the token rotates on each successful response.
+            tok := lamPluginCookie(req, cookieName)
+            if _, ok := lamCookieVerify(tok, secret); !ok || tok == "" {
+                raw := lamGenReqId() + lamGenReqId()
+                tok = raw + "." + lamCookieSign(raw, secret)
+            }
+            cookie := lamServerBuildCookie(
+                cookieName, tok, "/", 3600, "", false, false, "Lax")
+            res.Headers["Set-Cookie"] = lamServerAppendCookie(
+                res.Headers["Set-Cookie"], cookie)
+            // Convenience: also surface it on a response header
+            // so single-page apps can pull it without parsing
+            // cookies themselves.
+            res.Headers[headerName] = tok
+        }
+        srv.OnRequestHooks = append(srv.OnRequestHooks, onReq)
+        srv.OnSendHooks = append(srv.OnSendHooks, onSend)
+    }
+}
+
+go! {
+    import (
+        "crypto/subtle"
+        "encoding/base64"
+        "reflect"
+    )
+
+    // ─── plugin-local request helpers ──────────────────────────
+    //
+    // These duplicate a sliver of what ``Request.cookie`` /
+    // ``Request.realIP`` expose as methods — plugins live in a
+    // separate compilation unit, and the method symbols aren't
+    // accessible as free Go functions once the Lam transpiler has
+    // emitted them. Re-implementing the lookup here keeps the
+    // plugins import-free and avoids a coupling surface that
+    // would break on future refactors of the Request class.
+    func lamPluginCookie(req *Request, name string) string {
+        raw := ""
+        for k, v := range req.Headers {
+            if strings.EqualFold(k, "Cookie") {
+                raw = v
+                break
+            }
+        }
+        if raw == "" { return "" }
+        for _, part := range strings.Split(raw, ";") {
+            kv := strings.TrimSpace(part)
+            eq := strings.IndexByte(kv, '=')
+            if eq < 0 { continue }
+            if kv[:eq] == name {
+                return kv[eq+1:]
+            }
+        }
+        return ""
+    }
+
+    func lamPluginClientIP(req *Request) string {
+        // Trust-proxy-aware if the dispatcher stashed the headers
+        // on req.Ctx; otherwise fall back to the raw peer address.
+        if names, ok := req.Ctx["__lamTrustHeaders"].([]string); ok {
+            hops := 1
+            if h, ok := req.Ctx["__lamTrustHops"].(int); ok && h > 0 {
+                hops = h
+            }
+            for _, n := range names {
+                for hk, hv := range req.Headers {
+                    if !strings.EqualFold(hk, n) { continue }
+                    parts := strings.Split(hv, ",")
+                    // RFC-ish: the trusted proxy appends on the
+                    // right, so the ``hops``-th from the end is
+                    // our target client.
+                    idx := len(parts) - hops
+                    if idx < 0 { idx = 0 }
+                    ip := strings.TrimSpace(parts[idx])
+                    if ip != "" { return ip }
+                }
+            }
+        }
+        host := req.RemoteAddr
+        if colon := strings.LastIndex(host, ":"); colon > 0 && strings.Count(host, ":") == 1 {
+            host = host[:colon]
+        } else if strings.HasPrefix(host, "[") {
+            if end := strings.Index(host, "]"); end > 0 {
+                host = host[1:end]
+            }
+        }
+        return host
+    }
+
+    // ─── basicAuth helpers ─────────────────────────────────────
+    func lamServerBasicChallenge(res *Response, realm string) {
+        if res.Headers == nil { res.Headers = map[string]string{} }
+        res.Headers["WWW-Authenticate"] = "Basic realm=\"" + realm + "\""
+        res.Status = 401
+        res.Body = "401 unauthorized"
+        res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+        res.Sent = true
+    }
+
+    func lamServerBearerChallenge(res *Response) {
+        if res.Headers == nil { res.Headers = map[string]string{} }
+        res.Headers["WWW-Authenticate"] = "Bearer"
+        res.Status = 401
+        res.Body = "401 unauthorized"
+        res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+        res.Sent = true
+    }
+
+    // Accept either a Lam closure stored as an ``interface{}`` (shape
+    // ``func(string) interface{}``) or a plain Go
+    // ``func(string) (interface{}, bool)``. ``reflect.Call`` makes
+    // this work for both shapes without the caller having to know
+    // which one they passed in.
+    func lamServerCallVerify(fn interface{}, token string) interface{} {
+        if fn == nil { return nil }
+        rv := reflect.ValueOf(fn)
+        if rv.Kind() != reflect.Func { return nil }
+        in := []reflect.Value{reflect.ValueOf(token)}
+        out := rv.Call(in)
+        if len(out) == 0 { return nil }
+        first := out[0].Interface()
+        if len(out) > 1 {
+            if ok, _ := out[1].Interface().(bool); !ok { return nil }
+        }
+        return first
+    }
+
+    // ─── ipFilter helpers ──────────────────────────────────────
+    func lamServerParseCIDRs(list interface{}) ([]*net.IPNet, error) {
+        out := []*net.IPNet{}
+        rv := reflect.ValueOf(list)
+        if !rv.IsValid() { return out, nil }
+        switch rv.Kind() {
+        case reflect.Slice, reflect.Array:
+            for i := 0; i < rv.Len(); i++ {
+                s, ok := rv.Index(i).Interface().(string)
+                if !ok { continue }
+                s = strings.TrimSpace(s)
+                if s == "" { continue }
+                if !strings.Contains(s, "/") {
+                    if strings.Contains(s, ":") {
+                        s += "/128"
+                    } else {
+                        s += "/32"
+                    }
+                }
+                _, ipnet, err := net.ParseCIDR(s)
+                if err == nil {
+                    out = append(out, ipnet)
+                }
+            }
+        }
+        return out, nil
+    }
+
+    func lamServerIPMatch(ip net.IP, nets []*net.IPNet) bool {
+        for _, n := range nets {
+            if n.Contains(ip) { return true }
+        }
+        return false
+    }
+
+    // ─── session store ─────────────────────────────────────────
+    type lamSessionStore struct {
+        mu sync.Mutex
+        m  map[string]map[string]interface{}
+    }
+
+    func newLamSessionStore() *lamSessionStore {
+        return &lamSessionStore{m: map[string]map[string]interface{}{}}
+    }
+
+    func (s *lamSessionStore) load(sid string) map[string]interface{} {
+        s.mu.Lock()
+        defer s.mu.Unlock()
+        if v, ok := s.m[sid]; ok {
+            // Return a shallow copy so handlers can mutate without
+            // racing against concurrent requests using the same sid.
+            out := make(map[string]interface{}, len(v))
+            for k, vv := range v { out[k] = vv }
+            return out
+        }
+        return map[string]interface{}{}
+    }
+
+    func (s *lamSessionStore) save(sid string, data map[string]interface{}) {
+        s.mu.Lock()
+        defer s.mu.Unlock()
+        out := make(map[string]interface{}, len(data))
+        for k, v := range data { out[k] = v }
+        s.m[sid] = out
+    }
+
+    func (s *lamSessionStore) forget(sid string) {
+        s.mu.Lock()
+        defer s.mu.Unlock()
+        delete(s.m, sid)
+    }
+}

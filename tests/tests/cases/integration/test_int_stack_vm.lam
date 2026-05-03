@@ -1,0 +1,128 @@
+# Integration test: tiny stack-based bytecode VM.
+#
+# Implements a 7-opcode VM over an integer operand stack. A program
+# is a flat list of (op, arg) tuples; the VM walks it once, executing
+# each instruction and pushing/popping on its stack. Used to compute
+# (1 + 2) * (3 + 4) = 21 and verify that intermediate program states
+# are what we expect.
+#
+# Stresses: classes carrying mutable state, big match-style switch
+# (here implemented as if/elif chains because Lam's match does not
+# yet pattern-bind tuple shapes), nested lists of mixed types.
+#
+# expect: result=21
+# expect: trace_len=11
+# expect: dup_doubles=true
+# expect: vm_ok
+
+# ── Opcodes ──
+# 0 = PUSH n       push literal n
+# 1 = ADD          pop b, a; push a + b
+# 2 = MUL          pop b, a; push a * b
+# 3 = SUB          pop b, a; push a - b
+# 4 = DUP          duplicate top
+# 5 = DROP         drop top
+# 6 = HALT         end of program
+
+class VM {
+    func __init__(self) {
+        self.stack: list[int] = []
+        self.trace: list[str] = []
+    }
+
+    func push(self, v: int) {
+        self.stack.append(v)
+        self.trace.append("push " + str(v))
+    }
+
+    func pop(self) -> int {
+        v: int = self.stack[len(self.stack) - 1]
+        self.stack = self.stack[0:len(self.stack) - 1]
+        return v
+    }
+
+    func top(self) -> int {
+        return self.stack[len(self.stack) - 1]
+    }
+
+    func run(self, program: list[list[int]]) {
+        # Each instruction is [op, arg] — arg unused for ops that
+        # don't take operands. We bail on HALT or end-of-program,
+        # whichever comes first.
+        i: int = 0
+        while i < len(program) {
+            instr: list[int] = program[i]
+            op: int = instr[0]
+
+            if op == 0 {
+                self.push(instr[1])
+            } elif op == 1 {
+                b: int = self.pop()
+                a: int = self.pop()
+                self.push(a + b)
+                self.trace.append("add")
+            } elif op == 2 {
+                b: int = self.pop()
+                a: int = self.pop()
+                self.push(a * b)
+                self.trace.append("mul")
+            } elif op == 3 {
+                b: int = self.pop()
+                a: int = self.pop()
+                self.push(a - b)
+                self.trace.append("sub")
+            } elif op == 4 {
+                v: int = self.top()
+                self.push(v)
+                self.trace.append("dup")
+            } elif op == 5 {
+                _: int = self.pop()
+                self.trace.append("drop")
+            } elif op == 6 {
+                self.trace.append("halt")
+                return
+            }
+            i = i + 1
+        }
+    }
+}
+
+func instr(op: int, arg: int) -> list[int] {
+    out: list[int] = []
+    out.append(op)
+    out.append(arg)
+    return out
+}
+
+func main() {
+    # Compute (1 + 2) * (3 + 4) = 21
+    program: list[list[int]] = []
+    program.append(instr(0, 1))   # PUSH 1
+    program.append(instr(0, 2))   # PUSH 2
+    program.append(instr(1, 0))   # ADD              -> stack: [3]
+    program.append(instr(0, 3))   # PUSH 3
+    program.append(instr(0, 4))   # PUSH 4
+    program.append(instr(1, 0))   # ADD              -> stack: [3, 7]
+    program.append(instr(2, 0))   # MUL              -> stack: [21]
+    program.append(instr(6, 0))   # HALT
+
+    vm: VM = VM()
+    vm.run(program)
+    finalVal: int = vm.top()
+    traceLen: int = len(vm.trace)
+    print(f"result={finalVal}")
+    print(f"trace_len={traceLen}")
+
+    # DUP semantics: dup'ing should leave the top element duplicated.
+    dupVm: VM = VM()
+    dupProg: list[list[int]] = []
+    dupProg.append(instr(0, 9))   # PUSH 9
+    dupProg.append(instr(4, 0))   # DUP            -> stack: [9, 9]
+    dupProg.append(instr(1, 0))   # ADD            -> stack: [18]
+    dupProg.append(instr(6, 0))   # HALT
+    dupVm.run(dupProg)
+    dupTop: int = dupVm.top()
+    print(f"dup_doubles={dupTop == 18}")
+
+    print("vm_ok")
+}

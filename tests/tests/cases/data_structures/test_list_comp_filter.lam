@@ -1,0 +1,7 @@
+# Test: list comprehension with if filter
+# expect: [0 2 4 6 8]
+
+func main() {
+    evens: list[int] = [x for x in range(10) if x % 2 == 0]
+    print(evens)
+}

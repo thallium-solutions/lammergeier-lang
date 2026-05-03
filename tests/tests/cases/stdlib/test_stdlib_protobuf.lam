@@ -1,0 +1,76 @@
+# Test: lamprotobuf — wire-format codec on top of
+# ``google.golang.org/protobuf``. Uses ``timestamppb.Timestamp`` from
+# the well-known-types so the test doesn't depend on a generated
+# ``.proto`` file (those are out-of-tree assets).
+#
+# expect: wire bytes: 6
+# expect: unmarshal ok: true
+# expect: round-trip equal: true
+# expect: json: "2023-11-14T22:13:20Z"
+# expect: fromJson ok: true
+# expect: json round-trip equal: true
+# expect: text len > 0: true
+# expect: size matches: true
+# expect: clone equal: true
+# expect: after mutate same: false
+
+from lamprotobuf import Pb
+
+go! {
+    import (
+        "fmt"
+        "time"
+        "google.golang.org/protobuf/types/known/timestamppb"
+    )
+}
+
+func main() {
+    msg: any = None
+    go! {
+        msg = timestamppb.New(time.Unix(1700000000, 0).UTC())
+    }
+
+    wire: str = Pb.marshal(msg)
+    n: int = len(wire)
+    print(f"wire bytes: {n}")
+
+    decoded: any = None
+    go! {
+        decoded = &timestamppb.Timestamp{}
+    }
+    ok: bool = Pb.unmarshal(wire, decoded)
+    print(f"unmarshal ok: {ok}")
+
+    eq: bool = Pb.equal(msg, decoded)
+    print(f"round-trip equal: {eq}")
+
+    j: str = Pb.toJson(msg)
+    print(f"json: {j}")
+
+    j2: any = None
+    go! {
+        j2 = &timestamppb.Timestamp{}
+    }
+    okj: bool = Pb.fromJson(j, j2)
+    print(f"fromJson ok: {okj}")
+    eq2: bool = Pb.equal(msg, j2)
+    print(f"json round-trip equal: {eq2}")
+
+    t: str = Pb.toText(msg)
+    tlen: int = len(t)
+    print(f"text len > 0: {tlen > 0}")
+
+    sz: int = Pb.size(msg)
+    print(f"size matches: {sz == n}")
+
+    cloned: any = Pb.clone(msg)
+    eqClone: bool = Pb.equal(msg, cloned)
+    print(f"clone equal: {eqClone}")
+
+    go! {
+        c := cloned.(*timestamppb.Timestamp)
+        c.Seconds += 100
+    }
+    diff: bool = Pb.equal(msg, cloned)
+    print(f"after mutate same: {diff}")
+}

@@ -1,0 +1,58 @@
+# Test: Comparison operators in various contexts
+# expect: true
+# expect: false
+# expect: true
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+# expect: true
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+# expect: equal
+# expect: less
+# expect: less
+# expect: greater
+# expect: cmp2_ok
+
+func compare(a: int, b: int) -> str {
+    if a == b {
+        return "equal"
+    } elif a < b {
+        return "less"
+    } else {
+        return "greater"
+    }
+}
+
+func main() {
+    # Basic comparisons
+    print(1 < 2)
+    print(2 < 1)
+    print(1 <= 1)
+    print(1 <= 2)
+    print(2 <= 1)
+    print(2 > 1)
+    print(1 > 2)
+    print(2 >= 2)
+    print(3 >= 2)
+    print(1 >= 2)
+
+    # Equality
+    print(5 == 5)
+    print(5 == 6)
+    print(5 != 6)
+    print(5 != 5)
+
+    # Function-based comparison
+    print(compare(10, 10))
+    print(compare(10, 20))
+    print(compare(10, 20))
+    print(compare(20, 10))
+
+    print("cmp2_ok")
+}

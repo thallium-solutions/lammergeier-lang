@@ -1,0 +1,11 @@
+# expect: csv_ok
+
+from lamcsv import Csv
+
+func main() {
+    data: str = "a,b,c\nd,e,f"
+    parsed: list[list[str]] = Csv.parseAll(data)
+    if len(parsed) == 2 {
+        print("csv_ok")
+    }
+}

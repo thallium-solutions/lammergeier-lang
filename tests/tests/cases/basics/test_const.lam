@@ -1,0 +1,35 @@
+# Test: ``const`` declarations create immutable bindings.
+# Top-level and function-local consts both work; the value is just a
+# regular Lam expression and the type can be inferred or annotated.
+# expect: 3.14
+# expect: 5
+# expect: hello
+# expect: 50
+# expect: const_ok
+
+const PI: float = 3.14
+const COUNT = 5
+
+func double(x: int) -> int {
+    const factor = 2
+    return x * factor
+}
+
+func main() {
+    print(PI)
+    print(COUNT)
+
+    const greeting = "hello"
+    print(greeting)
+
+    const limit: int = COUNT * 10
+    print(limit)
+
+    # Typed const with computed RHS works too.
+    const total: int = double(COUNT) * COUNT
+    if total == 50 {
+        print("const_ok")
+    } else {
+        print(f"const_fail: total={total}")
+    }
+}

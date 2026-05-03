@@ -1,0 +1,68 @@
+# Lammergeier standard library: date/time utilities
+# Import with: from lamdatetime import DateTime
+
+go! {
+    import "time"
+}
+
+class DateTime {
+    static func now() -> str {
+        go! {
+            return time.Now().Format("2006-01-02 15:04:05")
+        }
+    }
+
+    static func today() -> str {
+        go! {
+            return time.Now().Format("2006-01-02")
+        }
+    }
+
+    static func timestamp() -> int {
+        go! {
+            return int(time.Now().Unix())
+        }
+    }
+
+    static func fromTimestamp(ts: int) -> str {
+        go! {
+            return time.Unix(int64(ts), 0).Format("2006-01-02 15:04:05")
+        }
+    }
+
+    static func diffSeconds(start: int, end: int) -> int {
+        return end - start
+    }
+
+    static func year() -> int {
+        go! {
+            return time.Now().Year()
+        }
+    }
+
+    static func month() -> int {
+        go! {
+            return int(time.Now().Month())
+        }
+    }
+
+    static func day() -> int {
+        go! {
+            return time.Now().Day()
+        }
+    }
+
+    static func weekday() -> str {
+        go! {
+            return time.Now().Weekday().String()
+        }
+    }
+
+    static func isLeapYear(y: int) -> bool {
+        return y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)
+    }
+}
+
+func main() {
+    pass
+}

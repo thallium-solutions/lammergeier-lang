@@ -1,0 +1,40 @@
+# Test: Class inheritance
+# expect: Animal speaks
+# expect: Dog barks
+# expect: Woof!
+# expect: Dog
+
+class Animal {
+    func __init__(self, name: str) {
+        self.name: str = name
+    }
+
+    func speak(self) -> str {
+        return f"{self.name} speaks"
+    }
+}
+
+class Dog(Animal) {
+    func __init__(self, name: str, breed: str) {
+        self.name: str = name
+        self.breed: str = breed
+    }
+
+    func bark(self) -> str {
+        return f"{self.name} barks"
+    }
+
+    func sound(self) -> str {
+        return "Woof!"
+    }
+}
+
+func main() {
+    a: Animal = Animal("Animal")
+    print(a.speak())
+
+    d: Dog = Dog("Dog", "Lab")
+    print(d.bark())
+    print(d.sound())
+    print(d.name)
+}

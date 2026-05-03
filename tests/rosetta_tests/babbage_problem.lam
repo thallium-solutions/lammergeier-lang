@@ -1,0 +1,16 @@
+# Rosetta Code: Babbage problem
+# https://rosettacode.org/wiki/Babbage_problem
+# Find smallest positive integer whose square ends in 269696
+# expect: 25264
+
+func main() {
+    n: int = 1
+    while true {
+        sq: int = n * n
+        if sq % 1000000 == 269696 {
+            print(n)
+            return
+        }
+        n += 1
+    }
+}

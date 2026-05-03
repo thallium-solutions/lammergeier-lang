@@ -1,0 +1,105 @@
+# Test: Algorithms - sorting, searching, common patterns
+# expect: 1
+# expect: 5
+# expect: 3
+# expect: -1
+# expect: true
+# expect: false
+# expect: 8
+# expect: 1024
+# expect: 3628800
+# expect: 6
+# expect: 75025
+
+func binary_search(arr: list[int], target: int) -> int {
+    lo: int = 0
+    hi: int = len(arr) - 1
+    while lo <= hi {
+        mid: int = (lo + hi) / 2
+        if arr[mid] == target {
+            return mid
+        } elif arr[mid] < target {
+            lo = mid + 1
+        } else {
+            hi = mid - 1
+        }
+    }
+    return -1
+}
+
+func is_palindrome(s: str) -> bool {
+    n: int = len(s)
+    i: int = 0
+    for i in range(n / 2) {
+        if s[i] != s[n - 1 - i] {
+            return False
+        }
+    }
+    return True
+}
+
+func power(base: int, exp: int) -> int {
+    result: int = 1
+    i: int = 0
+    for i in range(exp) {
+        result = result * base
+    }
+    return result
+}
+
+func factorial(n: int) -> int {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+func gcd(a: int, b: int) -> int {
+    while b != 0 {
+        temp: int = b
+        b = a % b
+        a = temp
+    }
+    return a
+}
+
+func fib_iterative(n: int) -> int {
+    if n <= 1 {
+        return n
+    }
+    prev: int = 0
+    curr: int = 1
+    i: int = 0
+    for i in range(2, n + 1) {
+        temp: int = curr
+        curr = prev + curr
+        prev = temp
+    }
+    return curr
+}
+
+func main() {
+    # Binary search
+    sorted_arr: list[int] = [1, 3, 5, 7, 9, 11, 13]
+    print(binary_search(sorted_arr, 3))
+    print(binary_search(sorted_arr, 11))
+    print(binary_search(sorted_arr, 7))
+    print(binary_search(sorted_arr, 4))
+
+    # Palindrome
+    print(is_palindrome("racecar"))
+    print(is_palindrome("hello"))
+
+    # Power
+    print(power(2, 3))
+    print(power(2, 10))
+
+    # Factorial
+    print(factorial(10))
+
+    # GCD
+    print(gcd(12, 18))
+
+    # Fibonacci iterative
+    print(fib_iterative(25))
+}

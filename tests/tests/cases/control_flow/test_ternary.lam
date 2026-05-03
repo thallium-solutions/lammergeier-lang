@@ -1,0 +1,17 @@
+# Test: ternary with typed annotation
+# expect: big
+# expect: small
+# expect: even
+# expect: positive
+
+func main() {
+    x: int = 10
+    label: str = "big" if x > 5 else "small"
+    print(label)
+    label2: str = "big" if x < 5 else "small"
+    print(label2)
+    parity: str = "even" if x % 2 == 0 else "odd"
+    print(parity)
+    sign: str = "positive" if x > 0 else "negative"
+    print(sign)
+}

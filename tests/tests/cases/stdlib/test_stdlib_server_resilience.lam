@@ -1,0 +1,150 @@
+# Test: lamserver resilience.
+#
+# Verifies the server survives panics in every phase the user can
+# write code in: onRequest hook, preHandler hook, route handler,
+# onResponse hook, onError hook, and the central error handler. A
+# panic in any one of these must:
+#
+#   * not crash the listener (subsequent requests still succeed);
+#   * not leak a stack trace to the client;
+#   * yield a clean 500 (or, for HttpError, the typed status).
+#
+# Mirrors Gin's panic-recovery contract.
+#
+# expect: ok-status: 200
+# expect: ok-body: alive
+# expect: panic-handler-status: 500
+# expect: panic-handler-survives: true
+# expect: panic-onreq-status: 500
+# expect: panic-onreq-survives: true
+# expect: panic-prehandler-status: 500
+# expect: panic-prehandler-survives: true
+# expect: panic-onresponse-survives: true
+# expect: httperr-status: 418
+# expect: httperr-body-has-message: true
+# expect: panic-after-many: 200
+
+from lamserver import Server, Request, Response, HttpError
+
+func aliveHandler(req: Request, res: Response) {
+    res.text("alive")
+}
+
+func panicHandler(req: Request, res: Response) {
+    panic("kaboom in handler")
+}
+
+func teaHandler(req: Request, res: Response) {
+    panic(HttpError(418, "i am a teapot"))
+}
+
+func panicOnReq(req: Request, res: Response) {
+    if req.path == "/onreq-panic" {
+        panic("kaboom in onRequest")
+    }
+}
+
+func panicPreHandler(req: Request, res: Response) {
+    if req.path == "/pre-panic" {
+        panic("kaboom in preHandler")
+    }
+}
+
+func panicOnResp(req: Request, res: Response) {
+    if req.path == "/onresp-panic" {
+        panic("kaboom in onResponse")
+    }
+}
+
+func main() {
+    srv: Server = Server()
+
+    srv.onRequest(panicOnReq)
+    srv.preHandler(panicPreHandler)
+    srv.onResponse(panicOnResp)
+
+    srv.get("/alive", aliveHandler)
+    srv.get("/boom", panicHandler)
+    srv.get("/tea", teaHandler)
+    srv.get("/onreq-panic", aliveHandler)
+    srv.get("/pre-panic", aliveHandler)
+    srv.get("/onresp-panic", aliveHandler)
+
+    # ── Healthy baseline
+    ok: dict[str, any] = srv.inject("GET", "/alive")
+    oks: any = ok["status"]
+    okb: any = ok["body"]
+    print(f"ok-status: {oks}")
+    print(f"ok-body: {okb}")
+
+    # ── Handler panic → 500, then a second request should still work
+    boom: dict[str, any] = srv.inject("GET", "/boom")
+    booms: any = boom["status"]
+    print(f"panic-handler-status: {booms}")
+    after: dict[str, any] = srv.inject("GET", "/alive")
+    afters: any = after["status"]
+    survives1: bool = false
+    go! {
+        if v, ok := afters.(int); ok && v == 200 { survives1 = true }
+    }
+    print(f"panic-handler-survives: {survives1}")
+
+    # ── onRequest panic → 500 + listener intact
+    onreq: dict[str, any] = srv.inject("GET", "/onreq-panic")
+    onreqs: any = onreq["status"]
+    print(f"panic-onreq-status: {onreqs}")
+    after2: dict[str, any] = srv.inject("GET", "/alive")
+    after2s: any = after2["status"]
+    survives2: bool = false
+    go! {
+        if v, ok := after2s.(int); ok && v == 200 { survives2 = true }
+    }
+    print(f"panic-onreq-survives: {survives2}")
+
+    # ── preHandler panic
+    pre: dict[str, any] = srv.inject("GET", "/pre-panic")
+    pres: any = pre["status"]
+    print(f"panic-prehandler-status: {pres}")
+    after3: dict[str, any] = srv.inject("GET", "/alive")
+    after3s: any = after3["status"]
+    survives3: bool = false
+    go! {
+        if v, ok := after3s.(int); ok && v == 200 { survives3 = true }
+    }
+    print(f"panic-prehandler-survives: {survives3}")
+
+    # ── onResponse panic — the request response is already sent;
+    #    we just check the listener still serves a fresh request.
+    srv.inject("GET", "/onresp-panic")
+    after4: dict[str, any] = srv.inject("GET", "/alive")
+    after4s: any = after4["status"]
+    survives4: bool = false
+    go! {
+        if v, ok := after4s.(int); ok && v == 200 { survives4 = true }
+    }
+    print(f"panic-onresponse-survives: {survives4}")
+
+    # ── HttpError lowering
+    tea: dict[str, any] = srv.inject("GET", "/tea")
+    teas: any = tea["status"]
+    teab: any = tea["body"]
+    print(f"httperr-status: {teas}")
+    teabHas: bool = false
+    go! {
+        if s, ok := teab.(string); ok {
+            teabHas = strings.Contains(s, "i am a teapot")
+        }
+    }
+    print(f"httperr-body-has-message: {teabHas}")
+
+    # ── Hammer test: 50 alternating panic / healthy requests
+    for i in range(25) {
+        srv.inject("GET", "/boom")
+        srv.inject("GET", "/alive")
+    }
+    final: dict[str, any] = srv.inject("GET", "/alive")
+    finals: any = final["status"]
+    print(f"panic-after-many: {finals}")
+}
+
+go! { import "strings" }

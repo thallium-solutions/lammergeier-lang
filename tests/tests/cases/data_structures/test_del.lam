@@ -1,0 +1,10 @@
+# Test: Del operator for maps
+# expect: 2
+# expect: 1
+
+func main() {
+    d: dict[str, int] = {"a": 1, "b": 2}
+    print(len(d))
+    del d["a"]
+    print(len(d))
+}

@@ -1,0 +1,94 @@
+# Test: Class with multiple methods and state
+# expect: account_ok
+# expect: balance: 1000
+# expect: balance: 1500
+# expect: balance: 1200
+# expect: withdraw_fail
+# expect: balance: 1200
+# expect: 1
+# expect: total: 100
+# expect: total: 300
+# expect: total: 600
+# expect: cls_state_ok
+
+class Account {
+    func __init__(self, owner: str, balance: int) {
+        self.owner: str = owner
+        self.balance: int = balance
+    }
+
+    func deposit(self, amount: int) {
+        self.balance = self.balance + amount
+    }
+
+    func withdraw(self, amount: int) -> bool {
+        if amount > self.balance {
+            return False
+        }
+        self.balance = self.balance - amount
+        return True
+    }
+
+    func get_balance(self) -> int {
+        return self.balance
+    }
+
+    func transfer_to(self, other: Account, amount: int) -> bool {
+        if amount > self.balance {
+            return False
+        }
+        self.balance = self.balance - amount
+        other.balance = other.balance + amount
+        return True
+    }
+}
+
+class Tracker {
+    func __init__(self) {
+        self.count: int = 0
+        self.total: int = 0
+    }
+
+    func add(self, value: int) {
+        self.count = self.count + 1
+        self.total = self.total + value
+    }
+
+    func get_count(self) -> int {
+        return self.count
+    }
+
+    func get_total(self) -> int {
+        return self.total
+    }
+}
+
+func main() {
+    acct: Account = Account("Alice", 1000)
+    print("account_ok")
+    print(f"balance: {acct.get_balance()}")
+
+    acct.deposit(500)
+    print(f"balance: {acct.get_balance()}")
+
+    ok: bool = acct.withdraw(300)
+    print(f"balance: {acct.get_balance()}")
+
+    ok = acct.withdraw(5000)
+    if not ok {
+        print("withdraw_fail")
+    }
+    print(f"balance: {acct.get_balance()}")
+
+    # Tracker
+    t: Tracker = Tracker()
+    t.add(100)
+    print(t.get_count())
+    print(f"total: {t.get_total()}")
+    t.add(200)
+    print(f"total: {t.get_total()}")
+    t.add(300)
+    print(f"total: {t.get_total()}")
+
+    print("cls_state_ok")
+}

@@ -1,0 +1,186 @@
+# Lammergeier standard library: basic statistics
+# Import with: from lamstats import Stats
+#
+# Accepts lists of `float` (use Conv.toFloat if you have ints). Every
+# function returns float; callers can round/truncate as needed.
+
+go! {
+    import (
+        "math"
+        "sort"
+    )
+}
+
+class Stats {
+    static func sum(values: list[float]) -> float {
+        go! {
+            total := 0.0
+            for _, v := range values { total += v }
+            return total
+        }
+    }
+
+    static func product(values: list[float]) -> float {
+        go! {
+            if len(values) == 0 { return 0.0 }
+            total := 1.0
+            for _, v := range values { total *= v }
+            return total
+        }
+    }
+
+    static func mean(values: list[float]) -> float {
+        go! {
+            if len(values) == 0 { panic("Stats.mean: empty list") }
+            total := 0.0
+            for _, v := range values { total += v }
+            return total / float64(len(values))
+        }
+    }
+
+    static func median(values: list[float]) -> float {
+        go! {
+            n := len(values)
+            if n == 0 { panic("Stats.median: empty list") }
+            tmp := make([]float64, n)
+            copy(tmp, values)
+            sort.Float64s(tmp)
+            if n%2 == 1 { return tmp[n/2] }
+            return (tmp[n/2-1] + tmp[n/2]) / 2.0
+        }
+    }
+
+    static func mode(values: list[float]) -> float {
+        #- Return the most frequent value. Ties return the smallest mode. -#
+        go! {
+            if len(values) == 0 { panic("Stats.mode: empty list") }
+            tmp := make([]float64, len(values))
+            copy(tmp, values)
+            sort.Float64s(tmp)
+            best := tmp[0]
+            bestCount := 1
+            current := tmp[0]
+            currentCount := 1
+            for i := 1; i < len(tmp); i++ {
+                if tmp[i] == current {
+                    currentCount++
+                } else {
+                    if currentCount > bestCount {
+                        best = current
+                        bestCount = currentCount
+                    }
+                    current = tmp[i]
+                    currentCount = 1
+                }
+            }
+            if currentCount > bestCount { best = current }
+            return best
+        }
+    }
+
+    static func variance(values: list[float]) -> float {
+        #- Population variance. Use `sampleVariance` for a sample estimate. -#
+        go! {
+            n := len(values)
+            if n == 0 { panic("Stats.variance: empty list") }
+            total := 0.0
+            for _, v := range values { total += v }
+            mean := total / float64(n)
+            sumSq := 0.0
+            for _, v := range values {
+                d := v - mean
+                sumSq += d * d
+            }
+            return sumSq / float64(n)
+        }
+    }
+
+    static func sampleVariance(values: list[float]) -> float {
+        go! {
+            n := len(values)
+            if n < 2 { panic("Stats.sampleVariance: need at least 2 values") }
+            total := 0.0
+            for _, v := range values { total += v }
+            mean := total / float64(n)
+            sumSq := 0.0
+            for _, v := range values {
+                d := v - mean
+                sumSq += d * d
+            }
+            return sumSq / float64(n-1)
+        }
+    }
+
+    static func stddev(values: list[float]) -> float {
+        #- Population standard deviation. -#
+        go! {
+            n := len(values)
+            if n == 0 { panic("Stats.stddev: empty list") }
+            total := 0.0
+            for _, v := range values { total += v }
+            mean := total / float64(n)
+            sumSq := 0.0
+            for _, v := range values {
+                d := v - mean
+                sumSq += d * d
+            }
+            return math.Sqrt(sumSq / float64(n))
+        }
+    }
+
+    static func minVal(values: list[float]) -> float {
+        go! {
+            if len(values) == 0 { panic("Stats.minVal: empty list") }
+            best := values[0]
+            for _, v := range values[1:] {
+                if v < best { best = v }
+            }
+            return best
+        }
+    }
+
+    static func maxVal(values: list[float]) -> float {
+        go! {
+            if len(values) == 0 { panic("Stats.maxVal: empty list") }
+            best := values[0]
+            for _, v := range values[1:] {
+                if v > best { best = v }
+            }
+            return best
+        }
+    }
+
+    static func range_(values: list[float]) -> float {
+        #- max - min. Named `range_` because `range` is a Lam keyword. -#
+        go! {
+            if len(values) == 0 { panic("Stats.range_: empty list") }
+            lo, hi := values[0], values[0]
+            for _, v := range values[1:] {
+                if v < lo { lo = v }
+                if v > hi { hi = v }
+            }
+            return hi - lo
+        }
+    }
+
+    static func percentile(values: list[float], p: float) -> float {
+        #- Linear-interpolated percentile, 0 <= p <= 100. -#
+        go! {
+            if len(values) == 0 { panic("Stats.percentile: empty list") }
+            if p < 0 || p > 100 { panic("Stats.percentile: p must be in [0,100]") }
+            tmp := make([]float64, len(values))
+            copy(tmp, values)
+            sort.Float64s(tmp)
+            rank := p / 100.0 * float64(len(tmp)-1)
+            lo := int(rank)
+            hi := lo + 1
+            if hi >= len(tmp) { return tmp[lo] }
+            frac := rank - float64(lo)
+            return tmp[lo] + (tmp[hi]-tmp[lo])*frac
+        }
+    }
+}
+
+func main() {
+    pass
+}

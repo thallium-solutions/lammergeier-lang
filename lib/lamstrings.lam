@@ -1,0 +1,305 @@
+# Lammergeier standard library: string utilities
+# Import with: from lamstrings import Strings
+
+go! {
+    import (
+        "strings"
+        "unicode"
+    )
+}
+
+class Strings {
+    static func repeat(s: str, n: int) -> str {
+        go! {
+            return strings.Repeat(s, n)
+        }
+    }
+
+    static func contains(s: str, sub: str) -> bool {
+        go! {
+            return strings.Contains(s, sub)
+        }
+    }
+
+    static func hasPrefix(s: str, prefix: str) -> bool {
+        go! {
+            return strings.HasPrefix(s, prefix)
+        }
+    }
+
+    static func hasSuffix(s: str, suffix: str) -> bool {
+        go! {
+            return strings.HasSuffix(s, suffix)
+        }
+    }
+
+    static func toUpper(s: str) -> str {
+        go! {
+            return strings.ToUpper(s)
+        }
+    }
+
+    static func toLower(s: str) -> str {
+        go! {
+            return strings.ToLower(s)
+        }
+    }
+
+    static func trim(s: str) -> str {
+        go! {
+            return strings.TrimSpace(s)
+        }
+    }
+
+    static func trimLeft(s: str, cutset: str) -> str {
+        go! {
+            return strings.TrimLeft(s, cutset)
+        }
+    }
+
+    static func trimRight(s: str, cutset: str) -> str {
+        go! {
+            return strings.TrimRight(s, cutset)
+        }
+    }
+
+    static func replace(s: str, old: str, newStr: str) -> str {
+        go! {
+            return strings.ReplaceAll(s, old, newStr)
+        }
+    }
+
+    static func split(s: str, sep: str) -> list[str] {
+        go! {
+            return strings.Split(s, sep)
+        }
+    }
+
+    static func join(parts: list[str], sep: str) -> str {
+        go! {
+            return strings.Join(parts, sep)
+        }
+    }
+
+    static func count(s: str, sub: str) -> int {
+        go! {
+            return strings.Count(s, sub)
+        }
+    }
+
+    static func index(s: str, sub: str) -> int {
+        go! {
+            return strings.Index(s, sub)
+        }
+    }
+
+    static func lastIndex(s: str, sub: str) -> int {
+        go! {
+            return strings.LastIndex(s, sub)
+        }
+    }
+
+    static func title(s: str) -> str {
+        go! {
+            return strings.Title(s)
+        }
+    }
+
+    static func equalFold(a: str, b: str) -> bool {
+        go! {
+            return strings.EqualFold(a, b)
+        }
+    }
+
+    static func fields(s: str) -> list[str] {
+        go! {
+            return strings.Fields(s)
+        }
+    }
+
+    static func capitalize(s: str) -> str {
+        #- Capitalize first letter, lowercase the rest -#
+        go! {
+            if len(s) == 0 { return s }
+            runes := []rune(s)
+            runes[0] = unicode.ToUpper(runes[0])
+            return string(runes)
+        }
+    }
+
+    static func isAlpha(s: str) -> bool {
+        go! {
+            for _, r := range s {
+                if !unicode.IsLetter(r) { return false }
+            }
+            return len(s) > 0
+        }
+    }
+
+    static func isDigit(s: str) -> bool {
+        go! {
+            for _, r := range s {
+                if !unicode.IsDigit(r) { return false }
+            }
+            return len(s) > 0
+        }
+    }
+
+    static func isAlnum(s: str) -> bool {
+        go! {
+            for _, r := range s {
+                if !unicode.IsLetter(r) && !unicode.IsDigit(r) { return false }
+            }
+            return len(s) > 0
+        }
+    }
+
+    static func isSpace(s: str) -> bool {
+        go! {
+            for _, r := range s {
+                if !unicode.IsSpace(r) { return false }
+            }
+            return len(s) > 0
+        }
+    }
+
+    static func reverse(s: str) -> str {
+        go! {
+            runes := []rune(s)
+            for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+                runes[i], runes[j] = runes[j], runes[i]
+            }
+            return string(runes)
+        }
+    }
+
+    static func center(s: str, width: int, fill: str = " ") -> str {
+        go! {
+            if len(s) >= width { return s }
+            pad := width - len(s)
+            left := pad / 2
+            right := pad - left
+            f := []rune(fill)
+            if len(f) == 0 { f = []rune(" ") }
+            return strings.Repeat(string(f), left) + s + strings.Repeat(string(f), right)
+        }
+    }
+
+    static func zfill(s: str, width: int) -> str {
+        go! {
+            if len(s) >= width { return s }
+            return strings.Repeat("0", width-len(s)) + s
+        }
+    }
+
+    static func padLeft(s: str, width: int, fill: str = " ") -> str {
+        #- Left-pad `s` with `fill` until it has at least `width` runes. -#
+        go! {
+            if fill == "" { fill = " " }
+            runes := []rune(s)
+            if len(runes) >= width { return s }
+            return strings.Repeat(fill, width-len(runes)) + s
+        }
+    }
+
+    static func padRight(s: str, width: int, fill: str = " ") -> str {
+        #- Right-pad `s` with `fill` until it has at least `width` runes. -#
+        go! {
+            if fill == "" { fill = " " }
+            runes := []rune(s)
+            if len(runes) >= width { return s }
+            return s + strings.Repeat(fill, width-len(runes))
+        }
+    }
+
+    static func splitLines(s: str) -> list[str] {
+        #- Split on \r\n, \r, or \n (like Python's splitlines). -#
+        go! {
+            normalized := strings.ReplaceAll(s, "\r\n", "\n")
+            normalized = strings.ReplaceAll(normalized, "\r", "\n")
+            if normalized == "" { return []string{} }
+            return strings.Split(normalized, "\n")
+        }
+    }
+
+    static func splitN(s: str, sep: str, n: int) -> list[str] {
+        #- Split up to `n` times (like Python's str.split(sep, n)). -#
+        go! {
+            return strings.SplitN(s, sep, n)
+        }
+    }
+
+    static func replaceFirst(s: str, old: str, newStr: str) -> str {
+        go! {
+            return strings.Replace(s, old, newStr, 1)
+        }
+    }
+
+    static func startsWith(s: str, prefix: str) -> bool {
+        #- Alias for hasPrefix to match the familiar JS/Python API. -#
+        go! {
+            return strings.HasPrefix(s, prefix)
+        }
+    }
+
+    static func endsWith(s: str, suffix: str) -> bool {
+        #- Alias for hasSuffix to match the familiar JS/Python API. -#
+        go! {
+            return strings.HasSuffix(s, suffix)
+        }
+    }
+
+    static func containsAny(s: str, chars: str) -> bool {
+        #- True if any rune in `chars` appears in `s`. -#
+        go! {
+            return strings.ContainsAny(s, chars)
+        }
+    }
+
+    static func isEmpty(s: str) -> bool {
+        return len(s) == 0
+    }
+
+    static func isBlank(s: str) -> bool {
+        #- True if the string is empty or consists only of whitespace. -#
+        go! {
+            return strings.TrimSpace(s) == ""
+        }
+    }
+
+    static func indent(s: str, prefix: str) -> str {
+        #- Prefix every non-empty line with `prefix`. -#
+        go! {
+            lines := strings.Split(s, "\n")
+            for i, ln := range lines {
+                if ln != "" { lines[i] = prefix + ln }
+            }
+            return strings.Join(lines, "\n")
+        }
+    }
+
+    static func dedent(s: str) -> str {
+        #- Remove the longest whitespace prefix common to every non-blank line. -#
+        go! {
+            lines := strings.Split(s, "\n")
+            minIndent := -1
+            for _, ln := range lines {
+                stripped := strings.TrimLeft(ln, " \t")
+                if stripped == "" { continue }
+                count := len(ln) - len(stripped)
+                if minIndent < 0 || count < minIndent { minIndent = count }
+            }
+            if minIndent <= 0 { return s }
+            for i, ln := range lines {
+                if len(ln) >= minIndent {
+                    lines[i] = ln[minIndent:]
+                }
+            }
+            return strings.Join(lines, "\n")
+        }
+    }
+}
+
+func main() {
+    pass
+}

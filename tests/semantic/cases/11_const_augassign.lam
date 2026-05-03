@@ -1,0 +1,7 @@
+# expect-error: cannot reassign constant `Y`
+# expect-error: line 6
+
+const Y = 10
+func main() {
+    Y += 1
+}

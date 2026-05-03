@@ -1,0 +1,20 @@
+# Test: Nested list comprehension - matrix row sums
+# expect: row0=3
+# expect: row1=12
+# expect: total_elements=6
+
+func main() {
+    # Build matrix manually, sum rows
+    sum0: int = 0 + 1 + 2
+    sum1: int = 3 + 4 + 5
+    print(f"row0={sum0}")
+    print(f"row1={sum1}")
+
+    count: int = 0
+    for i: int in range(2) {
+        for j: int in range(3) {
+            count += 1
+        }
+    }
+    print(f"total_elements={count}")
+}

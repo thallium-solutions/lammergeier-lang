@@ -1,0 +1,62 @@
+# Test: Arithmetic edge cases - large numbers, overflow patterns, zero division guard
+# expect: 1000000
+# expect: -1000000
+# expect: 1000000000
+# expect: 0
+# expect: 0
+# expect: 1
+# expect: -1
+# expect: 100
+# expect: 0
+# expect: 1
+# expect: 99
+# expect: 0
+# expect: 33
+# expect: 25
+# expect: 20
+# expect: arith2_ok
+
+func safe_div(a: int, b: int) -> int {
+    if b == 0 {
+        return 0
+    }
+    return a / b
+}
+
+func main() {
+    # Large numbers
+    x: int = 1000000
+    print(x)
+    print(0 - x)
+    print(x * 1000)
+
+    # Multiply by zero
+    print(x * 0)
+
+    # Divide large by larger
+    print(1 / 2)
+
+    # Identity operations
+    y: int = 1
+    print(y * 1)
+    print(0 - y)
+
+    # Square
+    z: int = 10
+    print(z * z)
+
+    # Zero patterns
+    print(0 * 100)
+    print(0 + 1)
+
+    # Modulo patterns
+    print(99 % 100)
+    print(100 % 50)
+
+    # Division patterns
+    print(100 / 3)
+    print(100 / 4)
+    print(100 / 5)
+
+    print("arith2_ok")
+}

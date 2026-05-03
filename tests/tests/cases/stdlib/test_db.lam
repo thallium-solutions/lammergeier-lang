@@ -1,0 +1,41 @@
+# expect: connected
+# expect: table created
+# expect: inserted 3 rows
+# expect: Bob 25
+# expect: Alice 30
+# expect: Charlie 35
+# expect: row count: 3
+# expect: cleaned up
+
+from lamdb import Db
+
+func main() {
+    # In-memory SQLite — disposable, no setup needed.
+    db: Db = Db.connect("sqlite", ":memory:")
+    print("connected")
+
+    db.exec("DROP TABLE IF EXISTS lam_test_users")
+    db.exec("CREATE TABLE lam_test_users (name TEXT, age INTEGER)")
+    print("table created")
+
+    db.exec("INSERT INTO lam_test_users (name, age) VALUES ('Alice', 30)")
+    db.exec("INSERT INTO lam_test_users (name, age) VALUES ('Bob', 25)")
+    db.exec("INSERT INTO lam_test_users (name, age) VALUES ('Charlie', 35)")
+    print("inserted 3 rows")
+
+    rows: list[dict[str, any]] = db.query(
+        "SELECT name, age FROM lam_test_users ORDER BY age"
+    )
+    for row in rows {
+        name: any = row["name"]
+        age: any = row["age"]
+        print(f"{name} {age}")
+    }
+
+    n: any = db.scalar("SELECT COUNT(*) FROM lam_test_users")
+    print(f"row count: {n}")
+
+    db.exec("DROP TABLE lam_test_users")
+    db.close()
+    print("cleaned up")
+}

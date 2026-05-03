@@ -1,0 +1,67 @@
+# expect: [2 4 6]
+# expect: [2 4 6]
+# expect: [4 5]
+# expect: 6
+# expect: 25
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+
+func double(x: int) -> int {
+    return x * 2
+}
+
+func is_even(x: int) -> bool {
+    return x % 2 == 0
+}
+
+func add(a: int, b: int) -> int {
+    return a + b
+}
+
+func gt3(x: int) -> bool {
+    return x > 3
+}
+
+func main() {
+    nums: list[int] = [1, 2, 3]
+
+    # map with named function
+    mapped: list[int] = nums.map(double)
+    print(mapped)
+
+    # map with lambda
+    doubler = lambda (x: int): x * 2
+    mapped2: list[int] = nums.map(doubler)
+    print(mapped2)
+
+    # filter
+    big: list[int] = [1, 2, 3, 4, 5]
+    filtered: list[int] = big.filter(gt3)
+    print(filtered)
+
+    # reduce without initial value
+    total: int = nums.reduce(add)
+    print(total)
+
+    # reduce with initial value
+    total2: int = nums.reduce(add, 19)
+    print(total2)
+
+    # any
+    has_even: bool = nums.any(is_even)
+    print(has_even)
+
+    all_even: bool = nums.all(is_even)
+    print(all_even)
+
+    # all
+    evens: list[int] = [2, 4, 6]
+    all_even2: bool = evens.all(is_even)
+    print(all_even2)
+
+    check_odd = lambda (x: int): x % 2 != 0
+    has_odd: bool = evens.any(check_odd)
+    print(has_odd)
+}

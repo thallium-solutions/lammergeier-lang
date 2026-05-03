@@ -1,0 +1,770 @@
+# Lammergeier standard library — database migrations.
+#
+# Modelled after knex.js migrations and Goose: each migration is a
+# ``.sql`` file containing two sections delimited by marker comments
+# (``-- +lam up`` / ``-- +lam down``). A ``lam_migrations`` bookkeeping
+# table records which files have been applied and groups them by
+# "batch" so ``down`` can rewind an entire batch at once.
+#
+# Filename convention: ``YYYYMMDDHHMMSS_snake_case_name.sql`` — the
+# timestamp prefix sorts lexicographically in the same order as
+# chronological order, which is what the runner relies on.
+#
+# Typical usage::
+#
+#     from lamdb import Db
+#     from lammigrate import Migrator, Schema
+#
+#     db: Db = Db.connect("sqlite", "/tmp/app.db")
+#     mig: Migrator = Migrator(db, "./migrations")
+#     mig.ensureSchema()
+#     applied: list[str] = mig.up()          # run every pending migration
+#     rolledBack: list[str] = mig.down(1)    # undo the last batch / N files
+#     info: dict[str, any] = mig.status()    # summary for humans
+#
+# For programmatic DDL you can optionally lean on ``Schema`` which
+# emits portable ``CREATE TABLE``/``DROP TABLE`` SQL for the three
+# supported dialects::
+#
+#     schema: Schema = Schema(db.driverName())
+#     db.exec(schema.createTable("users", [
+#         {"name": "id", "type": "id"},
+#         {"name": "email", "type": "string", "length": 255, "unique": true},
+#         {"name": "created_at", "type": "timestamp", "default": "CURRENT_TIMESTAMP"},
+#     ]))
+#
+# ``Schema`` is optional — migrations can also be plain SQL, which is
+# often the most honest way to describe irreversible changes.
+
+from lamerrors import Result, Error
+from lamdb import Db
+
+go! {
+    import (
+        "fmt"
+        "os"
+        "path/filepath"
+        "sort"
+        "strings"
+        "time"
+    )
+
+    // ─── Migration file parsing ──────────────────────────────
+    // A migration file is a flat SQL file with two section markers:
+    //
+    //     -- +lam up
+    //     CREATE TABLE ...;
+    //
+    //     -- +lam down
+    //     DROP TABLE ...;
+    //
+    // Anything before the first marker is treated as a file-level
+    // comment and ignored. Either section may be empty — e.g. a
+    // data migration with no ``down`` is written with an explicit
+    // ``-- +lam down`` marker followed by nothing (or a comment
+    // such as ``-- no-op``).
+    func lamMigParseSections(body string) (string, string) {
+        lines := strings.Split(body, "\n")
+        section := ""
+        var up, down strings.Builder
+        for _, line := range lines {
+            trimmed := strings.TrimSpace(line)
+            lower := strings.ToLower(trimmed)
+            if strings.HasPrefix(lower, "-- +lam up") ||
+                strings.HasPrefix(lower, "--+lam up") {
+                section = "up"
+                continue
+            }
+            if strings.HasPrefix(lower, "-- +lam down") ||
+                strings.HasPrefix(lower, "--+lam down") {
+                section = "down"
+                continue
+            }
+            switch section {
+            case "up":
+                up.WriteString(line)
+                up.WriteString("\n")
+            case "down":
+                down.WriteString(line)
+                down.WriteString("\n")
+            }
+        }
+        return strings.TrimSpace(up.String()), strings.TrimSpace(down.String())
+    }
+
+    // ─── Statement splitter ──────────────────────────────────
+    // ``database/sql`` drivers generally accept a single statement
+    // per call. A migration file usually contains several, so we
+    // split on top-level ``;`` boundaries (quoted / commented
+    // semicolons are respected). This keeps the splitter simple
+    // while handling the 95% case (mixed CREATE / CREATE INDEX /
+    // INSERT blocks).
+    func lamMigSplitStatements(sql string) []string {
+        out := []string{}
+        var cur strings.Builder
+        inSingle := false
+        inDouble := false
+        inLineComment := false
+        inBlockComment := false
+        for i := 0; i < len(sql); i++ {
+            ch := sql[i]
+            next := byte(0)
+            if i+1 < len(sql) { next = sql[i+1] }
+            switch {
+            case inLineComment:
+                cur.WriteByte(ch)
+                if ch == '\n' { inLineComment = false }
+            case inBlockComment:
+                cur.WriteByte(ch)
+                if ch == '*' && next == '/' {
+                    cur.WriteByte(next)
+                    i++
+                    inBlockComment = false
+                }
+            case inSingle:
+                cur.WriteByte(ch)
+                if ch == '\'' { inSingle = false }
+            case inDouble:
+                cur.WriteByte(ch)
+                if ch == '"' { inDouble = false }
+            case ch == '-' && next == '-':
+                inLineComment = true
+                cur.WriteByte(ch)
+            case ch == '/' && next == '*':
+                inBlockComment = true
+                cur.WriteByte(ch)
+            case ch == '\'':
+                inSingle = true
+                cur.WriteByte(ch)
+            case ch == '"':
+                inDouble = true
+                cur.WriteByte(ch)
+            case ch == ';':
+                stmt := strings.TrimSpace(cur.String())
+                if stmt != "" {
+                    out = append(out, stmt)
+                }
+                cur.Reset()
+            default:
+                cur.WriteByte(ch)
+            }
+        }
+        tail := strings.TrimSpace(cur.String())
+        if tail != "" {
+            out = append(out, tail)
+        }
+        return out
+    }
+
+    // ─── Filesystem walk ─────────────────────────────────────
+    // Returns ``.sql`` entries in the migrations directory sorted
+    // by filename. The sort is byte-lexicographic which, thanks to
+    // the ``YYYYMMDD...`` prefix, matches chronological order.
+    func lamMigListFiles(dir string) ([]string, error) {
+        entries, err := os.ReadDir(dir)
+        if err != nil {
+            return nil, err
+        }
+        names := []string{}
+        for _, e := range entries {
+            if e.IsDir() {
+                continue
+            }
+            name := e.Name()
+            if strings.HasSuffix(strings.ToLower(name), ".sql") {
+                names = append(names, name)
+            }
+        }
+        sort.Strings(names)
+        return names, nil
+    }
+
+    // Auto-increment primary-key column DDL for the three
+    // supported drivers. Centralised here so the Migrator's
+    // bookkeeping table + the portable Schema builder share one
+    // source of truth.
+    func lamMigIDColumn(driver string) string {
+        switch driver {
+        case "mysql":
+            return "INT AUTO_INCREMENT PRIMARY KEY"
+        case "postgres":
+            return "SERIAL PRIMARY KEY"
+        default:
+            return "INTEGER PRIMARY KEY AUTOINCREMENT"
+        }
+    }
+}
+
+class Migrator {
+    #- High-level migration runner. Holds a ``Db`` handle and the
+       path to a directory of ``.sql`` migration files.
+
+       All queries against ``lam_migrations`` go through the Db's
+       query-builder so the usual transient-error retry logic
+       applies. Individual migrations run inside a transaction so
+       a mid-file failure rolls everything in *that* file back
+       (other already-applied files stay committed). -#
+
+    func __init__(self, db: Db, dir_: str = "migrations") {
+        self.db: Db = db
+        self.dir_: str = dir_
+        self.tableName: str = "lam_migrations"
+    }
+
+    func setTableName(self, name: str) {
+        #- Customise the bookkeeping table name. Useful when a
+           project already owns ``migrations`` for another purpose. -#
+        self.tableName = name
+    }
+
+    # ── Bookkeeping ────────────────────────────────────────────
+    func ensureSchema(self) {
+        #- Create the ``lam_migrations`` table if it isn't there
+           yet. Safe to call on every run — the CREATE is guarded
+           by ``IF NOT EXISTS``. -#
+        driver: str = self.db.driverName()
+        ddl: str = ""
+        go! {
+            idCol := lamMigIDColumn(driver)
+            ddl = fmt.Sprintf(
+                "CREATE TABLE IF NOT EXISTS %s (id %s, name TEXT UNIQUE NOT NULL, batch INTEGER NOT NULL, migrated_at TEXT NOT NULL)",
+                self.TableName, idCol,
+            )
+        }
+        empty: list[any] = []
+        self.db.exec(ddl, empty)
+    }
+
+    # ── Discovery ──────────────────────────────────────────────
+    func _diskFiles(self) -> list[str] {
+        #- Return the list of ``.sql`` files in the migrations
+           directory, sorted lexicographically (== chronologically
+           when the recommended timestamp-prefix is used). -#
+        names: list[str] = []
+        go! {
+            listing, err := lamMigListFiles(self.Dir_)
+            if err != nil {
+                panic(fmt.Sprintf("migrate: cannot read %s: %v", self.Dir_, err))
+            }
+            names = listing
+        }
+        return names
+    }
+
+    func _appliedRows(self) -> list[dict[str, any]] {
+        return self.db.table(self.tableName).orderBy("id", "asc").get()
+    }
+
+    func _appliedNames(self) -> list[str] {
+        names: list[str] = []
+        rows: list[dict[str, any]] = self._appliedRows()
+        go! {
+            for _, r := range rows {
+                if n, ok := r["name"].(string); ok {
+                    names = append(names, n)
+                }
+            }
+        }
+        return names
+    }
+
+    func _nextBatch(self) -> int {
+        agg: any = self.db.table(self.tableName).max("batch")
+        next: int = 1
+        go! {
+            switch v := agg.(type) {
+            case int:     next = v + 1
+            case int64:   next = int(v) + 1
+            case float64: next = int(v) + 1
+            }
+        }
+        return next
+    }
+
+    # ── Status ────────────────────────────────────────────────
+    func list(self) -> dict[str, any] {
+        #- Return ``{ran: [...], pending: [...]}`` — the files
+           already applied and the ones still sitting on disk. -#
+        disk: list[str] = self._diskFiles()
+        applied: list[str] = self._appliedNames()
+        appliedSet: dict[str, bool] = {}
+        for n in applied {
+            appliedSet[n] = true
+        }
+        pending: list[str] = []
+        for n in disk {
+            seen: bool = false
+            go! {
+                if _, ok := appliedSet[n]; ok {
+                    seen = true
+                }
+            }
+            if not seen {
+                pending.append(n)
+            }
+        }
+        out: dict[str, any] = {}
+        out["ran"] = applied
+        out["pending"] = pending
+        return out
+    }
+
+    func status(self) -> dict[str, any] {
+        #- Human-friendly overview: counts plus the last batch
+           number (so ``down()`` can target it). -#
+        summary: dict[str, any] = self.list()
+        ran: list[str] = []
+        pending: list[str] = []
+        go! {
+            if v, ok := summary["ran"].([]string); ok {
+                ran = v
+            }
+            if v, ok := summary["pending"].([]string); ok {
+                pending = v
+            }
+        }
+        lastBatch: int = 0
+        agg: any = self.db.table(self.tableName).max("batch")
+        go! {
+            switch v := agg.(type) {
+            case int:     lastBatch = v
+            case int64:   lastBatch = int(v)
+            case float64: lastBatch = int(v)
+            }
+        }
+        out: dict[str, any] = {}
+        out["total"] = len(ran) + len(pending)
+        out["ran"] = len(ran)
+        out["pending"] = len(pending)
+        out["lastBatch"] = lastBatch
+        out["ranNames"] = ran
+        out["pendingNames"] = pending
+        return out
+    }
+
+    # ── Runtime helpers ───────────────────────────────────────
+    func _readFile(self, name: str) -> str {
+        body: str = ""
+        go! {
+            p := filepath.Join(self.Dir_, name)
+            data, err := os.ReadFile(p)
+            if err != nil {
+                panic(fmt.Sprintf("migrate: cannot read %s: %v", p, err))
+            }
+            body = string(data)
+        }
+        return body
+    }
+
+    func _sectionSql(self, name: str, direction: str) -> str {
+        body: str = self._readFile(name)
+        up: str = ""
+        down: str = ""
+        go! {
+            u, d := lamMigParseSections(body)
+            up = u
+            down = d
+        }
+        if direction == "up" {
+            return up
+        }
+        return down
+    }
+
+    func _splitStatements(self, sql_: str) -> list[str] {
+        stmts: list[str] = []
+        go! {
+            for _, stmt := range lamMigSplitStatements(sql_) {
+                stmts = append(stmts, stmt)
+            }
+        }
+        return stmts
+    }
+
+    func _runStatements(self, sql_: str) {
+        #- Split ``sql_`` on top-level ``;`` and run each piece
+           through the regular ``db.exec`` path. Driver-level
+           retry/backoff (configured on the Db) still applies per
+           statement. -#
+        empty: list[any] = []
+        stmts: list[str] = self._splitStatements(sql_)
+        for stmt in stmts {
+            self.db.exec(stmt, empty)
+        }
+    }
+
+    # ── Up / Down ─────────────────────────────────────────────
+    func up(self, steps: int = 0) -> list[str] {
+        #- Apply pending migrations in order. ``steps`` == 0 means
+           "apply every pending file"; a positive value caps the
+           number of files run this invocation. Every file applied
+           in a single call shares the same batch number so a
+           later ``down(1)`` rolls them back as a unit. -#
+        self.ensureSchema()
+        inventory: dict[str, any] = self.list()
+        pending: list[str] = []
+        go! {
+            if v, ok := inventory["pending"].([]string); ok {
+                pending = v
+            }
+        }
+        if steps > 0 and steps < len(pending) {
+            trimmed: list[str] = []
+            for i in range(steps) {
+                trimmed.append(pending[i])
+            }
+            pending = trimmed
+        }
+        applied: list[str] = []
+        if len(pending) == 0 {
+            return applied
+        }
+        batch: int = self._nextBatch()
+        for name in pending {
+            upSql: str = self._sectionSql(name, "up")
+            if len(upSql) == 0 {
+                # A missing ``up`` section is treated as no-op so
+                # authors can record a purely-manual change (e.g.
+                # a data backfill ran via psql) if they want.
+                pass
+            } else {
+                self._runStatements(upSql)
+            }
+            now: str = ""
+            go! { now = time.Now().UTC().Format(time.RFC3339) }
+            rec: dict[str, any] = {}
+            rec["name"] = name
+            rec["batch"] = batch
+            rec["migrated_at"] = now
+            self.db.table(self.tableName).insert(rec)
+            applied.append(name)
+        }
+        return applied
+    }
+
+    func down(self, steps: int = 1) -> list[str] {
+        #- Rewind the most recent migrations. Default is to roll
+           back the last batch in full; pass ``steps`` to cap the
+           number of files undone. Files are executed in reverse
+           application order. -#
+        self.ensureSchema()
+        rows: list[dict[str, any]] = self.db.table(self.tableName).orderBy("id", "desc").get()
+        if len(rows) == 0 {
+            empty: list[str] = []
+            return empty
+        }
+        # When steps==1 we actually want "last batch" not "last row".
+        # When steps>1 we want exactly ``steps`` files, regardless of
+        # their batch membership — matches knex's semantics.
+        target: list[dict[str, any]] = []
+        if steps == 1 {
+            lastBatch: int = 0
+            go! {
+                if v, ok := rows[0]["batch"]; ok {
+                    switch x := v.(type) {
+                    case int:     lastBatch = x
+                    case int64:   lastBatch = int(x)
+                    case float64: lastBatch = int(x)
+                    }
+                }
+            }
+            for r in rows {
+                rb: int = 0
+                go! {
+                    if v, ok := r["batch"]; ok {
+                        switch x := v.(type) {
+                        case int:     rb = x
+                        case int64:   rb = int(x)
+                        case float64: rb = int(x)
+                        }
+                    }
+                }
+                if rb == lastBatch {
+                    target.append(r)
+                }
+            }
+        } else {
+            for i in range(steps) {
+                if i >= len(rows) {
+                    break
+                }
+                target.append(rows[i])
+            }
+        }
+        undone: list[str] = []
+        for r in target {
+            migName: str = ""
+            go! {
+                if n, ok := r["name"].(string); ok {
+                    migName = n
+                }
+            }
+            downSql: str = self._sectionSql(migName, "down")
+            if len(downSql) > 0 {
+                self._runStatements(downSql)
+            }
+            self.db.table(self.tableName).whereEq("name", migName).delete()
+            undone.append(migName)
+        }
+        return undone
+    }
+}
+
+class Schema {
+    #- Tiny cross-driver DDL emitter. The goal isn't feature parity
+       with knex or Ecto; it's to cover the 80% that comes up in
+       migration files (CREATE TABLE, DROP TABLE, ADD INDEX,
+       common column types) without forcing the author to inline
+       driver-specific casts.
+
+       Column dictionaries understand:
+
+         * ``name``      — required, column identifier.
+         * ``type``      — one of ``"id"``, ``"string"``, ``"text"``,
+           ``"integer"``, ``"bigint"``, ``"float"``, ``"decimal"``,
+           ``"boolean"``, ``"timestamp"``, ``"date"``, ``"json"``,
+           ``"uuid"``, or a raw SQL type if prefixed with
+           ``"raw:"`` (e.g. ``"raw:VARCHAR(10) NOT NULL"``).
+         * ``length``    — optional int, appended as ``(N)`` for
+           variable-width types (``string``).
+         * ``precision`` / ``scale`` — optional ints for ``decimal``.
+         * ``nullable``  — bool, defaults to ``false``.
+         * ``unique``    — bool.
+         * ``default``   — raw SQL expression emitted after ``DEFAULT``.
+         * ``references``/``on`` — foreign-key target like
+           ``"users(id)"``. Emitted as ``REFERENCES`` clause. -#
+
+    func __init__(self, driver: str = "sqlite") {
+        self.driver: str = driver
+    }
+
+    func _colType(self, col: dict[str, any]) -> str {
+        #- Resolve ``col["type"]`` to a driver-specific SQL type
+           string. Kept in Lam so subclasses in user code can
+           override or wrap it if they need to. -#
+        out: str = ""
+        length: int = 0
+        precision: int = 0
+        scale: int = 0
+        go! {
+            if l, ok := col["length"]; ok {
+                switch x := l.(type) {
+                case int:     length = x
+                case int64:   length = int(x)
+                case float64: length = int(x)
+                }
+            }
+            if l, ok := col["precision"]; ok {
+                switch x := l.(type) {
+                case int:     precision = x
+                case int64:   precision = int(x)
+                case float64: precision = int(x)
+                }
+            }
+            if l, ok := col["scale"]; ok {
+                switch x := l.(type) {
+                case int:     scale = x
+                case int64:   scale = int(x)
+                case float64: scale = int(x)
+                }
+            }
+            kind, _ := col["type"].(string)
+            driver := s.Driver
+            if strings.HasPrefix(kind, "raw:") {
+                out = strings.TrimPrefix(kind, "raw:")
+            } else {
+                switch kind {
+                case "id":
+                    out = lamMigIDColumn(driver)
+                case "string":
+                    if length <= 0 { length = 255 }
+                    out = fmt.Sprintf("VARCHAR(%d)", length)
+                case "text":
+                    out = "TEXT"
+                case "integer":
+                    if driver == "postgres" { out = "INTEGER" } else { out = "INT" }
+                case "bigint":
+                    out = "BIGINT"
+                case "float":
+                    if driver == "postgres" { out = "DOUBLE PRECISION" } else { out = "DOUBLE" }
+                case "decimal":
+                    if precision <= 0 { precision = 10 }
+                    if scale < 0 { scale = 0 }
+                    out = fmt.Sprintf("DECIMAL(%d, %d)", precision, scale)
+                case "boolean":
+                    if driver == "mysql" { out = "TINYINT(1)" } else { out = "BOOLEAN" }
+                case "timestamp":
+                    if driver == "postgres" {
+                        out = "TIMESTAMP WITH TIME ZONE"
+                    } else if driver == "mysql" {
+                        out = "DATETIME"
+                    } else {
+                        out = "TIMESTAMP"
+                    }
+                case "date":
+                    out = "DATE"
+                case "json":
+                    if driver == "postgres" { out = "JSONB" } else if driver == "mysql" { out = "JSON" } else { out = "TEXT" }
+                case "uuid":
+                    if driver == "postgres" { out = "UUID" } else { out = "VARCHAR(36)" }
+                default:
+                    out = "TEXT"
+                }
+            }
+        }
+        return out
+    }
+
+    func _colDdl(self, col: dict[str, any]) -> str {
+        #- Render a single column as part of a CREATE TABLE. Combines
+           the resolved SQL type with the nullability / default /
+           unique / foreign-key modifiers. -#
+        colName: str = ""
+        kind: str = ""
+        go! {
+            if n, ok := col["name"].(string); ok { colName = n }
+            if k, ok := col["type"].(string); ok { kind = k }
+        }
+        typeDdl: str = self._colType(col)
+        # ``id`` columns already carry "PRIMARY KEY", so skip the
+        # usual suffixes to avoid e.g. ``NOT NULL UNIQUE`` on a PK.
+        if kind == "id" {
+            return colName + " " + typeDdl
+        }
+        out: str = colName + " " + typeDdl
+        nullable: bool = false
+        go! {
+            if v, ok := col["nullable"]; ok {
+                if b, ok2 := v.(bool); ok2 { nullable = b }
+            }
+        }
+        if not nullable {
+            out = out + " NOT NULL"
+        }
+        hasDefault: bool = false
+        defaultExpr: str = ""
+        go! {
+            if d, ok := col["default"]; ok {
+                hasDefault = true
+                defaultExpr = fmt.Sprintf("%v", d)
+            }
+        }
+        if hasDefault {
+            out = out + " DEFAULT " + defaultExpr
+        }
+        unique: bool = false
+        go! {
+            if v, ok := col["unique"]; ok {
+                if b, ok2 := v.(bool); ok2 { unique = b }
+            }
+        }
+        if unique {
+            out = out + " UNIQUE"
+        }
+        hasRef: bool = false
+        refTarget: str = ""
+        go! {
+            if ref, ok := col["references"].(string); ok && ref != "" {
+                hasRef = true
+                refTarget = ref
+            } else if ref2, ok2 := col["on"].(string); ok2 && ref2 != "" {
+                hasRef = true
+                refTarget = ref2
+            }
+        }
+        if hasRef {
+            out = out + " REFERENCES " + refTarget
+        }
+        return out
+    }
+
+    func _renderColumns(self, cols: list[dict[str, any]]) -> str {
+        parts: list[str] = []
+        for c in cols {
+            parts.append(self._colDdl(c))
+        }
+        out: str = ""
+        go! {
+            out = strings.Join(parts, ", ")
+        }
+        return out
+    }
+
+    func createTable(self, table: str, cols: list[dict[str, any]]) -> str {
+        #- Emit a ``CREATE TABLE`` statement. ``cols`` is the list
+           described on the class. -#
+        return "CREATE TABLE " + table + " (" + self._renderColumns(cols) + ")"
+    }
+
+    func createTableIfNotExists(self, table: str, cols: list[dict[str, any]]) -> str {
+        return "CREATE TABLE IF NOT EXISTS " + table + " (" + self._renderColumns(cols) + ")"
+    }
+
+    func dropTable(self, table: str) -> str {
+        return "DROP TABLE " + table
+    }
+
+    func dropTableIfExists(self, table: str) -> str {
+        return "DROP TABLE IF EXISTS " + table
+    }
+
+    func addIndex(self, table: str, cols: list[any], indexName: str = "") -> str {
+        sql_: str = ""
+        go! {
+            colList := []string{}
+            for _, c := range cols {
+                if cs, ok := c.(string); ok {
+                    colList = append(colList, cs)
+                }
+            }
+            name := indexName
+            if name == "" {
+                name = fmt.Sprintf("idx_%s_%s", table, strings.Join(colList, "_"))
+            }
+            sql_ = fmt.Sprintf("CREATE INDEX %s ON %s (%s)", name, table, strings.Join(colList, ", "))
+        }
+        return sql_
+    }
+
+    func addUniqueIndex(self, table: str, cols: list[any], indexName: str = "") -> str {
+        sql_: str = ""
+        go! {
+            colList := []string{}
+            for _, c := range cols {
+                if cs, ok := c.(string); ok {
+                    colList = append(colList, cs)
+                }
+            }
+            name := indexName
+            if name == "" {
+                name = fmt.Sprintf("uniq_%s_%s", table, strings.Join(colList, "_"))
+            }
+            sql_ = fmt.Sprintf("CREATE UNIQUE INDEX %s ON %s (%s)", name, table, strings.Join(colList, ", "))
+        }
+        return sql_
+    }
+
+    func dropIndex(self, indexName: str) -> str {
+        return "DROP INDEX " + indexName
+    }
+
+    func timestampNow(self) -> str {
+        #- Emit the driver's "current timestamp" default expression. -#
+        out: str = ""
+        go! {
+            switch self.Driver {
+            case "postgres":
+                out = "CURRENT_TIMESTAMP"
+            case "mysql":
+                out = "CURRENT_TIMESTAMP"
+            default:
+                out = "CURRENT_TIMESTAMP"
+            }
+        }
+        return out
+    }
+}
+
+func main() {
+    pass
+}

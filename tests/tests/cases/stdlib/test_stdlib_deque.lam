@@ -1,0 +1,46 @@
+# Test: lamdeque Deque
+# expect: PASS 1 empty
+# expect: PASS 2 pushBack size
+# expect: PASS 3 peekFront
+# expect: PASS 4 peekBack
+# expect: PASS 5 pushFront
+# expect: PASS 6 front order
+# expect: PASS 7 popFront
+# expect: PASS 8 popBack
+# expect: PASS 9 toList round-trip
+# expect: PASS 10 clear empties
+# expect: 10 passed, 0 failed, 10 total
+
+from lamdeque import Deque
+from lamtest import Test
+
+func main() {
+    d: Deque = Deque()
+    Test.assertTrue(d.isEmpty(), "1 empty")
+
+    d.pushBack(10)
+    d.pushBack(20)
+    d.pushBack(30)
+    Test.assertEqual(d.size(), 3, "2 pushBack size")
+    Test.assertEqual(d.peekFront(), 10, "3 peekFront")
+    Test.assertEqual(d.peekBack(), 30, "4 peekBack")
+
+    d.pushFront(0)
+    Test.assertEqual(d.size(), 4, "5 pushFront")
+    Test.assertEqual(d.peekFront(), 0, "6 front order")
+
+    first: any = d.popFront()
+    Test.assertEqual(first, 0, "7 popFront")
+
+    last: any = d.popBack()
+    Test.assertEqual(last, 30, "8 popBack")
+
+    snapshot: list[any] = d.toList()
+    expected: list[any] = [10, 20]
+    Test.assertEqual(snapshot, expected, "9 toList round-trip")
+
+    d.clear()
+    Test.assertTrue(d.isEmpty(), "10 clear empties")
+
+    Test.summary()
+}

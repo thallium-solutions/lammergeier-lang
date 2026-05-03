@@ -1,0 +1,14 @@
+# Test: multiline string in function
+# expect: line1
+# expect: line2
+# expect: line3
+
+func get_text() -> str {
+    return """line1
+line2
+line3"""
+}
+
+func main() {
+    print(get_text())
+}

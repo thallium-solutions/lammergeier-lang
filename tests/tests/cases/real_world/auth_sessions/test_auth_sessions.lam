@@ -1,0 +1,33 @@
+# Real-world mini project: user auth, signed session payload, LRU eviction.
+# expect: login_ok=true
+# expect: admin=true
+# expect: token_signed=true
+# expect: first_active=false
+# expect: second_active=true
+# expect: revoke_second=true
+# expect: second_active_after=false
+
+from users import User, UserStore
+from session_service import SessionService
+from lamstrings import Strings
+
+func main() {
+    store: UserStore = UserStore()
+    store.add(1, "admin@example.test", "admin", "correct-horse")
+    store.add(2, "reader@example.test", "reader", "battery")
+
+    svc: SessionService = SessionService("session-secret", 1)
+    admin: User = store.authenticate("admin@example.test", "correct-horse")
+    reader: User = store.authenticate("reader@example.test", "battery")
+
+    first: str = svc.issue(admin)
+    second: str = svc.issue(reader)
+
+    print(f"login_ok={admin != None and reader != None}")
+    print(f"admin={admin.isAdmin()}")
+    print(f"token_signed={Strings.contains(first, '.') and len(first) > 20}")
+    print(f"first_active={svc.isActive(first)}")
+    print(f"second_active={svc.isActive(second)}")
+    print(f"revoke_second={svc.revoke(second)}")
+    print(f"second_active_after={svc.isActive(second)}")
+}

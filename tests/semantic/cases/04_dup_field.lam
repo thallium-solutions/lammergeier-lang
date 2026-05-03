@@ -1,0 +1,12 @@
+# expect-error: duplicate class member `count`
+
+class Counter {
+    count: int = 0
+    name: string = "x"
+    count: int = 1
+}
+
+func main() {
+    c: Counter = Counter()
+    print(c.count)
+}

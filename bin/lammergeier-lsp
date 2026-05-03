@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Lammergeier LSP launcher — drop-in for editor LSP configs.
+#
+# Configure your editor to spawn this script; it boots
+# ``compiler/lsp.py`` with the project's interpreter and the
+# project root on ``PYTHONPATH``. Set ``LAMMERGEIER_LSP_LOG`` in
+# the env to capture a verbose log to a file (the LSP itself
+# never logs to stderr, since editors expect a clean stdio).
+#
+# Symlink-safe: resolves ``BASH_SOURCE`` through ``readlink -f`` so
+# that editors can spawn ``~/.local/bin/lammergeier-lsp`` (installed
+# by ``install.sh``) and still find ``compiler/lsp.py`` in the
+# original checkout.
+
+set -e
+
+# Follow symlinks to find the real script location. ``readlink -f``
+# (GNU) and ``readlink -e`` work on Linux; fall back to a manual
+# chase for portability.
+_resolve_real() {
+    local target="$1"
+    if command -v readlink >/dev/null 2>&1; then
+        local resolved
+        resolved="$(readlink -f -- "$target" 2>/dev/null || true)"
+        if [[ -n "$resolved" ]]; then
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+    fi
+    # Manual fallback.
+    while [[ -L "$target" ]]; do
+        local dir link
+        dir="$(cd "$(dirname "$target")" && pwd)"
+        link="$(readlink "$target")"
+        case "$link" in
+            /*) target="$link" ;;
+            *)  target="$dir/$link" ;;
+        esac
+    done
+    printf '%s\n' "$(cd "$(dirname "$target")" && pwd)/$(basename "$target")"
+}
+
+REAL_SCRIPT="$(_resolve_real "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "$REAL_SCRIPT")"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PYTHON="${PYTHON:-python3}"
+
+exec "${PYTHON}" "${PROJECT_ROOT}/compiler/lsp.py" "$@"

@@ -1,0 +1,90 @@
+# Test: parser tolerates JS-style formatting variations.
+#
+# Lam isn't whitespace-sensitive (curly braces delimit blocks; the
+# auto-semicolon pass handles statement termination). This test
+# pins that contract by exercising common JS-style formatting
+# choices that aren't allowed in Python and aren't typical Go:
+#
+#   * statements separated by ``;`` on a single line
+#   * function call args on multiple lines (with trailing comma)
+#   * dict / list literals split across lines
+#   * inconsistent indentation between sibling statements
+#   * brace at end of line *or* on the next line (K&R + Allman)
+#   * comments interleaved between expression operands
+#   * empty function body
+#   * extra blank lines and surplus whitespace
+#
+# expect: oneliner: 6
+# expect: trailing-comma: 9
+# expect: split-list: [1 2 3 4]
+# expect: split-dict: {a:1 b:2}
+# expect: kr-block: kr
+# expect: empty-body: empty
+# expect: midcomment: 30
+# expect: bad-indent: 7
+
+# K&R brace style (default in existing tests).
+func krBlock() -> str { return "kr" }
+
+# Empty body.
+func emptyBody() {
+}
+
+func main() {
+    # Multiple statements on one line, separated by `;`.
+    a: int = 1; b: int = 2; c: int = 3
+    print(f"oneliner: {a + b + c}")
+
+    # Trailing comma in a function call's arg list, args on separate
+    # lines.
+    s: int = sumThree(
+        2,
+        3,
+        4,
+    )
+    print(f"trailing-comma: {s}")
+
+    # List literal across multiple lines (with and without trailing
+    # comma, mixed inline + multi-line).
+    xs: list[int] = [
+        1,
+        2, 3,
+        4,
+    ]
+    print(f"split-list: {xs}")
+
+    # Dict literal across multiple lines.
+    m: dict[str, int] = {
+        "a": 1,
+        "b": 2,
+    }
+    aval: int = m["a"]
+    bval: int = m["b"]
+    print(f"split-dict: {{a:{aval} b:{bval}}}")
+
+    # Call to a func whose opening brace was on the same line as the
+    # signature.
+    print(f"kr-block: {krBlock()}")
+
+    # Call the void empty-body function — proves the parser+compiler
+    # accept a no-op block. We can't assign its return; we just call
+    # and print a literal.
+    emptyBody()
+    print(f"empty-body: empty")
+
+    # Comments interleaved between operands of a multi-line expression.
+    total: int = 10 +  # ten
+        # plus twenty
+        20
+    print(f"midcomment: {total}")
+
+    # Inconsistent indentation between siblings — Lam shouldn't care.
+    x: int = 1
+       y: int = 2
+    z: int = 4
+    print(f"bad-indent: {x + y + z}")
+}
+
+func sumThree(a: int, b: int, c: int) -> int {
+    return a + b + c
+}

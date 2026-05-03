@@ -1,0 +1,19 @@
+# Test: variadic with regular param before variadic
+# expect: tag: hello world
+# expect: tag: a b c
+
+func tag_and_join(tag: str, *parts: string) -> str {
+    result: str = tag + ": "
+    for i, p in enumerate(parts) {
+        if i > 0 {
+            result = result + " "
+        }
+        result = result + p
+    }
+    return result
+}
+
+func main() {
+    print(tag_and_join("tag", "hello", "world"))
+    print(tag_and_join("tag", "a", "b", "c"))
+}

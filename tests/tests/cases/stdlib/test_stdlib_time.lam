@@ -1,0 +1,16 @@
+# expect: time_ok
+# expect: year_ok
+
+from lamtime import Time
+
+func main() {
+    t: str = Time.nowString()
+    if len(t) > 0 {
+        print("time_ok")
+    }
+
+    y: int = Time.nowYear()
+    if y >= 2024 {
+        print("year_ok")
+    }
+}

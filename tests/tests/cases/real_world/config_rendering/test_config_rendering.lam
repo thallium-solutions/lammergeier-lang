@@ -1,0 +1,37 @@
+# Real-world mini project: parse config, write/read file, render template.
+# expect: env=PAYMENTS
+# expect: host=api.example.test:8443
+# expect: retry_count=3
+# expect: rendered=service payments-api talks to api.example.test:8443 with 3 retries
+# expect: file_roundtrip=true
+
+from config import AppConfig, parseConfig
+from lamtemplate import Template
+from lamos import Os
+
+func main() {
+    raw: str = """name=payments-api
+base_url=https://api.example.test:8443/v1/payments
+retries=3"""
+
+    cfg: AppConfig = parseConfig(raw)
+    t: Template = Template()
+    t.parse("service {{.Name}} talks to {{.Host}} with {{.Retries}} retries")
+
+    data: dict[str, any] = {}
+    data["Name"] = cfg.name
+    data["Host"] = cfg.host()
+    data["Retries"] = cfg.retries
+    rendered: str = t.render(data)
+
+    path: str = Os.tempDir() + "/lam-real-world-config.txt"
+    Os.writeFile(path, rendered)
+    roundtrip: str = Os.readFile(path)
+    Os.remove(path)
+
+    print(f"env={cfg.envName()}")
+    print(f"host={cfg.host()}")
+    print(f"retry_count={cfg.retries}")
+    print(f"rendered={rendered}")
+    print(f"file_roundtrip={roundtrip == rendered}")
+}

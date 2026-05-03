@@ -1,0 +1,17 @@
+# Test: comments are ignored properly
+# This is a comment
+# expect: hello
+# expect: 42
+# expect: done
+
+# Another comment
+func main() {
+    # comment inside function
+    x: int = 42  # inline comment
+    # print something
+    print("hello")
+    # more comments
+    print(x)
+    # final comment
+    print("done")
+}

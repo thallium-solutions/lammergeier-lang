@@ -1,0 +1,12 @@
+# Test: import from standard library (lammergeieronv)
+# expect: 42
+# expect: 123
+
+from lamconv import Conv
+
+func main() {
+    s: str = Conv.toString(42)
+    print(s)
+    n: int = Conv.toInt("123")
+    print(n)
+}

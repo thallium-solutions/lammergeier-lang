@@ -1,0 +1,28 @@
+# expect: sum: 6
+# expect: sum: 15
+# expect: greet: Hello, World!
+# expect: greet: Hi, Alice!
+# expect: greet: Hey, Bob!
+
+func sumAll(*nums: int) -> int {
+    total: int = 0
+    for n in nums {
+        total = total + n
+    }
+    return total
+}
+
+func greet(name: str = "World", greeting: str = "Hello") -> str {
+    return f"{greeting}, {name}!"
+}
+
+func main() {
+    print(f"sum: {sumAll(1, 2, 3)}")
+    print(f"sum: {sumAll(1, 2, 3, 4, 5)}")
+    r1: str = greet()
+    print(f"greet: {r1}")
+    r2: str = greet("Alice", "Hi")
+    print(f"greet: {r2}")
+    r3: str = greet("Bob", "Hey")
+    print(f"greet: {r3}")
+}

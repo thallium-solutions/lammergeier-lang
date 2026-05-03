@@ -1,0 +1,53 @@
+# Test: Arithmetic operators and expressions
+# expect: 15
+# expect: 5
+# expect: 50
+# expect: 2
+# expect: 0
+# expect: 7
+# expect: -3
+# expect: 100
+# expect: 3
+# expect: 1
+# expect: 6
+# expect: true
+# expect: false
+# expect: true
+# expect: true
+# expect: false
+
+func main() {
+    # Basic arithmetic
+    a: int = 10
+    b: int = 5
+    print(a + b)
+    print(a - b)
+    print(a * b)
+    print(a / b)
+    print(a % b)
+
+    # Operator precedence
+    print(1 + 2 * 3)
+    print(1 - 2 * 2)
+
+    # Compound expressions
+    c: int = (2 + 3) * (4 + 16) / 1
+    print(c)
+
+    # Integer division
+    print(7 / 2)
+
+    # Modulo
+    print(10 % 3)
+
+    # Chained addition
+    x: int = 1 + 2 + 3
+    print(x)
+
+    # Boolean comparisons
+    print(10 > 5)
+    print(10 < 5)
+    print(10 >= 10)
+    print(10 <= 10)
+    print(10 == 5)
+}

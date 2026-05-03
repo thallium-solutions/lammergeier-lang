@@ -1,0 +1,146 @@
+# Test: lamserver Server-Sent Events (Response.sse + SseEmitter).
+# Spins up a tiny event stream, has a custom HTTP client read all the
+# events (since lamhttp doesn't expose streaming), and verifies the
+# wire format. Three named events plus a comment heartbeat and a
+# multi-line payload exercise every emitter method.
+#
+# expect: ct: text/event-stream
+# expect: cache: no-cache
+# expect: events count: 4
+# expect: tick body: tick
+# expect: greet event: greet
+# expect: greet body: hello
+# expect: multi line count: 2
+# expect: multi line first: line1
+# expect: multi line second: line2
+# expect: heartbeat: yes
+# expect: ok
+
+from lamserver import Server, Request, Response, SseEmitter
+from lamhttp import Http
+
+go! {
+    import (
+        "bufio"
+        "io"
+        "net/http"
+        "strings"
+        "time"
+    )
+
+    type sseEvent struct {
+        Name string
+        Data string
+    }
+
+    // Read the SSE stream from ``url`` until ``maxEvents`` events have
+    // arrived (or EOF). Returns the events plus a flag for whether a
+    // ``: heartbeat`` comment was seen.
+    func sseRead(url string, maxEvents int) ([]sseEvent, bool) {
+        client := &http.Client{Timeout: 5 * time.Second}
+        resp, err := client.Get(url)
+        if err != nil { return nil, false }
+        defer resp.Body.Close()
+        events := []sseEvent{}
+        heartbeat := false
+        var current sseEvent
+        var dataLines []string
+        scanner := bufio.NewScanner(resp.Body)
+        flush := func() {
+            if current.Name == "" && len(dataLines) == 0 { return }
+            current.Data = strings.Join(dataLines, "\n")
+            events = append(events, current)
+            current = sseEvent{}
+            dataLines = nil
+        }
+        for scanner.Scan() {
+            line := scanner.Text()
+            if line == "" {
+                flush()
+                if len(events) >= maxEvents { return events, heartbeat }
+                continue
+            }
+            switch {
+            case strings.HasPrefix(line, ":"):
+                heartbeat = true
+            case strings.HasPrefix(line, "event:"):
+                current.Name = strings.TrimSpace(line[len("event:"):])
+            case strings.HasPrefix(line, "data:"):
+                dataLines = append(dataLines, strings.TrimSpace(line[len("data:"):]))
+            }
+        }
+        // Catch a final unterminated event (shouldn't happen with our
+        // emitter but let's be safe).
+        flush()
+        // Drain any remainder.
+        _, _ = io.Copy(io.Discard, resp.Body)
+        return events, heartbeat
+    }
+}
+
+func emitSseStream(emitter: SseEmitter) {
+    emitter.send("tick")
+    emitter.sendEvent("greet", "hello")
+    emitter.send("line1\nline2")
+    emitter.comment("heartbeat")
+    emitter.sendEvent("done", "bye")
+    emitter.close()
+}
+
+func sseHandler(req: Request, res: Response) {
+    res.sse(emitSseStream)
+}
+
+func main() {
+    srv: Server = Server()
+    srv.get("/events", sseHandler)
+    srv.listenBackground(18787)
+
+    ct: str = Http.getHeader("http://127.0.0.1:18787/events", "Content-Type")
+    cache: str = Http.getHeader("http://127.0.0.1:18787/events", "Cache-Control")
+    print(f"ct: {ct}")
+    print(f"cache: {cache}")
+
+    eventCount: int = 0
+    tickBody: str = ""
+    greetEvent: str = ""
+    greetBody: str = ""
+    multiLines: int = 0
+    multiFirst: str = ""
+    multiSecond: str = ""
+    heartbeat: bool = false
+    go! {
+        events, hb := sseRead("http://127.0.0.1:18787/events", 4)
+        eventCount = len(events)
+        if len(events) > 0 {
+            tickBody = events[0].Data
+        }
+        if len(events) > 1 {
+            greetEvent = events[1].Name
+            greetBody = events[1].Data
+        }
+        if len(events) > 2 {
+            parts := strings.Split(events[2].Data, "\n")
+            multiLines = len(parts)
+            if len(parts) > 0 { multiFirst = parts[0] }
+            if len(parts) > 1 { multiSecond = parts[1] }
+        }
+        heartbeat = hb
+    }
+
+    print(f"events count: {eventCount}")
+    print(f"tick body: {tickBody}")
+    print(f"greet event: {greetEvent}")
+    print(f"greet body: {greetBody}")
+    print(f"multi line count: {multiLines}")
+    print(f"multi line first: {multiFirst}")
+    print(f"multi line second: {multiSecond}")
+    hbStr: str = "no"
+    if heartbeat {
+        hbStr = "yes"
+    }
+    print(f"heartbeat: {hbStr}")
+
+    srv.close()
+    print("ok")
+}

@@ -1,0 +1,30 @@
+# Real-world mini project: observer/pub-sub notifications with wildcard subscription.
+# expect: delivered_order=3
+# expect: delivered_audit=1
+# expect: email_count=2
+# expect: audit_count=3
+# expect: sms_last=paid
+# expect: published=3
+
+from bus import EventBus, Subscriber, Message
+
+func main() {
+    bus: EventBus = EventBus()
+    email: Subscriber = Subscriber("email", "order")
+    sms: Subscriber = Subscriber("sms", "order")
+    audit: Subscriber = Subscriber("audit", "*")
+    bus.subscribe(email)
+    bus.subscribe(sms)
+    bus.subscribe(audit)
+
+    deliveredOrder: int = bus.publish(Message("order", "created"))
+    deliveredAudit: int = bus.publish(Message("security", "login"))
+    bus.publish(Message("order", "paid"))
+
+    print(f"delivered_order={deliveredOrder}")
+    print(f"delivered_audit={deliveredAudit}")
+    print(f"email_count={email.received}")
+    print(f"audit_count={audit.received}")
+    print(f"sms_last={sms.last}")
+    print(f"published={bus.published}")
+}

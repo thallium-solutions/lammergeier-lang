@@ -1,0 +1,8 @@
+# expect-error: duplicate import `Strings`
+
+from lamstrings import Strings
+from lamstrings import Strings
+
+func main() {
+    print(0)
+}

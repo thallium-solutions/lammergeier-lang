@@ -1,0 +1,100 @@
+# Integration test: lamserver + lamhttp full round-trip.
+#
+# Spins up a Fastify-style Lammergeier server, registers two routes
+# (a JSON echo and an arithmetic endpoint), connects via the Lam HTTP
+# client, and verifies request bodies, status codes and response
+# bodies all flow through correctly. Also exercises a plug-in (auth
+# guard via a preHandler hook) and the onResponse header injector.
+#
+# This is the "real users wire two stdlib modules together" smoke
+# test — if anything regresses in either lamserver or lamhttp, this
+# usually catches it.
+#
+# expect: echo_payload=hello-world
+# expect: add_result=42
+# expect: missing_no_auth=401
+# expect: missing_with_auth=found
+# expect: header_present=true
+# expect: server_client_ok
+
+from lamserver import Server, Request, Response
+from lamhttp import Http
+
+func echoHandler(req: Request, res: Response) {
+    # Read the raw request body and ship it back. Used to confirm
+    # that POST bodies survive Round-trip in both directions.
+    res.text(req.body)
+}
+
+func addHandler(req: Request, res: Response) {
+    # Compute a + b from query string params. ``query`` is a
+    # ``dict[str, str]`` so values come in pre-parsed strings.
+    aStr: str = req.query["a"]
+    bStr: str = req.query["b"]
+    a: int = int_(aStr)
+    b: int = int_(bStr)
+    res.text(str(a + b))
+}
+
+func protectedHandler(req: Request, res: Response) {
+    res.text("found")
+}
+
+func authGuard(req: Request, res: Response) {
+    if req.path == "/protected" and req.header("X-Auth") != "letmein" {
+        res.setStatus(401)
+        res.text("401")
+    }
+}
+
+func bannerHook(req: Request, res: Response) {
+    res.setHeader("X-Frame", "lamserver")
+}
+
+go! {
+    import "strconv"
+}
+
+func int_(s: str) -> int {
+    go! { n, _ := strconv.Atoi(s); return n }
+}
+
+func main() {
+    srv: Server = Server()
+    srv.onResponse(bannerHook)
+    srv.preHandler(authGuard)
+    srv.post("/echo", echoHandler)
+    srv.get("/add", addHandler)
+    srv.get("/protected", protectedHandler)
+
+    srv.listenBackground(18282)
+
+    # POST with a body — server should echo it back verbatim.
+    echoed: str = Http.post("http://127.0.0.1:18282/echo",
+                            "text/plain", "hello-world")
+    print(f"echo_payload={echoed}")
+
+    # GET with query string.
+    sum: str = Http.get("http://127.0.0.1:18282/add?a=29&b=13")
+    print(f"add_result={sum}")
+
+    # /protected without the X-Auth header → 401 short-circuit.
+    noAuth: str = Http.get("http://127.0.0.1:18282/protected")
+    print(f"missing_no_auth={noAuth}")
+
+    # /protected with the right header → handler runs.
+    headers: dict[str, str] = {}
+    headers["X-Auth"] = "letmein"
+    okBody: str = Http.getWithHeaders("http://127.0.0.1:18282/protected",
+                                       headers)
+    print(f"missing_with_auth={okBody}")
+
+    # onResponse hook: X-Frame header should be set on every reply.
+    frame: str = Http.getHeader("http://127.0.0.1:18282/add?a=1&b=2",
+                                 "X-Frame")
+    headerOk: bool = frame == "lamserver"
+    print(f"header_present={headerOk}")
+
+    srv.close()
+    print("server_client_ok")
+}

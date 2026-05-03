@@ -1,0 +1,16 @@
+# Test: Slice assignment
+# expect: [1 10 20 4 5]
+# expect: [1 2 3]
+# expect: slice_ok
+
+func main() {
+    a: list[int] = [1, 2, 3, 4, 5]
+    a[1:3] = [10, 20]
+    print(a)
+
+    b: list[int] = [1, 2, 3, 4, 5]
+    b[2:5] = [3]
+    print(b)
+
+    print("slice_ok")
+}

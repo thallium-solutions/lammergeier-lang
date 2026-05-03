@@ -1,0 +1,7 @@
+# expect-error: undefined name `oops`
+
+func main() {
+    if true {
+        print(oops)
+    }
+}

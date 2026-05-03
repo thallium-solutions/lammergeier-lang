@@ -1,0 +1,12 @@
+# Test: ternary with arithmetic
+# expect: 30
+# expect: 5
+
+func main() {
+    a: int = 10
+    b: int = 20
+    result: int = a + b if a < b else a - b
+    print(result)
+    result2: int = a - b if a > b else a / 2
+    print(result2)
+}

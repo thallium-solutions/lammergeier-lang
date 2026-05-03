@@ -1,0 +1,76 @@
+# Test: Type annotations - all primitive types, generics, collections
+# expect: 42
+# expect: 3.14
+# expect: hello
+# expect: true
+# expect: 3
+# expect: a=1
+# expect: 8
+# expect: 2
+# expect: 0
+# expect: hello
+# expect: typed_ok
+
+func take_int(x: int) -> int {
+    return x
+}
+
+func take_float(x: float) -> float {
+    return x
+}
+
+func take_str(x: str) -> str {
+    return x
+}
+
+func take_bool(x: bool) -> bool {
+    return x
+}
+
+func list_len(items: list[int]) -> int {
+    return len(items)
+}
+
+func dict_get(d: dict[str, int], key: str) -> int {
+    return d[key]
+}
+
+func first_elem(items: list[str]) -> str {
+    return items[0]
+}
+
+func sum_list(items: list[int]) -> int {
+    total: int = 0
+    item: int = 0
+    for item in items {
+        total = total + item
+    }
+    return total
+}
+
+func main() {
+    print(take_int(42))
+    print(take_float(3.14))
+    print(take_str("hello"))
+    print(take_bool(True))
+
+    nums: list[int] = [1, 2, 3]
+    print(list_len(nums))
+
+    d: dict[str, int] = {"a": 1, "b": 2}
+    key: str = "a"
+    print(f"a={d[key]}")
+
+    print(sum_list(nums) + 2)
+
+    words: list[str] = ["hello", "world"]
+    print(len(words))
+
+    empty: list[int] = []
+    print(len(empty))
+
+    print(first_elem(words))
+
+    # Verify all compiles
+    print("typed_ok")
+}

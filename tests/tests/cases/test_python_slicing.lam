@@ -1,0 +1,36 @@
+# expect: [20 30]
+# expect: [10 20 30]
+# expect: [30 40 50]
+# expect: [10 20 30 40 50]
+# expect: [40 50]
+# expect: [10 20 30 40]
+# expect: [30 40]
+# expect: [10 30 50]
+# expect: [20 40]
+# expect: [50 40 30 20 10]
+# expect: world
+# expect: world
+# expect: dlrow olleh
+# expect: hlowrd
+
+func main() {
+    xs: list[int] = [10, 20, 30, 40, 50]
+    print(xs[1:3])
+    print(xs[:3])
+    print(xs[2:])
+    print(xs[:])
+
+    print(xs[-2:])
+    print(xs[:-1])
+    print(xs[-3:-1])
+
+    print(xs[::2])
+    print(xs[1::2])
+    print(xs[::-1])
+
+    s: str = "hello world"
+    print(s[6:])
+    print(s[-5:])
+    print(s[::-1])
+    print(s[::2])
+}

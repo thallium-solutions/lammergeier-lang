@@ -1,0 +1,62 @@
+go! {
+    import "strconv"
+}
+
+class TokenStream {
+    func init(self, tokens: list[str]) {
+        self.tokens: list[str] = tokens
+        self.pos: int = 0
+    }
+
+    func next(self) -> str {
+        tok: str = self.tokens[self.pos]
+        self.pos += 1
+        return tok
+    }
+
+    func remaining(self) -> int {
+        return len(self.tokens) - self.pos
+    }
+}
+
+class PrefixParser {
+    func init(self, source: str) {
+        self.stream: TokenStream = TokenStream(source.split(" "))
+        self.nodes: int = 0
+    }
+
+    func parseNumber(self, tok: str) -> int {
+        n: int = 0
+        go! {
+            n, _ = strconv.Atoi(tok)
+        }
+        return n
+    }
+
+    func parseExpr(self) -> int {
+        tok: str = self.stream.next()
+        self.nodes += 1
+        if tok == "add" {
+            return self.parseExpr() + self.parseExpr()
+        }
+        if tok == "sub" {
+            return self.parseExpr() - self.parseExpr()
+        }
+        if tok == "mul" {
+            return self.parseExpr() * self.parseExpr()
+        }
+        if tok == "max" {
+            a: int = self.parseExpr()
+            b: int = self.parseExpr()
+            if a > b {
+                return a
+            }
+            return b
+        }
+        return self.parseNumber(tok)
+    }
+}
+
+func main() {
+    pass
+}

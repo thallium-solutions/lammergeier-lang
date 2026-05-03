@@ -1,0 +1,49 @@
+# Test: Numerical edge cases - large numbers, zero, negative, overflow-adjacent
+# expect: 0
+# expect: -1
+# expect: 1
+# expect: 999999999
+# expect: -999999999
+# expect: 0
+# expect: 1
+# expect: true
+# expect: true
+# expect: num_edge_ok
+
+func sign(x: int) -> int {
+    if x > 0 {
+        return 1
+    } elif x < 0 {
+        return -1
+    }
+    return 0
+}
+
+func abs_val(x: int) -> int {
+    if x < 0 {
+        return 0 - x
+    }
+    return x
+}
+
+func main() {
+    # Zero
+    print(sign(0))
+    print(sign(-5))
+    print(sign(5))
+
+    # Large numbers
+    big: int = 999999999
+    print(big)
+    print(0 - big)
+
+    # Min/max of zero
+    print(abs_val(0))
+    print(abs_val(-1))
+
+    # Comparisons with negatives
+    print(-5 < 0)
+    print(-5 < 5)
+
+    print("num_edge_ok")
+}

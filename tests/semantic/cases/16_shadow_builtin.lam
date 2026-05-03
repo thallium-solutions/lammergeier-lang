@@ -1,0 +1,8 @@
+# expect-error: shadows the built-in
+# expect-error: `print`
+
+print: int = 42
+
+func main() {
+    print(0)
+}

@@ -1,0 +1,15 @@
+# Test: import custom library with class
+# expect: 10
+# expect: Hello, World!
+# expect: 7
+
+from myhelper import double, greet, add
+
+func main() {
+    x: int = double(5)
+    print(x)
+    msg: str = greet("World")
+    print(msg)
+    sum: int = add(3, 4)
+    print(sum)
+}

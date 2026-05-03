@@ -1,0 +1,68 @@
+# Test: Variable assignment patterns - augmented, chained, typed
+# expect: 10
+# expect: 20
+# expect: 15
+# expect: 75
+# expect: 25
+# expect: 1
+# expect: hello world
+# expect: true
+# expect: false
+# expect: 0
+# expect: 100
+# expect: 50
+# expect: 1
+# expect: assign_ok
+
+func main() {
+    # Basic typed assignment
+    x: int = 10
+    print(x)
+
+    # Reassignment
+    x = 20
+    print(x)
+
+    # Augmented add
+    x = 10
+    x += 5
+    print(x)
+
+    # Augmented multiply
+    x *= 5
+    print(x)
+
+    # Augmented subtract
+    x -= 50
+    print(x)
+
+    # Augmented modulo
+    x %= 3
+    print(x)
+
+    # String assignment
+    s: str = "hello"
+    s = s + " world"
+    print(s)
+
+    # Boolean assignment
+    flag: bool = True
+    print(flag)
+    flag = False
+    print(flag)
+
+    # Zero initialization
+    z: int = 0
+    print(z)
+
+    # Chain of operations
+    a: int = 10
+    a *= 10
+    print(a)
+    a /= 2
+    print(a)
+    a %= 7
+    print(a)
+
+    print("assign_ok")
+}

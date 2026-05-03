@@ -1,0 +1,12 @@
+# Rosetta Code: Associative array/Creation
+# https://rosettacode.org/wiki/Associative_array/Creation
+# expect: red
+# expect: green
+# expect: blue
+
+func main() {
+    colors: dict[str, str] = {"r": "red", "g": "green", "b": "blue"}
+    print(colors["r"])
+    print(colors["g"])
+    print(colors["b"])
+}

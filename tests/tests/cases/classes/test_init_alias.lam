@@ -1,0 +1,26 @@
+# Test: init as constructor alias (without underscores)
+# expect: Alice
+# expect: 30
+# expect: Bob
+# expect: 25
+
+class Person {
+    func init(self, name: str, age: int) {
+        self.name: str = name
+        self.age: int = age
+    }
+
+    func greet(self) -> str {
+        return self.name
+    }
+}
+
+func main() {
+    p1: Person = Person("Alice", 30)
+    print(p1.greet())
+    print(p1.age)
+
+    p2: Person = Person("Bob", 25)
+    print(p2.greet())
+    print(p2.age)
+}

@@ -1,0 +1,342 @@
+# Test: lamserver — Fastify-style feature parity.
+#
+# Covers the full request-lifecycle ladder, HttpError, central
+# error handler, all three decorator scopes, JSON Schema body /
+# query / params / headers validation, response schema serialization,
+# encapsulated plugins, the requestId plugin, OpenAPI 3.0 generation,
+# and trie-matched wildcard routes.
+#
+# expect: order: onRequest|preParsing|preValidation|preHandler|handler|preSerialization|onSend|onResponse
+# expect: handler-greeting: hello
+# expect: handler-reqdec: r1
+# expect: handler-resdec: rd1
+# expect: httperr-status: 409
+# expect: httperr-body: {"data":{"key":"x"},"error":"Conflict","message":"dup","statusCode":409}
+# expect: panicerr-status: 500
+# expect: panicerr-body: handled by central
+# expect: validate-body-status: 400
+# expect: validate-body-msg-has-validation: true
+# expect: validate-query-status: 400
+# expect: validate-query-msg-has-validation: true
+# expect: response-shaped-body: {"id":1,"name":"a"}
+# expect: encapsulated-shared-status: 200
+# expect: encapsulated-private-header: 1
+# expect: encapsulated-other-header: 
+# expect: requestid-fresh-len: 20
+# expect: requestid-passthrough: existing-id
+# expect: openapi-paths-has-items: true
+# expect: openapi-has-getitems: true
+# expect: openapi-getitem-has-params: true
+# expect: wildcard-rest: a/b/c
+# expect: param-id: 7
+# expect: head-status: 200
+# expect: ready-fired: 1
+# expect: listen-fired: 1
+# expect: close-fired: 1
+
+from lamserver import Server, Request, Response, HttpError
+from lamserver_plugins import requestId
+
+go! {
+    import (
+        "fmt"
+        "strings"
+        "sync"
+    )
+}
+
+go! {
+    var orderEvents []string
+    var orderMu sync.Mutex
+
+    func recordOrder(name string) {
+        orderMu.Lock()
+        orderEvents = append(orderEvents, name)
+        orderMu.Unlock()
+    }
+}
+
+func onReqHook(req: Request, res: Response) {
+    go! { recordOrder("onRequest") }
+}
+
+func preParseHook(req: Request, res: Response) {
+    go! { recordOrder("preParsing") }
+}
+
+func preValHook(req: Request, res: Response) {
+    go! { recordOrder("preValidation") }
+}
+
+func preHandlerHook(req: Request, res: Response) {
+    go! { recordOrder("preHandler") }
+}
+
+func preSerHook(req: Request, res: Response) {
+    go! { recordOrder("preSerialization") }
+}
+
+func onSendHook(req: Request, res: Response) {
+    go! { recordOrder("onSend") }
+}
+
+func onRespHook(req: Request, res: Response) {
+    go! { recordOrder("onResponse") }
+}
+
+func orderRoute(req: Request, res: Response) {
+    go! { recordOrder("handler") }
+    res.text("ok")
+}
+
+func decoratorRoute(req: Request, res: Response) {
+    g: any = req.dec("requestId")
+    rd: any = res.dec("respHelper")
+    out: dict[str, any] = {"greeting": req.dec("greeting"), "reqid": g, "respdec": rd}
+    # the server-level decorator is reachable via req.dec via the
+    # threaded RequestDecorators map; for the server-level dec we
+    # also inject it into RequestDecorators below for ergonomics.
+    res.json(out)
+}
+
+func httpErrRoute(req: Request, res: Response) {
+    panic(HttpError(409, "dup", {"key": "x"}))
+}
+
+func panicRoute(req: Request, res: Response) {
+    panic("kaboom")
+}
+
+func centralErr(err: any, req: Request, res: Response) {
+    res.code(500).text("handled by central")
+}
+
+func itemsList(req: Request, res: Response) {
+    res.code(200).json({"id": 1, "name": "a", "secret": "leak"})
+}
+
+func itemById(req: Request, res: Response) {
+    id: str = req.params[":id"]
+    res.text(f"item:{id}")
+}
+
+func wildcardCatch(req: Request, res: Response) {
+    rest: str = req.params["*"]
+    res.text(rest)
+}
+
+func headHandler(req: Request, res: Response) {
+    res.code(200).text("")
+}
+
+func encapPrivate(req: Request, res: Response) {
+    res.text("priv")
+}
+
+func encapShared(req: Request, res: Response) {
+    res.text("shared")
+}
+
+func encapPlugin(srv: Server) {
+    srv.onRequest(lamSetEncapHeader)
+    srv.get("/private", encapPrivate)
+}
+
+func lamSetEncapHeader(req: Request, res: Response) {
+    res.setHeader("X-Encap", "1")
+}
+
+func reqIdEcho(req: Request, res: Response) {
+    res.text(req.id())
+}
+
+func main() {
+    srv: Server = Server()
+
+    # ── Lifecycle ladder
+    srv.onRequest(onReqHook)
+    srv.preParsing(preParseHook)
+    srv.preValidation(preValHook)
+    srv.preHandler(preHandlerHook)
+    srv.preSerialization(preSerHook)
+    srv.onSend(onSendHook)
+    srv.onResponse(onRespHook)
+
+    srv.get("/order", orderRoute)
+
+    # Run the request and read the recorded order.
+    srv.inject("GET", "/order")
+    order: str = ""
+    go! {
+        orderMu.Lock()
+        order = strings.Join(orderEvents, "|")
+        orderMu.Unlock()
+    }
+    print(f"order: {order}")
+
+    # ── Decorators
+    srv.decorate("greeting", "hello")
+    srv.decorateRequest("requestId", "r1")
+    srv.decorateResponse("respHelper", "rd1")
+    srv.get("/dec", decoratorRoute)
+    out: dict[str, any] = srv.inject("GET", "/dec")
+    body: any = out["body"]
+    bodystr: str = ""
+    go! { if b, ok := body.(string); ok { bodystr = b } }
+    # The body is JSON; check the relevant shards.
+    go! {
+        if strings.Contains(bodystr, `"greeting":"hello"`) {
+            fmt.Println("handler-greeting: hello")
+        } else {
+            fmt.Println("handler-greeting: MISSING ->", bodystr)
+        }
+        if strings.Contains(bodystr, `"reqid":"r1"`) {
+            fmt.Println("handler-reqdec: r1")
+        } else {
+            fmt.Println("handler-reqdec: MISSING")
+        }
+        if strings.Contains(bodystr, `"respdec":"rd1"`) {
+            fmt.Println("handler-resdec: rd1")
+        } else {
+            fmt.Println("handler-resdec: MISSING")
+        }
+    }
+
+    # ── HttpError + central error handler
+    srv.get("/oops", httpErrRoute)
+    eo: dict[str, any] = srv.inject("GET", "/oops")
+    eos: any = eo["status"]
+    eob: any = eo["body"]
+    print(f"httperr-status: {eos}")
+    print(f"httperr-body: {eob}")
+
+    srv.setErrorHandler(centralErr)
+    srv.get("/panic", panicRoute)
+    po: dict[str, any] = srv.inject("GET", "/panic")
+    pos: any = po["status"]
+    pob: any = po["body"]
+    print(f"panicerr-status: {pos}")
+    print(f"panicerr-body: {pob}")
+
+    # ── Schema validation: body
+    bodySchema: str = '{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}'
+    srv.postOpts("/items", itemsList, {"schema": {"body": bodySchema}})
+    bv: dict[str, any] = srv.inject("POST", "/items", "{}", {"Content-Type": "application/json"})
+    bvs: any = bv["status"]
+    bvb: any = bv["body"]
+    print(f"validate-body-status: {bvs}")
+    bvbstr: str = ""
+    go! { if v, ok := bvb.(string); ok { bvbstr = v } }
+    bvHas: bool = false
+    go! { bvHas = strings.Contains(bvbstr, "validation") }
+    print(f"validate-body-msg-has-validation: {bvHas}")
+
+    # ── Schema validation: query
+    qSchema: str = '{"type":"object","required":["q"],"properties":{"q":{"type":"string"}}}'
+    srv.getOpts("/search", orderRoute, {"schema": {"querystring": qSchema}})
+    qv: dict[str, any] = srv.inject("GET", "/search")
+    qvs: any = qv["status"]
+    qvb: any = qv["body"]
+    print(f"validate-query-status: {qvs}")
+    qvbstr: str = ""
+    go! { if v, ok := qvb.(string); ok { qvbstr = v } }
+    qvHas: bool = false
+    go! { qvHas = strings.Contains(qvbstr, "validation") }
+    print(f"validate-query-msg-has-validation: {qvHas}")
+
+    # ── Response schema (drops extra fields)
+    respSchema: str = '{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"}},"required":["id","name"],"additionalProperties":false}'
+    srv.getOpts("/items/list", itemsList, {"schema": {"response": {"200": respSchema}}})
+    rs: dict[str, any] = srv.inject("GET", "/items/list")
+    rsb: any = rs["body"]
+    print(f"response-shaped-body: {rsb}")
+
+    # ── Encapsulated plugin: hook scoped to plugin's routes only
+    srv.get("/shared", encapShared)
+    srv.register(encapPlugin, "", true)
+    enpriv: dict[str, any] = srv.inject("GET", "/private")
+    enprivs: any = enpriv["status"]
+    enprivh: any = enpriv["headers"]
+    enprivHdr: str = ""
+    go! { if hh, ok := enprivh.(map[string]string); ok { enprivHdr = hh["X-Encap"] } }
+    print(f"encapsulated-shared-status: {enprivs}")
+    print(f"encapsulated-private-header: {enprivHdr}")
+    enother: dict[str, any] = srv.inject("GET", "/shared")
+    enotherh: any = enother["headers"]
+    enotherHdr: str = ""
+    go! { if hh, ok := enotherh.(map[string]string); ok { enotherHdr = hh["X-Encap"] } }
+    print(f"encapsulated-other-header: {enotherHdr}")
+
+    # ── requestId plugin
+    srv2: Server = Server()
+    requestId(srv2)
+    srv2.get("/ridfresh", reqIdEcho)
+    rid: dict[str, any] = srv2.inject("GET", "/ridfresh")
+    ridb: any = rid["body"]
+    ridbstr: str = ""
+    go! { if v, ok := ridb.(string); ok { ridbstr = v } }
+    rln: int = len(ridbstr)
+    print(f"requestid-fresh-len: {rln}")
+
+    h: dict[str, str] = {}
+    h["X-Request-Id"] = "existing-id"
+    rid2: dict[str, any] = srv2.inject("GET", "/ridfresh", "", h)
+    rid2b: any = rid2["body"]
+    print(f"requestid-passthrough: {rid2b}")
+
+    # ── OpenAPI generation
+    srv3: Server = Server()
+    srv3.getOpts("/items", itemsList, {
+        "summary": "List items",
+        "operationId": "listItems",
+        "tags": ["items"],
+        "schema": {"response": {"200": respSchema}}
+    })
+    srv3.getOpts("/items/:id", itemById, {
+        "summary": "Get item",
+        "operationId": "getItem"
+    })
+    spec: str = srv3.openapi({"title": "T", "version": "9.9"})
+    has1: bool = false
+    has2: bool = false
+    has3: bool = false
+    go! {
+        has1 = strings.Contains(spec, `"/items"`)
+        has2 = strings.Contains(spec, `"operationId": "listItems"`)
+        has3 = strings.Contains(spec, `"name": "id"`)
+    }
+    print(f"openapi-paths-has-items: {has1}")
+    print(f"openapi-has-getitems: {has2}")
+    print(f"openapi-getitem-has-params: {has3}")
+
+    # ── Wildcard + parametric trie matching
+    srv4: Server = Server()
+    srv4.get("/files/*", wildcardCatch)
+    srv4.get("/users/:id", itemById)
+    srv4.head("/h", headHandler)
+    wo: dict[str, any] = srv4.inject("GET", "/files/a/b/c")
+    wob: any = wo["body"]
+    print(f"wildcard-rest: {wob}")
+    pp: dict[str, any] = srv4.inject("GET", "/users/7")
+    ppb: any = pp["body"]
+    go! { if s, ok := ppb.(string); ok { fmt.Printf("param-id: %s\n", strings.TrimPrefix(s, "item:")) } }
+    ho: dict[str, any] = srv4.inject("HEAD", "/h")
+    hos: any = ho["status"]
+    print(f"head-status: {hos}")
+
+    # ── App-lifecycle hooks
+    srv5: Server = Server()
+    readyFired: int = 0
+    listenFired: int = 0
+    closeFired: int = 0
+    go! {
+        srv5.OnReadyHooks = append(srv5.OnReadyHooks, func(s *Server) { readyFired = 1 })
+        srv5.OnListenHooks = append(srv5.OnListenHooks, func(s *Server) { listenFired = 1 })
+        srv5.OnCloseHooks = append(srv5.OnCloseHooks, func(s *Server) { closeFired = 1 })
+    }
+    srv5.listenBackground(0)
+    srv5.close()
+    print(f"ready-fired: {readyFired}")
+    print(f"listen-fired: {listenFired}")
+    print(f"close-fired: {closeFired}")
+}

@@ -1,0 +1,58 @@
+# Test: Go standard library usage via go! blocks
+# expect: 42
+# expect: 3.14
+# expect: true_str
+# expect: HELLO
+# expect: hello
+# expect: true
+# expect: false
+# expect: 3
+# expect: h-e-l-l-o
+# expect: 13
+# expect: 5
+# expect: go_stdlib2_ok
+
+func main() {
+    # strconv
+    go! {
+        import "strconv"
+        n, _ := strconv.Atoi("42")
+        fmt.Println(n)
+    }
+    go! {
+        import "strconv"
+        f, _ := strconv.ParseFloat("3.14", 64)
+        fmt.Println(f)
+    }
+    go! {
+        import "strconv"
+        b, _ := strconv.ParseBool("true")
+        if b {
+            fmt.Println("true_str")
+        }
+    }
+    # strings package
+    go! {
+        import "strings"
+        fmt.Println(strings.ToUpper("hello"))
+        fmt.Println(strings.ToLower("HELLO"))
+        fmt.Println(strings.Contains("hello world", "world"))
+        fmt.Println(strings.Contains("hello world", "xyz"))
+        fmt.Println(strings.Count("abcabcabc", "abc"))
+    }
+    go! {
+        import "strings"
+        parts := []string{"h", "e", "l", "l", "o"}
+        fmt.Println(strings.Join(parts, "-"))
+    }
+    # math package
+    go! {
+        import "math"
+        fmt.Println(math.Sqrt(169))
+    }
+    go! {
+        import "math"
+        fmt.Println(math.Sqrt(25.0))
+    }
+    print("go_stdlib2_ok")
+}

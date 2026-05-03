@@ -1,0 +1,76 @@
+# Test: CircuitBreaker — closed → open → half-open → closed cycle.
+#
+# expect: state-initial: closed
+# expect: ok-call: ok
+# expect: state-after-success: closed
+# expect: state-after-trip: open
+# expect: open-blocks: blocked
+# expect: state-after-cooldown: half-open
+# expect: state-after-recovery: closed
+
+from lamserver_plugins import CircuitBreaker
+from lamerrors import Result
+
+go! {
+    import (
+        "fmt"
+        "time"
+    )
+}
+
+go! {
+    var failNext bool
+
+    func goodFn() { /* nothing */ }
+
+    func flakyFn() {
+        if failNext { panic("downstream error") }
+    }
+}
+
+func main() {
+    cb = CircuitBreaker(2, 100)
+    print(f"state-initial: {cb.state()}")
+
+    # First call succeeds.
+    go! {
+        r := cb.CallFn(goodFn).(*Result)
+        if r.Ok() {
+            fmt.Println("ok-call: ok")
+        } else {
+            fmt.Println("ok-call: FAIL")
+        }
+    }
+    print(f"state-after-success: {cb.state()}")
+
+    # Two failures should trip the breaker (threshold=2).
+    go! {
+        failNext = true
+        cb.CallFn(flakyFn)
+        cb.CallFn(flakyFn)
+    }
+    print(f"state-after-trip: {cb.state()}")
+
+    # OPEN state rejects immediately without invoking ``flakyFn``.
+    go! {
+        failNext = false
+        rOpen := cb.CallFn(flakyFn).(*Result)
+        if !rOpen.Ok() {
+            fmt.Println("open-blocks: blocked")
+        } else {
+            fmt.Println("open-blocks: NOT BLOCKED")
+        }
+    }
+
+    # Wait past the cooldown to flip to HALF_OPEN.
+    go! {
+        time.Sleep(150 * time.Millisecond)
+    }
+    print(f"state-after-cooldown: {cb.state()}")
+
+    # A successful call in HALF_OPEN closes the breaker.
+    go! {
+        cb.CallFn(goodFn)
+    }
+    print(f"state-after-recovery: {cb.state()}")
+}

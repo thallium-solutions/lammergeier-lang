@@ -1,0 +1,23 @@
+# Recursive fibonacci — measures function-call overhead and the
+# int-arithmetic fast path. N tuned to stay under ~50ms on a modern
+# laptop so a regression of ±10ms is comfortably visible in the
+# best-of-3 timing.
+
+func fib(n: int) -> int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+func main() {
+    total: int = 0
+    for __i in range(5) {
+        total = total + fib(28)
+    }
+    # Consume the result so the optimiser can't eliminate the
+    # recursion entirely.
+    if total < 0 {
+        print("unreachable")
+    }
+}

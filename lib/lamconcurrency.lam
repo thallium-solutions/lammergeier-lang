@@ -1,0 +1,195 @@
+# Lammergeier standard library: concurrency primitives
+# Import with: from lamconcurrency import Channel, WaitGroup, Mutex, RWMutex, Atomic
+#
+# Thin wrappers around Go's `sync` and `sync/atomic` packages so that user
+# code can spawn and coordinate goroutines without reaching for go! blocks
+# on every line.
+
+go! {
+    import (
+        "sync"
+        "sync/atomic"
+    )
+}
+
+class Channel {
+    #- Buffered channel of `any` values. -#
+
+    func __init__(self, size: int) {
+        self.ch: any = None
+        go! {
+            s.Ch = make(chan interface{}, size)
+        }
+    }
+
+    func send(self, val: any) {
+        go! {
+            s.Ch.(chan interface{}) <- val
+        }
+    }
+
+    func recv(self) -> any {
+        go! {
+            return <-s.Ch.(chan interface{})
+        }
+    }
+
+    func tryRecv(self) -> any {
+        #- Non-blocking receive. Returns None if no value is available. -#
+        go! {
+            select {
+            case v := <-s.Ch.(chan interface{}):
+                return v
+            default:
+                return nil
+            }
+        }
+    }
+
+    func close(self) {
+        go! {
+            close(s.Ch.(chan interface{}))
+        }
+    }
+}
+
+class WaitGroup {
+    #- Wrapper around sync.WaitGroup. -#
+
+    func __init__(self) {
+        self.wg: any = None
+        go! {
+            s.Wg = &sync.WaitGroup{}
+        }
+    }
+
+    func add(self, n: int) {
+        go! {
+            s.Wg.(*sync.WaitGroup).Add(n)
+        }
+    }
+
+    func done(self) {
+        go! {
+            s.Wg.(*sync.WaitGroup).Done()
+        }
+    }
+
+    func wait(self) {
+        go! {
+            s.Wg.(*sync.WaitGroup).Wait()
+        }
+    }
+}
+
+class Mutex {
+    #- Wrapper around sync.Mutex. -#
+
+    func __init__(self) {
+        self.mu: any = None
+        go! {
+            s.Mu = &sync.Mutex{}
+        }
+    }
+
+    func lock(self) {
+        go! {
+            s.Mu.(*sync.Mutex).Lock()
+        }
+    }
+
+    func unlock(self) {
+        go! {
+            s.Mu.(*sync.Mutex).Unlock()
+        }
+    }
+}
+
+class RWMutex {
+    #- Wrapper around sync.RWMutex. Use for read-heavy critical sections. -#
+
+    func __init__(self) {
+        self.mu: any = None
+        go! {
+            s.Mu = &sync.RWMutex{}
+        }
+    }
+
+    func lock(self) {
+        go! {
+            s.Mu.(*sync.RWMutex).Lock()
+        }
+    }
+
+    func unlock(self) {
+        go! {
+            s.Mu.(*sync.RWMutex).Unlock()
+        }
+    }
+
+    func rLock(self) {
+        go! {
+            s.Mu.(*sync.RWMutex).RLock()
+        }
+    }
+
+    func rUnlock(self) {
+        go! {
+            s.Mu.(*sync.RWMutex).RUnlock()
+        }
+    }
+}
+
+class Atomic {
+    #- Thread-safe 64-bit integer counter backed by sync/atomic. -#
+
+    func __init__(self, val: int) {
+        self.val: any = None
+        go! {
+            v := new(int64)
+            *v = int64(val)
+            s.Val = v
+        }
+    }
+
+    func get(self) -> int {
+        go! {
+            return int(atomic.LoadInt64(s.Val.(*int64)))
+        }
+    }
+
+    func set(self, v: int) {
+        go! {
+            atomic.StoreInt64(s.Val.(*int64), int64(v))
+        }
+    }
+
+    func increment(self) -> int {
+        go! {
+            return int(atomic.AddInt64(s.Val.(*int64), 1))
+        }
+    }
+
+    func decrement(self) -> int {
+        go! {
+            return int(atomic.AddInt64(s.Val.(*int64), -1))
+        }
+    }
+
+    func add(self, n: int) -> int {
+        go! {
+            return int(atomic.AddInt64(s.Val.(*int64), int64(n)))
+        }
+    }
+
+    func compareAndSwap(self, old: int, replacement: int) -> bool {
+        #- Atomically swap to `replacement` only if the current value == `old`. -#
+        go! {
+            return atomic.CompareAndSwapInt64(s.Val.(*int64), int64(old), int64(replacement))
+        }
+    }
+}
+
+func main() {
+    pass
+}

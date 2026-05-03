@@ -1,0 +1,71 @@
+# Test: Mixed Python + Go patterns - combining both
+# expect: py_sum: 55
+# expect: go_sum: 55
+# expect: py_max: 9
+# expect: go_max: 9
+# expect: greeting: Hello, World!
+# expect: reversed: !dlroW ,olleH
+# expect: mixed_ok
+
+func py_sum(n: int) -> int {
+    total: int = 0
+    i: int = 0
+    for i in range(1, n + 1) {
+        total = total + i
+    }
+    return total
+}
+
+func py_max_list(items: list[int]) -> int {
+    best: int = items[0]
+    item: int = 0
+    for item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+
+func main() {
+    # Python sum
+    print(f"py_sum: {py_sum(10)}")
+
+    # Go sum
+    go! {
+        total := 0
+        for i := 1; i <= 10; i++ {
+            total += i
+        }
+        fmt.Println(fmt.Sprintf("go_sum: %d", total))
+    }
+    # Python max
+    nums: list[int] = [3, 1, 4, 1, 5, 9, 2, 6, 5]
+    print(f"py_max: {py_max_list(nums)}")
+
+    # Go max
+    go! {
+        goNums := []int{3, 1, 4, 1, 5, 9, 2, 6, 5}
+        best := goNums[0]
+        for _, n := range goNums {
+            if n > best {
+                best = n
+            }
+        }
+        fmt.Println(fmt.Sprintf("go_max: %d", best))
+    }
+    # Python string
+    greeting: str = "Hello, World!"
+    print(f"greeting: {greeting}")
+
+    # Go string reverse
+    go! {
+        s := "Hello, World!"
+        runes := []rune(s)
+        for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+            runes[i], runes[j] = runes[j], runes[i]
+        }
+        fmt.Println("reversed: " + string(runes))
+    }
+    print("mixed_ok")
+}

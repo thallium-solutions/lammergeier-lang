@@ -1,0 +1,793 @@
+/* ============================================================
+   Lammergeier Lang — website theme
+   Palette pulled straight off the logo: dark slate-indigo base,
+   warm ochre/amber accents, bone-ivory text, deep shadows.
+   ============================================================ */
+
+:root {
+    /* Base surfaces */
+    --bg:              #1d222d;
+    --bg-elev-1:       #242b38;
+    --bg-elev-2:       #2c3444;
+    --bg-elev-3:       #36405452;
+    --border:          #3a4456;
+    --border-strong:   #56627a;
+
+    /* Text */
+    --text:            #eadbbb;
+    --text-dim:        #c5b99a;
+    --text-faint:      #8a8270;
+
+    /* Accent — ochre gradient like the bird's plumage */
+    --accent:          #e0a94a;
+    --accent-bright:   #f4b860;
+    --accent-deep:     #c68a24;
+    --accent-glow:     rgba(224, 169, 74, 0.18);
+
+    /* Semantic */
+    --code-bg:         #171b24;
+    --code-text:       #f3e5cb;
+    --success:         #9bc168;
+    --danger:          #d67b63;
+
+    /* Typography */
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
+                  "Inter", "Liberation Sans", system-ui, sans-serif;
+    --font-serif: "Iowan Old Style", "Palatino Linotype", Georgia,
+                  "Book Antiqua", serif;
+    --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", "Menlo",
+                  Consolas, "Liberation Mono", monospace;
+
+    /* Layout */
+    --radius: 10px;
+    --radius-lg: 16px;
+    --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    --content-max: 880px;
+}
+
+* { box-sizing: border-box; }
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+body {
+    /* Subtle radial ochre glow anchored to the top-left, evokes
+       the amber halo around the bird in the logo. */
+    background-image:
+        radial-gradient(1200px 600px at 10% -10%, rgba(224, 169, 74, 0.08), transparent 60%),
+        radial-gradient(900px 500px at 110% 0%, rgba(64, 82, 115, 0.35), transparent 70%);
+    background-attachment: fixed;
+}
+
+a {
+    color: var(--accent-bright);
+    text-decoration: none;
+    border-bottom: 1px dotted transparent;
+    transition: border-color 120ms ease;
+}
+a:hover { border-bottom-color: var(--accent-bright); }
+
+/* ─── Header ──────────────────────────────────────────────── */
+.site-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.2rem;
+    padding: 0.75rem 1.5rem;
+    background: rgba(29, 34, 45, 0.9);
+    backdrop-filter: saturate(150%) blur(10px);
+    -webkit-backdrop-filter: saturate(150%) blur(10px);
+    border-bottom: 1px solid var(--border);
+}
+.site-header .brand {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    font-family: var(--font-serif);
+    font-size: 1.25rem;
+    letter-spacing: 0.02em;
+    color: var(--text);
+}
+.site-header .brand img {
+    /* The transparent ``icon.png`` looks better unframed — drop the
+       border-shadow that was there for the rectangular ``logo.png``
+       and let the bird sit directly on the header. */
+    width: 36px; height: 36px;
+    object-fit: contain;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+.site-header nav {
+    display: flex;
+    gap: 1.25rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.site-header nav a {
+    color: var(--text-dim);
+    font-size: 0.95rem;
+    border-bottom: none;
+    padding: 0.35rem 0.6rem;
+    border-radius: 6px;
+    transition: background 120ms ease, color 120ms ease;
+}
+.site-header nav a:hover {
+    background: var(--bg-elev-2);
+    color: var(--text);
+}
+.site-header nav a.active {
+    color: var(--accent-bright);
+    background: rgba(224, 169, 74, 0.1);
+}
+.site-header nav a.github {
+    background: var(--bg-elev-2);
+    color: var(--text);
+}
+.site-header nav a.github:hover {
+    background: var(--bg-elev-3);
+}
+
+/* ─── Hero ────────────────────────────────────────────────── */
+.hero {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr;
+    gap: 2rem;
+    align-items: center;
+    max-width: 1150px;
+    margin: 3rem auto 1.5rem;
+    padding: 2rem 1.5rem;
+}
+.hero h1 {
+    font-family: var(--font-serif);
+    font-size: clamp(2.2rem, 4vw, 3.4rem);
+    line-height: 1.08;
+    margin: 0 0 1rem 0;
+    color: var(--text);
+    letter-spacing: -0.01em;
+}
+.hero h1 .accent {
+    color: var(--accent-bright);
+    background: linear-gradient(90deg, var(--accent-bright), var(--accent-deep));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.hero p.lede {
+    font-size: 1.2rem;
+    color: var(--text-dim);
+    margin: 0 0 1.8rem 0;
+    max-width: 42em;
+}
+.hero .cta {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+.hero .cta a {
+    padding: 0.7rem 1.2rem;
+    border-radius: 8px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    border-bottom: 1px solid transparent;
+    transition: transform 80ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+.hero .cta .primary {
+    background: linear-gradient(180deg, var(--accent-bright), var(--accent-deep));
+    color: #1a1d26;
+    box-shadow: 0 4px 12px var(--accent-glow);
+}
+.hero .cta .primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px var(--accent-glow);
+}
+.hero .cta .ghost {
+    background: transparent;
+    color: var(--text);
+    border-color: var(--border-strong);
+}
+.hero .cta .ghost:hover {
+    background: var(--bg-elev-2);
+    border-color: var(--accent);
+}
+.hero .media {
+    text-align: center;
+}
+.hero .media img {
+    max-width: 100%;
+    height: auto;
+    max-height: 320px;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow), 0 0 0 1px var(--border);
+}
+
+/* ─── Section grids ───────────────────────────────────────── */
+section.band {
+    padding: 3rem 1.5rem;
+    border-top: 1px solid var(--border);
+}
+section.band.alt {
+    background: linear-gradient(180deg, transparent, rgba(0,0,0,0.18));
+}
+section.band h2 {
+    font-family: var(--font-serif);
+    font-size: 2rem;
+    margin: 0 auto 1.5rem;
+    max-width: 1150px;
+    color: var(--text);
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1rem;
+    max-width: 1150px;
+    margin: 0 auto;
+}
+.card {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    transition: transform 100ms ease, border-color 120ms ease, background 150ms ease;
+}
+.card:hover {
+    transform: translateY(-2px);
+    border-color: var(--accent);
+    background: var(--bg-elev-2);
+}
+.card h3 {
+    margin: 0 0 0.4rem 0;
+    color: var(--accent-bright);
+    font-size: 1.05rem;
+    font-family: var(--font-sans);
+    letter-spacing: 0.01em;
+}
+.card p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 0.95rem;
+}
+
+/* ─── Section utility blocks ──────────────────────────────── */
+/* Lede paragraph that introduces a band — slightly larger, dim. */
+.band-lede {
+    max-width: 920px;
+    margin: -0.4rem auto 1.4rem;
+    color: var(--text-dim);
+    font-size: 1.05rem;
+}
+/* Trailing paragraph at the bottom of a band, e.g. "see also". */
+.band-cta {
+    max-width: 920px;
+    margin: 1.6rem auto 0;
+    color: var(--text-dim);
+    font-size: 0.98rem;
+}
+/* Generic dim paragraph used inside hero / sample blocks. */
+.muted {
+    color: var(--text-dim);
+    margin-top: 0;
+}
+/* The single big code block under "A real HTTP service ..." */
+.hero-sample {
+    max-width: 920px;
+    margin: 0 auto;
+}
+.hero-sample pre {
+    margin-top: 1rem;
+}
+
+/* ─── Tour cards (home page "Tour the language") ──────────── */
+.tour {
+    display: grid;
+    /* Two equal columns capped at the same 1150px the ``.grid`` rule
+       uses for the "Why Lammergeier" section, so the cards line up
+       with the section ``<h2>`` (which is also 1150px max-width).
+       ``minmax(0, 1fr)`` is critical: without the ``0`` lower bound,
+       long ``<pre>`` content forces the column to grow past its 1fr
+       share, breaking the equal-width layout. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.25rem;
+    max-width: 1150px;
+    margin: 0 auto;
+}
+.tour-card {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.4rem 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    transition: border-color 120ms ease, transform 100ms ease;
+}
+.tour-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+}
+.tour-card h3 {
+    margin: 0;
+    color: var(--accent-bright);
+    font-size: 1.1rem;
+    font-family: var(--font-sans);
+}
+.tour-card p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 0.95rem;
+    line-height: 1.5;
+}
+.tour-card pre {
+    margin: 0;
+    flex: 1;
+    /* Slightly smaller font so multi-line snippets fit comfortably
+       in the side-by-side card grid without horizontal scrolling
+       on mid-sized viewports. */
+    font-size: 0.85rem;
+    line-height: 1.5;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    /* ``min-width: 0`` allows the column's ``minmax(0, 1fr)`` rule
+       to actually clamp the pre when a snippet has overflow lines.
+       ``max-width: 100%`` prevents the pre from blowing the card
+       wider than its grid track on long lines. */
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    /* Slightly tighter padding so the small font doesn't drown
+       inside the default 1rem 1.25rem ``pre`` padding. */
+    padding: 0.85rem 1rem;
+}
+.tour-card p code,
+.tour-card h3 code {
+    /* Don't let inline ``<code>`` in the blurb push the card wider
+       than its column on phones — wrap on word boundaries. */
+    word-break: break-word;
+}
+
+/* ── Tablet: cards collapse to one column at the docs breakpoint. */
+@media (max-width: 900px) {
+    .tour {
+        grid-template-columns: 1fr;
+        max-width: 720px;       /* keep code at a sane reading width */
+        gap: 1rem;
+    }
+}
+
+/* ── Phone: tighter padding & font, full-bleed scrollable pre. */
+@media (max-width: 560px) {
+    .tour-card {
+        padding: 1rem 1rem 1.1rem;
+    }
+    .tour-card h3 { font-size: 1rem; }
+    .tour-card p  { font-size: 0.9rem; }
+    .tour-card pre {
+        font-size: 0.78rem;
+        line-height: 1.45;
+        padding: 0.75rem 0.9rem;
+    }
+    .band-lede, .band-cta { font-size: 0.95rem; }
+    section.band { padding: 2rem 1rem; }
+}
+
+/* ─── "What is Lammergeier?" two-column prose ─────────────── */
+.prose-2col {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2rem;
+    max-width: 1150px;
+    margin: 0 auto;
+    color: var(--text-dim);
+    font-size: 1.02rem;
+    line-height: 1.65;
+}
+.prose-2col p { margin: 0 0 1rem; }
+.prose-2col strong { color: var(--text); }
+.prose-2col code { color: var(--accent-bright); }
+@media (max-width: 900px) {
+    .prose-2col {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+    }
+}
+
+/* ─── "How it's made" four-step pipeline ──────────────────── */
+.pipeline {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1rem;
+    max-width: 1150px;
+    margin: 0 auto;
+}
+.pipeline .step {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.2rem;
+    position: relative;
+    transition: border-color 120ms ease, transform 100ms ease;
+}
+.pipeline .step:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+}
+.pipeline .step .num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: linear-gradient(180deg, var(--accent-bright), var(--accent-deep));
+    color: #1a1d26;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    margin-bottom: 0.6rem;
+    box-shadow: 0 2px 6px var(--accent-glow);
+}
+.pipeline .step h3 {
+    margin: 0 0 0.4rem;
+    color: var(--accent-bright);
+    font-size: 1.05rem;
+    font-family: var(--font-sans);
+}
+.pipeline .step p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 0.92rem;
+    line-height: 1.5;
+}
+@media (max-width: 900px) {
+    .pipeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+    .pipeline { grid-template-columns: 1fr; }
+}
+
+/* ─── "Get started" two-column quick-install pair ─────────── */
+.getstarted {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.5rem;
+    max-width: 1150px;
+    margin: 0 auto;
+}
+.getstarted > div {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.4rem;
+}
+.getstarted h3 {
+    margin: 0 0 0.75rem;
+    color: var(--accent-bright);
+    font-family: var(--font-sans);
+    font-size: 1.1rem;
+}
+.getstarted pre {
+    margin: 0 0 0.75rem;
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+.getstarted .band-cta {
+    margin: 0;
+    font-size: 0.92rem;
+}
+@media (max-width: 900px) {
+    .getstarted { grid-template-columns: 1fr; }
+}
+
+/* ─── Code samples ────────────────────────────────────────── */
+pre, code {
+    font-family: var(--font-mono);
+}
+code {
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: 0.12em 0.35em;
+    border-radius: 4px;
+    font-size: 0.92em;
+}
+pre {
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: 1rem 1.25rem;
+    border-radius: var(--radius);
+    overflow: auto;
+    line-height: 1.55;
+    font-size: 0.92rem;
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    max-width: 100%;
+}
+pre code {
+    background: transparent;
+    padding: 0;
+    border: 0;
+    font-size: inherit;
+}
+
+/* hljs overrides to match our palette */
+.hljs                 { background: transparent !important; color: var(--code-text); }
+.hljs-keyword         { color: #f3a84a; }
+.hljs-built_in        { color: #e0a94a; }
+.hljs-string          { color: #c3d489; }
+.hljs-number          { color: #e6b5a1; }
+.hljs-comment         { color: #6d7792; font-style: italic; }
+.hljs-title,
+.hljs-title.function_ { color: #d8c69a; }
+.hljs-type            { color: #d8c69a; }
+.hljs-params          { color: var(--text-dim); }
+.hljs-variable,
+.hljs-attr            { color: #f2dba2; }
+.hljs-meta,
+.hljs-literal         { color: #9bc168; }
+
+/* ─── Docs layout ────────────────────────────────────────── */
+.docs {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+    gap: 2rem;
+    max-width: 1260px;
+    margin: 2rem auto;
+    padding: 0 1.5rem 4rem;
+}
+.docs aside {
+    position: sticky;
+    top: 4.5rem;
+    align-self: start;
+    max-height: calc(100vh - 5rem);
+    overflow: auto;
+    border-right: 1px solid var(--border);
+    padding-right: 1rem;
+}
+.docs aside h4 {
+    margin: 1rem 0 0.3rem;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+}
+.docs aside ul {
+    list-style: none;
+    margin: 0 0 0.6rem;
+    padding: 0;
+}
+.docs aside li { margin: 0; }
+.docs aside a {
+    display: block;
+    padding: 0.3rem 0.55rem;
+    border-radius: 6px;
+    color: var(--text-dim);
+    font-size: 0.93rem;
+    border-bottom: none;
+    line-height: 1.3;
+}
+.docs aside a:hover {
+    background: var(--bg-elev-2);
+    color: var(--text);
+}
+.docs aside a.active {
+    background: rgba(224, 169, 74, 0.12);
+    color: var(--accent-bright);
+}
+.docs main {
+    min-width: 0;
+}
+.docs main .content {
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 2rem 2.25rem;
+    max-width: var(--content-max);
+    box-shadow: var(--shadow);
+}
+.docs main h1 {
+    font-family: var(--font-serif);
+    margin-top: 0;
+    color: var(--text);
+}
+.docs main h2 {
+    font-family: var(--font-serif);
+    margin-top: 2rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.35rem;
+    color: var(--text);
+}
+.docs main h3 { color: var(--accent-bright); }
+.docs main table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.94rem;
+}
+.docs main th, .docs main td {
+    border: 1px solid var(--border);
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    vertical-align: top;
+}
+.docs main th {
+    background: var(--bg-elev-2);
+    color: var(--text);
+}
+.docs main blockquote {
+    border-left: 3px solid var(--accent);
+    padding: 0.2rem 1rem;
+    margin: 1rem 0;
+    color: var(--text-dim);
+    background: rgba(224, 169, 74, 0.05);
+}
+.docs main hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 2rem 0;
+}
+
+/* Anchor hover indicator */
+.docs main h1:hover::after,
+.docs main h2:hover::after,
+.docs main h3:hover::after,
+.docs main h4:hover::after {
+    content: " ¶";
+    color: var(--text-faint);
+    font-size: 0.7em;
+    margin-left: 0.25rem;
+}
+
+/* ─── Search ──────────────────────────────────────────────── */
+.search-wrap {
+    position: relative;
+}
+.search-wrap input {
+    width: 240px;
+    padding: 0.42rem 0.75rem 0.42rem 2rem;
+    background: var(--bg-elev-1);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.92rem;
+    outline: none;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+.search-wrap input::placeholder { color: var(--text-faint); }
+.search-wrap input:focus {
+    border-color: var(--accent);
+    background: var(--bg-elev-2);
+}
+.search-wrap::before {
+    content: "⌕";
+    position: absolute;
+    left: 0.65rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-faint);
+    font-size: 1rem;
+    pointer-events: none;
+}
+.search-results {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: 420px;
+    max-height: 60vh;
+    overflow: auto;
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 0.35rem 0;
+    display: none;
+    z-index: 40;
+}
+.search-results.open { display: block; }
+.search-results .result {
+    display: block;
+    padding: 0.55rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    border-bottom: none;
+}
+.search-results .result:hover,
+.search-results .result.highlight {
+    background: var(--bg-elev-2);
+}
+.search-results .result .title {
+    font-weight: 600;
+    color: var(--accent-bright);
+    font-size: 0.95rem;
+    display: block;
+}
+.search-results .result .crumbs {
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    display: block;
+    margin-top: 2px;
+}
+.search-results .result .snippet {
+    font-size: 0.86rem;
+    color: var(--text-dim);
+    margin-top: 4px;
+    display: block;
+    line-height: 1.35;
+}
+.search-results .result mark {
+    background: rgba(224, 169, 74, 0.25);
+    color: var(--accent-bright);
+    padding: 0 2px;
+    border-radius: 3px;
+}
+.search-empty {
+    padding: 0.9rem;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 0.92rem;
+}
+
+/* ─── Footer ─────────────────────────────────────────────── */
+.site-footer {
+    border-top: 1px solid var(--border);
+    padding: 2rem 1.5rem;
+    color: var(--text-faint);
+    font-size: 0.9rem;
+    text-align: center;
+    background: rgba(0, 0, 0, 0.15);
+}
+.site-footer a { color: var(--text-dim); }
+.site-footer a:hover { color: var(--accent-bright); }
+
+/* ─── Responsive ─────────────────────────────────────────── */
+@media (max-width: 900px) {
+    .hero {
+        grid-template-columns: 1fr;
+        padding: 1.5rem 1.2rem;
+        text-align: center;
+    }
+    .hero .media img { max-height: 220px; }
+    .hero .cta { justify-content: center; }
+    .docs {
+        grid-template-columns: 1fr;
+        padding: 0 1rem 3rem;
+    }
+    .docs aside {
+        position: static;
+        max-height: none;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        padding: 0 0 1rem;
+        margin-bottom: 1rem;
+    }
+    .site-header {
+        padding: 0.6rem 1rem;
+        flex-wrap: wrap;
+    }
+    .site-header nav { gap: 0.6rem; }
+    .search-wrap input { width: 160px; }
+    .search-results { width: 90vw; right: -1rem; }
+    .docs main .content { padding: 1.25rem 1.25rem; }
+}
+
+/* Loading indicator */
+.loading {
+    padding: 3rem 1.5rem;
+    text-align: center;
+    color: var(--text-faint);
+    font-style: italic;
+}
+
+/* Heading anchors */
+.docs main h1 a, .docs main h2 a, .docs main h3 a,
+.docs main h4 a, .docs main h5 a, .docs main h6 a {
+    color: inherit;
+    border-bottom: none;
+}

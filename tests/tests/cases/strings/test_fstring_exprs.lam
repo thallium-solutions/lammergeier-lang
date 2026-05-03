@@ -1,0 +1,16 @@
+# Test: f-string with expressions and format specs
+# expect: Hello, World!
+# expect: x=10, y=20
+# expect: sum=30
+# expect: Pi is 3.14
+
+func main() {
+    name: str = "World"
+    print(f"Hello, {name}!")
+    x: int = 10
+    y: int = 20
+    print(f"x={x}, y={y}")
+    print(f"sum={x + y}")
+    pi: float = 3.14159
+    print(f"Pi is {pi:.2f}")
+}

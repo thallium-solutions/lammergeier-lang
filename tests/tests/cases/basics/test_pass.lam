@@ -1,0 +1,54 @@
+# Test: Pass statement, empty blocks, minimal functions
+# expect: before
+# expect: after
+# expect: loop_pass_ok
+# expect: if_pass_ok
+# expect: func_pass_ok
+# expect: class_pass_ok
+# expect: minimal_ok
+
+func do_nothing() {
+    pass
+}
+
+class EmptyClass {
+    func __init__(self) {
+        self.x: int = 0
+    }
+}
+
+func minimal() -> int {
+    return 1
+}
+
+func main() {
+    print("before")
+    do_nothing()
+    print("after")
+
+    # Pass in loop
+    i: int = 0
+    for i in range(10) {
+        pass
+    }
+    print("loop_pass_ok")
+
+    # Pass in if
+    if True {
+        pass
+    }
+    print("if_pass_ok")
+
+    # Minimal function
+    if minimal() == 1 {
+        print("func_pass_ok")
+    }
+
+    # Empty-ish class
+    e: EmptyClass = EmptyClass()
+    if e.x == 0 {
+        print("class_pass_ok")
+    }
+
+    print("minimal_ok")
+}

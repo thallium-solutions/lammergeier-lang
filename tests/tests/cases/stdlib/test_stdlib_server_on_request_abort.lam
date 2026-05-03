@@ -1,0 +1,94 @@
+# Integration test: ``Server.onRequestAbort`` fires when the
+# client disconnects before the handler finishes writing.
+#
+# We run the scenario end-to-end in one process:
+#
+#   1. Start a ``listenBackground`` server with a 400 ms sleepy
+#      handler + a hook that bumps a package-level atomic counter.
+#   2. Issue a Go-side ``http.Get`` with a 50 ms context deadline
+#      — the deadline trips long before the handler can reply,
+#      mimicking a client that drops the connection.
+#   3. Give the hook goroutine a moment to run, then read the
+#      counter and assert it's ≥ 1.
+#
+# The test does NOT rely on a specific port — ``listen(0)`` asks
+# the kernel for an ephemeral one and ``srv.boundAddr`` tells us
+# which one we got.
+#
+# expect: abort-fired: true
+
+from lamserver import Server, Request, Response
+from lamtime import Time
+
+go! {
+    import (
+        "context"
+        "net/http"
+        "sync/atomic"
+        "time"
+    )
+
+    // Package-level atomic so the abort hook (which only sees a
+    // *Request) and main() (which measures the outcome) can share
+    // state without threading values through srv.ctx or
+    // req.ctx — simpler + matches how Fastify users typically
+    // reach out to module globals.
+    var lamTestAbortCounter int64
+}
+
+func slowHandler(req: Request, res: Response) {
+    go! {
+        time.Sleep(400 * time.Millisecond)
+    }
+    res.text("too late")
+}
+
+func recordAbort(req: Request) {
+    go! {
+        atomic.AddInt64(&lamTestAbortCounter, 1)
+    }
+}
+
+func main() {
+    srv: Server = Server()
+    srv.onRequestAbort(recordAbort)
+    srv.get("/slow", slowHandler)
+
+    srv.listenBackground(0)
+    addr: str = srv.boundAddr
+    url: str = "http://" + addr + "/slow"
+
+    # Give the listener a beat to be truly ready.
+    Time.sleepMs(20)
+
+    # Fire the client. 50 ms context deadline ⇒ the ``Do`` call
+    # returns with ``context.DeadlineExceeded`` while the handler
+    # is still sleeping, which severs the TCP connection.
+    go! {
+        ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+        defer cancel()
+        req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+        if err != nil {
+            return
+        }
+        client := &http.Client{}
+        _, _ = client.Do(req)
+    }
+
+    # Wait long enough for the handler to wake + the abort watcher
+    # goroutine to run the hook. 700 ms > the 400 ms handler sleep.
+    Time.sleepMs(700)
+
+    count: int = 0
+    go! {
+        count = int(atomic.LoadInt64(&lamTestAbortCounter))
+    }
+
+    if count >= 1 {
+        print("abort-fired: true")
+    } else {
+        print("abort-fired: false (count=" + str(count) + ")")
+    }
+
+    srv.close()
+}

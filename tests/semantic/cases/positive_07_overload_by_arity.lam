@@ -1,0 +1,16 @@
+# expect-pass
+# Overloading by arity is allowed — only same-name + same-arity is
+# flagged as a duplicate.
+
+func greet(name: str) -> str {
+    return f"hi {name}"
+}
+
+func greet(name: str, age: int) -> str {
+    return f"hi {name}, age {age}"
+}
+
+func main() {
+    print(greet("alice"))
+    print(greet("bob", 30))
+}

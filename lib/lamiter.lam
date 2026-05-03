@@ -1,0 +1,334 @@
+# Lammergeier standard library: lazy iterator combinators.
+# Import with: from lamiter import Iter
+#
+# ``Iter`` lets you chain ``map`` / ``filter`` / ``take`` / … without
+# materialising intermediate slices. Each combinator wraps the
+# previous one in a thunk; the values only flow through when you call
+# a terminal operation (``toList``, ``forEach``, ``reduce``, ``count``,
+# ``first``, ``sum``, ``max``, ``min``).
+#
+#   from lamiter import Iter
+#
+#   nums: list[int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+#   total: int = Iter.fromList(nums)
+#       .filter(lambda (x: any): (x.(int)) % 2 == 0)
+#       .map(lambda (x: any): (x.(int)) * (x.(int)))
+#       .take(3)
+#       .reduce(0, lambda (acc: any, x: any): (acc.(int)) + (x.(int)))
+#
+# Element type is ``any`` so the combinators compose with anything;
+# numeric users pay a single ``.(int)`` / ``.(float64)`` assertion at
+# the leaf, the same way Go's ``interface{}`` pipelines work.
+
+class Iter {
+    #- A pull-based iterator. ``self.next_`` is a ``func() (any, bool)``
+       that returns the next value, or ``(_, false)`` at end of stream.
+       Combinators build new ``Iter`` instances that wrap ``next_``. -#
+
+    func __init__(self) {
+        self.next_: any = None
+        self.done_: bool = false
+    }
+
+    static func fromList(values: list[any]) -> Iter {
+        #- Wrap a slice as an iterator. The slice is captured by
+           reference; mutating it mid-iteration is undefined. -#
+        it: Iter = Iter()
+        go! {
+            i := 0
+            it.Next_ = func() (interface{}, bool) {
+                if i >= len(values) { return nil, false }
+                v := values[i]
+                i++
+                return v, true
+            }
+        }
+        return it
+    }
+
+    static func count(start: int, step: int) -> Iter {
+        #- Infinite arithmetic progression. Useful with ``take``. -#
+        it: Iter = Iter()
+        go! {
+            n := start
+            it.Next_ = func() (interface{}, bool) {
+                v := n
+                n += step
+                return v, true
+            }
+        }
+        return it
+    }
+
+    static func range_(start: int, stop: int) -> Iter {
+        #- Half-open ``[start, stop)`` integer range. -#
+        it: Iter = Iter()
+        go! {
+            n := start
+            it.Next_ = func() (interface{}, bool) {
+                if n >= stop { return nil, false }
+                v := n
+                n++
+                return v, true
+            }
+        }
+        return it
+    }
+
+    static func repeat(value: any, times: int) -> Iter {
+        #- Yield ``value`` ``times`` times. -#
+        it: Iter = Iter()
+        go! {
+            n := 0
+            it.Next_ = func() (interface{}, bool) {
+                if n >= times { return nil, false }
+                n++
+                return value, true
+            }
+        }
+        return it
+    }
+
+    # ─── Lazy combinators ───────────────────────────────────
+    func map(self, fn: any) -> Iter {
+        out: Iter = Iter()
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            mapper, ok := fn.(func(interface{}) interface{})
+            if !ok { panic("Iter.map: fn must be func(any) -> any") }
+            out.Next_ = func() (interface{}, bool) {
+                v, hasNext := src()
+                if !hasNext { return nil, false }
+                return mapper(v), true
+            }
+        }
+        return out
+    }
+
+    func filter(self, predicate: any) -> Iter {
+        out: Iter = Iter()
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            pred, ok := predicate.(func(interface{}) bool)
+            if !ok { panic("Iter.filter: predicate must be func(any) -> bool") }
+            out.Next_ = func() (interface{}, bool) {
+                for {
+                    v, hasNext := src()
+                    if !hasNext { return nil, false }
+                    if pred(v) { return v, true }
+                }
+            }
+        }
+        return out
+    }
+
+    func take(self, n: int) -> Iter {
+        out: Iter = Iter()
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            taken := 0
+            limit := int(n)
+            out.Next_ = func() (interface{}, bool) {
+                if taken >= limit { return nil, false }
+                v, hasNext := src()
+                if !hasNext { return nil, false }
+                taken++
+                return v, true
+            }
+        }
+        return out
+    }
+
+    func drop(self, n: int) -> Iter {
+        out: Iter = Iter()
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            dropped := 0
+            limit := int(n)
+            out.Next_ = func() (interface{}, bool) {
+                for dropped < limit {
+                    _, hasNext := src()
+                    if !hasNext { return nil, false }
+                    dropped++
+                }
+                return src()
+            }
+        }
+        return out
+    }
+
+    func takeWhile(self, predicate: any) -> Iter {
+        out: Iter = Iter()
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            pred, ok := predicate.(func(interface{}) bool)
+            if !ok { panic("Iter.takeWhile: predicate must be func(any) -> bool") }
+            done := false
+            out.Next_ = func() (interface{}, bool) {
+                if done { return nil, false }
+                v, hasNext := src()
+                if !hasNext { done = true; return nil, false }
+                if !pred(v) { done = true; return nil, false }
+                return v, true
+            }
+        }
+        return out
+    }
+
+    func dropWhile(self, predicate: any) -> Iter {
+        out: Iter = Iter()
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            pred, ok := predicate.(func(interface{}) bool)
+            if !ok { panic("Iter.dropWhile: predicate must be func(any) -> bool") }
+            stopped := false
+            out.Next_ = func() (interface{}, bool) {
+                if !stopped {
+                    for {
+                        v, hasNext := src()
+                        if !hasNext { return nil, false }
+                        if !pred(v) {
+                            stopped = true
+                            return v, true
+                        }
+                    }
+                }
+                return src()
+            }
+        }
+        return out
+    }
+
+    func enumerate(self) -> Iter {
+        #- Yield ``[index, value]`` pairs (as a 2-element list). -#
+        out: Iter = Iter()
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            i := 0
+            out.Next_ = func() (interface{}, bool) {
+                v, hasNext := src()
+                if !hasNext { return nil, false }
+                pair := []interface{}{i, v}
+                i++
+                return pair, true
+            }
+        }
+        return out
+    }
+
+    func chain(self, other: Iter) -> Iter {
+        #- Concatenate two iterators end-to-end. -#
+        out: Iter = Iter()
+        go! {
+            a := s.Next_.(func() (interface{}, bool))
+            b := other.Next_.(func() (interface{}, bool))
+            useA := true
+            out.Next_ = func() (interface{}, bool) {
+                if useA {
+                    if v, hasNext := a(); hasNext { return v, true }
+                    useA = false
+                }
+                return b()
+            }
+        }
+        return out
+    }
+
+    # ─── Terminal operations ────────────────────────────────
+    func toList(self) -> list[any] {
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            out := []interface{}{}
+            for {
+                v, hasNext := src()
+                if !hasNext { break }
+                out = append(out, v)
+            }
+            return out
+        }
+    }
+
+    func forEach(self, fn: any) {
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            cb, ok := fn.(func(interface{}))
+            if !ok { panic("Iter.forEach: fn must be func(any)") }
+            for {
+                v, hasNext := src()
+                if !hasNext { break }
+                cb(v)
+            }
+        }
+    }
+
+    func reduce(self, initial: any, fn: any) -> any {
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            reducer, ok := fn.(func(interface{}, interface{}) interface{})
+            if !ok { panic("Iter.reduce: fn must be func(any, any) -> any") }
+            acc := initial
+            for {
+                v, hasNext := src()
+                if !hasNext { break }
+                acc = reducer(acc, v)
+            }
+            return acc
+        }
+    }
+
+    func count_(self) -> int {
+        #- Drain the iterator and count how many values it yielded.
+           Named with a trailing underscore because ``count`` is a
+           static constructor on this same class. -#
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            n := 0
+            for {
+                _, hasNext := src()
+                if !hasNext { break }
+                n++
+            }
+            return n
+        }
+    }
+
+    func first(self) -> any {
+        #- Return the first value, or ``nil`` if the iterator is empty. -#
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            v, hasNext := src()
+            if !hasNext { return nil }
+            return v
+        }
+    }
+
+    func anyMatch(self, predicate: any) -> bool {
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            pred, ok := predicate.(func(interface{}) bool)
+            if !ok { panic("Iter.anyMatch: predicate must be func(any) -> bool") }
+            for {
+                v, hasNext := src()
+                if !hasNext { return false }
+                if pred(v) { return true }
+            }
+        }
+    }
+
+    func allMatch(self, predicate: any) -> bool {
+        go! {
+            src := s.Next_.(func() (interface{}, bool))
+            pred, ok := predicate.(func(interface{}) bool)
+            if !ok { panic("Iter.allMatch: predicate must be func(any) -> bool") }
+            for {
+                v, hasNext := src()
+                if !hasNext { return true }
+                if !pred(v) { return false }
+            }
+        }
+    }
+}
+
+func main() {
+    pass
+}

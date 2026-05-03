@@ -1,0 +1,6 @@
+# expect-error: unreachable code after flow statement
+
+func main() {
+    return
+    print("never runs")
+}

@@ -1,0 +1,98 @@
+# Lammergeier standard library: hashing and crypto
+# Import with: from lamhash import Hash
+
+go! {
+    import (
+        "crypto/hmac"
+        "crypto/md5"
+        "crypto/sha1"
+        "crypto/sha256"
+        "crypto/sha512"
+        "crypto/subtle"
+        "encoding/hex"
+        "hash/crc32"
+    )
+}
+
+class Hash {
+    static func sha256(data: str) -> str {
+        go! {
+            h := sha256.Sum256([]byte(data))
+            return hex.EncodeToString(h[:])
+        }
+    }
+
+    static func sha1(data: str) -> str {
+        go! {
+            h := sha1.Sum([]byte(data))
+            return hex.EncodeToString(h[:])
+        }
+    }
+
+    static func md5(data: str) -> str {
+        go! {
+            h := md5.Sum([]byte(data))
+            return hex.EncodeToString(h[:])
+        }
+    }
+
+    static func crc32(data: str) -> int {
+        go! {
+            return int(crc32.ChecksumIEEE([]byte(data)))
+        }
+    }
+
+    static func sha512(data: str) -> str {
+        go! {
+            h := sha512.Sum512([]byte(data))
+            return hex.EncodeToString(h[:])
+        }
+    }
+
+    static func hmacSha256(key: str, msg: str) -> str {
+        #- Hex-encoded HMAC-SHA256 using the given key. -#
+        go! {
+            mac := hmac.New(sha256.New, []byte(key))
+            mac.Write([]byte(msg))
+            return hex.EncodeToString(mac.Sum(nil))
+        }
+    }
+
+    static func hmacSha1(key: str, msg: str) -> str {
+        go! {
+            mac := hmac.New(sha1.New, []byte(key))
+            mac.Write([]byte(msg))
+            return hex.EncodeToString(mac.Sum(nil))
+        }
+    }
+
+    static func hmacSha512(key: str, msg: str) -> str {
+        go! {
+            mac := hmac.New(sha512.New, []byte(key))
+            mac.Write([]byte(msg))
+            return hex.EncodeToString(mac.Sum(nil))
+        }
+    }
+
+    static func constantTimeEquals(a: str, b: str) -> bool {
+        #- Length-preserving, constant-time string comparison. Use this
+           (not `==`) when comparing secrets like HMAC tags. -#
+        go! {
+            return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+        }
+    }
+
+    static func verifyHmacSha256(key: str, msg: str, expectedHex: str) -> bool {
+        #- Compute HMAC-SHA256 and compare in constant time. -#
+        go! {
+            mac := hmac.New(sha256.New, []byte(key))
+            mac.Write([]byte(msg))
+            actual := hex.EncodeToString(mac.Sum(nil))
+            return subtle.ConstantTimeCompare([]byte(actual), []byte(expectedHex)) == 1
+        }
+    }
+}
+
+func main() {
+    pass
+}

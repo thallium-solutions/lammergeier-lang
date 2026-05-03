@@ -1,0 +1,402 @@
+# Lammergeier standard library: XML encoding / decoding + DOM walk.
+#
+# Wraps Go's ``encoding/xml`` plus a small DOM-style walker for cases
+# where the schema isn't known at compile time (RSS feeds, SOAP
+# envelopes, OpenSearch results, configuration that mixes attributes
+# and child elements freely).
+#
+# Two layers:
+#
+#   1. ``Xml.encode(value)`` / ``Xml.decode(xmlStr)`` — JSON-flavoured
+#      shape-shifting:
+#        * map  →  one root element with one child per key
+#        * list →  repeated elements at the parent level
+#        * scalar → text content
+#      Useful when you control both ends and want a quick "stringly
+#      typed" interchange format.
+#
+#   2. ``Xml.parse(xmlStr) -> XmlNode`` — proper DOM tree. Each
+#      ``XmlNode`` carries ``tag`` / ``attrs`` / ``text`` / ``children``
+#      and supports ``find(tag)`` / ``findAll(tag)`` /
+#      ``attr(name, fallback)`` for ergonomic traversal.
+#
+# Import with: ``from lamxml import Xml, XmlNode``.
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "encoding/xml"
+        "fmt"
+        "io"
+        "strings"
+    )
+
+    // lamXmlEncodeValue serialises a Lam-shaped value into XML
+    // wrapped in a single ``<root>`` element. The shape rules
+    // mirror lamjson:
+    //
+    //   * map[string]interface{} → one child element per key
+    //   * []interface{}          → one child element per entry
+    //                              (caller decides the tag — we
+    //                              use ``item`` when none is set)
+    //   * scalar                 → text content of the parent
+    //
+    // Recursion is bounded indirectly by the input depth — for
+    // unbounded inputs the caller should pre-cap.
+    func lamXmlEncodeValue(tag string, v interface{}, sb *strings.Builder) {
+        sb.WriteByte('<')
+        sb.WriteString(tag)
+        switch x := v.(type) {
+        case nil:
+            sb.WriteString("/>")
+        case map[string]interface{}:
+            sb.WriteByte('>')
+            for k, val := range x {
+                lamXmlEncodeValue(k, val, sb)
+            }
+            sb.WriteString("</")
+            sb.WriteString(tag)
+            sb.WriteByte('>')
+        case []interface{}:
+            sb.WriteByte('>')
+            for _, val := range x {
+                lamXmlEncodeValue("item", val, sb)
+            }
+            sb.WriteString("</")
+            sb.WriteString(tag)
+            sb.WriteByte('>')
+        default:
+            // Scalar — text content. Use Go's escaper so ``<&>``
+            // round-trip safely.
+            sb.WriteByte('>')
+            xml.EscapeText(sb, []byte(fmt.Sprint(x)))
+            sb.WriteString("</")
+            sb.WriteString(tag)
+            sb.WriteByte('>')
+        }
+    }
+}
+
+
+class XmlNode {
+    #- DOM-style XML node. Plain holder; navigation methods below
+       avoid mutating the tree so call sites can share a parsed
+       document across goroutines without coordination.
+
+       Field shapes:
+         * ``tag``       — element name (``""`` for the synthetic
+                           root wrapper used by sequence-like inputs).
+         * ``attrs``     — ``dict[str, str]`` of attribute → value.
+         * ``text``      — text content. Mixed-content elements (a
+                           tag with both text and child elements)
+                           keep their full text concatenated.
+         * ``children``  — ``list[XmlNode]`` of nested elements in
+                           document order.
+    -#
+
+    func __init__(self,
+                  tag: str = "",
+                  attrs: dict[str, str] = None,
+                  text: str = "",
+                  children: list[any] = None) {
+        self.tag: str = tag
+        self.text: str = text
+        a: dict[str, str] = {}
+        if attrs != None {
+            a = attrs
+        }
+        self.attrs: dict[str, str] = a
+        c: list[any] = []
+        if children != None {
+            c = children
+        }
+        self.children: list[any] = c
+    }
+
+    func attr(self, name: str, fallback: str = "") -> str {
+        #- Look up an attribute, falling back to ``fallback`` if it's
+           missing. -#
+        out: str = fallback
+        go! {
+            if v, ok := s.Attrs[name]; ok {
+                out = v
+            }
+        }
+        return out
+    }
+
+    func find(self, tag: str) -> any {
+        #- Return the first direct-child element with this tag, or
+           ``None`` if there isn't one. Use ``findAll`` for recursive
+           or repeated lookups. -#
+        for c in self.children {
+            go! {
+                if cn, ok := c.(*XmlNode); ok && cn.Tag == tag {
+                    return cn
+                }
+            }
+        }
+        return None
+    }
+
+    func findAll(self, tag: str) -> list[any] {
+        #- Recursive collect of every descendant element with this
+           tag, document-order. Empty when nothing matches. -#
+        out: list[any] = []
+        go! {
+            var walk func(n *XmlNode)
+            walk = func(n *XmlNode) {
+                for _, c := range n.Children {
+                    if cn, ok := c.(*XmlNode); ok {
+                        if cn.Tag == tag {
+                            out = append(out, cn)
+                        }
+                        walk(cn)
+                    }
+                }
+            }
+            walk(s)
+        }
+        return out
+    }
+
+    func toString(self) -> str {
+        #- Render the node back to an XML string. Round-tripping
+           ``parse`` → ``toString`` is *not* byte-exact (whitespace
+           is lost) but the resulting tree is structurally
+           equivalent. -#
+        sb: str = ""
+        go! {
+            // Inner closure restructured into an if/else chain so
+            // the lowering doesn't insert a phantom ``return ""``
+            // for the bare ``return`` early-exit (the auto-padding
+            // pass uses the surrounding Lam method's return type,
+            // which doesn't apply inside a void closure).
+            var build func(n *XmlNode, w *strings.Builder)
+            build = func(n *XmlNode, w *strings.Builder) {
+                w.WriteByte('<')
+                w.WriteString(n.Tag)
+                for k, v := range n.Attrs {
+                    w.WriteByte(' ')
+                    w.WriteString(k)
+                    w.WriteString("=\"")
+                    xml.EscapeText(w, []byte(v))
+                    w.WriteByte('"')
+                }
+                if n.Text == "" && len(n.Children) == 0 {
+                    w.WriteString("/>")
+                } else {
+                    w.WriteByte('>')
+                    if n.Text != "" {
+                        xml.EscapeText(w, []byte(n.Text))
+                    }
+                    for _, c := range n.Children {
+                        if cn, ok := c.(*XmlNode); ok {
+                            build(cn, w)
+                        }
+                    }
+                    w.WriteString("</")
+                    w.WriteString(n.Tag)
+                    w.WriteByte('>')
+                }
+            }
+            var w strings.Builder
+            build(s, &w)
+            sb = w.String()
+        }
+        return sb
+    }
+}
+
+
+class Xml {
+    #- Static encode/decode/parse helpers. -#
+
+    static func encode(value: any, root: str = "root") -> str {
+        #- Marshal a Lam-shaped value to XML wrapped in a single
+           ``<root>`` element. ``root`` lets the caller name the
+           wrapper to match an external schema. -#
+        out: str = ""
+        rootName: str = root
+        go! {
+            var sb strings.Builder
+            lamXmlEncodeValue(rootName, value, &sb)
+            out = sb.String()
+        }
+        return out
+    }
+
+    static func decode(xmlStr: str) -> any {
+        #- Parse an XML document into a Lam-shaped tree, mirroring
+           ``Json.decode``. Element trees become ``dict[str, any]``;
+           repeated tags collapse into ``list[any]``; leaf text
+           becomes a ``str``. Returns ``None`` on parse error. -#
+        out: any = None
+        go! {
+            dec := xml.NewDecoder(strings.NewReader(xmlStr))
+            v, err := lamXmlDecodeOne(dec)
+            if err == nil {
+                out = v
+            }
+        }
+        return out
+    }
+
+    static func tryDecode(xmlStr: str) -> Result {
+        #- Same as ``decode`` but surfaces parse errors as ``Err``. -#
+        go! {
+            dec := xml.NewDecoder(strings.NewReader(xmlStr))
+            v, err := lamXmlDecodeOne(dec)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("XmlError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(v)
+        }
+    }
+
+    static func parse(xmlStr: str) -> any {
+        #- Parse to a proper DOM (``XmlNode``). Returns ``None`` on
+           parse error — use ``tryParse`` if you need the error
+           message. -#
+        out: any = None
+        go! {
+            dec := xml.NewDecoder(strings.NewReader(xmlStr))
+            n, err := lamXmlParseDom(dec)
+            if err == nil {
+                out = n
+            }
+        }
+        return out
+    }
+
+    static func tryParse(xmlStr: str) -> Result {
+        go! {
+            dec := xml.NewDecoder(strings.NewReader(xmlStr))
+            n, err := lamXmlParseDom(dec)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("XmlError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(n)
+        }
+    }
+}
+
+
+# ─── DOM + scalar decoders (Go-side helpers) ─────────────────────
+go! {
+    // lamXmlDecodeOne reads a single XML document and returns its
+    // shape-shifted form (map / list / string). Behaviour:
+    //
+    //   * elements with only text → string
+    //   * elements with only children of one tag → list of those
+    //   * elements with mixed children → map[tag]value, repeated
+    //     tags collapsing into a list
+    //
+    // Attributes are folded into the map under ``@name`` keys so
+    // the structural shape stays a plain interface{} tree (no need
+    // for a separate ``XmlAttrs`` container at the consumption
+    // site).
+    func lamXmlDecodeOne(dec *xml.Decoder) (interface{}, error) {
+        for {
+            tok, err := dec.Token()
+            if err != nil { return nil, err }
+            if start, ok := tok.(xml.StartElement); ok {
+                return lamXmlDecodeElement(dec, start)
+            }
+        }
+    }
+
+    func lamXmlDecodeElement(dec *xml.Decoder, start xml.StartElement) (interface{}, error) {
+        out := map[string]interface{}{}
+        var textBuf strings.Builder
+        for _, a := range start.Attr {
+            out["@"+a.Name.Local] = a.Value
+        }
+        for {
+            tok, err := dec.Token()
+            if err != nil {
+                if err == io.EOF { break }
+                return nil, err
+            }
+            switch t := tok.(type) {
+            case xml.StartElement:
+                child, err := lamXmlDecodeElement(dec, t)
+                if err != nil { return nil, err }
+                key := t.Name.Local
+                if existing, ok := out[key]; ok {
+                    if list, ok := existing.([]interface{}); ok {
+                        out[key] = append(list, child)
+                    } else {
+                        out[key] = []interface{}{existing, child}
+                    }
+                } else {
+                    out[key] = child
+                }
+            case xml.CharData:
+                textBuf.Write([]byte(t))
+            case xml.EndElement:
+                txt := strings.TrimSpace(textBuf.String())
+                // Pure-text element — collapse to a bare string.
+                if len(out) == 0 {
+                    return txt, nil
+                }
+                if txt != "" {
+                    out["#text"] = txt
+                }
+                return out, nil
+            }
+        }
+        return out, nil
+    }
+
+    // lamXmlParseDom builds the DOM-flavoured tree exposed via
+    // ``XmlNode``. Compared to lamXmlDecodeElement we keep the
+    // original attribute / text / child-order distinctions because
+    // DOM consumers care about them.
+    func lamXmlParseDom(dec *xml.Decoder) (*XmlNode, error) {
+        for {
+            tok, err := dec.Token()
+            if err != nil { return nil, err }
+            if start, ok := tok.(xml.StartElement); ok {
+                return lamXmlParseDomElement(dec, start)
+            }
+        }
+    }
+
+    func lamXmlParseDomElement(dec *xml.Decoder, start xml.StartElement) (*XmlNode, error) {
+        node := &XmlNode{
+            Tag:      start.Name.Local,
+            Attrs:    map[string]string{},
+            Children: []interface{}{},
+        }
+        for _, a := range start.Attr {
+            node.Attrs[a.Name.Local] = a.Value
+        }
+        var textBuf strings.Builder
+        for {
+            tok, err := dec.Token()
+            if err != nil {
+                if err == io.EOF { break }
+                return nil, err
+            }
+            switch t := tok.(type) {
+            case xml.StartElement:
+                child, err := lamXmlParseDomElement(dec, t)
+                if err != nil { return nil, err }
+                node.Children = append(node.Children, child)
+            case xml.CharData:
+                textBuf.Write([]byte(t))
+            case xml.EndElement:
+                node.Text = strings.TrimSpace(textBuf.String())
+                return node, nil
+            }
+        }
+        return node, nil
+    }
+}
+
+
+func main() {
+    pass
+}

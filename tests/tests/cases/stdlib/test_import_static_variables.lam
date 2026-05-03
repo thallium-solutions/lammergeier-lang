@@ -1,0 +1,13 @@
+# Test: imported class static variables
+# expect: lib-alpha-1
+# expect: requests=1
+# expect: requests=5
+
+from static_config_lib import SharedConfig
+
+func main() {
+    print(SharedConfig.mark("alpha"))
+    print(f"requests={SharedConfig.requests}")
+    SharedConfig.requests = 5
+    print(f"requests={SharedConfig.requests}")
+}

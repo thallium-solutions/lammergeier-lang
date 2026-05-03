@@ -1,0 +1,83 @@
+# Test: lamheap Heap and PriorityHeap
+# expect: PASS 1 empty
+# expect: PASS 2 size after pushes
+# expect: PASS 3 min-heap peek
+# expect: PASS 4 min-heap pop order
+# expect: PASS 5 clear empties
+# expect: PASS 6 max-heap peek
+# expect: PASS 7 max-heap pop order
+# expect: PASS 8 toList has all elements
+# expect: PASS 9 priority pop order
+# expect: PASS 10 priority peek
+# expect: 10 passed, 0 failed, 10 total
+
+from lamheap import Heap
+from lamheap import PriorityHeap
+from lamtest import Test
+from lamsort import Sort
+
+func main() {
+    h: Heap = Heap()
+    Test.assertTrue(h.isEmpty(), "1 empty")
+
+    h.push(5.0)
+    h.push(1.0)
+    h.push(3.0)
+    h.push(2.0)
+    h.push(4.0)
+    Test.assertEqual(h.size(), 5, "2 size after pushes")
+
+    Test.assertAlmostEqual(h.peek(), 1.0, 0.0001, "3 min-heap peek")
+
+    popped: list[float] = []
+    while not h.isEmpty() {
+        popped.append(h.pop())
+    }
+    expectedMin: list[float] = [1.0, 2.0, 3.0, 4.0, 5.0]
+    Test.assertEqual(popped, expectedMin, "4 min-heap pop order")
+
+    h.push(42.0)
+    h.clear()
+    Test.assertTrue(h.isEmpty(), "5 clear empties")
+
+    maxH: Heap = Heap(true)
+    maxH.push(5.0)
+    maxH.push(1.0)
+    maxH.push(3.0)
+    Test.assertAlmostEqual(maxH.peek(), 5.0, 0.0001, "6 max-heap peek")
+
+    popMax: list[float] = []
+    while not maxH.isEmpty() {
+        popMax.append(maxH.pop())
+    }
+    expectedMax: list[float] = [5.0, 3.0, 1.0]
+    Test.assertEqual(popMax, expectedMax, "7 max-heap pop order")
+
+    toListHeap: Heap = Heap()
+    toListHeap.push(3.0)
+    toListHeap.push(1.0)
+    toListHeap.push(2.0)
+    items: list[float] = toListHeap.toList()
+    # sort so we get a stable representation regardless of heap layout
+    sorted_items: list[float] = Sort.floats(items)
+    expectedList: list[float] = [1.0, 2.0, 3.0]
+    Test.assertEqual(sorted_items, expectedList, "8 toList has all elements")
+
+    # PriorityHeap — job scheduler style
+    pq: PriorityHeap = PriorityHeap()
+    pq.push(3.0, "low")
+    pq.push(1.0, "high")
+    pq.push(2.0, "mid")
+    order: list[any] = []
+    while not pq.isEmpty() {
+        order.append(pq.pop())
+    }
+    Test.assertEqual(order, ["high", "mid", "low"], "9 priority pop order")
+
+    pq2: PriorityHeap = PriorityHeap()
+    pq2.push(5.0, "a")
+    pq2.push(2.0, "b")
+    Test.assertEqual(pq2.peek(), "b", "10 priority peek")
+
+    Test.summary()
+}

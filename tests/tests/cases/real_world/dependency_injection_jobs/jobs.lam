@@ -1,0 +1,65 @@
+class RetryPolicy {
+    func init(self, maxAttempts: int) {
+        self.maxAttempts: int = maxAttempts
+    }
+}
+
+class Notifier {
+    func init(self) {
+        self.sent: list[str] = []
+    }
+
+    func send(self, message: str) {
+        self.sent.append(message)
+    }
+}
+
+class Job {
+    func init(self, name: str, failuresBeforeSuccess: int) {
+        self.name: str = name
+        self.failuresBeforeSuccess: int = failuresBeforeSuccess
+        self.attempts: int = 0
+    }
+
+    func run(self) -> bool {
+        self.attempts += 1
+        return self.attempts > self.failuresBeforeSuccess
+    }
+}
+
+class JobRunner {
+    func init(self, policy: RetryPolicy, notifier: Notifier) {
+        self.policy: RetryPolicy = policy
+        self.notifier: Notifier = notifier
+        self.completed: list[str] = []
+        self.failed: list[str] = []
+    }
+
+    func runOne(self, job: Job) -> bool {
+        for i in range(self.policy.maxAttempts) {
+            if job.run() {
+                self.completed.append(job.name)
+                self.notifier.send("completed:" + job.name)
+                return true
+            }
+        }
+        self.failed.append(job.name)
+        self.notifier.send("failed:" + job.name)
+        return false
+    }
+}
+
+class Container {
+    func init(self) {
+        self.retryPolicy: RetryPolicy = RetryPolicy(3)
+        self.notifier: Notifier = Notifier()
+    }
+
+    func runner(self) -> JobRunner {
+        return JobRunner(self.retryPolicy, self.notifier)
+    }
+}
+
+func main() {
+    pass
+}

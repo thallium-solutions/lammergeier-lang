@@ -1,0 +1,10 @@
+# expect-error: unreachable code after flow statement
+
+func main() {
+    for i in range(10) {
+        if i > 5 {
+            break
+            print("dead")
+        }
+    }
+}

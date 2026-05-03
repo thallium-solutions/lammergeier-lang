@@ -1,0 +1,28 @@
+# Test: Assert statements
+# expect: assert_basic_ok
+# expect: assert_msg_ok
+# expect: assert_expr_ok
+# expect: all_asserts_pass
+
+func main() {
+    # Basic assert
+    assert True
+    print("assert_basic_ok")
+
+    # Assert with message
+    assert 1 + 1 == 2
+    print("assert_msg_ok")
+
+    # Assert with expression
+    x: int = 42
+    assert x == 42
+    print("assert_expr_ok")
+
+    # Multiple asserts
+    assert 10 > 5
+    assert 10 < 20
+    assert 10 >= 10
+    assert 10 <= 10
+    assert "hello" == "hello"
+    print("all_asserts_pass")
+}

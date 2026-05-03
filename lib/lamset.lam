@@ -1,0 +1,124 @@
+# Lammergeier standard library: Set data structure (unique values)
+# Import with: from lamset import Set
+#
+# `Set` preserves insertion order via a parallel list and uses a map for
+# O(1) membership tests. Elements may be of any hashable Go type
+# (strings, numbers, booleans). For non-hashable values use a list
+# with manual de-duplication.
+
+class Set {
+    func __init__(self) {
+        self.items: list[any] = []
+        self.index: dict[any, bool] = {}
+    }
+
+    func add(self, v: any) {
+        if not self.index[v] {
+            self.items.append(v)
+            self.index[v] = true
+        }
+    }
+
+    func addAll(self, values: list[any]) {
+        #- Bulk-add every element of `values`. Duplicates are ignored. -#
+        for v in values {
+            self.add(v)
+        }
+    }
+
+    func remove(self, v: any) {
+        #- Remove `v` from the set. No-op if the element is absent. -#
+        if not self.index[v] {
+            return
+        }
+        del self.index[v]
+        kept: list[any] = []
+        for item in self.items {
+            if item != v {
+                kept.append(item)
+            }
+        }
+        self.items = kept
+    }
+
+    func contains(self, v: any) -> bool {
+        return self.index[v]
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func isEmpty(self) -> bool {
+        return len(self.items) == 0
+    }
+
+    func clear(self) {
+        self.items = []
+        self.index = {}
+    }
+
+    func toList(self) -> list[any] {
+        #- Return a copy of the elements in insertion order. -#
+        result: list[any] = []
+        for item in self.items {
+            result.append(item)
+        }
+        return result
+    }
+
+    func union(self, other: Set) -> Set {
+        #- Return a new set containing every element in either set. -#
+        out: Set = Set()
+        for item in self.items {
+            out.add(item)
+        }
+        for item in other.items {
+            out.add(item)
+        }
+        return out
+    }
+
+    func intersect(self, other: Set) -> Set {
+        #- Return a new set containing only elements in both sets. -#
+        out: Set = Set()
+        for item in self.items {
+            if other.contains(item) {
+                out.add(item)
+            }
+        }
+        return out
+    }
+
+    func difference(self, other: Set) -> Set {
+        #- Return a new set with elements of `self` that are not in `other`. -#
+        out: Set = Set()
+        for item in self.items {
+            if not other.contains(item) {
+                out.add(item)
+            }
+        }
+        return out
+    }
+
+    func isSubsetOf(self, other: Set) -> bool {
+        #- True if every element of `self` is also in `other`. -#
+        for item in self.items {
+            if not other.contains(item) {
+                return false
+            }
+        }
+        return true
+    }
+
+    func equals(self, other: Set) -> bool {
+        if self.size() != other.size() {
+            return false
+        }
+        return self.isSubsetOf(other)
+    }
+}
+
+func main() {
+    pass
+}

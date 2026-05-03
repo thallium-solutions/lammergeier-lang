@@ -1,0 +1,103 @@
+# Test: bare ``return`` statements inside ``go!`` blocks of typed Lam
+# functions are auto-rewritten to ``return <zero-value>`` so the dev
+# never has to know Go's "not enough return values" rule.
+#
+# expect: int returns 0
+# expect: bool returns false
+# expect: str returns ''
+# expect: float returns 0
+# expect: any returns nil
+# expect: list returns []
+# expect: pre-condition n: 7
+
+go! {
+    import "fmt"
+}
+
+func intGuard(x: int) -> int {
+    go! {
+        if x < 0 {
+            return
+        }
+    }
+    return x * 2
+}
+
+func boolGuard(x: int) -> bool {
+    go! {
+        if x < 0 {
+            return
+        }
+    }
+    return true
+}
+
+func strGuard(x: int) -> str {
+    go! {
+        if x < 0 {
+            return
+        }
+    }
+    return "ok"
+}
+
+func floatGuard(x: int) -> float {
+    go! {
+        if x < 0 {
+            return
+        }
+    }
+    return 3.14
+}
+
+func anyGuard(x: int) -> any {
+    go! {
+        if x < 0 {
+            return
+        }
+    }
+    return "value"
+}
+
+func listGuard(x: int) -> list[int] {
+    go! {
+        if x < 0 {
+            return
+        }
+    }
+    out: list[int] = [1, 2, 3]
+    return out
+}
+
+func main() {
+    a: int = intGuard(-1)
+    print(f"int returns {a}")
+
+    b: bool = boolGuard(-1)
+    bs: str = "true"
+    if not b {
+        bs = "false"
+    }
+    print(f"bool returns {bs}")
+
+    s: str = strGuard(-1)
+    print(f"str returns '{s}'")
+
+    f: float = floatGuard(-1)
+    print(f"float returns {f}")
+
+    v: any = anyGuard(-1)
+    if v == None {
+        print("any returns nil")
+    } else {
+        print("any returns NON-nil")
+    }
+
+    l: list[int] = listGuard(-1)
+    print(f"list returns {l}")
+
+    # Sanity: the happy path still works.
+    happy: int = intGuard(7)
+    half: int = happy / 2
+    print(f"pre-condition n: {half}")
+}

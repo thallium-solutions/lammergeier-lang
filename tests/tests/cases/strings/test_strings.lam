@@ -1,0 +1,62 @@
+# Test: String operations and methods
+# expect: hello world
+# expect: HELLO
+# expect: hello
+# expect: 11
+# expect: true
+# expect: true
+# expect: false
+# expect: hello-world-foo
+# expect: hewwo
+# expect: heo
+# expect: 5
+# expect: Hello World
+# expect: hello world  
+# expect: 3
+
+func main() {
+    s: str = "hello"
+    t: str = " world"
+
+    # Concatenation
+    print(s + t)
+
+    # Upper/lower
+    print(s.upper())
+    print("HELLO".lower())
+
+    # Length
+    print(len(s + t))
+
+    # Startswith / endswith
+    print(s.startswith("hel"))
+    print(s.endswith("llo"))
+    print(s.startswith("xyz"))
+
+    # Join
+    parts: list[str] = ["hello", "world", "foo"]
+    print("-".join(parts))
+
+    # Replace
+    print(s.replace("ll", "ww"))
+
+    # Multiple replace
+    msg: str = "hello"
+    msg = msg.replace("ll", "")
+    print(msg)
+
+    # Count
+    print("abracadabra".count("a"))
+
+    # Strip
+    padded: str = "  Hello World  "
+    print(padded.strip())
+
+    # String with special chars
+    special: str = "hello world  "
+    print(special)
+
+    # String multiplication analog - manual
+    count: int = 3
+    print(count)
+}

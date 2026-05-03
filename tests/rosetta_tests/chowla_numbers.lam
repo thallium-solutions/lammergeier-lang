@@ -1,0 +1,30 @@
+# Rosetta Code: Chowla numbers
+# https://rosettacode.org/wiki/Chowla_numbers
+# expect: 0 0 0 2 0 5 0 6 3 7
+
+func chowla(n: int) -> int {
+    total: int = 0
+    i: int = 2
+    while i * i <= n {
+        if n % i == 0 {
+            total += i
+            other: int = n / i
+            if i != other {
+                total += other
+            }
+        }
+        i += 1
+    }
+    return total
+}
+
+func main() {
+    result: str = ""
+    for i in range(1, 11) {
+        if i > 1 {
+            result = result + " "
+        }
+        result = result + f"{chowla(i)}"
+    }
+    print(result)
+}

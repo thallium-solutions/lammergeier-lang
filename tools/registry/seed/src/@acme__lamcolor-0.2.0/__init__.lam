@@ -1,0 +1,15 @@
+# Scoped-name seed library. Ships under ``@acme/lamcolor`` so users
+# can verify ``from @acme/lamcolor import ...`` works end-to-end
+# through the install + compile flow.
+
+func red(s: str) -> str {
+    return f"\x1b[31m{s}\x1b[0m"
+}
+
+func green(s: str) -> str {
+    return f"\x1b[32m{s}\x1b[0m"
+}
+
+func bold(s: str) -> str {
+    return f"\x1b[1m{s}\x1b[0m"
+}

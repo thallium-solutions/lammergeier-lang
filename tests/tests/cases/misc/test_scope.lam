@@ -1,0 +1,66 @@
+# Test: Scope and variable shadowing, reassignment
+# expect: 10
+# expect: 20
+# expect: 30
+# expect: inner
+# expect: outer
+# expect: 5
+# expect: 100
+# expect: 5
+# expect: loop_done
+# expect: 42
+
+func get_val() -> int {
+    return 42
+}
+
+func scope_test() -> int {
+    x: int = 10
+    if True {
+        x = 20
+    }
+    return x
+}
+
+func main() {
+    # Variable reassignment
+    x: int = 10
+    print(x)
+    x = 20
+    print(x)
+
+    # Scope in if block
+    y: int = 10
+    if True {
+        y = 30
+    }
+    print(y)
+
+    # Function scope
+    a: str = "outer"
+    if True {
+        a = "inner"
+        print(a)
+    }
+    a = "outer"
+    print(a)
+
+    # Multiple assignments
+    n: int = 5
+    print(n)
+    n = 100
+    print(n)
+    n = 5
+    print(n)
+
+    # Loop variable scope
+    i: int = 0
+    for i in range(10) {
+        pass
+    }
+    print("loop_done")
+
+    # Function call result assignment
+    result: int = get_val()
+    print(result)
+}

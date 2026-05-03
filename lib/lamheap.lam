@@ -1,0 +1,188 @@
+# Lammergeier standard library: binary heap / priority queue
+# Import with: from lamheap import Heap
+#
+# `Heap` is a min-heap by default. Construct with `Heap(maxHeap=true)`
+# to flip the comparison and get a max-heap. Values may be int or float
+# — anything that can be compared with `<` in Go. For custom ordering
+# use `PriorityHeap` instead, which stores (priority, value) tuples.
+
+go! {
+    import "container/heap"
+}
+
+go! {
+    // ─── Backing store for Heap (numeric) ────────────────────
+    type lamNumHeap struct {
+        data []float64
+        max  bool
+    }
+    func (h lamNumHeap) Len() int { return len(h.data) }
+    func (h lamNumHeap) Less(i, j int) bool {
+        if h.max { return h.data[i] > h.data[j] }
+        return h.data[i] < h.data[j]
+    }
+    func (h lamNumHeap) Swap(i, j int) { h.data[i], h.data[j] = h.data[j], h.data[i] }
+    func (h *lamNumHeap) Push(v interface{}) {
+        switch x := v.(type) {
+        case float64: h.data = append(h.data, x)
+        case int:     h.data = append(h.data, float64(x))
+        case int64:   h.data = append(h.data, float64(x))
+        default:      panic("Heap accepts only int/float values")
+        }
+    }
+    func (h *lamNumHeap) Pop() interface{} {
+        n := len(h.data)
+        v := h.data[n-1]
+        h.data = h.data[:n-1]
+        return v
+    }
+
+    // ─── Backing store for PriorityHeap (priority, value) ────
+    type lamPrioEntry struct {
+        priority float64
+        value    interface{}
+    }
+    type lamPrioHeap struct {
+        data []lamPrioEntry
+        max  bool
+    }
+    func (h lamPrioHeap) Len() int { return len(h.data) }
+    func (h lamPrioHeap) Less(i, j int) bool {
+        if h.max { return h.data[i].priority > h.data[j].priority }
+        return h.data[i].priority < h.data[j].priority
+    }
+    func (h lamPrioHeap) Swap(i, j int) { h.data[i], h.data[j] = h.data[j], h.data[i] }
+    func (h *lamPrioHeap) Push(v interface{}) {
+        if e, ok := v.(lamPrioEntry); ok {
+            h.data = append(h.data, e)
+            return
+        }
+        panic("PriorityHeap.Push expects lamPrioEntry")
+    }
+    func (h *lamPrioHeap) Pop() interface{} {
+        n := len(h.data)
+        v := h.data[n-1]
+        h.data = h.data[:n-1]
+        return v
+    }
+}
+
+class Heap {
+    #- Binary heap of numbers. Defaults to a min-heap. -#
+
+    func __init__(self, maxHeap: bool = false) {
+        self.inner: any = None
+        go! {
+            s.Inner = &lamNumHeap{data: []float64{}, max: maxHeap}
+            heap.Init(s.Inner.(*lamNumHeap))
+        }
+    }
+
+    func push(self, v: float) {
+        go! {
+            heap.Push(s.Inner.(*lamNumHeap), v)
+        }
+    }
+
+    func pop(self) -> float {
+        #- Remove and return the smallest (or largest, if max-heap) value. -#
+        go! {
+            return heap.Pop(s.Inner.(*lamNumHeap)).(float64)
+        }
+    }
+
+    func peek(self) -> float {
+        #- Return the smallest/largest value without removing it. -#
+        go! {
+            h := s.Inner.(*lamNumHeap)
+            if len(h.data) == 0 { panic("Heap.peek: empty heap") }
+            return h.data[0]
+        }
+    }
+
+    func size(self) -> int {
+        go! {
+            return s.Inner.(*lamNumHeap).Len()
+        }
+    }
+
+    func isEmpty(self) -> bool {
+        go! {
+            return s.Inner.(*lamNumHeap).Len() == 0
+        }
+    }
+
+    func clear(self) {
+        go! {
+            h := s.Inner.(*lamNumHeap)
+            h.data = h.data[:0]
+        }
+    }
+
+    func toList(self) -> list[float] {
+        #- Return the underlying slice, in heap order (not sorted). -#
+        go! {
+            src := s.Inner.(*lamNumHeap).data
+            out := make([]float64, len(src))
+            copy(out, src)
+            return out
+        }
+    }
+}
+
+class PriorityHeap {
+    #- Heap where each item carries its own priority. Stores `any` values. -#
+
+    func __init__(self, maxHeap: bool = false) {
+        self.inner: any = None
+        go! {
+            s.Inner = &lamPrioHeap{data: []lamPrioEntry{}, max: maxHeap}
+            heap.Init(s.Inner.(*lamPrioHeap))
+        }
+    }
+
+    func push(self, priority: float, value: any) {
+        go! {
+            heap.Push(s.Inner.(*lamPrioHeap), lamPrioEntry{priority: priority, value: value})
+        }
+    }
+
+    func pop(self) -> any {
+        #- Remove and return the top item's value (discarding its priority). -#
+        go! {
+            e := heap.Pop(s.Inner.(*lamPrioHeap)).(lamPrioEntry)
+            return e.value
+        }
+    }
+
+    func peek(self) -> any {
+        go! {
+            h := s.Inner.(*lamPrioHeap)
+            if len(h.data) == 0 { panic("PriorityHeap.peek: empty heap") }
+            return h.data[0].value
+        }
+    }
+
+    func size(self) -> int {
+        go! {
+            return s.Inner.(*lamPrioHeap).Len()
+        }
+    }
+
+    func isEmpty(self) -> bool {
+        go! {
+            return s.Inner.(*lamPrioHeap).Len() == 0
+        }
+    }
+
+    func clear(self) {
+        go! {
+            h := s.Inner.(*lamPrioHeap)
+            h.data = h.data[:0]
+        }
+    }
+}
+
+func main() {
+    pass
+}

@@ -1,0 +1,91 @@
+# Test: Edge cases - empty functions, single-line, boundary values, special chars
+# expect: empty_ok
+# expect: 0
+# expect: -1
+# expect: 2147483647
+# expect: long_string_ok
+# expect: special: hello\nworld
+# expect: tab: hello\tworld
+# expect: single_if_ok
+# expect: chain_ok
+# expect: deep_nest_ok
+# expect: reassign_type_ok
+
+func empty_func() {
+    pass
+}
+
+func return_zero() -> int {
+    return 0
+}
+
+func return_negative() -> int {
+    return -1
+}
+
+func return_large() -> int {
+    return 2147483647
+}
+
+func deeply_nested(x: int) -> int {
+    if x > 0 {
+        if x > 5 {
+            if x > 10 {
+                if x > 15 {
+                    return 15
+                }
+                return 10
+            }
+            return 5
+        }
+        return 1
+    }
+    return 0
+}
+
+func main() {
+    empty_func()
+    print("empty_ok")
+
+    print(return_zero())
+    print(return_negative())
+    print(return_large())
+
+    # Long string
+    long_s: str = "abcdefghijklmnopqrstuvwxyz"
+    if len(long_s) == 26 {
+        print("long_string_ok")
+    }
+
+    # Strings with escape sequences
+    s1: str = "hello\\nworld"
+    print(f"special: {s1}")
+
+    s2: str = "hello\\tworld"
+    print(f"tab: {s2}")
+
+    # Single statement if
+    x: int = 10
+    if x == 10 {
+        print("single_if_ok")
+    }
+
+    # Chained comparisons (decomposed)
+    a: int = 5
+    if a > 0 and a < 10 {
+        print("chain_ok")
+    }
+
+    # Deep nesting
+    if deeply_nested(20) == 15 {
+        print("deep_nest_ok")
+    }
+
+    # Reassign with same type
+    v: int = 10
+    v = 20
+    v = 30
+    if v == 30 {
+        print("reassign_type_ok")
+    }
+}

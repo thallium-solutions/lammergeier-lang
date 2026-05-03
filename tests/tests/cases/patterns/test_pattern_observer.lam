@@ -1,0 +1,86 @@
+# Observer pattern: Event bus where listeners are triggered on events
+# expect: [email] Order #101 placed by Alice
+# expect: [inventory] Order #101 placed by Alice
+# expect: [email] Payment received: 49
+# expect: [email] Order #102 placed by Bob
+# expect: [inventory] Order #102 placed by Bob
+# expect: Total events fired: 5
+
+class EventBus {
+    func __init__(self) {
+        self.listeners: list[str] = []
+        self.event_count: int = 0
+        self.num_listeners: int = 0
+    }
+
+    func subscribe(self, name: str) {
+        self.listeners.append(name)
+        self.num_listeners = self.num_listeners + 1
+    }
+
+    func unsubscribe_all(self) {
+        # Reset by creating a new bus — but we keep event_count
+        self.num_listeners = 0
+    }
+
+    func emit(self, event: str) {
+        # Only notify up to num_listeners (allows "unsubscribe" by reducing count)
+        for i in range(self.num_listeners) {
+            listener: str = self.listeners[i]
+            print(f"[{listener}] {event}")
+            self.event_count = self.event_count + 1
+        }
+    }
+
+    func total_events(self) -> int {
+        return self.event_count
+    }
+}
+
+class OrderService {
+    func __init__(self, bus: EventBus) {
+        self.bus: EventBus = bus
+        self.next_id: int = 101
+    }
+
+    func place_order(self, customer: str) {
+        order_id: int = self.next_id
+        self.next_id = self.next_id + 1
+        self.bus.emit(f"Order #{order_id} placed by {customer}")
+    }
+}
+
+class PaymentService {
+    func __init__(self, bus: EventBus) {
+        self.bus: EventBus = bus
+    }
+
+    func process(self, amount: int) {
+        self.bus.emit(f"Payment received: {amount}")
+    }
+}
+
+func main() {
+    bus: EventBus = EventBus()
+
+    # Subscribe listeners to the bus
+    bus.subscribe("email")
+    bus.subscribe("inventory")
+
+    orders: OrderService = OrderService(bus)
+    payments: PaymentService = PaymentService(bus)
+
+    # Actions trigger events to ALL listeners
+    orders.place_order("Alice")
+
+    # Effectively unsubscribe all, then re-add only email
+    bus.unsubscribe_all()
+    bus.subscribe("email")
+    payments.process(49)
+
+    # Re-subscribe inventory
+    bus.subscribe("inventory")
+    orders.place_order("Bob")
+
+    print(f"Total events fired: {bus.total_events()}")
+}

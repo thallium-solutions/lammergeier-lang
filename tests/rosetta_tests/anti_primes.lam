@@ -1,0 +1,38 @@
+# Rosetta Code: Anti-primes (highly composite numbers)
+# https://rosettacode.org/wiki/Anti-primes
+# expect: 1 2 4 6 12 24 36 48 60 120
+
+func count_divisors(n: int) -> int {
+    count: int = 0
+    i: int = 1
+    while i * i <= n {
+        if n % i == 0 {
+            count += 1
+            if i != n / i {
+                count += 1
+            }
+        }
+        i += 1
+    }
+    return count
+}
+
+func main() {
+    max_divs: int = 0
+    result: str = ""
+    count: int = 0
+    n: int = 1
+    while count < 10 {
+        d: int = count_divisors(n)
+        if d > max_divs {
+            max_divs = d
+            if count > 0 {
+                result = result + " "
+            }
+            result = result + f"{n}"
+            count += 1
+        }
+        n += 1
+    }
+    print(result)
+}

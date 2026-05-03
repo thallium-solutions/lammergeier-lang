@@ -1,0 +1,11 @@
+# Test: enumerate with index and value
+# expect: 0: apple
+# expect: 1: banana
+# expect: 2: cherry
+
+func main() {
+    fruits: list[str] = ["apple", "banana", "cherry"]
+    for i, f in enumerate(fruits) {
+        print(f"{i}: {f}")
+    }
+}

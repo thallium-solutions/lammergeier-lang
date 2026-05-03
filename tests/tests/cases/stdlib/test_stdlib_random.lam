@@ -1,0 +1,17 @@
+# expect: random_ok
+# expect: choice_ok
+
+from lamrandom import Random
+
+func main() {
+    n: int = Random.randInt(1, 100)
+    if n >= 1 {
+        print("random_ok")
+    }
+
+    items: list[any] = ["a", "b", "c"]
+    c: any = Random.choice(items)
+    if c != None {
+        print("choice_ok")
+    }
+}

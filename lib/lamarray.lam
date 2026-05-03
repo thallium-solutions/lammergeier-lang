@@ -1,0 +1,828 @@
+# Lammergeier standard library: high-performance numerical arrays
+# Import with: from lamarray import Array, Matrix
+#
+# ``Array`` is a 1-D float64 vector; ``Matrix`` is a dense 2-D matrix.
+# The hot paths delegate to ``gonum.org/v1/gonum/floats`` (vector
+# kernels) and ``gonum.org/v1/gonum/mat`` (BLAS-backed dense linear
+# algebra), so matmul / inverse / solve get the same performance as
+# hand-written Go + gonum.
+#
+# The Go module is fetched on first build via ``go mod tidy``; no
+# extra install steps are required on the Lam side.
+#
+#     from lamarray import Array, Matrix
+#
+#     xs: list[float] = [1.0, 2.0, 3.0, 4.0]
+#     a: Array = Array.fromList(xs)
+#     b: Array = Array.ones(4)
+#     c: Array = a.add(b)               # element-wise add
+#     total: float = c.sum()
+#     m: Matrix = Matrix.fromList(2, 2, xs)
+#     prod: Matrix = m.matmul(m)        # BLAS matmul
+#     inv: Matrix = m.inverse()         # LAPACK-style LU solve
+#
+# Design notes:
+# * Most methods return a *new* Array/Matrix to avoid surprising
+#   aliasing. In-place variants ("_inplace") are spelled out when they
+#   buy meaningful perf.
+# * All list-taking constructors expect typed lists (``list[float]``,
+#   ``list[list[float]]``). Use an intermediate typed variable so the
+#   transpiler emits ``[]float64`` rather than ``[]interface{}``:
+#
+#       xs: list[float] = [1.0, 2.0]
+#       a: Array = Array.fromList(xs)
+#
+# * Shape mismatches panic with a descriptive message. For recoverable
+#   error handling, wrap calls in ``do { ... } catch err { ... }``.
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "fmt"
+        "math"
+        "math/rand"
+        "sort"
+
+        "gonum.org/v1/gonum/floats"
+        "gonum.org/v1/gonum/mat"
+        "gonum.org/v1/gonum/stat"
+    )
+}
+
+go! {
+    // ─── Internal helpers ──────────────────────────────────
+    // Tiny wrappers that keep the class method bodies short and make
+    // shape checks uniform. They compile away once inlined.
+    func lamArrCheckLen(op string, a, b []float64) {
+        if len(a) != len(b) {
+            panic(fmt.Sprintf("Array.%s: shape mismatch %d vs %d", op, len(a), len(b)))
+        }
+    }
+
+    func lamArrCopy(a []float64) []float64 {
+        out := make([]float64, len(a))
+        copy(out, a)
+        return out
+    }
+
+    func lamMatDataCopy(m *mat.Dense) []float64 {
+        r, c := m.Dims()
+        out := make([]float64, r*c)
+        for i := 0; i < r; i++ {
+            for j := 0; j < c; j++ {
+                out[i*c+j] = m.At(i, j)
+            }
+        }
+        return out
+    }
+}
+
+class Array {
+    #- Dense 1-D float64 vector. Element-wise arithmetic delegates to
+       ``gonum.org/v1/gonum/floats`` so the inner loops call into the
+       same BLAS-style kernels gonum uses internally. -#
+
+    func __init__(self, n: int) {
+        # Default constructor: zero-filled length-n array. Prefer the
+        # static helpers (``zeros`` / ``ones`` / ``fromList`` / …) —
+        # they're just thin sugar over this one.
+        self.data: any = None
+        self.length: int = n
+        go! {
+            s.Data = make([]float64, n)
+        }
+    }
+
+    static func zeros(n: int) -> Array {
+        return Array(n)
+    }
+
+    static func ones(n: int) -> Array {
+        a: Array = Array(n)
+        go! {
+            d := a.Data.([]float64)
+            for i := range d { d[i] = 1.0 }
+        }
+        return a
+    }
+
+    static func full(n: int, value: float) -> Array {
+        a: Array = Array(n)
+        go! {
+            d := a.Data.([]float64)
+            for i := range d { d[i] = value }
+        }
+        return a
+    }
+
+    static func arange(start: float, stop: float, step: float) -> Array {
+        #- Half-open interval ``[start, stop)`` with ``step`` stride.
+           ``step`` must be non-zero; positive step walks up, negative
+           step walks down. -#
+        go! {
+            if step == 0 { panic("Array.arange: step must be non-zero") }
+            var out []float64
+            if step > 0 {
+                for v := start; v < stop; v += step { out = append(out, v) }
+            } else {
+                for v := start; v > stop; v += step { out = append(out, v) }
+            }
+            a := NewArray(len(out))
+            a.Data = out
+            return a
+        }
+    }
+
+    static func linspace(start: float, stop: float, num: int) -> Array {
+        #- ``num`` evenly-spaced samples from ``start`` to ``stop``
+           (endpoints inclusive). Matches NumPy's ``linspace``. -#
+        go! {
+            if num <= 0 { panic("Array.linspace: num must be > 0") }
+            out := make([]float64, num)
+            if num == 1 {
+                out[0] = start
+            } else {
+                floats.Span(out, start, stop)
+            }
+            a := NewArray(num)
+            a.Data = out
+            return a
+        }
+    }
+
+    static func fromList(values: list[float]) -> Array {
+        go! {
+            a := NewArray(len(values))
+            a.Data = lamArrCopy(values)
+            return a
+        }
+    }
+
+    static func random(n: int) -> Array {
+        #- Uniform random doubles in ``[0, 1)``. Uses ``math/rand``'s
+           default source — seed it if you need reproducibility. -#
+        go! {
+            out := make([]float64, n)
+            for i := range out { out[i] = rand.Float64() }
+            a := NewArray(n)
+            a.Data = out
+            return a
+        }
+    }
+
+    func size(self) -> int {
+        go! { return len(s.Data.([]float64)) }
+    }
+
+    func at(self, i: int) -> float {
+        go! {
+            d := s.Data.([]float64)
+            if i < 0 || i >= len(d) {
+                panic(fmt.Sprintf("Array.at: index %d out of range [0,%d)", i, len(d)))
+            }
+            return d[i]
+        }
+    }
+
+    func setAt(self, i: int, v: float) {
+        go! {
+            d := s.Data.([]float64)
+            if i < 0 || i >= len(d) {
+                panic(fmt.Sprintf("Array.setAt: index %d out of range [0,%d)", i, len(d)))
+            }
+            d[i] = v
+        }
+    }
+
+    func toList(self) -> list[float] {
+        go! {
+            return lamArrCopy(s.Data.([]float64))
+        }
+    }
+
+    func copy(self) -> Array {
+        go! {
+            out := lamArrCopy(s.Data.([]float64))
+            a := NewArray(len(out))
+            a.Data = out
+            return a
+        }
+    }
+
+    # ─── element-wise arithmetic (vector-vector) ────────────
+    # ``floats.AddTo(dst, a, b)`` writes ``a + b`` into ``dst`` and
+    # returns the destination slice — perfect for a fresh allocation.
+    func add(self, other: Array) -> Array {
+        go! {
+            x := s.Data.([]float64)
+            y := other.Data.([]float64)
+            lamArrCheckLen("add", x, y)
+            out := make([]float64, len(x))
+            floats.AddTo(out, x, y)
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    func sub(self, other: Array) -> Array {
+        go! {
+            x := s.Data.([]float64)
+            y := other.Data.([]float64)
+            lamArrCheckLen("sub", x, y)
+            out := make([]float64, len(x))
+            floats.SubTo(out, x, y)
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    func mul(self, other: Array) -> Array {
+        go! {
+            x := s.Data.([]float64)
+            y := other.Data.([]float64)
+            lamArrCheckLen("mul", x, y)
+            out := make([]float64, len(x))
+            floats.MulTo(out, x, y)
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    func div(self, other: Array) -> Array {
+        go! {
+            x := s.Data.([]float64)
+            y := other.Data.([]float64)
+            lamArrCheckLen("div", x, y)
+            out := make([]float64, len(x))
+            floats.DivTo(out, x, y)
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    # ─── element-wise arithmetic (vector-scalar) ─────────────
+    func addScalar(self, k: float) -> Array {
+        go! {
+            out := lamArrCopy(s.Data.([]float64))
+            floats.AddConst(k, out)
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    func mulScalar(self, k: float) -> Array {
+        go! {
+            out := lamArrCopy(s.Data.([]float64))
+            floats.Scale(k, out)
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    func neg(self) -> Array {
+        return self.mulScalar(-1.0)
+    }
+
+    # ─── unary mathematical kernels ─────────────────────────
+    func sqrt(self) -> Array {
+        go! {
+            d := s.Data.([]float64)
+            out := make([]float64, len(d))
+            for i, v := range d { out[i] = math.Sqrt(v) }
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    func exp(self) -> Array {
+        go! {
+            d := s.Data.([]float64)
+            out := make([]float64, len(d))
+            for i, v := range d { out[i] = math.Exp(v) }
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    func log(self) -> Array {
+        go! {
+            d := s.Data.([]float64)
+            out := make([]float64, len(d))
+            for i, v := range d { out[i] = math.Log(v) }
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    func absVal(self) -> Array {
+        go! {
+            d := s.Data.([]float64)
+            out := make([]float64, len(d))
+            for i, v := range d { out[i] = math.Abs(v) }
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    func pow(self, exponent: float) -> Array {
+        go! {
+            d := s.Data.([]float64)
+            out := make([]float64, len(d))
+            for i, v := range d { out[i] = math.Pow(v, exponent) }
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    # ─── reductions ─────────────────────────────────────────
+    func sum(self) -> float {
+        go! { return floats.Sum(s.Data.([]float64)) }
+    }
+
+    func mean(self) -> float {
+        go! {
+            d := s.Data.([]float64)
+            if len(d) == 0 { panic("Array.mean: empty array") }
+            return stat.Mean(d, nil)
+        }
+    }
+
+    func minVal(self) -> float {
+        go! {
+            d := s.Data.([]float64)
+            if len(d) == 0 { panic("Array.minVal: empty array") }
+            return floats.Min(d)
+        }
+    }
+
+    func maxVal(self) -> float {
+        go! {
+            d := s.Data.([]float64)
+            if len(d) == 0 { panic("Array.maxVal: empty array") }
+            return floats.Max(d)
+        }
+    }
+
+    func argMin(self) -> int {
+        go! {
+            d := s.Data.([]float64)
+            if len(d) == 0 { panic("Array.argMin: empty array") }
+            return floats.MinIdx(d)
+        }
+    }
+
+    func argMax(self) -> int {
+        go! {
+            d := s.Data.([]float64)
+            if len(d) == 0 { panic("Array.argMax: empty array") }
+            return floats.MaxIdx(d)
+        }
+    }
+
+    func std(self) -> float {
+        #- Population standard deviation (denominator ``N``, not
+           ``N-1``). Use ``sampleStd`` for the unbiased estimate. -#
+        go! {
+            d := s.Data.([]float64)
+            if len(d) == 0 { panic("Array.std: empty array") }
+            m := stat.Mean(d, nil)
+            sumSq := 0.0
+            for _, v := range d { dx := v - m; sumSq += dx * dx }
+            return math.Sqrt(sumSq / float64(len(d)))
+        }
+    }
+
+    func sampleStd(self) -> float {
+        go! {
+            d := s.Data.([]float64)
+            if len(d) < 2 { panic("Array.sampleStd: need at least 2 values") }
+            return stat.StdDev(d, nil)
+        }
+    }
+
+    func variance(self) -> float {
+        go! {
+            d := s.Data.([]float64)
+            if len(d) == 0 { panic("Array.variance: empty array") }
+            m := stat.Mean(d, nil)
+            sumSq := 0.0
+            for _, v := range d { dx := v - m; sumSq += dx * dx }
+            return sumSq / float64(len(d))
+        }
+    }
+
+    func dot(self, other: Array) -> float {
+        #- Inner product. Both arrays must have the same length. -#
+        go! {
+            x := s.Data.([]float64)
+            y := other.Data.([]float64)
+            lamArrCheckLen("dot", x, y)
+            return floats.Dot(x, y)
+        }
+    }
+
+    func norm(self, p: float) -> float {
+        #- ``p``-norm of the vector. ``p=2`` is Euclidean length. -#
+        go! {
+            return floats.Norm(s.Data.([]float64), p)
+        }
+    }
+
+    # ─── slicing and structural helpers ─────────────────────
+    func slice(self, start: int, end: int) -> Array {
+        #- Half-open ``[start, end)``. Out-of-range indices are
+           clamped to avoid a panic on small off-by-ones. -#
+        go! {
+            d := s.Data.([]float64)
+            if start < 0 { start = 0 }
+            if end > len(d) { end = len(d) }
+            if start > end { start = end }
+            out := make([]float64, end-start)
+            copy(out, d[start:end])
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    func reverse(self) -> Array {
+        go! {
+            d := s.Data.([]float64)
+            n := len(d)
+            out := make([]float64, n)
+            for i, v := range d { out[n-1-i] = v }
+            r := NewArray(n)
+            r.Data = out
+            return r
+        }
+    }
+
+    func sortAsc(self) -> Array {
+        go! {
+            d := s.Data.([]float64)
+            out := make([]float64, len(d))
+            copy(out, d)
+            sort.Float64s(out)
+            r := NewArray(len(out))
+            r.Data = out
+            return r
+        }
+    }
+
+    func equals(self, other: Array) -> bool {
+        #- Exact equality. Use ``allClose`` for float comparisons that
+           need an epsilon. -#
+        go! {
+            x := s.Data.([]float64)
+            y := other.Data.([]float64)
+            if len(x) != len(y) { return false }
+            for i, v := range x { if v != y[i] { return false } }
+            return true
+        }
+    }
+
+    func allClose(self, other: Array, tol: float) -> bool {
+        #- ``true`` iff every pair of elements differs by at most
+           ``tol`` in absolute value. -#
+        go! {
+            return floats.EqualApprox(s.Data.([]float64), other.Data.([]float64), tol)
+        }
+    }
+
+    func toString(self) -> str {
+        go! {
+            return fmt.Sprintf("Array(%v)", s.Data.([]float64))
+        }
+    }
+}
+
+class Matrix {
+    #- Dense 2-D matrix backed by ``*mat.Dense``. Matrix multiply,
+       transpose, inverse, determinant and linear solves all go
+       through gonum's LAPACK-equivalent routines — the same code
+       paths used by ``gonum/mat`` directly. -#
+
+    func __init__(self, rows: int, cols: int) {
+        self.dense: any = None
+        self.rowsN: int = rows
+        self.colsN: int = cols
+        go! {
+            s.Dense = mat.NewDense(rows, cols, nil)
+        }
+    }
+
+    static func zerosM(rows: int, cols: int) -> Matrix {
+        return Matrix(rows, cols)
+    }
+
+    static func eye(n: int) -> Matrix {
+        m: Matrix = Matrix(n, n)
+        go! {
+            d := m.Dense.(*mat.Dense)
+            for i := 0; i < n; i++ { d.Set(i, i, 1.0) }
+        }
+        return m
+    }
+
+    static func fromList(rows: int, cols: int, values: list[float]) -> Matrix {
+        go! {
+            if len(values) != rows*cols {
+                panic(fmt.Sprintf("Matrix.fromList: expected %d values, got %d", rows*cols, len(values)))
+            }
+            data := make([]float64, rows*cols)
+            copy(data, values)
+            m := NewMatrix(rows, cols)
+            m.Dense = mat.NewDense(rows, cols, data)
+            return m
+        }
+    }
+
+    static func fromRows(rows: list[list[float]]) -> Matrix {
+        #- Build from a row-of-rows literal. Every row must have the
+           same length; mismatches panic. The inner lists need to be
+           ``[]float64`` at the Go level — assign through a typed
+           variable (``rows: list[list[float]] = [...]``) before
+           calling. -#
+        go! {
+            r := len(rows)
+            if r == 0 {
+                mm := NewMatrix(0, 0)
+                mm.Dense = mat.NewDense(0, 0, nil)
+                return mm
+            }
+            c := len(rows[0])
+            data := make([]float64, r*c)
+            for i, row := range rows {
+                if len(row) != c {
+                    panic(fmt.Sprintf("Matrix.fromRows: row %d has %d cols, expected %d", i, len(row), c))
+                }
+                copy(data[i*c:(i+1)*c], row)
+            }
+            mm := NewMatrix(r, c)
+            mm.Dense = mat.NewDense(r, c, data)
+            return mm
+        }
+    }
+
+    func rows(self) -> int {
+        return self.rowsN
+    }
+
+    func cols(self) -> int {
+        return self.colsN
+    }
+
+    func get(self, r: int, c: int) -> float {
+        go! {
+            return s.Dense.(*mat.Dense).At(r, c)
+        }
+    }
+
+    func set(self, r: int, c: int, v: float) {
+        go! {
+            s.Dense.(*mat.Dense).Set(r, c, v)
+        }
+    }
+
+    func transpose(self) -> Matrix {
+        go! {
+            src := s.Dense.(*mat.Dense)
+            r, c := src.Dims()
+            out := mat.NewDense(c, r, nil)
+            out.CloneFrom(src.T())
+            mm := NewMatrix(c, r)
+            mm.Dense = out
+            return mm
+        }
+    }
+
+    func addM(self, other: Matrix) -> Matrix {
+        go! {
+            a := s.Dense.(*mat.Dense)
+            b := other.Dense.(*mat.Dense)
+            ar, ac := a.Dims()
+            br, bc := b.Dims()
+            if ar != br || ac != bc {
+                panic(fmt.Sprintf("Matrix.addM: shape mismatch %dx%d vs %dx%d", ar, ac, br, bc))
+            }
+            out := mat.NewDense(ar, ac, nil)
+            out.Add(a, b)
+            mm := NewMatrix(ar, ac)
+            mm.Dense = out
+            return mm
+        }
+    }
+
+    func subM(self, other: Matrix) -> Matrix {
+        go! {
+            a := s.Dense.(*mat.Dense)
+            b := other.Dense.(*mat.Dense)
+            ar, ac := a.Dims()
+            br, bc := b.Dims()
+            if ar != br || ac != bc {
+                panic(fmt.Sprintf("Matrix.subM: shape mismatch %dx%d vs %dx%d", ar, ac, br, bc))
+            }
+            out := mat.NewDense(ar, ac, nil)
+            out.Sub(a, b)
+            mm := NewMatrix(ar, ac)
+            mm.Dense = out
+            return mm
+        }
+    }
+
+    func scale(self, k: float) -> Matrix {
+        go! {
+            a := s.Dense.(*mat.Dense)
+            ar, ac := a.Dims()
+            out := mat.NewDense(ar, ac, nil)
+            out.Scale(k, a)
+            mm := NewMatrix(ar, ac)
+            mm.Dense = out
+            return mm
+        }
+    }
+
+    func matmul(self, other: Matrix) -> Matrix {
+        #- BLAS-accelerated matrix multiply via
+           ``(*mat.Dense).Mul``. Inner dimensions must match. -#
+        go! {
+            a := s.Dense.(*mat.Dense)
+            b := other.Dense.(*mat.Dense)
+            ar, ac := a.Dims()
+            br, bc := b.Dims()
+            if ac != br {
+                panic(fmt.Sprintf("Matrix.matmul: inner dims %d != %d", ac, br))
+            }
+            out := mat.NewDense(ar, bc, nil)
+            out.Mul(a, b)
+            mm := NewMatrix(ar, bc)
+            mm.Dense = out
+            return mm
+        }
+    }
+
+    func mulVec(self, v: Array) -> Array {
+        #- Matrix–vector multiply. ``v`` is treated as a column vector
+           with length ``self.cols()``; the result has length
+           ``self.rows()``. -#
+        go! {
+            a := s.Dense.(*mat.Dense)
+            x := v.Data.([]float64)
+            ar, ac := a.Dims()
+            if len(x) != ac {
+                panic(fmt.Sprintf("Matrix.mulVec: cols=%d but vector has length %d", ac, len(x)))
+            }
+            vec := mat.NewVecDense(ac, x)
+            outVec := mat.NewVecDense(ar, nil)
+            outVec.MulVec(a, vec)
+            out := make([]float64, ar)
+            for i := 0; i < ar; i++ { out[i] = outVec.AtVec(i) }
+            arr := NewArray(ar)
+            arr.Data = out
+            return arr
+        }
+    }
+
+    func sumM(self) -> float {
+        go! {
+            return mat.Sum(s.Dense.(*mat.Dense))
+        }
+    }
+
+    func meanM(self) -> float {
+        go! {
+            d := s.Dense.(*mat.Dense)
+            r, c := d.Dims()
+            n := r * c
+            if n == 0 { panic("Matrix.meanM: empty matrix") }
+            return mat.Sum(d) / float64(n)
+        }
+    }
+
+    func trace(self) -> float {
+        #- Sum of the main diagonal. Matrix must be square. -#
+        go! {
+            d := s.Dense.(*mat.Dense)
+            r, c := d.Dims()
+            if r != c { panic("Matrix.trace: matrix must be square") }
+            return mat.Trace(d)
+        }
+    }
+
+    func det(self) -> float {
+        #- Determinant via LU decomposition. Matrix must be square. -#
+        go! {
+            d := s.Dense.(*mat.Dense)
+            r, c := d.Dims()
+            if r != c { panic("Matrix.det: matrix must be square") }
+            return mat.Det(d)
+        }
+    }
+
+    func inverse(self) -> Matrix {
+        #- True matrix inverse via LU. Panics on singular matrices —
+           use ``solve`` if you only need ``A^-1 b``. -#
+        go! {
+            a := s.Dense.(*mat.Dense)
+            ar, ac := a.Dims()
+            if ar != ac { panic("Matrix.inverse: matrix must be square") }
+            inv := mat.NewDense(ar, ac, nil)
+            if err := inv.Inverse(a); err != nil {
+                panic(fmt.Sprintf("Matrix.inverse: %v", err))
+            }
+            mm := NewMatrix(ar, ac)
+            mm.Dense = inv
+            return mm
+        }
+    }
+
+    func solve(self, b: Array) -> Array {
+        #- Solve ``A x = b`` for ``x`` using gonum's LU solver. The
+           receiver must be square and of dimension matching ``b``. -#
+        go! {
+            a := s.Dense.(*mat.Dense)
+            ar, ac := a.Dims()
+            if ar != ac { panic("Matrix.solve: matrix must be square") }
+            rhs := b.Data.([]float64)
+            if len(rhs) != ar {
+                panic(fmt.Sprintf("Matrix.solve: rhs length %d != matrix rows %d", len(rhs), ar))
+            }
+            rhsVec := mat.NewVecDense(ar, rhs)
+            var x mat.VecDense
+            if err := x.SolveVec(a, rhsVec); err != nil {
+                panic(fmt.Sprintf("Matrix.solve: %v", err))
+            }
+            out := make([]float64, ar)
+            for i := 0; i < ar; i++ { out[i] = x.AtVec(i) }
+            arr := NewArray(ar)
+            arr.Data = out
+            return arr
+        }
+    }
+
+    func equals(self, other: Matrix) -> bool {
+        go! {
+            a := s.Dense.(*mat.Dense)
+            b := other.Dense.(*mat.Dense)
+            ar, ac := a.Dims()
+            br, bc := b.Dims()
+            if ar != br || ac != bc { return false }
+            return mat.Equal(a, b)
+        }
+    }
+
+    func allClose(self, other: Matrix, tol: float) -> bool {
+        go! {
+            a := s.Dense.(*mat.Dense)
+            b := other.Dense.(*mat.Dense)
+            ar, ac := a.Dims()
+            br, bc := b.Dims()
+            if ar != br || ac != bc { return false }
+            return mat.EqualApprox(a, b, tol)
+        }
+    }
+
+    func toRows(self) -> list[list[float]] {
+        go! {
+            a := s.Dense.(*mat.Dense)
+            r, c := a.Dims()
+            out := make([][]float64, r)
+            for i := 0; i < r; i++ {
+                row := make([]float64, c)
+                for j := 0; j < c; j++ { row[j] = a.At(i, j) }
+                out[i] = row
+            }
+            return out
+        }
+    }
+
+    func toList(self) -> list[float] {
+        #- Row-major flattening of the matrix. -#
+        go! {
+            return lamMatDataCopy(s.Dense.(*mat.Dense))
+        }
+    }
+
+    func toString(self) -> str {
+        go! {
+            a := s.Dense.(*mat.Dense)
+            return fmt.Sprintf("Matrix(%v)", mat.Formatted(a, mat.Squeeze()))
+        }
+    }
+}
+
+func main() {
+    pass
+}

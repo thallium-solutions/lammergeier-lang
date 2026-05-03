@@ -1,0 +1,88 @@
+# Test: lamserver_ws WebSocket support — verifies an upgrade + echo
+# round-trip and that route query params survive the upgrade so handlers
+# can read them off ``req.query``.
+#
+# The client side dials with ``github.com/gorilla/websocket``'s built-in
+# Dialer; both the server and client live in the same process to keep
+# the test hermetic.
+#
+# expect: echo reply: echo: hello
+# expect: upper reply: WORLD!
+# expect: ok
+
+from lamserver import Server, Request, Response
+from lamserver_ws import WebSocket, wsRoute
+
+go! {
+    import (
+        "fmt"
+        "github.com/gorilla/websocket"
+        "io"
+        "net/http"
+        "net/url"
+        "strings"
+        "time"
+    )
+
+    func wsClientRoundtrip(rawURL, msg string) string {
+        u, perr := url.Parse(rawURL)
+        if perr != nil { return "ERR-parse: " + perr.Error() }
+        dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second}
+        conn, resp, err := dialer.Dial(u.String(), http.Header{})
+        if err != nil {
+            extra := ""
+            if resp != nil {
+                body, _ := io.ReadAll(resp.Body)
+                extra = fmt.Sprintf(" (status=%d body=%q)", resp.StatusCode, string(body))
+            }
+            return "ERR-dial: " + err.Error() + extra
+        }
+        defer conn.Close()
+        if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+            return "ERR-write: " + err.Error()
+        }
+        conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+        _, reply, err := conn.ReadMessage()
+        if err != nil { return "ERR-read: " + err.Error() }
+        return string(reply)
+    }
+}
+
+func echoHandler(ws: WebSocket, req: Request) {
+    msg: str = ws.recv()
+    if msg == "" {
+        return
+    }
+    ws.send(f"echo: {msg}")
+}
+
+func upperHandler(ws: WebSocket, req: Request) {
+    suffix: str = req.queryGet("suffix", "")
+    msg: str = ws.recv()
+    go! {
+        upper := strings.ToUpper(msg)
+        ws.Send(upper + suffix)
+    }
+}
+
+func main() {
+    srv: Server = Server()
+    wsRoute(srv, "/echo", echoHandler)
+    wsRoute(srv, "/upper", upperHandler)
+    srv.listenBackground(18686)
+
+    reply1: str = ""
+    go! {
+        reply1 = wsClientRoundtrip("ws://127.0.0.1:18686/echo", "hello")
+    }
+    print(f"echo reply: {reply1}")
+
+    reply2: str = ""
+    go! {
+        reply2 = wsClientRoundtrip("ws://127.0.0.1:18686/upper?suffix=!", "world")
+    }
+    print(f"upper reply: {reply2}")
+
+    srv.close()
+    print("ok")
+}

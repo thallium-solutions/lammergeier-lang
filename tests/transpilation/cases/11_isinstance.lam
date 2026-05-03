@@ -1,0 +1,27 @@
+# Transpilation: `isinstance` emits real Go type assertions / reflect
+# checks instead of the old `true /* isinstance */` placeholder.
+# expect-go: _, ok := interface{}(v).(int); return ok
+# expect-go: _, ok := interface{}(s).(string); return ok
+# expect-go: reflect.ValueOf(xs)
+# expect-go: reflect.Slice
+# expect-go: _, ok := interface{}(p).(*Point); return ok
+# expect-go: (n == nil)
+
+class Point {
+    func init(self, x: int) {
+        self.x: int = x
+    }
+}
+
+func check(v: any, s: any, xs: any, p: any, n: any) {
+    b1: bool = isinstance(v, int)
+    b2: bool = isinstance(s, str)
+    b3: bool = isinstance(xs, list)
+    b4: bool = isinstance(p, Point)
+    b5: bool = isinstance(n, None)
+    print(b1, b2, b3, b4, b5)
+}
+
+func main() {
+    check(1, "x", [1, 2], Point(3), nil)
+}

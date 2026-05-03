@@ -1,0 +1,116 @@
+# Test: lammigrate — Migrator drives .sql files in batches against a
+# real (SQLite :memory:) database.
+#
+# expect: initial-total: 2
+# expect: initial-ran: 0
+# expect: initial-pending: 2
+# expect: applied-count: 2
+# expect: applied-last: 20260101120001_create_posts.sql
+# expect: after-up-ran: 2
+# expect: after-up-pending: 0
+# expect: users-row-count: 1
+# expect: posts-row-count: 1
+# expect: rollback-count: 2
+# expect: after-down-ran: 0
+# expect: after-down-pending: 2
+# expect: second-up-applied: 1
+# expect: partial-down-remaining: 1
+# expect: schema-ddl-contains-id: true
+# expect: schema-timestamp-default: CURRENT_TIMESTAMP
+
+from lamdb import Db
+from lammigrate import Migrator, Schema
+from lamos import Os
+
+func main() {
+    # ── Prepare a temp migrations dir ─────────────────────────
+    dir_: str = "/tmp/lammigrate_test"
+    Os.removeAll(dir_)
+    Os.mkdir(dir_)
+    Os.writeFile(
+        dir_ + "/20260101120000_create_users.sql",
+        "-- +lam up\nCREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);\nINSERT INTO users (name) VALUES ('alice');\n-- +lam down\nDROP TABLE users;\n"
+    )
+    Os.writeFile(
+        dir_ + "/20260101120001_create_posts.sql",
+        "-- +lam up\nCREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT);\nINSERT INTO posts (title) VALUES ('hello');\n-- +lam down\nDROP TABLE posts;\n"
+    )
+
+    db: Db = Db.connect("sqlite", ":memory:")
+    mig: Migrator = Migrator(db, dir_)
+    mig.ensureSchema()
+
+    # ── Baseline ──────────────────────────────────────────────
+    summary0: dict[str, any] = mig.status()
+    print("initial-total: " + str(summary0["total"]))
+    print("initial-ran: " + str(summary0["ran"]))
+    print("initial-pending: " + str(summary0["pending"]))
+
+    # ── Apply all pending ─────────────────────────────────────
+    applied: list[str] = mig.up()
+    print("applied-count: " + str(len(applied)))
+    print("applied-last: " + str(applied[len(applied) - 1]))
+
+    summary1: dict[str, any] = mig.status()
+    print("after-up-ran: " + str(summary1["ran"]))
+    print("after-up-pending: " + str(summary1["pending"]))
+
+    # Verify the migration actually ran the data.
+    users: int = db.table("users").count()
+    print("users-row-count: " + str(users))
+    posts: int = db.table("posts").count()
+    print("posts-row-count: " + str(posts))
+
+    # ── Roll back the full batch ─────────────────────────────
+    undone: list[str] = mig.down(1)
+    print("rollback-count: " + str(len(undone)))
+    summary2: dict[str, any] = mig.status()
+    print("after-down-ran: " + str(summary2["ran"]))
+    print("after-down-pending: " + str(summary2["pending"]))
+
+    # ── Stepwise up / partial down ────────────────────────────
+    stepUp: list[str] = mig.up(1)
+    print("second-up-applied: " + str(len(stepUp)))
+    # Now apply the remaining, then down 1 — should leave one behind.
+    mig.up()
+    mig.down(1)            # rolls back the *last batch* (one file)
+    rem: dict[str, any] = mig.status()
+    print("partial-down-remaining: " + str(rem["ran"]))
+
+    # ── Schema builder smoke-test ─────────────────────────────
+    schema: Schema = Schema("sqlite")
+    cols: list[dict[str, any]] = []
+    colId: dict[str, any] = {"name": "id", "type": "id"}
+    colLabel: dict[str, any] = {"name": "label", "type": "string", "length": 64, "unique": true}
+    colCreated: dict[str, any] = {"name": "created_at", "type": "timestamp", "default": schema.timestampNow()}
+    cols.append(colId)
+    cols.append(colLabel)
+    cols.append(colCreated)
+    ddl: str = schema.createTable("widgets", cols)
+    hasId: bool = false
+    hasTs: bool = false
+    go! {
+        if strings.Contains(ddl, "INTEGER PRIMARY KEY AUTOINCREMENT") {
+            hasId = true
+        }
+        if strings.Contains(ddl, "DEFAULT CURRENT_TIMESTAMP") {
+            hasTs = true
+        }
+    }
+    if hasId {
+        print("schema-ddl-contains-id: true")
+    } else {
+        print("schema-ddl-contains-id: false")
+    }
+    if hasTs {
+        print("schema-timestamp-default: CURRENT_TIMESTAMP")
+    } else {
+        print("schema-timestamp-default: MISSING")
+    }
+
+    # Cleanup.
+    db.close()
+    Os.removeAll(dir_)
+}
+
+go! { import "strings" }

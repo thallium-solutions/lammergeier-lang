@@ -1,0 +1,75 @@
+# Lammergeier standard library: URL parsing
+# Import with: from lamurl import Url
+
+go! {
+    import "net/url"
+}
+
+class Url {
+    static func parse(rawUrl: str) -> str {
+        go! {
+            u, err := url.Parse(rawUrl)
+            if err != nil {
+                return ""
+            }
+            return u.String()
+        }
+    }
+
+    static func host(rawUrl: str) -> str {
+        go! {
+            u, err := url.Parse(rawUrl)
+            if err != nil {
+                return ""
+            }
+            return u.Host
+        }
+    }
+
+    static func path(rawUrl: str) -> str {
+        go! {
+            u, err := url.Parse(rawUrl)
+            if err != nil {
+                return ""
+            }
+            return u.Path
+        }
+    }
+
+    static func scheme(rawUrl: str) -> str {
+        go! {
+            u, err := url.Parse(rawUrl)
+            if err != nil {
+                return ""
+            }
+            return u.Scheme
+        }
+    }
+
+    static func queryParam(rawUrl: str, key: str) -> str {
+        go! {
+            u, err := url.Parse(rawUrl)
+            if err != nil {
+                return ""
+            }
+            return u.Query().Get(key)
+        }
+    }
+
+    static func encode(s: str) -> str {
+        go! {
+            return url.QueryEscape(s)
+        }
+    }
+
+    static func decode(s: str) -> str {
+        go! {
+            decoded, _ := url.QueryUnescape(s)
+            return decoded
+        }
+    }
+}
+
+func main() {
+    pass
+}

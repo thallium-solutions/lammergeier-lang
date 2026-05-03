@@ -1,0 +1,57 @@
+# Test: lamjwt — HS256/HS512 sign + verify + decode round-trip.
+# RS256 isn't tested here since it requires PEM key fixtures; the
+# code path is the same and is exercised manually.
+#
+# expect: hs256 issued nonzero: true
+# expect: hs256 verify good: true
+# expect: hs256 verify wrong: false
+# expect: hs256 sub: alice
+# expect: hs256 role: admin
+# expect: hs512 verify: true
+# expect: unverified sub: alice
+# expect: leeway set: 60
+# expect: try ok: true
+# expect: try bad: false
+
+from lamjwt import Jwt
+from lamerrors import Result
+
+func main() {
+    claims: dict[str, any] = {}
+    claims["sub"] = "alice"
+    claims["role"] = "admin"
+
+    tok: str = Jwt.signHS256(claims, "supersecret", 3600)
+    n: int = len(tok)
+    print(f"hs256 issued nonzero: {n > 0}")
+
+    ok: bool = Jwt.verifyHS256(tok, "supersecret")
+    print(f"hs256 verify good: {ok}")
+
+    bad: bool = Jwt.verifyHS256(tok, "wrong-secret")
+    print(f"hs256 verify wrong: {bad}")
+
+    payload: dict[str, any] = Jwt.decodeHS256(tok, "supersecret")
+    sub: any = payload["sub"]
+    role: any = payload["role"]
+    print(f"hs256 sub: {sub}")
+    print(f"hs256 role: {role}")
+
+    tok2: str = Jwt.signHS512(claims, "another", 3600)
+    ok2: bool = Jwt.verifyHS512(tok2, "another")
+    print(f"hs512 verify: {ok2}")
+
+    debug: dict[str, any] = Jwt.parseUnverified(tok)
+    dsub: any = debug["sub"]
+    print(f"unverified sub: {dsub}")
+
+    Jwt.setLeeway(60)
+    leeway: int = Jwt.getLeeway()
+    print(f"leeway set: {leeway}")
+
+    # Try-flavoured API returns Results.
+    rg: Result = Jwt.tryDecodeHS256(tok, "supersecret")
+    print(f"try ok: {rg.ok()}")
+    rb: Result = Jwt.tryDecodeHS256(tok, "wrong")
+    print(f"try bad: {rb.ok()}")
+}

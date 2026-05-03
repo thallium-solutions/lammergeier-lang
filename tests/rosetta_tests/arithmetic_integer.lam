@@ -1,0 +1,17 @@
+# Rosetta Code: Arithmetic/Integer
+# https://rosettacode.org/wiki/Arithmetic/Integer
+# expect: a + b = 15
+# expect: a - b = 5
+# expect: a * b = 50
+# expect: a / b = 2
+# expect: a % b = 0
+
+func main() {
+    a: int = 10
+    b: int = 5
+    print(f"a + b = {a + b}")
+    print(f"a - b = {a - b}")
+    print(f"a * b = {a * b}")
+    print(f"a / b = {a / b}")
+    print(f"a % b = {a % b}")
+}

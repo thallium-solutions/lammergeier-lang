@@ -1,0 +1,26 @@
+# Real-world mini project: finite state machine for order lifecycle.
+# expect: ship_before_pay=false
+# expect: final=delivered
+# expect: history=draft,blocked:ship,pending_payment,paid,packed,shipped,delivered
+# expect: refund_after_delivery=false
+# expect: history_count=8
+
+from fsm import OrderStateMachine, configuredOrderMachine
+from lamstrings import Strings
+
+func main() {
+    sm: OrderStateMachine = configuredOrderMachine()
+    shipBeforePay: bool = sm.trigger("ship")
+    sm.trigger("submit")
+    sm.trigger("pay")
+    sm.trigger("pack")
+    sm.trigger("ship")
+    sm.trigger("deliver")
+    refundAfterDelivery: bool = sm.trigger("refund")
+
+    print(f"ship_before_pay={shipBeforePay}")
+    print(f"final={sm.state}")
+    print(f"history={Strings.join(sm.history[:len(sm.history)-1], ',')}")
+    print(f"refund_after_delivery={refundAfterDelivery}")
+    print(f"history_count={len(sm.history)}")
+}

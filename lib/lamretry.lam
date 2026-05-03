@@ -1,0 +1,179 @@
+# Lammergeier standard library: retry with exponential backoff.
+#
+# Real-world clients talk to flaky dependencies — databases that
+# transiently disconnect, HTTP APIs that rate-limit, filesystems
+# that block. A naïve retry loop is easy to write wrong (fixed
+# delay, no jitter, no cap, swallowed errors). This module gives
+# you a tested primitive:
+#
+#     from lamretry import Retry
+#     from lamerrors import Result
+#
+#     res: Result = Retry.runFn(lambda: callFlakyApi(),
+#                               maxAttempts=5,
+#                               baseMs=100,
+#                               maxMs=2000,
+#                               jitter=true)
+#     body: str = res.unwrap()
+#
+# Semantics:
+#   * ``fn`` is invoked under panic recovery. A panic is treated as
+#     a failure and triggers the next retry (with the panic message
+#     as the error string).
+#   * If ``fn`` returns a ``Result`` directly, ``Err`` results
+#     likewise trigger a retry; ``Ok`` results short-circuit and
+#     are returned immediately.
+#   * ``baseMs`` is the first delay; subsequent delays double
+#     (``baseMs``, ``2·baseMs``, ``4·baseMs``, …) up to ``maxMs``.
+#   * ``jitter=true`` adds ±25% random wobble per delay — this is
+#     the cheapest way to avoid thundering-herd behaviour when N
+#     clients all retry at the same cadence.
+#   * ``maxAttempts=1`` is a "try once, no retry" (equivalent to
+#     just calling ``fn`` yourself) — useful for parametric code
+#     that wants to toggle retries on / off.
+#
+# Returns a ``Result`` carrying the successful value, or the last
+# error observed after exhausting attempts.
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "fmt"
+        "math/rand"
+        "sync"
+        "time"
+    )
+
+    // Seed the local RNG once per process. ``rand/v2`` would avoid
+    // this dance but older toolchains ship only v1; keep the shim
+    // compatible.
+    var lamRetryRandOnce sync.Once
+    var lamRetryRand     *rand.Rand
+    var lamRetryRandMu   sync.Mutex
+
+    func lamRetryRng() *rand.Rand {
+        lamRetryRandOnce.Do(func() {
+            lamRetryRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+        })
+        return lamRetryRand
+    }
+
+    // lamRetryDelay returns the delay for ``attempt`` (0-indexed),
+    // clamped to ``[0, maxMs]`` and optionally jittered.
+    func lamRetryDelay(attempt int, baseMs int, maxMs int, jitter bool) time.Duration {
+        if baseMs <= 0 { return 0 }
+        d := baseMs
+        for i := 0; i < attempt; i++ {
+            d *= 2
+            if maxMs > 0 && d > maxMs { d = maxMs; break }
+        }
+        if jitter && d > 0 {
+            lamRetryRandMu.Lock()
+            wobble := lamRetryRng().Float64()*0.5 - 0.25 // ±25%
+            lamRetryRandMu.Unlock()
+            d = int(float64(d) * (1.0 + wobble))
+            if d < 0 { d = 0 }
+        }
+        return time.Duration(d) * time.Millisecond
+    }
+}
+
+class Retry {
+    #- Static class — no instance state. -#
+
+    static func runFn(fn: any, maxAttempts: int = 3, baseMs: int = 100, maxMs: int = 2000, jitter: bool = true) -> Result {
+        #- Retry ``fn`` up to ``maxAttempts`` times with exponential
+           backoff, returning the first ``Ok`` Result it produces.
+
+           ``fn`` signature: ``func() -> any``. The return value may
+           be either a ``Result`` (``Err`` triggers retry) or any
+           other value (treated as ``Ok(value)``). Panics are also
+           caught and treated as transient failures.
+
+           ``baseMs=0`` disables the delay entirely (tight loop —
+           useful in tests that already stub out the sleep). -#
+        go! {
+            attempts := maxAttempts
+            if attempts < 1 { attempts = 1 }
+
+            var lastErr *Error
+            for i := 0; i < attempts; i++ {
+                var out interface{}
+                var panicked bool
+                var panicMsg string
+
+                func() {
+                    defer func() {
+                        if rec := recover(); rec != nil {
+                            panicked = true
+                            panicMsg = fmt.Sprintf("%v", rec)
+                        }
+                    }()
+                    if f, ok := fn.(func() interface{}); ok {
+                        out = f()
+                    } else {
+                        panicked = true
+                        panicMsg = "Retry.runFn: fn must be func() -> any"
+                    }
+                }()
+
+                if panicked {
+                    lastErr = LAMMERGEIER.Error("RetryError", panicMsg, nil)
+                } else if r, ok := out.(*Result); ok {
+                    if r.Error == nil {
+                        return r
+                    }
+                    if e, ok := r.Error.(*Error); ok {
+                        lastErr = e
+                    } else {
+                        lastErr = LAMMERGEIER.Error("RetryError", fmt.Sprintf("%v", r.Error), nil)
+                    }
+                } else {
+                    return LAMMERGEIER.Result.Ok(out)
+                }
+
+                if i+1 < attempts {
+                    time.Sleep(lamRetryDelay(i, baseMs, maxMs, jitter))
+                }
+            }
+            if lastErr == nil {
+                lastErr = LAMMERGEIER.Error("RetryError", "Retry.runFn: exhausted attempts", nil)
+            }
+            return LAMMERGEIER.Result.Err(lastErr)
+        }
+    }
+
+    static func until(predicate: any, maxAttempts: int = 10, baseMs: int = 50, maxMs: int = 500, jitter: bool = false) -> bool {
+        #- Call ``predicate()`` with exponential backoff until it
+           returns ``true`` or attempts are exhausted. Useful for
+           polling loops — "wait for the lease to become available",
+           "wait for the listener to bind", etc.
+
+           Returns ``true`` if the predicate eventually succeeded,
+           ``false`` otherwise. Never panics — a panicking predicate
+           is treated as ``false`` for that attempt. -#
+        go! {
+            attempts := maxAttempts
+            if attempts < 1 { attempts = 1 }
+            for i := 0; i < attempts; i++ {
+                var got bool
+                func() {
+                    defer func() { _ = recover() }()
+                    if p, ok := predicate.(func() bool); ok {
+                        got = p()
+                    }
+                }()
+                if got { return true }
+                if i+1 < attempts {
+                    time.Sleep(lamRetryDelay(i, baseMs, maxMs, jitter))
+                }
+            }
+            return false
+        }
+    }
+}
+
+func main() {
+    pass
+}

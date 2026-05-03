@@ -1,0 +1,54 @@
+# Test: F-string advanced patterns - expressions, method calls, nesting
+# expect: sum=15
+# expect: product=200
+# expect: result: 42
+# expect: empty:
+# expect: bool: true
+# expect: neg: -10
+# expect: HELLO
+# expect: hello
+# expect: x=10 y=20 z=30
+# expect: total=60
+# expect: fstr2_ok
+
+func compute(n: int) -> int {
+    return n * n + 1
+}
+
+func main() {
+    # Expression in f-string
+    a: int = 5
+    b: int = 10
+    print(f"sum={a + b}")
+    print(f"product={a * b * (a - 1)}")
+
+    # Nested function result display
+    val: int = 42
+    print(f"result: {val}")
+
+    # Empty value
+    s: str = ""
+    print(f"empty:{s}")
+
+    # Boolean
+    flag: bool = True
+    print(f"bool: {flag}")
+
+    # Negative
+    neg: int = -10
+    print(f"neg: {neg}")
+
+    # String methods in f-string
+    word: str = "hello"
+    print(word.upper())
+    print("HELLO".lower())
+
+    # Multiple values
+    x: int = 10
+    y: int = 20
+    z: int = 30
+    print(f"x={x} y={y} z={z}")
+    print(f"total={x + y + z}")
+
+    print("fstr2_ok")
+}

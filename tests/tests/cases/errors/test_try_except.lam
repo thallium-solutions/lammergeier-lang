@@ -1,0 +1,10 @@
+# Test: Try with except (Python keyword) also works
+# expect: caught it
+
+func main() {
+    try {
+        panic("oops")
+    } catch {
+        print("caught it")
+    }
+}

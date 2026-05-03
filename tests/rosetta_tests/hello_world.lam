@@ -1,0 +1,7 @@
+# Rosetta Code: Hello World
+# https://rosettacode.org/wiki/Hello_world/Text
+# expect: Hello, World!
+
+func main() {
+    print("Hello, World!")
+}

@@ -1,0 +1,162 @@
+# Test: lamserver_tus — tus.io 1.0.0 resumable-upload protocol.
+#
+# Walks the full happy path:
+#   * OPTIONS (capabilities advertisement)
+#   * POST    (creation, returns Location)
+#   * PATCH   (append bytes)
+#   * HEAD    (poll Upload-Offset)
+#   * PATCH   (finish)
+#   * PATCH   (wrong offset → 409)
+#   * DELETE  (termination)
+#
+# All run via Server.inject; storage is a temp dir cleaned up at the
+# end. Verifies tus headers, status codes, on-disk content, and
+# concurrent-safe offset checks.
+#
+# expect: options ver: 1.0.0
+# expect: options ext: creation,creation-with-upload,termination,concatenation,checksum
+# expect: create status: 201
+# expect: create location prefix: /uploads/
+# expect: id is uuid-len: 36
+# expect: patch1 status: 204
+# expect: patch1 offset: 6
+# expect: head status: 200
+# expect: head offset: 6
+# expect: head length: 11
+# expect: patch2 status: 204
+# expect: patch2 offset: 11
+# expect: conflict status: 409
+# expect: file: hello world
+# expect: delete status: 204
+# expect: file exists after: false
+# expect: ok
+
+from lamserver import Server, Request, Response
+from lamserver_tus import tusUploads
+from lamos import Os
+
+go! {
+    import (
+        "fmt"
+        "strings"
+    )
+}
+
+func main() {
+    tmp: str = Os.tempDir() + "/lam-tus-test"
+    Os.removeAll(tmp)
+
+    srv: Server = Server()
+    tusUploads(srv, "/uploads", tmp, 1024 * 1024)
+
+    # ── OPTIONS preflight: capabilities
+    ro: dict[str, any] = srv.inject("OPTIONS", "/uploads")
+    rh: any = ro["headers"]
+    tusVer: str = ""
+    tusExt: str = ""
+    go! {
+        if h, ok := rh.(map[string]string); ok {
+            tusVer = h["Tus-Version"]
+            tusExt = h["Tus-Extension"]
+        }
+    }
+    print(f"options ver: {tusVer}")
+    print(f"options ext: {tusExt}")
+
+    # ── POST: create new upload
+    h: dict[str, str] = {}
+    h["Upload-Length"] = "11"
+    h["Upload-Metadata"] = "filename aGVsbG8udHh0"
+    h["Tus-Resumable"] = "1.0.0"
+    rp: dict[str, any] = srv.inject("POST", "/uploads", "", h)
+    rps: any = rp["status"]
+    rph: any = rp["headers"]
+    location: str = ""
+    go! {
+        if hh, ok := rph.(map[string]string); ok {
+            location = hh["Location"]
+        }
+    }
+    print(f"create status: {rps}")
+    print(f"create location prefix: {location[:9]}")
+
+    id: str = ""
+    go! {
+        id = strings.TrimPrefix(location, "/uploads/")
+    }
+    idLen: int = len(id)
+    print(f"id is uuid-len: {idLen}")
+
+    # ── PATCH: send first 6 bytes
+    p1h: dict[str, str] = {}
+    p1h["Tus-Resumable"] = "1.0.0"
+    p1h["Content-Type"] = "application/offset+octet-stream"
+    p1h["Upload-Offset"] = "0"
+    rp1: dict[str, any] = srv.inject("PATCH", location, "hello ", p1h)
+    rp1s: any = rp1["status"]
+    rp1h: any = rp1["headers"]
+    off1: str = ""
+    go! {
+        if hh, ok := rp1h.(map[string]string); ok {
+            off1 = hh["Upload-Offset"]
+        }
+    }
+    print(f"patch1 status: {rp1s}")
+    print(f"patch1 offset: {off1}")
+
+    # ── HEAD: confirm offset
+    rh1: dict[str, any] = srv.inject("HEAD", location)
+    rh1s: any = rh1["status"]
+    rh1h: any = rh1["headers"]
+    headOff: str = ""
+    headLen: str = ""
+    go! {
+        if hh, ok := rh1h.(map[string]string); ok {
+            headOff = hh["Upload-Offset"]
+            headLen = hh["Upload-Length"]
+        }
+    }
+    print(f"head status: {rh1s}")
+    print(f"head offset: {headOff}")
+    print(f"head length: {headLen}")
+
+    # ── PATCH: send remaining 5 bytes ("world" → 11 total)
+    p2h: dict[str, str] = {}
+    p2h["Tus-Resumable"] = "1.0.0"
+    p2h["Content-Type"] = "application/offset+octet-stream"
+    p2h["Upload-Offset"] = "6"
+    rp2: dict[str, any] = srv.inject("PATCH", location, "world", p2h)
+    rp2s: any = rp2["status"]
+    rp2h: any = rp2["headers"]
+    off2: str = ""
+    go! {
+        if hh, ok := rp2h.(map[string]string); ok {
+            off2 = hh["Upload-Offset"]
+        }
+    }
+    print(f"patch2 status: {rp2s}")
+    print(f"patch2 offset: {off2}")
+
+    # ── Wrong offset returns 409
+    p3h: dict[str, str] = {}
+    p3h["Tus-Resumable"] = "1.0.0"
+    p3h["Content-Type"] = "application/offset+octet-stream"
+    p3h["Upload-Offset"] = "999"
+    rp3: dict[str, any] = srv.inject("PATCH", location, "x", p3h)
+    rp3s: any = rp3["status"]
+    print(f"conflict status: {rp3s}")
+
+    # ── Verify file on disk
+    finalContent: str = Os.readFile(tmp + "/" + id)
+    print(f"file: {finalContent}")
+
+    # ── DELETE
+    rd: dict[str, any] = srv.inject("DELETE", location)
+    rds: any = rd["status"]
+    exists: bool = Os.fileExists(tmp + "/" + id)
+    print(f"delete status: {rds}")
+    print(f"file exists after: {exists}")
+
+    Os.removeAll(tmp)
+    print("ok")
+}

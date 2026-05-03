@@ -1,0 +1,14 @@
+# Test: comments between statements
+# expect: 1
+# expect: 2
+# expect: 3
+
+func main() {
+    # first
+    print(1)
+    # second
+    print(2)
+    # third
+    print(3)
+    # end
+}

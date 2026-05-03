@@ -1,0 +1,56 @@
+# Test: Type conversion patterns and edge cases
+# expect: 42
+# expect: 3
+# expect: hello
+# expect: true
+# expect: 10
+# expect: 0
+# expect: -5
+# expect: 100
+# expect: 7
+# expect: 3
+# expect: conv_ok
+
+func to_abs(x: int) -> int {
+    if x < 0 {
+        return 0 - x
+    }
+    return x
+}
+
+func main() {
+    # Int from expression
+    a: int = 40 + 2
+    print(a)
+
+    # Int division result
+    b: int = 7 / 2
+    print(b)
+
+    # String
+    s: str = "hello"
+    print(s)
+
+    # Bool
+    flag: bool = True
+    print(flag)
+
+    # Positive
+    print(to_abs(10))
+    print(to_abs(0))
+    print(0 - to_abs(-5))
+
+    # Large expression
+    c: int = (5 + 5) * (2 + 8)
+    print(c)
+
+    # Chained arithmetic
+    d: int = 1 + 2 + 3 + 4 - 3
+    print(d)
+
+    # Nested parentheses
+    e: int = ((1 + 2) * (3 + 4)) / 7
+    print(e)
+
+    print("conv_ok")
+}

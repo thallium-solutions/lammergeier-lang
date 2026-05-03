@@ -1,0 +1,110 @@
+# Lammergeier standard library: path/filepath utilities
+# Import with: from lampath import Path
+
+go! {
+    import (
+        "os"
+        "path/filepath"
+        "strings"
+    )
+}
+
+class Path {
+    static func join(parts: list[str]) -> str {
+        go! {
+            return filepath.Join(parts...)
+        }
+    }
+
+    static func base(p: str) -> str {
+        go! {
+            return filepath.Base(p)
+        }
+    }
+
+    static func dir(p: str) -> str {
+        go! {
+            return filepath.Dir(p)
+        }
+    }
+
+    static func ext(p: str) -> str {
+        go! {
+            return filepath.Ext(p)
+        }
+    }
+
+    static func abs(p: str) -> str {
+        go! {
+            a, _ := filepath.Abs(p)
+            return a
+        }
+    }
+
+    static func clean(p: str) -> str {
+        go! {
+            return filepath.Clean(p)
+        }
+    }
+
+    static func isAbs(p: str) -> bool {
+        go! {
+            return filepath.IsAbs(p)
+        }
+    }
+
+    static func rel(basePath: str, targPath: str) -> str {
+        go! {
+            r, _ := filepath.Rel(basePath, targPath)
+            return r
+        }
+    }
+
+    static func glob(pattern: str) -> list[str] {
+        go! {
+            matches, _ := filepath.Glob(pattern)
+            if matches == nil {
+                return []string{}
+            }
+            return matches
+        }
+    }
+
+    static func exists(p: str) -> bool {
+        #- True if anything exists at the given path. -#
+        go! {
+            _, err := os.Stat(p)
+            return err == nil
+        }
+    }
+
+    static func splitExt(p: str) -> list[str] {
+        #- Split a path into [stem, ext]. `ext` includes the leading dot. -#
+        go! {
+            ext := filepath.Ext(p)
+            stem := strings.TrimSuffix(p, ext)
+            return []string{stem, ext}
+        }
+    }
+
+    static func withExt(p: str, ext: str) -> str {
+        #- Return `p` with its extension replaced by `ext` (leading dot optional). -#
+        go! {
+            if ext != "" && !strings.HasPrefix(ext, ".") { ext = "." + ext }
+            stem := strings.TrimSuffix(p, filepath.Ext(p))
+            return stem + ext
+        }
+    }
+
+    static func split(p: str) -> list[str] {
+        #- Split a path into [dir, file]. `dir` keeps its trailing slash. -#
+        go! {
+            d, f := filepath.Split(p)
+            return []string{d, f}
+        }
+    }
+}
+
+func main() {
+    pass
+}

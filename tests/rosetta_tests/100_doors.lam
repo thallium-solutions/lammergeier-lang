@@ -1,0 +1,32 @@
+# Rosetta Code: 100 doors
+# https://rosettacode.org/wiki/100_doors
+# expect: 1
+# expect: 4
+# expect: 9
+# expect: 16
+# expect: 25
+# expect: 36
+# expect: 49
+# expect: 64
+# expect: 81
+# expect: 100
+
+func main() {
+    doors: list[bool] = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
+    for pass_num in range(1, 101) {
+        i: int = pass_num
+        while i <= 100 {
+            if doors[i] == true {
+                doors[i] = false
+            } else {
+                doors[i] = true
+            }
+            i += pass_num
+        }
+    }
+    for i in range(1, 101) {
+        if doors[i] == true {
+            print(i)
+        }
+    }
+}

@@ -1,0 +1,191 @@
+# Test: Additional Fastify-parity sugar added to lamserver.
+#
+# Covers the recently introduced shortcuts:
+#   * Request.routerPath / routerMethod / is_() / url()
+#   * Response.setHeaders({...}) / getResponseTime() / callNotFound()
+#   * Server.hasRoute(method, path) / useSecurityHeaders({...})
+#
+# expect: hasRoute-users: true
+# expect: hasRoute-missing: false
+# expect: hasRoute-wrongMethod: false
+# expect: routerPath: /users/:id
+# expect: routerMethod: GET
+# expect: is-json: true
+# expect: is-form: false
+# expect: url-host: http://example.test/ping?ref=one
+# expect: setHeaders-ct: text/plain; charset=utf-8
+# expect: setHeaders-x: beta
+# expect: responseTime-ok: true
+# expect: sec-csp: default-src 'self'
+# expect: sec-hsts-prefix: max-age=15552000
+# expect: sec-xcto: nosniff
+# expect: sec-preserve-custom: route-csp
+# expect: callNotFound-status: 404
+# expect: callNotFound-body: oops — custom NF
+# expect: fastify-more-ok
+
+from lamserver import Server, Request, Response
+
+go! {
+    import (
+        "strings"
+    )
+}
+
+func usersById(req: Request, res: Response) {
+    # Echo the matched router path / method so the outer harness can
+    # verify ``req.routerPath()`` and ``req.routerMethod()``.
+    path: str = req.routerPath()
+    method: str = req.routerMethod()
+    res.setHeader("X-Path", path)
+    res.setHeader("X-Method", method)
+    res.text("user-" + req.params[":id"])
+}
+
+func pingEcho(req: Request, res: Response) {
+    isJson: bool = req.is_("json")
+    isForm: bool = req.is_("x-www-form-urlencoded")
+    u: str = req.url()
+    res.setHeader("X-Is-JSON", str(isJson))
+    res.setHeader("X-Is-Form", str(isForm))
+    res.setHeader("X-Url", u)
+    # setHeaders should replace X-Foo and add X-Bar in one shot.
+    res.setHeader("X-Foo", "initial")
+    batch: dict[str, str] = {}
+    batch["Content-Type"] = "text/plain; charset=utf-8"
+    batch["X-Foo"] = "beta"
+    batch["X-Bar"] = "gamma"
+    res.setHeaders(batch)
+    # responseTime should be a non-negative int.
+    rt: int = res.getResponseTime()
+    res.setHeader("X-RT-OK", str(rt >= 0))
+    res.text("pong")
+}
+
+func deleteMaybe(req: Request, res: Response) {
+    # Force delegation to the custom not-found handler.
+    res.callNotFound()
+}
+
+func customNotFound(req: Request, res: Response) {
+    res.setStatus(404)
+    res.text("oops — custom NF")
+}
+
+# A route that sets its own CSP — useSecurityHeaders must *not*
+# overwrite it.
+func secureRoute(req: Request, res: Response) {
+    res.setHeader("Content-Security-Policy", "route-csp")
+    res.text("secured")
+}
+
+func main() {
+    srv: Server = Server()
+    srv.useSecurityHeaders({})
+    srv.setNotFoundHandler(customNotFound)
+
+    srv.get("/users/:id", usersById)
+    srv.post("/ping",     pingEcho)
+    srv.del("/items/:id", deleteMaybe)
+    srv.get("/secure",    secureRoute)
+
+    # ── hasRoute ───────────────────────────────────────────
+    print("hasRoute-users: "       + str(srv.hasRoute("GET", "/users/:id")))
+    print("hasRoute-missing: "     + str(srv.hasRoute("GET", "/nope")))
+    print("hasRoute-wrongMethod: " + str(srv.hasRoute("DELETE", "/users/:id")))
+
+    # ── routerPath / routerMethod ──────────────────────────
+    r1: dict[str, any] = srv.inject("GET", "/users/42")
+    h1: any = r1["headers"]
+    rp: str = ""
+    rm: str = ""
+    go! {
+        if hh, ok := h1.(map[string]string); ok {
+            rp = hh["X-Path"]
+            rm = hh["X-Method"]
+        }
+    }
+    print("routerPath: " + rp)
+    print("routerMethod: " + rm)
+
+    # ── req.is_() / req.url() ──────────────────────────────
+    h0: dict[str, str] = {}
+    h0["Content-Type"] = "application/json"
+    h0["Host"] = "example.test"
+    r2: dict[str, any] = srv.inject("POST", "/ping?ref=one", "{\"hi\":\"there\"}", h0)
+    h2: any = r2["headers"]
+    isJ: str = ""
+    isF: str = ""
+    u:   str = ""
+    ctVal: str = ""
+    xFoo: str = ""
+    rtOk: str = ""
+    go! {
+        if hh, ok := h2.(map[string]string); ok {
+            isJ   = hh["X-Is-JSON"]
+            isF   = hh["X-Is-Form"]
+            u     = hh["X-Url"]
+            ctVal = hh["Content-Type"]
+            xFoo  = hh["X-Foo"]
+            rtOk  = hh["X-RT-OK"]
+        }
+    }
+    print("is-json: "      + isJ)
+    print("is-form: "      + isF)
+    print("url-host: "     + u)
+    # ── setHeaders / getResponseTime ───────────────────────
+    print("setHeaders-ct: " + ctVal)
+    print("setHeaders-x: "  + xFoo)
+    print("responseTime-ok: " + rtOk)
+
+    # ── useSecurityHeaders ─────────────────────────────────
+    r3: dict[str, any] = srv.inject("GET", "/users/1")
+    h3: any = r3["headers"]
+    csp: str = ""
+    hsts: str = ""
+    xcto: str = ""
+    go! {
+        if hh, ok := h3.(map[string]string); ok {
+            csp  = hh["Content-Security-Policy"]
+            hsts = hh["Strict-Transport-Security"]
+            xcto = hh["X-Content-Type-Options"]
+        }
+    }
+    print("sec-csp: " + csp)
+    hstsOk: bool = false
+    go! {
+        hstsOk = strings.HasPrefix(hsts, "max-age=15552000")
+    }
+    if hstsOk {
+        print("sec-hsts-prefix: max-age=15552000")
+    } else {
+        print("sec-hsts-prefix: MISSING=" + hsts)
+    }
+    print("sec-xcto: " + xcto)
+
+    # Route sets its own CSP — sec hook must defer.
+    r4: dict[str, any] = srv.inject("GET", "/secure")
+    h4: any = r4["headers"]
+    cspRoute: str = ""
+    go! {
+        if hh, ok := h4.(map[string]string); ok {
+            cspRoute = hh["Content-Security-Policy"]
+        }
+    }
+    print("sec-preserve-custom: " + cspRoute)
+
+    # ── callNotFound ───────────────────────────────────────
+    r5: dict[str, any] = srv.inject("DELETE", "/items/99")
+    statusAny: any = r5["status"]
+    bodyAny:   any = r5["body"]
+    statusI: int = 0
+    bodyS:   str = ""
+    go! {
+        if v, ok := statusAny.(int); ok { statusI = v }
+        if v, ok := bodyAny.(string); ok { bodyS = v }
+    }
+    print("callNotFound-status: " + str(statusI))
+    print("callNotFound-body: "   + bodyS)
+
+    print("fastify-more-ok")
+}

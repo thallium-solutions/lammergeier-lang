@@ -1,0 +1,15 @@
+# Transpilation: for i in range(n) -> C-style for loop; for x in xs -> range.
+# expect-go: for i := 0; i < 5; i += 1
+# expect-go: range nums
+
+func main() {
+    total: int = 0
+    for i in range(5) {
+        total = total + i
+    }
+    nums: list[int] = [10, 20, 30]
+    for n in nums {
+        total = total + n
+    }
+    print(total)
+}

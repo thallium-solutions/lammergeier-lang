@@ -1,0 +1,33 @@
+# Test: Interface with multiple methods
+# expect: area: 50
+# expect: perimeter: 30
+
+interface Shape {
+    func area() -> int
+    func perimeter() -> int
+}
+
+class Rectangle {
+    func __init__(self, w: int, h: int) {
+        self.w: int = w
+        self.h: int = h
+    }
+
+    func area(self) -> int {
+        return self.w * self.h
+    }
+
+    func perimeter(self) -> int {
+        return 2 * (self.w + self.h)
+    }
+}
+
+func print_shape(s: Shape) {
+    print(f"area: {s.area()}")
+    print(f"perimeter: {s.perimeter()}")
+}
+
+func main() {
+    r: Rectangle = Rectangle(5, 10)
+    print_shape(r)
+}

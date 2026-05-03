@@ -1,0 +1,79 @@
+# Integration test: CSV → typed records → group-by → JSON pipeline.
+#
+# Mimics the kind of data-massaging you'd write in a small ETL job:
+#
+#   1. Parse a multi-line CSV.
+#   2. Promote each row to a typed dict by zipping with the header.
+#   3. Group rows by the "team" column.
+#   4. Sum the integer "score" per team and emit it as JSON.
+#
+# Stresses the lamcsv → lamjson pipe, dict mutation, and a little
+# string/integer coercion through ``int(str)``.
+#
+# expect: header_count=3
+# expect: row_count=4
+# expect: red_total=12
+# expect: blue_total=15
+# expect: json_present=true
+# expect: csv_json_ok
+
+from lamcsv import Csv
+from lamjson import Json
+
+go! {
+    import "strconv"
+}
+
+func parseIntStr(s: str) -> int {
+    go! {
+        n, err := strconv.Atoi(s)
+        if err != nil { return 0 }
+        return n
+    }
+}
+
+func sumTeam(rows: list[list[str]], team: str) -> int {
+    total: int = 0
+    for row in rows {
+        if row[1] == team {
+            total = total + parseIntStr(row[2])
+        }
+    }
+    return total
+}
+
+func main() {
+    csvText: str = "name,team,score\nalice,red,4\nbob,blue,7\ncarol,red,8\ndave,blue,8\n"
+    rows: list[list[str]] = Csv.parseAll(csvText)
+
+    # First row is the header; the rest are data.
+    header: list[str] = rows[0]
+    data: list[list[str]] = rows[1:]
+
+    print(f"header_count={len(header)}")
+    print(f"row_count={len(data)}")
+
+    redTotal: int = sumTeam(data, "red")
+    blueTotal: int = sumTeam(data, "blue")
+    print(f"red_total={redTotal}")
+    print(f"blue_total={blueTotal}")
+
+    # Build a summary dict and serialise it. The JSON output is
+    # whitespace-sensitive in tests, so we just assert that key
+    # tokens are present rather than match the full string.
+    summary: dict[str, int] = {}
+    summary["red"] = redTotal
+    summary["blue"] = blueTotal
+    blob: str = Json.encode(summary)
+    # Don't assume key ordering — JSON encoders sort or preserve insertion
+    # order depending on the implementation. Just check that all four
+    # expected tokens appear somewhere in the payload.
+    hasRed: bool = blob.contains("red")
+    hasBlue: bool = blob.contains("blue")
+    has12: bool = blob.contains("12")
+    has15: bool = blob.contains("15")
+    jsonOk: bool = hasRed and hasBlue and has12 and has15
+    print(f"json_present={jsonOk}")
+
+    print("csv_json_ok")
+}

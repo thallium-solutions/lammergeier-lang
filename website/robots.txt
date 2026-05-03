@@ -1,0 +1,7 @@
+# Lammergeier Lang — robots.txt
+# Allow everyone to crawl everything; the site is static + public.
+
+User-agent: *
+Allow: /
+
+Sitemap: https://lammergeier-lang.dev/sitemap.xml

@@ -1,0 +1,14 @@
+# Test: f-string with method calls and nested expressions
+# expect: HELLO
+# expect: 3+4=7
+# expect: name has 5 chars
+
+func main() {
+    s: str = "hello"
+    print(f"{s.upper()}")
+    a: int = 3
+    b: int = 4
+    print(f"{a}+{b}={a + b}")
+    name: str = "world"
+    print(f"name has {len(name)} chars")
+}

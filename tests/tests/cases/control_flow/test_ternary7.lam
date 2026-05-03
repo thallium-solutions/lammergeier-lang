@@ -1,0 +1,12 @@
+# Test: ternary with string values in assign
+# expect: long
+# expect: short
+
+func main() {
+    s: str = "hello world"
+    desc = "long" if len(s) > 5 else "short"
+    print(desc)
+    s2: str = "hi"
+    desc2 = "long" if len(s2) > 5 else "short"
+    print(desc2)
+}

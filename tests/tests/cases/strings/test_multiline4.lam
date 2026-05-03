@@ -1,0 +1,11 @@
+# Test: multiline string preserves content
+# expect: line one
+# expect: line two
+# expect: end
+
+func main() {
+    text: str = """line one
+line two
+end"""
+    print(text)
+}

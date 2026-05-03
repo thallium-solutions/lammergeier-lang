@@ -1,0 +1,150 @@
+# Test: Response.paginate (RFC 5988 Link header) and
+# Server.versionedRoute (header-based API version branching).
+#
+# expect: p1-total: 57
+# expect: p1-page: 2
+# expect: p1-per-page: 10
+# expect: p1-total-pages: 6
+# expect: p1-link-has-next: true
+# expect: p1-link-has-prev: true
+# expect: p1-link-has-first: true
+# expect: p1-link-has-last: true
+# expect: p-last-no-next: true
+# expect: p-first-no-prev: true
+# expect: v-default: v1:list
+# expect: v-v2: v2:list
+# expect: v-explicit-v1: v1:list
+# expect: v-unknown-status: 406
+
+from lamserver import Server, Request, Response
+
+go! {
+    import (
+        "fmt"
+        "strings"
+    )
+}
+
+func pageHandler(req: Request, res: Response) {
+    res.paginate(57, 2, 10)
+    res.json("{\"items\":[]}")
+}
+
+func pageLastHandler(req: Request, res: Response) {
+    res.paginate(57, 6, 10)
+    res.json("{}")
+}
+
+func pageFirstHandler(req: Request, res: Response) {
+    res.paginate(57, 1, 10)
+    res.json("{}")
+}
+
+func v1Handler(req: Request, res: Response) {
+    res.text("v1:list")
+}
+
+func v2Handler(req: Request, res: Response) {
+    res.text("v2:list")
+}
+
+func main() {
+    srv: Server = Server()
+    srv.get("/items", pageHandler)
+    srv.get("/items/last", pageLastHandler)
+    srv.get("/items/first", pageFirstHandler)
+
+    # ── pagination
+    o: dict[str, any] = srv.inject("GET", "/items")
+    h: any = o["headers"]
+    total: str = ""
+    page: str = ""
+    perPage: str = ""
+    totalPages: str = ""
+    linkHdr: str = ""
+    go! {
+        if hh, ok := h.(map[string]string); ok {
+            total = hh["X-Total-Count"]
+            page = hh["X-Pagination-Page"]
+            perPage = hh["X-Pagination-Per-Page"]
+            totalPages = hh["X-Pagination-Total-Pages"]
+            linkHdr = hh["Link"]
+        }
+    }
+    print(f"p1-total: {total}")
+    print(f"p1-page: {page}")
+    print(f"p1-per-page: {perPage}")
+    print(f"p1-total-pages: {totalPages}")
+    hasNext: bool = false
+    hasPrev: bool = false
+    hasFirst: bool = false
+    hasLast: bool = false
+    go! {
+        hasNext = strings.Contains(linkHdr, `rel="next"`)
+        hasPrev = strings.Contains(linkHdr, `rel="prev"`)
+        hasFirst = strings.Contains(linkHdr, `rel="first"`)
+        hasLast = strings.Contains(linkHdr, `rel="last"`)
+    }
+    print(f"p1-link-has-next: {hasNext}")
+    print(f"p1-link-has-prev: {hasPrev}")
+    print(f"p1-link-has-first: {hasFirst}")
+    print(f"p1-link-has-last: {hasLast}")
+
+    # Last page shouldn't have a `next` link.
+    oLast: dict[str, any] = srv.inject("GET", "/items/last")
+    hLast: any = oLast["headers"]
+    linkLast: str = ""
+    go! {
+        if hh, ok := hLast.(map[string]string); ok { linkLast = hh["Link"] }
+    }
+    noNext: bool = false
+    go! { noNext = !strings.Contains(linkLast, `rel="next"`) }
+    print(f"p-last-no-next: {noNext}")
+
+    # First page shouldn't have a `prev` link.
+    oFirst: dict[str, any] = srv.inject("GET", "/items/first")
+    hFirst: any = oFirst["headers"]
+    linkFirst: str = ""
+    go! {
+        if hh, ok := hFirst.(map[string]string); ok { linkFirst = hh["Link"] }
+    }
+    noPrev: bool = false
+    go! { noPrev = !strings.Contains(linkFirst, `rel="prev"`) }
+    print(f"p-first-no-prev: {noPrev}")
+
+    # ── versionedRoute
+    srv2: Server = Server()
+    handlers: dict[str, any] = {}
+    handlers["v1"] = v1Handler
+    handlers["v2"] = v2Handler
+    srv2.versionedRoute("GET", "/list", handlers, "v1", "Accept-Version")
+
+    # No header → fallback to v1.
+    r0: dict[str, any] = srv2.inject("GET", "/list")
+    b0: any = r0["body"]
+    print(f"v-default: {b0}")
+
+    # Explicit v2.
+    headers2: dict[str, str] = {}
+    headers2["Accept-Version"] = "v2"
+    r2: dict[str, any] = srv2.inject("GET", "/list", "", headers2)
+    b2: any = r2["body"]
+    print(f"v-v2: {b2}")
+
+    # Explicit v1.
+    headers1: dict[str, str] = {}
+    headers1["Accept-Version"] = "v1"
+    r1: dict[str, any] = srv2.inject("GET", "/list", "", headers1)
+    b1: any = r1["body"]
+    print(f"v-explicit-v1: {b1}")
+
+    # Unknown version + no fallback → 406. We rebuild a fresh server
+    # with no fallback.
+    srv3: Server = Server()
+    srv3.versionedRoute("GET", "/list", handlers, "", "Accept-Version")
+    headersBad: dict[str, str] = {}
+    headersBad["Accept-Version"] = "v9"
+    rBad: dict[str, any] = srv3.inject("GET", "/list", "", headersBad)
+    badStatus: any = rBad["status"]
+    print(f"v-unknown-status: {badStatus}")
+}

@@ -1,0 +1,29 @@
+# expect: json_encode_ok
+# expect: valid_true: true
+# expect: valid_false: false
+# expect: try_ok: true
+# expect: try_err: true
+
+from lamjson import Json
+from lamerrors import Result
+
+func main() {
+    encoded: str = Json.encode("hello")
+    if len(encoded) > 0 {
+        print("json_encode_ok")
+    }
+
+    good: bool = Json.isValid('{"a": 1}')
+    bad: bool = Json.isValid("{not json}")
+    print(f"valid_true: {good}")
+    print(f"valid_false: {bad}")
+
+    # ``Json.tryDecode`` now returns a ``Result``: ``.ok()`` is True
+    # on success and the decoded value lives in ``.value``; on a
+    # parse failure ``.error`` carries a ``JsonDecodeError``.
+    parsed: Result = Json.tryDecode('{"a": 1}')
+    failed: Result = Json.tryDecode("not json at all")
+    isErr: bool = not failed.ok()
+    print(f"try_ok: {parsed.ok()}")
+    print(f"try_err: {isErr}")
+}

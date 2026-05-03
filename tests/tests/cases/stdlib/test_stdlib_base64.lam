@@ -1,0 +1,14 @@
+# Test: tpybase64 standard library
+# expect: aGVsbG8gd29ybGQ=
+# expect: hello world
+# expect: base64_ok
+
+from lambase64 import Base64
+
+func main() {
+    encoded: str = Base64.encode("hello world")
+    print(encoded)
+    decoded: str = Base64.decode(encoded)
+    print(decoded)
+    print("base64_ok")
+}

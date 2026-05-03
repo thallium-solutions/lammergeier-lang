@@ -1,0 +1,98 @@
+# Lammergeier standard library: formatting utilities
+# Import with: from lamfmt import Fmt
+
+go! {
+    import (
+        "fmt"
+        "strings"
+    )
+}
+
+class Fmt {
+    static func sprintf(format: str, *args: any) -> str {
+        #- Variadic printf-style formatter. Mirrors Go's fmt.Sprintf. -#
+        go! {
+            return fmt.Sprintf(format, args...)
+        }
+    }
+
+    static func printf(format: str, *args: any) {
+        #- Variadic printf-style writer to stdout (no trailing newline). -#
+        go! {
+            fmt.Printf(format, args...)
+        }
+    }
+
+    static func println(*args: any) {
+        #- Print each arg separated by a space, followed by a newline. -#
+        go! {
+            fmt.Println(args...)
+        }
+    }
+
+    static func padLeft(s: str, width: int, ch: str) -> str {
+        go! {
+            if ch == "" { ch = " " }
+            for len(s) < width {
+                s = ch + s
+            }
+            return s
+        }
+    }
+
+    static func padRight(s: str, width: int, ch: str) -> str {
+        go! {
+            if ch == "" { ch = " " }
+            for len(s) < width {
+                s = s + ch
+            }
+            return s
+        }
+    }
+
+    static func center(s: str, width: int, ch: str) -> str {
+        go! {
+            if ch == "" { ch = " " }
+            if len(s) >= width { return s }
+            total := width - len(s)
+            left := total / 2
+            right := total - left
+            return strings.Repeat(ch, left) + s + strings.Repeat(ch, right)
+        }
+    }
+
+    static func hex(n: int) -> str {
+        go! {
+            return fmt.Sprintf("%x", n)
+        }
+    }
+
+    static func octal(n: int) -> str {
+        go! {
+            return fmt.Sprintf("%o", n)
+        }
+    }
+
+    static func binary(n: int) -> str {
+        go! {
+            return fmt.Sprintf("%b", n)
+        }
+    }
+
+    static func formatFloat(f: float, decimals: int) -> str {
+        go! {
+            return fmt.Sprintf("%.*f", decimals, f)
+        }
+    }
+
+    static func repr(val: any) -> str {
+        #- Go-style debug representation, using fmt.Sprintf("%#v", ...). -#
+        go! {
+            return fmt.Sprintf("%#v", val)
+        }
+    }
+}
+
+func main() {
+    pass
+}

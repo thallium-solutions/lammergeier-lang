@@ -1,0 +1,113 @@
+class UserContext {
+    func init(self, id: int, email: str, plan: str, country: str) {
+        self.id: int = id
+        self.email: str = email
+        self.plan: str = plan
+        self.country: str = country
+    }
+}
+
+class FeatureFlag {
+    func init(self, key: str, enabled: bool, rolloutPercent: int = 100) {
+        self.key: str = key
+        self.enabled: bool = enabled
+        self.rolloutPercent: int = rolloutPercent
+        self.allowedPlans: list[str] = []
+        self.deniedCountries: list[str] = []
+    }
+
+    func allowPlan(self, plan: str) -> FeatureFlag {
+        self.allowedPlans.append(plan)
+        return self
+    }
+
+    func denyCountry(self, country: str) -> FeatureFlag {
+        self.deniedCountries.append(country)
+        return self
+    }
+
+    func hasAllowedPlan(self, user: UserContext) -> bool {
+        if len(self.allowedPlans) == 0 {
+            return true
+        }
+        for plan in self.allowedPlans {
+            if plan == user.plan {
+                return true
+            }
+        }
+        return false
+    }
+
+    func isDeniedCountry(self, user: UserContext) -> bool {
+        for country in self.deniedCountries {
+            if country == user.country {
+                return true
+            }
+        }
+        return false
+    }
+
+    func bucketFor(self, user: UserContext) -> int {
+        return (user.id + len(user.email) * 17 + len(user.plan) * 13) % 100
+    }
+
+    func enabledFor(self, user: UserContext) -> bool {
+        if not self.enabled {
+            return false
+        }
+        if self.isDeniedCountry(user) {
+            return false
+        }
+        if not self.hasAllowedPlan(user) {
+            return false
+        }
+        return self.bucketFor(user) < self.rolloutPercent
+    }
+}
+
+class FlagRegistry {
+    func init(self) {
+        self.flags: list[FeatureFlag] = []
+    }
+
+    func add(self, flag: FeatureFlag) {
+        self.flags.append(flag)
+    }
+
+    func getFlag(self, key: str) -> FeatureFlag {
+        for flag in self.flags {
+            if flag.key == key {
+                return flag
+            }
+        }
+        return FeatureFlag(key, false, 0)
+    }
+
+    func enabled(self, key: str, user: UserContext) -> bool {
+        flag: FeatureFlag = self.getFlag(key)
+        return flag.enabledFor(user)
+    }
+}
+
+func buildRegistry() -> FlagRegistry {
+    reg: FlagRegistry = FlagRegistry()
+
+    checkout: FeatureFlag = FeatureFlag("checkout_v2", true, 80)
+    checkout.allowPlan("pro")
+    checkout.allowPlan("enterprise")
+    checkout.denyCountry("IR")
+    reg.add(checkout)
+
+    billing: FeatureFlag = FeatureFlag("billing_portal", true, 30)
+    billing.allowPlan("enterprise")
+    reg.add(billing)
+
+    disabled: FeatureFlag = FeatureFlag("legacy_export", false, 100)
+    reg.add(disabled)
+
+    return reg
+}
+
+func main() {
+    pass
+}

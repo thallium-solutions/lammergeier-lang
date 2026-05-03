@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""Lammergeier Lang Compiler — CLI launcher.
+
+Symlink-safe: uses ``os.path.realpath`` so that running ``lamc`` via a
+``~/.local/bin/lamc`` symlink still resolves the project root where
+``compiler/`` and ``lib/`` live.
+"""
+import os
+import sys
+
+# Resolve project root, following symlinks so the launcher works
+# whether invoked as ``./lamc`` from the checkout or as ``lamc`` via
+# a PATH symlink installed by ``install.sh``.
+ROOT = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, ROOT)
+
+from compiler.lammergeier import main
+main()

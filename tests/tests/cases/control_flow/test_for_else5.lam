@@ -1,0 +1,16 @@
+# Test: for-else with range, no break
+# expect: all positive
+# expect: done
+
+func main() {
+    nums: list[int] = [1, 2, 3, 4, 5]
+    for n in nums {
+        if n < 0 {
+            print("found negative")
+            break
+        }
+    } else {
+        print("all positive")
+    }
+    print("done")
+}

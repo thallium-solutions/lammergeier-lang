@@ -1,0 +1,62 @@
+# Test: Operator overloading - chained operations and negation
+# expect: Vec(6, 9)
+# expect: Vec(-1, -2)
+# expect: 14
+
+class Vec {
+    func __init__(self, x: int, y: int) {
+        self.x: int = x
+        self.y: int = y
+    }
+
+    func __add__(self, other: Vec) -> Vec {
+        return Vec(self.x + other.x, self.y + other.y)
+    }
+
+    func __neg__(self) -> Vec {
+        return Vec(-self.x, -self.y)
+    }
+
+    func __str__(self) -> str {
+        return f"Vec({self.x}, {self.y})"
+    }
+}
+
+class Num {
+    func __init__(self, val: int) {
+        self.val: int = val
+    }
+
+    func __add__(self, other: Num) -> Num {
+        return Num(self.val + other.val)
+    }
+
+    func __mul__(self, other: Num) -> Num {
+        return Num(self.val * other.val)
+    }
+
+    func __str__(self) -> str {
+        return f"{self.val}"
+    }
+}
+
+func main() {
+    a: Vec = Vec(1, 2)
+    b: Vec = Vec(2, 3)
+    c: Vec = Vec(3, 4)
+
+    # Chained addition: a + b + c
+    result: Vec = a + b + c
+    print(result)
+
+    # Unary negation
+    neg: Vec = -a
+    print(neg)
+
+    # Mul overload
+    x: Num = Num(2)
+    y: Num = Num(3)
+    z: Num = Num(4)
+    r: Num = x + y * z
+    print(r)
+}

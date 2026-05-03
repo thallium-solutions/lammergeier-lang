@@ -1,0 +1,18 @@
+# Test: for-else searching in list
+# expect: found target
+# expect: target missing
+
+func search(items: list[int], target: int) -> str {
+    for item in items {
+        if item == target {
+            return "found target"
+        }
+    }
+    return "target missing"
+}
+
+func main() {
+    data: list[int] = [1, 2, 3, 4, 5]
+    print(search(data, 3))
+    print(search(data, 9))
+}

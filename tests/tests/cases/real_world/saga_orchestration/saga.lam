@@ -1,0 +1,64 @@
+class SagaStep {
+    func init(self, name: str, shouldFail: bool = false) {
+        self.name: str = name
+        self.shouldFail: bool = shouldFail
+        self.done: bool = false
+        self.compensated: bool = false
+    }
+
+    func execute(self) -> bool {
+        if self.shouldFail {
+            return false
+        }
+        self.done = true
+        return true
+    }
+
+    func compensate(self) {
+        if self.done {
+            self.compensated = true
+        }
+    }
+}
+
+class SagaResult {
+    func init(self, ok: bool, failedAt: str, completed: int, compensated: int) {
+        self.ok: bool = ok
+        self.failedAt: str = failedAt
+        self.completed: int = completed
+        self.compensated: int = compensated
+    }
+}
+
+class Saga {
+    func init(self) {
+        self.steps: list[SagaStep] = []
+    }
+
+    func add(self, step: SagaStep) {
+        self.steps.append(step)
+    }
+
+    func run(self) -> SagaResult {
+        completed: list[SagaStep] = []
+        for step in self.steps {
+            if step.execute() {
+                completed.append(step)
+            } else {
+                compensated: int = 0
+                i: int = len(completed) - 1
+                while i >= 0 {
+                    completed[i].compensate()
+                    compensated += 1
+                    i -= 1
+                }
+                return SagaResult(false, step.name, len(completed), compensated)
+            }
+        }
+        return SagaResult(true, "", len(completed), 0)
+    }
+}
+
+func main() {
+    pass
+}

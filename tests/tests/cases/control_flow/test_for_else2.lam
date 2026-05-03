@@ -1,0 +1,16 @@
+# Test: for-else - prime number, no break means else runs
+# expect: 7 is prime
+# expect: done
+
+func main() {
+    n: int = 7
+    for i in range(2, n) {
+        if n % i == 0 {
+            print(f"{n} is not prime")
+            break
+        }
+    } else {
+        print(f"{n} is prime")
+    }
+    print("done")
+}

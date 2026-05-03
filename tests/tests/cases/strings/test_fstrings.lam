@@ -1,0 +1,62 @@
+# Test: F-strings and string formatting
+# expect: Hello, Alice!
+# expect: 2 + 3 = 5
+# expect: Pi is 3.14159
+# expect: Name: Bob, Age: 25
+# expect: Result: 42
+# expect: Values: 10 and 20
+# expect: Nested: hello HELLO
+# expect: Multi: a=1 b=2 c=3
+# expect: Bool: true
+# expect: Negative: -5
+# expect: Zero: 0
+# expect: Percent: 100%%
+# expect: Mixed: hello 42 true
+
+func main() {
+    name: str = "Alice"
+    print(f"Hello, {name}!")
+
+    a: int = 2
+    b: int = 3
+    print(f"{a} + {b} = {a + b}")
+
+    pi: float = 3.14159
+    print(f"Pi is {pi}")
+
+    person_name: str = "Bob"
+    age: int = 25
+    print(f"Name: {person_name}, Age: {age}")
+
+    result: int = 42
+    print(f"Result: {result}")
+
+    x: int = 10
+    y: int = 20
+    print(f"Values: {x} and {y}")
+
+    s: str = "hello"
+    print(f"Nested: {s} {s.upper()}")
+
+    v1: int = 1
+    v2: int = 2
+    v3: int = 3
+    print(f"Multi: a={v1} b={v2} c={v3}")
+
+    flag: bool = True
+    print(f"Bool: {flag}")
+
+    neg: int = -5
+    print(f"Negative: {neg}")
+
+    zero: int = 0
+    print(f"Zero: {zero}")
+
+    pct: int = 100
+    print(f"Percent: {pct}%%")
+
+    word: str = "hello"
+    num: int = 42
+    bval: bool = True
+    print(f"Mixed: {word} {num} {bval}")
+}

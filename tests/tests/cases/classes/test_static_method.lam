@@ -1,0 +1,24 @@
+# Test: Static methods in classes
+# expect: static result: 10
+# expect: instance: hello
+
+class MyClass {
+    func __init__(self, name: str) {
+        self.name: str = name
+    }
+
+    static func add(a: int, b: int) -> int {
+        return a + b
+    }
+
+    func greet(self) -> str {
+        return f"instance: {self.name}"
+    }
+}
+
+func main() {
+    result: int = MyClass.add(3, 7)
+    print(f"static result: {result}")
+    obj: MyClass = MyClass("hello")
+    print(obj.greet())
+}

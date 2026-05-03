@@ -1,0 +1,224 @@
+# Test: lamserver_tus Concatenation + Checksum extensions.
+#
+# Covers:
+#   * OPTIONS advertises Tus-Checksum-Algorithm + new Tus-Extension.
+#   * Upload-Checksum on PATCH: valid sha1 → 204, mismatch → 460,
+#     unsupported algo → 400.
+#   * Upload-Concat: partial marks an upload as partial; HEAD echoes
+#     "Upload-Concat: partial".
+#   * Upload-Concat: final concatenates partials into a new blob,
+#     sets HEAD Upload-Concat = "final;<url1> <url2>", and marks it
+#     complete immediately.
+#   * PATCH on a final upload → 403.
+#
+# expect: opt-algo: sha1,sha256,md5
+# expect: opt-ext: creation,creation-with-upload,termination,concatenation,checksum
+# expect: checksum-good: 204
+# expect: checksum-bad: 460
+# expect: checksum-bad-algo: 400
+# expect: part-a-patch: 204
+# expect: part-b-patch: 204
+# expect: head-partial-concat: partial
+# expect: final-status: 201
+# expect: final-length-11: true
+# expect: final-complete: 200
+# expect: final-content: hello world
+# expect: final-concat-header-prefix: final;
+# expect: patch-final-forbidden: 403
+
+from lamserver import Server, Request, Response
+from lamserver_tus import tusUploads
+from lamos import Os
+
+go! {
+    import (
+        "crypto/sha1"
+        "encoding/base64"
+        "strings"
+    )
+}
+
+func main() {
+    tmp: str = Os.tempDir() + "/lam-tus-ext"
+    Os.removeAll(tmp)
+
+    srv: Server = Server()
+    tusUploads(srv, "/u", tmp, 1024 * 1024)
+
+    # ── OPTIONS: new advertisements
+    opt: dict[str, any] = srv.inject("OPTIONS", "/u")
+    optH: any = opt["headers"]
+    algo: str = ""
+    ext: str = ""
+    go! {
+        if h, ok := optH.(map[string]string); ok {
+            algo = h["Tus-Checksum-Algorithm"]
+            ext = h["Tus-Extension"]
+        }
+    }
+    print(f"opt-algo: {algo}")
+    print(f"opt-ext: {ext}")
+
+    # ── Create a normal upload for checksum testing.
+    h1: dict[str, str] = {}
+    h1["Upload-Length"] = "5"
+    h1["Tus-Resumable"] = "1.0.0"
+    r1: dict[str, any] = srv.inject("POST", "/u", "", h1)
+    r1H: any = r1["headers"]
+    loc1: str = ""
+    go! {
+        if hh, ok := r1H.(map[string]string); ok { loc1 = hh["Location"] }
+    }
+
+    chunk: str = "hello"
+    goodSum: str = ""
+    go! {
+        s := sha1.Sum([]byte("hello"))
+        goodSum = "sha1 " + base64.StdEncoding.EncodeToString(s[:])
+    }
+
+    # Valid sha1.
+    pGood: dict[str, str] = {}
+    pGood["Tus-Resumable"] = "1.0.0"
+    pGood["Content-Type"] = "application/offset+octet-stream"
+    pGood["Upload-Offset"] = "0"
+    pGood["Upload-Checksum"] = goodSum
+    rGood: dict[str, any] = srv.inject("PATCH", loc1, chunk, pGood)
+    sGood: any = rGood["status"]
+    print(f"checksum-good: {sGood}")
+
+    # Create another upload to test mismatch (offset has moved on the first).
+    r2: dict[str, any] = srv.inject("POST", "/u", "", h1)
+    r2H: any = r2["headers"]
+    loc2: str = ""
+    go! {
+        if hh, ok := r2H.(map[string]string); ok { loc2 = hh["Location"] }
+    }
+
+    # Wrong checksum for the same bytes.
+    pBad: dict[str, str] = {}
+    pBad["Tus-Resumable"] = "1.0.0"
+    pBad["Content-Type"] = "application/offset+octet-stream"
+    pBad["Upload-Offset"] = "0"
+    pBad["Upload-Checksum"] = "sha1 YWFhYWFhYWFhYWFhYWFhYWFhYWE="
+    rBad: dict[str, any] = srv.inject("PATCH", loc2, chunk, pBad)
+    sBad: any = rBad["status"]
+    print(f"checksum-bad: {sBad}")
+
+    # Unsupported algorithm.
+    pUnk: dict[str, str] = {}
+    pUnk["Tus-Resumable"] = "1.0.0"
+    pUnk["Content-Type"] = "application/offset+octet-stream"
+    pUnk["Upload-Offset"] = "0"
+    pUnk["Upload-Checksum"] = "whirlpool ZmFrZQ=="
+    rUnk: dict[str, any] = srv.inject("PATCH", loc2, chunk, pUnk)
+    sUnk: any = rUnk["status"]
+    print(f"checksum-bad-algo: {sUnk}")
+
+    # ── Concatenation: two partials + one final.
+    partHdr: dict[str, str] = {}
+    partHdr["Upload-Length"] = "6"
+    partHdr["Tus-Resumable"] = "1.0.0"
+    partHdr["Upload-Concat"] = "partial"
+    pA: dict[str, any] = srv.inject("POST", "/u", "", partHdr)
+    pAH: any = pA["headers"]
+    locA: str = ""
+    go! {
+        if hh, ok := pAH.(map[string]string); ok { locA = hh["Location"] }
+    }
+
+    partHdr2: dict[str, str] = {}
+    partHdr2["Upload-Length"] = "5"
+    partHdr2["Tus-Resumable"] = "1.0.0"
+    partHdr2["Upload-Concat"] = "partial"
+    pB: dict[str, any] = srv.inject("POST", "/u", "", partHdr2)
+    pBH: any = pB["headers"]
+    locB: str = ""
+    go! {
+        if hh, ok := pBH.(map[string]string); ok { locB = hh["Location"] }
+    }
+
+    # Upload the part bytes.
+    uA: dict[str, str] = {}
+    uA["Tus-Resumable"] = "1.0.0"
+    uA["Content-Type"] = "application/offset+octet-stream"
+    uA["Upload-Offset"] = "0"
+    ra: dict[str, any] = srv.inject("PATCH", locA, "hello ", uA)
+    raS: any = ra["status"]
+    print(f"part-a-patch: {raS}")
+
+    uB: dict[str, str] = {}
+    uB["Tus-Resumable"] = "1.0.0"
+    uB["Content-Type"] = "application/offset+octet-stream"
+    uB["Upload-Offset"] = "0"
+    rb: dict[str, any] = srv.inject("PATCH", locB, "world", uB)
+    rbS: any = rb["status"]
+    print(f"part-b-patch: {rbS}")
+
+    # HEAD partial: Upload-Concat echoed.
+    hPa: dict[str, any] = srv.inject("HEAD", locA)
+    hPaH: any = hPa["headers"]
+    concatA: str = ""
+    go! {
+        if hh, ok := hPaH.(map[string]string); ok { concatA = hh["Upload-Concat"] }
+    }
+    print(f"head-partial-concat: {concatA}")
+
+    # Final upload.
+    finalHdr: dict[str, str] = {}
+    finalHdr["Tus-Resumable"] = "1.0.0"
+    finalHdr["Upload-Concat"] = f"final;{locA} {locB}"
+    rF: dict[str, any] = srv.inject("POST", "/u", "", finalHdr)
+    sF: any = rF["status"]
+    rFH: any = rF["headers"]
+    locF: str = ""
+    go! {
+        if hh, ok := rFH.(map[string]string); ok { locF = hh["Location"] }
+    }
+    print(f"final-status: {sF}")
+
+    # HEAD the final to confirm Upload-Length is the sum.
+    hF: dict[str, any] = srv.inject("HEAD", locF)
+    hFs: any = hF["status"]
+    hFH: any = hF["headers"]
+    finalLen: str = ""
+    finalConcat: str = ""
+    go! {
+        if hh, ok := hFH.(map[string]string); ok {
+            finalLen = hh["Upload-Length"]
+            finalConcat = hh["Upload-Concat"]
+        }
+    }
+    is11: bool = finalLen == "11"
+    print(f"final-length-11: {is11}")
+    print(f"final-complete: {hFs}")
+
+    # Read the concatenated file.
+    finalId: str = ""
+    go! {
+        finalId = strings.TrimPrefix(locF, "/u/")
+    }
+    finalBytes: str = Os.readFile(tmp + "/" + finalId)
+    print(f"final-content: {finalBytes}")
+
+    prefixOk: bool = false
+    go! {
+        prefixOk = strings.HasPrefix(finalConcat, "final;")
+    }
+    # The expect harness only does exact match; emit the literal
+    # "final;" when the prefix matches so the check is deterministic.
+    marker: str = ""
+    if prefixOk { marker = "final;" }
+    print(f"final-concat-header-prefix: {marker}")
+
+    # PATCH on a final upload → 403.
+    pFin: dict[str, str] = {}
+    pFin["Tus-Resumable"] = "1.0.0"
+    pFin["Content-Type"] = "application/offset+octet-stream"
+    pFin["Upload-Offset"] = "11"
+    rFp: dict[str, any] = srv.inject("PATCH", locF, "x", pFin)
+    sFp: any = rFp["status"]
+    print(f"patch-final-forbidden: {sFp}")
+
+    Os.removeAll(tmp)
+}

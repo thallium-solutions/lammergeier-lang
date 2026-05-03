@@ -1,0 +1,73 @@
+# Test: Power-of-two and bit manipulation patterns
+# expect: 1
+# expect: 2
+# expect: 4
+# expect: 8
+# expect: 16
+# expect: 32
+# expect: 64
+# expect: 128
+# expect: 256
+# expect: 512
+# expect: 1024
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+# expect: true
+# expect: 0
+# expect: 1
+# expect: 1
+# expect: 2
+# expect: 1
+# expect: 3
+# expect: 1
+# expect: 5
+# expect: 1
+# expect: bits_ok
+
+func is_power_of_two(n: int) -> bool {
+    if n <= 0 {
+        return False
+    }
+    return (n & (n - 1)) == 0
+}
+
+func count_bits(n: int) -> int {
+    count: int = 0
+    while n > 0 {
+        count = count + (n & 1)
+        n = n >> 1
+    }
+    return count
+}
+
+func main() {
+    # Powers of 2
+    val: int = 1
+    i: int = 0
+    for i in range(11) {
+        print(val)
+        val = val << 1
+    }
+
+    # Power of 2 check
+    print(is_power_of_two(16))
+    print(is_power_of_two(15))
+    print(is_power_of_two(1))
+    print(is_power_of_two(0))
+    print(is_power_of_two(1024))
+
+    # Count bits
+    print(count_bits(0))
+    print(count_bits(1))
+    print(count_bits(2))
+    print(count_bits(3))
+    print(count_bits(4))
+    print(count_bits(7))
+    print(count_bits(8))
+    print(count_bits(31))
+    print(count_bits(32))
+
+    print("bits_ok")
+}

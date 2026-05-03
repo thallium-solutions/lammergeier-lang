@@ -1,0 +1,57 @@
+# Regression: ``LAMMERGEIER.<userName>`` resolves to the Go-mangled
+# symbol from inside go! blocks. Three forms are supported:
+#   1. Top-level user function (lowercase camelCase)        → ``FuncName``
+#   2. Top-level user class                                 → unchanged
+#   3. ``ClassName.staticMethod`` static-method path        → ``ClassName_staticMethod``
+#
+# expect: PASS 1 user function from go! block
+# expect: PASS 2 user class instance from go! block
+# expect: PASS 3 static method from go! block
+# expect: 3 passed, 0 failed, 3 total
+
+from lamtest import Test
+
+func formatGreeting(name: str) -> str {
+    return "hello, " + name
+}
+
+class Counter {
+    func __init__(self, start: int = 0) {
+        self.value: int = start
+    }
+
+    static func zero() -> int {
+        return 0
+    }
+}
+
+func main() {
+    # 1. Reach a Lam function from inside a go! block. The compiler
+    # resolves ``LAMMERGEIER.formatGreeting`` to the Go public name
+    # (``FormatGreeting``) at emit time.
+    out1: str = ""
+    go! {
+        out1 = LAMMERGEIER.formatGreeting("alice")
+    }
+    Test.assertEqual(out1, "hello, alice", "1 user function from go! block")
+
+    # 2. Construct a Lam class from inside a go! block. ``Counter``
+    # is already Go-public; the alias just confirms that class names
+    # are accepted.
+    countVal: int = -1
+    go! {
+        c := LAMMERGEIER.Counter(7)
+        countVal = c.Value
+    }
+    Test.assertEqual(countVal, 7, "2 user class instance from go! block")
+
+    # 3. Call a static method via the alias: resolves to
+    # ``Counter_zero``.
+    zeroVal: int = -1
+    go! {
+        zeroVal = LAMMERGEIER.Counter.zero()
+    }
+    Test.assertEqual(zeroVal, 0, "3 static method from go! block")
+
+    Test.summary()
+}

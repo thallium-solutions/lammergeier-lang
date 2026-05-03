@@ -1,0 +1,26 @@
+# Test: With statement (resource management via defer)
+# expect: opened
+# expect: working
+# expect: done
+
+class Resource {
+    func __init__(self, name: str) {
+        self.name: str = name
+        print("opened")
+    }
+
+    func close(self) {
+        pass
+    }
+
+    func work(self) {
+        print("working")
+    }
+}
+
+func main() {
+    with Resource("test") as r {
+        r.work()
+    }
+    print("done")
+}

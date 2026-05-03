@@ -1,0 +1,75 @@
+class PriceContext {
+    func init(self, subtotal: int, items: int, tier: str, country: str) {
+        self.subtotal: int = subtotal
+        self.items: int = items
+        self.tier: str = tier
+        self.country: str = country
+    }
+}
+
+class PriceRule {
+    func init(self, name: str, kind: str, threshold: int, amount: int) {
+        self.name: str = name
+        self.kind: str = kind
+        self.threshold: int = threshold
+        self.amount: int = amount
+    }
+
+    func applies(self, ctx: PriceContext) -> bool {
+        if self.kind == "bulk" {
+            return ctx.items >= self.threshold
+        }
+        if self.kind == "tier" {
+            return ctx.tier == "gold"
+        }
+        if self.kind == "country" {
+            return ctx.country == "it"
+        }
+        return false
+    }
+
+    func discount(self, ctx: PriceContext) -> int {
+        if not self.applies(ctx) {
+            return 0
+        }
+        if self.kind == "country" {
+            return self.amount
+        }
+        return ctx.subtotal * self.amount / 100
+    }
+}
+
+class PriceRuleEngine {
+    func init(self) {
+        self.rules: list[PriceRule] = []
+    }
+
+    func add(self, rule: PriceRule) {
+        self.rules.append(rule)
+    }
+
+    func totalDiscount(self, ctx: PriceContext) -> int {
+        total: int = 0
+        for rule in self.rules {
+            total += rule.discount(ctx)
+        }
+        if total > ctx.subtotal / 2 {
+            return ctx.subtotal / 2
+        }
+        return total
+    }
+
+    func appliedNames(self, ctx: PriceContext) -> list[str] {
+        names: list[str] = []
+        for rule in self.rules {
+            if rule.applies(ctx) {
+                names.append(rule.name)
+            }
+        }
+        return names
+    }
+}
+
+func main() {
+    pass
+}

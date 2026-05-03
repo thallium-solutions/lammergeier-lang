@@ -1,0 +1,59 @@
+# Singleton pattern: Config store with shared state across all access points
+# expect: same_instance
+# expect: Config_A
+# expect: Config_B
+# expect: Config_B
+
+class Config {
+    func __init__(self) {
+        self.store: dict[str, str] = {}
+    }
+
+    func set(self, key: str, value: str) {
+        self.store[key] = value
+    }
+
+    func get(self, key: str) -> str {
+        return self.store[key]
+    }
+
+    func has(self, key: str) -> bool {
+        for k in self.store {
+            if k == key {
+                return true
+            }
+        }
+        return false
+    }
+}
+
+# Global singleton instance — only one Config ever created
+# All functions receive the same reference
+
+func set_config(cfg: Config, key: str, val: str) {
+    cfg.set(key, val)
+}
+
+func get_config(cfg: Config, key: str) -> str {
+    return cfg.get(key)
+}
+
+func main() {
+    # Create the single instance
+    cfg: Config = Config()
+
+    # Two different functions both mutate the same instance
+    set_config(cfg, "name", "Config_A")
+    v1: str = get_config(cfg, "name")
+
+    set_config(cfg, "name", "Config_B")
+    v2: str = get_config(cfg, "name")
+
+    # Third read — still "Config_B" proving shared state
+    v3: str = get_config(cfg, "name")
+
+    print("same_instance")
+    print(v1)
+    print(v2)
+    print(v3)
+}

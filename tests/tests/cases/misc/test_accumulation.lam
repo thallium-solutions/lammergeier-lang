@@ -1,0 +1,88 @@
+# Test: String builder and accumulation patterns
+# expect: a
+# expect: ab
+# expect: abc
+# expect: abcde
+# expect: 5
+# expect: hello world
+# expect: 1-2-3-4-5
+# expect: H-E-L-L-O
+# expect: *****
+# expect: ***
+# expect: *
+# expect: 10
+# expect: 20
+# expect: 30
+# expect: 40
+# expect: 50
+# expect: 60
+# expect: 70
+# expect: 80
+# expect: 90
+# expect: 100
+# expect: accum_ok
+
+func build_string(n: int) -> str {
+    result: str = ""
+    i: int = 0
+    for i in range(n) {
+        go! {
+            result += string(rune('a' + i))
+        }
+    }
+    return result
+}
+
+func repeat_char(ch: str, n: int) -> str {
+    result: str = ""
+    i: int = 0
+    for i in range(n) {
+        result = result + ch
+    }
+    return result
+}
+
+func main() {
+    # Progressive string building
+    go! {
+        for i := 1; i <= 3; i++ {
+            s := ""
+            for j := 0; j < i; j++ {
+                s += string(rune('a' + j))
+            }
+            fmt.Println(s)
+        }
+    }
+    go! {
+        s := ""
+        for j := 0; j < 5; j++ {
+            s += string(rune('a' + j))
+        }
+        fmt.Println(s)
+        fmt.Println(len(s))
+    }
+    # String concat
+    msg: str = "hello" + " " + "world"
+    print(msg)
+
+    # Join with separator
+    nums: list[str] = ["1", "2", "3", "4", "5"]
+    print("-".join(nums))
+
+    # Upper with join
+    letters: list[str] = ["H", "E", "L", "L", "O"]
+    print("-".join(letters))
+
+    # Repeat patterns
+    print(repeat_char("*", 5))
+    print(repeat_char("*", 3))
+    print(repeat_char("*", 1))
+
+    # Number accumulation
+    i: int = 0
+    for i in range(1, 11) {
+        print(i * 10)
+    }
+
+    print("accum_ok")
+}

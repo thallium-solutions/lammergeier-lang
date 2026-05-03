@@ -1,0 +1,33 @@
+# expect: 0
+# expect: 2
+# expect: hello
+# expect: world
+
+class Container {
+    func init(self) {
+        self.items: list[str] = []
+    }
+
+    func add(self, item: str) {
+        self.items.append(item)
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func clear(self) {
+        self.items = []
+    }
+}
+
+func main() {
+    c: Container = Container()
+    print(c.size())
+    c.add("hello")
+    c.add("world")
+    print(c.size())
+    for item in c.items {
+        print(item)
+    }
+}

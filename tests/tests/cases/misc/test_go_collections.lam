@@ -1,0 +1,56 @@
+# Test: Go map and slice patterns via go! blocks
+# expect: Alice: 90
+# expect: Bob: 85
+# expect: Charlie: 95
+# expect: sum: 270
+# expect: 1
+# expect: 4
+# expect: 9
+# expect: 16
+# expect: 25
+# expect: reversed: 5 4 3 2 1
+# expect: go_collections_ok
+
+func main() {
+    # Go map iteration
+    go! {
+        import "sort"
+        scores := map[string]int{
+            "Alice":   90,
+            "Bob":     85,
+            "Charlie": 95,
+        }
+        // Sort keys for deterministic output
+        keys := make([]string, 0, len(scores))
+        for k := range scores {
+            keys = append(keys, k)
+        }
+        sort.Strings(keys)
+        total := 0
+        for _, k := range keys {
+            fmt.Println(fmt.Sprintf("%s: %d", k, scores[k]))
+            total += scores[k]
+        }
+        fmt.Println(fmt.Sprintf("sum: %d", total))
+    }
+    # Go slice operations
+    go! {
+        nums := []int{1, 2, 3, 4, 5}
+        for _, n := range nums {
+            fmt.Println(n * n)
+        }
+    }
+    # Reverse a slice
+    go! {
+        data := []int{1, 2, 3, 4, 5}
+        result := ""
+        for i := len(data) - 1; i >= 0; i-- {
+            if i < len(data)-1 {
+                result += " "
+            }
+            result += fmt.Sprintf("%d", data[i])
+        }
+        fmt.Println("reversed: " + result)
+    }
+    print("go_collections_ok")
+}

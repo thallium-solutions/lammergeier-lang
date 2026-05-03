@@ -1,0 +1,56 @@
+# Test: Dict operations - creation, access, Go integration
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 3
+# expect: true
+# expect: false
+# expect: 10
+# expect: 20
+# expect: 30
+# expect: 0
+# expect: default_42
+# expect: dict_ok
+
+func main() {
+    # Basic dict
+    d: dict[str, int] = {"a": 1, "b": 2, "c": 3}
+    print(d["a"])
+    print(d["b"])
+    print(d["c"])
+
+    # Dict length
+    print(len(d))
+
+    # Key existence (via go!)
+    go! {
+        _, ok1 := d["a"]
+        if ok1 {
+            fmt.Println("true")
+        }
+        _, ok2 := d["z"]
+        if !ok2 {
+            fmt.Println("false")
+        }
+    }
+    # Numeric dict
+    nums: dict[str, int] = {"x": 10, "y": 20, "z": 30}
+    print(nums["x"])
+    print(nums["y"])
+    print(nums["z"])
+
+    # Empty dict
+    empty: dict[str, int] = {}
+    print(len(empty))
+
+    # Dict with default via go!
+    go! {
+        val, exists := d["missing"]
+        if exists {
+            fmt.Println(val)
+        } else {
+            fmt.Println("default_42")
+        }
+    }
+    print("dict_ok")
+}

@@ -1,0 +1,109 @@
+# Test: parser tolerates *aggressive* JS-style formatting variations.
+#
+# The first syntax-flex test covers the common cases; this one pins
+# the weirder ones:
+#
+#   * Allman brace style (opening ``{`` on its own line).
+#   * Horstmann style (first statement on the opener's line, closer
+#     on its own line).
+#   * Compact if / else-if / else chain all on one line.
+#   * Extra trailing ``;`` (redundant statement terminator).
+#   * Weird whitespace between tokens (extra spaces around ``:``,
+#     between call parens, etc.).
+#   * Mixed tabs + spaces for indentation.
+#   * Explicit ``\`` line continuation inside expressions.
+#   * Comments inside argument lists.
+#   * Two top-level funcs with no blank line between them.
+#
+# expect: allman: A
+# expect: horstmann: H
+# expect: chain-lt: neg
+# expect: chain-eq: zero
+# expect: chain-gt: pos
+# expect: redundant-semi: ok
+# expect: weird-ws: 6
+# expect: mixed-indent: 3
+# expect: line-cont: 15
+# expect: comment-in-args: 30
+# expect: no-blank-a: A
+# expect: no-blank-b: B
+
+# Allman — opening brace on its own line.
+func allmanStyle() -> str
+{
+    return "A"
+}
+
+# Horstmann — first statement on the opening brace line,
+# closer on its own line. Also the opening ``{`` has no preceding space.
+func horstmannStyle() -> str{ x: str = "H"
+    return x
+}
+
+# Two top-level funcs with no blank line between them.
+func noBlankA() -> str { return "A" }
+func noBlankB() -> str { return "B" }
+
+# Weird whitespace around tokens.
+func  weirdWs  (  a  :  int  ,  b  :  int  )  ->  int  {
+    return   a   +   b
+}
+
+# Comments interleaved inside an argument list.
+func sumFour(a: int, b: int, c: int, d: int) -> int {
+    return a + b + c + d
+}
+
+func main() {
+    print(f"allman: {allmanStyle()}")
+    print(f"horstmann: {horstmannStyle()}")
+
+    # Compact if / else-if / else all on one line.
+    x: int = -3
+    label: str = ""
+    if x < 0 { label = "neg" } elif x == 0 { label = "zero" } else { label = "pos" }
+    print(f"chain-lt: {label}")
+
+    x = 0
+    if x < 0 { label = "neg" } elif x == 0 { label = "zero" } else { label = "pos" }
+    print(f"chain-eq: {label}")
+
+    x = 5
+    if x < 0 { label = "neg" } elif x == 0 { label = "zero" } else { label = "pos" }
+    print(f"chain-gt: {label}")
+
+    # Redundant semicolons — user can be as verbose as they like.
+    a: int = 1;
+    b: int = 2;;
+    if a + b == 3 { print("redundant-semi: ok") }
+
+    print(f"weird-ws: {weirdWs(2, 4)}")
+
+    # Mixed tabs + spaces in indentation (first statement uses tab,
+    # second uses 4 spaces, third uses 8 spaces). Parser has no
+    # indent-sensitivity, so all three are siblings.
+	m: int = 1
+    n: int = 1
+        o: int = 1
+    print(f"mixed-indent: {m + n + o}")
+
+    # Line continuation with ``\`` mid-expression.
+    total: int = 1 + 2 + 3 + \
+                 4 + 5
+    print(f"line-cont: {total}")
+
+    # Comment inside an argument list (between args, before close
+    # paren, with leading whitespace).
+    s: int = sumFour(
+        5,   # first
+        # second
+        10,
+        7,
+        # trailing comment before close paren
+        8,
+    )
+    print(f"comment-in-args: {s}")
+
+    print(f"no-blank-a: {noBlankA()}")
+    print(f"no-blank-b: {noBlankB()}")
+}

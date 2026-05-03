@@ -1,0 +1,47 @@
+class Transition {
+    func init(self, fromState: str, event: str, toState: str) {
+        self.fromState: str = fromState
+        self.event: str = event
+        self.toState: str = toState
+    }
+}
+
+class OrderStateMachine {
+    func init(self, initial: str = "draft") {
+        self.state: str = initial
+        self.history: list[str] = [initial]
+        self.transitions: list[Transition] = []
+    }
+
+    func add(self, fromState: str, event: str, toState: str) {
+        self.transitions.append(Transition(fromState, event, toState))
+    }
+
+    func trigger(self, event: str) -> bool {
+        for t in self.transitions {
+            if t.fromState == self.state and t.event == event {
+                self.state = t.toState
+                self.history.append(self.state)
+                return true
+            }
+        }
+        self.history.append("blocked:" + event)
+        return false
+    }
+}
+
+func configuredOrderMachine() -> OrderStateMachine {
+    sm: OrderStateMachine = OrderStateMachine()
+    sm.add("draft", "submit", "pending_payment")
+    sm.add("pending_payment", "pay", "paid")
+    sm.add("paid", "pack", "packed")
+    sm.add("packed", "ship", "shipped")
+    sm.add("shipped", "deliver", "delivered")
+    sm.add("pending_payment", "cancel", "cancelled")
+    sm.add("paid", "refund", "refunded")
+    return sm
+}
+
+func main() {
+    pass
+}

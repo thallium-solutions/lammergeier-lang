@@ -1,0 +1,126 @@
+# Test: lamserver_plugins (helmet, etag, healthcheck, metrics).
+#
+# Verifies each plugin's contract:
+#   * ``helmet``: nosniff / X-Frame-Options / Content-Security-Policy
+#     are applied to every response (additive — handler-set values
+#     win when present).
+#   * ``etag``: weak ETag is computed once, ``If-None-Match`` short-
+#     circuits with 304 + empty body.
+#   * ``healthcheck``: ``/healthz`` always 200; ``/readyz`` honours
+#     the gate (200 by default, 503 after ``markNotReady``).
+#   * ``metrics``: scrape returns the OpenMetrics text format with
+#     counters, histograms, and an uptime gauge.
+#
+# All assertions run via Server.inject so the test stays hermetic.
+#
+# expect: nosniff: nosniff
+# expect: frame: DENY
+# expect: csp: default-src 'self'
+# expect: etag len: 20
+# expect: 304 status: 304
+# expect: 304 body: ''
+# expect: live status: 200
+# expect: live body: ok
+# expect: ready status: 200
+# expect: ready body: ready
+# expect: notready status: 503
+# expect: metrics status: 200
+# expect: metrics has counter: true
+# expect: metrics has histogram: true
+# expect: metrics has uptime: true
+
+from lamserver import Server, Request, Response
+from lamserver_plugins import helmet, etag, healthcheck, markNotReady, metrics
+
+go! {
+    import (
+        "fmt"
+        "strings"
+    )
+}
+
+func cachedHandler(req: Request, res: Response) {
+    res.text("hello world")
+}
+
+func main() {
+    srv: Server = Server()
+    helmet(srv)
+    etag(srv)
+    healthcheck(srv, "/healthz", "/readyz")
+    metrics(srv, "/metrics")
+
+    srv.get("/cached", cachedHandler)
+
+    r: dict[str, any] = srv.inject("GET", "/cached")
+    rh: any = r["headers"]
+    nosniff: str = ""
+    csp: str = ""
+    frame: str = ""
+    go! {
+        if hh, ok := rh.(map[string]string); ok {
+            nosniff = hh["X-Content-Type-Options"]
+            csp = hh["Content-Security-Policy"]
+            frame = hh["X-Frame-Options"]
+        }
+    }
+    print(f"nosniff: {nosniff}")
+    print(f"frame: {frame}")
+    print(f"csp: {csp}")
+
+    etag1: str = ""
+    go! {
+        if hh, ok := rh.(map[string]string); ok {
+            etag1 = hh["ETag"]
+        }
+    }
+    n: int = len(etag1)
+    print(f"etag len: {n}")
+
+    h: dict[str, str] = {}
+    h["If-None-Match"] = etag1
+    r2: dict[str, any] = srv.inject("GET", "/cached", "", h)
+    r2s: any = r2["status"]
+    r2b: any = r2["body"]
+    print(f"304 status: {r2s}")
+    print(f"304 body: '{r2b}'")
+
+    rh2: dict[str, any] = srv.inject("GET", "/healthz")
+    rh2s: any = rh2["status"]
+    rh2b: any = rh2["body"]
+    print(f"live status: {rh2s}")
+    print(f"live body: {rh2b}")
+
+    rrz: dict[str, any] = srv.inject("GET", "/readyz")
+    rrzs: any = rrz["status"]
+    rrzb: any = rrz["body"]
+    print(f"ready status: {rrzs}")
+    print(f"ready body: {rrzb}")
+
+    markNotReady(srv)
+    rrz2: dict[str, any] = srv.inject("GET", "/readyz")
+    rrz2s: any = rrz2["status"]
+    print(f"notready status: {rrz2s}")
+
+    for i in range(3) {
+        srv.inject("GET", "/cached")
+    }
+    rm: dict[str, any] = srv.inject("GET", "/metrics")
+    rms: any = rm["status"]
+    rmb: any = rm["body"]
+    print(f"metrics status: {rms}")
+    rmstr: str = ""
+    go! {
+        if s, ok := rmb.(string); ok {
+            rmstr = s
+        }
+    }
+    go! {
+        hasCounter := strings.Contains(rmstr, "http_requests_total")
+        hasHistogram := strings.Contains(rmstr, "http_request_duration_seconds_bucket")
+        hasUptime := strings.Contains(rmstr, "process_uptime_seconds")
+        fmt.Printf("metrics has counter: %v\n", hasCounter)
+        fmt.Printf("metrics has histogram: %v\n", hasHistogram)
+        fmt.Printf("metrics has uptime: %v\n", hasUptime)
+    }
+}

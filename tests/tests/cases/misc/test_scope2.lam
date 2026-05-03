@@ -1,0 +1,82 @@
+# Test: Variable scoping patterns - nested blocks, shadowing, reassignment
+# expect: 10
+# expect: 20
+# expect: 20
+# expect: 40
+# expect: 100
+# expect: inner
+# expect: outer
+# expect: 10
+# expect: 15
+# expect: 15
+# expect: 0
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 4
+# expect: after_loop: 5
+# expect: scope2_ok
+
+func modify(x: int) -> int {
+    x = x * 2
+    return x
+}
+
+func main() {
+    # Basic scoping
+    a: int = 10
+    print(a)
+    a = 20
+    print(a)
+
+    # Function doesn't modify caller's variable
+    b: int = 20
+    c: int = modify(b)
+    print(b)
+    print(c)
+
+    # Nested block scope
+    d: int = 100
+    if True {
+        print(d)
+    }
+
+    # String scope
+    s: str = "outer"
+    if True {
+        s2: str = "inner"
+        print(s2)
+    }
+    print(s)
+
+    # Loop variable scope
+    total: int = 0
+    i: int = 0
+    for i in range(5) {
+        total = total + i
+    }
+    print(total)
+
+    # Accumulator pattern
+    acc: int = 0
+    for i in range(5) {
+        acc = acc + i + 1
+    }
+    print(acc)
+
+    print(acc)
+
+    # Loop variable values
+    for i in range(5) {
+        print(i)
+    }
+
+    # After loop
+    count: int = 0
+    for i in range(5) {
+        count = count + 1
+    }
+    print(f"after_loop: {count}")
+
+    print("scope2_ok")
+}

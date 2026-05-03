@@ -1,0 +1,109 @@
+# Real-world mini project: checkout API server using lamserver plugins.
+# Uses Server.inject so the test exercises the full HTTP lifecycle
+# without binding a port.
+# expect: unauth_status=401
+# expect: bad_payload_status=400
+# expect: first_status=202
+# expect: first_has_internal=false
+# expect: first_cache=private, max-age=30
+# expect: first_reqid=cart-req-1
+# expect: replay_status=202
+# expect: replay_header=1
+# expect: replay_body_equal=true
+
+from lamserver import Server, Request, Response
+from lamserver_plugins import requestId, idempotency, cacheControl
+from lamstrings import Strings
+
+func authGuard(req: Request, res: Response) {
+    if req.header("Authorization") != "Bearer shop-secret" {
+        res.setStatus(401)
+        res.text("unauthorized")
+    }
+}
+
+func checkoutHandler(req: Request, res: Response) {
+    if not Strings.contains(req.body, "sku") {
+        res.setStatus(400)
+        res.text("bad payload")
+        return
+    }
+
+    payload: dict[str, any] = {}
+    payload["status"] = "accepted"
+    payload["requestId"] = req.id()
+    payload["queued"] = true
+    payload["internal"] = "should be projected away"
+
+    res.setStatus(202)
+    res.setHeader("X-Order-Queue", "checkout")
+    res.json(payload)
+}
+
+func main() {
+    srv: Server = Server()
+    requestId(srv)
+    idempotency(srv)
+    cacheControl(srv, "private, max-age=30")
+    srv.preHandler(authGuard)
+
+    bodySchema: str = "{\"type\":\"object\",\"required\":[\"sku\"],\"properties\":{\"sku\":{\"type\":\"string\"},\"qty\":{\"type\":\"integer\",\"minimum\":1}},\"additionalProperties\":true}"
+    responseSchema: str = "{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\"},\"requestId\":{\"type\":\"string\"},\"queued\":{\"type\":\"boolean\"}},\"additionalProperties\":false}"
+    schema: dict[str, any] = {}
+    responseSchemas: dict[str, any] = {}
+    responseSchemas["202"] = responseSchema
+    schema["body"] = bodySchema
+    schema["response"] = responseSchemas
+
+    opts: dict[str, any] = {}
+    opts["schema"] = schema
+    opts["summary"] = "Queue checkout order"
+    opts["tags"] = ["checkout", "orders"]
+    srv.postOpts("/checkout", checkoutHandler, opts)
+
+    jsonHeaders: dict[str, str] = {}
+    jsonHeaders["Content-Type"] = "application/json"
+
+    unauth: dict[str, any] = srv.inject("POST", "/checkout", "{\"sku\":\"book\",\"qty\":1}", jsonHeaders)
+    print("unauth_status=" + str(unauth["status"]))
+
+    authHeaders: dict[str, str] = {}
+    authHeaders["Content-Type"] = "application/json"
+    authHeaders["Authorization"] = "Bearer shop-secret"
+    authHeaders["Idempotency-Key"] = "cart-42"
+    authHeaders["X-Request-Id"] = "cart-req-1"
+
+    badHeaders: dict[str, str] = {}
+    badHeaders["Content-Type"] = "application/json"
+    badHeaders["Authorization"] = "Bearer shop-secret"
+    badHeaders["Idempotency-Key"] = "cart-bad"
+    badHeaders["X-Request-Id"] = "cart-req-bad"
+    bad: dict[str, any] = srv.inject("POST", "/checkout", "{}", badHeaders)
+    print("bad_payload_status=" + str(bad["status"]))
+
+    first: dict[str, any] = srv.inject("POST", "/checkout", "{\"sku\":\"book\",\"qty\":1}", authHeaders)
+    second: dict[str, any] = srv.inject("POST", "/checkout", "{\"sku\":\"book\",\"qty\":1}", authHeaders)
+
+    firstBody: str = str(first["body"])
+    secondBody: str = str(second["body"])
+    firstCache: str = ""
+    firstReqId: str = ""
+    replayHeader: str = ""
+    go! {
+        if headers, ok := first["headers"].(map[string]string); ok {
+            firstCache = headers["Cache-Control"]
+            firstReqId = headers["X-Request-Id"]
+        }
+        if headers, ok := second["headers"].(map[string]string); ok {
+            replayHeader = headers["X-Idempotency-Replay"]
+        }
+    }
+
+    print("first_status=" + str(first["status"]))
+    print("first_has_internal=" + str(Strings.contains(firstBody, "internal")))
+    print("first_cache=" + firstCache)
+    print("first_reqid=" + firstReqId)
+    print("replay_status=" + str(second["status"]))
+    print("replay_header=" + replayHeader)
+    print("replay_body_equal=" + str(firstBody == secondBody))
+}

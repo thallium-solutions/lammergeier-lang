@@ -1,0 +1,62 @@
+# Test: Complex class interactions - objects using other objects
+# expect: Rect(10, 20)
+# expect: 200
+# expect: 60
+# expect: Rect(5, 5)
+# expect: 25
+# expect: 20
+# expect: bigger: a
+# expect: equal: yes
+# expect: cls_interact_ok
+
+class Rect2 {
+    func __init__(self, width: int, height: int) {
+        self.width: int = width
+        self.height: int = height
+    }
+
+    func area(self) -> int {
+        return self.width * self.height
+    }
+
+    func perimeter(self) -> int {
+        return 2 * (self.width + self.height)
+    }
+
+    func describe(self) -> str {
+        return f"Rect({self.width}, {self.height})"
+    }
+
+    func is_square(self) -> bool {
+        return self.width == self.height
+    }
+}
+
+func bigger_rect(a: Rect2, b: Rect2) -> str {
+    if a.area() > b.area() {
+        return "bigger: a"
+    } elif b.area() > a.area() {
+        return "bigger: b"
+    } else {
+        return "equal: yes"
+    }
+}
+
+func main() {
+    r1: Rect2 = Rect2(10, 20)
+    print(r1.describe())
+    print(r1.area())
+    print(r1.perimeter())
+
+    r2: Rect2 = Rect2(5, 5)
+    print(r2.describe())
+    print(r2.area())
+    print(r2.perimeter())
+
+    print(bigger_rect(r1, r2))
+
+    r3: Rect2 = Rect2(5, 5)
+    print(bigger_rect(r2, r3))
+
+    print("cls_interact_ok")
+}

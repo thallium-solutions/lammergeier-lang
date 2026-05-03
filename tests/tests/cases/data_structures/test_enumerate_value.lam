@@ -1,0 +1,32 @@
+# Test: bare `enumerate(xs)` is a real value now, not a placeholder.
+# It materialises a slice of [i, v] pairs so it can be passed around,
+# indexed, and iterated.
+# expect: pairs=3
+# expect: first=0:a
+# expect: last=2:c
+# expect: via-loop=0=a|1=b|2=c|
+
+func format_pair(pair: any) -> str {
+    go! {
+        p := pair.([]interface{})
+        return fmt.Sprintf("%v:%v", p[0], p[1])
+    }
+}
+
+func main() {
+    xs: list[str] = ["a", "b", "c"]
+    pairs: any = enumerate(xs)
+
+    go! {
+        ps := pairs.([]interface{})
+        fmt.Printf("pairs=%d\n", len(ps))
+        fmt.Printf("first=%s\n", Format_pair(ps[0]))
+        fmt.Printf("last=%s\n",  Format_pair(ps[len(ps)-1]))
+        out := ""
+        for _, p := range ps {
+            pr := p.([]interface{})
+            out += fmt.Sprintf("%v=%v|", pr[0], pr[1])
+        }
+        fmt.Printf("via-loop=%s\n", out)
+    }
+}

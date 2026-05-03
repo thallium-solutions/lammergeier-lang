@@ -1,0 +1,192 @@
+# Lammergeier standard library: YAML encoding / decoding.
+#
+# Wraps ``gopkg.in/yaml.v3`` with the same shape as ``lamjson``:
+# ``encode(value)`` and ``decode(yamlStr)``. YAML maps decode into
+# ``dict[str, any]`` and YAML sequences into ``list[any]``; scalars
+# become ``str``, ``int``, ``float``, or ``bool`` per the YAML 1.2
+# core schema.
+#
+# Why this matters: every modern devops tool (Kubernetes manifests,
+# GitHub Actions workflows, CircleCI, Helm charts, OpenAPI docs)
+# uses YAML as the source of truth. Apps that need to read or
+# generate that config without YAML support end up shelling out to
+# ``yq`` or hand-rolling an ad-hoc parser.
+#
+# Usage::
+#
+#     from lamyaml import Yaml
+#
+#     doc: dict[str, any] = Yaml.decode("name: alice\nage: 30")
+#     yamlStr: str = Yaml.encode({"name": "alice", "age": 30})
+#
+# The ``try*`` siblings return a ``Result`` so callers can
+# distinguish "decoded successfully but the structure was wrong"
+# from "the input wasn't valid YAML at all":
+#
+#     res: Result = Yaml.tryDecode(input)
+#     if res.isErr() { … }
+#
+# Caveats:
+#   * YAML supports anchors / aliases — yaml.v3 expands them
+#     automatically during decode, so the result is always a
+#     fully-realised tree.
+#   * ``null``, ``Null``, ``NULL`` and the bare ``~`` all decode
+#     to Lam ``None`` (Go's ``nil``).
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "strings"
+
+        yaml "gopkg.in/yaml.v3"
+    )
+
+    // lamYamlNormalise walks the result of ``yaml.Unmarshal`` (which
+    // returns ``map[interface{}]interface{}`` for mapping nodes)
+    // and converts every nested map into ``map[string]interface{}``
+    // so it slots into Lam's ``dict[str, any]`` lowering. yaml.v3
+    // *should* return string-keyed maps directly for most YAML
+    // inputs, but YAML allows non-string keys and we have to
+    // stringify them when we hit one.
+    func lamYamlNormalise(v interface{}) interface{} {
+        switch x := v.(type) {
+        case map[interface{}]interface{}:
+            out := make(map[string]interface{}, len(x))
+            for k, val := range x {
+                ks, ok := k.(string)
+                if !ok {
+                    ks = fmtSprint(k)
+                }
+                out[ks] = lamYamlNormalise(val)
+            }
+            return out
+        case map[string]interface{}:
+            for k, val := range x {
+                x[k] = lamYamlNormalise(val)
+            }
+            return x
+        case []interface{}:
+            for i, val := range x {
+                x[i] = lamYamlNormalise(val)
+            }
+            return x
+        default:
+            return v
+        }
+    }
+
+    // Avoid pulling in fmt at the top-level for one call site.
+    func fmtSprint(v interface{}) string {
+        if s, ok := v.(string); ok { return s }
+        // The common non-string case is ints / bools — both have
+        // straightforward String() conversions via strings.Builder
+        // free of any ``fmt`` dependency.
+        var sb strings.Builder
+        switch x := v.(type) {
+        case int:
+            sb.WriteString(strconvItoa(x))
+        case int64:
+            sb.WriteString(strconvItoa64(x))
+        case bool:
+            if x { sb.WriteString("true") } else { sb.WriteString("false") }
+        case float64:
+            sb.WriteString(formatFloat(x))
+        default:
+            // Last resort — fall back to fmt for exotic types.
+            sb.WriteString(fmtFallback(v))
+        }
+        return sb.String()
+    }
+}
+
+# Add the small helpers used above. Pulled into their own go! block
+# so the imports stay focused.
+go! {
+    import (
+        "fmt"
+        "strconv"
+    )
+
+    func strconvItoa(i int) string   { return strconv.Itoa(i) }
+    func strconvItoa64(i int64) string { return strconv.FormatInt(i, 10) }
+    func formatFloat(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
+    func fmtFallback(v interface{}) string { return fmt.Sprint(v) }
+}
+
+class Yaml {
+    #- Static class — no instance state. -#
+
+    static func encode(value: any) -> str {
+        #- Marshal ``value`` to a YAML string. Returns the empty
+           string on encoding error — use ``tryEncode`` if you
+           need to distinguish "intentionally empty" from
+           "encoding failed". -#
+        out: str = ""
+        go! {
+            if b, err := yaml.Marshal(value); err == nil {
+                out = string(b)
+            }
+        }
+        return out
+    }
+
+    static func tryEncode(value: any) -> Result {
+        #- Marshal ``value`` to YAML, returning a ``Result``. -#
+        go! {
+            b, err := yaml.Marshal(value)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("YamlError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(string(b))
+        }
+    }
+
+    static func decode(yamlStr: str) -> any {
+        #- Parse a YAML document. Mapping nodes lower to
+           ``dict[str, any]``; sequence nodes to ``list[any]``;
+           scalars to their natural Lam type. Returns ``None``
+           on parse error. -#
+        out: any = None
+        go! {
+            var v interface{}
+            if err := yaml.Unmarshal([]byte(yamlStr), &v); err == nil {
+                out = lamYamlNormalise(v)
+            }
+        }
+        return out
+    }
+
+    static func tryDecode(yamlStr: str) -> Result {
+        #- Parse a YAML document with error surfacing. -#
+        go! {
+            var v interface{}
+            if err := yaml.Unmarshal([]byte(yamlStr), &v); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("YamlError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(lamYamlNormalise(v))
+        }
+    }
+
+    static func decodeAll(yamlStr: str) -> list[any] {
+        #- Parse a multi-document YAML stream (``---`` separators).
+           Returns one entry per document, each in the same shape
+           as ``decode``. Returns an empty list on parse error. -#
+        out: list[any] = []
+        go! {
+            dec := yaml.NewDecoder(strings.NewReader(yamlStr))
+            var docs []interface{}
+            for {
+                var v interface{}
+                if err := dec.Decode(&v); err != nil { break }
+                docs = append(docs, lamYamlNormalise(v))
+            }
+            out = docs
+        }
+        return out
+    }
+}
+
+func main() {
+    pass
+}

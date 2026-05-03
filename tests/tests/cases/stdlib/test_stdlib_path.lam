@@ -1,0 +1,32 @@
+# Test: Path standard library
+# expect: file.txt
+# expect: /home/user
+# expect: .txt
+# expect: true
+# expect: splitExt_stem: /home/user/file
+# expect: splitExt_ext: .txt
+# expect: withExt: /tmp/hello.go
+# expect: exists_tmp: true
+# expect: exists_fake: false
+# expect: path_ok
+
+from lampath import Path
+
+func main() {
+    print(Path.base("/home/user/file.txt"))
+    print(Path.dir("/home/user/file.txt"))
+    print(Path.ext("/home/user/file.txt"))
+    if Path.isAbs("/home/user") {
+        print("true")
+    }
+    pair: list[str] = Path.splitExt("/home/user/file.txt")
+    print(f"splitExt_stem: {pair[0]}")
+    print(f"splitExt_ext: {pair[1]}")
+    we: str = Path.withExt("/tmp/hello.lam", "go")
+    print(f"withExt: {we}")
+    et: bool = Path.exists("/tmp")
+    ef: bool = Path.exists("/definitely/not/real/12345")
+    print(f"exists_tmp: {et}")
+    print(f"exists_fake: {ef}")
+    print("path_ok")
+}

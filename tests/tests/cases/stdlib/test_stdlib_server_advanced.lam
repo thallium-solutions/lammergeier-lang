@@ -1,0 +1,212 @@
+# Test: lamserver advanced features — query helpers, reply builders
+# (html / redirect / cookie / error_), the onError hook, route prefixes
+# via register(plugin, prefix=...), useCors() preflight + headers,
+# method-aware 405 with the Allow response header, and the graceful
+# shutdown(timeoutMs) entry point.
+#
+# We embed a tiny no-redirect HTTP probe in a go! block because
+# lamhttp.Http.* always follows 3xx redirects and exposes only a
+# subset of the response surface.
+#
+# expect: query: name=alice missing=fallback
+# expect: redirect status: 302
+# expect: redirect location: /target
+# expect: html ct: text/html; charset=utf-8
+# expect: teapot: 418 I'm a teapot
+# expect: cookie set: true
+# expect: 405 status: 405
+# expect: 405 allow: GET
+# expect: prefix v1: hello-v1
+# expect: prefix v2: hello-v2
+# expect: cors preflight: 204
+# expect: cors origin: *
+# expect: panic status: 599
+# expect: panic body: error hook fired
+# expect: shutdown ok
+
+from lamserver import Server, Request, Response
+from lamhttp import Http
+
+go! {
+    import (
+        "io"
+        "net/http"
+        "strings"
+        "time"
+    )
+
+    // A no-follow client lets us inspect 3xx responses directly.
+    var lamSrvAdvClient = &http.Client{
+        CheckRedirect: func(req *http.Request, via []*http.Request) error {
+            return http.ErrUseLastResponse
+        },
+        Timeout: 5 * time.Second,
+    }
+
+    func lamSrvAdvStatus(method, url, body string) int {
+        req, err := http.NewRequest(method, url, strings.NewReader(body))
+        if err != nil { return 0 }
+        resp, err := lamSrvAdvClient.Do(req)
+        if err != nil { return 0 }
+        defer resp.Body.Close()
+        return resp.StatusCode
+    }
+
+    func lamSrvAdvBody(method, url, body string) string {
+        req, err := http.NewRequest(method, url, strings.NewReader(body))
+        if err != nil { return "" }
+        resp, err := lamSrvAdvClient.Do(req)
+        if err != nil { return "" }
+        defer resp.Body.Close()
+        b, _ := io.ReadAll(resp.Body)
+        return string(b)
+    }
+
+    func lamSrvAdvHeader(method, url, body, header string) string {
+        req, err := http.NewRequest(method, url, strings.NewReader(body))
+        if err != nil { return "" }
+        resp, err := lamSrvAdvClient.Do(req)
+        if err != nil { return "" }
+        defer resp.Body.Close()
+        return resp.Header.Get(header)
+    }
+}
+
+func queryHandler(req: Request, res: Response) {
+    name: str = req.queryGet("name", "anon")
+    miss: str = req.queryGet("missing", "fallback")
+    res.text(f"name={name} missing={miss}")
+}
+
+func redirectHandler(req: Request, res: Response) {
+    res.redirect("/target", 302)
+}
+
+func targetHandler(req: Request, res: Response) {
+    res.text("redirected")
+}
+
+func htmlHandler(req: Request, res: Response) {
+    res.html("<h1>hi</h1>")
+}
+
+func teapotHandler(req: Request, res: Response) {
+    res.error_(418, "I'm a teapot")
+}
+
+func cookieHandler(req: Request, res: Response) {
+    res.cookie("session", "abc123", "/", 60)
+    res.text("ok")
+}
+
+func panicHandler(req: Request, res: Response) {
+    raise ValueError("oops")
+}
+
+func errorHookHandler(req: Request, res: Response, errVal: any) {
+    res.setStatus(599)
+    res.text("error hook fired")
+}
+
+func helloV1(req: Request, res: Response) {
+    res.text("hello-v1")
+}
+
+func helloV2(req: Request, res: Response) {
+    res.text("hello-v2")
+}
+
+func v1Plugin(srv: Server) {
+    srv.get("/hello", helloV1)
+}
+
+func v2Plugin(srv: Server) {
+    srv.get("/hello", helloV2)
+}
+
+func methodsHandler(req: Request, res: Response) {
+    res.text("only-get")
+}
+
+func main() {
+    srv: Server = Server()
+    srv.useCors("*", "GET, POST", "Content-Type")
+
+    srv.get("/q", queryHandler)
+    srv.get("/r", redirectHandler)
+    srv.get("/target", targetHandler)
+    srv.get("/h", htmlHandler)
+    srv.get("/t", teapotHandler)
+    srv.get("/c", cookieHandler)
+    srv.get("/panic", panicHandler)
+    srv.get("/methods", methodsHandler)
+
+    srv.onError(errorHookHandler)
+
+    srv.register(v1Plugin, "/v1")
+    srv.register(v2Plugin, "/v2")
+
+    srv.listenBackground(18484)
+
+    qBody: str = Http.get("http://127.0.0.1:18484/q?name=alice")
+    print(f"query: {qBody}")
+
+    rStatus: int = 0
+    rLoc: str = ""
+    go! {
+        rStatus = lamSrvAdvStatus("GET", "http://127.0.0.1:18484/r", "")
+        rLoc = lamSrvAdvHeader("GET", "http://127.0.0.1:18484/r", "", "Location")
+    }
+    print(f"redirect status: {rStatus}")
+    print(f"redirect location: {rLoc}")
+
+    htmlCt: str = Http.getHeader("http://127.0.0.1:18484/h", "Content-Type")
+    print(f"html ct: {htmlCt}")
+
+    teapotStatus: int = 0
+    teapotBody: str = ""
+    go! {
+        teapotStatus = lamSrvAdvStatus("GET", "http://127.0.0.1:18484/t", "")
+        teapotBody = lamSrvAdvBody("GET", "http://127.0.0.1:18484/t", "")
+    }
+    print(f"teapot: {teapotStatus} {teapotBody}")
+
+    setCookie: str = Http.getHeader("http://127.0.0.1:18484/c", "Set-Cookie")
+    cookieOk: bool = setCookie != ""
+    print(f"cookie set: {cookieOk}")
+
+    methodsStatus: int = 0
+    methodsAllow: str = ""
+    go! {
+        methodsStatus = lamSrvAdvStatus("POST", "http://127.0.0.1:18484/methods", "")
+        methodsAllow = lamSrvAdvHeader("POST", "http://127.0.0.1:18484/methods", "", "Allow")
+    }
+    print(f"405 status: {methodsStatus}")
+    print(f"405 allow: {methodsAllow}")
+
+    v1: str = Http.get("http://127.0.0.1:18484/v1/hello")
+    v2: str = Http.get("http://127.0.0.1:18484/v2/hello")
+    print(f"prefix v1: {v1}")
+    print(f"prefix v2: {v2}")
+
+    corsStatus: int = 0
+    corsOrigin: str = ""
+    go! {
+        corsStatus = lamSrvAdvStatus("OPTIONS", "http://127.0.0.1:18484/q", "")
+        corsOrigin = lamSrvAdvHeader("OPTIONS", "http://127.0.0.1:18484/q", "", "Access-Control-Allow-Origin")
+    }
+    print(f"cors preflight: {corsStatus}")
+    print(f"cors origin: {corsOrigin}")
+
+    panicStatus: int = 0
+    panicBody: str = ""
+    go! {
+        panicStatus = lamSrvAdvStatus("GET", "http://127.0.0.1:18484/panic", "")
+        panicBody = lamSrvAdvBody("GET", "http://127.0.0.1:18484/panic", "")
+    }
+    print(f"panic status: {panicStatus}")
+    print(f"panic body: {panicBody}")
+
+    srv.shutdown(1000)
+    print("shutdown ok")
+}

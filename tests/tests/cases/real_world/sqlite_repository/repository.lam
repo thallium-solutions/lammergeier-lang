@@ -1,0 +1,46 @@
+class LedgerEntry {
+    func init(self, account: str, cents: int) {
+        self.account: str = account
+        self.cents: int = cents
+    }
+}
+
+class LedgerRepository {
+    func init(self) {
+        self.entries: list[LedgerEntry] = []
+    }
+
+    func add(self, account: str, cents: int) {
+        self.entries.append(LedgerEntry(account, cents))
+    }
+
+    func balance(self, account: str) -> int {
+        total: int = 0
+        for row in self.entries {
+            if row.account == account {
+                total += row.cents
+            }
+        }
+        return total
+    }
+
+    func transfer(self, fromAccount: str, toAccount: str, cents: int) -> bool {
+        if cents <= 0 {
+            return false
+        }
+        if self.balance(fromAccount) < cents {
+            return false
+        }
+        self.add(fromAccount, -cents)
+        self.add(toAccount, cents)
+        return true
+    }
+
+    func count(self) -> int {
+        return len(self.entries)
+    }
+}
+
+func main() {
+    pass
+}

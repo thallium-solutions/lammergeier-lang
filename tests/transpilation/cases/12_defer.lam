@@ -1,0 +1,14 @@
+# Transpilation: `defer expr` lowers to Go's native `defer` for calls,
+# and wraps non-call expressions in an anonymous function.
+# expect-go: defer Cleanup()
+# expect-go: defer fmt.Println(
+
+func cleanup() {
+    print("bye")
+}
+
+func main() {
+    defer cleanup()
+    defer print("about to return")
+    print("hello")
+}

@@ -1,0 +1,28 @@
+# Test: go! blocks - inline Go code injection
+# expect: Go says hello!
+# expect: HOME exists
+# expect: 42
+# expect: GoHelper result: 100
+# expect: done
+
+func main() {
+    go! {
+        fmt.Println("Go says hello!")
+    }
+    go! {
+        import "os"
+        home := os.Getenv("HOME")
+        if home != "" {
+            fmt.Println("HOME exists")
+        }
+    }
+    go! {
+        goVar := 42
+        fmt.Println(goVar)
+    }
+    go! {
+        goHelperResult := func(x int) int { return x * 10 }(10)
+        fmt.Println(fmt.Sprintf("GoHelper result: %d", goHelperResult))
+    }
+    print("done")
+}

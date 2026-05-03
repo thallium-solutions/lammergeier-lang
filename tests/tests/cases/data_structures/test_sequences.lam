@@ -1,0 +1,79 @@
+# Test: Fibonacci variants and number sequences
+# expect: 0
+# expect: 1
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 5
+# expect: 8
+# expect: 13
+# expect: 21
+# expect: 34
+# expect: 1
+# expect: 2
+# expect: 6
+# expect: 24
+# expect: 120
+# expect: 720
+# expect: 5040
+# expect: 40320
+# expect: 362880
+# expect: 1
+# expect: 3
+# expect: 5
+# expect: 7
+# expect: 9
+# expect: 11
+# expect: 13
+# expect: 15
+# expect: 17
+# expect: 19
+# expect: seq_ok
+
+func fib_iter(n: int) -> int {
+    if n <= 0 {
+        return 0
+    }
+    if n == 1 {
+        return 1
+    }
+    a: int = 0
+    b: int = 1
+    i: int = 0
+    for i in range(2, n + 1) {
+        temp: int = b
+        b = a + b
+        a = temp
+    }
+    return b
+}
+
+func factorial_iter(n: int) -> int {
+    result: int = 1
+    i: int = 2
+    while i <= n {
+        result = result * i
+        i = i + 1
+    }
+    return result
+}
+
+func main() {
+    # Fibonacci 0-9
+    i: int = 0
+    for i in range(10) {
+        print(fib_iter(i))
+    }
+
+    # Factorials 1-9
+    for i in range(1, 10) {
+        print(factorial_iter(i))
+    }
+
+    # Odd numbers 1-19
+    for i in range(10) {
+        print(2 * i + 1)
+    }
+
+    print("seq_ok")
+}

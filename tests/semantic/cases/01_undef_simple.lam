@@ -1,0 +1,6 @@
+# expect-error: undefined name `mystery`
+# expect-error: line 5
+
+func main() {
+    print(mystery)
+}

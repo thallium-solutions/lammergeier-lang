@@ -1,0 +1,92 @@
+# Test: Complex class hierarchies and methods
+# expect: Circle area: 75
+# expect: Rect area: 50
+# expect: account: 150
+# expect: account: 50
+# expect: LinkedList: 3 -> 2 -> 1
+# expect: class_complex_ok
+
+class Circle {
+    func __init__(self, radius: int) {
+        self.radius: int = radius
+    }
+
+    func area(self) -> int {
+        return 3 * self.radius * self.radius
+    }
+}
+
+class Rect {
+    func __init__(self, width: int, height: int) {
+        self.width: int = width
+        self.height: int = height
+    }
+
+    func area(self) -> int {
+        return self.width * self.height
+    }
+}
+
+class BankAccount {
+    func __init__(self, balance: int) {
+        self.balance: int = balance
+    }
+
+    func deposit(self, amount: int) {
+        self.balance = self.balance + amount
+    }
+
+    func withdraw(self, amount: int) -> bool {
+        if amount > self.balance {
+            return False
+        }
+        self.balance = self.balance - amount
+        return True
+    }
+
+    func get_balance(self) -> int {
+        return self.balance
+    }
+}
+
+class Node {
+    func __init__(self, val: int, next_val: int) {
+        self.val: int = val
+        self.next_val: int = next_val
+    }
+}
+
+func main() {
+    c: Circle = Circle(5)
+    print(f"Circle area: {c.area()}")
+
+    r: Rect = Rect(5, 10)
+    print(f"Rect area: {r.area()}")
+
+    acct: BankAccount = BankAccount(100)
+    acct.deposit(50)
+    print(f"account: {acct.get_balance()}")
+    acct.withdraw(100)
+    print(f"account: {acct.get_balance()}")
+
+    # Simple linked list with just values
+    go! {
+        // Build a linked list manually in Go
+        type ListNode struct {
+            Val  int
+            Next *ListNode
+        }
+        head := &ListNode{Val: 1}
+        head = &ListNode{Val: 2, Next: head}
+        head = &ListNode{Val: 3, Next: head}
+        result := "LinkedList:"
+        for n := head; n != nil; n = n.Next {
+            result += fmt.Sprintf(" %d", n.Val)
+            if n.Next != nil {
+                result += " ->"
+            }
+        }
+        fmt.Println(result)
+    }
+    print("class_complex_ok")
+}

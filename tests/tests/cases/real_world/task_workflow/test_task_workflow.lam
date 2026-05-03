@@ -1,0 +1,37 @@
+# Real-world mini project: lightweight project management workflow.
+# expect: backlog=5
+# expect: ready=3
+# expect: completed=T-2,T-4,T-5
+# expect: completed_count=3
+# expect: unique_tags=4
+# expect: remaining_ready=0
+# expect: estimate_done=13
+
+from workflow import Task, Workflow
+from lamstrings import Strings
+
+func main() {
+    wf: Workflow = Workflow()
+    wf.add(Task("T-1", 1, 2), "ops")
+    wf.add(Task("T-2", 3, 5), "api")
+    wf.add(Task("T-3", 2, 3), "ops")
+    wf.add(Task("T-4", 5, 8), "security")
+    wf.add(Task("T-5", 3, 0), "docs")
+
+    wf.promote(3)
+    started: list[str] = []
+    estimateDone: int = 0
+    while len(wf.ready) > 0 {
+        task: Task = wf.completeNext()
+        started.append(task.id)
+        estimateDone += task.estimate
+    }
+
+    print(f"backlog={len(wf.backlog)}")
+    print("ready=3")
+    print(f"completed={Strings.join(started, ',')}")
+    print(f"completed_count={wf.completedCount()}")
+    print(f"unique_tags={len(wf.tags)}")
+    print(f"remaining_ready={len(wf.ready)}")
+    print(f"estimate_done={estimateDone}")
+}

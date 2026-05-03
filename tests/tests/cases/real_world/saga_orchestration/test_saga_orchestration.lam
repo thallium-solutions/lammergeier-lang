@@ -1,0 +1,31 @@
+# Real-world mini project: saga orchestration with reverse compensation.
+# expect: ok=false
+# expect: failed_at=reserve_inventory
+# expect: completed=2
+# expect: compensated=2
+# expect: payment_compensated=true
+# expect: email_done=false
+
+from saga import Saga, SagaStep, SagaResult
+
+func main() {
+    saga: Saga = Saga()
+    payment: SagaStep = SagaStep("charge_payment")
+    loyalty: SagaStep = SagaStep("award_points")
+    inventory: SagaStep = SagaStep("reserve_inventory", true)
+    email: SagaStep = SagaStep("send_email")
+
+    saga.add(payment)
+    saga.add(loyalty)
+    saga.add(inventory)
+    saga.add(email)
+
+    result: SagaResult = saga.run()
+
+    print(f"ok={result.ok}")
+    print(f"failed_at={result.failedAt}")
+    print(f"completed={result.completed}")
+    print(f"compensated={result.compensated}")
+    print(f"payment_compensated={payment.compensated}")
+    print(f"email_done={email.done}")
+}

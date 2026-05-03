@@ -1,0 +1,7 @@
+# Test: multi-for list comprehension (cartesian product)
+# expect: 6
+
+func main() {
+    pairs: list[int] = [x * y for x in range(1, 3) for y in range(1, 4)]
+    print(len(pairs))
+}

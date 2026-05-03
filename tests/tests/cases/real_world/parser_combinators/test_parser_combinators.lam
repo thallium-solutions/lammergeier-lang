@@ -1,0 +1,20 @@
+# Real-world mini project: recursive parser/interpreter for prefix expressions.
+# expect: result=59
+# expect: nodes=9
+# expect: remaining=0
+# expect: nested=42
+
+from prefix_parser import PrefixParser
+
+func main() {
+    parser: PrefixParser = PrefixParser("add 3 mul max 4 7 sub 10 2")
+    result: int = parser.parseExpr()
+
+    nestedParser: PrefixParser = PrefixParser("mul add 4 3 add 2 4")
+    nested: int = nestedParser.parseExpr()
+
+    print(f"result={result}")
+    print(f"nodes={parser.nodes}")
+    print(f"remaining={parser.stream.remaining()}")
+    print(f"nested={nested}")
+}

@@ -1,0 +1,12 @@
+# Test: dict comprehension basic
+# expect: 0
+# expect: 1
+# expect: 4
+# expect: 9
+
+func main() {
+    squares: dict[int, int] = {i: i * i for i in range(4)}
+    for k in range(4) {
+        print(squares[k])
+    }
+}

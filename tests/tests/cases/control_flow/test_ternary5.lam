@@ -1,0 +1,14 @@
+# Test: ternary with bool comparison
+# expect: yes
+# expect: no
+# expect: yes
+
+func check(val: bool) -> str {
+    return "yes" if val else "no"
+}
+
+func main() {
+    print(check(true))
+    print(check(false))
+    print(check(5 > 3))
+}

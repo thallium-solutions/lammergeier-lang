@@ -1,0 +1,81 @@
+# Test: lamiter — lazy iterator combinators (filter / map / take / …)
+# Uses a chain of intermediate Iter values rather than fluent
+# chaining; chained method calls on user classes don't preserve their
+# return type yet, so binding each step to a typed local is needed.
+#
+# expect: total=56
+# expect: range=[0 1 2 3 4]
+# expect: count=2
+# expect: enum=[[0 a] [1 b] [2 c]]
+# expect: chain=[1 2 10 20]
+# expect: any=true
+# expect: all=false
+# expect: dropwhile=[5 6]
+# expect: iter_tests_ok
+
+from lamiter import Iter
+
+func isEven(x: any) -> bool {
+    go! { return x.(int)%2 == 0 }
+}
+
+func square(x: any) -> any {
+    go! { n := x.(int); return n * n }
+}
+
+func sumInts(acc: any, x: any) -> any {
+    go! { return acc.(int) + x.(int) }
+}
+
+func lt5(x: any) -> bool {
+    go! { return x.(int) < 5 }
+}
+
+func main() {
+    # 4 + 16 + 36 = 56 (first three squared evens)
+    nums: list[any] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    src: Iter = Iter.fromList(nums)
+    filtered: Iter = src.filter(isEven)
+    mapped: Iter = filtered.map(square)
+    head: Iter = mapped.take(3)
+    total: any = head.reduce(0, sumInts)
+    print(f"total={total}")
+
+    # range produces an inclusive-exclusive integer sequence
+    rng: Iter = Iter.range_(0, 5)
+    print(f"range={rng.toList()}")
+
+    # filter + take + count: how many evens in [1..6] capped at 2 = 2
+    src2: Iter = Iter.fromList(nums)
+    f2: Iter = src2.filter(isEven)
+    t2: Iter = f2.take(2)
+    print(f"count={t2.count_()}")
+
+    # enumerate
+    letters: list[any] = ["a", "b", "c"]
+    src3: Iter = Iter.fromList(letters)
+    enum: Iter = src3.enumerate()
+    print(f"enum={enum.toList()}")
+
+    # chain
+    a: Iter = Iter.fromList([1, 2])
+    b: Iter = Iter.fromList([10, 20])
+    chained: Iter = a.chain(b)
+    print(f"chain={chained.toList()}")
+
+    # any / all
+    src4: Iter = Iter.fromList(nums)
+    anyEven: bool = src4.anyMatch(isEven)
+    print(f"any={anyEven}")
+    src5: Iter = Iter.fromList(nums)
+    allEven: bool = src5.allMatch(isEven)
+    print(f"all={allEven}")
+
+    # dropWhile: drop everything < 5 from [1..6]
+    six: list[any] = [1, 2, 3, 4, 5, 6]
+    src6: Iter = Iter.fromList(six)
+    dropped: Iter = src6.dropWhile(lt5)
+    print(f"dropwhile={dropped.toList()}")
+
+    print("iter_tests_ok")
+}

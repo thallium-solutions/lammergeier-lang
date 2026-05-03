@@ -1,0 +1,98 @@
+# Test: lamserver — Fastify-style HTTP server with lifecycle hooks
+# and a plug-in mechanism. Spins up a server in the background, runs
+# a handful of requests through the lamhttp client, then verifies
+# that hooks, params and the plugin all wired up correctly.
+#
+# expect: GET /hello -> hello world
+# expect: GET /user/42 -> user 42
+# expect: POST /echo -> ping
+# expect: GET /admin (without auth) -> 401 unauthorized
+# expect: GET /admin (with auth) -> admin ok
+# expect: header X-Server present: true
+# expect: 404 path: 404 not found
+# expect: server_tests_ok
+
+from lamserver import Server, Request, Response
+from lamhttp import Http
+
+func logRequest(req: Request, res: Response) {
+    # No-op hook just to prove ``onRequest`` fires for every request.
+    pass
+}
+
+func addServerHeader(req: Request, res: Response) {
+    res.setHeader("X-Server", "lamserver/1")
+}
+
+func helloHandler(req: Request, res: Response) {
+    res.text("hello world")
+}
+
+func userHandler(req: Request, res: Response) {
+    res.text("user " + req.params[":id"])
+}
+
+func echoHandler(req: Request, res: Response) {
+    res.text(req.body)
+}
+
+func adminHandler(req: Request, res: Response) {
+    res.text("admin ok")
+}
+
+func authGuard(req: Request, res: Response) {
+    # Simple bearer-token guard. Triggered as a preHandler so it can
+    # short-circuit the response before the route handler runs.
+    if req.path == "/admin" and req.header("Authorization") != "Bearer s3cret" {
+        res.setStatus(401)
+        res.text("401 unauthorized")
+    }
+}
+
+func authPlugin(srv: Server) {
+    # Plugins are just ``func(Server)``: they get the live server and
+    # register hooks/routes the same way main() would. Encapsulating
+    # the auth wiring in a plugin keeps main() tidy.
+    srv.preHandler(authGuard)
+    srv.get("/admin", adminHandler)
+}
+
+func main() {
+    srv: Server = Server()
+
+    # Hooks
+    srv.onRequest(logRequest)
+    srv.onResponse(addServerHeader)
+
+    # Routes
+    srv.get("/hello", helloHandler)
+    srv.get("/user/:id", userHandler)
+    srv.post("/echo", echoHandler)
+
+    # Plugin contributes the /admin route + auth hook
+    srv.register(authPlugin)
+
+    srv.listenBackground(18181)
+
+    # Hit the server; lamhttp's default client is fine for tests.
+    print("GET /hello -> " + Http.get("http://127.0.0.1:18181/hello"))
+    print("GET /user/42 -> " + Http.get("http://127.0.0.1:18181/user/42"))
+    print("POST /echo -> " + Http.post("http://127.0.0.1:18181/echo", "text/plain", "ping"))
+    print("GET /admin (without auth) -> " + Http.get("http://127.0.0.1:18181/admin"))
+
+    # Authorised request: pass the bearer header.
+    headers: dict[str, str] = {}
+    headers["Authorization"] = "Bearer s3cret"
+    print("GET /admin (with auth) -> " + Http.getWithHeaders("http://127.0.0.1:18181/admin", headers))
+
+    # Verify the onResponse hook (X-Server header) actually fires.
+    serverHeader: str = Http.getHeader("http://127.0.0.1:18181/hello", "X-Server")
+    headerOk: bool = serverHeader == "lamserver/1"
+    print(f"header X-Server present: {headerOk}")
+
+    # Unknown path → 404
+    print("404 path: " + Http.get("http://127.0.0.1:18181/no-such-path"))
+
+    srv.close()
+    print("server_tests_ok")
+}

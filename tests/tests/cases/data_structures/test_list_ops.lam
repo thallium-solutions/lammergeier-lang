@@ -1,0 +1,87 @@
+# Test: List operations - append, length, iteration, indexing
+# expect: 0
+# expect: 3
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 15
+# expect: 5
+# expect: 1
+# expect: 10
+# expect: 10
+# expect: 9
+# expect: 8
+# expect: 7
+# expect: 6
+# expect: list_ok
+
+func sum_list(items: list[int]) -> int {
+    total: int = 0
+    item: int = 0
+    for item in items {
+        total = total + item
+    }
+    return total
+}
+
+func max_in_list(items: list[int]) -> int {
+    best: int = items[0]
+    item: int = 0
+    for item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+
+func min_in_list(items: list[int]) -> int {
+    best: int = items[0]
+    item: int = 0
+    for item in items {
+        if item < best {
+            best = item
+        }
+    }
+    return best
+}
+
+func main() {
+    # Empty list
+    empty: list[int] = []
+    print(len(empty))
+
+    # Basic list
+    nums: list[int] = [1, 2, 3]
+    print(len(nums))
+
+    # Iteration
+    x: int = 0
+    for x in nums {
+        print(x)
+    }
+
+    # Range-built list
+    items: list[int] = []
+    i: int = 0
+    for i in range(1, 6) {
+        items = append(items, i)
+    }
+    print(sum_list(items))
+
+    # Max
+    print(max_in_list(items))
+
+    # Min
+    print(min_in_list(items))
+
+    # Indexing
+    big: list[int] = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+    print(big[0])
+    j: int = 0
+    for j in range(5) {
+        print(big[j])
+    }
+
+    print("list_ok")
+}

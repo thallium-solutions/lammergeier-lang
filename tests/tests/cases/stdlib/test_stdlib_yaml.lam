@@ -1,0 +1,89 @@
+# Test: lamyaml — YAML encode / decode round-trip.
+#
+# expect: name: alice
+# expect: age: 30
+# expect: enabled: true
+# expect: hobbies-len: 3
+# expect: hobbies-1: chess
+# expect: nested-city: Paris
+# expect: encode-roundtrip: true
+# expect: bad-decode-iserr: true
+# expect: docs-count: 3
+# expect: doc1-name: first
+# expect: doc3-name: third
+
+from lamyaml import Yaml
+from lamerrors import Result
+
+func main() {
+    src: str = "name: alice\nage: 30\nenabled: true\nhobbies:\n  - reading\n  - chess\n  - hiking\nlocation:\n  city: Paris\n"
+
+    doc: any = Yaml.decode(src)
+    name: str = ""
+    age: int = 0
+    enabled: bool = false
+    hobbies: list[any] = []
+    cityFromNested: str = ""
+    go! {
+        if m, ok := doc.(map[string]interface{}); ok {
+            if v, ok := m["name"].(string); ok { name = v }
+            if v, ok := m["age"].(int); ok { age = v }
+            if v, ok := m["enabled"].(bool); ok { enabled = v }
+            if v, ok := m["hobbies"].([]interface{}); ok { hobbies = v }
+            if loc, ok := m["location"].(map[string]interface{}); ok {
+                if c, ok := loc["city"].(string); ok { cityFromNested = c }
+            }
+        }
+    }
+    print(f"name: {name}")
+    print(f"age: {age}")
+    print(f"enabled: {enabled}")
+    n: int = len(hobbies)
+    print(f"hobbies-len: {n}")
+    h1: str = ""
+    go! {
+        if len(hobbies) > 1 {
+            if v, ok := hobbies[1].(string); ok { h1 = v }
+        }
+    }
+    print(f"hobbies-1: {h1}")
+    print(f"nested-city: {cityFromNested}")
+
+    # ── Round-trip: encode the decoded doc and re-decode it.
+    yamlStr: str = Yaml.encode(doc)
+    redoc: any = Yaml.decode(yamlStr)
+    matches: bool = false
+    go! {
+        if a, ok := redoc.(map[string]interface{}); ok {
+            if a["name"] == "alice" { matches = true }
+        }
+    }
+    print(f"encode-roundtrip: {matches}")
+
+    # ── Bad YAML returns Err via tryDecode.
+    bad: Result = Yaml.tryDecode("name: alice\n  oops: : :")
+    badIsErr: bool = not bad.ok()
+    print(f"bad-decode-iserr: {badIsErr}")
+
+    # ── Multi-document stream.
+    multi: str = "---\nname: first\n---\nname: second\n---\nname: third\n"
+    docs: list[any] = Yaml.decodeAll(multi)
+    nDocs: int = len(docs)
+    print(f"docs-count: {nDocs}")
+    d1: str = ""
+    d3: str = ""
+    go! {
+        if len(docs) > 0 {
+            if m, ok := docs[0].(map[string]interface{}); ok {
+                if v, ok := m["name"].(string); ok { d1 = v }
+            }
+        }
+        if len(docs) > 2 {
+            if m, ok := docs[2].(map[string]interface{}); ok {
+                if v, ok := m["name"].(string); ok { d3 = v }
+            }
+        }
+    }
+    print(f"doc1-name: {d1}")
+    print(f"doc3-name: {d3}")
+}

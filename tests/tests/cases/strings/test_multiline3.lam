@@ -1,0 +1,12 @@
+# Test: multiline string assignment and comparison
+# expect: 3
+# expect: true
+
+func main() {
+    text: str = """one
+two
+three"""
+    lines: list[str] = text.split("\n")
+    print(len(lines))
+    print(text.startswith("one"))
+}

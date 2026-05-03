@@ -1,0 +1,58 @@
+# Test: Go interop - using Go libraries and features via go! blocks
+# expect: sha256_ok
+# expect: base64_ok
+# expect: json_ok
+# expect: regex_ok
+# expect: buffer_ok
+
+func main() {
+    # crypto/sha256
+    go! {
+        import "crypto/sha256"
+        import "encoding/hex"
+        hash := sha256.Sum256([]byte("hello"))
+        hexStr := hex.EncodeToString(hash[:])
+        if len(hexStr) == 64 {
+            fmt.Println("sha256_ok")
+        }
+    }
+    # encoding/base64
+    go! {
+        import "encoding/base64"
+        encoded := base64.StdEncoding.EncodeToString([]byte("hello world"))
+        decoded, _ := base64.StdEncoding.DecodeString(encoded)
+        if string(decoded) == "hello world" {
+            fmt.Println("base64_ok")
+        }
+    }
+    # encoding/json
+    go! {
+        import "encoding/json"
+        type Msg struct {
+            Text string `json:"text"`
+        }
+        data, _ := json.Marshal(Msg{Text: "test"})
+        if len(data) > 0 {
+            fmt.Println("json_ok")
+        }
+    }
+    # regexp
+    go! {
+        import "regexp"
+        re := regexp.MustCompile(`\d+`)
+        match := re.FindString("abc123def")
+        if match == "123" {
+            fmt.Println("regex_ok")
+        }
+    }
+    # bytes.Buffer
+    go! {
+        import "bytes"
+        var buf bytes.Buffer
+        buf.WriteString("hello")
+        buf.WriteString(" world")
+        if buf.Len() == 11 {
+            fmt.Println("buffer_ok")
+        }
+    }
+}

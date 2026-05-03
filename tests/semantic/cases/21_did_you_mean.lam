@@ -1,0 +1,6 @@
+# expect-error: undefined name `prnit`
+# expect-error: did you mean `print`
+
+func main() {
+    prnit("hello")
+}

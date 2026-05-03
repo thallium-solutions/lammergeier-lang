@@ -1,0 +1,13 @@
+# Transpilation: static methods become module-level `Class_method` funcs.
+# expect-go: func Counter_zero() int
+# expect-go: Counter_zero()
+
+class Counter {
+    static func zero() -> int {
+        return 0
+    }
+}
+
+func main() {
+    print(Counter.zero())
+}

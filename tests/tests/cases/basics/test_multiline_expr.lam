@@ -1,0 +1,102 @@
+# Test: multi-line expressions (function calls, collection literals,
+# operator-split) compile and evaluate as a single statement.
+# expect: PASS 1 call across lines
+# expect: PASS 2 nested call across lines
+# expect: PASS 3 list literal across lines
+# expect: PASS 4 dict literal across lines
+# expect: PASS 5 nested list literal
+# expect: PASS 6 operator-split arithmetic
+# expect: PASS 7 deeply nested multiline
+# expect: PASS 8 trailing commas tolerated
+# expect: PASS 9 f-string arg across lines
+# expect: PASS 10 return across lines
+# expect: 10 passed, 0 failed, 10 total
+
+from lamtest import Test
+from lamfmt import Fmt
+
+func add3(a: int, b: int, c: int) -> int {
+    return a + b + c
+}
+
+func add5(a: int, b: int, c: int, d: int, e: int) -> int {
+    return (a
+            + b
+            + c
+            + d
+            + e)
+}
+
+func main() {
+    r1: int = add3(
+        1,
+        2,
+        3,
+    )
+    Test.assertEqual(r1, 6, "1 call across lines")
+
+    r2: int = add3(
+        add3(1, 2, 3),
+        10,
+        100,
+    )
+    Test.assertEqual(r2, 116, "2 nested call across lines")
+
+    xs: list[int] = [
+        1,
+        2,
+        3,
+        4,
+    ]
+    Test.assertEqual(len(xs), 4, "3 list literal across lines")
+
+    d: dict[str, int] = {
+        "a": 1,
+        "b": 2,
+        "c": 3,
+    }
+    Test.assertEqual(len(d), 3, "4 dict literal across lines")
+
+    # A list mixed with multi-line items (dict and list inline) works
+    # the same as a single-line expression.
+    words: list[str] = [
+        "alpha",
+        "beta",
+        "gamma",
+    ]
+    Test.assertEqual(len(words), 3, "5 nested list literal")
+
+    total: int = (1
+                  + 2
+                  + 3
+                  + 4)
+    Test.assertEqual(total, 10, "6 operator-split arithmetic")
+
+    msg: str = Fmt.sprintf(
+        "sum=%d total=%d",
+        add3(
+            1,
+            2,
+            3,
+        ),
+        total,
+    )
+    Test.assertEqual(msg, "sum=6 total=10", "7 deeply nested multiline")
+
+    both: int = add3(
+        1,
+        2,
+        3,
+    )
+    Test.assertEqual(both, 6, "8 trailing commas tolerated")
+
+    greeting: str = Fmt.sprintf(
+        "hi %s",
+        "world",
+    )
+    Test.assertEqual(greeting, "hi world", "9 f-string arg across lines")
+
+    Test.assertEqual(add5(1, 2, 3, 4, 5), 15, "10 return across lines")
+
+    Test.summary()
+}

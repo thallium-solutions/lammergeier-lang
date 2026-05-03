@@ -1,0 +1,18 @@
+# expect: encode_ok
+# expect: decode_ok
+
+from lambytes import Bytes
+
+func main() {
+    # Hex encode
+    h: str = Bytes.hexEncode("hello")
+    if len(h) > 0 {
+        print("encode_ok")
+    }
+
+    # Hex decode
+    d: str = Bytes.hexDecode(h)
+    if d == "hello" {
+        print("decode_ok")
+    }
+}

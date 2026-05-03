@@ -1,0 +1,8 @@
+# expect-pass
+
+func main() {
+    xs: list[int] = [n * n for n in range(5)]
+    print(xs)
+    pairs: list[int] = [a + b for a in range(2) for b in range(2)]
+    print(pairs)
+}

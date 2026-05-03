@@ -1,0 +1,46 @@
+# Test: `defer expr` statement — mirrors Go semantics.
+# Expected output proves: (a) single defer runs on exit,
+# (b) multiple defers run LIFO, (c) defer in branch still fires,
+# (d) deferred call sees the variable value at defer time.
+# expect: start
+# expect: main-body
+# expect: deferred-third
+# expect: deferred-second
+# expect: deferred-first
+# expect: branched
+# expect: cleanup-branch
+# expect: captured=10
+# expect: done
+
+func lifo() {
+    defer print("deferred-first")
+    defer print("deferred-second")
+    defer print("deferred-third")
+    print("main-body")
+}
+
+func branched(x: int) {
+    defer print("cleanup-branch")
+    if x > 0 {
+        print("branched")
+        return
+    }
+    print("not-reached")
+}
+
+func capture() {
+    v: int = 10
+    # Go's defer evaluates its arguments at the point of the defer
+    # call, so the captured value freezes at 10 even when `v` is
+    # mutated after.
+    defer print(f"captured={v}")
+    v = 999
+}
+
+func main() {
+    print("start")
+    lifo()
+    branched(1)
+    capture()
+    print("done")
+}

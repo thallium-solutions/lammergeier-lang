@@ -1,0 +1,18 @@
+# Test: for-else in function
+# expect: found at 2
+# expect: not found
+
+func find_index(items: list[int], target: int) -> str {
+    for i, v in enumerate(items) {
+        if v == target {
+            return f"found at {i}"
+        }
+    }
+    return "not found"
+}
+
+func main() {
+    data: list[int] = [10, 20, 30, 40]
+    print(find_index(data, 30))
+    print(find_index(data, 99))
+}

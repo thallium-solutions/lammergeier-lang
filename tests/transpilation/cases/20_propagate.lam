@@ -1,0 +1,42 @@
+# Transpilation: the ``?`` propagation operator desugars to a temp +
+# early-return guard. The substitution is wrapped in a typed Go
+# assertion when the enclosing annassign provides the target type.
+#
+# ``parseInt(s)?`` in ``n: int = parseInt(s)?`` becomes:
+#   __q1 := ParseInt(s)
+#   if !__q1.Ok() { return __q1 }
+#   var n int = __q1.Value.(int)
+#
+# Multiple ``?`` in one function get successive ``__q1``, ``__q2``, …
+# names. Untyped contexts (``return`` of a Result, function args of
+# ``any``) just see ``__qN.Value`` (interface{}).
+
+# expect-go: __q1 := ParseInt(s)
+# expect-go: if !__q1.Ok() { return __q1 }
+# expect-go: var n int = __q1.Value.(int)
+# expect-go: __q2 := ParseInt(a)
+# expect-go: __q3 := ParseInt(b)
+
+from lamerrors import Result, Error
+
+func parseInt(s: str) -> Result {
+    if s == "1" {
+        return Result.Ok(1)
+    }
+    return Result.Err(Error("ParseError", "bad"))
+}
+
+func double(s: str) -> Result {
+    n: int = parseInt(s)?
+    return Result.Ok(n * 2)
+}
+
+func sumPair(a: str, b: str) -> Result {
+    x: int = parseInt(a)?
+    y: int = parseInt(b)?
+    return Result.Ok(x + y)
+}
+
+func main() {
+    print(double("1").value)
+}

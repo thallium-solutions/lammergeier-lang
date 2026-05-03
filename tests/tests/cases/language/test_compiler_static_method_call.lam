@@ -1,0 +1,27 @@
+# Test: static-method calls written as ``Class.method(args)`` at the
+# Lam level dispatch to the right Go helper (``Class_method``). Also
+# verifies that the dispatch survives across a library import.
+#
+# expect: ok-result valid: true
+# expect: err-result valid: false
+# expect: ok value: hello
+# expect: ok-from-fn valid: true
+
+from lamerrors import Result
+
+func makeOk() -> Result {
+    return Result.Ok("hello")
+}
+
+func main() {
+    a: Result = Result.Ok(42)
+    b: Result = Result.Err("oops")
+    print(f"ok-result valid: {a.ok()}")
+    print(f"err-result valid: {b.ok()}")
+
+    # Decoded value round-trips
+    c: Result = makeOk()
+    cv: any = c.value
+    print(f"ok value: {cv}")
+    print(f"ok-from-fn valid: {c.ok()}")
+}

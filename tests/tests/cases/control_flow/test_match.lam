@@ -1,0 +1,88 @@
+# Test: Match/case (switch) - integers, strings, wildcards
+# expect: one
+# expect: two
+# expect: other
+# expect: zero
+# expect: greeting
+# expect: farewell
+# expect: unknown_cmd
+# expect: weekend
+# expect: weekday
+# expect: weekday
+# expect: small
+# expect: medium
+# expect: large
+
+func num_word(n: int) -> str {
+    match n {
+        case 0 {
+            return "zero"
+        }
+        case 1 {
+            return "one"
+        }
+        case 2 {
+            return "two"
+        }
+        case _ {
+            return "other"
+        }
+    }
+}
+
+func handle_command(cmd: str) -> str {
+    match cmd {
+        case "hello" {
+            return "greeting"
+        }
+        case "bye" {
+            return "farewell"
+        }
+        case _ {
+            return "unknown_cmd"
+        }
+    }
+}
+
+func day_type(day: str) -> str {
+    match day {
+        case "Saturday" {
+            return "weekend"
+        }
+        case "Sunday" {
+            return "weekend"
+        }
+        case _ {
+            return "weekday"
+        }
+    }
+}
+
+func size_category(n: int) -> str {
+    if n < 10 {
+        return "small"
+    } elif n < 100 {
+        return "medium"
+    } else {
+        return "large"
+    }
+}
+
+func main() {
+    print(num_word(1))
+    print(num_word(2))
+    print(num_word(99))
+    print(num_word(0))
+
+    print(handle_command("hello"))
+    print(handle_command("bye"))
+    print(handle_command("unknown"))
+
+    print(day_type("Saturday"))
+    print(day_type("Monday"))
+    print(day_type("Wednesday"))
+
+    print(size_category(5))
+    print(size_category(50))
+    print(size_category(500))
+}

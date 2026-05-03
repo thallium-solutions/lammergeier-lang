@@ -1,0 +1,10 @@
+# Test: Del in loop context
+# expect: 2
+# expect: done
+
+func main() {
+    d: dict[str, int] = {"a": 1, "b": 2, "c": 3}
+    del d["c"]
+    print(len(d))
+    print("done")
+}

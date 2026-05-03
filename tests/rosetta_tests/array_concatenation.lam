@@ -1,0 +1,12 @@
+# Rosetta Code: Array concatenation
+# https://rosettacode.org/wiki/Array_concatenation
+# expect: 6
+
+func main() {
+    a: list[int] = [1, 2, 3]
+    b: list[int] = [4, 5, 6]
+    c: list[int] = append(a, b[0])
+    c = append(c, b[1])
+    c = append(c, b[2])
+    print(len(c))
+}

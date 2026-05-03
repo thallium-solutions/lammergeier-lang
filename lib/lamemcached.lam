@@ -1,0 +1,347 @@
+# Lammergeier standard library — Memcached client.
+#
+# Thin wrapper around ``github.com/memcachier/mc/v3``. We picked the
+# ``memcachier/mc`` library over the much-more-popular
+# ``bradfitz/gomemcache`` for one reason: it speaks the *binary*
+# protocol, which is the only memcached dialect that supports SASL
+# PLAIN authentication. That lets the same client talk to both
+# unauthenticated dev containers (``mc.connect("localhost:11211")``)
+# and a hardened cluster behind credentials
+# (``mc.connect("localhost:11211", username="u", password="p")``)
+# with no API surface change.
+#
+#     from lamemcached import Memcached
+#
+#     # No-auth.
+#     m: Memcached = Memcached.connect("localhost:11211")
+#     m.set("greeting", "hello")
+#     msg: str = m.get("greeting")            # "hello"
+#
+#     # SASL auth.
+#     m2: Memcached = Memcached.connect(
+#         "localhost:11211",
+#         username="memuser",
+#         password="mempass123",
+#     )
+#
+#     # TTL & atomic counters.
+#     m.set("session:42", "alice", ttlSec=600)
+#     n: int = m.incr("hits", by=1, initial=0)
+#
+# Missing-key semantics: ``get`` returns ``""`` for absent keys; use
+# ``exists()`` if you need to distinguish "missing" from "empty
+# string". Mutating helpers that race against missing keys (``add``,
+# ``replace``, ``delete``, ``touch``) return a ``bool`` so the caller
+# doesn't have to inspect an error.
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "errors"
+        "fmt"
+
+        mcgo "github.com/memcachier/mc/v3"
+    )
+
+    // ─── Error helpers ───────────────────────────────────────
+    // ``mc/v3`` returns the *same* sentinel pointer for every
+    // miss / collision / auth-required reply, so ``errors.Is``
+    // keeps working across versions even if the library starts
+    // wrapping its errors in the future.
+
+    func lamMcIsNotFound(err error) bool {
+        return err != nil && errors.Is(err, mcgo.ErrNotFound)
+    }
+
+    func lamMcIsKeyExists(err error) bool {
+        return err != nil && errors.Is(err, mcgo.ErrKeyExists)
+    }
+}
+
+class Memcached {
+    #- Binary-protocol memcached client. One ``Memcached`` instance is
+       backed by a connection pool inside ``mc/v3`` and is safe to
+       share across goroutines — every method takes a lock for the
+       duration of the round-trip, so callers don't need to
+       coordinate. -#
+
+    func __init__(self) {
+        self._client: any = None
+    }
+
+    static func connect(addr: str, username: str = "", password: str = "") -> Memcached {
+        #- Open a connection to ``addr`` (``host:port``). Pass
+           ``username``/``password`` for SASL PLAIN auth; leave them
+           empty (the default) to talk to a server without auth.
+           A ``noop`` round-trip is performed before returning so
+           bad credentials surface here rather than at the first
+           ``get``/``set``. -#
+        m: Memcached = Memcached()
+        go! {
+            m._client = mcgo.NewMC(addr, username, password)
+        }
+        m.noop()
+        return m
+    }
+
+    func close(self) {
+        #- Release every pooled connection. Idempotent — calling
+           ``close`` twice is a no-op. -#
+        go! {
+            if c, ok := s._client.(*mcgo.Client); ok && c != nil {
+                c.Quit()
+            }
+            s._client = nil
+        }
+    }
+
+    # ── Basic KV ─────────────────────────────────────────────
+    func get(self, key: str) -> str {
+        #- ``GET`` — returns the stored value, or ``""`` when the
+           key is absent. Use ``exists()`` if you need to tell those
+           two cases apart. -#
+        out: str = ""
+        go! {
+            c := s._client.(*mcgo.Client)
+            v, _, _, err := c.Get(key)
+            if err != nil {
+                if !lamMcIsNotFound(err) {
+                    panic(fmt.Sprintf("memcached: GET %s: %v", key, err))
+                }
+            } else {
+                out = v
+            }
+        }
+        return out
+    }
+
+    func set(self, key: str, value: str, ttlSec: int = 0) {
+        #- ``SET`` — unconditionally store ``value`` under ``key``.
+           ``ttlSec == 0`` means no expiry; positive values count as
+           seconds, matching memcached's wire-level semantics for
+           expirations under 30 days. -#
+        go! {
+            c := s._client.(*mcgo.Client)
+            _, err := c.Set(key, value, 0, uint32(ttlSec), 0)
+            if err != nil {
+                panic(fmt.Sprintf("memcached: SET %s: %v", key, err))
+            }
+        }
+    }
+
+    func add(self, key: str, value: str, ttlSec: int = 0) -> bool {
+        #- ``ADD`` — store ``value`` only if ``key`` doesn't already
+           exist. Returns ``true`` on success, ``false`` if the key
+           was already there. -#
+        ok: bool = false
+        go! {
+            c := s._client.(*mcgo.Client)
+            _, err := c.Add(key, value, 0, uint32(ttlSec))
+            if err == nil {
+                ok = true
+            } else if !lamMcIsKeyExists(err) {
+                panic(fmt.Sprintf("memcached: ADD %s: %v", key, err))
+            }
+        }
+        return ok
+    }
+
+    func replace(self, key: str, value: str, ttlSec: int = 0) -> bool {
+        #- ``REPLACE`` — overwrite an existing key. Returns ``false``
+           when the key isn't there. -#
+        ok: bool = false
+        go! {
+            c := s._client.(*mcgo.Client)
+            _, err := c.Replace(key, value, 0, uint32(ttlSec), 0)
+            if err == nil {
+                ok = true
+            } else if !lamMcIsNotFound(err) {
+                panic(fmt.Sprintf("memcached: REPLACE %s: %v", key, err))
+            }
+        }
+        return ok
+    }
+
+    func delete(self, key: str) -> bool {
+        #- ``DELETE`` — returns ``true`` when a key was actually
+           removed, ``false`` when the key didn't exist. -#
+        ok: bool = false
+        go! {
+            c := s._client.(*mcgo.Client)
+            err := c.Del(key)
+            if err == nil {
+                ok = true
+            } else if !lamMcIsNotFound(err) {
+                panic(fmt.Sprintf("memcached: DEL %s: %v", key, err))
+            }
+        }
+        return ok
+    }
+
+    func exists(self, key: str) -> bool {
+        #- A ``GET`` round-trip that throws away the value — the
+           cheapest way to distinguish "missing" from "empty
+           string". -#
+        out: bool = false
+        go! {
+            c := s._client.(*mcgo.Client)
+            _, _, _, err := c.Get(key)
+            if err == nil {
+                out = true
+            } else if !lamMcIsNotFound(err) {
+                panic(fmt.Sprintf("memcached: EXISTS %s: %v", key, err))
+            }
+        }
+        return out
+    }
+
+    func touch(self, key: str, ttlSec: int) -> bool {
+        #- Reset the TTL on an existing key without rewriting the
+           value. Returns ``false`` when the key wasn't there. -#
+        ok: bool = false
+        go! {
+            c := s._client.(*mcgo.Client)
+            _, err := c.Touch(key, uint32(ttlSec))
+            if err == nil {
+                ok = true
+            } else if !lamMcIsNotFound(err) {
+                panic(fmt.Sprintf("memcached: TOUCH %s: %v", key, err))
+            }
+        }
+        return ok
+    }
+
+    # ── Counters ─────────────────────────────────────────────
+    func incr(self, key: str, by: int = 1, initial: int = 0, ttlSec: int = 0) -> int {
+        #- Atomic ``INCR``. If the key is missing memcached creates
+           it with ``initial`` and applies the increment on the
+           *next* call — the first call returns ``initial`` itself.
+           ``by`` defaults to 1 so ``m.incr("hits")`` reads
+           naturally. -#
+        out: int = 0
+        go! {
+            c := s._client.(*mcgo.Client)
+            n, _, err := c.Incr(key, uint64(by), uint64(initial), uint32(ttlSec), 0)
+            if err != nil {
+                panic(fmt.Sprintf("memcached: INCR %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func decr(self, key: str, by: int = 1, initial: int = 0, ttlSec: int = 0) -> int {
+        #- Atomic ``DECR`` — saturates at zero per memcached's wire
+           semantics; otherwise mirrors :py:meth:`incr`. -#
+        out: int = 0
+        go! {
+            c := s._client.(*mcgo.Client)
+            n, _, err := c.Decr(key, uint64(by), uint64(initial), uint32(ttlSec), 0)
+            if err != nil {
+                panic(fmt.Sprintf("memcached: DECR %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    # ── Append / prepend ─────────────────────────────────────
+    func append(self, key: str, value: str) -> bool {
+        #- ``APPEND`` — concatenate ``value`` after the existing
+           value. Returns ``false`` when the key isn't there
+           (memcached requires the key to exist). -#
+        ok: bool = false
+        go! {
+            c := s._client.(*mcgo.Client)
+            _, err := c.Append(key, value, 0)
+            if err == nil {
+                ok = true
+            } else if !lamMcIsNotFound(err) {
+                panic(fmt.Sprintf("memcached: APPEND %s: %v", key, err))
+            }
+        }
+        return ok
+    }
+
+    func prepend(self, key: str, value: str) -> bool {
+        #- ``PREPEND`` — concatenate ``value`` before the existing
+           value. Same return semantics as :py:meth:`append`. -#
+        ok: bool = false
+        go! {
+            c := s._client.(*mcgo.Client)
+            _, err := c.Prepend(key, value, 0)
+            if err == nil {
+                ok = true
+            } else if !lamMcIsNotFound(err) {
+                panic(fmt.Sprintf("memcached: PREPEND %s: %v", key, err))
+            }
+        }
+        return ok
+    }
+
+    # ── Maintenance ──────────────────────────────────────────
+    func flush(self, when: int = 0) {
+        #- ``FLUSH_ALL`` — wipe every key. ``when > 0`` schedules the
+           flush ``when`` seconds in the future. Use sparingly. -#
+        go! {
+            c := s._client.(*mcgo.Client)
+            if err := c.Flush(uint32(when)); err != nil {
+                panic(fmt.Sprintf("memcached: FLUSH: %v", err))
+            }
+        }
+    }
+
+    func noop(self) {
+        #- ``NOOP`` — round-trip handshake. Used internally by
+           ``connect`` to surface auth / network errors eagerly,
+           and exposed here so callers can implement their own
+           liveness checks. -#
+        go! {
+            c := s._client.(*mcgo.Client)
+            if err := c.NoOp(); err != nil {
+                panic(fmt.Sprintf("memcached: NOOP: %v", err))
+            }
+        }
+    }
+
+    func version(self) -> dict[str, str] {
+        #- ``VERSION`` — ``{server: "1.6.39", ...}``. With a single
+           memcached node the dict has one entry; with a server
+           pool you get one entry per node. -#
+        out: dict[str, str] = {}
+        go! {
+            c := s._client.(*mcgo.Client)
+            v, err := c.Version()
+            if err != nil {
+                panic(fmt.Sprintf("memcached: VERSION: %v", err))
+            }
+            for k, val := range v {
+                out[k] = val
+            }
+        }
+        return out
+    }
+
+    func stats(self) -> dict[str, dict[str, str]] {
+        #- ``STATS`` — full stats dump, keyed by server address.
+           Lots of useful diagnostics in here: ``curr_items``,
+           ``cmd_get``, ``get_hits``, ``bytes``, ``uptime``, … -#
+        out: dict[str, dict[str, str]] = {}
+        go! {
+            c := s._client.(*mcgo.Client)
+            stats, err := c.Stats()
+            if err != nil {
+                panic(fmt.Sprintf("memcached: STATS: %v", err))
+            }
+            for server, st := range stats {
+                inner := map[string]string{}
+                for k, v := range st {
+                    inner[k] = v
+                }
+                out[server] = inner
+            }
+        }
+        return out
+    }
+}

@@ -1,0 +1,38 @@
+#- Regression: Phase 2.4 — unused function-scope locals must not
+   break ``go build``.
+
+   Lam emits a "warning: unused local" diagnostic AND injects a
+   ``_ = name`` epilogue so Go's hard "declared and not used" error
+   never triggers. Without the epilogue, this whole file would fail
+   to compile.
+
+   Note: ``# expect`` lines below match stdout only; the warnings
+   land on stderr and don't influence the comparison. -#
+
+# expect: 99
+# expect: hello
+# expect: 7
+
+func compute_unused() {
+    a = 42;
+    b = 99;
+    print(b);
+}
+
+func with_string_unused() {
+    msg = "ignored";
+    out = "hello";
+    print(out);
+}
+
+func with_int_arith_unused() {
+    sum = 1 + 2 + 3;
+    target = 7;
+    print(target);
+}
+
+func main() {
+    compute_unused();
+    with_string_unused();
+    with_int_arith_unused();
+}

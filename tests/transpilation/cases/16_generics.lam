@@ -1,0 +1,50 @@
+# Transpilation: generics lower to Go 1.18 type parameters.
+#
+# Check:
+#   - plain generic func: ``func Identity[T any](x T) T``
+#   - two-param generic:  ``func Pair_first[T any, U any]``
+#   - built-in ``ordered`` constraint expands to the Go union
+#   - generic class: ``type Box[T any] struct`` + ``*Box[T]`` receivers
+#   - generic static method inherits its class's T
+
+# expect-go: func Identity[T any](x T) T
+# expect-go: func Pair_first[T any, U any](a T, b U) T
+# expect-go: func Max_of[T ~int | ~int64 | ~float64 | ~string](a T, b T) T
+# expect-go: type Box[T any] struct
+# expect-go: func (s *Box[T]) Unwrap() T
+# expect-go: func NewBox[T any]() *Box[T]
+# expect-go: return &Box[T]{}
+# expect-go: func Helpers_wrap[T any](x T) T
+
+func identity[T](x: T) -> T {
+    return x
+}
+
+func pair_first[T, U](a: T, b: U) -> T {
+    return a
+}
+
+func max_of[T: ordered](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+class Box[T] {
+    value: T
+
+    func unwrap() -> T {
+        return self.value
+    }
+}
+
+class Helpers {
+    static func wrap[T](x: T) -> T {
+        return x
+    }
+}
+
+func main() {
+    print(identity(42))
+}

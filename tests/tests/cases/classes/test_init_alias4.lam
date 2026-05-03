@@ -1,0 +1,32 @@
+# Test: init alias with method chaining
+# expect: Builder[hello world]
+
+class Builder {
+    func init(self) {
+        self.parts: list[str] = []
+    }
+
+    func add(self, item: str) -> str {
+        self.parts = append(self.parts, item)
+        return "ok"
+    }
+
+    func build(self) -> str {
+        result: str = "Builder["
+        for i, p in enumerate(self.parts) {
+            if i > 0 {
+                result = result + " "
+            }
+            result = result + p
+        }
+        result = result + "]"
+        return result
+    }
+}
+
+func main() {
+    b: Builder = Builder()
+    b.add("hello")
+    b.add("world")
+    print(b.build())
+}

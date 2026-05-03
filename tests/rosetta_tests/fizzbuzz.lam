@@ -1,0 +1,36 @@
+# Rosetta Code: FizzBuzz
+# https://rosettacode.org/wiki/FizzBuzz
+# expect: 1
+# expect: 2
+# expect: Fizz
+# expect: 4
+# expect: Buzz
+# expect: Fizz
+# expect: 7
+# expect: 8
+# expect: Fizz
+# expect: Buzz
+# expect: 11
+# expect: Fizz
+# expect: 13
+# expect: 14
+# expect: FizzBuzz
+# expect: 16
+# expect: 17
+# expect: Fizz
+# expect: 19
+# expect: Buzz
+
+func main() {
+    for i in range(1, 21) {
+        if i % 15 == 0 {
+            print("FizzBuzz")
+        } elif i % 3 == 0 {
+            print("Fizz")
+        } elif i % 5 == 0 {
+            print("Buzz")
+        } else {
+            print(i)
+        }
+    }
+}

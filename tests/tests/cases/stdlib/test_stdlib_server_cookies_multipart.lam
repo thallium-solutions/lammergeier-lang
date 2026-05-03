@@ -1,0 +1,224 @@
+# Test: lamserver — cookie attribute coverage + multipart upload
+# round-trip.
+#
+# Drives a real HTTP server with the net/http test client so the
+# cookie serializer and multipart parser are exercised end-to-end
+# (not just lowered to Go).
+#
+# expect: cookie-read: lam=on
+# expect: cookie-set-has-secure: true
+# expect: cookie-set-has-httponly: true
+# expect: cookie-set-has-samesite-strict: true
+# expect: cookie-set-has-domain: true
+# expect: cookie-set-has-max-age: true
+# expect: cookie-cleared-has-expires: true
+# expect: signed-roundtrip: tamper-evident
+# expect: signed-tampered: 
+# expect: upload-field-name: alice
+# expect: upload-file-filename: hello.txt
+# expect: upload-file-contenttype: application/octet-stream
+# expect: upload-file-size: 12
+# expect: upload-file-content: hello-world!
+# expect: upload-multifile-count: 2
+
+from lamserver import Server, Request, Response
+
+go! {
+    import (
+        "bytes"
+        "io"
+        "mime/multipart"
+        "net/http"
+        "strings"
+        "time"
+    )
+}
+
+func echoCookie(req: Request, res: Response) {
+    v: str = req.cookie("lam")
+    res.text("lam=" + v)
+}
+
+func setCookie(req: Request, res: Response) {
+    res.cookie("session", "abc", "/", 3600, "example.com", true, true, "Strict")
+    res.text("ok")
+}
+
+func clearCookieHandler(req: Request, res: Response) {
+    res.clearCookie("session")
+    res.text("ok")
+}
+
+func setSigned(req: Request, res: Response) {
+    res.signedCookie("auth", "user-7", "topsecret")
+    res.text("ok")
+}
+
+func readSigned(req: Request, res: Response) {
+    res.text(req.signedCookie("auth", "topsecret"))
+}
+
+func upload(req: Request, res: Response) {
+    name: str = req.formField("name")
+    f: any = req.formFile("doc")
+    out: dict[str, any] = {"name": name}
+    go! {
+        if fm, ok := f.(map[string]interface{}); ok {
+            out["filename"] = fm["filename"]
+            out["contentType"] = fm["contentType"]
+            out["size"] = fm["size"]
+            if b, ok := fm["content"].([]byte); ok {
+                out["content"] = string(b)
+            }
+        }
+    }
+    res.json(out)
+}
+
+func uploadMany(req: Request, res: Response) {
+    files: list[any] = req.formFiles("docs")
+    n: int = len(files)
+    payload: dict[str, any] = {"count": n}
+    res.json(payload)
+}
+
+func main() {
+    s: Server = Server()
+    s.get("/cookie", echoCookie)
+    s.get("/set", setCookie)
+    s.get("/clear", clearCookieHandler)
+    s.get("/sign", setSigned)
+    s.get("/read-signed", readSigned)
+    s.post("/upload", upload)
+    s.post("/upload-many", uploadMany)
+
+    s.listenBackground(0)
+    go! {
+        // Wait briefly for the listener to bind. listenBackground
+        // populates BoundAddr from inside the server goroutine; we
+        // spin until it's published.
+        for i := 0; i < 50 && s.BoundAddr == ""; i++ {
+            time.Sleep(10 * time.Millisecond)
+        }
+        base := "http://" + s.BoundAddr
+        defer s.Shutdown(5000)
+
+        // ── Echo back a cookie sent by the client.
+        req1, _ := http.NewRequest("GET", base+"/cookie", nil)
+        req1.AddCookie(&http.Cookie{Name: "lam", Value: "on"})
+        resp1, _ := http.DefaultClient.Do(req1)
+        body1, _ := io.ReadAll(resp1.Body)
+        resp1.Body.Close()
+        fmt.Printf("cookie-read: %s\n", string(body1))
+
+        // ── Attribute coverage on a Set-Cookie.
+        resp2, _ := http.Get(base + "/set")
+        resp2.Body.Close()
+        setHdr := resp2.Header.Get("Set-Cookie")
+        fmt.Printf("cookie-set-has-secure: %v\n", strings.Contains(setHdr, "Secure"))
+        fmt.Printf("cookie-set-has-httponly: %v\n", strings.Contains(setHdr, "HttpOnly"))
+        fmt.Printf("cookie-set-has-samesite-strict: %v\n", strings.Contains(setHdr, "SameSite=Strict"))
+        fmt.Printf("cookie-set-has-domain: %v\n", strings.Contains(setHdr, "Domain=example.com"))
+        fmt.Printf("cookie-set-has-max-age: %v\n", strings.Contains(setHdr, "Max-Age=3600"))
+
+        resp3, _ := http.Get(base + "/clear")
+        resp3.Body.Close()
+        clrHdr := resp3.Header.Get("Set-Cookie")
+        fmt.Printf("cookie-cleared-has-expires: %v\n", strings.Contains(clrHdr, "Expires="))
+
+        // ── Signed cookie round-trip + tamper.
+        resp4, _ := http.Get(base + "/sign")
+        resp4.Body.Close()
+        signed := resp4.Header.Get("Set-Cookie")
+        // Pull the cookie value out of ``auth=<value>; Path=...``.
+        eq := strings.Index(signed, "=")
+        semi := strings.Index(signed, ";")
+        goodVal := signed[eq+1 : semi]
+
+        req5, _ := http.NewRequest("GET", base+"/read-signed", nil)
+        req5.AddCookie(&http.Cookie{Name: "auth", Value: goodVal})
+        resp5, _ := http.DefaultClient.Do(req5)
+        body5, _ := io.ReadAll(resp5.Body)
+        resp5.Body.Close()
+        if string(body5) == "user-7" {
+            fmt.Println("signed-roundtrip: tamper-evident")
+        } else {
+            fmt.Printf("signed-roundtrip: FAIL (%q)\n", string(body5))
+        }
+
+        // Mutate the sig by flipping the last char.
+        tampered := goodVal[:len(goodVal)-1] + "X"
+        req6, _ := http.NewRequest("GET", base+"/read-signed", nil)
+        req6.AddCookie(&http.Cookie{Name: "auth", Value: tampered})
+        resp6, _ := http.DefaultClient.Do(req6)
+        body6, _ := io.ReadAll(resp6.Body)
+        resp6.Body.Close()
+        fmt.Printf("signed-tampered: %s\n", string(body6))
+
+        // ── Multipart upload.
+        var buf bytes.Buffer
+        mw := multipart.NewWriter(&buf)
+        mw.WriteField("name", "alice")
+        fw, _ := mw.CreateFormFile("doc", "hello.txt")
+        fw.Write([]byte("hello-world!"))
+        mw.Close()
+
+        req7, _ := http.NewRequest("POST", base+"/upload", &buf)
+        req7.Header.Set("Content-Type", mw.FormDataContentType())
+        resp7, _ := http.DefaultClient.Do(req7)
+        body7, _ := io.ReadAll(resp7.Body)
+        resp7.Body.Close()
+        // Body is JSON — just string-contains assertions are enough.
+        js := string(body7)
+        fmt.Printf("upload-field-name: %s\n", extractJSONField(js, "name"))
+        fmt.Printf("upload-file-filename: %s\n", extractJSONField(js, "filename"))
+        fmt.Printf("upload-file-contenttype: %s\n", extractJSONField(js, "contentType"))
+        fmt.Printf("upload-file-size: %s\n", extractJSONField(js, "size"))
+        fmt.Printf("upload-file-content: %s\n", extractJSONField(js, "content"))
+
+        // Two files under the same field name.
+        var buf2 bytes.Buffer
+        mw2 := multipart.NewWriter(&buf2)
+        for _, n := range []string{"a.txt", "b.txt"} {
+            fw2, _ := mw2.CreateFormFile("docs", n)
+            fw2.Write([]byte(n))
+        }
+        mw2.Close()
+        req8, _ := http.NewRequest("POST", base+"/upload-many", &buf2)
+        req8.Header.Set("Content-Type", mw2.FormDataContentType())
+        resp8, _ := http.DefaultClient.Do(req8)
+        body8, _ := io.ReadAll(resp8.Body)
+        resp8.Body.Close()
+        fmt.Printf("upload-multifile-count: %s\n", extractJSONField(string(body8), "count"))
+    }
+}
+
+go! {
+    // Tiny string-level JSON field extractor good enough for the
+    // single-level shapes our handlers produce. Avoids pulling in a
+    // full decoder for the test wire.
+    func extractJSONField(js, key string) string {
+        needle := "\"" + key + "\":"
+        i := strings.Index(js, needle)
+        if i < 0 {
+            return ""
+        }
+        i += len(needle)
+        for i < len(js) && js[i] == ' ' {
+            i++
+        }
+        if i < len(js) && js[i] == '"' {
+            i++
+            j := i
+            for j < len(js) && js[j] != '"' {
+                j++
+            }
+            return js[i:j]
+        }
+        j := i
+        for j < len(js) && js[j] != ',' && js[j] != '}' {
+            j++
+        }
+        return js[i:j]
+    }
+}

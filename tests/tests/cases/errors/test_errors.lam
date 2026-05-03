@@ -1,0 +1,44 @@
+# Test: Error handling - try/except, try/finally, raise
+# expect: caught: runtime error: integer divide by zero
+# expect: safe: 0
+# expect: finally_ran
+# expect: raised_caught
+# expect: 42
+
+func safe_div(a: int, b: int) -> int {
+    try {
+        return a / b
+    } catch Exception as e {
+        print(f"caught: {e}")
+        return 0
+    }
+}
+
+func with_finally() -> int {
+    result: int = 0
+    try {
+        result = 42
+    } finally {
+        print("finally_ran")
+    }
+    return result
+}
+
+func raise_and_catch() {
+    try {
+        raise ValueError("test error")
+    } catch ValueError as e {
+        print("raised_caught")
+    }
+}
+
+func main() {
+    r: int = safe_div(10, 0)
+    print(f"safe: {r}")
+
+    val: int = with_finally()
+
+    raise_and_catch()
+
+    print(val)
+}

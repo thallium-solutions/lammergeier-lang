@@ -1,0 +1,98 @@
+# Test: Loops - for, while, range variants, break, continue, nested
+# expect: 0
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 4
+# expect: 2
+# expect: 4
+# expect: 6
+# expect: 8
+# expect: 10
+# expect: 10
+# expect: 9
+# expect: 8
+# expect: 7
+# expect: 6
+# expect: 45
+# expect: 0
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 4
+# expect: 1
+# expect: 3
+# expect: 5
+# expect: 7
+# expect: 9
+# expect: done_while
+# expect: 20
+# expect: 10
+
+func main() {
+    # Simple range
+    i: int = 0
+    for i in range(5) {
+        print(i)
+    }
+
+    # Range with start, end
+    for i in range(2, 11, 2) {
+        print(i)
+    }
+
+    # Range with start, end, step
+    for i in range(10, 5, -1) {
+        print(i)
+    }
+
+    # Sum with accumulator
+    total: int = 0
+    for i in range(10) {
+        total = total + i
+    }
+    print(total)
+
+    # Break
+    for i in range(10) {
+        if i == 5 {
+            break
+        }
+        print(i)
+    }
+
+    # Continue (skip evens)
+    for i in range(10) {
+        if i % 2 == 0 {
+            continue
+        }
+        print(i)
+    }
+
+    # While loop
+    count: int = 5
+    while count > 0 {
+        count = count - 1
+    }
+    print("done_while")
+
+    # Nested loops sum
+    total = 0
+    j: int = 0
+    for i in range(5) {
+        for j in range(i + 1) {
+            total = total + j
+        }
+    }
+    print(total)
+
+    # While with break
+    n: int = 0
+    while True {
+        n = n + 1
+        if n == 10 {
+            break
+        }
+    }
+    print(n)
+}

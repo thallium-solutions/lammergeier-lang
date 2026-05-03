@@ -1,0 +1,65 @@
+# Test: function-typed variables (function "pointers"). A variable
+# typed ``func(T, U) -> V`` can hold any function with that signature
+# and be invoked through it.
+# expect: 5
+# expect: 6
+# expect: 20
+# expect: 12
+# expect: 20
+# expect: [log] hi
+# expect: void_ok
+# expect: func_type_ok
+
+func add(a: int, b: int) -> int {
+    return a + b
+}
+
+func mul(a: int, b: int) -> int {
+    return a * b
+}
+
+func apply(op: func(int, int) -> int, x: int, y: int) -> int {
+    return op(x, y)
+}
+
+func _log(msg: str) -> None {
+    print(f"[log] {msg}")
+}
+
+func make_logger() -> func(str) -> None {
+    return _log
+}
+
+func noop() {
+    pass
+}
+
+func main() {
+    # 1) Direct assignment.
+    f: func(int, int) -> int = add
+    print(f(2, 3))
+
+    # 2) Reassignable through a non-const binding.
+    f = mul
+    print(f(2, 3))
+
+    # 3) Pass as argument.
+    print(apply(mul, 4, 5))
+
+    # 4) Hold in a list.
+    ops: list[func(int, int) -> int] = [add, mul]
+    for op in ops {
+        print(op(10, 2))
+    }
+
+    # 5) Returned from a function.
+    log = make_logger()
+    log("hi")
+
+    # 6) Void function type.
+    void_fn: func() = noop
+    void_fn()
+    print("void_ok")
+
+    print("func_type_ok")
+}

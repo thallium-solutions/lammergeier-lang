@@ -1,0 +1,33 @@
+# Test: lamstack.Stack data structure
+# expect: empty: true
+# expect: size: 3
+# expect: peek: 30
+# expect: pop: 30
+# expect: pop: 20
+# expect: size: 1
+# expect: empty: false
+# expect: tolist_size: 1
+# expect: cleared: true
+
+from lamstack import Stack
+
+func main() {
+    s: Stack = Stack()
+    print(f"empty: {s.isEmpty()}")
+
+    s.push(10)
+    s.push(20)
+    s.push(30)
+    print(f"size: {s.size()}")
+    print(f"peek: {s.peek()}")
+    print(f"pop: {s.pop()}")
+    print(f"pop: {s.pop()}")
+    print(f"size: {s.size()}")
+    print(f"empty: {s.isEmpty()}")
+
+    items: list[any] = s.toList()
+    print(f"tolist_size: {len(items)}")
+
+    s.clear()
+    print(f"cleared: {s.isEmpty()}")
+}

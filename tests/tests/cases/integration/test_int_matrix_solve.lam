@@ -1,0 +1,63 @@
+# Integration test: linear algebra kitchen sink.
+#
+# Builds a 4x4 system, solves Ax = b via gonum's LU, multiplies the
+# solution back through the original matrix and verifies the residual
+# is essentially zero. Also exercises determinant, trace, and the
+# inverse — round-tripping A * A^-1 and asserting it's the identity.
+#
+# This stresses the lamarray ↔ gonum bridge end-to-end: dense
+# matrix construction, BLAS matmul, LAPACK-style solves, and elementwise
+# comparisons. If this passes, the numerical core is fully wired.
+#
+# expect: det_ok=true
+# expect: trace=10
+# expect: solve_residual_small=true
+# expect: A_times_inv_is_identity=true
+# expect: matmul_associative=true
+# expect: matrix_solve_ok
+
+from lamarray import Array, Matrix
+from lamtest import Test
+
+func main() {
+    # 4x4 well-conditioned matrix (ordered along the main diagonal so
+    # det is easy to verify by hand: 1*2*3*4 = 24).
+    aData: list[float] = [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 2.0, 0.0, 0.0,
+        0.0, 0.0, 3.0, 0.0,
+        0.0, 0.0, 0.0, 4.0,
+    ]
+    A: Matrix = Matrix.fromList(4, 4, aData)
+    detVal: float = A.det()
+    detOk: bool = detVal > 23.99 and detVal < 24.01
+    print(f"det_ok={detOk}")
+    print(f"trace={A.trace()}")
+
+    # Linear solve: x_i = b_i / a_ii since A is diagonal
+    bData: list[float] = [1.0, 4.0, 9.0, 16.0]
+    b: Array = Array.fromList(bData)
+    x: Array = A.solve(b)               # should be [1, 2, 3, 4]
+
+    # Re-multiply: A * x should reproduce b.
+    rebuilt: Array = A.mulVec(x)
+    diff: Array = rebuilt.sub(b)
+    residual: float = diff.norm(2.0)    # any non-trivial residual flags a bug
+    smallEnough: bool = residual < 0.000001
+    print(f"solve_residual_small={smallEnough}")
+
+    # A * A^-1 ≈ I via the Frobenius-norm tolerance check.
+    inv: Matrix = A.inverse()
+    AAinv: Matrix = A.matmul(inv)
+    I: Matrix = Matrix.eye(4)
+    print(f"A_times_inv_is_identity={AAinv.allClose(I, 0.0001)}")
+
+    # (A * A) * A == A * (A * A) — matmul is associative.
+    AA: Matrix = A.matmul(A)
+    left: Matrix = AA.matmul(A)
+    rightInner: Matrix = A.matmul(A)
+    right: Matrix = A.matmul(rightInner)
+    print(f"matmul_associative={left.allClose(right, 0.0001)}")
+
+    print("matrix_solve_ok")
+}

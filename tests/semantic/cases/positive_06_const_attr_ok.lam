@@ -1,0 +1,19 @@
+# expect-pass
+# A ``const`` binding protects only the *name*; mutating an
+# attribute or element of the bound object is allowed (matches Go's
+# ``var`` of a pointer or slice).
+
+class Box {
+    func __init__(self) {
+        self.x = 0
+    }
+}
+
+func main() {
+    const b = Box()
+    b.x = 5
+
+    const arr: list[int] = [1, 2, 3]
+    arr[0] = 99
+    print(b.x, arr[0])
+}

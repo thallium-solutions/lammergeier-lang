@@ -1,0 +1,22 @@
+# expect: positive
+# expect: zero
+# expect: counted to 3
+# expect: else_branch
+
+func main() {
+    x: int = 5
+    if x > 0 print("positive")
+
+    y: int = 0
+    if y > 0 print("nonzero")
+    else print("zero")
+
+    c: int = 0
+    for i in range(3) c = c + 1
+    print(f"counted to {c}")
+
+    z: int = 10
+    if z < 0 print("negative")
+    elif z == 0 print("zero")
+    else print("else_branch")
+}

@@ -1,0 +1,99 @@
+{
+  "name": "lammergeier-lang",
+  "displayName": "Lammergeier Lang",
+  "description": "Syntax highlighting and LSP client for Lammergeier (.lam) — a typed Python-like language that compiles to Go.",
+  "version": "0.3.0",
+  "publisher": "lammergeier",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "lammergeier",
+    "lam",
+    "go",
+    "python",
+    "transpiler",
+    "lsp"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:lammergeier"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "lammergeier",
+        "aliases": ["Lammergeier", "lammergeier", "lam"],
+        "extensions": [".lam"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icon.png",
+          "dark": "./icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lammergeier",
+        "scopeName": "source.lammergeier",
+        "path": "./syntaxes/lammergeier.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Lammergeier",
+      "properties": {
+        "lammergeier.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Lammergeier language server (diagnostics, hover, completion, goto-definition, document symbols)."
+        },
+        "lammergeier.lsp.path": {
+          "type": "string",
+          "default": "lammergeier-lsp",
+          "description": "Path to the lammergeier-lsp launcher. Use an absolute path if it is not on your PATH."
+        },
+        "lammergeier.lsp.args": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "string" },
+          "description": "Extra command-line arguments forwarded to lammergeier-lsp."
+        },
+        "lammergeier.lsp.logFile": {
+          "type": "string",
+          "default": "",
+          "description": "If set, the LSP server writes a verbose trace to this file (LAMMERGEIER_LSP_LOG)."
+        },
+        "lammergeier.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Traces JSON-RPC traffic between VS Code and the Lammergeier language server."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "lammergeier.restartServer",
+        "title": "Lammergeier: Restart Language Server"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.82.0",
+    "typescript": "^5.4.5"
+  }
+}

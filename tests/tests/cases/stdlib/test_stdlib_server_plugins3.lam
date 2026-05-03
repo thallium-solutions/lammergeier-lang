@@ -1,0 +1,108 @@
+# Test: lamserver_plugins (serverTiming, idempotency).
+#
+# expect: timing-has-total: true
+# expect: idem-first-status: 200
+# expect: idem-first-replay: none
+# expect: idem-second-status: 200
+# expect: idem-second-replay: 1
+# expect: idem-second-body: created-1
+# expect: idem-no-key-no-replay: none
+
+from lamserver import Server, Request, Response
+from lamserver_plugins import serverTiming, idempotency
+
+go! {
+    import (
+        "fmt"
+        "strings"
+        "sync/atomic"
+    )
+}
+
+go! {
+    var idemCounter int64
+}
+
+func slowHandler(req: Request, res: Response) {
+    res.text("ok")
+}
+
+func createHandler(req: Request, res: Response) {
+    n: int = 0
+    go! {
+        n = int(atomic.AddInt64(&idemCounter, 1))
+    }
+    res.code(200).text(f"created-{n}")
+}
+
+func main() {
+    # ── serverTiming
+    srv: Server = Server()
+    serverTiming(srv)
+    srv.get("/slow", slowHandler)
+
+    o: dict[str, any] = srv.inject("GET", "/slow")
+    h: any = o["headers"]
+    timing: str = ""
+    go! {
+        if hh, ok := h.(map[string]string); ok {
+            timing = hh["Server-Timing"]
+        }
+    }
+    hasTotal: bool = false
+    go! {
+        hasTotal = strings.Contains(timing, "total;dur=")
+    }
+    print(f"timing-has-total: {hasTotal}")
+
+    # ── idempotency
+    srv2: Server = Server()
+    idempotency(srv2, "Idempotency-Key", 60)
+    srv2.post("/charge", createHandler)
+
+    headers: dict[str, str] = {}
+    headers["Idempotency-Key"] = "abc123"
+    headers["Content-Type"] = "application/json"
+
+    r1: dict[str, any] = srv2.inject("POST", "/charge", "{}", headers)
+    r1s: any = r1["status"]
+    r1h: any = r1["headers"]
+    r1Replay: str = ""
+    go! {
+        if hh, ok := r1h.(map[string]string); ok {
+            r1Replay = hh["X-Idempotency-Replay"]
+        }
+    }
+    print(f"idem-first-status: {r1s}")
+    if r1Replay == "" { r1Replay = "none" }
+    print(f"idem-first-replay: {r1Replay}")
+
+    # Replay — same key, same body comes back, with replay header.
+    r2: dict[str, any] = srv2.inject("POST", "/charge", "{}", headers)
+    r2s: any = r2["status"]
+    r2b: any = r2["body"]
+    r2h: any = r2["headers"]
+    r2Replay: str = ""
+    go! {
+        if hh, ok := r2h.(map[string]string); ok {
+            r2Replay = hh["X-Idempotency-Replay"]
+        }
+    }
+    print(f"idem-second-status: {r2s}")
+    print(f"idem-second-replay: {r2Replay}")
+    print(f"idem-second-body: {r2b}")
+
+    # No idempotency header → fresh invocation each time, no replay header.
+    plain: dict[str, str] = {}
+    plain["Content-Type"] = "application/json"
+    r3: dict[str, any] = srv2.inject("POST", "/charge", "{}", plain)
+    r3h: any = r3["headers"]
+    r3Replay: str = ""
+    go! {
+        if hh, ok := r3h.(map[string]string); ok {
+            r3Replay = hh["X-Idempotency-Replay"]
+        }
+    }
+    if r3Replay == "" { r3Replay = "none" }
+    print(f"idem-no-key-no-replay: {r3Replay}")
+}

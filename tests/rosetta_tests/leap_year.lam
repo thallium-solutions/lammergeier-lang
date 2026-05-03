@@ -1,0 +1,30 @@
+# Rosetta Code: Leap year
+# https://rosettacode.org/wiki/Leap_year
+# expect: true
+# expect: false
+# expect: false
+# expect: true
+# expect: true
+# expect: false
+
+func is_leap_year(year: int) -> bool {
+    if year % 400 == 0 {
+        return true
+    }
+    if year % 100 == 0 {
+        return false
+    }
+    if year % 4 == 0 {
+        return true
+    }
+    return false
+}
+
+func main() {
+    print(is_leap_year(2000))
+    print(is_leap_year(1900))
+    print(is_leap_year(2001))
+    print(is_leap_year(2024))
+    print(is_leap_year(2400))
+    print(is_leap_year(2100))
+}

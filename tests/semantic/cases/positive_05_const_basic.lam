@@ -1,0 +1,10 @@
+# expect-pass
+
+const PI: float = 3.14
+const COUNT = 5
+
+func main() {
+    const greeting = "hi"
+    const limit: int = COUNT * 2
+    print(PI, COUNT, greeting, limit)
+}

@@ -1,0 +1,51 @@
+class Product {
+    func init(self, sku: str, name: str, priceCents: int, taxable: bool = true) {
+        self.sku: str = sku
+        self.name: str = name
+        self.priceCents: int = priceCents
+        self.taxable: bool = taxable
+    }
+}
+
+class CartLine {
+    func init(self, product: Product, quantity: int) {
+        self.product: Product = product
+        self.quantity: int = quantity
+    }
+
+    func subtotal(self) -> int {
+        return self.product.priceCents * self.quantity
+    }
+}
+
+class Cart {
+    func init(self) {
+        self.lines: list[CartLine] = []
+    }
+
+    func add(self, product: Product, quantity: int) {
+        self.lines.append(CartLine(product, quantity))
+    }
+
+    func subtotal(self) -> int {
+        total: int = 0
+        for line in self.lines {
+            total += line.subtotal()
+        }
+        return total
+    }
+
+    func taxableSubtotal(self) -> int {
+        total: int = 0
+        for line in self.lines {
+            if line.product.taxable {
+                total += line.subtotal()
+            }
+        }
+        return total
+    }
+}
+
+func main() {
+    pass
+}

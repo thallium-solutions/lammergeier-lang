@@ -1,0 +1,18 @@
+# Test: tpyhash standard library
+# expect: sha256_ok
+# expect: md5_ok
+# expect: hash_ok
+
+from lamhash import Hash
+
+func main() {
+    h: str = Hash.sha256("hello")
+    if len(h) == 64 {
+        print("sha256_ok")
+    }
+    m: str = Hash.md5("hello")
+    if len(m) == 32 {
+        print("md5_ok")
+    }
+    print("hash_ok")
+}

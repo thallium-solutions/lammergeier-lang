@@ -1,0 +1,48 @@
+# Test: lamratelimit — token bucket.
+#
+# Scenarios:
+#   * A fresh bucket of capacity=5 allows 5 immediate tryTakes.
+#   * The 6th tryTake fails (bucket empty).
+#   * After sleeping long enough for a refill, tryTake succeeds again.
+#   * take() blocks until a token is available.
+#
+# expect: initial-available: 5
+# expect: burst-5: true
+# expect: sixth-fails: false
+# expect: after-refill: true
+# expect: take-waited-ms>=80: true
+
+from lamratelimit import TokenBucket
+from lamtime import Time
+
+func main() {
+    bucket: TokenBucket = TokenBucket(5, 50)   # 5 tokens, refills at 50/s
+    print(f"initial-available: {bucket.available()}")
+
+    # Drain the bucket — 5 takes should all succeed immediately.
+    burstOk: bool = true
+    for i in range(5) {
+        if not bucket.tryTake(1) { burstOk = false }
+    }
+    print(f"burst-5: {burstOk}")
+
+    # The 6th take fails — bucket is empty.
+    sixth: bool = bucket.tryTake(1)
+    print(f"sixth-fails: {sixth}")
+
+    # Wait 100ms — at 50 tokens/sec that's ~5 tokens back.
+    Time.sleepMs(100)
+    afterRefill: bool = bucket.tryTake(1)
+    print(f"after-refill: {afterRefill}")
+
+    # Drain again, then measure how long a blocking take() takes.
+    # After a full drain the bucket should need roughly 1/50s == 20ms
+    # to refill a single token, but the poll loop caps sleep at 50ms
+    # so in practice the observed wait is one sleep interval.
+    for i in range(5) { bucket.tryTake(1) }
+    start: int = Time.nowUnixMilli()
+    bucket.take(4)   # needs 4 tokens, must wait for refill
+    elapsed: int = Time.elapsedSince(start)
+    waited: bool = elapsed >= 80
+    print(f"take-waited-ms>=80: {waited}")
+}

@@ -1,0 +1,86 @@
+# Test: Miscellaneous edge cases - empty functions, single-line, boundary values
+# expect: 0
+# expect: -1
+# expect: 1
+# expect: 2147483647
+# expect: -2147483647
+# expect: hello
+# expect: true
+# expect: false
+# expect: 0
+# expect: 1
+# expect: -1
+# expect: 0
+# expect: 0
+# expect: 99
+# expect: 1
+# expect: 0
+# expect: 0
+# expect: 1
+# expect: false
+# expect: true
+# expect: misc_ok
+
+func identity_int(x: int) -> int {
+    return x
+}
+
+func always_zero() -> int {
+    return 0
+}
+
+func toggle(b: bool) -> bool {
+    if b {
+        return False
+    }
+    return True
+}
+
+func sign(x: int) -> int {
+    if x > 0 {
+        return 1
+    } elif x < 0 {
+        return -1
+    }
+    return 0
+}
+
+func main() {
+    print(identity_int(0))
+    print(identity_int(-1))
+    print(identity_int(1))
+
+    # Large int
+    print(2147483647)
+    print(-2147483647)
+
+    # String identity
+    s: str = "hello"
+    print(s)
+
+    # Toggle
+    print(toggle(False))
+    print(toggle(True))
+
+    # Always zero
+    print(always_zero())
+
+    # Sign
+    print(sign(42))
+    print(sign(-7))
+    print(sign(0))
+
+    # Zero patterns
+    print(0 * 999)
+    print(99 + 0)
+    print(1 * 1)
+    print(0 + 0)
+    print(0 * 0)
+    print(1 * 1 * 1)
+
+    # Boolean edge
+    print(True and False and True)
+    print(True or False or True)
+
+    print("misc_ok")
+}

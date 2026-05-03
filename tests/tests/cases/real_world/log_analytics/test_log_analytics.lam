@@ -1,0 +1,70 @@
+# Real-world mini project: parse logs, aggregate latency, and detect incidents.
+# expect: event_count=6
+# expect: api_errors=2
+# expect: billing_slow=1
+# expect: max_latency=940
+# expect: avg_latency=326
+# expect: levels=ERROR,INFO,WARN
+# expect: incident=true
+
+from parser import LogEvent, parseEvents
+from lamstats import Stats
+from lamsort import Sort
+from lamstrings import Strings
+
+func hasLevel(levels: list[str], needle: str) -> bool {
+    for level in levels {
+        if level == needle {
+            return true
+        }
+    }
+    return false
+}
+
+func countServiceLevel(events: list[LogEvent], service: str, level: str) -> int {
+    total: int = 0
+    for ev in events {
+        if ev.service == service and ev.level == level {
+            total += 1
+        }
+    }
+    return total
+}
+
+func main() {
+    raw: str = """2026-04-01 INFO service=api code=200 ms=120
+2026-04-01 ERROR service=api code=500 ms=940
+2026-04-01 WARN service=billing code=429 ms=640
+2026-04-01 INFO service=api code=200 ms=110
+2026-04-01 ERROR service=api code=502 ms=80
+2026-04-01 INFO service=billing code=200 ms=70"""
+
+    events: list[LogEvent] = parseEvents(raw)
+    latencies: list[float] = []
+    levels: list[str] = []
+    billingSlow: int = 0
+    for ev in events {
+        latencies.append(float(ev.ms))
+        if not hasLevel(levels, ev.level) {
+            levels.append(ev.level)
+        }
+        if ev.service == "billing" and ev.ms > 500 {
+            billingSlow += 1
+        }
+    }
+
+    levelNames: list[str] = Sort.strings(levels)
+
+    avg: int = int(Stats.mean(latencies))
+    maxMs: int = int(Stats.maxVal(latencies))
+    apiErrors: int = countServiceLevel(events, "api", "ERROR")
+    incident: bool = apiErrors >= 2 or maxMs > 900
+
+    print(f"event_count={len(events)}")
+    print(f"api_errors={apiErrors}")
+    print(f"billing_slow={billingSlow}")
+    print(f"max_latency={maxMs}")
+    print(f"avg_latency={avg}")
+    print(f"levels={Strings.join(levelNames, ',')}")
+    print(f"incident={incident}")
+}

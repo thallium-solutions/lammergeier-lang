@@ -1,0 +1,44 @@
+# Lammergeier standard library: base64 encoding/decoding
+# Import with: from lambase64 import Base64
+
+go! {
+    import "encoding/base64"
+}
+
+class Base64 {
+    static func encode(data: str) -> str {
+        go! {
+            return base64.StdEncoding.EncodeToString([]byte(data))
+        }
+    }
+
+    static func decode(data: str) -> str {
+        go! {
+            b, err := base64.StdEncoding.DecodeString(data)
+            if err != nil {
+                return ""
+            }
+            return string(b)
+        }
+    }
+
+    static func encodeURL(data: str) -> str {
+        go! {
+            return base64.URLEncoding.EncodeToString([]byte(data))
+        }
+    }
+
+    static func decodeURL(data: str) -> str {
+        go! {
+            b, err := base64.URLEncoding.DecodeString(data)
+            if err != nil {
+                return ""
+            }
+            return string(b)
+        }
+    }
+}
+
+func main() {
+    pass
+}

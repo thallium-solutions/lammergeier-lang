@@ -1,0 +1,113 @@
+# Test: lamretry — retry with exponential backoff.
+#
+# Scenarios:
+#   * Succeed on first attempt → 1 call, Ok.
+#   * Fail twice, succeed on 3rd → 3 calls, Ok.
+#   * Always fail → maxAttempts calls, Err.
+#   * Panicking fn is treated as transient.
+#   * ``until`` polls until predicate returns true.
+#   * ``until`` exhausts attempts if predicate never returns true.
+#
+# expect: first-try-ok: 1
+# expect: first-try-value: 42
+# expect: third-try-ok: 3
+# expect: third-try-value: hi
+# expect: always-fail-calls: 4
+# expect: always-fail-iserr: true
+# expect: panic-converted: true
+# expect: until-success: true
+# expect: until-calls: 3
+# expect: until-exhausted: false
+
+from lamretry import Retry
+from lamerrors import Result
+
+func main() {
+    # ── Scenario 1: succeed on first attempt.
+    calls1: int = 0
+    fnOk: any = None
+    go! {
+        fnOk = func() interface{} {
+            calls1++
+            return 42
+        }
+    }
+    r1: Result = Retry.runFn(fnOk, 5, 1, 10, false)
+    print(f"first-try-ok: {calls1}")
+    v1: any = r1.unwrap()
+    print(f"first-try-value: {v1}")
+
+    # ── Scenario 2: fail twice, succeed on third.
+    calls2: int = 0
+    fn3: any = None
+    go! {
+        fn3 = func() interface{} {
+            calls2++
+            if calls2 < 3 {
+                return Result_Err(NewError("Flaky", "not yet", nil))
+            }
+            return Result_Ok("hi")
+        }
+    }
+    r2: Result = Retry.runFn(fn3, 5, 1, 10, false)
+    print(f"third-try-ok: {calls2}")
+    v2: any = r2.unwrap()
+    print(f"third-try-value: {v2}")
+
+    # ── Scenario 3: always fail — exhaust attempts.
+    calls3: int = 0
+    fnBad: any = None
+    go! {
+        fnBad = func() interface{} {
+            calls3++
+            return Result_Err(NewError("AlwaysFail", "nope", nil))
+        }
+    }
+    r3: Result = Retry.runFn(fnBad, 4, 1, 10, false)
+    print(f"always-fail-calls: {calls3}")
+    err3: bool = not r3.ok()
+    print(f"always-fail-iserr: {err3}")
+
+    # ── Scenario 4: panicking fn is retried, then bubbled up as Err.
+    calls4: int = 0
+    fnPanic: any = None
+    go! {
+        fnPanic = func() interface{} {
+            calls4++
+            if calls4 < 2 {
+                panic("synthetic")
+            }
+            return "recovered"
+        }
+    }
+    r4: Result = Retry.runFn(fnPanic, 3, 1, 10, false)
+    ok4: bool = r4.ok()
+    val4: any = r4.unwrap()
+    convOk: bool = ok4 and val4 == "recovered"
+    print(f"panic-converted: {convOk}")
+
+    # ── Scenario 5: until() polls a predicate.
+    polls: int = 0
+    pred: any = None
+    go! {
+        pred = func() bool {
+            polls++
+            return polls >= 3
+        }
+    }
+    succeeded: bool = Retry.until(pred, 10, 1, 10, false)
+    print(f"until-success: {succeeded}")
+    print(f"until-calls: {polls}")
+
+    # ── Scenario 6: until() exhausts.
+    neverCalls: int = 0
+    neverP: any = None
+    go! {
+        neverP = func() bool {
+            neverCalls++
+            return false
+        }
+    }
+    exhausted: bool = Retry.until(neverP, 4, 1, 10, false)
+    print(f"until-exhausted: {exhausted}")
+}

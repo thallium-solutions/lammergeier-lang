@@ -1,0 +1,79 @@
+# Test: Match/case with various patterns
+# expect: one
+# expect: two
+# expect: three
+# expect: other
+# expect: zero
+# expect: small
+# expect: medium
+# expect: big
+# expect: red
+# expect: green
+# expect: blue
+# expect: unknown
+# expect: match2_ok
+
+func number_word(n: int) -> str {
+    match n {
+        case 1 {
+            return "one"
+        }
+        case 2 {
+            return "two"
+        }
+        case 3 {
+            return "three"
+        }
+        case _ {
+            return "other"
+        }
+    }
+}
+
+func size_category(n: int) -> str {
+    if n == 0 {
+        return "zero"
+    } elif n < 10 {
+        return "small"
+    } elif n < 100 {
+        return "medium"
+    } else {
+        return "big"
+    }
+}
+
+func color_name(code: str) -> str {
+    match code {
+        case "R" {
+            return "red"
+        }
+        case "G" {
+            return "green"
+        }
+        case "B" {
+            return "blue"
+        }
+        case _ {
+            return "unknown"
+        }
+    }
+}
+
+func main() {
+    print(number_word(1))
+    print(number_word(2))
+    print(number_word(3))
+    print(number_word(99))
+
+    print(size_category(0))
+    print(size_category(5))
+    print(size_category(50))
+    print(size_category(500))
+
+    print(color_name("R"))
+    print(color_name("G"))
+    print(color_name("B"))
+    print(color_name("X"))
+
+    print("match2_ok")
+}

@@ -1,0 +1,19 @@
+# Test: Try/catch/finally comprehensive
+# expect: starting
+# expect: caught: runtime error
+# expect: finally block
+
+func risky() {
+    panic("runtime error")
+}
+
+func main() {
+    print("starting")
+    try {
+        risky()
+    } catch e {
+        print(f"caught: {e}")
+    } finally {
+        print("finally block")
+    }
+}

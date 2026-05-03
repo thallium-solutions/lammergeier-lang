@@ -1,0 +1,9 @@
+# expect-error: `continue` outside of a loop
+
+func helper() {
+    continue
+}
+
+func main() {
+    helper()
+}

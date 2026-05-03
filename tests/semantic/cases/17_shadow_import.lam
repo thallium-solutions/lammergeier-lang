@@ -1,0 +1,10 @@
+# expect-error: shadows the imported module
+# expect-error: `Strings`
+
+from lamstrings import Strings
+
+Strings: int = 5
+
+func main() {
+    print(0)
+}

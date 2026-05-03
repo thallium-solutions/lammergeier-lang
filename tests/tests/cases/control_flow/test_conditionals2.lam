@@ -1,0 +1,115 @@
+# Test: Complex conditional logic and nested if/elif/else
+# expect: positive
+# expect: zero
+# expect: negative
+# expect: large
+# expect: medium
+# expect: small
+# expect: tiny
+# expect: A
+# expect: B
+# expect: C
+# expect: D
+# expect: F
+# expect: fizz
+# expect: buzz
+# expect: fizzbuzz
+# expect: 7
+# expect: even_positive
+# expect: odd_negative
+# expect: zero_case
+# expect: cond2_ok
+
+func classify(x: int) -> str {
+    if x > 0 {
+        return "positive"
+    } elif x == 0 {
+        return "zero"
+    } else {
+        return "negative"
+    }
+}
+
+func size_label(x: int) -> str {
+    if x > 100 {
+        return "large"
+    } elif x > 50 {
+        return "medium"
+    } elif x > 10 {
+        return "small"
+    } else {
+        return "tiny"
+    }
+}
+
+func grade(score: int) -> str {
+    if score >= 90 {
+        return "A"
+    } elif score >= 80 {
+        return "B"
+    } elif score >= 70 {
+        return "C"
+    } elif score >= 60 {
+        return "D"
+    } else {
+        return "F"
+    }
+}
+
+func fizzbuzz_label(n: int) -> str {
+    if n % 15 == 0 {
+        return "fizzbuzz"
+    } elif n % 3 == 0 {
+        return "fizz"
+    } elif n % 5 == 0 {
+        return "buzz"
+    } else {
+        return str(n)
+    }
+}
+
+func classify2(x: int) -> str {
+    if x > 0 {
+        if x % 2 == 0 {
+            return "even_positive"
+        } else {
+            return "odd_positive"
+        }
+    } elif x < 0 {
+        if x % 2 == 0 {
+            return "even_negative"
+        } else {
+            return "odd_negative"
+        }
+    } else {
+        return "zero_case"
+    }
+}
+
+func main() {
+    print(classify(5))
+    print(classify(0))
+    print(classify(-3))
+
+    print(size_label(200))
+    print(size_label(75))
+    print(size_label(25))
+    print(size_label(5))
+
+    print(grade(95))
+    print(grade(85))
+    print(grade(75))
+    print(grade(65))
+    print(grade(50))
+
+    print(fizzbuzz_label(9))
+    print(fizzbuzz_label(10))
+    print(fizzbuzz_label(30))
+    print(fizzbuzz_label(7))
+
+    print(classify2(4))
+    print(classify2(-3))
+    print(classify2(0))
+
+    print("cond2_ok")
+}

@@ -1,0 +1,66 @@
+# Test: Multiple return values
+# expect: 7
+# expect: 3
+# expect: 3
+# expect: 2
+# expect: 10
+# expect: 1
+# expect: true
+# expect: result
+# expect: 0
+# expect: false
+
+func swap(a: int, b: int) -> (int, int) {
+    return b, a
+}
+
+func divmod_func(a: int, b: int) -> (int, int) {
+    return a / b, a % b
+}
+
+func min_max(a: int, b: int) -> (int, int) {
+    if a < b {
+        return a, b
+    }
+    return b, a
+}
+
+func try_operation() -> (bool, str) {
+    return True, "result"
+}
+
+func try_fail() -> (int, bool) {
+    return 0, False
+}
+
+func main() {
+    x: int = 0
+    y: int = 0
+    x, y = swap(3, 7)
+    print(x)
+    print(y)
+
+    q: int = 0
+    r: int = 0
+    q, r = divmod_func(17, 5)
+    print(q)
+    print(r)
+
+    lo: int = 0
+    hi: int = 0
+    lo, hi = min_max(10, 1)
+    print(hi)
+    print(lo)
+
+    ok: bool = False
+    msg: str = ""
+    ok, msg = try_operation()
+    print(ok)
+    print(msg)
+
+    code: int = 0
+    flag: bool = True
+    code, flag = try_fail()
+    print(code)
+    print(flag)
+}

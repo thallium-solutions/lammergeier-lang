@@ -1,0 +1,45 @@
+# Test: Public and private static variables in classes
+# expect: same=true
+# expect: name=primary
+# expect: hits=2
+# expect: tag=boot-2
+# expect: retag=boot-9
+
+class AppRegistry {
+    static hits: int = 0
+    private static bootName: str = "boot"
+    private static instance: AppRegistry
+
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    static func get(name: str) -> AppRegistry {
+        AppRegistry.hits += 1
+        if AppRegistry.instance == None {
+            AppRegistry.instance = AppRegistry(name)
+        }
+        return AppRegistry.instance
+    }
+
+    static func tag() -> str {
+        return AppRegistry.bootName + "-" + str(AppRegistry.hits)
+    }
+
+    func getName(self) -> str {
+        return self.name
+    }
+}
+
+func main() {
+    first: AppRegistry = AppRegistry.get("primary")
+    second: AppRegistry = AppRegistry.get("ignored")
+
+    print(f"same={first == second}")
+    print(f"name={second.getName()}")
+    print(f"hits={AppRegistry.hits}")
+    print(f"tag={AppRegistry.tag()}")
+
+    AppRegistry.hits = 9
+    print(f"retag={AppRegistry.tag()}")
+}

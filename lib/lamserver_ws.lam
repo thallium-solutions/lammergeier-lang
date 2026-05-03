@@ -1,0 +1,399 @@
+# Lammergeier standard library: WebSocket helper for ``lamserver``.
+# Import with: from lamserver_ws import WebSocket, wsRoute
+#
+# This module pulls in ``github.com/gorilla/websocket`` (vendored on
+# first build via ``go mod tidy``). It is split out from ``lamserver``
+# so binaries that only need plain HTTP don't have to ship a websocket
+# dependency.
+#
+# Usage::
+#
+#     from lamserver import Server, Request, Response
+#     from lamserver_ws import WebSocket, wsRoute
+#
+#     func chatHandler(ws: WebSocket, req: Request) {
+#         while true {
+#             msg: str = ws.recv()
+#             if msg == "" { break }
+#             ws.send(f"echo: {msg}")
+#         }
+#         ws.close()
+#     }
+#
+#     func main() {
+#         srv: Server = Server()
+#         wsRoute(srv, "/chat", chatHandler)
+#         srv.listen(8080)
+#     }
+#
+# Lifecycle:
+#   * ``wsRoute(srv, path, handler)`` registers a route that performs
+#     the WebSocket upgrade on first request and then calls ``handler``
+#     once for the lifetime of the connection.
+#   * The Lam ``Request`` is forwarded so handlers can inspect query
+#     params, headers, signed cookies, etc.
+#   * The HTTP response is hijacked by the upgrade — Lam ``Response``
+#     hooks (``onResponse`` etc.) do *not* fire on a successful upgrade.
+#
+# Wire-format limitations (kept on purpose):
+#   * Text messages only (``recv`` returns the UTF-8 string and skips
+#     binary frames). Use the ``rawConn`` escape hatch for binary.
+#   * No automatic ping/pong; call ``ping()`` from your own loop.
+
+from lamserver import Server, Request, Response
+
+go! {
+    import (
+        "fmt"
+        "net/http"
+
+        "github.com/gorilla/websocket"
+    )
+
+    // Permissive default upgrader: accept any Origin so dev clients
+    // can connect without further config. In production you should
+    // tighten ``CheckOrigin`` from a hook before calling ``wsRoute``.
+    var lamWsUpgrader = websocket.Upgrader{
+        ReadBufferSize:  1024,
+        WriteBufferSize: 1024,
+        CheckOrigin:     func(r *http.Request) bool { return true },
+    }
+
+    // lamWsBuildUpgrader assembles a fresh ``websocket.Upgrader`` for a
+    // route, honouring the subset of options the Lam side exposes:
+    //   * subprotocols ([]string): server-supported subprotocols. The
+    //     gorilla upgrader picks the first one the client also lists.
+    //   * compression (bool): enables permessage-deflate (RFC 7692).
+    //   * compressionLevel (int): flate level 1-9; 0 means "use library default".
+    //   * originAllowList ([]string): exact-match Origin allow-list. If
+    //     present, requests with a non-listed Origin are rejected with
+    //     403. Empty = accept any (current default behaviour).
+    func lamWsBuildUpgrader(opts map[string]interface{}) *websocket.Upgrader {
+        u := &websocket.Upgrader{
+            ReadBufferSize:  1024,
+            WriteBufferSize: 1024,
+        }
+        if subs, ok := opts["subprotocols"].([]string); ok {
+            u.Subprotocols = subs
+        } else if list, ok := opts["subprotocols"].([]interface{}); ok {
+            for _, v := range list {
+                if s, ok := v.(string); ok {
+                    u.Subprotocols = append(u.Subprotocols, s)
+                }
+            }
+        }
+        if v, ok := opts["compression"].(bool); ok && v {
+            u.EnableCompression = true
+        }
+        // Origin handling: explicit allow-list wins over the permissive default.
+        if list, ok := opts["originAllowList"].([]string); ok && len(list) > 0 {
+            allow := make(map[string]struct{}, len(list))
+            for _, o := range list { allow[o] = struct{}{} }
+            u.CheckOrigin = func(r *http.Request) bool {
+                origin := r.Header.Get("Origin")
+                _, ok := allow[origin]
+                return ok
+            }
+        } else if list, ok := opts["originAllowList"].([]interface{}); ok && len(list) > 0 {
+            allow := make(map[string]struct{}, len(list))
+            for _, v := range list {
+                if s, ok := v.(string); ok { allow[s] = struct{}{} }
+            }
+            u.CheckOrigin = func(r *http.Request) bool {
+                _, ok := allow[r.Header.Get("Origin")]
+                return ok
+            }
+        } else {
+            u.CheckOrigin = func(r *http.Request) bool { return true }
+        }
+        return u
+    }
+}
+
+class WebSocket {
+    #- Wraps a ``*websocket.Conn`` after a successful HTTP upgrade.
+       Methods block; for non-blocking use, drive ``recv()`` in a
+       goroutine started via ``Channel`` / ``WaitGroup`` from
+       ``lamconcurrency``. -#
+
+    func __init__(self) {
+        self.conn: any = None
+        self.closed: bool = false
+        # Negotiated subprotocol (empty if neither side picked one).
+        # Populated by ``wsUpgradeHandler`` after the handshake.
+        self.subprotocol: str = ""
+    }
+
+    func send(self, msg: str) -> bool {
+        #- Send a text message. Returns ``true`` on success, ``false``
+           on a closed / errored connection. -#
+        if self.closed {
+            return false
+        }
+        go! {
+            c, ok := s.Conn.(*websocket.Conn)
+            if !ok {
+                s.Closed = true
+                return false
+            }
+            if err := c.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+                s.Closed = true
+                return false
+            }
+            return true
+        }
+    }
+
+    func sendBytes(self, data: any) -> bool {
+        #- Send a binary message. ``data`` must be a Go ``[]byte``;
+           pass ``go!([]byte("...")) ``or use ``Bytes.fromString``.
+           Returns ``true`` on success. -#
+        if self.closed {
+            return false
+        }
+        go! {
+            c, ok := s.Conn.(*websocket.Conn)
+            if !ok {
+                s.Closed = true
+                return false
+            }
+            buf, ok2 := data.([]byte)
+            if !ok2 {
+                return false
+            }
+            if err := c.WriteMessage(websocket.BinaryMessage, buf); err != nil {
+                s.Closed = true
+                return false
+            }
+            return true
+        }
+    }
+
+    func recv(self) -> str {
+        #- Block until the next text message arrives. Returns ``""`` on
+           a closed connection or on a non-text frame (skip silently);
+           call ``isClosed`` to distinguish. -#
+        if self.closed {
+            return ""
+        }
+        go! {
+            c, ok := s.Conn.(*websocket.Conn)
+            if !ok {
+                s.Closed = true
+                return ""
+            }
+            for {
+                mt, msg, err := c.ReadMessage()
+                if err != nil {
+                    s.Closed = true
+                    return ""
+                }
+                if mt == websocket.TextMessage {
+                    return string(msg)
+                }
+                // Binary / control frames: loop and read another.
+            }
+        }
+    }
+
+    func recvBytes(self) -> any {
+        #- Block until the next binary message arrives. Returns the
+           ``[]byte`` payload (as ``any``) or ``None`` on close. -#
+        if self.closed {
+            return None
+        }
+        go! {
+            c, ok := s.Conn.(*websocket.Conn)
+            if !ok {
+                s.Closed = true
+                return nil
+            }
+            for {
+                mt, msg, err := c.ReadMessage()
+                if err != nil {
+                    s.Closed = true
+                    return nil
+                }
+                if mt == websocket.BinaryMessage {
+                    return msg
+                }
+            }
+        }
+    }
+
+    func ping(self) -> bool {
+        #- Send a control-frame ping. Useful for keep-alive. -#
+        if self.closed {
+            return false
+        }
+        go! {
+            c, ok := s.Conn.(*websocket.Conn)
+            if !ok { return false }
+            if err := c.WriteMessage(websocket.PingMessage, nil); err != nil {
+                s.Closed = true
+                return false
+            }
+            return true
+        }
+    }
+
+    func close(self) {
+        #- Send a Close frame and tear the connection down. Idempotent. -#
+        if self.closed {
+            return
+        }
+        go! {
+            s.Closed = true
+            c, ok := s.Conn.(*websocket.Conn)
+            if !ok { return }
+            // Best-effort close handshake; ignore errors (peer may
+            // already be gone).
+            _ = c.WriteMessage(
+                websocket.CloseMessage,
+                websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+            )
+            _ = c.Close()
+        }
+    }
+
+    func isClosed(self) -> bool {
+        return self.closed
+    }
+
+    func rawConn(self) -> any {
+        #- Escape hatch: returns the underlying ``*websocket.Conn`` for
+           anything the wrapper doesn't expose (subprotocols, deadlines,
+           per-frame compression, etc.). -#
+        return self.conn
+    }
+}
+
+func wsUpgradeHandler(req: Request, res: Response) {
+    #- Internal: the actual route handler ``wsRoute`` registers.
+       Reads the user's WebSocket handler off ``req.ctx[\"__wsHandler\"]``
+       and runs it after upgrading the HTTP connection. -#
+    handler: any = req.ctx["__wsHandler"]
+    upgraderOpts: any = req.ctx["__wsUpgrader"]
+    go! {
+        if handler == nil {
+            res.Status = 500
+            res.Body = "ws: no handler bound"
+            res.Sent = true
+            return
+        }
+        // Recover the ResponseWriter + *http.Request the dispatcher
+        // tucked onto req. They're absent on the inject() path, so we
+        // refuse to upgrade there.
+        w, wok := req.RawWriter.(http.ResponseWriter)
+        r, rok := req.RawHttp.(*http.Request)
+        if !wok || !rok {
+            res.Status = 500
+            res.Body = "ws: not on http path"
+            res.Sent = true
+            return
+        }
+
+        // Pick the upgrader: per-route opts win, otherwise share the
+        // package-global permissive one (back-compat with wsRoute).
+        var upgrader *websocket.Upgrader
+        if optsMap, ok := upgraderOpts.(map[string]interface{}); ok {
+            upgrader = lamWsBuildUpgrader(optsMap)
+        } else {
+            upgrader = &lamWsUpgrader
+        }
+
+        conn, err := upgrader.Upgrade(w, r, nil)
+        if err != nil {
+            // Upgrader already wrote a response; mark hijacked so the
+            // dispatcher leaves the writer alone.
+            res.Hijacked = true
+            res.Sent = true
+            return
+        }
+        res.Hijacked = true
+        res.Sent = true
+
+        ws := NewWebSocket()
+        ws.Conn = conn
+        // Surface the negotiated subprotocol so handlers can branch
+        // on it (e.g. a JSON-RPC subprotocol vs. a free-form one).
+        ws.Subprotocol = conn.Subprotocol()
+        defer func() {
+            if !ws.Closed {
+                ws.Close()
+            }
+        }()
+        // Dispatch to the user-registered handler. Recover so a panic
+        // in user code doesn't kill the whole server.
+        defer func() { _ = recover() }()
+        if fn, ok := handler.(func(*WebSocket, *Request)); ok {
+            fn(ws, req)
+        } else {
+            fmt.Fprintln(os.Stderr, "ws handler has wrong signature; want func(*WebSocket, *Request)")
+        }
+    }
+}
+
+func wsRoute(srv: Server, path: str, handler: any) {
+    #- Register a WebSocket endpoint at ``path``. ``handler`` is
+       ``func(ws: WebSocket, req: Request) -> None`` — when it returns
+       the connection is closed automatically.
+
+       Implemented as a regular GET route + a preHandler that stores
+       the user's handler on ``req.ctx``. The route handler then
+       performs the upgrade and dispatches. This lets all your other
+       hooks (auth, signed cookies, CORS, request log) apply to the
+       upgrade request just like any other endpoint. -#
+    go! {
+        // Per-route preHandler that injects the user's ws handler.
+        bind := func(req *Request, res *Response) {
+            if req.Path == path && strings.EqualFold(req.Method, "GET") {
+                req.Ctx["__wsHandler"] = handler
+            }
+        }
+        srv.OnRequestHooks = append(srv.OnRequestHooks, bind)
+    }
+    srv.get(path, wsUpgradeHandler)
+}
+
+func wsRouteOpts(srv: Server, path: str, handler: any, opts: any) {
+    #- Like ``wsRoute`` but with per-route upgrader configuration.
+       ``opts`` is a ``dict[str, any]`` accepting:
+
+         * ``subprotocols`` (list[str]) — server-supported subprotocols
+           to advertise during the handshake. The negotiated value
+           lands on ``WebSocket.subprotocol``.
+         * ``compression`` (bool) — enable permessage-deflate (RFC 7692)
+           for both directions when the client requests it.
+         * ``originAllowList`` (list[str]) — explicit ``Origin`` header
+           values to accept; reject everything else with ``403``.
+           Use this in production rather than the permissive default.
+
+       Example::
+
+           wsRouteOpts(srv, "/rpc", rpcHandler, {
+               "subprotocols": ["jsonrpc-v2"],
+               "compression":  true,
+               "originAllowList": ["https://app.example.com"],
+           })
+    -#
+    go! {
+        bind := func(req *Request, res *Response) {
+            if req.Path == path && strings.EqualFold(req.Method, "GET") {
+                req.Ctx["__wsHandler"] = handler
+                if optsMap, ok := opts.(map[string]interface{}); ok {
+                    req.Ctx["__wsUpgrader"] = optsMap
+                }
+            }
+        }
+        srv.OnRequestHooks = append(srv.OnRequestHooks, bind)
+    }
+    srv.get(path, wsUpgradeHandler)
+}
+
+go! {
+    import (
+        "os"
+        "strings"
+    )
+}

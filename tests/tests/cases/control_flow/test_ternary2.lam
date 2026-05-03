@@ -1,0 +1,24 @@
+# Test: ternary in function returns and nested
+# expect: adult
+# expect: minor
+# expect: hot
+# expect: 1
+
+func classify(age: int) -> str {
+    return "adult" if age >= 18 else "minor"
+}
+
+func temp_label(t: int) -> str {
+    return "hot" if t > 30 else "cold"
+}
+
+func max_val(a: int, b: int) -> int {
+    return a if a > b else b
+}
+
+func main() {
+    print(classify(25))
+    print(classify(10))
+    print(temp_label(35))
+    print(max_val(1, 0))
+}

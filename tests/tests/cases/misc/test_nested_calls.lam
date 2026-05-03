@@ -1,0 +1,100 @@
+# Test: Nested function calls and chained returns
+# expect: 3
+# expect: 10
+# expect: 120
+# expect: 21
+# expect: 11
+# expect: 7
+# expect: 100
+# expect: 24
+# expect: 0
+# expect: 15
+# expect: chain_ok
+
+func add(a: int, b: int) -> int {
+    return a + b
+}
+
+func mul(a: int, b: int) -> int {
+    return a * b
+}
+
+func square(x: int) -> int {
+    return x * x
+}
+
+func double(x: int) -> int {
+    return x * 2
+}
+
+func negate(x: int) -> int {
+    return 0 - x
+}
+
+func identity(x: int) -> int {
+    return x
+}
+
+func max_val(a: int, b: int) -> int {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+func min_val(a: int, b: int) -> int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+func clamp(x: int, lo: int, hi: int) -> int {
+    if x < lo {
+        return lo
+    }
+    if x > hi {
+        return hi
+    }
+    return x
+}
+
+func sum_range(n: int) -> int {
+    total: int = 0
+    i: int = 0
+    for i in range(n + 1) {
+        total = total + i
+    }
+    return total
+}
+
+func main() {
+    # Nested calls
+    print(add(1, 2))
+    print(add(mul(2, 3), 4))
+
+    # Deep nesting
+    print(mul(add(3, 7), add(5, 7)))
+
+    # Recursive sum
+    print(sum_range(6))
+
+    # Max/min
+    print(max_val(5, 11))
+    print(min_val(7, 12))
+
+    # Square of 10
+    print(square(10))
+
+    # Chained operations
+    x: int = 3
+    print(double(double(double(x))))
+
+    # Negate
+    print(negate(negate(0)))
+
+    # Clamp
+    print(clamp(20, 0, 15))
+
+    print("chain_ok")
+}

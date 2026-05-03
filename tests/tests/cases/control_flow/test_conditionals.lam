@@ -1,0 +1,137 @@
+# Test: Conditional logic - if/elif/else, ternary, nested
+# expect: positive
+# expect: zero
+# expect: negative
+# expect: teen
+# expect: adult
+# expect: senior
+# expect: B
+# expect: even
+# expect: odd
+# expect: both true
+# expect: at least one
+# expect: neither
+# expect: inner true
+# expect: 5
+
+func classify_age(age: int) -> str {
+    if age < 13 {
+        return "child"
+    } elif age < 20 {
+        return "teen"
+    } elif age < 65 {
+        return "adult"
+    } else {
+        return "senior"
+    }
+}
+
+func grade(score: int) -> str {
+    if score >= 90 {
+        return "A"
+    } elif score >= 80 {
+        return "B"
+    } elif score >= 70 {
+        return "C"
+    } elif score >= 60 {
+        return "D"
+    } else {
+        return "F"
+    }
+}
+
+func main() {
+    # Simple if/elif/else
+    x: int = 10
+    if x > 0 {
+        print("positive")
+    } elif x == 0 {
+        print("zero")
+    } else {
+        print("negative")
+    }
+
+    x = 0
+    if x > 0 {
+        print("positive")
+    } elif x == 0 {
+        print("zero")
+    } else {
+        print("negative")
+    }
+
+    x = -5
+    if x > 0 {
+        print("positive")
+    } elif x == 0 {
+        print("zero")
+    } else {
+        print("negative")
+    }
+
+    # Multi-level elif
+    print(classify_age(15))
+    print(classify_age(30))
+    print(classify_age(70))
+
+    # Grade function
+    print(grade(85))
+
+    # Even/odd
+    n: int = 4
+    if n % 2 == 0 {
+        print("even")
+    } else {
+        print("odd")
+    }
+
+    n = 7
+    if n % 2 == 0 {
+        print("even")
+    } else {
+        print("odd")
+    }
+
+    # Compound boolean
+    a: bool = True
+    b: bool = True
+    if a and b {
+        print("both true")
+    } else {
+        print("not both")
+    }
+
+    a = True
+    b = False
+    if a or b {
+        print("at least one")
+    } else {
+        print("neither")
+    }
+
+    a = False
+    b = False
+    if a or b {
+        print("at least one")
+    } else {
+        print("neither")
+    }
+
+    # Nested if
+    val: int = 42
+    if val > 0 {
+        if val > 10 {
+            print("inner true")
+        } else {
+            print("inner false")
+        }
+    } else {
+        print("outer false")
+    }
+
+    # Not operator
+    flag: bool = False
+    if not flag {
+        print(5)
+    }
+}

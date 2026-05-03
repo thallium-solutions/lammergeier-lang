@@ -1,0 +1,42 @@
+# Rosetta Code: Happy numbers
+# https://rosettacode.org/wiki/Happy_number
+# expect: 1
+# expect: 7
+# expect: 10
+# expect: 13
+# expect: 19
+# expect: 23
+# expect: 28
+# expect: 31
+
+func is_happy(n: int) -> bool {
+    seen: list[int] = []
+    while n != 1 {
+        total: int = 0
+        while n > 0 {
+            d: int = n % 10
+            total += d * d
+            n = n / 10
+        }
+        n = total
+        for s in seen {
+            if s == n {
+                return false
+            }
+        }
+        seen = append(seen, n)
+    }
+    return true
+}
+
+func main() {
+    count: int = 0
+    i: int = 1
+    while count < 8 {
+        if is_happy(i) {
+            print(i)
+            count += 1
+        }
+        i += 1
+    }
+}

@@ -1,0 +1,110 @@
+# Test: lamarray — NumPy-style Array / Matrix backed by gonum.
+#
+# Exercises the main kernels: element-wise arithmetic, reductions,
+# linear-algebra (matmul / inverse / solve / det / trace), and a few
+# structural helpers (slice, reverse, sortAsc).
+#
+# expect: size=5
+# expect: sum=15
+# expect: mean=3
+# expect: min=1
+# expect: max=5
+# expect: argmax=4
+# expect: std_ok=true
+# expect: norm2_ok=true
+# expect: add=[3 5 7 9 11]
+# expect: sub=[-1 -1 -1 -1 -1]
+# expect: mulScalar=[2 4 6 8 10]
+# expect: dot=70
+# expect: slice=[2 3 4]
+# expect: reverse=[5 4 3 2 1]
+# expect: sort=[1 2 3 4 5]
+# expect: mdet=-2
+# expect: mtrace=5
+# expect: matmul_ok=true
+# expect: inverse_ok=true
+# expect: solve_ok=true
+# expect: linspace_ok=true
+# expect: array_tests_ok
+
+from lamarray import Array, Matrix
+from lamtest import Test
+
+func main() {
+    xs: list[float] = [1.0, 2.0, 3.0, 4.0, 5.0]
+    a: Array = Array.fromList(xs)
+
+    # ── basic shape / reductions ─────────────────────────────
+    print(f"size={a.size()}")
+    print(f"sum={a.sum()}")
+    print(f"mean={a.mean()}")
+    print(f"min={a.minVal()}")
+    print(f"max={a.maxVal()}")
+    print(f"argmax={a.argMax()}")
+
+    # std of {1..5} with N=5 denominator = sqrt(10/5) = sqrt(2) ≈ 1.4142
+    stdOk: bool = a.std() > 1.41 and a.std() < 1.42
+    print(f"std_ok={stdOk}")
+
+    # norm2 of {1..5} = sqrt(1+4+9+16+25) = sqrt(55) ≈ 7.416
+    normOk: bool = a.norm(2.0) > 7.41 and a.norm(2.0) < 7.42
+    print(f"norm2_ok={normOk}")
+
+    # ── element-wise arithmetic ──────────────────────────────
+    ys: list[float] = [2.0, 3.0, 4.0, 5.0, 6.0]
+    b: Array = Array.fromList(ys)
+    sumAB: Array = a.add(b)
+    subAB: Array = a.sub(b)
+    scaled: Array = a.mulScalar(2.0)
+    print(f"add={sumAB.toList()}")
+    print(f"sub={subAB.toList()}")
+    print(f"mulScalar={scaled.toList()}")
+    print(f"dot={a.dot(b)}")
+
+    # ── slicing / reshaping ──────────────────────────────────
+    sliced: Array = a.slice(1, 4)
+    reversed: Array = a.reverse()
+    print(f"slice={sliced.toList()}")
+    print(f"reverse={reversed.toList()}")
+
+    # Sort a known list
+    q: list[float] = [5.0, 4.0, 3.0, 2.0, 1.0]
+    qArr: Array = Array.fromList(q)
+    sortedArr: Array = qArr.sortAsc()
+    print(f"sort={sortedArr.toList()}")
+
+    # ── Matrix: basics + linear algebra ──────────────────────
+    # A = [[1, 2], [3, 4]]
+    coeffs: list[float] = [1.0, 2.0, 3.0, 4.0]
+    A: Matrix = Matrix.fromList(2, 2, coeffs)
+    print(f"mdet={A.det()}")
+    print(f"mtrace={A.trace()}")
+
+    # matmul: [[1,2],[3,4]]^2 = [[7,10],[15,22]]
+    A2: Matrix = A.matmul(A)
+    expected: list[float] = [7.0, 10.0, 15.0, 22.0]
+    E: Matrix = Matrix.fromList(2, 2, expected)
+    print(f"matmul_ok={A2.allClose(E, 0.0001)}")
+
+    # A * A^-1 ≈ I
+    inv: Matrix = A.inverse()
+    id: Matrix = A.matmul(inv)
+    I: Matrix = Matrix.eye(2)
+    print(f"inverse_ok={id.allClose(I, 0.0001)}")
+
+    # Linear solve: A x = rhs where rhs = [5, 11]  =>  x = [1, 2]
+    rhsList: list[float] = [5.0, 11.0]
+    rhs: Array = Array.fromList(rhsList)
+    soln: Array = A.solve(rhs)
+    expectedSolnList: list[float] = [1.0, 2.0]
+    expectedSoln: Array = Array.fromList(expectedSolnList)
+    print(f"solve_ok={soln.allClose(expectedSoln, 0.0001)}")
+
+    # Linspace(0, 1, 5) = [0, 0.25, 0.5, 0.75, 1.0]
+    lin: Array = Array.linspace(0.0, 1.0, 5)
+    expectedLinList: list[float] = [0.0, 0.25, 0.5, 0.75, 1.0]
+    expectedLin: Array = Array.fromList(expectedLinList)
+    print(f"linspace_ok={lin.allClose(expectedLin, 0.0001)}")
+
+    print("array_tests_ok")
+}

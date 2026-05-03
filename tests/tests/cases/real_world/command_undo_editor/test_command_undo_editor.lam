@@ -1,0 +1,28 @@
+# Real-world mini project: command pattern with undo/redo history.
+# expect: text=hello brave world
+# expect: after_undo=hello world
+# expect: redo_ok=true
+# expect: after_redo=hello brave world
+# expect: after_replace=hello calm world
+# expect: history=2
+# expect: redo_empty=0
+
+from editor import Editor, EditCommand
+
+func main() {
+    ed: Editor = Editor("hello world")
+    ed.execute(EditCommand("insert", 6, "brave "))
+    print(f"text={ed.doc.text}")
+
+    ed.undo()
+    print(f"after_undo={ed.doc.text}")
+
+    redone: bool = ed.redo()
+    print(f"redo_ok={redone}")
+    print(f"after_redo={ed.doc.text}")
+
+    ed.execute(EditCommand("replace", 6, "calm", 5))
+    print(f"after_replace={ed.doc.text}")
+    print(f"history={len(ed.history)}")
+    print(f"redo_empty={len(ed.redoStack)}")
+}

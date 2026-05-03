@@ -1,0 +1,8 @@
+# Test: list comprehension with string type
+# expect: [HELLO WORLD FOO]
+
+func main() {
+    words: list[str] = ["hello", "world", "foo"]
+    upper: list[str] = [w.upper() for w in words]
+    print(upper)
+}

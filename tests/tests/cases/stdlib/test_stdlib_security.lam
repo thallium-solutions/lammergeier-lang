@@ -1,0 +1,67 @@
+# Test: cryptographic features across Hash and Random
+# expect: PASS 1 sha256 known vector
+# expect: PASS 2 sha1 known vector
+# expect: PASS 3 md5 known vector
+# expect: PASS 4 sha512 non-empty
+# expect: PASS 5 hmacSha256 stable
+# expect: PASS 6 hmacSha256 different key
+# expect: PASS 7 hmacSha1 non-empty
+# expect: PASS 8 constantTimeEquals true
+# expect: PASS 9 constantTimeEquals false
+# expect: PASS 10 verifyHmacSha256 happy path
+# expect: PASS 11 verifyHmacSha256 wrong key
+# expect: PASS 12 secureBytes length
+# expect: PASS 13 secureToken non-empty
+# expect: PASS 14 secureInt in range
+# expect: PASS 15 secureUuid shape
+# expect: 15 passed, 0 failed, 15 total
+
+from lamhash import Hash
+from lamrandom import Random
+from lamtest import Test
+
+func main() {
+    # 1-3: published reference vectors
+    sha256Exp: str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    Test.assertEqual(Hash.sha256("abc"), sha256Exp, "1 sha256 known vector")
+    sha1Exp: str = "a9993e364706816aba3e25717850c26c9cd0d89d"
+    Test.assertEqual(Hash.sha1("abc"), sha1Exp, "2 sha1 known vector")
+    md5Exp: str = "900150983cd24fb0d6963f7d28e17f72"
+    Test.assertEqual(Hash.md5("abc"), md5Exp, "3 md5 known vector")
+    # 4
+    Test.assertLen(Hash.sha512("abc"), 128, "4 sha512 non-empty")
+
+    # 5-7: HMAC stability + key sensitivity
+    tag1: str = Hash.hmacSha256("key", "hello")
+    tag2: str = Hash.hmacSha256("key", "hello")
+    Test.assertEqual(tag1, tag2, "5 hmacSha256 stable")
+    tag3: str = Hash.hmacSha256("other-key", "hello")
+    Test.assertNotEqual(tag1, tag3, "6 hmacSha256 different key")
+    Test.assertLen(Hash.hmacSha1("k", "m"), 40, "7 hmacSha1 non-empty")
+
+    # 8-9: constant-time comparison
+    Test.assertTrue(Hash.constantTimeEquals("secret", "secret"), "8 constantTimeEquals true")
+    Test.assertFalse(Hash.constantTimeEquals("secret", "public"), "9 constantTimeEquals false")
+
+    # 10-11: verifyHmacSha256
+    Test.assertTrue(Hash.verifyHmacSha256("key", "hello", tag1), "10 verifyHmacSha256 happy path")
+    Test.assertFalse(Hash.verifyHmacSha256("wrong-key", "hello", tag1), "11 verifyHmacSha256 wrong key")
+
+    # 12: secureBytes returns hex of right length (each byte = 2 hex chars)
+    bytesHex: str = Random.secureBytes(16)
+    Test.assertLen(bytesHex, 32, "12 secureBytes length")
+
+    # 13: secureToken is a non-empty URL-safe string
+    token: str = Random.secureToken(16)
+    Test.assertTrue(len(token) > 0, "13 secureToken non-empty")
+
+    # 14: secureInt(maxVal) < maxVal
+    n: int = Random.secureInt(100)
+    Test.assertTrue(n >= 0 and n < 100, "14 secureInt in range")
+
+    # 15: secureUuid matches the usual UUID shape (8-4-4-4-12)
+    uuid: str = Random.secureUuid()
+    Test.assertLen(uuid, 36, "15 secureUuid shape")
+
+    Test.summary()
+}

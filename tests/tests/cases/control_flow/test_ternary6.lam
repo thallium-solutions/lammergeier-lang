@@ -1,0 +1,10 @@
+# Test: ternary in print directly
+# expect: big
+# expect: zero
+
+func main() {
+    x: int = 100
+    print("big" if x > 50 else "small")
+    y: int = 0
+    print("zero" if y == 0 else "nonzero")
+}

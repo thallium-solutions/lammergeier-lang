@@ -1,0 +1,76 @@
+# Test: Os standard library
+# expect: PASS 1 cwd non-empty
+# expect: PASS 2 tempDir non-empty
+# expect: PASS 3 tempFile created
+# expect: PASS 4 writeFile/readFile round-trip
+# expect: PASS 5 readLines count
+# expect: PASS 6 writeLines round-trip
+# expect: PASS 7 fileSize
+# expect: PASS 8 isFile / isDir
+# expect: PASS 9 listDir contains file
+# expect: PASS 10 walk finds file
+# expect: PASS 11 copyFile duplicates
+# expect: PASS 12 hostname non-empty
+# expect: 12 passed, 0 failed, 12 total
+
+from lamos import Os
+from lamtest import Test
+from lampath import Path
+
+func main() {
+    cwd: str = Os.getcwd()
+    Test.assertTrue(len(cwd) > 0, "1 cwd non-empty")
+
+    tdir: str = Os.tempDir()
+    Test.assertTrue(len(tdir) > 0, "2 tempDir non-empty")
+
+    # tempFile: create and verify it exists
+    tmp: str = Os.tempFile("lamos_test_", ".txt")
+    Test.assertTrue(Path.exists(tmp), "3 tempFile created")
+
+    # write/read round-trip
+    Os.writeFile(tmp, "hello world")
+    roundTrip: str = Os.readFile(tmp)
+    Test.assertEqual(roundTrip, "hello world", "4 writeFile/readFile round-trip")
+
+    # readLines — file with two lines
+    Os.writeFile(tmp, "a\nb\nc\n")
+    lines: list[str] = Os.readLines(tmp)
+    Test.assertLen(lines, 3, "5 readLines count")
+
+    # writeLines round-trip
+    toWrite: list[str] = ["x", "y", "z"]
+    Os.writeLines(tmp, toWrite)
+    back: list[str] = Os.readLines(tmp)
+    Test.assertEqual(back, toWrite, "6 writeLines round-trip")
+
+    # fileSize
+    Os.writeFile(tmp, "1234567890")
+    Test.assertEqual(Os.fileSize(tmp), 10, "7 fileSize")
+
+    # isFile / isDir
+    Test.assertTrue(Os.isFile(tmp) and not Os.isDir(tmp), "8 isFile / isDir")
+
+    # listDir of the tempdir contains the basename of tmp
+    basename: str = Path.base(tmp)
+    dirEntries: list[str] = Os.listDir(tdir)
+    Test.assertContains(dirEntries, basename, "9 listDir contains file")
+
+    # walk over tempdir finds the file path
+    paths: list[str] = Os.walk(tdir)
+    Test.assertContains(paths, tmp, "10 walk finds file")
+
+    # copyFile
+    dst: str = Os.tempFile("lamos_test_copy_", ".txt")
+    Os.copyFile(tmp, dst)
+    Test.assertEqual(Os.readFile(dst), "1234567890", "11 copyFile duplicates")
+
+    # hostname (on Linux CI this should never be empty)
+    Test.assertTrue(len(Os.hostname()) > 0, "12 hostname non-empty")
+
+    # cleanup
+    Os.remove(tmp)
+    Os.remove(dst)
+
+    Test.summary()
+}

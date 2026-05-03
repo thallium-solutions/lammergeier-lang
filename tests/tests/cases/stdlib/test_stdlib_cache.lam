@@ -1,0 +1,59 @@
+# Test: lamcache — LruCache (fixed capacity, LRU eviction) and
+# TtlCache (per-entry expiry).
+#
+# expect: lru_a=<nil>
+# expect: lru_b=2
+# expect: lru_c=3
+# expect: lru_size=2
+# expect: lru_contains_b=true
+# expect: lru_contains_a=false
+# expect: lru_remove_b=true
+# expect: lru_remove_again=false
+# expect: ttl_get1=v
+# expect: ttl_get2=<nil>
+# expect: ttl_forever=eternal
+# expect: cache_tests_ok
+
+from lamcache import LruCache, TtlCache
+from lamtime import Time
+
+func main() {
+    # ─── LRU eviction ────────────────────────────────────────
+    c: LruCache = LruCache(2)
+    c.put("a", 1)
+    c.put("b", 2)
+    c.put("c", 3)            # capacity 2 — "a" should be evicted
+    aVal: any = c.get("a")
+    bVal: any = c.get("b")
+    cVal: any = c.get("c")
+    print(f"lru_a={aVal}")
+    print(f"lru_b={bVal}")
+    print(f"lru_c={cVal}")
+    print(f"lru_size={c.size()}")
+    hasB: bool = c.contains("b")
+    hasA: bool = c.contains("a")
+    print(f"lru_contains_b={hasB}")
+    print(f"lru_contains_a={hasA}")
+
+    removed: bool = c.remove("b")
+    removedAgain: bool = c.remove("b")
+    print(f"lru_remove_b={removed}")
+    print(f"lru_remove_again={removedAgain}")
+
+    # ─── TTL expiry ──────────────────────────────────────────
+    t: TtlCache = TtlCache()
+    t.put("k", "v", 1)         # expires after 1s
+    v1: any = t.get("k")
+    print(f"ttl_get1={v1}")
+    Time.sleepMs(1100)
+    v2: any = t.get("k")
+    print(f"ttl_get2={v2}")
+
+    # putForever survives even past long sleeps
+    t.putForever("immortal", "eternal")
+    Time.sleepMs(50)
+    v3: any = t.get("immortal")
+    print(f"ttl_forever={v3}")
+
+    print("cache_tests_ok")
+}

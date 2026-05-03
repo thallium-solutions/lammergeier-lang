@@ -1,0 +1,87 @@
+# Exercises:
+#   - generic functions with inferred type arguments
+#   - generic functions with multiple type parameters
+#   - generic functions with built-in constraints (``ordered``,
+#     ``comparable``)
+#   - generic classes with state (stack of T)
+#   - generic classes with static methods that also use the class's T
+
+# expect: identity_int_42
+# expect: identity_str_hi
+# expect: pair_first_1
+# expect: ord_int_7
+# expect: ord_float_2.5
+# expect: ord_str_banana
+# expect: stack_size_3
+# expect: stack_pop_3
+# expect: stack_peek_2
+# expect: box_wrap_99
+
+func identity[T](x: T) -> T {
+    return x
+}
+
+func pair_first[T, U](a: T, b: U) -> T {
+    return a
+}
+
+func max_of[T: ordered](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+class Stack[T] {
+    items: list[T] = []
+
+    func push(v: T) {
+        self.items.append(v)
+    }
+
+    func pop() -> T {
+        last = self.items[len(self.items) - 1]
+        self.items = self.items[:len(self.items) - 1]
+        return last
+    }
+
+    func peek() -> T {
+        return self.items[len(self.items) - 1]
+    }
+
+    func size() -> int {
+        return len(self.items)
+    }
+}
+
+class Box[T] {
+    static func wrap(x: T) -> T {
+        return x
+    }
+}
+
+func main() {
+    i_int: int = identity(42)
+    i_str: str = identity("hi")
+    pf_int: int = pair_first(1, "x")
+    o_int: int = max_of(3, 7)
+    o_float: float = max_of(2.5, 1.5)
+    o_str: str = max_of("banana", "apple")
+    print(f"identity_int_{i_int}")
+    print(f"identity_str_{i_str}")
+    print(f"pair_first_{pf_int}")
+    print(f"ord_int_{o_int}")
+    print(f"ord_float_{o_float}")
+    print(f"ord_str_{o_str}")
+
+    s: Stack[int] = Stack[int]()
+    s.push(1)
+    s.push(2)
+    s.push(3)
+    print(f"stack_size_{s.size()}")
+    print(f"stack_pop_{s.pop()}")
+    print(f"stack_peek_{s.peek()}")
+
+    wrapped: int = Box.wrap(99)
+    print(f"box_wrap_{wrapped}")
+}

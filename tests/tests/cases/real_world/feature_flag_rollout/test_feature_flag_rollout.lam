@@ -1,0 +1,30 @@
+# Real-world mini project: deterministic feature-flag rollout.
+# expect: enterprise_checkout=true
+# expect: reader_checkout=false
+# expect: blocked_country=false
+# expect: enterprise_billing=true
+# expect: reader_billing=false
+# expect: disabled_export=false
+# expect: missing_flag=false
+# expect: checkout_bucket=9
+
+from flags import UserContext, FeatureFlag, FlagRegistry, buildRegistry
+
+func main() {
+    reg: FlagRegistry = buildRegistry()
+
+    enterprise: UserContext = UserContext(7, "ada@example.test", "enterprise", "US")
+    reader: UserContext = UserContext(12, "reader@example.test", "free", "US")
+    blocked: UserContext = UserContext(5, "blocked@example.test", "enterprise", "IR")
+
+    checkout: FeatureFlag = reg.getFlag("checkout_v2")
+
+    print("enterprise_checkout=" + str(reg.enabled("checkout_v2", enterprise)))
+    print("reader_checkout=" + str(reg.enabled("checkout_v2", reader)))
+    print("blocked_country=" + str(reg.enabled("checkout_v2", blocked)))
+    print("enterprise_billing=" + str(reg.enabled("billing_portal", enterprise)))
+    print("reader_billing=" + str(reg.enabled("billing_portal", reader)))
+    print("disabled_export=" + str(reg.enabled("legacy_export", enterprise)))
+    print("missing_flag=" + str(reg.enabled("no_such_flag", enterprise)))
+    print("checkout_bucket=" + str(checkout.bucketFor(enterprise)))
+}

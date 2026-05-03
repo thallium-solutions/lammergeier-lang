@@ -1,0 +1,82 @@
+# Rosetta Code: Roman numerals/Encode
+# https://rosettacode.org/wiki/Roman_numerals/Encode
+# expect: I
+# expect: IV
+# expect: IX
+# expect: XIV
+# expect: XLII
+# expect: XCIX
+# expect: CDXLVII
+# expect: CMXCIX
+# expect: MCMXC
+# expect: MMXXVI
+
+func to_roman(n: int) -> str {
+    result: str = ""
+    while n >= 1000 {
+        result = result + "M"
+        n -= 1000
+    }
+    if n >= 900 {
+        result = result + "CM"
+        n -= 900
+    }
+    if n >= 500 {
+        result = result + "D"
+        n -= 500
+    }
+    if n >= 400 {
+        result = result + "CD"
+        n -= 400
+    }
+    while n >= 100 {
+        result = result + "C"
+        n -= 100
+    }
+    if n >= 90 {
+        result = result + "XC"
+        n -= 90
+    }
+    if n >= 50 {
+        result = result + "L"
+        n -= 50
+    }
+    if n >= 40 {
+        result = result + "XL"
+        n -= 40
+    }
+    while n >= 10 {
+        result = result + "X"
+        n -= 10
+    }
+    if n >= 9 {
+        result = result + "IX"
+        n -= 9
+    }
+    if n >= 5 {
+        result = result + "V"
+        n -= 5
+    }
+    if n >= 4 {
+        result = result + "IV"
+        n -= 4
+    }
+    while n >= 1 {
+        result = result + "I"
+        n -= 1
+    }
+    return result
+}
+
+func main() {
+    print(to_roman(1))
+    print(to_roman(4))
+    print(to_roman(9))
+    print(to_roman(14))
+    print(to_roman(42))
+    print(to_roman(99))
+    print(to_roman(447))
+    print(to_roman(999))
+    print(to_roman(1990))
+    print(to_roman(2026))
+}

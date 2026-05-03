@@ -1,0 +1,25 @@
+# Rosetta Code: Palindrome detection
+# https://rosettacode.org/wiki/Palindrome_detection
+# expect: true
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+
+func is_palindrome(s: str) -> bool {
+    n: int = len(s)
+    for i in range(n / 2) {
+        if s[i] != s[n - 1 - i] {
+            return false
+        }
+    }
+    return true
+}
+
+func main() {
+    print(is_palindrome("racecar"))
+    print(is_palindrome("madam"))
+    print(is_palindrome("hello"))
+    print(is_palindrome("abba"))
+    print(is_palindrome("world"))
+}

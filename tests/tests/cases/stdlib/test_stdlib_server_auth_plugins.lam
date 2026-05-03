@@ -1,0 +1,154 @@
+# Test: lamserver_plugins — basicAuth, bearerAuth, ipFilter, session,
+# csrf, cacheControl.
+#
+# expect: basic-no-creds: 401
+# expect: basic-bad-creds: 401
+# expect: basic-good-creds: hello alice
+# expect: bearer-no-creds: 401
+# expect: bearer-bad-creds: 401
+# expect: bearer-good-creds: bob
+# expect: ipfilter-loopback: ok
+# expect: cache-control-default: no-store
+# expect: cache-control-handler-wins: max-age=60
+
+from lamserver import Server, Request, Response
+from lamserver_plugins import basicAuth, bearerAuth, ipFilter, cacheControl
+
+go! {
+    import (
+        "io"
+        "net/http"
+        "time"
+    )
+}
+
+func hello(req: Request, res: Response) {
+    user: str = ""
+    go! {
+        if u, ok := req.Ctx["user"].(string); ok { user = u }
+    }
+    res.text("hello " + user)
+}
+
+func bearerHandler(req: Request, res: Response) {
+    name: str = ""
+    go! {
+        if m, ok := req.Ctx["user"].(map[string]interface{}); ok {
+            if s, ok := m["name"].(string); ok { name = s }
+        }
+    }
+    res.text(name)
+}
+
+func cachedHandler(req: Request, res: Response) {
+    go! { res.Headers["Cache-Control"] = "max-age=60" }
+    res.text("cached")
+}
+
+func verifyBearer(token: str) -> any {
+    if token == "good" {
+        return {"name": "bob"}
+    }
+    return None
+}
+
+func okHandler(req: Request, res: Response) {
+    res.text("ok")
+}
+
+func xHandler(req: Request, res: Response) {
+    res.text("x")
+}
+
+func main() {
+    users: dict[str, str] = {"alice": "secret"}
+    allowList: list[str] = ["127.0.0.0/8", "::1/128"]
+
+    basicSrv: Server = Server()
+    basicAuth(basicSrv, users)
+    basicSrv.get("/hello", hello)
+    basicSrv.listenBackground(0)
+
+    bearerSrv: Server = Server()
+    bearerAuth(bearerSrv, verifyBearer)
+    bearerSrv.get("/me", bearerHandler)
+    bearerSrv.listenBackground(0)
+
+    denyList: list[str] = []
+    ipSrv: Server = Server()
+    ipFilter(ipSrv, allowList, denyList)
+    ipSrv.get("/", okHandler)
+    ipSrv.listenBackground(0)
+
+    cacheSrv: Server = Server()
+    cacheControl(cacheSrv, directive="no-store")
+    cacheSrv.get("/", xHandler)
+    cacheSrv.get("/cached", cachedHandler)
+    cacheSrv.listenBackground(0)
+
+    go! {
+        // Wait for all listeners.
+        for i := 0; i < 100; i++ {
+            if basicSrv.BoundAddr != "" && bearerSrv.BoundAddr != "" &&
+                ipSrv.BoundAddr != "" && cacheSrv.BoundAddr != "" {
+                break
+            }
+            time.Sleep(10 * time.Millisecond)
+        }
+        defer basicSrv.Shutdown(5000)
+        defer bearerSrv.Shutdown(5000)
+        defer ipSrv.Shutdown(5000)
+        defer cacheSrv.Shutdown(5000)
+
+        // ── basicAuth
+        resp, _ := http.Get("http://" + basicSrv.BoundAddr + "/hello")
+        fmt.Printf("basic-no-creds: %d\n", resp.StatusCode)
+        resp.Body.Close()
+
+        req1, _ := http.NewRequest("GET", "http://"+basicSrv.BoundAddr+"/hello", nil)
+        req1.SetBasicAuth("alice", "wrong")
+        resp1, _ := http.DefaultClient.Do(req1)
+        fmt.Printf("basic-bad-creds: %d\n", resp1.StatusCode)
+        resp1.Body.Close()
+
+        req2, _ := http.NewRequest("GET", "http://"+basicSrv.BoundAddr+"/hello", nil)
+        req2.SetBasicAuth("alice", "secret")
+        resp2, _ := http.DefaultClient.Do(req2)
+        body2, _ := io.ReadAll(resp2.Body)
+        resp2.Body.Close()
+        fmt.Printf("basic-good-creds: %s\n", string(body2))
+
+        // ── bearerAuth
+        resp3, _ := http.Get("http://" + bearerSrv.BoundAddr + "/me")
+        fmt.Printf("bearer-no-creds: %d\n", resp3.StatusCode)
+        resp3.Body.Close()
+
+        req4, _ := http.NewRequest("GET", "http://"+bearerSrv.BoundAddr+"/me", nil)
+        req4.Header.Set("Authorization", "Bearer bad")
+        resp4, _ := http.DefaultClient.Do(req4)
+        fmt.Printf("bearer-bad-creds: %d\n", resp4.StatusCode)
+        resp4.Body.Close()
+
+        req5, _ := http.NewRequest("GET", "http://"+bearerSrv.BoundAddr+"/me", nil)
+        req5.Header.Set("Authorization", "Bearer good")
+        resp5, _ := http.DefaultClient.Do(req5)
+        body5, _ := io.ReadAll(resp5.Body)
+        resp5.Body.Close()
+        fmt.Printf("bearer-good-creds: %s\n", string(body5))
+
+        // ── ipFilter (loopback is on the allow list)
+        resp6, _ := http.Get("http://" + ipSrv.BoundAddr + "/")
+        body6, _ := io.ReadAll(resp6.Body)
+        resp6.Body.Close()
+        fmt.Printf("ipfilter-loopback: %s\n", string(body6))
+
+        // ── cacheControl
+        resp7, _ := http.Get("http://" + cacheSrv.BoundAddr + "/")
+        resp7.Body.Close()
+        fmt.Printf("cache-control-default: %s\n", resp7.Header.Get("Cache-Control"))
+
+        resp8, _ := http.Get("http://" + cacheSrv.BoundAddr + "/cached")
+        resp8.Body.Close()
+        fmt.Printf("cache-control-handler-wins: %s\n", resp8.Header.Get("Cache-Control"))
+    }
+}

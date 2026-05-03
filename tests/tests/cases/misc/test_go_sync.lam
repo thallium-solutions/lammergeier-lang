@@ -1,0 +1,40 @@
+# Test: Go sync patterns - WaitGroup, Mutex, Once
+# expect: counter: 1000
+# expect: once_value: hello
+# expect: sync2_ok
+
+func main() {
+    # Mutex counter
+    go! {
+        import "sync"
+        var mu sync.Mutex
+        counter := 0
+        var wg sync.WaitGroup
+        for i := 0; i < 100; i++ {
+            wg.Add(1)
+            go func() {
+                defer wg.Done()
+                for j := 0; j < 10; j++ {
+                    mu.Lock()
+                    counter++
+                    mu.Unlock()
+                }
+            }()
+        }
+        wg.Wait()
+        fmt.Println(fmt.Sprintf("counter: %d", counter))
+    }
+    # sync.Once
+    go! {
+        import "sync"
+        var once sync.Once
+        value := ""
+        for i := 0; i < 10; i++ {
+            once.Do(func() {
+                value = "hello"
+            })
+        }
+        fmt.Println(fmt.Sprintf("once_value: %s", value))
+    }
+    print("sync2_ok")
+}

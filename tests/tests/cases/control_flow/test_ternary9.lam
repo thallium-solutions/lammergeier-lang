@@ -1,0 +1,18 @@
+# Test: ternary chained via if/elif
+# expect: A
+# expect: B
+# expect: C
+
+func grade(score: int) -> str {
+    if score >= 90 {
+        return "A"
+    }
+    result: str = "B" if score >= 80 else "C"
+    return result
+}
+
+func main() {
+    print(grade(95))
+    print(grade(85))
+    print(grade(70))
+}

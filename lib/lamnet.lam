@@ -1,0 +1,164 @@
+# Lammergeier standard library: networking primitives
+# Import with: from lamnet import Net, TcpConn
+#
+# A small, sugar-first wrapper around Go's net package: DNS lookups,
+# hostname, and a simple blocking TCP client/server built from the
+# same `TcpConn` value on both sides.
+
+go! {
+    import (
+        "io"
+        "net"
+        "os"
+        "strconv"
+        "time"
+    )
+}
+
+class Net {
+    static func lookupHost(host: str) -> list[str] {
+        #- Resolve `host` to a list of IP addresses (both v4 and v6). -#
+        go! {
+            addrs, err := net.LookupHost(host)
+            if err != nil { return []string{} }
+            return addrs
+        }
+    }
+
+    static func lookupAddr(ip: str) -> list[str] {
+        #- Reverse-DNS an IP to its host names. -#
+        go! {
+            names, err := net.LookupAddr(ip)
+            if err != nil { return []string{} }
+            return names
+        }
+    }
+
+    static func hostname() -> str {
+        go! {
+            h, err := os.Hostname()
+            if err != nil { return "" }
+            return h
+        }
+    }
+
+    static func isReachable(host: str, port: int, timeoutMs: int = 1000) -> bool {
+        #- Attempt a TCP dial with a deadline. Returns true if the
+           connection succeeded. -#
+        go! {
+            address := host + ":" + strconv.Itoa(port)
+            conn, err := net.DialTimeout("tcp", address, time.Duration(timeoutMs)*time.Millisecond)
+            if err != nil { return false }
+            conn.Close()
+            return true
+        }
+    }
+
+    static func dialTcp(host: str, port: int, timeoutMs: int = 5000) -> TcpConn {
+        go! {
+            address := host + ":" + strconv.Itoa(port)
+            conn, err := net.DialTimeout("tcp", address, time.Duration(timeoutMs)*time.Millisecond)
+            if err != nil { panic("dialTcp: " + err.Error()) }
+            c := NewTcpConn()
+            c.Raw = conn
+            return c
+        }
+    }
+
+    static func listenTcp(port: int) -> TcpListener {
+        #- Listen on 0.0.0.0:port. Call `accept()` on the returned
+           listener to wait for the next inbound connection. -#
+        go! {
+            ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+            if err != nil { panic("listenTcp: " + err.Error()) }
+            l := NewTcpListener()
+            l.Raw = ln
+            return l
+        }
+    }
+}
+
+class TcpConn {
+    #- Thin convenience wrapper over net.Conn. Methods block. -#
+
+    func __init__(self) {
+        self.raw: any = None
+    }
+
+    func send(self, data: str) {
+        go! {
+            if s.Raw == nil { panic("TcpConn.send: not connected") }
+            if _, err := s.Raw.(net.Conn).Write([]byte(data)); err != nil {
+                panic("TcpConn.send: " + err.Error())
+            }
+        }
+    }
+
+    func recv(self, maxBytes: int = 4096) -> str {
+        #- Blocking read up to `maxBytes`. Returns "" on EOF. -#
+        go! {
+            if s.Raw == nil { panic("TcpConn.recv: not connected") }
+            buf := make([]byte, maxBytes)
+            n, err := s.Raw.(net.Conn).Read(buf)
+            if err != nil && err != io.EOF && n == 0 { return "" }
+            return string(buf[:n])
+        }
+    }
+
+    func close(self) {
+        go! {
+            if s.Raw != nil {
+                s.Raw.(net.Conn).Close()
+                s.Raw = nil
+            }
+        }
+    }
+
+    func remoteAddr(self) -> str {
+        go! {
+            if s.Raw == nil { return "" }
+            return s.Raw.(net.Conn).RemoteAddr().String()
+        }
+    }
+}
+
+class TcpListener {
+    func __init__(self) {
+        self.raw: any = None
+    }
+
+    func accept(self) -> TcpConn {
+        #- Block until a client connects; wrap the conn for send/recv. -#
+        go! {
+            if s.Raw == nil { panic("TcpListener.accept: not listening") }
+            conn, err := s.Raw.(net.Listener).Accept()
+            if err != nil { panic("TcpListener.accept: " + err.Error()) }
+            c := NewTcpConn()
+            c.Raw = conn
+            return c
+        }
+    }
+
+    func close(self) {
+        go! {
+            if s.Raw != nil {
+                s.Raw.(net.Listener).Close()
+                s.Raw = nil
+            }
+        }
+    }
+
+    func port(self) -> int {
+        go! {
+            if s.Raw == nil { return 0 }
+            if tcp, ok := s.Raw.(net.Listener).Addr().(*net.TCPAddr); ok {
+                return tcp.Port
+            }
+            return 0
+        }
+    }
+}
+
+func main() {
+    pass
+}

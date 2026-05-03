@@ -1,0 +1,110 @@
+# Test: Complex function patterns - closures-like, callbacks via classes
+# expect: 10
+# expect: 20
+# expect: 30
+# expect: 40
+# expect: 50
+# expect: 2
+# expect: 4
+# expect: 6
+# expect: 8
+# expect: 10
+# expect: 100
+# expect: 200
+# expect: 300
+# expect: 150
+# expect: 3628800
+# expect: 1024
+# expect: 0
+# expect: 1
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 5
+# expect: 8
+# expect: 13
+# expect: 21
+# expect: 34
+# expect: funcpat_ok
+
+func apply_op(items: list[int], factor: int) -> list[int] {
+    result: list[int] = []
+    item: int = 0
+    for item in items {
+        result = append(result, item * factor)
+    }
+    return result
+}
+
+func reduce_sum(items: list[int]) -> int {
+    total: int = 0
+    item: int = 0
+    for item in items {
+        total = total + item
+    }
+    return total
+}
+
+func reduce_product(items: list[int]) -> int {
+    result: int = 1
+    item: int = 0
+    for item in items {
+        result = result * item
+    }
+    return result
+}
+
+func fib_list(n: int) -> list[int] {
+    result: list[int] = []
+    a: int = 0
+    b: int = 1
+    i: int = 0
+    for i in range(n) {
+        result = append(result, a)
+        temp: int = b
+        b = a + b
+        a = temp
+    }
+    return result
+}
+
+func main() {
+    # Map-like: multiply each by 10
+    nums: list[int] = [1, 2, 3, 4, 5]
+    tens: list[int] = apply_op(nums, 10)
+    i: int = 0
+    for i in range(5) {
+        print(tens[i])
+    }
+
+    # Map: multiply by 2
+    twos: list[int] = apply_op(nums, 2)
+    for i in range(5) {
+        print(twos[i])
+    }
+
+    # Map: multiply by 100
+    hundreds: list[int] = apply_op(nums, 100)
+    print(hundreds[0])
+    print(hundreds[1])
+    print(hundreds[2])
+
+    # Reduce: sum
+    print(reduce_sum(tens))
+
+    # Reduce: product of 1..10
+    fact_list: list[int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    print(reduce_product(fact_list))
+
+    # Power via reduce
+    two_list: list[int] = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+    print(reduce_product(two_list))
+
+    # Fibonacci list
+    fibs: list[int] = fib_list(10)
+    for i in range(10) {
+        print(fibs[i])
+    }
+
+    print("funcpat_ok")
+}

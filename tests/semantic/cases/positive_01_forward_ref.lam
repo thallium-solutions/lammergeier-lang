@@ -1,0 +1,7 @@
+# expect-pass
+
+func main() {
+    print(later)
+    later: int = 7
+    print(later)
+}

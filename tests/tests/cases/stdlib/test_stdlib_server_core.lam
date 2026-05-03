@@ -1,0 +1,209 @@
+# Test: lamserver core productivity surface — Server.inject (in-process
+# test harness), Request.ctx (per-request plugin storage),
+# Request.parsedBody (Content-Type-aware body parsing), Response /
+# Request signedCookie (HMAC-SHA256), Response.type_, Server.bodyLimit
+# (413 enforcement), Server.listRoutes, Response.streamFile (with
+# inject-mode fallback to in-memory body), and the dispatcher's 404 /
+# 405 codepaths exercised via inject.
+#
+# All assertions run via inject — no port is bound — so this test
+# stays deterministic in CI.
+#
+# expect: routes count: 8
+# expect: ctx status: 200
+# expect: ctx body: uid=42
+# expect: json body: json:alice
+# expect: form body: form:hello world
+# expect: signed cookie set: true
+# expect: read cookie: sess=alice
+# expect: type ct: application/x-custom
+# expect: type body: hi
+# expect: 413 status: 413
+# expect: under status: 200
+# expect: under body: len=4
+# expect: stream body: streamed!
+# expect: 404 status: 404
+# expect: 405 status: 405
+# expect: 405 allow: GET
+
+from lamserver import Server, Request, Response
+from lamos import Os
+
+go! {
+    import "strings"
+}
+
+func ctxPreHandler(req: Request, res: Response) {
+    req.ctx["userId"] = 42
+}
+
+func ctxHandler(req: Request, res: Response) {
+    uid: any = req.ctx["userId"]
+    res.text(f"uid={uid}")
+}
+
+func jsonHandler(req: Request, res: Response) {
+    body: any = req.parsedBody()
+    go! {
+        m, ok := body.(map[string]interface{})
+        if !ok {
+            res.Status = 400
+            res.Body = "not a json object"
+            res.Sent = true
+            return
+        }
+        name, _ := m["name"].(string)
+        res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+        res.Body = "json:" + name
+        res.Sent = true
+    }
+}
+
+func formHandler(req: Request, res: Response) {
+    body: any = req.parsedBody()
+    go! {
+        m, ok := body.(map[string]string)
+        if !ok {
+            res.Status = 400
+            res.Body = "not a form"
+            res.Sent = true
+            return
+        }
+        res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+        res.Body = "form:" + m["greeting"]
+        res.Sent = true
+    }
+}
+
+func setSigCookieHandler(req: Request, res: Response) {
+    res.signedCookie("sess", "alice", "supersecret")
+    res.text("set")
+}
+
+func readSigCookieHandler(req: Request, res: Response) {
+    val: str = req.signedCookie("sess", "supersecret")
+    res.text(f"sess={val}")
+}
+
+func typeHandler(req: Request, res: Response) {
+    res.type_("application/x-custom").send("hi")
+}
+
+func bigEchoHandler(req: Request, res: Response) {
+    n: int = len(req.body)
+    res.text(f"len={n}")
+}
+
+func streamHandler(req: Request, res: Response) {
+    p: str = req.query["path"]
+    res.streamFile(p)
+}
+
+func main() {
+    srv: Server = Server()
+    srv.bodyLimit = 64
+
+    srv.preHandler(ctxPreHandler)
+    srv.get("/ctx", ctxHandler)
+    srv.post("/json", jsonHandler)
+    srv.post("/form", formHandler)
+    srv.get("/cookie/set", setSigCookieHandler)
+    srv.get("/cookie/read", readSigCookieHandler)
+    srv.get("/type", typeHandler)
+    srv.post("/echo", bigEchoHandler)
+    srv.get("/stream", streamHandler)
+
+    routes: list[any] = srv.listRoutes()
+    n: int = len(routes)
+    print(f"routes count: {n}")
+
+    r: dict[str, any] = srv.inject("GET", "/ctx")
+    rs1: any = r["status"]
+    rb1: any = r["body"]
+    print(f"ctx status: {rs1}")
+    print(f"ctx body: {rb1}")
+
+    jsonHeaders: dict[str, str] = {}
+    jsonHeaders["Content-Type"] = "application/json"
+    rj: dict[str, any] = srv.inject("POST", "/json", "{\"name\":\"alice\"}", jsonHeaders)
+    rjb: any = rj["body"]
+    print(f"json body: {rjb}")
+
+    formHeaders: dict[str, str] = {}
+    formHeaders["Content-Type"] = "application/x-www-form-urlencoded"
+    rf: dict[str, any] = srv.inject("POST", "/form", "greeting=hello%20world", formHeaders)
+    rfb: any = rf["body"]
+    print(f"form body: {rfb}")
+
+    rsc: dict[str, any] = srv.inject("GET", "/cookie/set")
+    rscHeaders: any = rsc["headers"]
+    setCookieHdr: str = ""
+    go! {
+        if h, ok := rscHeaders.(map[string]string); ok {
+            setCookieHdr = h["Set-Cookie"]
+        }
+    }
+    cookieSet: bool = setCookieHdr != ""
+    print(f"signed cookie set: {cookieSet}")
+
+    go! {
+        idx := strings.Index(setCookieHdr, ";")
+        if idx > 0 {
+            setCookieHdr = setCookieHdr[:idx]
+        }
+    }
+    readHeaders: dict[str, str] = {}
+    readHeaders["Cookie"] = setCookieHdr
+    rr: dict[str, any] = srv.inject("GET", "/cookie/read", "", readHeaders)
+    rrb: any = rr["body"]
+    print(f"read cookie: {rrb}")
+
+    rt: dict[str, any] = srv.inject("GET", "/type")
+    rtHeaders: any = rt["headers"]
+    rtCt: str = ""
+    go! {
+        if h, ok := rtHeaders.(map[string]string); ok {
+            rtCt = h["Content-Type"]
+        }
+    }
+    rtb: any = rt["body"]
+    print(f"type ct: {rtCt}")
+    print(f"type body: {rtb}")
+
+    big: str = ""
+    go! {
+        big = strings.Repeat("x", 200)
+    }
+    rb: dict[str, any] = srv.inject("POST", "/echo", big)
+    rbs: any = rb["status"]
+    print(f"413 status: {rbs}")
+
+    rs2: dict[str, any] = srv.inject("POST", "/echo", "tiny")
+    rs2s: any = rs2["status"]
+    rs2b: any = rs2["body"]
+    print(f"under status: {rs2s}")
+    print(f"under body: {rs2b}")
+
+    tmp: str = Os.tempDir() + "/lam-stream-test.txt"
+    Os.writeFile(tmp, "streamed!")
+    rsf: dict[str, any] = srv.inject("GET", "/stream?path=" + tmp)
+    rsfb: any = rsf["body"]
+    print(f"stream body: {rsfb}")
+    Os.remove(tmp)
+
+    r404: dict[str, any] = srv.inject("GET", "/no-such-thing")
+    r404s: any = r404["status"]
+    print(f"404 status: {r404s}")
+
+    r405: dict[str, any] = srv.inject("DELETE", "/ctx")
+    r405s: any = r405["status"]
+    r405h: any = r405["headers"]
+    r405allow: str = ""
+    go! {
+        if h, ok := r405h.(map[string]string); ok {
+            r405allow = h["Allow"]
+        }
+    }
+    print(f"405 status: {r405s}")
+    print(f"405 allow: {r405allow}")
+}

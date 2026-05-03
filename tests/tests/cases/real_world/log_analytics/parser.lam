@@ -1,0 +1,46 @@
+go! {
+    import "strconv"
+}
+
+class LogEvent {
+    func init(self, level: str, service: str, code: int, ms: int) {
+        self.level: str = level
+        self.service: str = service
+        self.code: int = code
+        self.ms: int = ms
+    }
+}
+
+func parseLine(line: str) -> LogEvent {
+    parts: list[str] = line.split(" ")
+    level: str = parts[1]
+    service: str = parts[2].split("=")[1]
+    codeText: str = parts[3].split("=")[1]
+    code: int = 0
+    go! {
+        code, _ = strconv.Atoi(codeText)
+    }
+    msRaw: str = parts[4].split("=")[1]
+    msText: str = msRaw.replace("ms", "")
+    ms: int = 0
+    go! {
+        ms, _ = strconv.Atoi(msText)
+    }
+    return LogEvent(level, service, code, ms)
+}
+
+func parseEvents(text: str) -> list[LogEvent] {
+    trimmed: str = text.strip()
+    lines: list[str] = trimmed.split("\n")
+    events: list[LogEvent] = []
+    for line in lines {
+        if len(line) > 0 {
+            events.append(parseLine(line))
+        }
+    }
+    return events
+}
+
+func main() {
+    pass
+}

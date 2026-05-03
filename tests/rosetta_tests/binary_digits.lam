@@ -1,0 +1,31 @@
+# Rosetta Code: Binary digits
+# https://rosettacode.org/wiki/Binary_digits
+# expect: 0
+# expect: 1
+# expect: 101
+# expect: 1010
+# expect: 11111111
+
+func to_binary(n: int) -> str {
+    if n == 0 {
+        return "0"
+    }
+    result: str = ""
+    while n > 0 {
+        if n % 2 == 0 {
+            result = "0" + result
+        } else {
+            result = "1" + result
+        }
+        n = n / 2
+    }
+    return result
+}
+
+func main() {
+    print(to_binary(0))
+    print(to_binary(1))
+    print(to_binary(5))
+    print(to_binary(10))
+    print(to_binary(255))
+}

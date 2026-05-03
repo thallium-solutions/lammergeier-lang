@@ -1,0 +1,43 @@
+# Test: Go I/O and file operations via go! blocks
+# expect: write_ok
+# expect: read_ok
+# expect: content_match
+# expect: cleanup_ok
+# expect: io_done
+
+func main() {
+    go! {
+        import "os"
+        import "io/ioutil"
+
+        // Write to temp file
+        tmpfile, err := ioutil.TempFile("", "lammergeier_test_*.txt")
+        if err != nil {
+            panic(err)
+        }
+        path := tmpfile.Name()
+
+        _, err = tmpfile.WriteString("hello lammergeier")
+        if err != nil {
+            panic(err)
+        }
+        tmpfile.Close()
+        fmt.Println("write_ok")
+
+        // Read back
+        data, err := ioutil.ReadFile(path)
+        if err != nil {
+            panic(err)
+        }
+        fmt.Println("read_ok")
+
+        if string(data) == "hello lammergeier" {
+            fmt.Println("content_match")
+        }
+
+        // Cleanup
+        os.Remove(path)
+        fmt.Println("cleanup_ok")
+    }
+    print("io_done")
+}

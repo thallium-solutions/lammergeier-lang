@@ -1,0 +1,20 @@
+# Test: ternary with class method
+# expect: Pass
+# expect: Fail
+
+class Exam {
+    func init(self, score: int) {
+        self.score: int = score
+    }
+
+    func result(self) -> str {
+        return "Pass" if self.score >= 50 else "Fail"
+    }
+}
+
+func main() {
+    e1: Exam = Exam(75)
+    e2: Exam = Exam(30)
+    print(e1.result())
+    print(e2.result())
+}

@@ -1,0 +1,91 @@
+# Test: Function features - recursion, multiple params, void, default-like patterns
+# expect: 120
+# expect: 6765
+# expect: 15
+# expect: hello world
+# expect: 3
+# expect: 10
+# expect: 1
+# expect: void_done
+# expect: 42
+# expect: 100
+# expect: inner called
+# expect: 55
+
+func factorial(n: int) -> int {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+func fib(n: int) -> int {
+    if n <= 1 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+func add_three(a: int, b: int, c: int) -> int {
+    return a + b + c
+}
+
+func concat(a: str, b: str) -> str {
+    return a + " " + b
+}
+
+func max_of_three(a: int, b: int, c: int) -> int {
+    result: int = a
+    if b > result {
+        result = b
+    }
+    if c > result {
+        result = c
+    }
+    return result
+}
+
+func min_val(a: int, b: int) -> int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+func void_func() {
+    print("void_done")
+}
+
+func identity(x: int) -> int {
+    return x
+}
+
+func square(x: int) -> int {
+    return x * x
+}
+
+func sum_recursive(n: int) -> int {
+    if n <= 0 {
+        return 0
+    }
+    return n + sum_recursive(n - 1)
+}
+
+func main() {
+    print(factorial(5))
+    print(fib(20))
+    print(add_three(4, 5, 6))
+    print(concat("hello", "world"))
+    print(max_of_three(1, 3, 2))
+    print(max_of_three(10, 5, 7))
+    print(min_val(1, 5))
+    void_func()
+    print(identity(42))
+    print(square(10))
+
+    # Nested function call
+    print(concat("inner", "called"))
+
+    # Recursive sum
+    print(sum_recursive(10))
+}

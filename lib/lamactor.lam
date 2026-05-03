@@ -1,0 +1,661 @@
+# Lammergeier standard library: actor-model concurrency.
+#
+# Inspired by the lightweight ``go-actor`` design:
+# https://github.com/vladopajic/go-actor — but reshaped around the
+# Erlang/Akka mailbox-message-handler vocabulary that's more
+# familiar to most users.
+#
+# Three building blocks:
+#
+#   * ``Mailbox``       — a typed-ish channel with ``send`` /
+#                         ``recv`` / ``trySend`` / ``tryRecv`` /
+#                         ``close``. Use this directly when you want
+#                         a worker goroutine you control yourself.
+#   * ``Actor``         — convention: a class that exposes
+#                         ``onMessage(self, msg)``, plus optional
+#                         ``onStart(self)``, ``onStop(self)``, and
+#                         ``onError(self, err)``.
+#   * ``ActorSystem``   — spawns + supervises actors. Returns an
+#                         ``ActorRef`` for ``tell`` / ``ask`` /
+#                         ``stop`` calls. ``shutdown(timeoutMs)``
+#                         drains every actor before returning.
+#
+# Usage::
+#
+#     from lamactor import ActorSystem, ActorRef
+#
+#     class Counter {
+#         func __init__(self) {
+#             self.n: int = 0
+#         }
+#
+#         func onMessage(self, msg: any) -> any {
+#             if msg == "inc"  { self.n = self.n + 1; return self.n }
+#             if msg == "get"  { return self.n }
+#             return None
+#         }
+#     }
+#
+#     func main() {
+#         sys: ActorSystem = ActorSystem()
+#         ref: ActorRef = sys.spawn(Counter())
+#         ref.tell("inc")
+#         ref.tell("inc")
+#         total: any = ref.ask("get", 1000)
+#         print(total)               # 2
+#         sys.shutdown(1000)
+#     }
+#
+# The dispatch loop survives panics in user code via ``recover()``;
+# if the actor exposes ``onError`` it gets the recovered value and
+# can return ``True`` to keep going, ``False`` to stop. The default
+# is to stop on any unhandled panic.
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "fmt"
+        "reflect"
+        "sync"
+        "sync/atomic"
+        "time"
+    )
+
+    // Internal envelope sent through every mailbox. ``Reply`` is
+    // ``nil`` for ``tell`` and a 1-buffered chan for ``ask`` so the
+    // dispatch loop can drop in the answer without blocking.
+    type lamActorEnvelope struct {
+        body  interface{}
+        reply chan interface{}
+    }
+
+    // Bookkeeping for a single live actor inside an ActorSystem.
+    type lamActorEntry struct {
+        id      uint64
+        name    string
+        actor   interface{}
+        mailbox chan *lamActorEnvelope
+        done    chan struct{}
+        stopped atomic.Bool
+        wg      sync.WaitGroup
+    }
+
+    // The ActorSystem owns one of these. Mutating the registry from
+    // outside the supervisor goroutine is fine — every operation
+    // takes ``mu``.
+    type lamActorRegistry struct {
+        mu     sync.Mutex
+        nextId uint64
+        actors map[uint64]*lamActorEntry
+        named  map[string]*lamActorEntry
+    }
+
+    func newLamActorRegistry() *lamActorRegistry {
+        return &lamActorRegistry{
+            actors: map[uint64]*lamActorEntry{},
+            named:  map[string]*lamActorEntry{},
+        }
+    }
+
+    // Reflectively call a Lam-defined method on the actor. Returns
+    // (result, ok). ``ok=false`` signals "method not implemented" —
+    // useful for the optional onStart / onStop / onError hooks where
+    // the dispatcher is happy to skip a missing override.
+    func lamActorInvoke(actor interface{}, method string,
+                        args ...interface{}) (interface{}, bool) {
+        if actor == nil {
+            return nil, false
+        }
+        rv := reflect.ValueOf(actor)
+        if !rv.IsValid() {
+            return nil, false
+        }
+        m := rv.MethodByName(method)
+        if !m.IsValid() {
+            return nil, false
+        }
+        in := make([]reflect.Value, len(args))
+        mtyp := m.Type()
+        for i, a := range args {
+            if i >= mtyp.NumIn() {
+                break
+            }
+            wantType := mtyp.In(i)
+            if a == nil {
+                in[i] = reflect.Zero(wantType)
+                continue
+            }
+            v := reflect.ValueOf(a)
+            if v.Type().AssignableTo(wantType) {
+                in[i] = v
+            } else if v.Type().ConvertibleTo(wantType) {
+                in[i] = v.Convert(wantType)
+            } else {
+                in[i] = reflect.Zero(wantType)
+            }
+        }
+        // Pad missing args with zero values so a handler whose
+        // signature is wider than what we have on hand still runs.
+        for len(in) < mtyp.NumIn() {
+            in = append(in, reflect.Zero(mtyp.In(len(in))))
+        }
+        out := m.Call(in)
+        if len(out) == 0 {
+            return nil, true
+        }
+        return out[0].Interface(), true
+    }
+
+    // Drain a mailbox by closing ``done`` and waiting for the loop
+    // to exit. ``timeout`` is the per-actor budget; on expiry we
+    // stop waiting and report it to the caller.
+    func lamActorStop(entry *lamActorEntry, timeout time.Duration) bool {
+        if entry.stopped.Swap(true) {
+            return true
+        }
+        close(entry.done)
+        if timeout <= 0 {
+            entry.wg.Wait()
+            return true
+        }
+        finished := make(chan struct{})
+        go func() {
+            entry.wg.Wait()
+            close(finished)
+        }()
+        select {
+        case <-finished:
+            return true
+        case <-time.After(timeout):
+            return false
+        }
+    }
+
+    // The actor's main loop. One goroutine per actor; messages are
+    // processed strictly in FIFO order. ``recover()`` keeps a buggy
+    // handler from bringing down the entire process.
+    func lamActorLoop(entry *lamActorEntry) {
+        defer entry.wg.Done()
+        if _, ok := lamActorInvoke(entry.actor, "OnStart"); ok {
+            // OnStart is best-effort; failures here mirror onMessage
+            // semantics below.
+        }
+        for {
+            select {
+            case <-entry.done:
+                _, _ = lamActorInvoke(entry.actor, "OnStop")
+                return
+            case env := <-entry.mailbox:
+                if env == nil {
+                    _, _ = lamActorInvoke(entry.actor, "OnStop")
+                    return
+                }
+                result := lamActorDispatchOne(entry, env)
+                if env.reply != nil {
+                    // ask() is waiting; drop the answer in.
+                    select {
+                    case env.reply <- result:
+                    default:
+                    }
+                }
+            }
+        }
+    }
+
+    // Single-message dispatch with panic recovery + optional
+    // onError hook. Returns whatever the handler produced (or nil
+    // on a failure the actor swallowed).
+    func lamActorDispatchOne(entry *lamActorEntry,
+                             env *lamActorEnvelope) (out interface{}) {
+        defer func() {
+            if r := recover(); r != nil {
+                if cont, ok := lamActorInvoke(entry.actor, "OnError", r); ok {
+                    if keep, ok2 := cont.(bool); ok2 && keep {
+                        // onError says: keep going.
+                        out = nil
+                        return
+                    }
+                }
+                // Default: silently drop the message and stop the
+                // actor. Return nil so any pending ask() unblocks
+                // with a sentinel rather than hanging.
+                _ = lamActorStop(entry, 0)
+                out = nil
+            }
+        }()
+        result, _ := lamActorInvoke(entry.actor, "OnMessage", env.body)
+        return result
+    }
+}
+
+
+class Mailbox {
+    #- Concurrent-safe message queue backed by a Go channel.
+
+       ``capacity=0`` selects an *unbounded* queue (a goroutine moves
+       messages from the producer side to the consumer side, growing
+       a slice in between). Any positive capacity selects a bounded
+       channel; ``send`` blocks when the buffer is full.
+
+       Use this directly for "I just need a worker goroutine" cases
+       where the full ``Actor`` ceremony is overkill. -#
+
+    func __init__(self, capacity: int = 0) {
+        self.cap: int = capacity
+        self.ch: any = None
+        self.closed: any = None
+        self.unboundedIn: any = None
+        self.unboundedOut: any = None
+        go! {
+            s.Closed = new(atomic.Bool)
+            if capacity <= 0 {
+                in := make(chan interface{})
+                out := make(chan interface{})
+                s.UnboundedIn = in
+                s.UnboundedOut = out
+                go func() {
+                    var queue []interface{}
+                    for {
+                        if len(queue) == 0 {
+                            v, ok := <-in
+                            if !ok {
+                                close(out)
+                                return
+                            }
+                            queue = append(queue, v)
+                        }
+                        select {
+                        case v, ok := <-in:
+                            if !ok {
+                                // Drain remaining queue then close.
+                                for _, q := range queue {
+                                    out <- q
+                                }
+                                close(out)
+                                return
+                            }
+                            queue = append(queue, v)
+                        case out <- queue[0]:
+                            queue = queue[1:]
+                        }
+                    }
+                }()
+            } else {
+                s.Ch = make(chan interface{}, capacity)
+            }
+        }
+    }
+
+    func send(self, msg: any) {
+        #- Block until ``msg`` is accepted into the mailbox. Panics
+           if the mailbox is closed. -#
+        go! {
+            if s.Closed.(*atomic.Bool).Load() {
+                panic("lamactor.Mailbox: send on closed mailbox")
+            }
+            if s.UnboundedIn != nil {
+                s.UnboundedIn.(chan interface{}) <- msg
+                return
+            }
+            s.Ch.(chan interface{}) <- msg
+        }
+    }
+
+    func trySend(self, msg: any) -> bool {
+        #- Attempt to enqueue without blocking. Returns ``true`` on
+           success, ``false`` if the buffer is full or the mailbox
+           is closed. -#
+        go! {
+            if s.Closed.(*atomic.Bool).Load() {
+                return false
+            }
+            if s.UnboundedIn != nil {
+                // The unbounded path always accepts because the
+                // forwarder goroutine grows a slice on demand.
+                s.UnboundedIn.(chan interface{}) <- msg
+                return true
+            }
+            select {
+            case s.Ch.(chan interface{}) <- msg:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    func recv(self) -> any {
+        #- Block until a message arrives. Returns ``None`` once the
+           mailbox has been closed and drained. -#
+        go! {
+            if s.UnboundedOut != nil {
+                v, ok := <-s.UnboundedOut.(chan interface{})
+                if !ok {
+                    return nil
+                }
+                return v
+            }
+            v, ok := <-s.Ch.(chan interface{})
+            if !ok {
+                return nil
+            }
+            return v
+        }
+    }
+
+    func tryRecv(self) -> any {
+        #- Non-blocking receive. Returns the message or ``None`` if
+           the mailbox is empty (or closed and drained). -#
+        go! {
+            if s.UnboundedOut != nil {
+                select {
+                case v, ok := <-s.UnboundedOut.(chan interface{}):
+                    if !ok {
+                        return nil
+                    }
+                    return v
+                default:
+                    return nil
+                }
+            }
+            select {
+            case v, ok := <-s.Ch.(chan interface{}):
+                if !ok {
+                    return nil
+                }
+                return v
+            default:
+                return nil
+            }
+        }
+    }
+
+    func close(self) {
+        #- Mark the mailbox closed. Pending ``recv`` calls drain
+           remaining buffered messages, then return ``None``. -#
+        go! {
+            if !s.Closed.(*atomic.Bool).CompareAndSwap(false, true) {
+                return
+            }
+            if s.UnboundedIn != nil {
+                close(s.UnboundedIn.(chan interface{}))
+                return
+            }
+            close(s.Ch.(chan interface{}))
+        }
+    }
+
+    func isClosed(self) -> bool {
+        go! {
+            return s.Closed.(*atomic.Bool).Load()
+        }
+    }
+
+    func size(self) -> int {
+        #- Best-effort length of the buffered side. The unbounded
+           variant always returns ``0`` — its growth is invisible to
+           the caller. -#
+        go! {
+            if s.UnboundedOut != nil {
+                return 0
+            }
+            return len(s.Ch.(chan interface{}))
+        }
+    }
+}
+
+
+class ActorRef {
+    #- Handle returned from ``ActorSystem.spawn``. Treat instances
+       as opaque — the constructor here only exists so the type
+       checker is happy; ``__init__`` does not register an actor.
+       Use ``sys.spawn(...)`` to obtain a real ref. -#
+
+    func __init__(self) {
+        self.id: int = 0
+        self.actorName: str = ""
+        self.registry: any = None
+    }
+
+    func tell(self, msg: any) {
+        #- Fire-and-forget send. Returns immediately. If the actor
+           is stopped or its mailbox is full beyond a generous
+           backlog the message is dropped. -#
+        go! {
+            reg, ok := s.Registry.(*lamActorRegistry)
+            if !ok || reg == nil {
+                return
+            }
+            reg.mu.Lock()
+            entry, present := reg.actors[uint64(s.Id)]
+            reg.mu.Unlock()
+            if !present || entry.stopped.Load() {
+                return
+            }
+            select {
+            case entry.mailbox <- &lamActorEnvelope{body: msg}:
+            default:
+                // Mailbox is full. We could block here, but
+                // ``tell`` is by contract non-blocking; drop and
+                // let the caller decide (e.g. by switching to ask
+                // or a larger capacity).
+            }
+        }
+    }
+
+    func ask(self, msg: any, timeoutMs: int = 5000) -> any {
+        #- Send ``msg`` and wait up to ``timeoutMs`` for the actor
+           to return a value from its ``onMessage`` handler. Returns
+           ``None`` on timeout or if the actor is stopped. -#
+        go! {
+            reg, ok := s.Registry.(*lamActorRegistry)
+            if !ok || reg == nil {
+                return nil
+            }
+            reg.mu.Lock()
+            entry, present := reg.actors[uint64(s.Id)]
+            reg.mu.Unlock()
+            if !present || entry.stopped.Load() {
+                return nil
+            }
+            replyCh := make(chan interface{}, 1)
+            env := &lamActorEnvelope{body: msg, reply: replyCh}
+            select {
+            case entry.mailbox <- env:
+            case <-time.After(time.Duration(timeoutMs) * time.Millisecond):
+                return nil
+            }
+            select {
+            case r := <-replyCh:
+                return r
+            case <-time.After(time.Duration(timeoutMs) * time.Millisecond):
+                return nil
+            }
+        }
+    }
+
+    func stop(self) {
+        #- Stop this actor. Returns once its ``onStop`` (if any)
+           has finished, or after a 5s grace period — whichever
+           comes first. -#
+        go! {
+            reg, ok := s.Registry.(*lamActorRegistry)
+            if !ok || reg == nil {
+                return
+            }
+            reg.mu.Lock()
+            entry, present := reg.actors[uint64(s.Id)]
+            reg.mu.Unlock()
+            if !present {
+                return
+            }
+            lamActorStop(entry, 5*time.Second)
+            reg.mu.Lock()
+            delete(reg.actors, uint64(s.Id))
+            if entry.name != "" {
+                delete(reg.named, entry.name)
+            }
+            reg.mu.Unlock()
+        }
+    }
+
+    func isAlive(self) -> bool {
+        go! {
+            reg, ok := s.Registry.(*lamActorRegistry)
+            if !ok || reg == nil {
+                return false
+            }
+            reg.mu.Lock()
+            entry, present := reg.actors[uint64(s.Id)]
+            reg.mu.Unlock()
+            if !present {
+                return false
+            }
+            return !entry.stopped.Load()
+        }
+    }
+}
+
+
+class ActorSystem {
+    #- Registry that owns and supervises a group of actors. Spawn
+       actors with ``spawn(actor)`` (or ``spawnNamed(name, actor)``);
+       each call returns an ``ActorRef``. ``shutdown(timeoutMs)``
+       stops every live actor in parallel and waits up to
+       ``timeoutMs`` total. -#
+
+    func __init__(self) {
+        self.registry: any = None
+        go! {
+            s.Registry = newLamActorRegistry()
+        }
+    }
+
+    func spawn(self, actor: any) -> ActorRef {
+        #- Spawn ``actor`` in a fresh goroutine. The actor is any
+           object with an ``onMessage(self, msg)`` method; optional
+           ``onStart`` / ``onStop`` / ``onError`` hooks are honoured
+           if present. Returns an ``ActorRef`` for sending messages. -#
+        return self.spawnNamed("", actor)
+    }
+
+    func spawnNamed(self, actorName: str, actor: any) -> ActorRef {
+        #- Like ``spawn`` but registers the actor under ``actorName``
+           so ``find(actorName)`` can retrieve it later. Re-using a
+           name replaces the previous binding (the old actor keeps
+           running until you ``stop`` it explicitly). -#
+        ref: ActorRef = ActorRef()
+        ref.actorName = actorName
+        go! {
+            reg := s.Registry.(*lamActorRegistry)
+            reg.mu.Lock()
+            reg.nextId++
+            id := reg.nextId
+            entry := &lamActorEntry{
+                id:      id,
+                name:    actorName,
+                actor:   actor,
+                mailbox: make(chan *lamActorEnvelope, 64),
+                done:    make(chan struct{}),
+            }
+            reg.actors[id] = entry
+            if actorName != "" {
+                reg.named[actorName] = entry
+            }
+            reg.mu.Unlock()
+            entry.wg.Add(1)
+            go lamActorLoop(entry)
+            ref.Id = int(id)
+            ref.Registry = reg
+        }
+        return ref
+    }
+
+    func find(self, actorName: str) -> ActorRef {
+        #- Look up an actor by name. Returns an ``ActorRef`` whose
+           ``isAlive()`` is ``True`` on hit, or an inert ref
+           (``isAlive()`` is ``False``, ``tell``/``ask`` are no-ops)
+           when no actor with that name is registered. The inert
+           shape lets callers stay statically typed without an
+           explicit cast. -#
+        ref: ActorRef = ActorRef()
+        ref.actorName = actorName
+        go! {
+            reg := s.Registry.(*lamActorRegistry)
+            reg.mu.Lock()
+            entry, ok := reg.named[actorName]
+            reg.mu.Unlock()
+            if ok && !entry.stopped.Load() {
+                ref.Id = int(entry.id)
+                ref.Registry = reg
+            }
+        }
+        return ref
+    }
+
+    func numActors(self) -> int {
+        go! {
+            reg := s.Registry.(*lamActorRegistry)
+            reg.mu.Lock()
+            defer reg.mu.Unlock()
+            count := 0
+            for _, e := range reg.actors {
+                if !e.stopped.Load() {
+                    count++
+                }
+            }
+            return count
+        }
+    }
+
+    func shutdown(self, timeoutMs: int = 5000) {
+        #- Stop every live actor and wait up to ``timeoutMs``
+           total for them to drain. Idempotent. -#
+        go! {
+            reg := s.Registry.(*lamActorRegistry)
+            reg.mu.Lock()
+            entries := make([]*lamActorEntry, 0, len(reg.actors))
+            for _, e := range reg.actors {
+                entries = append(entries, e)
+            }
+            reg.mu.Unlock()
+            // Signal everyone to stop in parallel, then wait under
+            // a single deadline so a slow actor can't blow the
+            // budget for the rest.
+            deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+            var wg sync.WaitGroup
+            for _, e := range entries {
+                wg.Add(1)
+                go func(entry *lamActorEntry) {
+                    defer wg.Done()
+                    remaining := time.Until(deadline)
+                    if remaining < 0 {
+                        remaining = 0
+                    }
+                    lamActorStop(entry, remaining)
+                }(e)
+            }
+            done := make(chan struct{})
+            go func() {
+                wg.Wait()
+                close(done)
+            }()
+            select {
+            case <-done:
+            case <-time.After(time.Until(deadline)):
+            }
+            reg.mu.Lock()
+            for id, e := range reg.actors {
+                if e.stopped.Load() {
+                    delete(reg.actors, id)
+                    if e.name != "" {
+                        delete(reg.named, e.name)
+                    }
+                }
+            }
+            reg.mu.Unlock()
+            _ = fmt.Sprintf
+        }
+    }
+}

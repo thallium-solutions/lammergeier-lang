@@ -1,0 +1,38 @@
+# Test: Interface with class that has init
+# expect: Circle area: 314
+# expect: Square area: 100
+
+interface Measurable {
+    func area() -> int
+}
+
+class Circle {
+    func __init__(self, radius: int) {
+        self.radius: int = radius
+    }
+
+    func area(self) -> int {
+        return self.radius * self.radius * 314 / 100
+    }
+}
+
+class Square {
+    func __init__(self, side: int) {
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+func show_area(name: str, m: Measurable) {
+    print(f"{name} area: {m.area()}")
+}
+
+func main() {
+    c: Circle = Circle(10)
+    s: Square = Square(10)
+    show_area("Circle", c)
+    show_area("Square", s)
+}

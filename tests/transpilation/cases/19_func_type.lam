@@ -1,0 +1,58 @@
+# Transpilation: ``func(T, U) -> V`` lowers to Go ``func(T, U) V``.
+# Empty parameter lists and absent return types are both supported,
+# and the type can appear anywhere a regular type can — parameters,
+# return clauses, variable annotations, and inside generics.
+#
+# Check:
+#   - parameter type ``op: func(int, int) -> int`` -> ``op func(int, int) int``
+#   - return type ``-> func(str) -> None`` -> ``func(string)``
+#   - local annotation ``f: func(int, int) -> int = add`` -> ``var f func(int, int) int``
+#   - list of functions ``list[func(int, int) -> int]`` -> ``[]func(int, int) int``
+#   - void function type ``func()`` -> ``func()``
+
+# expect-go: func Apply(op func(int, int) int, x int, y int) int
+# expect-go: func Make_logger() func(string)
+# expect-go: var f func(int, int) int = Add
+# expect-go: var ops []func(int, int) int = []func(int, int) int{Add, Mul}
+# expect-go: var void_fn func() = Noop
+
+func add(a: int, b: int) -> int {
+    return a + b
+}
+
+func mul(a: int, b: int) -> int {
+    return a * b
+}
+
+func apply(op: func(int, int) -> int, x: int, y: int) -> int {
+    return op(x, y)
+}
+
+func _log(msg: str) -> None {
+    print(msg)
+}
+
+func make_logger() -> func(str) -> None {
+    return _log
+}
+
+func noop() {
+    pass
+}
+
+func main() {
+    f: func(int, int) -> int = add
+    print(f(2, 3))
+    print(apply(mul, 4, 5))
+
+    ops: list[func(int, int) -> int] = [add, mul]
+    for op in ops {
+        print(op(10, 2))
+    }
+
+    log = make_logger()
+    log("hi")
+
+    void_fn: func() = noop
+    void_fn()
+}

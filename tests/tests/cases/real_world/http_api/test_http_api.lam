@@ -1,0 +1,35 @@
+# Real-world mini project: in-process HTTP-style API contract.
+# expect: route_count=3
+# expect: list_status=200
+# expect: list_has_ada=true
+# expect: show_status=200
+# expect: show_body={"id":"1","name":"ada"}
+# expect: create_status=201
+# expect: create_body={"created":"linus"}
+# expect: create_json_valid=true
+# expect: missing_status=404
+
+from api import Api, ResponseData, buildApi
+from lamstrings import Strings
+from lamjson import Json
+
+func main() {
+    api: Api = buildApi()
+
+    listRes: ResponseData = api.dispatch("GET", "/users")
+    showRes: ResponseData = api.dispatch("GET", "/users/1")
+    createRes: ResponseData = api.dispatch("POST", "/users", "{\"name\":\"linus\"}")
+    missingRes: ResponseData = api.dispatch("GET", "/users/42")
+
+    validCreate: bool = Json.isValid(createRes.body)
+
+    print(f"route_count={api.routeCount()}")
+    print(f"list_status={listRes.status}")
+    print(f"list_has_ada={Strings.contains(listRes.body, 'ada')}")
+    print(f"show_status={showRes.status}")
+    print(f"show_body={showRes.body}")
+    print(f"create_status={createRes.status}")
+    print(f"create_body={createRes.body}")
+    print(f"create_json_valid={validCreate}")
+    print(f"missing_status={missingRes.status}")
+}

@@ -1,0 +1,13 @@
+# Test: Del multiple map keys
+# expect: 3
+# expect: 2
+# expect: 1
+
+func main() {
+    m: dict[str, int] = {"x": 10, "y": 20, "z": 30}
+    print(len(m))
+    del m["x"]
+    print(len(m))
+    del m["y"]
+    print(len(m))
+}

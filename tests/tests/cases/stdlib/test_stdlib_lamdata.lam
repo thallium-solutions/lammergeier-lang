@@ -1,0 +1,197 @@
+# Test: lamdata DataFrame / Series / DataFrameGroups
+#
+# Covers construction, introspection, subsetting, filtering, sorting,
+# joins, group-by aggregation, mutation, I/O roundtrip, and Series
+# statistics against the go-gota-backed implementation.
+#
+# expect: PASS 1 nrow/ncol/dims
+# expect: PASS 2 names
+# expect: PASS 3 types inferred
+# expect: PASS 4 filterEq
+# expect: PASS 5 filterGt numeric
+# expect: PASS 6 selectCols preserves order
+# expect: PASS 7 dropCols
+# expect: PASS 8 head
+# expect: PASS 9 tail
+# expect: PASS 10 slice
+# expect: PASS 11 subset repeats
+# expect: PASS 12 rename
+# expect: PASS 13 sort asc
+# expect: PASS 14 sort desc
+# expect: PASS 15 innerJoin
+# expect: PASS 16 rbind
+# expect: PASS 17 mutateInts adds column
+# expect: PASS 18 describe shape
+# expect: PASS 19 groupBy aggregate
+# expect: PASS 20 CSV roundtrip
+# expect: PASS 21 JSON roundtrip
+# expect: PASS 22 col returns series
+# expect: PASS 23 series sum
+# expect: PASS 24 series mean
+# expect: PASS 25 series min/max
+# expect: PASS 26 series toFloatList
+# expect: PASS 27 Series.fromFloats + stats
+# expect: 27 passed, 0 failed, 27 total
+
+from lamdata import DataFrame, Series, DataFrameGroups
+from lamtest import Test
+
+func main() {
+    df: DataFrame = DataFrame.fromRecords([
+        ["Country", "Year", "Pop"],
+        ["IT",      "2020", "60.0"],
+        ["IT",      "2021", "59.5"],
+        ["FR",      "2020", "67.4"],
+        ["FR",      "2021", "67.6"],
+    ])
+
+    # 1. Basic shape
+    dims: list[int] = df.dims()
+    shapeOk: bool = (df.nrow() == 4) and (df.ncol() == 3) and (len(dims) == 2)
+    Test.assertTrue(shapeOk, "1 nrow/ncol/dims")
+
+    # 2. Column names
+    names: list[str] = df.names()
+    namesOk: bool = (len(names) == 3) and (names[0] == "Country") and (names[1] == "Year") and (names[2] == "Pop")
+    Test.assertTrue(namesOk, "2 names")
+
+    # 3. Inferred types: string / int / float
+    types: list[str] = df.types()
+    typesOk: bool = (types[0] == "string") and (types[1] == "int") and (types[2] == "float")
+    Test.assertTrue(typesOk, "3 types inferred")
+
+    # 4. Filter on a string column
+    italy: DataFrame = df.filterEq("Country", "IT")
+    Test.assertEqual(italy.nrow(), 2, "4 filterEq")
+
+    # 5. Filter on a numeric column
+    big: DataFrame = df.filterGt("Pop", 67.0)
+    Test.assertEqual(big.nrow(), 2, "5 filterGt numeric")
+
+    # 6. selectCols — order preserved, no drift
+    selOrder: list[str] = ["Pop", "Country"]
+    sel: DataFrame = df.selectCols(selOrder)
+    selNames: list[str] = sel.names()
+    selOk: bool = (sel.ncol() == 2) and (selNames[0] == "Pop") and (selNames[1] == "Country")
+    Test.assertTrue(selOk, "6 selectCols preserves order")
+
+    # 7. dropCols
+    dropNames: list[str] = ["Pop"]
+    dropped: DataFrame = df.dropCols(dropNames)
+    Test.assertEqual(dropped.ncol(), 2, "7 dropCols")
+
+    # 8. head (n = 2)
+    Test.assertEqual(df.head(2).nrow(), 2, "8 head")
+
+    # 9. tail (n = 2) — picks the last two rows
+    t: DataFrame = df.tail(2)
+    tailOk: bool = (t.nrow() == 2) and (t.elem(0, 0) == "FR")
+    Test.assertTrue(tailOk, "9 tail")
+
+    # 10. slice (half-open)
+    sl: DataFrame = df.slice(1, 3)
+    slOk: bool = (sl.nrow() == 2) and (sl.elem(0, 0) == "IT") and (sl.elem(1, 0) == "FR")
+    Test.assertTrue(slOk, "10 slice")
+
+    # 11. subset allows repeats; index 0 twice and index 2 once
+    idxs: list[int] = [0, 0, 2]
+    sub: DataFrame = df.subset(idxs)
+    subOk: bool = (sub.nrow() == 3) and (sub.elem(0, 0) == "IT") and (sub.elem(1, 0) == "IT") and (sub.elem(2, 0) == "FR")
+    Test.assertTrue(subOk, "11 subset repeats")
+
+    # 12. rename: Country → Land
+    renamed: DataFrame = df.rename("Country", "Land")
+    rnNames: list[str] = renamed.names()
+    Test.assertEqual(rnNames[0], "Land", "12 rename")
+
+    # 13. sort asc by Year
+    asc: DataFrame = df.sort("Year", false)
+    ascOk: bool = (asc.elem(0, 1) == "2020") and (asc.elem(3, 1) == "2021")
+    Test.assertTrue(ascOk, "13 sort asc")
+
+    # 14. sort desc by Pop
+    desc: DataFrame = df.sort("Pop", true)
+    descOk: bool = (desc.elem(0, 0) == "FR")
+    Test.assertTrue(descOk, "14 sort desc")
+
+    # 15. Inner join
+    gdp: DataFrame = DataFrame.fromRecords([
+        ["Country", "Gdp"],
+        ["IT",      "2.1"],
+        ["FR",      "2.9"],
+    ])
+    onKey: list[str] = ["Country"]
+    joined: DataFrame = df.innerJoin(gdp, onKey)
+    # gota inner-join moves the key to the front and produces
+    # (Country, Year, Pop, Gdp) across 4 rows.
+    joinOk: bool = (joined.nrow() == 4) and (joined.ncol() == 4)
+    Test.assertTrue(joinOk, "15 innerJoin")
+
+    # 16. rbind — append matching-shape rows
+    extra: DataFrame = DataFrame.fromRecords([
+        ["Country", "Year", "Pop"],
+        ["DE",      "2020", "83.1"],
+    ])
+    together: DataFrame = df.rbind(extra)
+    Test.assertEqual(together.nrow(), 5, "16 rbind")
+
+    # 17. mutateInts — add a new Flag column
+    flags: list[int] = [1, 2, 3, 4]
+    flagged: DataFrame = df.mutateInts("Flag", flags)
+    fNames: list[str] = flagged.names()
+    flagOk: bool = (flagged.ncol() == 4) and (fNames[3] == "Flag")
+    Test.assertTrue(flagOk, "17 mutateInts adds column")
+
+    # 18. describe always produces an 8-row summary (mean / median /
+    #    stddev / min / 25% / 50% / 75% / max).
+    summary: DataFrame = df.describe()
+    Test.assertEqual(summary.nrow(), 8, "18 describe shape")
+
+    # 19. groupBy + aggregate
+    groupCols: list[str] = ["Country"]
+    byCountry: DataFrameGroups = df.groupBy(groupCols)
+    aggTypes: list[str] = ["mean"]
+    aggCols: list[str] = ["Pop"]
+    means: DataFrame = byCountry.aggregate(aggTypes, aggCols)
+    # 2 groups (IT, FR) × 2 cols (Country, Pop_MEAN)
+    meansOk: bool = (means.nrow() == 2) and (means.ncol() == 2)
+    Test.assertTrue(meansOk, "19 groupBy aggregate")
+
+    # 20. CSV roundtrip: writeCSV → readCSV preserves shape + cells.
+    csvOut: str = df.writeCSV()
+    reloadedCsv: DataFrame = DataFrame.readCSV(csvOut)
+    csvOk: bool = (reloadedCsv.nrow() == df.nrow()) and (reloadedCsv.ncol() == df.ncol())
+    Test.assertTrue(csvOk, "20 CSV roundtrip")
+
+    # 21. JSON roundtrip: writeJSON → readJSON preserves shape.
+    jsonOut: str = df.writeJSON()
+    reloadedJson: DataFrame = DataFrame.readJSON(jsonOut)
+    jsonOk: bool = (reloadedJson.nrow() == df.nrow()) and (reloadedJson.ncol() == df.ncol())
+    Test.assertTrue(jsonOk, "21 JSON roundtrip")
+
+    # 22. col() returns a Series
+    pop: Series = df.col("Pop")
+    Test.assertEqual(pop.length(), 4, "22 col returns series")
+
+    # 23. Series.sum — 60.0 + 59.5 + 67.4 + 67.6 = 254.5
+    Test.assertAlmostEqual(pop.sum(), 254.5, 0.0001, "23 series sum")
+
+    # 24. Series.mean — 254.5 / 4 = 63.625
+    Test.assertAlmostEqual(pop.mean(), 63.625, 0.0001, "24 series mean")
+
+    # 25. Series.min / Series.max
+    minMaxOk: bool = (pop.minVal() == 59.5) and (pop.maxVal() == 67.6)
+    Test.assertTrue(minMaxOk, "25 series min/max")
+
+    # 26. Series.toFloatList — round-trip to a typed Go slice
+    floats: list[float] = pop.toFloatList()
+    Test.assertEqual(len(floats), 4, "26 series toFloatList")
+
+    # 27. Series.fromFloats then mean / sum sanity
+    vals: list[float] = [1.0, 2.0, 3.0, 4.0, 5.0]
+    ser: Series = Series.fromFloats(vals, "v")
+    serOk: bool = (ser.length() == 5) and (ser.sum() == 15.0) and (ser.mean() == 3.0)
+    Test.assertTrue(serOk, "27 Series.fromFloats + stats")
+
+    Test.summary()
+}

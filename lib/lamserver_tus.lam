@@ -1,0 +1,665 @@
+# Tus 1.0.0 resumable-upload protocol (https://tus.io) on top of
+# ``lamserver``. Implements the core protocol — Creation + Patch +
+# Head + Termination + Length — which is enough to receive uploads
+# from every official tus client (uppy, tus-js-client, Go/Python/iOS
+# SDKs).
+#
+# Storage is a flat directory: every upload gets two files,
+# ``<id>`` (raw bytes received so far) and ``<id>.json`` (metadata
+# blob with Upload-Length, parsed Upload-Metadata, MIME hint, and
+# whether the upload is complete).
+#
+# Usage::
+#
+#     from lamserver import Server
+#     from lamserver_tus import tusUploads
+#
+#     srv: Server = Server()
+#     tusUploads(srv, "/uploads", "/var/lib/lammergeier-uploads", 200_000_000)
+#     srv.listen(8080)
+#
+# Then point a tus-js-client at ``http://host:8080/uploads`` and watch
+# uploads land under that directory. The plugin doesn't care what
+# happens after an upload finishes: hook a handler off ``onTusComplete``
+# (a Server.ctx callback) to copy / scan / re-encode the bytes.
+#
+# Limitations on purpose:
+#   * No expiration / cleanup — call ``tusGc(dir, maxAgeHours)`` from
+#     a cron-like loop.
+#
+# Extensions currently supported (advertised via ``Tus-Extension``):
+#   * creation                      — POST to mount creates an upload.
+#   * creation-with-upload          — initial POST may carry bytes.
+#   * termination                   — DELETE removes an upload.
+#   * concatenation                 — Upload-Concat: partial/final;...
+#   * checksum (sha1, sha256, md5)  — Upload-Checksum: <algo> <b64>.
+
+from lamserver import Server, Request, Response
+
+go! {
+    import (
+        "crypto/md5"
+        "crypto/sha1"
+        "crypto/sha256"
+        "encoding/base64"
+        "encoding/hex"
+        "encoding/json"
+        "fmt"
+        "hash"
+        "io"
+        "net/http"
+        "os"
+        "path/filepath"
+        "strconv"
+        "strings"
+        "sync"
+        "time"
+
+        "github.com/google/uuid"
+    )
+
+    const lamTusVersion = "1.0.0"
+    const lamTusVersions = "1.0.0"
+    const lamTusExtensions = "creation,creation-with-upload,termination,concatenation,checksum"
+    const lamTusChecksumAlgos = "sha1,sha256,md5"
+
+    // ─── On-disk metadata ─────────────────────────────────────
+    type lamTusInfo struct {
+        ID         string            `json:"id"`
+        Length     int64             `json:"length"`
+        Offset     int64             `json:"offset"`
+        Metadata   map[string]string `json:"metadata"`
+        Complete   bool              `json:"complete"`
+        CreatedAt  time.Time         `json:"createdAt"`
+        FinishedAt time.Time         `json:"finishedAt,omitempty"`
+        // ─── Concatenation extension ────────────────────────
+        // ``Concat`` is one of "" (normal), "partial" (accepts
+        // bytes; can be a component of a final upload), or
+        // "final" (derived upload that concatenates ``Parts``).
+        // ``Parts`` is the ordered list of part-upload IDs that
+        // make up a final upload. Empty for non-concat uploads.
+        Concat string   `json:"concat,omitempty"`
+        Parts  []string `json:"parts,omitempty"`
+    }
+
+    // ─── Checksum extension ─────────────────────────────────
+    func lamTusHashFor(algo string) (hash.Hash, bool) {
+        switch strings.ToLower(algo) {
+        case "sha1":
+            return sha1.New(), true
+        case "sha256":
+            return sha256.New(), true
+        case "md5":
+            return md5.New(), true
+        default:
+            return nil, false
+        }
+    }
+
+    // lamTusVerifyChecksum returns ``(valid, supported)``. A
+    // request without an ``Upload-Checksum`` header is treated as
+    // ``(true, true)`` — the extension only kicks in when the
+    // client actually supplies the header.
+    func lamTusVerifyChecksum(header string, chunk []byte) (bool, bool) {
+        header = strings.TrimSpace(header)
+        if header == "" { return true, true }
+        parts := strings.SplitN(header, " ", 2)
+        if len(parts) != 2 { return false, true }
+        h, ok := lamTusHashFor(parts[0])
+        if !ok { return false, false }
+        want, err := base64.StdEncoding.DecodeString(strings.TrimSpace(parts[1]))
+        if err != nil { return false, true }
+        h.Write(chunk)
+        got := h.Sum(nil)
+        if len(got) != len(want) { return false, true }
+        for i := range got {
+            if got[i] != want[i] { return false, true }
+        }
+        return true, true
+    }
+    var _ = hex.EncodeToString
+
+    // Per-upload mutex to keep parallel PATCH from corrupting offsets.
+    var lamTusLocks sync.Map // map[string]*sync.Mutex
+
+    func lamTusLockFor(id string) *sync.Mutex {
+        if v, ok := lamTusLocks.Load(id); ok {
+            return v.(*sync.Mutex)
+        }
+        m := &sync.Mutex{}
+        actual, _ := lamTusLocks.LoadOrStore(id, m)
+        return actual.(*sync.Mutex)
+    }
+
+    func lamTusInfoPath(dir, id string) string  { return filepath.Join(dir, id+".json") }
+    func lamTusBlobPath(dir, id string) string  { return filepath.Join(dir, id) }
+
+    func lamTusReadInfo(dir, id string) (*lamTusInfo, error) {
+        b, err := os.ReadFile(lamTusInfoPath(dir, id))
+        if err != nil { return nil, err }
+        var info lamTusInfo
+        if err := json.Unmarshal(b, &info); err != nil { return nil, err }
+        return &info, nil
+    }
+
+    func lamTusWriteInfo(dir string, info *lamTusInfo) error {
+        b, err := json.MarshalIndent(info, "", "  ")
+        if err != nil { return err }
+        return os.WriteFile(lamTusInfoPath(dir, info.ID), b, 0o644)
+    }
+
+    // ParseUpload-Metadata: comma-separated "key base64(value)" pairs.
+    func lamTusParseMetadata(raw string) map[string]string {
+        out := map[string]string{}
+        if raw == "" { return out }
+        for _, part := range strings.Split(raw, ",") {
+            kv := strings.SplitN(strings.TrimSpace(part), " ", 2)
+            if len(kv) == 0 { continue }
+            key := kv[0]
+            if len(kv) == 1 {
+                out[key] = "" // boolean-style metadata
+                continue
+            }
+            if dec, err := base64.StdEncoding.DecodeString(kv[1]); err == nil {
+                out[key] = string(dec)
+            } else {
+                out[key] = kv[1]
+            }
+        }
+        return out
+    }
+
+    // Headers common to every tus response (per the spec).
+    func lamTusBaseHeaders(res *Response) {
+        res.Headers["Tus-Resumable"] = lamTusVersion
+        res.Headers["Cache-Control"] = "no-store"
+    }
+
+    // CORS headers tus-js-client requires by default.
+    func lamTusCorsHeaders(res *Response) {
+        res.Headers["Access-Control-Allow-Origin"] = "*"
+        res.Headers["Access-Control-Expose-Headers"] = "Upload-Offset, Location, Upload-Length, Tus-Resumable, Tus-Version, Tus-Max-Size, Tus-Extension, Upload-Metadata"
+        res.Headers["Access-Control-Allow-Methods"] = "POST, HEAD, PATCH, OPTIONS, DELETE"
+        res.Headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Tus-Resumable, Upload-Length, Upload-Offset, Upload-Metadata, X-Requested-With"
+    }
+
+    // Lookup helper that's tolerant of header-case from net/http.
+    func lamTusHeader(req *Request, name string) string {
+        for k, v := range req.Headers {
+            if strings.EqualFold(k, name) { return v }
+        }
+        return ""
+    }
+}
+
+func tusUploads(srv: Server, mountPath: str, storeDir: str, maxBytes: int) {
+    #- Mount tus.io endpoints at ``mountPath`` storing files under
+       ``storeDir``. ``maxBytes`` caps the total upload size; pass
+       ``0`` for unlimited. Routes registered:
+
+         * ``POST <mount>``        — create a new upload
+         * ``HEAD <mount>/:id``    — query offset
+         * ``PATCH <mount>/:id``   — append bytes
+         * ``DELETE <mount>/:id``  — abort and discard
+         * ``OPTIONS <mount>``     — capabilities preflight
+
+       Set a callback for completed uploads via::
+
+           srv.ctx["__tusComplete"] = lambda info: print(info["id"])
+
+       The callback receives the parsed ``info`` dict. Errors propagate
+       as 4xx with ``Content-Type: text/plain`` for human readability. -#
+    go! {
+        if err := os.MkdirAll(storeDir, 0o755); err != nil {
+            fmt.Fprintf(os.Stderr, "tus: cannot create store dir %s: %v\n", storeDir, err)
+            return
+        }
+    }
+
+    optionsHandler: any = None
+    postHandler: any = None
+    headHandler: any = None
+    patchHandler: any = None
+    deleteHandler: any = None
+
+    go! {
+        local := srv
+
+        optionsHandler = func(req *Request, res *Response) {
+            lamTusBaseHeaders(res)
+            lamTusCorsHeaders(res)
+            res.Headers["Tus-Version"] = lamTusVersions
+            res.Headers["Tus-Extension"] = lamTusExtensions
+            // Checksum extension advertises supported algorithms.
+            res.Headers["Tus-Checksum-Algorithm"] = lamTusChecksumAlgos
+            if maxBytes > 0 {
+                res.Headers["Tus-Max-Size"] = strconv.FormatInt(int64(maxBytes), 10)
+            }
+            res.Status = 204
+            res.Sent = true
+        }
+
+        // ── POST: create upload (with optional creation-with-upload
+        //         and concatenation extension).
+        postHandler = func(req *Request, res *Response) {
+            lamTusBaseHeaders(res)
+            lamTusCorsHeaders(res)
+
+            concatHdr := strings.TrimSpace(lamTusHeader(req, "Upload-Concat"))
+
+            // ── Concatenation: final upload.
+            //    Header shape: ``Upload-Concat: final;<url1> <url2> …``.
+            //    We parse the part URLs, verify every referenced
+            //    part exists and is complete, then concatenate them
+            //    into a fresh blob immediately.
+            if strings.HasPrefix(concatHdr, "final") {
+                rest := strings.TrimSpace(strings.TrimPrefix(concatHdr, "final"))
+                rest = strings.TrimPrefix(rest, ";")
+                rest = strings.TrimSpace(rest)
+                if rest == "" {
+                    res.Status = 400
+                    res.Headers["Content-Type"] = "text/plain"
+                    res.Body = "tus: Upload-Concat final missing parts"
+                    res.Sent = true
+                    return
+                }
+                partURLs := strings.Fields(rest)
+                partIDs := make([]string, 0, len(partURLs))
+                var total int64
+                for _, u := range partURLs {
+                    // Accept either an absolute /path or a bare ID.
+                    // Take the trailing segment of the path as the ID.
+                    seg := u
+                    if idx := strings.LastIndex(u, "/"); idx >= 0 {
+                        seg = u[idx+1:]
+                    }
+                    part, err := lamTusReadInfo(storeDir, seg)
+                    if err != nil {
+                        res.Status = 400
+                        res.Headers["Content-Type"] = "text/plain"
+                        res.Body = fmt.Sprintf("tus: unknown part %q", seg)
+                        res.Sent = true
+                        return
+                    }
+                    if part.Concat != "partial" {
+                        res.Status = 400
+                        res.Headers["Content-Type"] = "text/plain"
+                        res.Body = fmt.Sprintf("tus: part %q is not Upload-Concat: partial", seg)
+                        res.Sent = true
+                        return
+                    }
+                    if !part.Complete {
+                        res.Status = 400
+                        res.Headers["Content-Type"] = "text/plain"
+                        res.Body = fmt.Sprintf("tus: part %q is not complete", seg)
+                        res.Sent = true
+                        return
+                    }
+                    partIDs = append(partIDs, seg)
+                    total += part.Length
+                }
+                if maxBytes > 0 && total > int64(maxBytes) {
+                    res.Status = 413
+                    res.Headers["Content-Type"] = "text/plain"
+                    res.Body = "tus: concatenated upload exceeds Tus-Max-Size"
+                    res.Sent = true
+                    return
+                }
+
+                id := uuid.NewString()
+                out, err := os.Create(lamTusBlobPath(storeDir, id))
+                if err != nil {
+                    res.Status = 500
+                    res.Body = "tus: cannot create final blob: " + err.Error()
+                    res.Sent = true
+                    return
+                }
+                for _, pid := range partIDs {
+                    in, err := os.Open(lamTusBlobPath(storeDir, pid))
+                    if err != nil {
+                        out.Close()
+                        os.Remove(lamTusBlobPath(storeDir, id))
+                        res.Status = 500
+                        res.Body = "tus: cannot read part blob: " + err.Error()
+                        res.Sent = true
+                        return
+                    }
+                    _, err = io.Copy(out, in)
+                    in.Close()
+                    if err != nil {
+                        out.Close()
+                        os.Remove(lamTusBlobPath(storeDir, id))
+                        res.Status = 500
+                        res.Body = "tus: cannot copy part: " + err.Error()
+                        res.Sent = true
+                        return
+                    }
+                }
+                out.Close()
+
+                info := &lamTusInfo{
+                    ID:         id,
+                    Length:     total,
+                    Offset:     total,
+                    Metadata:   lamTusParseMetadata(lamTusHeader(req, "Upload-Metadata")),
+                    Complete:   true,
+                    CreatedAt:  time.Now().UTC(),
+                    FinishedAt: time.Now().UTC(),
+                    Concat:     "final",
+                    Parts:      partIDs,
+                }
+                _ = lamTusWriteInfo(storeDir, info)
+
+                // Fire the onTusComplete callback (if any) — a final
+                // upload is complete the moment it's created.
+                if cb, ok := local.Ctx["__tusComplete"]; ok {
+                    if fn, ok := cb.(func(map[string]interface{})); ok {
+                        payload := map[string]interface{}{
+                            "id":       info.ID,
+                            "length":   info.Length,
+                            "offset":   info.Offset,
+                            "metadata": info.Metadata,
+                            "path":     lamTusBlobPath(storeDir, info.ID),
+                            "concat":   "final",
+                            "parts":    info.Parts,
+                        }
+                        func() {
+                            defer func() { _ = recover() }()
+                            fn(payload)
+                        }()
+                    }
+                }
+
+                res.Headers["Location"] = mountPath + "/" + id
+                res.Status = 201
+                res.Sent = true
+                return
+            }
+
+            lengthStr := lamTusHeader(req, "Upload-Length")
+            length, err := strconv.ParseInt(lengthStr, 10, 64)
+            if err != nil || length < 0 {
+                res.Status = 400
+                res.Headers["Content-Type"] = "text/plain"
+                res.Body = "tus: invalid Upload-Length"
+                res.Sent = true
+                return
+            }
+            if maxBytes > 0 && length > int64(maxBytes) {
+                res.Status = 413
+                res.Headers["Content-Type"] = "text/plain"
+                res.Body = "tus: upload exceeds Tus-Max-Size"
+                res.Sent = true
+                return
+            }
+
+            id := uuid.NewString()
+            info := &lamTusInfo{
+                ID:        id,
+                Length:    length,
+                Offset:    0,
+                Metadata:  lamTusParseMetadata(lamTusHeader(req, "Upload-Metadata")),
+                CreatedAt: time.Now().UTC(),
+            }
+            // Concatenation: partial upload (just bytes; assembled
+            // later by a final-upload POST that references this ID).
+            if concatHdr == "partial" {
+                info.Concat = "partial"
+            }
+            if err := lamTusWriteInfo(storeDir, info); err != nil {
+                res.Status = 500
+                res.Body = "tus: cannot persist info: " + err.Error()
+                res.Sent = true
+                return
+            }
+            // Pre-allocate the blob file so PATCH can just open+seek.
+            f, err := os.Create(lamTusBlobPath(storeDir, id))
+            if err != nil {
+                res.Status = 500
+                res.Body = "tus: cannot create blob: " + err.Error()
+                res.Sent = true
+                return
+            }
+            f.Close()
+
+            // creation-with-upload: if Content-Type is offset+octet-stream
+            // and a body was attached, treat it as the first PATCH.
+            // Checksum extension kicks in here too.
+            ct := lamTusHeader(req, "Content-Type")
+            if strings.HasPrefix(ct, "application/offset+octet-stream") && len(req.Body) > 0 {
+                chunk := []byte(req.Body)
+                csum := lamTusHeader(req, "Upload-Checksum")
+                if csum != "" {
+                    valid, supported := lamTusVerifyChecksum(csum, chunk)
+                    if !supported {
+                        res.Status = 400
+                        res.Headers["Content-Type"] = "text/plain"
+                        res.Body = "tus: unsupported checksum algorithm"
+                        res.Sent = true
+                        return
+                    }
+                    if !valid {
+                        // 460 is tus's recommended status for checksum failure.
+                        res.Status = 460
+                        res.Headers["Content-Type"] = "text/plain"
+                        res.Body = "tus: checksum mismatch"
+                        res.Sent = true
+                        return
+                    }
+                }
+                lamTusAppendChunk(storeDir, info, chunk, local)
+                res.Headers["Upload-Offset"] = strconv.FormatInt(info.Offset, 10)
+            }
+
+            res.Headers["Location"] = mountPath + "/" + id
+            res.Status = 201
+            res.Sent = true
+        }
+
+        // ── HEAD: query offset
+        headHandler = func(req *Request, res *Response) {
+            lamTusBaseHeaders(res)
+            lamTusCorsHeaders(res)
+            id := req.Params[":id"]
+            info, err := lamTusReadInfo(storeDir, id)
+            if err != nil {
+                res.Status = 404
+                res.Sent = true
+                return
+            }
+            res.Headers["Upload-Length"] = strconv.FormatInt(info.Length, 10)
+            res.Headers["Upload-Offset"] = strconv.FormatInt(info.Offset, 10)
+            if len(info.Metadata) > 0 {
+                pairs := []string{}
+                for k, v := range info.Metadata {
+                    pairs = append(pairs, k+" "+base64.StdEncoding.EncodeToString([]byte(v)))
+                }
+                res.Headers["Upload-Metadata"] = strings.Join(pairs, ",")
+            }
+            // Concatenation: reflect the Upload-Concat header so
+            // clients can detect finished / final uploads.
+            if info.Concat == "partial" {
+                res.Headers["Upload-Concat"] = "partial"
+            } else if info.Concat == "final" {
+                urls := []string{}
+                for _, pid := range info.Parts {
+                    urls = append(urls, mountPath+"/"+pid)
+                }
+                res.Headers["Upload-Concat"] = "final;" + strings.Join(urls, " ")
+            }
+            res.Status = 200
+            res.Sent = true
+        }
+
+        // ── PATCH: append bytes (with optional Upload-Checksum).
+        patchHandler = func(req *Request, res *Response) {
+            lamTusBaseHeaders(res)
+            lamTusCorsHeaders(res)
+            id := req.Params[":id"]
+
+            ct := lamTusHeader(req, "Content-Type")
+            if !strings.HasPrefix(ct, "application/offset+octet-stream") {
+                res.Status = 415
+                res.Headers["Content-Type"] = "text/plain"
+                res.Body = "tus: Content-Type must be application/offset+octet-stream"
+                res.Sent = true
+                return
+            }
+            wantOffset, err := strconv.ParseInt(lamTusHeader(req, "Upload-Offset"), 10, 64)
+            if err != nil {
+                res.Status = 400
+                res.Body = "tus: invalid Upload-Offset"
+                res.Sent = true
+                return
+            }
+
+            mu := lamTusLockFor(id)
+            mu.Lock()
+            defer mu.Unlock()
+
+            info, err := lamTusReadInfo(storeDir, id)
+            if err != nil {
+                res.Status = 404
+                res.Sent = true
+                return
+            }
+            // Final uploads are immutable — PATCH is meaningless.
+            if info.Concat == "final" {
+                res.Status = 403
+                res.Headers["Content-Type"] = "text/plain"
+                res.Body = "tus: cannot PATCH a final upload"
+                res.Sent = true
+                return
+            }
+            if info.Offset != wantOffset {
+                res.Status = 409
+                res.Headers["Content-Type"] = "text/plain"
+                res.Body = fmt.Sprintf("tus: offset mismatch — got %d, want %d",
+                    wantOffset, info.Offset)
+                res.Sent = true
+                return
+            }
+
+            chunk := []byte(req.Body)
+            // Checksum extension: validate the chunk before we touch
+            // the blob on disk. This keeps the offset monotonic even
+            // when clients retry after a mismatch.
+            csum := lamTusHeader(req, "Upload-Checksum")
+            if csum != "" {
+                valid, supported := lamTusVerifyChecksum(csum, chunk)
+                if !supported {
+                    res.Status = 400
+                    res.Headers["Content-Type"] = "text/plain"
+                    res.Body = "tus: unsupported checksum algorithm"
+                    res.Sent = true
+                    return
+                }
+                if !valid {
+                    res.Status = 460
+                    res.Headers["Content-Type"] = "text/plain"
+                    res.Body = "tus: checksum mismatch"
+                    res.Sent = true
+                    return
+                }
+            }
+
+            lamTusAppendChunk(storeDir, info, chunk, local)
+
+            res.Headers["Upload-Offset"] = strconv.FormatInt(info.Offset, 10)
+            res.Status = 204
+            res.Sent = true
+        }
+
+        // ── DELETE: abort & cleanup
+        deleteHandler = func(req *Request, res *Response) {
+            lamTusBaseHeaders(res)
+            lamTusCorsHeaders(res)
+            id := req.Params[":id"]
+            os.Remove(lamTusBlobPath(storeDir, id))
+            os.Remove(lamTusInfoPath(storeDir, id))
+            lamTusLocks.Delete(id)
+            res.Status = 204
+            res.Sent = true
+        }
+    }
+
+    srv.route("OPTIONS", mountPath, optionsHandler)
+    srv.route("POST", mountPath, postHandler)
+    srv.route("HEAD", mountPath + "/:id", headHandler)
+    srv.route("PATCH", mountPath + "/:id", patchHandler)
+    srv.route("DELETE", mountPath + "/:id", deleteHandler)
+}
+
+func tusGc(storeDir: str, maxAgeHours: int) -> int {
+    #- Delete tus uploads older than ``maxAgeHours`` (whether finished
+       or not). Returns the number of upload-pairs removed. Call this
+       from a periodic task; tus has no built-in expiration. -#
+    n: int = 0
+    go! {
+        cutoff := time.Now().Add(-time.Duration(maxAgeHours) * time.Hour)
+        if entries, err := os.ReadDir(storeDir); err == nil {
+            for _, e := range entries {
+                if !strings.HasSuffix(e.Name(), ".json") { continue }
+                id := strings.TrimSuffix(e.Name(), ".json")
+                info, err := lamTusReadInfo(storeDir, id)
+                if err != nil { continue }
+                if info.CreatedAt.Before(cutoff) {
+                    os.Remove(lamTusBlobPath(storeDir, id))
+                    os.Remove(lamTusInfoPath(storeDir, id))
+                    lamTusLocks.Delete(id)
+                    n++
+                }
+            }
+        }
+    }
+    return n
+}
+
+go! {
+    // lamTusAppendChunk is the shared write path used by both POST
+    // (creation-with-upload) and PATCH. It mutates ``info.Offset`` in
+    // place and persists ``info`` after the write so a crash mid-PATCH
+    // never leaves the metadata ahead of the actual bytes.
+    func lamTusAppendChunk(storeDir string, info *lamTusInfo, chunk []byte, srv *Server) {
+        if len(chunk) == 0 { return }
+        f, err := os.OpenFile(lamTusBlobPath(storeDir, info.ID), os.O_WRONLY|os.O_APPEND, 0o644)
+        if err != nil { return }
+        defer f.Close()
+        n, err := f.Write(chunk)
+        if err != nil { return }
+        info.Offset += int64(n)
+        if info.Offset >= info.Length {
+            info.Complete = true
+            info.FinishedAt = time.Now().UTC()
+        }
+        _ = lamTusWriteInfo(storeDir, info)
+
+        // Notify completion callback if registered.
+        if info.Complete {
+            if cb, ok := srv.Ctx["__tusComplete"]; ok {
+                if fn, ok := cb.(func(map[string]interface{})); ok {
+                    payload := map[string]interface{}{
+                        "id":       info.ID,
+                        "length":   info.Length,
+                        "offset":   info.Offset,
+                        "metadata": info.Metadata,
+                        "path":     lamTusBlobPath(storeDir, info.ID),
+                    }
+                    func() {
+                        defer func() { _ = recover() }()
+                        fn(payload)
+                    }()
+                }
+            }
+        }
+    }
+
+    // ``io`` is referenced only when streaming a body via Body.io. Keep
+    // the import alive to avoid Go's "imported and not used" error.
+    var _ = io.EOF
+    var _ = http.StatusOK
+}
+
+func main() {
+    pass
+}

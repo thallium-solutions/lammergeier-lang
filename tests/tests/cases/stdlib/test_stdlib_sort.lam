@@ -1,0 +1,25 @@
+# Test: Sort standard library
+# expect: [1 2 3 4 5]
+# expect: [5 4 3 2 1]
+# expect: true
+# expect: [1.2 2.5 3.1]
+# expect: [3 2 1]
+# expect: sort_ok
+
+from lamsort import Sort
+
+func main() {
+    nums: list[int] = [3, 1, 4, 5, 2]
+    sorted_nums: list[int] = Sort.ints(nums)
+    print(sorted_nums)
+    reversed_nums: list[int] = Sort.reverseInts(sorted_nums)
+    print(reversed_nums)
+    if Sort.isSorted(sorted_nums) {
+        print("true")
+    }
+    floats: list[float] = [3.1, 1.2, 2.5]
+    print(Sort.floats(floats))
+    any_list: list[any] = [1, 2, 3]
+    print(Sort.reverse(any_list))
+    print("sort_ok")
+}

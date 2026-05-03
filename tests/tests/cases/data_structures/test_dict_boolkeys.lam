@@ -1,0 +1,9 @@
+# Test: dict with bool keys
+# expect: yes
+# expect: no
+
+func main() {
+    d: dict[bool, str] = {true: "yes", false: "no"}
+    print(d[true])
+    print(d[false])
+}

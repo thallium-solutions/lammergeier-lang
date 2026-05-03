@@ -1,0 +1,61 @@
+# Integration test: lamemcached with SASL credentials in the
+# connect path. Verifies that ``Memcached.connect`` accepts a
+# ``username`` / ``password`` pair, performs the SASL handshake
+# during the eager NOOP, and that commands work afterwards.
+#
+# Note on the test fixture: the bundled docker image runs vanilla
+# ``memcached`` without ``-S``, so the server replies to the auth
+# handshake with ``UnknownCommand`` and the ``mc/v3`` client (per
+# its documented behaviour) silently continues. That's enough to
+# exercise the *client-side* SASL path; testing actual rejection
+# requires a SASL-built server which is intentionally outside the
+# scope of this regression test.
+#
+# expect: pong-after-auth: ok
+# expect: set-and-get-auth: secret-value
+# expect: incr-auth-nonzero: true
+# expect: stats-nonempty: true
+
+from lamemcached import Memcached
+
+func main() {
+    # Auth port (host runs a second memcached on 11212 with the
+    # username/password env vars baked in for downstream SASL
+    # builds).
+    m: Memcached = Memcached.connect(
+        "localhost:11212",
+        username="memuser",
+        password="mempass123",
+    )
+    m.flush()
+
+    # NOOP succeeded inside ``connect``; another one here is just a
+    # sanity check that the connection isn't poisoned.
+    m.noop()
+    print("pong-after-auth: ok")
+
+    m.set("auth:key", "secret-value")
+    print("set-and-get-auth: " + m.get("auth:key"))
+
+    # First INCR with ``initial=0`` returns 0 (memcached's "I
+    # created the key for you" signal); the next call returns the
+    # actual counter value. Either way we just need to confirm a
+    # round-trip happened on the authenticated connection.
+    _: int = m.incr("auth:counter", 1, 0)
+    n: int = m.incr("auth:counter")
+    if n > 0 {
+        print("incr-auth-nonzero: true")
+    } else {
+        print("incr-auth-nonzero: false")
+    }
+
+    serverStats: dict[str, dict[str, str]] = m.stats()
+    if len(serverStats) > 0 {
+        print("stats-nonempty: true")
+    } else {
+        print("stats-nonempty: false")
+    }
+
+    m.flush()
+    m.close()
+}

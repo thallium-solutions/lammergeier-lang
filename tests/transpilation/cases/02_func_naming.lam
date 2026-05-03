@@ -1,0 +1,17 @@
+# Transpilation: top-level funcs get title-cased Go names; private
+# (underscore-prefixed) funcs keep their unexported form.
+# expect-go: func Greet(name string) string
+# expect-go: func _helper() int
+# expect-go: return "hi " + name
+
+func greet(name: str) -> str {
+    return "hi " + name
+}
+
+func _helper() -> int {
+    return 42
+}
+
+func main() {
+    print(greet("world"), _helper())
+}

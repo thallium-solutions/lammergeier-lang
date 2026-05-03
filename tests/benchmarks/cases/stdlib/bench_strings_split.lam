@@ -1,0 +1,16 @@
+# lamstrings.split — tokenise a log-style line. Primarily exercises
+# strings.Split + the list[str] materialisation path.
+
+from lamstrings import Strings
+
+func main() {
+    line: str = "2026-04-30 INFO req_id=abc123 path=/api/v1/items status=200 duration=45ms client=mobile tag=alpha"
+    total: int = 0
+    for __i in range(200000) {
+        parts: list[str] = Strings.split(line, " ")
+        total = total + len(parts)
+    }
+    if total == 0 {
+        print("unreachable")
+    }
+}

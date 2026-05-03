@@ -1,0 +1,15 @@
+# Transpilation: tuple destructuring in function parameters is
+# lowered to a single synthetic ``_tupN`` slice argument, with typed
+# unpack statements at the top of the function body.
+# expect-go: func Sum(_tup0 []interface{})
+# expect-go: a := _tup0[0].(int)
+# expect-go: b := _tup0[1].(int)
+# expect-go: Sum([]interface{}{3, 4})
+
+func sum((a, b): tuple[int, int]) -> int {
+    return a + b
+}
+
+func main() {
+    print(sum((3, 4)))
+}

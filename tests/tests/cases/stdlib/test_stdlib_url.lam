@@ -1,0 +1,19 @@
+# Test: tpyurl standard library
+# expect: https
+# expect: example.com
+# expect: /path
+# expect: hello+world
+# expect: hello world
+# expect: url_ok
+
+from lamurl import Url
+
+func main() {
+    print(Url.scheme("https://example.com/path?q=1"))
+    print(Url.host("https://example.com/path?q=1"))
+    print(Url.path("https://example.com/path?q=1"))
+    encoded: str = Url.encode("hello world")
+    print(encoded)
+    print(Url.decode(encoded))
+    print("url_ok")
+}

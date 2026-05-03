@@ -1,0 +1,326 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Lammergeier",
+  "scopeName": "source.lammergeier",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#go-block" },
+    { "include": "#decorators" },
+    { "include": "#function-definition" },
+    { "include": "#class-definition" },
+    { "include": "#interface-definition" },
+    { "include": "#lammergeier-namespace" },
+    { "include": "#keywords" },
+    { "include": "#storage-modifiers" },
+    { "include": "#constants" },
+    { "include": "#types" },
+    { "include": "#stdlib-modules" },
+    { "include": "#stdlib-classes" },
+    { "include": "#builtins" },
+    { "include": "#operators" },
+    { "include": "#numbers" },
+    { "include": "#function-call" },
+    { "include": "#variables" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.lammergeier",
+          "begin": "#-",
+          "end": "-#",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.comment.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.comment.end.lammergeier" }
+          }
+        },
+        {
+          "name": "comment.line.number-sign.lammergeier",
+          "match": "#(?!-).*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.lammergeier",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [
+            { "include": "#fstring-interpolation" }
+          ]
+        },
+        {
+          "name": "string.quoted.double.lammergeier",
+          "begin": "f\"",
+          "end": "\"",
+          "patterns": [
+            { "include": "#fstring-interpolation" }
+          ]
+        },
+        {
+          "name": "string.quoted.double.lammergeier",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "include": "#string-escape" }
+          ]
+        },
+        {
+          "name": "string.quoted.single.lammergeier",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            { "include": "#string-escape" }
+          ]
+        }
+      ]
+    },
+    "fstring-interpolation": {
+      "patterns": [
+        {
+          "name": "meta.embedded.expression.lammergeier",
+          "begin": "\\{",
+          "end": "\\}",
+          "beginCaptures": { "0": { "name": "punctuation.definition.interpolation.begin.lammergeier" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.interpolation.end.lammergeier" } },
+          "patterns": [
+            { "include": "source.lammergeier" }
+          ]
+        },
+        { "include": "#string-escape" }
+      ]
+    },
+    "string-escape": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.lammergeier",
+          "match": "\\\\[\\\\\"'nrtbf0]"
+        }
+      ]
+    },
+    "go-block": {
+      "patterns": [
+        {
+          "name": "meta.embedded.block.go.lammergeier",
+          "begin": "(\\bgo!)\\s*(\\{)",
+          "end": "^\\s*\\}\\s*$",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.go-block.lammergeier" },
+            "2": { "name": "punctuation.section.block.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.section.block.end.lammergeier" }
+          },
+          "contentName": "meta.embedded.block.go",
+          "patterns": [
+            { "include": "source.go" }
+          ]
+        },
+        {
+          "name": "keyword.control.go-inline.lammergeier",
+          "match": "\\bgo!\\s*\\("
+        }
+      ]
+    },
+    "decorators": {
+      "patterns": [
+        {
+          "name": "meta.decorator.lammergeier",
+          "match": "(@)(\\w+)",
+          "captures": {
+            "1": { "name": "punctuation.definition.decorator.lammergeier" },
+            "2": { "name": "entity.name.function.decorator.lammergeier" }
+          }
+        }
+      ]
+    },
+    "function-definition": {
+      "patterns": [
+        {
+          "match": "(?:\\b(private|static|async)\\s+)*\\b(func)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": { "name": "storage.modifier.lammergeier" },
+            "2": { "name": "keyword.other.func.lammergeier" },
+            "3": { "name": "entity.name.function.lammergeier" }
+          }
+        }
+      ]
+    },
+    "class-definition": {
+      "patterns": [
+        {
+          "match": "\\b(class)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.class.lammergeier" },
+            "2": { "name": "entity.name.type.class.lammergeier" }
+          }
+        }
+      ]
+    },
+    "interface-definition": {
+      "patterns": [
+        {
+          "match": "\\b(interface)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.interface.lammergeier" },
+            "2": { "name": "entity.name.type.interface.lammergeier" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.lammergeier",
+          "match": "\\b(if|elif|else|for|while|break|continue|return|pass|try|catch|finally|raise|match|case|with|as|yield|del|assert|import|from)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.lammergeier",
+          "match": "\\b(and|or|not|in|is)\\b"
+        },
+        {
+          "name": "keyword.other.lammergeier",
+          "match": "\\b(func|class|interface|global|nonlocal|lambda)\\b"
+        }
+      ]
+    },
+    "storage-modifiers": {
+      "patterns": [
+        {
+          "name": "storage.modifier.lammergeier",
+          "match": "\\b(private|static|async|await)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.lammergeier",
+          "match": "\\b(True|False|None)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.lammergeier",
+          "match": "\\b(int|int8|int16|int32|int64|uint|float|float32|float64|string|str|bool|byte|rune|bytes|any|error|list|dict|set|object)\\b"
+        },
+        {
+          "name": "support.type.exception.lammergeier",
+          "match": "\\b(ValueError|TypeError|KeyError|IndexError|RuntimeError|AttributeError|IOError|OSError|FileNotFoundError|ZeroDivisionError|OverflowError|NotImplementedError|StopIteration|Exception|ArithmeticError|LookupError|NameError)\\b"
+        }
+      ]
+    },
+    "stdlib-modules": {
+      "patterns": [
+        {
+          "name": "support.class.stdlib.module.lammergeier",
+          "match": "\\b(lamarray|lambase64|lamcache|lamcompress|lamconcurrency|lamconv|lamcrypto|lamcsv|lamdb|lamenv|lamerrors|lamfs|lamhash|lamheap|lamhttp|lamiter|lamitertools|lamjson|lamjwt|lamlog|lammath|lamnet|lamos|lampath|lamprotobuf|lamqueue|lamrandom|lamratelimit|lamre|lamretry|lamsecurity|lamserver|lamserver_plugins|lamserver_tus|lamset|lamsort|lamstack|lamstats|lamstrings|lamsys|lamtemplate|lamtest|lamthreading|lamtime|lamtypes|lamunicode|lamurl|lamuuid|lamxml|lamyaml)\\b"
+        }
+      ]
+    },
+    "stdlib-classes": {
+      "patterns": [
+        {
+          "name": "support.class.stdlib.type.lammergeier",
+          "match": "\\b(Result|Error|Array|Matrix|Iter|LruCache|TtlCache|Uuid|Server|Request|Response|Http|HttpClient|HttpResponse|Heap|WaitGroup|Channel|Mutex|Atomic|Time|Duration|Path|File|Json|Csv|Xml|XmlNode|Yaml|Template|HtmlTemplate|Retry|TokenBucket|CircuitBreaker|HttpError|Jwt|JwtKeySet|TusServer|Db|QueryBuilder)\\b"
+        }
+      ]
+    },
+    "lammergeier-namespace": {
+      "patterns": [
+        {
+          "name": "support.constant.lammergeier-namespace.lammergeier",
+          "match": "\\bLAMMERGEIER\\.(?:Result\\.(?:Ok|Err)|Error|None|nil)\\b"
+        },
+        {
+          "name": "invalid.illegal.lammergeier-namespace.lammergeier",
+          "match": "\\bLAMMERGEIER\\.[A-Za-z_][A-Za-z_0-9.]*\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.lammergeier",
+          "match": "\\b(print|println|len|append|range|enumerate|map|filter|zip|sorted|reversed|sum|min|max|abs|open|input|type|isinstance|hasattr|getattr|setattr|int|float|str|bool|list|dict|set|tuple|format|round|pow|divmod|hex|oct|bin|ord|chr|hash|id|repr|vars|dir|all|any|iter|next|super|staticmethod|classmethod|property)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.lammergeier",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.try.lammergeier",
+          "match": "(?<=[\\w\\)\\]])\\?"
+        },
+        {
+          "name": "keyword.operator.assignment.lammergeier",
+          "match": "(=|\\+=|-=|\\*=|/=|//=|%=|\\*\\*=|&=|\\|=|\\^=|<<=|>>=)"
+        },
+        {
+          "name": "keyword.operator.comparison.lammergeier",
+          "match": "(==|!=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.lammergeier",
+          "match": "(\\+|-|\\*\\*|\\*|//|/|%)"
+        },
+        {
+          "name": "keyword.operator.bitwise.lammergeier",
+          "match": "(&|\\||\\^|~|<<|>>)"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.lammergeier",
+          "match": "\\b\\d+\\.\\d+([eE][+-]?\\d+)?\\b"
+        },
+        {
+          "name": "constant.numeric.hex.lammergeier",
+          "match": "\\b0[xX][0-9a-fA-F]+\\b"
+        },
+        {
+          "name": "constant.numeric.octal.lammergeier",
+          "match": "\\b0[oO][0-7]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.lammergeier",
+          "match": "\\b0[bB][01]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.lammergeier",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "function-call": {
+      "patterns": [
+        {
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": { "name": "entity.name.function.call.lammergeier" }
+          }
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "name": "variable.other.lammergeier",
+          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}

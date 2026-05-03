@@ -1,0 +1,109 @@
+# Integration test: lamemcached against an unauthenticated memcached
+# server. Exercises strings, counters, append/prepend, exists/touch,
+# and STATS / VERSION.
+#
+# expect: get-missing: <empty>
+# expect: set-and-get: hello
+# expect: exists-after-set: true
+# expect: add-first: true
+# expect: add-second: false
+# expect: replace-existing: true
+# expect: replace-missing: false
+# expect: get-after-replace: world
+# expect: delete-existing: true
+# expect: delete-missing: false
+# expect: exists-after-delete: false
+# expect: incr-initial: 0
+# expect: incr-step: 1
+# expect: incrBy-3: 4
+# expect: decr-1: 3
+# expect: append: head|tail
+# expect: prepend: front|head|tail
+# expect: touch-existing: true
+# expect: touch-missing: false
+# expect: version-nonempty: true
+# expect: stats-has-curr-items: true
+# expect: flushed-get: <empty>
+
+from lamemcached import Memcached
+
+func main() {
+    m: Memcached = Memcached.connect("localhost:11211")
+    m.flush()
+
+    # ── Strings ──────────────────────────────────────────────
+    missing: str = m.get("does-not-exist")
+    if len(missing) == 0 {
+        print("get-missing: <empty>")
+    } else {
+        print("get-missing: " + missing)
+    }
+    m.set("greeting", "hello")
+    print("set-and-get: " + m.get("greeting"))
+    print("exists-after-set: " + str(m.exists("greeting")))
+
+    # ── ADD / REPLACE ────────────────────────────────────────
+    print("add-first: " + str(m.add("only-once", "v1")))
+    print("add-second: " + str(m.add("only-once", "v2")))
+    print("replace-existing: " + str(m.replace("only-once", "world")))
+    print("replace-missing: " + str(m.replace("never-existed", "x")))
+    print("get-after-replace: " + m.get("only-once"))
+
+    # ── DELETE ───────────────────────────────────────────────
+    print("delete-existing: " + str(m.delete("only-once")))
+    print("delete-missing: " + str(m.delete("only-once")))
+    print("exists-after-delete: " + str(m.exists("only-once")))
+
+    # ── Counters ─────────────────────────────────────────────
+    # First INCR with ``initial=0`` returns 0 — that's how memcached
+    # signals "I created the key for you, the next call will start
+    # incrementing." Subsequent calls increment normally.
+    print("incr-initial: " + str(m.incr("counter", 1, 0)))
+    print("incr-step: " + str(m.incr("counter")))
+    print("incrBy-3: " + str(m.incr("counter", 3)))
+    print("decr-1: " + str(m.decr("counter")))
+
+    # ── APPEND / PREPEND ─────────────────────────────────────
+    m.set("buf", "head")
+    m.append("buf", "|tail")
+    print("append: " + m.get("buf"))
+    m.prepend("buf", "front|")
+    print("prepend: " + m.get("buf"))
+
+    # ── TOUCH ────────────────────────────────────────────────
+    m.set("ephemeral", "x")
+    print("touch-existing: " + str(m.touch("ephemeral", 30)))
+    print("touch-missing: " + str(m.touch("never-existed", 30)))
+
+    # ── VERSION / STATS ──────────────────────────────────────
+    versions: dict[str, str] = m.version()
+    if len(versions) > 0 {
+        print("version-nonempty: true")
+    } else {
+        print("version-nonempty: false")
+    }
+    serverStats: dict[str, dict[str, str]] = m.stats()
+    foundCurrItems: bool = false
+    for serverAddr, stats in serverStats {
+        # ``key in dict`` membership is map-typed, which the
+        # transpiler doesn't lift; do the check Go-side instead.
+        go! {
+            _ = serverAddr
+            if _, ok := stats["curr_items"]; ok {
+                foundCurrItems = true
+            }
+        }
+    }
+    print("stats-has-curr-items: " + str(foundCurrItems))
+
+    # ── FLUSH ────────────────────────────────────────────────
+    m.flush()
+    after: str = m.get("buf")
+    if len(after) == 0 {
+        print("flushed-get: <empty>")
+    } else {
+        print("flushed-get: " + after)
+    }
+
+    m.close()
+}

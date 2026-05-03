@@ -1,0 +1,22 @@
+# Rosetta Code: GCD (Greatest Common Divisor)
+# https://rosettacode.org/wiki/Greatest_common_divisor
+# expect: 4
+# expect: 1
+# expect: 12
+# expect: 7
+
+func gcd(a: int, b: int) -> int {
+    while b != 0 {
+        temp: int = b
+        b = a % b
+        a = temp
+    }
+    return a
+}
+
+func main() {
+    print(gcd(12, 8))
+    print(gcd(17, 13))
+    print(gcd(36, 24))
+    print(gcd(49, 21))
+}

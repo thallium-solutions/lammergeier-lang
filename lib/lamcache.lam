@@ -1,0 +1,257 @@
+# Lammergeier standard library: in-memory caches.
+# Import with: from lamcache import LruCache, TtlCache
+#
+# ``LruCache`` is a fixed-capacity Least-Recently-Used cache; on
+# overflow the *least* recently accessed entry is evicted. ``TtlCache``
+# associates a wall-clock expiry with each entry; reads transparently
+# drop expired values (no separate sweeper goroutine).
+#
+# Both caches are goroutine-safe — every public method acquires an
+# internal mutex. They store ``any`` values keyed by a hashable Go
+# type (string / number / bool); for compound keys, encode them to a
+# string first.
+#
+#     from lamcache import LruCache, TtlCache
+#
+#     c: LruCache = LruCache(128)
+#     c.put("user:42", profile)
+#     hit: any = c.get("user:42")             # nil if missing
+#
+#     ttl: TtlCache = TtlCache()
+#     ttl.put("token", "abcd", 30)            # expires in 30 seconds
+#     v: any = ttl.get("token")               # nil after the TTL fires
+
+go! {
+    import (
+        "container/list"
+        "sync"
+        "time"
+    )
+}
+
+go! {
+    type lruEntry struct {
+        key interface{}
+        value interface{}
+    }
+}
+
+class LruCache {
+    #- LRU cache backed by ``container/list`` for the ordering and a
+       map for O(1) lookups. ``capacity`` must be > 0; on every ``put``
+       above the limit, the tail (least-recently-used) is evicted. -#
+
+    func __init__(self, capacity: int) {
+        self.capacity: int = capacity
+        self.lst: any = None
+        self.idx: any = None
+        self.mu: any = None
+        go! {
+            if capacity <= 0 {
+                panic("LruCache: capacity must be > 0")
+            }
+            s.Lst = list.New()
+            s.Idx = map[interface{}]*list.Element{}
+            s.Mu = &sync.Mutex{}
+        }
+    }
+
+    func get(self, key: any) -> any {
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            idx := s.Idx.(map[interface{}]*list.Element)
+            elem, ok := idx[key]
+            if !ok { return nil }
+            s.Lst.(*list.List).MoveToFront(elem)
+            return elem.Value.(*lruEntry).value
+        }
+    }
+
+    func put(self, key: any, value: any) {
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            lst := s.Lst.(*list.List)
+            idx := s.Idx.(map[interface{}]*list.Element)
+            if elem, ok := idx[key]; ok {
+                elem.Value.(*lruEntry).value = value
+                lst.MoveToFront(elem)
+                return
+            }
+            elem := lst.PushFront(&lruEntry{key: key, value: value})
+            idx[key] = elem
+            cap_ := int(s.Capacity)
+            if lst.Len() > cap_ {
+                back := lst.Back()
+                if back != nil {
+                    lst.Remove(back)
+                    delete(idx, back.Value.(*lruEntry).key)
+                }
+            }
+        }
+    }
+
+    func contains(self, key: any) -> bool {
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            _, ok := s.Idx.(map[interface{}]*list.Element)[key]
+            return ok
+        }
+    }
+
+    func remove(self, key: any) -> bool {
+        #- Drop ``key`` from the cache. Returns true iff the key was
+           actually present. -#
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            idx := s.Idx.(map[interface{}]*list.Element)
+            elem, ok := idx[key]
+            if !ok { return false }
+            s.Lst.(*list.List).Remove(elem)
+            delete(idx, key)
+            return true
+        }
+    }
+
+    func size(self) -> int {
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            return s.Lst.(*list.List).Len()
+        }
+    }
+
+    func clear(self) {
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            s.Lst.(*list.List).Init()
+            s.Idx = map[interface{}]*list.Element{}
+        }
+    }
+}
+
+go! {
+    type ttlEntry struct {
+        value     interface{}
+        expiresAt time.Time
+    }
+}
+
+class TtlCache {
+    #- Time-to-live cache. Each ``put`` takes a TTL in seconds; entries
+       become invisible once the deadline passes. Lookups perform the
+       expiry check inline, so there's no background goroutine — the
+       cache only does work when you call into it. -#
+
+    func __init__(self) {
+        self.idx: any = None
+        self.mu: any = None
+        go! {
+            s.Idx = map[interface{}]*ttlEntry{}
+            s.Mu = &sync.Mutex{}
+        }
+    }
+
+    func put(self, key: any, value: any, ttlSeconds: int) {
+        #- Cache ``value`` under ``key`` with a TTL of ``ttlSeconds``.
+           Use ``putForever`` if you want the entry to live until
+           explicitly removed. -#
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            s.Idx.(map[interface{}]*ttlEntry)[key] = &ttlEntry{
+                value:     value,
+                expiresAt: time.Now().Add(time.Duration(ttlSeconds) * time.Second),
+            }
+        }
+    }
+
+    func putForever(self, key: any, value: any) {
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            s.Idx.(map[interface{}]*ttlEntry)[key] = &ttlEntry{
+                value:     value,
+                expiresAt: time.Time{},  // zero value -> never expires
+            }
+        }
+    }
+
+    func get(self, key: any) -> any {
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            idx := s.Idx.(map[interface{}]*ttlEntry)
+            entry, ok := idx[key]
+            if !ok { return nil }
+            if !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt) {
+                delete(idx, key)
+                return nil
+            }
+            return entry.value
+        }
+    }
+
+    func contains(self, key: any) -> bool {
+        return self.get(key) != None
+    }
+
+    func remove(self, key: any) -> bool {
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            idx := s.Idx.(map[interface{}]*ttlEntry)
+            if _, ok := idx[key]; !ok { return false }
+            delete(idx, key)
+            return true
+        }
+    }
+
+    func size(self) -> int {
+        #- Number of entries, including expired ones that haven't been
+           reaped yet. Call ``purgeExpired`` first for a strict count. -#
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            return len(s.Idx.(map[interface{}]*ttlEntry))
+        }
+    }
+
+    func purgeExpired(self) -> int {
+        #- Drop every expired entry. Returns how many were removed. -#
+        go! {
+            mu := s.Mu.(*sync.Mutex)
+            mu.Lock()
+            defer mu.Unlock()
+            idx := s.Idx.(map[interface{}]*ttlEntry)
+            now := time.Now()
+            removed := 0
+            for k, e := range idx {
+                if !e.expiresAt.IsZero() && now.After(e.expiresAt) {
+                    delete(idx, k)
+                    removed++
+                }
+            }
+            return removed
+        }
+    }
+}
+
+func main() {
+    pass
+}

@@ -1,0 +1,39 @@
+# Test: Augmented assignment operators
+# expect: 15
+# expect: 10
+# expect: 50
+# expect: 10
+# expect: 1
+# expect: 6
+# expect: 0
+# expect: 7
+
+func main() {
+    x: int = 10
+    x += 5
+    print(x)
+
+    x -= 5
+    print(x)
+
+    x *= 5
+    print(x)
+
+    x /= 5
+    print(x)
+
+    x %= 3
+    print(x)
+
+    # Bitwise augmented
+    y: int = 3
+    y <<= 1
+    print(y)
+
+    y >>= 3
+    print(y)
+
+    z: int = 5
+    z |= 2
+    print(z)
+}

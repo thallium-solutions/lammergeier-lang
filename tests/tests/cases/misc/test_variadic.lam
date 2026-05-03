@@ -1,0 +1,35 @@
+# Test: variadic arguments - sum, concat, count
+# expect: 10
+# expect: 15
+# expect: 3
+# expect: hello world foo
+
+func sum_all(*nums: int) -> int {
+    total: int = 0
+    for n in nums {
+        total += n
+    }
+    return total
+}
+
+func count(*items: string) -> int {
+    return len(items)
+}
+
+func join_words(*words: string) -> str {
+    result: str = ""
+    for i, w in enumerate(words) {
+        if i > 0 {
+            result = result + " "
+        }
+        result = result + w
+    }
+    return result
+}
+
+func main() {
+    print(sum_all(1, 2, 3, 4))
+    print(sum_all(5, 5, 5))
+    print(count("a", "b", "c"))
+    print(join_words("hello", "world", "foo"))
+}

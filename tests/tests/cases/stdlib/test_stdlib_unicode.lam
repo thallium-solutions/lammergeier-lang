@@ -1,0 +1,22 @@
+# Test: tpyunicode standard library
+# expect: 5
+# expect: true
+# expect: true
+# expect: true
+# expect: unicode_ok
+
+from lamunicode import Unicode
+
+func main() {
+    print(Unicode.runeCount("hello"))
+    if Unicode.isValid("hello") {
+        print("true")
+    }
+    if Unicode.isLetter("A") {
+        print("true")
+    }
+    if Unicode.isDigit("5") {
+        print("true")
+    }
+    print("unicode_ok")
+}

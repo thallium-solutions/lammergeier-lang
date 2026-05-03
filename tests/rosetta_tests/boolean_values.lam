@@ -1,0 +1,15 @@
+# Rosetta Code: Boolean values
+# https://rosettacode.org/wiki/Boolean_values
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+
+func main() {
+    a: bool = true
+    b: bool = false
+    print(a)
+    print(b)
+    print(a and true)
+    print(a and b)
+}

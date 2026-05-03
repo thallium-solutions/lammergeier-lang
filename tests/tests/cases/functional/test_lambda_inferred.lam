@@ -1,0 +1,56 @@
+# Test: untyped lambdas receive their param types from the call site
+# when passed directly to functional methods. The receiver's element
+# type flows into the lambda so `x * 2` type-checks as real `int`.
+# expect: doubled=[2 4 6 8 10]
+# expect: evens=[2 4]
+# expect: sum=15
+# expect: sum-init=25
+# expect: any-odd=true
+# expect: all-pos=true
+# expect: not-any-neg=false
+# expect: not-all-even=false
+# expect: squared=[1 4 9 16 25]
+# expect: filtered-map=[4 16]
+
+func main() {
+    nums: list[int] = [1, 2, 3, 4, 5]
+
+    # 1. map: `x * 2` compiles as `x * 2` over typed `int`.
+    doubled: list[int] = nums.map(lambda x: x * 2)
+    print(f"doubled={doubled}")
+
+    # 2. filter: `x % 2 == 0` returns bool directly.
+    evens: list[int] = nums.filter(lambda x: x % 2 == 0)
+    print(f"evens={evens}")
+
+    # 3. reduce: no init.
+    total: int = nums.reduce(lambda a, b: a + b)
+    print(f"sum={total}")
+
+    # 4. reduce: with init.
+    total_init: int = nums.reduce(lambda a, b: a + b, 10)
+    print(f"sum-init={total_init}")
+
+    # 5. any / all — predicate returning bool.
+    has_odd: bool = nums.any(lambda x: x % 2 == 1)
+    print(f"any-odd={has_odd}")
+
+    all_pos: bool = nums.all(lambda x: x > 0)
+    print(f"all-pos={all_pos}")
+
+    # 6. any returning false.
+    has_neg: bool = nums.any(lambda x: x < 0)
+    print(f"not-any-neg={has_neg}")
+
+    # 7. all returning false.
+    all_even: bool = nums.all(lambda x: x % 2 == 0)
+    print(f"not-all-even={all_even}")
+
+    # 8. same-lambda-different-body on map.
+    squared: list[int] = nums.map(lambda x: x * x)
+    print(f"squared={squared}")
+
+    # 9. chained call — filter even, then map to square.
+    chained: list[int] = nums.filter(lambda x: x % 2 == 0).map(lambda x: x * x)
+    print(f"filtered-map={chained}")
+}

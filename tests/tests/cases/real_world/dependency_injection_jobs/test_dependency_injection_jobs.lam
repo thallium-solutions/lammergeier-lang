@@ -1,0 +1,29 @@
+# Real-world mini project: dependency injection container with retrying job runner.
+# expect: completed=2
+# expect: failed=1
+# expect: flaky_attempts=3
+# expect: doomed_attempts=3
+# expect: notifications=3
+# expect: last_notification=failed:doomed
+
+from jobs import Container, JobRunner, Job
+
+func main() {
+    c: Container = Container()
+    runner: JobRunner = c.runner()
+
+    fast: Job = Job("fast", 0)
+    flaky: Job = Job("flaky", 2)
+    doomed: Job = Job("doomed", 5)
+
+    runner.runOne(fast)
+    runner.runOne(flaky)
+    runner.runOne(doomed)
+
+    print(f"completed={len(runner.completed)}")
+    print(f"failed={len(runner.failed)}")
+    print(f"flaky_attempts={flaky.attempts}")
+    print(f"doomed_attempts={doomed.attempts}")
+    print(f"notifications={len(c.notifier.sent)}")
+    print(f"last_notification={c.notifier.sent[len(c.notifier.sent)-1]}")
+}

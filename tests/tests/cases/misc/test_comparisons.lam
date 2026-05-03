@@ -1,0 +1,43 @@
+# Test: Comparison operators - all variants
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+# expect: true
+# expect: true
+# expect: false
+# expect: true
+# expect: true
+# expect: cmp_ok
+
+func main() {
+    a: int = 10
+    b: int = 20
+
+    # Less than
+    print(a < b)
+    print(b < a)
+
+    # Greater than
+    print(b > a)
+    print(a > b)
+
+    # Equals
+    print(a == 10)
+    print(a == 20)
+
+    # Not equals
+    print(a != b)
+    print(a != 20)
+
+    # Less equal
+    print(a <= 5)
+
+    # Greater equal
+    print(a >= 10)
+    print(b >= 20)
+
+    print("cmp_ok")
+}

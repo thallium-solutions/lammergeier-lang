@@ -1,0 +1,220 @@
+# Protocol Buffers — wire-format codec on top of
+# ``google.golang.org/protobuf``. Lam doesn't compile ``.proto`` files
+# itself; the standard workflow is:
+#
+#   1. Write your ``.proto`` schemas under ``proto/`` in your project.
+#   2. Run ``protoc --go_out=. --go_opt=paths=source_relative *.proto``
+#      to generate Go types (one-off, checked-in alongside your code).
+#   3. Import the generated package inside a ``go!`` block.
+#   4. Use ``Pb.marshal(msg)`` / ``Pb.unmarshal(data, msg)`` from Lam.
+#
+# Example::
+#
+#     from lamprotobuf import Pb
+#
+#     go! {
+#         import myproto "github.com/me/app/proto/v1"
+#     }
+#
+#     func main() {
+#         u: any = None
+#         go! { u = &myproto.User{Name: "alice", Age: 30} }
+#         wire: str = Pb.marshal(u)
+#         decoded: any = None
+#         go! { decoded = &myproto.User{} }
+#         Pb.unmarshal(wire, decoded)
+#         go! {
+#             d := decoded.(*myproto.User)
+#             fmt.Printf("%s aged %d\n", d.Name, d.Age)
+#         }
+#     }
+#
+# Why no ``.proto`` runtime parsing? It would pull in ``protocompile``
+# (a heavy dep) and most production usage already runs ``protoc`` as a
+# build step — at which point the generated types are strictly faster
+# than the dynamic path. If/when there's demand for runtime ``.proto``
+# parsing, a second module ``lamprotobuf_dynamic`` can sit alongside.
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "google.golang.org/protobuf/encoding/protojson"
+        "google.golang.org/protobuf/encoding/prototext"
+        "google.golang.org/protobuf/proto"
+    )
+
+    func lamPbAsMessage(v interface{}) (proto.Message, bool) {
+        m, ok := v.(proto.Message)
+        return m, ok
+    }
+}
+
+class Pb {
+    #- Static class. Not instantiable. -#
+
+    static func marshal(msg: any) -> str {
+        #- Serialise ``msg`` (a ``*MyProtoType``) to the binary wire
+           format. Returns the bytes as a Go ``string`` so they survive
+           Lam's dict / channel typing intact (use ``[]byte(s)`` on the
+           Go side if you need a slice). Returns ``""`` on failure;
+           prefer ``tryMarshal`` if the distinction between empty and
+           error matters. -#
+        out: str = ""
+        go! {
+            if m, ok := lamPbAsMessage(msg); ok {
+                if b, err := proto.Marshal(m); err == nil {
+                    out = string(b)
+                }
+            }
+        }
+        return out
+    }
+
+    static func tryMarshal(msg: any) -> Result {
+        go! {
+            m, ok := lamPbAsMessage(msg)
+            if !ok {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("PbError", "value is not a proto.Message", nil))
+            }
+            b, err := proto.Marshal(m)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("PbError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(string(b))
+        }
+    }
+
+    static func unmarshal(data: str, msg: any) -> bool {
+        #- Decode binary wire bytes into ``msg`` (must be a freshly
+           allocated ``*MyProtoType``). Returns ``true`` on success.
+           ``msg`` is mutated in place. -#
+        ok: bool = false
+        go! {
+            if m, mok := lamPbAsMessage(msg); mok {
+                if err := proto.Unmarshal([]byte(data), m); err == nil {
+                    ok = true
+                }
+            }
+        }
+        return ok
+    }
+
+    static func tryUnmarshal(data: str, msg: any) -> Result {
+        go! {
+            m, ok := lamPbAsMessage(msg)
+            if !ok {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("PbError", "value is not a proto.Message", nil))
+            }
+            if err := proto.Unmarshal([]byte(data), m); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("PbError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(true)
+        }
+    }
+
+    static func toJson(msg: any) -> str {
+        #- Render ``msg`` as canonical proto-JSON (``protojson``). This
+           is the standard JSON mapping defined in the protobuf spec —
+           strict typing, base64 for ``bytes``, ``"NaN"``/``"Infinity"``
+           for floats, etc. Use this rather than ``Json.stringify``
+           when you want spec-compliant output. -#
+        out: str = ""
+        go! {
+            if m, ok := lamPbAsMessage(msg); ok {
+                if b, err := protojson.Marshal(m); err == nil {
+                    out = string(b)
+                }
+            }
+        }
+        return out
+    }
+
+    static func fromJson(jsonStr: str, msg: any) -> bool {
+        #- Parse a proto-JSON document into ``msg``. Tolerates both
+           camelCase and snake_case field names (``protojson`` defaults).
+           Returns ``true`` on success. -#
+        ok: bool = false
+        go! {
+            if m, mok := lamPbAsMessage(msg); mok {
+                if err := protojson.Unmarshal([]byte(jsonStr), m); err == nil {
+                    ok = true
+                }
+            }
+        }
+        return ok
+    }
+
+    static func toText(msg: any) -> str {
+        #- Render ``msg`` in protobuf text-format. Useful for logs and
+           snapshot tests where you want a stable, human-readable
+           representation. -#
+        out: str = ""
+        go! {
+            if m, ok := lamPbAsMessage(msg); ok {
+                if b, err := prototext.Marshal(m); err == nil {
+                    out = string(b)
+                }
+            }
+        }
+        return out
+    }
+
+    static func fromText(text: str, msg: any) -> bool {
+        #- Parse text-format into ``msg``. -#
+        ok: bool = false
+        go! {
+            if m, mok := lamPbAsMessage(msg); mok {
+                if err := prototext.Unmarshal([]byte(text), m); err == nil {
+                    ok = true
+                }
+            }
+        }
+        return ok
+    }
+
+    static func equal(a: any, b: any) -> bool {
+        #- Deep-equality on two proto messages by canonical wire bytes.
+           Cheaper than two ``proto.Marshal`` + ``bytes.Equal`` calls
+           because ``proto.Equal`` walks descriptors directly. -#
+        ok: bool = false
+        go! {
+            am, aOk := lamPbAsMessage(a)
+            bm, bOk := lamPbAsMessage(b)
+            if aOk && bOk {
+                ok = proto.Equal(am, bm)
+            }
+        }
+        return ok
+    }
+
+    static func size(msg: any) -> int {
+        #- Number of bytes ``marshal`` would produce, without actually
+           serialising. Useful to budget message sizes against gRPC
+           ``MaxRecvMsgSize`` etc. Returns ``-1`` on type errors. -#
+        n: int = -1
+        go! {
+            if m, ok := lamPbAsMessage(msg); ok {
+                n = proto.Size(m)
+            }
+        }
+        return n
+    }
+
+    static func clone(msg: any) -> any {
+        #- Return a deep copy of ``msg`` — same type, independent
+           backing memory. Useful for stamping a request prototype for
+           per-RPC mutation. -#
+        out: any = None
+        go! {
+            if m, ok := lamPbAsMessage(msg); ok {
+                out = proto.Clone(m)
+            }
+        }
+        return out
+    }
+}
+
+func main() {
+    pass
+}

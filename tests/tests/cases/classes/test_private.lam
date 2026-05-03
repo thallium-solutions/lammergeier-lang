@@ -1,0 +1,18 @@
+# Test: Private keyword for functions and variables
+# expect: private_result
+# expect: 42
+
+private func helper() -> str {
+    return "private_result"
+}
+
+func show() {
+    val: str = helper()
+    print(val)
+}
+
+func main() {
+    show()
+    private x: int = 42
+    print(x)
+}

@@ -1,0 +1,21 @@
+# Real-world mini project: chain-of-responsibility style registration validation.
+# expect: good_ok=true
+# expect: bad_ok=false
+# expect: bad_errors=5
+# expect: first_error=email
+# expect: joined=email,password_length,password_digit,age,country
+
+from validation import Registration, RegistrationValidator, ValidationResult
+from lamstrings import Strings
+
+func main() {
+    validator: RegistrationValidator = RegistrationValidator()
+    good: ValidationResult = validator.validate(Registration("ada@example.test", "abc12345", 37, "it"))
+    bad: ValidationResult = validator.validate(Registration("broken", "short", 16, "blocked"))
+
+    print(f"good_ok={good.ok}")
+    print(f"bad_ok={bad.ok}")
+    print(f"bad_errors={len(bad.errors)}")
+    print(f"first_error={bad.errors[0]}")
+    print(f"joined={Strings.join(bad.errors, ',')}")
+}

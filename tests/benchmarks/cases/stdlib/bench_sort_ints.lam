@@ -1,0 +1,18 @@
+# lamsort — sort a large int slice. Gives a baseline against the
+# Go builtin ``sort.Ints`` in case lamsort grows its own heuristic
+# (e.g. insertion-sort fast path for small inputs).
+
+from lamsort import Sort
+from lamrandom import Random
+
+func main() {
+    Random.seed(42)
+    vals: list[int] = []
+    for __i in range(100000) {
+        vals = append(vals, Random.randInt(0, 1000000))
+    }
+    out: list[int] = Sort.ints(vals)
+    if out[0] > out[len(out) - 1] {
+        print("unreachable")
+    }
+}

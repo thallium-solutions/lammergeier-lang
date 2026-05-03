@@ -1,0 +1,24 @@
+# Rosetta Code: Greatest element of a list
+# https://rosettacode.org/wiki/Greatest_element_of_a_list
+# expect: 99
+# expect: 1
+# expect: 42
+
+func greatest(arr: list[int]) -> int {
+    max_val: int = arr[0]
+    for v in arr {
+        if v > max_val {
+            max_val = v
+        }
+    }
+    return max_val
+}
+
+func main() {
+    a: list[int] = [5, 3, 99, 1, 7]
+    b: list[int] = [1]
+    c: list[int] = [42, 0, -5, 10]
+    print(greatest(a))
+    print(greatest(b))
+    print(greatest(c))
+}

@@ -1,0 +1,40 @@
+# Test: Concurrency using Lammergeier standard library
+# expect: channel_ok
+# expect: atomic_ok
+# expect: mutex_ok
+# expect: concurrency_done
+
+from lamconcurrency import Channel, Mutex, Atomic
+
+func main() {
+    # Channel: send and receive
+    ch: Channel = Channel(1)
+    ch.send(42)
+    val: any = ch.recv()
+    if val == 42 {
+        print("channel_ok")
+    }
+
+    # Atomic counter
+    counter: Atomic = Atomic(0)
+    for i in range(10) {
+        counter.increment()
+    }
+    if counter.get() == 10 {
+        print("atomic_ok")
+    }
+
+    # Mutex-protected counter
+    mu: Mutex = Mutex()
+    shared: Atomic = Atomic(0)
+    for i in range(100) {
+        mu.lock()
+        shared.increment()
+        mu.unlock()
+    }
+    if shared.get() == 100 {
+        print("mutex_ok")
+    }
+
+    print("concurrency_done")
+}

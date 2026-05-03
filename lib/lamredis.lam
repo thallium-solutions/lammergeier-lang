@@ -1,0 +1,1100 @@
+# Lammergeier standard library — Redis client.
+#
+# Thin wrapper around ``github.com/redis/go-redis/v9``: the official
+# client maintains the connection pool, transparent reconnects, ACL
+# auth, and pipelining for us, so this module focuses on giving Lam
+# code a small, idiomatic surface (string GET/SET with TTL, list /
+# hash / set / sorted-set helpers, pub-sub with a blocking iterator,
+# pipelines, and a generic ``exec`` escape hatch for commands we
+# haven't wrapped yet).
+#
+#     from lamredis import Redis
+#
+#     # No-auth, default DB.
+#     r: Redis = Redis.connect("localhost:6379")
+#     r.set("greeting", "hello")
+#     msg: str = r.get("greeting")            # "hello"
+#
+#     # Auth + non-default DB (Redis 6+ ACL also supports a username).
+#     r2: Redis = Redis.connect(
+#         "localhost:6380",
+#         password="secret",
+#         db=1,
+#     )
+#
+#     # Lists used as a queue.
+#     r.rpush("jobs", "a", "b", "c")
+#     job: str = r.lpop("jobs")               # "a"
+#
+#     # Hashes (record-shaped values).
+#     r.hsetMap("user:1", {"name": "alice", "tier": "gold"})
+#     u: dict[str, str] = r.hgetAll("user:1") # {"name": "alice", "tier": "gold"}
+#
+#     # Pub/sub.
+#     ps: PubSub = r.subscribe("events")
+#     msg: str = ps.next()                    # blocks until a message arrives
+#     ps.close()
+#
+# Missing-key semantics: ``get``, ``hget``, etc. return ``""`` for
+# absent keys (mirroring how Lam tends to treat empty values). When
+# you need to distinguish "missing" from "empty string", use
+# ``exists`` or the ``try*`` siblings that surface a ``Result``.
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "context"
+        "errors"
+        "fmt"
+        "strconv"
+        "time"
+
+        rdb "github.com/redis/go-redis/v9"
+    )
+
+    // Background context used for every command. Per-call timeouts
+    // are tunable through ``Redis.setTimeout``; the default ``go-redis``
+    // pool already enforces a 3s read/write timeout out of the box,
+    // so we don't reinvent that.
+    var lamRedisCtx = context.Background()
+
+    // ─── Conversion helpers ──────────────────────────────────
+    // ``go-redis`` returns native Go types (string / int64 / float64
+    // / []string / map[string]string …); the Lam side expects a
+    // narrower set, so each wrapper coerces consistently.
+
+    // Coerce arbitrary Go values to the string Redis expects on
+    // writes. Booleans serialise as "0"/"1" — same as Redis would
+    // accept on a roundtrip with INCR.
+    func lamRedisToString(v interface{}) string {
+        switch x := v.(type) {
+        case nil:
+            return ""
+        case string:
+            return x
+        case []byte:
+            return string(x)
+        case bool:
+            if x { return "1" }
+            return "0"
+        case int:
+            return strconv.Itoa(x)
+        case int64:
+            return strconv.FormatInt(x, 10)
+        case float64:
+            return strconv.FormatFloat(x, 'g', -1, 64)
+        default:
+            return fmt.Sprintf("%v", x)
+        }
+    }
+
+    // Convert ``[]interface{}`` (Lam list of any) into the variadic
+    // ``[]interface{}`` form ``go-redis`` expects. Each element is
+    // pre-stringified so callers don't need to think about types.
+    func lamRedisArgs(values []interface{}) []interface{} {
+        out := make([]interface{}, 0, len(values))
+        for _, v := range values {
+            out = append(out, lamRedisToString(v))
+        }
+        return out
+    }
+
+    // ``[]interface{}`` → ``[]string``. Lam list literals always
+    // transpile to ``[]interface{}``, but a number of go-redis APIs
+    // (EXISTS, DEL, HDEL, SUBSCRIBE, …) take variadic strings; this
+    // is the converter we use to bridge the two without forcing
+    // callers to type their lists explicitly.
+    func lamRedisStrings(values []interface{}) []string {
+        out := make([]string, len(values))
+        for i, v := range values {
+            out[i] = lamRedisToString(v)
+        }
+        return out
+    }
+
+    // ``redis.Nil`` is how go-redis signals "key not present" on
+    // GET / HGET / etc. We treat it as "" for ergonomics.
+    func lamRedisIsNil(err error) bool {
+        return errors.Is(err, rdb.Nil)
+    }
+}
+
+class PubSub {
+    #- Iterator over messages on subscribed channels. Returned by
+       ``Redis.subscribe`` / ``Redis.psubscribe``. Methods block
+       until a message is available; ``close()`` releases the
+       underlying connection back to the pool. -#
+
+    func __init__(self) {
+        self._ps: any = None
+        self._timeoutMs: int = 0
+    }
+
+    func setTimeout(self, ms: int) {
+        #- Block for at most ``ms`` milliseconds when waiting for a
+           message. ``ms == 0`` (the default) waits forever. The
+           timeout applies per ``next*`` call, not for the whole
+           subscription. -#
+        self._timeoutMs = ms
+    }
+
+    func next(self) -> str {
+        #- Wait for and return the next message's payload as a
+           string. Returns ``""`` on timeout, on connection close,
+           or if the subscription was cancelled. -#
+        out: str = ""
+        timeoutMs: int = self._timeoutMs
+        go! {
+            ps, _ := s._ps.(*rdb.PubSub)
+            if ps == nil {
+                return
+            }
+            if timeoutMs > 0 {
+                ctx, cancel := context.WithTimeout(lamRedisCtx, time.Duration(timeoutMs)*time.Millisecond)
+                defer cancel()
+                msg, err := ps.ReceiveMessage(ctx)
+                if err != nil {
+                    return
+                }
+                out = msg.Payload
+            } else {
+                msg, err := ps.ReceiveMessage(lamRedisCtx)
+                if err != nil {
+                    return
+                }
+                out = msg.Payload
+            }
+        }
+        return out
+    }
+
+    func nextWith(self) -> dict[str, str] {
+        #- Variant that returns ``{"channel": ..., "pattern": ...,
+           "payload": ...}``. Useful when subscribed to multiple
+           channels or pattern-subscribed. -#
+        out: dict[str, str] = {}
+        timeoutMs: int = self._timeoutMs
+        go! {
+            ps, _ := s._ps.(*rdb.PubSub)
+            if ps == nil {
+                return
+            }
+            ctx := lamRedisCtx
+            if timeoutMs > 0 {
+                c, cancel := context.WithTimeout(lamRedisCtx, time.Duration(timeoutMs)*time.Millisecond)
+                defer cancel()
+                ctx = c
+            }
+            msg, err := ps.ReceiveMessage(ctx)
+            if err != nil {
+                return
+            }
+            out["channel"] = msg.Channel
+            out["pattern"] = msg.Pattern
+            out["payload"] = msg.Payload
+        }
+        return out
+    }
+
+    func close(self) {
+        #- Stop the subscription and release the underlying
+           connection. Safe to call multiple times. -#
+        go! {
+            if ps, ok := s._ps.(*rdb.PubSub); ok && ps != nil {
+                ps.Close()
+            }
+            s._ps = nil
+        }
+    }
+}
+
+class Redis {
+    #- Redis client. Thread-safe: each method acquires a connection
+       from ``go-redis``'s internal pool, so concurrent goroutines
+       can call methods on the same instance without coordination. -#
+
+    func __init__(self) {
+        self._client: any = None
+    }
+
+    static func connect(addr: str, password: str = "", db: int = 0, username: str = "") -> Redis {
+        #- Open a connection to ``addr`` (``host:port``). ``password``
+           is an empty string for unauthenticated servers; pass a
+           ``username`` too when using Redis 6+ ACLs. ``db`` selects
+           a logical database (Redis is single-DB by default — only
+           change this if you know you've configured multiple). -#
+        r: Redis = Redis()
+        go! {
+            opts := &rdb.Options{
+                Addr:     addr,
+                Username: username,
+                Password: password,
+                DB:       db,
+            }
+            r._client = rdb.NewClient(opts)
+        }
+        # Eager round-trip: surface bad creds / wrong addr at
+        # ``connect`` time rather than at the first command.
+        r.ping()
+        return r
+    }
+
+    static func fromUrl(url_: str) -> Redis {
+        #- Parse a ``redis://`` (or ``rediss://``) URL with embedded
+           credentials. Useful when reading config from an env var. -#
+        r: Redis = Redis()
+        go! {
+            opts, err := rdb.ParseURL(url_)
+            if err != nil {
+                panic(fmt.Sprintf("redis: invalid URL %q: %v", url_, err))
+            }
+            r._client = rdb.NewClient(opts)
+        }
+        r.ping()
+        return r
+    }
+
+    func close(self) {
+        #- Close the connection pool. The instance is unusable
+           afterwards. Idempotent. -#
+        go! {
+            if c, ok := s._client.(*rdb.Client); ok && c != nil {
+                c.Close()
+            }
+            s._client = nil
+        }
+    }
+
+    # ── Generic / health ──────────────────────────────────────
+    func ping(self) -> str {
+        #- ``PING`` round-trip. Returns ``"PONG"`` on success;
+           panics on any error so callers don't need to inspect a
+           bool. -#
+        out: str = ""
+        go! {
+            c := s._client.(*rdb.Client)
+            v, err := c.Ping(lamRedisCtx).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: ping: %v", err))
+            }
+            out = v
+        }
+        return out
+    }
+
+    func exec(self, cmd: str, args: list[any]) -> any {
+        #- Send an arbitrary command. ``args`` is a list of
+           positional arguments. The result type depends on the
+           command — strings come back as ``str``, integers as
+           ``int``, arrays as ``list``, hash maps as ``dict``. -#
+        out: any = None
+        go! {
+            c := s._client.(*rdb.Client)
+            full := append([]interface{}{cmd}, lamRedisArgs(args)...)
+            res, err := c.Do(lamRedisCtx, full...).Result()
+            if err != nil && !lamRedisIsNil(err) {
+                panic(fmt.Sprintf("redis: %s: %v", cmd, err))
+            }
+            out = res
+        }
+        return out
+    }
+
+    # ── Strings ───────────────────────────────────────────────
+    func set(self, key: str, value: any, ttlSec: int = 0) {
+        #- Set ``key`` to ``value``. Pass ``ttlSec > 0`` to apply a
+           TTL atomically — otherwise the key persists until
+           explicitly deleted. -#
+        go! {
+            c := s._client.(*rdb.Client)
+            v := lamRedisToString(value)
+            d := time.Duration(0)
+            if ttlSec > 0 {
+                d = time.Duration(ttlSec) * time.Second
+            }
+            if err := c.Set(lamRedisCtx, key, v, d).Err(); err != nil {
+                panic(fmt.Sprintf("redis: SET %s: %v", key, err))
+            }
+        }
+    }
+
+    func setNx(self, key: str, value: any, ttlSec: int = 0) -> bool {
+        #- ``SET ... NX`` — only set if the key doesn't already
+           exist. Returns ``true`` if the write happened. Common
+           lock primitive when paired with a TTL. -#
+        ok: bool = false
+        go! {
+            c := s._client.(*rdb.Client)
+            v := lamRedisToString(value)
+            d := time.Duration(0)
+            if ttlSec > 0 {
+                d = time.Duration(ttlSec) * time.Second
+            }
+            res, err := c.SetNX(lamRedisCtx, key, v, d).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: SETNX %s: %v", key, err))
+            }
+            ok = res
+        }
+        return ok
+    }
+
+    func get(self, key: str) -> str {
+        #- Read a string value. Returns ``""`` for missing keys —
+           use ``exists`` if the empty / missing distinction
+           matters. -#
+        out: str = ""
+        go! {
+            c := s._client.(*rdb.Client)
+            v, err := c.Get(lamRedisCtx, key).Result()
+            if err != nil {
+                if !lamRedisIsNil(err) {
+                    panic(fmt.Sprintf("redis: GET %s: %v", key, err))
+                }
+                return
+            }
+            out = v
+        }
+        return out
+    }
+
+    func getDel(self, key: str) -> str {
+        #- Atomically read and delete ``key``. Returns ``""`` if the
+           key wasn't there. -#
+        out: str = ""
+        go! {
+            c := s._client.(*rdb.Client)
+            v, err := c.GetDel(lamRedisCtx, key).Result()
+            if err != nil {
+                if !lamRedisIsNil(err) {
+                    panic(fmt.Sprintf("redis: GETDEL %s: %v", key, err))
+                }
+                return
+            }
+            out = v
+        }
+        return out
+    }
+
+    func mset(self, pairs: dict[str, any]) {
+        #- Set many key/value pairs in one round-trip. -#
+        go! {
+            c := s._client.(*rdb.Client)
+            args := make([]interface{}, 0, len(pairs)*2)
+            for k, v := range pairs {
+                args = append(args, k, lamRedisToString(v))
+            }
+            if err := c.MSet(lamRedisCtx, args...).Err(); err != nil {
+                panic(fmt.Sprintf("redis: MSET: %v", err))
+            }
+        }
+    }
+
+    func mget(self, keys: list[any]) -> list[str] {
+        #- Fetch many keys at once. Missing keys appear as ``""``
+           in the result, preserving input order. -#
+        out: list[str] = []
+        go! {
+            c := s._client.(*rdb.Client)
+            iargs := lamRedisStrings(keys)
+            res, err := c.MGet(lamRedisCtx, iargs...).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: MGET: %v", err))
+            }
+            for _, v := range res {
+                if v == nil {
+                    out = append(out, "")
+                } else {
+                    out = append(out, lamRedisToString(v))
+                }
+            }
+        }
+        return out
+    }
+
+    func exists(self, keys: list[any]) -> int {
+        #- Number of the supplied keys that currently exist. Useful
+           as a low-cost "is this key set?" check (count == 1). -#
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.Exists(lamRedisCtx, lamRedisStrings(keys)...).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: EXISTS: %v", err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func delete(self, keys: list[any]) -> int {
+        #- ``DEL`` — returns the number of keys actually removed. -#
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.Del(lamRedisCtx, lamRedisStrings(keys)...).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: DEL: %v", err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func expire(self, key: str, ttlSec: int) -> bool {
+        #- Apply a TTL to an existing key. Returns ``false`` when
+           the key doesn't exist (no TTL was set). -#
+        ok: bool = false
+        go! {
+            c := s._client.(*rdb.Client)
+            res, err := c.Expire(lamRedisCtx, key, time.Duration(ttlSec)*time.Second).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: EXPIRE %s: %v", key, err))
+            }
+            ok = res
+        }
+        return ok
+    }
+
+    func persist(self, key: str) -> bool {
+        #- Strip a TTL — the key becomes permanent. -#
+        ok: bool = false
+        go! {
+            c := s._client.(*rdb.Client)
+            res, err := c.Persist(lamRedisCtx, key).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: PERSIST %s: %v", key, err))
+            }
+            ok = res
+        }
+        return ok
+    }
+
+    func ttl(self, key: str) -> int {
+        #- Seconds until ``key`` expires. ``-1`` means no TTL,
+           ``-2`` means the key doesn't exist (matches the
+           command's wire-level convention). -#
+        out: int = -2
+        go! {
+            c := s._client.(*rdb.Client)
+            d, err := c.TTL(lamRedisCtx, key).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: TTL %s: %v", key, err))
+            }
+            // go-redis stores the wire-level -1/-2 sentinels as a
+            // raw ``time.Duration(-1)`` / ``time.Duration(-2)`` (i.e.
+            // -1 / -2 nanoseconds), only multiplying *positive*
+            // counts by precision. Match on the raw values so
+            // ``persist()``-then-``ttl()`` reports -1 instead of 0.
+            switch d {
+            case time.Duration(-1):
+                out = -1
+            case time.Duration(-2):
+                out = -2
+            default:
+                out = int(d / time.Second)
+            }
+        }
+        return out
+    }
+
+    func type_(self, key: str) -> str {
+        #- ``TYPE`` — one of ``"string"``, ``"list"``, ``"set"``,
+           ``"hash"``, ``"zset"``, ``"stream"``, or ``"none"``. -#
+        out: str = ""
+        go! {
+            c := s._client.(*rdb.Client)
+            v, err := c.Type(lamRedisCtx, key).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: TYPE %s: %v", key, err))
+            }
+            out = v
+        }
+        return out
+    }
+
+    func keys(self, pattern: str) -> list[str] {
+        #- ``KEYS pattern`` — globbed key listing. Avoid in hot
+           paths against a production server: it scans the entire
+           keyspace and blocks. ``scan`` is the production-safe
+           alternative. -#
+        out: list[str] = []
+        go! {
+            c := s._client.(*rdb.Client)
+            res, err := c.Keys(lamRedisCtx, pattern).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: KEYS %s: %v", pattern, err))
+            }
+            out = res
+        }
+        return out
+    }
+
+    func scan(self, cursor: int, match: str = "", count: int = 0) -> dict[str, any] {
+        #- Cursor-based iteration. Returns ``{cursor: int, keys:
+           list[str]}``; pass ``cursor`` back in until it's ``0``. -#
+        next: int = 0
+        keys: list[str] = []
+        go! {
+            c := s._client.(*rdb.Client)
+            res, n, err := c.Scan(lamRedisCtx, uint64(cursor), match, int64(count)).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: SCAN: %v", err))
+            }
+            keys = res
+            next = int(n)
+        }
+        out: dict[str, any] = {}
+        out["cursor"] = next
+        out["keys"] = keys
+        return out
+    }
+
+    # ── Counters ──────────────────────────────────────────────
+    func incr(self, key: str) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.Incr(lamRedisCtx, key).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: INCR %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func incrBy(self, key: str, by: int) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.IncrBy(lamRedisCtx, key, int64(by)).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: INCRBY %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func decr(self, key: str) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.Decr(lamRedisCtx, key).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: DECR %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func decrBy(self, key: str, by: int) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.DecrBy(lamRedisCtx, key, int64(by)).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: DECRBY %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    # ── Lists ─────────────────────────────────────────────────
+    func lpush(self, key: str, values: list[any]) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.LPush(lamRedisCtx, key, lamRedisArgs(values)...).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: LPUSH %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func rpush(self, key: str, values: list[any]) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.RPush(lamRedisCtx, key, lamRedisArgs(values)...).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: RPUSH %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func lpop(self, key: str) -> str {
+        out: str = ""
+        go! {
+            c := s._client.(*rdb.Client)
+            v, err := c.LPop(lamRedisCtx, key).Result()
+            if err != nil {
+                if !lamRedisIsNil(err) {
+                    panic(fmt.Sprintf("redis: LPOP %s: %v", key, err))
+                }
+                return
+            }
+            out = v
+        }
+        return out
+    }
+
+    func rpop(self, key: str) -> str {
+        out: str = ""
+        go! {
+            c := s._client.(*rdb.Client)
+            v, err := c.RPop(lamRedisCtx, key).Result()
+            if err != nil {
+                if !lamRedisIsNil(err) {
+                    panic(fmt.Sprintf("redis: RPOP %s: %v", key, err))
+                }
+                return
+            }
+            out = v
+        }
+        return out
+    }
+
+    func llen(self, key: str) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.LLen(lamRedisCtx, key).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: LLEN %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func lrange(self, key: str, start: int, stop: int) -> list[str] {
+        #- ``LRANGE`` — inclusive range. ``-1`` means "last element". -#
+        out: list[str] = []
+        go! {
+            c := s._client.(*rdb.Client)
+            res, err := c.LRange(lamRedisCtx, key, int64(start), int64(stop)).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: LRANGE %s: %v", key, err))
+            }
+            out = res
+        }
+        return out
+    }
+
+    # ── Hashes ────────────────────────────────────────────────
+    func hset(self, key: str, field: str, value: any) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.HSet(lamRedisCtx, key, field, lamRedisToString(value)).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: HSET %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func hsetMap(self, key: str, fields: dict[str, any]) -> int {
+        #- Bulk variant — write many fields in a single round-trip. -#
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            args := make([]interface{}, 0, len(fields)*2)
+            for k, v := range fields {
+                args = append(args, k, lamRedisToString(v))
+            }
+            n, err := c.HSet(lamRedisCtx, key, args...).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: HSET %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func hget(self, key: str, field: str) -> str {
+        out: str = ""
+        go! {
+            c := s._client.(*rdb.Client)
+            v, err := c.HGet(lamRedisCtx, key, field).Result()
+            if err != nil {
+                if !lamRedisIsNil(err) {
+                    panic(fmt.Sprintf("redis: HGET %s.%s: %v", key, field, err))
+                }
+                return
+            }
+            out = v
+        }
+        return out
+    }
+
+    func hgetAll(self, key: str) -> dict[str, str] {
+        out: dict[str, str] = {}
+        go! {
+            c := s._client.(*rdb.Client)
+            res, err := c.HGetAll(lamRedisCtx, key).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: HGETALL %s: %v", key, err))
+            }
+            for k, v := range res {
+                out[k] = v
+            }
+        }
+        return out
+    }
+
+    func hdel(self, key: str, fields: list[any]) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.HDel(lamRedisCtx, key, lamRedisStrings(fields)...).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: HDEL %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func hexists(self, key: str, field: str) -> bool {
+        out: bool = false
+        go! {
+            c := s._client.(*rdb.Client)
+            v, err := c.HExists(lamRedisCtx, key, field).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: HEXISTS %s.%s: %v", key, field, err))
+            }
+            out = v
+        }
+        return out
+    }
+
+    func hkeys(self, key: str) -> list[str] {
+        out: list[str] = []
+        go! {
+            c := s._client.(*rdb.Client)
+            res, err := c.HKeys(lamRedisCtx, key).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: HKEYS %s: %v", key, err))
+            }
+            out = res
+        }
+        return out
+    }
+
+    func hincrBy(self, key: str, field: str, by: int) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.HIncrBy(lamRedisCtx, key, field, int64(by)).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: HINCRBY %s.%s: %v", key, field, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    # ── Sets ──────────────────────────────────────────────────
+    func sadd(self, key: str, members: list[any]) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.SAdd(lamRedisCtx, key, lamRedisArgs(members)...).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: SADD %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func srem(self, key: str, members: list[any]) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.SRem(lamRedisCtx, key, lamRedisArgs(members)...).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: SREM %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func smembers(self, key: str) -> list[str] {
+        out: list[str] = []
+        go! {
+            c := s._client.(*rdb.Client)
+            res, err := c.SMembers(lamRedisCtx, key).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: SMEMBERS %s: %v", key, err))
+            }
+            out = res
+        }
+        return out
+    }
+
+    func sismember(self, key: str, member: any) -> bool {
+        out: bool = false
+        go! {
+            c := s._client.(*rdb.Client)
+            v, err := c.SIsMember(lamRedisCtx, key, lamRedisToString(member)).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: SISMEMBER %s: %v", key, err))
+            }
+            out = v
+        }
+        return out
+    }
+
+    func scard(self, key: str) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.SCard(lamRedisCtx, key).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: SCARD %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    # ── Sorted sets ───────────────────────────────────────────
+    func zadd(self, key: str, score: float, member: any) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            z := rdb.Z{Score: score, Member: lamRedisToString(member)}
+            n, err := c.ZAdd(lamRedisCtx, key, z).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: ZADD %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func zincrBy(self, key: str, by: float, member: any) -> float {
+        out: float = 0.0
+        go! {
+            c := s._client.(*rdb.Client)
+            v, err := c.ZIncrBy(lamRedisCtx, key, by, lamRedisToString(member)).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: ZINCRBY %s: %v", key, err))
+            }
+            out = v
+        }
+        return out
+    }
+
+    func zscore(self, key: str, member: any) -> float {
+        out: float = 0.0
+        go! {
+            c := s._client.(*rdb.Client)
+            v, err := c.ZScore(lamRedisCtx, key, lamRedisToString(member)).Result()
+            if err != nil {
+                if !lamRedisIsNil(err) {
+                    panic(fmt.Sprintf("redis: ZSCORE %s: %v", key, err))
+                }
+                return
+            }
+            out = v
+        }
+        return out
+    }
+
+    func zrange(self, key: str, start: int, stop: int) -> list[str] {
+        out: list[str] = []
+        go! {
+            c := s._client.(*rdb.Client)
+            res, err := c.ZRange(lamRedisCtx, key, int64(start), int64(stop)).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: ZRANGE %s: %v", key, err))
+            }
+            out = res
+        }
+        return out
+    }
+
+    func zrangeWithScores(self, key: str, start: int, stop: int) -> list[dict[str, any]] {
+        out: list[dict[str, any]] = []
+        go! {
+            c := s._client.(*rdb.Client)
+            res, err := c.ZRangeWithScores(lamRedisCtx, key, int64(start), int64(stop)).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: ZRANGE %s: %v", key, err))
+            }
+            for _, z := range res {
+                m := map[string]interface{}{}
+                m["member"] = lamRedisToString(z.Member)
+                m["score"] = z.Score
+                out = append(out, m)
+            }
+        }
+        return out
+    }
+
+    func zrem(self, key: str, members: list[any]) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.ZRem(lamRedisCtx, key, lamRedisArgs(members)...).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: ZREM %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func zcard(self, key: str) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.ZCard(lamRedisCtx, key).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: ZCARD %s: %v", key, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    # ── Pub/Sub ───────────────────────────────────────────────
+    func publish(self, channel: str, message: any) -> int {
+        #- Returns the number of subscribers that received the
+           message. -#
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.Publish(lamRedisCtx, channel, lamRedisToString(message)).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: PUBLISH %s: %v", channel, err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+
+    func subscribe(self, channels: list[any]) -> PubSub {
+        #- Subscribe to one or more channels. The returned
+           ``PubSub`` blocks on ``next()`` until a message arrives;
+           always pair the call with ``ps.close()`` once you're
+           done so the connection returns to the pool. -#
+        ps: PubSub = PubSub()
+        go! {
+            c := s._client.(*rdb.Client)
+            sub := c.Subscribe(lamRedisCtx, lamRedisStrings(channels)...)
+            // Wait for confirmation that the subscription has
+            // taken effect — without this an immediate ``publish``
+            // from the same client could race the SUBSCRIBE.
+            if _, err := sub.Receive(lamRedisCtx); err != nil {
+                sub.Close()
+                panic(fmt.Sprintf("redis: SUBSCRIBE: %v", err))
+            }
+            ps._ps = sub
+        }
+        return ps
+    }
+
+    func psubscribe(self, patterns: list[any]) -> PubSub {
+        #- Pattern subscribe. Same blocking semantics as
+           ``subscribe`` — ``next()`` returns just the payload, use
+           ``nextWith()`` for the matching channel + pattern. -#
+        ps: PubSub = PubSub()
+        go! {
+            c := s._client.(*rdb.Client)
+            sub := c.PSubscribe(lamRedisCtx, lamRedisStrings(patterns)...)
+            if _, err := sub.Receive(lamRedisCtx); err != nil {
+                sub.Close()
+                panic(fmt.Sprintf("redis: PSUBSCRIBE: %v", err))
+            }
+            ps._ps = sub
+        }
+        return ps
+    }
+
+    # ── Pipelines / utilities ────────────────────────────────
+    func pipeline(self, commands: list[dict[str, any]]) -> list[any] {
+        #- Execute several commands in a single network round-trip.
+           Each entry is ``{"cmd": "...", "args": [...]}``; results
+           come back in the same order. Errors per-command are
+           returned as ``Error`` instances so the caller can spot
+           individual failures without aborting the batch. -#
+        out: list[any] = []
+        go! {
+            c := s._client.(*rdb.Client)
+            pipe := c.Pipeline()
+            cmders := make([]rdb.Cmder, 0, len(commands))
+            for _, cmd := range commands {
+                name, _ := cmd["cmd"].(string)
+                var args []interface{}
+                if rawArgs, ok := cmd["args"].([]interface{}); ok {
+                    args = lamRedisArgs(rawArgs)
+                } else if rawArgsList, ok := cmd["args"].([]string); ok {
+                    args = make([]interface{}, len(rawArgsList))
+                    for i, v := range rawArgsList {
+                        args[i] = v
+                    }
+                }
+                full := append([]interface{}{name}, args...)
+                cmders = append(cmders, pipe.Do(lamRedisCtx, full...))
+            }
+            _, err := pipe.Exec(lamRedisCtx)
+            // Per-command results are still readable even when
+            // ``Exec`` returns a non-nil error (e.g. one command
+            // erroring out doesn't void the others).
+            for _, cmder := range cmders {
+                if dc, ok := cmder.(*rdb.Cmd); ok {
+                    if v, e := dc.Result(); e == nil || lamRedisIsNil(e) {
+                        out = append(out, v)
+                    } else {
+                        out = append(out, fmt.Sprintf("error: %v", e))
+                    }
+                }
+            }
+            _ = err
+        }
+        return out
+    }
+
+    func flushDb(self) {
+        #- Drop every key in the currently-selected DB. Test-only —
+           never call this against shared infrastructure. -#
+        go! {
+            c := s._client.(*rdb.Client)
+            if err := c.FlushDB(lamRedisCtx).Err(); err != nil {
+                panic(fmt.Sprintf("redis: FLUSHDB: %v", err))
+            }
+        }
+    }
+
+    func dbSize(self) -> int {
+        out: int = 0
+        go! {
+            c := s._client.(*rdb.Client)
+            n, err := c.DBSize(lamRedisCtx).Result()
+            if err != nil {
+                panic(fmt.Sprintf("redis: DBSIZE: %v", err))
+            }
+            out = int(n)
+        }
+        return out
+    }
+}
+
+func main() {
+    pass
+}

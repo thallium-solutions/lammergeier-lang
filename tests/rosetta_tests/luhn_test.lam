@@ -1,0 +1,31 @@
+# Rosetta Code: Luhn test
+# https://rosettacode.org/wiki/Luhn_test_of_credit_card_numbers
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+
+func luhn(num: int) -> bool {
+    total: int = 0
+    even: bool = false
+    while num > 0 {
+        d: int = num % 10
+        if even {
+            d = d * 2
+            if d > 9 {
+                d -= 9
+            }
+        }
+        total += d
+        even = not even
+        num = num / 10
+    }
+    return total % 10 == 0
+}
+
+func main() {
+    print(luhn(49927398716))
+    print(luhn(49927398717))
+    print(luhn(1234567812345670))
+    print(luhn(1234567812345678))
+}

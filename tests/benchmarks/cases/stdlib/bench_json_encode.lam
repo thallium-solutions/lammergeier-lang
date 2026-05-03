@@ -1,0 +1,27 @@
+# lamjson encode — representative payload (nested objects + arrays)
+# encoded repeatedly. Shows the cost of walking the interface{} tree
+# plus json.Marshal on the Go side.
+
+from lamjson import Json
+
+func main() {
+    payload: dict[str, any] = {}
+    tags: list[str] = []
+    for i in range(20) {
+        tags = append(tags, f"tag{i}")
+    }
+    nested: dict[str, any] = {}
+    nested["active"] = true
+    nested["score"] = 42
+    nested["tags"] = tags
+    payload["user"] = "alice"
+    payload["meta"] = nested
+
+    last: str = ""
+    for __i in range(50000) {
+        last = Json.encode(payload)
+    }
+    if len(last) == 0 {
+        print("unreachable")
+    }
+}

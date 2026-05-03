@@ -1,0 +1,53 @@
+# Lammergeier standard library: process execution
+# Import with: from lamexec import Exec
+
+go! {
+    import (
+        "os/exec"
+        "strings"
+    )
+}
+
+class Exec {
+    static func run(command: str) -> str {
+        go! {
+            parts := strings.Fields(command)
+            if len(parts) == 0 {
+                return ""
+            }
+            cmd := exec.Command(parts[0], parts[1:]...)
+            out, err := cmd.CombinedOutput()
+            if err != nil {
+                return string(out) + "\n" + err.Error()
+            }
+            return string(out)
+        }
+    }
+
+    static func runSilent(command: str) -> int {
+        go! {
+            parts := strings.Fields(command)
+            if len(parts) == 0 {
+                return -1
+            }
+            cmd := exec.Command(parts[0], parts[1:]...)
+            err := cmd.Run()
+            if err != nil {
+                return 1
+            }
+            return 0
+        }
+    }
+
+    static func output(name: str, args: list[str]) -> str {
+        go! {
+            cmd := exec.Command(name, args...)
+            out, _ := cmd.Output()
+            return string(out)
+        }
+    }
+}
+
+func main() {
+    pass
+}

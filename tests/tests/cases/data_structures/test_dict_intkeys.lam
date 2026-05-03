@@ -1,0 +1,11 @@
+# Test: dict with integer keys
+# expect: 10
+# expect: 20
+# expect: 30
+
+func main() {
+    scores: dict[int, int] = {1: 10, 2: 20, 3: 30}
+    print(scores[1])
+    print(scores[2])
+    print(scores[3])
+}

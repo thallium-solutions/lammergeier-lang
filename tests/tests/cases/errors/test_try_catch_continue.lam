@@ -1,0 +1,101 @@
+# Test: try/catch IIFE recovery — code AFTER a successful catch must run.
+#
+# Pre-IIFE behaviour (function-scoped `defer recover()`) silently skipped
+# everything between the recovering catch and the function return.  After
+# the IIFE rewrite a successful catch leaves the IIFE and execution
+# continues with the next statement, like in any other language.
+#
+# expect: before
+# expect: caught: divide
+# expect: after
+# expect: tail: ok
+# expect: typed_after: 7
+# expect: voidish_done
+# expect: outer_before
+# expect: inner_caught
+# expect: inner_after
+# expect: outer_after
+# expect: nested_typed: 11
+
+func divz(d: int) -> int {
+    return 10 / d
+}
+
+# void-style function: catch swallows, code after the try/catch runs.
+func recover_and_continue() {
+    print("before")
+    try {
+        x: int = divz(0)
+        print(f"unreachable: {x}")
+    } catch Exception as e {
+        print("caught: divide")
+    }
+    print("after")
+}
+
+# typed-return function: catch mutates a local, statements after the
+# try/catch keep running and the final return uses the post-catch value.
+func typed_after() -> int {
+    n: int = 0
+    try {
+        raise ValueError("nope")
+    } catch ValueError as e {
+        n = 5
+    }
+    n = n + 2
+    return n
+}
+
+# void-style function with a raise/catch pair, prints after the catch.
+func voidish() {
+    try {
+        raise ValueError("boom")
+    } catch ValueError as e {
+        # swallow
+        x: int = 1
+        x = x
+    }
+    print("voidish_done")
+}
+
+# Nested try/catch — inner catch recovers and inner-after runs, then
+# outer-after runs.
+func nested() {
+    print("outer_before")
+    try {
+        try {
+            raise ValueError("inner")
+        } catch ValueError as e {
+            print("inner_caught")
+        }
+        print("inner_after")
+    } catch Exception as e {
+        print(f"outer_caught: {e}")
+    }
+    print("outer_after")
+}
+
+# Nested typed-return: inner catch sets n=10, inner-after adds 1 -> 11.
+func nested_typed(a: int) -> int {
+    n: int = a
+    try {
+        try {
+            raise ValueError("inner")
+        } catch ValueError as e {
+            n = n + 10
+        }
+        n = n + 1
+    } catch Exception as e {
+        n = -99
+    }
+    return n
+}
+
+func main() {
+    recover_and_continue()
+    print("tail: ok")
+    print(f"typed_after: {typed_after()}")
+    voidish()
+    nested()
+    print(f"nested_typed: {nested_typed(0)}")
+}

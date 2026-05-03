@@ -1,0 +1,15 @@
+# Test: f-string with multiple expressions
+# expect: 3 * 4 = 12
+# expect: name=Alice, age=30
+# expect: HELLO
+
+func main() {
+    a: int = 3
+    b: int = 4
+    print(f"{a} * {b} = {a * b}")
+    name: str = "Alice"
+    age: int = 30
+    print(f"name={name}, age={age}")
+    word: str = "hello"
+    print(f"{word.upper()}")
+}

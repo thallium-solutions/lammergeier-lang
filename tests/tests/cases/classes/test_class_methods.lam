@@ -1,0 +1,113 @@
+# Test: Class methods with various return types and patterns
+# expect: 0
+# expect: 5
+# expect: 10
+# expect: 15
+# expect: true
+# expect: false
+# expect: 11
+# expect: hello world
+# expect: 11
+# expect: 5
+# expect: -5
+# expect: 7
+# expect: Alice:100
+# expect: Bob:200
+# expect: 300
+# expect: cls_methods_ok
+
+class Counter2 {
+    func __init__(self) {
+        self.val: int = 0
+    }
+
+    func inc(self) {
+        self.val = self.val + 1
+    }
+
+    func inc_by(self, n: int) {
+        self.val = self.val + n
+    }
+
+    func get_val(self) -> int {
+        return self.val
+    }
+
+    func reset(self) {
+        self.val = 0
+    }
+
+    func is_positive(self) -> bool {
+        return self.val > 0
+    }
+}
+
+class Pair {
+    func __init__(self, first: int, second: int) {
+        self.first: int = first
+        self.second: int = second
+    }
+
+    func sum_pair(self) -> int {
+        return self.first + self.second
+    }
+
+    func diff(self) -> int {
+        return self.first - self.second
+    }
+
+    func max_pair(self) -> int {
+        if self.first > self.second {
+            return self.first
+        }
+        return self.second
+    }
+}
+
+class NamedValue {
+    func __init__(self, name: str, value: int) {
+        self.name: str = name
+        self.value: int = value
+    }
+
+    func describe(self) -> str {
+        return f"{self.name}:{self.value}"
+    }
+}
+
+func main() {
+    c: Counter2 = Counter2()
+    print(c.get_val())
+    c.inc_by(5)
+    print(c.get_val())
+    c.inc_by(5)
+    print(c.get_val())
+    c.inc_by(5)
+    print(c.get_val())
+    print(c.is_positive())
+    c.reset()
+    print(c.is_positive())
+
+    p: Pair = Pair(7, 4)
+    print(p.sum_pair())
+
+    # String output
+    print("hello world")
+
+    # Another pair
+    p2: Pair = Pair(8, 3)
+    print(p2.sum_pair())
+    print(p2.diff())
+    q: Pair = Pair(2, 7)
+    print(q.diff())
+    print(q.max_pair())
+
+    # Named values
+    nv1: NamedValue = NamedValue("Alice", 100)
+    nv2: NamedValue = NamedValue("Bob", 200)
+    print(nv1.describe())
+    print(nv2.describe())
+    print(nv1.value + nv2.value)
+
+    print("cls_methods_ok")
+}

@@ -1,0 +1,21 @@
+# Rosetta Code: Loops/While
+# https://rosettacode.org/wiki/Loops/While
+# expect: 1024
+# expect: 512
+# expect: 256
+# expect: 128
+# expect: 64
+# expect: 32
+# expect: 16
+# expect: 8
+# expect: 4
+# expect: 2
+# expect: 1
+
+func main() {
+    n: int = 1024
+    while n > 0 {
+        print(n)
+        n = n / 2
+    }
+}

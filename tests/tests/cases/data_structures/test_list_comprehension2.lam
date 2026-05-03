@@ -1,0 +1,18 @@
+# Test: Advanced list comprehensions
+# expect: [0 1 4 9 16]
+# expect: [0 2 4 6 8]
+# expect: [1 4 9 16]
+
+func main() {
+    # Squares
+    squares: list[int] = [x * x for x in range(5)]
+    print(squares)
+
+    # Even numbers
+    evens: list[int] = [x for x in range(10) if x % 2 == 0]
+    print(evens)
+
+    # Filtered squares
+    filtered: list[int] = [x * x for x in range(5) if x > 0]
+    print(filtered)
+}

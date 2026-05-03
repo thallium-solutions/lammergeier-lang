@@ -1,0 +1,148 @@
+# Integration test: ``Server.requestTimeoutMs`` + ``onTimeout`` hook.
+#
+# Exercises three branches of the timeout machinery:
+#
+#   1. **Server-default timeout fires** — a slow handler exceeds the
+#      server-level ``setRequestTimeout`` deadline, the dispatcher
+#      writes a 408 response and runs the registered ``onTimeout``
+#      hook. The hook bumps a package-level atomic counter so the
+#      test can prove it ran.
+#   2. **Per-route timeout override** — a route-level ``timeoutMs``
+#      override beats the server default. We make the server
+#      default permissive (1000ms) but configure the route at 30ms,
+#      so the same slow handler still trips the timeout.
+#   3. **Fast handler completes normally** — a route with the same
+#      slow handler but a *generous* per-route override returns the
+#      handler's normal payload, proving the timeout path is opt-in
+#      and the fast path keeps working.
+#
+# expect: t1-status: 408
+# expect: t1-hook-fired: true
+# expect: t1-body-has-message: true
+# expect: t2-status: 408
+# expect: t3-status: 200
+# expect: t3-body: too late
+
+from lamserver import Server, Request, Response
+from lamtime import Time
+
+go! {
+    import (
+        "encoding/json"
+        "io"
+        "net/http"
+        "strings"
+        "sync/atomic"
+        "time"
+    )
+
+    // Package-level atomic shared between the timeout hook (which
+    // doesn't have access to the test scope) and main(). See
+    // docs/SYNTAX.md → "Scoping inside go! blocks" for why this
+    // lives at the top level rather than inside a closure.
+    var lamTestTimeoutHits int64
+}
+
+func slowHandler(req: Request, res: Response) {
+    # Sleep longer than the smallest configured timeout so the
+    # dispatcher has to give up on us. Co-operative cancellation
+    # via ``req.rawHttp.Context().Done()`` is *also* tested in the
+    # onRequestAbort suite; here we just hang to prove the
+    # dispatcher's deadline path works regardless.
+    go! {
+        time.Sleep(300 * time.Millisecond)
+    }
+    res.text("too late")
+}
+
+func bumpTimeoutCounter(req: Request, res: Response) {
+    go! {
+        atomic.AddInt64(&lamTestTimeoutHits, 1)
+    }
+}
+
+func httpGet(url: str) -> dict[str, any] {
+    out: dict[str, any] = {"status": 0, "body": ""}
+    go! {
+        client := &http.Client{Timeout: 2 * time.Second}
+        resp, err := client.Get(url)
+        if err != nil {
+            out["status"] = 0
+            out["body"] = err.Error()
+            return out
+        }
+        defer resp.Body.Close()
+        b, _ := io.ReadAll(resp.Body)
+        out["status"] = resp.StatusCode
+        out["body"] = string(b)
+    }
+    return out
+}
+
+func main() {
+    # ── Test 1 + 3: server-default timeout, with one route also
+    #    overriding it generously to verify the override beats the
+    #    default in *both* directions (shorter or longer).
+    srv: Server = Server()
+    srv.setRequestTimeout(50)              # 50ms server default
+    srv.onTimeout(bumpTimeoutCounter)
+    srv.get("/slow-default", slowHandler)
+    srv.routeOpts("GET", "/slow-fast", slowHandler, {
+        "timeoutMs": 1000,                 # override default → completes
+    })
+    srv.routeOpts("GET", "/slow-tight", slowHandler, {
+        "timeoutMs": 30,                   # override default → tighter
+    })
+
+    srv.listenBackground(0)
+    addr: str = srv.boundAddr
+
+    # Server-default timeout (50ms) trips on the 300ms handler → 408
+    r1: dict[str, any] = httpGet("http://" + addr + "/slow-default")
+    s1: any = r1["status"]
+    b1: any = r1["body"]
+    print("t1-status: " + str(s1))
+
+    # Run the assertion on the hook counter after a brief settle
+    # so the goroutine has a chance to schedule.
+    Time.sleepMs(20)
+    hits: int = 0
+    go! {
+        hits = int(atomic.LoadInt64(&lamTestTimeoutHits))
+    }
+    if hits >= 1 {
+        print("t1-hook-fired: true")
+    } else {
+        print(f"t1-hook-fired: false (hits={hits})")
+    }
+
+    # Confirm the default 408 envelope carries the structured
+    # ``message`` field so plugins can rely on it.
+    hasMessage: bool = false
+    go! {
+        if bs, ok := b1.(string); ok {
+            var payload map[string]interface{}
+            if err := json.Unmarshal([]byte(bs), &payload); err == nil {
+                if msg, ok := payload["message"].(string); ok {
+                    hasMessage = strings.Contains(msg, "timeout")
+                }
+            }
+        }
+    }
+    print(f"t1-body-has-message: {hasMessage}")
+
+    # Per-route tighter timeout (30ms) also fires.
+    r2: dict[str, any] = httpGet("http://" + addr + "/slow-tight")
+    s2: any = r2["status"]
+    print("t2-status: " + str(s2))
+
+    # Per-route generous timeout (1000ms) lets the 300ms handler
+    # complete normally.
+    r3: dict[str, any] = httpGet("http://" + addr + "/slow-fast")
+    s3: any = r3["status"]
+    b3: any = r3["body"]
+    print("t3-status: " + str(s3))
+    print("t3-body: " + str(b3))
+
+    srv.close()
+}

@@ -1,0 +1,14 @@
+# Test: enumerate with string building
+# expect: [0]first [1]second [2]third
+
+func main() {
+    items: list[str] = ["first", "second", "third"]
+    result: str = ""
+    for i, item in enumerate(items) {
+        if i > 0 {
+            result = result + " "
+        }
+        result = result + f"[{i}]{item}"
+    }
+    print(result)
+}

@@ -1,0 +1,15 @@
+go! {
+    import "time"
+    import "strings"
+}
+
+func main() {
+    x: int = go!(time.Now().Year())
+    print(x > 2000)
+
+    s: str = go!(strings.ToUpper("hello"))
+    print(s)
+
+    y: int = go!(len("test"))
+    print(y)
+}

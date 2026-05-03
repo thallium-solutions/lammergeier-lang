@@ -1,0 +1,38 @@
+# Real-world mini project: inventory planning with statistics and math helpers.
+# expect: avg_a=12
+# expect: avg_b=4
+# expect: point_a=29
+# expect: point_b=13
+# expect: reorder_count=1
+# expect: total_on_hand=49
+# expect: service_ratio=72
+
+from inventory import StockItem
+from lammath import Math
+
+func main() {
+    demandA: list[float] = [10.0, 12.0, 9.0, 17.0]
+    demandB: list[float] = [3.0, 4.0, 5.0, 4.0]
+    a: StockItem = StockItem("FILTER", 24, demandA)
+    b: StockItem = StockItem("SEAL", 25, demandB)
+    items: list[StockItem] = [a, b]
+
+    reorderCount: int = 0
+    totalOnHand: int = 0
+    for item in items {
+        totalOnHand += item.onHand
+        if item.status(2, 5) == "reorder" {
+            reorderCount += 1
+        }
+    }
+
+    serviceRatio: int = Math.round(float(totalOnHand) / 68.0 * 100.0)
+
+    print(f"avg_a={int(a.averageDemand())}")
+    print(f"avg_b={int(b.averageDemand())}")
+    print(f"point_a={a.reorderPoint(2, 5)}")
+    print(f"point_b={b.reorderPoint(2, 5)}")
+    print(f"reorder_count={reorderCount}")
+    print(f"total_on_hand={totalOnHand}")
+    print(f"service_ratio={serviceRatio}")
+}

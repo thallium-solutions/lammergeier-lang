@@ -1,0 +1,8 @@
+# Transpilation: f-strings compile to fmt.Sprintf with %v placeholders.
+# expect-go: fmt.Sprintf("%v years old", age)
+
+func main() {
+    age: int = 30
+    msg: str = f"{age} years old"
+    print(msg)
+}

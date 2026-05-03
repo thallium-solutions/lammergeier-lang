@@ -1,0 +1,75 @@
+class WalletEvent {
+    func init(self, kind: str, account: str, cents: int) {
+        self.kind: str = kind
+        self.account: str = account
+        self.cents: int = cents
+    }
+
+    func line(self) -> str {
+        return f"{self.kind}:{self.account}:{self.cents}"
+    }
+}
+
+class WalletAggregate {
+    func init(self) {
+        self.events: list[WalletEvent] = []
+    }
+
+    func deposit(self, account: str, cents: int) {
+        self.events.append(WalletEvent("deposit", account, cents))
+    }
+
+    func withdraw(self, account: str, cents: int) -> bool {
+        if self.balance(account) < cents {
+            self.events.append(WalletEvent("rejected", account, cents))
+            return false
+        }
+        self.events.append(WalletEvent("withdraw", account, cents))
+        return true
+    }
+
+    func transfer(self, fromAccount: str, toAccount: str, cents: int) -> bool {
+        if self.withdraw(fromAccount, cents) {
+            self.deposit(toAccount, cents)
+            return true
+        }
+        return false
+    }
+
+    func balance(self, account: str) -> int {
+        total: int = 0
+        for ev in self.events {
+            if ev.account == account {
+                if ev.kind == "deposit" {
+                    total += ev.cents
+                }
+                if ev.kind == "withdraw" {
+                    total -= ev.cents
+                }
+            }
+        }
+        return total
+    }
+
+    func replay(self, events: list[WalletEvent]) {
+        self.events = []
+        for ev in events {
+            self.events.append(ev)
+        }
+    }
+
+    func auditLog(self) -> str {
+        out: str = ""
+        for ev in self.events {
+            if out != "" {
+                out += "|"
+            }
+            out += ev.line()
+        }
+        return out
+    }
+}
+
+func main() {
+    pass
+}

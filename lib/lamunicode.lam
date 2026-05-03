@@ -1,0 +1,98 @@
+# Lammergeier standard library: unicode/utf8 utilities
+# Import with: from lamunicode import Unicode
+
+go! {
+    import (
+        "unicode"
+        "unicode/utf8"
+    )
+}
+
+class Unicode {
+    static func runeCount(s: str) -> int {
+        go! {
+            return utf8.RuneCountInString(s)
+        }
+    }
+
+    static func isValid(s: str) -> bool {
+        go! {
+            return utf8.ValidString(s)
+        }
+    }
+
+    static func isLetter(ch: str) -> bool {
+        go! {
+            runes := []rune(ch)
+            if len(runes) == 0 {
+                return false
+            }
+            return unicode.IsLetter(runes[0])
+        }
+    }
+
+    static func isDigit(ch: str) -> bool {
+        go! {
+            runes := []rune(ch)
+            if len(runes) == 0 {
+                return false
+            }
+            return unicode.IsDigit(runes[0])
+        }
+    }
+
+    static func isUpper(ch: str) -> bool {
+        go! {
+            runes := []rune(ch)
+            if len(runes) == 0 {
+                return false
+            }
+            return unicode.IsUpper(runes[0])
+        }
+    }
+
+    static func isLower(ch: str) -> bool {
+        go! {
+            runes := []rune(ch)
+            if len(runes) == 0 {
+                return false
+            }
+            return unicode.IsLower(runes[0])
+        }
+    }
+
+    static func isSpace(ch: str) -> bool {
+        go! {
+            runes := []rune(ch)
+            if len(runes) == 0 {
+                return false
+            }
+            return unicode.IsSpace(runes[0])
+        }
+    }
+
+    static func toRunes(s: str) -> list[int] {
+        go! {
+            runes := []rune(s)
+            result := make([]int, len(runes))
+            for i, r := range runes {
+                result[i] = int(r)
+            }
+            return result
+        }
+    }
+
+    static func fromRunes(runes: list[int]) -> str {
+        go! {
+            rs := make([]rune, len(runes))
+            for i, r := range runes {
+                rs[i] = rune(r)
+            }
+            return string(rs)
+        }
+    }
+}
+
+func main() {
+    pass
+}

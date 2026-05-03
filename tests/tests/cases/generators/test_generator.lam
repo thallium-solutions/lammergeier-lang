@@ -1,0 +1,20 @@
+# Test: Generator with yield
+# expect: 0
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 4
+
+func gen_range(n: int) -> int {
+    i: int = 0
+    while i < n {
+        yield i
+        i += 1
+    }
+}
+
+func main() {
+    for val: int in gen_range(5) {
+        print(val)
+    }
+}

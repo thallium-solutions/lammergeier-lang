@@ -1,0 +1,33 @@
+# expect: push: 1 2 3
+# expect: size: 3
+# expect: empty: false
+
+class IntStack {
+    func __init__(self) {
+        self.items: list[int] = []
+        self.length: int = 0
+    }
+
+    func push(self, val: int) {
+        self.items.append(val)
+        self.length = self.length + 1
+    }
+
+    func size(self) -> int {
+        return self.length
+    }
+
+    func is_empty(self) -> bool {
+        return self.length == 0
+    }
+}
+
+func main() {
+    st: IntStack = IntStack()
+    st.push(1)
+    st.push(2)
+    st.push(3)
+    print("push: 1 2 3")
+    print(f"size: {st.size()}")
+    print(f"empty: {st.is_empty()}")
+}

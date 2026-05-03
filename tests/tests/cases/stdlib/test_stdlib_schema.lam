@@ -1,0 +1,65 @@
+# Test: lamschema — JSON Schema validation via gojsonschema.
+# Verifies declarative validation, error-list reporting, and
+# the compile-once-cache via ``register``.
+#
+# expect: simple ok: true
+# expect: simple bad: false
+# expect: errs: 2
+# expect: registered ok: true
+# expect: registered bad: false
+# expect: registered errs: 1
+# expect: complex ok: true
+# expect: complex bad: false
+# expect: not-json: false
+# expect: is-json: true
+# expect: unregister: true
+# expect: unregister miss: false
+
+from lamschema import Schema
+
+func main() {
+    simple: str = "{\"type\":\"object\",\"required\":[\"name\",\"age\"],\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1},\"age\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":150}}}"
+
+    okGood: bool = Schema.validateJson(simple, "{\"name\":\"alice\",\"age\":30}")
+    okBad: bool = Schema.validateJson(simple, "{\"name\":\"\",\"age\":-5}")
+    print(f"simple ok: {okGood}")
+    print(f"simple bad: {okBad}")
+
+    errs: list[str] = Schema.errors(simple, "{\"name\":\"\",\"age\":-5}")
+    n: int = len(errs)
+    print(f"errs: {n}")
+
+    # ── register-by-key flow
+    err: str = Schema.register("user.create", simple)
+    if err != "" {
+        print(f"unexpected register error: {err}")
+        return
+    }
+    okReg: bool = Schema.validateByKey("user.create", "{\"name\":\"bob\",\"age\":42}")
+    badReg: bool = Schema.validateByKey("user.create", "{\"name\":\"\",\"age\":42}")
+    print(f"registered ok: {okReg}")
+    print(f"registered bad: {badReg}")
+    regErrs: list[str] = Schema.errorsByKey("user.create", "{\"name\":\"\",\"age\":42}")
+    rn: int = len(regErrs)
+    print(f"registered errs: {rn}")
+
+    # ── complex schema: oneOf
+    complex_: str = "{\"oneOf\":[{\"type\":\"string\"},{\"type\":\"integer\",\"minimum\":0}]}"
+    okStr: bool = Schema.validateJson(complex_, "\"hello\"")
+    okInt: bool = Schema.validateJson(complex_, "42")
+    badType: bool = Schema.validateJson(complex_, "true")
+    print(f"complex ok: {okStr && okInt}")
+    print(f"complex bad: {badType}")
+
+    # ── isJson
+    nope: bool = Schema.isJson("{not-valid}")
+    yes: bool = Schema.isJson("{\"a\":1}")
+    print(f"not-json: {nope}")
+    print(f"is-json: {yes}")
+
+    # ── unregister
+    rem: bool = Schema.unregister("user.create")
+    print(f"unregister: {rem}")
+    miss: bool = Schema.unregister("nonexistent")
+    print(f"unregister miss: {miss}")
+}

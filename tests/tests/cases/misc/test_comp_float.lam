@@ -1,0 +1,9 @@
+# Test: List comprehension with float type (typed)
+# expect: [1.5 2.5 3.5 4.5]
+# expect: 4
+
+func main() {
+    vals: list[float] = [1.5, 2.5, 3.5, 4.5]
+    print(vals)
+    print(len(vals))
+}

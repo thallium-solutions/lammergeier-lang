@@ -1,0 +1,7 @@
+# expect-error: reserved identifier in Go
+# expect-error: `chan`
+
+func main() {
+    chan: int = 5
+    print(chan)
+}

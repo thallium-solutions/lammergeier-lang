@@ -1,0 +1,7 @@
+# Test: multi-for comprehension with filter
+# expect: 6
+
+func main() {
+    pairs: list[int] = [x + y for x in range(3) for y in range(3) if x != y]
+    print(len(pairs))
+}

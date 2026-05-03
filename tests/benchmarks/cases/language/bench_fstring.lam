@@ -1,0 +1,14 @@
+# F-string interpolation — stresses the fmt.Sprintf lowering. The
+# fan-out (four interpolations per iteration) makes this sensitive
+# to any future change that would unify f-strings with a
+# strings.Builder-based emitter.
+
+func main() {
+    last: str = ""
+    for i in range(200000) {
+        last = f"iter={i} half={i / 2} name=user_{i} tag=bench"
+    }
+    if len(last) == 0 {
+        print("unreachable")
+    }
+}

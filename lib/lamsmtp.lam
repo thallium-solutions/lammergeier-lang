@@ -1,0 +1,482 @@
+# Lammergeier standard library — SMTP mail sending.
+#
+# Wraps Go's ``net/smtp`` stdlib and composes RFC 5322 / MIME
+# multipart bodies in-memory, so programs can send plain-text,
+# HTML, and attachment mail without reaching for a third-party
+# dependency. Works with any SMTP server (MailHog / Mailpit for
+# local dev, Amazon SES / SendGrid / SMTP relay for prod).
+#
+#     from lamsmtp import Smtp, Mail
+#
+#     # One-shot plaintext.
+#     Smtp.sendMail(
+#         host="localhost:1025",
+#         sender="alice@example.com",
+#         to=["bob@example.com"],
+#         subject="Hello",
+#         text="Hi Bob!",
+#     )
+#
+#     # With auth (PLAIN over STARTTLS-upgraded connection, which
+#     # the stdlib's client negotiates when the server advertises
+#     # STARTTLS during EHLO):
+#     Smtp.sendMail(
+#         host="smtp.example.com:587",
+#         username="alice",
+#         password="app-password",
+#         sender="alice@example.com",
+#         to=["bob@example.com"],
+#         subject="Hello",
+#         text="Hi!",
+#     )
+#
+#     # HTML + text alternative + attachments via the ``Mail``
+#     # builder — ``Smtp.send`` accepts either form.
+#     m: Mail = Mail()
+#     m.setSender("alice@example.com")
+#     m.addTo("bob@example.com")
+#     m.setSubject("Invoice")
+#     m.setText("PDF attached.")
+#     m.setHtml("<p>PDF attached.</p>")
+#     m.attach("invoice.pdf", "application/pdf", pdfBytes)
+#     Smtp.send(host="localhost:1025", mail=m)
+#
+# The ``sender``/``to`` split follows RFC 5321 terminology: the
+# "envelope from" / "envelope to" addresses used in ``MAIL FROM`` /
+# ``RCPT TO`` are what the server actually routes on. Display names
+# go into the ``From:`` / ``To:`` headers which the builder emits
+# for you.
+
+go! {
+    import (
+        "bytes"
+        "encoding/base64"
+        "fmt"
+        "mime"
+        "mime/multipart"
+        "net"
+        "net/smtp"
+        "net/textproto"
+        "strings"
+        "time"
+    )
+
+    // ``mail message`` struct — mirrored by the Lam-side ``Mail``
+    // class. Keeping the Go fields exported so the helper
+    // functions below can populate them from either API shape.
+    type lamSmtpAttachment struct {
+        Filename    string
+        ContentType string
+        Data        []byte
+    }
+
+    type lamSmtpMessage struct {
+        Sender      string
+        To          []string
+        Cc          []string
+        Bcc         []string
+        ReplyTo     string
+        Subject     string
+        Text        string
+        Html        string
+        Attachments []lamSmtpAttachment
+        Headers     map[string]string
+    }
+
+    // ─── Encoding helpers ───────────────────────────────────
+    // ``mime.QEncoding.Encode`` wraps a header value in
+    // ``=?UTF-8?Q?...?=`` form iff it contains non-ASCII
+    // characters. That keeps purely-ASCII subjects readable on
+    // the wire while still accepting Unicode.
+    func lamSmtpEncodeHeader(v string) string {
+        return mime.QEncoding.Encode("utf-8", v)
+    }
+
+    // Produce the ``From: ``/``To: `` header line. If ``addr`` is
+    // a bare address we return it as-is; if the caller already
+    // used ``"Name" <addr>`` we leave that intact.
+    func lamSmtpHeaderAddr(addr string) string {
+        return addr
+    }
+
+    func lamSmtpJoinAddrs(addrs []string) string {
+        return strings.Join(addrs, ", ")
+    }
+
+    // Build the byte-level RFC 5322 message ``smtp.SendMail``
+    // consumes. We always emit ``multipart/mixed`` when there's
+    // at least one attachment, ``multipart/alternative`` when
+    // both plaintext and HTML bodies are present, and a single
+    // ``text/plain`` or ``text/html`` part otherwise.
+    func lamSmtpBuildMessage(m *lamSmtpMessage) ([]byte, error) {
+        var buf bytes.Buffer
+        hdr := textproto.MIMEHeader{}
+        if m.Sender != "" {
+            hdr.Set("From", lamSmtpHeaderAddr(m.Sender))
+        }
+        if len(m.To) > 0 {
+            hdr.Set("To", lamSmtpJoinAddrs(m.To))
+        }
+        if len(m.Cc) > 0 {
+            hdr.Set("Cc", lamSmtpJoinAddrs(m.Cc))
+        }
+        if m.ReplyTo != "" {
+            hdr.Set("Reply-To", m.ReplyTo)
+        }
+        if m.Subject != "" {
+            hdr.Set("Subject", lamSmtpEncodeHeader(m.Subject))
+        }
+        hdr.Set("Date", time.Now().UTC().Format(time.RFC1123Z))
+        hdr.Set("MIME-Version", "1.0")
+        for k, v := range m.Headers {
+            hdr.Set(k, v)
+        }
+
+        hasAttachments := len(m.Attachments) > 0
+        hasAlt := m.Text != "" && m.Html != ""
+
+        writeHeaders := func(h textproto.MIMEHeader) {
+            for k, vs := range h {
+                for _, v := range vs {
+                    buf.WriteString(k)
+                    buf.WriteString(": ")
+                    buf.WriteString(v)
+                    buf.WriteString("\r\n")
+                }
+            }
+        }
+
+        if hasAttachments {
+            mw := multipart.NewWriter(&buf)
+            hdr.Set("Content-Type",
+                fmt.Sprintf("multipart/mixed; boundary=%s", mw.Boundary()))
+            writeHeaders(hdr)
+            buf.WriteString("\r\n")
+
+            bodyPart, err := lamSmtpBodyPart(mw, m.Text, m.Html, hasAlt)
+            if err != nil {
+                return nil, err
+            }
+            _ = bodyPart
+
+            for _, att := range m.Attachments {
+                ph := textproto.MIMEHeader{}
+                ctype := att.ContentType
+                if ctype == "" {
+                    ctype = "application/octet-stream"
+                }
+                ph.Set("Content-Type",
+                    fmt.Sprintf("%s; name=%q", ctype, att.Filename))
+                ph.Set("Content-Transfer-Encoding", "base64")
+                ph.Set("Content-Disposition",
+                    fmt.Sprintf("attachment; filename=%q", att.Filename))
+                pw, err := mw.CreatePart(ph)
+                if err != nil {
+                    return nil, err
+                }
+                enc := base64.StdEncoding.EncodeToString(att.Data)
+                // base64 wraps at 76 chars per RFC 2045 §6.8.
+                for i := 0; i < len(enc); i += 76 {
+                    end := i + 76
+                    if end > len(enc) {
+                        end = len(enc)
+                    }
+                    pw.Write([]byte(enc[i:end]))
+                    pw.Write([]byte("\r\n"))
+                }
+            }
+            if err := mw.Close(); err != nil {
+                return nil, err
+            }
+            return buf.Bytes(), nil
+        }
+
+        if hasAlt {
+            mw := multipart.NewWriter(&buf)
+            hdr.Set("Content-Type",
+                fmt.Sprintf("multipart/alternative; boundary=%s", mw.Boundary()))
+            writeHeaders(hdr)
+            buf.WriteString("\r\n")
+            if err := lamSmtpTextPart(mw, "text/plain", m.Text); err != nil {
+                return nil, err
+            }
+            if err := lamSmtpTextPart(mw, "text/html", m.Html); err != nil {
+                return nil, err
+            }
+            if err := mw.Close(); err != nil {
+                return nil, err
+            }
+            return buf.Bytes(), nil
+        }
+
+        // Single-part body.
+        ctype := "text/plain"
+        body := m.Text
+        if m.Html != "" && m.Text == "" {
+            ctype = "text/html"
+            body = m.Html
+        }
+        hdr.Set("Content-Type", ctype+"; charset=utf-8")
+        hdr.Set("Content-Transfer-Encoding", "8bit")
+        writeHeaders(hdr)
+        buf.WriteString("\r\n")
+        buf.WriteString(body)
+        return buf.Bytes(), nil
+    }
+
+    // Emit the "body" of a mixed-multipart message — either a
+    // single part or a nested ``multipart/alternative`` when both
+    // plaintext and HTML are supplied.
+    func lamSmtpBodyPart(mw *multipart.Writer, text, html string,
+        hasAlt bool) (io interface{}, err error) {
+        if hasAlt {
+            altBuf := &bytes.Buffer{}
+            altWriter := multipart.NewWriter(altBuf)
+            if err := lamSmtpTextPart(altWriter, "text/plain", text); err != nil {
+                return nil, err
+            }
+            if err := lamSmtpTextPart(altWriter, "text/html", html); err != nil {
+                return nil, err
+            }
+            if err := altWriter.Close(); err != nil {
+                return nil, err
+            }
+            ph := textproto.MIMEHeader{}
+            ph.Set("Content-Type",
+                fmt.Sprintf("multipart/alternative; boundary=%s", altWriter.Boundary()))
+            pw, err := mw.CreatePart(ph)
+            if err != nil {
+                return nil, err
+            }
+            pw.Write(altBuf.Bytes())
+            return nil, nil
+        }
+        body := text
+        ctype := "text/plain"
+        if html != "" {
+            body = html
+            ctype = "text/html"
+        }
+        return nil, lamSmtpTextPart(mw, ctype, body)
+    }
+
+    func lamSmtpTextPart(mw *multipart.Writer, ctype, body string) error {
+        ph := textproto.MIMEHeader{}
+        ph.Set("Content-Type", ctype+"; charset=utf-8")
+        ph.Set("Content-Transfer-Encoding", "8bit")
+        pw, err := mw.CreatePart(ph)
+        if err != nil {
+            return err
+        }
+        _, err = pw.Write([]byte(body))
+        return err
+    }
+
+    // Coerce a Lam-side string or []interface{} into a []string.
+    // ``to`` / ``cc`` / ``bcc`` all accept either a single address
+    // or a list.
+    func lamSmtpAddrs(v interface{}) []string {
+        if v == nil {
+            return nil
+        }
+        switch x := v.(type) {
+        case string:
+            if x == "" {
+                return nil
+            }
+            return []string{x}
+        case []string:
+            return x
+        case []interface{}:
+            out := make([]string, 0, len(x))
+            for _, item := range x {
+                if s, ok := item.(string); ok && s != "" {
+                    out = append(out, s)
+                }
+            }
+            return out
+        }
+        return nil
+    }
+
+    // Dial+send. Honours auth when ``username`` is non-empty;
+    // otherwise does an unauthenticated ``smtp.SendMail`` which
+    // works against MailHog / Mailpit / any relay that doesn't
+    // require authentication.
+    func lamSmtpDialSend(host, username, password, sender string,
+        to []string, raw []byte) error {
+        _, _, err := net.SplitHostPort(host)
+        if err != nil {
+            return fmt.Errorf("lamsmtp: invalid host %q: %w", host, err)
+        }
+        hostname := host
+        if idx := strings.LastIndex(host, ":"); idx != -1 {
+            hostname = host[:idx]
+        }
+        var auth smtp.Auth
+        if username != "" {
+            auth = smtp.PlainAuth("", username, password, hostname)
+        }
+        return smtp.SendMail(host, auth, sender, to, raw)
+    }
+}
+
+class Mail {
+    #- Builder for multipart / attachment-bearing messages. For
+       simple plain-text sends you can skip this entirely and call
+       :py:meth:`Smtp.sendMail` directly. -#
+
+    func __init__(self) {
+        self._msg: any = None
+        go! {
+            s._msg = &lamSmtpMessage{Headers: map[string]string{}}
+        }
+    }
+
+    func setSender(self, addr: str) {
+        #- Set the envelope + ``From:`` header address. -#
+        go! {
+            m := s._msg.(*lamSmtpMessage)
+            m.Sender = addr
+        }
+    }
+
+    func addTo(self, addr: str) {
+        #- Append a recipient; both the header ``To:`` and the
+           ``RCPT TO`` envelope target. -#
+        go! {
+            m := s._msg.(*lamSmtpMessage)
+            m.To = append(m.To, addr)
+        }
+    }
+
+    func addCc(self, addr: str) {
+        go! {
+            m := s._msg.(*lamSmtpMessage)
+            m.Cc = append(m.Cc, addr)
+        }
+    }
+
+    func addBcc(self, addr: str) {
+        #- Blind-copy recipient — added to the envelope but not
+           rendered in any header. -#
+        go! {
+            m := s._msg.(*lamSmtpMessage)
+            m.Bcc = append(m.Bcc, addr)
+        }
+    }
+
+    func setReplyTo(self, addr: str) {
+        go! {
+            m := s._msg.(*lamSmtpMessage)
+            m.ReplyTo = addr
+        }
+    }
+
+    func setSubject(self, subject: str) {
+        go! {
+            m := s._msg.(*lamSmtpMessage)
+            m.Subject = subject
+        }
+    }
+
+    func setText(self, body: str) {
+        #- Plaintext body. When both :py:meth:`setText` and
+           :py:meth:`setHtml` are provided, the message is emitted
+           as ``multipart/alternative`` so mail clients pick the
+           richer part they understand. -#
+        go! {
+            m := s._msg.(*lamSmtpMessage)
+            m.Text = body
+        }
+    }
+
+    func setHtml(self, body: str) {
+        go! {
+            m := s._msg.(*lamSmtpMessage)
+            m.Html = body
+        }
+    }
+
+    func attach(self, filename: str, contentType: str, data: bytes) {
+        #- Attach raw bytes under ``filename`` with the given MIME
+           type. Pass an empty ``contentType`` to fall back to
+           ``application/octet-stream``. -#
+        go! {
+            m := s._msg.(*lamSmtpMessage)
+            m.Attachments = append(m.Attachments, lamSmtpAttachment{
+                Filename:    filename,
+                ContentType: contentType,
+                Data:        data,
+            })
+        }
+    }
+
+    func setHeader(self, key: str, value: str) {
+        #- Extra header (``X-Mailer``, ``In-Reply-To``, …). Stored
+           verbatim — the caller is responsible for well-formed
+           header values. -#
+        go! {
+            m := s._msg.(*lamSmtpMessage)
+            m.Headers[key] = value
+        }
+    }
+}
+
+class Smtp {
+    #- Static class — every entry point takes its config inline.
+       There's no persistent client object because ``net/smtp`` is
+       happy to dial a fresh connection per send, and SMTP servers
+       generally prefer short connections over long-lived idle
+       ones. -#
+
+    static func sendMail(host: str, sender: str, to: any,
+        subject: str, text: str = "",
+        username: str = "", password: str = "") {
+        #- Send a plaintext message. ``to`` may be a single address
+           or a list of addresses. Pass ``username`` /
+           ``password`` to opt into SMTP PLAIN auth (only use on
+           TLS-upgraded ports: 465 implicit TLS, 587 STARTTLS —
+           the stdlib client refuses plain-auth over a cleartext
+           channel unless the server is ``localhost``). -#
+        go! {
+            rcpt := lamSmtpAddrs(to)
+            msg := &lamSmtpMessage{
+                Sender:  sender,
+                To:      rcpt,
+                Subject: subject,
+                Text:    text,
+                Headers: map[string]string{},
+            }
+            raw, err := lamSmtpBuildMessage(msg)
+            if err != nil {
+                panic(fmt.Sprintf("lamsmtp: build: %v", err))
+            }
+            if err := lamSmtpDialSend(host, username, password, sender, rcpt, raw); err != nil {
+                panic(fmt.Sprintf("lamsmtp: send: %v", err))
+            }
+        }
+    }
+
+    static func send(host: str, mail: Mail,
+        username: str = "", password: str = "") {
+        #- Send a pre-built :py:class:`Mail`. The envelope
+           recipients are the union of ``To`` / ``Cc`` / ``Bcc``
+           on the builder; ``Bcc`` entries are routed without
+           appearing in any header. -#
+        go! {
+            msg := mail._msg.(*lamSmtpMessage)
+            raw, err := lamSmtpBuildMessage(msg)
+            if err != nil {
+                panic(fmt.Sprintf("lamsmtp: build: %v", err))
+            }
+            envelope := append([]string{}, msg.To...)
+            envelope = append(envelope, msg.Cc...)
+            envelope = append(envelope, msg.Bcc...)
+            if err := lamSmtpDialSend(host, username, password,
+                msg.Sender, envelope, raw); err != nil {
+                panic(fmt.Sprintf("lamsmtp: send: %v", err))
+            }
+        }
+    }
+}

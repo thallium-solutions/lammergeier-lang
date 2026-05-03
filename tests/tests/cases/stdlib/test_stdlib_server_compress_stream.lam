@@ -1,0 +1,163 @@
+# Test: compress() now handles streaming responses.
+#
+# We spin up a server with a route that uses ``res.streamFile`` and a
+# raw ``res.streamHandler``. With ``Accept-Encoding: gzip`` advertised,
+# both responses should come back as gzip-encoded streams (verified by
+# the ``Content-Encoding`` response header). SSE remains unchanged.
+#
+# expect: stream-file-encoding: gzip
+# expect: stream-raw-encoding: gzip
+# expect: sse-encoding-absent: true
+# expect: no-gzip-header-absent: true
+
+from lamserver import Server, Request, Response
+from lamserver_plugins import compress
+from lamhttp import Http
+
+go! {
+    import (
+        "fmt"
+        "net/http"
+        "os"
+        "path/filepath"
+        "strings"
+        "time"
+    )
+}
+
+func streamFileHandler(req: Request, res: Response) {
+    p: str = req.query["path"]
+    res.streamFile(p)
+}
+
+func rawStreamHandler(req: Request, res: Response) {
+    go! {
+        res.Headers["Content-Type"] = "text/plain; charset=utf-8"
+        res.StreamHandler = func(w http.ResponseWriter) {
+            for i := 0; i < 3; i++ {
+                fmt.Fprintf(w, "chunk %d\n", i)
+                if fl, ok := w.(http.Flusher); ok { fl.Flush() }
+                time.Sleep(5 * time.Millisecond)
+            }
+        }
+        res.Sent = true
+    }
+}
+
+func sseHandler(req: Request, res: Response) {
+    # Trivial SSE route — we only care its Content-Encoding header
+    # is NOT set to gzip.
+    go! {
+        res.SseHandler = func(emitter *SseEmitter) {
+            emitter.Send("hi")
+        }
+        res.Sent = true
+    }
+}
+
+func main() {
+    tmpDir: str = ""
+    tmpFile: str = ""
+    go! {
+        d, _ := os.MkdirTemp("", "lamcmp")
+        tmpDir = d
+        tmpFile = filepath.Join(d, "big.txt")
+        body := strings.Repeat("hello world\n", 512)
+        _ = os.WriteFile(tmpFile, []byte(body), 0o644)
+    }
+
+    srv: Server = Server()
+    compress(srv, 16)
+    srv.get("/file", streamFileHandler)
+    srv.get("/raw", rawStreamHandler)
+    srv.get("/events", sseHandler)
+    srv.listenBackground(18899)
+
+    hdrs: dict[str, str] = {}
+    hdrs["Accept-Encoding"] = "gzip"
+
+    # Each ``go!`` block below uses an IIFE so its local ``:=``
+    # bindings (``req``, ``resp``, ``client``…) don't collide with
+    # siblings' bindings at the outer function scope.
+
+    # streamFile with gzip offered → gzip-wrapped.
+    encFile: str = ""
+    go! {
+        encFile = func() string {
+            url := fmt.Sprintf("http://127.0.0.1:18899/file?path=%s", tmpFile)
+            req, _ := http.NewRequest("GET", url, nil)
+            req.Header.Set("Accept-Encoding", "gzip")
+            client := &http.Client{
+                Transport: &http.Transport{DisableCompression: true},
+                Timeout:   5 * time.Second,
+            }
+            resp, err := client.Do(req)
+            if err != nil { return "" }
+            defer resp.Body.Close()
+            return resp.Header.Get("Content-Encoding")
+        }()
+    }
+    print(f"stream-file-encoding: {encFile}")
+
+    # Raw stream handler with gzip offered → gzip-wrapped.
+    encRaw: str = ""
+    go! {
+        encRaw = func() string {
+            req, _ := http.NewRequest("GET", "http://127.0.0.1:18899/raw", nil)
+            req.Header.Set("Accept-Encoding", "gzip")
+            client := &http.Client{
+                Transport: &http.Transport{DisableCompression: true},
+                Timeout:   5 * time.Second,
+            }
+            resp, err := client.Do(req)
+            if err != nil { return "" }
+            defer resp.Body.Close()
+            return resp.Header.Get("Content-Encoding")
+        }()
+    }
+    print(f"stream-raw-encoding: {encRaw}")
+
+    # SSE never gets compressed even with gzip advertised.
+    encSse: str = ""
+    go! {
+        encSse = func() string {
+            req, _ := http.NewRequest("GET", "http://127.0.0.1:18899/events", nil)
+            req.Header.Set("Accept-Encoding", "gzip")
+            client := &http.Client{
+                Transport: &http.Transport{DisableCompression: true},
+                Timeout:   2 * time.Second,
+            }
+            resp, err := client.Do(req)
+            if err != nil { return "" }
+            defer resp.Body.Close()
+            return resp.Header.Get("Content-Encoding")
+        }()
+    }
+    sseAbsent: bool = encSse != "gzip"
+    print(f"sse-encoding-absent: {sseAbsent}")
+
+    # Client that doesn't advertise gzip → no gzip even on a large
+    # streamed body.
+    encNo: str = ""
+    go! {
+        encNo = func() string {
+            url := fmt.Sprintf("http://127.0.0.1:18899/file?path=%s", tmpFile)
+            req, _ := http.NewRequest("GET", url, nil)
+            req.Header.Set("Accept-Encoding", "identity")
+            client := &http.Client{
+                Transport: &http.Transport{DisableCompression: true},
+                Timeout:   5 * time.Second,
+            }
+            resp, err := client.Do(req)
+            if err != nil { return "" }
+            defer resp.Body.Close()
+            return resp.Header.Get("Content-Encoding")
+        }()
+    }
+    noGzipAbsent: bool = encNo != "gzip"
+    print(f"no-gzip-header-absent: {noGzipAbsent}")
+
+    go! {
+        os.RemoveAll(tmpDir)
+    }
+}

@@ -1,0 +1,20 @@
+# Test: Power operator **
+# expect: 8
+# expect: 1024
+# expect: 1
+# expect: 256
+
+func main() {
+    a: int = 2
+    b: int = int(a ** 3)
+    print(b)
+
+    c: int = int(2 ** 10)
+    print(c)
+
+    d: int = int(5 ** 0)
+    print(d)
+
+    e: int = int(4 ** 4)
+    print(e)
+}

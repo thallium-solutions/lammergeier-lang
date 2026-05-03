@@ -1,0 +1,95 @@
+# Test: Large-scale patterns - builder, state machine, pipeline
+# expect: HELLO WORLD
+# expect: 3
+# expect: idle
+# expect: running
+# expect: stopped
+# expect: 150
+# expect: pattern_ok
+
+class StringBuilder {
+    func __init__(self) {
+        self.parts: list[str] = []
+        self.count: int = 0
+    }
+
+    func add(self, part: str) {
+        self.parts = append(self.parts, part)
+        self.count = self.count + 1
+    }
+
+    func build(self) -> str {
+        result: str = ""
+        p: str = ""
+        for p in self.parts {
+            result = result + p
+        }
+        return result
+    }
+}
+
+class StateMachine {
+    func __init__(self) {
+        self.state: str = "idle"
+    }
+
+    func start(self) {
+        if self.state == "idle" {
+            self.state = "running"
+        }
+    }
+
+    func stop(self) {
+        if self.state == "running" {
+            self.state = "stopped"
+        }
+    }
+
+    func reset(self) {
+        self.state = "idle"
+    }
+
+    func get_state(self) -> str {
+        return self.state
+    }
+}
+
+func transform_pipeline(x: int) -> int {
+    # multiply by 2, add 10, multiply by 3
+    x = x * 2
+    x = x + 10
+    x = x * 3
+    return x
+}
+
+func apply_n_times(x: int, n: int) -> int {
+    result: int = x
+    i: int = 0
+    for i in range(n) {
+        result = result + x
+    }
+    return result
+}
+
+func main() {
+    # StringBuilder
+    sb: StringBuilder = StringBuilder()
+    sb.add("HELLO")
+    sb.add(" ")
+    sb.add("WORLD")
+    print(sb.build())
+    print(sb.count)
+
+    # State machine
+    sm: StateMachine = StateMachine()
+    print(sm.get_state())
+    sm.start()
+    print(sm.get_state())
+    sm.stop()
+    print(sm.get_state())
+
+    # Pipeline
+    print(transform_pipeline(20))
+
+    print("pattern_ok")
+}

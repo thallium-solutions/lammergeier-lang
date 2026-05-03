@@ -1,0 +1,19 @@
+# Test: Generator with squares
+# expect: 1
+# expect: 4
+# expect: 9
+# expect: 16
+
+func squares(n: int) -> int {
+    i: int = 1
+    while i <= n {
+        yield i * i
+        i += 1
+    }
+}
+
+func main() {
+    for s: int in squares(4) {
+        print(s)
+    }
+}

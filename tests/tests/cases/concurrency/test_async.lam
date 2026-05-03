@@ -1,0 +1,19 @@
+# Test: Async/await with goroutines and channels
+# expect: hello from async
+# expect: 42
+
+async func greet() -> str {
+    return "hello from async"
+}
+
+async func compute(x: int) -> int {
+    return x * 2
+}
+
+func main() {
+    ch1: str = await greet()
+    print(ch1)
+
+    result: int = await compute(21)
+    print(result)
+}

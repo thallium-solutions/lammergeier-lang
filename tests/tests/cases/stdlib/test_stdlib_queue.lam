@@ -1,0 +1,33 @@
+# Test: lamqueue.Queue data structure
+# expect: empty: true
+# expect: size: 3
+# expect: peek: a
+# expect: dequeue: a
+# expect: dequeue: b
+# expect: size: 1
+# expect: empty: false
+# expect: tolist_size: 1
+# expect: cleared: true
+
+from lamqueue import Queue
+
+func main() {
+    q: Queue = Queue()
+    print(f"empty: {q.isEmpty()}")
+
+    q.enqueue("a")
+    q.enqueue("b")
+    q.enqueue("c")
+    print(f"size: {q.size()}")
+    print(f"peek: {q.peek()}")
+    print(f"dequeue: {q.dequeue()}")
+    print(f"dequeue: {q.dequeue()}")
+    print(f"size: {q.size()}")
+    print(f"empty: {q.isEmpty()}")
+
+    items: list[any] = q.toList()
+    print(f"tolist_size: {len(items)}")
+
+    q.clear()
+    print(f"cleared: {q.isEmpty()}")
+}

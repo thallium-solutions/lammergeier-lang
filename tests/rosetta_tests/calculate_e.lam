@@ -1,0 +1,17 @@
+# Rosetta Code: Calculating the value of e
+# https://rosettacode.org/wiki/Calculating_the_value_of_e
+# expect: 2.718281
+
+func main() {
+    e: float = 1.0
+    fact: float = 1.0
+    for i in range(1, 20) {
+        fact = fact * float(i)
+        e = e + 1.0 / fact
+    }
+    # Truncate to 6 decimal places by converting to int and back
+    truncated: int = int(e * 1000000.0)
+    whole: int = truncated / 1000000
+    frac: int = truncated % 1000000
+    print(f"{whole}.{frac}")
+}

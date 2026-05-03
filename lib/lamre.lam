@@ -1,0 +1,153 @@
+# Lammergeier standard library: regex utilities
+# Import with: from lamre import Re
+#
+# Most ``Re`` methods compile their pattern with ``regexp.MustCompile``,
+# which panics on a malformed pattern. The ``try*`` family returns a
+# ``Result`` instead so a user-supplied or runtime-built pattern can
+# fail gracefully:
+#
+#     hits: list[str] = Re.tryFindAll(pattern, text)?
+#     hits: list[str] = Re.tryFindAll(pattern, text).unwrapOr([])
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "fmt"
+        "regexp"
+    )
+}
+
+class Re {
+    static func match(pattern: str, s: str) -> bool {
+        go! {
+            matched, _ := regexp.MatchString(pattern, s)
+            return matched
+        }
+    }
+
+    static func tryMatch(pattern: str, s: str) -> Result {
+        #- Match ``pattern`` against ``s``. Returns ``Result.Ok(bool)``
+           on a valid pattern (the bool says whether ``s`` contains a
+           match) or ``Result.Err(Error("RegexError", ...))`` if the
+           pattern can't be compiled. -#
+        go! {
+            matched, err := regexp.MatchString(pattern, s)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "RegexError",
+                    fmt.Sprintf("compile %q: %v", pattern, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(matched)
+        }
+    }
+
+    static func find(pattern: str, s: str) -> str {
+        go! {
+            re := regexp.MustCompile(pattern)
+            return re.FindString(s)
+        }
+    }
+
+    static func tryFind(pattern: str, s: str) -> Result {
+        #- Find the first match of ``pattern`` in ``s``. ``Ok("")``
+           still means a valid pattern with no match; ``Err(...)``
+           means the pattern itself was malformed. -#
+        go! {
+            re, err := regexp.Compile(pattern)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "RegexError",
+                    fmt.Sprintf("compile %q: %v", pattern, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(re.FindString(s))
+        }
+    }
+
+    static func findAll(pattern: str, s: str) -> list[str] {
+        go! {
+            re := regexp.MustCompile(pattern)
+            return re.FindAllString(s, -1)
+        }
+    }
+
+    static func tryFindAll(pattern: str, s: str) -> Result {
+        #- Find every match. ``Ok([])`` means a valid pattern with no
+           matches; ``Err(...)`` means the pattern was malformed. -#
+        go! {
+            re, err := regexp.Compile(pattern)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "RegexError",
+                    fmt.Sprintf("compile %q: %v", pattern, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(re.FindAllString(s, -1))
+        }
+    }
+
+    static func replaceAll(pattern: str, s: str, repl: str) -> str {
+        go! {
+            re := regexp.MustCompile(pattern)
+            return re.ReplaceAllString(s, repl)
+        }
+    }
+
+    static func tryReplaceAll(pattern: str, s: str, repl: str) -> Result {
+        #- Replace every match of ``pattern`` in ``s`` with ``repl``.
+           ``Err(...)`` only fires for invalid patterns. -#
+        go! {
+            re, err := regexp.Compile(pattern)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "RegexError",
+                    fmt.Sprintf("compile %q: %v", pattern, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(re.ReplaceAllString(s, repl))
+        }
+    }
+
+    static func split(pattern: str, s: str) -> list[str] {
+        go! {
+            re := regexp.MustCompile(pattern)
+            return re.Split(s, -1)
+        }
+    }
+
+    static func trySplit(pattern: str, s: str) -> Result {
+        #- Split ``s`` by every match of ``pattern``. -#
+        go! {
+            re, err := regexp.Compile(pattern)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "RegexError",
+                    fmt.Sprintf("compile %q: %v", pattern, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(re.Split(s, -1))
+        }
+    }
+
+    static func matchGroups(pattern: str, s: str) -> list[str] {
+        go! {
+            re := regexp.MustCompile(pattern)
+            m := re.FindStringSubmatch(s)
+            if m == nil {
+                return []string{}
+            }
+            return m
+        }
+    }
+}
+
+func main() {
+    pass
+}

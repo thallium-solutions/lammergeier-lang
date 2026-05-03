@@ -1,0 +1,251 @@
+# Lammergeier standard library: math utilities
+# Import with: from lammath import Math
+
+go! {
+    import "math"
+}
+
+class Math {
+    static func pi() -> float {
+        return 3.141592653589793
+    }
+
+    static func e() -> float {
+        return 2.718281828459045
+    }
+
+    static func sqrt(x: float) -> float {
+        go! {
+            return math.Sqrt(float64(x))
+        }
+    }
+
+    static func floor(x: float) -> int {
+        go! {
+            return int(math.Floor(float64(x)))
+        }
+    }
+
+    static func ceil(x: float) -> int {
+        go! {
+            return int(math.Ceil(float64(x)))
+        }
+    }
+
+    static func pow(base: float, exp: float) -> float {
+        go! {
+            return math.Pow(float64(base), float64(exp))
+        }
+    }
+
+    static func log(x: float) -> float {
+        go! {
+            return math.Log(float64(x))
+        }
+    }
+
+    static func log2(x: float) -> float {
+        go! {
+            return math.Log2(float64(x))
+        }
+    }
+
+    static func log10(x: float) -> float {
+        go! {
+            return math.Log10(float64(x))
+        }
+    }
+
+    static func sin(x: float) -> float {
+        go! {
+            return math.Sin(float64(x))
+        }
+    }
+
+    static func cos(x: float) -> float {
+        go! {
+            return math.Cos(float64(x))
+        }
+    }
+
+    static func tan(x: float) -> float {
+        go! {
+            return math.Tan(float64(x))
+        }
+    }
+
+    static func asin(x: float) -> float {
+        go! {
+            return math.Asin(float64(x))
+        }
+    }
+
+    static func acos(x: float) -> float {
+        go! {
+            return math.Acos(float64(x))
+        }
+    }
+
+    static func atan(x: float) -> float {
+        go! {
+            return math.Atan(float64(x))
+        }
+    }
+
+    static func atan2(y: float, x: float) -> float {
+        go! {
+            return math.Atan2(float64(y), float64(x))
+        }
+    }
+
+    static func absVal(x: float) -> float {
+        go! {
+            return math.Abs(float64(x))
+        }
+    }
+
+    static func maxVal(a: float, b: float) -> float {
+        go! {
+            return math.Max(float64(a), float64(b))
+        }
+    }
+
+    static func minVal(a: float, b: float) -> float {
+        go! {
+            return math.Min(float64(a), float64(b))
+        }
+    }
+
+    static func round(x: float) -> int {
+        go! {
+            return int(math.Round(float64(x)))
+        }
+    }
+
+    static func hypot(x: float, y: float) -> float {
+        go! {
+            return math.Hypot(float64(x), float64(y))
+        }
+    }
+
+    static func exp(x: float) -> float {
+        go! {
+            return math.Exp(float64(x))
+        }
+    }
+
+    static func isInf(x: float) -> bool {
+        go! {
+            return math.IsInf(float64(x), 0)
+        }
+    }
+
+    static func isNaN(x: float) -> bool {
+        go! {
+            return math.IsNaN(float64(x))
+        }
+    }
+
+    static func clamp(x: float, lo: float, hi: float) -> float {
+        #- Clamp x to the range [lo, hi] -#
+        go! {
+            if x < lo { return lo }
+            if x > hi { return hi }
+            return x
+        }
+    }
+
+    static func lerp(a: float, b: float, t: float) -> float {
+        #- Linear interpolation between a and b by t (0..1) -#
+        go! {
+            return a + (b-a)*t
+        }
+    }
+
+    static func mapRange(x: float, inMin: float, inMax: float, outMin: float, outMax: float) -> float {
+        #- Map x from range [inMin, inMax] to [outMin, outMax] -#
+        go! {
+            return outMin + (x-inMin)*(outMax-outMin)/(inMax-inMin)
+        }
+    }
+
+    static func sign(x: float) -> int {
+        go! {
+            if x > 0 { return 1 }
+            if x < 0 { return -1 }
+            return 0
+        }
+    }
+
+    static func degToRad(deg: float) -> float {
+        go! { return deg * math.Pi / 180.0 }
+    }
+
+    static func radToDeg(rad: float) -> float {
+        go! { return rad * 180.0 / math.Pi }
+    }
+
+    static func fmod(x: float, y: float) -> float {
+        #- Floating-point remainder of x / y, as per Go's math.Mod. -#
+        go! { return math.Mod(float64(x), float64(y)) }
+    }
+
+    static func trunc(x: float) -> float {
+        #- Truncate toward zero. -#
+        go! { return math.Trunc(float64(x)) }
+    }
+
+    static func copysign(mag: float, sign: float) -> float {
+        #- Return a value with magnitude of `mag` and sign of `sign`. -#
+        go! { return math.Copysign(float64(mag), float64(sign)) }
+    }
+
+    static func cbrt(x: float) -> float {
+        #- Cube root. -#
+        go! { return math.Cbrt(float64(x)) }
+    }
+
+    static func sinh(x: float) -> float {
+        go! { return math.Sinh(float64(x)) }
+    }
+
+    static func cosh(x: float) -> float {
+        go! { return math.Cosh(float64(x)) }
+    }
+
+    static func tanh(x: float) -> float {
+        go! { return math.Tanh(float64(x)) }
+    }
+
+    static func gcd(a: int, b: int) -> int {
+        #- Greatest common divisor (Euclidean algorithm). -#
+        go! {
+            if a < 0 { a = -a }
+            if b < 0 { b = -b }
+            for b != 0 {
+                a, b = b, a%b
+            }
+            return a
+        }
+    }
+
+    static func lcm(a: int, b: int) -> int {
+        #- Least common multiple. Returns 0 if either value is 0. -#
+        go! {
+            if a == 0 || b == 0 { return 0 }
+            ax, bx := a, b
+            if ax < 0 { ax = -ax }
+            if bx < 0 { bx = -bx }
+            g := ax
+            h := bx
+            for h != 0 {
+                g, h = h, g%h
+            }
+            return ax / g * bx
+        }
+    }
+}
+
+func main() {
+    pass
+}

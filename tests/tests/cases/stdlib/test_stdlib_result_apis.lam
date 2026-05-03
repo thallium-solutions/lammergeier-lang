@@ -1,0 +1,83 @@
+# Test: the ``try*`` Result-returning methods we added across the
+# stdlib (lamconv / lamjson / lamre / lamos). Each module's success
+# and failure paths get exercised, plus one ``?``-propagation
+# example to confirm the new APIs cooperate with the operator from
+# Sprint 2B.
+#
+# expect: conv_int_ok=42
+# expect: conv_int_err: ParseError
+# expect: conv_float_ok=3.14
+# expect: conv_bool_ok=true
+# expect: json_encode_ok={"a":1}
+# expect: json_decode_err: JsonDecodeError
+# expect: re_match_ok=true
+# expect: re_match_err: RegexError
+# expect: os_read_ok=hello stdlib
+# expect: os_read_err: IOError
+# expect: propagated: ParseError
+# expect: result_apis_ok
+
+from lamconv import Conv
+from lamjson import Json
+from lamre import Re
+from lamos import Os
+from lamerrors import Result, Error
+
+func parseChain(a: str, b: str) -> Result {
+    # Threads two ``Conv.tryInt`` calls through ``?`` so the test
+    # exercises a stdlib Result with the propagation operator.
+    x: int = Conv.tryInt(a)?
+    y: int = Conv.tryInt(b)?
+    return Result.Ok(x + y)
+}
+
+func main() {
+    # ─── lamconv ────────────────────────────────────────────
+    n: Result = Conv.tryInt("42")
+    print(f"conv_int_ok={n.value}")
+
+    bad: Result = Conv.tryInt("not-a-number")
+    e: Error = bad.error
+    print(f"conv_int_err: {e.kind}")
+
+    f: Result = Conv.tryFloat("3.14")
+    print(f"conv_float_ok={f.value}")
+
+    b: Result = Conv.tryBool("true")
+    print(f"conv_bool_ok={b.value}")
+
+    # ─── lamjson ────────────────────────────────────────────
+    enc: Result = Json.tryEncode({"a": 1})
+    print(f"json_encode_ok={enc.value}")
+
+    dec: Result = Json.tryDecode("not json at all")
+    je: Error = dec.error
+    print(f"json_decode_err: {je.kind}")
+
+    # ─── lamre ──────────────────────────────────────────────
+    rm: Result = Re.tryMatch("h.*o", "hello")
+    print(f"re_match_ok={rm.value}")
+
+    badRe: Result = Re.tryMatch("[unterminated", "anything")
+    re: Error = badRe.error
+    print(f"re_match_err: {re.kind}")
+
+    # ─── lamos ──────────────────────────────────────────────
+    # Round-trip through a tmp file using the new try* APIs.
+    tmp: str = Os.tempFile("lamtest-result-", ".txt")
+    Os.tryWriteFile(tmp, "hello stdlib").unwrap()
+    rd: Result = Os.tryReadFile(tmp)
+    print(f"os_read_ok={rd.value}")
+    Os.remove(tmp)
+
+    missing: Result = Os.tryReadFile("/no/such/file/here")
+    me: Error = missing.error
+    print(f"os_read_err: {me.kind}")
+
+    # ─── ? propagation across modules ───────────────────────
+    chain: Result = parseChain("1", "x")  # second call fails
+    ce: Error = chain.error
+    print(f"propagated: {ce.kind}")
+
+    print("result_apis_ok")
+}

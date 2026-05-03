@@ -1,0 +1,49 @@
+from users import User
+
+class SessionService {
+    func init(self, secret: str, capacity: int = 32) {
+        self.secret: str = secret
+        self.capacity: int = capacity
+        self.active: dict[str, str] = {}
+        self.order: list[str] = []
+    }
+
+    func issue(self, user: User) -> str {
+        body: str = f"{user.id}:{user.email}:{user.role}"
+        sig: str = f"sig-{len(body) + len(self.secret)}"
+        token: str = body + "." + sig
+        self.active[token] = user.email
+        self.order.append(token)
+        if len(self.order) > self.capacity {
+            oldest: str = self.order[0]
+            del self.active[oldest]
+            self.order = self.order[1:]
+        }
+        return token
+    }
+
+    func isActive(self, token: str) -> bool {
+        for key in self.order {
+            if key == token {
+                for value in self.active {
+                    if value != "" {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    func revoke(self, token: str) -> bool {
+        if self.isActive(token) {
+            del self.active[token]
+            return true
+        }
+        return false
+    }
+}
+
+func main() {
+    pass
+}

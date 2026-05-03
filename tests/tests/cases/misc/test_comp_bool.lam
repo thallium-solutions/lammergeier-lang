@@ -1,0 +1,15 @@
+# Test: List comprehension with boolean results
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+
+func is_even(n: int) -> bool {
+    return n % 2 == 0
+}
+
+func main() {
+    for i: int in range(4) {
+        print(is_even(i))
+    }
+}

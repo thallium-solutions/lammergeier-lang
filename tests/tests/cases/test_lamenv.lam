@@ -1,0 +1,76 @@
+# expect: NAME=alice
+# expect: GREETING=hello, alice
+# expect: PATH_EXT=/usr/local/bin
+# expect: PORT=8080
+# expect: EMPTY=
+# expect: loaded=5
+# expect: NAME env=alice
+# expect: title=Example
+# expect: db.host=localhost
+# expect: db.port=5432
+# expect: debug=true
+# expect: retries=3
+# expect: merged.title=Example
+# expect: merged.NAME=alice
+
+from lamenv import Env, Dotenv, Config
+from lamos import Os
+
+go! {
+    import "os"
+}
+
+func main() {
+    # Write fresh config files into a temp dir so the test is
+    # deterministic even when /tmp has stale state from earlier runs.
+    go! {
+        td, _ := os.MkdirTemp("", "lamenv-test-*")
+        os.WriteFile(td+"/.env", []byte(
+            "# comment\n"+
+            "NAME=alice\n"+
+            "GREETING=\"hello, $NAME\"\n"+
+            "export PATH_EXT='/usr/local/bin'\n"+
+            "PORT=8080   # inline\n"+
+            "EMPTY=\n"), 0644)
+        os.WriteFile(td+"/config.toml", []byte(
+            "title = \"Example\"\n\n"+
+            "[database]\n"+
+            "host = \"localhost\"\n"+
+            "port = 5432\n"), 0644)
+        os.WriteFile(td+"/config.json", []byte(
+            "{\"debug\": true, \"retries\": 3}\n"), 0644)
+        os.Setenv("_LAMENV_TEST_DIR", td)
+    }
+
+    dir: str = Env.get("_LAMENV_TEST_DIR")
+
+    entries: dict[str, any] = Dotenv.parseFile(dir + "/.env")
+    names: list[str] = ["NAME", "GREETING", "PATH_EXT", "PORT", "EMPTY"]
+    for k in names {
+        v = entries[k] ?? "(missing)"
+        print(f"{k}={v}")
+    }
+
+    loaded: int = Dotenv.load(dir + "/.env")
+    print(f"loaded={loaded}")
+    print(f"NAME env={Env.get('NAME')}")
+
+    toml: dict[str, any] = Config.load(dir + "/config.toml")
+    print(f"title={toml['title']}")
+    db: dict[str, any] = {}
+    go! {
+        if m, ok := toml["database"].(map[string]interface{}); ok {
+            db = m
+        }
+    }
+    print(f"db.host={db['host']}")
+    print(f"db.port={db['port']}")
+
+    j: dict[str, any] = Config.load(dir + "/config.json")
+    print(f"debug={j['debug']}")
+    print(f"retries={j['retries']}")
+
+    merged: dict[str, any] = Config.merge([toml, Dotenv.parseFile(dir + "/.env")])
+    print(f"merged.title={merged['title']}")
+    print(f"merged.NAME={merged['NAME']}")
+}

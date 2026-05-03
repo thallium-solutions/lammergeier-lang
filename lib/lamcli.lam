@@ -1,0 +1,165 @@
+# Lammergeier standard library: CLI argument parsing helpers
+# Import with: from lamcli import Cli
+#
+# A thin wrapper around os.Args that covers the most common shell-script
+# patterns (flags with and without values, boolean switches, positional
+# arguments) without requiring users to drop into `go!`.
+#
+# Supported forms:
+#   -f / --flag            boolean switch
+#   --key=value            key/value in one token
+#   --key value / -k val   key/value in two tokens
+
+go! {
+    import (
+        "os"
+        "strings"
+    )
+}
+
+class Cli {
+    static func args() -> list[str] {
+        #- Every argument except the program name, in the order given. -#
+        go! {
+            if len(os.Args) <= 1 { return []string{} }
+            out := make([]string, len(os.Args)-1)
+            copy(out, os.Args[1:])
+            return out
+        }
+    }
+
+    static func program() -> str {
+        #- The program name (os.Args[0]). -#
+        go! {
+            if len(os.Args) == 0 { return "" }
+            return os.Args[0]
+        }
+    }
+
+    static func argCount() -> int {
+        #- Number of arguments (excluding the program name). -#
+        go! {
+            if len(os.Args) <= 1 { return 0 }
+            return len(os.Args) - 1
+        }
+    }
+
+    static func arg(idx: int) -> str {
+        #- Return the idx-th user argument, or "" if out of range. -#
+        go! {
+            i := idx + 1
+            if i < 0 || i >= len(os.Args) { return "" }
+            return os.Args[i]
+        }
+    }
+
+    static func hasFlag(name: str) -> bool {
+        #- True if `name` appears as a flag. Accepts both `-x`/`--x` and
+           `--x=value` forms. `name` may be given with or without leading
+           dashes: "verbose", "-v" and "--verbose" all work. -#
+        go! {
+            stripped := strings.TrimLeft(name, "-")
+            for _, a := range os.Args[1:] {
+                trim := strings.TrimLeft(a, "-")
+                if idx := strings.Index(trim, "="); idx >= 0 {
+                    trim = trim[:idx]
+                }
+                if trim == stripped { return true }
+            }
+            return false
+        }
+    }
+
+    static func getFlag(name: str, fallback: str = "") -> str {
+        #- Return the value of `--name value` or `--name=value`. If the
+           flag is absent or has no value, return `fallback`. -#
+        go! {
+            stripped := strings.TrimLeft(name, "-")
+            argsSlice := os.Args[1:]
+            for i, a := range argsSlice {
+                trim := strings.TrimLeft(a, "-")
+                if idx := strings.Index(trim, "="); idx >= 0 {
+                    if trim[:idx] == stripped {
+                        return trim[idx+1:]
+                    }
+                    continue
+                }
+                if trim == stripped {
+                    if i+1 < len(argsSlice) { return argsSlice[i+1] }
+                    return fallback
+                }
+            }
+            return fallback
+        }
+    }
+
+    static func getInt(name: str, fallback: int = 0) -> int {
+        #- Like getFlag but parses the value as an integer. -#
+        go! {
+            stripped := strings.TrimLeft(name, "-")
+            argsSlice := os.Args[1:]
+            parse := func(s string) (int, bool) {
+                n := 0
+                neg := false
+                if len(s) > 0 && s[0] == '-' { neg = true; s = s[1:] }
+                if s == "" { return 0, false }
+                for _, c := range s {
+                    if c < '0' || c > '9' { return 0, false }
+                    n = n*10 + int(c-'0')
+                }
+                if neg { n = -n }
+                return n, true
+            }
+            for i, a := range argsSlice {
+                trim := strings.TrimLeft(a, "-")
+                if idx := strings.Index(trim, "="); idx >= 0 {
+                    if trim[:idx] == stripped {
+                        if v, ok := parse(trim[idx+1:]); ok { return v }
+                        return fallback
+                    }
+                    continue
+                }
+                if trim == stripped && i+1 < len(argsSlice) {
+                    if v, ok := parse(argsSlice[i+1]); ok { return v }
+                    return fallback
+                }
+            }
+            return fallback
+        }
+    }
+
+    static func positional() -> list[str] {
+        #- Return only the non-flag arguments, preserving order.
+           Recognises both `-x` / `--x` (switches) and `--x=value`.
+           Two-token `--x value` pairs are consumed as a unit. -#
+        go! {
+            result := []string{}
+            argsSlice := os.Args[1:]
+            i := 0
+            for i < len(argsSlice) {
+                a := argsSlice[i]
+                if strings.HasPrefix(a, "-") {
+                    // --k=v in a single token — consume just this token
+                    if strings.Contains(a, "=") {
+                        i++
+                        continue
+                    }
+                    // two-token: skip the following value unless it also looks like a flag
+                    if i+1 < len(argsSlice) && !strings.HasPrefix(argsSlice[i+1], "-") {
+                        i += 2
+                        continue
+                    }
+                    i++
+                    continue
+                }
+                result = append(result, a)
+                i++
+            }
+            return result
+        }
+    }
+}
+
+func main() {
+    pass
+}

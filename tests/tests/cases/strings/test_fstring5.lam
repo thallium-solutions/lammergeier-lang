@@ -1,0 +1,18 @@
+# Test: f-string with class attributes
+# expect: Alice is 30 years old
+
+class Person {
+    func init(self, name: str, age: int) {
+        self.name: str = name
+        self.age: int = age
+    }
+
+    func describe(self) -> str {
+        return f"{self.name} is {self.age} years old"
+    }
+}
+
+func main() {
+    p: Person = Person("Alice", 30)
+    print(p.describe())
+}

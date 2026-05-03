@@ -1,0 +1,48 @@
+# Rosetta Code: Chinese remainder theorem
+# https://rosettacode.org/wiki/Chinese_remainder_theorem
+# expect: 23
+
+func gcd(a: int, b: int) -> int {
+    while b != 0 {
+        t: int = b
+        b = a % b
+        a = t
+    }
+    return a
+}
+
+func mod_inverse(a: int, m: int) -> int {
+    g: int = gcd(a, m)
+    if g != 1 {
+        return -1
+    }
+    result: int = 1
+    a = a % m
+    for x in range(1, m) {
+        if (a * x) % m == 1 {
+            result = x
+            break
+        }
+    }
+    return result
+}
+
+func chinese_remainder(remainders: list[int], moduli: list[int]) -> int {
+    prod: int = 1
+    for m in moduli {
+        prod = prod * m
+    }
+    total: int = 0
+    for i in range(len(remainders)) {
+        pp: int = prod / moduli[i]
+        inv: int = mod_inverse(pp, moduli[i])
+        total += remainders[i] * pp * inv
+    }
+    return total % prod
+}
+
+func main() {
+    remainders: list[int] = [2, 3, 2]
+    moduli: list[int] = [3, 5, 7]
+    print(chinese_remainder(remainders, moduli))
+}

@@ -1,0 +1,21 @@
+# Rosetta Code: Reverse a string
+# https://rosettacode.org/wiki/Reverse_a_string
+# expect: dlrow olleH
+# expect: desrever
+# expect: a
+# expect: 
+
+func reverse_string(s: str) -> str {
+    result: str = ""
+    for i in range(len(s) - 1, -1, -1) {
+        result = result + string(s[i])
+    }
+    return result
+}
+
+func main() {
+    print(reverse_string("Hello world"))
+    print(reverse_string("reversed"))
+    print(reverse_string("a"))
+    print(reverse_string(""))
+}

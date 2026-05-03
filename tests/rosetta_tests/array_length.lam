@@ -1,0 +1,14 @@
+# Rosetta Code: Array length
+# https://rosettacode.org/wiki/Array_length
+# expect: 5
+# expect: 0
+# expect: 3
+
+func main() {
+    a: list[int] = [1, 2, 3, 4, 5]
+    print(len(a))
+    b: list[int] = []
+    print(len(b))
+    c: list[str] = ["hello", "world", "foo"]
+    print(len(c))
+}

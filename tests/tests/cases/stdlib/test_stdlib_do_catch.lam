@@ -1,0 +1,68 @@
+# Test: ``do { } catch err { }`` block.
+#
+# Three scenarios:
+#   1. Body completes successfully; catch is skipped.
+#   2. Body's ``?`` propagates an error; catch fires with the error.
+#   3. Two consecutive ``do`` blocks share locals re-declared per IIFE
+#      (regression check for the ``declared_vars`` scoping).
+#
+# expect: do_ok sum=3
+# expect: do_err caught: ParseError: bad input
+# expect: do2 sum=4
+# expect: do2 caught: ParseError: bad input
+# expect: do_catch_ok
+
+from lamerrors import Result, Error
+
+func parseInt(s: str) -> Result {
+    if s == "1" {
+        return Result.Ok(1)
+    }
+    if s == "2" {
+        return Result.Ok(2)
+    }
+    if s == "3" {
+        return Result.Ok(3)
+    }
+    return Result.Err(Error("ParseError", "bad input"))
+}
+
+func main() {
+    # 1) Success path
+    do {
+        a: int = parseInt("1")?
+        b: int = parseInt("2")?
+        print(f"do_ok sum={a + b}")
+    } catch err {
+        print(f"do_ok caught: {err}")
+    }
+
+    # 2) Error path
+    do {
+        a: int = parseInt("1")?
+        b: int = parseInt("zzz")?
+        print(f"do_err sum={a + b}")
+    } catch err {
+        print(f"do_err caught: {err}")
+    }
+
+    # 3) Two more consecutive do-blocks (the second re-uses ``a`` /
+    # ``b`` which previously leaked from the first IIFE's scope).
+    do {
+        a: int = parseInt("1")?
+        b: int = parseInt("3")?
+        print(f"do2 sum={a + b}")
+    } catch err {
+        print(f"do2 caught: {err}")
+    }
+
+    do {
+        a: int = parseInt("1")?
+        b: int = parseInt("???")?
+        print(f"do2 sum={a + b}")
+    } catch err {
+        print(f"do2 caught: {err}")
+    }
+
+    print("do_catch_ok")
+}

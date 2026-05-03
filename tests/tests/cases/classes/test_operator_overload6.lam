@@ -1,0 +1,28 @@
+# Test: Operator overloading - modulo, floor division, power
+# expect: Money(1)
+# expect: Money(3)
+
+class Money {
+    func __init__(self, amount: int) {
+        self.amount: int = amount
+    }
+
+    func __mod__(self, other: Money) -> Money {
+        return Money(self.amount % other.amount)
+    }
+
+    func __floordiv__(self, other: Money) -> Money {
+        return Money(self.amount / other.amount)
+    }
+
+    func __str__(self) -> str {
+        return f"Money({self.amount})"
+    }
+}
+
+func main() {
+    a: Money = Money(10)
+    b: Money = Money(3)
+    print(a % b)
+    print(a // b)
+}

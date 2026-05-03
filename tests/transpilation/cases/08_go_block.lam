@@ -1,0 +1,18 @@
+# Transpilation: `go! { ... }` blocks are inlined verbatim and their
+# imports are hoisted into the generated Go import group.
+# expect-go: "hash/crc32"
+# expect-go: return int(crc32.ChecksumIEEE([]byte(s)))
+
+go! {
+    import "hash/crc32"
+}
+
+func checksum(s: str) -> int {
+    go! {
+        return int(crc32.ChecksumIEEE([]byte(s)))
+    }
+}
+
+func main() {
+    print(checksum("abc"))
+}

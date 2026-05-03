@@ -1,0 +1,63 @@
+# Test: Boolean logic - and, or, not, compound conditions
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+# expect: true
+# expect: true
+# expect: false
+# expect: true
+# expect: complex_true
+# expect: triple_and
+# expect: triple_or
+# expect: big_true
+
+func main() {
+    a: bool = True
+    b: bool = False
+
+    # Basic operators
+    print(a and True)
+    print(a and b)
+    print(a or b)
+    print(b or False)
+
+    # Not
+    print(not b)
+    print(not a)
+
+    # Compound
+    x: int = 10
+    print(x > 5 and x < 20)
+    print(x >= 10 and x <= 10)
+    print(x > 10 and x < 20)
+
+    # Mixed
+    print(x > 5 or x < 0)
+
+    # Complex
+    y: int = 5
+    if (x > 0 and y > 0) or (x < 0 and y < 0) {
+        print("complex_true")
+    }
+
+    # Triple and
+    if x > 0 and y > 0 and x + y > 10 {
+        print("triple_and")
+    }
+
+    # Triple or
+    if x == 10 or y == 10 or x + y == 15 {
+        print("triple_or")
+    }
+
+    # Nested boolean
+    p: bool = True
+    q: bool = False
+    r: bool = True
+    if (p or q) and (p or r) {
+        print("big_true")
+    }
+}

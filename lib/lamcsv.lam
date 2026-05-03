@@ -1,0 +1,54 @@
+# Lammergeier standard library: CSV reading/writing
+# Import with: from lamcsv import Csv
+
+go! {
+    import (
+        "encoding/csv"
+        "strings"
+    )
+}
+
+class Csv {
+    static func parseAll(content: str) -> list[list[str]] {
+        go! {
+            r := csv.NewReader(strings.NewReader(content))
+            records, err := r.ReadAll()
+            if err != nil {
+                return [][]string{}
+            }
+            // Convert to []interface{} of []interface{}
+            result := make([]interface{}, len(records))
+            for i, row := range records {
+                irow := make([]interface{}, len(row))
+                for j, v := range row {
+                    irow[j] = v
+                }
+                result[i] = irow
+            }
+            _ = result
+            return records
+        }
+    }
+
+    static func formatRow(fields: list[str]) -> str {
+        go! {
+            return strings.Join(fields, ",")
+        }
+    }
+
+    static func formatAll(rows: list[list[str]]) -> str {
+        go! {
+            var buf strings.Builder
+            w := csv.NewWriter(&buf)
+            for _, row := range rows {
+                w.Write(row)
+            }
+            w.Flush()
+            return buf.String()
+        }
+    }
+}
+
+func main() {
+    pass
+}

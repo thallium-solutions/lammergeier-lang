@@ -1,0 +1,42 @@
+# Rosetta Code: Abundant, deficient and perfect number classifications
+# https://rosettacode.org/wiki/Abundant,_deficient_and_perfect_number_classifications
+# expect: Deficient: 15043
+# expect: Perfect: 4
+# expect: Abundant: 4953
+
+func sum_proper_divisors(n: int) -> int {
+    if n <= 1 {
+        return 0
+    }
+    total: int = 1
+    i: int = 2
+    while i * i <= n {
+        if n % i == 0 {
+            total += i
+            if i != n / i {
+                total += n / i
+            }
+        }
+        i += 1
+    }
+    return total
+}
+
+func main() {
+    deficient: int = 0
+    perfect: int = 0
+    abundant: int = 0
+    for n in range(1, 20001) {
+        s: int = sum_proper_divisors(n)
+        if s < n {
+            deficient += 1
+        } elif s == n {
+            perfect += 1
+        } else {
+            abundant += 1
+        }
+    }
+    print(f"Deficient: {deficient}")
+    print(f"Perfect: {perfect}")
+    print(f"Abundant: {abundant}")
+}

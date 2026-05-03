@@ -1,0 +1,86 @@
+# Test: Mathematical computations - GCD, LCM, prime check, series
+# expect: 6
+# expect: 1
+# expect: 12
+# expect: true
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+# expect: 1
+# expect: 4
+# expect: 9
+# expect: 16
+# expect: 25
+# expect: 36
+# expect: 49
+# expect: 64
+# expect: 81
+# expect: 100
+# expect: 385
+# expect: math2_ok
+
+func gcd(a: int, b: int) -> int {
+    while b != 0 {
+        temp: int = b
+        b = a % b
+        a = temp
+    }
+    return a
+}
+
+func lcm(a: int, b: int) -> int {
+    return a * b / gcd(a, b)
+}
+
+func is_prime(n: int) -> bool {
+    if n < 2 {
+        return False
+    }
+    i: int = 2
+    while i * i <= n {
+        if n % i == 0 {
+            return False
+        }
+        i = i + 1
+    }
+    return True
+}
+
+func sum_of_squares(n: int) -> int {
+    total: int = 0
+    i: int = 1
+    while i <= n {
+        total = total + i * i
+        i = i + 1
+    }
+    return total
+}
+
+func main() {
+    # GCD
+    print(gcd(12, 18))
+    print(gcd(7, 13))
+
+    # LCM
+    print(lcm(4, 6))
+
+    # Prime check
+    print(is_prime(2))
+    print(is_prime(17))
+    print(is_prime(15))
+    print(is_prime(97))
+    print(is_prime(1))
+
+    # Squares
+    i: int = 1
+    while i <= 10 {
+        print(i * i)
+        i = i + 1
+    }
+
+    # Sum of squares
+    print(sum_of_squares(10))
+
+    print("math2_ok")
+}

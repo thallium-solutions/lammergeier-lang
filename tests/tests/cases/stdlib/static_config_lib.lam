@@ -1,0 +1,15 @@
+# helper library for testing imported class static variables
+
+class SharedConfig {
+    static requests: int = 0
+    private static prefix: str = "lib"
+
+    static func mark(label: str) -> str {
+        SharedConfig.requests += 1
+        return SharedConfig.prefix + "-" + label + "-" + str(SharedConfig.requests)
+    }
+}
+
+func main() {
+    pass
+}

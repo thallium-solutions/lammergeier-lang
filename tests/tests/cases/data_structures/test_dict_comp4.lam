@@ -1,0 +1,12 @@
+# Test: dict comprehension with string values
+# expect: a=0
+# expect: b=1
+# expect: c=2
+
+func main() {
+    letters: list[str] = ["a", "b", "c"]
+    idx_map: dict[int, str] = {i: letters[i] for i in range(3)}
+    for i in range(3) {
+        print(f"{idx_map[i]}={i}")
+    }
+}

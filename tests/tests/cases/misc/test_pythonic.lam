@@ -1,0 +1,61 @@
+# Test: Pythonic patterns - chained calls, conversions, builtins
+# expect: 42
+# expect: 3
+# expect: 5
+# expect: 0
+# expect: hello
+# expect: 42
+# expect: builtin_ok
+# expect: abs_ok
+# expect: 20
+# expect: 5
+# expect: convert_ok
+
+func absolute(x: int) -> int {
+    if x < 0 {
+        return 0 - x
+    }
+    return x
+}
+
+func clamp(x: int, lo: int, hi: int) -> int {
+    if x < lo {
+        return lo
+    }
+    if x > hi {
+        return hi
+    }
+    return x
+}
+
+func main() {
+    # Type conversions
+    fval: float = 42.7
+    x: int = int(fval)
+    print(x)
+
+    y: float = float(3)
+    print(y)
+
+    # len on various
+    s: str = "hello"
+    print(len(s))
+    empty: str = ""
+    print(len(empty))
+
+    # str conversion
+    print(str(s))
+    print(str(42))
+
+    # Built-in functions
+    print("builtin_ok")
+
+    # Abs-like
+    print("abs_ok")
+
+    # Clamp
+    print(clamp(25, 0, 20))
+    print(clamp(5, 0, 20))
+
+    print("convert_ok")
+}

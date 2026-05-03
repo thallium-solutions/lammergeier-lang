@@ -1,0 +1,40 @@
+go! {
+    import "strconv"
+}
+
+class AppConfig {
+    func init(self, name: str, baseUrl: str, retries: int) {
+        self.name: str = name
+        self.baseUrl: str = baseUrl
+        self.retries: int = retries
+    }
+
+    func host(self) -> str {
+        noScheme: str = self.baseUrl.split("//")[1]
+        return noScheme.split("/")[0]
+    }
+
+    func envName(self) -> str {
+        parts: list[str] = self.name.split("-")
+        return parts[0].upper()
+    }
+}
+
+func parseConfig(text: str) -> AppConfig {
+    values: dict[str, str] = {}
+    trimmed: str = text.strip()
+    lines: list[str] = trimmed.split("\n")
+    for line in lines {
+        parts: list[str] = line.split("=")
+        values[parts[0]] = parts[1]
+    }
+    retries: int = 0
+    go! {
+        retries, _ = strconv.Atoi(values["retries"])
+    }
+    return AppConfig(values["name"], values["base_url"], retries)
+}
+
+func main() {
+    pass
+}

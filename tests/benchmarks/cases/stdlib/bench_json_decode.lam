@@ -1,0 +1,20 @@
+# lamjson decode — parses the same payload N times. A regression
+# here is usually decoder re-allocation per call; an optimisation
+# that pools a strings.NewReader across calls would show up as
+# a measurable drop.
+
+from lamjson import Json
+
+func main() {
+    src: str = "{\"user\":\"alice\",\"meta\":{\"active\":true,\"score\":42,\"tags\":[\"t0\",\"t1\",\"t2\",\"t3\",\"t4\",\"t5\"]}}"
+    total: int = 0
+    for __i in range(50000) {
+        v: any = Json.decode(src)
+        if v != None {
+            total = total + 1
+        }
+    }
+    if total != 50000 {
+        print("unreachable")
+    }
+}

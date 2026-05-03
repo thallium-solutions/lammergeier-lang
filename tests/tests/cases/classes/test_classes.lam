@@ -1,0 +1,108 @@
+# Test: Classes - constructors, methods, multiple classes, method chaining
+# expect: Point(1, 2)
+# expect: Point(4, 6)
+# expect: 52
+# expect: Alice is 30
+# expect: 31
+# expect: hello from Counter: 3
+# expect: true
+# expect: false
+# expect: 0
+# expect: 1
+# expect: 2
+
+class Point {
+    func __init__(self, x: int, y: int) {
+        self.x: int = x
+        self.y: int = y
+    }
+
+    func __str__(self) -> str {
+        return f"Point({self.x}, {self.y})"
+    }
+
+    func add(self, other: Point) -> Point {
+        return Point(self.x + other.x, self.y + other.y)
+    }
+
+    func distance_sq(self) -> int {
+        return self.x * self.x + self.y * self.y
+    }
+}
+
+class Person {
+    func __init__(self, name: str, age: int) {
+        self.name: str = name
+        self.age: int = age
+    }
+
+    func greet(self) -> str {
+        return f"{self.name} is {self.age}"
+    }
+
+    func birthday(self) {
+        self.age = self.age + 1
+    }
+}
+
+class Counter {
+    func __init__(self) {
+        self.count: int = 0
+    }
+
+    func increment(self) {
+        self.count = self.count + 1
+    }
+
+    func get(self) -> int {
+        return self.count
+    }
+}
+
+class Stack {
+    func __init__(self) {
+        self.items: list[int] = []
+        self.size: int = 0
+    }
+
+    func push(self, val: int) {
+        self.items = append(self.items, val)
+        self.size = self.size + 1
+    }
+
+    func is_empty(self) -> bool {
+        return self.size == 0
+    }
+}
+
+func main() {
+    p1: Point = Point(1, 2)
+    p2: Point = Point(3, 4)
+    print(p1)
+
+    p3: Point = p1.add(p2)
+    print(p3)
+
+    print(p3.distance_sq())
+
+    alice: Person = Person("Alice", 30)
+    print(alice.greet())
+    alice.birthday()
+    print(alice.age)
+
+    c: Counter = Counter()
+    c.increment()
+    c.increment()
+    c.increment()
+    print(f"hello from Counter: {c.get()}")
+
+    s: Stack = Stack()
+    print(s.is_empty())
+    s.push(10)
+    print(s.is_empty())
+
+    i: int = 0
+    for i in range(3) {
+        print(i)
+    }
+}

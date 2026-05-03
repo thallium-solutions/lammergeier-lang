@@ -1,0 +1,24 @@
+# lamre — match a moderately complex pattern against many lines.
+# Today every call re-compiles via regexp.MustCompile on the fly;
+# an obvious future optimisation is caching by pattern. When that
+# lands this benchmark's running time should roughly halve.
+
+from lamre import Re
+
+func main() {
+    lines: list[str] = []
+    for i in range(1000) {
+        lines = append(lines, f"2026-04-{i % 30:02d} INFO req_id=abc{i} path=/api/v1/items/{i}")
+    }
+    hits: int = 0
+    for __i in range(50) {
+        for line in lines {
+            if Re.match("req_id=\\w+", line) {
+                hits = hits + 1
+            }
+        }
+    }
+    if hits == 0 {
+        print("unreachable")
+    }
+}

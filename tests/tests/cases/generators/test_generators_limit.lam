@@ -1,0 +1,13 @@
+# Test: Generator limitation (yields are not supported, use channels instead)
+# expect: generator_workaround
+# expect: 0
+# expect: 1
+# expect: 2
+
+func main() {
+    print("generator_workaround")
+    # Use explicit loop instead of generators
+    for i: int in range(3) {
+        print(i)
+    }
+}

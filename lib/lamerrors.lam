@@ -1,0 +1,109 @@
+# Lammergeier standard library: error handling primitives.
+#
+# Two cooperating types:
+#
+#   * ``Error``  – a structured error value (kind / message / cause).
+#                  Plain strings are also accepted as errors, so
+#                  ``Result.Err("oops")`` is fine when you don't need
+#                  the extra metadata.
+#   * ``Result`` – a success-or-error container. Either ``.value`` is
+#                  set (and ``.error`` is ``None``) or ``.error`` is
+#                  set (and ``.value`` is ``None``).
+#
+# Build a result with the static helpers ``Result.Ok(v)`` /
+# ``Result.Err(e)``. Inspect it with ``r.ok()``, ``r.error``, or
+# ``r.value``; consume it with ``r.unwrap()`` (panics on error) or
+# ``r.unwrapOr(default)``.
+#
+# The ``?`` operator (Sprint 2B) and the ``do { } catch err { }`` block
+# (Sprint 2C) build on these primitives.
+#
+# Import with: ``from lamerrors import Result, Error``.
+
+
+class Error {
+    #- Structured error value.
+
+       ``kind`` is a short identifier (``"IOError"``, ``"ParseError"``,
+       …) — useful for matching in callers. ``message`` is a
+       human-readable description. ``cause``, if set, chains the
+       underlying error so wrap/unwrap stays cheap.
+    -#
+
+    func __init__(self, kind: str, message: str, cause: any = None) {
+        self.kind: str = kind
+        self.message: str = message
+        self.cause: any = cause
+    }
+
+    func __str__(self) -> str {
+        if self.cause != None {
+            return f"{self.kind}: {self.message} (cause: {self.cause})"
+        }
+        return f"{self.kind}: {self.message}"
+    }
+}
+
+
+class Result {
+    #- Success-or-error container.
+
+       Construct with the static helpers — never call the bare
+       constructor — so the invariant "exactly one of value/error is
+       set" stays explicit at the call site:
+
+           ok  = Result.Ok(42)
+           bad = Result.Err(Error("IOError", "disk full"))
+
+       ``value`` is typed ``any`` so a single ``Result`` can carry
+       any payload. Assign ``r.unwrap()`` (or ``r.value``) to a
+       typed local to recover the static type at the consumption
+       site:
+
+           r = parseInt("42")
+           n: int = r.unwrap()    # cast happens on assignment
+    -#
+
+    func __init__(self, value: any = None, error: any = None) {
+        self.value: any = value
+        self.error: any = error
+    }
+
+    static func Ok(v: any) -> Result {
+        #- Build a success result wrapping ``v``. -#
+        return Result(v, None)
+    }
+
+    static func Err(e: any) -> Result {
+        #- Build an error result. ``e`` may be an ``Error`` instance,
+           a string, or any value the caller chooses to use as an
+           error sentinel. -#
+        return Result(None, e)
+    }
+
+    func ok(self) -> bool {
+        #- ``True`` if this is a success result. Equivalent to
+           ``self.error == None``. -#
+        return self.error == None
+    }
+
+    func unwrap(self) -> any {
+        #- Return the contained value, or panic with the error if this
+           is an error result. Use ``unwrapOr`` when you have a sane
+           default; use ``ok()`` / ``.error`` when you want to handle
+           the error explicitly. -#
+        if self.error != None {
+            throw RuntimeError(f"unwrap on error result: {self.error}")
+        }
+        return self.value
+    }
+
+    func unwrapOr(self, fallback: any) -> any {
+        #- Return the contained value, or ``fallback`` if this is an
+           error result. Never panics. -#
+        if self.error != None {
+            return fallback
+        }
+        return self.value
+    }
+}

@@ -1,0 +1,30 @@
+# Rosetta Code: Bubble sort
+# https://rosettacode.org/wiki/Sorting_algorithms/Bubble_sort
+# expect: 1 2 3 4 5 6 7 8 9 10
+
+func bubble_sort(arr: list[int]) -> list[int] {
+    n: int = len(arr)
+    for i in range(n) {
+        for j in range(0, n - i - 1) {
+            if arr[j] > arr[j + 1] {
+                temp: int = arr[j]
+                arr[j] = arr[j + 1]
+                arr[j + 1] = temp
+            }
+        }
+    }
+    return arr
+}
+
+func main() {
+    data: list[int] = [5, 3, 8, 1, 9, 2, 7, 4, 10, 6]
+    sorted_data: list[int] = bubble_sort(data)
+    result: str = ""
+    for i, v in enumerate(sorted_data) {
+        if i > 0 {
+            result = result + " "
+        }
+        result = result + f"{v}"
+    }
+    print(result)
+}

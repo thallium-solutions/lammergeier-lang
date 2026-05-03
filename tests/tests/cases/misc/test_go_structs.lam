@@ -1,0 +1,41 @@
+# Test: Go struct patterns and method receivers via go! blocks
+# expect: {1 2}
+# expect: 5
+# expect: Stack: 3 items
+# expect: 30
+# expect: 20
+# expect: 10
+# expect: empty
+# expect: go_struct_ok
+
+func main() {
+    # Go struct literal
+    go! {
+        type Point struct {
+            X, Y int
+        }
+        p := Point{1, 2}
+        fmt.Println(p)
+        fmt.Println(p.X + p.Y + 2)
+    }
+    # Stack with slice
+    go! {
+        type Stack struct {
+            items []int
+        }
+        s := Stack{items: []int{}}
+        s.items = append(s.items, 10)
+        s.items = append(s.items, 20)
+        s.items = append(s.items, 30)
+        fmt.Println(fmt.Sprintf("Stack: %d items", len(s.items)))
+        // Pop items
+        for i := len(s.items) - 1; i >= 0; i-- {
+            fmt.Println(s.items[i])
+        }
+        s.items = s.items[:0]
+        if len(s.items) == 0 {
+            fmt.Println("empty")
+        }
+    }
+    print("go_struct_ok")
+}

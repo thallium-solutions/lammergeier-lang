@@ -1,0 +1,32 @@
+# Rosetta Code: Selection sort
+# https://rosettacode.org/wiki/Sorting_algorithms/Selection_sort
+# expect: 1 2 3 4 5 6 7 8 9 10
+
+func selection_sort(arr: list[int]) -> list[int] {
+    n: int = len(arr)
+    for i in range(n) {
+        min_idx: int = i
+        for j in range(i + 1, n) {
+            if arr[j] < arr[min_idx] {
+                min_idx = j
+            }
+        }
+        temp: int = arr[i]
+        arr[i] = arr[min_idx]
+        arr[min_idx] = temp
+    }
+    return arr
+}
+
+func main() {
+    data: list[int] = [3, 6, 1, 9, 2, 8, 4, 7, 10, 5]
+    sorted_data: list[int] = selection_sort(data)
+    result: str = ""
+    for i, v in enumerate(sorted_data) {
+        if i > 0 {
+            result = result + " "
+        }
+        result = result + f"{v}"
+    }
+    print(result)
+}

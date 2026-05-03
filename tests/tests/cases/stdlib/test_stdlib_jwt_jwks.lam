@@ -1,0 +1,159 @@
+# Test: lamjwt.JwtKeySet — JWKS / multi-key verify (rotation).
+#
+# Scenarios:
+#   * HS256 with two secrets under different kids. A token signed
+#     with secretA+kid-a verifies; signed with the wrong secret does
+#     not; signed under kid-b with secretB verifies (kid selects
+#     the right secret).
+#   * After removing kid-a, tokens signed with kid-a fail.
+#   * A token without any kid header still verifies as long as one
+#     of the registered secrets is correct (fallback iteration).
+#   * Malformed JWKS JSON returns Err from ``loadJwks``.
+#   * RSA JWKS rotation: the test generates a small RSA key at
+#     runtime, constructs a minimal JWKS doc, loads it, and
+#     verifies a kid-tagged token.
+#
+# expect: ks-empty-size: 0
+# expect: ks-size-after: 2
+# expect: ks-kids-count: 2
+# expect: verify-kid-a-good: true
+# expect: verify-kid-a-wrong-secret: false
+# expect: verify-kid-b-good: true
+# expect: verify-without-kid: true
+# expect: verify-after-rotate: false
+# expect: size-after-remove: 1
+# expect: kid-extracted: kid-a
+# expect: loadjwks-bad: true
+# expect: rsa-jwks-loaded: 1
+# expect: rsa-kid-verify: true
+# expect: rsa-kid-wrong: false
+
+from lamjwt import Jwt, JwtKeySet
+from lamerrors import Result
+
+go! {
+    import (
+        "crypto/rand"
+        "crypto/rsa"
+        "crypto/x509"
+        "encoding/base64"
+        "encoding/pem"
+        "encoding/json"
+    )
+}
+
+func main() {
+    # ── HS256 multi-secret rotation.
+    ks: JwtKeySet = JwtKeySet()
+    print(f"ks-empty-size: {ks.size()}")
+
+    ks.addHS("kid-a", "secretA")
+    ks.addHS("kid-b", "secretB")
+    print(f"ks-size-after: {ks.size()}")
+
+    kidList: list[str] = ks.kids()
+    n: int = len(kidList)
+    print(f"ks-kids-count: {n}")
+
+    claims: dict[str, any] = {}
+    claims["sub"] = "alice"
+
+    tokenA: str = Jwt.signHS256Kid(claims, "kid-a", "secretA", 60)
+    tokenAwrong: str = Jwt.signHS256Kid(claims, "kid-a", "wrongSecret", 60)
+    tokenB: str = Jwt.signHS256Kid(claims, "kid-b", "secretB", 60)
+
+    print(f"verify-kid-a-good: {ks.verifyHS256(tokenA)}")
+    print(f"verify-kid-a-wrong-secret: {ks.verifyHS256(tokenAwrong)}")
+    print(f"verify-kid-b-good: {ks.verifyHS256(tokenB)}")
+
+    # Token without any kid header → fallback: try every key.
+    tokenNoKid: str = Jwt.signHS256(claims, "secretA", 60)
+    print(f"verify-without-kid: {ks.verifyHS256(tokenNoKid)}")
+
+    # Rotate: remove kid-a. Tokens signed under kid-a should now fail
+    # because the remaining key (secretB) cannot verify the signature.
+    ks.remove("kid-a")
+    print(f"verify-after-rotate: {ks.verifyHS256(tokenA)}")
+    print(f"size-after-remove: {ks.size()}")
+
+    # Confirm the kid extractor works independently.
+    extracted: str = Jwt.extractKid(tokenA)
+    print(f"kid-extracted: {extracted}")
+
+    # ── Malformed JWKS JSON.
+    badResult: Result = ks.loadJwks("{not valid")
+    badErr: bool = not badResult.ok()
+    print(f"loadjwks-bad: {badErr}")
+
+    # ── RSA JWKS rotation (live keygen).
+    privPem: str = ""
+    jwksDoc: str = ""
+    go! {
+        priv, err := rsa.GenerateKey(rand.Reader, 2048)
+        if err == nil {
+            pkBytes := x509.MarshalPKCS1PrivateKey(priv)
+            privPem = string(pem.EncodeToMemory(&pem.Block{
+                Type: "RSA PRIVATE KEY", Bytes: pkBytes,
+            }))
+
+            // Construct a minimal JWKS doc for the public key.
+            n := base64.RawURLEncoding.EncodeToString(priv.PublicKey.N.Bytes())
+            // Encode the exponent as the smallest big-endian byte
+            // slice (usually just \x01\x00\x01 for 65537).
+            eInt := priv.PublicKey.E
+            var eBytes []byte
+            for eInt > 0 {
+                eBytes = append([]byte{byte(eInt & 0xff)}, eBytes...)
+                eInt >>= 8
+            }
+            e := base64.RawURLEncoding.EncodeToString(eBytes)
+
+            jwk := map[string]interface{}{
+                "kty": "RSA",
+                "kid": "rsa-kid",
+                "use": "sig",
+                "alg": "RS256",
+                "n":   n,
+                "e":   e,
+            }
+            doc := map[string]interface{}{
+                "keys": []interface{}{jwk},
+            }
+            b, _ := json.Marshal(doc)
+            jwksDoc = string(b)
+        }
+    }
+
+    ks2: JwtKeySet = JwtKeySet()
+    loadRes: Result = ks2.loadJwks(jwksDoc)
+    loaded: int = 0
+    if loadRes.ok() {
+        v: any = loadRes.unwrap()
+        go! {
+            if vi, ok := v.(int); ok { loaded = vi }
+        }
+    }
+    print(f"rsa-jwks-loaded: {loaded}")
+
+    rsaTok: str = Jwt.signRS256Kid(claims, "rsa-kid", privPem, 60)
+    print(f"rsa-kid-verify: {ks2.verifyRS256(rsaTok)}")
+
+    # Wrong kid but the set still tries every registered key; since
+    # the signing key is the *same*, verify still succeeds — so
+    # instead we sign with a totally separate key pair to confirm
+    # mismatch paths return false.
+    privOther: str = ""
+    go! {
+        p, err := rsa.GenerateKey(rand.Reader, 2048)
+        if err == nil {
+            b := x509.MarshalPKCS1PrivateKey(p)
+            privOther = string(pem.EncodeToMemory(&pem.Block{
+                Type: "RSA PRIVATE KEY", Bytes: b,
+            }))
+        }
+    }
+    # Sign with a different private key under the same kid — the
+    # registered public key cannot verify it.
+    rogueTok: str = Jwt.signRS256Kid(claims, "rsa-kid", privOther, 60)
+    print(f"rsa-kid-wrong: {ks2.verifyRS256(rogueTok)}")
+}

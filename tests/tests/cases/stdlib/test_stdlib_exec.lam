@@ -1,0 +1,10 @@
+# expect: exec_ok
+
+from lamexec import Exec
+
+func main() {
+    out: str = Exec.run("echo hello_exec")
+    if len(out) > 0 {
+        print("exec_ok")
+    }
+}

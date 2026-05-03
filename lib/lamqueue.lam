@@ -1,0 +1,55 @@
+# Lammergeier standard library: Queue data structure (FIFO)
+# Import with: from lamqueue import Queue
+
+class Queue {
+    func __init__(self) {
+        self.items: list[any] = []
+    }
+
+    func enqueue(self, val: any) {
+        self.items.append(val)
+    }
+
+    func dequeue(self) -> any {
+        #- Remove and return the front of the queue. Panics when empty. -#
+        if len(self.items) == 0 {
+            raise "dequeue from empty queue"
+        }
+        val: any = self.items[0]
+        self.items = self.items[1:]
+        return val
+    }
+
+    func peek(self) -> any {
+        #- Return the front element without removing it. Panics when empty. -#
+        if len(self.items) == 0 {
+            raise "peek from empty queue"
+        }
+        return self.items[0]
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func isEmpty(self) -> bool {
+        return len(self.items) == 0
+    }
+
+    func clear(self) {
+        self.items = []
+    }
+
+    func toList(self) -> list[any] {
+        #- Return a copy of the items from front to back. -#
+        result: list[any] = []
+        for item in self.items {
+            result.append(item)
+        }
+        return result
+    }
+}
+
+func main() {
+    pass
+}

@@ -1,0 +1,173 @@
+# Lammergeier standard library: random utilities
+# Import with: from lamrandom import Random
+#
+# Uses math/rand for the bulk of operations and crypto/rand for UUIDs.
+
+go! {
+    import (
+        "math/rand"
+        crand "crypto/rand"
+        "encoding/base64"
+        "encoding/hex"
+        "fmt"
+        "math/big"
+    )
+}
+
+class Random {
+    static func randInt(minVal: int, maxVal: int) -> int {
+        #- Random integer in [minVal, maxVal). Panics if maxVal <= minVal. -#
+        go! {
+            if maxVal <= minVal { panic("randInt: maxVal must be > minVal") }
+            return rand.Intn(maxVal - minVal) + minVal
+        }
+    }
+
+    static func randFloat() -> float {
+        #- Random float in [0.0, 1.0). -#
+        go! {
+            return rand.Float64()
+        }
+    }
+
+    static func randFloatRange(minVal: float, maxVal: float) -> float {
+        #- Random float in [minVal, maxVal). -#
+        go! {
+            return minVal + rand.Float64()*(maxVal-minVal)
+        }
+    }
+
+    static func randBool() -> bool {
+        go! {
+            return rand.Intn(2) == 1
+        }
+    }
+
+    static func seed(s: int) {
+        go! {
+            rand.Seed(int64(s))
+        }
+    }
+
+    static func shuffle(arr: list[any]) -> list[any] {
+        #- Return a shuffled copy of the list. The input is not mutated. -#
+        go! {
+            result := make([]interface{}, len(arr))
+            copy(result, arr)
+            rand.Shuffle(len(result), func(i, j int) {
+                result[i], result[j] = result[j], result[i]
+            })
+            return result
+        }
+    }
+
+    static func choice(arr: list[any]) -> any {
+        #- Pick a single random element. Panics on empty input. -#
+        go! {
+            if len(arr) == 0 { panic("choice: empty list") }
+            return arr[rand.Intn(len(arr))]
+        }
+    }
+
+    static func sample(arr: list[any], k: int) -> list[any] {
+        #- Pick k unique random elements (without replacement). -#
+        go! {
+            if k > len(arr) { panic("sample: k > len(arr)") }
+            if k < 0 { panic("sample: k < 0") }
+            pool := make([]interface{}, len(arr))
+            copy(pool, arr)
+            rand.Shuffle(len(pool), func(i, j int) {
+                pool[i], pool[j] = pool[j], pool[i]
+            })
+            return pool[:k]
+        }
+    }
+
+    static func uuid() -> str {
+        #- Generate a random UUID v4 string. -#
+        go! {
+            b := make([]byte, 16)
+            crand.Read(b)
+            b[6] = (b[6] & 0x0f) | 0x40
+            b[8] = (b[8] & 0x3f) | 0x80
+            return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+        }
+    }
+
+    static func randomString(length: int) -> str {
+        #- Random alphanumeric string of the given length. -#
+        go! {
+            const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+            b := make([]byte, length)
+            for i := range b {
+                b[i] = chars[rand.Intn(len(chars))]
+            }
+            return string(b)
+        }
+    }
+
+    static func randomHex(length: int) -> str {
+        #- Random hex string of the given length (each char is 4 bits). -#
+        go! {
+            const chars = "0123456789abcdef"
+            b := make([]byte, length)
+            for i := range b {
+                b[i] = chars[rand.Intn(len(chars))]
+            }
+            return string(b)
+        }
+    }
+
+    static func secureBytes(n: int) -> str {
+        #- `n` cryptographically-strong random bytes returned as a hex
+           string (so it can round-trip through the string-only API). -#
+        go! {
+            if n <= 0 { return "" }
+            b := make([]byte, n)
+            if _, err := crand.Read(b); err != nil {
+                panic("Random.secureBytes: " + err.Error())
+            }
+            return hex.EncodeToString(b)
+        }
+    }
+
+    static func secureToken(n: int) -> str {
+        #- URL-safe, base64-encoded token with `n` raw bytes of entropy. -#
+        go! {
+            if n <= 0 { return "" }
+            b := make([]byte, n)
+            if _, err := crand.Read(b); err != nil {
+                panic("Random.secureToken: " + err.Error())
+            }
+            return base64.RawURLEncoding.EncodeToString(b)
+        }
+    }
+
+    static func secureInt(maxVal: int) -> int {
+        #- Cryptographically-strong random integer in [0, maxVal). -#
+        go! {
+            if maxVal <= 0 { panic("Random.secureInt: maxVal must be positive") }
+            n, err := crand.Int(crand.Reader, big.NewInt(int64(maxVal)))
+            if err != nil { panic("Random.secureInt: " + err.Error()) }
+            return int(n.Int64())
+        }
+    }
+
+    static func secureUuid() -> str {
+        #- Same as `uuid()`, made explicit for contexts that want to
+           signal "use the crypto-backed variant on purpose". -#
+        go! {
+            b := make([]byte, 16)
+            if _, err := crand.Read(b); err != nil {
+                panic("Random.secureUuid: " + err.Error())
+            }
+            b[6] = (b[6] & 0x0f) | 0x40
+            b[8] = (b[8] & 0x3f) | 0x80
+            return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+        }
+    }
+}
+
+func main() {
+    pass
+}

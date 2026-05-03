@@ -1,0 +1,346 @@
+# Lammergeier standard library: os/filesystem utilities
+# Import with: from lamos import Os
+#
+# File I/O is the natural home of recoverable errors. The historical
+# ``readFile``/``writeFile``/``readLines``/``writeLines`` family
+# silently swallows os errors (an unreadable file just yields an
+# empty string). The ``try*`` siblings return a ``Result`` so the
+# caller can decide:
+#
+#     content: str = Os.tryReadFile(path)?           # propagate
+#     Os.tryWriteFile(path, body).unwrap()           # panic on failure
+#     Os.tryReadLines(path).unwrapOr([])             # silent fallback
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "bufio"
+        "fmt"
+        "io"
+        "os"
+        "path/filepath"
+        "strings"
+    )
+}
+
+class Os {
+    static func getenv(key: str) -> str {
+        go! {
+            return os.Getenv(key)
+        }
+    }
+
+    static func setenv(key: str, val: str) {
+        go! {
+            os.Setenv(key, val)
+        }
+    }
+
+    static func getcwd() -> str {
+        go! {
+            dir, _ := os.Getwd()
+            return dir
+        }
+    }
+
+    static func mkdir(path: str) {
+        go! {
+            os.MkdirAll(path, 0755)
+        }
+    }
+
+    static func remove(path: str) {
+        go! {
+            os.Remove(path)
+        }
+    }
+
+    static func removeAll(path: str) {
+        go! {
+            os.RemoveAll(path)
+        }
+    }
+
+    static func fileExists(path: str) -> bool {
+        go! {
+            _, err := os.Stat(path)
+            return err == nil
+        }
+    }
+
+    static func readFile(path: str) -> str {
+        go! {
+            data, _ := os.ReadFile(path)
+            return string(data)
+        }
+    }
+
+    static func tryReadFile(path: str) -> Result {
+        #- Read the entire file at ``path``. Returns ``Result.Ok(str)``
+           on success or ``Result.Err(Error("IOError", ...))`` if the
+           file is missing or unreadable. -#
+        go! {
+            data, err := os.ReadFile(path)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError",
+                    fmt.Sprintf("readFile %q: %v", path, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(data))
+        }
+    }
+
+    static func writeFile(path: str, content: str) {
+        go! {
+            os.WriteFile(path, []byte(content), 0644)
+        }
+    }
+
+    static func tryWriteFile(path: str, content: str) -> Result {
+        #- Write ``content`` to ``path``, replacing any existing file.
+           Returns ``Result.Ok(None)`` on success or
+           ``Result.Err(Error("IOError", ...))`` on failure. -#
+        go! {
+            err := os.WriteFile(path, []byte(content), 0644)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError",
+                    fmt.Sprintf("writeFile %q: %v", path, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    static func appendFile(path: str, content: str) {
+        go! {
+            f, _ := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+            f.WriteString(content)
+            f.Close()
+        }
+    }
+
+    static func listDir(path: str) -> list[str] {
+        go! {
+            entries, _ := os.ReadDir(path)
+            names := make([]string, 0, len(entries))
+            for _, e := range entries {
+                names = append(names, e.Name())
+            }
+            return names
+        }
+    }
+
+    static func isDir(path: str) -> bool {
+        go! {
+            info, err := os.Stat(path)
+            if err != nil {
+                return false
+            }
+            return info.IsDir()
+        }
+    }
+
+    static func rename(oldPath: str, newPath: str) {
+        go! {
+            os.Rename(oldPath, newPath)
+        }
+    }
+
+    static func tempDir() -> str {
+        go! {
+            return os.TempDir()
+        }
+    }
+
+    static func exit(code: int) {
+        go! {
+            os.Exit(code)
+        }
+    }
+
+    static func args() -> list[str] {
+        go! {
+            return os.Args
+        }
+    }
+
+    static func isFile(path: str) -> bool {
+        go! {
+            info, err := os.Stat(path)
+            if err != nil { return false }
+            return !info.IsDir()
+        }
+    }
+
+    static func fileSize(path: str) -> int {
+        go! {
+            info, err := os.Stat(path)
+            if err != nil { return -1 }
+            return int(info.Size())
+        }
+    }
+
+    static func copyFile(src: str, dst: str) {
+        go! {
+            data, err := os.ReadFile(src)
+            if err != nil { panic(err) }
+            os.WriteFile(dst, data, 0644)
+        }
+    }
+
+    static func tryReadLines(path: str) -> Result {
+        #- Read a file as a list of lines. Trailing newline is
+           stripped but inner blank lines are preserved. Returns
+           ``Result.Ok(list[str])`` or ``Result.Err`` on I/O failure. -#
+        go! {
+            data, err := os.ReadFile(path)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError",
+                    fmt.Sprintf("readLines %q: %v", path, err),
+                    nil,
+                ))
+            }
+            content := string(data)
+            content = strings.TrimRight(content, "\n")
+            if content == "" {
+                return LAMMERGEIER.Result.Ok([]string{})
+            }
+            return LAMMERGEIER.Result.Ok(strings.Split(content, "\n"))
+        }
+    }
+
+    static func tryWriteLines(path: str, lines: list[str]) -> Result {
+        #- Write each line terminated by ``\n``. Returns
+           ``Result.Ok(None)`` on success. -#
+        go! {
+            err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError",
+                    fmt.Sprintf("writeLines %q: %v", path, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    static func readLines(path: str) -> list[str] {
+        #- Read a file and return its lines. Trailing newline is stripped
+           but inner blank lines are preserved. -#
+        go! {
+            data, err := os.ReadFile(path)
+            if err != nil { return []string{} }
+            content := string(data)
+            content = strings.TrimRight(content, "\n")
+            if content == "" { return []string{} }
+            return strings.Split(content, "\n")
+        }
+    }
+
+    static func writeLines(path: str, lines: list[str]) {
+        #- Write each line terminated by \n. Overwrites any existing file. -#
+        go! {
+            os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+        }
+    }
+
+    static func walk(root: str) -> list[str] {
+        #- Return every file path below `root`, recursively. -#
+        go! {
+            paths := []string{}
+            filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+                if err != nil { return nil }
+                if info == nil || info.IsDir() { return nil }
+                paths = append(paths, p)
+                return nil
+            })
+            return paths
+        }
+    }
+
+    static func listFiles(path: str) -> list[str] {
+        #- Only regular files in `path` (non-recursive). -#
+        go! {
+            entries, _ := os.ReadDir(path)
+            names := make([]string, 0, len(entries))
+            for _, e := range entries {
+                if !e.IsDir() { names = append(names, e.Name()) }
+            }
+            return names
+        }
+    }
+
+    static func listDirs(path: str) -> list[str] {
+        #- Only subdirectories in `path` (non-recursive). -#
+        go! {
+            entries, _ := os.ReadDir(path)
+            names := make([]string, 0, len(entries))
+            for _, e := range entries {
+                if e.IsDir() { names = append(names, e.Name()) }
+            }
+            return names
+        }
+    }
+
+    static func tempFile(prefix: str = "lam-", suffix: str = "") -> str {
+        #- Create a new empty temp file and return its path. The caller owns
+           the file and is responsible for cleanup. -#
+        go! {
+            f, err := os.CreateTemp("", prefix+"*"+suffix)
+            if err != nil { panic(err) }
+            name := f.Name()
+            f.Close()
+            return name
+        }
+    }
+
+    static func readStdin() -> str {
+        #- Read everything from stdin into a single string. -#
+        go! {
+            data, err := io.ReadAll(os.Stdin)
+            if err != nil { return "" }
+            return string(data)
+        }
+    }
+
+    static func readStdinLine() -> str {
+        #- Read a single line from stdin (trailing newline stripped).
+           Returns "" on EOF. -#
+        go! {
+            reader := bufio.NewReader(os.Stdin)
+            line, err := reader.ReadString('\n')
+            line = strings.TrimRight(line, "\r\n")
+            if err != nil && line == "" { return "" }
+            return line
+        }
+    }
+
+    static func user() -> str {
+        #- Current user's login name. Looks at $USER/$LOGNAME/$USERNAME. -#
+        go! {
+            for _, key := range []string{"USER", "LOGNAME", "USERNAME"} {
+                if v := os.Getenv(key); v != "" { return v }
+            }
+            return ""
+        }
+    }
+
+    static func hostname() -> str {
+        go! {
+            name, err := os.Hostname()
+            if err != nil { return "" }
+            return name
+        }
+    }
+}
+
+func main() {
+    pass
+}

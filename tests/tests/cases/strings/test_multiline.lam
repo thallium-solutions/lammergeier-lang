@@ -1,0 +1,16 @@
+# Test: multiline strings
+# expect: hello
+# expect: world
+# expect: line 1
+# expect: line 2
+# expect: done
+
+func main() {
+    msg: str = """hello
+world"""
+    print(msg)
+    msg2: str = """line 1
+line 2"""
+    print(msg2)
+    print("done")
+}

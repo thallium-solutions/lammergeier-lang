@@ -1,0 +1,11 @@
+# Test: enumerate in list building
+# expect: 0:a
+# expect: 1:b
+# expect: 2:c
+
+func main() {
+    letters: list[str] = ["a", "b", "c"]
+    for idx, letter in enumerate(letters) {
+        print(f"{idx}:{letter}")
+    }
+}

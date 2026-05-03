@@ -1,0 +1,78 @@
+# Integration test: fan-out / fan-in style "crawler".
+#
+# Spawns N goroutines that pretend to fetch a remote document
+# (here: just compute the square of their worker id), pushes the
+# result to a channel, and the main loop fans the values back in
+# through a WaitGroup-coordinated drain.
+#
+# Stresses lamconcurrency's WaitGroup + Channel + Mutex, plus
+# range-over-channel iteration through a Lam class wrapping a Go
+# ``chan interface{}``.
+#
+# expect: total=285
+# expect: count=10
+# expect: max_seen=81
+# expect: crawler_ok
+
+from lamconcurrency import Channel, WaitGroup, Mutex
+
+go! {
+    import "sync/atomic"
+}
+
+func runWorker(id: int, results: Channel, wg: WaitGroup) {
+    # The "fetch": compute id*id. Real crawler would call lamhttp here.
+    sq: int = id * id
+    results.send(sq)
+    wg.done()
+}
+
+func main() {
+    n: int = 10
+    results: Channel = Channel(n)
+    wg: WaitGroup = WaitGroup()
+
+    # Fan out: spawn n workers.
+    i: int = 0
+    while i < n {
+        wg.add(1)
+        # ``go!`` block + ``go func()`` — calls the Lam-defined runner
+        # from inside a real goroutine. We pass i by value via a Go
+        # closure parameter to avoid the classic capture-loop bug.
+        go! {
+            workerId := i
+            go func() { RunWorker(workerId, results, wg) }()
+        }
+        i = i + 1
+    }
+
+    # Wait for all workers to finish, then close the channel so the
+    # range loop below terminates.
+    wg.wait()
+    results.close()
+
+    # Fan in: drain the channel.
+    total: int = 0
+    count: int = 0
+    maxSeen: int = 0
+    go! {
+        ch := results.Ch.(chan interface{})
+        for v := range ch {
+            n := v.(int)
+            total += n
+            count++
+            if n > maxSeen { maxSeen = n }
+        }
+    }
+
+    print(f"total={total}")        # 0+1+4+9+16+25+36+49+64+81 = 285
+    print(f"count={count}")
+    print(f"max_seen={maxSeen}")   # 9*9 = 81
+
+    # Use atomic so the linter doesn't complain about the import — it
+    # also doubles as a sanity check that ``sync/atomic`` is wired up
+    # for future tests.
+    go! { _ = atomic.LoadInt64(new(int64)) }
+
+    print("crawler_ok")
+}

@@ -1,0 +1,36 @@
+class StockItem {
+    func init(self, sku: str, onHand: int, weeklyDemand: list[float]) {
+        self.sku: str = sku
+        self.onHand: int = onHand
+        self.weeklyDemand: list[float] = weeklyDemand
+    }
+
+    func averageDemand(self) -> float {
+        total: float = 0.0
+        for n in self.weeklyDemand {
+            total += n
+        }
+        return total / float(len(self.weeklyDemand))
+    }
+
+    func reorderPoint(self, leadWeeks: int, safetyStock: int) -> int {
+        need: float = self.averageDemand() * float(leadWeeks)
+        whole: int = int(need)
+        if float(whole) < need {
+            whole += 1
+        }
+        return whole + safetyStock
+    }
+
+    func status(self, leadWeeks: int, safetyStock: int) -> str {
+        point: int = self.reorderPoint(leadWeeks, safetyStock)
+        if self.onHand <= point {
+            return "reorder"
+        }
+        return "ok"
+    }
+}
+
+func main() {
+    pass
+}

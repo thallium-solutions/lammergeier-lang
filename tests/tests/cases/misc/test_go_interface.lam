@@ -1,0 +1,35 @@
+# Test: Go interface patterns via go! blocks
+# expect: area of circle: 75
+# expect: area of rect: 200
+# expect: total area: 275
+# expect: go_interface_ok
+
+func main() {
+    go! {
+        type Shape interface {
+            Area() int
+        }
+        type Circle struct {
+            Radius int
+        }
+        type Rectangle struct {
+            Width, Height int
+        }
+        // Note: need to use methods on pointer or value receiver consistently
+        // Using value receivers here for simplicity
+        circleArea := func(c Circle) int {
+            return 3 * c.Radius * c.Radius
+        }
+        rectArea := func(r Rectangle) int {
+            return r.Width * r.Height
+        }
+        c := Circle{Radius: 5}
+        r := Rectangle{Width: 10, Height: 20}
+        ca := circleArea(c)
+        ra := rectArea(r)
+        fmt.Println(fmt.Sprintf("area of circle: %d", ca))
+        fmt.Println(fmt.Sprintf("area of rect: %d", ra))
+        fmt.Println(fmt.Sprintf("total area: %d", ca + ra))
+    }
+    print("go_interface_ok")
+}

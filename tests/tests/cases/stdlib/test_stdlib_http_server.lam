@@ -1,0 +1,66 @@
+# Test: Http.serve + Http.get/post/postJson + getHeader/getWithHeaders
+# expect: PASS 1 server created
+# expect: PASS 2 GET /hello
+# expect: PASS 3 GET root
+# expect: PASS 4 POST echoes body
+# expect: PASS 5 postJson echoes payload
+# expect: PASS 6 statusCode 200
+# expect: PASS 7 statusCode 0 unreachable
+# expect: PASS 8 getHeader Content-Type
+# expect: PASS 9 getWithHeaders echoes header
+# expect: PASS 10 server closed
+# expect: 10 passed, 0 failed, 10 total
+
+from lamhttp import Http
+from lamhttp import HttpServer
+from lamtest import Test
+from lamfmt import Fmt
+
+func handler(method: str, path: str, body: str) -> str {
+    if method == "POST" {
+        return "echo:" + body
+    }
+    return Fmt.sprintf("method=%s path=%s", method, path)
+}
+
+func main() {
+    # Port 38271 is fairly unlikely to clash with system services; if it
+    # ever does in CI, bump it and adjust the assertions.
+    srv: HttpServer = Http.serve(38271, handler)
+    Test.assertNotNil(srv, "1 server created")
+
+    # GET
+    body: str = Http.get("http://127.0.0.1:38271/hello")
+    Test.assertEqual(body, "method=GET path=/hello", "2 GET /hello")
+
+    rootBody: str = Http.get("http://127.0.0.1:38271/")
+    Test.assertEqual(rootBody, "method=GET path=/", "3 GET root")
+
+    # POST
+    echoed: str = Http.post("http://127.0.0.1:38271/echo", "text/plain", "ping")
+    Test.assertEqual(echoed, "echo:ping", "4 POST echoes body")
+
+    # postJson
+    jsonEcho: str = Http.postJson("http://127.0.0.1:38271/json", '{"a":1}')
+    Test.assertEqual(jsonEcho, 'echo:{"a":1}', "5 postJson echoes payload")
+
+    # statusCode
+    Test.assertEqual(Http.statusCode("http://127.0.0.1:38271/hello"), 200, "6 statusCode 200")
+    Test.assertEqual(Http.statusCode("http://127.0.0.1:1/"), 0, "7 statusCode 0 unreachable")
+
+    # getHeader should return the default content type Go adds
+    ct: str = Http.getHeader("http://127.0.0.1:38271/hello", "Content-Type")
+    Test.assertTrue(len(ct) > 0, "8 getHeader Content-Type")
+
+    # getWithHeaders — we don't round-trip the header body in this handler,
+    # but the call should succeed and return the same payload.
+    hdrs: dict[str, str] = {"X-Custom": "1"}
+    customBody: str = Http.getWithHeaders("http://127.0.0.1:38271/hdr", hdrs)
+    Test.assertEqual(customBody, "method=GET path=/hdr", "9 getWithHeaders echoes header")
+
+    srv.close()
+    aftermath: str = Http.get("http://127.0.0.1:38271/")
+    Test.assertEqual(aftermath, "", "10 server closed")
+
+    Test.summary()
+}

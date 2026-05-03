@@ -1,0 +1,278 @@
+# JSON Schema validation backed by ``xeipuuv/gojsonschema``
+# (draft-07 compliant). Schemas are compiled lazily on first use and
+# cached in a goroutine-safe registry, so registering the same schema
+# in a hot path costs ~one map lookup.
+#
+# Usage::
+#
+#     from lamschema import Schema
+#
+#     userSchema: str = """
+#     {
+#       "type": "object",
+#       "required": ["name", "age"],
+#       "properties": {
+#         "name": {"type": "string", "minLength": 1},
+#         "age":  {"type": "integer", "minimum": 0, "maximum": 150},
+#         "email": {"type": "string", "format": "email"}
+#       }
+#     }
+#     """
+#
+#     ok: bool = Schema.validateJson(userSchema, '{"name":"alice","age":30}')
+#
+# For better error messages::
+#
+#     errors: list[str] = Schema.errors(userSchema, badJson)
+#     for msg in errors {
+#         print(msg)
+#     }
+#
+# Pre-compile a schema once when its key is known up front (e.g.
+# during route registration) so request-time work is just the
+# document validation:
+#
+#     Schema.register("user.create", userSchema)
+#     ok: bool = Schema.validateByKey("user.create", body)
+
+go! {
+    import (
+        "encoding/json"
+        "fmt"
+        "sync"
+
+        gojsonschema "github.com/xeipuuv/gojsonschema"
+    )
+
+    // ─── compiled-schema cache ──────────────────────────────────
+    type schemaEntry struct {
+        schema *gojsonschema.Schema
+        err    error
+    }
+
+    var (
+        lamSchemaMu       sync.RWMutex
+        lamSchemaByText   = map[string]*schemaEntry{}
+        lamSchemaByKey    = map[string]*schemaEntry{}
+    )
+
+    // compileFromText compiles a schema document given its JSON
+    // source. We dedupe on the source string itself so callers
+    // building schemas inline still benefit from the cache.
+    func lamSchemaCompileText(src string) (*gojsonschema.Schema, error) {
+        lamSchemaMu.RLock()
+        if e, ok := lamSchemaByText[src]; ok {
+            lamSchemaMu.RUnlock()
+            return e.schema, e.err
+        }
+        lamSchemaMu.RUnlock()
+
+        loader := gojsonschema.NewStringLoader(src)
+        s, err := gojsonschema.NewSchema(loader)
+        e := &schemaEntry{schema: s, err: err}
+
+        lamSchemaMu.Lock()
+        lamSchemaByText[src] = e
+        lamSchemaMu.Unlock()
+        return s, err
+    }
+
+    func lamSchemaResolveKey(key string) (*gojsonschema.Schema, error) {
+        lamSchemaMu.RLock()
+        defer lamSchemaMu.RUnlock()
+        if e, ok := lamSchemaByKey[key]; ok {
+            return e.schema, e.err
+        }
+        return nil, fmt.Errorf("schema key not registered: %s", key)
+    }
+
+    // lamSchemaErrorList runs the validation and returns a flat
+    // string slice of human-readable errors. Returns nil on success.
+    func lamSchemaErrorList(s *gojsonschema.Schema, doc string) []string {
+        if s == nil {
+            return []string{"schema not compiled"}
+        }
+        result, err := s.Validate(gojsonschema.NewStringLoader(doc))
+        if err != nil {
+            return []string{"validate: " + err.Error()}
+        }
+        if result.Valid() {
+            return nil
+        }
+        out := make([]string, 0, len(result.Errors()))
+        for _, e := range result.Errors() {
+            out = append(out, e.String())
+        }
+        return out
+    }
+
+    // lamSchemaValidateAny accepts either a string (JSON text) or an
+    // already-decoded value (map / list / scalar) and validates it
+    // against the schema. The two-input form lets callers reuse a
+    // value they've already parsed without re-marshalling.
+    func lamSchemaValidateAny(s *gojsonschema.Schema, doc interface{}) []string {
+        if s == nil {
+            return []string{"schema not compiled"}
+        }
+        var loader gojsonschema.JSONLoader
+        switch v := doc.(type) {
+        case string:
+            loader = gojsonschema.NewStringLoader(v)
+        case []byte:
+            loader = gojsonschema.NewStringLoader(string(v))
+        default:
+            loader = gojsonschema.NewGoLoader(v)
+        }
+        result, err := s.Validate(loader)
+        if err != nil {
+            return []string{"validate: " + err.Error()}
+        }
+        if result.Valid() {
+            return nil
+        }
+        out := make([]string, 0, len(result.Errors()))
+        for _, e := range result.Errors() {
+            out = append(out, e.String())
+        }
+        return out
+    }
+
+    // lamSchemaIsValidJSON is a low-cost shape-only sanity check used
+    // by the boolean entry points before invoking the schema engine.
+    func lamSchemaIsValidJSON(s string) bool {
+        var v interface{}
+        return json.Unmarshal([]byte(s), &v) == nil
+    }
+}
+
+class Schema {
+    #- Compile a schema text and cache it under ``key``. Subsequent
+       ``validateByKey`` calls bypass parsing and run straight against
+       the compiled schema. Returns an error message on bad schemas;
+       an empty string on success. -#
+    static func register(key: str, schemaText: str) -> str {
+        out: str = ""
+        go! {
+            s, err := lamSchemaCompileText(schemaText)
+            if err != nil {
+                out = "compile: " + err.Error()
+            } else {
+                lamSchemaMu.Lock()
+                lamSchemaByKey[key] = &schemaEntry{schema: s, err: nil}
+                lamSchemaMu.Unlock()
+            }
+        }
+        return out
+    }
+
+    #- Validate a JSON document text against an inline schema. Returns
+       true if the document is valid. For diagnostic detail, prefer
+       ``errors`` or ``errorsByKey``. -#
+    static func validateJson(schemaText: str, jsonDoc: str) -> bool {
+        ok: bool = false
+        go! {
+            if s, err := lamSchemaCompileText(schemaText); err == nil {
+                ok = len(lamSchemaErrorList(s, jsonDoc)) == 0
+            }
+        }
+        return ok
+    }
+
+    #- Validate using a previously ``register``ed schema. Saves the
+       compile cost on the hot path. -#
+    static func validateByKey(key: str, jsonDoc: str) -> bool {
+        ok: bool = false
+        go! {
+            if s, err := lamSchemaResolveKey(key); err == nil {
+                ok = len(lamSchemaErrorList(s, jsonDoc)) == 0
+            }
+        }
+        return ok
+    }
+
+    #- Validate an already-decoded value (e.g. the result of
+       ``Json.parse`` or ``req.parsedBody()``) against an inline
+       schema, avoiding the JSON round-trip. -#
+    static func validateValue(schemaText: str, value: any) -> bool {
+        ok: bool = false
+        go! {
+            if s, err := lamSchemaCompileText(schemaText); err == nil {
+                ok = len(lamSchemaValidateAny(s, value)) == 0
+            }
+        }
+        return ok
+    }
+
+    #- Same as ``validateValue`` but resolves the schema by key. -#
+    static func validateValueByKey(key: str, value: any) -> bool {
+        ok: bool = false
+        go! {
+            if s, err := lamSchemaResolveKey(key); err == nil {
+                ok = len(lamSchemaValidateAny(s, value)) == 0
+            }
+        }
+        return ok
+    }
+
+    #- Return the list of human-readable validation errors for an
+       inline schema. Empty list = valid. -#
+    static func errors(schemaText: str, jsonDoc: str) -> list[str] {
+        out: list[str] = []
+        go! {
+            if s, err := lamSchemaCompileText(schemaText); err != nil {
+                out = []string{"compile: " + err.Error()}
+            } else {
+                out = lamSchemaErrorList(s, jsonDoc)
+                if out == nil { out = []string{} }
+            }
+        }
+        return out
+    }
+
+    #- Return the list of validation errors for a registered schema. -#
+    static func errorsByKey(key: str, jsonDoc: str) -> list[str] {
+        out: list[str] = []
+        go! {
+            if s, err := lamSchemaResolveKey(key); err != nil {
+                out = []string{err.Error()}
+            } else {
+                out = lamSchemaErrorList(s, jsonDoc)
+                if out == nil { out = []string{} }
+            }
+        }
+        return out
+    }
+
+    #- Convenience: ``true`` if the input is syntactically valid JSON
+       (no schema). Useful as a cheap pre-check before throwing the
+       full validator at a request body. -#
+    static func isJson(s: str) -> bool {
+        ok: bool = false
+        go! {
+            ok = lamSchemaIsValidJSON(s)
+        }
+        return ok
+    }
+
+    #- Drop a registration. Returns true if a key existed. -#
+    static func unregister(key: str) -> bool {
+        existed: bool = false
+        go! {
+            lamSchemaMu.Lock()
+            _, existed = lamSchemaByKey[key]
+            delete(lamSchemaByKey, key)
+            lamSchemaMu.Unlock()
+        }
+        return existed
+    }
+}
+
+func main() {
+    #- Self-test when run directly. -#
+    schemaText: str = "{\"type\":\"object\",\"required\":[\"name\"],\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1}}}"
+    print(Schema.validateJson(schemaText, "{\"name\":\"alice\"}"))
+    print(Schema.validateJson(schemaText, "{}"))
+    errors: list[str] = Schema.errors(schemaText, "{}")
+    n: int = len(errors)
+    print(f"errors: {n}")
+}

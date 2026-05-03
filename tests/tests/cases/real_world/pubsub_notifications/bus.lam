@@ -1,0 +1,51 @@
+class Message {
+    func init(self, topic: str, body: str) {
+        self.topic: str = topic
+        self.body: str = body
+    }
+}
+
+class Subscriber {
+    func init(self, name: str, topic: str) {
+        self.name: str = name
+        self.topic: str = topic
+        self.received: int = 0
+        self.last: str = ""
+    }
+
+    func accepts(self, msg: Message) -> bool {
+        return self.topic == "*" or self.topic == msg.topic
+    }
+
+    func receive(self, msg: Message) {
+        self.received += 1
+        self.last = msg.body
+    }
+}
+
+class EventBus {
+    func init(self) {
+        self.subscribers: list[Subscriber] = []
+        self.published: int = 0
+    }
+
+    func subscribe(self, sub: Subscriber) {
+        self.subscribers.append(sub)
+    }
+
+    func publish(self, msg: Message) -> int {
+        delivered: int = 0
+        self.published += 1
+        for sub in self.subscribers {
+            if sub.accepts(msg) {
+                sub.receive(msg)
+                delivered += 1
+            }
+        }
+        return delivered
+    }
+}
+
+func main() {
+    pass
+}

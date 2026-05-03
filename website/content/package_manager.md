@@ -1,0 +1,928 @@
+# The `lamc` package manager
+
+> **Audience:** developers who want to **install, publish, or
+> uninstall third-party Lammergeier libraries**. For installing
+> the compiler / LSP / extension on your machine, see
+> [`docs/installation.md`](#/docs/installation). For the on-disk
+> library format and registry protocol, see
+> [`docs/third_party_libraries.md`](#/docs/third_party).
+
+`lamc` is the single CLI for everything that touches a Lam
+project — compiler, formatter, migrations, *and* the package
+manager. This doc covers every package-manager verb end-to-end:
+
+- **`init`** — scaffold a fresh project (manifest, entry-point,
+  `.gitignore`).
+- **`install`** — fetch + materialise libraries (registry / git /
+  path), update the manifest, refresh the lockfile.
+- **`uninstall`** — remove an installed library and its lockfile
+  pin.
+- **`tidy`** — sync the manifest with the project's actual import
+  graph (drop unused, add missing, refresh lockfile).
+- **`verify`** — re-hash installed extlibs against the lockfile
+  for supply-chain integrity.
+- **`list`** / **`tree`** / **`why`** — read-only introspection
+  over the lockfile's `requested_by` graph.
+- **`publish`** — pack + POST a library tarball to a registry.
+
+Plus the lockfile, the resolver, the conflict detector, the
+SemVer / API-diff gate, the `[replace]` directive, and the
+reserved `[workspace]` keyword.
+
+Every behaviour described here is implemented and exercised by
+`tests/tests/test_install_cli.py` (17 cases),
+`test_dependency_crash.py` (9 cases), `test_tidy_verify.py`
+(9 cases), `test_init_introspection.py` (8 cases),
+`test_replace_workspace.py` (6 cases),
+`test_semantic_warnings.py` (10 cases),
+`test_apidiff.py` (13), `test_manifest.py` (14), and
+`test_scoped_imports.py` (6).
+
+---
+
+## 1. The 30-second tour
+
+```bash
+# Add a library to the current project. The install lands in
+# ./extlibs/, the entry is appended to lamlib.toml, and the
+# resolved version is recorded in lamlib.lock.toml — all in one
+# command.
+lamc install lamwebp@1.2.0
+
+# Use it from your source.
+echo 'from lamwebp import Encoder' >> app.lam
+lamc app.lam --run
+
+# Teammate clones the repo: one verb gets them set up.
+git clone <repo> && cd <repo>
+lamc install                                    # reads lamlib.toml + lamlib.lock.toml
+
+# CI / Docker: refuse to deviate from the lockfile, refuse the
+# network. Ideal in a `--mount=type=cache` build.
+lamc install --frozen --offline
+
+# Drop a library later.
+lamc uninstall lamwebp
+```
+
+That is the whole workflow. No `package.json`, no
+`requirements.txt`, no `go.mod` to hand-edit. One command in,
+one command out.
+
+---
+
+## 2. `lamc install`
+
+### 2.1 Spec syntax
+
+```bash
+lamc install <spec> [<spec> …] [flags]
+```
+
+`<spec>` is one of:
+
+| Form | Example | Behaviour |
+|------|---------|-----------|
+| Bare name | `lamc install lamwebp` | Latest non-yanked version from the registry. |
+| `name@version` | `lamc install lamwebp@1.2.0` | Exact version. |
+| `name@<range>` | `lamc install 'lamwebp@^1.0'` | SemVer range. Quote the spec — your shell will eat the `^`. |
+| Scoped name | `lamc install @alice/lamwebp` | npm-style two-level identifier. The `@scope/` part is preserved everywhere (resolver, install path, lockfile). |
+| Git URL | `lamc install https://github.com/alice/lamwebp.git@v1.2.0` | Bypasses the registry — clones (shallow) and validates `lamlib.toml` on the checkout. Pins the resolved commit SHA in the lockfile. |
+| Local path | `lamc install ./local-lamwebp` | Useful for in-development libs. Recursively copies the tree (no symlink — re-run after edits). |
+
+You can pass multiple specs in a single invocation; each is
+resolved independently but all share the same destination
+directory and demand set.
+
+Bare `lamc install` (no positional specs) reads the project's
+`lamlib.toml` and installs every entry under `[dependencies]`.
+This is the canonical setup verb after a fresh checkout: clone,
+`cd`, `lamc install`, build. Version ranges in the manifest are
+resolved against the registry (or replayed from
+`lamlib.lock.toml` under `--frozen`).
+
+```bash
+lamc install                                    # everything in [dependencies]
+lamc install lamwebp@1.2.0 lamqueue@^1.0       # add two new deps
+```
+
+When you pass explicit specs, each successful install also
+appends (or updates) the matching entry in `[dependencies]` so
+the manifest, lockfile, and on-disk install stay in lockstep.
+Git URLs do **not** auto-update the manifest yet — the
+`[dependencies]` schema gains a `git`/`ref` form when the
+`[replace]` directive lands.
+
+### 2.2 Flags
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--global` | off | Install into `~/.lammergeier/extlibs/` instead of `<cwd>/extlibs/`, and skip both reading the project `lamlib.toml` and writing `lamlib.lock.toml`. The escape hatch for one-off installs outside any project. |
+| `--frozen` | off | Lockfile-driven install: validate that `lamlib.toml` and `lamlib.lock.toml` agree, then materialise every pin exactly as recorded. Refuses positional specs (the lockfile is law) and refuses on drift. |
+| `--offline` | off | Refuse all network access — cache hits proceed, misses fail loudly. Implies `--frozen` because resolving range specs without the network is impossible. |
+| `--registry URL` | `http://localhost:8765` | Override the registry base. The default is the dev registry shipped under `tools/registry/`. Production deployments should set `LAMC_REGISTRY` once in their environment. |
+| `--extlibs-dir DIR` | *(derived)* | Force a specific install root. Mostly used by the test suite. |
+| `--force` | off | Re-install even if the same version is already on disk. |
+| `--allow-breaking` | off | Bypass the SemVer / API-diff gate. See §6. |
+| `-q` / `--quiet` | off | Suppress the per-step status lines. |
+
+Authentication: set `LAMC_TOKEN` in the environment to attach a
+`Bearer …` header to every registry request (used at publish
+time too).
+
+### 2.3 Where files actually go
+
+Project mode (the default) is reproducible-by-construction:
+
+```
+<project-root>/                     # your repo
+├── lamlib.toml                     # source of truth
+├── lamlib.lock.toml                # auto-generated, commit it
+└── extlibs/
+    └── lamwebp/
+        ├── lamlib.toml
+        └── lamwebp.lam
+```
+
+`--global` opts out into the legacy user-global path:
+
+```
+$HOME/.lammergeier/extlibs/         # only with --global
+└── lamwebp/
+    ├── lamlib.toml
+    └── lamwebp.lam
+```
+
+A shared content-addressed **cache** sits behind both modes
+and transparently de-duplicates downloads:
+
+```
+$HOME/.lammergeier/cache/           # override with $LAMC_CACHE
+├── tarballs/                       # registry tarballs, sha-sharded
+│   └── ab/abcd...ef.tar.gz
+└── git/                            # bare clones, refreshed via fetch
+    └── https___github.com_alice_lamwebp.git/
+```
+
+A second install of the same artefact (or a teammate's
+fresh checkout pointing at the same cache via `--mount=type=cache`)
+skips the network entirely.
+
+All three roots (`./extlibs/`, `~/.lammergeier/extlibs/`,
+`$LAMC_EXTLIBS`) are auto-discovered by the compiler's
+[resolver](#/docs/third_party?h=1-resolution-order-implemented),
+so the library is usable immediately — no `import` path or
+`PATH` change required.
+
+### 2.4 Scoped names
+
+```bash
+lamc install @acme/lamcolor@0.2.0
+```
+
+```
+extlibs/
+└── @acme/
+    └── lamcolor/
+        ├── lamlib.toml
+        └── __init__.lam
+```
+
+The scope is a real directory; consumers spell the dependency
+out in full (`from @acme/lamcolor import Palette`).
+
+---
+
+## 3. Transitive resolution
+
+`lamc install lamtwo` walks the full `[dependencies]` graph of
+`lamtwo`, plus every `[go-deps]` entry along the way, plus the
+constraints already declared by every library on disk under
+`extlibs/`, plus the project's own `lamlib.toml` (when one
+exists). The combined demand set is solved before any on-disk
+mutation — partial failure leaves the smallest possible mess.
+
+```text
+lamtwo@1.0.0
+├── lamshared@^1.0   ← already pinned via lamone@1.0.0
+└── lamutil@^0.4
+        └── lamshared@^1.0   ← demand set unifies
+```
+
+After the walk:
+
+| Library | Source | Why it's here |
+|---------|--------|---------------|
+| `lamtwo` | `lamc install` | direct request |
+| `lamutil` | transitive | `lamtwo` requires it |
+| `lamshared` | transitive | both `lamone` and `lamtwo` (via `lamutil`) need it |
+
+All three end up under `extlibs/` and pinned in
+`lamlib.lock.toml`.
+
+### 3.1 Cross-library conflicts
+
+When two libraries (or one library + the project) demand
+incompatible versions of the same dep, the install is refused
+**before** any side-effect:
+
+```text
+$ lamc install lamtwo
+error: version conflict for lammergeier dependency 'lamshared':
+  - lamone@1.0.0 requires '^1.0'
+  - lamtwo@1.0.0 requires '^2.0'
+```
+
+Nothing is written to disk; the lockfile is untouched; the only
+remediation is to upgrade or drop one of the conflicting
+demands. There is intentionally **no automatic side-by-side
+install** of two majors of the same library — Lammergeier
+follows Go's "one package, one version" rule because each major
+of a Lam library transpiles into the same Go package path.
+
+### 3.2 Compatible Lam-side resolution
+
+When constraints overlap, the resolver picks the **highest
+version that satisfies every demand**:
+
+```text
+project requires lamshared = ">=1.5 <2"
+lamone@1.0.0 requires lamshared = "^1.0"
+→ resolved: lamshared@1.7.0     (latest in the intersection)
+```
+
+---
+
+## 4. Go-module dependencies
+
+Libraries that drop into `go! { ... }` blocks frequently need
+specific Go modules. List them in the manifest:
+
+```toml
+[go-deps]
+"github.com/foo/bar" = "v1.2.3"
+"gopkg.in/yaml.v2"   = "v2.4.0"
+```
+
+(`[go.dependencies]` is an accepted alias for publishers reaching
+for the dotted spelling.)
+
+### 4.1 Validation
+
+- The path must be a multi-segment Go module path
+  (`github.com/x/y`, `gopkg.in/x.v2`). Bare single-segment names
+  are rejected.
+- The version must be a `v`-prefixed SemVer
+  (`v1.2.3`, `v0.3.0-rc1`) or a Go pseudo-version
+  (`v0.0.0-20250101010101-deadbeefcafe`).
+
+Bad entries are caught at install time before any registry
+roundtrip.
+
+### 4.2 Merging across libraries
+
+Compatible majors merge using Go's MVS rule (highest minor wins):
+
+```text
+lamone@1.0.0 → "github.com/foo/bar" = "v1.2.3"
+lamtwo@1.0.0 → "github.com/foo/bar" = "v1.5.0"
+→ resolved: github.com/foo/bar v1.5.0
+```
+
+Incompatible majors are a hard error — `go mod tidy` would
+otherwise pick one and silently break the other:
+
+```text
+$ lamc install lamtwo
+error: incompatible Go module 'github.com/foo/bar':
+  - lamone@1.0.0 requires v1.2.3 (major 1)
+  - lamtwo@1.0.0 requires v2.0.0 (major 2)
+```
+
+### 4.3 Compile-time injection
+
+The resolved Go pins land in `lamlib.lock.toml` under
+`[go_pins."<module-path>"]`. At compile time, `lamc` reads them
+back and writes matching `require` directives into the
+synthesised `go.mod` between `go mod init` and `go mod tidy`.
+The result: `tidy` honours the resolved versions instead of
+picking the newest tag at random.
+
+---
+
+## 5. The lockfile
+
+`lamlib.lock.toml` is the project's **deterministic**
+dependency snapshot — same role as `package-lock.json` or
+`Cargo.lock`. Schema **v1**:
+
+```toml
+# Auto-generated by lamc install — do not edit.
+
+[meta]
+schema = 1
+
+[pins.lamtwo]
+name         = "lamtwo"
+version      = "1.0.0"
+source       = "registry"
+sha256       = "deadbeef…"
+requested_by = ["root"]
+
+[pins.lamshared]
+name         = "lamshared"
+version      = "1.7.0"
+source       = "registry"
+sha256       = "cafef00d…"
+requested_by = ["lamone@1.0.0", "lamtwo@1.0.0"]
+
+[pins.lamlocal]
+name         = "lamlocal"
+version      = "0.3.0"
+source       = "path"
+tree_sha256  = "abcdef…"           # content hash of the on-disk tree
+requested_by = ["root"]
+
+[go_pins."github.com/foo/bar"]
+path         = "github.com/foo/bar"
+version      = "v1.5.0"
+requested_by = ["lamtwo@1.0.0"]
+```
+
+Properties:
+
+- **Versioned schema.** The leading `[meta] schema = N` block
+  versions the file format so future changes can migrate without
+  breaking parsers. v0 lockfiles (no `[meta]` block) load fine
+  and are silently upgraded on the next write — no user-facing
+  migration step required.
+- **Sorted keys, deterministic ordering.** Re-running
+  `lamc install` against the same input produces a byte-for-byte
+  identical lockfile. Diffs in code review are real changes, not
+  formatter noise.
+- **Source-tagged.** Each pin records whether it came from the
+  registry, a git URL, or a local path. Registry pins carry the
+  authoritative `sha256` of the tarball. Git and path pins carry
+  a `tree_sha256` content hash so drift detection works without
+  re-fetching from upstream (see `lamc verify`, Phase 3).
+- **Provenance for every dep.** `requested_by` is a TOML array
+  of trail strings: `"root"` for direct deps, `<lib>@<ver>` for
+  transitive ones. Both Lam pins (`[pins.*]`) and Go-module pins
+  (`[go_pins.*]`) carry the same array shape.
+- **Cross-surface.** Lammergeier libraries land under `[pins.*]`,
+  Go modules under `[go_pins.*]`. Same file, same resolution
+  pass.
+- **Commit it.** Like every lockfile, version-control it for
+  reproducible builds.
+
+### 5.6 Unused-dependency warning
+
+Every Lam build runs a project-level scan: every `.lam` file
+under the project root (with `extlibs/` / `.git/` / `build/`
+pruned) is grepped for `from X import …` / `import X` lines, and
+the union is diffed against the manifest's `[dependencies]`
+table. Any declared dep that no source file actually imports
+prints a warning:
+
+```text
+warning: 1 declared manifest dependency not imported anywhere under /…/myproj:
+  - lamwebp: declared in lamlib.toml but no `from lamwebp import …` /
+    `import lamwebp` in the project tree
+  (run `lamc uninstall lamwebp` to drop it, or import it to silence
+   this warning)
+```
+
+The warning is advisory: the build still succeeds. It's the
+project-level analog of the per-file unused-import warning
+(see [`SYNTAX.md`](#/docs/syntax?h=compiler-diagnostics)) and it
+stays out of the way for multi-file projects: `main.lam` not
+importing a dep doesn't false-positive when a sibling under
+`lib/` does. Imports inside `extlibs/` (i.e. installed libraries'
+own imports) **never** count towards the user's manifest, so a
+declared dep that exists *only* to satisfy a transitive
+constraint will be flagged honestly. Phase 3 will turn this into
+a `lamc tidy` action that auto-removes the offending entry.
+
+---
+
+## 6. The SemVer / API-diff gate
+
+When `lamc install` is about to **upgrade** an already-installed
+library, it diffs the public surface of the on-disk version
+against the freshly-fetched one and refuses the upgrade when
+the claimed SemVer bump lies about the actual change.
+
+| SemVer bump | Allowed change severity |
+|-------------|-------------------------|
+| `1.0.0 → 1.0.1` (patch) | only patches |
+| `1.0.0 → 1.1.0` (feature) | features + patches |
+| `1.0.0 → 2.0.0` (breaking) | anything |
+
+What the diff looks at (via `compiler/apidiff.py`, a
+zero-dependency AST scan):
+
+- Every top-level `func`.
+- Every public `class`, its methods, its annotated instance fields, and
+  its public `static` variables.
+- Underscore-prefixed / `private`-marked members are excluded.
+
+Severity classification:
+
+- **breaking** — removed function / method / field, changed
+  return type, changed field type, or a new *required*
+  parameter added to an existing function.
+- **feature** — new function / method / field, or a new
+  *optional* parameter (default value present).
+- **patch** — anything else (including pure-body changes
+  invisible to a surface scan).
+
+When the gate trips:
+
+```text
+[lamc] API drift detected for lamwebp: version bump is patch
+but the code contains breaking changes.
+  1.2.0 → 1.2.1
+  removed_func: encode_async
+[lamc] error installing lamwebp@1.2.1: refusing to install a
+mis-labelled release; rerun with `--allow-breaking` to override
+```
+
+The gate also runs at **publish** time (as a non-fatal warning,
+so an author catches the mistake before they push to the
+registry).
+
+> **Note.** This is a *protection*, not a *guarantee*: the
+> static surface won't catch a body-only behavioural break (same
+> signature, different semantics). The lockfile + the registry's
+> immutable-versions rule (versions can be yanked, never
+> rewritten) is the orthogonal defence against that.
+
+---
+
+## 7. `lamc uninstall`
+
+```bash
+lamc uninstall <name> [<name> …] [--global]
+```
+
+Removes:
+
+1. The library tree (`./extlibs/<name>/` in project mode,
+   `~/.lammergeier/extlibs/<name>/` with `--global`).
+2. The library's `[pins.<name>]` block from the lockfile (in
+   project mode).
+3. Any `[go_pins.*]` entry whose `requested_by` set drops to empty.
+
+Transitive deps are **not** removed automatically. If a dependency
+is no longer needed, remove it explicitly with `lamc uninstall
+<name>`. The lockfile entry for the named library is pruned,
+along with any Go pins that were only requested by it.
+
+---
+
+## 8. `lamc publish`
+
+```bash
+lamc publish [<dir>] [--registry URL] [-q]
+```
+
+Packs `<dir>` (defaults to `.`) into a `<name>-<version>.tar.gz`
+tarball rooted at `<name>-<version>/`, validates `lamlib.toml`
+client-side, runs the SemVer / API-diff gate (as a warning), and
+POSTs the tarball to `POST /api/v1/publish`.
+
+What the publisher needs:
+
+- A valid `lamlib.toml` with `library.name`, `library.version`,
+  and `library.license`.
+- A clean checkout — the publisher won't bundle anything
+  gitignored (so build artefacts, `extlibs/`, `__pycache__/`
+  don't leak).
+- `LAMC_TOKEN` in the environment if the registry requires
+  authentication. The reference registry under `tools/registry/`
+  is open by default; production deployments should slot in
+  their own auth middleware.
+
+The reference registry's three endpoints (full spec in
+[`third_party_libraries.md`](#/docs/third_party?h=62-registry)):
+
+```
+GET  /api/v1/libraries/<name>             → JSON metadata
+GET  /api/v1/libraries/<name>/<file>.tgz  → tarball stream
+POST /api/v1/publish                       → multipart upload
+```
+
+Versions are immutable. To pull a published release, the
+registry **yanks** it (still downloadable, flagged in the
+index) — never deletes it.
+
+---
+
+## 9. `lamc tidy`
+
+```bash
+lamc tidy [--check] [-q]
+```
+
+Reconciles `lamlib.toml` `[dependencies]` with the project's
+actual import graph. Spiritually `go mod tidy`:
+
+1. Walk every `.lam` / `.tpy` file under the project root
+   (`extlibs/`, `.git/`, `build/`, `__pycache__`, and
+   `node_modules` pruned) and collect every `from X import …` /
+   `import X` it sees.
+2. Drop stdlib hits (`lamstrings`, `lamhttp`, etc.) — those are
+   built into the compiler and never need a manifest entry.
+3. Diff:
+   - **`would remove`** — declared in `[dependencies]` but no
+     source file imports it. Removed from the manifest.
+   - **`would add`** — imported but not declared, *and* already
+     installed under `extlibs/<name>/`. Added with a caret pin
+     derived from the installed `lamlib.toml` (`tidy` is
+     network-free; the install on disk is the source of truth).
+   - **`imported but not installed`** — imported, not declared,
+     not installed. `tidy` reports them and refuses to mutate
+     the manifest. Run `lamc install <name>` for each first,
+     then re-run `tidy`.
+4. After mutation, refresh `lamlib.lock.toml` so the manifest,
+   on-disk install, and lockfile all agree.
+
+```text
+$ lamc tidy
+would remove (declared but never imported):
+  - lamwebp
+would add (imported, version inferred from extlibs/):
+  + lamhttp = "^1.4.0"
+[lamc] removed lamwebp from lamlib.toml
+[lamc] added lamhttp in lamlib.toml
+[lamc] tidy: refreshing lockfile…
+```
+
+**`--check`** prints the same plan but doesn't touch the files,
+and exits non-zero if any change would be needed. Drop it into
+CI / pre-commit so a stale manifest fails the build:
+
+```yaml
+# .github/workflows/ci.yml
+- run: lamc tidy --check
+```
+
+The verb intentionally won't auto-uninstall removed libraries
+from `extlibs/`. Use `lamc uninstall <name>` separately when you
+want the on-disk tree gone too.
+
+---
+
+## 10. `lamc verify`
+
+```bash
+lamc verify [-q]
+```
+
+Re-hashes every `[pins.*]` entry in `lamlib.lock.toml` against
+the installed tree under `./extlibs/<name>/` and reports drift.
+This is the supply-chain integrity check: surface tampering with
+installed source, partial installs, or lockfile/disk drift after
+a manual edit.
+
+```text
+$ lamc verify
+  ✓ lamhttp                        ok (a3b4f9c2e1f0…)
+  ✓ lamjson                        ok (61c2bd5d8a90…)
+  ✗ lamwebp                        tree drifted: expected b2c3d4…, got d5e6f7…
+[lamc] verify: 1 integrity failure:
+  - lamwebp: tree drifted: expected b2c3d4…, got d5e6f7…
+  → run `lamc install --frozen` to repair from the lockfile, or
+    `lamc install` to re-resolve.
+```
+
+Exit codes are deliberately distinct so CI can branch on them:
+
+| code | meaning |
+|------|---------|
+| `0`  | every pin matches its on-disk tree. |
+| `1`  | at least one drift / missing install detected. |
+| `2`  | setup error (no `lamlib.toml` / no `lamlib.lock.toml`). |
+
+`tree_sha256` is recorded for every source — registry tarballs,
+git clones, and local paths. Older v0 lockfiles that pre-date
+the `tree_sha256` field for registry pins fall back to a soft
+"present" check; a single `lamc install` re-resolves and
+back-fills the field on the next write.
+
+---
+
+## 10a. Project scaffolding (`lamc init`)
+
+```bash
+lamc init [--name=NAME] [--version=VER] [--scope=@scope]
+          [--license=SPDX] [--bin|--lib] [--force] [-q]
+```
+
+Drops a fresh `lamlib.toml` + entry-point `.lam` + `.gitignore`
+in the current directory. Defaults are tuned so the bare
+`lamc init` form produces something you can immediately
+`lamc main.lam --run`:
+
+```text
+$ mkdir greetings && cd greetings && lamc init
+[lamc] created lamlib.toml
+[lamc] created main.lam
+[lamc] created .gitignore
+[lamc] init: scaffolded executable 'greetings' v0.1.0 in /…/greetings
+  → next: run `lamc main.lam --run`
+```
+
+Flags cover the common shapes:
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--name NAME` | sanitised cwd name (or `myproj` if it isn't a valid module name) | Must be `snake_case`, starting with a letter. |
+| `--version VER` | `0.1.0` | SemVer, validated against the same regex used by the registry. |
+| `--scope @S` | *(unscoped)* | Result becomes `@scope/name` in the manifest. Must start with `@`. |
+| `--license SPDX` | `MIT` | Anything goes; convention is an SPDX identifier. |
+| `--bin` / `--lib` | `--bin` | `--bin` writes `main.lam`; `--lib` writes `<name>.lam` with a `tag()` helper. |
+| `--force` | off | Overwrite existing files. The verb is otherwise refusal-by-default. |
+
+The generated `.gitignore` excludes `extlibs/`, `build/`, and
+the transpilation cache by default. Comment out the `extlibs/`
+line if you want a Go-style "vendor everything" workflow where
+the install tree itself is checked in.
+
+---
+
+## 10b. Lockfile introspection (`list` / `tree` / `why`)
+
+All three are read-only: they consume `lamlib.lock.toml` and
+nothing else (no network, no filesystem walks beyond the
+manifest + lockfile pair).
+
+**`lamc list`** — flat output, one pin per line, with source
+tag:
+
+```text
+$ lamc list
+@acme/lamcolor@0.2.0  [registry]
+lamhttp@1.4.2         [registry]
+lamwebp@1.2.0         [path]
+
+# Go modules
+github.com/foo/bar    v1.5.0
+```
+
+**`lamc tree`** — render the dependency graph using the
+lockfile's `requested_by` array:
+
+```text
+$ lamc tree
+myapp@0.1.0
+├── lamwebp@1.2.0
+│   └── lamhttp@1.4.2
+└── @acme/lamcolor@0.2.0
+```
+
+**`lamc why <name>`** — explain why a particular pin exists by
+walking `requested_by` back to the project root:
+
+```text
+$ lamc why lamhttp
+lamhttp@1.4.2
+  └── requested by lamwebp@1.2.0
+    └── requested by root
+```
+
+When a pin has multiple parents (a transitive shared between
+two libs), every chain shows up so the full dependent set is
+visible at a glance. `--check` knobs are deliberately absent —
+these verbs are diagnostic, never mutating.
+
+---
+
+## 10c. Replacement directive (`[replace]`)
+
+Project-only override map in `lamlib.toml`. Lets you redirect a
+declared dependency to a local checkout or a forked git URL
+without touching `[dependencies]` itself. Modeled on Go's
+`go.mod replace` directive.
+
+```toml
+[dependencies]
+lamwebp        = "^1.2"
+"@acme/lamcolor" = "^0.2"
+
+[replace]
+# Working on a local checkout? Point at it directly.
+lamwebp = { path = "../local-lamwebp" }
+
+# Need a forked branch in CI? Pin a git URL + ref.
+"@acme/lamcolor" = { git = "https://github.com/myfork/lamcolor.git", ref = "main" }
+```
+
+Semantics:
+
+- **Project-only.** Library-level `[replace]` blocks are
+  ignored at install time so a transitive dep can't sneak in a
+  rewrite of an unrelated lib. Only the *project's* manifest is
+  consulted.
+- **Applies transitively.** Replacing `lamhttp` redirects every
+  library that pulls in `lamhttp` to the override. Same as Go.
+- **Path or git, never both.** Mixing `path` with `git`/`ref`
+  is rejected at parse time.
+- **Lockfile-honest.** The pin records the *replacement's*
+  source (`path` / `git`) and `tree_sha256` — `lamc verify`
+  catches drift on the local checkout exactly as it would for a
+  registry install.
+
+A common workflow: develop a library locally, point the
+project at it via `[replace]`, iterate. When the library
+publishes a fixed release, drop the `[replace]` entry and
+re-run `lamc install` (or `lamc tidy`) to re-pin against the
+registry.
+
+---
+
+## 10d. `[workspace]` keyword (reserved)
+
+`[workspace]` is **reserved** for a future multi-package layout
+(Cargo / npm workspaces). User manifests that declare it today
+get a hard parse error so nobody accidentally locks themselves
+into a half-baked schema. Watch for the feature in a later phase
+if you have a polyrepo / monorepo use case.
+
+---
+
+## 11. Worked example: a project with conflicts
+
+```bash
+mkdir myapp && cd myapp
+cat > lamlib.toml <<'TOML'
+[library]
+name        = "myapp"
+version     = "0.1.0"
+license     = "MIT"
+
+[dependencies]
+lamone = "^1.0"
+lamtwo = "^1.0"
+
+[go-deps]
+"github.com/foo/bar" = "v1.2.3"
+TOML
+
+# 1. Install everything declared in the manifest. One verb.
+lamc install
+# → Resolves lamone, lamtwo, their shared transitive
+#   lamshared, and the Go pin github.com/foo/bar.
+# → Writes ./extlibs/{lamone,lamtwo,lamshared}/.
+# → Writes ./lamlib.lock.toml with the full graph.
+
+# 2. App code uses the libs.
+cat > main.lam <<'LAM'
+from lamone import One
+from lamtwo import Two
+
+func main() {
+    One().greet()
+    Two().greet()
+}
+LAM
+
+# 3. Build. The compiler reads the Go pin from the lockfile and
+#    writes "require github.com/foo/bar v1.2.3" into the
+#    synthesised go.mod before invoking go build.
+lamc main.lam --run
+```
+
+If a future `lamc install lamthree` would pull a
+`lamshared@^2.0` demand, the conflict surfaces immediately
+without modifying disk:
+
+```text
+$ lamc install lamthree
+error: version conflict for lammergeier dependency 'lamshared':
+  - myapp@0.1.0 (project) requires '^1.0'
+  - lamone@1.0.0 requires '^1.0'
+  - lamtwo@1.0.0 requires '^1.0'
+  - lamthree@1.0.0 requires '^2.0'
+```
+
+The fix: bump `lamone` / `lamtwo` to versions that allow
+`^2.0`, or pin `lamthree` to a `^1`-compatible release.
+
+---
+
+## 12. Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `LAMC_REGISTRY` | Default registry base URL. `--registry` overrides per call. |
+| `LAMC_TOKEN` | Bearer token attached to every registry request (install, publish). |
+| `LAMC_EXTLIBS` | Colon-separated (`os.pathsep`) list of extra extlibs roots the compiler searches before `./extlibs/` and `~/.lammergeier/extlibs/`. Useful for monorepos with a shared cache. |
+| `LAMC_CACHE` | Override the content-addressed cache root (default: `~/.lammergeier/cache`). Point at a `--mount=type=cache` directory in Docker builds for fast reproducible installs. |
+
+---
+
+## 13. Cookbook
+
+### 13.1 "Pin the registry once for the whole machine"
+
+```bash
+echo 'export LAMC_REGISTRY=https://libraries.example.com' >> ~/.bashrc
+```
+
+### 13.2 "Run a private registry locally"
+
+```bash
+docker compose -f tools/registry/docker-compose.yml up
+lamc install --registry http://localhost:8765 lamgreet
+```
+
+### 13.3 "Reproduce a teammate's exact install set"
+
+```bash
+git pull              # pull lamlib.toml + lamlib.lock.toml
+lamc install          # bare install hydrates the manifest
+```
+
+The lockfile records exactly what was installed; bare
+`lamc install` reads the manifest and resolves against the
+lockfile when both agree. For the strictest "reproduce or fail"
+contract — typically what you want in CI — reach for `--frozen`:
+
+```bash
+lamc install --frozen           # refuse on lockfile ↔ manifest drift
+lamc install --frozen --offline # also refuse network (cache-only)
+```
+
+### 13.4 "Try a local checkout before publishing"
+
+```bash
+lamc install ./local-lamwebp
+# Hack on ../local-lamwebp/, then re-run the same install command.
+# Re-runs are non-destructive — they re-copy the tree so on-disk
+# changes pick up without manual cleanup.
+```
+
+### 13.5 "Skip the API-diff gate during a known-breaking upgrade"
+
+```bash
+lamc install --allow-breaking lamwebp@1.2.1
+```
+
+The gate still prints the diff to stderr so the change is
+auditable in CI logs.
+
+### 13.6 "Docker build that always succeeds offline"
+
+```dockerfile
+# syntax=docker/dockerfile:1.5
+FROM lammergeier:0.5
+WORKDIR /app
+COPY lamlib.toml lamlib.lock.toml ./
+RUN --mount=type=cache,target=/root/.lammergeier/cache \
+    lamc install --frozen --offline || lamc install --frozen
+COPY . .
+RUN lamc main.lam -o /app/myapp
+```
+
+The cache mount survives across builds; once warm, every
+subsequent build reads tarballs and bare clones from disk —
+no registry round-trip. The `|| lamc install --frozen` fallback
+handles the cold-cache first build.
+
+### 13.7 "Find out what depends on a library"
+
+```bash
+grep -A 6 '\[pins\.lamshared\]' lamlib.lock.toml
+# requested_by tells you the full dependent set.
+# (`lamc tree` and `lamc why` land in Phase 4 with friendlier output.)
+```
+
+---
+
+## 14. Troubleshooting
+
+| Symptom | Cause / fix |
+|---------|-------------|
+| `error: connection refused` on first install | The default registry URL is `http://localhost:8765`. Either start the reference registry (`docker compose -f tools/registry/docker-compose.yml up`) or pass `--registry https://your-prod.example.com`. |
+| `error: --frozen: lockfile and manifest drift` | The manifest's `[dependencies]` and the lockfile no longer agree (typically: someone edited `lamlib.toml` without re-running `lamc install`). Run `lamc install` (no `--frozen`) to refresh the lockfile, or revert the manifest edit. |
+| `error: --offline: no cached tarball for …` | The cache doesn't have the bytes the lockfile points at. Re-run once with network access to populate the cache, or arrange your CI to pre-warm the cache. |
+| `error: refusing to install a mis-labelled release` | The SemVer / API-diff gate caught a breaking change shipped as a non-major bump. Either fix the publisher or override with `--allow-breaking` (and consider opening an issue against the library). |
+| `error: version conflict for …` | Two demands in the resolution can't be satisfied at once. The error message lists every demand and which library raised it; pick the one to upgrade or downgrade. |
+| `error: incompatible Go module …` | Same as above, but for a Go module (one library wants `v1`, another wants `v2`). Go treats each major as a different package, so coexistence is impossible. |
+| Library installs but `from foo import …` fails | Check the resolver order in [`third_party_libraries.md`](#/docs/third_party?h=1-resolution-order-implemented) and confirm the install root is actually being searched. |
+
+---
+
+## 15. See also
+
+- [`docs/installation.md`](#/docs/installation) — installing the
+  toolchain itself (`install.sh`, the LSP, the editor extension).
+- [`docs/third_party_libraries.md`](#/docs/third_party) —
+  the on-disk library format, `lamlib.toml` schema, scoped
+  names, registry protocol.
+- [`docs/SYNTAX.md`](#/docs/syntax) — language reference, including
+  the `from <module> import …` syntax the resolver feeds.
+- [`docs/stdlib.md`](#/docs/stdlib) — every `lam*` module shipped
+  with the compiler. Stdlib modules always win the resolver
+  race, so they can't be shadowed by an `extlibs/` install.

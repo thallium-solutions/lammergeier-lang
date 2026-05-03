@@ -1,0 +1,12 @@
+# expect-pass
+# Shadowing a builtin *inside* a function is allowed — only the
+# module-level shadow is flagged.
+
+func do_work() -> int {
+    type: str = "worker"
+    return len(type)
+}
+
+func main() {
+    print(do_work())
+}

@@ -1,0 +1,29 @@
+# Rosetta Code: Insertion sort
+# https://rosettacode.org/wiki/Sorting_algorithms/Insertion_sort
+# expect: 1 2 3 4 5 6 7 8 9 10
+
+func insertion_sort(arr: list[int]) -> list[int] {
+    for i in range(1, len(arr)) {
+        key: int = arr[i]
+        j: int = i - 1
+        while j >= 0 and arr[j] > key {
+            arr[j + 1] = arr[j]
+            j -= 1
+        }
+        arr[j + 1] = key
+    }
+    return arr
+}
+
+func main() {
+    data: list[int] = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+    sorted_data: list[int] = insertion_sort(data)
+    result: str = ""
+    for i, v in enumerate(sorted_data) {
+        if i > 0 {
+            result = result + " "
+        }
+        result = result + f"{v}"
+    }
+    print(result)
+}

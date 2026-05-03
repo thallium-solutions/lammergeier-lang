@@ -1,0 +1,64 @@
+# Test: Complex for loop patterns
+# expect: 0
+# expect: 1
+# expect: 4
+# expect: 9
+# expect: 16
+# expect: 1
+# expect: 8
+# expect: 27
+# expect: 64
+# expect: 125
+# expect: sum: 45
+# expect: product: 3628800
+# expect: countdown: 10 9 8 7 6 5 4 3 2 1
+# expect: 100
+# expect: loop2_ok
+
+func main() {
+    # Squares
+    i: int = 0
+    for i in range(5) {
+        print(i * i)
+    }
+
+    # Cubes
+    for i in range(1, 6) {
+        print(i * i * i)
+    }
+
+    # Accumulate
+    total: int = 0
+    for i in range(10) {
+        total = total + i
+    }
+    print(f"sum: {total}")
+
+    # Product (factorial of 10)
+    prod: int = 1
+    for i in range(1, 11) {
+        prod = prod * i
+    }
+    print(f"product: {prod}")
+
+    # Countdown string building
+    countdown: str = "countdown:"
+    c: int = 10
+    while c >= 1 {
+        countdown = countdown + f" {c}"
+        c = c - 1
+    }
+    print(countdown)
+
+    # Nested loop product
+    count: int = 0
+    j: int = 0
+    for i in range(10) {
+        for j in range(10) {
+            count = count + 1
+        }
+    }
+    print(count)
+
+    print("loop2_ok")
+}

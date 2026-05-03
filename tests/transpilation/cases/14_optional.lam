@@ -1,0 +1,18 @@
+# Transpilation: the ``?.`` and ``??`` operators lower to small IIFEs
+# that nil-guard the left operand and fall through to the alternative.
+# expect-go: func() interface{} { if u != nil { return u.Name }; return nil }()
+# expect-go: _v := interface{}(nil); if _v != nil { return _v }; return 42
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func main() {
+    u: User = User("Ada")
+    x = u?.name
+    y = None ?? 42
+    print(x)
+    print(y)
+}

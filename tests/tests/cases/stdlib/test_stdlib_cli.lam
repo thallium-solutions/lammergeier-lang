@@ -1,0 +1,26 @@
+# Test: lamcli default behaviour (no argv)
+# expect: PASS argCount zero
+# expect: PASS args empty
+# expect: PASS arg out-of-range
+# expect: PASS program non-empty
+# expect: PASS flag absent
+# expect: PASS flag default
+# expect: PASS int default
+# expect: PASS positional empty
+# expect: 8 passed, 0 failed, 8 total
+
+from lamcli import Cli
+from lamtest import Test
+
+func main() {
+    Test.assertEqual(Cli.argCount(), 0, "argCount zero")
+    Test.assertLen(Cli.args(), 0, "args empty")
+    Test.assertEqual(Cli.arg(0), "", "arg out-of-range")
+    prog: str = Cli.program()
+    Test.assertTrue(len(prog) > 0, "program non-empty")
+    Test.assertFalse(Cli.hasFlag("does-not-exist"), "flag absent")
+    Test.assertEqual(Cli.getFlag("missing", "fallback"), "fallback", "flag default")
+    Test.assertEqual(Cli.getInt("missing", 42), 42, "int default")
+    Test.assertLen(Cli.positional(), 0, "positional empty")
+    Test.summary()
+}

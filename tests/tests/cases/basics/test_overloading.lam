@@ -1,0 +1,21 @@
+# expect: area of square: 25
+# expect: area of rectangle: 50
+# expect: volume: 60
+
+func area(side: int) -> int {
+    return side * side
+}
+
+func area(width: int, height: int) -> int {
+    return width * height
+}
+
+func volume(w: int, h: int, d: int) -> int {
+    return w * h * d
+}
+
+func main() {
+    print(f"area of square: {area(5)}")
+    print(f"area of rectangle: {area(5, 10)}")
+    print(f"volume: {volume(3, 4, 5)}")
+}

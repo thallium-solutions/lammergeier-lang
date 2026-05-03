@@ -1,0 +1,72 @@
+class ValidationResult {
+    func init(self) {
+        self.ok: bool = true
+        self.errors: list[str] = []
+    }
+
+    func add(self, message: str) {
+        self.ok = false
+        self.errors.append(message)
+    }
+}
+
+class Registration {
+    func init(self, email: str, password: str, age: int, country: str) {
+        self.email: str = email
+        self.password: str = password
+        self.age: int = age
+        self.country: str = country
+    }
+}
+
+class RegistrationValidator {
+    func init(self) {
+        self.blockedCountries: list[str] = ["blocked", "unknown"]
+    }
+
+    func hasDigit(self, value: str) -> bool {
+        if value.contains("0") or value.contains("1") or value.contains("2") {
+            return true
+        }
+        if value.contains("3") or value.contains("4") or value.contains("5") {
+            return true
+        }
+        if value.contains("6") or value.contains("7") or value.contains("8") or value.contains("9") {
+            return true
+        }
+        return false
+    }
+
+    func isBlocked(self, country: str) -> bool {
+        for item in self.blockedCountries {
+            if item == country {
+                return true
+            }
+        }
+        return false
+    }
+
+    func validate(self, reg: Registration) -> ValidationResult {
+        result: ValidationResult = ValidationResult()
+        if not reg.email.contains("@") {
+            result.add("email")
+        }
+        if len(reg.password) < 8 {
+            result.add("password_length")
+        }
+        if not self.hasDigit(reg.password) {
+            result.add("password_digit")
+        }
+        if reg.age < 18 {
+            result.add("age")
+        }
+        if self.isBlocked(reg.country) {
+            result.add("country")
+        }
+        return result
+    }
+}
+
+func main() {
+    pass
+}

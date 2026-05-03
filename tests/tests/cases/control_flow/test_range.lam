@@ -1,0 +1,84 @@
+# Test: Range variations - different signatures and uses
+# expect: 0
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 4
+# expect: 2
+# expect: 3
+# expect: 4
+# expect: 5
+# expect: 6
+# expect: 0
+# expect: 2
+# expect: 4
+# expect: 6
+# expect: 8
+# expect: 10
+# expect: 8
+# expect: 6
+# expect: 4
+# expect: 2
+# expect: 45
+# expect: 25
+# expect: 10
+# expect: range_ok
+
+func sum_range(start: int, end: int) -> int {
+    total: int = 0
+    i: int = 0
+    for i in range(start, end) {
+        total = total + i
+    }
+    return total
+}
+
+func count_in_range(start: int, end: int, step: int) -> int {
+    count: int = 0
+    i: int = 0
+    for i in range(start, end, step) {
+        count = count + 1
+    }
+    return count
+}
+
+func main() {
+    # range(n) - 0 to n-1
+    i: int = 0
+    for i in range(5) {
+        print(i)
+    }
+
+    # range(start, end)
+    for i in range(2, 7) {
+        print(i)
+    }
+
+    # range(start, end, step)
+    for i in range(0, 10, 2) {
+        print(i)
+    }
+
+    # Negative step
+    for i in range(10, 1, -2) {
+        print(i)
+    }
+
+    # Sum range
+    print(sum_range(0, 10))
+
+    # Count
+    print(count_in_range(0, 100, 4))
+
+    # Nested ranges
+    total: int = 0
+    j: int = 0
+    for i in range(5) {
+        for j in range(i) {
+            total = total + 1
+        }
+    }
+    print(total)
+
+    print("range_ok")
+}

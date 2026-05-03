@@ -1,0 +1,30 @@
+# Real-world mini project: composable pricing rule engine with discount cap.
+# expect: applied=bulk,gold,italy
+# expect: discount=2700
+# expect: payable=9300
+# expect: cap_discount=5000
+# expect: cap_payable=5000
+
+from rules import PriceContext, PriceRule, PriceRuleEngine
+from lamstrings import Strings
+
+func main() {
+    engine: PriceRuleEngine = PriceRuleEngine()
+    engine.add(PriceRule("bulk", "bulk", 5, 10))
+    engine.add(PriceRule("gold", "tier", 0, 10))
+    engine.add(PriceRule("italy", "country", 0, 300))
+
+    ctx: PriceContext = PriceContext(12000, 6, "gold", "it")
+    discount: int = engine.totalDiscount(ctx)
+    applied: str = Strings.join(engine.appliedNames(ctx), ",")
+
+    cappedCtx: PriceContext = PriceContext(10000, 10, "gold", "it")
+    engine.add(PriceRule("campaign", "country", 0, 8000))
+    capped: int = engine.totalDiscount(cappedCtx)
+
+    print(f"applied={applied}")
+    print(f"discount={discount}")
+    print(f"payable={ctx.subtotal - discount}")
+    print(f"cap_discount={capped}")
+    print(f"cap_payable={cappedCtx.subtotal - capped}")
+}

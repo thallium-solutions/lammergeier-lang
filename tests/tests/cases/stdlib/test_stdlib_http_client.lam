@@ -1,0 +1,163 @@
+# Test: lamhttp.HttpClient — reusable client with base URL,
+# default headers, and the full HTTP-verb surface.
+#
+# Spins up a tiny test server that echoes the method + path +
+# the request's Authorization header back as JSON, then exercises
+# every verb plus the base-URL composition rules.
+#
+# expect: get-status: 200
+# expect: get-method-path: GET /users/42 
+# expect: head-status: 200
+# expect: post-status: 200
+# expect: post-method-path: POST /things {"name":"x"}
+# expect: put-status: 200
+# expect: put-method-path: PUT /things/1 {"name":"y"}
+# expect: patch-status: 200
+# expect: patch-method-path: PATCH /things/1 {"name":"z"}
+# expect: delete-status: 200
+# expect: delete-method-path: DELETE /things/1 
+# expect: auth-echoed: Bearer abc123
+# expect: ok-helper-true: true
+# expect: ok-helper-false: false
+# expect: absolute-url-bypasses-base: true
+# expect: timeout-error: true
+
+from lamhttp import Http, HttpClient, HttpResponse
+from lamtime import Time
+
+go! {
+    import (
+        "fmt"
+        "net"
+        "net/http"
+        "strings"
+    )
+}
+
+func main() {
+    # ── Spin up a self-contained echo server. ``port`` is captured
+    #    from the listener so the test doesn't need a hardcoded port.
+    port: int = 0
+    go! {
+        ln, err := net.Listen("tcp", "127.0.0.1:0")
+        if err != nil { panic(err) }
+        port = ln.Addr().(*net.TCPAddr).Port
+
+        mux := http.NewServeMux()
+        mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+            authHdr := r.Header.Get("Authorization")
+            body := ""
+            if r.Body != nil {
+                buf := make([]byte, 4096)
+                n, _ := r.Body.Read(buf)
+                body = string(buf[:n])
+            }
+            fmt.Fprintf(w, "%s %s %s|auth=%s", r.Method, r.URL.Path, body, authHdr)
+        })
+        srv := &http.Server{Handler: mux}
+        go func() { _ = srv.Serve(ln) }()
+        // Give the listener a tick to be ready.
+        // The httptest package has Sleep semantics built in; we
+        // use a tiny pause here for the same reason.
+    }
+    Time.sleepMs(50)
+
+    base: str = ""
+    go! {
+        base = fmt.Sprintf("http://127.0.0.1:%d", port)
+    }
+
+    api: HttpClient = HttpClient(base, 5000)
+    api.setHeader("Authorization", "Bearer abc123")
+
+    # ── GET. The echo body looks like ``METHOD PATH BODY|auth=...``;
+    #    we slice everything before the ``|auth=`` marker so the
+    #    expects don't depend on the auth header layout.
+    r1: HttpResponse = api.get("/users/42")
+    print(f"get-status: {r1.status}")
+    body1: str = r1.body
+    mp1: str = ""
+    go! {
+        if i := strings.Index(body1, "|auth="); i >= 0 { mp1 = body1[:i] }
+    }
+    print(f"get-method-path: {mp1}")
+
+    # ── HEAD (server doesn't return a body for HEAD, but status echoes).
+    r2: HttpResponse = api.head("/anything")
+    print(f"head-status: {r2.status}")
+
+    # ── POST JSON
+    r3: HttpResponse = api.postJson("/things", "{\"name\":\"x\"}")
+    print(f"post-status: {r3.status}")
+    body3: str = r3.body
+    mp3: str = ""
+    go! {
+        if i := strings.Index(body3, "|auth="); i >= 0 { mp3 = body3[:i] }
+    }
+    print(f"post-method-path: {mp3}")
+
+    # ── PUT JSON
+    r4: HttpResponse = api.putJson("/things/1", "{\"name\":\"y\"}")
+    print(f"put-status: {r4.status}")
+    body4: str = r4.body
+    mp4: str = ""
+    go! {
+        if i := strings.Index(body4, "|auth="); i >= 0 { mp4 = body4[:i] }
+    }
+    print(f"put-method-path: {mp4}")
+
+    # ── PATCH JSON
+    r5: HttpResponse = api.patchJson("/things/1", "{\"name\":\"z\"}")
+    print(f"patch-status: {r5.status}")
+    body5: str = r5.body
+    mp5: str = ""
+    go! {
+        if i := strings.Index(body5, "|auth="); i >= 0 { mp5 = body5[:i] }
+    }
+    print(f"patch-method-path: {mp5}")
+
+    # ── DELETE
+    r6: HttpResponse = api.delete("/things/1")
+    print(f"delete-status: {r6.status}")
+    body6: str = r6.body
+    mp6: str = ""
+    go! {
+        if i := strings.Index(body6, "|auth="); i >= 0 { mp6 = body6[:i] }
+    }
+    print(f"delete-method-path: {mp6}")
+
+    # ── Authorization header echoed by the server.
+    auth: str = ""
+    go! {
+        idx := strings.Index(body1, "auth=")
+        if idx >= 0 { auth = body1[idx+5:] }
+    }
+    print(f"auth-echoed: {auth}")
+
+    # ── ok() helper.
+    print(f"ok-helper-true: {r1.ok()}")
+    bad: HttpResponse = HttpResponse(404, "nope", "")
+    print(f"ok-helper-false: {bad.ok()}")
+
+    # ── Absolute URL bypasses baseUrl composition. Even when the
+    #    HttpClient has a different baseUrl, an absolute path must
+    #    win.
+    api2: HttpClient = HttpClient("http://wrong.invalid", 2000)
+    api2.setHeader("Authorization", "Bearer abc123")
+    absUrl: str = f"{base}/explicit"
+    rAbs: HttpResponse = api2.get(absUrl)
+    bodyAbs: str = rAbs.body
+    bypass: bool = rAbs.status == 200
+    go! {
+        if !strings.Contains(bodyAbs, "/explicit") { bypass = false }
+    }
+    print(f"absolute-url-bypasses-base: {bypass}")
+
+    # ── Tiny timeout against a non-routable address surfaces an
+    #    error string. Use 10.255.255.1 (RFC 5737 is HTTP-only;
+    #    this is reserved-ish private space that won't resolve).
+    timeoutClient: HttpClient = HttpClient("http://10.255.255.1", 50)
+    rTo: HttpResponse = timeoutClient.get("/x")
+    timeoutFailed: bool = rTo.error != ""
+    print(f"timeout-error: {timeoutFailed}")
+}

@@ -1,0 +1,14 @@
+# expect-error: duplicate function `greet`
+# expect-error: 1 parameter
+
+func greet(name: str) -> str {
+    return f"hi {name}"
+}
+
+func greet(other: str) -> str {
+    return f"hello {other}"
+}
+
+func main() {
+    print(greet("world"))
+}

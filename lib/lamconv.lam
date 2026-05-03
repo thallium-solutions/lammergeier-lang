@@ -1,0 +1,151 @@
+# Lammergeier standard library: conversion utilities
+# Import with: from lamconv import Conv
+#
+# The ``to*`` family silently swallows parse errors (an int that
+# fails to parse comes back as ``0``), which is convenient for quick
+# scripts but loses information. The ``try*`` family — added with the
+# Result error system — returns a ``Result`` so callers can decide
+# what to do on failure:
+#
+#     n: int = Conv.tryInt(s)?            # propagate
+#     n: int = Conv.tryInt(s).unwrapOr(0) # default
+#     n: int = Conv.toInt(s)              # legacy: silent default
+#
+# Bringing in ``lamerrors`` here means any program that uses
+# ``Conv.tryInt`` automatically gets ``Result`` / ``Error`` bundled
+# with no extra import line at the call site.
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "fmt"
+        "strconv"
+    )
+}
+
+class Conv {
+    static func toInt(s: str) -> int {
+        go! {
+            v, _ := strconv.Atoi(s)
+            return v
+        }
+    }
+
+    static func tryInt(s: str) -> Result {
+        #- Parse ``s`` as a decimal integer. Returns ``Result.Ok(int)``
+           on success, or ``Result.Err(Error("ParseError", ...))`` if
+           the string is not a valid integer literal. -#
+        go! {
+            v, err := strconv.Atoi(s)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ParseError",
+                    fmt.Sprintf("cannot parse %q as int: %v", s, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(v)
+        }
+    }
+
+    static func toFloat(s: str) -> float {
+        go! {
+            v, _ := strconv.ParseFloat(s, 64)
+            return v
+        }
+    }
+
+    static func tryFloat(s: str) -> Result {
+        #- Parse ``s`` as a 64-bit float. Returns ``Result.Ok(float)``
+           on success or ``Result.Err`` with a ``ParseError`` on
+           failure. -#
+        go! {
+            v, err := strconv.ParseFloat(s, 64)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ParseError",
+                    fmt.Sprintf("cannot parse %q as float: %v", s, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(v)
+        }
+    }
+
+    static func toString(n: int) -> str {
+        go! {
+            return strconv.Itoa(n)
+        }
+    }
+
+    static func floatToString(f: float) -> str {
+        go! {
+            return strconv.FormatFloat(f, 'f', -1, 64)
+        }
+    }
+
+    static func intToBase(n: int, base: int) -> str {
+        go! {
+            return strconv.FormatInt(int64(n), base)
+        }
+    }
+
+    static func toBool(s: str) -> bool {
+        go! {
+            v, _ := strconv.ParseBool(s)
+            return v
+        }
+    }
+
+    static func tryBool(s: str) -> Result {
+        #- Parse ``s`` as a boolean (``"true"`` / ``"false"`` / ``"1"`` /
+           ``"0"`` / ``"t"`` / ``"f"``). Returns ``Result.Ok(bool)`` or
+           a ``ParseError`` on malformed input. -#
+        go! {
+            v, err := strconv.ParseBool(s)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ParseError",
+                    fmt.Sprintf("cannot parse %q as bool: %v", s, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(v)
+        }
+    }
+
+    static func boolToString(b: bool) -> str {
+        go! {
+            return strconv.FormatBool(b)
+        }
+    }
+
+    static func toHex(n: int) -> str {
+        go! { return strconv.FormatInt(int64(n), 16) }
+    }
+
+    static func toOctal(n: int) -> str {
+        go! { return strconv.FormatInt(int64(n), 8) }
+    }
+
+    static func toBin(n: int) -> str {
+        go! { return strconv.FormatInt(int64(n), 2) }
+    }
+
+    static func fromHex(s: str) -> int {
+        go! { v, _ := strconv.ParseInt(s, 16, 64); return int(v) }
+    }
+
+    static func fromOctal(s: str) -> int {
+        go! { v, _ := strconv.ParseInt(s, 8, 64); return int(v) }
+    }
+
+    static func fromBin(s: str) -> int {
+        go! { v, _ := strconv.ParseInt(s, 2, 64); return int(v) }
+    }
+}
+
+func main() {
+    pass
+}

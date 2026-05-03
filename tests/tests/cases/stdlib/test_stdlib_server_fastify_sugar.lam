@@ -1,0 +1,185 @@
+# Integration test: Fastify-parity sugar added in the HTTP-server
+# audit. Covers Tier 1 (Request / Response introspection
+# shortcuts) and the inject-testable parts of Tier 2 (addSchema +
+# $ref resolution, setSchemaErrorFormatter).
+#
+# ``onRequestAbort`` is exercised by
+# ``tests/tests/test_lamserver_abort_integration.py`` because it
+# requires a live listener that a client can disconnect from
+# mid-request.
+#
+# expect: tier1-status: 200
+# expect: tier1-has-proto-http: true
+# expect: tier1-has-hostname: true
+# expect: tier1-has-route-path: true
+# expect: tier1-has-elapsed-nonneg: true
+# expect: tier1-header-removed: true
+# expect: tier1-snapshot-has-removed: true
+# expect: tier2-valid-status: 200
+# expect: tier2-invalid-status: 400
+# expect: tier2-invalid-uses-formatter: true
+# expect: tier2-missing-status: 400
+# expect: tier2-removed-schema-allows-anything: true
+
+from lamserver import Server, Request, Response
+
+go! { import "strings" }
+
+# ─── Tier 1 handler ─────────────────────────────────────────────
+func helloHandler(req: Request, res: Response) {
+    #- Reports every Tier-1 sugar we can observe from the inject
+       path. Snapshots ``getHeaders()`` *before* removing a header
+       so the test can prove the snapshot is a copy, not a live
+       view. -#
+    res.header("X-A", "alpha")
+    res.header("X-B", "beta")
+    snapshot: dict[str, str] = res.getHeaders()
+    res.removeHeader("X-B")
+
+    opts: dict[str, any] = req.routeOptions()
+
+    # Reduce the output to a single JSON-free line so we don't
+    # depend on lamjson's shape.
+    hasBNow: bool = res.hasHeader("X-B")
+    # ``snapshot`` must still contain "X-B" — that's the isolation
+    # guarantee of ``getHeaders()``.
+    snapshotBefore: str = "no"
+    go! {
+        if _, ok := snapshot["X-B"]; ok {
+            snapshotBefore = "yes"
+        }
+    }
+
+    elapsed: int = res.elapsedTime()
+    elapsedOk: str = "no"
+    if elapsed >= 0 {
+        elapsedOk = "yes"
+    }
+
+    marker: str = "proto=" + req.protocol() +
+        "|host=" + req.hostname() +
+        "|path=" + str(opts["path"]) +
+        "|method=" + str(opts["method"]) +
+        "|elapsedNonNeg=" + elapsedOk +
+        "|xBRemoved=" + str(not hasBNow) +
+        "|snapshotHadXB=" + snapshotBefore
+    res.text(marker)
+}
+
+# ─── Tier 2 handlers ────────────────────────────────────────────
+func createHandler(req: Request, res: Response) {
+    res.json({"ok": true})
+}
+
+func customFormatter(where: str, errs: list[str], req: Request) -> any {
+    out: dict[str, any] = {
+        "x-formatter": "custom",
+        "field": where,
+        "errors": errs,
+    }
+    return out
+}
+
+func main() {
+    # ── Tier 1 ────────────────────────────────────────────────
+    srv: Server = Server()
+    # Parametric path so ``routeOptions()["path"]`` reflects the
+    # *pattern*, not the concrete request URL.
+    srv.get("/hello/:name", helloHandler)
+
+    reqHeaders: dict[str, str] = {"Host": "localhost"}
+    r1: dict[str, any] = srv.inject("GET", "/hello/world", "", reqHeaders)
+    s1: any = r1["status"]
+    b1: any = r1["body"]
+    print("tier1-status: " + str(s1))
+
+    # Body-shape asserts via substring matching — simpler than
+    # round-tripping through lamjson, and equally load-bearing.
+    bs1: str = str(b1)
+    hasProto: bool = false
+    hasHost: bool = false
+    hasPath: bool = false
+    hasElapsed: bool = false
+    hasRemoved: bool = false
+    hasSnapshot: bool = false
+    go! {
+        if strings.Contains(bs1, "proto=http") { hasProto = true }
+        if strings.Contains(bs1, "host=localhost") { hasHost = true }
+        if strings.Contains(bs1, "path=/hello/:name") { hasPath = true }
+        if strings.Contains(bs1, "elapsedNonNeg=yes") { hasElapsed = true }
+        if strings.Contains(bs1, "xBRemoved=true") { hasRemoved = true }
+        if strings.Contains(bs1, "snapshotHadXB=yes") { hasSnapshot = true }
+    }
+    print("tier1-has-proto-http: " + str(hasProto))
+    print("tier1-has-hostname: " + str(hasHost))
+    print("tier1-has-route-path: " + str(hasPath))
+    print("tier1-has-elapsed-nonneg: " + str(hasElapsed))
+    print("tier1-header-removed: " + str(hasRemoved))
+    print("tier1-snapshot-has-removed: " + str(hasSnapshot))
+
+    # ── Tier 2: addSchema + $ref + setSchemaErrorFormatter ───
+    srv2: Server = Server()
+    srv2.addSchema({
+        "$id": "timestamp",
+        "type": "string",
+        "minLength": 10,
+    })
+
+    routeSchema: dict[str, any] = {
+        "schema": {
+            "body": {
+                "type": "object",
+                "required": ["createdAt"],
+                "properties": {
+                    "createdAt": {"$ref": "timestamp"},
+                },
+            },
+        },
+    }
+    srv2.postOpts("/events", createHandler, routeSchema)
+    srv2.setSchemaErrorFormatter(customFormatter)
+
+    jsonHdrs: dict[str, str] = {"Content-Type": "application/json"}
+
+    # Valid body — shared schema resolved the $ref; minLength=10
+    # passes for the RFC3339 timestamp below.
+    validBody: str = "{\"createdAt\":\"2026-01-01T00:00:00Z\"}"
+    r2: dict[str, any] = srv2.inject("POST", "/events", validBody, jsonHdrs)
+    print("tier2-valid-status: " + str(r2["status"]))
+
+    # Invalid body — ``"nope"`` is 4 chars, < minLength=10, so the
+    # shared schema rejects with a 400 served through the custom
+    # formatter.
+    invalidBody: str = "{\"createdAt\":\"nope\"}"
+    r3: dict[str, any] = srv2.inject("POST", "/events", invalidBody, jsonHdrs)
+    print("tier2-invalid-status: " + str(r3["status"]))
+    bodyStr3: any = r3["body"]
+    bs3: str = str(bodyStr3)
+    usesFormatter: bool = false
+    go! {
+        if strings.Contains(bs3, "\"x-formatter\":\"custom\"") {
+            usesFormatter = true
+        }
+    }
+    print("tier2-invalid-uses-formatter: " + str(usesFormatter))
+
+    # Missing field — same 400 path, still through the formatter.
+    r4: dict[str, any] = srv2.inject("POST", "/events", "{}", jsonHdrs)
+    print("tier2-missing-status: " + str(r4["status"]))
+
+    # Remove the shared schema → subsequent requests with the same
+    # (invalid) body should no longer 400, because the $ref can't
+    # be resolved and gojsonschema lets the ref through unchecked.
+    # Documents the contract that ``removeSchema`` relaxes routes
+    # that reference it.
+    srv2.removeSchema("timestamp")
+    r5: dict[str, any] = srv2.inject("POST", "/events", invalidBody, jsonHdrs)
+    stat5: any = r5["status"]
+    notStale400: bool = true
+    go! {
+        if code, ok := stat5.(int); ok && code == 400 {
+            notStale400 = false
+        }
+    }
+    print("tier2-removed-schema-allows-anything: " + str(notStale400))
+}

@@ -1,0 +1,27 @@
+# Transpilation: ``do { body } catch err { handler }`` lowers to a
+# Go IIFE returning ``*Result``. ``?`` inside the body short-circuits
+# the IIFE (not the enclosing function), and the caller dispatches on
+# the IIFE's ``.Error`` field.
+
+# expect-go: __rdo1 := func() *Result {
+# expect-go: return Result_Ok(nil)
+# expect-go: if __rdo1.Error != nil {
+# expect-go: err := __rdo1.Error
+
+from lamerrors import Result, Error
+
+func parseInt(s: str) -> Result {
+    if s == "1" {
+        return Result.Ok(1)
+    }
+    return Result.Err(Error("ParseError", "bad"))
+}
+
+func main() {
+    do {
+        n: int = parseInt("1")?
+        print(n)
+    } catch err {
+        print(f"failed: {err}")
+    }
+}

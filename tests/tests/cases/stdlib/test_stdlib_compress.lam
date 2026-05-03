@@ -1,0 +1,46 @@
+# Test: lamcompress Compress
+# expect: PASS 1 gzip non-empty
+# expect: PASS 2 gzip round-trip
+# expect: PASS 3 gzip empty
+# expect: PASS 4 gzip utf8
+# expect: PASS 5 gzip large payload
+# expect: PASS 6 zlib non-empty
+# expect: PASS 7 zlib round-trip
+# expect: PASS 8 zlib empty
+# expect: PASS 9 gzip != zlib
+# expect: PASS 10 gzip stable
+# expect: 10 passed, 0 failed, 10 total
+
+from lamcompress import Compress
+from lamtest import Test
+from lamstrings import Strings
+
+func main() {
+    msg: str = "Hello, Lammergeier compression!"
+
+    enc: str = Compress.gzip(msg)
+    Test.assertTrue(len(enc) > 0, "1 gzip non-empty")
+    Test.assertEqual(Compress.gunzip(enc), msg, "2 gzip round-trip")
+
+    encEmpty: str = Compress.gzip("")
+    Test.assertEqual(Compress.gunzip(encEmpty), "", "3 gzip empty")
+
+    utf8: str = "ciao 🪶 lammergeier"
+    Test.assertEqual(Compress.gunzip(Compress.gzip(utf8)), utf8, "4 gzip utf8")
+
+    big: str = Strings.repeat("abcdefghij", 2000)
+    Test.assertEqual(Compress.gunzip(Compress.gzip(big)), big, "5 gzip large payload")
+
+    z: str = Compress.zlibDeflate(msg)
+    Test.assertTrue(len(z) > 0, "6 zlib non-empty")
+    Test.assertEqual(Compress.zlibInflate(z), msg, "7 zlib round-trip")
+    Test.assertEqual(Compress.zlibInflate(Compress.zlibDeflate("")), "", "8 zlib empty")
+
+    # gzip and zlib produce different byte streams for the same input
+    Test.assertNotEqual(Compress.gzip(msg), Compress.zlibDeflate(msg), "9 gzip != zlib")
+
+    # gzip is deterministic for the same input at default level — round trip stable
+    Test.assertEqual(Compress.gunzip(Compress.gzip(msg)), msg, "10 gzip stable")
+
+    Test.summary()
+}

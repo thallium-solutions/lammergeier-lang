@@ -1,0 +1,45 @@
+# Test: lamset.Set data structure
+# expect: size: 3
+# expect: contains a: true
+# expect: contains z: false
+# expect: removed size: 2
+# expect: union size: 4
+# expect: intersect size: 1
+# expect: diff size: 1
+# expect: cleared empty: true
+
+from lamset import Set
+
+func main() {
+    a: Set = Set()
+    a.add("a")
+    a.add("b")
+    a.add("c")
+    a.add("a")  # duplicate should be ignored
+    print(f"size: {a.size()}")
+
+    has_a: bool = a.contains("a")
+    has_z: bool = a.contains("z")
+    print(f"contains a: {has_a}")
+    print(f"contains z: {has_z}")
+
+    a.remove("c")
+    print(f"removed size: {a.size()}")
+
+    b: Set = Set()
+    b.add("b")
+    b.add("x")
+    b.add("y")
+
+    u: Set = a.union(b)
+    print(f"union size: {u.size()}")
+
+    i: Set = a.intersect(b)
+    print(f"intersect size: {i.size()}")
+
+    d: Set = a.difference(b)
+    print(f"diff size: {d.size()}")
+
+    a.clear()
+    print(f"cleared empty: {a.isEmpty()}")
+}

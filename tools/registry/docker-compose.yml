@@ -1,0 +1,39 @@
+# Local-dev registry stack.
+#
+# ``docker-compose -f tools/registry/docker-compose.yml up``
+# launches the registry on http://localhost:8765, persisting uploads
+# to the named ``lamcdata`` volume and seeding the ``seed/``
+# directory's tarballs on first boot so the registry is never empty.
+#
+# After ``up``:
+#   lamc install --registry http://localhost:8765 lamwebp@0.1.0
+#   lamc publish ./my-lib --registry http://localhost:8765
+
+services:
+  registry:
+    build:
+      # Build context is the project root so the Dockerfile can
+      # ``COPY compiler/manifest.py`` without extra hoops.
+      context: ../..
+      dockerfile: tools/registry/Dockerfile
+    image: lamcregistry:dev
+    container_name: lamcregistry
+    ports:
+      - "8765:8765"
+    volumes:
+      - lamcdata:/data
+      - ./seed:/seed:ro
+    environment:
+      LAMC_REGISTRY_SEED: "/seed"
+      LAMC_REGISTRY_PORT: "8765"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/health',timeout=2).status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  lamcdata:
+    driver: local

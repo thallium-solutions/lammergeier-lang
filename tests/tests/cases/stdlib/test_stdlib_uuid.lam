@@ -1,0 +1,38 @@
+# Test: lamuuid — RFC 4122 v4 + v7 UUID generation and validation.
+#
+# expect: distinct=true
+# expect: v4_valid=true
+# expect: v7_valid=true
+# expect: nil_valid=true
+# expect: bogus_valid=false
+# expect: parse_len=16
+# expect: v7_monotonic=true
+# expect: uuid_tests_ok
+
+from lamuuid import Uuid
+
+func main() {
+    a: str = Uuid.v4()
+    b: str = Uuid.v4()
+    print(f"distinct={a != b}")
+    print(f"v4_valid={Uuid.isValid(a)}")
+
+    seven: str = Uuid.v7()
+    print(f"v7_valid={Uuid.isValid(seven)}")
+
+    nilU: str = Uuid.nil_()
+    print(f"nil_valid={Uuid.isValid(nilU)}")
+
+    bogus: bool = Uuid.isValid("not-a-uuid")
+    print(f"bogus_valid={bogus}")
+
+    raw: bytes = Uuid.parse(a)
+    print(f"parse_len={len(raw)}")
+
+    # Two v7 UUIDs generated in order should sort lexicographically.
+    first: str = Uuid.v7()
+    second: str = Uuid.v7()
+    print(f"v7_monotonic={second >= first}")
+
+    print("uuid_tests_ok")
+}

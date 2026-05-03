@@ -1,0 +1,53 @@
+# Test: tuple destructuring in function parameters.
+# The compiler synthesises a single ``_tupN`` slice parameter on the Go
+# side and emits the element bindings (with typed assertions) at the
+# top of the function body.
+# expect: sum=7
+# expect: full-name=Ada Lovelace
+# expect: label=Q:42
+# expect: method=label: Sensor#3
+# expect: nested-sum=10
+
+class Device {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func label(self, (kind, idx): tuple[str, int]) -> str {
+        return f"label: {kind}#{idx}"
+    }
+}
+
+func add_pair((a, b): tuple[int, int]) -> int {
+    return a + b
+}
+
+func describe((first, last): tuple[str, str]) -> str {
+    return f"{first} {last}"
+}
+
+func show((letter, score): tuple[str, int]) -> str {
+    return f"{letter}:{score}"
+}
+
+func total_two_pairs((a, b): tuple[int, int], (c, d): tuple[int, int]) -> int {
+    return a + b + c + d
+}
+
+func main() {
+    s: int = add_pair((3, 4))
+    print(f"sum={s}")
+
+    n: str = describe(("Ada", "Lovelace"))
+    print(f"full-name={n}")
+
+    l: str = show(("Q", 42))
+    print(f"label={l}")
+
+    dev: Device = Device("Sensor")
+    m: str = dev.label(("Sensor", 3))
+    print(f"method={m}")
+
+    t: int = total_two_pairs((1, 2), (3, 4))
+    print(f"nested-sum={t}")
+}

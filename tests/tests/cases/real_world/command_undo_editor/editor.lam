@@ -1,0 +1,70 @@
+class Document {
+    func init(self, text: str = "") {
+        self.text: str = text
+    }
+}
+
+class EditCommand {
+    func init(self, kind: str, pos: int, value: str = "", count: int = 0) {
+        self.kind: str = kind
+        self.pos: int = pos
+        self.value: str = value
+        self.count: int = count
+        self.before: str = ""
+        self.after: str = ""
+    }
+}
+
+class Editor {
+    func init(self, text: str = "") {
+        self.doc: Document = Document(text)
+        self.history: list[EditCommand] = []
+        self.redoStack: list[EditCommand] = []
+    }
+
+    func applyCommand(self, cmd: EditCommand) {
+        if cmd.kind == "insert" {
+            self.doc.text = self.doc.text[:cmd.pos] + cmd.value + self.doc.text[cmd.pos:]
+        }
+        if cmd.kind == "delete" {
+            self.doc.text = self.doc.text[:cmd.pos] + self.doc.text[cmd.pos + cmd.count:]
+        }
+        if cmd.kind == "replace" {
+            self.doc.text = self.doc.text[:cmd.pos] + cmd.value + self.doc.text[cmd.pos + cmd.count:]
+        }
+    }
+
+    func execute(self, cmd: EditCommand) {
+        cmd.before = self.doc.text
+        self.applyCommand(cmd)
+        cmd.after = self.doc.text
+        self.history.append(cmd)
+        self.redoStack = []
+    }
+
+    func undo(self) -> bool {
+        if len(self.history) == 0 {
+            return false
+        }
+        cmd: EditCommand = self.history[len(self.history) - 1]
+        self.history = self.history[:len(self.history) - 1]
+        self.doc.text = cmd.before
+        self.redoStack.append(cmd)
+        return true
+    }
+
+    func redo(self) -> bool {
+        if len(self.redoStack) == 0 {
+            return false
+        }
+        cmd: EditCommand = self.redoStack[len(self.redoStack) - 1]
+        self.redoStack = self.redoStack[:len(self.redoStack) - 1]
+        self.doc.text = cmd.after
+        self.history.append(cmd)
+        return true
+    }
+}
+
+func main() {
+    pass
+}

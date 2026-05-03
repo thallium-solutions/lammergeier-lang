@@ -1,0 +1,81 @@
+# Test: String operations batch 2 - more string methods and patterns
+# expect: 5
+# expect: WORLD
+# expect: test
+# expect: true
+# expect: false
+# expect: true
+# expect: false
+# expect: 3
+# expect: 0
+# expect: a-b-c-d
+# expect: hello world
+# expect: HELLO WORLD
+# expect: Hello World
+# expect: xxhello
+# expect: helloxx
+# expect: xxhelloxx
+# expect: 7
+# expect: abc def
+# expect: str2_ok
+
+func repeat_str(s: str, n: int) -> str {
+    result: str = ""
+    i: int = 0
+    for i in range(n) {
+        result = result + s
+    }
+    return result
+}
+
+func main() {
+    s: str = "world"
+    print(len(s))
+    print(s.upper())
+    print("TEST".lower())
+
+    # Contains check via find
+    msg: str = "hello world"
+    idx: int = msg.find("world")
+    print(idx >= 0)
+    print(msg.find("xyz") >= 0)
+
+    # Startswith / endswith
+    print(msg.startswith("hello"))
+    print(msg.endswith("xyz"))
+
+    # Count occurrences
+    abc: str = "abcabcabc"
+    print(abc.count("abc"))
+    print(abc.count("xyz"))
+
+    # Join
+    items: list[str] = ["a", "b", "c", "d"]
+    print("-".join(items))
+
+    # Chained operations — do them separately  
+    x: str = "  HELLO WORLD  "
+    trimmed: str = x.strip()
+    print(trimmed.lower())
+    print(trimmed)
+
+    # Title
+    y: str = "hello world"
+    print(y.title())
+
+    # Manual padding
+    z: str = "hello"
+    print("xx" + z)
+    print(z + "xx")
+    print("xx" + z + "xx")
+
+    # Length of longer string
+    long_str: str = "abcdefg"
+    print(len(long_str))
+
+    # Replace
+    rep: str = "abc_def"
+    print(rep.replace("_", " "))
+
+    print("str2_ok")
+}

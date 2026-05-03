@@ -1,0 +1,58 @@
+# Test: Error handling patterns - try/except/finally combinations
+# expect: caught_div
+# expect: safe: 0
+# expect: cleanup_done
+# expect: calc: 50
+# expect: custom_error
+# expect: finally_always
+# expect: err2_ok
+
+func safe_divide(a: int, b: int) -> int {
+    try {
+        return a / b
+    } catch Exception as e {
+        print("caught_div")
+        return 0
+    }
+}
+
+func calculate(x: int) -> int {
+    result: int = 0
+    try {
+        result = x * 10
+    } finally {
+        print("cleanup_done")
+    }
+    return result
+}
+
+func raise_custom() {
+    try {
+        raise ValueError("custom error happened")
+    } catch ValueError as e {
+        print("custom_error")
+    }
+}
+
+func always_finally() {
+    try {
+        x: int = 42
+        x = x
+    } finally {
+        print("finally_always")
+    }
+}
+
+func main() {
+    r: int = safe_divide(10, 0)
+    print(f"safe: {r}")
+
+    val: int = calculate(5)
+    print(f"calc: {val}")
+
+    raise_custom()
+
+    always_finally()
+
+    print("err2_ok")
+}

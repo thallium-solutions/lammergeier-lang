@@ -1,0 +1,33 @@
+# Test: Go time and string formatting via go! blocks
+# expect: formatted: 42
+# expect: padded: 007
+# expect: hex: 2a
+# expect: HEX: 2A
+# expect: binary: 101010
+# expect: width: |hello     |
+# expect: right: |     hello|
+# expect: float: 3.14
+# expect: sci: 1.23e+04
+# expect: go_format_ok
+
+func main() {
+    go! {
+        // Integer formatting
+        fmt.Println(fmt.Sprintf("formatted: %d", 42))
+        fmt.Println(fmt.Sprintf("padded: %03d", 7))
+        fmt.Println(fmt.Sprintf("hex: %x", 42))
+        fmt.Println(fmt.Sprintf("HEX: %X", 42))
+        fmt.Println(fmt.Sprintf("binary: %b", 42))
+    }
+    go! {
+        // String formatting
+        fmt.Println(fmt.Sprintf("width: |%-10s|", "hello"))
+        fmt.Println(fmt.Sprintf("right: |%10s|", "hello"))
+    }
+    go! {
+        // Float formatting
+        fmt.Println(fmt.Sprintf("float: %.2f", 3.14159))
+        fmt.Println(fmt.Sprintf("sci: %.2e", 12300.0))
+    }
+    print("go_format_ok")
+}

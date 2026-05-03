@@ -1,0 +1,32 @@
+# expect: int_ok
+# expect: float_ok
+# expect: str_ok
+# expect: bool_ok
+
+from lamconv import Conv
+
+func main() {
+    # Int conversion
+    n: int = Conv.toInt("42")
+    if n == 42 {
+        print("int_ok")
+    }
+
+    # Float conversion
+    f: float = Conv.toFloat("3.14")
+    if f > 3.13 {
+        print("float_ok")
+    }
+
+    # String conversion
+    s: str = Conv.toString(123)
+    if s == "123" {
+        print("str_ok")
+    }
+
+    # Bool conversion
+    b: bool = Conv.toBool("true")
+    if b {
+        print("bool_ok")
+    }
+}

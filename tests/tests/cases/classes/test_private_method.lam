@@ -1,0 +1,23 @@
+# Test: Private class methods
+# expect: public_result
+# expect: internal_42
+
+class Service {
+    func __init__(self, value: int) {
+        self.value: int = value
+    }
+
+    private func internal_compute(self) -> str {
+        return f"internal_{self.value}"
+    }
+
+    func public_action(self) -> str {
+        return "public_result"
+    }
+}
+
+func main() {
+    s: Service = Service(42)
+    print(s.public_action())
+    print(s.internal_compute())
+}

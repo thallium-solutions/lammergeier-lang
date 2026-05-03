@@ -1,0 +1,23 @@
+# Test: variadic with typed return
+# expect: hello-world-foo
+# expect: a
+
+func join_with(sep: str, *parts: string) -> str {
+    result: str = ""
+    for i, p in enumerate(parts) {
+        if i > 0 {
+            result = result + sep
+        }
+        result = result + p
+    }
+    return result
+}
+
+func first(*items: string) -> str {
+    return items[0]
+}
+
+func main() {
+    print(join_with("-", "hello", "world", "foo"))
+    print(first("a", "b", "c"))
+}

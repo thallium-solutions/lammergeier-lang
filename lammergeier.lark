@@ -1,0 +1,465 @@
+// Typed Python Grammar for Lark (v4 — C-style braces)
+// =====================================================
+// Lammergeier Lang — Compiles to Go.
+// Function syntax: func foo(x: int) -> int { ... }
+// Raw Go injection via go! { ... }
+// Features: private, static, async/await, variadic, ternary, multiline strings,
+//           init alias, comprehensions, unpacking, file management, interfaces,
+//           generators/yield, try/catch/finally, del, operator overloading
+
+start: stmt*
+
+file_input: stmt*
+
+// ========================= RAW GO INJECTION =========================
+// Preprocessed before parsing. The preprocessor replaces go! blocks with
+// a special marker statement:  __go_block__("id")
+// The transpiler then looks up the original raw Go code by id.
+// This avoids terminal conflicts in the grammar.
+//
+// Source syntax:
+//   go! {
+//       <verbatim Go lines>
+//   }
+//
+// Also supports legacy go!: indentation syntax.
+//
+// After preprocessing becomes:
+//   __go_block__("0")
+
+
+// ========================= DECORATORS =========================
+
+decorator: "@" dotted_name ["(" [arguments] ")"]
+decorators: decorator+
+decorated: decorators (classdef | funcdef)
+
+// ========================= FUNCTION DEFINITION =========================
+// def add(x: int, y: int) -> int:
+// def main():
+// private async def helper(x: int) -> str:
+// def variadic(*args: int) -> int:
+
+funcdef: [PRIVATE] [STATIC_FUNC] [ASYNC] FUNC name [type_params] "(" [typed_parameters] ")" ["->" return_type] suite
+
+// Generic type parameters: ``foo[T, U: comparable](x: T) -> U``.
+// Constraints use ``:`` (not Go's implicit whitespace) so the grammar
+// stays unambiguous against the ``typed_parameters`` block. When
+// omitted, each parameter defaults to Go's ``any`` constraint.
+type_params: "[" type_param ("," type_param)* "]"
+type_param: name [":" type_constraint]
+type_constraint: dotted_name
+
+PRIVATE: "private"
+STATIC_FUNC.3: /static(?=[\t \f\r\n]+func\b)/
+STATIC: "static"
+ASYNC: "async"
+FUNC.2: "func"
+
+return_type: "(" type_expr ("," type_expr)+ ")"  -> multi_return_type
+           | type_expr                            -> single_return_type
+
+typed_parameters: typed_paramvalue ("," typed_paramvalue)* ["," [typed_starparams | typed_kwparams]]
+                | typed_starparams
+                | typed_kwparams
+
+typed_starparams: "*" typed_param typed_poststarparams
+                | "*" typed_poststarparams
+typed_poststarparams: ("," typed_paramvalue)* ["," typed_kwparams]
+typed_kwparams: "**" typed_param ","?
+
+?typed_paramvalue: typed_param ["=" test]
+typed_param: name ":" type_expr
+           | name
+           | "(" name ("," name)+ ")" ":" type_expr -> tuple_typed_param
+
+// ========================= TYPE EXPRESSIONS =========================
+
+type_expr: type_union
+
+?type_union: type_primary ("|" type_primary)*  -> type_union
+
+?type_primary: type_generic
+             | type_atom
+
+type_generic: dotted_name "[" type_expr ("," type_expr)* "]"
+
+?type_atom: dotted_name -> type_name
+          | "None"     -> type_none
+          | type_func
+
+// Function-typed values: ``f: func(int, int) -> int = add``.
+// The parameter list may be empty; the return clause is optional
+// (a void function type is just ``func()``).
+type_func: FUNC "(" [type_func_params] ")" ["->" type_expr]
+type_func_params: type_expr ("," type_expr)*
+
+// ========================= STATEMENTS =========================
+
+?stmt: compound_stmt | simple_stmt
+?simple_stmt: small_stmt (";" small_stmt)* ";"
+?small_stmt: expr_stmt
+           | assign_stmt
+           | const_stmt
+           | del_stmt
+           | pass_stmt
+           | flow_stmt
+           | import_stmt
+           | global_stmt
+           | nonlocal_stmt
+           | assert_stmt
+           | defer_stmt
+
+expr_stmt: testlist_star_expr
+
+// ========================= ASSIGNMENT =========================
+
+assign_stmt: annassign | augassign | assign
+
+annassign: [PRIVATE] [STATIC] testlist_star_expr ":" type_expr ["=" test]
+assign: testlist_star_expr ("=" (yield_expr | testlist_star_expr))+
+augassign: testlist_star_expr augassign_op (yield_expr | testlist)
+
+// `const NAME [: TYPE] = EXPR` declares an immutable binding. The
+// semantic checker rejects later assignments to NAME; the transpiler
+// emits a Go `var` (Go's `const` would require compile-time
+// evaluable RHS, which Lam doesn't constrain).
+const_stmt: "const" name [":" type_expr] "=" test
+!augassign_op: "+=" | "-=" | "*=" | "@=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" | "**=" | "//="
+
+?testlist_star_expr: test_or_star_expr
+                   | test_or_star_expr ("," test_or_star_expr)+ ","?  -> tuple
+                   | test_or_star_expr ","  -> tuple
+
+// ========================= SIMPLE STATEMENTS =========================
+
+del_stmt: "del" exprlist
+pass_stmt: "pass"
+?flow_stmt: break_stmt | continue_stmt | return_stmt | raise_stmt | yield_stmt
+break_stmt: "break"
+continue_stmt: "continue"
+return_stmt: "return" [testlist]
+yield_stmt: yield_expr
+raise_stmt: ("raise" | "throw") [test ["from" test]]
+defer_stmt: "defer" test
+
+// ========================= IMPORT =========================
+
+import_stmt: import_name | import_from
+import_name: "import" dotted_as_names
+// ``scoped_name`` lets third-party libraries use the ``@scope/name``
+// npm-style namespace (e.g. ``from @alice/lamwebp import Encoder``).
+// It's only legal in import positions — the resolver maps the scope
+// + name pair straight to ``<extlibs>/@scope/name{.lam,/__init__.lam}``
+// on disk, so no grammar changes leak into the rest of the language.
+import_from: "from" (dots? (dotted_name | scoped_name) | dots) "import" ("*" | "(" import_as_names ")" | import_as_names)
+!dots: "."+
+import_as_name: name ["as" name]
+dotted_as_name: dotted_name ["as" name]
+import_as_names: import_as_name ("," import_as_name)* [","]
+dotted_as_names: dotted_as_name ("," dotted_as_name)*
+dotted_name: name ("." name)*
+scoped_name: SCOPED_NAME
+// ``SCOPED_NAME`` is a single token spanning the ``/`` so the lexer
+// can't split it into ``@`` + NAME + ``/`` + NAME (which would also
+// collide with the decorator ``@foo`` syntax). Giving it a higher
+// priority than NAME ensures ``@alice/lamwebp`` always tokenizes as
+// one SCOPED_NAME rather than a decorator-plus-division soup.
+SCOPED_NAME.2: /@[a-z0-9_][a-z0-9_\-]*\/[a-z_][a-z0-9_\-]*/
+
+global_stmt: "global" name ("," name)*
+nonlocal_stmt: "nonlocal" name ("," name)*
+assert_stmt: "assert" test ["," test]
+
+// ========================= COMPOUND STATEMENTS =========================
+
+?compound_stmt: if_stmt
+              | while_stmt
+              | for_stmt
+              | try_stmt
+              | do_stmt
+              | match_stmt
+              | with_stmt
+              | funcdef
+              | classdef
+              | interfacedef
+              | decorated
+
+// ========================= IF / ELIF / ELSE =========================
+
+if_stmt: "if" test suite elifs ["else" suite]
+elifs: elif_*
+elif_: "elif" test suite
+
+// ========================= WHILE =========================
+
+while_stmt: "while" test suite ["else" suite]
+
+// ========================= FOR =========================
+
+for_stmt: "for" for_target "in" testlist suite ["else" suite]
+?for_target: exprlist ":" type_expr -> typed_for_target
+           | exprlist              -> untyped_for_target
+
+// ========================= TRY / EXCEPT =========================
+
+try_stmt: "try" suite catch_clauses ["else" suite] [finally]
+        | "try" suite finally   -> try_finally
+finally: "finally" suite
+catch_clauses: catch_clause+
+catch_clause: "catch" [test ["as" name]] suite
+
+// ========================= DO / CATCH (Result-aware) =========================
+// ``do { body } catch err { handler }`` — sibling of try/catch that
+// works on Lam ``Result`` values. Inside the body, ``?`` short-circuits
+// out of the do-block (not the enclosing function), and any error
+// surfaced that way binds to ``err`` in the catch handler. The
+// catch variable is mandatory and always a single name.
+
+do_stmt: "do" suite "catch" name suite
+
+// ========================= WITH =========================
+
+with_stmt: "with" with_items suite
+with_items: with_item ("," with_item)*
+with_item: test ["as" name]
+
+// ========================= MATCH =========================
+
+match_stmt: "match" test "{" case+ "}"
+
+case: "case" pattern ["if" test] suite
+
+?pattern: sequence_item_pattern "," _sequence_pattern -> sequence_pattern
+        | as_pattern
+?as_pattern: or_pattern ("as" NAME)?
+?or_pattern: closed_pattern ("|" closed_pattern)*
+?closed_pattern: literal_pattern
+               | NAME -> capture_pattern
+               | "_" -> any_pattern
+               | attr_pattern
+               | "(" as_pattern ")"
+               | "[" _sequence_pattern "]" -> sequence_pattern
+               | "(" (sequence_item_pattern "," _sequence_pattern)? ")" -> sequence_pattern
+               | "{" (mapping_item_pattern ("," mapping_item_pattern)* ","?)? "}" -> mapping_pattern
+               | "{" (mapping_item_pattern ("," mapping_item_pattern)* ",")? "**" NAME ","? "}" -> mapping_star_pattern
+               | class_pattern
+
+literal_pattern: inner_literal_pattern
+?inner_literal_pattern: "None" -> const_none
+                      | "True" -> const_true
+                      | "False" -> const_false
+                      | STRING -> string
+                      | number
+
+attr_pattern: NAME ("." NAME)+ -> value
+name_or_attr_pattern: NAME ("." NAME)* -> value
+mapping_item_pattern: (literal_pattern | attr_pattern) ":" as_pattern
+
+_sequence_pattern: (sequence_item_pattern ("," sequence_item_pattern)* ","?)?
+?sequence_item_pattern: as_pattern
+                      | "*" NAME -> star_pattern
+
+class_pattern: name_or_attr_pattern "(" [arguments_pattern ","?] ")"
+arguments_pattern: pos_arg_pattern ["," keyws_arg_pattern]
+                 | keyws_arg_pattern -> no_pos_arguments
+pos_arg_pattern: as_pattern ("," as_pattern)*
+keyws_arg_pattern: keyw_arg_pattern ("," keyw_arg_pattern)*
+keyw_arg_pattern: NAME "=" as_pattern
+
+// ========================= CLASS DEFINITION =========================
+
+classdef: "class" name [type_params] ["(" [arguments] ")"] suite
+
+interfacedef: "interface" name "{" interface_method+ "}"
+interface_method: FUNC name "(" [typed_parameters] ")" ["->" return_type] ";"
+
+// ========================= SUITE (BLOCK) =========================
+
+suite: "{" stmt+ "}"
+
+// ========================= EXPRESSIONS =========================
+
+// Ternary: value_if_true if condition else value_if_false
+// ``null_coalesce`` captures the ``a ?? b`` operator and sits above
+// ``or_test`` so ``a or b ?? c`` parses as ``(a or b) ?? c``. When no
+// ``??`` appears the ``?`` prefix elides the single-child tree and
+// the expression collapses to a plain ``or_test``.
+?test: null_coalesce ("if" null_coalesce "else" test)?
+     | lambdef
+     | assign_expr
+
+?null_coalesce: or_test ("??" or_test)+ -> null_coalesce
+              | or_test
+
+// Lambda forms (single-line + multi-line, optional return-type):
+//
+//     lambda: expr                              # nullary, expression body
+//     lambda x: x * 2                           # untyped single param
+//     lambda x, y: x + y                        # untyped multi-param
+//     lambda (x: int, y: float): x + y          # typed multi-param
+//     lambda (x: int) -> int: x * 2             # explicit return type
+//     lambda (x: int) {                         # multi-line body
+//         doStuff(x)
+//         return x * 2
+//     }
+//
+// Both the paren-wrapped and bare-comma forms are accepted; the
+// paren-wrapped form is the only place ``: type`` annotations may
+// appear because the bare form would shift-reduce conflict with the
+// body's ``:`` separator. Multi-line bodies use the regular ``suite``
+// rule (``{ stmt+ }``) and require an explicit ``return`` to yield
+// a value, matching block-bodied function semantics.
+lambdef: "lambda" [lambda_params] [lambda_return_anno] (":" test | suite)
+
+?lambda_params: paren_lambda_params | inline_lambda_params
+
+paren_lambda_params: "(" [typed_lambda_param ("," typed_lambda_param)*] ")"
+inline_lambda_params: inline_lambda_param ("," inline_lambda_param)*
+
+typed_lambda_param: name [":" type_expr]
+inline_lambda_param: name
+
+lambda_return_anno: "->" type_expr
+
+assign_expr: name ":=" test
+
+?test_nocond: or_test
+
+?or_test: and_test ("or" and_test)*
+?and_test: not_test_ ("and" not_test_)*
+?not_test_: "not" not_test_ -> not_test
+          | comparison
+?comparison: expr (comp_op expr)*
+star_expr: "*" expr
+
+?expr: or_expr
+?or_expr: xor_expr ("|" xor_expr)*
+?xor_expr: and_expr ("^" and_expr)*
+?and_expr: shift_expr ("&" shift_expr)*
+?shift_expr: arith_expr (_shift_op arith_expr)*
+?arith_expr: term (_add_op term)*
+?term: factor (_mul_op factor)*
+?factor: _unary_op factor | power
+
+!_unary_op: "+" | "-" | "~"
+!_add_op: "+" | "-"
+!_shift_op: "<<" | ">>"
+!_mul_op: "*" | "@" | "/" | "%" | "//"
+
+!comp_op: "<" | ">" | "==" | ">=" | "<=" | "!=" | "in" | "not" "in" | "is" | "is" "not"
+
+?power: await_expr ("**" factor)?
+?await_expr: "await" atom_expr -> await_call
+           | atom_expr
+
+?atom_expr: atom_expr "(" [arguments] ")"      -> funccall
+          | atom_expr "[" subscriptlist "]"  -> getitem
+          | atom_expr "." name               -> getattr
+          | atom_expr "?." name              -> getattr_safe
+          | atom_expr "?"                    -> propagate
+          | atom
+
+?atom: "(" yield_expr ")"
+     | "(" _tuple_inner? ")" -> tuple
+     | "(" comprehension{test_or_star_expr} ")" -> tuple_comprehension
+     | "[" _exprlist? "]"  -> list
+     | "[" comprehension{test_or_star_expr} "]"  -> list_comprehension
+     | "{" _dict_exprlist? "}" -> dict
+     | "{" comprehension{key_value} "}" -> dict_comprehension
+     | "{" _exprlist "}" -> set
+     | "{" comprehension{test} "}" -> set_comprehension
+     | name -> var
+     | number
+     | string_concat
+     | "(" test ")"
+     | "..." -> ellipsis
+     | "None"    -> const_none
+     | "True"    -> const_true
+     | "False"   -> const_false
+
+?string_concat: (fstring | string)+
+
+fstring: FSTRING | FSTRING_LONG
+string: STRING | LONG_STRING
+
+_tuple_inner: test_or_star_expr (("," test_or_star_expr)+ [","] | ",")
+
+?test_or_star_expr: test
+                  | star_expr
+
+?subscriptlist: subscript
+              | subscript (("," subscript)+ [","] | ",") -> subscript_tuple
+?subscript: test | ([test] ":" [test] [sliceop]) -> slice
+sliceop: ":" [test]
+
+?exprlist: (expr | star_expr)
+         | (expr | star_expr) (("," (expr | star_expr))+ [","] | ",")
+
+?testlist: test | testlist_tuple
+testlist_tuple: test (("," test)+ [","] | ",")
+
+_dict_exprlist: (key_value | "**" expr) ("," (key_value | "**" expr))* [","]
+key_value: test ":" test
+_exprlist: test_or_star_expr ("," test_or_star_expr)* [","]
+
+// ========================= FUNCTION CALL ARGUMENTS =========================
+
+arguments: argvalue ("," argvalue)* ("," [starargs | kwargs])?
+         | starargs
+         | kwargs
+         | comprehension{test}
+
+starargs: stararg ("," stararg)* ("," argvalue)* ["," kwargs]
+stararg: "*" test
+kwargs: "**" test ("," argvalue)*
+?argvalue: test ("=" test)?
+
+// ========================= COMPREHENSIONS =========================
+// Supports multiple for clauses: [expr for x in xs for y in ys]
+// Supports if filters: [expr for x in xs if cond]
+
+comprehension{comp_result}: comp_result comp_fors [comp_if]
+comp_fors: comp_for+
+comp_for: "for" exprlist "in" or_test
+?comp_if: "if" test_nocond
+
+// ========================= YIELD =========================
+
+yield_expr: "yield" [testlist]
+          | "yield" "from" test -> yield_from
+
+// ========================= LITERALS / TOKENS =========================
+
+number: DEC_NUMBER | HEX_NUMBER | BIN_NUMBER | OCT_NUMBER | FLOAT_NUMBER | IMAG_NUMBER
+
+// ========================= TERMINALS =========================
+
+%ignore /[\t \f]+/
+%ignore /\r?\n/
+%ignore /\\[\t \f]*\r?\n/
+%ignore COMMENT
+%ignore BLOCK_COMMENT
+
+!name: NAME | "match" | "case" | "type"
+NAME: /(?!func\b)[^\W\d]\w*/
+COMMENT: /#(?!-)[^\n]*/
+BLOCK_COMMENT: /#-[\s\S]*?-#/
+
+STRING: /([ubf]?r?|r[ubf])("(?!"").*?(?<!\\)(\\\\)*?"|'(?!'').*?(?<!\\)(\\\\)*?')/i
+LONG_STRING: /([ubf]?r?|r[ubf])(""".*?(?<!\\)(\\\\)*?"""|'''.*?(?<!\\)(\\\\)*?''')/is
+
+FSTRING.3: /f("(?!"").*?(?<!\\)(\\\\)*?"|'(?!'').*?(?<!\\)(\\\\)*?')/i
+FSTRING_LONG.4: /f(""".*?(?<!\\)(\\\\)*?"""|'''.*?(?<!\\)(\\\\)*?''')/is
+
+_SPECIAL_DEC: "0".."9"        ("_"?  "0".."9"                       )*
+DEC_NUMBER:   "1".."9"        ("_"?  "0".."9"                       )*
+            | "0"             ("_"?  "0"                             )* /(?![1-9])/
+HEX_NUMBER.2: "0" ("x" | "X") ("_"? ("0".."9" | "a".."f" | "A".."F"))+
+OCT_NUMBER.2: "0" ("o" | "O") ("_"?  "0".."7"                       )+
+BIN_NUMBER.2: "0" ("b" | "B") ("_"?  "0".."1"                       )+
+
+_EXP: ("e" | "E") ["+" | "-"] _SPECIAL_DEC
+DECIMAL: "." _SPECIAL_DEC | _SPECIAL_DEC "." _SPECIAL_DEC?
+FLOAT_NUMBER.2: _SPECIAL_DEC _EXP | DECIMAL _EXP?
+IMAG_NUMBER.2: (_SPECIAL_DEC | FLOAT_NUMBER) ("J" | "j")

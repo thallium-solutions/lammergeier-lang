@@ -1,0 +1,16 @@
+# Rosetta Code: Averages/Arithmetic mean
+# https://rosettacode.org/wiki/Averages/Arithmetic_mean
+# expect: 3
+
+func mean(arr: list[int]) -> int {
+    total: int = 0
+    for v in arr {
+        total += v
+    }
+    return total / len(arr)
+}
+
+func main() {
+    data: list[int] = [1, 2, 3, 4, 5]
+    print(mean(data))
+}

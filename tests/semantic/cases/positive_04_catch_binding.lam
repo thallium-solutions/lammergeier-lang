@@ -1,0 +1,10 @@
+# `catch e` must be accepted as a binding name (no false-positive on `e`).
+# expect-pass
+
+func main() {
+    try {
+        panic("boom")
+    } catch e {
+        print(e)
+    }
+}

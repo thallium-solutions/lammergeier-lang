@@ -1,0 +1,27 @@
+# Real-world mini project: specification pattern for catalog search.
+# expect: active_books=2
+# expect: cheap_lam=1
+# expect: archived_all=4
+# expect: first_lam_sku=B-1
+# expect: expensive_active=2
+
+from catalog import ProductCatalog, ProductDoc, ProductSpec
+
+func main() {
+    cat: ProductCatalog = ProductCatalog()
+    cat.add(ProductDoc("B-1", "Lammergeier Patterns", "book", 2400, true))
+    cat.add(ProductDoc("B-2", "Go Runtime Notes", "book", 1800, true))
+    cat.add(ProductDoc("B-3", "Archived Lam Manual", "book", 900, false))
+    cat.add(ProductDoc("H-1", "Workshop Hoodie", "merch", 4200, true))
+
+    activeBooks: list[ProductDoc] = cat.search(ProductSpec("book"))
+    cheapLam: list[ProductDoc] = cat.search(ProductSpec("*", 0, 2500, true, "lam"))
+    allDocs: list[ProductDoc] = cat.search(ProductSpec("*", 0, 999999, false))
+    expensive: list[ProductDoc] = cat.search(ProductSpec("*", 2000, 999999, true))
+
+    print(f"active_books={len(activeBooks)}")
+    print(f"cheap_lam={len(cheapLam)}")
+    print(f"archived_all={len(allDocs)}")
+    print(f"first_lam_sku={cheapLam[0].sku}")
+    print(f"expensive_active={len(expensive)}")
+}

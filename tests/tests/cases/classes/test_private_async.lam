@@ -1,0 +1,11 @@
+# Test: Private async function
+# expect: secret_42
+
+private async func secret_compute(x: int) -> str {
+    return f"secret_{x}"
+}
+
+func main() {
+    result: str = await secret_compute(42)
+    print(result)
+}

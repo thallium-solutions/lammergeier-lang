@@ -1,0 +1,31 @@
+# Test: default arguments fill in correctly when calling
+# library-imported functions from a downstream module. Before, only
+# locally-defined functions had their defaults filled at call sites
+# — library calls fell through to the bare-emit path and Go would
+# refuse with "not enough arguments".
+#
+# expect: ok
+
+from lamserver import Server
+from lamserver_plugins import healthcheck, metrics, requestLog, rateLimit, compress, helmet, etag
+
+func main() {
+    srv: Server = Server()
+
+    # Each of these has at least one default param. The compiler
+    # should auto-fill them.
+    helmet(srv)                      # zero defaults
+    etag(srv)                        # zero defaults
+    healthcheck(srv)                 # 2 defaults
+    metrics(srv)                     # 1 default
+    requestLog(srv)                  # 1 default
+    rateLimit(srv)                   # 3 defaults
+    compress(srv)                    # 1 default
+
+    # Partial-application also works — provide some, default the rest.
+    healthcheck(srv, "/live")        # readyPath defaulted
+    metrics(srv, "/scrape")          # explicit override
+    requestLog(srv, "[trace]")       # explicit override
+
+    print("ok")
+}

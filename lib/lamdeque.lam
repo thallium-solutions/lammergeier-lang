@@ -1,0 +1,85 @@
+# Lammergeier standard library: double-ended queue
+# Import with: from lamdeque import Deque
+#
+# Backed by a slice; insertions at either end are amortised O(1) in the
+# back and O(n) in the front. For true O(1) at both ends a ring buffer
+# would be better, but keeping the implementation simple matches the
+# rest of the data-structure family (Stack, Queue, Set).
+
+class Deque {
+    func __init__(self) {
+        self.items: list[any] = []
+    }
+
+    func pushBack(self, v: any) {
+        self.items.append(v)
+    }
+
+    func pushFront(self, v: any) {
+        prefixed: list[any] = [v]
+        for item in self.items {
+            prefixed.append(item)
+        }
+        self.items = prefixed
+    }
+
+    func popBack(self) -> any {
+        #- Remove and return the last element. Panics on empty. -#
+        n: int = len(self.items)
+        if n == 0 {
+            go! { panic("Deque.popBack: empty deque") }
+        }
+        last: any = self.items[n-1]
+        self.items = self.items[:n-1]
+        return last
+    }
+
+    func popFront(self) -> any {
+        #- Remove and return the first element. Panics on empty. -#
+        if len(self.items) == 0 {
+            go! { panic("Deque.popFront: empty deque") }
+        }
+        first: any = self.items[0]
+        self.items = self.items[1:]
+        return first
+    }
+
+    func peekBack(self) -> any {
+        if len(self.items) == 0 {
+            go! { panic("Deque.peekBack: empty deque") }
+        }
+        return self.items[len(self.items)-1]
+    }
+
+    func peekFront(self) -> any {
+        if len(self.items) == 0 {
+            go! { panic("Deque.peekFront: empty deque") }
+        }
+        return self.items[0]
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func isEmpty(self) -> bool {
+        return len(self.items) == 0
+    }
+
+    func clear(self) {
+        self.items = []
+    }
+
+    func toList(self) -> list[any] {
+        #- Return a copy from front to back. -#
+        result: list[any] = []
+        for item in self.items {
+            result.append(item)
+        }
+        return result
+    }
+}
+
+func main() {
+    pass
+}

@@ -1,0 +1,20 @@
+# Rosetta Code: Collatz sequence
+# https://rosettacode.org/wiki/Collatz_sequence  (Hailstone)
+# expect: 27: 111 steps
+
+func collatz_length(n: int) -> int {
+    steps: int = 0
+    while n != 1 {
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = 3 * n + 1
+        }
+        steps += 1
+    }
+    return steps
+}
+
+func main() {
+    print(f"27: {collatz_length(27)} steps")
+}

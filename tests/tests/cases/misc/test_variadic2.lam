@@ -1,0 +1,18 @@
+# Test: variadic with single and zero args
+# expect: 0
+# expect: 42
+# expect: 6
+
+func sum_ints(*nums: int) -> int {
+    total: int = 0
+    for n in nums {
+        total += n
+    }
+    return total
+}
+
+func main() {
+    print(sum_ints())
+    print(sum_ints(42))
+    print(sum_ints(1, 2, 3))
+}

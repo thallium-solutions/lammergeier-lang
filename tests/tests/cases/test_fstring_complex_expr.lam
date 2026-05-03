@@ -1,0 +1,45 @@
+# expect: user=a@example.com
+# expect: user=none
+# expect: second=20
+# expect: first*second=200
+# expect: hyp2=25
+# expect: greeting=hello, ALICE!
+# expect: shout=THE COUNT IS 3
+
+class Profile {
+    func init(self, email: str = "") {
+        self.email: str = email
+    }
+}
+
+class User {
+    func init(self, name: str = "anon", profile: Profile = None) {
+        self.name: str = name
+        self.profile: Profile = profile
+    }
+}
+
+func main() {
+    users: list[User] = [
+        User(name="alice", profile=Profile(email="a@example.com")),
+        User(name="bob"),
+    ]
+    # Complex expression — indexing + safe nav + null coalesce.
+    print(f"user={users[0].profile?.email ?? 'none'}")
+    print(f"user={users[1].profile?.email ?? 'none'}")
+
+    items: list[int] = [10, 20, 30]
+    print(f"second={items[1]}")
+    print(f"first*second={items[0] * items[1]}")
+
+    a: int = 3
+    b: int = 4
+    print(f"hyp2={a*a + b*b}")
+
+    # Method chains and string ops still work (the existing path).
+    name: str = "alice"
+    print(f"greeting=hello, {name.upper()}!")
+
+    count: int = 3
+    print(f"shout={f'the count is {count}'.upper()}")
+}

@@ -1,0 +1,78 @@
+# Lammergeier standard library: logging utilities
+# Import with: from lamlog import Log
+
+go! {
+    import "log"
+}
+
+class Log {
+    static func info(msg: str) {
+        go! {
+            log.Println("[INFO]", msg)
+        }
+    }
+
+    static func warn(msg: str) {
+        go! {
+            log.Println("[WARN]", msg)
+        }
+    }
+
+    static func error(msg: str) {
+        go! {
+            log.Println("[ERROR]", msg)
+        }
+    }
+
+    static func debug(msg: str) {
+        go! {
+            log.Println("[DEBUG]", msg)
+        }
+    }
+
+    static func fatal(msg: str) {
+        go! {
+            log.Fatal("[FATAL] ", msg)
+        }
+    }
+
+    static func setPrefix(prefix: str) {
+        go! {
+            log.SetPrefix(prefix)
+        }
+    }
+
+    static func infof(format: str, *args: any) {
+        go! {
+            log.Printf("[INFO] "+format, args...)
+        }
+    }
+
+    static func warnf(format: str, *args: any) {
+        go! {
+            log.Printf("[WARN] "+format, args...)
+        }
+    }
+
+    static func errorf(format: str, *args: any) {
+        go! {
+            log.Printf("[ERROR] "+format, args...)
+        }
+    }
+
+    static func debugf(format: str, *args: any) {
+        go! {
+            log.Printf("[DEBUG] "+format, args...)
+        }
+    }
+
+    static func fatalf(format: str, *args: any) {
+        go! {
+            log.Fatalf("[FATAL] "+format, args...)
+        }
+    }
+}
+
+func main() {
+    pass
+}

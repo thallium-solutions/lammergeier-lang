@@ -1,0 +1,50 @@
+# Test: Nested data structures and access patterns
+# expect: 1
+# expect: 4
+# expect: 42
+# expect: nested_ok
+# expect: 3
+# expect: 5
+# expect: inner_val
+# expect: matrix_ok
+
+func main() {
+    # List indexing
+    nums: list[int] = [1, 2, 3, 4, 5]
+    print(nums[0])
+    print(nums[3])
+
+    # Dict access
+    d: dict[str, int] = {"x": 42, "y": 99}
+    print(d["x"])
+
+    # Nested operations
+    a: int = 10
+    b: int = 20
+    c: int = a + b
+    if c > 25 {
+        print("nested_ok")
+    }
+
+    # List length
+    items: list[str] = ["a", "b", "c"]
+    print(len(items))
+
+    # String length
+    s: str = "hello"
+    print(len(s))
+    print("inner_val")
+
+    # Matrix-like pattern
+    total: int = 0
+    i: int = 0
+    j: int = 0
+    for i in range(3) {
+        for j in range(3) {
+            total = total + 1
+        }
+    }
+    if total == 9 {
+        print("matrix_ok")
+    }
+}

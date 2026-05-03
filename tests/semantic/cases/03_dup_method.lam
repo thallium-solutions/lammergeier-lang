@@ -1,0 +1,18 @@
+# expect-error: duplicate class member `get`
+
+class Box {
+    x: int = 0
+
+    func get() -> int {
+        return self.x
+    }
+
+    func get() -> int {
+        return 0
+    }
+}
+
+func main() {
+    b: Box = Box()
+    print(b.get())
+}

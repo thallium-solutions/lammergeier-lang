@@ -1,0 +1,49 @@
+from domain import Cart
+
+class Coupon {
+    func init(self, code: str, kind: str, amount: int) {
+        self.code: str = code
+        self.kind: str = kind
+        self.amount: int = amount
+    }
+
+    func discount(self, subtotal: int) -> int {
+        if self.kind == "percent" {
+            return subtotal * self.amount / 100
+        }
+        if self.amount > subtotal {
+            return subtotal
+        }
+        return self.amount
+    }
+}
+
+class PricingEngine {
+    func init(self, taxRatePercent: int = 8) {
+        self.taxRatePercent: int = taxRatePercent
+    }
+
+    func shipping(self, subtotal: int, region: str) -> int {
+        if subtotal >= 5000 {
+            return 0
+        }
+        if region == "remote" {
+            return 1299
+        }
+        return 499
+    }
+
+    func tax(self, cart: Cart) -> int {
+        return cart.taxableSubtotal() * self.taxRatePercent / 100
+    }
+
+    func total(self, cart: Cart, coupon: Coupon, region: str) -> int {
+        subtotal: int = cart.subtotal()
+        discount: int = coupon.discount(subtotal)
+        return subtotal - discount + self.tax(cart) + self.shipping(subtotal - discount, region)
+    }
+}
+
+func main() {
+    pass
+}

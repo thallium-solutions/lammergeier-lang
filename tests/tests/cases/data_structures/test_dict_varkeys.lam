@@ -1,0 +1,11 @@
+# Test: dict with variable keys
+# expect: 100
+# expect: 200
+
+func main() {
+    a: int = 1
+    b: int = 2
+    d: dict[int, int] = {a: 100, b: 200}
+    print(d[a])
+    print(d[b])
+}

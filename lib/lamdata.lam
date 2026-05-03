@@ -1,0 +1,900 @@
+# Lammergeier standard library — dataframes (``pandas``-style).
+#
+# Thin wrapper around ``github.com/go-gota/gota`` that gives Lam
+# code a familiar tabular-data surface: ``DataFrame`` for the 2-D
+# table, ``Series`` for a single typed column, and
+# ``DataFrameGroups`` for ``group-by`` aggregations. The Go module
+# is fetched on first build via ``go mod tidy``; no extra install
+# step is required on the Lam side.
+#
+#     from lamdata import DataFrame, Series
+#
+#     df: DataFrame = DataFrame.fromRecords([
+#         ["Country", "Year", "Pop"],
+#         ["IT",      "2020", "60.0"],
+#         ["IT",      "2021", "59.5"],
+#         ["FR",      "2020", "67.4"],
+#     ])
+#     print(df.nrow())                          # 3
+#     print(df.names())                         # ["Country", "Year", "Pop"]
+#
+#     # Select, filter, sort — each op returns a *new* DataFrame, so
+#     # chaining is safe and the original stays intact.
+#     italy: DataFrame = (
+#         df.filterEq("Country", "IT")
+#           .selectCols(["Year", "Pop"])
+#           .sort("Year", false)
+#     )
+#
+#     # Column-level stats via Series.
+#     pop: Series = df.col("Pop")
+#     totalPop: float = pop.sum()
+#     meanPop: float = pop.mean()
+#
+#     # Joins.
+#     gdp: DataFrame = DataFrame.fromRecords([
+#         ["Country", "Gdp"],
+#         ["IT",      "2.1"],
+#         ["FR",      "2.9"],
+#     ])
+#     joined: DataFrame = df.innerJoin(gdp, ["Country"])
+#
+#     # Group-by aggregation.
+#     byCountry: DataFrameGroups = df.groupBy(["Country"])
+#     means: DataFrame = byCountry.aggregate(["mean"], ["Pop"])
+#
+# Design notes:
+# * The Go library parses records as strings and infers a column
+#   type (``string``/``int``/``float``/``bool``/NA). Most of the
+#   Lam surface returns strings on read and typed lists via
+#   ``Series.toFloatList()`` and friends — if you want numbers out
+#   of a string column, coerce through ``toFloatList()``.
+# * Every operation that can fail (bad column name, type mismatch,
+#   incompatible join key…) stores the error on the resulting
+#   DataFrame. Use ``df.error()`` to surface it; it returns the
+#   empty string on success. This mirrors the upstream convention
+#   and avoids a per-call ``Result`` wrapper.
+# * String / map-style APIs intentionally take ``str`` column names
+#   and ``list[str]`` name collections instead of numeric indices
+#   — pandas muscle memory transfers over cleanly.
+
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "bytes"
+        "fmt"
+        "strings"
+
+        "github.com/go-gota/gota/dataframe"
+        "github.com/go-gota/gota/series"
+    )
+
+    // ─── Internal helpers ───────────────────────────────────
+    //
+    // Tiny plumbing that keeps the class bodies focused on the
+    // user-facing contract. These are package-level Go helpers so
+    // both ``DataFrame`` and ``Series`` methods share them without
+    // paying a per-call dispatch cost.
+
+    // Convert a Lam ``list[list[str]]`` (Go ``[]interface{}`` of
+    // ``[]interface{}``) into the ``[][]string`` gota expects.
+    // Nested element lists may come in as any concrete Go slice
+    // depending on how the literal was declared, so we accept both.
+    func lamDfRecordsToStrings(records []interface{}) [][]string {
+        out := make([][]string, len(records))
+        for i, row := range records {
+            switch r := row.(type) {
+            case []string:
+                out[i] = r
+            case []interface{}:
+                sub := make([]string, len(r))
+                for j, v := range r {
+                    sub[j] = fmt.Sprint(v)
+                }
+                out[i] = sub
+            default:
+                out[i] = []string{fmt.Sprint(row)}
+            }
+        }
+        return out
+    }
+
+    // ``LoadMaps`` wants ``[]map[string]interface{}``. Lam emits
+    // ``[]interface{}`` whose elements are ``map[interface{}]interface{}``
+    // (the Lam dict type). Convert keys to strings and values
+    // verbatim.
+    func lamDfMapsToStringMaps(rows []interface{}) []map[string]interface{} {
+        out := make([]map[string]interface{}, 0, len(rows))
+        for _, row := range rows {
+            m := map[string]interface{}{}
+            switch r := row.(type) {
+            case map[string]interface{}:
+                for k, v := range r {
+                    m[k] = v
+                }
+            case map[interface{}]interface{}:
+                for k, v := range r {
+                    m[fmt.Sprint(k)] = v
+                }
+            }
+            out = append(out, m)
+        }
+        return out
+    }
+
+    // Resolve a user-supplied comparator string to a gota
+    // ``series.Comparator`` enum. We accept both the gota spelling
+    // (``>``, ``<``) and a handful of pandas-ish aliases (``eq``,
+    // ``gt``) for readability.
+    func lamDfComparator(op string) series.Comparator {
+        switch op {
+        case "eq", "==", "=":
+            return series.Eq
+        case "neq", "!=", "<>":
+            return series.Neq
+        case "gt", ">":
+            return series.Greater
+        case "gte", ">=":
+            return series.GreaterEq
+        case "lt", "<":
+            return series.Less
+        case "lte", "<=":
+            return series.LessEq
+        case "in":
+            return series.In
+        }
+        panic(fmt.Sprintf("DataFrame: unknown comparator %q", op))
+    }
+
+    // Map an aggregation-type string to gota's int enum. Strings
+    // are lowered to be case-insensitive.
+    func lamDfAggType(name string) dataframe.AggregationType {
+        switch strings.ToLower(name) {
+        case "max":
+            return dataframe.Aggregation_MAX
+        case "min":
+            return dataframe.Aggregation_MIN
+        case "mean", "avg", "average":
+            return dataframe.Aggregation_MEAN
+        case "median":
+            return dataframe.Aggregation_MEDIAN
+        case "std", "stddev":
+            return dataframe.Aggregation_STD
+        case "sum":
+            return dataframe.Aggregation_SUM
+        case "count":
+            return dataframe.Aggregation_COUNT
+        }
+        panic(fmt.Sprintf("DataFrame.groupBy: unknown aggregation %q", name))
+    }
+
+    // Build a new ``*DataFrame`` Lam object wrapping a gota value.
+    // Written as a helper so every constructor stays a single line.
+    // The caller still owns the returned pointer.
+    func lamDfWrap(df dataframe.DataFrame) *DataFrame {
+        w := NewDataFrame()
+        w.Df = df
+        return w
+    }
+
+    func lamSeriesWrap(s series.Series) *Series {
+        w := NewSeries()
+        w.Ser = s
+        return w
+    }
+}
+
+class DataFrame {
+    #- 2-D table, like a pandas ``DataFrame``. Every operation that
+       returns a new table leaves the receiver unchanged — go-gota's
+       ``DataFrame`` is already a value type. -#
+
+    func __init__(self) {
+        # Internal slot that holds the gota ``dataframe.DataFrame``.
+        # Users should never touch it directly; the class methods
+        # assert the type on every access.
+        self.df: any = None
+    }
+
+    # ─── constructors ────────────────────────────────────────
+    static func fromRecords(records: list[any]) -> DataFrame {
+        #- Build a DataFrame from ``records`` where the first row is
+           the header and every other row is an observation. gota
+           auto-detects column types (``int``, ``float``, ``bool``,
+           ``string``).
+
+           Accepts ``list[any]`` instead of ``list[list[str]]`` so
+           callers can pass heterogeneous inline literals without
+           annotating them — the helper coerces every inner element
+           to a string. -#
+        go! {
+            rs := lamDfRecordsToStrings(records)
+            return lamDfWrap(dataframe.LoadRecords(rs))
+        }
+    }
+
+    static func fromMaps(rows: list[any]) -> DataFrame {
+        #- Build a DataFrame from a list of row-maps. Each map keys
+           a column name to its value. Missing keys become NaN in the
+           corresponding column. Parameter typed as ``list[any]``
+           so inline dict literals don't need an annotation pass. -#
+        go! {
+            ms := lamDfMapsToStringMaps(rows)
+            return lamDfWrap(dataframe.LoadMaps(ms))
+        }
+    }
+
+    static func readCSV(content: str) -> DataFrame {
+        #- Parse a CSV string (header row required). Use Lam's
+           ``os.readFile`` first if you need to load from disk. -#
+        go! {
+            return lamDfWrap(dataframe.ReadCSV(strings.NewReader(content)))
+        }
+    }
+
+    static func readJSON(content: str) -> DataFrame {
+        #- Parse a JSON-array string where every element is a row
+           object. Columns are the union of every row's keys. -#
+        go! {
+            return lamDfWrap(dataframe.ReadJSON(strings.NewReader(content)))
+        }
+    }
+
+    # ─── introspection ───────────────────────────────────────
+    func nrow(self) -> int {
+        go! { return s.Df.(dataframe.DataFrame).Nrow() }
+    }
+
+    func ncol(self) -> int {
+        go! { return s.Df.(dataframe.DataFrame).Ncol() }
+    }
+
+    func dims(self) -> list[int] {
+        #- ``[nrow, ncol]``. Handy for asserting shape in one call. -#
+        go! {
+            r, c := s.Df.(dataframe.DataFrame).Dims()
+            return []int{r, c}
+        }
+    }
+
+    func names(self) -> list[str] {
+        go! { return s.Df.(dataframe.DataFrame).Names() }
+    }
+
+    func types(self) -> list[str] {
+        #- Per-column gota type names (``"string"``, ``"int"``,
+           ``"float"``, ``"bool"``). -#
+        go! {
+            ts := s.Df.(dataframe.DataFrame).Types()
+            out := make([]string, len(ts))
+            for i, t := range ts { out[i] = string(t) }
+            return out
+        }
+    }
+
+    func error(self) -> str {
+        #- Empty string on success. gota stores operation errors on
+           the returned DataFrame rather than panicking — surface it
+           here so callers can branch without a ``try`` wrapper. -#
+        go! {
+            df := s.Df.(dataframe.DataFrame)
+            if df.Err != nil { return df.Err.Error() }
+            return ""
+        }
+    }
+
+    func toString(self) -> str {
+        #- Same pretty-printed table gota produces via ``fmt.Println``. -#
+        go! { return s.Df.(dataframe.DataFrame).String() }
+    }
+
+    # ─── access ──────────────────────────────────────────────
+    func col(self, name: str) -> Series {
+        go! {
+            return lamSeriesWrap(s.Df.(dataframe.DataFrame).Col(name))
+        }
+    }
+
+    func elem(self, row: int, col: int) -> str {
+        #- Return the cell at ``(row, col)`` as its string
+           representation. Use ``col(name).toFloatList()[row]`` when
+           you want a typed value. -#
+        go! {
+            return s.Df.(dataframe.DataFrame).Elem(row, col).String()
+        }
+    }
+
+    func records(self) -> list[list[str]] {
+        #- The full table as ``[[header...], [row...], ...]``. -#
+        go! {
+            return s.Df.(dataframe.DataFrame).Records()
+        }
+    }
+
+    func maps(self) -> list[dict[str, any]] {
+        #- One map per row; keys are column names. Numeric columns
+           preserve their Go type (``int``, ``float64``) on the way
+           out. -#
+        go! {
+            return s.Df.(dataframe.DataFrame).Maps()
+        }
+    }
+
+    func copy(self) -> DataFrame {
+        go! { return lamDfWrap(s.Df.(dataframe.DataFrame).Copy()) }
+    }
+
+    # ─── subsetting ──────────────────────────────────────────
+    func selectCols(self, cols: list[str]) -> DataFrame {
+        #- Return a new DataFrame with only the listed columns, in
+           the given order. Missing column names land in the
+           returned DataFrame's ``error()``. -#
+        go! {
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Select(cols))
+        }
+    }
+
+    func dropCols(self, cols: list[str]) -> DataFrame {
+        #- Opposite of ``selectCols``: keep every column NOT in
+           ``cols``. Unknown names appear in ``error()`` on the
+           resulting DataFrame. -#
+        go! {
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Drop(cols))
+        }
+    }
+
+    func head(self, n: int) -> DataFrame {
+        #- First ``n`` rows (clamped to ``nrow``). -#
+        go! {
+            df := s.Df.(dataframe.DataFrame)
+            total := df.Nrow()
+            if n > total { n = total }
+            if n < 0 { n = 0 }
+            idx := make([]int, n)
+            for i := 0; i < n; i++ { idx[i] = i }
+            return lamDfWrap(df.Subset(idx))
+        }
+    }
+
+    func tail(self, n: int) -> DataFrame {
+        #- Last ``n`` rows (clamped to ``nrow``). -#
+        go! {
+            df := s.Df.(dataframe.DataFrame)
+            total := df.Nrow()
+            if n > total { n = total }
+            if n < 0 { n = 0 }
+            start := total - n
+            idx := make([]int, n)
+            for i := 0; i < n; i++ { idx[i] = start + i }
+            return lamDfWrap(df.Subset(idx))
+        }
+    }
+
+    func slice(self, start: int, end: int) -> DataFrame {
+        #- Half-open ``[start, end)`` row slice. Out-of-range
+           indices are clamped. -#
+        go! {
+            df := s.Df.(dataframe.DataFrame)
+            total := df.Nrow()
+            if start < 0 { start = 0 }
+            if end > total { end = total }
+            if start > end { start = end }
+            idx := make([]int, end-start)
+            for i := 0; i < end-start; i++ { idx[i] = start + i }
+            return lamDfWrap(df.Subset(idx))
+        }
+    }
+
+    func subset(self, indexes: list[int]) -> DataFrame {
+        #- Return the rows at the given 0-based indexes, in the
+           order supplied. Repeating an index duplicates the row. -#
+        go! {
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Subset(indexes))
+        }
+    }
+
+    # ─── mutation (returns new DataFrame) ────────────────────
+    func rename(self, oldName: str, newName: str) -> DataFrame {
+        #- Rename a single column. gota signature is
+           ``Rename(newname, oldname)``; we keep the ``(old, new)``
+           order from Python's ``DataFrame.rename`` for consistency. -#
+        go! {
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Rename(newName, oldName))
+        }
+    }
+
+    func setNames(self, names: list[str]) -> DataFrame {
+        #- Replace every column name in one call. The incoming slice
+           must have the same length as ``ncol``. Errors land on the
+           returned DataFrame's ``error()``. The operation is
+           performed on a copy so the receiver is left intact. -#
+        go! {
+            df := s.Df.(dataframe.DataFrame).Copy()
+            if err := df.SetNames(names...); err != nil {
+                // gota's SetNames writes on a receiver pointer so
+                // the returned error is separate from ``df.Err``.
+                // Surface it through the wrapper's error channel.
+                df.Err = err
+            }
+            return lamDfWrap(df)
+        }
+    }
+
+    func mutate(self, name: str, values: list[any]) -> DataFrame {
+        #- Replace column ``name`` with ``values`` (or add it if the
+           column doesn't exist yet). The incoming slice is auto-typed
+           by gota based on its concrete element kind. Prefer the
+           typed variants (``mutateInts`` / ``mutateFloats`` /
+           ``mutateStrings`` / ``mutateBools``) — Lam emits
+           ``list[int]`` as ``[]int`` (not ``[]interface{}``), so
+           passing a typed list directly to this ``list[any]``
+           parameter would be a compile-time mismatch. -#
+        go! {
+            ser := series.New(values, series.String, name)
+            // Re-infer type from the element kind where possible to
+            // avoid forcing everything to string. gota picks Float /
+            // Int / Bool automatically when the elements are numeric
+            // / boolean, so we try the more specific constructor
+            // first and fall back to the string-typed one.
+            if len(values) > 0 {
+                switch values[0].(type) {
+                case int, int64:
+                    ser = series.New(values, series.Int, name)
+                case float32, float64:
+                    ser = series.New(values, series.Float, name)
+                case bool:
+                    ser = series.New(values, series.Bool, name)
+                }
+            }
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
+        }
+    }
+
+    func mutateInts(self, name: str, values: list[int]) -> DataFrame {
+        go! {
+            ser := series.New(values, series.Int, name)
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
+        }
+    }
+
+    func mutateFloats(self, name: str, values: list[float]) -> DataFrame {
+        go! {
+            ser := series.New(values, series.Float, name)
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
+        }
+    }
+
+    func mutateStrings(self, name: str, values: list[str]) -> DataFrame {
+        go! {
+            ser := series.New(values, series.String, name)
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
+        }
+    }
+
+    func mutateBools(self, name: str, values: list[bool]) -> DataFrame {
+        go! {
+            ser := series.New(values, series.Bool, name)
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
+        }
+    }
+
+    # ─── filtering ───────────────────────────────────────────
+    func filter(self, col: str, op: str, value: any) -> DataFrame {
+        #- Single-predicate filter. ``op`` is one of ``"eq"``,
+           ``"neq"``, ``"gt"``, ``"gte"``, ``"lt"``, ``"lte"``,
+           ``"in"`` (or their symbolic equivalents ``==``, ``!=``,
+           ``>``, ``>=``, ``<``, ``<=``). ``"in"`` expects a
+           ``list[any]`` value. -#
+        go! {
+            comp := lamDfComparator(op)
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Filter(dataframe.F{
+                Colname:    col,
+                Comparator: comp,
+                Comparando: value,
+            }))
+        }
+    }
+
+    func filterEq(self, col: str, value: any) -> DataFrame {
+        return self.filter(col, "eq", value)
+    }
+
+    func filterNeq(self, col: str, value: any) -> DataFrame {
+        return self.filter(col, "neq", value)
+    }
+
+    func filterGt(self, col: str, value: any) -> DataFrame {
+        return self.filter(col, "gt", value)
+    }
+
+    func filterGte(self, col: str, value: any) -> DataFrame {
+        return self.filter(col, "gte", value)
+    }
+
+    func filterLt(self, col: str, value: any) -> DataFrame {
+        return self.filter(col, "lt", value)
+    }
+
+    func filterLte(self, col: str, value: any) -> DataFrame {
+        return self.filter(col, "lte", value)
+    }
+
+    func filterIn(self, col: str, values: list[any]) -> DataFrame {
+        return self.filter(col, "in", values)
+    }
+
+    # ─── sorting ─────────────────────────────────────────────
+    func sort(self, col: str, reverse: bool = false) -> DataFrame {
+        #- Single-column sort. Pass ``reverse=true`` for descending. -#
+        go! {
+            var order dataframe.Order
+            if reverse {
+                order = dataframe.RevSort(col)
+            } else {
+                order = dataframe.Sort(col)
+            }
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Arrange(order))
+        }
+    }
+
+    func sortBy(self, cols: list[str], reverse: list[bool]) -> DataFrame {
+        #- Multi-key sort. ``reverse[i]`` controls whether column
+           ``cols[i]`` sorts descending. Missing entries in
+           ``reverse`` default to ascending. -#
+        go! {
+            orders := make([]dataframe.Order, len(cols))
+            for i, c := range cols {
+                rev := false
+                if i < len(reverse) { rev = reverse[i] }
+                if rev {
+                    orders[i] = dataframe.RevSort(c)
+                } else {
+                    orders[i] = dataframe.Sort(c)
+                }
+            }
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Arrange(orders...))
+        }
+    }
+
+    # ─── joins ───────────────────────────────────────────────
+    func innerJoin(self, other: DataFrame, on: list[str]) -> DataFrame {
+        #- Inner join on the listed columns. Result has all
+           non-key columns from both sides, with ``_0`` / ``_1``
+           suffixes on collisions. -#
+        go! {
+            a := s.Df.(dataframe.DataFrame)
+            b := other.Df.(dataframe.DataFrame)
+            return lamDfWrap(a.InnerJoin(b, on...))
+        }
+    }
+
+    func leftJoin(self, other: DataFrame, on: list[str]) -> DataFrame {
+        go! {
+            a := s.Df.(dataframe.DataFrame)
+            b := other.Df.(dataframe.DataFrame)
+            return lamDfWrap(a.LeftJoin(b, on...))
+        }
+    }
+
+    func rightJoin(self, other: DataFrame, on: list[str]) -> DataFrame {
+        go! {
+            a := s.Df.(dataframe.DataFrame)
+            b := other.Df.(dataframe.DataFrame)
+            return lamDfWrap(a.RightJoin(b, on...))
+        }
+    }
+
+    func outerJoin(self, other: DataFrame, on: list[str]) -> DataFrame {
+        go! {
+            a := s.Df.(dataframe.DataFrame)
+            b := other.Df.(dataframe.DataFrame)
+            return lamDfWrap(a.OuterJoin(b, on...))
+        }
+    }
+
+    func crossJoin(self, other: DataFrame) -> DataFrame {
+        go! {
+            a := s.Df.(dataframe.DataFrame)
+            b := other.Df.(dataframe.DataFrame)
+            return lamDfWrap(a.CrossJoin(b))
+        }
+    }
+
+    # ─── combine ─────────────────────────────────────────────
+    func rbind(self, other: DataFrame) -> DataFrame {
+        #- Append rows from ``other`` matching columns by name.
+           Both DataFrames must share a column set. -#
+        go! {
+            a := s.Df.(dataframe.DataFrame)
+            b := other.Df.(dataframe.DataFrame)
+            return lamDfWrap(a.RBind(b))
+        }
+    }
+
+    func cbind(self, other: DataFrame) -> DataFrame {
+        #- Concat columns side-by-side. Both DataFrames must share
+           the same row count. -#
+        go! {
+            a := s.Df.(dataframe.DataFrame)
+            b := other.Df.(dataframe.DataFrame)
+            return lamDfWrap(a.CBind(b))
+        }
+    }
+
+    func concat(self, other: DataFrame) -> DataFrame {
+        #- Union of columns, NaN-filling gaps. Matches pandas
+           ``concat`` semantics more closely than ``rbind``. -#
+        go! {
+            a := s.Df.(dataframe.DataFrame)
+            b := other.Df.(dataframe.DataFrame)
+            return lamDfWrap(a.Concat(b))
+        }
+    }
+
+    # ─── I/O ─────────────────────────────────────────────────
+    func writeCSV(self) -> str {
+        #- Serialise to CSV. Errors bubble up via ``error()``. -#
+        go! {
+            var buf bytes.Buffer
+            if err := s.Df.(dataframe.DataFrame).WriteCSV(&buf); err != nil {
+                return ""
+            }
+            return buf.String()
+        }
+    }
+
+    func writeJSON(self) -> str {
+        #- Serialise to a JSON array of row-objects. -#
+        go! {
+            var buf bytes.Buffer
+            if err := s.Df.(dataframe.DataFrame).WriteJSON(&buf); err != nil {
+                return ""
+            }
+            return buf.String()
+        }
+    }
+
+    # ─── summary / grouping ──────────────────────────────────
+    func describe(self) -> DataFrame {
+        #- ``mean / median / stddev / min / quartiles / max`` per
+           numeric column. Matches pandas' ``DataFrame.describe``. -#
+        go! {
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Describe())
+        }
+    }
+
+    func groupBy(self, cols: list[str]) -> DataFrameGroups {
+        #- Group rows by the listed columns. Call ``aggregate`` or
+           ``getGroups`` on the resulting object. -#
+        go! {
+            g := s.Df.(dataframe.DataFrame).GroupBy(cols...)
+            out := NewDataFrameGroups()
+            out.Groups = g
+            return out
+        }
+    }
+}
+
+class DataFrameGroups {
+    #- Lazy handle for the groups produced by ``DataFrame.groupBy``.
+       ``aggregate`` produces a summary DataFrame; ``getGroups``
+       returns every partition keyed by its composite group name. -#
+
+    func __init__(self) {
+        self.groups: any = None
+    }
+
+    func aggregate(self, types: list[str], cols: list[str]) -> DataFrame {
+        #- Apply the aggregation strategies in ``types`` to the
+           matching columns in ``cols``. ``types`` and ``cols`` must
+           be the same length — ``types[i]`` is applied to
+           ``cols[i]``. Valid strategies: ``"max"``, ``"min"``,
+           ``"mean"``, ``"median"``, ``"std"``, ``"sum"``, ``"count"``. -#
+        go! {
+            gps := s.Groups.(*dataframe.Groups)
+            typed := make([]dataframe.AggregationType, len(types))
+            for i, t := range types { typed[i] = lamDfAggType(t) }
+            return lamDfWrap(gps.Aggregation(typed, cols))
+        }
+    }
+
+    func getGroups(self) -> dict[str, DataFrame] {
+        #- Return a map from group-key string to its underlying
+           DataFrame partition. -#
+        go! {
+            raw := s.Groups.(*dataframe.Groups).GetGroups()
+            out := make(map[string]*DataFrame, len(raw))
+            for k, v := range raw {
+                out[k] = lamDfWrap(v)
+            }
+            return out
+        }
+    }
+
+    func error(self) -> str {
+        go! {
+            gps := s.Groups.(*dataframe.Groups)
+            if gps.Err != nil { return gps.Err.Error() }
+            return ""
+        }
+    }
+}
+
+class Series {
+    #- Single typed column. Mirrors ``gota/series.Series`` with a
+       Lam-friendly surface. Constructed either directly via the
+       ``fromXxx`` static helpers or by calling ``DataFrame.col``. -#
+
+    func __init__(self) {
+        # Internal slot holding the gota ``series.Series``.
+        self.ser: any = None
+    }
+
+    # ─── constructors ────────────────────────────────────────
+    static func fromStrings(values: list[str], name: str) -> Series {
+        go! { return lamSeriesWrap(series.New(values, series.String, name)) }
+    }
+
+    static func fromInts(values: list[int], name: str) -> Series {
+        go! { return lamSeriesWrap(series.New(values, series.Int, name)) }
+    }
+
+    static func fromFloats(values: list[float], name: str) -> Series {
+        go! { return lamSeriesWrap(series.New(values, series.Float, name)) }
+    }
+
+    static func fromBools(values: list[bool], name: str) -> Series {
+        go! { return lamSeriesWrap(series.New(values, series.Bool, name)) }
+    }
+
+    # ─── introspection ───────────────────────────────────────
+    func name(self) -> str {
+        go! { return s.Ser.(series.Series).Name }
+    }
+
+    func typeName(self) -> str {
+        #- One of ``"string"``, ``"int"``, ``"float"``, ``"bool"``. -#
+        go! { return string(s.Ser.(series.Series).Type()) }
+    }
+
+    func length(self) -> int {
+        #- Named ``length`` (not ``len``) because ``len`` collides with
+           Python's built-in usage inside the Lam grammar. -#
+        go! { return s.Ser.(series.Series).Len() }
+    }
+
+    func records(self) -> list[str] {
+        #- Stringified values. Prefer ``toFloatList`` / ``toIntList``
+           when you need typed data. -#
+        go! { return s.Ser.(series.Series).Records() }
+    }
+
+    func isNaN(self) -> list[bool] {
+        #- Per-element NaN mask. ``true`` for missing values. -#
+        go! { return s.Ser.(series.Series).IsNaN() }
+    }
+
+    func error(self) -> str {
+        go! {
+            ser := s.Ser.(series.Series)
+            if ser.Err != nil { return ser.Err.Error() }
+            return ""
+        }
+    }
+
+    # ─── access ──────────────────────────────────────────────
+    func at(self, i: int) -> any {
+        #- Raw Go value at index ``i`` (``int``, ``float64``,
+           ``string``, ``bool``). Use ``elemStr`` when you always want
+           a string. -#
+        go! { return s.Ser.(series.Series).Val(i) }
+    }
+
+    func elemStr(self, i: int) -> str {
+        go! { return s.Ser.(series.Series).Elem(i).String() }
+    }
+
+    # ─── aggregations ────────────────────────────────────────
+    func sum(self) -> float {
+        go! { return s.Ser.(series.Series).Sum() }
+    }
+
+    func mean(self) -> float {
+        go! { return s.Ser.(series.Series).Mean() }
+    }
+
+    func median(self) -> float {
+        go! { return s.Ser.(series.Series).Median() }
+    }
+
+    func stddev(self) -> float {
+        go! { return s.Ser.(series.Series).StdDev() }
+    }
+
+    func minVal(self) -> float {
+        go! { return s.Ser.(series.Series).Min() }
+    }
+
+    func maxVal(self) -> float {
+        go! { return s.Ser.(series.Series).Max() }
+    }
+
+    func quantile(self, p: float) -> float {
+        #- Sample quantile, ``0 <= p <= 1``. ``p=0.5`` is the
+           median. -#
+        go! { return s.Ser.(series.Series).Quantile(p) }
+    }
+
+    # ─── conversion ──────────────────────────────────────────
+    func toStringList(self) -> list[str] {
+        go! { return s.Ser.(series.Series).Records() }
+    }
+
+    func toIntList(self) -> list[int] {
+        #- Coerces every element to ``int``. Errors surface through
+           ``error()``. -#
+        go! {
+            out, err := s.Ser.(series.Series).Int()
+            if err != nil { return []int{} }
+            return out
+        }
+    }
+
+    func toFloatList(self) -> list[float] {
+        #- Coerces every element to ``float64``. NaN stays NaN. -#
+        go! { return s.Ser.(series.Series).Float() }
+    }
+
+    func toBoolList(self) -> list[bool] {
+        #- Coerces every element to ``bool``. Errors surface through
+           ``error()``. -#
+        go! {
+            out, err := s.Ser.(series.Series).Bool()
+            if err != nil { return []bool{} }
+            return out
+        }
+    }
+
+    # ─── mutation / derived ──────────────────────────────────
+    func copy(self) -> Series {
+        go! { return lamSeriesWrap(s.Ser.(series.Series).Copy()) }
+    }
+
+    func slice(self, start: int, end: int) -> Series {
+        #- Half-open ``[start, end)``. Clamped to length. -#
+        go! {
+            ser := s.Ser.(series.Series)
+            total := ser.Len()
+            if start < 0 { start = 0 }
+            if end > total { end = total }
+            if start > end { start = end }
+            return lamSeriesWrap(ser.Slice(start, end))
+        }
+    }
+
+    func order(self, reverse: bool = false) -> list[int] {
+        #- Return the indexes that would sort the series. NaN
+           elements are pushed to the end. -#
+        go! { return s.Ser.(series.Series).Order(reverse) }
+    }
+
+    func toString(self) -> str {
+        go! { return s.Ser.(series.Series).String() }
+    }
+}
+
+go! {
+    // The ``lamDfWrap`` / ``lamSeriesWrap`` helpers above use
+    // ``NewDataFrame`` / ``NewSeries`` / ``NewDataFrameGroups`` —
+    // identifiers the transpiler emits for each Lam class's
+    // constructor. Declaring them here (in a second ``go!`` block
+    // that follows the class definitions) would be redundant:
+    // Lam's class-name resolution happens at call-site time, so
+    // the helpers see the constructors on first use. This comment
+    // documents the ordering requirement for future maintainers.
+}
+
+func main() {
+    pass
+}

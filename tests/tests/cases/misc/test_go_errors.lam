@@ -1,0 +1,44 @@
+# Test: Go error handling patterns via go! blocks
+# expect: file_error_handled
+# expect: parsed: 42
+# expect: parse_error_handled
+# expect: recovered
+# expect: go_err_ok
+
+func main() {
+    # Error handling with os
+    go! {
+        import "os"
+        _, err := os.Open("/nonexistent/file")
+        if err != nil {
+            fmt.Println("file_error_handled")
+        }
+    }
+    # strconv error handling
+    go! {
+        import "strconv"
+        val, err := strconv.Atoi("42")
+        if err == nil {
+            fmt.Println(fmt.Sprintf("parsed: %d", val))
+        }
+    }
+    go! {
+        import "strconv"
+        _, err2 := strconv.Atoi("not_a_number")
+        if err2 != nil {
+            fmt.Println("parse_error_handled")
+        }
+    }
+    # Recover from panic
+    go! {
+        func() {
+            defer func() {
+                if r := recover(); r != nil {
+                    fmt.Println("recovered")
+                }
+            }()
+            panic("test panic")
+        }()
+    }
+    print("go_err_ok")
+}

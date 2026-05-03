@@ -1,0 +1,25 @@
+# Test: lamconcurrency.Atomic
+# expect: get: 10
+# expect: inc: 11
+# expect: dec: 10
+# expect: add: 20
+# expect: cas_hit: true
+# expect: get2: 30
+# expect: cas_miss: false
+# expect: get3: 30
+
+from lamconcurrency import Atomic
+
+func main() {
+    a: Atomic = Atomic(10)
+    print(f"get: {a.get()}")
+    print(f"inc: {a.increment()}")
+    print(f"dec: {a.decrement()}")
+    print(f"add: {a.add(10)}")
+    cas1: bool = a.compareAndSwap(20, 30)
+    print(f"cas_hit: {cas1}")
+    print(f"get2: {a.get()}")
+    cas2: bool = a.compareAndSwap(99, 0)
+    print(f"cas_miss: {cas2}")
+    print(f"get3: {a.get()}")
+}

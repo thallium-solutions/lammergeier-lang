@@ -1,0 +1,70 @@
+# Lammergeier standard library: compression helpers
+# Import with: from lamcompress import Compress
+#
+# Compressed output is returned as a base64 string so callers don't have
+# to worry about binary-safety. Decompression accepts the same format.
+
+go! {
+    import (
+        "bytes"
+        "compress/gzip"
+        "compress/zlib"
+        "encoding/base64"
+        "io"
+    )
+}
+
+class Compress {
+    static func gzip(data: str) -> str {
+        #- GZip-compress a UTF-8 string; result is base64-encoded. -#
+        go! {
+            var buf bytes.Buffer
+            w := gzip.NewWriter(&buf)
+            if _, err := w.Write([]byte(data)); err != nil { panic(err) }
+            if err := w.Close(); err != nil { panic(err) }
+            return base64.StdEncoding.EncodeToString(buf.Bytes())
+        }
+    }
+
+    static func gunzip(b64: str) -> str {
+        #- Decode a base64 string and GZip-decompress it. -#
+        go! {
+            raw, err := base64.StdEncoding.DecodeString(b64)
+            if err != nil { panic("gunzip: base64 decode: " + err.Error()) }
+            r, err := gzip.NewReader(bytes.NewReader(raw))
+            if err != nil { panic("gunzip: " + err.Error()) }
+            defer r.Close()
+            out, err := io.ReadAll(r)
+            if err != nil { panic("gunzip: " + err.Error()) }
+            return string(out)
+        }
+    }
+
+    static func zlibDeflate(data: str) -> str {
+        #- Zlib-compress a UTF-8 string; result is base64-encoded. -#
+        go! {
+            var buf bytes.Buffer
+            w := zlib.NewWriter(&buf)
+            if _, err := w.Write([]byte(data)); err != nil { panic(err) }
+            if err := w.Close(); err != nil { panic(err) }
+            return base64.StdEncoding.EncodeToString(buf.Bytes())
+        }
+    }
+
+    static func zlibInflate(b64: str) -> str {
+        go! {
+            raw, err := base64.StdEncoding.DecodeString(b64)
+            if err != nil { panic("zlibInflate: base64 decode: " + err.Error()) }
+            r, err := zlib.NewReader(bytes.NewReader(raw))
+            if err != nil { panic("zlibInflate: " + err.Error()) }
+            defer r.Close()
+            out, err := io.ReadAll(r)
+            if err != nil { panic("zlibInflate: " + err.Error()) }
+            return string(out)
+        }
+    }
+}
+
+func main() {
+    pass
+}

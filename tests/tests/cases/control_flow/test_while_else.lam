@@ -1,0 +1,13 @@
+# Test: while-else - normal exit, else runs
+# expect: counted to 3
+# expect: loop finished normally
+
+func main() {
+    i: int = 0
+    while i < 3 {
+        i += 1
+    } else {
+        print(f"counted to {i}")
+    }
+    print("loop finished normally")
+}

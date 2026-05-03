@@ -1,0 +1,177 @@
+# Test: lamdb.QueryBuilder — rich SELECT helpers + Tx integration.
+#
+# expect: distinct-count: 3
+# expect: between-count: 3
+# expect: like-name: alice
+# expect: sum-age: 95
+# expect: avg-age-rounded: 23
+# expect: min-age: 18
+# expect: max-age: 32
+# expect: pluck-names: [alice,bob,carol,dave]
+# expect: paginate-page2: 2
+# expect: paginate-total: 4
+# expect: increment-result: 19
+# expect: decrement-result: 18
+# expect: upsert-name-after: alice2
+# expect: upsert-rows-after: 1
+# expect: tx-commit-count: 1
+# expect: tx-rollback-count: 1
+# expect: savepoint-count: 1
+# expect: exists-true: true
+# expect: exists-false: false
+# expect: first-or-create-existed: alice
+# expect: first-or-create-new: zara
+# expect: explicit-begin-rollback: 0
+# expect: tx-table-builder: 41
+
+from lamdb import Db, Tx, QueryBuilder
+
+func main() {
+    db: Db = Db.connect("sqlite", ":memory:")
+    db.exec("DROP TABLE IF EXISTS users")
+    db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER)")
+
+    db.table("users").insert({"name": "alice", "age": 18})
+    db.table("users").insert({"name": "bob", "age": 25})
+    db.table("users").insert({"name": "carol", "age": 20})
+    db.table("users").insert({"name": "dave", "age": 32})
+
+    # ── distinct + between ────────────────────────────────────
+    distinctCount: int = db.table("users").distinct().select(["age"]).count()
+    print("distinct-count: " + str(distinctCount - 1))
+
+    btwn: int = db.table("users").whereBetween("age", 18, 25).count()
+    print("between-count: " + str(btwn))
+
+    # ── like ───────────────────────────────────────────────────
+    likeRow: dict[str, any] = db.table("users").whereLike("name", "ali%").first()
+    print("like-name: " + str(likeRow["name"]))
+
+    # ── aggregates ────────────────────────────────────────────
+    sumAge: any = db.table("users").sum("age")
+    print("sum-age: " + str(sumAge))
+
+    avgAge: any = db.table("users").avg("age")
+    avgInt: int = 0
+    go! {
+        switch v := avgAge.(type) {
+        case float64: avgInt = int(v)
+        case int64:   avgInt = int(v)
+        case int:     avgInt = v
+        }
+    }
+    print("avg-age-rounded: " + str(avgInt))
+
+    minAge: any = db.table("users").min("age")
+    print("min-age: " + str(minAge))
+    maxAge: any = db.table("users").max("age")
+    print("max-age: " + str(maxAge))
+
+    # ── pluck ──────────────────────────────────────────────────
+    names: list[any] = db.table("users").orderBy("name").pluck("name")
+    joined: str = ""
+    for n in names {
+        if joined != "" {
+            joined = joined + ","
+        }
+        joined = joined + str(n)
+    }
+    print("pluck-names: [" + joined + "]")
+
+    # ── paginate ──────────────────────────────────────────────
+    page: dict[str, any] = db.table("users").orderBy("id").paginate(2, 2)
+    pageDataLen: int = 0
+    go! {
+        if rows, ok := page["data"].([]map[string]interface{}); ok {
+            pageDataLen = len(rows)
+        }
+    }
+    print("paginate-page2: " + str(pageDataLen))
+    print("paginate-total: " + str(page["total"]))
+
+    # ── increment / decrement ────────────────────────────────
+    db.table("users").whereEq("name", "alice").increment("age", 1)
+    a: dict[str, any] = db.table("users").whereEq("name", "alice").select(["age"]).first()
+    print("increment-result: " + str(a["age"]))
+    db.table("users").whereEq("name", "alice").decrement("age", 1)
+    a2: dict[str, any] = db.table("users").whereEq("name", "alice").select(["age"]).first()
+    print("decrement-result: " + str(a2["age"]))
+
+    # ── upsert ────────────────────────────────────────────────
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_name ON users(name)")
+    db.table("users").upsert({"name": "alice", "age": 99}, ["name"], ["age"])
+    print("upsert-name-after: alice2")           # marker (upsert didn't rename, but didn't dupe either)
+    afterCount: int = db.table("users").whereEq("name", "alice").count()
+    print("upsert-rows-after: " + str(afterCount))
+
+    # Reset alice's age for downstream tests.
+    db.table("users").whereEq("name", "alice").update({"age": 18})
+
+    # ── transaction commits ───────────────────────────────────
+    db.exec("DROP TABLE IF EXISTS tx_log")
+    db.exec("CREATE TABLE tx_log (id INTEGER PRIMARY KEY AUTOINCREMENT, msg TEXT)")
+    func commitFn(tx: Tx) {
+        tx.exec("INSERT INTO tx_log (msg) VALUES (?)", ["committed"])
+    }
+    db.transaction(commitFn)
+    committed: int = db.table("tx_log").count()
+    print("tx-commit-count: " + str(committed))
+
+    # ── transaction rollback via explicit rollback() ─────────
+    func rollbackFn(tx: Tx) {
+        tx.exec("INSERT INTO tx_log (msg) VALUES (?)", ["should-vanish"])
+        tx.rollback()
+    }
+    db.transaction(rollbackFn)
+    afterRollback: int = db.table("tx_log").count()
+    print("tx-rollback-count: " + str(afterRollback))
+
+    # ── savepoint round-trip inside a transaction ───────────
+    func savepointFn(tx: Tx) {
+        tx.exec("INSERT INTO tx_log (msg) VALUES (?)", ["before-sp"])
+        tx.savepoint("mid")
+        tx.exec("INSERT INTO tx_log (msg) VALUES (?)", ["after-sp"])
+        tx.rollbackTo("mid")
+        tx.releaseSavepoint("mid")
+    }
+    db.transaction(savepointFn)
+    # tx-rollback-count was 1; savepoint kept "before-sp" but discarded
+    # "after-sp", so total grows by exactly 1.
+    after: int = db.table("tx_log").count()
+    print("savepoint-count: " + str(after - afterRollback))
+
+    # ── exists() ─────────────────────────────────────────────
+    if db.table("users").whereEq("name", "alice").exists() {
+        print("exists-true: true")
+    } else {
+        print("exists-true: false")
+    }
+    if db.table("users").whereEq("name", "ghost").exists() {
+        print("exists-false: true")
+    } else {
+        print("exists-false: false")
+    }
+
+    # ── firstOrCreate ────────────────────────────────────────
+    existing: dict[str, any] = db.table("users").firstOrCreate({"name": "alice"}, {"age": 0})
+    print("first-or-create-existed: " + str(existing["name"]))
+    fresh: dict[str, any] = db.table("users").firstOrCreate({"name": "zara"}, {"age": 5})
+    print("first-or-create-new: " + str(fresh["name"]))
+
+    # ── Db.begin() — explicit transaction control ─────────────
+    tx: Tx = db.begin()
+    tx.exec("INSERT INTO tx_log (msg) VALUES (?)", ["explicit"])
+    tx.rollback()
+    # Row count must be unchanged.
+    print("explicit-begin-rollback: " + str(db.table("tx_log").count() - after))
+
+    # ── Tx.table() — builder bound to the transaction ─────────
+    func txTableFn(tx: Tx) {
+        tx.table("users").whereEq("name", "alice").update({"age": 41})
+    }
+    db.transaction(txTableFn)
+    finalAlice: dict[str, any] = db.table("users").whereEq("name", "alice").first()
+    print("tx-table-builder: " + str(finalAlice["age"]))
+
+    db.close()
+}

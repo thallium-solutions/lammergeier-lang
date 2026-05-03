@@ -1,0 +1,49 @@
+# Test: lamstats Stats
+# expect: PASS 1 sum
+# expect: PASS 2 product
+# expect: PASS 3 mean
+# expect: PASS 4 median odd
+# expect: PASS 5 median even
+# expect: PASS 6 mode
+# expect: PASS 7 variance (population)
+# expect: PASS 8 sampleVariance
+# expect: PASS 9 stddev
+# expect: PASS 10 min/max
+# expect: PASS 11 range
+# expect: PASS 12 percentile median
+# expect: 12 passed, 0 failed, 12 total
+
+from lamstats import Stats
+from lamtest import Test
+
+func main() {
+    xs: list[float] = [1.0, 2.0, 3.0, 4.0, 5.0]
+    Test.assertAlmostEqual(Stats.sum(xs), 15.0, 0.0001, "1 sum")
+    Test.assertAlmostEqual(Stats.product(xs), 120.0, 0.0001, "2 product")
+    Test.assertAlmostEqual(Stats.mean(xs), 3.0, 0.0001, "3 mean")
+    Test.assertAlmostEqual(Stats.median(xs), 3.0, 0.0001, "4 median odd")
+
+    evens: list[float] = [1.0, 2.0, 3.0, 4.0]
+    Test.assertAlmostEqual(Stats.median(evens), 2.5, 0.0001, "5 median even")
+
+    modal: list[float] = [1.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0]
+    Test.assertAlmostEqual(Stats.mode(modal), 3.0, 0.0001, "6 mode")
+
+    # variance of {1,2,3,4,5} = ((-2)^2+...+2^2)/5 = 10/5 = 2.0 (pop)
+    Test.assertAlmostEqual(Stats.variance(xs), 2.0, 0.0001, "7 variance (population)")
+    # sample variance divides by n-1 => 10/4 = 2.5
+    Test.assertAlmostEqual(Stats.sampleVariance(xs), 2.5, 0.0001, "8 sampleVariance")
+    # population stddev = sqrt(2) ≈ 1.41421356
+    Test.assertAlmostEqual(Stats.stddev(xs), 1.41421356, 0.0001, "9 stddev")
+
+    # min/max
+    minOk: bool = Stats.minVal(xs) == 1.0
+    maxOk: bool = Stats.maxVal(xs) == 5.0
+    Test.assertTrue(minOk and maxOk, "10 min/max")
+    Test.assertAlmostEqual(Stats.range_(xs), 4.0, 0.0001, "11 range")
+
+    # 50th percentile == median
+    Test.assertAlmostEqual(Stats.percentile(xs, 50.0), 3.0, 0.0001, "12 percentile median")
+
+    Test.summary()
+}

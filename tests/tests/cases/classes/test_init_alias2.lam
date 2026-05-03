@@ -1,0 +1,31 @@
+# Test: init alias with multiple classes
+# expect: Circle r=5
+# expect: Rect 3x4
+
+class Circle {
+    func init(self, r: int) {
+        self.r: int = r
+    }
+
+    func describe(self) -> str {
+        return f"Circle r={self.r}"
+    }
+}
+
+class Rect {
+    func init(self, w: int, h: int) {
+        self.w: int = w
+        self.h: int = h
+    }
+
+    func describe(self) -> str {
+        return f"Rect {self.w}x{self.h}"
+    }
+}
+
+func main() {
+    c: Circle = Circle(5)
+    r: Rect = Rect(3, 4)
+    print(c.describe())
+    print(r.describe())
+}

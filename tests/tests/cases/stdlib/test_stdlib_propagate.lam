@@ -1,0 +1,68 @@
+# Test: the ``?`` operator on Result. Cover three usage patterns:
+#   1. typed annassign (with auto-cast)
+#   2. multiple ``?`` in a single function (chained propagation)
+#   3. untyped context (``return Result.Ok(parseInt(s)?)``)
+#
+# expect: double_ok val=4
+# expect: double_err err=ParseError: cannot parse
+# expect: sum_ok val=6
+# expect: sum_err err=ParseError: cannot parse
+# expect: pt_ok val=3
+# expect: pt_err err=ParseError: cannot parse
+# expect: propagate_ok
+
+from lamerrors import Result, Error
+
+func parseInt(s: str) -> Result {
+    if s == "1" {
+        return Result.Ok(1)
+    }
+    if s == "2" {
+        return Result.Ok(2)
+    }
+    if s == "3" {
+        return Result.Ok(3)
+    }
+    return Result.Err(Error("ParseError", "cannot parse"))
+}
+
+# Typed annassign: ``?`` injects a ``.(int)`` cast on the substitution.
+func double(s: str) -> Result {
+    n: int = parseInt(s)?
+    return Result.Ok(n * 2)
+}
+
+# Multiple ``?`` in one function: each gets its own __qN temp.
+func sumPair(a: str, b: str) -> Result {
+    x: int = parseInt(a)?
+    y: int = parseInt(b)?
+    return Result.Ok(x + y)
+}
+
+# Untyped context: the Result.Ok(...) call accepts ``any``, so the
+# substituted ``__qN.Value`` flows through unboxed.
+func passthrough(s: str) -> Result {
+    return Result.Ok(parseInt(s)?)
+}
+
+func main() {
+    ok: Result = double("2")
+    print(f"double_ok val={ok.value}")
+
+    bad: Result = double("x")
+    print(f"double_err err={bad.error}")
+
+    sok: Result = sumPair("3", "3")
+    print(f"sum_ok val={sok.value}")
+
+    sbad: Result = sumPair("1", "z")
+    print(f"sum_err err={sbad.error}")
+
+    pt: Result = passthrough("3")
+    print(f"pt_ok val={pt.value}")
+
+    pte: Result = passthrough("zz")
+    print(f"pt_err err={pte.error}")
+
+    print("propagate_ok")
+}

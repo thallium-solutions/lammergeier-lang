@@ -1,0 +1,116 @@
+# Test: lamactor — named registration, lookup, ask-timeout, mailbox
+# unbounded variant, multi-actor composition.
+#
+# expect: find-greeter-hit: hello via-find
+# expect: find-missing-alive: false
+# expect: ask-timeout-is-nil: true
+# expect: unbounded-mailbox-drained: 5
+# expect: pipeline-result: HELLO-WORLD
+# expect: spawn-count-after-stop: 0
+
+from lamactor import Mailbox, ActorRef, ActorSystem
+
+class Greeter {
+    func onMessage(self, msg: any) -> any {
+        return "hello " + str(msg)
+    }
+}
+
+# Sleeps inside its handler so an ask() with a tight deadline times out.
+class Slow {
+    func onMessage(self, msg: any) -> any {
+        go! { time.Sleep(50 * time.Millisecond) }
+        return msg
+    }
+}
+
+# Forwards each message to a downstream actor, transforming on the
+# way through. Demonstrates actors talking to actors via captured
+# refs.
+class Upper {
+    func __init__(self, downstream: ActorRef) {
+        self.downstream: ActorRef = downstream
+    }
+
+    func onMessage(self, msg: any) -> any {
+        text: str = str(msg)
+        upper: str = text.upper()
+        # Forward and wait for the next stage's reply, then bubble
+        # it back up to whoever asked us.
+        return self.downstream.ask(upper, 1000)
+    }
+}
+
+class Hyphenate {
+    func onMessage(self, msg: any) -> any {
+        text: str = str(msg)
+        return text.replace(" ", "-")
+    }
+}
+
+go! { import "time" }
+
+func main() {
+    sys: ActorSystem = ActorSystem()
+
+    # ── Named registration + find().
+    sys.spawnNamed("greeter", Greeter())
+    found: ActorRef = sys.find("greeter")
+    if found.isAlive() {
+        reply: any = found.ask("via-find", 500)
+        print("find-greeter-hit: " + str(reply))
+    } else {
+        print("find-greeter-hit: FAIL")
+    }
+    missing: ActorRef = sys.find("does-not-exist")
+    if missing.isAlive() {
+        print("find-missing-alive: true")
+    } else {
+        print("find-missing-alive: false")
+    }
+
+    # ── ask() returns None when the handler outlives the deadline.
+    sref: ActorRef = sys.spawn(Slow())
+    timedOut: any = sref.ask("nope", 1)
+    if timedOut == None {
+        print("ask-timeout-is-nil: true")
+    } else {
+        print("ask-timeout-is-nil: false")
+    }
+    sref.stop()
+
+    # ── Unbounded mailbox: 5 sends without a reader, all queue up.
+    mb: Mailbox = Mailbox(0)
+    mb.send("a")
+    mb.send("b")
+    mb.send("c")
+    mb.send("d")
+    mb.send("e")
+    drained: int = 0
+    while drained < 5 {
+        v: any = mb.recv()
+        if v == None {
+            break
+        }
+        drained = drained + 1
+    }
+    print("unbounded-mailbox-drained: " + str(drained))
+    mb.close()
+
+    # ── Two-stage pipeline: Upper → Hyphenate. The Upper actor asks
+    # the Hyphenate actor and bubbles the reply.
+    hRef: ActorRef = sys.spawn(Hyphenate())
+    uRef: ActorRef = sys.spawn(Upper(hRef))
+    out: any = uRef.ask("hello world", 1000)
+    print("pipeline-result: " + str(out))
+
+    # ── Stop one actor, count drops, then shutdown the rest.
+    uRef.stop()
+    hRef.stop()
+    found2: ActorRef = sys.find("greeter")
+    if found2.isAlive() {
+        found2.stop()
+    }
+    sys.shutdown(1000)
+    print("spawn-count-after-stop: " + str(sys.numActors()))
+}

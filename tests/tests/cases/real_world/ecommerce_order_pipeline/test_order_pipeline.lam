@@ -1,0 +1,58 @@
+# Real-world mini project: ecommerce checkout pipeline with local modules.
+# expect: sku_count=3
+# expect: subtotal=7500
+# expect: taxable=6900
+# expect: discount=1125
+# expect: shipping=0
+# expect: tax=552
+# expect: total=6927
+# expect: packed=order=ORD-1001|items=3|total=6927
+# expect: checksum_ok=true
+
+from domain import Product, Cart
+from pricing import Coupon, PricingEngine
+from lamhash import Hash
+from lamstrings import Strings
+
+func centsLabel(cents: int) -> str {
+    dollars: int = cents / 100
+    rem: int = cents % 100
+    if rem < 10 {
+        return f"{dollars}.0{rem}"
+    }
+    return f"{dollars}.{rem}"
+}
+
+func main() {
+    tea: Product = Product("tea-001", "Black Tea", 1200)
+    mug: Product = Product("mug-002", "Stoneware Mug", 3300)
+    ship: Product = Product("svc-gift", "Gift Wrap", 600, false)
+
+    cart: Cart = Cart()
+    cart.add(tea, 3)
+    cart.add(mug, 1)
+    cart.add(ship, 1)
+
+    engine: PricingEngine = PricingEngine(taxRatePercent=8)
+    coupon: Coupon = Coupon("SPRING15", "percent", 15)
+
+    subtotal: int = cart.subtotal()
+    discount: int = coupon.discount(subtotal)
+    tax: int = engine.tax(cart)
+    shipCost: int = engine.shipping(subtotal - discount, "metro")
+    total: int = engine.total(cart, coupon, "metro")
+
+    skus: list[str] = [line.product.sku for line in cart.lines]
+    packed: str = f"order=ORD-1001|items={len(skus)}|total={total}"
+    digest: str = Hash.hmacSha256("checkout-secret", packed)
+
+    print(f"sku_count={len(skus)}")
+    print(f"subtotal={subtotal}")
+    print(f"taxable={cart.taxableSubtotal()}")
+    print(f"discount={discount}")
+    print(f"shipping={shipCost}")
+    print(f"tax={tax}")
+    print(f"total={total}")
+    print(f"packed={packed}")
+    print(f"checksum_ok={len(digest) == 64 and Strings.contains(centsLabel(total), '69.27')}")
+}

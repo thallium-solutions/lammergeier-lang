@@ -1,0 +1,7 @@
+# expect-error: redeclaration of constant `Z`
+# expect-error: line 6
+
+const Z = 1
+func main() {
+    const Z = 2
+}

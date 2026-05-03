@@ -1,0 +1,153 @@
+# Lammergeier standard library: client-side rate limiting.
+#
+# Token-bucket implementation for outbound throttling — e.g. you're
+# calling a vendor API that allows 10 requests/second/api-key and
+# you want to shape your own traffic to stay under that budget.
+#
+# Usage::
+#
+#     from lamratelimit import TokenBucket
+#
+#     bucket: TokenBucket = TokenBucket(capacity=10, refillPerSec=10)
+#
+#     for item in items {
+#         bucket.wait(1)          # blocks until a token is available
+#         callVendorApi(item)
+#     }
+#
+# Variants:
+#   * ``tryTake(n)`` — non-blocking. Returns true on success.
+#   * ``take(n)``     — blocks until ``n`` tokens are available.
+#   * ``wait(n)``     — alias for ``take``, reads more idiomatically
+#                       when the caller doesn't care about the
+#                       success bool.
+#
+# The bucket is safe across goroutines — a single bucket can throttle
+# many concurrent callers. Use one bucket per logical quota (e.g.
+# one per vendor API key) rather than sharing across unrelated call
+# sites.
+
+go! {
+    import (
+        "sync"
+        "time"
+    )
+
+    // The bucket uses a simple fractional-token model: ``tokens``
+    // is the current balance (float64 so partial refills are
+    // representable). On every take the balance is first topped up
+    // based on elapsed time since ``last``.
+    type lamBucketState struct {
+        mu           sync.Mutex
+        capacity     float64
+        refillPerSec float64
+        tokens       float64
+        last         time.Time
+    }
+
+    func lamBucketRefillLocked(b *lamBucketState, now time.Time) {
+        elapsed := now.Sub(b.last).Seconds()
+        if elapsed > 0 {
+            b.tokens += elapsed * b.refillPerSec
+            if b.tokens > b.capacity { b.tokens = b.capacity }
+            b.last = now
+        }
+    }
+
+    // lamBucketTryTake returns (ok, waitForSec). ``ok`` is true if
+    // enough tokens were available and were deducted immediately;
+    // otherwise the caller can sleep ``waitForSec`` seconds and try
+    // again (the tokens are NOT reserved — another caller could
+    // race in before this one comes back, which is the correct
+    // behaviour for a fair bucket).
+    func lamBucketTryTake(b *lamBucketState, n float64) (bool, float64) {
+        b.mu.Lock()
+        defer b.mu.Unlock()
+        lamBucketRefillLocked(b, time.Now())
+        if b.tokens >= n {
+            b.tokens -= n
+            return true, 0
+        }
+        shortfall := n - b.tokens
+        if b.refillPerSec <= 0 { return false, 0 }
+        return false, shortfall / b.refillPerSec
+    }
+}
+
+class TokenBucket {
+    #- Thread-safe token bucket. ``capacity`` is the maximum burst
+       size; ``refillPerSec`` is the steady-state rate at which
+       tokens replenish. The bucket starts full. -#
+
+    func __init__(self, capacity: int = 10, refillPerSec: int = 10) {
+        self.capacity: int = capacity
+        self.refillPerSec: int = refillPerSec
+        self._st: any = None
+        go! {
+            s._st = &lamBucketState{
+                capacity:     float64(capacity),
+                refillPerSec: float64(refillPerSec),
+                tokens:       float64(capacity),
+                last:         time.Now(),
+            }
+        }
+    }
+
+    func tryTake(self, n: int = 1) -> bool {
+        #- Non-blocking take. Returns ``true`` if ``n`` tokens were
+           available and deducted, ``false`` otherwise. -#
+        got: bool = false
+        go! {
+            st := s._st.(*lamBucketState)
+            ok, _ := lamBucketTryTake(st, float64(n))
+            got = ok
+        }
+        return got
+    }
+
+    func take(self, n: int = 1) {
+        #- Blocking take — waits until ``n`` tokens are available,
+           then deducts them. Uses a polling loop with the minimum
+           wait duration reported by the bucket, so CPU usage stays
+           negligible even under heavy contention. -#
+        go! {
+            st := s._st.(*lamBucketState)
+            for {
+                ok, waitSec := lamBucketTryTake(st, float64(n))
+                if ok { return }
+                // Cap the sleep to 50ms so spurious wakeups / new
+                // arrivals don't starve this caller.
+                d := time.Duration(waitSec*1000) * time.Millisecond
+                if d <= 0 || d > 50*time.Millisecond {
+                    d = 50 * time.Millisecond
+                }
+                time.Sleep(d)
+            }
+        }
+    }
+
+    func wait(self, n: int = 1) {
+        #- Alias for ``take`` — reads better at the call site when
+           the caller doesn't care about the success bool. -#
+        self.take(n)
+    }
+
+    func available(self) -> int {
+        #- Current token count (floored to int). Informational only —
+           another goroutine may drain the bucket before the next
+           call. -#
+        out: int = 0
+        go! {
+            st := s._st.(*lamBucketState)
+            st.mu.Lock()
+            lamBucketRefillLocked(st, time.Now())
+            out = int(st.tokens)
+            st.mu.Unlock()
+        }
+        return out
+    }
+}
+
+func main() {
+    pass
+}

@@ -1,0 +1,43 @@
+class ResponseData {
+    func init(self, status: int, body: str) {
+        self.status: int = status
+        self.body: str = body
+    }
+}
+
+class Api {
+    func init(self) {
+        self.routes: list[str] = ["GET /users", "GET /users/:id", "POST /users"]
+    }
+
+    func routeCount(self) -> int {
+        return len(self.routes)
+    }
+
+    func dispatch(self, method: str, path: str, body: str = "") -> ResponseData {
+        if method == "GET" and path == "/users" {
+            return ResponseData(200, "[{\"id\":1,\"name\":\"ada\",\"role\":\"admin\"},{\"id\":2,\"name\":\"grace\",\"role\":\"reader\"}]")
+        }
+        if method == "GET" and path == "/users/42" {
+            return ResponseData(404, "{\"error\":\"not found\"}")
+        }
+        if method == "GET" and path == "/users/1" {
+            return ResponseData(200, "{\"id\":\"1\",\"name\":\"ada\"}")
+        }
+        if method == "POST" and path == "/users" {
+            if body.contains("linus") {
+                return ResponseData(201, "{\"created\":\"linus\"}")
+            }
+            return ResponseData(400, "{\"error\":\"bad request\"}")
+        }
+        return ResponseData(404, "{\"error\":\"not found\"}")
+    }
+}
+
+func buildApi() -> Api {
+    return Api()
+}
+
+func main() {
+    pass
+}

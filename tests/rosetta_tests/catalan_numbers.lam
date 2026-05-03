@@ -1,0 +1,29 @@
+# Rosetta Code: Catalan numbers
+# https://rosettacode.org/wiki/Catalan_numbers
+# expect: 1
+# expect: 1
+# expect: 2
+# expect: 5
+# expect: 14
+# expect: 42
+# expect: 132
+# expect: 429
+# expect: 1430
+# expect: 4862
+
+func catalan(n: int) -> int {
+    if n <= 1 {
+        return 1
+    }
+    result: int = 0
+    for i in range(n) {
+        result += catalan(i) * catalan(n - 1 - i)
+    }
+    return result
+}
+
+func main() {
+    for i in range(10) {
+        print(catalan(i))
+    }
+}

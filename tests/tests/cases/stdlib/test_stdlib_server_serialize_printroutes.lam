@@ -1,0 +1,180 @@
+# Integration test for ``Response.serialize()`` +
+# ``Server.printRoutes()``.
+#
+#   1. **serialize() without schema** — returns the payload
+#      round-tripped through ``json.Marshal``.
+#   2. **serialize() with a response schema** — projects fields
+#      down to the schema's ``properties`` (Fastify-compatible
+#      whitelist when ``additionalProperties: false``).
+#   3. **serialize() on a string body** — returns the string
+#      verbatim so text handlers keep working.
+#   4. **printRoutes()** — lines are sorted, show flags for
+#      deprecated / hidden / streamBody / timeout routes, and
+#      include bodyLimit / tags / summary when present.
+#
+# expect: t1-plain: {"name":"alice","note":"hi"}
+# expect: t2-projected: true
+# expect: t2-keeps-schema-fields: true
+# expect: t2-drops-extra-fields: true
+# expect: t3-string: just-a-string
+# expect: t4-has-get-root: true
+# expect: t4-stream-flag: true
+# expect: t4-timeout-flag: true
+# expect: t4-deprecated-flag: true
+# expect: t4-sorted: true
+
+from lamserver import Server, Request, Response
+
+go! {
+    import (
+        "encoding/json"
+        "strings"
+    )
+}
+
+func plainHandler(req: Request, res: Response) {
+    # Use serialize() to turn a dict into a string then emit it.
+    # Handler writes .text() so we observe the exact serialisation.
+    raw: str = res.serialize({"name": "alice", "note": "hi"})
+    res.text(raw)
+}
+
+func schemaHandler(req: Request, res: Response) {
+    # ``name`` is in the schema, ``secret`` isn't. Expect the
+    # projected string to drop ``secret``.
+    raw: str = res.serialize({"name": "alice", "secret": "classified"})
+    res.text(raw)
+}
+
+func stringHandler(req: Request, res: Response) {
+    # Strings pass through unchanged.
+    raw: str = res.serialize("just-a-string")
+    res.text(raw)
+}
+
+# Dummy handler — never actually invoked; only registered so
+# ``printRoutes()`` has a collection to walk.
+func noop(req: Request, res: Response) {
+    res.text("ok")
+}
+
+func main() {
+    srv: Server = Server()
+    srv.get("/plain", plainHandler)
+
+    # Response schema: only ``name`` is projected out.
+    userSchema: str = '{"type":"object","properties":{"name":{"type":"string"}},"additionalProperties":false}'
+    srv.getOpts("/schema", schemaHandler, {
+        "schema": {"response": {"200": userSchema}},
+    })
+    srv.get("/string", stringHandler)
+
+    # ── Test 1: plain serialize
+    r1: dict[str, any] = srv.inject("GET", "/plain")
+    b1: any = r1["body"]
+    print("t1-plain: " + str(b1))
+
+    # ── Test 2: schema-aware serialize
+    r2: dict[str, any] = srv.inject("GET", "/schema")
+    b2: any = r2["body"]
+    # Parse the body, check fields.
+    keepsName: bool = false
+    dropsSecret: bool = false
+    go! {
+        if bs, ok := b2.(string); ok {
+            var parsed map[string]interface{}
+            if err := json.Unmarshal([]byte(bs), &parsed); err == nil {
+                if v, ok := parsed["name"].(string); ok && v == "alice" {
+                    keepsName = true
+                }
+                if _, hasSecret := parsed["secret"]; !hasSecret {
+                    dropsSecret = true
+                }
+            }
+        }
+    }
+    print(f"t2-projected: {keepsName and dropsSecret}")
+    print(f"t2-keeps-schema-fields: {keepsName}")
+    print(f"t2-drops-extra-fields: {dropsSecret}")
+
+    # ── Test 3: strings round-trip unchanged
+    r3: dict[str, any] = srv.inject("GET", "/string")
+    b3: any = r3["body"]
+    print("t3-string: " + str(b3))
+
+    # ── Test 4: printRoutes() — register a mix of routes and
+    # check the produced output.
+    srv2: Server = Server()
+    srv2.get("/", noop)
+    srv2.get("/alpha", noop)
+    srv2.routeOpts("POST", "/uploads", noop, {
+        "streamBody": true,
+        "bodyLimit": 1048576,
+        "summary": "Bulk upload",
+        "tags": ["admin"],
+    })
+    srv2.routeOpts("PUT", "/legacy", noop, {
+        "deprecated": true,
+    })
+    srv2.routeOpts("GET", "/slow", noop, {
+        "timeoutMs": 250,
+    })
+
+    table: str = srv2.printRoutes()
+
+    # Walk the output.
+    hasRoot: bool = false
+    hasStream: bool = false
+    hasTimeout: bool = false
+    hasDeprecated: bool = false
+    go! {
+        for _, line := range strings.Split(table, "\n") {
+            if strings.HasPrefix(line, "GET") && strings.Contains(line, " / ") {
+                hasRoot = true
+            }
+            if strings.Contains(line, "/uploads") && strings.Contains(line, "stream") {
+                hasStream = true
+            }
+            if strings.Contains(line, "/slow") && strings.Contains(line, "timeout=250ms") {
+                hasTimeout = true
+            }
+            if strings.Contains(line, "/legacy") && strings.Contains(line, "deprecated") {
+                hasDeprecated = true
+            }
+        }
+    }
+    print(f"t4-has-get-root: {hasRoot}")
+    print(f"t4-stream-flag: {hasStream}")
+    print(f"t4-timeout-flag: {hasTimeout}")
+    print(f"t4-deprecated-flag: {hasDeprecated}")
+
+    # Sorted: "/" < "/alpha" < "/legacy" < "/slow" < "/uploads" by
+    # path ascending. Find each path's line index and assert
+    # monotonic order.
+    sorted: bool = false
+    go! {
+        lines := strings.Split(table, "\n")
+        want := []string{"/", "/alpha", "/legacy", "/slow", "/uploads"}
+        idx := []int{}
+        for _, w := range want {
+            found := -1
+            for i, ln := range lines {
+                // Match the path column — surrounded by spaces to
+                // avoid "/legacy" triggering on "/legacy-v2".
+                if strings.Contains(ln, " "+w+" ") || strings.HasSuffix(strings.TrimSpace(ln), " "+w) {
+                    found = i
+                    break
+                }
+            }
+            idx = append(idx, found)
+        }
+        sorted = true
+        for i := 1; i < len(idx); i++ {
+            if idx[i-1] < 0 || idx[i] < 0 || idx[i-1] > idx[i] {
+                sorted = false
+                break
+            }
+        }
+    }
+    print(f"t4-sorted: {sorted}")
+}

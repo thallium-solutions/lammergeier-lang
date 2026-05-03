@@ -1,0 +1,14 @@
+# expect-pass
+# Keyword arguments at the call site must not raise undefined-name errors
+# for the parameter name on the LHS of ``=``.
+
+func greet(name: str = "world", times: int = 1) {
+    print(name)
+    print(times)
+}
+
+func main() {
+    greet(name="alice")
+    greet(times=3)
+    greet(name="bob", times=2)
+}

@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <!-- ── Primary SEO ─────────────────────────────────────── -->
+    <title>Lammergeier Lang — typed, Python-flavoured language that compiles to Go</title>
+    <meta name="description"
+          content="Lammergeier is a typed, Python-flavoured programming language that compiles to native Go binaries. Ships with a Fastify-class HTTP stack, a deep standard library, a built-in LSP, a real package manager, and a drop-into-Go escape hatch. Python's readability, Go's runtime, no fastify glue, no tsconfig, no virtualenv.">
+    <meta name="keywords"
+          content="lammergeier, lammergeier-lang, lamc, programming language, typed python, python to go, transpile python to go, python flavoured language, go-backed language, lamserver, fastify alternative, lamlib, lamc install, package manager, language server, LSP, language design, statically typed, native binary">
+    <meta name="author" content="Lammergeier Lang contributors">
+    <meta name="theme-color" content="#1d222d">
+    <meta name="color-scheme" content="dark">
+    <meta name="robots" content="index, follow, max-image-preview:large">
+    <meta name="generator" content="Lammergeier Lang static site (vanilla HTML/CSS/JS)">
+    <link rel="canonical" href="https://lammergeier-lang.dev/">
+    <link rel="icon" type="image/png" href="assets/images/icon.png">
+    <link rel="apple-touch-icon" href="assets/images/icon.png">
+    <link rel="sitemap" type="application/xml" href="sitemap.xml">
+
+    <!-- ── Open Graph + Twitter ────────────────────────────── -->
+    <meta property="og:title"
+          content="Lammergeier Lang — typed, Python-flavoured, compiles to Go">
+    <meta property="og:description"
+          content="Python's readability with Go's runtime. A typed, Python-flavoured language that compiles to native Go binaries — Fastify-class HTTP stack, deep stdlib, built-in LSP, real package manager.">
+    <meta property="og:image" content="https://lammergeier-lang.dev/assets/images/logo.png">
+    <meta property="og:image:alt" content="Lammergeier Lang logo: a stylised lammergeier vulture in ochre on a dark slate background.">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://lammergeier-lang.dev/">
+    <meta property="og:site_name" content="Lammergeier Lang">
+    <meta property="og:locale" content="en_US">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Lammergeier Lang">
+    <meta name="twitter:description"
+          content="Python's readability with Go's runtime. A typed, Python-flavoured language that compiles to native Go binaries.">
+    <meta name="twitter:image" content="https://lammergeier-lang.dev/assets/images/logo.png">
+
+    <!-- ── Structured data (JSON-LD) ───────────────────────── -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebSite",
+          "@id": "https://lammergeier-lang.dev/#website",
+          "url": "https://lammergeier-lang.dev/",
+          "name": "Lammergeier Lang",
+          "description": "A typed, Python-flavoured programming language that compiles to Go.",
+          "inLanguage": "en",
+          "publisher": {"@id": "https://lammergeier-lang.dev/#org"},
+          "potentialAction": {
+            "@type": "SearchAction",
+            "target": {
+              "@type": "EntryPoint",
+              "urlTemplate": "https://lammergeier-lang.dev/#/docs/syntax?q={search_term_string}"
+            },
+            "query-input": "required name=search_term_string"
+          }
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://lammergeier-lang.dev/#org",
+          "name": "Lammergeier Lang",
+          "url": "https://lammergeier-lang.dev/",
+          "logo": "https://lammergeier-lang.dev/assets/images/logo.png",
+          "sameAs": ["https://github.com/thallium-solutions/lammergeier-lang"]
+        },
+        {
+          "@type": "SoftwareApplication",
+          "@id": "https://lammergeier-lang.dev/#app",
+          "name": "Lammergeier Lang",
+          "alternateName": ["Lammergeier", "lamc"],
+          "applicationCategory": "DeveloperApplication",
+          "applicationSubCategory": "ProgrammingLanguage",
+          "operatingSystem": "Linux, macOS, Windows (via WSL)",
+          "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+          "softwareRequirements": "Python 3.10+, Go 1.21+",
+          "url": "https://lammergeier-lang.dev/",
+          "downloadUrl": "https://github.com/thallium-solutions/lammergeier-lang",
+          "license": "https://github.com/thallium-solutions/lammergeier-lang/blob/main/LICENSE",
+          "description": "A typed, Python-flavoured programming language that compiles to native Go binaries. Pairs Python's readability with Go's tooling and runtime performance.",
+          "keywords": "programming language, typed python, transpile to go, language server, package manager, native binary"
+        },
+        {
+          "@type": "SoftwareSourceCode",
+          "name": "Lammergeier Lang compiler",
+          "codeRepository": "https://github.com/thallium-solutions/lammergeier-lang",
+          "programmingLanguage": [
+            {"@type": "ComputerLanguage", "name": "Python"},
+            {"@type": "ComputerLanguage", "name": "Go"},
+            {"@type": "ComputerLanguage", "name": "Lammergeier"}
+          ],
+          "runtimePlatform": "Go 1.21+",
+          "targetProduct": {"@id": "https://lammergeier-lang.dev/#app"}
+        }
+      ]
+    }
+    </script>
+
+    <!-- ── Styles ──────────────────────────────────────────── -->
+    <link rel="stylesheet" href="assets/css/main.css">
+
+    <!-- ── External scripts (markdown + syntax highlighting) ── -->
+    <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+    <link rel="stylesheet"
+          href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/go.min.js"></script>
+    <script>
+      // Alias ``lammergeier`` and ``lam`` to python so user-authored
+      // fenced blocks get reasonable colouring without a custom grammar.
+      document.addEventListener("DOMContentLoaded", () => {
+          if (!window.hljs) return;
+          try {
+              window.hljs.registerAliases(["lammergeier", "lam"], { languageName: "python" });
+          } catch (e) { /* older hljs builds silently ignore */ }
+      });
+    </script>
+    <script defer src="assets/js/app.js"></script>
+</head>
+<body>
+    <header class="site-header">
+        <a class="brand" href="#/">
+            <img src="assets/images/icon.png" alt="Lammergeier Lang logo">
+            Lammergeier Lang
+        </a>
+        <nav>
+            <a href="#/"                         data-view="home">Home</a>
+            <a href="#/docs/syntax"              data-view="docs">Syntax</a>
+            <a href="#/docs/stdlib"              data-view="docs">Stdlib</a>
+            <a href="#/docs/installation"        data-view="docs">Install</a>
+            <a href="#/docs/package_manager"     data-view="docs">Packages</a>
+            <div class="search-wrap">
+                <input id="search-input"
+                       type="search"
+                       placeholder="Search the docs…"
+                       autocomplete="off"
+                       spellcheck="false"
+                       aria-label="Search the documentation">
+                <div id="search-results" class="search-results" role="listbox"></div>
+            </div>
+            <a class="github"
+               href="https://github.com/thallium-solutions/lammergeier-lang"
+               target="_blank" rel="noopener">GitHub</a>
+        </nav>
+    </header>
+
+    <div id="app">
+        <!-- ── Server-renderable fallback (also seen by SEO crawlers,
+                 RSS readers, and users with JS disabled). The SPA
+                 replaces this on first paint. ─────────────────── -->
+        <noscript>
+            <section style="max-width: 880px; margin: 3rem auto; padding: 0 1.5rem;">
+                <h1>Lammergeier Lang</h1>
+                <p><strong>A typed, Python-flavoured programming language that compiles to Go.</strong></p>
+                <p>
+                    Lammergeier pairs Python's readability with Go's
+                    tooling and runtime performance. Write
+                    <code>.lam</code> source files with type
+                    annotations, classes, comprehensions, pattern
+                    matching, generators, and async/await; the
+                    compiler turns them into idiomatic Go and hands
+                    that off to <code>go build</code>. The output is a
+                    native binary — no VM, no GC surprises, no
+                    runtime layer.
+                </p>
+                <p>This site requires JavaScript for the in-browser docs viewer + search. Direct doc links:</p>
+                <ul>
+                    <li><a href="https://github.com/thallium-solutions/lammergeier-lang#readme">Project README</a></li>
+                    <li><a href="https://github.com/thallium-solutions/lammergeier-lang/blob/main/docs/SYNTAX.md">Syntax reference</a></li>
+                    <li><a href="https://github.com/thallium-solutions/lammergeier-lang/blob/main/docs/stdlib.md">Standard library</a></li>
+                    <li><a href="https://github.com/thallium-solutions/lammergeier-lang/blob/main/docs/installation.md">Installing the toolchain</a></li>
+                    <li><a href="https://github.com/thallium-solutions/lammergeier-lang/blob/main/docs/package_manager.md">Package manager</a></li>
+                    <li><a href="https://github.com/thallium-solutions/lammergeier-lang/blob/main/docs/third_party_libraries.md">Authoring third-party libraries</a></li>
+                </ul>
+            </section>
+        </noscript>
+        <div class="loading">Loading…</div>
+    </div>
+
+    <footer class="site-footer">
+        Lammergeier Lang is open source under the project's license.
+        <br>
+        Built with vanilla HTML / CSS / JS — no build step required.
+        <a href="https://github.com/thallium-solutions/lammergeier-lang" target="_blank" rel="noopener">Source</a> ·
+        <a href="#/docs/contributing">Contribute</a>
+        <a href="https://thallium-solutions.com/en/">Thallium Solutions</a>
+    </footer>
+</body>
+</html>

@@ -1,0 +1,10 @@
+# Test: Lambda functions basic
+# expect: 25
+# expect: 7
+
+func main() {
+    square = lambda (x: int): x * x
+    print(square(5))
+    add = lambda (a: int, b: int): a + b
+    print(add(3, 4))
+}

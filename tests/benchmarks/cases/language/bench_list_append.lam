@@ -1,0 +1,18 @@
+# List growth + iteration — exercises the ``append`` builtin and the
+# generated ``[]int``/``[]interface{}`` slice semantics. Any future
+# change to how lists lower (e.g. pre-reserving capacity when the
+# final length is statically known) should move the needle here.
+
+func main() {
+    items: list[int] = []
+    for i in range(1000000) {
+        items = append(items, i)
+    }
+    total: int = 0
+    for v in items {
+        total = total + v
+    }
+    if total < 0 {
+        print("unreachable")
+    }
+}

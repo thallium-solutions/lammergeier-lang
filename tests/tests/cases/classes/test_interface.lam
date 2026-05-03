@@ -1,0 +1,30 @@
+# Test: Interface definition and implementation
+# expect: Woof!
+# expect: Meow!
+
+interface Animal {
+    func speak() -> str
+}
+
+class Dog {
+    func speak(self) -> str {
+        return "Woof!"
+    }
+}
+
+class Cat {
+    func speak(self) -> str {
+        return "Meow!"
+    }
+}
+
+func make_speak(a: Animal) {
+    print(a.speak())
+}
+
+func main() {
+    d: Dog = Dog()
+    c: Cat = Cat()
+    make_speak(d)
+    make_speak(c)
+}

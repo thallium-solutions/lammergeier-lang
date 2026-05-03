@@ -1,0 +1,53 @@
+# Test: JS-style chained method calls broken across newlines.
+# The parser should not break on a leading-`.` continuation, and
+# binary operators should also be permitted at end-of-line or
+# beginning-of-next-line.
+#
+# expect: single: [6 8 10]
+# expect: multi: [6 8 10]
+# expect: chain: [40 80 120]
+# expect: arith: 21
+# expect: logical: true
+
+func double(x: int) -> int {
+    return x * 2
+}
+
+func gtFour(x: int) -> bool {
+    return x > 4
+}
+
+func main() {
+    xs: list[int] = [1, 2, 3, 4, 5]
+
+    a: list[int] = xs.map(double).filter(gtFour)
+    print(f"single: {a}")
+
+    b: list[int] = xs
+        .map(double)
+        .filter(gtFour)
+    print(f"multi: {b}")
+
+    ys: list[int] = [10, 20, 30]
+    c: list[int] = ys
+        .map(double)
+        .filter(gtFour)
+        .map(double)
+    print(f"chain: {c}")
+
+    # Trailing operator on previous line.
+    total: int = 1 +
+        2 +
+        3 +
+        4 +
+        5 +
+        6
+    print(f"arith: {total}")
+
+    # Leading operator on next line: parens-based — the binop case
+    # works thanks to the existing paren-depth tracking.
+    flag: bool = (true
+        and true
+        or false)
+    print(f"logical: {flag}")
+}

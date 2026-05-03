@@ -1,0 +1,19 @@
+# Test: Naming freedom - no forced CamelCase, underscores preserved
+# expect: hello from foo_bar
+# expect: result: 42
+# expect: done
+
+func foo_bar() -> str {
+    return "hello from foo_bar"
+}
+
+func compute_value(x: int) -> int {
+    return x * 2
+}
+
+func main() {
+    print(foo_bar())
+    val: int = compute_value(21)
+    print(f"result: {val}")
+    print("done")
+}

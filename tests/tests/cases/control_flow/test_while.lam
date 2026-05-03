@@ -1,0 +1,96 @@
+# Test: While loops, nested while, while with break/continue
+# expect: 0
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 4
+# expect: 10
+# expect: 1
+# expect: 3
+# expect: 5
+# expect: 7
+# expect: 9
+# expect: 55
+# expect: found_7
+# expect: 0
+# expect: count_10
+# expect: while_ok
+
+func sum_while(n: int) -> int {
+    total: int = 0
+    i: int = 1
+    while i <= n {
+        total = total + i
+        i = i + 1
+    }
+    return total
+}
+
+func find_first(target: int) -> str {
+    i: int = 0
+    while i < 20 {
+        if i == target {
+            return f"found_{target}"
+        }
+        i = i + 1
+    }
+    return "not_found"
+}
+
+func countdown(n: int) -> int {
+    result: int = 0
+    while n > 0 {
+        result = result + n
+        n = n - 1
+    }
+    return result
+}
+
+func main() {
+    # Simple while
+    i: int = 0
+    while i < 5 {
+        print(i)
+        i = i + 1
+    }
+
+    # While sum
+    print(sum_while(4))
+
+    # While with skip (odd numbers only)
+    j: int = 0
+    while j < 10 {
+        if j % 2 == 0 {
+            j = j + 1
+        } else {
+            print(j)
+            j = j + 1
+        }
+    }
+
+    # Sum 1..10
+    print(sum_while(10))
+
+    # Find
+    print(find_first(7))
+
+    # Countdown
+    print(countdown(0))
+
+    # Nested while count
+    a: int = 0
+    b: int = 0
+    count: int = 0
+    a = 0
+    while a < 5 {
+        b = 0
+        while b < a {
+            count = count + 1
+            b = b + 1
+        }
+        a = a + 1
+    }
+    print(f"count_{count}")
+
+    print("while_ok")
+}
