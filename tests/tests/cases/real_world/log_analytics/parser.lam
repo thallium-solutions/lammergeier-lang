@@ -30,7 +30,7 @@ func parseLine(line: str) -> LogEvent {
 }
 
 func parseEvents(text: str) -> list[LogEvent] {
-    trimmed: str = text.strip()
+    trimmed: str = text.trim()
     lines: list[str] = trimmed.split("\n")
     events: list[LogEvent] = []
     for line in lines {

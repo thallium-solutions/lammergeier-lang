@@ -218,6 +218,13 @@ class _Scope:
     used_names: Set[str] = field(default_factory=set)
     param_nodes: dict = field(default_factory=dict)  # name -> Tree/Token
     is_loop: bool = False
+    # Only meaningful on ``function`` scopes: True when the function
+    # declares ``-> Result`` (or an equivalent that accepts the ``?``
+    # propagation operator's ``*Result`` return value). Consulted by
+    # the ``?``-in-non-Result warning so nested ``func`` / ``lambda``
+    # scopes search the nearest enclosing function scope and not the
+    # module.
+    returns_result: bool = False
 
 
 class SemanticChecker:
@@ -235,6 +242,18 @@ class SemanticChecker:
         # Each entry is ``(local_binding, source_node)``. The node
         # supplies the location for the diagnostic.
         self._import_records: List[tuple] = []
+        # Functions / methods declared in this file whose signature
+        # promises a non-void return. Cross-referenced when an
+        # expression statement drops the call's value, so the
+        # ``dropped-return-value`` warning only fires on call sites
+        # where we actually know something will be returned. Populated
+        # during the top-level collection pass (see
+        # ``_collect_module_defs``).
+        self._nonvoid_funcs: Set[str] = set()
+        # ``"Class.method"`` keys for non-void methods and static
+        # methods. Covers both kinds uniformly; we only need the flag,
+        # not the dispatch kind.
+        self._nonvoid_methods: Set[str] = set()
 
     # ─── Public API ────────────────────────────────────────────
 
@@ -311,18 +330,31 @@ class SemanticChecker:
             name = self._funcdef_name(node)
             if name:
                 scope.names.add(name)
-                arity = len(self._param_names(self._funcdef_params(node)))
-                key = (name, arity)
+                params_node = self._funcdef_params(node)
+                arity = len(self._param_names(params_node))
+                # Dupe key is ``(name, arity, type-signature)`` so two
+                # definitions at the same arity whose parameter types
+                # differ (``foo(int)`` vs ``foo(string)``) are accepted
+                # as overloads. When the user didn't annotate every
+                # slot, the signature collapses to all-``any`` and the
+                # original same-name/same-arity collision rule still
+                # fires — that keeps the diagnostic stable for
+                # un-annotated code.
+                sig = self._param_type_sig(params_node)
+                key = (name, arity, sig)
                 if key in seen_func:
                     self._error(
                         node, "duplicate",
                         f"duplicate function `{name}` with {arity} "
-                        f"parameter{'s' if arity != 1 else ''} "
-                        f"(overloading requires a different arity)",
+                        f"parameter{'s' if arity != 1 else ''} of the "
+                        f"same type signature (overloading requires "
+                        f"a different arity or different parameter types)",
                     )
                 else:
                     seen_func[key] = node
                 self._module_seen[name] = "func"
+                if self._funcdef_has_nonvoid_return(node):
+                    self._nonvoid_funcs.add(name)
         elif d == "classdef":
             name = self._classdef_name(node)
             if name:
@@ -335,6 +367,10 @@ class SemanticChecker:
                 else:
                     seen_class[name] = node
                 self._module_seen[name] = "class"
+                # Harvest the class's non-void methods (instance +
+                # static) so a dropped-return call on a method with a
+                # declared return type warns just like a bare func.
+                self._collect_nonvoid_methods(name, node)
         elif d == "interfacedef":
             if node.children and isinstance(node.children[0], Tree):
                 n = self._name_text(node.children[0])
@@ -513,7 +549,20 @@ class SemanticChecker:
             self._visit_expr_subtree(node)
             return
 
-        if d in ("raise_stmt", "del_stmt", "assert_stmt", "expr_stmt",
+        if d == "expr_stmt":
+            # A bare expression statement whose top expression is a
+            # call to a function / static method we *know* returns a
+            # non-void value is almost always a bug — the caller
+            # meant to assign the result somewhere. We emit a
+            # warning, not an error, so incremental / REPL-style code
+            # still compiles. The opt-out is the standard Lam idiom:
+            # ``_ = fn(x)`` (handled as ``assign_stmt``, never reaches
+            # this branch).
+            self._check_dropped_return(node)
+            self._visit_expr_subtree(node)
+            return
+
+        if d in ("raise_stmt", "del_stmt", "assert_stmt",
                  "yield_expr", "defer_stmt"):
             self._visit_expr_subtree(node)
             return
@@ -534,6 +583,7 @@ class SemanticChecker:
         # the function don't false-positive (Lam permits referring to
         # a local that's introduced later in the same block).
         scope = _Scope(kind="function")
+        scope.returns_result = self._funcdef_returns_result(node)
         scope.names.add("self")
         for tp in self._funcdef_type_params(node):
             scope.names.add(tp)
@@ -731,7 +781,18 @@ class SemanticChecker:
         handler_suite = node.children[2]
 
         if isinstance(body_suite, Tree) and body_suite.data == "suite":
-            self._enter_block_and_visit(body_suite)
+            # The body lowers to a ``*Result``-returning IIFE, so
+            # ``?`` propagates into the IIFE rather than the enclosing
+            # function. Mark the scope accordingly so the
+            # ``?``-in-non-Result warning doesn't misfire here.
+            scope = _Scope(kind="block")
+            scope.returns_result = True
+            self._collect_block_defs(body_suite, scope)
+            self._scopes.append(scope)
+            try:
+                self._walk_suite_stmts(self._suite_stmts(body_suite))
+            finally:
+                self._scopes.pop()
 
         err_name = self._name_text(err_name_node)
         if isinstance(handler_suite, Tree) and handler_suite.data == "suite":
@@ -903,6 +964,23 @@ class SemanticChecker:
                 self._visit_expr_subtree(node.children[0])
             return
 
+        # ``expr?`` — only well-formed inside a function whose
+        # signature declares ``-> Result`` (or inside a
+        # ``do { } catch`` block, which has its own Result-returning
+        # IIFE scope at emission time). Everywhere else the lowering
+        # falls back to a panic on ``Err``; we warn here so the user
+        # spots the intent mismatch before surprise runtime panics.
+        if d == "propagate":
+            if not self._nearest_returns_result():
+                self._warning(
+                    node, "flow",
+                    "`?` operator used outside a `-> Result` function; "
+                    "an `Err` will panic at runtime "
+                    "(change the signature to return `Result` "
+                    "or handle the error explicitly)",
+                )
+            # Fall through so the inner expression is still walked.
+
         # Function calls: we only inspect the callee and the args, but
         # already-handled by recursing into children. Static-method
         # calls like ``Math.sqrt(x)`` and module attribute calls show
@@ -1014,6 +1092,95 @@ class SemanticChecker:
                 scope.used_names.add(name)
                 return True
         return False
+
+    def _nearest_returns_result(self) -> bool:
+        """True if the nearest enclosing scope that defines a
+        return target (a ``function`` scope, or a block scope
+        explicitly marked Result-returning because it lowers to a
+        ``do { } catch`` IIFE) declared ``-> Result``.
+
+        Search order walks outward: any intermediate scope flagged
+        ``returns_result=True`` short-circuits True (this is how a
+        ``do { }`` block wins over the enclosing function), and the
+        first enclosing ``function`` scope otherwise decides — its
+        return target is the only one a propagated ``*Result`` could
+        reach at that depth. If we fall off the stack without ever
+        entering a function or a Result-returning block, we're at
+        module scope and the answer is unambiguously False.
+        """
+        for scope in reversed(self._scopes):
+            if scope.returns_result:
+                return True
+            if scope.kind == "function":
+                return False
+        return False
+
+    def _check_dropped_return(self, expr_stmt: Tree) -> None:
+        """Emit a warning when ``expr_stmt`` is a bare function call
+        that drops a known non-void return value.
+
+        Covered call shapes:
+
+        * ``foo(...)`` where ``foo`` is a top-level ``func`` declared
+          in this file with a non-``None`` return annotation.
+        * ``Class.method(...)`` (static or bare-class receiver) where
+          ``Class`` is a user-defined class in this file and its
+          ``method`` declares a non-void return.
+
+        Intentionally *not* covered:
+
+        * Instance calls ``obj.method()`` — we'd need type inference
+          to know the receiver's class, and the current semantic
+          walker is deliberately flow-insensitive. The transpiler
+          has the inference tables but runs too late to participate
+          in a pre-emission warning.
+        * Calls to imported / library-defined functions — we'd need
+          their return-type map, which isn't shared with this pass.
+        * Unannotated functions (``func f() {...}``) — treated as
+          void because users who cared about the return would have
+          annotated it. Avoids a large false-positive surface on
+          early-draft code.
+
+        The opt-out for every shape we *do* cover is the standard
+        Lam idiom: ``_ = foo(x)``, which parses as an assignment
+        and never reaches this method.
+        """
+        if not expr_stmt.children:
+            return
+        expr = expr_stmt.children[0]
+        if not isinstance(expr, Tree) or expr.data != "funccall":
+            return
+        callee = expr.children[0] if expr.children else None
+        if not isinstance(callee, Tree):
+            return
+
+        # Top-level function call: ``foo(...)``.
+        if callee.data == "var":
+            name = self._name_text(callee.children[0]) if callee.children else ""
+            if name and name in self._nonvoid_funcs:
+                self._warning(
+                    expr_stmt, "unused",
+                    f"dropped return value of `{name}()` "
+                    f"(assign to `_` to silence)",
+                )
+            return
+
+        # Static / class-qualified call: ``Class.method(...)``.
+        if callee.data == "getattr":
+            obj = callee.children[0] if callee.children else None
+            attr_node = callee.children[1] if len(callee.children) > 1 else None
+            if (isinstance(obj, Tree) and obj.data == "var"
+                    and obj.children
+                    and attr_node is not None):
+                cls_name = self._name_text(obj.children[0])
+                method = self._name_text(attr_node)
+                key = f"{cls_name}.{method}"
+                if key in self._nonvoid_methods:
+                    self._warning(
+                        expr_stmt, "unused",
+                        f"dropped return value of `{cls_name}.{method}()` "
+                        f"(assign to `_` to silence)",
+                    )
 
     def _mark_fstring_uses(self, node: Tree) -> None:
         """Scan an ``fstring`` AST node's literal text and mark
@@ -1384,6 +1551,126 @@ class SemanticChecker:
                 return c
         return None
 
+    def _collect_nonvoid_methods(self, class_name: str, classdef: Tree) -> None:
+        """Walk ``classdef``'s body and record the ``Class.method``
+        pairs whose signatures declare a non-void return. We walk
+        the full suite so instance + static + private methods are all
+        treated the same way (the dropped-return warning doesn't
+        care about visibility or receiver shape — only about whether
+        the call site is discarding a promised value).
+        """
+        suite = self._suite_node(classdef)
+        if suite is None:
+            return
+        for stmt in self._suite_stmts(suite):
+            if not isinstance(stmt, Tree):
+                continue
+            # ``decorated`` wraps the real funcdef; unwrap one level.
+            fn_node = stmt
+            if stmt.data == "decorated":
+                for c in stmt.children:
+                    if isinstance(c, Tree) and c.data == "funcdef":
+                        fn_node = c
+                        break
+                else:
+                    continue
+            if fn_node.data != "funcdef":
+                continue
+            name = self._funcdef_name(fn_node)
+            if not name:
+                continue
+            if self._funcdef_has_nonvoid_return(fn_node):
+                self._nonvoid_methods.add(f"{class_name}.{name}")
+
+    @staticmethod
+    def _funcdef_has_nonvoid_return(node: Tree) -> bool:
+        """True if the funcdef declares a non-void return type.
+
+        Three shapes classify as *non*-void and so make a dropped
+        call worth warning about:
+
+        * a single return type that's anything other than ``None``
+          (``-> int``, ``-> Result``, ``-> Option[str]``, …);
+        * a multi-return tuple (``-> (int, str)``).
+
+        Anything else — no annotation at all, or the explicit
+        ``-> None`` form — is treated as void. Unannotated Lam
+        functions are a judgement call: they *do* compile to a
+        Go function returning whatever Go sees fit (usually
+        ``interface{}`` or the zero value), but in practice users
+        who cared about the return value would have annotated it,
+        so suppressing the warning there avoids a large false-
+        positive surface on early-draft code.
+        """
+        for c in node.children:
+            if not isinstance(c, Tree):
+                continue
+            if c.data == "single_return_type":
+                # ``single_return_type > type_expr > type_union >
+                # {type_name | type_generic | type_none | …}``.
+                # Dig one level deeper than the old form, which
+                # looked at ``single_return_type``'s direct child
+                # and therefore never saw ``type_none`` at all.
+                return not SemanticChecker._return_is_none(c)
+            if c.data == "multi_return_type":
+                return True
+        return False
+
+    @staticmethod
+    def _return_is_none(single_return_type: Tree) -> bool:
+        """True if the ``single_return_type`` subtree is
+        ``type_none`` — the explicit ``-> None`` form.
+
+        Walks through ``type_expr`` / ``type_union`` wrappers that
+        the grammar inserts around the actual type node.
+        """
+        for descendant in single_return_type.iter_subtrees():
+            if descendant.data == "type_none":
+                return True
+        return False
+
+    @staticmethod
+    def _funcdef_returns_result(node: Tree) -> bool:
+        """True if the funcdef's single return annotation has
+        ``Result`` as its root type (``Result``, ``Result[T]``,
+        ``Result[T, E]`` all qualify).
+
+        Multi-return tuples are treated as *not* Result-returning:
+        ``?`` in a ``-> (int, str)`` function still can't propagate
+        a ``*Result`` value into the Go signature, so the warning
+        should still fire there.
+        """
+        for c in node.children:
+            if not isinstance(c, Tree) or c.data != "single_return_type":
+                continue
+            return SemanticChecker._type_root_name(c) == "Result"
+        return False
+
+    @staticmethod
+    def _type_root_name(type_node: Tree) -> str:
+        """Return the bare root name of a type subtree
+        (``Result`` out of ``Result[T]``, ``Option`` out of
+        ``Option[str]``, etc.), or ``""`` if we can't reduce to a
+        single root.
+
+        The grammar wraps types in ``type_expr`` / ``type_union``
+        with ``type_name`` or ``type_generic`` at the leaf. Both
+        ``type_name`` and ``type_generic`` have a ``dotted_name``
+        as their first child; the first ``name`` underneath is
+        the head we're after.
+        """
+        for descendant in type_node.iter_subtrees():
+            if descendant.data in ("type_name", "type_generic"):
+                for c in descendant.children:
+                    if isinstance(c, Tree) and c.data == "dotted_name":
+                        for sub in c.children:
+                            if isinstance(sub, Tree) and sub.data == "name":
+                                return SemanticChecker._name_text(sub)
+                            if isinstance(sub, Token):
+                                return str(sub)
+                return ""
+        return ""
+
     @staticmethod
     def _funcdef_type_params(node: Tree) -> List[str]:
         for c in node.children:
@@ -1402,6 +1689,63 @@ class SemanticChecker:
             if isinstance(c, Tree) and c.data == "suite":
                 return c
         return None
+
+    @staticmethod
+    def _param_type_sig(params_node) -> tuple:
+        """Return a tuple of canonical type-annotation strings, one
+        per positional parameter of ``params_node``.
+
+        Used by :meth:`_collect_top_decl_with_dupe_check` to let two
+        same-arity functions coexist as long as their parameter types
+        differ. The string form is a depth-first serialisation of the
+        type-expression subtree — close enough to a syntactic
+        identity check that it won't accept ``int`` as a match for
+        ``Int`` or ``list[int]`` as a match for ``list[str]``.
+
+        Parameters with no annotation collapse to the sentinel
+        ``"any"`` so two un-annotated overloads still collide, which
+        preserves the pre-existing same-name/same-arity diagnostic
+        for loosely-typed code.
+        """
+        if params_node is None or not isinstance(params_node, Tree):
+            return ()
+        out: list = []
+        for child in params_node.children:
+            if not isinstance(child, Tree):
+                continue
+            if child.data == "typed_paramvalue":
+                inner = child.children[0]
+                if isinstance(inner, Tree) and inner.data == "typed_param":
+                    if len(inner.children) > 1:
+                        out.append(SemanticChecker._render_type_node(inner.children[1]))
+                    else:
+                        out.append("any")
+                elif isinstance(inner, Tree) and inner.data == "tuple_typed_param":
+                    out.append(SemanticChecker._render_type_node(inner.children[-1]))
+            elif child.data == "typed_starparams":
+                # Variadics can't participate in arity-based or
+                # type-based overload dispatch — stamp a fixed
+                # sentinel so two variadic overloads still collide.
+                out.append("...var")
+        return tuple(out)
+
+    @staticmethod
+    def _render_type_node(node) -> str:
+        """Cheap textual fingerprint of a type-expr subtree.
+
+        Not a full Go-type lowering — the semantic checker doesn't
+        need that. Just enough to tell ``int`` apart from ``str`` and
+        ``list[int]`` apart from ``list[str]`` so the dupe check
+        doesn't flag legitimate type overloads.
+        """
+        if isinstance(node, Token):
+            return str(node)
+        if not isinstance(node, Tree):
+            return "any"
+        parts = [node.data]
+        for c in node.children:
+            parts.append(SemanticChecker._render_type_node(c))
+        return "(" + "|".join(parts) + ")"
 
     @staticmethod
     def _param_names(params_node) -> List[str]:

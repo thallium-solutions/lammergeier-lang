@@ -31,18 +31,18 @@ func repeat_str(s: str, n: int) -> str {
 func main() {
     s: str = "world"
     print(len(s))
-    print(s.upper())
-    print("TEST".lower())
+    print(s.toUpper())
+    print("TEST".toLower())
 
-    # Contains check via find
+    # Contains check via index
     msg: str = "hello world"
-    idx: int = msg.find("world")
+    idx: int = msg.index("world")
     print(idx >= 0)
-    print(msg.find("xyz") >= 0)
+    print(msg.index("xyz") >= 0)
 
-    # Startswith / endswith
-    print(msg.startswith("hello"))
-    print(msg.endswith("xyz"))
+    # startsWith / endsWith
+    print(msg.startsWith("hello"))
+    print(msg.endsWith("xyz"))
 
     # Count occurrences
     abc: str = "abcabcabc"
@@ -55,8 +55,8 @@ func main() {
 
     # Chained operations — do them separately  
     x: str = "  HELLO WORLD  "
-    trimmed: str = x.strip()
-    print(trimmed.lower())
+    trimmed: str = x.trim()
+    print(trimmed.toLower())
     print(trimmed)
 
     # Title

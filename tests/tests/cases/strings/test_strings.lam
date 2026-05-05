@@ -22,16 +22,16 @@ func main() {
     print(s + t)
 
     # Upper/lower
-    print(s.upper())
-    print("HELLO".lower())
+    print(s.toUpper())
+    print("HELLO".toLower())
 
     # Length
     print(len(s + t))
 
     # Startswith / endswith
-    print(s.startswith("hel"))
-    print(s.endswith("llo"))
-    print(s.startswith("xyz"))
+    print(s.startsWith("hel"))
+    print(s.endsWith("llo"))
+    print(s.startsWith("xyz"))
 
     # Join
     parts: list[str] = ["hello", "world", "foo"]
@@ -50,7 +50,7 @@ func main() {
 
     # Strip
     padded: str = "  Hello World  "
-    print(padded.strip())
+    print(padded.trim())
 
     # String with special chars
     special: str = "hello world  "

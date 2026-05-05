@@ -36,7 +36,7 @@ func main() {
     print(f"Values: {x} and {y}")
 
     s: str = "hello"
-    print(f"Nested: {s} {s.upper()}")
+    print(f"Nested: {s} {s.toUpper()}")
 
     v1: int = 1
     v2: int = 2

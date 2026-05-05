@@ -11,5 +11,5 @@ func main() {
     age: int = 30
     print(f"name={name}, age={age}")
     word: str = "hello"
-    print(f"{word.upper()}")
+    print(f"{word.toUpper()}")
 }

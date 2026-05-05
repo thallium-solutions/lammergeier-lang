@@ -16,7 +16,7 @@ class User {
     }
 
     func upper_name(self) -> str {
-        return self.name.upper()
+        return self.name.toUpper()
     }
 }
 

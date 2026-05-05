@@ -34,7 +34,7 @@ class Upper {
 
     func onMessage(self, msg: any) -> any {
         text: str = str(msg)
-        upper: str = text.upper()
+        upper: str = text.toUpper()
         # Forward and wait for the next stage's reply, then bubble
         # it back up to whoever asked us.
         return self.downstream.ask(upper, 1000)

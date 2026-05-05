@@ -1,0 +1,112 @@
+# Test: interface polymorphism in the "textbook" Shape hierarchy.
+#
+# Three concrete shapes satisfy the same ``Shape`` interface, are
+# stored in a ``list[Shape]``, and are fed through a helper that
+# knows only the interface. This covers:
+#
+#   * Implicit interface conformance: Lam classes do not declare
+#     which interfaces they implement; the Go struct implements
+#     the interface because it has the right method set.
+#   * Interface-typed parameters + returns in user functions.
+#   * Heterogeneous collection (``list[Shape]``) with dispatch
+#     landing on the concrete type's method each iteration.
+#   * ``isinstance(x, Shape)`` driving a runtime branch on the
+#     interface type — the compiler lowers that to the Go
+#     ``_, ok := x.(Shape)`` pattern.
+#
+# expect: Circle r=2: area=12.566370614359172 perim=12.566370614359172
+# expect: Square s=3: area=9 perim=12
+# expect: Triangle 3/4/5: area=6 perim=12
+# expect: total-area=27.566370614359172
+# expect: Circle(r=2) isinstance Shape: true
+# expect: isinstance int Shape: false
+
+from lammath import Math
+
+interface Shape {
+    func area() -> float
+    func perimeter() -> float
+    func describe() -> str
+}
+
+class Circle {
+    func __init__(self, r: float) {
+        self.r: float = r
+    }
+    func area(self) -> float {
+        return Math.pi() * self.r * self.r
+    }
+    func perimeter(self) -> float {
+        return 2.0 * Math.pi() * self.r
+    }
+    func describe(self) -> str {
+        return f"Circle r={self.r}: area={self.area()} perim={self.perimeter()}"
+    }
+}
+
+class Square {
+    func __init__(self, side: float) {
+        self.side: float = side
+    }
+    func area(self) -> float {
+        return self.side * self.side
+    }
+    func perimeter(self) -> float {
+        return 4.0 * self.side
+    }
+    func describe(self) -> str {
+        return f"Square s={self.side}: area={self.area()} perim={self.perimeter()}"
+    }
+}
+
+class Triangle {
+    func __init__(self, a: float, b: float, c: float) {
+        self.a: float = a
+        self.b: float = b
+        self.c: float = c
+    }
+    func area(self) -> float {
+        # Heron's formula — no heavy-maths dependencies. The local
+        # ``sp`` avoids colliding with the Go receiver name ``s``
+        # that the transpiler uses for ``self``.
+        sp: float = (self.a + self.b + self.c) / 2.0
+        return Math.sqrt(sp * (sp - self.a) * (sp - self.b) * (sp - self.c))
+    }
+    func perimeter(self) -> float {
+        return self.a + self.b + self.c
+    }
+    func describe(self) -> str {
+        return f"Triangle {self.a:.0f}/{self.b:.0f}/{self.c:.0f}: area={self.area()} perim={self.perimeter()}"
+    }
+}
+
+func describeAll(shapes: list[Shape]) {
+    for s in shapes {
+        print(s.describe())
+    }
+}
+
+func totalArea(shapes: list[Shape]) -> float {
+    out: float = 0.0
+    for s in shapes {
+        out += s.area()
+    }
+    return out
+}
+
+func main() {
+    shapes: list[Shape] = [
+        Circle(2.0),
+        Square(3.0),
+        Triangle(3.0, 4.0, 5.0),
+    ]
+
+    describeAll(shapes)
+    print(f"total-area={totalArea(shapes)}")
+
+    c: Circle = Circle(2.0)
+    print(f"Circle(r=2) isinstance Shape: {isinstance(c, Shape)}")
+
+    n: int = 7
+    print(f"isinstance int Shape: {isinstance(n, Shape)}")
+}

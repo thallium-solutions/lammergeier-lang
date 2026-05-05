@@ -1,8 +1,18 @@
 # Transpilation: f-strings compile to fmt.Sprintf with %v placeholders.
+# Both the single-quoted (``f"..."``) and triple-quoted
+# (``f"""..."""``) shapes must emit a valid ``fmt.Sprintf(...)``
+# call. The triple-quoted check protects against a regression
+# where the shorter-prefix branch matched first and left two
+# dangling quote characters at each end of the format string.
 # expect-go: fmt.Sprintf("%v years old", age)
+# expect-go: fmt.Sprintf("hello, %v!\nage: %v", name, age)
 
 func main() {
     age: int = 30
+    name: str = "world"
     msg: str = f"{age} years old"
+    greeting: str = f"""hello, {name}!
+age: {age}"""
     print(msg)
+    print(greeting)
 }

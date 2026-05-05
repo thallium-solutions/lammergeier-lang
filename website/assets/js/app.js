@@ -360,20 +360,21 @@ func main() {
 }`,
         },
         {
-            heading: "Iter combinators — lazy pipelines",
-            blurb: `<code>Iter</code> chains map / filter / take / reduce without materialising intermediates. Pulls one item at a time, just like Go's range.`,
-            code: `from lamiter import Iter
-
-func main() {
+            heading: "List combinators — map / filter / reduce",
+            blurb: `Lists carry the usual combinators straight out of the box: <code>.map</code>, <code>.filter</code>, <code>.reduce</code>, <code>.any</code>, <code>.all</code>, <code>.foreach</code>. Every callback is a <code>lambda</code>; no helper library needed.`,
+            code: `func main() {
     nums: list[int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
-    top3: list[int] = Iter.from_(nums)
-                          .map(func(x) -> int { return x * x })
-                          .filter(func(x) -> bool { return x > 10 })
-                          .take(3)
-                          .toList()
-    print(top3)                     # [16, 25, 36]
-}`,
+    squares: list[int] = nums.map(lambda x: x * x)
+    big:     list[int] = squares.filter(lambda x: x > 10)
+    total:   int       = big.reduce(lambda acc, x: acc + x, 0)
+
+    print(big)     # [16 25 36 49 64 81 100]
+    print(total)   # 371
+}
+
+# Reach for the lamiter stdlib module when you need a lazy pipeline
+# (one item at a time, with short-circuiting via .take() / .takeWhile()).`,
         },
         {
             heading: "Drop into raw Go when you have to",

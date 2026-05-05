@@ -266,10 +266,9 @@ def extract_surface(src: str) -> ApiSurface:
 
 
 def surface_from_path(path: Path) -> ApiSurface:
-    """Aggregate the public API of every ``.lam`` / ``.tpy`` file
-    under ``path``. Hidden dirs + ``tests`` / ``benchmarks`` /
-    ``extlibs`` / ``build`` are skipped because they're not
-    published surface."""
+    """Aggregate the public API of every ``.lam`` file under
+    ``path``. Hidden dirs + ``tests`` / ``benchmarks`` / ``extlibs`` /
+    ``build`` are skipped because they're not published surface."""
     surface = ApiSurface()
     base = Path(path)
     if base.is_file():
@@ -282,7 +281,7 @@ def surface_from_path(path: Path) -> ApiSurface:
             continue
         if any(part in skip_dirs or part.startswith(".") for part in p.parts):
             continue
-        if p.suffix not in (".lam", ".tpy"):
+        if p.suffix != ".lam":
             continue
         try:
             text = p.read_text(encoding="utf-8")

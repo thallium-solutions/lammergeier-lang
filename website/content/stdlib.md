@@ -57,6 +57,23 @@ from lamstrings import Strings
 | `Strings.isAlpha(s)` / `isDigit(s)` / `isAlnum(s)` / `isSpace(s)` / `isEmpty(s)` / `isBlank(s)` | `bool` |
 | `Strings.startsWith(s, p)` / `endsWith(s, p)` / `containsAny(s, chars)` | `bool` |
 | `Strings.indent(s, prefix)` / `dedent(s)` | `str` |
+| `Strings.format(template, *args)` — `fmt.Sprintf`-style formatter (`"%s"` / `"%d"` / `"%v"` verbs) | `str` |
+
+`Strings` is also the backing for the built-in string-method
+dispatch the transpiler uses for `"hello".toUpper()` /
+`s.split(",")` / `tpl.format(...)` / etc. The Lam-side method
+names match the static-method names *exactly* — there's no
+Python-style alias layer mapping `.upper()` to `.toUpper()`,
+so the language reads the same way whether you call
+`"hi".toUpper()` or `Strings.toUpper("hi")`. Those calls lower
+to `Strings_<method>(...)` at compile time, so the static
+methods listed above are the single source of truth for the
+behaviour. The compiler auto-injects `from lamstrings import
+Strings` whenever any dispatched name appears in your source,
+so the explicit import shown here is only needed when you want
+to call a method that *isn't* covered by the dispatch table
+(e.g. `Strings.fields(s)`, `Strings.center(s, 20)`,
+`Strings.repeat(s, n)`, …).
 
 ### `lamunicode` — `Unicode`
 

@@ -91,7 +91,10 @@ class DefinitionVisitorMixin:
             self._emit_tuple_param_prologue(params_node)
         body_start = len(self.output_lines)
         params_at_start = set(self.declared_vars)
-        with self._scoped(_current_return_type=return_type):
+        with self._scoped(
+            _current_return_type=return_type,
+            _q_propagate_ok=(return_type == "*Result"),
+        ):
             self._visit_suite(suite_node)
         self._emit_unused_local_silencers(body_start, params_at_start)
         self._pop_scope()
@@ -164,16 +167,21 @@ class DefinitionVisitorMixin:
             return
 
         # ── Name resolution ──
-        is_overloaded = len(self._overloaded_functions.get(func_name, set())) > 1
-        arity = self._count_params(params_node)
-        arity_suffix = f"_{arity}" if is_overloaded and func_name != "main" else ""
+        # Prefer the type-aware overload suffix: it's identical to the
+        # arity-only one (``_{arity}``) when no other variant shares
+        # this arity, and extends to ``_{arity}_{sig}`` when it does.
+        # That way single-arity overloads keep their historical Go
+        # names and only genuine same-arity collisions get the longer
+        # mangled form.
+        sig = self._param_types_sig(params_node) if params_node else ()
+        name_suffix = self._overload_suffix_for_sig(func_name, sig)
 
         if func_name == "main":
             go_name = "main"
         elif is_private:
-            go_name = self._go_private_name(func_name) + arity_suffix
+            go_name = self._go_private_name(func_name) + name_suffix
         else:
-            go_name = self._go_public_name(func_name) + arity_suffix
+            go_name = self._go_public_name(func_name) + name_suffix
 
         params_str = self._typed_params_to_go(params_node)
 
@@ -250,7 +258,11 @@ class DefinitionVisitorMixin:
                 self._emit_tuple_param_prologue(params_node)
             body_start = len(self.output_lines)
             params_at_start = set(self.declared_vars)
-            with self._scoped(_in_try_func=True, _current_return_type=current_ret):
+            with self._scoped(
+                _in_try_func=True,
+                _current_return_type=current_ret,
+                _q_propagate_ok=(current_ret == "*Result"),
+            ):
                 self._visit_suite(suite_node)
             self._emit_unused_local_silencers(body_start, params_at_start)
             # Fallback ``return`` so Go's flow analyser is happy even
@@ -277,13 +289,41 @@ class DefinitionVisitorMixin:
             self._emit_tuple_param_prologue(params_node)
         body_start = len(self.output_lines)
         params_at_start = set(self.declared_vars)
-        with self._scoped(_current_return_type=current_ret):
+        with self._scoped(
+            _current_return_type=current_ret,
+            _q_propagate_ok=(current_ret == "*Result"),
+        ):
             self._visit_suite(suite_node)
         self._emit_unused_local_silencers(body_start, params_at_start)
         self._pop_scope()
         self.indent -= 1
         self._emit("}")
         self._emit("")
+
+    def _emit_ancestor_init(self, class_name: str, *, receiver: str,
+                            visited: "set | None" = None) -> None:
+        """Emit ``<receiver>.<Parent> = &Parent{}`` for every
+        embedded ancestor on the ``class_name`` chain, recursing
+        depth-first so grandparents are also initialised.
+
+        ``visited`` tracks the ancestor set already processed on
+        this walk so a pathological diamond / cycle (shouldn't
+        happen for well-formed Lam input) doesn't produce infinite
+        emits.
+        """
+        if visited is None:
+            visited = set()
+        for base in self.class_bases.get(class_name, []):
+            if base in visited:
+                continue
+            visited.add(base)
+            go_base = self._go_public_name(base)
+            path = f"{receiver}.{go_base}"
+            self._emit(f"{path} = &{go_base}{{}}")
+            # Recurse to cover grandparents (``Puppy -> Dog ->
+            # Animal``). The receiver for the next level is the
+            # freshly-allocated parent pointer we just wrote.
+            self._emit_ancestor_init(base, receiver=path, visited=visited)
 
     def _emit_constructor(self, func_name, params_node, suite_node):
         cls = self.current_class
@@ -299,6 +339,23 @@ class DefinitionVisitorMixin:
         self.indent += 1
         self._push_scope()
         self._emit(f"s := &{go_cls}{class_args}{{}}")
+        # Initialise every embedded ancestor pointer to a zero-value
+        # instance so inherited methods can read the shared fields
+        # without segfaulting on a nil receiver. Without this, a
+        # ``Dog(Animal)`` struct ends up with ``s.Animal == nil``
+        # and the first call like ``d.greet()`` — which promotes
+        # through to ``(*Animal).Greet`` — panics on the nil
+        # dereference.
+        #
+        # The walk is recursive so a three-level chain
+        # ``Puppy -> Dog -> Animal`` also initialises the
+        # grandparent: after ``s.Dog = &Dog{}`` we immediately set
+        # ``s.Dog.Animal = &Animal{}`` so a ``p.greet()`` call
+        # (promoting through ``*Dog`` to ``*Animal``) can read
+        # ``name`` without panicking. Cycles are guarded with a
+        # ``visited`` set — they're nonsense in a class hierarchy
+        # but defensive against malformed input.
+        self._emit_ancestor_init(cls, receiver="s")
         if params_node:
             self._declare_params(params_node)
             self._emit_tuple_param_prologue(params_node, skip_self=True)
@@ -337,7 +394,8 @@ class DefinitionVisitorMixin:
         body_start = len(self.output_lines)
         params_at_start = set(self.declared_vars)
         with self._scoped(_self_replacement="s",
-                          _current_return_type=return_type or ""):
+                          _current_return_type=return_type or "",
+                          _q_propagate_ok=(return_type == "*Result")):
             self._visit_suite(suite_node)
         self._emit_unused_local_silencers(body_start, params_at_start)
         self._pop_scope()
@@ -388,12 +446,27 @@ class DefinitionVisitorMixin:
 
         try:
             fields = self.class_fields.get(class_name, [])
+            # Suppress fields that a parent already declares — the
+            # child's ``self.name = name`` assignments promote
+            # transparently to the embedded parent's field, and
+            # declaring ``Name`` twice (once on the child, once on
+            # the embedded ``*Animal``) would shadow the parent copy
+            # and leave inherited methods reading an always-empty
+            # value. This preserves Python's "fields defined on the
+            # parent are visible through ``self`` in the child"
+            # semantics on top of Go's embedded-struct promotion.
+            parent_fields: set = set()
+            for base in self.class_bases.get(class_name, []):
+                for f_name, _ in self.class_fields.get(base, []):
+                    parent_fields.add(f_name)
             self._emit(f"type {go_cls}{tp_clause} struct {{")
             self.indent += 1
             for base in self.class_bases.get(class_name, []):
                 go_base = self._go_public_name(base)
                 self._emit(f"*{go_base}")
             for field_name, go_type in fields:
+                if field_name in parent_fields:
+                    continue
                 json_tag = field_name
                 self._emit(f'{self._go_public_name(field_name)} {go_type} `json:"{json_tag}"`')
             self.indent -= 1

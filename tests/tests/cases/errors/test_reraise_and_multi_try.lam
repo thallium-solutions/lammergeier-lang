@@ -1,0 +1,40 @@
+# Test: bare `raise` inside a catch re-propagates the live
+# exception value (not a synthetic placeholder string), and
+# multiple `try`/`catch` blocks in the same function emit valid
+# Go (historically they duplicated `__lamShouldReturn := false`).
+# expect: inner saw: boom
+# expect: outer caught: boom
+# expect: first caught: one
+# expect: second caught: two
+# expect: done
+
+func deep() {
+    try {
+        raise "boom"
+    } catch e {
+        print(f"inner saw: {e}")
+        raise
+    }
+}
+
+func main() {
+    try {
+        deep()
+    } catch e {
+        print(f"outer caught: {e}")
+    }
+
+    try {
+        raise "one"
+    } catch e {
+        print(f"first caught: {e}")
+    }
+
+    try {
+        raise "two"
+    } catch e {
+        print(f"second caught: {e}")
+    }
+
+    print("done")
+}

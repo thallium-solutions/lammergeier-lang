@@ -28,8 +28,8 @@ class ProductSpec {
             return false
         }
         if self.text != "" {
-            title: str = doc.title.lower()
-            needle: str = self.text.lower()
+            title: str = doc.title.toLower()
+            needle: str = self.text.toLower()
             if not title.contains(needle) {
                 return false
             }

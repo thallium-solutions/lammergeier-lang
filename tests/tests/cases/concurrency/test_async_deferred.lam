@@ -1,0 +1,43 @@
+# Test: await can happen later than the async call site.
+#
+# The basic ``test_async.lam`` awaits at the call site, which
+# leaves open the question of whether ``x = slow()`` actually
+# starts the goroutine (yes, it does) or just lazily records the
+# intention. Here we probe the contract explicitly:
+#
+#   1. ``x = slow(...)`` kicks off the goroutine and returns a
+#      handle. Control flow continues immediately — the subsequent
+#      ``print("all started")`` runs while the three slow tasks
+#      are still asleep.
+#   2. Each ``await x`` collects the handle's result. Awaits can
+#      happen in any order; the handles are independent.
+#   3. Three 100ms sleeps run concurrently, so the whole program
+#      finishes in roughly 0.1s, not 0.3s. We don't assert the
+#      timing (flaky on CI) but we *do* verify the values come
+#      back in the expected order so the handle-to-task binding
+#      stays correct.
+#
+# expect: all started
+# expect: a=10
+# expect: b=20
+# expect: c=30
+
+from lamtime import Time
+
+async func slow(n: int) -> int {
+    Time.sleepMs(100)
+    return n * 10
+}
+
+func main() {
+    # Start three async tasks concurrently.
+    a = slow(1)
+    b = slow(2)
+    c = slow(3)
+    print("all started")
+
+    # Await later — the handles remember their goroutine.
+    print(f"a={await a}")
+    print(f"b={await b}")
+    print(f"c={await c}")
+}

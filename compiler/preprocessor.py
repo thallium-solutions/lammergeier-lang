@@ -7,37 +7,60 @@ import re
 
 # ─── LAMMERGEIER.* namespace ──────────────────────────────────────
 #
-# The transpiler emits a small handful of helper symbols whose names
-# (``Result_Ok``, ``Result_Err``, ``NewError`` …) leak the compiler's
-# Go-side calling convention into the stdlib. Library authors used to
-# call those names directly from inside ``go!`` blocks, which meant
-# every rename of an internal helper would ripple across every
-# library file.
+# Two resolution layers turn ``LAMMERGEIER.<something>`` references
+# into usable Go symbols inside ``go!`` blocks:
 #
-# ``LAMMERGEIER.<name>`` is the supported, stable alias for those
-# helpers. It looks like a normal namespaced call from Lam, but the
-# preprocessor lowers it to the underlying Go symbol before the
-# parser ever sees it. Renaming an internal helper now only needs
-# updating this table.
+# 1. **Literal aliases** — a tiny hard-coded table (below) for values
+#    that don't have a Lam-level symbol we could dispatch through.
+#    Today that's just ``LAMMERGEIER.None`` / ``LAMMERGEIER.nil``,
+#    both lowered to the Go ``nil`` literal by a textual pass that
+#    runs *before* the parser sees the source. Adding a new literal
+#    alias is an O(1) edit here.
 #
-# The preprocessor rewrites the alias *everywhere in the source*
-# (inside and outside ``go!`` blocks) so that a future lifting of
-# these helpers into pure-Lam wrappers — e.g. exposing
-# ``LAMMERGEIER.Result.Ok`` as a real static method on a Lam class
-# — would not require touching call sites.
+# 2. **Dynamic symbol dispatch** — at ``go!``-block *emit* time the
+#    transpiler walks the raw Go text and rewrites every remaining
+#    ``LAMMERGEIER.<tail>`` reference through
+#    :meth:`_resolve_user_lammergeier` (in
+#    ``compiler/visitors/helpers.py``). That pass knows about every
+#    top-level Lam function, class, and ``ClassName.staticMember``
+#    in scope at transpile time, so a stdlib or user ``go!`` block
+#    can write ``LAMMERGEIER.Result.Ok(...)``,
+#    ``LAMMERGEIER.MyClass(...)``, ``LAMMERGEIER.myFunc(...)`` etc.
+#    and the emitter picks the right Go-mangled name without
+#    anything having to be registered up front.
+#
+# The split matters because it keeps the per-source textual pass
+# trivial (no AST needed, no symbol resolution) while the
+# type-aware dispatcher gets to look at the fully populated
+# ``_user_functions`` / ``_class_names`` / ``_static_methods``
+# tables that only exist after :meth:`_collect_function_names`
+# has run.
 
-# Map from the public Lam-facing alias to the actual Go-side
-# identifier the transpiler emits. Order doesn't matter; longest
-# patterns are matched first to avoid prefix collisions.
+# Map from the textual alias to its literal Go replacement. The
+# preprocessor rewrites these *everywhere in the source* (inside
+# and outside ``go!`` blocks) before the parser sees the file.
+# The table used to carry entries for ``Result.Ok``, ``Result.Err``
+# and ``Error`` — the compiler-emitted shortcuts into the
+# ``lamerrors`` stdlib. Those were removed when the dynamic
+# ``LAMMERGEIER.<UserSymbol>`` dispatcher grew the ability to
+# resolve stdlib classes and their static methods by name
+# (see :meth:`_resolve_user_lammergeier` in
+# ``compiler/visitors/helpers.py``). A ``go!`` block now just
+# writes ``LAMMERGEIER.Result.Ok(...)`` — the emitter notices
+# that ``Result`` is in ``_class_names``, ``Ok`` is in
+# ``_static_methods["Result"]``, and rewrites it to ``Result_Ok``
+# exactly as the old hard-coded alias did. Users with custom
+# ``Result``-shaped classes get the same behaviour for free.
+#
+# The only entries kept here are *literal* values that don't have
+# a user-space form — you can't make ``None`` or ``nil``
+# dynamic because they're not symbols on a class/function.
 LAMMERGEIER_ALIASES: Dict[str, str] = {
-    "LAMMERGEIER.Result.Ok":  "Result_Ok",
-    "LAMMERGEIER.Result.Err": "Result_Err",
-    "LAMMERGEIER.Error":      "NewError",
-    # ``LAMMERGEIER.None`` / ``LAMMERGEIER.nil`` are convenience
-    # aliases for the Go nil literal, useful inside ``go!`` blocks
-    # that want to be explicit about emitting a Go ``nil`` rather
-    # than a Lam ``None`` (which lowers the same way today, but
-    # could diverge later).
+    # ``LAMMERGEIER.None`` / ``LAMMERGEIER.nil`` are the only
+    # remaining hard-coded aliases: both lower to the Go ``nil``
+    # literal. They're useful inside ``go!`` blocks that want to
+    # be explicit about emitting a Go ``nil`` rather than a Lam
+    # ``None`` (which lowers the same way today, but could diverge).
     "LAMMERGEIER.None":       "nil",
     "LAMMERGEIER.nil":        "nil",
 }
@@ -83,25 +106,28 @@ def find_unknown_lammergeier_aliases(
     source: str,
     extra_valid: "set[str] | None" = None,
 ) -> list:
-    """Locate every ``LAMMERGEIER.<dotted>`` reference whose alias
-    is unknown.
+    """Locate every ``LAMMERGEIER.<dotted>`` reference whose tail
+    doesn't resolve.
 
     A reference is "known" when its tail (the part after the literal
-    ``LAMMERGEIER.``) matches:
+    ``LAMMERGEIER.``) matches either:
 
-      * an entry in :data:`LAMMERGEIER_ALIASES` (compiler-emitted
-        helper, eg ``Result.Ok``); or
-      * any element of ``extra_valid`` (typically user-defined
-        functions, classes, or ``ClassName.staticMethod`` static
-        method paths). The caller populates this set after parsing
-        so user names participate in the typo guard the same way
-        compiler helpers do.
+      * an entry in :data:`LAMMERGEIER_ALIASES` — the hard-coded
+        literal-value aliases (``None`` / ``nil``); or
+      * any element of ``extra_valid`` — the dynamic symbol set
+        the caller builds after parsing. Typical entries are
+        top-level ``func`` and ``class`` names plus every
+        ``ClassName.staticMember`` path the transpiler discovered.
+        That's what lets ``LAMMERGEIER.Result.Ok`` resolve even
+        though it isn't in the hard-coded table: ``Result`` and
+        ``Result.Ok`` both end up in the caller's ``extra_valid``
+        set because they came from ``lamerrors.lam``.
 
     Returns a list of ``(line, column, full_alias)`` tuples (1-indexed
     line, 1-indexed column to match the rest of the compiler's
     diagnostics). The lookup is purely textual and ignores comments
     via a quick line-by-line filter — false positives here would only
-    fire on a stale spelling of an alias that was never valid, which
+    fire on a stale spelling of a name that was never valid, which
     is exactly the case we want to flag.
     """
     out: list = []

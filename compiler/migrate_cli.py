@@ -161,14 +161,14 @@ def _run_generated(
     program: str, *, stdlib_path: str | None, verbose: bool = False
 ) -> int:
     """Write the generated program to a tempfile, compile it with
-    the existing ``compile_tpy`` pipeline, and run it.
+    the existing ``compile_lam`` pipeline, and run it.
 
     We reuse the compiler's own ``run`` flag so the standard error
     formatting / Go-source display for failures is consistent with
     the rest of the toolchain.
     """
     # Import lazily so ``lamc --help`` doesn't pay the Lark import cost.
-    from compiler.lammergeier import compile_tpy, PROJECT_ROOT
+    from compiler.lammergeier import compile_lam, PROJECT_ROOT
 
     with tempfile.NamedTemporaryFile(
         suffix=".lam", delete=False, prefix="lam_migrate_", mode="w"
@@ -182,7 +182,7 @@ def _run_generated(
             if default_stdlib.is_dir() and any(default_stdlib.glob("*.go")):
                 stdlib_path = str(default_stdlib)
         try:
-            compile_tpy(
+            compile_lam(
                 source_path=src_path,
                 run=True,
                 stdlib_path=stdlib_path,

@@ -75,6 +75,12 @@ DUNDER_OPS = {
     "__invert__": "Invert",
     "__contains__": "Contains",
     "__getitem__": "GetItem", "__setitem__": "SetItem",
+    # Postfix ``x++`` / ``x--``. The methods must return the
+    # updated value because the transpiler rewrites the statement
+    # to ``x = x.__inc__()`` / ``x = x.__dec__()`` — reusing the
+    # same value-returning shape as the other overloads keeps
+    # method emission uniform (no special void-returning path).
+    "__inc__": "Inc", "__dec__": "Dec",
 }
 
 # Go stdlib packages that keep lowercase naming

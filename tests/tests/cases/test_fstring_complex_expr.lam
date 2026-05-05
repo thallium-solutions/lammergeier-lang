@@ -38,8 +38,8 @@ func main() {
 
     # Method chains and string ops still work (the existing path).
     name: str = "alice"
-    print(f"greeting=hello, {name.upper()}!")
+    print(f"greeting=hello, {name.toUpper()}!")
 
     count: int = 3
-    print(f"shout={f'the count is {count}'.upper()}")
+    print(f"shout={f'the count is {count}'.toUpper()}")
 }

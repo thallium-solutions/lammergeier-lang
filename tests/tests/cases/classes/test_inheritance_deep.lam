@@ -1,0 +1,85 @@
+# Test: deeper inheritance semantics.
+#
+# The older ``test_inheritance.lam`` checks that a child can override
+# a parent method. This file covers the bits that were broken until
+# the embedded-parent-pointer fix landed:
+#
+#   * **Inherited method read via child receiver.** ``d.greet()``
+#     resolves to ``Animal.Greet`` through Go's embedded-struct
+#     promotion. The parent pointer must be non-nil *and* share its
+#     ``name`` field with the child (the child's struct stops
+#     re-declaring ``name`` so ``self.name`` in the child's init
+#     writes through to the parent).
+#   * **Overridden method wins on the child.** ``describe`` has both
+#     a parent and a child definition; calling via a ``Dog``
+#     receiver must see the child's version.
+#   * **Three-level chain.** ``Puppy -> Dog -> Animal`` exercises
+#     nested promotions, and a method defined on the grandparent
+#     remains reachable from the grandchild.
+#   * **Overridden method and an inherited method in the same
+#     class.** ``Puppy`` overrides ``describe`` but still inherits
+#     ``greet`` from the grandparent — both work on the same
+#     instance.
+#
+# expect: a-greet: hi, I'm Rex
+# expect: a-describe: Animal: Rex
+# expect: d-greet: hi, I'm Buddy
+# expect: d-describe: Buddy the labrador
+# expect: p-greet: hi, I'm Pip
+# expect: p-describe: Puppy Pip (tiny labrador)
+# expect: p-bark: Pip!
+
+class Animal {
+    func __init__(self, name: str) {
+        self.name: str = name
+    }
+    func greet(self) -> str {
+        return f"hi, I'm {self.name}"
+    }
+    func describe(self) -> str {
+        return f"Animal: {self.name}"
+    }
+}
+
+class Dog(Animal) {
+    func __init__(self, name: str, breed: str) {
+        self.name: str = name
+        self.breed: str = breed
+    }
+    func describe(self) -> str {
+        return f"{self.name} the {self.breed}"
+    }
+    func bark(self) -> str {
+        return f"{self.name}!"
+    }
+}
+
+class Puppy(Dog) {
+    func __init__(self, name: str, breed: str) {
+        self.name: str = name
+        self.breed: str = breed
+    }
+    func describe(self) -> str {
+        return f"Puppy {self.name} (tiny {self.breed})"
+    }
+}
+
+func main() {
+    # Parent: both defined on Animal.
+    a: Animal = Animal("Rex")
+    print(f"a-greet: {a.greet()}")
+    print(f"a-describe: {a.describe()}")
+
+    # Child: inherits greet, overrides describe.
+    d: Dog = Dog("Buddy", "labrador")
+    print(f"d-greet: {d.greet()}")
+    print(f"d-describe: {d.describe()}")
+
+    # Grandchild: inherits greet (from Animal), overrides describe
+    # (from its own body, shadowing Dog's override).
+    p: Puppy = Puppy("Pip", "labrador")
+    print(f"p-greet: {p.greet()}")
+    print(f"p-describe: {p.describe()}")
+    # ... and still reaches the intermediate parent's method.
+    print(f"p-bark: {p.bark()}")
+}

@@ -308,6 +308,35 @@ synthesised `go.mod` between `go mod init` and `go mod tidy`.
 The result: `tidy` honours the resolved versions instead of
 picking the newest tag at random.
 
+### 4.4 Stdlib pins (compiler-bundled)
+
+The Lam stdlib itself wraps third-party Go modules
+(`modernc.org/sqlite` for `lamdb`, `gorilla/websocket` for
+`lamserver_ws`, `BurntSushi/toml` + `gopkg.in/yaml.v3` for
+`lamenv`, …). Their versions are pinned in
+[`compiler/stdlib_go_deps.py`](https://github.com/thallium-solutions/lammergeier-lang/blob/main/compiler/stdlib_go_deps.py)
+under the `STDLIB_GO_PINS` table — moving in lockstep with the
+stdlib source, so a PR that adopts a new upstream API bumps the
+pin in the same commit.
+
+`_collect_go_pins` in `compiler/transpiler.py` seeds the
+project's pin map with `STDLIB_GO_PINS` first, then layers your
+`[go-deps]` and `[go_pins.*]` on top — so:
+
+- A vanilla project with no `[go-deps]` still gets a fully
+  pinned, reproducible build for every stdlib transitive.
+- A project that sets `"github.com/redis/go-redis/v9" = "v9.20.0"`
+  in its own `[go-deps]` overrides the stdlib's pin via Go's
+  MVS rule (the higher version wins).
+- The stdlib's pin set never reaches `lamlib.lock.toml` — the
+  lockfile only carries pins **you** declared, so future stdlib
+  bumps don't churn it. The compiler-bundled set is the
+  single source of truth.
+
+If `go mod tidy` ever surprises you by picking a different
+version for a stdlib dep, check whether you have a competing
+project-level pin first; if not, the stdlib table needs a bump.
+
 ---
 
 ## 5. The lockfile
@@ -527,10 +556,9 @@ lamc tidy [--check] [-q]
 Reconciles `lamlib.toml` `[dependencies]` with the project's
 actual import graph. Spiritually `go mod tidy`:
 
-1. Walk every `.lam` / `.tpy` file under the project root
-   (`extlibs/`, `.git/`, `build/`, `__pycache__`, and
-   `node_modules` pruned) and collect every `from X import …` /
-   `import X` it sees.
+1. Walk every `.lam` file under the project root (`extlibs/`,
+   `.git/`, `build/`, `__pycache__`, and `node_modules` pruned) and
+   collect every `from X import …` / `import X` it sees.
 2. Drop stdlib hits (`lamstrings`, `lamhttp`, etc.) — those are
    built into the compiler and never need a manifest entry.
 3. Diff:

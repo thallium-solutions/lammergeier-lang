@@ -109,6 +109,18 @@ type_func_params: type_expr ("," type_expr)*
            | nonlocal_stmt
            | assert_stmt
            | defer_stmt
+           | inc_stmt
+           | dec_stmt
+
+// Postfix ``i++`` / ``i--`` are *statement* forms (never expressions)
+// to keep parity with Go's rules: the RHS of an expression can't
+// contain a side-effecting increment, and the shape is ambiguous
+// against unary plus/minus otherwise (``x + +y`` would clash with
+// ``x++y``). Classes may override the behaviour by defining
+// ``__inc__`` / ``__dec__``, in which case the transpiler rewrites
+// the statement to ``target = target.__inc__()`` (or ``__dec__``).
+inc_stmt: testlist_star_expr "++"
+dec_stmt: testlist_star_expr "--"
 
 expr_stmt: testlist_star_expr
 

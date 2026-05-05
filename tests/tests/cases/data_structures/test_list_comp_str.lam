@@ -3,6 +3,6 @@
 
 func main() {
     words: list[str] = ["hello", "world", "foo"]
-    upper: list[str] = [w.upper() for w in words]
+    upper: list[str] = [w.toUpper() for w in words]
     print(upper)
 }

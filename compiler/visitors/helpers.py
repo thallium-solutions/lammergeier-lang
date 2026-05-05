@@ -868,6 +868,11 @@ class HelpersMixin:
             var_name = self._get_name(node.children[0])
             if var_name in self._init_param_types:
                 return self._init_param_types[var_name]
+            # Typed locals (``nums: list[int] = ...``) record their
+            # Go type in ``_var_go_types``; reuse it so a call like
+            # ``describe(nums)`` reaches the ``list[int]`` overload.
+            if var_name in self._var_go_types:
+                return self._var_go_types[var_name]
             return "interface{}"
         if d == "funccall":
             func = node.children[0]
@@ -876,6 +881,104 @@ class HelpersMixin:
                 if name and name[0].isupper() and name not in PYTHON_EXCEPTIONS:
                     return "*" + self._go_public_name(name)
         return "interface{}"
+
+    # ─── Overload-by-type signature helpers ────────────────────
+
+    def _param_types_sig(self, params_node, skip_self: bool = False):
+        """Return the Go-type signature of a ``typed_parameters`` node.
+
+        Parameters without an explicit annotation land on
+        ``interface{}`` so "untyped" overloads don't silently
+        collide with each other — they're a single variant from
+        the dispatcher's point of view. Tuple-destructured params
+        are collapsed into the tuple's declared type (that's the
+        single argument the caller actually passes).
+
+        Used by the overload-by-type lowering to (a) detect
+        genuine duplicate definitions at pre-scan time and
+        (b) pick the correct mangled Go name at each call site.
+        Keep this in lockstep with ``_typed_params_to_go``; any
+        drift between the signature used for dispatch and the
+        signature actually emitted on the function header
+        causes silent mis-dispatch.
+        """
+        sig = []
+        if not isinstance(params_node, Tree) or params_node.data != "typed_parameters":
+            return tuple(sig)
+        for child in params_node.children:
+            if child is None:
+                continue
+            if isinstance(child, Tree) and child.data == "typed_paramvalue":
+                param = child.children[0]
+                if isinstance(param, Tree) and param.data == "typed_param":
+                    name = self._get_name(param.children[0])
+                    if skip_self and name == "self":
+                        continue
+                    if len(param.children) > 1:
+                        sig.append(self._type_expr_to_go(param.children[1]))
+                    else:
+                        sig.append("interface{}")
+                elif isinstance(param, Tree) and param.data == "tuple_typed_param":
+                    # ``(a, b): tuple[int, str]`` — the callee sees one
+                    # aggregate argument, so that's what drives dispatch.
+                    type_node = param.children[-1]
+                    sig.append(self._type_expr_to_go(type_node))
+            elif isinstance(child, Tree) and child.data == "typed_starparams":
+                # Variadic callees aren't participating in arity-based
+                # or type-based overload — return a sentinel so the
+                # caller can opt them out uniformly.
+                sig.append("...")
+        return tuple(sig)
+
+    @staticmethod
+    def _sig_suffix(sig) -> str:
+        """Return an identifier-safe suffix for a Go-type signature.
+
+        The common primitive shapes get short readable fragments
+        (``int``, ``str``, ``float``, ``bool``, ``any``); anything
+        else gets a sanitised form of the Go type name with a
+        short sha1 tag appended when the cleaned form is too long
+        or non-unique. The suffix stays stable across rebuilds of
+        the same source — consumers (other ``.lam`` files calling
+        this overload) depend on the mangling being deterministic.
+
+        The arity is *not* folded into this suffix; callers that
+        need arity-level disambiguation (the common case) should
+        prefix the arity themselves (``_{arity}_{sig_suffix}``).
+        """
+        import hashlib
+        import re
+        short = {
+            "int": "int", "int64": "int", "int32": "int32",
+            "string": "str", "float64": "float", "float32": "float32",
+            "bool": "bool", "interface{}": "any", "byte": "byte",
+            "rune": "rune", "...": "var",
+        }
+
+        def encode_one(t):
+            t = (t or "").strip()
+            if t in short:
+                return short[t]
+            # Slices, maps, and pointers get a distinct prefix so
+            # ``[]int`` (``sliceOfInt``) doesn't collapse to the same
+            # suffix as the scalar ``int`` variant.
+            if t.startswith("[]"):
+                return "sliceOf" + encode_one(t[2:])
+            if t.startswith("*"):
+                return "ptr" + encode_one(t[1:])
+            if t.startswith("map["):
+                close = t.find("]")
+                if close != -1:
+                    k, v = t[4:close], t[close + 1:]
+                    return "mapOf" + encode_one(k) + "To" + encode_one(v)
+            cleaned = re.sub(r"[^A-Za-z0-9]", "_", t).strip("_") or "any"
+            if len(cleaned) > 12:
+                tag = hashlib.sha1(t.encode("utf-8")).hexdigest()[:6]
+                cleaned = cleaned[:6] + tag
+            return cleaned
+
+        parts = [encode_one(t) for t in sig]
+        return "_".join(parts) if parts else "void"
 
     # ─── Call argument helpers ─────────────────────────────────
 
@@ -1026,6 +1129,40 @@ class HelpersMixin:
                         continue
                 result.append(child)
         return result
+
+    def _infer_call_arg_sig(self, args_node) -> "tuple":
+        """Infer a Go-type signature from a call's positional arguments.
+
+        Walks the raw argument AST and runs each node through
+        :meth:`_infer_type_from_value`. Used by the overload-by-type
+        dispatcher to pick the matching variant; the returned tuple
+        lines up slot-for-slot with the callee's ``_param_types_sig``.
+
+        Keyword and ``*splat`` arguments don't contribute —
+        the dispatch rules only look at positional types. When a
+        slot's type can't be inferred, the slot collapses to
+        ``interface{}`` (the same fallback used at def sites for
+        un-annotated parameters), which matches an ``interface{}``
+        overload and doesn't force callers to carry explicit
+        annotations on every literal.
+        """
+        sig = []
+        if not isinstance(args_node, Tree) or args_node.data != "arguments":
+            return tuple(sig)
+        for child in args_node.children:
+            if not isinstance(child, Tree):
+                continue
+            node = child
+            if child.data == "argvalue":
+                if len(child.children) == 2:
+                    # ``name=value`` — keyword, skip.
+                    continue
+                if child.children and isinstance(child.children[0], Tree):
+                    node = child.children[0]
+            elif child.data in ("stararg", "kwargs", "starparams"):
+                continue
+            sig.append(self._infer_type_from_value(node))
+        return tuple(sig)
 
     def _fill_default_args(self, func_key: str, args: list) -> list:
         """Fill in default argument values for calls with fewer args than params.

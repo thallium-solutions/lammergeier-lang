@@ -16,13 +16,13 @@ class AppConfig {
 
     func envName(self) -> str {
         parts: list[str] = self.name.split("-")
-        return parts[0].upper()
+        return parts[0].toUpper()
     }
 }
 
 func parseConfig(text: str) -> AppConfig {
     values: dict[str, str] = {}
-    trimmed: str = text.strip()
+    trimmed: str = text.trim()
     lines: list[str] = trimmed.split("\n")
     for line in lines {
         parts: list[str] = line.split("=")

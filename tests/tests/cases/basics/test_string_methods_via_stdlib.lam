@@ -1,0 +1,32 @@
+# expect: HELLO
+# expect: hello
+# expect: World
+# expect: hello-world
+# expect: 5
+# expect: 1
+# expect: true
+# expect: false
+# expect: a/b/c
+# expect: name=alice age=42
+
+# Built-in string-method dispatch goes through the ``lamstrings``
+# stdlib (``Strings_toUpper``, ``Strings_split``, …) — the
+# compiler driver auto-injects ``lamstrings`` whenever any of
+# the dispatched names appears in the source, so this test
+# deliberately does *not* ``from lamstrings import Strings``:
+# if the auto-inject regressed, the build would fail with an
+# undefined-symbol error.
+
+func main() {
+    print("hello".toUpper())
+    print("HELLO".toLower())
+    print("  World  ".trim())
+    print("hello-world".replace("_", "-"))   # idempotent — no underscore present
+    print("hello".count("l") + 3)             # `count` returns 2
+    print("banana".index("ana"))              # → 1, mirrors lamstrings.Strings.index
+    print("hello world".contains("wor"))
+    print("hello".startsWith("xx"))
+    parts: list[str] = ["a", "b", "c"]
+    print("/".join(parts))
+    print("name=%s age=%d".format("alice", 42))
+}

@@ -40,8 +40,8 @@ func main() {
 
     # String methods in f-string
     word: str = "hello"
-    print(word.upper())
-    print("HELLO".lower())
+    print(word.toUpper())
+    print("HELLO".toLower())
 
     # Multiple values
     x: int = 10

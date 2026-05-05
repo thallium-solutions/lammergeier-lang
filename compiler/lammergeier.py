@@ -150,6 +150,15 @@ def auto_semicolons(source: str) -> str:
             result.append(rewritten)
             continue
 
+        # ``i++`` / ``i--`` are complete statements — the trailing
+        # ``+`` / ``-`` must not be treated as a line-continuation
+        # (which would swallow the semicolon and glue the next line
+        # onto the increment). Checked before the generic
+        # binary-operator suppressor below.
+        if len(code) >= 2 and code[-2:] in ("++", "--"):
+            result.append(code + ';' + comment_part)
+            continue
+
         # Don't add ; after these endings — block / literal openers,
         # explicit line-continuation, and binary-operator endings
         # (e.g. ``a +\n    b``).
@@ -990,8 +999,8 @@ def _scan_project_imports(project_root: Path) -> set[str]:
     """Return the set of *module* names imported by user code under
     ``project_root``.
 
-    Walks every ``.lam`` (and legacy ``.tpy``) file in the tree, with
-    ``extlibs/``, ``.git/``, ``build/``, and ``__pycache__`` pruned
+    Walks every ``.lam`` file in the tree, with ``extlibs/``,
+    ``.git/``, ``build/``, and ``__pycache__`` pruned
     so we never count an installed library's own imports against
     the user's manifest. We use a tolerant regex over raw source
     rather than a full parse — the manifest-vs-imports comparison is
@@ -1008,7 +1017,7 @@ def _scan_project_imports(project_root: Path) -> set[str]:
     for path in project_root.rglob("*"):
         if path.is_dir():
             continue
-        if path.suffix not in (".lam", ".tpy"):
+        if path.suffix != ".lam":
             continue
         # Prune anything under a skipped directory at any depth.
         if any(part in skip_dirs for part in path.relative_to(project_root).parts):
@@ -1071,19 +1080,36 @@ def _emit_unused_manifest_dep_warnings(source_dir: Path) -> None:
 def _collect_go_pins(source_dir: Path) -> dict[str, str]:
     """Collect ``{go_module_path: version}`` pins for the project.
 
-    Walks upward from ``source_dir`` looking for a ``lamlib.toml`` /
-    ``lamlib.lock.toml`` pair. Lockfile pins win over the raw
-    manifest (the lockfile is the post-resolution view) but raw
-    manifest pins are still respected as a fallback when no lockfile
-    exists yet — typical for a fresh project that hasn't run
-    ``lamc install`` yet.
+    Three layers contribute, in increasing precedence:
 
-    Returns an empty dict when neither file is present, so callers
-    can no-op cheaply on standalone scripts."""
+    1. **Stdlib pins** — the ``STDLIB_GO_PINS`` table shipped with
+       the compiler. These are the versions the Lam stdlib was
+       tested against; they stop ``go mod tidy`` from silently
+       upgrading a stdlib-linked Go module to a new major between
+       builds. Tidy strips any pin the project doesn't actually
+       need, so listing all stdlib pins unconditionally is safe.
+    2. **Project manifest** — ``[go-deps]`` / ``[go.dependencies]``
+       in the nearest ``lamlib.toml`` walking up from
+       ``source_dir``. Users override a stdlib pin here when they
+       need a newer version.
+    3. **Lockfile** — ``[go_pins.*]`` entries in
+       ``lamlib.lock.toml``, the post-resolution view produced by
+       ``lamc install``. Wins over everything because it encodes
+       the conflict-resolved decisions across the whole transitive
+       library graph.
+
+    Returns a dict that's safe to iterate even on a standalone
+    script with no ``lamlib.toml`` — the stdlib pins still seed
+    ``go.mod`` so the build is reproducible.
+    """
     try:
         from compiler.manifest import Manifest, ManifestError, _parse_toml
     except ImportError:
         return {}
+    try:
+        from compiler.stdlib_go_deps import STDLIB_GO_PINS
+    except ImportError:
+        STDLIB_GO_PINS = {}
 
     here = source_dir.resolve()
     manifest_path = None
@@ -1105,7 +1131,10 @@ def _collect_go_pins(source_dir: Path) -> dict[str, str]:
             break
         here = parent
 
-    pins: dict[str, str] = {}
+    # Seed with stdlib defaults so projects that don't carry any
+    # ``lamlib.toml`` (single-file scripts, one-off tests) still
+    # build against the versions the stdlib was validated with.
+    pins: dict[str, str] = dict(STDLIB_GO_PINS)
     if manifest_path is not None:
         try:
             mf = Manifest.load(manifest_path)
@@ -1150,7 +1179,7 @@ def _inject_go_requires(go_mod_path: Path,
                            encoding="utf-8")
 
 
-def compile_tpy(
+def compile_lam(
     source_path: str,
     output_path: str | None = None,
     emit_go: bool = False,
@@ -1297,48 +1326,6 @@ def compile_tpy(
     _pre_transpiler._collect_function_names(tree)
     _pre_transpiler._collect_class_fields(tree)
 
-    # ── Deferred LAMMERGEIER.* typo guard ──
-    # Now that we've collected user function / class / static-member
-    # names, run the typo guard with the full set of valid aliases:
-    # compiler-emitted helpers + every top-level ``func`` / ``class``
-    # the user defined, plus ``ClassName.staticMember`` paths. This
-    # is what enables ``LAMMERGEIER.<userFunction>`` inside go! blocks
-    # to resolve to the Go-mangled identifier at emission time.
-    extra_valid: set[str] = set()
-    extra_valid |= set(_pre_transpiler._user_functions)
-    extra_valid |= set(_pre_transpiler._class_names)
-    for cls, methods in _pre_transpiler._static_methods.items():
-        for m in methods:
-            extra_valid.add(f"{cls}.{m}")
-    for cls, fields in _pre_transpiler._static_vars.items():
-        for name in fields:
-            extra_valid.add(f"{cls}.{name}")
-    unknown = find_unknown_lammergeier_aliases(source, extra_valid=extra_valid)
-    if unknown:
-        print(f"error: unknown LAMMERGEIER.* alias in {source_path}", file=sys.stderr)
-        valid = sorted({k for k in LAMMERGEIER_ALIASES})
-        src_lines = source.split('\n')
-        from difflib import get_close_matches as _gcm
-        valid_tails = [k.split(".", 1)[1] for k in LAMMERGEIER_ALIASES] + sorted(extra_valid)
-        for lineno, col, full in unknown:
-            tail = full.split(".", 1)[1] if "." in full else full
-            match = _gcm(tail, valid_tails, n=1, cutoff=0.65)
-            suffix = f" — did you mean `LAMMERGEIER.{match[0]}`?" if match else ""
-            print(f"  line {lineno}: `{full}` is not a known alias{suffix}",
-                  file=sys.stderr)
-            start = max(0, lineno - 2)
-            end = min(len(src_lines), lineno + 1)
-            for i in range(start, end):
-                marker = ">>>" if i == lineno - 1 else "   "
-                print(f"    {marker} {i+1:4d} | {src_lines[i]}", file=sys.stderr)
-        print("\n  valid compiler aliases:", file=sys.stderr)
-        for v in valid:
-            print(f"    - {v}", file=sys.stderr)
-        if extra_valid:
-            print("\n  valid user names (functions/classes/static members):", file=sys.stderr)
-            for v in sorted(extra_valid):
-                print(f"    - LAMMERGEIER.{v}", file=sys.stderr)
-        sys.exit(1)
 
     def _extract_imports(node) -> list[str]:
         """Walk ``node`` and return every ``from X import ...`` /
@@ -1390,10 +1377,45 @@ def compile_tpy(
         _walk(node)
         return out
 
-    _pre_transpiler._tpy_imports.extend(_extract_imports(tree))
+    _pre_transpiler._lam_imports.extend(_extract_imports(tree))
 
-    # ── Resolve custom tpy library imports (before main transpile) ──
-    tpy_lib_sources = {}  # {module_name: go_source}
+    # ── Auto-inject ``lamstrings`` when the source uses any of
+    #    the built-in string-method dispatch names ──
+    #
+    # The string-method dispatcher in ``compiler/visitors/expressions.py``
+    # lowers ``"hello".toUpper()`` to a call into the ``lamstrings``
+    # library (``Strings_toUpper(...)``) so the runtime behaviour
+    # comes from a single place — the standard library — rather
+    # than from inlined ``strings.X`` calls scattered through the
+    # transpiler. For that to link, ``lamstrings`` has to be in
+    # the import worklist below.
+    #
+    # The detection is purely textual on the *preprocessed* source
+    # (go! blocks already replaced with markers, comments
+    # stripped). False positives (e.g. a user class that exposes
+    # a method called ``contains``) are harmless: the dispatcher
+    # itself checks the receiver type and routes user-instance
+    # calls to the user method, so the bundled ``Strings_*``
+    # functions just become unused dead code that Go's linker
+    # discards. The point of the auto-inject is to avoid forcing
+    # users to write ``from lamstrings import Strings`` for the
+    # syntactic sugar they expect to "just work".
+    _STRING_METHOD_DISPATCH_NAMES = (
+        "toUpper", "toLower", "trim", "trimLeft", "trimRight",
+        "replace", "split", "join", "startsWith", "endsWith",
+        "index", "count", "contains", "title", "format",
+    )
+    _lam_string_method_re = _re.compile(
+        r"\.(?:" + "|".join(_STRING_METHOD_DISPATCH_NAMES) + r")\s*\("
+    )
+    if (
+        "lamstrings" not in _pre_transpiler._lam_imports
+        and _lam_string_method_re.search(preprocessed)
+    ):
+        _pre_transpiler._lam_imports.append("lamstrings")
+
+    # ── Resolve custom library imports (before main transpile) ──
+    lib_sources = {}  # {module_name: go_source}
     lib_class_names = set()
     lib_static_methods = {}  # {class_name: {method_name, ...}}
     lib_static_vars = {}     # {class_name: {var_name: is_private, ...}}
@@ -1429,15 +1451,19 @@ def compile_tpy(
     lib_dirs = [PROJECT_ROOT / "lib", *extlibs_dirs, source_dir, source_dir / "lib"]
 
     def _resolve_lib_path(mod_name: str):
-        """Locate a library file for ``mod_name`` across ``lib_dirs``."""
+        """Locate a library file for ``mod_name`` across ``lib_dirs``.
+
+        Accepts two shapes per directory: a flat ``<mod>.lam`` file,
+        or a package directory ``<mod>/__init__.lam``. The flat form
+        wins when both exist.
+        """
         for d in lib_dirs:
-            for ext in ('.lam', '.tpy'):
-                candidate = d / f"{mod_name}{ext}"
-                if candidate.exists():
-                    return candidate
-                candidate_dir = d / mod_name / f"__init__{ext}"
-                if candidate_dir.exists():
-                    return candidate_dir
+            candidate = d / f"{mod_name}.lam"
+            if candidate.exists():
+                return candidate
+            candidate_dir = d / mod_name / "__init__.lam"
+            if candidate_dir.exists():
+                return candidate_dir
         return None
 
     # Resolve the user's direct imports, then walk transitively: any
@@ -1462,7 +1488,7 @@ def compile_tpy(
     lib_pre_static_methods: dict[str, set[str]] = {}
     lib_pre_static_vars: dict[str, dict[str, bool]] = {}
     seen: set[str] = set()
-    worklist: list[str] = list(_pre_transpiler._tpy_imports)
+    worklist: list[str] = list(_pre_transpiler._lam_imports)
     while worklist:
         mod_name = worklist.pop()
         if mod_name in seen:
@@ -1494,6 +1520,19 @@ def compile_tpy(
         for imp in _extract_imports(sub_tree):
             if imp not in seen:
                 worklist.append(imp)
+        # If this library calls any string method that the
+        # built-in dispatcher routes through ``Strings_*``,
+        # ``lamstrings`` has to be in the import graph too —
+        # otherwise the per-library transpile would emit calls
+        # to undefined symbols. Skip the inject when the library
+        # *is* lamstrings (it can't import itself).
+        if (
+            mod_name != "lamstrings"
+            and "lamstrings" not in seen
+            and "lamstrings" not in worklist
+            and _lam_string_method_re.search(sub_pre)
+        ):
+            worklist.append("lamstrings")
         # Harvest this library's class names and static members so
         # cross-library static-member access can be lowered correctly.
         try:
@@ -1512,6 +1551,64 @@ def compile_tpy(
             # Pre-scan is best-effort; downstream transpile will
             # surface real errors with full positional diagnostics.
             pass
+
+    # ── Deferred LAMMERGEIER.* typo guard ──
+    # Runs *after* the library worklist so the ``extra_valid`` set
+    # includes every class / static member reachable through a
+    # ``from X import …`` chain. Without that, user code that
+    # writes ``LAMMERGEIER.Result.Ok`` inside a ``go!`` block would
+    # be flagged even though the emitter's dynamic dispatcher is
+    # going to resolve it correctly at go-block emission time.
+    extra_valid: set[str] = set()
+    extra_valid |= set(_pre_transpiler._user_functions)
+    extra_valid |= set(_pre_transpiler._class_names)
+    for cls, methods in _pre_transpiler._static_methods.items():
+        for m in methods:
+            extra_valid.add(f"{cls}.{m}")
+    for cls, fields in _pre_transpiler._static_vars.items():
+        for name in fields:
+            extra_valid.add(f"{cls}.{name}")
+    # Transitive library symbols: every class + static member
+    # harvested from the imports of the current file (and their
+    # transitive imports). The emitter injects these into each
+    # library transpiler too, so what the typo guard accepts here
+    # matches exactly what the dispatcher will resolve later.
+    extra_valid |= set(lib_pre_class_names)
+    for cls, methods in lib_pre_static_methods.items():
+        for m in methods:
+            extra_valid.add(f"{cls}.{m}")
+    for cls, fields in lib_pre_static_vars.items():
+        for name in fields:
+            extra_valid.add(f"{cls}.{name}")
+    unknown = find_unknown_lammergeier_aliases(source, extra_valid=extra_valid)
+    if unknown:
+        print(f"error: unknown LAMMERGEIER.* reference in {source_path}", file=sys.stderr)
+        valid = sorted({k for k in LAMMERGEIER_ALIASES})
+        src_lines = source.split('\n')
+        from difflib import get_close_matches as _gcm
+        valid_tails = [k.split(".", 1)[1] for k in LAMMERGEIER_ALIASES] + sorted(extra_valid)
+        for lineno, col, full in unknown:
+            tail = full.split(".", 1)[1] if "." in full else full
+            match = _gcm(tail, valid_tails, n=1, cutoff=0.65)
+            suffix = f" — did you mean `LAMMERGEIER.{match[0]}`?" if match else ""
+            print(f"  line {lineno}: `{full}` does not resolve to a known "
+                  f"symbol{suffix}", file=sys.stderr)
+            start = max(0, lineno - 2)
+            end = min(len(src_lines), lineno + 1)
+            for i in range(start, end):
+                marker = ">>>" if i == lineno - 1 else "   "
+                print(f"    {marker} {i+1:4d} | {src_lines[i]}", file=sys.stderr)
+        print("\n  LAMMERGEIER.* resolves to either of:", file=sys.stderr)
+        print("    • a compiler-emitted literal alias (for values "
+              "with no Lam-level symbol):", file=sys.stderr)
+        for v in valid:
+            print(f"        - {v}", file=sys.stderr)
+        if extra_valid:
+            print("    • a Lam-level symbol in scope "
+                  "(function / class / static member):", file=sys.stderr)
+            for v in sorted(extra_valid):
+                print(f"        - LAMMERGEIER.{v}", file=sys.stderr)
+        sys.exit(1)
 
     # Stable byte digest of the cross-library class/static-member
     # union so the per-library cache can't return a stale entry that
@@ -1682,7 +1779,7 @@ def compile_tpy(
                  fn_defaults, fn_param_counts, variadic_set,
                  user_fns, priv_fns, method_returns,
                  fn_param_names) = fut.result()
-                tpy_lib_sources[mod_name] = go_src
+                lib_sources[mod_name] = go_src
                 lib_class_names.update(cls_names)
                 for cls_name, methods in static_meths.items():
                     if cls_name not in lib_static_methods:
@@ -1747,7 +1844,7 @@ def compile_tpy(
 
     if emit_go:
         print(go_source)
-        for mod_name, lib_src in tpy_lib_sources.items():
+        for mod_name, lib_src in lib_sources.items():
             print(f"\n// === Library: {mod_name} ===")
             print(lib_src)
         return
@@ -1794,7 +1891,7 @@ def compile_tpy(
         # leading ``@`` and replace the scope separator with ``__``
         # so ``@alice/lamwebp`` → ``lib_alice__lamwebp.go`` (unique
         # because ``__`` isn't permitted in plain module names).
-        for mod_name, lib_src in tpy_lib_sources.items():
+        for mod_name, lib_src in lib_sources.items():
             safe = mod_name.replace("/", "__")
             if safe.startswith("@"):
                 safe = safe[1:]
@@ -2041,7 +2138,7 @@ def _cmd_build(argv: list) -> int:
         if default_stdlib.is_dir() and any(default_stdlib.glob("*.go")):
             stdlib = str(default_stdlib)
 
-    compile_tpy(
+    compile_lam(
         source_path=args.source,
         output_path=args.output,
         emit_go=args.emit_go,
@@ -2100,6 +2197,17 @@ Subcommands:
 Run ``lamc <subcommand> --help`` for details on any subcommand, or
 ``lamc build --help`` for the full list of compile flags.
 """
+
+
+# Back-compat alias. ``compile_tpy`` was the original name when
+# Lam source files carried the ``.tpy`` extension during the
+# Python-flavoured prototype phase. The implementation has always
+# compiled any path the user hands it (extension is not checked),
+# and the canonical name is now ``compile_lam``. Keep the old
+# symbol exported so third-party tooling that imports it via
+# ``from compiler.lammergeier import compile_tpy`` keeps working;
+# new code should use ``compile_lam``.
+compile_tpy = compile_lam
 
 
 def main():

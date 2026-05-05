@@ -133,8 +133,9 @@ import Decoder`) aren't supported *yet* — the current resolver is
 flat, matching how stdlib modules are organised. This is the first
 enhancement on the roadmap once third-party libraries ship.
 
-File extensions accepted: `.lam` (canonical) and `.tpy` (legacy
-transitional extension retained for backwards compatibility).
+The accepted file extension is `.lam`. (The earlier `.tpy`
+transitional extension has been retired; rename any such files in
+flight before compiling against the current toolchain.)
 
 ### Conventions
 

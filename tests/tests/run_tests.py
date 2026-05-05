@@ -113,9 +113,9 @@ def extract_expected(source: str) -> str | None:
     return "\n".join(expected_lines) if expected_lines else None
 
 
-def run_test(tpy_file: Path, verbose: bool = False) -> tuple[bool, str]:
-    """Compile and run a single .tpy file, return (success, message)."""
-    source = tpy_file.read_text(encoding="utf-8")
+def run_test(lam_file: Path, verbose: bool = False) -> tuple[bool, str]:
+    """Compile and run a single .lam file, return (success, message)."""
+    source = lam_file.read_text(encoding="utf-8")
     expected = extract_expected(source)
 
     with tempfile.TemporaryDirectory(prefix="lammergeier_test_") as tmpdir:
@@ -123,7 +123,7 @@ def run_test(tpy_file: Path, verbose: bool = False) -> tuple[bool, str]:
 
         # Compile
         result = subprocess.run(
-            [PYTHON, str(COMPILER), str(tpy_file), "-o", binary],
+            [PYTHON, str(COMPILER), str(lam_file), "-o", binary],
             capture_output=True, text=True, timeout=30,
         )
 
@@ -157,18 +157,18 @@ def run_test(tpy_file: Path, verbose: bool = False) -> tuple[bool, str]:
         return True, f"compiled & ran (no expected output to check)"
 
 
-def _run_test_wrapper(tpy_file_str: str) -> tuple[str, bool, str]:
+def _run_test_wrapper(lam_file_str: str) -> tuple[str, bool, str]:
     """Wrapper for parallel execution (needs picklable args)."""
-    tpy_file = Path(tpy_file_str)
+    lam_file = Path(lam_file_str)
     try:
-        success, message = run_test(tpy_file)
+        success, message = run_test(lam_file)
     except Exception as e:
         success = False
         message = f"EXCEPTION: {e}"
     try:
-        rel = str(tpy_file.relative_to(PROJECT_ROOT))
+        rel = str(lam_file.relative_to(PROJECT_ROOT))
     except ValueError:
-        rel = str(tpy_file)
+        rel = str(lam_file)
     return rel, success, message
 
 

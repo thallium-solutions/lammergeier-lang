@@ -28,7 +28,7 @@ class StatementVisitorMixin:
                 for das in child.children:
                     if isinstance(das, Tree) and das.data == "dotted_as_name":
                         name = self._dotted_name_to_str(das.children[0])
-                        self._tpy_imports.append(name)
+                        self._lam_imports.append(name)
 
     def _visit_import_from(self, node: Tree):
         module_name = None
@@ -45,7 +45,7 @@ class StatementVisitorMixin:
                     module_name = str(child.children[0])
                 break
         if module_name:
-            self._tpy_imports.append(module_name)
+            self._lam_imports.append(module_name)
 
     # ─── Suite ─────────────────────────────────────────────────
 
@@ -288,6 +288,47 @@ class StatementVisitorMixin:
         else:
             self._emit(f"{target_str} {op} {value_str}")
 
+    # ─── Postfix increment / decrement ─────────────────────────
+
+    def _visit_inc_stmt(self, node: Tree):
+        self._emit_inc_dec(node, "__inc__", "Inc", go_op="++")
+
+    def _visit_dec_stmt(self, node: Tree):
+        self._emit_inc_dec(node, "__dec__", "Dec", go_op="--")
+
+    def _emit_inc_dec(self, node: Tree, dunder: str,
+                      dunder_go: str, *, go_op: str):
+        """Shared lowering for ``x++`` / ``x--``. Uses Go's native
+        postfix operator for numeric targets, but routes through the
+        ``__inc__`` / ``__dec__`` dunder when the target's class
+        defines one — emitted as ``x = x.Inc()`` so the method's
+        return value replaces the previous binding.
+
+        ``node.children[0]`` is the ``testlist_star_expr`` LHS. We
+        only support a single target (``a, b++`` is rejected by
+        Go itself, and Lam didn't have a use case to invent a
+        tuple-increment shape). If the user writes a tuple on the
+        left we fall back to emitting ``x++`` on the first element
+        so downstream Go errors surface a clear message.
+        """
+        target_node = node.children[0]
+        target_str = self._expr_to_go(target_node)
+
+        # Class dunder hook — only fires when the target is a plain
+        # variable whose tracked class exposes the override. Field
+        # or indexed targets (``self.count++``) stay on the native
+        # Go path: operator-overloading interop for those would
+        # require l-value support we don't have yet, and the
+        # native postfix handles the common cases.
+        if isinstance(target_node, Tree) and target_node.data == "var":
+            var_name = self._get_name(target_node.children[0])
+            cls = self._var_types.get(var_name)
+            if cls and self._get_dunder_method(cls, dunder):
+                self._emit(f"{target_str} = {target_str}.{dunder_go}()")
+                return
+
+        self._emit(f"{target_str}{go_op}")
+
     def _get_augassign_op(self, node) -> str:
         if isinstance(node, Tree) and node.data == "augassign_op":
             return str(node.children[0])
@@ -403,8 +444,18 @@ class StatementVisitorMixin:
         if node.children and node.children[0] is not None:
             val = self._expr_to_go(node.children[0])
             self._emit(f"panic({val})")
-        else:
-            self._emit('panic("re-raised")')
+            return
+        # Bare ``raise`` / ``throw`` inside a ``catch`` block should
+        # re-raise the exception the catch just recovered, so an outer
+        # ``try`` sees the original value instead of a synthetic
+        # placeholder. ``r`` is the recover binding introduced by the
+        # enclosing ``if r := recover(); r != nil`` guard.
+        if self._in_recover_block:
+            self._emit("panic(r)")
+            return
+        # Fallback for a bare ``raise`` outside any catch — there's no
+        # active panic to re-raise, so emit a distinctive sentinel.
+        self._emit('panic("re-raised")')
 
     def _visit_defer_stmt(self, node: Tree):
         """`defer expr` — schedules ``expr`` to run on function exit.
@@ -677,10 +728,20 @@ class StatementVisitorMixin:
         # the outer function (the value lands in ``retval`` if the
         # function has a typed return; otherwise the bare return is
         # enough).
+        # ``__lamShouldReturn`` / ``__lamPanicked`` are per-function
+        # sentinels shared across every ``try``-with-``catch`` block.
+        # On the first try we introduce them with ``:=``; on every
+        # subsequent try in the *same function* we just reset them
+        # with ``=``, since Go forbids redeclaring an existing
+        # local. Without this gate, writing two independent
+        # ``try/catch`` blocks one after the other produced
+        # ``no new variables on left side of :=``.
         self._emit("// try")
-        self._emit("__lamShouldReturn := false")
+        first_try = "__lamShouldReturn" not in self.declared_vars
+        op = ":=" if first_try else "="
+        self._emit(f"__lamShouldReturn {op} false")
         self._declare_var("__lamShouldReturn")
-        self._emit("__lamPanicked := false")
+        self._emit(f"__lamPanicked {op} false")
         self._declare_var("__lamPanicked")
         self._emit("_ = __lamShouldReturn")
         self._emit("_ = __lamPanicked")
@@ -712,7 +773,10 @@ class StatementVisitorMixin:
         # Catch bodies are also inside the IIFE: flip ``_in_try_iife``
         # so ``return X`` from a catch handler also funnels through
         # ``__lamShouldReturn`` and propagates to the outer function.
-        with self._scoped(_in_try_iife=True):
+        # ``_in_recover_block`` is flipped too so a bare ``raise``
+        # inside the catch re-panics the live ``r`` value instead of
+        # emitting a placeholder string.
+        with self._scoped(_in_try_iife=True, _in_recover_block=True):
             for i, clause in enumerate(catch_clauses_node.children):
                 if isinstance(clause, Tree) and clause.data == "catch_clause":
                     self._emit_catch_clause(clause, i == 0)
@@ -799,15 +863,35 @@ class StatementVisitorMixin:
                     elif exception_type is None:
                         exception_type = str(child)
 
+        # Bind the caught panic value as-is (``interface{}``) rather
+        # than stringifying it eagerly. This preserves the original
+        # object so handlers can:
+        #
+        #   * ``print(err)`` / ``f"saw: {err}"`` — still works because
+        #     ``fmt`` follows ``Stringer`` on the live value (so a
+        #     thrown ``MyError(42, "boom")`` with a ``__str__``
+        #     renders the same way an eager ``fmt.Sprintf("%v", r)``
+        #     bind used to produce).
+        #   * ``ve: ValidationError = err`` — the existing annassign
+        #     unboxer in ``_typed_value_to_go`` inserts a
+        #     ``.(*ValidationError)`` assertion on the rvalue, so the
+        #     user can then reach ``ve.field`` / ``ve.reason``.
+        #
+        # The previous ``fmt.Sprintf("%v", r)`` bind flattened the
+        # exception to a ``string`` at the catch site, which made
+        # field access impossible without a manual type assertion.
         if as_name:
-            self._need_import("fmt")
-            self._emit(f'{as_name} := fmt.Sprintf("%v", r)')
+            self._emit(f'{as_name} := r')
             self._emit(f'_ = {as_name}')
+            # Track the binding as ``interface{}`` so downstream
+            # ``local: ClassName = {as_name}`` annassigns trigger the
+            # class-pointer coercion path.
+            self._var_go_types[as_name] = "interface{}"
         elif exception_type and exception_type[0].islower() and exception_type not in PYTHON_EXCEPTIONS:
             as_name = exception_type
-            self._need_import("fmt")
-            self._emit(f'{as_name} := fmt.Sprintf("%v", r)')
+            self._emit(f'{as_name} := r')
             self._emit(f'_ = {as_name}')
+            self._var_go_types[as_name] = "interface{}"
 
         if suite:
             self._push_scope()
@@ -906,14 +990,19 @@ class StatementVisitorMixin:
         # ``x`` as already declared from a previous IIFE.
         self._push_scope()
         try:
-            if isinstance(body_suite, Tree) and body_suite.data == "suite":
-                for stmt in body_suite.children:
-                    if isinstance(stmt, Tree):
-                        self._visit(stmt)
-            # Implicit success-tail: if control reaches the end of the
-            # body without ``?`` short-circuiting, we synthesise an
-            # ``Ok(nil)`` so the IIFE always returns a non-nil ``*Result``.
-            self._emit("return Result_Ok(nil)")
+            # Inside the ``do { }`` IIFE, ``?`` propagates to the IIFE
+            # itself (which returns ``*Result``), not the enclosing
+            # function — so ``_q_propagate_ok`` is True here even if
+            # the outer function returns something non-Result.
+            with self._scoped(_q_propagate_ok=True):
+                if isinstance(body_suite, Tree) and body_suite.data == "suite":
+                    for stmt in body_suite.children:
+                        if isinstance(stmt, Tree):
+                            self._visit(stmt)
+                # Implicit success-tail: if control reaches the end of the
+                # body without ``?`` short-circuiting, we synthesise an
+                # ``Ok(nil)`` so the IIFE always returns a non-nil ``*Result``.
+                self._emit("return Result_Ok(nil)")
         finally:
             self._pop_scope()
         self.indent -= 1

@@ -1,0 +1,89 @@
+# Test: throwing class instances preserves the object across
+# ``panic`` / ``recover`` so the catch handler can reach the
+# exception's fields via a typed rebinding.
+#
+# Covers:
+#   * bare ``catch err`` binds the *live* object (not its
+#     stringification), so ``f"{err}"`` still works through
+#     the class's ``__str__``.
+#   * ``local: ClassName = err`` inside the handler triggers
+#     the class-pointer coercion pass and unboxes the field
+#     access for the user.
+#   * Deep-stack propagation: a throw three frames down surfaces
+#     at the outermost ``try`` without needing per-frame
+#     plumbing. Without this, an exception-object feature
+#     would only be useful for immediate neighbours.
+#
+# expect: printed: email: missing @
+# expect: field: email
+# expect: reason: missing @
+# expect: caught wrapped: ValidationError[E001] age: not a number
+# expect: code: E001
+# expect: inner field: age
+
+class ValidationError {
+    func __init__(self, field: str, reason: str) {
+        self.field: str = field
+        self.reason: str = reason
+    }
+    func __str__(self) -> str {
+        return f"{self.field}: {self.reason}"
+    }
+}
+
+class DomainError {
+    func __init__(self, code: str, inner: ValidationError) {
+        self.code: str = code
+        self.inner: ValidationError = inner
+    }
+    func __str__(self) -> str {
+        return f"ValidationError[{self.code}] {self.inner}"
+    }
+}
+
+func deepest() {
+    throw ValidationError("email", "missing @")
+}
+
+func middle() {
+    deepest()
+}
+
+func shallow() {
+    middle()
+}
+
+func handler() {
+    try {
+        shallow()
+    } catch err {
+        # Default stringer — `__str__` fires transparently.
+        print(f"printed: {err}")
+        # Unbox to reach the fields.
+        ve: ValidationError = err
+        print(f"field: {ve.field}")
+        print(f"reason: {ve.reason}")
+    }
+}
+
+func raiseWrapped() {
+    try {
+        throw ValidationError("age", "not a number")
+    } catch err {
+        ve: ValidationError = err
+        throw DomainError("E001", ve)
+    }
+}
+
+func main() {
+    handler()
+
+    try {
+        raiseWrapped()
+    } catch err {
+        de: DomainError = err
+        print(f"caught wrapped: {de}")
+        print(f"code: {de.code}")
+        print(f"inner field: {de.inner.field}")
+    }
+}

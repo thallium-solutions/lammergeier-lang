@@ -37,6 +37,20 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     "current_class",
     "_in_try_func",
     "_in_try_iife",
+    # Set while emitting the body of a ``catch`` clause (i.e. inside
+    # the ``if r := recover(); r != nil { ... }`` block). A bare
+    # ``raise`` / ``throw`` with no argument relies on this flag to
+    # re-panic the live recover value ``r`` instead of emitting a
+    # placeholder string, so the outer ``try`` sees the original
+    # exception rather than a synthetic ``"re-raised"`` token.
+    "_in_recover_block",
+    # Set while emitting code whose enclosing return target can
+    # accept a propagated ``*Result`` (i.e. the function declares
+    # ``-> Result`` or we're inside a ``do { } catch`` IIFE). Used
+    # by the ``?`` lowering to decide whether to emit a plain
+    # ``return __qN`` (propagate) or ``panic(__qN)`` (surface the
+    # error as an exception) when the ``Err`` branch fires.
+    "_q_propagate_ok",
     "_in_except_handler",
     "_in_async_func",
     "_async_chan_name",
@@ -96,6 +110,17 @@ class GoTranspiler(
         # the function checks ``__lamShouldReturn`` to decide whether
         # to propagate the return.
         self._in_try_iife: bool = False
+        # ``_in_recover_block`` is a narrower flag that's only true
+        # inside the recover-guard of a catch clause — bare raise
+        # uses it to re-panic the live ``r`` value.
+        self._in_recover_block: bool = False
+        # ``_q_propagate_ok`` is True iff a ``?``-propagated
+        # ``return __q{N}`` would compile — i.e. we're inside a
+        # ``-> Result`` function or a ``do { } catch`` IIFE. When
+        # it's False, ``?`` falls back to ``panic`` so an errant
+        # propagation surfaces as an exception instead of a Go
+        # "too many return values" build failure.
+        self._q_propagate_ok: bool = False
         self._in_except_handler: bool = False
 
         # Self replacement for methods
@@ -149,8 +174,22 @@ class GoTranspiler(
         # Operator overloading
         self._class_dunder_methods: Dict[str, Dict[str, str]] = {}
 
-        # Custom tpy library imports
-        self._tpy_imports: List[str] = []
+        # Lam library modules this file imports. Populated by the
+        # statement visitors as ``from X import ...`` / ``import X``
+        # are seen, then consumed by the driver in
+        # ``lammergeier.py`` to resolve the transitive library
+        # graph before the main transpile pass runs.
+        self._lam_imports: List[str] = []
+
+        # Alias map populated from ``from pkg import Foo as Bar``
+        # and ``import pkg as p`` lines by
+        # :meth:`_collect_import_aliases`. Keys are the local
+        # binding (``Bar``); values are the name the library
+        # actually exports (``Foo``). The import-alias pre-pass
+        # rewrites every referenced identifier through this map
+        # so the rest of the pipeline never has to know an alias
+        # was involved.
+        self._import_aliases: Dict[str, str] = {}
 
         # Generator state
         self._in_generator = False
@@ -197,6 +236,14 @@ class GoTranspiler(
 
         # Overloaded functions
         self._overloaded_functions: Dict[str, set] = {}
+        # Authoritative list of variants for same-arity type-based
+        # overload dispatch. Each entry is
+        # ``{"arity": int, "sig": tuple[str, ...], "suffix": str}``,
+        # one per definition in source order. The ``suffix`` field
+        # is filled in by ``_finalize_overload_variants`` once the
+        # pre-scan has seen every definition so the def site and
+        # the call site produce the same mangled Go name.
+        self._overload_variants: Dict[str, List[Dict[str, object]]] = {}
 
         # Variadic functions
         self._variadic_functions: set = set()
@@ -312,6 +359,13 @@ class GoTranspiler(
 
         # Pass 0: collect user-defined function names
         self._collect_function_names(tree)
+        # Now that every definition has been registered, walk the
+        # variant lists once to decide each variant's mangled
+        # suffix. Doing this after the recursive collect lets a
+        # forward call in an earlier function see the correct
+        # mangling for a later definition (source order doesn't
+        # constrain call order in Go).
+        self._finalize_overload_variants()
         # Library-imported functions are also "user functions" from the
         # call-site dispatcher's POV — without this, calls to library
         # functions would bypass default-arg filling.
@@ -410,11 +464,23 @@ class GoTranspiler(
             self._func_param_counts[name] = arity
             if params_node:
                 self._collect_param_defaults(name, params_node)
-            # Track overloading (only for non-variadic)
+            # Track overloading (only for non-variadic). We keep
+            # the legacy arity-indexed set alongside the richer
+            # variants list because several call sites still check
+            # the set to decide whether *any* overload mangling is
+            # needed at all — that's cheaper than walking
+            # ``_overload_variants[name]`` on every call.
             if not variadic:
                 if name not in self._overloaded_functions:
                     self._overloaded_functions[name] = set()
                 self._overloaded_functions[name].add(arity)
+                sig = self._param_types_sig(params_node) if params_node else ()
+                self._overload_variants.setdefault(name, []).append({
+                    "arity": arity,
+                    "sig": sig,
+                    # Filled in by ``_finalize_overload_variants``.
+                    "suffix": "",
+                })
 
         elif tree.data == "classdef":
             name_node = tree.children[0]
@@ -483,6 +549,82 @@ class GoTranspiler(
         for child in tree.children:
             if isinstance(child, Tree):
                 self._collect_function_names(child)
+
+    def _finalize_overload_variants(self) -> None:
+        """Assign each overload variant a stable mangled suffix.
+
+        Runs once, after ``_collect_function_names`` has visited
+        every ``funcdef`` in the source and populated
+        ``_overload_variants``. The policy is:
+
+        * **Single variant** — no suffix. The Go function keeps
+          its plain public/private name. This is the vast majority
+          of definitions and the compiler never has to dispatch
+          at the call site.
+        * **Multiple variants, all with distinct arities** —
+          suffix is ``_{arity}``. Same as the legacy arity-only
+          overload path; keeping the shape stable means user-
+          facing tooling (stack traces, ``go tool pprof`` output)
+          looks the same as before for arity-only overloads.
+        * **Multiple variants, some sharing an arity** — suffix
+          is ``_{arity}_{sig_suffix}`` for every variant at that
+          arity so distinct Go symbols never collide. Variants at
+          *other* arities still get the shorter ``_{arity}`` form
+          so we don't churn their names unnecessarily.
+
+        The suffix is written back into each variant dict's
+        ``suffix`` field so def-site emission and call-site
+        dispatch share a single lookup. The function is
+        idempotent: running it twice on the same transpiler
+        instance produces the same suffixes (useful for repeat
+        compiles from the same driver).
+        """
+        for name, variants in self._overload_variants.items():
+            if name == "main":
+                # ``main`` is fixed by Go's runtime; we never mangle it
+                # even if the user somehow overloads it (the semantic
+                # checker already rejects that, so this is defensive).
+                for v in variants:
+                    v["suffix"] = ""
+                continue
+            if len(variants) <= 1:
+                for v in variants:
+                    v["suffix"] = ""
+                continue
+            # Count how many variants share each arity so we know
+            # which variants need the longer ``_{arity}_{sig}``
+            # form and which can stick with the plain ``_{arity}``.
+            arity_counts: Dict[int, int] = {}
+            for v in variants:
+                a = int(v["arity"])  # type: ignore[arg-type]
+                arity_counts[a] = arity_counts.get(a, 0) + 1
+            for v in variants:
+                a = int(v["arity"])  # type: ignore[arg-type]
+                if arity_counts[a] > 1:
+                    v["suffix"] = f"_{a}_{self._sig_suffix(v['sig'])}"
+                else:
+                    v["suffix"] = f"_{a}"
+
+    def _overload_suffix_for_sig(self, name: str, sig):
+        """Return the Go name suffix for the variant of ``name``
+        whose parameter signature equals ``sig``.
+
+        Used at both def sites (to mangle the emitted function
+        header) and call sites (after resolving which variant
+        the caller targets). Falls back to the arity-only
+        suffix when no exact signature match is found — that
+        keeps arity-only overloads (the pre-existing case)
+        working even if the caller can't type-infer one of the
+        arguments.
+        """
+        variants = self._overload_variants.get(name) or []
+        for v in variants:
+            if tuple(v.get("sig") or ()) == tuple(sig):
+                return v.get("suffix", "") or ""
+        # Fallback: arity-only match (legacy path).
+        if len(self._overloaded_functions.get(name, set())) > 1:
+            return f"_{len(sig)}"
+        return ""
 
     def _count_params(self, params_node, skip_self=False) -> int:
         if not isinstance(params_node, Tree) or params_node.data != "typed_parameters":

@@ -3,6 +3,7 @@
 
 go! {
     import (
+        "fmt"
         "strings"
         "unicode"
     )
@@ -296,6 +297,23 @@ class Strings {
                 }
             }
             return strings.Join(lines, "\n")
+        }
+    }
+
+    static func format(template: str, *args: any) -> str {
+        #- Substitute Go-style format verbs (``%v``, ``%s``,
+           ``%d`` …) in ``template`` with the variadic ``args``.
+
+           This is what `.format()` on a string literal lowers to:
+
+               "value: %d, name: %s".format(42, "alice")
+               # → "value: 42, name: alice"
+
+           Lam's ``str.format`` is intentionally *Go-flavoured*
+           rather than Python-flavoured (``"{}".format(...)``)
+           because the runtime is ``fmt.Sprintf`` underneath. -#
+        go! {
+            return fmt.Sprintf(template, args...)
         }
     }
 }

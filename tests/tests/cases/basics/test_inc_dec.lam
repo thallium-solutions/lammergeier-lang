@@ -1,0 +1,56 @@
+# Test: postfix ``i++`` / ``i--`` operators.
+#
+# Covers:
+#   * numeric int target using Go-native ``++`` / ``--``
+#   * class target routing through ``__inc__`` / ``__dec__`` dunders
+#   * multiple consecutive increments on the same line via `;`
+#   * automatic-semicolon handling when the line ends in ``++``
+#     (the auto-semicolon pass must not treat the trailing ``+``
+#     as a line-continuation)
+#
+# expect: 1
+# expect: 2
+# expect: 1
+# expect: 4
+# expect: Counter(10)
+# expect: Counter(11)
+# expect: Counter(10)
+
+class Counter {
+    func __init__(self, n: int) {
+        self.n: int = n
+    }
+    func __inc__(self) -> Counter {
+        return Counter(self.n + 1)
+    }
+    func __dec__(self) -> Counter {
+        return Counter(self.n - 1)
+    }
+    func __str__(self) -> str {
+        return f"Counter({self.n})"
+    }
+}
+
+func main() {
+    # Native int increment.
+    i: int = 0
+    i++
+    print(i)
+    i++
+    print(i)
+    i--
+    print(i)
+
+    # Chained on one line (compound-stmt semicolons).
+    j: int = 0; j++; j++; j++; j++
+    print(j)
+
+    # Overloaded increment — rebinds the variable to the
+    # returned instance.
+    c: Counter = Counter(10)
+    print(c)
+    c++
+    print(c)
+    c--
+    print(c)
+}

@@ -1919,15 +1919,15 @@ def _tidy_find_manifest(start: Path) -> Optional[Path]:
 
 def _tidy_scan_imports(project_root: Path) -> Dict[str, Path]:
     """Return ``{module_name: first_seen_path}`` for every ``from X
-    import …`` / ``import X`` line in the project's ``.lam`` /
-    ``.tpy`` files. Skips ``extlibs/`` and the usual auto-generated
-    directories so we never count a third-party lib's own imports
-    against the user's manifest.
+    import …`` / ``import X`` line in the project's ``.lam`` files.
+    Skips ``extlibs/`` and the usual auto-generated directories so we
+    never count a third-party lib's own imports against the user's
+    manifest.
     """
     skip = {"extlibs", ".git", "build", "__pycache__", "node_modules"}
     seen: Dict[str, Path] = {}
     for path in project_root.rglob("*"):
-        if path.is_dir() or path.suffix not in (".lam", ".tpy"):
+        if path.is_dir() or path.suffix != ".lam":
             continue
         rel_parts = path.relative_to(project_root).parts
         if any(part in skip for part in rel_parts):

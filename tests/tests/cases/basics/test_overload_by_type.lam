@@ -1,0 +1,50 @@
+# expect: int path: 42
+# expect: str path: hello!
+# expect: float path: 2.5
+# expect: list path: 3 items
+# expect: greet int: num=7
+# expect: greet str: name=alice
+
+# Function overloading with the SAME arity but DIFFERENT parameter
+# types. The compiler picks the variant that matches each call's
+# inferred argument type — ``describe(42)`` routes to the ``int``
+# overload even though ``describe(str)`` has the same arity.
+
+func describe(x: int) -> str {
+    return f"int path: {x}"
+}
+
+func describe(x: string) -> str {
+    return f"str path: {x}!"
+}
+
+func describe(x: float) -> str {
+    return f"float path: {x}"
+}
+
+func describe(xs: list[int]) -> str {
+    return f"list path: {len(xs)} items"
+}
+
+# Mixed with an arity-2 overload — the pre-existing arity-only path
+# must keep working alongside the new type-based dispatcher.
+func greet(age: int, kind: string) -> str {
+    _ = kind
+    return f"greet int: num={age}"
+}
+
+func greet(name: string, kind: string) -> str {
+    _ = kind
+    return f"greet str: name={name}"
+}
+
+func main() {
+    print(describe(42))
+    print(describe("hello"))
+    print(describe(2.5))
+    nums: list[int] = [1, 2, 3]
+    print(describe(nums))
+
+    print(greet(7, "years"))
+    print(greet("alice", "person"))
+}

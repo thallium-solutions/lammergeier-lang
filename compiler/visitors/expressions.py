@@ -37,26 +37,39 @@ class ExpressionVisitorMixin:
         raw = self._expr_to_go(node)
         # ── Class-pointer coercion ─────────────────────────────
         # When annassign targets a Lam class (``go_type`` is
-        # ``*<ClassName>``) and the value is an attribute access on
-        # another Lam object (``r.error`` / ``r.value``), the
-        # attribute type at the Go level is ``interface{}``. Wrap the
-        # rvalue in a type assertion so the declaration typechecks:
+        # ``*<ClassName>``) and the value is either:
+        #
+        #   * an attribute access on another Lam object
+        #     (``r.error`` / ``r.value`` — the attribute's Go type is
+        #     ``interface{}``), or
+        #   * a bare variable reference whose tracked Go type is
+        #     ``interface{}`` (e.g. an ``err`` bound by a ``catch``
+        #     clause — we now preserve the live panic value rather
+        #     than stringifying it, so typed unboxing of the caught
+        #     object is the natural way to reach its fields),
+        #
+        # wrap the rvalue in a type assertion so the declaration
+        # typechecks:
         #
         #     err: Error = r.error
         #   → var err *Error = r.Error.(*Error)
         #
-        # Restricted to ``getattr`` so that function calls which
-        # already return a ``*Class`` aren't double-cast (we don't
-        # track return types precisely enough to tell them apart
-        # through the generic ``_infer_type_from_value`` path).
-        if (
-            go_type.startswith("*")
-            and isinstance(node, Tree) and node.data == "getattr"
-            and not raw.endswith(f".({go_type})")
-        ):
+        #     ve:  ValidationError = err   # err bound by catch
+        #   → var ve *ValidationError = err.(*ValidationError)
+        #
+        # ``getattr`` / ``var`` are the only shapes we coerce —
+        # function calls and constructors already return typed
+        # ``*Class`` values and double-casting would be a silent
+        # correctness hazard if the return type ever drifts.
+        if go_type.startswith("*") and not raw.endswith(f".({go_type})"):
             class_name = go_type[1:]
-            if class_name in self._class_names:
-                return f"{raw}.({go_type})"
+            if class_name in self._class_names and isinstance(node, Tree):
+                if node.data == "getattr":
+                    return f"{raw}.({go_type})"
+                if node.data == "var":
+                    var_name = self._get_name(node.children[0])
+                    if self._var_go_types.get(var_name) == "interface{}":
+                        return f"{raw}.({go_type})"
         return raw
 
     # ─── Main expression dispatcher ───────────────────────────
@@ -183,11 +196,29 @@ class ExpressionVisitorMixin:
             # as ``interface{}`` and either flows through an untyped
             # context (function arg of type ``any``, ``return``) or
             # the user lifts to a typed local for the cast.
+            #
+            # When the enclosing function *doesn't* return a
+            # ``Result`` (and we aren't inside a ``do { } catch``
+            # IIFE) there's no valid ``return`` target for the
+            # propagated ``*Result``. The semantic checker already
+            # warned the author, but we still need to emit *something*
+            # that compiles. Falling back to ``panic(__qN.Error)``
+            # turns an ``Err`` into an exception, which is recoverable
+            # via a ``try { } catch { }`` upstream and surfaces the
+            # underlying error message instead of Go's opaque
+            # "too many return values" build failure.
             inner_str = self._expr_to_go(node.children[0])
             self._q_temp_counter += 1
             tmp = f"__q{self._q_temp_counter}"
             self._emit(f"{tmp} := {inner_str}")
-            self._emit(f"if !{tmp}.Ok() {{ return {tmp} }}")
+            if self._q_propagate_ok:
+                self._emit(f"if !{tmp}.Ok() {{ return {tmp} }}")
+            else:
+                self._emit(
+                    f"if !{tmp}.Ok() {{ "
+                    f"panic({tmp}.Error) "
+                    f"}}"
+                )
             self._declare_var(tmp)
             cast = self._propagate_cast_hint
             if cast and cast != "interface{}":
@@ -601,29 +632,65 @@ class ExpressionVisitorMixin:
             return f"{func_str}({', '.join(args)})"
 
         # ── String methods ──
-        def _str_method(pkg, template):
-            def handler(o, a):
-                self._need_import(pkg)
-                return template.format(o=o, args=', '.join(a), a0=a[0] if a else '" "')
-            return handler
+        #
+        # Every Lam-side string method (``"hello".toUpper()``,
+        # ``s.split(",")``, …) lowers to a call into the
+        # ``lamstrings`` standard library rather than inlining a
+        # ``strings.X`` Go call here. The dispatch key matches the
+        # Lam-facing static-method name on ``lamstrings.Strings``
+        # exactly (``toUpper``, ``trim``, ``startsWith``,
+        # ``index``, …) so the language surface reads like the
+        # stdlib: ``"hi".toUpper()`` and ``Strings.toUpper("hi")``
+        # are spelled the same way and run the same code. The
+        # Go-mangled emission is ``Strings_<methodName>``.
+        # See ``lib/lamstrings.lam`` for the reference
+        # implementations; the compiler driver auto-injects
+        # ``lamstrings`` into the import worklist whenever any of
+        # these dispatch names appears in user source, so callers
+        # don't need ``from lamstrings import Strings`` for the
+        # syntactic sugar to "just work".
+        #
+        # The whitespace cutset for argument-less ``.trimLeft()``
+        # / ``.trimRight()`` matches what the Go-level
+        # ``strings.TrimLeft`` / ``TrimRight`` defaults used to be
+        # — a small, ASCII-only set, not the full Unicode
+        # whitespace class that ``strings.TrimSpace`` would use.
+        # We keep that exact behaviour so existing user code
+        # doesn't change semantics under the refactor.
+        _ws_arg = '" \\t\\n"'
 
-        ws_chars = ' \\t\\n'
+        def _strings_call(method, *args):
+            return f"Strings_{method}({', '.join(args)})"
+
         string_methods = {
-            "upper": _str_method("strings", "strings.ToUpper({o})"),
-            "lower": _str_method("strings", "strings.ToLower({o})"),
-            "strip": _str_method("strings", "strings.TrimSpace({o})"),
-            "lstrip": _str_method("strings", 'strings.TrimLeft({o}, "' + ws_chars + '")'),
-            "rstrip": _str_method("strings", 'strings.TrimRight({o}, "' + ws_chars + '")'),
-            "replace": _str_method("strings", "strings.ReplaceAll({o}, {args})"),
-            "split": _str_method("strings", "strings.Split({o}, {a0})"),
-            "join": lambda o, a: (self._need_import("strings"), "strings.Join(" + a[0] + ", " + o + ")")[1] if a else o,
-            "startswith": _str_method("strings", "strings.HasPrefix({o}, {a0})"),
-            "endswith": _str_method("strings", "strings.HasSuffix({o}, {a0})"),
-            "find": _str_method("strings", "strings.Index({o}, {a0})"),
-            "count": _str_method("strings", "strings.Count({o}, {a0})"),
-            "contains": _str_method("strings", "strings.Contains({o}, {a0})"),
-            "title": _str_method("strings", "strings.Title({o})"),
-            "format": lambda o, a: (self._need_import("fmt"), "fmt.Sprintf(" + o + ", " + ", ".join(a) + ")")[1],
+            "toUpper":    lambda o, a: _strings_call("toUpper", o),
+            "toLower":    lambda o, a: _strings_call("toLower", o),
+            "trim":       lambda o, a: _strings_call("trim", o),
+            # ``Strings.trimLeft`` / ``trimRight`` need an explicit
+            # cutset; default to ASCII whitespace when the Lam call
+            # was bare (``s.trimLeft()``).
+            "trimLeft":   lambda o, a: _strings_call("trimLeft", o, a[0] if a else _ws_arg),
+            "trimRight":  lambda o, a: _strings_call("trimRight", o, a[0] if a else _ws_arg),
+            "replace":    lambda o, a: _strings_call("replace", o, *a),
+            "split":      lambda o, a: _strings_call("split", o, a[0]),
+            # ``"sep".join(parts)`` — the receiver is the
+            # separator, the argument is the sequence, but
+            # ``Strings.join(parts, sep)`` takes them the other
+            # way around. The dispatcher swaps them so callers
+            # keep the familiar receiver-as-separator ordering.
+            "join":       lambda o, a: _strings_call("join", a[0], o) if a else o,
+            "startsWith": lambda o, a: _strings_call("startsWith", o, a[0]),
+            "endsWith":   lambda o, a: _strings_call("endsWith", o, a[0]),
+            # ``Strings.index`` returns -1 when the substring is
+            # absent — same shape as Go's ``strings.Index``.
+            "index":      lambda o, a: _strings_call("index", o, a[0]),
+            "count":      lambda o, a: _strings_call("count", o, a[0]),
+            "contains":   lambda o, a: _strings_call("contains", o, a[0]),
+            "title":      lambda o, a: _strings_call("title", o),
+            # ``Strings.format`` is variadic so the ``args`` are
+            # forwarded as-is. Empty ``a`` is fine — Sprintf with
+            # no extras just returns the template untouched.
+            "format":     lambda o, a: _strings_call("format", o, *a),
         }
 
         if raw_method and raw_obj is not None:
@@ -644,8 +711,8 @@ class ExpressionVisitorMixin:
             # ``strings.Count(o, " ")`` would silently emit nonsense.
             # Fall through to user-method dispatch in that case.
             string_methods_need_arg = {
-                "replace", "split", "join", "startswith", "endswith",
-                "find", "count", "contains", "format",
+                "replace", "split", "join", "startsWith", "endsWith",
+                "index", "count", "contains", "format",
             }
 
             if raw_method in string_methods and not (
@@ -976,8 +1043,16 @@ class ExpressionVisitorMixin:
                 go_name = func_str
             args = self._apply_call_kwargs(func_str, args, kwargs)
             args = self._fill_default_args(func_str, args)
-            if len(self._overloaded_functions.get(func_str, set())) > 1:
-                go_name = f"{go_name}_{len(args)}"
+            # Overload dispatch. Prefer a type-matching variant
+            # (``_{arity}_{sig}``) so two defs like ``foo(int)`` and
+            # ``foo(string)`` both survive to Go; when we can't
+            # infer a precise type for every argument the helper
+            # falls back to the arity-only suffix so arity-only
+            # overloads keep their pre-existing Go names.
+            if (len(self._overloaded_functions.get(func_str, set())) > 1
+                    or len(self._overload_variants.get(func_str, [])) > 1):
+                call_sig = self._infer_call_arg_sig(args_node)
+                go_name = f"{go_name}{self._overload_suffix_for_sig(func_str, call_sig)}"
             return f"{go_name}({', '.join(args)})"
 
         # ── Local variable (lambda, etc.) ──
@@ -1160,10 +1235,15 @@ class ExpressionVisitorMixin:
     def _fstring_to_go(self, node: Tree) -> str:
         self._need_import("fmt")
         raw = str(node.children[0])
-        if raw.startswith("f'") or raw.startswith('f"'):
-            raw = raw[2:-1]
-        elif raw.startswith("f'''") or raw.startswith('f"""'):
+        # Triple-quoted ``f"""..."""`` must be tested *before* the
+        # single-quoted forms — every triple-quoted literal also
+        # starts with ``f"``/``f'`` so the shorter prefix would win
+        # and leave two quote characters dangling on each end, which
+        # then leak into the emitted Go format string.
+        if raw.startswith('f"""') or raw.startswith("f'''"):
             raw = raw[4:-3]
+        elif raw.startswith("f'") or raw.startswith('f"'):
+            raw = raw[2:-1]
 
         fmt_str = ""
         go_args = []

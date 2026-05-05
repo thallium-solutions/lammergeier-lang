@@ -7,5 +7,5 @@ func hello(name: str) -> str {
 }
 
 func shout(name: str) -> str {
-    return hello(name).upper()
+    return hello(name).toUpper()
 }

@@ -420,8 +420,17 @@ func Add(a int, b int) int {
 - Variadics (`func f(xs: ...int)`) become Go variadics (`xs ...int`). The
   compiler remembers variadic functions in `_variadic_functions`.
 - `private func` or a leading underscore produces an unexported name.
-- Overloads (same name, different arities) are emitted as
-  `Name_<argcount>` and dispatched at the call site.
+- Overloads dispatch on **arity *and* parameter type**. The
+  transpiler walks the per-name `_overload_variants` list after
+  the pre-scan and assigns each variant a stable Go-name suffix:
+  `Name_<argcount>` when arities differ, `Name_<argcount>_<sigSuffix>`
+  when two variants share an arity (`Describe_1_int` vs
+  `Describe_1_str` vs `Describe_1_sliceOfInt`). Call sites build
+  the same signature from each argument's inferred Go type
+  (`_infer_call_arg_sig`) and pick the matching suffix; typed
+  locals participate via `_var_go_types` so `nums: list[int]`
+  routes to the `list[int]` overload. Variadic functions
+  (`*args`) still can't be overloaded.
 
 Bare references to user functions (e.g. passing `handler` as a value)
 resolve to the Go public name so they can be used as first-class values.
@@ -721,6 +730,86 @@ requiring users to manage Go modules manually. The relevant flow:
 If you want a stdlib-only build (no network at compile time), pin every
 dependency by vendoring or by writing equivalent kernels in pure Go via
 inline `go!` blocks. There are no Lam-side hooks for offline builds yet.
+
+### Stdlib Go-module pins
+
+Third-party Go modules that the Lam stdlib itself depends on are
+listed with frozen versions in
+`compiler/stdlib_go_deps.py::STDLIB_GO_PINS`. Examples: `lamdb`
+blank-imports `modernc.org/sqlite`, `lamserver_ws` imports
+`github.com/gorilla/websocket`, `lamenv` reaches into
+`github.com/BurntSushi/toml` and `gopkg.in/yaml.v3`, and so on.
+Each entry is a `<go_module_path> = "<v…>"` pair sorted by
+module path for diff stability.
+
+`_collect_go_pins` in `compiler/transpiler.py` seeds the
+project's pin map with `STDLIB_GO_PINS` first and then layers
+project-side pins (from `lamlib.toml` `[go-deps]` and
+`lamlib.lock.toml` `[go_pins.*]`) on top. Project pins win over
+stdlib pins via Go's MVS rule (the higher version is selected),
+so users can still upgrade an individual stdlib transitive
+without forking the compiler. Every other stdlib module stays
+reproducible across builds — no silent upgrade between when the
+stdlib was last tested and when `go mod tidy` runs in your build.
+
+Updating a pin: bump the entry in `STDLIB_GO_PINS`, update the
+stdlib library's `go!` block if the new module API changed, and
+run the regression suite. The file's docstring carries the
+checklist.
+
+## Built-in string methods → `lamstrings`
+
+`"hello".toUpper()`, `s.split(",")`, `parts.join("/")` and
+friends don't lower to inline `strings.X` Go calls. The
+dispatcher in `compiler/visitors/expressions.py::_funccall_to_go`
+(search for `string_methods`) emits a call into the `lamstrings`
+standard library instead. The Lam-side method names match the
+`lamstrings.Strings` static-method names verbatim —
+`"hi".toUpper()` and `Strings.toUpper("hi")` are spelled the
+same way and dispatch to the same Go function:
+
+| Lam call                  | Go emission                            |
+|---------------------------|----------------------------------------|
+| `"…".toUpper()`           | `Strings_toUpper("…")`                 |
+| `"…".toLower()`           | `Strings_toLower("…")`                 |
+| `s.trim()`                | `Strings_trim(s)`                      |
+| `s.trimLeft()` / `(set)`  | `Strings_trimLeft(s, " \t\n")` / `(set)` |
+| `s.trimRight()` / `(set)` | `Strings_trimRight(s, " \t\n")` / `(set)` |
+| `s.replace(o, n)`         | `Strings_replace(s, o, n)`             |
+| `s.split(sep)`            | `Strings_split(s, sep)`                |
+| `sep.join(parts)`         | `Strings_join(parts, sep)`             |
+| `s.startsWith(p)`         | `Strings_startsWith(s, p)`             |
+| `s.endsWith(p)`           | `Strings_endsWith(s, p)`               |
+| `s.index(sub)`            | `Strings_index(s, sub)`                |
+| `s.count(sub)`            | `Strings_count(s, sub)`                |
+| `s.contains(sub)`         | `Strings_contains(s, sub)`             |
+| `s.title()`               | `Strings_title(s)`                     |
+| `tpl.format(*args)`       | `Strings_format(tpl, *args)`           |
+
+Two consequences worth understanding:
+
+1. **`lamstrings` is the single source of truth.** Tweaking how
+   `.toUpper()` behaves (Unicode handling, normalisation rules)
+   means editing `Strings.toUpper` in `lib/lamstrings.lam`. The
+   compiler doesn't carry an inline copy of the lowering.
+2. **The compiler driver auto-injects `lamstrings`.** A textual
+   scan over the preprocessed source (in
+   `compile_lam` and inside the library worklist) appends
+   `lamstrings` to `_lam_imports` whenever any of the dispatched
+   names appears in a `.<method>(` position. The injection runs
+   for both the user file *and* every transitively-imported
+   stdlib library, so `prefix_parser.lam` calling `source.split(" ")`
+   gets `Strings_split` resolved without having to write
+   `from lamstrings import Strings` itself. False positives —
+   say a user class with a `.contains()` method — are harmless:
+   the dispatcher falls back to user-method lowering whenever
+   the receiver is a known class instance, and the unused
+   `Strings_*` symbols get dropped by Go's linker.
+
+The "needs at least one argument" guard still applies: a bare
+`qb.count()` on an unknown receiver shape skips the
+`Strings_count(o, " ")` lowering and falls through to user-method
+dispatch so the build doesn't silently emit nonsense.
 
 ## Lam-side abstractions over Go primitives
 

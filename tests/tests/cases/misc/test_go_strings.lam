@@ -16,22 +16,22 @@ from lamstrings import Strings
 func main() {
     s: str = "Hello, World!"
     print(f"length: {len(s)}")
-    print(f"upper: {s.upper()}")
+    print(f"upper: {s.toUpper()}")
     if s.contains("World") {
         print("contains: true")
     }
     replaced: str = Strings.replace(s, "World", "Go")
-    print(f"replaced: {replaced.lower()}")
+    print(f"replaced: {replaced.toLower()}")
     parts: list[str] = "a,b,c".split(",")
     print(f"split: {len(parts)}")
     trimmed: str = Strings.trim("  hello  ")
     print(f"trim: {trimmed}")
     repeated: str = Strings.repeat("abc", 3)
     print(f"repeat: {repeated}")
-    if s.startswith("Hello") {
+    if s.startsWith("Hello") {
         print("startswith: true")
     }
-    if s.endswith("!") {
+    if s.endsWith("!") {
         print("endswith: true")
     }
     cnt: int = Strings.count("abracadabra", "a")

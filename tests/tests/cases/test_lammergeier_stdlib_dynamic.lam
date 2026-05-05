@@ -1,0 +1,39 @@
+# expect: ok: 42
+# expect: err: boom
+
+# User code references ``LAMMERGEIER.Result.Ok`` / ``.Err`` /
+# ``Error`` *inside* a go! block without any compiler-emitted
+# literal alias for those paths. The dynamic dispatcher in
+# ``_resolve_user_lammergeier`` sees that ``Result`` / ``Error``
+# are classes reachable through the transitive import graph
+# (lamerrors) and rewrites the references to the Go-side mangled
+# names at emission time. If the emitter ever regressed to
+# leaving the raw ``LAMMERGEIER.Result.Ok`` token in the output,
+# ``go build`` would fail loudly.
+
+from lamerrors import Result, Error
+
+func makeOk(v: any) -> Result {
+    _ = v  # referenced inside the go! block below
+    go! {
+        return LAMMERGEIER.Result.Ok(v)
+    }
+}
+
+func makeErr(msg: string) -> Result {
+    _ = msg  # referenced inside the go! block below
+    go! {
+        return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("Demo", msg, nil))
+    }
+}
+
+func main() {
+    r1: Result = makeOk(42)
+    print(f"ok: {r1.unwrap()}")
+
+    r2: Result = makeErr("boom")
+    if not r2.ok() {
+        e: Error = r2.error
+        print(f"err: {e.message}")
+    }
+}

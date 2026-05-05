@@ -337,3 +337,7 @@ Lammergeier Lang, including the compiler, VS Code extension, language server,
 and website code in this repository, is licensed under the Apache License 2.0.
 
 Copyright 2026 Thallium Solutions di Busconi Alessandro.
+
+## Thallium Solutions
+
+Check our website at <a href="https://thallium-solutions.com/en/">https://thallium-solutions.com/en/</a>

@@ -320,7 +320,32 @@ class Vec {
 }
 ```
 
-Supported operators: `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__floordiv__`, `__mod__`, `__pow__`, `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`, `__ge__`, `__and__`, `__or__`, `__xor__`
+Supported operators: `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__floordiv__`, `__mod__`, `__pow__`, `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`, `__ge__`, `__and__`, `__or__`, `__xor__`, `__inc__`, `__dec__`
+
+### Postfix `++` / `--`
+
+Plain integers use the Go-native postfix operator — `i++` emits
+`i++` in Go directly. Classes may opt in to the shape by defining
+`__inc__` / `__dec__`; the methods must return the new value because
+the transpiler rewrites `c++` to `c = c.Inc()`:
+
+```lammergeier
+class Counter {
+    func __init__(self, n: int) { self.n: int = n }
+    func __inc__(self) -> Counter { return Counter(self.n + 1) }
+    func __dec__(self) -> Counter { return Counter(self.n - 1) }
+}
+
+func main() {
+    c: Counter = Counter(0)
+    c++       # -> c = c.Inc()
+    c++
+    c--
+}
+```
+
+`++` / `--` are *statements*, never expressions — you can't embed
+them in a larger expression (matching Go's rules).
 
 ---
 
@@ -616,6 +641,15 @@ The `[...]` form remains the right choice when you want to index
 or slice the result; `(...)` signals that consumers will iterate
 once.
 
+> **Allocation note.** `(...)` is **not** a lazy generator — it
+> lowers to the same "build a `[]T`, then iterate it once" IIFE
+> as `[...]`. A `(x for x in range(10_000_000))` will allocate
+> 10 million entries before the loop body runs. For truly lazy
+> iteration (stream one element at a time, short-circuit via
+> `take` / `takeWhile`) reach for the [`lamiter`](stdlib.md#lamiter)
+> stdlib module or a hand-rolled `yield`-generator function
+> ([see Generators](#generators)).
+
 ---
 
 ## Dictionaries with Non-String Keys
@@ -655,7 +689,7 @@ age: int = 30
 print(f"Name: {name}, Age: {age}")
 print(f"Sum: {3 + 4}")
 print(f"Pi: {3.14159:.2f}")            # Go fmt verb after the colon
-print(f"{name.upper()}")
+print(f"{name.toUpper()}")
 
 # Composite expressions
 items: list[int] = [10, 20, 30]
@@ -765,6 +799,77 @@ print(msg)
 
 ---
 
+## Primitive-Type Methods
+
+Built-in method calls on strings and lists (e.g.
+`"hello".toUpper()`, `xs.append(v)`, `xs.map(fn)`) don't come
+from a class declaration —
+Go's `string` and `[]T` types don't have methods of their own.
+Instead the transpiler pattern-matches the `.<method>()` call site
+at compile time:
+
+- **String methods** lower to a call into the `lamstrings`
+  standard library — `"hi".toUpper()` becomes
+  `Strings_toUpper("hi")`, `s.split(",")` becomes
+  `Strings_split(s, ",")`, and so on. The dispatch *names match
+  the lamstrings static-method names exactly* (`toUpper`, `trim`,
+  `startsWith`, `index`, …) — there's no Python-style alias
+  layer, so the language reads the same way whether you call
+  `"hi".toUpper()` or `Strings.toUpper("hi")`. The Go-side
+  behaviour lives in `lib/lamstrings.lam`, one source of truth
+  for every dispatched method, so overriding or extending a
+  built-in is just an edit in that file. The
+  compiler driver auto-injects `from lamstrings import Strings`
+  into the import worklist whenever any of the dispatched names
+  appears in your source — direct or transitive — so callers
+  never need to write the import explicitly.
+- **List methods** (`append` / `map` / `filter` / `any` / `all`
+  / `foreach` / `reduce` / `sort` / …) lower to either a Go
+  primitive (`append(xs, 4)`) or an inline IIFE that builds the
+  result. Lists don't go through a stdlib library — there's no
+  `Lists` class to host them — but the dispatch convention is
+  the same: the transpiler picks the lowering only when the
+  receiver is genuinely a `list[T]`.
+
+The rewrite fires only when the receiver is known to be of the
+right primitive type (either because its declared annotation is
+`str` / `list[T]`, or because we inferred the type from the
+expression shape). If the receiver is an instance of a user class
+that happens to define a method with the same name — say a
+`Counter` with its own `.count()` — the built-in rewrite steps out
+of the way and the user method wins.
+
+```lammergeier
+# Strings — lower to lamstrings.Strings static methods.
+s: str = "  hello, WORLD  "
+print(s.toUpper())                 # Strings_toUpper(s)
+print(s.split(","))                # Strings_split(s, ",")
+print("hi".startsWith("h"))        # Strings_startsWith("hi", "h")
+print("banana".index("ana"))       # Strings_index("banana", "ana")
+print("name=%s age=%d".format("alice", 42))
+                                   # Strings_format("name=…", "alice", 42)
+
+# Lists.
+xs: list[int] = [1, 2, 3]
+xs.append(4)                       # xs = append(xs, 4)
+doubled: list[int] = xs.map(lambda x: x * 2)
+                                   # IIFE that builds a new []int
+print(xs.any(lambda x: x > 2))     # IIFE with early return -> bool
+```
+
+The full set of dispatched string methods is `toUpper`,
+`toLower`, `trim`, `trimLeft`, `trimRight`, `replace`, `split`,
+`join`, `startsWith`, `endsWith`, `index`, `count`, `contains`,
+`title`, `format` — the same identifiers `lamstrings.Strings`
+exposes as static methods. See [TRANSPILATION.md](TRANSPILATION.md)
+for the emission details, including which method names require
+at least one argument (`replace` / `split` / `index` / `count` /
+`contains` / `format` — a zero-arg call like `qb.count()` falls
+through to user-method dispatch so the built-in doesn't silently
+emit `Strings_count(o, " ")`).
+
+---
+
 ## Comments
 
 Single-line comments with `#`:
@@ -837,6 +942,97 @@ func validate(n: int) {
 
 A bare `raise` (or bare `throw`) inside a `catch` re-raises the
 currently-active exception, identical to Python.
+
+### Rich exception objects — throw any class instance
+
+`throw` accepts any value, not just strings. A class instance
+carries its own fields through `panic`/`recover` intact, so a
+handler can either print it via the class's `__str__` or rebind
+it to a typed local to reach the metadata directly:
+
+```lammergeier
+class ValidationError {
+    func __init__(self, field: str, reason: str) {
+        self.field: str = field
+        self.reason: str = reason
+    }
+    func __str__(self) -> str {
+        return f"{self.field}: {self.reason}"
+    }
+}
+
+func parseBody(raw: str) {
+    throw ValidationError("email", "missing @")
+}
+
+func main() {
+    try {
+        parseBody("{}")
+    } catch err {
+        # Default stringer — ``__str__`` fires transparently.
+        print(err)                   # email: missing @
+
+        # Rebind to the concrete class to reach fields.
+        ve: ValidationError = err
+        print(ve.field)              # email
+        print(ve.reason)             # missing @
+    }
+}
+```
+
+Under the hood the `catch` binding is the live panic value
+(Go `interface{}`). Field access requires naming the class — Lam
+inserts the type assertion for you when you write
+`ve: ValidationError = err`. The old eager-stringification bind
+would have left `err` as a plain `str`, hiding the fields; the
+current binding preserves them.
+
+### Exceptions vs. `Result` errors — two complementary models
+
+Lam gives you **two** orthogonal tools for the "this operation
+might fail" problem. Choose based on how the failure should flow
+through your code:
+
+| | **Exceptions** (`raise` / `try`/`catch`) | **`Result` errors** (`Result.Ok` / `Result.Err` / `?`) |
+|---|---|---|
+| How the failure travels | **Propagates** up the call stack until a matching `catch` handles it, or the program aborts. Intermediate frames need to know nothing about it. | **Must be handled immediately** at every hop — either by propagating with `?`, by pattern-matching, or by converting to a default. A dropped `Result` is a warning. |
+| When to reach for it | Truly exceptional conditions: programmer bugs, unrecoverable I/O failures, "this should never happen" invariants. | Expected failure modes you want to force callers to acknowledge: validation errors, missing keys, parse failures, network timeouts. |
+| Runtime cost | A panic + `recover` (Go's native mechanism — free on the happy path, but an unwind on the failure path). | A plain tagged struct. No stack unwinding. The ``?`` operator lowers to an `if` check. |
+| Interop with Go | Raised values become Go `panic` values; caught by the IIFE wrapping each `try`. | Plain Go structs, usable directly from `go!` blocks. |
+
+The two can be mixed: a function can return a `Result[T]` *and*
+raise exceptions for programming-bug class failures. Callers
+handle `Result` explicitly and are protected from the panic case
+by an outer `try`.
+
+Because exceptions unwind through any number of intermediate
+frames without those frames needing to participate, you can catch
+an error raised three calls deep with a single `try` at the
+top-level:
+
+```lammergeier
+func _inner() {
+    raise "something broke"
+}
+
+func _middle() {
+    _inner()               # middle neither catches nor re-throws
+}
+
+func main() {
+    try {
+        _middle()
+    } catch e {
+        print(f"caught at top: {e}")   # caught at top: something broke
+    }
+}
+```
+
+`Result` errors do *not* auto-propagate: the intermediate
+function would have to either call `?` on the inner result or
+manually inspect it. That difference is why `Result` is the tool
+of choice for flows where every caller should be *forced* to
+acknowledge the failure explicitly.
 
 ### Recovery is *block*-scoped — execution continues after the catch
 
@@ -1108,10 +1304,48 @@ target).
 ## Nested Functions
 
 A `func` may be declared inside another `func` body. Lam compiles
-the inner declaration to a Go closure assignment, so the inner
-function can read and mutate the surrounding locals exactly like a
-lambda — except the named form documents the helper's purpose at
-its definition site.
+the inner declaration to a Go closure assigned to a local variable
+of the inner function's name, so the inner function can read and
+mutate the surrounding locals exactly like a `lambda`.
+
+The two forms — nested `func` and `lambda` — compile to the same
+Go closure. They differ only in what the reader sees:
+
+- A **nested `func`** has a name. The name shows up in IDE
+  outlines, `grep`, stack traces from a `throw` inside the
+  helper, and code review — so it's easier to answer *"what does
+  this helper do?"* at a glance. The full `func` shape also lets
+  you attach typed parameters, a return type, and a docstring:
+
+  ```lammergeier
+  func settle(orders: list[Order]) -> int {
+      # The helper gets a name (``total``) and an explicit
+      # signature, so a reader scanning the outer function sees
+      # both the call site and the definition without leaving
+      # the scope.
+      func total(subset: list[Order]) -> int {
+          sum: int = 0
+          for o in subset { sum += o.amount }
+          return sum
+      }
+      pending: list[Order] = orders.filter(lambda o: !o.paid)
+      return total(pending)
+  }
+  ```
+
+- A **`lambda`** is anonymous and expression-shaped. Reach for it
+  when the closure is a one-off passed directly into another
+  call — naming it would only add noise:
+
+  ```lammergeier
+  # The lambda is never referred to again; inlining it keeps
+  # the reader's eyes on the data flow, not on a helper name.
+  doubled: list[int] = nums.map(lambda x: x * 2)
+  ```
+
+Rule of thumb: if the helper gets referenced more than once, or
+needs a type signature or docstring, write it as a nested `func`;
+otherwise use `lambda`.
 
 ```lammergeier
 func adder(base: int) -> int {
@@ -1225,7 +1459,21 @@ func main() {
 
 ## Functional Programming
 
-Lists support `.map()`, `.filter()`, `.reduce()`, `.any()`, `.all()`, and `.foreach()`:
+Lists support `.map()`, `.filter()`, `.reduce()`, `.any()`, `.all()`, and `.foreach()`.
+
+**All of these are eager.** Each call produces a fresh `[]T` slice
+(or, for `.reduce` / `.any` / `.all` / `.foreach`, a scalar)
+immediately — the callback runs once per element as part of the
+method's own IIFE. `.any` / `.all` additionally short-circuit on
+the first definitive result.
+
+If you want pipeline-style laziness — one element flowing through
+the chain at a time, `take` / `takeWhile` bailing out before the
+rest of the input is touched — reach for the
+[`lamiter` stdlib module](stdlib.md#lamiter) (`Iter.fromList(xs)
+.map(f).filter(g).take(10).toList()`). That's the only place in
+the language where the combinator chain is deferred to the
+terminal call.
 
 ```lammergeier
 func double(x: int) -> int {
@@ -1526,6 +1774,28 @@ func main() {
 }
 ```
 
+### Aliasing imports with `as`
+
+Both the `import X as Y` and `from X import A as B` forms rebind
+the imported symbol to a new local name. The alias map is applied
+once at the front of compilation, so every subsequent reference to
+the alias — calls, type annotations, attribute accesses — resolves
+to the library's exported symbol:
+
+```lammergeier
+from lamerrors import Result as R, Error as E
+
+func bad() -> R {
+    return R.Err(E("parse", "bad input"))
+}
+```
+
+Aliasing is purely a local-binding convenience: the library still
+exports its canonical names, so two files can alias the same symbol
+differently without conflicting. Unused aliases trigger the same
+`unused import` warning as unused plain imports (the alias name is
+cited in the warning, not the original).
+
 Library files are resolved in three layers, in this order:
 
 1. **Stdlib** — `<compiler>/lib/`. Always wins, so users can't
@@ -1538,8 +1808,8 @@ Library files are resolved in three layers, in this order:
 3. **Project** — the source file's own directory, then its
    `lib/` subdirectory.
 
-File extensions are `.lam` (canonical) or `.tpy` (legacy); a
-library may also be a directory containing `__init__.lam`. See
+The file extension is `.lam`; a library may also be a directory
+containing `__init__.lam`. See
 [`docs/third_party_libraries.md`](docs/third_party_libraries.md)
 for the distribution / install workflow that layers on top of
 the resolver.
@@ -1826,7 +2096,12 @@ Rules:
 
 ## Function Overloading
 
-Functions with the same name but different arities are supported:
+Functions with the same name but different arities — *or* the same
+arity with different parameter types — are both supported. Lam
+records each definition's Go-type signature and picks a matching
+variant at every call site.
+
+### By arity
 
 ```lammergeier
 func describe(name: str) -> str {
@@ -1841,7 +2116,59 @@ print(describe("Alice"))      # Name: Alice
 print(describe("Bob", 30))    # Name: Bob, Age: 30
 ```
 
-The compiler dispatches based on argument count. Overloading works in f-strings too.
+### By parameter type (same arity)
+
+```lammergeier
+func describe(value: int) -> str {
+    return f"int: {value}"
+}
+
+func describe(value: str) -> str {
+    return f"str: {value}"
+}
+
+func describe(value: list[int]) -> str {
+    return f"list[int]: {value}"
+}
+
+print(describe(42))            # int: 42
+print(describe("hi"))          # str: hi
+
+nums: list[int] = [1, 2, 3]
+print(describe(nums))          # list[int]: [1 2 3]
+```
+
+The compiler picks a variant by inferring the Go type of every
+positional argument: typed locals (`nums: list[int]`) participate
+through the variable-type table, literals through their
+expression shape (`42` → `int`, `"hi"` → `string`, `[1, 2, 3]` →
+`[]int`). When the inference is ambiguous (untyped local, opaque
+return value, …) the call is routed to whichever variant the
+compiler can match — see the `_infer_call_arg_sig` helper.
+
+### Mangling rules
+
+Each variant is emitted with a stable Go-name suffix:
+
+- **Different arities** → `Name_<argcount>` (the historical form).
+- **Same arity, different types** → `Name_<argcount>_<sigSuffix>`.
+  `sigSuffix` is built from each parameter's Go type — `int`,
+  `str`, `float64`, `sliceOfInt`, `mapOfStrToInt`, `ptrFoo`, … —
+  so the symbol stays unique without depending on declaration
+  order. Example:
+
+  ```text
+  describe(int)          → Describe_1_int
+  describe(str)          → Describe_1_str
+  describe(list[int])    → Describe_1_sliceOfInt
+  describe(int, int)     → Describe_2_int_int
+  describe(str, int)     → Describe_2_str_int
+  ```
+
+The duplicate-definition checker keys on `(name, arity, type-sig)`
+so genuine duplicates (same name, same arity, **same** types) are
+still rejected with a clear diagnostic; only the
+arity-or-type-distinct cases are accepted.
 
 > **Note:** Variadic functions (`*args`) cannot be overloaded.
 
@@ -1907,32 +2234,45 @@ removes both.
 ## `LAMMERGEIER.*` — stable namespace for Lam-visible identifiers
 
 `LAMMERGEIER.<name>` is the supported, stable way to reach a
-Lam-side identifier from inside a `go!` block. Two flavours are
-recognised — the rewrite is invisible to the surrounding Lam code:
+Lam-side identifier from inside a `go!` block. Two layers cooperate
+behind the scenes — the rewrite is invisible to the surrounding
+Lam code:
 
-1. **Compiler-emitted helpers.** A small fixed table in
-   `compiler/preprocessor.py::LAMMERGEIER_ALIASES` covers runtime
-   helpers (`Result_Ok`, `Result_Err`, `NewError`) plus `nil`
-   conveniences. These get rewritten textually before parsing —
-   renaming an internal helper just means updating that one table.
-2. **User-defined names.** Top-level `func`, `class`, and
-   `ClassName.staticMember` definitions resolve via the AST: after
-   the parser has produced the tree and the transpiler has collected
-   every user function / class / static-member name, a post-parse
-   pass rewrites every remaining `LAMMERGEIER.<userName>` reference
-   to the appropriate Go-mangled identifier.
+1. **Compiler-emitted literal aliases.** A tiny fixed table in
+   `compiler/preprocessor.py::LAMMERGEIER_ALIASES` rewrites a
+   handful of values that *don't* correspond to a Lam-level
+   symbol: `LAMMERGEIER.None` and `LAMMERGEIER.nil` both lower
+   to a bare Go `nil`. These are textual substitutions performed
+   before parsing.
+2. **Dynamic symbol dispatch.** Everything else — top-level
+   `func`, `class`, `ClassName.staticMethod`,
+   `ClassName.staticVar` — is resolved at go-block emission time
+   from the symbol table built by the AST walk. The dispatcher
+   sees every user-defined identifier *plus* every class /
+   static method reachable through the transitive `from X
+   import …` graph, so stdlib classes like `lamerrors.Result`
+   and `lamerrors.Error` resolve through the same machinery as
+   anything you defined yourself. There's no special-casing —
+   if `Result` is in scope, `LAMMERGEIER.Result.Ok(v)` works.
 
-| Alias form                                | Lowers to (Go)            | Notes                                  |
-|-------------------------------------------|---------------------------|----------------------------------------|
-| `LAMMERGEIER.Result.Ok(v)`                | `Result_Ok(v)`            | Compiler helper                        |
-| `LAMMERGEIER.Result.Err(e)`               | `Result_Err(e)`           | Compiler helper                        |
-| `LAMMERGEIER.Error(k,m,c)`                | `NewError(k,m,c)`         | Compiler helper                        |
-| `LAMMERGEIER.None` / `LAMMERGEIER.nil`    | `nil`                     | Compiler helper                        |
-| `LAMMERGEIER.<userFunc>`                  | `UserFunc` (or unchanged for `private` funcs) | Top-level user function |
-| `LAMMERGEIER.<UserClass>(args)`           | `NewUserClass(args)`      | Class instantiation (call form)        |
-| `LAMMERGEIER.<UserClass>`                 | `UserClass`               | Class type (no trailing call)          |
-| `LAMMERGEIER.<UserClass>.<staticMethod>(…)` | `UserClass_staticMethod(…)` | Static method                        |
-| `LAMMERGEIER.<UserClass>.<staticVar>`     | `UserClass_staticVar`     | Static variable                        |
+| Alias form                                | Lowers to (Go)            | Notes                                                                       |
+|-------------------------------------------|---------------------------|-----------------------------------------------------------------------------|
+| `LAMMERGEIER.None` / `LAMMERGEIER.nil`    | `nil`                     | Literal alias (no Lam-level symbol)                                          |
+| `LAMMERGEIER.Result.Ok(v)`                | `Result_Ok(v)`            | Dynamic — `Result` is the stdlib `lamerrors.Result` class                    |
+| `LAMMERGEIER.Result.Err(e)`               | `Result_Err(e)`           | Dynamic — `Err` is a `Result` static method                                  |
+| `LAMMERGEIER.Error(k,m,c)`                | `NewError(k,m,c)`         | Dynamic — `Error` resolves to the stdlib class constructor                   |
+| `LAMMERGEIER.<userFunc>`                  | `UserFunc` (or unchanged for `private` funcs) | Top-level user function                                  |
+| `LAMMERGEIER.<UserClass>(args)`           | `NewUserClass(args)`      | Class instantiation (call form)                                              |
+| `LAMMERGEIER.<UserClass>`                 | `UserClass`               | Class type (no trailing call)                                                |
+| `LAMMERGEIER.<UserClass>.<staticMethod>(…)` | `UserClass_staticMethod(…)` | Static method                                                              |
+| `LAMMERGEIER.<UserClass>.<staticVar>`     | `UserClass_staticVar`     | Static variable                                                              |
+
+Stdlib classes participate in the dispatcher only when they're
+imported (directly or transitively): `from lamerrors import Result`
+brings `Result` and `Result.Ok` / `Result.Err` into scope; if you
+never import `lamerrors`, `LAMMERGEIER.Result` is reported as
+unknown. The same rule applies to your own classes — declare the
+class (or import it) and it appears in the dispatcher.
 
 Use it from a `go!` block to call back into Lam-defined logic
 without hand-mangling Go names:
@@ -1982,28 +2322,36 @@ static func tryDecode(xmlStr: str) -> Result {
 ```
 
 The compiler emits a typo-guard diagnostic with a did-you-mean
-suggestion when a reference is unknown — note that user names
-participate in the suggestion pool the same way compiler aliases
-do:
+suggestion when a reference doesn't resolve. The suggestion pool
+unifies both layers — literal aliases plus every Lam-level symbol
+in scope (user-defined and transitively-imported), so a typo on a
+stdlib name (`LAMMERGEIER.Result.OK`) suggests the right casing
+just like a typo on a user function does:
 
 ```text
-error: unknown LAMMERGEIER.* alias in app.lam
-  line 8: `LAMMERGEIER.realFunctionTypo` is not a known alias — did you mean `LAMMERGEIER.realFunction`?
+error: unknown LAMMERGEIER.* reference in app.lam
+  line 8: `LAMMERGEIER.realFunctionTypo` does not resolve to a known symbol — did you mean `LAMMERGEIER.realFunction`?
            7 |     go! {
    >>>     8 |         out = LAMMERGEIER.realFunctionTypo()
            9 |     }
 
-  valid compiler aliases:
-    - LAMMERGEIER.Error
-    - LAMMERGEIER.None
-    - LAMMERGEIER.Result.Err
-    - LAMMERGEIER.Result.Ok
-    - LAMMERGEIER.nil
-
-  valid user names (functions/classes/static members):
-    - LAMMERGEIER.realFunction
-    - …
+  LAMMERGEIER.* resolves to either of:
+    • a compiler-emitted literal alias (for values with no Lam-level symbol):
+        - LAMMERGEIER.None
+        - LAMMERGEIER.nil
+    • a Lam-level symbol in scope (function / class / static member):
+        - LAMMERGEIER.Error
+        - LAMMERGEIER.Result
+        - LAMMERGEIER.Result.Err
+        - LAMMERGEIER.Result.Ok
+        - LAMMERGEIER.realFunction
+        - …
 ```
+
+The typo guard runs *after* the library import worklist has
+finished, so transitively-imported classes (`Result`, `Error`,
+…) are already in `extra_valid` by the time the diagnostic
+fires — false positives on stdlib names are no longer possible.
 
 **Limitations.** The alias only resolves single-segment user names
 (top-level `func`/`class`) and `Class.staticMember`. It does *not*
@@ -2081,9 +2429,13 @@ Go's vocabulary:
 
 The pipeline runs in three layers:
 
-1. **Preprocessor** — compiler-emitted aliases (`LAMMERGEIER.Result.Ok`,
-   `LAMMERGEIER.Error`, `LAMMERGEIER.None` / `LAMMERGEIER.nil`) are
-   rewritten textually before parsing.
+1. **Preprocessor** — the literal aliases `LAMMERGEIER.None` and
+   `LAMMERGEIER.nil` are rewritten textually before parsing
+   (they don't correspond to any Lam-level symbol). Every other
+   `LAMMERGEIER.*` reference passes through untouched and is
+   handled later by the dynamic dispatcher; see the
+   [`LAMMERGEIER.*`](#lammergeier--stable-namespace-for-lam-visible-identifiers)
+   section for the full lowering table.
 2. **Parser** — Lark errors are line-tagged and printed with a
    three-line source snippet pointing at the offending token.
 3. **Semantic checker** (runs on a successful parse) — emits both

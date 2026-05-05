@@ -8,5 +8,5 @@ two
 three"""
     lines: list[str] = text.split("\n")
     print(len(lines))
-    print(text.startswith("one"))
+    print(text.startsWith("one"))
 }
