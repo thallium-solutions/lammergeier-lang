@@ -248,6 +248,19 @@ each parameter type and joining them as `func(P1, P2, ...) R` (or
 appear anywhere a regular type does — parameters, return clauses,
 variable annotations, generics, container element types.
 
+`Result` is not a compiler generic. The stdlib class has two
+`any` fields (`value`, `error`), so both `Result.Ok(v)` and
+`Result.Err(e)` lower to ordinary static-method calls and preserve
+the payload as `interface{}`. The `?` propagation path can cast into
+an annotated target; direct `.value`, `.error`, `unwrap()`, and
+`unwrapOr(...)` reads stay `interface{}` unless the user asserts in
+`go!`:
+
+```lam
+err: Result = Result.Err({"code": 400})
+raw: any = err.error
+```
+
 ## Control flow
 
 ### `if` / `elif` / `else`

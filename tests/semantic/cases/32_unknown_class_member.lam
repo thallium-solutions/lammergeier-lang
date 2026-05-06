@@ -1,0 +1,12 @@
+# expect-error: unknown member `Math.trippl`
+# expect-error: did you mean `Math.triple`
+
+class Math {
+    static func triple(x: int) -> int {
+        return x * 3
+    }
+}
+
+func main() {
+    print(Math.trippl(4))
+}

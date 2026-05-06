@@ -1,0 +1,11 @@
+# expect-pass
+
+func collect(first: int, *_rest: int, **_opts: int) -> int {
+    return first
+}
+
+func main() {
+    xs: list[int] = [2, 3]
+    opts: dict[str, int] = {"limit": 4}
+    print(collect(1, *xs, limit=4, **opts))
+}

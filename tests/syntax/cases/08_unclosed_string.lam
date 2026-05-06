@@ -1,0 +1,7 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected character '"'
+# expect-error: help: Check that the string literal is closed on the same line
+
+func main() {
+    print("hi)
+}

@@ -1,0 +1,8 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected end of statement.
+# expect-error: expected: `:` or `{`
+# expect-error: help: Lambda expressions need a body
+
+func main() {
+    mapper := lambda x
+}

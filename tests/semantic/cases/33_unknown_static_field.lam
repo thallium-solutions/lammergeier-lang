@@ -1,0 +1,10 @@
+# expect-error: unknown member `Config.verison` on class `Config`
+# expect-error: did you mean `Config.version`
+
+class Config {
+    static version: str = "1.0"
+}
+
+func main() {
+    print(Config.verison)
+}

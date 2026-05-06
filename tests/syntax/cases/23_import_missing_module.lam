@@ -1,0 +1,9 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected end of statement.
+# expect-error: expected: a module name
+# expect-error: help: Import statements need a module path after `import`
+
+import
+func main() {
+    pass
+}

@@ -1,0 +1,13 @@
+# expect-pass
+
+class User {
+    name: str = ""
+
+    func init(self, age: int) {
+        self.age = age
+    }
+
+    func label(self) -> str {
+        return self.name + str(self.age)
+    }
+}

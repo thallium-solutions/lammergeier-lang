@@ -1,0 +1,10 @@
+# expect-error: too many positional arguments in call to `add`
+# expect-error: expected at most 2, got 3
+
+func add(x: int, y: int) -> int {
+    return x + y
+}
+
+func main() {
+    print(add(1, 2, 3))
+}

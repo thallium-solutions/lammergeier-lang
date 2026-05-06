@@ -1,0 +1,7 @@
+# expect-pass
+
+from lamstrings import Strings as TextTools
+
+func main() {
+    print(TextTools.toUpper("lam"))
+}

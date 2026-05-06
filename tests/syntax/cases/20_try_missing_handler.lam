@@ -1,0 +1,10 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected `}`
+# expect-error: expected: `catch` or `finally`
+# expect-error: help: A `try` block must be followed by at least one `catch` or `finally` block.
+
+func main() {
+    try {
+        pass
+    }
+}

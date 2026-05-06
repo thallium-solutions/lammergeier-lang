@@ -1,0 +1,10 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected `@`
+# expect-error: expected: an expression, a scoped package name like `@scope/name`, or `.`
+# expect-error: help: Scoped imports must be lowercase
+
+from @Alice/lamwebp import Encoder
+
+func main() {
+    pass
+}

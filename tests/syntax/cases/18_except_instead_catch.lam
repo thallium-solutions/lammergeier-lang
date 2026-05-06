@@ -1,0 +1,12 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected identifier `except`
+# expect-error: expected: `catch`
+# expect-error: help: Lammergeier uses `catch`, not `except`
+
+func main() {
+    try {
+        pass
+    } except {
+        pass
+    }
+}

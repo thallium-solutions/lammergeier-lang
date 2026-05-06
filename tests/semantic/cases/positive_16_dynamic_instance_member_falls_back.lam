@@ -1,0 +1,10 @@
+# expect-pass
+
+func main() {
+    obj = make_object()
+    print(obj.dynamicMember)
+}
+
+func make_object() {
+    return None
+}

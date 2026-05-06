@@ -1,0 +1,10 @@
+# expect-error: missing required argument `name`
+# expect-error: call to `greet`
+
+func greet(name: str, punctuation: str = "!") -> str {
+    return name + punctuation
+}
+
+func main() {
+    print(greet())
+}

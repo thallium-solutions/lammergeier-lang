@@ -1,0 +1,125 @@
+# Real-world design patterns: Singleton + Factory + Facade.
+# Uses Queue, Set, Fmt, and Hash from the standard library.
+# expect: same_log=true
+# expect: factory=wallet
+# expect: checkout=paid:ord-1:wallet:64
+# expect: audit_size=1
+# expect: first_event=ord-1:book:1299
+# expect: missing=reject:missing-sku
+
+from lamqueue import Queue
+from lamset import Set
+from lamfmt import Fmt
+from lamhash import Hash
+
+interface PaymentGateway {
+    func name() -> str
+    func authorize(orderId: str, cents: int) -> str
+}
+
+class CardGateway {
+    func name(self) -> str {
+        return "card"
+    }
+
+    func authorize(self, orderId: str, cents: int) -> str {
+        return Fmt.sprintf("card:%s:%d", orderId, cents)
+    }
+}
+
+class WalletGateway {
+    func name(self) -> str {
+        return "wallet"
+    }
+
+    func authorize(self, orderId: str, cents: int) -> str {
+        return Fmt.sprintf("wallet:%s:%d", orderId, cents)
+    }
+}
+
+class GatewayFactory {
+    static func create(kind: str) -> PaymentGateway {
+        if kind == "wallet" {
+            return WalletGateway()
+        }
+        return CardGateway()
+    }
+}
+
+class AuditLog {
+    private static instance: AuditLog
+    static requests: int = 0
+
+    func __init__(self) {
+        self.events: Queue = Queue()
+    }
+
+    static func get() -> AuditLog {
+        AuditLog.requests += 1
+        if AuditLog.instance == None {
+            AuditLog.instance = AuditLog()
+        }
+        return AuditLog.instance
+    }
+
+    func record(self, event: str) {
+        self.events.enqueue(event)
+    }
+
+    func size(self) -> int {
+        return self.events.size()
+    }
+
+    func first(self) -> str {
+        item: any = self.events.peek()
+        return str(item)
+    }
+}
+
+class Inventory {
+    func __init__(self) {
+        self.available: Set = Set()
+        self.available.add("book")
+        self.available.add("pen")
+    }
+
+    func has(self, sku: str) -> bool {
+        return self.available.index[sku]
+    }
+}
+
+class CheckoutFacade {
+    func __init__(self, gateway: PaymentGateway) {
+        self.gateway: PaymentGateway = gateway
+        self.inventory: Inventory = Inventory()
+        self.audit: AuditLog = AuditLog.get()
+    }
+
+    func checkout(self, orderId: str, sku: str, cents: int) -> str {
+        if not self.inventory.has(sku) {
+            return "reject:missing-sku"
+        }
+
+        token: str = self.gateway.authorize(orderId, cents)
+        digest: str = Hash.sha256(token)
+        self.audit.record(Fmt.sprintf("%s:%s:%d", orderId, sku, cents))
+        return Fmt.sprintf("paid:%s:%s:%d", orderId, self.gateway.name(), len(digest))
+    }
+}
+
+func main() {
+    first: AuditLog = AuditLog.get()
+    second: AuditLog = AuditLog.get()
+    print(f"same_log={first == second}")
+
+    gateway: PaymentGateway = GatewayFactory.create("wallet")
+    print(f"factory={gateway.name()}")
+
+    checkout: CheckoutFacade = CheckoutFacade(gateway)
+    paid: str = checkout.checkout("ord-1", "book", 1299)
+    print(f"checkout={paid}")
+    print(f"audit_size={second.size()}")
+    print(f"first_event={first.first()}")
+    missing: str = checkout.checkout("ord-2", "laptop", 99900)
+    print(f"missing={missing}")
+}

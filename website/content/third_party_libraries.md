@@ -149,6 +149,178 @@ flight before compiling against the current toolchain.)
 
 ---
 
+## 2a. Designing a library people will actually adopt
+
+The mechanical format is small, but a useful Lam library should
+feel native to the language. Aim for a public surface that is
+typed, boring to import, easy to test, and honest about the Go
+code it wraps.
+
+### Shape the public API first
+
+Prefer one obvious import:
+
+```lammergeier
+from lamwebp import Encoder, DecodeOptions
+```
+
+For small utility libraries, expose top-level functions:
+
+```lammergeier
+func encode(data: bytes, quality: int = 90) -> bytes {
+    # ...
+}
+```
+
+For stateful libraries, expose a class with a compact constructor
+and methods that return either a value or `Result`:
+
+```lammergeier
+from lamerrors import Result, Error
+
+class Client {
+    baseUrl: str
+    timeoutMs: int
+
+    func __init__(baseUrl: str, timeoutMs: int = 5000) {
+        self.baseUrl = baseUrl
+        self.timeoutMs = timeoutMs
+    }
+
+    func get(path: str) -> Result {
+        if path == "" {
+            return Result.Err(Error("invalid_path", "path cannot be empty"))
+        }
+        # ...
+        return Result.Ok({"status": 200})
+    }
+}
+```
+
+Use exceptions for programmer mistakes and `Result` for expected
+runtime failures such as missing files, refused connections,
+invalid user input, parse errors, and authentication failures.
+That makes your library compose with `?`, `do / catch`, and the
+stdlib's `lamerrors` patterns.
+
+### Keep types explicit at the boundary
+
+Every exported function and method should annotate parameters and
+return types. Avoid `any` in public APIs unless the value is truly
+open-ended, such as a JSON payload, a plugin decorator bag, or a
+logging context map. Internal helpers can be more flexible; the
+public boundary is where users learn what is stable.
+
+Good:
+
+```lammergeier
+func thumbnail(input: bytes, width: int, height: int) -> Result
+```
+
+Too vague for most users:
+
+```lammergeier
+func thumbnail(input: any, options: any) -> any
+```
+
+If options are growing, create a small class or dict schema and
+document every key. If the library wraps a Go API with many knobs,
+start with a narrow Lam-facing API and add escape hatches only
+where real users need them.
+
+### Wrap Go dependencies deliberately
+
+When your implementation uses `go! { ... }`, list every external
+Go module under `[go-deps]`:
+
+```toml
+[go-deps]
+"github.com/chai2010/webp" = "v1.1.1"
+```
+
+Do not rely on `go mod tidy` discovering an unpinned latest
+version during the consumer's build. The package manager merges
+Go pins from every installed library, writes the result into the
+synthesised `go.mod`, and refuses incompatible majors before the
+build starts.
+
+For Go standard-library packages (`net/http`, `crypto/hmac`,
+`strings`, etc.), do not add a `[go-deps]` entry; those are part
+of the target Go toolchain.
+
+### Document the happy path and the failure path
+
+A good library README has three runnable examples:
+
+1. The smallest successful call.
+2. The same call with options or configuration.
+3. The error-handling path with `Result`, `?`, or `do / catch`.
+
+Example:
+
+```lammergeier
+from lamwebp import Encoder
+
+func main() {
+    enc: Encoder = Encoder(quality = 82)
+    do {
+        out: bytes = enc.encodeFile("in.png")?
+        writeFile("out.webp", out)
+    } catch err {
+        print(f"encode failed: {err}")
+    }
+}
+```
+
+Users should be able to paste the first example into `main.lam`
+after `lamc install <name>` and see it compile.
+
+### Test as a consumer
+
+Library-local tests should compile through the same import path
+that users will use:
+
+```lammergeier
+from lamtest import Test
+from lamwebp import Encoder
+
+func main() {
+    enc: Encoder = Encoder()
+    Test.assertTrue(enc.supports("webp"), "webp supported")
+}
+```
+
+Before publishing, install the library into a temporary app by
+path and compile that app:
+
+```bash
+mkdir /tmp/lamwebp-consumer && cd /tmp/lamwebp-consumer
+lamc init --name lamwebp_consumer
+lamc install /path/to/lamwebp
+lamc main.lam --run
+```
+
+This catches packaging mistakes that unit tests miss: manifest
+name mismatches, missing files in the tarball, undeclared
+`[go-deps]`, bad scoped imports, and public symbols that were
+never exported from the package root.
+
+### Version for the API your users see
+
+Patch releases are for body-only fixes. Minor releases add public
+functions, methods, fields, optional parameters, or new
+capabilities. Major releases remove or rename public API, change
+types, or add required parameters. `lamc publish` warns when the
+API diff disagrees with your version bump, and `lamc install`
+refuses lying upgrades unless the consumer passes
+`--allow-breaking`.
+
+When in doubt, bump minor rather than patch. It communicates that
+the public surface changed without forcing consumers through a
+major migration.
+
+---
+
 ## 3. Manifest format *(implemented)*
 
 Each library ships a `lamlib.toml` at its root. The compiler

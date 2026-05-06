@@ -1,0 +1,136 @@
+# Real-world design patterns: Builder + State + Repository.
+# Uses Template, Json, Queue, and Set from the standard library.
+# expect: report=Order A100 for Ada has 2 lines.
+# expect: state=pending
+# expect: after_pay=paid
+# expect: after_ship=shipped
+# expect: saved=true
+# expect: repo_count=1
+# expect: events=[paid:A100 shipped:A100]
+# expect: json_valid=true
+
+from lamtemplate import Template
+from lamjson import Json
+from lamqueue import Queue
+from lamset import Set
+
+class Order {
+    func __init__(self, id: str, customer: str, lines: list[str]) {
+        self.id: str = id
+        self.customer: str = customer
+        self.lines: list[str] = lines
+        self.state: str = "pending"
+        self.events: Queue = Queue()
+    }
+
+    func pay(self) {
+        if self.state == "pending" {
+            self.state = "paid"
+            self.events.enqueue("paid:" + self.id)
+        }
+    }
+
+    func ship(self) {
+        if self.state == "paid" {
+            self.state = "shipped"
+            self.events.enqueue("shipped:" + self.id)
+        }
+    }
+}
+
+class OrderBuilder {
+    func __init__(self) {
+        self.id: str = ""
+        self.customer: str = ""
+        self.lines: list[str] = []
+    }
+
+    func withId(self, id: str) -> OrderBuilder {
+        self.id = id
+        return self
+    }
+
+    func forCustomer(self, name: str) -> OrderBuilder {
+        self.customer = name
+        return self
+    }
+
+    func addLine(self, sku: str) -> OrderBuilder {
+        self.lines.append(sku)
+        return self
+    }
+
+    func build(self) -> Order {
+        copied: list[str] = []
+        for line in self.lines {
+            copied.append(line)
+        }
+        return Order(self.id, self.customer, copied)
+    }
+}
+
+class OrderRepository {
+    func __init__(self) {
+        self.ids: Set = Set()
+        self.orders: list[Order] = []
+    }
+
+    func save(self, order: Order) {
+        if not self.ids.index[order.id] {
+            self.ids.add(order.id)
+            self.orders.append(order)
+        }
+    }
+
+    func exists(self, id: str) -> bool {
+        return self.ids.index[id]
+    }
+
+    func count(self) -> int {
+        return len(self.orders)
+    }
+}
+
+class OrderReport {
+    func __init__(self) {
+        self.template: Template = Template()
+        _ = self.template.parse("Order {{.Id}} for {{.Customer}} has {{.LineCount}} lines.")
+    }
+
+    func render(self, order: Order) -> str {
+        data: dict[str, any] = {}
+        data["Id"] = order.id
+        data["Customer"] = order.customer
+        data["LineCount"] = len(order.lines)
+        return self.template.render(data)
+    }
+}
+
+func main() {
+    builder: OrderBuilder = OrderBuilder()
+    builder.withId("A100")
+    builder.forCustomer("Ada")
+    builder.addLine("book")
+    builder.addLine("pen")
+    order: Order = builder.build()
+
+    report: OrderReport = OrderReport()
+    print(f"report={report.render(order)}")
+    print(f"state={order.state}")
+
+    order.pay()
+    print(f"after_pay={order.state}")
+    order.ship()
+    print(f"after_ship={order.state}")
+
+    repo: OrderRepository = OrderRepository()
+    repo.save(order)
+    repo.save(order)
+    saved: bool = repo.exists("A100")
+    print(f"saved={saved}")
+    print(f"repo_count={repo.count()}")
+    print(f"events={order.events.toList()}")
+
+    payload: str = Json.encode(report.render(order))
+    print(f"json_valid={Json.isValid(payload)}")
+}

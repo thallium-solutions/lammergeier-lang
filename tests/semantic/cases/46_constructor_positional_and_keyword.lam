@@ -1,0 +1,12 @@
+# expect-error: argument `name` for `User` was passed both positionally and by keyword
+
+class User {
+    func init(self, name: str) {
+        self.name = name
+    }
+}
+
+func main() {
+    u: User = User("Lam", name="Geier")
+    print(u)
+}

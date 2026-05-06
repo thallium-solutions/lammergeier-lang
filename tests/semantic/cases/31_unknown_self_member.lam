@@ -1,0 +1,10 @@
+# expect-error: unknown member `self.titel` on class `Book`
+# expect-error: did you mean `self.title`
+
+class Book {
+    title: str = ""
+
+    func label(self) -> str {
+        return self.titel
+    }
+}

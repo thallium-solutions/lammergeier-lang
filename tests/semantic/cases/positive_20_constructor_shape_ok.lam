@@ -1,0 +1,21 @@
+# expect-pass
+
+class User {
+    func init(self, name: str, greeting: str = "hi") {
+        self.name = name
+        self.greeting = greeting
+    }
+}
+
+class Empty {
+    value: int = 0
+}
+
+func main() {
+    u1: User = User("Lam")
+    u2: User = User(name="Geier", greeting="hello")
+    e: Empty = Empty()
+    print(u1)
+    print(u2)
+    print(e)
+}

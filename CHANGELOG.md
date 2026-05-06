@@ -6,6 +6,38 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-05-07
+
+### Added
+
+- Lam-facing syntax diagnostics that render parser failures with source
+  snippets, expected Lam constructs, and targeted repair hints.
+- Import-resolution diagnostics for direct missing modules, missing imported
+  symbols, typo suggestions, searched paths, and package `__init__.lam`
+  resolution.
+- Semantic diagnostics for local call-shape errors, including missing required
+  arguments, too many positional arguments, unknown or duplicate keyword
+  arguments, and positional/keyword duplicates.
+- Semantic return-flow diagnostics for functions that omit required return
+  values or return values from `-> None` functions.
+- Conservative known-class member diagnostics for unknown `self.member`,
+  `Class.member`, static field, and static method references, with suggestions
+  when a close member exists.
+- Import binding diagnostics for duplicate aliases, aliases that shadow
+  builtins, and imports that conflict with existing functions, classes,
+  interfaces, or constants.
+- Structural interface conformance diagnostics for known local classes at
+  typed assignments and function-call boundaries, covering missing methods,
+  obvious method arity mismatches, and return annotation mismatches.
+- Constructor call-shape diagnostics for known local classes, validating
+  `init` / `__init__` arguments and zero-argument classes before Go emission.
+
+### Tests
+
+- Added focused syntax, semantic, and import-resolution diagnostic test suites
+  covering negative and positive/fallback cases for the new Lam-side error
+  messages.
+
 ## 2026-05-05
 
 ### Changed

@@ -27,6 +27,304 @@ behaviour.
 - [Serialization](#serialization)
 - [Crypto, encoding, IDs](#crypto-encoding-ids)
 - [Database](#database)
+- [Cookbook](#cookbook)
+- [Public API index](#public-api-index)
+
+---
+
+## Cookbook
+
+This section shows how the stdlib pieces compose in real programs.
+The reference sections below list the individual methods; these
+recipes show the intended workflow.
+
+### Parse, validate, and propagate with `Result`
+
+Use `try*` APIs when bad input is expected and should stay in normal
+control flow. The `?` operator unwraps success values and returns the
+same `Result.Err(...)` from the current function on failure.
+
+```lammergeier
+from lamconv import Conv
+from lamerrors import Result, Error
+
+func parsePort(raw: str) -> Result {
+    if raw == "" {
+        return Result.Err(Error("ConfigError", "PORT is required"))
+    }
+    port: int = Conv.tryInt(raw)?
+    if port <= 0 or port > 65535 {
+        return Result.Err({"kind": "ConfigError", "field": "PORT", "value": raw})
+    }
+    return Result.Ok(port)
+}
+
+func main() {
+    do {
+        port: int = parsePort("8080")?
+        print(f"listening on {port}")
+    } catch err {
+        print(f"bad config: {err}")
+    }
+}
+```
+
+Use direct `unwrap()` mainly at program edges or tests, where a panic
+is an acceptable failure signal. In reusable code, prefer `?`,
+`do/catch`, or explicit `r.ok()` checks.
+
+### Build a CLI that reads JSON and writes a report
+
+`Cli` handles flags, `Os` handles files, `Json` handles parsing, and
+`Result` keeps IO/parse errors explicit.
+
+```lammergeier
+from lamcli import Cli
+from lamos import Os
+from lamjson import Json
+from lamerrors import Result
+
+func loadJson(path: str) -> Result {
+    text: str = Os.tryReadFile(path)?
+    return Json.tryDecode(text)
+}
+
+func main() {
+    input: str = Cli.getFlag("input", "data.json")
+    pretty: bool = Cli.hasFlag("pretty")
+
+    do {
+        value: any = loadJson(input)?
+        if pretty {
+            print(Json.encodePretty(value))
+        } else {
+            print(Json.encode(value))
+        }
+    } catch err {
+        print(f"failed: {err}")
+    }
+}
+```
+
+Invocation:
+
+```bash
+lamc tools/report.lam --run -- --input=orders.json --pretty
+```
+
+### Build a production-style HTTP API
+
+`lamserver` gives you Fastify-like routing, lifecycle hooks,
+validation, decorators, schemas, OpenAPI, test injection, TLS,
+timeouts, and plugins.
+
+```lammergeier
+from lamserver import Server, Request, Response, HttpError
+from lamserver_plugins import requestId, requestLog, helmet, metrics
+
+func requireJson(req: Request, res: Response) {
+    if not req.is_("json") {
+        throw HttpError.badRequest("application/json required")
+    }
+}
+
+func listUsers(req: Request, res: Response) {
+    res.json({
+        "data": [{"id": "u_1", "name": "Ada"}],
+        "requestId": req.id(),
+    })
+}
+
+func createUser(req: Request, res: Response) {
+    body: any = req.jsonBody()
+    name: str = ""
+    go! {
+        if m, ok := body.(map[string]interface{}); ok {
+            if v, ok := m["name"].(string); ok { name = v }
+        }
+    }
+    res.code(201).json({"id": "u_2", "name": name})
+}
+
+func main() {
+    srv: Server = Server()
+    srv.setRequestTimeout(3000)
+    requestId(srv)
+    requestLog(srv, "[api]")
+    helmet(srv)
+    metrics(srv, "/metrics")
+
+    userBody: dict[str, any] = {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string", "minLength": 1}},
+    }
+
+    srv.getOpts("/users", listUsers, {
+        "summary": "List users",
+        "tags": ["users"],
+    })
+    srv.postOpts("/users", createUser, {
+        "preHandler": requireJson,
+        "schema": {"body": userBody},
+        "summary": "Create user",
+        "tags": ["users"],
+    })
+
+    print(srv.printRoutes())
+    print(srv.openapi({"title": "Users API", "version": "1.0.0"}))
+    srv.listen(8080)
+}
+```
+
+Test the same API without binding a port:
+
+```lammergeier
+headers: dict[str, str] = {"Content-Type": "application/json"}
+out: dict[str, any] = srv.inject("POST", "/users", "{\"name\":\"Grace\"}", headers)
+print(out["status"])     # 201
+print(out["headers"])    # includes request/security/plugin headers
+print(out["body"])
+```
+
+### Analyze CSV data with `DataFrame` and `Stats`
+
+Use `DataFrame` for tabular IO, filtering, joins, and group-by; use
+`Series` and `Stats` for numeric reductions.
+
+```lammergeier
+from lamdata import DataFrame, DataFrameGroups, Series
+from lamstats import Stats
+
+func main() {
+    csv: str = "city,temp,wind\nRome,20.5,8.0\nRome,22.0,6.0\nMilan,18.0,9.5\n"
+    df: DataFrame = DataFrame.readCSV(csv)
+
+    cols: list[str] = ["temp", "wind"]
+    rome: DataFrame = df.filterEq("city", "Rome").selectCols(cols)
+    temps: Series = rome.col("temp")
+    print(temps.mean())
+
+    groupCols: list[str] = ["city"]
+    aggTypes: list[str] = ["mean"]
+    aggCols: list[str] = ["temp", "wind"]
+    groups: DataFrameGroups = df.groupBy(groupCols)
+    summary: DataFrame = groups.aggregate(aggTypes, aggCols)
+    print(summary.toString())
+
+    values: list[float] = temps.toFloatList()
+    print(Stats.percentile(values, 0.95))
+}
+```
+
+`DataFrame` methods return new values and preserve the receiver,
+matching `gota`'s value-oriented design. Check `.error()` after
+operations that depend on external data or column names.
+
+### Use SQLite/Postgres/MySQL through `Db`
+
+`lamdb` provides raw SQL, transactions, savepoints, retries, and a
+chainable query builder. Placeholder dialects are normalized, so write
+`?` in Lam code and let the driver adapter translate where needed.
+
+```lammergeier
+from lamdb import Db, QueryBuilder, Tx
+
+func bumpAda(tx: Tx) {
+    tx.table("users").whereEq("name", "Ada").increment("age", 1)
+}
+
+func main() {
+    db: Db = Db.connect("sqlite", "file:app.db?cache=shared")
+    defer db.close()
+
+    db.exec("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+    db.table("users").insert({"name": "Ada", "age": 36})
+    db.table("users").insert({"name": "Grace", "age": 30})
+
+    adults: list[dict[str, any]] = (
+        db.table("users")
+          .select(["id", "name", "age"])
+          .where("age", ">=", 18)
+          .orderBy("name", "asc")
+          .get()
+    )
+    print(adults)
+
+    ok: bool = db.transaction(bumpAda)
+    print(ok)
+}
+```
+
+Use `tryConnect` / `tryExec` when setup failures should be reported as
+`Result`; use throwing methods when failure should abort the current
+operation and be caught by `try/catch` or the server error pipeline.
+
+### Cache and retry downstream calls
+
+`LruCache`, `TtlCache`, `Retry`, and `CircuitBreaker` cover the most
+common resilience patterns.
+
+```lammergeier
+from lamcache import TtlCache
+from lamretry import Retry
+from lamserver_plugins import CircuitBreaker
+from lamerrors import Result
+
+func expensiveFetch() -> Result {
+    return Result.Ok("fresh")
+}
+
+func downstreamSideEffect() {
+    _ = expensiveFetch()
+}
+
+func main() {
+    cache: TtlCache = TtlCache()
+    cached: any = cache.get("user:1")
+    if cached == None {
+        r: Result = Retry.runFn(expensiveFetch, 3, 50, 500, true)
+        if r.ok() {
+            cache.put("user:1", r.value, 60)
+        }
+    }
+
+    breaker: CircuitBreaker = CircuitBreaker(5, 2000)
+    guarded: any = breaker.callFn(downstreamSideEffect)  # holds a Result
+    print(guarded)
+    print(f"breaker state: {breaker.state()}")
+}
+```
+
+Use TTL caches for remote data, LRU caches for bounded in-memory
+memoization, retry for transient errors, and circuit breakers when a
+dependency can become unhealthy for a sustained period.
+
+### Test stdlib-heavy code
+
+The `lamtest` module is intentionally small and works well with the
+regular `tests/tests/run_tests.py` runner.
+
+```lammergeier
+from lamtest import Test
+from lamstrings import Strings
+
+func main() {
+    Test.describe("slug normalization")
+    got: str = Strings.toLower(Strings.replace("Hello World", " ", "-"))
+    Test.assertEqual(got, "hello-world", "lowercase hyphen slug")
+    Test.assertTrue(Strings.hasSuffix(got, "world"), "suffix")
+    Test.summary()
+}
+```
+
+Embed expected output at the top of the `.lam` file when you want it
+covered by the repository runner:
+
+```lammergeier
+# expect: PASS lowercase hyphen slug
+# expect: PASS suffix
+```
 
 ---
 
@@ -59,21 +357,41 @@ from lamstrings import Strings
 | `Strings.indent(s, prefix)` / `dedent(s)` | `str` |
 | `Strings.format(template, *args)` — `fmt.Sprintf`-style formatter (`"%s"` / `"%d"` / `"%v"` verbs) | `str` |
 
-`Strings` is also the backing for the built-in string-method
-dispatch the transpiler uses for `"hello".toUpper()` /
-`s.split(",")` / `tpl.format(...)` / etc. The Lam-side method
-names match the static-method names *exactly* — there's no
-Python-style alias layer mapping `.upper()` to `.toUpper()`,
-so the language reads the same way whether you call
-`"hi".toUpper()` or `Strings.toUpper("hi")`. Those calls lower
-to `Strings_<method>(...)` at compile time, so the static
-methods listed above are the single source of truth for the
-behaviour. The compiler auto-injects `from lamstrings import
-Strings` whenever any dispatched name appears in your source,
-so the explicit import shown here is only needed when you want
-to call a method that *isn't* covered by the dispatch table
-(e.g. `Strings.fields(s)`, `Strings.center(s, 20)`,
-`Strings.repeat(s, n)`, …).
+`Strings` is also the backing for built-in string-method
+dispatch. Every static method in the table above can be used as
+a receiver method too:
+
+```lammergeier
+func main() {
+    slug: str = " Hello Lam ".trim().toLower().replace(" ", "-")
+    print(slug)                         # hello-lam
+
+    csv: list[str] = "a,b,c".split(",")
+    print("/".join(csv))                 # a/b/c
+
+    print("Lam".equalFold("lam"))        # true
+    print("42".padLeft(5, "0"))          # 00042
+    print("a\nb".indent("> "))
+}
+```
+
+The Lam-side method names match the static-method names exactly:
+there is no Python-style alias layer mapping `.upper()` to
+`.toUpper()`. The compiler rewrites `"hi".toUpper()` into the
+same `Strings_toUpper("hi")` call that backs
+`Strings.toUpper("hi")`, then auto-injects `lamstrings` into the
+import graph so the sugar links without an explicit
+`from lamstrings import Strings`.
+
+Most receiver calls put the receiver in the first argument slot:
+`s.contains("x")` becomes `Strings.contains(s, "x")`.
+`join` is the one intentionally inverted helper because the
+natural receiver is the separator: `",".join(parts)` becomes
+`Strings.join(parts, ",")`. `trimLeft()` and `trimRight()` also
+accept a bare no-argument form; when you omit `cutset`, the
+compiler supplies ASCII whitespace (`" \t\n"`). Formatting uses
+Go `fmt.Sprintf` verbs, so prefer `"%s"`, `"%d"`, `"%v"`,
+`"%.2f"`, and similar Go-style placeholders.
 
 ### `lamunicode` — `Unicode`
 
@@ -147,18 +465,26 @@ out: str = Csv.formatAll([["x", "y"], ["1", "2"]])
 
 ### `lamjson` — `Json`
 
-Wraps `encoding/json`. `try*` siblings return `Result` for
-recoverable parsing.
+Wraps `encoding/json`. The throwing methods are named after the
+wire operation (`encode`, `decode`, `decodeInto`); `try*` siblings
+return `Result` for recoverable parsing/encoding.
 
 ```lammergeier
 from lamjson import Json
 
-obj: any = Json.parse('{"name":"alice"}')
-out: str = Json.stringify(obj)
+obj: any = Json.decode('{"name":"alice"}')
+out: str = Json.encode(obj)
+pretty: str = Json.encodePretty(obj)
+ok: bool = Json.isValid(out)
 ```
 
-9 helpers including `parse`, `tryParse`, `stringify`, `prettyStringify`,
-`getString`, `getInt`, `getFloat`, `getBool`, `keys`.
+| Method | Returns |
+|--------|---------|
+| `Json.encode(data)` / `Json.tryEncode(data)` | `str` / `Result` |
+| `Json.encodePretty(data)` / `Json.tryEncodePretty(data)` | `str` / `Result` |
+| `Json.decode(s)` / `Json.tryDecode(s)` | `any` / `Result` |
+| `Json.decodeInto(s, target)` / `Json.tryDecodeInto(s, target)` | `None` / `Result` |
+| `Json.isValid(s)` | `bool` |
 
 ### `lamurl` — `Url`
 
@@ -205,12 +531,13 @@ hx: str = Bytes.hexEncode("abc")
 ### `lammath` — `Math`
 
 39 helpers: trigonometry, exponentials, rounding, GCD/LCM, primality,
-combinatorics. Constants exposed as fields (`Math.pi`, `Math.e`).
+combinatorics. Constants are exposed as static functions:
+`Math.pi()` and `Math.e()`.
 
 ```lammergeier
 from lammath import Math
 
-x: float = Math.sin(Math.pi / 4.0)
+x: float = Math.sin(Math.pi() / 4.0)
 y: int = Math.gcd(48, 18)
 ```
 
@@ -501,15 +828,48 @@ func divide(a: int, b: int) -> Result {
     return Result.Ok(a / b)
 }
 
-n: int = divide(10, 0).unwrapOr(0)        # 0
-n2: int = divide(10, 2).unwrap()          # 5
+fallback: any = divide(10, 0).unwrapOr(0) # 0
+value: any = divide(10, 2).unwrap()       # 5
 ```
 
-`Error(kind, message, cause)`: `.kind`, `.message`, `.cause`.
-`Result(value, error)` with `.Ok(v)` / `.Err(e)` constructors:
-`isOk()`, `isErr()`, `unwrap()`, `unwrapOr(default)`, `unwrapErr()`,
-`map(fn)`, plus the postfix `?` operator (see
-[`SYNTAX.md`](#/docs/syntax)).
+`Error(kind, message, cause=None)` stores `.kind`, `.message`, and
+`.cause`; `str(error)` renders `Kind: message` and appends the cause
+when present.
+
+`Result` is deliberately non-generic. Both `.value` and `.error` are
+typed `any`, and the implemented API is:
+
+| Signature | Meaning |
+|---|---|
+| `Result.Ok(v: any) -> Result` | Success. Stores `v` in `.value` and `None` in `.error`. |
+| `Result.Err(e: any) -> Result` | Failure. Stores `None` in `.value` and `e` in `.error`. |
+| `r.ok() -> bool` | `true` when `.error == None`. |
+| `r.unwrap() -> any` | Returns `.value`; throws `RuntimeError` if this is an error. |
+| `r.unwrapOr(fallback: any) -> any` | Returns `.value`, or `fallback` on error. |
+
+`Result.Err` accepts any value because `.error` is `any`: structured
+`Error` objects, plain strings, dicts, sentinel objects, Go errors
+captured through `go!`, or domain payloads.
+
+```lammergeier
+from lamerrors import Result, Error
+
+bad1: Result = Result.Err(Error("ParseError", "bad integer"))
+bad2: Result = Result.Err("missing API key")
+bad3: Result = Result.Err({"field": "email", "reason": "invalid"})
+
+if not bad3.ok() {
+    print(bad3.error)
+}
+```
+
+Direct `.value`, `.error`, `unwrap()`, and `unwrapOr(...)` reads are
+`any`. Keep them as `any` when forwarding/logging, use `?` into an
+annotated local when composing `Result`-returning functions, or use a
+small `go!` type assertion when you intentionally need a concrete
+Go type from a direct unwrap. The postfix `?` operator and
+`do { } catch err { }` block are documented in
+[`SYNTAX.md`](#/docs/syntax?h=errors--results).
 
 ### `lamtest` — `Test`
 
@@ -804,11 +1164,12 @@ Run external processes.
 ```lammergeier
 from lamexec import Exec
 
-out: str = Exec.run("ls", ["-la", "/tmp"])
-status: int = Exec.runStatus("git", ["status"])
+out: str = Exec.run("git status --short")
+status: int = Exec.runSilent("git status --short")
+files: str = Exec.output("ls", ["-la", "/tmp"])
 ```
 
-3 helpers: `run`, `runStatus`, `runWithInput`.
+3 helpers: `run(command)`, `runSilent(command)`, `output(name, args)`.
 
 ---
 
@@ -854,6 +1215,425 @@ func main() {
     srv.listen(8080)
 }
 ```
+
+Routes can be as small as a handler function, or they can carry
+Fastify-style options for validation, route-local hooks, metadata,
+timeouts, streaming, and response serialization. `Server.inject`
+runs the same dispatcher in-process, which makes server examples and
+tests deterministic:
+
+```lammergeier
+from lamserver import Server, Request, Response
+
+func auth(req: Request, res: Response) {
+    if req.header("Authorization") != "Bearer dev" {
+        res.code(401).json({"error": "unauthorized"})
+    }
+}
+
+func createUser(req: Request, res: Response) {
+    body: any = req.jsonBody()
+    name: str = ""
+    go! {
+        if m, ok := body.(map[string]interface{}); ok {
+            if v, ok := m["name"].(string); ok { name = v }
+        }
+    }
+    res.code(201).json({
+        "id": "u_1",
+        "name": name,
+        "internal": "not in response",
+    })
+}
+
+func main() {
+    srv: Server = Server()
+    srv.addSchema({
+        "$id": "userName",
+        "type": "string",
+        "minLength": 1,
+    })
+
+    srv.postOpts("/users", createUser, {
+        "preHandler": auth,
+        "summary": "Create a user",
+        "tags": ["users"],
+        "schema": {
+            "body": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {"name": {"$ref": "userName"}},
+            },
+            "response": {
+                "201": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "name": {"type": "string"},
+                    },
+                },
+            },
+        },
+    })
+
+    headers: dict[str, str] = {
+        "Authorization": "Bearer dev",
+        "Content-Type": "application/json",
+    }
+    out: dict[str, any] = srv.inject("POST", "/users", "{\"name\":\"Ada\"}", headers)
+    print(out["status"])   # 201
+    print(out["body"])     # response schema strips "internal"
+}
+```
+
+### `lamserver` mental model
+
+`lamserver` follows the same shape as Fastify:
+
+- A `Server` owns routes, hooks, decorators, schemas, parsers, and
+  app-lifecycle callbacks.
+- A route is a method + path + handler, optionally with route-local
+  options.
+- Hooks form a request pipeline. A hook can short-circuit by writing a
+  response.
+- Plugins are ordinary functions that receive a `Server` and register
+  routes/hooks/decorators.
+- `Server.inject(...)` runs the same dispatcher in memory, so tests
+  exercise the real pipeline without opening a socket.
+
+The typical startup flow is:
+
+```lammergeier
+func main() {
+    srv: Server = Server()
+
+    # Server-wide behavior.
+    srv.trustProxy(["X-Forwarded-For"], 1)
+    srv.setRequestTimeout(5000)
+    srv.useCors()
+    srv.useSecurityHeaders()
+
+    # Plugins, then schemas, then routes.
+    requestId(srv)
+    metrics(srv, "/metrics")
+    srv.addSchema({"$id": "Id", "type": "string", "minLength": 1})
+
+    srv.get("/health", healthHandler)
+    srv.postOpts("/orders", createOrderHandler, createOrderOpts())
+
+    # Startup visibility.
+    print(srv.printRoutes())
+    srv.listen(8080)
+}
+```
+
+### Routing guide
+
+Use method helpers for normal routes and `route` / `routeOpts` when
+the method is dynamic:
+
+```lammergeier
+srv.get("/users", listUsers)
+srv.post("/users", createUser)
+srv.put("/users/:id", replaceUser)
+srv.patch("/users/:id", patchUser)
+srv.del("/users/:id", deleteUser)
+srv.all("/debug/*", debugCatchAll)
+srv.route("OPTIONS", "/custom", customOptions)
+```
+
+Path parameters are stored with their marker included:
+
+```lammergeier
+func getUser(req: Request, res: Response) {
+    id: str = req.params[":id"]
+    res.json({"id": id})
+}
+
+func getFile(req: Request, res: Response) {
+    rest: str = req.params["*"]
+    res.text(rest)
+}
+
+srv.get("/users/:id", getUser)
+srv.get("/files/*", getFile)
+```
+
+`HEAD` requests use the normal route pipeline. If a `HEAD` route is
+registered it wins; otherwise server behavior follows the explicit
+route table rather than inventing a hidden `GET` fallback.
+
+### Request and response workflow
+
+Request helpers normalize common HTTP access:
+
+```lammergeier
+func inspect(req: Request, res: Response) {
+    ct: str = req.header("Content-Type")
+    page: str = req.queryGet("page", "1")
+    sid: str = req.cookie("sid")
+    signed: str = req.signedCookie("sid", "secret")
+    ip: str = req.realIP()
+    scheme: str = req.realScheme("http")
+
+    res.header("X-Request-Id", req.id())
+    res.json({
+        "contentType": ct,
+        "page": page,
+        "hasSession": sid != "",
+        "signedSession": signed,
+        "ip": ip,
+        "scheme": scheme,
+    })
+}
+```
+
+Response methods are chainable, so handlers can read like Fastify
+reply code:
+
+```lammergeier
+func created(req: Request, res: Response) {
+    res.code(201)
+       .type_("application/json")
+       .header("Location", "/items/123")
+       .json({"id": "123"})
+}
+
+func download(req: Request, res: Response) {
+    res.streamFile("/var/reports/daily.csv", "text/csv")
+}
+
+func redirectOld(req: Request, res: Response) {
+    res.redirect("/new-path", 301)
+}
+```
+
+### Route options in practice
+
+Use `*Opts` routes when behavior belongs to one endpoint rather than
+the whole server.
+
+```lammergeier
+func requireAuth(req: Request, res: Response) {
+    if req.header("Authorization") == "" {
+        res.code(401).json({"error": "missing token"})
+    }
+}
+
+func afterAudit(req: Request, res: Response) {
+    print(f"{req.routerMethod()} {req.routerPath()} -> {res.status}")
+}
+
+func upload(req: Request, res: Response) {
+    reader: RequestBodyReader = req.bodyReader()
+    n: int = reader.copyTo("/tmp/upload.bin")
+    res.json({"bytes": n})
+}
+
+srv.routeOpts("POST", "/upload", upload, {
+    "preHandler": requireAuth,
+    "onResponse": afterAudit,
+    "bodyLimit": 20_000_000,
+    "streamBody": true,
+    "timeoutMs": 10000,
+    "summary": "Upload a binary object",
+    "tags": ["uploads"],
+})
+```
+
+Route-local hooks run in the same phase as global hooks. They are the
+right place for endpoint-specific authentication, audit logging,
+serialization tweaks, and validation that should not affect sibling
+routes.
+
+### Schemas and OpenAPI
+
+Schemas are JSON Schema draft-07. Put route input under `body`,
+`querystring`, `params`, or `headers`; put output under `response`.
+Response schemas are status-keyed. Exact status wins, then status
+family, then `default`.
+
+```lammergeier
+func createOrderOpts() -> dict[str, any] {
+    return {
+        "operationId": "createOrder",
+        "summary": "Create an order",
+        "description": "Validates the body and returns the public order view.",
+        "tags": ["orders"],
+        "schema": {
+            "body": {
+                "type": "object",
+                "required": ["sku", "quantity"],
+                "properties": {
+                    "sku": {"type": "string", "minLength": 1},
+                    "quantity": {"type": "integer", "minimum": 1},
+                },
+            },
+            "response": {
+                "201": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "sku": {"type": "string"},
+                        "quantity": {"type": "integer"},
+                    },
+                },
+                "400": {
+                    "type": "object",
+                    "properties": {"error": {"type": "string"}},
+                },
+            },
+        },
+    }
+}
+```
+
+Register shared schemas once and reference them with `$ref`:
+
+```lammergeier
+srv.addSchema({
+    "$id": "PaginationQuery",
+    "type": "object",
+    "properties": {
+        "page": {"type": "integer", "minimum": 1},
+        "perPage": {"type": "integer", "minimum": 1, "maximum": 100},
+    },
+})
+
+srv.getOpts("/orders", listOrders, {
+    "schema": {"querystring": {"$ref": "PaginationQuery"}},
+    "summary": "List orders",
+    "tags": ["orders"],
+})
+```
+
+Export an OpenAPI document from the route table:
+
+```lammergeier
+spec: str = srv.openapi({
+    "title": "Orders API",
+    "version": "1.0.0",
+    "description": "Internal order-management API",
+})
+```
+
+### Custom parsers
+
+`addContentTypeParser(mediaType, fn)` lets a server accept custom
+request bodies. The parser receives the raw body string and returns
+any value; handlers read the result through `req.parsedBody()`.
+
+```lammergeier
+from lamstrings import Strings
+
+func parseLineBody(body: str) -> any {
+    return {"lines": Strings.splitLines(body)}
+}
+
+func ingest(req: Request, res: Response) {
+    parsed: any = req.parsedBody()
+    res.json(parsed)
+}
+
+srv.addContentTypeParser("text/x-lines", parseLineBody)
+srv.post("/ingest", ingest)
+```
+
+Use custom parsers for line protocols, signed webhooks, or vendor
+media types. Keep parsers small; expensive validation belongs in
+`preValidation` or route schemas.
+
+### Decorators and shared state
+
+Decorators are per-server storage for values a plugin or route needs
+later. They are split across server, request, and response scopes:
+
+```lammergeier
+srv.decorate("serviceName", "orders")
+srv.decorateRequest("user", None)
+srv.decorateResponse("view", "public")
+
+func whoami(req: Request, res: Response) {
+    service: any = srv.dec("serviceName")
+    user: any = req.dec("user")
+    view: any = res.dec("view")
+    res.json({"service": service, "user": user, "view": view})
+}
+```
+
+Plugins usually prefer `req.ctx` for per-request values and
+decorators for server-wide values or default request/reply slots.
+Use a unique prefix such as `__myPluginName` for internal keys.
+
+### Error handling
+
+Throw `HttpError` when a hook or handler needs to abort with an HTTP
+status. Plain panics are converted to a 500 envelope; `HttpError`
+keeps the intended status and optional data.
+
+```lammergeier
+func requireAdmin(req: Request, res: Response) {
+    if req.header("X-Admin") != "1" {
+        throw HttpError.forbidden("admin required", {"route": req.routerPath()})
+    }
+}
+
+func errorHandler(err: any, req: Request, res: Response) {
+    res.code(500).json({
+        "error": "internal",
+        "requestId": req.id(),
+    })
+}
+
+srv.preHandler(requireAdmin)
+srv.setErrorHandler(errorHandler)
+```
+
+Use `onError` hooks for observation and `setErrorHandler` when you
+want to own the response body. Keep error handlers defensive: if they
+panic, the built-in fallback takes over.
+
+### Testing and inspection
+
+`inject` returns a dict with `status`, `body`, and `headers`.
+Headers can be passed as `dict[str, str]`.
+
+```lammergeier
+func testCreateOrder() {
+    srv: Server = Server()
+    srv.postOpts("/orders", createOrder, createOrderOpts())
+
+    h: dict[str, str] = {"Content-Type": "application/json"}
+    out: dict[str, any] = srv.inject("POST", "/orders", "{\"sku\":\"A\",\"quantity\":2}", h)
+    assert(out["status"] == 201)
+    assert(out["body"] != "")
+}
+```
+
+Use `printRoutes()` for human-readable startup output and
+`listRoutes()` for tooling:
+
+```lammergeier
+print(srv.printRoutes())
+routes: list[any] = srv.listRoutes()
+```
+
+### Production checklist
+
+- Set `trustProxy(...)` only when the process is actually behind a
+  trusted reverse proxy.
+- Install `requestId`, `requestLog`, `helmet`, `metrics`, and
+  `serverTiming` early.
+- Use route schemas for public APIs and `setSchemaErrorFormatter` for
+  stable validation envelopes.
+- Prefer `register(plugin, prefix, encapsulate=true)` for feature
+  modules that own routes and private hooks.
+- Set `setRequestTimeout(...)` globally, override with `timeoutMs` on
+  slow routes, and use `onTimeout` to tag timeout responses.
+- Use `listenTLS` only when the Lam process terminates TLS directly;
+  behind a proxy, terminate TLS at the proxy and use `listen`.
 
 **`Request`** — `.method`, `.path`, `.body`, `.headers`, `.query`,
 `.params`, `.remoteAddr`, `.ctx` (plugin-shared dict). Methods:
@@ -1087,15 +1867,10 @@ protection:
 
 ```lammergeier
 from lamserver_plugins import CircuitBreaker
-from lamerrors import Result
 
 cb = CircuitBreaker(5, 2000)        # threshold=5 failures, cooldown=2000ms
-go! {
-    r := cb.CallFn(callRemoteAPI).(*Result)
-    if !r.Ok() {
-        // Circuit open or downstream panicked; fail fast.
-    }
-}
+out: any = cb.callFn(callRemoteAPI)  # a Result stored as any
+print(f"breaker={cb.state()} result={out}")
 ```
 
 State transitions: `closed` → `open` (after `threshold` consecutive
@@ -1116,7 +1891,7 @@ on build). Supports subprotocols + permessage-deflate compression
 from lamserver_ws import WebSocket, wsRoute, wsRouteOpts
 
 func chatHandler(ws: WebSocket, req: Request) {
-    while !ws.isClosed() {
+    while not ws.isClosed() {
         msg: str = ws.recv()
         if msg == "" { break }
         ws.send(f"echo: {msg}")
@@ -1164,18 +1939,19 @@ Raw TCP/UDP sockets and DNS.
 ```lammergeier
 from lamnet import Net, TcpConn, TcpListener
 
-l: TcpListener = Net.listen("0.0.0.0:9000")
+l: TcpListener = Net.listenTcp(9000)
 conn: TcpConn = l.accept()
 conn.send("welcome\n")
-line: str = conn.recvLine()
+chunk: str = conn.recv(4096)
 conn.close()
 ```
 
-`Net`: `dial(addr)`, `listen(addr)`, `lookupHost(host)`,
-`localIP()`, `dialUdp(addr)`, `udpListen(addr)`.
-`TcpConn`: `send`, `recv`, `recvLine`, `recvBytes`, `close`, plus
-deadline setters.
-`TcpListener`: `accept`, `close`.
+`Net`: `lookupHost(host)`, `lookupAddr(ip)`, `hostname()`,
+`isReachable(host, port, timeoutMs=1000)`, `dialTcp(host, port,
+timeoutMs=5000)`, `listenTcp(port)`.
+`TcpConn`: `send(data)`, `recv(maxBytes=4096)`, `close()`,
+`remoteAddr()`.
+`TcpListener`: `accept()`, `close()`, `port()`.
 
 ### `lamcompress` — `Compress`
 
@@ -1864,7 +2640,7 @@ ok: bool = Retry.until(predicate, 10, 50, 1000, true)
 ```lammergeier
 from lamratelimit import TokenBucket
 
-bucket: TokenBucket = TokenBucket(10.0, 5.0)   # capacity=10, refill=5/s
+bucket: TokenBucket = TokenBucket(10, 5)   # capacity=10, refill=5/s
 if bucket.tryTake(1) {
     callApi()
 }
@@ -1908,3 +2684,149 @@ claims: any = ks.verifyHS256(token)
 
 For deeper dives, every module file in [`lib/`](https://github.com/thallium-solutions/lammergeier-lang/blob/main/lib) opens with a
 docstring and example block.
+
+---
+
+## Public API index
+
+Use this as a module map when you know the problem but not the import.
+The longer guide sections above explain behavior and examples; this
+index lists the public classes and top-level functions you can import.
+
+### Signature conventions
+
+- Static utility classes are imported as classes and called with
+  `Class.method(...)`: `Math.sqrt(9.0)`, `Json.encode(value)`.
+- Data-structure classes are constructed: `Stack()`, `Queue()`,
+  `Set()`, `LruCache(100)`.
+- Server plugins are top-level functions: `requestId(srv)`,
+  `rateLimit(srv, 100, 60000)`.
+- `Result`-returning methods use `Result.Ok(value)` /
+  `Result.Err(error)`. The error payload is `any`.
+- Methods returning `any` usually wrap dynamic Go values, decoded
+  JSON/YAML/XML, or plugin state. Keep the value as `any`, pass it to
+  another dynamic API, or assert with a small `go!` block.
+
+| Module | Import | Public surface |
+|---|---|---|
+| `lamactor` | `from lamactor import Mailbox, ActorRef, ActorSystem` | Actor mailboxes, references, spawn/find/shutdown. |
+| `lamarray` | `from lamarray import Array, Matrix` | 1-D arrays, dense matrices, linear algebra, reductions. |
+| `lambase64` | `from lambase64 import Base64` | `encode`, `decode`, URL-safe encode/decode. |
+| `lambytes` | `from lambytes import Bytes` | String/byte conversion, hex encode/decode, byte search/count. |
+| `lamcache` | `from lamcache import LruCache, TtlCache` | Bounded LRU cache and expiry-based TTL cache. |
+| `lamcli` | `from lamcli import Cli` | Args, flags, positional arguments, typed integer flags. |
+| `lamcompress` | `from lamcompress import Compress` | gzip/gunzip and zlib deflate/inflate as base64 strings. |
+| `lamconcurrency` | `from lamconcurrency import Channel, WaitGroup, Mutex, RWMutex, Atomic` | Go-style concurrency primitives. |
+| `lamconv` | `from lamconv import Conv` | String/int/float/bool/base conversions plus `try*` Result forms. |
+| `lamcron` | `from lamcron import Cron` | Cron scheduler, seconds-aware mode, start/stop/remove. |
+| `lamcsv` | `from lamcsv import Csv` | Parse/format CSV rows and whole documents. |
+| `lamdata` | `from lamdata import DataFrame, DataFrameGroups, Series` | DataFrames, Series, joins, filters, group-by aggregation. |
+| `lamdatetime` | `from lamdatetime import DateTime` | Calendar-style date/time helpers. |
+| `lamdb` | `from lamdb import Db, Tx, QueryBuilder` | SQL connections, transactions, raw queries, query builder. |
+| `lamdeque` | `from lamdeque import Deque` | Double-ended queue helpers. |
+| `lamemcached` | `from lamemcached import Memcached` | Memcached client: get/set/add/replace/delete/touch/counters/stats. |
+| `lamenv` | `from lamenv import Env, Dotenv, Config` | Environment variables, dotenv parsing/loading, layered config. |
+| `lamerrors` | `from lamerrors import Error, Result` | Structured errors and success/error containers. |
+| `lamexec` | `from lamexec import Exec` | Run shell-like commands or command + arg lists. |
+| `lamfmt` | `from lamfmt import Fmt` | `sprintf`, printing, padding, integer bases, float formatting. |
+| `lamhash` | `from lamhash import Hash` | SHA/MD5/CRC/HMAC and constant-time comparison. |
+| `lamheap` | `from lamheap import Heap, PriorityHeap` | Numeric heap and priority queue. |
+| `lamhttp` | `from lamhttp import Http, HttpClient, HttpResponse, HttpServer` | One-shot HTTP helpers, reusable client, tiny blocking server. |
+| `lamiter` | `from lamiter import Iter` | Lazy iterator pipelines: map/filter/take/drop/reduce/enumerate. |
+| `lamjson` | `from lamjson import Json` | JSON encode/decode/pretty/validate plus `try*` forms. |
+| `lamjwt` | `from lamjwt import Jwt, JwtKeySet` | JWT sign/verify, HMAC/RSA, kid/JWKS key rotation. |
+| `lamlog` | `from lamlog import Log` | Leveled logging and formatted log helpers. |
+| `lammath` | `from lammath import Math` | Constants, trig, logs, rounding, combinatorics, number theory. |
+| `lammigrate` | `from lammigrate import Migrator, Schema` | SQL migrations and schema helpers. |
+| `lamnet` | `from lamnet import Net, TcpConn, TcpListener` | DNS, reachability, TCP dial/listen/send/recv. |
+| `lamos` | `from lamos import Os` | Filesystem, process, path, directory, temp-file helpers. |
+| `lampath` | `from lampath import Path` | Path joining/splitting/ext/base/dir/existence helpers. |
+| `lamprotobuf` | `from lamprotobuf import Pb` | Protobuf marshal/unmarshal/JSON/descriptor helpers. |
+| `lamqueue` | `from lamqueue import Queue` | FIFO queue. |
+| `lamrandom` | `from lamrandom import Random` | Pseudo-random, secure random, tokens, UUID-like helpers. |
+| `lamratelimit` | `from lamratelimit import TokenBucket` | Thread-safe token bucket throttling. |
+| `lamre` | `from lamre import Re` | Regex match/find/findAll/replace/split/groups plus `try*`. |
+| `lamredis` | `from lamredis import Redis, PubSub` | Redis strings, hashes, lists, sets, sorted sets, pub/sub, pipelines. |
+| `lamretry` | `from lamretry import Retry` | Retry `Result`-returning calls and poll predicates. |
+| `lamschema` | `from lamschema import Schema` | JSON Schema validation and registry. |
+| `lamserver` | `from lamserver import Server, Request, Response, HttpError, SseEmitter, RequestBodyReader` | Fastify-style HTTP framework. |
+| `lamserver_plugins` | `from lamserver_plugins import requestId, rateLimit, compress, helmet, etag, healthcheck, metrics, CircuitBreaker, ...` | Ready-made server plugins and a circuit breaker. |
+| `lamserver_tus` | `from lamserver_tus import tusUploads, tusGc` | tus.io resumable upload routes and garbage collection. |
+| `lamserver_ws` | `from lamserver_ws import WebSocket, wsRoute, wsRouteOpts` | WebSocket route helper and socket wrapper. |
+| `lamset` | `from lamset import Set` | Set operations: add/remove/contains/union/intersect/difference/subset. |
+| `lamsmtp` | `from lamsmtp import Smtp, Mail` | SMTP send helpers and MIME mail builder. |
+| `lamsort` | `from lamsort import Sort` | Typed sort/reverse helpers. |
+| `lamstack` | `from lamstack import Stack` | LIFO stack. |
+| `lamstats` | `from lamstats import Stats` | Descriptive statistics and percentiles. |
+| `lamstrings` | `from lamstrings import Strings` | UTF-8 string manipulation and formatting helpers. |
+| `lamtemplate` | `from lamtemplate import Template, HtmlTemplate` | Text and HTML templates. |
+| `lamtest` | `from lamtest import Test` | Assertions, counters, summaries. |
+| `lamtime` | `from lamtime import Time` | Unix time, sleeps, formatting, parsing, measurement. |
+| `lamunicode` | `from lamunicode import Unicode` | Rune counts, validity, categories, rune conversion. |
+| `lamurl` | `from lamurl import Url` | URL parse parts and percent encode/decode. |
+| `lamuuid` | `from lamuuid import Uuid` | UUID v4/v7/nil/parse/validate. |
+| `lamxml` | `from lamxml import Xml, XmlNode` | XML encode/decode/parse and node traversal. |
+| `lamyaml` | `from lamyaml import Yaml` | YAML encode/decode/decodeAll plus `try*` forms. |
+
+### High-value signatures
+
+These are the signatures most often needed while writing application
+code. They duplicate the guide sections intentionally so you can skim
+without jumping around.
+
+```lammergeier
+# lamerrors
+Error(kind: str, message: str, cause: any = None)
+Result.Ok(v: any) -> Result
+Result.Err(e: any) -> Result
+r.ok() -> bool
+r.unwrap() -> any
+r.unwrapOr(fallback: any) -> any
+
+# lamserver
+srv.route(method: str, path: str, handler: any)
+srv.routeOpts(method: str, path: str, handler: any, opts: any)
+srv.get/post/put/del/patch/head/options/all(path: str, handler: any)
+srv.getOpts/postOpts/putOpts/delOpts/patchOpts/headOpts/optionsOpts(path, handler, opts)
+srv.onRequest/preParsing/preValidation/preHandler/preSerialization/onSend/onResponse/onError(fn)
+srv.register(plugin: any, prefix: str = "", encapsulate: bool = false)
+srv.addSchema(schema: any)
+srv.setSchemaErrorFormatter(fn: any)
+srv.inject(method: str, path: str, body: str = "", headers: any = None) -> dict[str, any]
+req.header(name: str) -> str
+req.queryGet(name: str, fallback: str = "") -> str
+req.jsonBody() -> any
+req.bodyReader() -> RequestBodyReader
+res.code(n: int) -> Response
+res.header(name: str, value: str) -> Response
+res.json(obj: any) -> Response
+res.text(body: str) -> Response
+res.streamFile(path: str, contentType: str = "") -> Response
+
+# lamdb
+Db.connect(driver: str, dsn: str) -> Db
+Db.tryConnect(driver: str, dsn: str) -> Result
+db.exec(query: str, params: list[any] = []) -> int
+db.query(query: str, params: list[any] = []) -> list[dict[str, any]]
+db.transaction(fn: any) -> bool
+db.table(name: str) -> QueryBuilder
+qb.select(cols: list[any]) -> QueryBuilder
+qb.where(col: str, op: str, val: any) -> QueryBuilder
+qb.whereEq(col: str, val: any) -> QueryBuilder
+qb.orderBy(col: str, dir_: str = "asc") -> QueryBuilder
+qb.get() -> list[dict[str, any]]
+qb.first() -> dict[str, any]
+qb.insert(record: dict[str, any]) -> int
+qb.update(record: dict[str, any]) -> int
+qb.delete() -> int
+
+# lamdata
+DataFrame.readCSV(content: str) -> DataFrame
+DataFrame.readJSON(content: str) -> DataFrame
+df.selectCols(cols: list[str]) -> DataFrame
+df.filter(col: str, op: str, value: any) -> DataFrame
+df.groupBy(cols: list[str]) -> DataFrameGroups
+groups.aggregate(types: list[str], cols: list[str]) -> DataFrame
+series.mean() -> float
+series.toFloatList() -> list[float]
+```

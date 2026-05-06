@@ -230,21 +230,20 @@ function updateActiveNav(route) {
 // ── Views ────────────────────────────────────────────────────
 
 function renderHome() {
-    // Why-cards: the six concrete reasons a developer evaluating Lam
-    // should keep reading. Every claim is grounded in the codebase.
-    const whyCards = [
-        ["Python's readability, Go's runtime",
-         "Write code that reads like Python — annotated types, classes, comprehensions, pattern matching, f-strings, async/await. Ship native Go binaries. No interpreter on the deploy target, no GIL, no GC surprises."],
-        ["Drop into Go when you must",
-         "<code>go! { ... }</code> blocks let you inline raw Go for goroutines, channels, or any package you need. The transpiler stitches the surrounding scopes for you, so you stay in one source file."],
-        ["Batteries-included stdlib",
-         "Fastify-class HTTP server with hooks and plugins, JWT, JSON-Schema validation, query-builder SQL with migrations, gonum-backed numerics, pandas-shaped dataframes, Redis, SMTP, WebSockets, TUS uploads, cron, and ~60 more <code>lam*</code> modules. None of them are optional add-ons — they ship with the compiler."],
-        ["First-class tooling",
-         "A built-in LSP server (`bin/lammergeier-lsp`) gives diagnostics, hover, completion, goto-definition, and document-symbol outlines. The repo ships a VS Code / Cursor / Windsurf extension that wires it up in one command (<code>./install.sh --with-editor all</code>)."],
-        ["A real package manager",
-         "<code>lamc install lamwebp@1.2</code> works against a registry, a git URL, or a local path. Scoped <code>@scope/name</code> packages, transitive resolution, cross-library conflict detection, deterministic <code>lamlib.lock.toml</code>, Go-module pin merging via MVS, and a SemVer / API-diff gate that refuses upgrades whose version bump lies about the actual change."],
-        ["Ruthlessly tested",
-         "342+ end-to-end language tests, a semantic-checker suite, a transpilation-output regression runner, a dependency-conflict crash battery, a benchmark harness, and an LSP smoke harness. Every PR runs the lot."],
+    // Open feature rows: concise proof points without card chrome.
+    const featureBlocks = [
+        ["Lam syntax has its own center",
+         "It borrows the pleasant parts: Python-like flow, JavaScript-familiar method names, C-style braces where they make structure obvious, and explicit types where programs need contracts."],
+        ["Go is the target, not the costume",
+         "<code>lamc</code> emits readable Go and then lets <code>go build</code> do what it is good at: fast builds, native binaries, cross-compilation, and deployment without a language runtime."],
+        ["The stdlib is broad by default",
+         "<code>lamserver</code>, plugins, JWT, schemas, SQL, migrations, Redis, SMTP, WebSockets, TUS uploads, cron, structured logging, numerics, and dataframes all ship as <code>lam*</code> modules."],
+        ["Raw Go stays one block away",
+         "<code>go! { ... }</code> lets you call goroutines, channels, and Go packages directly. Use Lam for the application shape and drop into Go where the ecosystem already solved the problem."],
+        ["Tooling belongs to the language",
+         "The repo includes the compiler, package manager, LSP, diagnostics, completion, hover, goto-definition, document symbols, and editor extension wiring."],
+        ["Packages are reproducible",
+         "<code>lamc install</code> handles registry, git, and local paths with scoped names, lockfiles, transitive resolution, Go-module pins, conflict detection, and API-diff checks."],
     ];
 
     // Hero sample: a fully-functional HTTP service with CORS,
@@ -408,38 +407,35 @@ func main() {
         </article>
     `;
 
-    // "When to use it" cards — concrete, decision-friendly cases.
+    // Concrete, decision-friendly cases.
     const whenCards = [
         ["Backend services that need to be small, fast, and self-contained",
-         "If you currently reach for Fastify on Node.js or FastAPI on uvicorn, Lammergeier targets the same shape with no runtime to ship — `lamc` produces a static binary you can `scp` to a box."],
+         "Use Lammergeier when the service wants Fastify-like ergonomics but should deploy as one binary."],
         ["Glue code that touches multiple Go libraries",
-         "When the package you need only exists in the Go ecosystem (gRPC, NATS, Tailscale's libs), <code>go! { ... }</code> blocks let you call straight into them while the rest of your program stays Python-shaped."],
+         "Keep the Lam code readable and call the Go package directly from <code>go! { ... }</code>."],
         ["Numerical / data work where you want pandas ergonomics on a real binary",
-         "<code>lamdata</code> wraps go-gota for pandas-style DataFrames; <code>lamarray</code> wraps gonum for BLAS-backed Matrix ops. No Python interpreter, no `numpy.so` loader, no GIL."],
+         "<code>lamdata</code> and <code>lamarray</code> wrap Go data and numeric libraries without shipping a Python process."],
         ["Internal CLIs and operational tools",
-         "Type-checked argument parsing, structured logging, embedded SQL with migrations, JWT helpers, Redis + cron. The CLI is one binary, dropped into a container or a homedir bin."],
+         "Typed argument parsing, logging, SQL, migrations, JWT, Redis, and cron in a single deployable executable."],
         ["When *not* to use Lammergeier",
-         "It's not yet the right tool for desktop GUIs, mobile apps, browser front-ends (no WASM target yet), or anything that depends on a vast Python-only library you can't replace. The roadmap focuses on backend, infra, and data work."],
+         "Skip it for desktop GUIs, mobile apps, browser front-ends, or Python-only libraries you cannot replace yet."],
         ["Migrating off Node + TypeScript",
-         "If your fastify-or-express service has outgrown Node and you're tired of <code>tsconfig</code> + bundlers + dependency drift, Lam's package manager + LSP + binary output is a clean target. The Fastify-shaped <code>lamserver</code> is intentionally familiar."],
+         "The <code>lamserver</code> API is intentionally familiar, while the output is a Go binary instead of a Node service."],
     ];
 
     return `
     <section class="hero">
         <div class="text">
-            <h1>A <span class="accent">typed, Python-flavoured</span><br>language that compiles to Go.</h1>
-            <p class="lede">
-                Lammergeier is a programming language that pairs Python's readability
-                with Go's toolchain and runtime performance. You write
-                <code>.lam</code> source files with type annotations, classes,
-                comprehensions, pattern matching, generators, and async/await; the
-                compiler turns them into idiomatic Go and hands that off to
-                <code>go build</code>. The output is a native binary —
-                <strong>no VM, no GC surprises, no runtime layer</strong>.
-            </p>
+            <h1><span class="accent">Lammergeier</span><br>write fast, Go fast.</h1>
+            <br><br><br>
+            <div class="hero-points">
+                <span>typed Lam syntax</span>
+                <span>readable Go output</span>
+                <span>single-binary deploys</span>
+            </div>
             <div class="cta">
-                <a class="primary" href="#/docs/installation">Install in 30 seconds</a>
-                <a class="ghost"   href="#/docs/syntax">Syntax reference</a>
+                <a class="primary" href="#/docs/installation">Install and run it</a>
+                <a class="ghost"   href="#/docs/syntax">Read the language tour</a>
                 <a class="ghost"   href="https://github.com/thallium-solutions/lammergeier-lang" target="_blank" rel="noopener">GitHub →</a>
             </div>
         </div>
@@ -449,80 +445,74 @@ func main() {
     </section>
 
     <section class="band">
-        <h2>What is Lammergeier?</h2>
+        <h2>What is Lammergeier?</h2><br>
         <p class="band-lede">
-            Two existing languages, joined at the seam where they each
-            shine: a syntax that reads like Python, an output that runs
-            like Go.
-        </p>
+            Lammergeier is a programming language that aims to be sugary and fast. Who said you couldn't have both?<br>
+            The Pythonish/Javaish syntax gets transpiled in Go-lang and then compiled, no VMs, no fuss.
+        </p><br>
         <div class="prose-2col">
             <div>
                 <p>
-                    Lammergeier (<em>Lam</em> for short) takes the
-                    syntactic shapes Python developers already reach
-                    for — functions with default + keyword arguments,
-                    f-strings, list / dict / set / generator
-                    comprehensions, <code>match</code>/<code>case</code>,
-                    <code>try</code>/<code>except</code>, decorators,
-                    classes with inheritance — and gives them mandatory
-                    type annotations on parameters and fields, with
-                    inference on locals.
+                    Lam, for short, mixes:<br>
+                    <br>• An indentation-friendly flow
+                    <br>• A familiar method-call style
+                    <br>• Braces for clear block boundaries
+                    <br>• F-strings
+                    <br>• Comprehensions
+                    <br>• Pattern matching
+                    <br>• Classes
+                    <br>• Async/await
+                    <br>• And explicit type annotations.
                 </p>
                 <p>
-                    Source files compile to clean, human-readable Go.
-                    There is no Lam runtime: every program is a
-                    self-contained Go binary built by <code>go build</code>.
-                    When the standard library doesn't already wrap
-                    what you need, <code>go! { ... }</code> blocks let you
-                    inline raw Go right next to your Lam — variables
-                    cross the seam without ceremony.
+                    The compiler lowers Lam to human-readable Go and
+                    then builds it with the Go toolchain. There is no
+                    Lam runtime to install beside your app.
                 </p>
             </div>
             <div>
                 <p>
-                    The compiler is one Python module
-                    (<code>compiler/</code>), one Lark grammar
-                    (<code>lammergeier.lark</code>), and a stdlib
-                    written in Lam itself (<code>lib/</code>). The
-                    LSP server, package manager, and registry are
-                    built on the same primitives.
+                    The standard library is part of the core pitch:<br>
+                    <br>• HTTP servers
+                    <br>• Plugins
+                    <br>• Data tools
+                    <br>• Persistence
+                    <br>• Auth
+                    <br>• Queues
+                    <br>• Encoding
+                    <br>• Time
+                    <br>• Networking
+                    <br>• Testing
+                    <br>• Operational helpers
+                    <br>live under <code>lib/</code>.
                 </p>
                 <p>
-                    The project ships an opinionated standard library
-                    of <code>lam*</code> modules: a Fastify-class HTTP
-                    server with hooks and plugins, JWT, JSON-Schema
-                    validation, query-builder SQL, gonum-backed
-                    numerics, pandas-style dataframes, Redis, SMTP,
-                    WebSockets, TUS uploads, cron, structured logging,
-                    and ~50 more. None of them are optional add-ons;
-                    they all live in <code>lib/</code> and follow the
-                    same import path as your code.
+                    When you need the Go ecosystem directly, use
+                    <code>go! { ... }</code>. Lam code and Go code can
+                    live in the same source file.
                 </p>
             </div>
         </div>
     </section>
 
     <section class="band alt">
-        <h2>Why Lammergeier</h2>
-        <div class="grid">
-            ${whyCards.map(([title, body]) => `
-                <div class="card">
+        <h2>What makes Lam different</h2>
+        <div class="feature-list">
+            ${featureBlocks.map(([title, body]) => `
+                <article class="feature">
                     <h3>${title}</h3>
                     <p>${body}</p>
-                </div>`).join("")}
+                </article>`).join("")}
         </div>
     </section>
 
     <section class="band">
-        <h2>A real HTTP service in twenty-three lines</h2>
+        <h2>A real HTTP service before your coffee cools</h2>
         <div class="hero-sample">
             <p class="muted">
-                Production wiring out of the box: CORS, Helmet-class
-                security headers, request logging, per-IP rate limiting,
-                routed handlers, structured <code>HttpError</code>
-                shortcuts. No <code>npm install</code>, no
-                <code>tsconfig</code>, no fastify-plugin glue — just the
-                stdlib and a single <code>lamc</code> invocation.
+                CORS, security headers, request logging, rate limits,
+                routed handlers, and structured <code>HttpError</code>
+                helpers come from the stdlib.
             </p>
             <pre><code class="language-python">${escapeHtml(heroSample)}</code></pre>
         </div>
@@ -531,10 +521,9 @@ func main() {
     <section class="band alt">
         <h2>Tour the language</h2>
         <p class="band-lede">
-            Six snippets that show the shape of an idiomatic Lam program —
-            from data, control flow and error handling all the way down to
-            the raw-Go escape hatch. Each compiles to plain Go: no runtime
-            layer, no reflection.
+            A quick look at typed functions, comprehensions, control
+            flow, Result propagation, list combinators, and raw Go
+            interop.
         </p>
         <div class="tour">
             ${tourCards.map(renderTourCard).join("")}
@@ -550,7 +539,7 @@ func main() {
     <section class="band">
         <h2>How it's made</h2>
         <p class="band-lede">
-            One pipeline, four steps, every stage open and inspectable.
+            Lam is small enough to inspect and practical enough to ship.
         </p>
         <div class="pipeline">
             <div class="step">
@@ -558,19 +547,17 @@ func main() {
                 <h3>Parse</h3>
                 <p>
                     A Lark LALR grammar (<code>lammergeier.lark</code>)
-                    turns <code>.lam</code> source into a typed AST.
-                    The same parser drives the LSP — a single grammar,
-                    no second source of truth.
+                    turns <code>.lam</code> source into an AST. The same
+                    grammar drives the LSP.
                 </p>
             </div>
             <div class="step">
                 <span class="num">2</span>
                 <h3>Check</h3>
                 <p>
-                    A semantic pass walks the AST: undefined names,
-                    duplicate class members, return-type mismatches,
-                    misplaced flow statements, scoped imports. Errors
-                    surface with line and column ranges Lark hands us.
+                    Semantic passes catch undefined names, duplicate
+                    members, return mismatches, and misplaced flow
+                    statements.
                 </p>
             </div>
             <div class="step">
@@ -578,22 +565,17 @@ func main() {
                 <h3>Transpile</h3>
                 <p>
                     Visitors in <code>compiler/visitors/</code> emit Go
-                    source — one Lam construct at a time. The mapping
-                    is documented in <a href="#/docs/transpilation">the
-                    transpilation rules</a> and snapshot-tested for
-                    every release.
+                    source one Lam construct at a time. The mapping is
+                    documented and snapshot-tested.
                 </p>
             </div>
             <div class="step">
                 <span class="num">4</span>
                 <h3>Build</h3>
                 <p>
-                    The synthesised <code>main.go</code> + a generated
-                    <code>go.mod</code> seeded with your
-                    <code>[go-deps]</code> pins go to <code>go build</code>.
-                    You get a native binary — same toolchain, same
-                    cross-compilation matrix, same artefacts as any
-                    other Go program.
+                    The generated <code>main.go</code> and
+                    <code>go.mod</code> go through <code>go build</code>.
+                    You get the same artefacts as a Go project.
                 </p>
             </div>
         </div>
@@ -606,15 +588,15 @@ func main() {
     <section class="band alt">
         <h2>When to use Lammergeier</h2>
         <p class="band-lede">
-            Concrete cases where Lam shines — and the cases where it
-            doesn't yet, so you can pick the right tool.
+            Pick it when the code should stay expressive but the
+            deployment target should look like Go.
         </p>
-        <div class="grid">
+        <div class="feature-list compact">
             ${whenCards.map(([title, body]) => `
-                <div class="card">
+                <article class="feature">
                     <h3>${title}</h3>
                     <p>${body}</p>
-                </div>`).join("")}
+                </article>`).join("")}
         </div>
     </section>
 

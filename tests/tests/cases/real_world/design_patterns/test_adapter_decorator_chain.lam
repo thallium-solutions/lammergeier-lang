@@ -1,0 +1,146 @@
+# Real-world design patterns: Adapter + Decorator + Chain of Responsibility.
+# Uses Csv, Conv, Base64, Hash, Re, Fmt, and Strings helpers.
+# expect: product=sku-1:adapter:199
+# expect: decorated=cGxhaW46c2t1LTEtc2hpcHBlZA==
+# expect: signed_len=32
+# expect: cleaned=ada@example.com
+# expect: valid=ok
+# expect: bad=invalid_email
+# expect: blank=required
+
+from lamcsv import Csv
+from lamconv import Conv
+from lambase64 import Base64
+from lamhash import Hash
+from lamre import Re
+from lamfmt import Fmt
+from lamstrings import Strings
+
+interface ProductSource {
+    func code(row: int) -> str
+    func price(row: int) -> int
+}
+
+class LegacyCsvInventory {
+    func __init__(self, raw: str) {
+        self.rows: list[list[str]] = Csv.parseAll(raw)
+    }
+
+    func cell(self, row: int, col: int) -> str {
+        return self.rows[row][col]
+    }
+}
+
+class CsvProductAdapter {
+    func __init__(self, legacy: LegacyCsvInventory) {
+        self.legacy: LegacyCsvInventory = legacy
+    }
+
+    func code(self, row: int) -> str {
+        return self.legacy.cell(row, 0)
+    }
+
+    func price(self, row: int) -> int {
+        return Conv.toInt(self.legacy.cell(row, 1))
+    }
+}
+
+interface Notifier {
+    func send(message: str) -> str
+}
+
+class PlainNotifier {
+    func send(self, message: str) -> str {
+        return "plain:" + message
+    }
+}
+
+class Base64Notifier {
+    func __init__(self, inner: Notifier) {
+        self.inner: Notifier = inner
+    }
+
+    func send(self, message: str) -> str {
+        return Base64.encode(self.inner.send(message))
+    }
+}
+
+class SignedNotifier {
+    func __init__(self, inner: Notifier) {
+        self.inner: Notifier = inner
+    }
+
+    func send(self, message: str) -> str {
+        digest: str = Hash.sha256(message)
+        return self.inner.send(message) + ":sha=" + digest[:8]
+    }
+}
+
+interface Rule {
+    func check(value: str) -> str
+}
+
+class RequiredRule {
+    func check(self, value: str) -> str {
+        if Strings.isBlank(value) {
+            return "required"
+        }
+        return ""
+    }
+}
+
+class EmailRule {
+    func check(self, value: str) -> str {
+        if Re.match("^[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}$", value) {
+            return ""
+        }
+        return "invalid_email"
+    }
+}
+
+class Validator {
+    func __init__(self) {
+        self.rules: list[Rule] = []
+    }
+
+    func add(self, rule: Rule) {
+        self.rules.append(rule)
+    }
+
+    func validate(self, value: str) -> str {
+        for rule in self.rules {
+            result: str = rule.check(value)
+            if result != "" {
+                return result
+            }
+        }
+        return "ok"
+    }
+}
+
+func main() {
+    legacy: LegacyCsvInventory = LegacyCsvInventory("sku-1,199\nsku-2,299\n")
+    source: ProductSource = CsvProductAdapter(legacy)
+    print(Fmt.sprintf("product=%s:adapter:%d", source.code(0), source.price(0)))
+
+    wrapped: Notifier = Base64Notifier(PlainNotifier())
+    decorated: str = wrapped.send("sku-1-shipped")
+    print(f"decorated={decorated}")
+
+    signed: Notifier = SignedNotifier(PlainNotifier())
+    signedMessage: str = signed.send("sku-1-shipped")
+    print(f"signed_len={len(signedMessage)}")
+
+    rawEmail: str = "  Ada@Example.COM  "
+    cleaned: str = Strings.toLower(Strings.trim(rawEmail))
+    print(f"cleaned={cleaned}")
+
+    validator: Validator = Validator()
+    validator.add(RequiredRule())
+    validator.add(EmailRule())
+    print(f"valid={validator.validate(cleaned)}")
+    bad: str = validator.validate("not an email")
+    blank: str = validator.validate("   ")
+    print(f"bad={bad}")
+    print(f"blank={blank}")
+}

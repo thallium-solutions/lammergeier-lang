@@ -1,0 +1,7 @@
+# expect-error: duplicate import `Text`
+
+from lamstrings import Strings as Text, Strings as Text
+
+func main() {
+    pass
+}

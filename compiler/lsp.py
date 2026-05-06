@@ -45,6 +45,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from compiler.preprocessor import preprocess_go_blocks, apply_lammergeier_aliases  # noqa: E402
+from compiler.syntax_errors import lsp_syntax_message  # noqa: E402
 from compiler.lammergeier import (  # noqa: E402
     _collapse_multiline_strings,
     _expand_single_statement_blocks,
@@ -449,6 +450,13 @@ def analyze(doc: Document) -> None:
             checker = SemanticChecker()
             errors = checker.check(tree)
             for err in errors:
+                # Keep the LSP signal focused on build-stopping
+                # diagnostics. The CLI still renders advisory warnings
+                # such as unused imports/parameters, but showing them
+                # on every keystroke made otherwise-valid documents
+                # look broken in editors.
+                if getattr(err, "is_warning", False):
+                    continue
                 # SemanticError lines are 1-indexed; LSP wants 0-indexed.
                 doc.semantic_diagnostics.append(
                     (max(0, err.line - 1), max(0, err.col - 1), err.message, 1)
@@ -459,7 +467,7 @@ def analyze(doc: Document) -> None:
     except UnexpectedInput as e:
         line = max(0, getattr(e, "line", 1) - 1)
         col = max(0, getattr(e, "column", 1) - 1)
-        msg = str(e).splitlines()[0] if str(e) else "syntax error"
+        msg = lsp_syntax_message(e, doc.text)
         doc.parse_error = (line, col, msg)
     except Exception as exc:
         doc.parse_error = (0, 0, f"internal parser error: {exc}")

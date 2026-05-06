@@ -1,0 +1,21 @@
+# expect-error: class `Dog` does not satisfy interface `Animal`: missing method `eat`
+
+interface Animal {
+    func speak() -> str
+    func eat(food: str) -> None
+}
+
+class Dog {
+    func speak(self) -> str {
+        return "woof"
+    }
+}
+
+func handle(a: Animal) {
+    print(a.speak())
+}
+
+func main() {
+    d: Dog = Dog()
+    handle(d)
+}

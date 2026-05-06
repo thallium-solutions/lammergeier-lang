@@ -1,0 +1,10 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected identifier `items`
+# expect-error: expected: `in`
+# expect-error: help: For loops use `for item in iterable { ... }`
+
+func main() {
+    for item items {
+        print(item)
+    }
+}

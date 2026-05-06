@@ -1,0 +1,8 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected number literal `1`
+# expect-error: expected: `:`
+# expect-error: help: Dictionary entries use `key: value`
+
+func main() {
+    counts := {"one" 1}
+}

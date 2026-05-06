@@ -1,0 +1,16 @@
+# expect-error: class `Dog` does not satisfy interface `Animal`: missing method `speak`
+
+interface Animal {
+    func speak() -> str
+}
+
+class Dog {
+    func wag(self) -> None {
+        return
+    }
+}
+
+func main() {
+    a: Animal = Dog()
+    print(0)
+}

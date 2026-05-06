@@ -1,0 +1,8 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected `}`
+# expect-error: expected: `]`
+# expect-error: help: Close the list, index, or generic type expression with `]`
+
+func main() {
+    xs: list[int] = [1, 2
+}

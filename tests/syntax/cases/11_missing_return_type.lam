@@ -1,0 +1,8 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected `{`
+# expect-error: expected: a return type
+# expect-error: help: Add a return type after `->`
+
+func identity(x: int) -> {
+    return x
+}

@@ -1,0 +1,6 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected identifier `print`
+# expect-error: expected: `{` or `->`
+# expect-error: help: Lam blocks use braces
+
+func main() print("hi")

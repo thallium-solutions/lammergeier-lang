@@ -1,0 +1,8 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected `int`
+# expect-error: expected: `)`, `:`, `,`, or `=`
+# expect-error: help: Type annotations use `name: Type`
+
+func add(x int) -> int {
+    return x
+}

@@ -1,0 +1,7 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected end of statement.
+# expect-error: expected: `func` or `class`
+# expect-error: help: Decorators must be followed immediately by a `func` or `class` declaration.
+
+@memoize
+pass

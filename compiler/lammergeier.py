@@ -23,6 +23,7 @@ import tempfile
 import shutil
 from pathlib import Path
 from lark import Lark, Tree
+from lark.exceptions import UnexpectedInput
 
 # Allow running from project root or compiler/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -36,6 +37,7 @@ from compiler.preprocessor import (
     LAMMERGEIER_ALIASES,
 )
 from compiler import cache as _lamcache
+from compiler.syntax_errors import SyntaxDiagnosticError, render_syntax_error
 import re as _re
 
 
@@ -1272,23 +1274,8 @@ def compile_lam(
     parser = create_parser()
     try:
         tree = parser.parse(preprocessed)
-    except Exception as e:
-        # Format parser errors with source context
-        err_str = str(e)
-        print(f"error: parse error in {source_path}", file=sys.stderr)
-        # Try to extract line number from Lark error
-        import re as _re2
-        m = _re2.search(r'line (\d+)', err_str)
-        if m:
-            err_line = int(m.group(1))
-            src_lines = source.split('\n')
-            print(f"  at line {err_line}:", file=sys.stderr)
-            start = max(0, err_line - 3)
-            end = min(len(src_lines), err_line + 2)
-            for i in range(start, end):
-                marker = ">>>" if i == err_line - 1 else "   "
-                print(f"  {marker} {i+1:4d} | {src_lines[i]}", file=sys.stderr)
-        print(f"\n  {err_str}", file=sys.stderr)
+    except UnexpectedInput as e:
+        print(render_syntax_error(e, source, source_path), file=sys.stderr)
         sys.exit(1)
 
     if emit_ast:
@@ -1327,15 +1314,14 @@ def compile_lam(
     _pre_transpiler._collect_class_fields(tree)
 
 
-    def _extract_imports(node) -> list[str]:
-        """Walk ``node`` and return every ``from X import ...`` /
-        ``import X`` module name as a dotted string.
+    def _extract_import_sites(node) -> list[tuple[str, Tree]]:
+        """Walk ``node`` and return every imported module with its AST node.
 
         Used both for the user's main file and for transitive
         resolution: a library that does ``from lamerrors import ...``
         triggers a second pass on ``lamerrors`` itself.
         """
-        out: list[str] = []
+        out: list[tuple[str, Tree]] = []
 
         def _walk(n):
             if not isinstance(n, Tree):
@@ -1349,13 +1335,13 @@ def compile_lam(
                                 parts.append(str(c.children[0]))
                             else:
                                 parts.append(str(c))
-                        out.append(".".join(parts))
+                        out.append((".".join(parts), n))
                         break
                     # ``scoped_name`` — ``from @alice/lamwebp import ...``.
                     # One child, a single SCOPED_NAME token.
                     if isinstance(child, Tree) and child.data == "scoped_name":
                         if child.children:
-                            out.append(str(child.children[0]))
+                            out.append((str(child.children[0]), n))
                         break
             elif n.data == "import_name":
                 for child in n.children:
@@ -1369,7 +1355,7 @@ def compile_lam(
                                         parts.append(str(c.children[0]))
                                     else:
                                         parts.append(str(c))
-                                out.append(".".join(parts))
+                                out.append((".".join(parts), n))
             for child in n.children:
                 if isinstance(child, Tree):
                     _walk(child)
@@ -1377,7 +1363,11 @@ def compile_lam(
         _walk(node)
         return out
 
-    _pre_transpiler._lam_imports.extend(_extract_imports(tree))
+    def _extract_imports(node) -> list[str]:
+        return [mod for mod, _ in _extract_import_sites(node)]
+
+    _direct_import_sites = _extract_import_sites(tree)
+    _pre_transpiler._lam_imports.extend(mod for mod, _ in _direct_import_sites)
 
     # ── Auto-inject ``lamstrings`` when the source uses any of
     #    the built-in string-method dispatch names ──
@@ -1401,9 +1391,14 @@ def compile_lam(
     # users to write ``from lamstrings import Strings`` for the
     # syntactic sugar they expect to "just work".
     _STRING_METHOD_DISPATCH_NAMES = (
+        "repeat", "contains", "hasPrefix", "hasSuffix",
         "toUpper", "toLower", "trim", "trimLeft", "trimRight",
-        "replace", "split", "join", "startsWith", "endsWith",
-        "index", "count", "contains", "title", "format",
+        "replace", "split", "join", "count", "index", "lastIndex",
+        "title", "equalFold", "fields", "capitalize", "isAlpha",
+        "isDigit", "isAlnum", "isSpace", "reverse", "center",
+        "zfill", "padLeft", "padRight", "splitLines", "splitN",
+        "replaceFirst", "startsWith", "endsWith", "containsAny",
+        "isEmpty", "isBlank", "indent", "dedent", "format",
     )
     _lam_string_method_re = _re.compile(
         r"\.(?:" + "|".join(_STRING_METHOD_DISPATCH_NAMES) + r")\s*\("
@@ -1465,6 +1460,197 @@ def compile_lam(
             if candidate_dir.exists():
                 return candidate_dir
         return None
+
+    def _node_loc(node) -> tuple[int, int]:
+        meta = getattr(node, "meta", None)
+        if meta is not None and not getattr(meta, "empty", True):
+            return int(getattr(meta, "line", 1) or 1), int(getattr(meta, "column", 1) or 1)
+        return 1, 1
+
+    def _format_missing_module_error(mod_name: str, node) -> str:
+        from difflib import get_close_matches as _get_close_matches
+
+        line, col = _node_loc(node)
+        src_lines = source.split("\n")
+        src_line = src_lines[line - 1] if 1 <= line <= len(src_lines) else ""
+        known_modules = sorted(
+            p.stem
+            for d in lib_dirs
+            if d.exists()
+            for p in d.glob("*.lam")
+        )
+        suggestion = _get_close_matches(mod_name, known_modules, n=1, cutoff=0.72)
+        out = [
+            f"error: import resolution failed for {source_path}",
+            f"  line {line}: module `{mod_name}` could not be found",
+        ]
+        if src_line:
+            out.append(f"    >>> {line:4d} | {src_line}")
+            out.append(f"        {' ' * max(0, col - 1)}^")
+        if suggestion:
+            out.append(f"  help: did you mean `{suggestion[0]}`?")
+        out.append(
+            f"  help: Lammergeier looked for `{mod_name}.lam` or "
+            f"`{mod_name}/__init__.lam`."
+        )
+        out.append("  searched:")
+        for d in lib_dirs:
+            out.append(f"    - {d}")
+        return "\n".join(out)
+
+    def _from_import_symbols(node) -> list[tuple[str, str, Tree]]:
+        if not isinstance(node, Tree) or node.data != "import_from":
+            return []
+        out: list[tuple[str, str, Tree]] = []
+        for child in node.children:
+            if isinstance(child, Tree) and child.data == "import_as_names":
+                for item in child.children:
+                    if not isinstance(item, Tree) or item.data != "import_as_name":
+                        continue
+                    names = [c for c in item.children
+                             if isinstance(c, Tree) and c.data == "name"]
+                    if not names:
+                        continue
+                    requested = str(names[0].children[0]) if names[0].children else ""
+                    local = requested
+                    if len(names) > 1 and names[1].children:
+                        local = str(names[1].children[0])
+                    if requested:
+                        out.append((requested, local, item))
+        return out
+
+    def _parse_lam_module(mod_file: Path):
+        try:
+            sub_source = mod_file.read_bytes().decode("utf-8")
+            sub_source = apply_lammergeier_aliases(sub_source)
+            sub_pre, _ = preprocess_go_blocks(sub_source)
+            sub_pre = _re.sub(r'#-[\s\S]*?-#', '', sub_pre)
+            sub_pre = _collapse_multiline_strings(sub_pre)
+            sub_pre = expand_dict_destructure(sub_pre)
+            sub_pre = _expand_single_statement_blocks(sub_pre)
+            sub_pre = auto_semicolons(sub_pre)
+            sub_pre = _collapse_runaway_semicolons(sub_pre)
+            sub_pre = _fill_empty_blocks(sub_pre)
+            return create_parser().parse(sub_pre + "\n")
+        except Exception:
+            return None
+
+    def _module_exports(tree) -> set[str]:
+        exports: set[str] = set()
+
+        def add_name_from_func(node) -> None:
+            for child in node.children:
+                if isinstance(child, Tree) and child.data == "name" and child.children:
+                    exports.add(str(child.children[0]))
+                    return
+
+        def add_assignment_target(node) -> None:
+            if isinstance(node, Tree):
+                if node.data == "var" and node.children:
+                    exports.add(str(node.children[0].children[0])
+                                if isinstance(node.children[0], Tree) and node.children[0].children
+                                else str(node.children[0]))
+                    return
+                if node.data == "annassign":
+                    for child in node.children:
+                        if isinstance(child, Tree) and child.data == "type_expr":
+                            break
+                        add_assignment_target(child)
+                    return
+                if node.data in {"assign", "assign_stmt"} and node.children:
+                    add_assignment_target(node.children[0])
+
+        for child in getattr(tree, "children", []):
+            if not isinstance(child, Tree):
+                continue
+            target = child
+            if target.data == "import_stmt" and target.children:
+                target = next((c for c in target.children if isinstance(c, Tree)), target)
+            if target.data == "funcdef":
+                add_name_from_func(target)
+            elif target.data in {"classdef", "interfacedef"}:
+                if target.children and isinstance(target.children[0], Tree):
+                    exports.add(str(target.children[0].children[0]))
+            elif target.data == "decorated":
+                for sub in target.children:
+                    if isinstance(sub, Tree) and sub.data in {"funcdef", "classdef"}:
+                        if sub.data == "funcdef":
+                            add_name_from_func(sub)
+                        elif sub.children and isinstance(sub.children[0], Tree):
+                            exports.add(str(sub.children[0].children[0]))
+            elif target.data == "const_stmt":
+                if target.children and isinstance(target.children[0], Tree):
+                    exports.add(str(target.children[0].children[0]))
+            elif target.data in {"assign_stmt", "annassign", "assign"}:
+                add_assignment_target(target)
+            elif target.data in {"import_from", "import_name"}:
+                try:
+                    from compiler.semantic import SemanticChecker as _SemanticChecker
+                    exports.update(_SemanticChecker._import_bindings(target))
+                except Exception:
+                    pass
+        return {name for name in exports if name}
+
+    def _format_missing_import_symbol_error(
+        mod_name: str,
+        symbol: str,
+        local_name: str,
+        node,
+        exports: set[str],
+    ) -> str:
+        from difflib import get_close_matches as _get_close_matches
+
+        line, col = _node_loc(node)
+        src_lines = source.split("\n")
+        src_line = src_lines[line - 1] if 1 <= line <= len(src_lines) else ""
+        suggestion = _get_close_matches(symbol, sorted(exports), n=1, cutoff=0.72)
+        alias_note = f" as `{local_name}`" if local_name != symbol else ""
+        out = [
+            f"error: import resolution failed for {source_path}",
+            f"  line {line}: module `{mod_name}` does not export `{symbol}`{alias_note}",
+        ]
+        if src_line:
+            out.append(f"    >>> {line:4d} | {src_line}")
+            out.append(f"        {' ' * max(0, col - 1)}^")
+        if suggestion:
+            out.append(f"  help: did you mean `{suggestion[0]}`?")
+        if exports:
+            out.append(f"  exported by `{mod_name}`:")
+            for name in sorted(exports):
+                out.append(f"    - {name}")
+        else:
+            out.append(f"  help: `{mod_name}` has no exported Lam symbols.")
+        return "\n".join(out)
+
+    direct_module_files: dict[str, Path] = {}
+    direct_module_trees: dict[str, Tree] = {}
+    for mod_name, import_node in _direct_import_sites:
+        mod_file = direct_module_files.get(mod_name)
+        if mod_file is None:
+            mod_file = _resolve_lib_path(mod_name)
+            if mod_file is None:
+                print(_format_missing_module_error(mod_name, import_node), file=sys.stderr)
+                sys.exit(1)
+            direct_module_files[mod_name] = mod_file
+        if _from_import_symbols(import_node):
+            parsed = _parse_lam_module(mod_file)
+            if parsed is not None:
+                direct_module_trees[mod_name] = parsed
+
+    for mod_name, import_node in _direct_import_sites:
+        symbols = _from_import_symbols(import_node)
+        if not symbols or mod_name not in direct_module_trees:
+            continue
+        exports = _module_exports(direct_module_trees[mod_name])
+        for requested, local_name, symbol_node in symbols:
+            if requested not in exports:
+                print(
+                    _format_missing_import_symbol_error(
+                        mod_name, requested, local_name, symbol_node, exports,
+                    ),
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
     # Resolve the user's direct imports, then walk transitively: any
     # library that itself imports another library (e.g. ``lamconv``
@@ -1659,7 +1845,11 @@ def compile_lam(
         lib_preprocessed = _collapse_runaway_semicolons(lib_preprocessed)
         lib_preprocessed = _fill_empty_blocks(lib_preprocessed)
         lib_parser = create_parser()
-        lib_tree = lib_parser.parse(lib_preprocessed + "\n")
+        try:
+            lib_tree = lib_parser.parse(lib_preprocessed + "\n")
+        except UnexpectedInput as e:
+            rendered = render_syntax_error(e, lib_source, mod_file)
+            raise SyntaxDiagnosticError(rendered) from None
         lib_transpiler = GoTranspiler(
             go_blocks=lib_go_blocks,
             stdlib_path=stdlib_path,
@@ -1775,10 +1965,14 @@ def compile_lam(
             futures = {pool.submit(_transpile_lib, name, path): name
                        for name, path in lib_mod_files.items()}
             for fut in futures:
-                (mod_name, go_src, cls_names, static_meths, static_vars,
-                 fn_defaults, fn_param_counts, variadic_set,
-                 user_fns, priv_fns, method_returns,
-                 fn_param_names) = fut.result()
+                try:
+                    (mod_name, go_src, cls_names, static_meths, static_vars,
+                     fn_defaults, fn_param_counts, variadic_set,
+                     user_fns, priv_fns, method_returns,
+                     fn_param_names) = fut.result()
+                except SyntaxDiagnosticError as e:
+                    print(str(e), file=sys.stderr)
+                    sys.exit(1)
                 lib_sources[mod_name] = go_src
                 lib_class_names.update(cls_names)
                 for cls_name, methods in static_meths.items():

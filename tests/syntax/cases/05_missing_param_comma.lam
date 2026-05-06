@@ -1,0 +1,7 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected identifier `y`
+# expect-error: help: Add `,` between parameters/items
+
+func add(x: int y: int) -> int {
+    return x + y
+}

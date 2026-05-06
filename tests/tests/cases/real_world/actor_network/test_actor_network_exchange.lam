@@ -1,0 +1,60 @@
+# Real-world actor test: two actors belonging to different logical networks
+# call each other and exchange messages through ActorRef.ask.
+# expect: first_reply=west:received:ack:hello
+# expect: return_reply=east:received:ack:return
+# expect: east_log=[east<-ping:hello east<-ack:return]
+# expect: west_log=[west<-ack:hello west<-ping:return]
+# expect: actors_before_shutdown=2
+# expect: actors_after_shutdown=0
+
+from lamactor import ActorSystem, ActorRef
+from lamqueue import Queue
+from lamstrings import Strings
+
+class NetworkNode {
+    func __init__(self, networkName: str) {
+        self.networkName: str = networkName
+        self.peer: ActorRef = ActorRef()
+        self.log: Queue = Queue()
+    }
+
+    func onMessage(self, msg: any) -> any {
+        text: str = str(msg)
+        self.log.enqueue(self.networkName + "<-" + text)
+
+        if Strings.startsWith(text, "ping:") {
+            payload: str = Strings.replace(text, "ping:", "ack:")
+            return self.peer.ask(payload, 1000)
+        }
+
+        if Strings.startsWith(text, "ack:") {
+            return self.networkName + ":received:" + text
+        }
+
+        return self.networkName + ":ignored"
+    }
+}
+
+func main() {
+    sys: ActorSystem = ActorSystem()
+
+    eastNode: NetworkNode = NetworkNode("east")
+    westNode: NetworkNode = NetworkNode("west")
+    eastRef: ActorRef = sys.spawnNamed("network-east", eastNode)
+    westRef: ActorRef = sys.spawnNamed("network-west", westNode)
+
+    eastNode.peer = westRef
+    westNode.peer = eastRef
+
+    firstReply: any = eastRef.ask("ping:hello", 1000)
+    returnReply: any = westRef.ask("ping:return", 1000)
+
+    print(f"first_reply={firstReply}")
+    print(f"return_reply={returnReply}")
+    print(f"east_log={eastNode.log.toList()}")
+    print(f"west_log={westNode.log.toList()}")
+    print(f"actors_before_shutdown={sys.numActors()}")
+
+    sys.shutdown(1000)
+    print(f"actors_after_shutdown={sys.numActors()}")
+}

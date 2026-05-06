@@ -1,0 +1,35 @@
+# Manual live Open-Meteo smoke test.
+#
+# The normal suite compiles and exits immediately. To perform the real HTTP
+# call manually:
+#   LAMMERGEIER_LIVE_OPENMETEO=1 python3 tests/tests/run_tests.py --dir tests/tests/cases/real_world/numeric_weather --filter live_guarded
+
+from lamenv import Env
+from lamhttp import Http
+from lamerrors import Result
+from lamjson import Json
+from lamfmt import Fmt
+
+func main() {
+    if Env.get("LAMMERGEIER_LIVE_OPENMETEO") != "1" {
+        return
+    }
+
+    url: str = Fmt.sprintf(
+        "https://archive-api.open-meteo.com/v1/archive?latitude=%.4f&longitude=%.4f&start_date=%s&end_date=%s&daily=temperature_2m_mean,temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=Europe%%2FRome",
+        45.0526,
+        9.6930,
+        "2026-04-01",
+        "2026-04-30",
+    )
+
+    response: Result = Http.tryGet(url)
+    if not response.ok() {
+        raise "Open-Meteo request failed"
+    }
+
+    body: str = str(response.value)
+    if not Json.isValid(body) {
+        raise "Open-Meteo returned invalid JSON"
+    }
+}

@@ -1,0 +1,13 @@
+# expect-error: unknown keyword argument `nmae` in call to `User`
+# expect-error: did you mean `name`
+
+class User {
+    func init(self, name: str) {
+        self.name = name
+    }
+}
+
+func main() {
+    u: User = User(nmae="Lam")
+    print(u)
+}

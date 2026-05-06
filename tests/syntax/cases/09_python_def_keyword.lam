@@ -1,0 +1,8 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected identifier `main`
+# expect-error: expected: `func`
+# expect-error: help: Lammergeier declares functions with `func`
+
+def main() {
+    pass
+}

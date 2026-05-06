@@ -109,13 +109,13 @@ cd lammergeier-lang
 ./install.sh                            # auto: system-wide if writable, else ~/.local/bin
 ./install.sh --with-editor all          # also wire up VS Code / Cursor / Windsurf
 
-lamc examples/hello.lam --run           # now on PATH
+lamc tests/rosetta_tests/hello_world.lam --run
 
 # Emit the generated Go for inspection:
-lamc examples/hello.lam --emit-go
+lamc tests/rosetta_tests/hello_world.lam --emit-go
 
 # Produce a binary at a custom path:
-lamc examples/hello.lam -o hello
+lamc tests/rosetta_tests/hello_world.lam -o hello
 ./hello
 ```
 
@@ -184,10 +184,12 @@ lammergeier-lang/
 │   ├── preprocessor.py
 │   └── visitors/                 # expressions, statements, definitions, helpers
 ├── lib/                          # Lammergeier standard library (.lam files)
-├── tests/                        # language, rosetta and transpilation suites
+├── tests/                        # language, rosetta and transpilation suites;
+│                                 #   the canonical examples live here too
 │   ├── tests/                    # focused language tests
 │   ├── rosetta_tests/            # larger end-to-end programs
 │   └── transpilation/            # Lam → Go output regression tests
+├── examples/                     # legacy tiny smoke examples
 ├── vs-code-extension/            # VS Code / Windsurf / Cursor extension
 ├── website/                      # static documentation site (SPA with
 │                                 #   client-side search, deploys straight

@@ -51,8 +51,9 @@ func main() {
     # The loop keeps accepting until the listener is closed in test 10.
     go! {
         go func() {
+            raw := listener.Raw.(net.Listener)
             for {
-                server, err := listener.Raw.(net.Listener).Accept()
+                server, err := raw.Accept()
                 if err != nil { return }
                 buf := make([]byte, 64)
                 n, _ := server.Read(buf)

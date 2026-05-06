@@ -162,10 +162,25 @@ a:hover { border-bottom-color: var(--accent-bright); }
     -webkit-text-fill-color: transparent;
 }
 .hero p.lede {
-    font-size: 1.2rem;
+    font-size: 1.15rem;
     color: var(--text-dim);
-    margin: 0 0 1.8rem 0;
-    max-width: 42em;
+    margin: 0 0 1rem 0;
+    max-width: 34em;
+}
+.hero-points {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    margin: 0 0 1.6rem;
+}
+.hero-points span {
+    border: 1px solid rgba(224, 169, 74, 0.35);
+    color: var(--accent-bright);
+    border-radius: 999px;
+    padding: 0.28rem 0.7rem;
+    font-size: 0.86rem;
+    line-height: 1.2;
+    background: rgba(224, 169, 74, 0.08);
 }
 .hero .cta {
     display: flex;
@@ -255,6 +270,46 @@ section.band h2 {
     margin: 0;
     color: var(--text-dim);
     font-size: 0.95rem;
+}
+
+.feature-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.45rem 2rem;
+    max-width: 1150px;
+    margin: 0 auto;
+}
+.feature {
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--border);
+}
+.feature h3 {
+    margin: 0 0 0.35rem;
+    color: var(--accent-bright);
+    font-size: 1rem;
+    font-family: var(--font-sans);
+}
+.feature p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 0.94rem;
+    line-height: 1.55;
+}
+.feature-list.compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (max-width: 900px) {
+    .feature-list,
+    .feature-list.compact {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+@media (max-width: 560px) {
+    .feature-list,
+    .feature-list.compact {
+        grid-template-columns: 1fr;
+        gap: 1.1rem;
+    }
 }
 
 /* ─── Section utility blocks ──────────────────────────────── */
@@ -404,21 +459,14 @@ section.band h2 {
 .pipeline {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 1rem;
+    gap: 1.45rem;
     max-width: 1150px;
     margin: 0 auto;
 }
 .pipeline .step {
-    background: var(--bg-elev-1);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 1.25rem 1.2rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.85rem;
     position: relative;
-    transition: border-color 120ms ease, transform 100ms ease;
-}
-.pipeline .step:hover {
-    border-color: var(--accent);
-    transform: translateY(-2px);
 }
 .pipeline .step .num {
     display: inline-flex;
@@ -427,13 +475,13 @@ section.band h2 {
     width: 30px;
     height: 30px;
     border-radius: 50%;
-    background: linear-gradient(180deg, var(--accent-bright), var(--accent-deep));
-    color: #1a1d26;
+    border: 1px solid rgba(224, 169, 74, 0.45);
+    color: var(--accent-bright);
     font-weight: 700;
     font-family: var(--font-mono);
     font-size: 0.95rem;
     margin-bottom: 0.6rem;
-    box-shadow: 0 2px 6px var(--accent-glow);
+    background: rgba(224, 169, 74, 0.08);
 }
 .pipeline .step h3 {
     margin: 0 0 0.4rem;

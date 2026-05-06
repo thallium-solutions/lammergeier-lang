@@ -1,0 +1,9 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected `:`
+# expect-error: expected: `{`
+# expect-error: help: Lam blocks use braces, not indentation
+
+func main() {
+    if True:
+        pass
+}

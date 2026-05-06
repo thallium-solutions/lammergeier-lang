@@ -1,0 +1,141 @@
+# Real-world design patterns: Mediator + Proxy + Prototype.
+# Uses Queue, LruCache, Json, Fmt, and Base64 from the standard library.
+# expect: room_events=4
+# expect: first_event=ada->room:hello
+# expect: bob_inbox=1
+# expect: bob_first=ada:hello
+# expect: proxy_first=user:42:call:1
+# expect: proxy_second=user:42:call:1
+# expect: service_calls=1
+# expect: prototype=invoice-copy:3:true
+# expect: encoded_len=32
+
+from lamqueue import Queue
+from lamcache import LruCache
+from lamjson import Json
+from lamfmt import Fmt
+from lambase64 import Base64
+
+class Participant {
+    func __init__(self, name: str) {
+        self.name: str = name
+        self.inbox: Queue = Queue()
+    }
+
+    func receive(self, fromName: str, message: str) {
+        self.inbox.enqueue(Fmt.sprintf("%s:%s", fromName, message))
+    }
+}
+
+class ChatRoom {
+    func __init__(self) {
+        self.members: list[Participant] = []
+        self.events: Queue = Queue()
+    }
+
+    func join(self, user: Participant) {
+        self.members.append(user)
+        self.events.enqueue(user.name + " joined")
+    }
+
+    func send(self, fromUser: Participant, message: str) {
+        self.events.enqueue(Fmt.sprintf("%s->room:%s", fromUser.name, message))
+        for member in self.members {
+            if member.name != fromUser.name {
+                member.receive(fromUser.name, message)
+            }
+        }
+    }
+}
+
+interface UserDirectory {
+    func lookup(id: str) -> str
+}
+
+class SlowDirectory {
+    func __init__(self) {
+        self.calls: int = 0
+    }
+
+    func lookup(self, id: str) -> str {
+        self.calls += 1
+        return Fmt.sprintf("user:%s:call:%d", id, self.calls)
+    }
+}
+
+class CachedDirectoryProxy {
+    func __init__(self, inner: UserDirectory) {
+        self.inner: UserDirectory = inner
+        self.cache: LruCache = LruCache(8)
+    }
+
+    func lookup(self, id: str) -> str {
+        cached: any = self.cache.get(id)
+        if cached != None {
+            return str(cached)
+        }
+        fresh: str = self.inner.lookup(id)
+        self.cache.put(id, fresh)
+        return fresh
+    }
+}
+
+class DocumentPrototype {
+    func __init__(self, title: str) {
+        self.title: str = title
+        self.tags: list[str] = []
+        self.signed: bool = false
+    }
+
+    func addTag(self, tag: str) {
+        self.tags.append(tag)
+    }
+
+    func clone(self, title: str) -> DocumentPrototype {
+        copy: DocumentPrototype = DocumentPrototype(title)
+        for tag in self.tags {
+            copy.addTag(tag)
+        }
+        copy.signed = self.signed
+        return copy
+    }
+}
+
+func main() {
+    room: ChatRoom = ChatRoom()
+    ada: Participant = Participant("ada")
+    bob: Participant = Participant("bob")
+    lin: Participant = Participant("lin")
+    room.join(ada)
+    room.join(bob)
+    room.join(lin)
+    room.send(ada, "hello")
+
+    print(f"room_events={room.events.size()}")
+    _ = room.events.dequeue()
+    _ = room.events.dequeue()
+    _ = room.events.dequeue()
+    print(f"first_event={room.events.peek()}")
+    print(f"bob_inbox={bob.inbox.size()}")
+    print(f"bob_first={bob.inbox.peek()}")
+
+    service: SlowDirectory = SlowDirectory()
+    proxy: UserDirectory = CachedDirectoryProxy(service)
+    first: str = proxy.lookup("42")
+    second: str = proxy.lookup("42")
+    print(f"proxy_first={first}")
+    print(f"proxy_second={second}")
+    print(f"service_calls={service.calls}")
+
+    template: DocumentPrototype = DocumentPrototype("invoice")
+    template.addTag("finance")
+    template.addTag("eu")
+    template.addTag("paid")
+    template.signed = true
+    cloned: DocumentPrototype = template.clone("invoice-copy")
+    print(f"prototype={cloned.title}:{len(cloned.tags)}:{cloned.signed}")
+
+    payload: str = Json.encode(cloned.title + ":" + cloned.tags[0])
+    encoded: str = Base64.encode(payload)
+    print(f"encoded_len={len(encoded)}")
+}

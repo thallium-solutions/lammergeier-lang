@@ -1,0 +1,9 @@
+# expect-error: argument `name` for `greet` was passed both positionally and by keyword
+
+func greet(name: str) -> str {
+    return name
+}
+
+func main() {
+    print(greet("Lam", name="Geier"))
+}

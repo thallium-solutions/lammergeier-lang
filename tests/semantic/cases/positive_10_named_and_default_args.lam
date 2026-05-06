@@ -1,0 +1,10 @@
+# expect-pass
+
+func greet(name: str, punctuation: str = "!") -> str {
+    return name + punctuation
+}
+
+func main() {
+    print(greet("Lam"))
+    print(greet(name="Lam", punctuation="?"))
+}

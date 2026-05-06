@@ -1,0 +1,10 @@
+# expect-error: duplicate keyword argument `name`
+# expect-error: call to `greet`
+
+func greet(name: str) -> str {
+    return name
+}
+
+func main() {
+    print(greet(name="Lam", name="Geier"))
+}

@@ -1,0 +1,18 @@
+# expect-pass
+
+interface Animal {
+    func speak() -> str
+}
+
+func handle(a: Animal) {
+    print(a.speak())
+}
+
+func main() {
+    d = make_dynamic()
+    handle(d)
+}
+
+func make_dynamic() {
+    return None
+}

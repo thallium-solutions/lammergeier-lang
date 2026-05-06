@@ -1,0 +1,9 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected identifier `sqrt`
+# expect-error: expected: `import`
+# expect-error: help: `from` imports use `from module import Name`
+
+from math sqrt
+func main() {
+    pass
+}

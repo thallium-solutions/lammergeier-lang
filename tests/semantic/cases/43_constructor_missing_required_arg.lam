@@ -1,0 +1,12 @@
+# expect-error: missing required argument `name` in call to `User`
+
+class User {
+    func init(self, name: str) {
+        self.name = name
+    }
+}
+
+func main() {
+    u: User = User()
+    print(u)
+}

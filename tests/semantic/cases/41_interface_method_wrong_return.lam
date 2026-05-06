@@ -1,0 +1,20 @@
+# expect-error: class `Dog` does not satisfy interface `Animal`: method `speak` returns `None`, expected `str`
+
+interface Animal {
+    func speak() -> str
+}
+
+class Dog {
+    func speak(self) -> None {
+        return
+    }
+}
+
+func handle(a: Animal) {
+    print(a.speak())
+}
+
+func main() {
+    d: Dog = Dog()
+    handle(d)
+}

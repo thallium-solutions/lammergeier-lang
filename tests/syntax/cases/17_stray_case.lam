@@ -1,0 +1,8 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected number literal `1`
+# expect-error: expected: a `match` block
+# expect-error: help: `case` labels are only valid inside a `match value
+
+case 1 {
+    pass
+}

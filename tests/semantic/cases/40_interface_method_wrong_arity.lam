@@ -1,0 +1,20 @@
+# expect-error: class `Dog` does not satisfy interface `Animal`: method `eat` has 0 parameters, expected 1
+
+interface Animal {
+    func eat(food: str) -> None
+}
+
+class Dog {
+    func eat(self) -> None {
+        return
+    }
+}
+
+func handle(a: Animal) {
+    a.eat("food")
+}
+
+func main() {
+    d: Dog = Dog()
+    handle(d)
+}

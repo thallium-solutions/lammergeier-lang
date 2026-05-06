@@ -1,0 +1,9 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected `pass`.
+# expect-error: expected: `case`
+# expect-error: help: A `match` block must contain at least one `case pattern
+
+func main() {
+    match value {
+    }
+}

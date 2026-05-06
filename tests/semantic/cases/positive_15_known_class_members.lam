@@ -1,0 +1,13 @@
+# expect-pass
+
+class Config {
+    static version: str = "1.0"
+
+    static func label() -> str {
+        return Config.version
+    }
+}
+
+func main() {
+    print(Config.label())
+}

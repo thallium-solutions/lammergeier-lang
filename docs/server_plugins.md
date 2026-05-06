@@ -80,6 +80,77 @@ The wrapper exists because Lam's `register()` requires a
 `func(*Server)`-typed value, which top-level named functions satisfy
 but closures do not.
 
+### Plugin categories
+
+Most plugins fall into one of four shapes:
+
+| Shape | Registers | Examples | Best for |
+|---|---|---|---|
+| Hook-only | lifecycle hooks | `requestId`, `requestLog`, `helmet`, `compress` | Cross-cutting behavior around every request. |
+| Route pack | routes, maybe hooks | `healthcheck`, `metrics`, feature routers | A feature module mounted under a prefix. |
+| Decorator | decorators/default state | sessions, db clients, service metadata | Sharing values with handlers/plugins. |
+| Parser/serializer | content-type parsers, response hooks | custom webhook parsers, compression | Protocol-specific body handling. |
+
+Keep a plugin focused. A plugin named `auth` should not also install
+metrics, static files, and CORS. Compose small plugins in `main()` or
+inside a feature router:
+
+```lammergeier
+func apiPlugins(srv: Server) {
+    requestId(srv)
+    requestLog(srv, "[api]")
+    helmet(srv)
+    metrics(srv, "/metrics")
+}
+
+func main() {
+    srv: Server = Server()
+    apiPlugins(srv)
+    srv.register(userRoutes, "/users", true)
+    srv.register(orderRoutes, "/orders", true)
+    srv.listen(8080)
+}
+```
+
+### Plugin options
+
+Use ordinary parameters for small plugins and a `dict[str, any]` for
+large option sets. Prefer typed parameters for required values because
+they are self-documenting and checked at compile time.
+
+```lammergeier
+func cacheHeaders(srv: Server, directive: str = "no-store", ifMissing: bool = true) {
+    func apply(req: Request, res: Response) {
+        if ifMissing and res.hasHeader("Cache-Control") {
+            return
+        }
+        res.header("Cache-Control", directive)
+    }
+    srv.onSend(apply)
+}
+```
+
+For larger options, normalize once at install time:
+
+```lammergeier
+func audit(srv: Server, opts: dict[str, any] = {}) {
+    header: str = "X-Audit-Id"
+    if "header" in opts {
+        header = str(opts["header"])
+    }
+
+    func emit(req: Request, res: Response) {
+        if req.header(header) != "" {
+            res.header(header, req.header(header))
+        }
+    }
+    srv.onResponse(emit)
+}
+```
+
+Avoid reading `opts` on every request when a simple local variable can
+hold the resolved setting. Hook closures capture the local value.
+
 ---
 
 ## 3. Worked example: a 1-minute auth plugin
@@ -117,6 +188,56 @@ and capture a pointer to it from the hook closure. See
 [`lib/lamserver_plugins.lam`](../lib/lamserver_plugins.lam)'s
 `rateLimit` for the canonical pattern.
 
+### Production auth plugin pattern
+
+A production auth plugin usually does three things:
+
+1. Reads the credential from a header/cookie.
+2. Verifies it with a caller-provided function.
+3. Stores the authenticated principal on `req.ctx` for downstream
+   handlers.
+
+```lammergeier
+from lamserver import Server, Request, Response
+
+func tokenAuth(srv: Server, verify: any, header: str = "Authorization") {
+    func guard(req: Request, res: Response) {
+        raw: str = req.header(header)
+        if raw == "" {
+            res.code(401).json({"error": "missing token"})
+            return
+        }
+
+        claims: any = None
+        _ = verify  # used inside go!
+        go! {
+            if fn, ok := verify.(func(string) interface{}); ok {
+                claims = fn(raw)
+            }
+        }
+        if claims == None {
+            res.code(401).json({"error": "invalid token"})
+            return
+        }
+        req.ctx["user"] = claims
+    }
+    srv.preHandler(guard)
+}
+```
+
+Handlers can then read `req.ctx["user"]`. If you want this auth to
+apply only to one mounted feature, register the feature with
+encapsulation and install the auth plugin inside it:
+
+```lammergeier
+func privateApi(srv: Server) {
+    tokenAuth(srv, verifyToken)
+    srv.get("/me", meHandler)
+}
+
+srv.register(privateApi, "/api", true)
+```
+
 ---
 
 ## 4. Sharing data between hooks: `req.ctx`
@@ -143,6 +264,49 @@ Keys with a `__` prefix are an informal convention for "internal use
 only" — `lamserver_ws`, for instance, uses `req.ctx["__wsHandler"]`
 to pass the WebSocket callback to the upgrade handler.
 
+### `req.ctx` vs decorators
+
+Use `req.ctx` for values that belong to one request:
+
+- authenticated user/claims;
+- trace/span IDs;
+- per-request timing marks;
+- parsed webhook metadata;
+- idempotency/cache keys.
+
+Use decorators for defaults and server-wide values:
+
+- shared database/client objects;
+- service name/version;
+- default request/reply fields;
+- pointers to plugin-owned state.
+
+```lammergeier
+func serviceInfo(srv: Server, name: str, version: str) {
+    srv.decorate("serviceName", name)
+    srv.decorate("serviceVersion", version)
+
+    func expose(req: Request, res: Response) {
+        res.header("X-Service", str(srv.dec("serviceName")))
+        res.header("X-Service-Version", str(srv.dec("serviceVersion")))
+    }
+    srv.onSend(expose)
+}
+```
+
+For request decorators, install a default and then override it during
+the request:
+
+```lammergeier
+func userSlot(srv: Server) {
+    srv.decorateRequest("user", None)
+    func load(req: Request, res: Response) {
+        req.ctx["user"] = req.dec("user")
+    }
+    srv.onRequest(load)
+}
+```
+
 ---
 
 ## 5. Per-route plugins via `register(plugin, prefix=...)`
@@ -165,6 +329,59 @@ func main() {
 `register(plugin, prefix=...)` saves the current prefix, sets a new
 one for the duration of the plugin, then restores. Nested
 `register(...)` calls compose, so you can build mount trees naturally.
+
+### Encapsulation
+
+`register(plugin, prefix, encapsulate=true)` makes hooks installed by
+the plugin private to the routes the plugin adds. This is the closest
+match to Fastify's plugin encapsulation.
+
+```lammergeier
+func adminAuth(req: Request, res: Response) {
+    if req.header("X-Admin") != "1" {
+        res.code(403).text("admin only")
+    }
+}
+
+func adminPlugin(srv: Server) {
+    srv.preHandler(adminAuth)
+    srv.get("/users", listAdminUsers)
+}
+
+func publicPlugin(srv: Server) {
+    srv.get("/status", publicStatus)
+}
+
+srv.register(adminPlugin, "/admin", true)
+srv.register(publicPlugin, "", true)
+```
+
+Requests to `/admin/users` run `adminAuth`; `/status` does not.
+Decorators and app-lifecycle hooks remain global, because they are
+server configuration rather than request-pipeline hooks.
+
+Use encapsulation when a plugin owns a feature area. Avoid it for
+global observability/security plugins where every route should be
+affected.
+
+### Prefix composition
+
+Nested prefixes compose:
+
+```lammergeier
+func v1Users(srv: Server) {
+    srv.get("/", listUsers)
+    srv.get("/:id", getUser)
+}
+
+func v1(srv: Server) {
+    srv.register(v1Users, "/users", true)
+}
+
+srv.register(v1, "/api/v1", true)
+```
+
+The final routes are `/api/v1/users/` and `/api/v1/users/:id`.
 
 ---
 
@@ -288,6 +505,47 @@ func myCounter(srv: Server) {
 (See [SYNTAX.md → Scoping inside `go!` blocks](SYNTAX.md#scoping-inside-go-blocks)
 for the canonical reference and language-level examples.)
 
+### State design checklist
+
+- **Per request:** use `req.ctx`.
+- **Per server instance:** capture a local Go value in the plugin
+  function or store a pointer in `srv.Decorators`.
+- **Process global:** package-level Go vars in a top-level `go!`
+  block, protected by `sync.Mutex`, `sync.Map`, or `sync/atomic`.
+- **Cross-process:** use Redis, Memcached, a database, or another
+  external store. In-memory plugin state is per binary only.
+
+When the plugin will be used in tests, prefer per-server state. It
+lets each test create a fresh `Server()` without state leaking from a
+previous test case.
+
+### Route-pack state without raw Go
+
+If state does not need locks or Go-only types, pure Lam fields are
+enough:
+
+```lammergeier
+func hitHeader(srv: Server) {
+    hits: dict[str, int] = {}
+
+    func count(req: Request, res: Response) {
+        key: str = req.path
+        if key in hits {
+            hits[key] = hits[key] + 1
+        } else {
+            hits[key] = 1
+        }
+        res.header("X-Route-Hits", str(hits[key]))
+    }
+
+    srv.onResponse(count)
+}
+```
+
+For true concurrent network traffic, use a Go mutex around mutable
+maps as shown above. `Server.inject` is deterministic, but real HTTP
+listeners run handlers concurrently.
+
 ---
 
 ## 7. Streaming responses & WebSocket plugins
@@ -310,6 +568,59 @@ WebSocket callback on `req.ctx`, and let the route handler call
 `websocket.Upgrade` from inside a `go!` block. Read
 [`lib/lamserver_ws.lam`](../lib/lamserver_ws.lam) for the full
 implementation.
+
+### Custom content-type parser plugin
+
+Plugins can teach the server about vendor media types:
+
+```lammergeier
+from lamstrings import Strings
+
+func lineProtocol(srv: Server) {
+    func parse(body: str) -> any {
+        return {"lines": Strings.splitLines(body)}
+    }
+    srv.addContentTypeParser("text/x-lines", parse)
+}
+
+func handler(req: Request, res: Response) {
+    res.json(req.parsedBody())
+}
+
+lineProtocol(srv)
+srv.post("/ingest", handler)
+```
+
+Use this for signed webhook formats, log-forwarding protocols, or
+legacy services that are not JSON/form/multipart. Parser functions
+should return quickly and leave expensive validation to schemas or
+`preValidation` hooks.
+
+### Response-transform plugin
+
+`onSend` is the right phase for response-body/header transforms.
+This plugin wraps JSON responses in a standard envelope unless the
+handler has already set an opt-out flag:
+
+```lammergeier
+from lamstrings import Strings
+
+func envelope(srv: Server) {
+    func wrap(req: Request, res: Response) {
+        if req.ctx["__skipEnvelope"] != None {
+            return
+        }
+        if Strings.contains(res.getHeader("Content-Type"), "application/json") {
+            res.body = "{\"data\":" + res.body + "}"
+        }
+    }
+    srv.onSend(wrap)
+}
+```
+
+For large responses, streaming responses, SSE, WebSocket hijacks, and
+file downloads, inspect the Go fields as the bundled `compress`
+plugin does before mutating the body.
 
 ---
 
@@ -347,15 +658,76 @@ test path identical to a real request.
 For real network tests (TLS, WebSocket, SSE), see the suite under
 [`tests/tests/cases/stdlib/test_stdlib_server_*`](../tests/tests/cases/stdlib).
 
+### What to test
+
+For hook-only plugins:
+
+- normal pass-through request;
+- short-circuited request;
+- headers/body/status mutation;
+- hook order relative to other installed plugins;
+- behavior when a handler panics.
+
+For route-pack plugins:
+
+- prefix registration;
+- route existence via `hasRoute`;
+- injected success and failure responses;
+- OpenAPI visibility when metadata is expected;
+- encapsulation if private hooks are installed.
+
+For stateful plugins:
+
+- state starts empty on a fresh `Server()`;
+- state updates after requests;
+- TTL/cooldown behavior if time is involved;
+- no state bleed between two `Server()` instances.
+
+### Encapsulation test pattern
+
+```lammergeier
+func privateHeader(req: Request, res: Response) {
+    res.header("X-Private", "1")
+}
+
+func privateRoutes(srv: Server) {
+    srv.onSend(privateHeader)
+    srv.get("/inside", insideHandler)
+}
+
+srv: Server = Server()
+srv.register(privateRoutes, "/p", true)
+srv.get("/outside", outsideHandler)
+
+inside: dict[str, any] = srv.inject("GET", "/p/inside")
+outside: dict[str, any] = srv.inject("GET", "/outside")
+insideHeader: str = ""
+outsideHeader: str = ""
+go! {
+    if h, ok := inside["headers"].(map[string]string); ok {
+        insideHeader = h["X-Private"]
+    }
+    if h, ok := outside["headers"].(map[string]string); ok {
+        outsideHeader = h["X-Private"]
+    }
+}
+assert(insideHeader == "1")
+assert(outsideHeader == "")
+```
+
+The important assertion is negative: a private hook must not mutate a
+route registered outside the encapsulated plugin.
+
 ---
 
 ## 9. Distributing your plugin
 
-There's no plugin registry yet; the convention is just to ship a
-`.lam` file in your repo and document the import path. If your plugin
-needs an external Go module, declare it inside a `go!` block — the
-compiler runs `go mod tidy` on every build, so the dependency is
-auto-fetched without any per-user setup.
+Ship plugins like any Lammergeier third-party library: a `lamlib.toml`,
+one or more `.lam` files, and a README that documents installation,
+configuration, hook phases, and examples. If your plugin needs an
+external Go module, import it inside `go!` and declare the Go pin in
+the library manifest's `[go-deps]` section so users get reproducible
+builds.
 
 ```lammergeier
 go! {
@@ -363,7 +735,16 @@ go! {
 }
 ```
 
-Stick the module path in your README; that's it.
+Plugin README checklist:
+
+- import line and install command;
+- one minimal example and one production example;
+- every option with default values;
+- hook phases used and whether the plugin can short-circuit;
+- keys written to `req.ctx`, `srv.ctx`, decorators, or headers;
+- external services or Go module dependencies;
+- concurrency/state behavior;
+- `Server.inject` test recipe.
 
 ---
 

@@ -1,0 +1,69 @@
+# expect: repeat: hahaha
+# expect: prefix: true
+# expect: suffix: true
+# expect: lastIndex: 3
+# expect: equalFold: true
+# expect: fields: 3
+# expect: capitalize: Hello
+# expect: alpha: true
+# expect: digit: true
+# expect: alnum: true
+# expect: space: true
+# expect: reverse: stressed
+# expect: center: ..go..
+# expect: zfill: 00042
+# expect: padLeft: 00042
+# expect: padRight: 42...
+# expect: splitLines: 3
+# expect: splitN: b,c
+# expect: replaceFirst: baa
+# expect: containsAny: true
+# expect: isEmpty: true
+# expect: isBlank: true
+# expect: indent: > a
+# expect: indent: > b
+# expect: dedent: hi
+# expect: dedent: there
+# expect: string_instance_methods_ok
+
+func main() {
+    print(f"repeat: {'ha'.repeat(3)}")
+    print(f"prefix: {'lammergeier'.hasPrefix('lam')}")
+    print(f"suffix: {'lammergeier'.hasSuffix('geier')}")
+    print(f"lastIndex: {'banana'.lastIndex('ana')}")
+    print(f"equalFold: {'Lam'.equalFold('lam')}")
+
+    words: list[str] = " one  two   three ".fields()
+    print(f"fields: {len(words)}")
+    print(f"capitalize: {'hello'.capitalize()}")
+    print(f"alpha: {'abc'.isAlpha()}")
+    print(f"digit: {'123'.isDigit()}")
+    print(f"alnum: {'abc123'.isAlnum()}")
+    print(f"space: {'  \t'.isSpace()}")
+    print(f"reverse: {'desserts'.reverse()}")
+    print(f"center: {'go'.center(6, '.')}")
+    print(f"zfill: {'42'.zfill(5)}")
+    print(f"padLeft: {'42'.padLeft(5, '0')}")
+    print(f"padRight: {'42'.padRight(5, '.')}")
+
+    lines: list[str] = "a\nb\nc".splitLines()
+    print(f"splitLines: {len(lines)}")
+    parts: list[str] = "a,b,c".splitN(",", 2)
+    print(f"splitN: {parts[1]}")
+    print(f"replaceFirst: {'aaa'.replaceFirst('a', 'b')}")
+    print(f"containsAny: {'hello'.containsAny('xyzol')}")
+    print(f"isEmpty: {''.isEmpty()}")
+    print(f"isBlank: {'   '.isBlank()}")
+
+    indented: str = "a\nb".indent("> ")
+    for line in indented.splitLines() {
+        print(f"indent: {line}")
+    }
+
+    dedented: str = "    hi\n    there".dedent()
+    for line in dedented.splitLines() {
+        print(f"dedent: {line}")
+    }
+
+    print("string_instance_methods_ok")
+}

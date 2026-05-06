@@ -1,0 +1,9 @@
+# expect-pass
+
+func number() -> int {
+    return 1
+}
+
+func main() {
+    print(number())
+}

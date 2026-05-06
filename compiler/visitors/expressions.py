@@ -663,6 +663,10 @@ class ExpressionVisitorMixin:
             return f"Strings_{method}({', '.join(args)})"
 
         string_methods = {
+            "repeat":     lambda o, a: _strings_call("repeat", o, a[0]),
+            "contains":   lambda o, a: _strings_call("contains", o, a[0]),
+            "hasPrefix":  lambda o, a: _strings_call("hasPrefix", o, a[0]),
+            "hasSuffix":  lambda o, a: _strings_call("hasSuffix", o, a[0]),
             "toUpper":    lambda o, a: _strings_call("toUpper", o),
             "toLower":    lambda o, a: _strings_call("toLower", o),
             "trim":       lambda o, a: _strings_call("trim", o),
@@ -684,9 +688,29 @@ class ExpressionVisitorMixin:
             # ``Strings.index`` returns -1 when the substring is
             # absent — same shape as Go's ``strings.Index``.
             "index":      lambda o, a: _strings_call("index", o, a[0]),
+            "lastIndex":  lambda o, a: _strings_call("lastIndex", o, a[0]),
             "count":      lambda o, a: _strings_call("count", o, a[0]),
-            "contains":   lambda o, a: _strings_call("contains", o, a[0]),
             "title":      lambda o, a: _strings_call("title", o),
+            "equalFold":  lambda o, a: _strings_call("equalFold", o, a[0]),
+            "fields":     lambda o, a: _strings_call("fields", o),
+            "capitalize": lambda o, a: _strings_call("capitalize", o),
+            "isAlpha":    lambda o, a: _strings_call("isAlpha", o),
+            "isDigit":    lambda o, a: _strings_call("isDigit", o),
+            "isAlnum":    lambda o, a: _strings_call("isAlnum", o),
+            "isSpace":    lambda o, a: _strings_call("isSpace", o),
+            "reverse":    lambda o, a: _strings_call("reverse", o),
+            "center":     lambda o, a: _strings_call("center", o, a[0], a[1] if len(a) > 1 else '" "'),
+            "zfill":      lambda o, a: _strings_call("zfill", o, a[0]),
+            "padLeft":    lambda o, a: _strings_call("padLeft", o, a[0], a[1] if len(a) > 1 else '" "'),
+            "padRight":   lambda o, a: _strings_call("padRight", o, a[0], a[1] if len(a) > 1 else '" "'),
+            "splitLines": lambda o, a: _strings_call("splitLines", o),
+            "splitN":     lambda o, a: _strings_call("splitN", o, a[0], a[1]),
+            "replaceFirst": lambda o, a: _strings_call("replaceFirst", o, *a),
+            "containsAny":  lambda o, a: _strings_call("containsAny", o, a[0]),
+            "isEmpty":    lambda o, a: _strings_call("isEmpty", o),
+            "isBlank":    lambda o, a: _strings_call("isBlank", o),
+            "indent":     lambda o, a: _strings_call("indent", o, a[0]),
+            "dedent":     lambda o, a: _strings_call("dedent", o),
             # ``Strings.format`` is variadic so the ``args`` are
             # forwarded as-is. Empty ``a`` is fine — Sprintf with
             # no extras just returns the template untouched.
@@ -710,13 +734,33 @@ class ExpressionVisitorMixin:
             # ``qb.count()`` on a custom class), intercepting it as
             # ``strings.Count(o, " ")`` would silently emit nonsense.
             # Fall through to user-method dispatch in that case.
-            string_methods_need_arg = {
-                "replace", "split", "join", "startsWith", "endsWith",
-                "index", "count", "contains", "format",
+            string_method_min_args = {
+                "repeat": 1,
+                "contains": 1,
+                "hasPrefix": 1,
+                "hasSuffix": 1,
+                "replace": 2,
+                "split": 1,
+                "join": 1,
+                "startsWith": 1,
+                "endsWith": 1,
+                "index": 1,
+                "lastIndex": 1,
+                "count": 1,
+                "equalFold": 1,
+                "center": 1,
+                "zfill": 1,
+                "padLeft": 1,
+                "padRight": 1,
+                "splitN": 2,
+                "replaceFirst": 2,
+                "containsAny": 1,
+                "indent": 1,
             }
 
-            if raw_method in string_methods and not (
-                raw_method in string_methods_need_arg and not args
+            if (
+                raw_method in string_methods
+                and len(args) >= string_method_min_args.get(raw_method, 0)
             ):
                 # Only treat this as a string-builtin call when we are sure
                 # the receiver is actually a string. If the receiver is a

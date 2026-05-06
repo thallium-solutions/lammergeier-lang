@@ -1,0 +1,91 @@
+# Real-world numeric test: a tiny matrix-based XOR neural network plus
+# deterministic Monte Carlo estimation of pi.
+# expect: xor_outputs=[0 1 1 0]
+# expect: xor_ok=true
+# expect: hidden_rows=4
+# expect: hidden_cols=2
+# expect: inside=3935
+# expect: pi_estimate=3.1480
+# expect: pi_ok=true
+
+from lamarray import Matrix
+from lamfmt import Fmt
+
+func step(x: float) -> float {
+    if x >= 0.0 {
+        return 1.0
+    }
+    return 0.0
+}
+
+func addBiasAndStep(m: Matrix, b0: float, b1: float) -> Matrix {
+    out: Matrix = Matrix.zerosM(m.rows(), m.cols())
+    for r in range(m.rows()) {
+        out.set(r, 0, step(m.get(r, 0) + b0))
+        out.set(r, 1, step(m.get(r, 1) + b1))
+    }
+    return out
+}
+
+func addOutputBiasAndStep(m: Matrix, bias: float) -> list[int] {
+    out: list[int] = [0, 0, 0, 0]
+    for r in range(m.rows()) {
+        value: float = step(m.get(r, 0) + bias)
+        out[r] = int(value)
+    }
+    return out
+}
+
+func nextRand(seed: int) -> int {
+    return (seed * 1103515245 + 12345) % 2147483648
+}
+
+func main() {
+    # XOR as a fixed 2-layer threshold network:
+    # hidden[0] = OR(x1, x2), hidden[1] = NAND(x1, x2), output = AND(hidden).
+    xValues: list[float] = [
+        0.0, 0.0,
+        0.0, 1.0,
+        1.0, 0.0,
+        1.0, 1.0,
+    ]
+    X: Matrix = Matrix.fromList(4, 2, xValues)
+    w1Values: list[float] = [
+        1.0, -1.0,
+        1.0, -1.0,
+    ]
+    W1: Matrix = Matrix.fromList(2, 2, w1Values)
+    hiddenLinear: Matrix = X.matmul(W1)
+    hidden: Matrix = addBiasAndStep(hiddenLinear, -0.5, 1.5)
+
+    w2Values: list[float] = [1.0, 1.0]
+    W2: Matrix = Matrix.fromList(2, 1, w2Values)
+    outputLinear: Matrix = hidden.matmul(W2)
+    outputs: list[int] = addOutputBiasAndStep(outputLinear, -1.5)
+
+    xorOk: bool = (outputs[0] == 0) and (outputs[1] == 1) and (outputs[2] == 1) and (outputs[3] == 0)
+    print(f"xor_outputs={outputs}")
+    print(f"xor_ok={xorOk}")
+    print(f"hidden_rows={hidden.rows()}")
+    print(f"hidden_cols={hidden.cols()}")
+
+    seed: int = 1234567
+    inside: int = 0
+    samples: int = 5000
+    denom: float = 2147483648.0
+    for i in range(samples) {
+        seed = nextRand(seed)
+        x: float = float(seed) / denom
+        seed = nextRand(seed)
+        y: float = float(seed) / denom
+        if (x * x + y * y) <= 1.0 {
+            inside += 1
+        }
+    }
+
+    piEstimate: float = 4.0 * float(inside) / float(samples)
+    piOk: bool = piEstimate > 3.10 and piEstimate < 3.17
+    print(f"inside={inside}")
+    print(Fmt.sprintf("pi_estimate=%.4f", piEstimate))
+    print(f"pi_ok={piOk}")
+}

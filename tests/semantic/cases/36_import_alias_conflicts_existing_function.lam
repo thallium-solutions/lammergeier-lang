@@ -1,0 +1,11 @@
+# expect-error: import binding `helper` conflicts with the existing func `helper`
+
+func helper() {
+    pass
+}
+
+from lamstrings import Strings as helper
+
+func main() {
+    pass
+}

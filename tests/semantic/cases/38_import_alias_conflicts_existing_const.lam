@@ -1,0 +1,9 @@
+# expect-error: import binding `VALUE` conflicts with the existing const `VALUE`
+
+const VALUE = 1
+
+from lamstrings import Strings as VALUE
+
+func main() {
+    pass
+}

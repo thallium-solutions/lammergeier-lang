@@ -1,0 +1,8 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected `(`
+# expect-error: expected: an identifier
+# expect-error: help: Function declarations need a name
+
+func (x: int) -> int {
+    return x
+}

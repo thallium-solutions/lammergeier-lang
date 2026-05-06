@@ -1,0 +1,12 @@
+# expect-error: too many positional arguments in call to `Math.double`
+# expect-error: expected at most 1, got 2
+
+class Math {
+    static func double(x: int) -> int {
+        return x * 2
+    }
+}
+
+func main() {
+    print(Math.double(1, 2))
+}

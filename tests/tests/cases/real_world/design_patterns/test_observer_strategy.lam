@@ -1,0 +1,154 @@
+# Real-world design patterns: Observer + Strategy.
+# Uses Queue, Stack, Fmt, and string stdlib-backed methods.
+# expect: email_inbox=2
+# expect: email_first=email:ORDER_CREATED:ada
+# expect: audit_top=audit:payment_captured:1499
+# expect: pro_total=1200
+# expect: basic_total=1500
+# expect: threshold_total=1400
+# expect: active_strategy=threshold
+
+from lamqueue import Queue
+from lamstack import Stack
+from lamfmt import Fmt
+
+interface Observer {
+    func update(event: str, payload: str)
+}
+
+class EmailObserver {
+    func __init__(self) {
+        self.inbox: Queue = Queue()
+    }
+
+    func update(self, event: str, payload: str) {
+        self.inbox.enqueue(Fmt.sprintf("email:%s:%s", event.toUpper(), payload))
+    }
+}
+
+class AuditObserver {
+    func __init__(self) {
+        self.entries: Stack = Stack()
+    }
+
+    func update(self, event: str, payload: str) {
+        self.entries.push(Fmt.sprintf("audit:%s:%s", event, payload))
+    }
+}
+
+class EventBus {
+    func __init__(self) {
+        self.observers: list[Observer] = []
+    }
+
+    func register(self, observer: Observer) {
+        self.observers.append(observer)
+    }
+
+    func publish(self, event: str, payload: str) {
+        for observer in self.observers {
+            observer.update(event, payload)
+        }
+    }
+}
+
+interface PricingStrategy {
+    func label() -> str
+    func apply(subtotal: int) -> int
+}
+
+class NoDiscount {
+    func label(self) -> str {
+        return "none"
+    }
+
+    func apply(self, subtotal: int) -> int {
+        return subtotal
+    }
+}
+
+class PercentOff {
+    func __init__(self, percent: int) {
+        self.percent: int = percent
+    }
+
+    func label(self) -> str {
+        return "percent"
+    }
+
+    func apply(self, subtotal: int) -> int {
+        return subtotal - (subtotal * self.percent / 100)
+    }
+}
+
+class ThresholdDiscount {
+    func __init__(self, threshold: int, amount: int) {
+        self.threshold: int = threshold
+        self.amount: int = amount
+    }
+
+    func label(self) -> str {
+        return "threshold"
+    }
+
+    func apply(self, subtotal: int) -> int {
+        if subtotal >= self.threshold {
+            return subtotal - self.amount
+        }
+        return subtotal
+    }
+}
+
+class Cart {
+    func __init__(self, strategy: PricingStrategy) {
+        self.items: list[int] = []
+        self.strategy: PricingStrategy = strategy
+    }
+
+    func add(self, cents: int) {
+        self.items.append(cents)
+    }
+
+    func subtotal(self) -> int {
+        total: int = 0
+        for cents in self.items {
+            total += cents
+        }
+        return total
+    }
+
+    func total(self) -> int {
+        return self.strategy.apply(self.subtotal())
+    }
+
+    func setStrategy(self, strategy: PricingStrategy) {
+        self.strategy = strategy
+    }
+}
+
+func main() {
+    bus: EventBus = EventBus()
+    email: EmailObserver = EmailObserver()
+    audit: AuditObserver = AuditObserver()
+    bus.register(email)
+    bus.register(audit)
+
+    bus.publish("order_created", "ada")
+    bus.publish("payment_captured", "1499")
+
+    print(f"email_inbox={email.inbox.size()}")
+    print(f"email_first={email.inbox.peek()}")
+    print(f"audit_top={audit.entries.peek()}")
+
+    cart: Cart = Cart(PercentOff(20))
+    cart.add(1000)
+    cart.add(500)
+    print(f"pro_total={cart.total()}")
+
+    cart.setStrategy(NoDiscount())
+    print(f"basic_total={cart.total()}")
+
+    cart.setStrategy(ThresholdDiscount(1000, 100))
+    print(f"threshold_total={cart.total()}")
+    print(f"active_strategy={cart.strategy.label()}")
+}

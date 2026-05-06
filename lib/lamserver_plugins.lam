@@ -585,7 +585,7 @@ class CircuitBreaker {
 
            cb: CircuitBreaker = CircuitBreaker(threshold=5, cooldownMs=2000)
            res: Result = cb.callFn(myDownstreamFn)
-           if res.isErr() {
+           if not res.ok() {
                // ``cb.state()`` is "open" once we've tripped.
            }
 

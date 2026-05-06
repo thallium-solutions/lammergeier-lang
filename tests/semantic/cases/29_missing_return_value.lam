@@ -1,0 +1,5 @@
+# expect-error: `return` in `number` must return a value because the function declares a return type
+
+func number() -> int {
+    return
+}

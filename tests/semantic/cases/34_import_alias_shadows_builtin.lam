@@ -1,0 +1,7 @@
+# expect-error: import binding `print` shadows the built-in `print`
+
+from lamstrings import Strings as print
+
+func main() {
+    pass
+}

@@ -1,0 +1,6 @@
+# expect-pass
+
+func main() {
+    dynamic = lambda x: x
+    print(dynamic(1, 2, name="fallback"))
+}

@@ -4,6 +4,321 @@ A typed programming language that compiles to Go. Combines Python-like readabili
 
 ---
 
+## Start Here: Guided Tour
+
+Lammergeier is easiest to learn if you think in three layers:
+
+1. **Lam syntax** for day-to-day code: Python-like expressions,
+   explicit typed APIs, braces for blocks, and Go-backed runtime
+   semantics.
+2. **Stdlib classes** for batteries-included work: `Math`, `Strings`,
+   `Json`, `Server`, `Db`, `DataFrame`, `Result`, and the rest of
+   `lib/`.
+3. **`go!` interop** for the rare cases where you need exact Go
+   syntax, Go packages, type assertions, or low-level concurrency.
+
+The smallest useful file is a `main` function:
+
+```lammergeier
+func main() {
+    name: str = "Lammergeier"
+    count: int = 3
+    for i in range(count) {
+        print(f"{i}: hello, {name}")
+    }
+}
+```
+
+Compile and run it with:
+
+```bash
+lamc app.lam --run
+```
+
+### Program Shape
+
+Source files contain imports, raw Go blocks, constants, functions,
+classes, interfaces, and top-level statements. Application entry is
+`func main()`. Library modules usually expose classes or functions and
+keep `main` empty with `pass`.
+
+```lammergeier
+from lamstrings import Strings
+from lamerrors import Result, Error
+
+const AppName: str = "orders"
+
+func normalizeSku(s: str) -> str {
+    return Strings.toUpper(Strings.trim(s))
+}
+
+func parseQty(raw: str) -> Result {
+    if raw == "" {
+        return Result.Err(Error("ValidationError", "quantity is required"))
+    }
+    # Real code would call Conv.tryInt(raw) and propagate it.
+    return Result.Ok(raw)
+}
+
+func main() {
+    print(f"{AppName}: {normalizeSku(' ab-10 ')}")
+}
+```
+
+### Choosing Types
+
+Use concrete types at module boundaries and public functions. Use
+`any` only when the value is genuinely dynamic, such as decoded JSON,
+plugin state, or Go interop payloads.
+
+```lammergeier
+typeName: str = "invoice"
+ids: list[int] = [10, 11, 12]
+labels: dict[str, str] = {"new": "New", "paid": "Paid"}
+seen: set[str] = {"a", "b", "c"}
+payload: any = {"id": 10, "status": "new"}
+
+func total(values: list[float]) -> float {
+    acc: float = 0.0
+    for v in values {
+        acc += v
+    }
+    return acc
+}
+```
+
+When a function accepts a callback, use a function type instead of
+`any`:
+
+```lammergeier
+func applyTwice(f: func(int) -> int, x: int) -> int {
+    return f(f(x))
+}
+
+func inc(x: int) -> int { return x + 1 }
+
+func main() {
+    print(applyTwice(inc, 5))       # 7
+}
+```
+
+### Data Flow With Collections
+
+Lists, dicts, sets, tuples, destructuring, comprehensions, and slices
+cover the common data-manipulation shapes:
+
+```lammergeier
+func main() {
+    nums: list[int] = [1, 2, 3, 4, 5]
+    evens: list[int] = [n for n in nums if n % 2 == 0]
+    squares: dict[int, int] = {n: n * n for n in nums}
+
+    first: int = nums[0]
+    middle: list[int] = nums[1:4]
+    nums[1:3] = [20, 30]
+
+    user: dict[str, any] = {"id": 1, "email": "ada@example.com"}
+    { email } = user
+    print(email)
+}
+```
+
+Use `list[T]`, `dict[K, V]`, and `set[T]` annotations when the
+literal is empty or when Go needs an exact element type.
+
+```lammergeier
+names: list[str] = []
+counts: dict[str, int] = {}
+flags: set[str] = {}
+```
+
+### Control Flow
+
+`if`, `elif`, `else`, `while`, `for`, `break`, `continue`, `defer`,
+`try/catch/finally`, `do/catch`, and `match/case` are statement forms.
+Boolean negation is `not`; `!` belongs inside `go!` blocks.
+
+```lammergeier
+func classify(n: int) -> str {
+    if n < 0 {
+        return "negative"
+    } elif n == 0 {
+        return "zero"
+    }
+    return "positive"
+}
+
+func findFirstEven(nums: list[int]) -> int {
+    for n in nums {
+        if n % 2 != 0 {
+            continue
+        }
+        return n
+    } else {
+        return -1
+    }
+}
+
+func describe(value: any) -> str {
+    match value {
+        case 0 { return "zero" }
+        case [x, y] { return f"pair {x}/{y}" }
+        case {"kind": k, **rest} { return f"kind={k}" }
+        case _ { return "other" }
+    }
+}
+```
+
+### Functions, Defaults, Lambdas, and Nested Helpers
+
+Functions support default arguments, variadic parameters, multiple
+returns, nested helper functions, lambdas, and generic type
+parameters.
+
+```lammergeier
+func greet(name: str, suffix: str = "!", times: int = 1) {
+    for i in range(times) {
+        print(f"hello, {name}{suffix}")
+    }
+}
+
+func sumAll(*nums: int) -> int {
+    total: int = 0
+    for n in nums { total += n }
+    return total
+}
+
+func divmod_(a: int, b: int) -> (int, int) {
+    return a / b, a % b
+}
+
+func outer(base: int) -> func(int) -> int {
+    func addBase(x: int) -> int {
+        return base + x
+    }
+    return addBase
+}
+
+func identity[T](x: T) -> T {
+    return x
+}
+```
+
+### Classes and Interfaces
+
+Classes compile to Go structs with pointer receivers. Use `init` or
+`__init__` for constructors, annotate fields where they are first
+assigned, and keep public method signatures explicit.
+
+```lammergeier
+interface Stringable {
+    func toString() -> str;
+}
+
+class Money {
+    func init(self, cents: int, currency: str = "EUR") {
+        self.cents: int = cents
+        self.currency: str = currency
+    }
+
+    func add(self, other: Money) -> Money {
+        if self.currency != other.currency {
+            throw ValueError("currency mismatch")
+        }
+        return Money(self.cents + other.cents, self.currency)
+    }
+
+    func toString(self) -> str {
+        return f"{self.currency} {self.cents}"
+    }
+}
+```
+
+Use operator overloads only when the operator is the clearest API.
+Named methods are better for domain operations with side effects or
+surprising constraints.
+
+```lammergeier
+class Vec2 {
+    func init(self, x: float, y: float) {
+        self.x: float = x
+        self.y: float = y
+    }
+
+    func __add__(self, other: Vec2) -> Vec2 {
+        return Vec2(self.x + other.x, self.y + other.y)
+    }
+
+    func __eq__(self, other: Vec2) -> bool {
+        return self.x == other.x and self.y == other.y
+    }
+}
+```
+
+### Error Handling Strategy
+
+Use exceptions (`throw`, `try/catch/finally`) for programmer bugs,
+invariants, and failures that should unwind the stack. Use
+`Result` for expected failures callers should handle locally.
+
+```lammergeier
+from lamerrors import Result, Error
+
+func readConfig(path: str) -> Result {
+    if path == "" {
+        return Result.Err(Error("ConfigError", "path is empty"))
+    }
+    return Result.Ok(path)
+}
+
+func boot(path: str) -> Result {
+    cfg: str = readConfig(path)?
+    return Result.Ok(f"loaded {cfg}")
+}
+
+func main() {
+    do {
+        msg: str = boot("settings.toml")?
+        print(msg)
+    } catch err {
+        print(f"boot failed: {err}")
+    }
+}
+```
+
+### When to Use `go!`
+
+Prefer Lam syntax for application logic. Use `go!` when you need:
+
+- a Go import or package not wrapped by the stdlib;
+- a type assertion from `any`;
+- a goroutine, select statement, mutex, or channel pattern not covered
+  by `lamconcurrency`;
+- exact access to generated Go names via `LAMMERGEIER.*`;
+- a small low-level performance escape hatch.
+
+```lammergeier
+go! {
+    import "strings"
+}
+
+func shout(v: any) -> str {
+    out: str = ""
+    _ = v  # referenced inside go!
+    go! {
+        if s, ok := v.(string); ok {
+            out = strings.ToUpper(s)
+        }
+    }
+    return out
+}
+```
+
+Keep `go!` blocks small and typed at the boundary: convert dynamic
+values into Lam locals before returning to normal Lam code.
+
+---
+
 ## Table of Contents
 
 1. [Basic Types](#basic-types)
@@ -1109,7 +1424,7 @@ Construction goes through the static factories so the
 | Form                              | Result                                                  |
 |-----------------------------------|---------------------------------------------------------|
 | `Result.Ok(v)`                    | success result; `.value = v`, `.error = None`           |
-| `Result.Err(e)`                   | error result;   `.value = None`, `.error = e`           |
+| `Result.Err(e)`                   | error result; `.value = None`, `.error = e`; `e` is `any` |
 | `Error(kind, message)`            | structured error with a kind tag and human message      |
 | `Error(kind, message, cause)`     | error chain — `cause` is the wrapped lower-level error  |
 
@@ -1123,10 +1438,53 @@ Inspection is by methods or fields, whichever reads better:
 | `r.unwrap()`      | the value, or panic with the error                      |
 | `r.unwrapOr(x)`   | the value, or `x` if this is an error                   |
 
-`Result` is intentionally non-generic — `value` is `any`. Recover the
-static type by assigning `r.unwrap()` (or `r.value`) to a typed local;
-the compiler emits the matching Go type assertion at the assignment
-site.
+`Result` is intentionally non-generic — `value` and `error` are
+`any`. Direct `.value`, `.error`, `unwrap()`, and `unwrapOr(...)`
+reads therefore remain `any`. The `?` operator has a special typed
+assignment path (`n: int = parseInt(s)?`) and emits the matching Go
+type assertion for the unwrapped value.
+
+`Result.Err(e)` is equally broad: `.error` is also `any`. Use a
+structured `Error` when callers need a kind/message/cause contract,
+but a string, dict, sentinel object, or raw value is valid when that
+fits the domain better.
+
+```lammergeier
+from lamerrors import Result, Error
+
+func configError(name: str) -> Result {
+    return Result.Err({"kind": "MissingConfig", "name": name})
+}
+
+func parseError(s: str) -> Result {
+    return Result.Err(Error("ParseError", f"bad integer: {s}"))
+}
+
+func simpleError() -> Result {
+    return Result.Err("permission denied")
+}
+
+func main() {
+    r: Result = configError("DATABASE_URL")
+    if not r.ok() {
+        print(r.error)
+    }
+}
+```
+
+If you directly unwrap and need a concrete type, assert it explicitly
+inside `go!`:
+
+```lammergeier
+from lamerrors import Result
+
+func main() {
+    r: Result = Result.Ok(42)
+    n: int = 0
+    go! { n = r.Unwrap().(int) }
+    print(n)
+}
+```
 
 ### The `?` propagation operator
 
@@ -1328,7 +1686,7 @@ Go closure. They differ only in what the reader sees:
           for o in subset { sum += o.amount }
           return sum
       }
-      pending: list[Order] = orders.filter(lambda o: !o.paid)
+      pending: list[Order] = orders.filter(lambda o: not o.paid)
       return total(pending)
   }
   ```

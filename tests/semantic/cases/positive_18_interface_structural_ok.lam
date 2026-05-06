@@ -1,0 +1,29 @@
+# expect-pass
+
+interface Animal {
+    func speak() -> str
+    func eat(food: str) -> None
+}
+
+class Dog {
+    func speak(self) -> str {
+        return "woof"
+    }
+
+    func eat(self, food: str) -> None {
+        print(food)
+        return
+    }
+}
+
+func handle(a: Animal) {
+    print(a.speak())
+    a.eat("kibble")
+}
+
+func main() {
+    d: Dog = Dog()
+    handle(d)
+    a: Animal = Dog()
+    print(a.speak())
+}

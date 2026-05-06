@@ -1,0 +1,100 @@
+# Real-world numeric/data test: Piacenza monthly weather statistics from
+# an Open-Meteo-style archive response.
+#
+# Normal CI uses a deterministic fixture with the same daily JSON shape as
+# Open-Meteo's /v1/archive endpoint. A guarded live smoke test lives beside
+# this file for manually exercising the HTTP call.
+#
+# expect: url_ok=true
+# expect: rows=30
+# expect: columns=5
+# expect: mean_temp=15.30
+# expect: max_temp=24.8
+# expect: min_temp=6.7
+# expect: rain_total=46.6
+# expect: wet_days=14
+# expect: warm_days=10
+# expect: dry_mean=15.60
+# expect: wet_mean=14.95
+
+from lamdata import DataFrame, Series
+from lamfmt import Fmt
+from lamstrings import Strings
+
+go! {
+    import "encoding/json"
+}
+
+func openMeteoArchiveUrl(latitude: float, longitude: float, startDate: str, endDate: str) -> str {
+    return Fmt.sprintf(
+        "https://archive-api.open-meteo.com/v1/archive?latitude=%.4f&longitude=%.4f&start_date=%s&end_date=%s&daily=temperature_2m_mean,temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=Europe%%2FRome",
+        latitude,
+        longitude,
+        startDate,
+        endDate,
+    )
+}
+
+func rowsFromOpenMeteoDaily(payload: str) -> list[any] {
+    rows: list[any] = []
+    rows.append(["date", "temp_mean", "temp_max", "temp_min", "rain_mm"])
+    go! {
+        var parsed struct {
+            Daily struct {
+                Time []string `json:"time"`
+                TempMean []float64 `json:"temperature_2m_mean"`
+                TempMax []float64 `json:"temperature_2m_max"`
+                TempMin []float64 `json:"temperature_2m_min"`
+                Rain []float64 `json:"precipitation_sum"`
+            } `json:"daily"`
+        }
+        if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+            panic(err)
+        }
+        for i := range parsed.Daily.Time {
+            rows = append(rows, []interface{}{
+                parsed.Daily.Time[i],
+                fmt.Sprintf("%.1f", parsed.Daily.TempMean[i]),
+                fmt.Sprintf("%.1f", parsed.Daily.TempMax[i]),
+                fmt.Sprintf("%.1f", parsed.Daily.TempMin[i]),
+                fmt.Sprintf("%.1f", parsed.Daily.Rain[i]),
+            })
+        }
+    }
+    return rows
+}
+
+func main() {
+    url: str = openMeteoArchiveUrl(45.0526, 9.6930, "2026-04-01", "2026-04-30")
+    urlOk: bool = Strings.startsWith(url, "https://archive-api.open-meteo.com/v1/archive") and Strings.contains(url, "latitude=45.0526") and Strings.contains(url, "timezone=Europe%2FRome")
+    print(f"url_ok={urlOk}")
+
+    fixture: str = """
+{"latitude":45.05,"longitude":9.69,"timezone":"Europe/Rome","daily":{"time":["2026-04-01","2026-04-02","2026-04-03","2026-04-04","2026-04-05","2026-04-06","2026-04-07","2026-04-08","2026-04-09","2026-04-10","2026-04-11","2026-04-12","2026-04-13","2026-04-14","2026-04-15","2026-04-16","2026-04-17","2026-04-18","2026-04-19","2026-04-20","2026-04-21","2026-04-22","2026-04-23","2026-04-24","2026-04-25","2026-04-26","2026-04-27","2026-04-28","2026-04-29","2026-04-30"],"temperature_2m_mean":[11.8,12.4,13.1,14.0,15.2,16.1,17.3,18.0,15.4,13.8,12.9,11.6,10.8,12.2,14.4,16.7,18.5,19.1,17.8,16.4,15.7,14.9,13.5,12.8,14.2,15.6,17.0,18.2,19.4,20.1],"temperature_2m_max":[17.0,18.1,19.0,20.5,21.0,22.2,23.4,24.0,20.1,18.2,17.6,16.0,15.3,17.1,19.8,21.9,23.7,24.4,22.1,21.0,20.2,19.4,18.1,17.3,19.0,20.6,22.4,23.3,24.5,24.8],"temperature_2m_min":[7.2,7.8,8.4,9.1,10.3,11.0,12.1,12.6,10.8,9.0,8.2,7.1,6.7,8.0,9.6,11.5,12.8,13.2,12.4,11.6,10.9,10.0,8.8,8.1,9.5,10.7,11.8,12.9,13.5,14.0],"precipitation_sum":[0.0,1.2,0.0,0.5,2.3,0.0,0.0,4.1,6.5,0.0,0.0,3.3,8.2,5.0,0.0,0.0,0.0,1.1,2.7,0.0,0.4,0.0,0.0,7.6,3.0,0.0,0.0,0.0,0.0,0.7]}}
+"""
+
+    df: DataFrame = DataFrame.fromRecords(rowsFromOpenMeteoDaily(fixture))
+    print(f"rows={df.nrow()}")
+    print(f"columns={df.ncol()}")
+
+    meanTemp: Series = df.col("temp_mean")
+    maxTemp: Series = df.col("temp_max")
+    minTemp: Series = df.col("temp_min")
+    rain: Series = df.col("rain_mm")
+
+    print(Fmt.sprintf("mean_temp=%.2f", meanTemp.mean()))
+    print(Fmt.sprintf("max_temp=%.1f", maxTemp.maxVal()))
+    print(Fmt.sprintf("min_temp=%.1f", minTemp.minVal()))
+    print(Fmt.sprintf("rain_total=%.1f", rain.sum()))
+
+    wet: DataFrame = df.filterGt("rain_mm", 0.0)
+    warm: DataFrame = df.filterGte("temp_max", 22.0)
+    dry: DataFrame = df.filterEq("rain_mm", 0.0)
+    wetTemps: Series = wet.col("temp_mean")
+    dryTemps: Series = dry.col("temp_mean")
+
+    print(f"wet_days={wet.nrow()}")
+    print(f"warm_days={warm.nrow()}")
+    print(Fmt.sprintf("dry_mean=%.2f", dryTemps.mean()))
+    print(Fmt.sprintf("wet_mean=%.2f", wetTemps.mean()))
+}

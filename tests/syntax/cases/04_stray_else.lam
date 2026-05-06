@@ -1,0 +1,7 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected `{`
+# expect-error: help: `else` must belong to a preceding `if`, `while`, or `try` block.
+
+else {
+    pass
+}

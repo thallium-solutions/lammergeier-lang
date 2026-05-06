@@ -1,0 +1,11 @@
+# expect-error: too many positional arguments in call to `Point`
+# expect-error: expected at most 0, got 1
+
+class Point {
+    x: int = 0
+}
+
+func main() {
+    p: Point = Point(1)
+    print(p)
+}

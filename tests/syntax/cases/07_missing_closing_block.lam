@@ -1,0 +1,7 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected end of file. A construct was left unfinished.
+# expect-error: expected: `}`
+# expect-error: help: Close the block, dict, set, or match body with `}`
+
+func main() {
+    print("hi")

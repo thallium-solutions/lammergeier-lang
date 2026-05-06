@@ -1,0 +1,7 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected `pass`.
+# expect-error: expected: `func`
+# expect-error: help: Interfaces must declare at least one method
+
+interface Shape {
+}

@@ -1,0 +1,5 @@
+# expect-error: `return` in `log` cannot return a value because the function returns `None`
+
+func log() -> None {
+    return 1
+}
