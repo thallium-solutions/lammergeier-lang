@@ -1,0 +1,10 @@
+# expect-error: expected: `or`
+# expect-error: Lammergeier uses `or` for logical disjunction, not `||`.
+
+func main() {
+    a: bool = True
+    b: bool = False
+    if a || b {
+        print("bad")
+    }
+}

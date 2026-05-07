@@ -1,0 +1,176 @@
+go! {
+    import (
+        "bytes"
+        "context"
+        "io"
+        "net/url"
+        "os"
+        "strings"
+
+        "github.com/aws/aws-sdk-go-v2/aws"
+        "github.com/aws/aws-sdk-go-v2/config"
+        "github.com/aws/aws-sdk-go-v2/credentials"
+        "github.com/aws/aws-sdk-go-v2/service/s3"
+    )
+}
+
+class S3Config {
+    func __init__(self) {
+        self.accessKeyId: str = ""
+        self.secretAccessKey: str = ""
+        self.endpoint: str = ""
+        self.publicEndpoint: str = ""
+        self.region: str = "auto"
+        self.bucket: str = ""
+        self.usePathStyle: bool = true
+    }
+
+    static func fromEnv() -> S3Config {
+        cfg: S3Config = S3Config()
+        go! {
+            cfg.AccessKeyId = os.Getenv("S3_ACCESS_KEY_ID")
+            cfg.SecretAccessKey = os.Getenv("S3_SECRET_ACCESS_KEY")
+            cfg.Endpoint = os.Getenv("S3_ENDPOINT")
+            cfg.PublicEndpoint = os.Getenv("S3_PUBLIC_ENDPOINT")
+            cfg.Region = os.Getenv("S3_REGION")
+            if cfg.Region == "" { cfg.Region = "auto" }
+            cfg.Bucket = os.Getenv("S3_PUBLIC_BUCKET")
+            if v := strings.TrimSpace(os.Getenv("S3_USE_PATH_STYLE")); v != "" {
+                cfg.UsePathStyle = v != "0" && strings.ToLower(v) != "false" && strings.ToLower(v) != "no"
+            }
+            return cfg
+        }
+    }
+
+    func isReady(self) -> bool {
+        go! {
+            return s.AccessKeyId != "" && s.SecretAccessKey != "" && s.Endpoint != "" && s.Region != "" && s.Bucket != ""
+        }
+    }
+}
+
+class S3Object {
+    func __init__(self) {
+        self.key: str = ""
+        self.size: int = 0
+        self.etag: str = ""
+        self.lastModified: str = ""
+    }
+}
+
+class S3Client {
+    func __init__(self, cfg: S3Config) {
+        self.cfg: S3Config = cfg
+        self.raw: any = None
+        go! {
+            endpoint := strings.TrimSpace(cfg.Endpoint)
+            endpoint = strings.TrimPrefix(endpoint, "https://")
+            endpoint = strings.TrimPrefix(endpoint, "http://")
+            awsCfg, err := config.LoadDefaultConfig(context.Background(),
+                config.WithRegion(cfg.Region),
+                config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKeyId, cfg.SecretAccessKey, "")),
+            )
+            if err != nil { panic("lams3: config: " + err.Error()) }
+            s.Raw = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+                o.BaseEndpoint = aws.String("https://" + endpoint)
+                o.UsePathStyle = cfg.UsePathStyle
+            })
+        }
+    }
+
+    static func fromEnv() -> S3Client {
+        return S3Client(S3Config.fromEnv())
+    }
+
+    func putText(self, key: str, text: str, contentType: str = "text/plain") -> bool {
+        go! {
+            client := s.Raw.(*s3.Client)
+            _, err := client.PutObject(context.Background(), &s3.PutObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+                Body: bytes.NewReader([]byte(text)),
+                ContentType: aws.String(contentType),
+            })
+            return err == nil
+        }
+    }
+
+    func getText(self, key: str) -> str {
+        go! {
+            client := s.Raw.(*s3.Client)
+            out, err := client.GetObject(context.Background(), &s3.GetObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+            })
+            if err != nil { return "" }
+            defer out.Body.Close()
+            data, err := io.ReadAll(out.Body)
+            if err != nil { return "" }
+            return string(data)
+        }
+    }
+
+    func delete(self, key: str) -> bool {
+        go! {
+            client := s.Raw.(*s3.Client)
+            _, err := client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+            })
+            return err == nil
+        }
+    }
+
+    func exists(self, key: str) -> bool {
+        go! {
+            client := s.Raw.(*s3.Client)
+            _, err := client.HeadObject(context.Background(), &s3.HeadObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+            })
+            return err == nil
+        }
+    }
+
+    func list(self, prefix: str = "") -> list[S3Object] {
+        go! {
+            client := s.Raw.(*s3.Client)
+            out, err := client.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Prefix: aws.String(prefix),
+            })
+            if err != nil { return []*S3Object{} }
+            result := make([]*S3Object, 0, len(out.Contents))
+            for _, item := range out.Contents {
+                obj := NewS3Object()
+                if item.Key != nil { obj.Key = *item.Key }
+                if item.Size != nil { obj.Size = int(*item.Size) }
+                if item.ETag != nil { obj.Etag = *item.ETag }
+                if item.LastModified != nil { obj.LastModified = item.LastModified.Format("2006-01-02T15:04:05Z07:00") }
+                result = append(result, obj)
+            }
+            return result
+        }
+    }
+
+    func publicUrl(self, key: str) -> str {
+        return S3.publicUrl(self.cfg.publicEndpoint, key)
+    }
+}
+
+class S3 {
+    static func publicUrl(publicEndpoint: str, key: str) -> str {
+        go! {
+            endpoint := strings.TrimSpace(publicEndpoint)
+            endpoint = strings.TrimPrefix(endpoint, "https://")
+            endpoint = strings.TrimPrefix(endpoint, "http://")
+            if endpoint == "" { return "" }
+            escaped := strings.ReplaceAll(url.PathEscape(key), "%2F", "/")
+            return "https://" + strings.TrimRight(endpoint, "/") + "/" + escaped
+        }
+    }
+
+    static func hasEnv() -> bool {
+        return S3Config.fromEnv().isReady()
+    }
+}

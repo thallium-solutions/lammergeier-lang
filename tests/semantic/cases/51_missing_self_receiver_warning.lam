@@ -1,0 +1,10 @@
+# expect-warning: warning[method]
+# expect-warning: method `User.label` uses `self` but does not declare `self` as its first parameter
+
+class User {
+    name: str = "Ada"
+
+    func label() -> str {
+        return self.name
+    }
+}

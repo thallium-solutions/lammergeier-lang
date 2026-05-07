@@ -1,0 +1,6 @@
+# expect-error: expected: `func`
+# expect-error: Lammergeier declares functions with `func`, not `function`.
+
+function main() {
+    print("bad")
+}

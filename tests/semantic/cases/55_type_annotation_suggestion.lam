@@ -1,0 +1,7 @@
+# expect-error: error[type]
+# expect-error: unknown type `stirng` — did you mean `string`?
+
+func main() {
+    name: stirng = "Ada"
+    print(name)
+}

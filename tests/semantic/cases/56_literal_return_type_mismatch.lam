@@ -1,0 +1,6 @@
+# expect-error: error[return]
+# expect-error: function `count` returns `str`, expected `int`
+
+func count() -> int {
+    return "one"
+}

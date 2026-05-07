@@ -1,0 +1,7 @@
+# expect-error: undefined name `custmerName`
+# expect-error: did you mean `customerName`
+
+func main() {
+    customerName: str = "Ada"
+    print(custmerName)
+}

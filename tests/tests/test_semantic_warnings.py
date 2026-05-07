@@ -100,6 +100,27 @@ func main() {
     print("PASS: used import does not warn")
 
 
+def test_missing_import_export_suggests_close_name() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = Path(tmp)
+        _write(proj / "libfoo.lam", """
+class S3Client {
+}
+""".lstrip())
+        _write(proj / "main.lam", """
+from libfoo import S3Clinet;
+
+func main() {
+    print("hi");
+}
+""".lstrip())
+        r = _run(str(proj / "main.lam"), "--emit-go", cwd=proj)
+        assert r.returncode != 0, (r.returncode, r.stderr)
+        assert "module `libfoo` does not export `S3Clinet`" in r.stderr, r.stderr
+        assert "did you mean `S3Client`" in r.stderr, r.stderr
+    print("PASS: missing import export suggests close name")
+
+
 # ── Phase 2.2 — unused parameter ────────────────────────────
 
 def test_unused_parameter_emits_warning() -> None:
@@ -243,10 +264,10 @@ lamwebp = "^1.0"
 lamhttp = "^1.0"
 """.lstrip())
         _write(proj / "main.lam", """
-from lamhttp import Server;
+from lamhttp import HttpServer;
 
 func main() {
-    print("hi");
+    print(HttpServer);
 }
 """.lstrip())
         r = _run(str(proj / "main.lam"), "--emit-go", cwd=proj)
@@ -281,11 +302,11 @@ func main() {
 """.lstrip())
         # Sibling file under ``lib/`` is the actual user of lamhttp.
         _write(proj / "lib" / "api.lam", """
-from lamhttp import Server;
+from lamhttp import HttpServer;
 
 class Api {
     func handle() {
-        s = Server();
+        s = HttpServer();
         print(s);
     }
 }
@@ -341,6 +362,7 @@ def main() -> int:
     tests = [
         test_unused_import_emits_warning,
         test_used_import_does_not_warn,
+        test_missing_import_export_suggests_close_name,
         test_unused_parameter_emits_warning,
         test_underscore_param_silences_warning,
         test_self_does_not_warn,

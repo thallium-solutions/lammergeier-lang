@@ -1,0 +1,12 @@
+# expect-error: static method `Math.double` should be called as `Math.double(...)`
+
+class Math {
+    static func double(x: int) -> int {
+        return x * 2
+    }
+}
+
+func main() {
+    m: Math = Math()
+    print(m.double(3))
+}

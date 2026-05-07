@@ -1,0 +1,8 @@
+# expect-warning: warning[unused]
+# expect-warning: unused import `Strings` (remove it, or rebind to `_` to silence)
+
+from lamstrings import Strings
+
+func main() {
+    print("hi")
+}

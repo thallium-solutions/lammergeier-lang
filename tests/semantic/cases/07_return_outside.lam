@@ -1,3 +1,3 @@
-# expect-error: `return` outside of a function
+# expect-error: `return` can only be used inside a function
 
 return 42

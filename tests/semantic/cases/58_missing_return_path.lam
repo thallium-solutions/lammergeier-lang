@@ -1,0 +1,8 @@
+# expect-error: error[return]
+# expect-error: not all paths in `label` return a value
+
+func label(ok: bool) -> str {
+    if ok {
+        return "yes"
+    }
+}

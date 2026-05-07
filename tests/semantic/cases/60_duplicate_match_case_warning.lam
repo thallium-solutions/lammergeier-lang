@@ -1,0 +1,16 @@
+# expect-warning: warning[match]
+# expect-warning: duplicate case pattern `1`; this case is unreachable
+
+func main() {
+    match 1 {
+        case 1 {
+            print("one");
+        }
+        case 1 {
+            print("again");
+        }
+        case _ {
+            print("other");
+        }
+    }
+}

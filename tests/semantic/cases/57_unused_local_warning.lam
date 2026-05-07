@@ -1,0 +1,7 @@
+# expect-warning: warning[unused]
+# expect-warning: unused local `result` (prefix with `_` to silence)
+
+func main() {
+    result: int = 42
+    print("done")
+}

@@ -1,0 +1,13 @@
+# expect-warning: warning[match]
+# expect-warning: case is unreachable because an earlier wildcard `_` matches first
+
+func main() {
+    match "ok" {
+        case _ {
+            print("any");
+        }
+        case "ok" {
+            print("ok");
+        }
+    }
+}

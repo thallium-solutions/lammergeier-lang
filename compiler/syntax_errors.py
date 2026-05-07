@@ -297,7 +297,7 @@ def _refine_expected(
     stripped = src_line.strip()
     previous = _previous_nonempty_line(source, line).strip()
 
-    if _looks_like_python_def(stripped):
+    if _looks_like_python_def(stripped) or _looks_like_wrong_function_keyword(stripped):
         return ("`func`",)
     if _looks_like_missing_function_name(stripped):
         return ("an identifier",)
@@ -315,6 +315,12 @@ def _refine_expected(
         return ("`import`",)
     if _looks_like_dict_missing_colon(src_line, column, token_type):
         return ("`:`",)
+    if _looks_like_c_style_not(src_line, column):
+        return ("`not`", "an expression")
+    if _looks_like_c_style_and(src_line, column):
+        return ("`and`",)
+    if _looks_like_c_style_or(src_line, column):
+        return ("`or`",)
     if _looks_like_missing_header_expr(previous):
         return ("an expression",)
     if _looks_like_empty_match(stripped, token_type, token_value):
@@ -347,6 +353,9 @@ def _hint_for(
 
     if _looks_like_python_def(stripped):
         return "Lammergeier declares functions with `func`, for example `func main() { ... }`."
+    if _looks_like_wrong_function_keyword(stripped):
+        keyword = stripped.split()[0]
+        return f"Lammergeier declares functions with `func`, not `{keyword}`."
     if _looks_like_missing_function_name(stripped):
         return "Function declarations need a name: write `func name(...) { ... }`."
     if _looks_like_missing_named_declaration(stripped):
@@ -374,6 +383,12 @@ def _hint_for(
         return "A `try` block must be followed by at least one `catch` or `finally` block."
     if _looks_like_dict_missing_colon(src_line, column, token_type):
         return "Dictionary entries use `key: value`; add `:` between the key and value."
+    if _looks_like_c_style_not(src_line, column):
+        return "Lammergeier uses `not expr` for boolean negation, not `!expr`."
+    if _looks_like_c_style_and(src_line, column):
+        return "Lammergeier uses `and` for logical conjunction, not `&&`."
+    if _looks_like_c_style_or(src_line, column):
+        return "Lammergeier uses `or` for logical disjunction, not `||`."
     if token_value == "except":
         return "Lammergeier uses `catch`, not `except`, after `try { ... }` blocks."
     if stripped.startswith("case"):
@@ -393,6 +408,12 @@ def _hint_for(
         return "Scoped imports must be lowercase and use `@scope/name`, for example `from @alice/lamwebp import Encoder`."
     if isinstance(exc, UnexpectedCharacters):
         char = getattr(exc, "char", "")
+        if char == "!":
+            return "Lammergeier uses `not expr` for boolean negation; keep `!=` for not-equal comparisons."
+        if char == "&" and "&&" in src_line:
+            return "Lammergeier uses `and` for logical conjunction, not `&&`."
+        if char == "|" and "||" in src_line:
+            return "Lammergeier uses `or` for logical disjunction, not `||`."
         if char == "@":
             return "Decorators are `@name` before `func`/`class`; scoped imports must be lowercase like `from @scope/name import X`."
         if char in {"'", '"'}:
@@ -437,6 +458,10 @@ def _token_details(exc: UnexpectedInput, src_line: str) -> tuple[str, str]:
 
 def _looks_like_python_def(stripped: str) -> bool:
     return bool(re.match(r"^def\s+\w+", stripped))
+
+
+def _looks_like_wrong_function_keyword(stripped: str) -> bool:
+    return bool(re.match(r"^(function|fn)\s+\w+", stripped))
 
 
 def _looks_like_missing_function_name(stripped: str) -> bool:
@@ -505,6 +530,21 @@ def _looks_like_dict_missing_colon(src_line: str, column: int, token_type: str) 
     if "{" not in prefix or "}" not in suffix:
         return False
     return bool(re.search(r'[{,]\s*(?:"[^"]*"|\'[^\']*\'|[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?)\s+$', prefix))
+
+
+def _looks_like_c_style_not(src_line: str, column: int) -> bool:
+    idx = max(0, column - 1)
+    return src_line[idx:idx + 1] == "!" and src_line[idx:idx + 2] != "!="
+
+
+def _looks_like_c_style_and(src_line: str, column: int) -> bool:
+    idx = max(0, column - 1)
+    return src_line[idx:idx + 2] == "&&" or (idx > 0 and src_line[idx - 1:idx + 1] == "&&")
+
+
+def _looks_like_c_style_or(src_line: str, column: int) -> bool:
+    idx = max(0, column - 1)
+    return src_line[idx:idx + 2] == "||" or (idx > 0 and src_line[idx - 1:idx + 1] == "||")
 
 
 def _previous_nonempty_line(source: str, line: int) -> str:

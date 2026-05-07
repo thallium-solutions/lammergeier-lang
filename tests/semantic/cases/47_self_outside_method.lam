@@ -1,0 +1,5 @@
+# expect-error: `self` is only available inside instance methods
+
+func main() {
+    print(self.name)
+}

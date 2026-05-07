@@ -1,0 +1,8 @@
+# expect-warning: warning[method]
+# expect-warning: static method `Util.name` should not take `self`
+
+class Util {
+    static func name(self) -> str {
+        return "util"
+    }
+}

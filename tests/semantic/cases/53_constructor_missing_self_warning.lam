@@ -1,0 +1,8 @@
+# expect-warning: warning[method]
+# expect-warning: constructor `User.init` is missing `self` as its first parameter
+
+class User {
+    func init(name: str) {
+        print(name)
+    }
+}

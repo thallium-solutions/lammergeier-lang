@@ -44,7 +44,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from compiler.preprocessor import preprocess_go_blocks, apply_lammergeier_aliases  # noqa: E402
+from compiler.preprocessor import (  # noqa: E402
+    apply_lammergeier_aliases,
+    expand_dict_destructure,
+    preprocess_go_blocks,
+)
 from compiler.syntax_errors import lsp_syntax_message  # noqa: E402
 from compiler.lammergeier import (  # noqa: E402
     _collapse_multiline_strings,
@@ -271,13 +275,14 @@ def _preprocess_for_parse(source: str) -> str:
 
     Order matters: ``go!`` blocks first (so braces inside Go code don't
     confuse the block-expansion pass), then doc-comment stripping,
-    multiline-string collapsing, single-statement block expansion, and
-    finally auto-semicolons.
+    multiline-string collapsing, dict-destructure expansion, single-
+    statement block expansion, and finally auto-semicolons.
     """
     source = apply_lammergeier_aliases(source)
     pre, _ = preprocess_go_blocks(source)
     pre = re.sub(r'#-[\s\S]*?-#', '', pre)
     pre = _collapse_multiline_strings(pre)
+    pre = expand_dict_destructure(pre)
     pre = _expand_single_statement_blocks(pre)
     pre = auto_semicolons(pre)
     return pre
@@ -450,16 +455,14 @@ def analyze(doc: Document) -> None:
             checker = SemanticChecker()
             errors = checker.check(tree)
             for err in errors:
-                # Keep the LSP signal focused on build-stopping
-                # diagnostics. The CLI still renders advisory warnings
-                # such as unused imports/parameters, but showing them
-                # on every keystroke made otherwise-valid documents
-                # look broken in editors.
-                if getattr(err, "is_warning", False):
-                    continue
                 # SemanticError lines are 1-indexed; LSP wants 0-indexed.
                 doc.semantic_diagnostics.append(
-                    (max(0, err.line - 1), max(0, err.col - 1), err.message, 1)
+                    (
+                        max(0, err.line - 1),
+                        max(0, err.col - 1),
+                        err.message,
+                        2 if getattr(err, "is_warning", False) else 1,
+                    )
                 )
         except Exception:
             logger.exception("semantic check failed")

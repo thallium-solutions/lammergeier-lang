@@ -1,0 +1,9 @@
+# expect-error: expected: `not` or an expression
+# expect-error: Lammergeier uses `not expr` for boolean negation
+
+func main() {
+    flag: bool = False
+    if !flag {
+        print("bad")
+    }
+}

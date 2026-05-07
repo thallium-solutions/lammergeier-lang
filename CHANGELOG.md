@@ -31,12 +31,50 @@ documentation.
   obvious method arity mismatches, and return annotation mismatches.
 - Constructor call-shape diagnostics for known local classes, validating
   `init` / `__init__` arguments and zero-argument classes before Go emission.
+- Syntax repair hints for C-style logical operators, pointing `!`, `&&`, and
+  `||` users toward Lammergeier's `not`, `and`, and `or` forms.
+- Syntax repair hints for common wrong function declaration keywords such as
+  `function` and `fn`, pointing users to Lammergeier's `func`.
+- Semantic diagnostics for misplaced `self`, class-qualified instance method
+  calls, and static methods called through known instances.
+- Deterministic undefined-name suggestions that prefer Lam keywords, builtins,
+  and stdlib modules before falling back to in-scope variable/function names.
+- Semantic warnings for likely receiver declaration mistakes, including methods
+  that use `self` without declaring it, constructors missing `self`, and static
+  methods that still accept `self`.
+- Semantic diagnostics for unknown members on known typed instances, close
+  type-annotation typos, and obvious literal return-type mismatches.
+- Clearer semantic diagnostic rendering with explicit `error[kind]` /
+  `warning[kind]` tags and modest ANSI color in interactive terminals.
+- Conservative non-void return-path diagnostics for functions with missing
+  paths through simple `if` / `match` / `try` control flow.
+- Import diagnostics now warn on unused top-level imports and suggest close
+  exported symbol names when a direct `from module import Name` typo can be
+  resolved from the imported Lam module.
+- Match diagnostics now warn on duplicate unguarded literal `case` patterns
+  and cases made unreachable by an earlier wildcard `_`.
+- LSP diagnostics now publish semantic warnings as editor warnings instead of
+  suppressing advisory diagnostics.
+- LSP preprocessing now mirrors the compiler's dict-destructuring rewrite, so
+  valid `{key, other: alias} = expr` syntax no longer appears as a parse error
+  in editors.
 
 ### Tests
 
 - Added focused syntax, semantic, and import-resolution diagnostic test suites
   covering negative and positive/fallback cases for the new Lam-side error
   messages.
+- Extended semantic diagnostic tests with warning expectations so advisory
+  messages are verified separately from hard errors.
+- Added coverage for missing return paths, unused import warnings, and import
+  export typo suggestions, plus full normal runtime regression validation.
+- Added coverage for duplicate `match` cases, wildcard-before-case warnings,
+  and guarded-case fallbacks.
+- Added LSP coverage for semantic warning severities and verified the VS Code
+  extension TypeScript build.
+- Added LSP regression coverage for valid dict destructuring syntax.
+- Added standalone `lams3` third-party library tests for offline URL helpers
+  and optional live S3-compatible upload/read/list/delete round-trips.
 
 ## 2026-05-05
 

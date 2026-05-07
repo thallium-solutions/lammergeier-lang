@@ -1,0 +1,13 @@
+# expect-pass
+
+func label(ok: bool) -> str {
+    if ok {
+        return "yes"
+    } else {
+        return "no"
+    }
+}
+
+func main() {
+    print(label(true))
+}

@@ -129,9 +129,7 @@ class LspClient:
 # Test cases
 # ────────────────────────────────────────────────────────────
 
-VALID_DOC = """from lamhttp import Http
-
-class Greeter {
+VALID_DOC = """class Greeter {
     func __init__(self, name: str) {
         self.name = name
     }
@@ -153,6 +151,12 @@ func main() {
     g: Greeter = Greeter("ada")
     print(g.greet())
     print(helper(21))
+}
+"""
+
+WARNING_DOC = """func main() {
+    value: int = 1;
+    print("hi");
 }
 """
 
@@ -225,6 +229,46 @@ def run_tests() -> int:
             assert_eq("clean diagnostics for valid doc",
                       params.get("diagnostics"), [])
             print("PASS: clean document yields empty diagnostics")
+        except AssertionError as e:
+            failures.append(str(e))
+
+        # ── didOpen valid dict destructuring syntax ─────────
+        dict_uri = "file:///tmp/lsp_dict_destructure.lam"
+        dict_doc = (PROJECT_ROOT / "tests" / "tests" / "cases" / "test_dict_destructure.lam").read_text(encoding="utf-8")
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": dict_uri, "languageId": "lammergeier",
+                "version": 1, "text": dict_doc,
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=4)
+        try:
+            assert_true("got dict destructure diagnostics notification", notes)
+            params = notes[0].get("params", {})
+            assert_eq("dict destructure has no diagnostics",
+                      params.get("diagnostics"), [])
+            print("PASS: dict destructuring syntax is accepted by LSP")
+        except AssertionError as e:
+            failures.append(str(e))
+
+        # ── didOpen with semantic warning ───────────────────
+        warn_uri = "file:///tmp/lsp_warning.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": warn_uri, "languageId": "lammergeier",
+                "version": 1, "text": WARNING_DOC,
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=4)
+        try:
+            assert_true("got warning diagnostics on open", notes)
+            diags = notes[0].get("params", {}).get("diagnostics", [])
+            assert_true("at least one semantic warning", diags)
+            assert_eq("warning severity",
+                      diags[0].get("severity"), 2)
+            assert_true("warning message",
+                        "unused local `value`" in diags[0].get("message", ""))
+            print("PASS: semantic warnings publish as LSP warning diagnostics")
         except AssertionError as e:
             failures.append(str(e))
 

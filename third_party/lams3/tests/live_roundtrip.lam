@@ -1,0 +1,34 @@
+from lams3 import S3
+from lams3 import S3Client
+
+go! {
+    import (
+        "fmt"
+        "os"
+    )
+}
+
+func main() {
+    go! {
+        if os.Getenv("LAMS3_LIVE_TESTS") != "1" {
+            fmt.Println("skip: set LAMS3_LIVE_TESTS=1 to run live S3 tests")
+            return
+        }
+    }
+
+    if not S3.hasEnv() {
+        print("missing S3 env")
+        return
+    }
+
+    client: S3Client = S3Client.fromEnv()
+    key: str = "lammergeier-live-test/hello.txt"
+    body: str = "hello from lams3"
+
+    print(client.putText(key, body, "text/plain"))
+    print(client.exists(key))
+    print(client.getText(key))
+    print(len(client.list("lammergeier-live-test/")) > 0)
+    print(client.publicUrl(key))
+    print(client.delete(key))
+}

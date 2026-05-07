@@ -1,0 +1,10 @@
+# expect-error: expected: `and`
+# expect-error: Lammergeier uses `and` for logical conjunction, not `&&`.
+
+func main() {
+    a: bool = True
+    b: bool = False
+    if a && b {
+        print("bad")
+    }
+}
