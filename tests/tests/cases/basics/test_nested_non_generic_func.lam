@@ -1,0 +1,9 @@
+# Test: non-generic nested functions still lower to closures.
+# expect: 42
+
+func main() {
+    func id(x: int) -> int {
+        return x
+    }
+    print(id(42))
+}

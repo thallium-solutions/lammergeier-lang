@@ -1,0 +1,27 @@
+# Transpilation: nested generic funcs hoist to generated Go helpers.
+#
+# expect-go: func __lam_nested_1_id[T any](x T) T {
+# expect-go: func __lam_nested_2_addOffset[T any](offset int, x T) int {
+# expect-go: var i int = __lam_nested_1_id(7)
+# expect-go: var s string = __lam_nested_1_id[string]("ok")
+# expect-go: var n int = __lam_nested_2_addOffset[int](offset, 7)
+
+func main() {
+    offset: int = 3
+
+    func id[T](x: T) -> T {
+        return x
+    }
+
+    func addOffset[T](x: T) -> int {
+        return int(x) + offset
+    }
+
+    i: int = id(7)
+    s: str = id[str]("ok")
+    n: int = addOffset[int](7)
+
+    print(i)
+    print(s)
+    print(n)
+}

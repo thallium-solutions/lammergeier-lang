@@ -1,0 +1,15 @@
+# Transpilation: multi-line function-call arguments lower as one call.
+# expect-go: var value int = Add(1, 2)
+# expect-go: fmt.Println(value)
+
+func add(a: int, b: int) -> int {
+    return a + b
+}
+
+func main() {
+    value: int = add(
+        1,
+        2,
+    )
+    print(value)
+}

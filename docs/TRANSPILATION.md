@@ -95,6 +95,7 @@ Lam type parameters lower straight to Go 1.18 generics:
 | auto-constructor for `Box[T]`                               | `func NewBox[T any]() *Box[T] { return &Box[T]{} }`                  |
 | `Box[int](x)` at call site                                  | `NewBox[int](x)`                                                     |
 | static method of `Box[T]`                                   | `func Box_method[T any](...)` — class's T is threaded through        |
+| nested `func id[T](x: T) -> T`                              | hoisted helper `func __lam_nested_N_id[T any](x T) T`                |
 
 The transpiler tracks generic classes in `_generic_classes` (class → Go
 clause) and the set of type-parameter names currently in lexical scope
@@ -109,6 +110,47 @@ Generic-constructor call sites (`Pair[int, str](a, b)`) parse as
 `funccall(getitem(Pair, <types>), args)`. The call-site visitor
 intercepts that shape and emits `NewPair[int, string](a, b)` directly
 rather than letting the naive expression lowering drop commas.
+
+Generic nested functions cannot lower to Go function literals because
+Go does not permit type parameters on anonymous functions. The
+transpiler therefore hoists each nested generic helper to a generated
+top-level Go function named `__lam_nested_<n>_<name>`. Any typed locals
+captured from the enclosing Lam function become hidden leading
+parameters at the Go call site, while Lam code keeps using normal nested
+syntax:
+
+```lam
+func main() {
+    offset: int = 3
+    func addOffset[T: int](x: T) -> int {
+        return int(x) + offset
+    }
+    print(addOffset[int](7))
+}
+```
+
+```go
+func __lam_nested_1_addOffset[T int](offset int, x T) int {
+    return int(x) + offset
+}
+```
+
+Calls with explicit type arguments (`addOffset[int](7)`) and calls where
+Go can infer type arguments (`id(7)`) are both supported.
+
+## Go dependency pins
+
+Project manifests can declare Go module pins in `[go-deps]`, and
+installed libraries can contribute resolved pins through
+`lamlib.lock.toml`. The compiler also knows about Go modules used by the
+standard library, but it only seeds pins for the stdlib modules actually
+reached by the Lam import graph. Importing a lightweight core module
+such as `lamstrings` therefore does not pre-populate `go.mod` with
+unrelated data, database, cache, or protobuf dependencies.
+
+Manifest and lockfile pins still take precedence over stdlib defaults.
+After the compiler writes the initial `go.mod`, Go's normal module
+selection and `go mod tidy` decide the final transitive set.
 
 ## Naming
 
@@ -850,11 +892,13 @@ inputs and forward to the underlying Go API.
 
 - **Nested function definitions:** a nested `func` declaration is
   rewritten to a Go closure assignment (``name := func(...) { ... }``),
-  so it cannot carry its own generic type-parameter list and is only
-  visible inside the enclosing body. Lift the helper to module scope
-  if you need it elsewhere.
-- **Multi-line function calls:** argument lists must sit on one logical
-  line. Break expressions into intermediate variables.
+  so it cannot carry its own generic type-parameter list. The semantic
+  checker rejects nested generic functions with a Lam diagnostic; lift
+  the generic helper to module scope if you need type parameters.
+- **Multi-line function calls:** calls may break after `(` and after
+  comma-separated arguments, with an optional trailing comma before
+  `)`. Positional and keyword arguments use the same semantics as
+  single-line calls.
 - **Implicit conversions:** integer ↔ float conversions are explicit.
   `Conv.toFloat`, `int()`, `float()` exist for readability.
 - **Reserved words:** identifiers colliding with Go keywords (e.g.

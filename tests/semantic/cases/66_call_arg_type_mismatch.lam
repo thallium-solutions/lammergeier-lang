@@ -1,0 +1,10 @@
+# expect-error: error[type]
+# expect-error: argument `count` to `repeat` has type `str`, expected `int`
+
+func repeat(label: str, count: int) -> str {
+    return label
+}
+
+func main() {
+    print(repeat("x", "two"))
+}

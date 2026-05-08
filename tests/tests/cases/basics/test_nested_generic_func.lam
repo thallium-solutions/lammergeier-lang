@@ -1,0 +1,34 @@
+# Test: nested generic functions lower to hoisted helpers and preserve Lam call syntax.
+# expect: int_7
+# expect: str_ok
+# expect: cap_10
+# expect: outer_yes
+
+func outerId[T](x: T) -> T {
+    func inner[U](value: U) -> U {
+        return value
+    }
+    return inner[T](x)
+}
+
+func main() {
+    offset: int = 3
+
+    func id[T](x: T) -> T {
+        return x
+    }
+
+    func addOffset[T: int](x: T) -> int {
+        return int(x) + offset
+    }
+
+    i: int = id(7)
+    s: str = id[str]("ok")
+    n: int = addOffset[int](7)
+    outer: str = outerId[str]("yes")
+
+    print(f"int_{i}")
+    print(f"str_{s}")
+    print(f"cap_{n}")
+    print(f"outer_{outer}")
+}

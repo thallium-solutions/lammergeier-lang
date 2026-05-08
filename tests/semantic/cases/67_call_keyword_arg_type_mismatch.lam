@@ -1,0 +1,10 @@
+# expect-error: error[type]
+# expect-error: argument `limit` to `take` has type `str`, expected `int`
+
+func take(limit: int, label: str) -> str {
+    return label
+}
+
+func main() {
+    print(take(limit="three", label="items"))
+}

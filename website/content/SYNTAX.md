@@ -202,7 +202,20 @@ func outer(base: int) -> func(int) -> int {
 func identity[T](x: T) -> T {
     return x
 }
+
+func chooseFirst[T](a: T, b: T) -> T {
+    func pick[U](x: U, _fallback: U) -> U {
+        return x
+    }
+    return pick[T](a, b)
+}
 ```
+
+Nested helper functions may also be generic. They use the same
+`func name[T, U: constraint](...)` syntax as top-level functions, can
+capture typed locals from the enclosing function, and can be called with
+inferred type arguments (`pick(a, b)`) or explicit type arguments
+(`pick[int](a, b)`).
 
 ### Classes and Interfaces
 

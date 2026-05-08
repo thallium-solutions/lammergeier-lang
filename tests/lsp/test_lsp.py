@@ -180,6 +180,75 @@ func main() {
 }
 """
 
+USER_HELPER_DOC = """func double(x: int) -> int {
+    return x * 2
+}
+"""
+
+USER_MAIN_DOC = """from helper import double
+
+func main() {
+    print(double(21))
+}
+"""
+
+REFERENCES_DOC = """func target(x: int) -> int {
+    return x
+}
+
+func main() {
+    a: int = target(1)
+    b: int = target(a)
+    print(b)
+}
+"""
+
+GENERIC_DOC = """func identity[T](x: T) -> T {
+    return x
+}
+
+class Box[T] {
+    func get(self) -> T {
+        return self.value
+    }
+}
+"""
+
+SIGNATURE_DOC = """func combine(left: str, right: str) -> str {
+    return left + right
+}
+
+func main() {
+    print(combine("a", "b"))
+}
+"""
+
+RENAME_DOC = """func compute(value: int) -> int {
+    total: int = value + 1
+    return total
+}
+
+func main() {
+    print(compute(41))
+}
+"""
+
+FORMAT_DOC = """func main(){
+value:int=1
+if value>0{
+print("x:y", value)# inline
+}
+}
+"""
+
+FORMAT_EXPECTED = """func main() {
+    value: int = 1
+    if value > 0 {
+        print("x:y", value)  # inline
+    }
+}
+"""
+
 
 def assert_eq(label: str, actual, expected) -> None:
     if actual != expected:
@@ -207,6 +276,11 @@ def run_tests() -> int:
             assert_true("hoverProvider", caps.get("hoverProvider"))
             assert_true("definitionProvider", caps.get("definitionProvider"))
             assert_true("documentSymbolProvider", caps.get("documentSymbolProvider"))
+            assert_true("signatureHelpProvider", isinstance(caps.get("signatureHelpProvider"), dict))
+            assert_true("referencesProvider", caps.get("referencesProvider"))
+            assert_true("renameProvider", isinstance(caps.get("renameProvider"), dict))
+            assert_true("rename prepareProvider", caps.get("renameProvider", {}).get("prepareProvider"))
+            assert_true("documentFormattingProvider", caps.get("documentFormattingProvider"))
             assert_true("completionProvider", isinstance(caps.get("completionProvider"), dict))
             print("PASS: initialize advertises capabilities")
         except AssertionError as e:
@@ -272,6 +346,123 @@ def run_tests() -> int:
         except AssertionError as e:
             failures.append(str(e))
 
+        references_uri = "file:///tmp/lsp_references.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": references_uri, "languageId": "lammergeier",
+                "version": 1, "text": REFERENCES_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        ref_lines = REFERENCES_DOC.splitlines()
+        target_line = next(i for i, l in enumerate(ref_lines) if "func target" in l)
+        target_col = ref_lines[target_line].index("target") + 1
+        resp = client.request("textDocument/references", {
+            "textDocument": {"uri": references_uri},
+            "position": {"line": target_line, "character": target_col},
+            "context": {"includeDeclaration": True},
+        })
+        refs = resp.get("result") or []
+        try:
+            ref_positions = {
+                (loc["uri"], loc["range"]["start"]["line"], loc["range"]["start"]["character"])
+                for loc in refs
+            }
+            expected = {
+                (references_uri, target_line, ref_lines[target_line].index("target")),
+                (references_uri, next(i for i, l in enumerate(ref_lines) if "target(1)" in l),
+                 next(l.index("target") for l in ref_lines if "target(1)" in l)),
+                (references_uri, next(i for i, l in enumerate(ref_lines) if "target(a)" in l),
+                 next(l.index("target") for l in ref_lines if "target(a)" in l)),
+            }
+            assert_eq("same-file reference count", len(refs), 3)
+            assert_eq("same-file reference locations", ref_positions, expected)
+            print("PASS: references finds definition and two same-file usages")
+        except AssertionError as e:
+            failures.append(f"references same-file: {e}")
+
+        rename_uri = "file:///tmp/lsp_rename.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": rename_uri, "languageId": "lammergeier",
+                "version": 1, "text": RENAME_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        rename_lines = RENAME_DOC.splitlines()
+        local_line = next(i for i, l in enumerate(rename_lines) if "return total" in l)
+        local_col = rename_lines[local_line].index("total") + 1
+        resp = client.request("textDocument/prepareRename", {
+            "textDocument": {"uri": rename_uri},
+            "position": {"line": local_line, "character": local_col},
+        })
+        prep = resp.get("result") or {}
+        resp = client.request("textDocument/rename", {
+            "textDocument": {"uri": rename_uri},
+            "position": {"line": local_line, "character": local_col},
+            "newName": "answer",
+        })
+        edits = ((resp.get("result") or {}).get("changes") or {}).get(rename_uri, [])
+        try:
+            edit_positions = {
+                (edit["range"]["start"]["line"], edit["range"]["start"]["character"], edit["newText"])
+                for edit in edits
+            }
+            assert_eq("prepareRename placeholder for local", prep.get("placeholder"), "total")
+            assert_eq("local rename edit count", len(edits), 2)
+            assert_true("local rename edits declaration",
+                        (1, rename_lines[1].index("total"), "answer") in edit_positions)
+            assert_true("local rename edits use",
+                        (local_line, rename_lines[local_line].index("total"), "answer") in edit_positions)
+            print("PASS: rename edits a local variable in the current function")
+        except AssertionError as e:
+            failures.append(f"rename local: {e}")
+
+        func_line = next(i for i, l in enumerate(rename_lines) if "func compute" in l)
+        func_col = rename_lines[func_line].index("compute") + 1
+        resp = client.request("textDocument/rename", {
+            "textDocument": {"uri": rename_uri},
+            "position": {"line": func_line, "character": func_col},
+            "newName": "calculate",
+        })
+        edits = ((resp.get("result") or {}).get("changes") or {}).get(rename_uri, [])
+        try:
+            edit_positions = {
+                (edit["range"]["start"]["line"], edit["range"]["start"]["character"], edit["newText"])
+                for edit in edits
+            }
+            call_line = next(i for i, l in enumerate(rename_lines) if "compute(41)" in l)
+            assert_eq("top-level rename edit count", len(edits), 2)
+            assert_true("top-level rename edits declaration",
+                        (func_line, rename_lines[func_line].index("compute"), "calculate") in edit_positions)
+            assert_true("top-level rename edits call",
+                        (call_line, rename_lines[call_line].index("compute"), "calculate") in edit_positions)
+            print("PASS: rename edits a top-level function in one file")
+        except AssertionError as e:
+            failures.append(f"rename top-level: {e}")
+
+        format_uri = "file:///tmp/lsp_format.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": format_uri, "languageId": "lammergeier",
+                "version": 1, "text": FORMAT_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("textDocument/formatting", {
+            "textDocument": {"uri": format_uri},
+            "options": {"tabSize": 4, "insertSpaces": True},
+        })
+        edits = resp.get("result") or []
+        try:
+            assert_eq("formatting edit count", len(edits), 1)
+            assert_eq("formatting edit text", edits[0].get("newText"), FORMAT_EXPECTED)
+            assert_eq("formatting edit starts at document start",
+                      edits[0].get("range", {}).get("start"), {"line": 0, "character": 0})
+            print("PASS: LSP formatting returns a text edit")
+        except AssertionError as e:
+            failures.append(f"formatting: {e}")
+
         # ── documentSymbol ──────────────────────────────────
         resp = client.request("textDocument/documentSymbol", {
             "textDocument": {"uri": uri},
@@ -289,6 +480,29 @@ def run_tests() -> int:
             print("PASS: documentSymbol returns a class with nested methods")
         except (AssertionError, StopIteration) as e:
             failures.append(f"documentSymbol: {e}")
+
+        generic_uri = "file:///tmp/lsp_generics.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": generic_uri, "languageId": "lammergeier",
+                "version": 1, "text": GENERIC_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("textDocument/documentSymbol", {
+            "textDocument": {"uri": generic_uri},
+        })
+        symbols = resp.get("result", [])
+        try:
+            names = {s["name"] for s in symbols}
+            assert_true("generic function symbol", "identity" in names)
+            assert_true("generic class symbol", "Box" in names)
+            box = next(s for s in symbols if s["name"] == "Box")
+            child_names = {c["name"] for c in box.get("children", [])}
+            assert_true("generic class method symbol", "get" in child_names)
+            print("PASS: documentSymbol includes generic function and class")
+        except (AssertionError, StopIteration) as e:
+            failures.append(f"generic documentSymbol: {e}")
 
         # ── hover on `helper` ───────────────────────────────
         # Find "helper" in the source.
@@ -308,6 +522,49 @@ def run_tests() -> int:
                 except AssertionError as e:
                     failures.append(str(e))
                 break
+
+        signature_uri = "file:///tmp/lsp_signature.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": signature_uri, "languageId": "lammergeier",
+                "version": 1, "text": SIGNATURE_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        sig_lines = SIGNATURE_DOC.splitlines()
+        sig_line = next(i for i, l in enumerate(sig_lines) if "combine(\"a\"" in l)
+        first_param_char = sig_lines[sig_line].index('combine("a"') + len('combine(')
+        resp = client.request("textDocument/signatureHelp", {
+            "textDocument": {"uri": signature_uri},
+            "position": {"line": sig_line, "character": first_param_char},
+        })
+        try:
+            result = resp.get("result") or {}
+            signatures = result.get("signatures") or []
+            assert_true("signature help result", signatures)
+            assert_true("signature label", "func combine(left: str, right: str) -> str" in signatures[0].get("label", ""))
+            assert_eq("active parameter before comma", result.get("activeParameter"), 0)
+            params = signatures[0].get("parameters") or []
+            assert_eq("first parameter label", params[0].get("label"), "left: str")
+            print("PASS: signatureHelp returns function signature inside a call")
+        except (AssertionError, IndexError) as e:
+            failures.append(f"signatureHelp: {e}")
+
+        second_param_char = sig_lines[sig_line].index(', "b"') + len(', ')
+        resp = client.request("textDocument/signatureHelp", {
+            "textDocument": {"uri": signature_uri},
+            "position": {"line": sig_line, "character": second_param_char},
+        })
+        try:
+            result = resp.get("result") or {}
+            signatures = result.get("signatures") or []
+            assert_true("signature help result after comma", signatures)
+            assert_eq("active parameter after comma", result.get("activeParameter"), 1)
+            params = signatures[0].get("parameters") or []
+            assert_eq("second parameter label", params[1].get("label"), "right: str")
+            print("PASS: signatureHelp advances active parameter after comma")
+        except (AssertionError, IndexError) as e:
+            failures.append(f"signatureHelp active parameter: {e}")
 
         # ── completion at top level ─────────────────────────
         resp = client.request("textDocument/completion", {
@@ -463,6 +720,20 @@ def run_tests() -> int:
         except AssertionError as e:
             failures.append(f"cross-file hover (func): {e}")
 
+        resp = client.request("textDocument/rename", {
+            "textDocument": {"uri": cross_uri},
+            "position": {"line": ba_line, "character": ba_col},
+            "newName": "renamedAuth",
+        })
+        try:
+            err = resp.get("error") or {}
+            assert_true("stdlib rename rejected", err)
+            assert_true("stdlib rename clear error",
+                        "imported symbol `basicAuth`" in err.get("message", ""))
+            print("PASS: rename rejects imported stdlib symbols clearly")
+        except AssertionError as e:
+            failures.append(f"stdlib rename rejection: {e}")
+
         # Top-level completion should expose every imported alias.
         resp = client.request("textDocument/completion", {
             "textDocument": {"uri": cross_uri},
@@ -539,6 +810,85 @@ def run_tests() -> int:
             print("PASS: go-to-definition jumps into the lib file")
         except AssertionError as e:
             failures.append(f"cross-file definition: {e}")
+
+        # ── cross-file user module resolution ───────────────
+        helper_uri = "file:///tmp/helper.lam"
+        user_main_uri = "file:///tmp/user_main.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": helper_uri, "languageId": "lammergeier",
+                "version": 1, "text": USER_HELPER_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": user_main_uri, "languageId": "lammergeier",
+                "version": 1, "text": USER_MAIN_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        user_lines = USER_MAIN_DOC.splitlines()
+        call_line = next(i for i, l in enumerate(user_lines) if "double(21)" in l)
+        call_col = user_lines[call_line].index("double") + 1
+
+        resp = client.request("textDocument/hover", {
+            "textDocument": {"uri": user_main_uri},
+            "position": {"line": call_line, "character": call_col},
+        })
+        try:
+            val = ((resp.get("result") or {}).get("contents") or {}).get("value", "")
+            assert_true("hover on user import shows signature",
+                         "func double(x: int) -> int" in val)
+            assert_true("hover on user import shows module", "helper" in val)
+            print("PASS: hover resolves imported user module function")
+        except AssertionError as e:
+            failures.append(f"user-module hover: {e}")
+
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": user_main_uri},
+            "position": {"line": 0, "character": 0},
+        })
+        labels = {it.get("label") for it in (resp.get("result") or {}).get("items", [])}
+        try:
+            assert_true("double in imported completion", "double" in labels)
+            print("PASS: completion lists imported user module symbols")
+        except AssertionError as e:
+            failures.append(f"user-module completion: {e}")
+
+        resp = client.request("textDocument/definition", {
+            "textDocument": {"uri": user_main_uri},
+            "position": {"line": call_line, "character": call_col},
+        })
+        loc = resp.get("result")
+        try:
+            assert_true("user definition non-null", loc)
+            assert_eq("user definition URI", loc.get("uri"), helper_uri)
+            assert_eq("user definition line", loc["range"]["start"]["line"], 0)
+            print("PASS: go-to-definition jumps into user module")
+        except AssertionError as e:
+            failures.append(f"user-module definition: {e}")
+
+        resp = client.request("textDocument/references", {
+            "textDocument": {"uri": helper_uri},
+            "position": {"line": 0, "character": USER_HELPER_DOC.splitlines()[0].index("double") + 1},
+            "context": {"includeDeclaration": True},
+        })
+        refs = resp.get("result") or []
+        try:
+            ref_positions = {
+                (loc["uri"], loc["range"]["start"]["line"], loc["range"]["start"]["character"])
+                for loc in refs
+            }
+            assert_true("cross-file includes helper definition",
+                        (helper_uri, 0, USER_HELPER_DOC.splitlines()[0].index("double")) in ref_positions)
+            assert_true("cross-file includes import usage",
+                        (user_main_uri, 0, USER_MAIN_DOC.splitlines()[0].index("double")) in ref_positions)
+            assert_true("cross-file includes call usage",
+                        (user_main_uri, call_line, USER_MAIN_DOC.splitlines()[call_line].index("double")) in ref_positions)
+            print("PASS: references finds usage across two open workspace files")
+        except AssertionError as e:
+            failures.append(f"user-module references: {e}")
 
         # ── didChange with broken doc → diagnostics ─────────
         client.notify("textDocument/didChange", {

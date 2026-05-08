@@ -15,6 +15,7 @@ behaviour.
 
 ## Table of contents
 
+- [Stdlib tiers](#stdlib-tiers)
 - [Strings & text](#strings--text)
 - [Numerics, math & data](#numerics-math--data)
 - [Collections & iterators](#collections--iterators)
@@ -29,6 +30,29 @@ behaviour.
 - [Database](#database)
 - [Cookbook](#cookbook)
 - [Public API index](#public-api-index)
+
+---
+
+## Stdlib tiers
+
+Stdlib tiers are documentation boundaries only. They describe expected
+weight and domain ownership; they do not change imports, module names,
+or resolution. Import a module with its normal `from lam... import ...`
+form regardless of tier.
+
+| Tier | Purpose | Modules |
+| --- | --- | --- |
+| core | Small, general-purpose modules expected to stay lightweight and broadly useful. | `lamstrings`, `lammath`, `lampath`, `lamjson`, `lamerrors`, `lamenv`, `lamtime`, `lamdatetime`, `lamconv`, `lamfmt`, `lamlog`, `lamtest` |
+| data | File formats, tabular/numeric data, and data-shaping helpers. | `lamcsv`, `lamyaml`, `lamxml`, `lamdata`, `lamarray`, `lamstats`, `lamrandom` |
+| net | Network protocols, web servers/clients, auth tokens, and wire formats. | `lamhttp`, `lamserver`, `lamserver_plugins`, `lamserver_ws`, `lamserver_tus`, `lamsmtp`, `lamnet`, `lamurl`, `lamjwt`, `lamprotobuf` |
+| infra | External services and operational infrastructure. | `lamdb`, `lamredis`, `lamemcached`, `lammigrate`, `lamcron`, `lamexec`, `lamcache` |
+| concurrency | Concurrency primitives, async coordination, and resilience helpers. | `lamactor`, `lamconcurrency`, `lamretry`, `lamratelimit`, `lamqueue`, `lamdeque`, `lamheap`, `lamstack`, `lamset`, `lamiter`, `lamsort` |
+| encoding & crypto | Encoding, hashing, compression, bytes, UUIDs, templates, and text validation helpers. | `lambase64`, `lambytes`, `lamcompress`, `lamhash`, `lamuuid`, `lamtemplate`, `lamunicode`, `lamre`, `lamschema`, `lamsecurity` |
+| CLI & OS | Program entrypoint, filesystem, environment, and host-process helpers. | `lamcli`, `lamos` |
+
+The tiers are intentionally coarse. A module can compose across tiers
+at the Lam source level; Phase 8 dependency work tracks whether that
+composition accidentally spreads heavy Go dependencies.
 
 ---
 

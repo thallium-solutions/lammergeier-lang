@@ -1,0 +1,6 @@
+# expect-error: error[type]
+# expect-error: cannot assign `str` to `int` variable `count`
+
+func main() {
+    count: int = "one"
+}

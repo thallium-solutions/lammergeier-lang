@@ -20,9 +20,12 @@ class DefinitionVisitorMixin:
         # Expose the function-level type-parameter names to
         # ``_type_expr_to_go`` so annotations can reference them before
         # the clause is emitted.
-        tp_clause, tp_names, _ = self._type_params_to_go(type_params_node)
+        tp_clause, tp_names, tp_pairs = self._type_params_to_go(type_params_node)
         prev_generic_names = set(self._generic_names)
+        prev_generic_constraints = dict(self._generic_constraints)
         self._generic_names.update(tp_names)
+        for tp_name, tp_constraint in tp_pairs:
+            self._generic_constraints[tp_name] = tp_constraint
 
         # ── Nested function definitions ───────────────────────────
         # Go has no nested named functions; ``func name() {}`` inside
@@ -38,12 +41,20 @@ class DefinitionVisitorMixin:
         if is_nested:
             try:
                 with self._scoped(_at_top_level=False):
-                    self._emit_nested_funcdef(
-                        func_name, params_node, return_type_node,
-                        suite_node, tp_clause=tp_clause,
-                    )
+                    if tp_clause:
+                        self._emit_nested_generic_funcdef(
+                            func_name, params_node, return_type_node,
+                            suite_node, tp_clause=tp_clause,
+                            tp_names=tp_names,
+                        )
+                    else:
+                        self._emit_nested_funcdef(
+                            func_name, params_node, return_type_node,
+                            suite_node, tp_clause=tp_clause,
+                        )
             finally:
                 self._generic_names = prev_generic_names
+                self._generic_constraints = prev_generic_constraints
             return
 
         try:
@@ -60,6 +71,7 @@ class DefinitionVisitorMixin:
                 )
         finally:
             self._generic_names = prev_generic_names
+            self._generic_constraints = prev_generic_constraints
 
     def _emit_nested_funcdef(
         self, func_name, params_node, return_type_node, suite_node,
@@ -84,21 +96,13 @@ class DefinitionVisitorMixin:
         self._declare_var(func_name)
 
         self._emit(f"{func_name} := func({params_str}){ret_str} {{")
-        self.indent += 1
-        self._push_scope()
-        if params_node:
-            self._declare_params(params_node)
-            self._emit_tuple_param_prologue(params_node)
-        body_start = len(self.output_lines)
-        params_at_start = set(self.declared_vars)
+        body_start, params_at_start = self._begin_scoped_body(params_node)
         with self._scoped(
             _current_return_type=return_type,
             _q_propagate_ok=(return_type == "*Result"),
         ):
             self._visit_suite(suite_node)
-        self._emit_unused_local_silencers(body_start, params_at_start)
-        self._pop_scope()
-        self.indent -= 1
+        self._finish_scoped_body(body_start, params_at_start)
         self._emit("}")
         # Mark as used so Go's "declared and not used" check can't
         # trip on closures that are passed straight to ``srv.onRequest(...)``
@@ -107,6 +111,177 @@ class DefinitionVisitorMixin:
         # ``_ = name`` only when the rest of the suite never references
         # it. The semantic checker doesn't currently track this, so we
         # leave it to the Go compiler to surface unused closures.
+
+    def _emit_nested_generic_funcdef(
+        self, func_name, params_node, return_type_node, suite_node,
+        tp_clause: str = "", tp_names=None,
+    ):
+        captures = self._nested_generic_captures(
+            func_name, params_node, suite_node, set(tp_names or []),
+        )
+        outer_type_names = sorted(self._generic_names - set(tp_names or []))
+        self._nested_generic_counter += 1
+        go_name = f"__lam_nested_{self._nested_generic_counter}_{func_name}"
+        info = {
+            "go_name": go_name,
+            "captures": captures,
+            "func_key": func_name,
+            "outer_type_names": outer_type_names,
+            "type_param_names": list(tp_names or []),
+        }
+        self._nested_generic_functions[func_name] = info
+
+        capture_params = [
+            f"{name} {go_type}" for name, go_type in captures
+        ]
+        params_str = self._typed_params_to_go(params_node)
+        all_params = capture_params + ([params_str] if params_str else [])
+        return_type = self._resolve_return_type(return_type_node)
+        ret_str = f" {return_type}" if return_type else ""
+        type_clause = self._nested_generic_type_clause(tp_clause, outer_type_names)
+
+        old_lines = self.output_lines
+        old_indent = self.indent
+        old_declared = set(self.declared_vars)
+        old_scopes = list(self.scope_stack)
+        old_nested = dict(self._nested_generic_functions)
+        self.output_lines = []
+        self.indent = 0
+        self.declared_vars = set()
+        self.scope_stack = []
+        self._nested_generic_functions = dict(old_nested)
+        self._nested_generic_functions[func_name] = info
+        try:
+            self._emit(f"func {go_name}{type_clause}({', '.join(all_params)}){ret_str} {{")
+            self.indent += 1
+            self._push_scope()
+            for name, go_type in captures:
+                self._declare_var(name)
+                self._var_go_types[name] = go_type
+            self._emit_params_prologue(params_node)
+            body_start = len(self.output_lines)
+            params_at_start = set(self.declared_vars)
+            with self._scoped(
+                _current_return_type=return_type,
+                _q_propagate_ok=(return_type == "*Result"),
+            ):
+                self._visit_suite(suite_node)
+            self._finish_scoped_body(body_start, params_at_start)
+            self._emit("}")
+            self._hoisted_nested_generic_funcs.extend(self.output_lines)
+            self._hoisted_nested_generic_funcs.append("")
+        finally:
+            self.output_lines = old_lines
+            self.indent = old_indent
+            self.declared_vars = old_declared
+            self.scope_stack = old_scopes
+            self._nested_generic_functions = old_nested
+
+    def _nested_generic_type_clause(
+        self, tp_clause: str, outer_type_names: list,
+    ) -> str:
+        entries = []
+        seen = set()
+        for name in outer_type_names:
+            if name in seen:
+                continue
+            entries.append(f"{name} {self._generic_constraints.get(name, 'any')}")
+            seen.add(name)
+        if tp_clause:
+            for part in tp_clause.strip("[]").split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                name = part.split()[0]
+                if name in seen:
+                    continue
+                entries.append(part)
+                seen.add(name)
+        if not entries:
+            return ""
+        return "[" + ", ".join(entries) + "]"
+
+    def _nested_generic_captures(
+        self, func_name, params_node, suite_node, nested_type_names: set,
+    ):
+        local = {func_name}
+        local.update(nested_type_names)
+        if isinstance(params_node, Tree):
+            for child in params_node.children:
+                if isinstance(child, Tree) and child.data == "typed_paramvalue":
+                    param = child.children[0]
+                    if isinstance(param, Tree) and param.data == "typed_param":
+                        local.add(self._get_name(param.children[0]))
+                    elif isinstance(param, Tree) and param.data == "tuple_typed_param":
+                        for pchild in param.children[:-1]:
+                            if isinstance(pchild, Tree) and pchild.data == "name":
+                                local.add(self._get_name(pchild))
+                elif isinstance(child, Tree) and child.data == "typed_param":
+                    local.add(self._get_name(child.children[0]))
+        self._collect_nested_local_defs(suite_node, local)
+        refs = []
+        seen = set()
+        self._collect_nested_var_refs(suite_node, refs, seen)
+        captures = []
+        for name in refs:
+            if (
+                name in local
+                or name not in self.declared_vars
+                or name in self._generic_names
+            ):
+                continue
+            go_type = self._var_go_types.get(name, "interface{}")
+            captures.append((name, go_type))
+        return captures
+
+    def _collect_nested_local_defs(self, node, out: set) -> None:
+        if not isinstance(node, Tree):
+            return
+        if node.data == "funcdef":
+            _, _, _, name_node, params_node, _, _, _ = self._parse_funcdef(node)
+            out.add(self._get_name(name_node))
+            return
+        if node.data == "annassign":
+            target = node.children[0] if node.children else None
+            self._collect_target_names(target, out)
+            return
+        if node.data == "assign":
+            target = node.children[0] if node.children else None
+            self._collect_target_names(target, out)
+            return
+        if node.data == "const_stmt" and node.children:
+            out.add(self._get_name(node.children[0]))
+            return
+        if node.data == "for_stmt" and node.children:
+            self._collect_target_names(node.children[0], out)
+        for child in node.children:
+            if isinstance(child, Tree):
+                self._collect_nested_local_defs(child, out)
+
+    def _collect_target_names(self, node, out: set) -> None:
+        if not isinstance(node, Tree):
+            return
+        if node.data == "var":
+            out.add(self._get_name(node.children[0]))
+            return
+        for child in node.children:
+            if isinstance(child, Tree):
+                self._collect_target_names(child, out)
+
+    def _collect_nested_var_refs(self, node, out: list, seen: set) -> None:
+        if not isinstance(node, Tree):
+            return
+        if node.data == "funcdef":
+            return
+        if node.data == "var" and node.children:
+            name = self._get_name(node.children[0])
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+            return
+        for child in node.children:
+            if isinstance(child, Tree):
+                self._collect_nested_var_refs(child, out, seen)
 
     def _visit_funcdef_body(
         self, is_private, is_static, is_async,
@@ -132,17 +307,9 @@ class DefinitionVisitorMixin:
                     tp_clause,
                 )
                 self._emit(f"func {go_name}{static_clause}({params_str}){ret_str} {{")
-                self.indent += 1
-                self._push_scope()
-                if params_node:
-                    self._declare_params(params_node)
-                    self._emit_tuple_param_prologue(params_node)
-                body_start = len(self.output_lines)
-                params_at_start = set(self.declared_vars)
+                body_start, params_at_start = self._begin_scoped_body(params_node)
                 self._visit_suite(suite_node)
-                self._emit_unused_local_silencers(body_start, params_at_start)
-                self._pop_scope()
-                self.indent -= 1
+                self._finish_scoped_body(body_start, params_at_start)
                 self._emit("}")
                 self._emit("")
             elif func_name == "__init__" or func_name == "init":
@@ -194,9 +361,7 @@ class DefinitionVisitorMixin:
             self._emit(f"go func() {{")
             self.indent += 1
             self._push_scope()
-            if params_node:
-                self._declare_params(params_node)
-                self._emit_tuple_param_prologue(params_node)
+            self._emit_params_prologue(params_node)
             body_start = len(self.output_lines)
             params_at_start = set(self.declared_vars)
             with self._scoped(_in_async_func=True, _async_chan_name="ch"):
@@ -224,9 +389,7 @@ class DefinitionVisitorMixin:
             self.indent += 1
             self._emit(f"defer close(_ch)")
             self._push_scope()
-            if params_node:
-                self._declare_params(params_node)
-                self._emit_tuple_param_prologue(params_node)
+            self._emit_params_prologue(params_node)
             body_start = len(self.output_lines)
             params_at_start = set(self.declared_vars)
             with self._scoped(_in_generator=True, _generator_chan="_ch"):
@@ -253,9 +416,7 @@ class DefinitionVisitorMixin:
             self.indent += 1
             self._push_scope()
             self._declare_var("retval")
-            if params_node:
-                self._declare_params(params_node)
-                self._emit_tuple_param_prologue(params_node)
+            self._emit_params_prologue(params_node)
             body_start = len(self.output_lines)
             params_at_start = set(self.declared_vars)
             with self._scoped(
@@ -282,21 +443,13 @@ class DefinitionVisitorMixin:
             current_ret = ""
             self._emit(f"func {go_name}{tp_clause}({params_str}) {{")
 
-        self.indent += 1
-        self._push_scope()
-        if params_node:
-            self._declare_params(params_node)
-            self._emit_tuple_param_prologue(params_node)
-        body_start = len(self.output_lines)
-        params_at_start = set(self.declared_vars)
+        body_start, params_at_start = self._begin_scoped_body(params_node)
         with self._scoped(
             _current_return_type=current_ret,
             _q_propagate_ok=(current_ret == "*Result"),
         ):
             self._visit_suite(suite_node)
-        self._emit_unused_local_silencers(body_start, params_at_start)
-        self._pop_scope()
-        self.indent -= 1
+        self._finish_scoped_body(body_start, params_at_start)
         self._emit("}")
         self._emit("")
 
@@ -356,9 +509,7 @@ class DefinitionVisitorMixin:
         # ``visited`` set — they're nonsense in a class hierarchy
         # but defensive against malformed input.
         self._emit_ancestor_init(cls, receiver="s")
-        if params_node:
-            self._declare_params(params_node)
-            self._emit_tuple_param_prologue(params_node, skip_self=True)
+        self._emit_params_prologue(params_node, skip_self=True)
         self._declare_var("s")
         body_start = len(self.output_lines)
         params_at_start = set(self.declared_vars)
@@ -387,9 +538,7 @@ class DefinitionVisitorMixin:
         self._emit(f"func (s *{go_cls}{class_args}) {go_method}{tp_clause}({params_str}){ret_str} {{")
         self.indent += 1
         self._push_scope()
-        if params_node:
-            self._declare_params(params_node)
-            self._emit_tuple_param_prologue(params_node, skip_self=True)
+        self._emit_params_prologue(params_node, skip_self=True)
         self._declare_var("s")
         body_start = len(self.output_lines)
         params_at_start = set(self.declared_vars)
@@ -440,9 +589,12 @@ class DefinitionVisitorMixin:
         tp_clause, tp_names, _ = self._type_params_to_go(tp_node)
 
         prev_generic_names = set(self._generic_names)
+        prev_generic_constraints = dict(self._generic_constraints)
         if tp_clause:
             self._generic_classes[class_name] = tp_clause
             self._generic_names.update(tp_names)
+            for tp_name, tp_constraint in self._type_params_to_go(tp_node)[2]:
+                self._generic_constraints[tp_name] = tp_constraint
 
         try:
             fields = self.class_fields.get(class_name, [])
@@ -496,6 +648,7 @@ class DefinitionVisitorMixin:
                     self._emit("")
         finally:
             self._generic_names = prev_generic_names
+            self._generic_constraints = prev_generic_constraints
 
     def _emit_static_fields(self, class_name: str) -> None:
         static_fields = self.class_static_fields.get(class_name, [])

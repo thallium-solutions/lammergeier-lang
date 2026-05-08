@@ -27,9 +27,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
+from compiler import lammergeier as lamc
 from compiler.lammergeier import _collect_go_pins
 from compiler.manifest import is_valid_go_module_path
-from compiler.stdlib_go_deps import STDLIB_GO_PINS
+from compiler.stdlib_go_deps import STDLIB_GO_PINS, STDLIB_GO_PIN_MODULES
 
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -66,6 +67,14 @@ def test_stdlib_pins_versions_look_semver() -> None:
         for comp in parts:
             assert comp.isdigit() or comp[0].isdigit(), \
                 f"{path}: non-numeric component in {ver!r}"
+
+
+def test_stdlib_pin_owners_cover_every_pin() -> None:
+    assert set(STDLIB_GO_PIN_MODULES) == set(STDLIB_GO_PINS)
+    for path, modules in STDLIB_GO_PIN_MODULES.items():
+        assert modules, f"{path}: no owning stdlib modules declared"
+        for module in modules:
+            assert module.startswith("lam"), f"{path}: bad stdlib module {module!r}"
 
 
 # ── Precedence layering ──────────────────────────────────────
@@ -148,6 +157,74 @@ def test_pins_walk_up_from_subdir() -> None:
     assert pins["gopkg.in/yaml.v3"] == "v3.42.0"
 
 
+def test_stdlib_pins_filter_to_imported_modules() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        light = _collect_go_pins(Path(td), stdlib_modules={"lamstrings"})
+        data = _collect_go_pins(Path(td), stdlib_modules={"lamdata"})
+    assert light == {}, light
+    assert data == {
+        "github.com/go-gota/gota": STDLIB_GO_PINS["github.com/go-gota/gota"],
+    }, data
+
+
+def test_filtered_stdlib_pins_keep_project_pins() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _write(root / "lamlib.toml", """
+            [library]
+            name = "demo"
+            version = "0.1.0"
+            lammergeier = ">=0.1.0"
+
+            [go-deps]
+            "github.com/robfig/cron/v3" = "v3.99.0"
+        """)
+        pins = _collect_go_pins(root, stdlib_modules={"lamstrings"})
+    assert pins == {"github.com/robfig/cron/v3": "v3.99.0"}, pins
+
+
+def test_lamstrings_build_go_mod_stays_light() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        source = root / "main.lam"
+        output = root / "app"
+        build_dir = root / "build"
+        _write(source, """
+            from lamstrings import Strings
+
+            func main() {
+                print(Strings.toUpper("ok"))
+            }
+        """)
+
+        original_mkdtemp = lamc.tempfile.mkdtemp
+
+        def fake_mkdtemp(prefix: str = "", *args, **kwargs) -> str:
+            build_dir.mkdir()
+            return str(build_dir)
+
+        lamc.tempfile.mkdtemp = fake_mkdtemp
+        try:
+            lamc.compile_lam(
+                str(source),
+                str(output),
+                keep_go=True,
+                use_cache=False,
+            )
+        finally:
+            lamc.tempfile.mkdtemp = original_mkdtemp
+
+        go_mod = (build_dir / "go.mod").read_text(encoding="utf-8")
+    heavy_modules = {
+        "github.com/go-gota/gota",
+        "github.com/redis/go-redis/v9",
+        "modernc.org/sqlite",
+        "google.golang.org/protobuf",
+    }
+    for module in heavy_modules:
+        assert module not in go_mod, go_mod
+
+
 # ── Entrypoint ───────────────────────────────────────────────
 
 def main() -> int:
@@ -155,10 +232,14 @@ def main() -> int:
         test_stdlib_pins_nonempty,
         test_stdlib_pins_module_paths_valid,
         test_stdlib_pins_versions_look_semver,
+        test_stdlib_pin_owners_cover_every_pin,
         test_standalone_script_gets_stdlib_pins,
         test_project_manifest_overrides_stdlib_pin,
         test_lockfile_overrides_manifest_and_stdlib,
         test_pins_walk_up_from_subdir,
+        test_stdlib_pins_filter_to_imported_modules,
+        test_filtered_stdlib_pins_keep_project_pins,
+        test_lamstrings_build_go_mod_stays_light,
     ]
     failures = 0
     for t in tests:

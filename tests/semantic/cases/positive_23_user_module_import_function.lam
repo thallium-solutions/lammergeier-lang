@@ -1,0 +1,6 @@
+# expect-pass
+from import_helper import exportedThing
+
+func main() {
+    print(exportedThing())
+}

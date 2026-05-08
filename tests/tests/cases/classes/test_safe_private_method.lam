@@ -1,0 +1,24 @@
+# Test: safe navigation preserves private method name lowering.
+# expect: safe=internal_42
+# expect: missing=<nil>
+
+class SafePrivateService {
+    func init(self, value: int) {
+        self.value: int = value
+    }
+
+    private func internal_compute(self) -> str {
+        return f"internal_{self.value}"
+    }
+}
+
+func main() {
+    s: SafePrivateService = SafePrivateService(42)
+    missing: SafePrivateService = None
+
+    safe = s?.internal_compute()
+    print(f"safe={safe}")
+
+    absent = missing?.internal_compute()
+    print(f"missing={absent}")
+}

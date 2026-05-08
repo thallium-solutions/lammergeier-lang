@@ -2,10 +2,10 @@
 
 Every stdlib library that wraps a third-party Go module is listed
 here together with the exact version the Lam toolchain was built
-against. The compiler merges this table with the project-side pins
-collected from ``lamlib.toml`` / ``lamlib.lock.toml`` and injects
-the union into the synthesised ``go.mod`` before ``go mod tidy``
-runs.
+against. The compiler filters this table to the stdlib modules used by the
+current build, merges those pins with project-side pins collected
+from ``lamlib.toml`` / ``lamlib.lock.toml``, and injects the union
+into the synthesised ``go.mod`` before ``go mod tidy`` runs.
 
 Why we do this:
 
@@ -76,4 +76,21 @@ STDLIB_GO_PINS: Dict[str, str] = {
     # cross-compilable from any platform. Blank-imported alongside
     # the MySQL and Postgres drivers in ``lib/lamdb.lam``.
     "modernc.org/sqlite":                   "v1.50.0",
+}
+
+STDLIB_GO_PIN_MODULES: Dict[str, tuple[str, ...]] = {
+    "github.com/BurntSushi/toml":           ("lamenv",),
+    "github.com/go-gota/gota":              ("lamdata",),
+    "github.com/go-sql-driver/mysql":       ("lamdb",),
+    "github.com/golang-jwt/jwt/v5":         ("lamjwt",),
+    "github.com/google/uuid":               ("lamserver_tus", "lamuuid"),
+    "github.com/gorilla/websocket":         ("lamserver_ws",),
+    "github.com/lib/pq":                    ("lamdb",),
+    "github.com/memcachier/mc/v3":          ("lamemcached",),
+    "github.com/redis/go-redis/v9":         ("lamredis",),
+    "github.com/robfig/cron/v3":            ("lamcron",),
+    "github.com/xeipuuv/gojsonschema":      ("lamschema", "lamserver"),
+    "google.golang.org/protobuf":           ("lamprotobuf",),
+    "gopkg.in/yaml.v3":                     ("lamyaml", "lamenv"),
+    "modernc.org/sqlite":                   ("lamdb",),
 }

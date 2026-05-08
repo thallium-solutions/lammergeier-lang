@@ -71,6 +71,20 @@ class StatementVisitorMixin:
     def _visit_assign_stmt(self, node: Tree):
         self._visit(node.children[0])
 
+    def _is_declared_or_nonlocal_target(self, target_str: str) -> bool:
+        return (
+            "." in target_str
+            or self._is_static_var_go_name(target_str)
+            or target_str in self.declared_vars
+        )
+
+    def _emit_decl_or_assign(self, target_str: str, go_type: str, value_str: str):
+        if self._is_declared_or_nonlocal_target(target_str):
+            self._emit(f"{target_str} = {value_str}")
+        else:
+            self._emit(f"var {target_str} {go_type} = {value_str}")
+            self._declare_var(target_str)
+
     def _visit_annassign(self, node: Tree):
         is_private = False
         is_static = False
@@ -105,11 +119,7 @@ class StatementVisitorMixin:
                 true_val = self._expr_to_go(value.children[0])
                 cond = self._expr_to_go(value.children[1])
                 false_val = self._expr_to_go(value.children[2])
-                if (
-                    "." not in target_str
-                    and target_str not in self.declared_vars
-                    and not self._is_static_var_go_name(target_str)
-                ):
+                if not self._is_declared_or_nonlocal_target(target_str):
                     self._emit(f"var {target_str} {go_type}")
                     self._declare_var(target_str)
                 self._emit(f"if {cond} {{")
@@ -126,15 +136,7 @@ class StatementVisitorMixin:
             # what cast to apply to its substituted ``__qN.Value``.
             with self._scoped(_propagate_cast_hint=go_type):
                 value_str = self._typed_value_to_go(value, go_type)
-            if "." in target_str:
-                self._emit(f"{target_str} = {value_str}")
-            elif self._is_static_var_go_name(target_str):
-                self._emit(f"{target_str} = {value_str}")
-            elif target_str in self.declared_vars:
-                self._emit(f"{target_str} = {value_str}")
-            else:
-                self._emit(f"var {target_str} {go_type} = {value_str}")
-                self._declare_var(target_str)
+            self._emit_decl_or_assign(target_str, go_type, value_str)
         else:
             if (
                 target_str not in self.declared_vars
@@ -482,8 +484,9 @@ class StatementVisitorMixin:
         self._emit(f"if {cond} {{")
         self.indent += 1
         self._push_scope()
+        body_start, vars_at_start = self._scope_unused_tracking_start()
         self._visit_suite(node.children[1])
-        self._pop_scope()
+        self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
 
         elifs = node.children[2]
@@ -494,8 +497,9 @@ class StatementVisitorMixin:
                     self._emit(f"}} else if {econd} {{")
                     self.indent += 1
                     self._push_scope()
+                    body_start, vars_at_start = self._scope_unused_tracking_start()
                     self._visit_suite(elif_node.children[1])
-                    self._pop_scope()
+                    self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
                     self.indent -= 1
 
         else_suite = node.children[3] if len(node.children) > 3 else None
@@ -503,8 +507,9 @@ class StatementVisitorMixin:
             self._emit("} else {")
             self.indent += 1
             self._push_scope()
+            body_start, vars_at_start = self._scope_unused_tracking_start()
             self._visit_suite(else_suite)
-            self._pop_scope()
+            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
         self._emit("}")
 
@@ -518,17 +523,19 @@ class StatementVisitorMixin:
         self._emit(f"for {cond} {{")
         self.indent += 1
         self._push_scope()
+        body_start, vars_at_start = self._scope_unused_tracking_start()
         with self._scoped(_while_else_break=has_else):
             self._visit_suite(node.children[1])
-        self._pop_scope()
+        self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
         self._emit("}")
         if has_else:
             self._emit("if !_whileBreak {")
             self.indent += 1
             self._push_scope()
+            body_start, vars_at_start = self._scope_unused_tracking_start()
             self._visit_suite(node.children[2])
-            self._pop_scope()
+            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
             self._emit("}")
 
@@ -566,17 +573,19 @@ class StatementVisitorMixin:
                 self._declare_var(var_name)
             self.indent += 1
             self._push_scope()
+            body_start, vars_at_start = self._scope_unused_tracking_start()
             with self._scoped(_for_else_break=bool(else_suite)):
                 self._visit_suite(suite_node)
-            self._pop_scope()
+            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
             self._emit("}")
             if else_suite:
                 self._emit("if !_whileBreak {")
                 self.indent += 1
                 self._push_scope()
+                body_start, vars_at_start = self._scope_unused_tracking_start()
                 self._visit_suite(else_suite)
-                self._pop_scope()
+                self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
                 self.indent -= 1
                 self._emit("}")
             return
@@ -613,6 +622,7 @@ class StatementVisitorMixin:
 
         self.indent += 1
         self._push_scope()
+        body_start, vars_at_start = self._scope_unused_tracking_start()
         if key_name and val_name:
             self._declare_var(key_name)
             self._declare_var(val_name)
@@ -620,15 +630,16 @@ class StatementVisitorMixin:
             self._declare_var(var_name)
         with self._scoped(_for_else_break=bool(else_suite)):
             self._visit_suite(suite_node)
-        self._pop_scope()
+        self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
         self._emit("}")
         if else_suite:
             self._emit("if !_whileBreak {")
             self.indent += 1
             self._push_scope()
+            body_start, vars_at_start = self._scope_unused_tracking_start()
             self._visit_suite(else_suite)
-            self._pop_scope()
+            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
             self._emit("}")
 
@@ -710,14 +721,16 @@ class StatementVisitorMixin:
                 self._emit("defer func() {")
                 self.indent += 1
                 self._push_scope()
+                body_start, vars_at_start = self._scope_unused_tracking_start()
                 self._visit_suite(finally_node.children[0])
-                self._pop_scope()
+                self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
                 self.indent -= 1
                 self._emit("}()")
             self._emit("// try")
             self._push_scope()
+            body_start, vars_at_start = self._scope_unused_tracking_start()
             self._visit_suite(try_suite)
-            self._pop_scope()
+            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             return
 
         # Try-with-catch: wrap the try body + catch dispatch in an
@@ -748,6 +761,7 @@ class StatementVisitorMixin:
         self._emit("func() {")
         self.indent += 1
         self._push_scope()
+        iife_body_start, iife_vars_at_start = self._scope_unused_tracking_start()
 
         # Defers run LIFO — registering the finally first means the
         # catch's recover runs first when a panic unwinds, which is
@@ -758,8 +772,9 @@ class StatementVisitorMixin:
             self._emit("defer func() {")
             self.indent += 1
             self._push_scope()
+            finally_body_start, finally_vars_at_start = self._scope_unused_tracking_start()
             self._visit_suite(finally_node.children[0])
-            self._pop_scope()
+            self._pop_scope_with_unused_local_silencers(finally_body_start, finally_vars_at_start)
             self.indent -= 1
             self._emit("}()")
 
@@ -770,6 +785,7 @@ class StatementVisitorMixin:
         self._emit("__lamPanicked = true")
         self._push_scope()
         self._declare_var("r")
+        recover_body_start, recover_vars_at_start = self._scope_unused_tracking_start()
         # Catch bodies are also inside the IIFE: flip ``_in_try_iife``
         # so ``return X`` from a catch handler also funnels through
         # ``__lamShouldReturn`` and propagates to the outer function.
@@ -780,7 +796,7 @@ class StatementVisitorMixin:
             for i, clause in enumerate(catch_clauses_node.children):
                 if isinstance(clause, Tree) and clause.data == "catch_clause":
                     self._emit_catch_clause(clause, i == 0)
-        self._pop_scope()
+        self._pop_scope_with_unused_local_silencers(recover_body_start, recover_vars_at_start)
         self.indent -= 1
         self._emit("}")
         self.indent -= 1
@@ -794,7 +810,7 @@ class StatementVisitorMixin:
         with self._scoped(_in_try_iife=True):
             self._visit_suite(try_suite)
 
-        self._pop_scope()
+        self._pop_scope_with_unused_local_silencers(iife_body_start, iife_vars_at_start)
         self.indent -= 1
         self._emit("}()")
 
@@ -805,8 +821,9 @@ class StatementVisitorMixin:
             self._emit("if !__lamPanicked {")
             self.indent += 1
             self._push_scope()
+            body_start, vars_at_start = self._scope_unused_tracking_start()
             self._visit_suite(else_suite)
-            self._pop_scope()
+            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
             self._emit("}")
 
@@ -825,15 +842,17 @@ class StatementVisitorMixin:
             self.indent += 1
             self._push_scope()
             fin_suite = finally_node.children[0] if finally_node.data == "finally" else finally_node
+            body_start, vars_at_start = self._scope_unused_tracking_start()
             self._visit_suite(fin_suite)
-            self._pop_scope()
+            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
             self._emit("}()")
 
         self._emit("// try")
         self._push_scope()
+        body_start, vars_at_start = self._scope_unused_tracking_start()
         self._visit_suite(try_suite)
-        self._pop_scope()
+        self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
 
     def _emit_catch_clause(self, clause: Tree, is_first: bool):
         exception_type = None
@@ -898,8 +917,9 @@ class StatementVisitorMixin:
             if as_name:
                 self._declare_var(as_name)
             with self._scoped(_in_except_handler=True):
+                body_start, vars_at_start = self._scope_unused_tracking_start()
                 self._visit_suite(suite)
-            self._pop_scope()
+            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
 
     # ─── Match / Switch ────────────────────────────────────────
 
@@ -923,8 +943,9 @@ class StatementVisitorMixin:
             self._emit(f"case {pat_str}:")
         self.indent += 1
         self._push_scope()
+        body_start, vars_at_start = self._scope_unused_tracking_start()
         self._visit_suite(suite)
-        self._pop_scope()
+        self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
 
     def _pattern_to_go(self, node) -> str:
@@ -989,6 +1010,7 @@ class StatementVisitorMixin:
         # declares its own ``var x int = ...`` rather than treating
         # ``x`` as already declared from a previous IIFE.
         self._push_scope()
+        body_start, vars_at_start = self._scope_unused_tracking_start()
         try:
             # Inside the ``do { }`` IIFE, ``?`` propagates to the IIFE
             # itself (which returns ``*Result``), not the enclosing
@@ -1004,7 +1026,7 @@ class StatementVisitorMixin:
                 # ``Ok(nil)`` so the IIFE always returns a non-nil ``*Result``.
                 self._emit("return Result_Ok(nil)")
         finally:
-            self._pop_scope()
+            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
         self._emit("}()")
 
@@ -1013,6 +1035,7 @@ class StatementVisitorMixin:
         # Handler scope: ``err_name`` lives only here, plus any locals
         # the handler introduces.
         self._push_scope()
+        body_start, vars_at_start = self._scope_unused_tracking_start()
         try:
             self._emit(f"{err_name} := {rdo}.Error")
             self._declare_var(err_name)
@@ -1021,7 +1044,7 @@ class StatementVisitorMixin:
                     if isinstance(stmt, Tree):
                         self._visit(stmt)
         finally:
-            self._pop_scope()
+            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
         self._emit("}")
 
@@ -1048,8 +1071,9 @@ class StatementVisitorMixin:
         self._emit("{")
         self.indent += 1
         self._push_scope()
+        body_start, vars_at_start = self._scope_unused_tracking_start()
         self._visit_suite(suite)
-        self._pop_scope()
+        self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
         self._emit("}")
 

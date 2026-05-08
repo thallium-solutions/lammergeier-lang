@@ -1,0 +1,4 @@
+# expect-error: error[type]
+# expect-error: cannot assign `str` to `int` constant `count`
+
+const count: int = "one"

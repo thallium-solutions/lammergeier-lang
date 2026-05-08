@@ -1,0 +1,17 @@
+# expect-pass
+
+func choose() -> str {
+    value: str = "ok"
+    return value
+}
+
+func widen() -> float {
+    value: int = 1
+    total: float = value
+    return total
+}
+
+func main() {
+    print(choose())
+    print(widen())
+}

@@ -21,15 +21,33 @@ import subprocess
 import sys
 import tempfile
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from lark import Lark, Tree
-from lark.exceptions import UnexpectedInput
+try:
+    import lark as _lark
+    from lark import Lark, Tree
+    from lark.exceptions import UnexpectedInput
+    _LARK_IMPORT_ERROR: ImportError | None = None
+except ImportError as _err:
+    _lark = None
+    Lark = None
+    class Tree:
+        pass
+    UnexpectedInput = Exception
+    _LARK_IMPORT_ERROR = _err
 
 # Allow running from project root or compiler/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from compiler.transpiler import GoTranspiler, preprocess_go_blocks
+try:
+    from compiler.transpiler import GoTranspiler, preprocess_go_blocks
+except ImportError as _err:
+    if _LARK_IMPORT_ERROR is None or getattr(_err, "name", None) != "lark":
+        raise
+    GoTranspiler = None
+    def preprocess_go_blocks(source):
+        return source, []
 from compiler.preprocessor import (
     apply_lammergeier_aliases,
     expand_dict_destructure,
@@ -37,7 +55,16 @@ from compiler.preprocessor import (
     LAMMERGEIER_ALIASES,
 )
 from compiler import cache as _lamcache
-from compiler.syntax_errors import SyntaxDiagnosticError, render_syntax_error
+from compiler.modules import WorkspaceIndex
+from compiler.source_map import SourceMap
+try:
+    from compiler.syntax_errors import SyntaxDiagnosticError, render_syntax_error
+except ImportError as _err:
+    if _LARK_IMPORT_ERROR is None or getattr(_err, "name", None) != "lark":
+        raise
+    SyntaxDiagnosticError = Exception
+    def render_syntax_error(exc, source, source_path):
+        return str(exc)
 import re as _re
 
 
@@ -704,6 +731,46 @@ def _strip_inline_comment(line: str) -> str:
     return line
 
 
+@dataclass(frozen=True)
+class ParsePreprocessResult:
+    source: str
+    go_blocks: dict[str, str]
+    source_map: SourceMap
+
+
+def preprocess_for_parse(source: str) -> ParsePreprocessResult:
+    """Run the full Lammergeier parse-preprocessing pipeline.
+
+    CLI and LSP callers must use this function before feeding source to
+    Lark. The source map is currently line-identity over the original
+    input; later phases can make individual transforms map-aware without
+    changing the call sites.
+    """
+    rewritten = apply_lammergeier_aliases(source)
+    preprocessed, go_blocks = preprocess_go_blocks(rewritten)
+    preprocessed = _strip_doc_comments_preserve_lines(preprocessed)
+    preprocessed = _collapse_multiline_strings(preprocessed)
+    preprocessed = expand_dict_destructure(preprocessed)
+    preprocessed = _expand_single_statement_blocks(preprocessed)
+    preprocessed = auto_semicolons(preprocessed)
+    preprocessed = _collapse_runaway_semicolons(preprocessed)
+    preprocessed = _fill_empty_blocks(preprocessed)
+    return ParsePreprocessResult(
+        source=preprocessed,
+        go_blocks=go_blocks,
+        source_map=SourceMap.identity(len(source.splitlines()) or 1),
+    )
+
+
+def _strip_doc_comments_preserve_lines(source: str) -> str:
+    """Strip ``#- ... -#`` comments without shifting later line numbers."""
+    return _re.sub(
+        r'#-[\s\S]*?-#',
+        lambda m: "\n" * m.group(0).count("\n"),
+        source,
+    )
+
+
 _PARSER_CACHE: "Lark | None" = None
 
 
@@ -729,6 +796,14 @@ def create_parser() -> Lark:
     ``lamc --clear-cache`` wipes both.
     """
     global _PARSER_CACHE
+    if _LARK_IMPORT_ERROR is not None or Lark is None:
+        print(
+            f"[lamc] missing Python dependency: lark ({_LARK_IMPORT_ERROR})",
+            file=sys.stderr,
+        )
+        print("[lamc] install it with: python3 -m pip install lark",
+              file=sys.stderr)
+        sys.exit(1)
     if _PARSER_CACHE is not None:
         return _PARSER_CACHE
 
@@ -738,7 +813,6 @@ def create_parser() -> Lark:
     # Cache key salts on the grammar bytes plus the Lark + Python
     # versions, since serialised parsers aren't portable across them.
     import hashlib as _hashlib
-    import lark as _lark
     salt = (
         f"lark={_lark.__version__};"
         f"py={sys.version_info.major}.{sys.version_info.minor};"
@@ -1079,7 +1153,10 @@ def _emit_unused_manifest_dep_warnings(source_dir: Path) -> None:
     )
 
 
-def _collect_go_pins(source_dir: Path) -> dict[str, str]:
+def _collect_go_pins(
+    source_dir: Path,
+    stdlib_modules: set[str] | None = None,
+) -> dict[str, str]:
     """Collect ``{go_module_path: version}`` pins for the project.
 
     Three layers contribute, in increasing precedence:
@@ -1088,8 +1165,9 @@ def _collect_go_pins(source_dir: Path) -> dict[str, str]:
        the compiler. These are the versions the Lam stdlib was
        tested against; they stop ``go mod tidy`` from silently
        upgrading a stdlib-linked Go module to a new major between
-       builds. Tidy strips any pin the project doesn't actually
-       need, so listing all stdlib pins unconditionally is safe.
+       builds. When callers provide the resolved stdlib import set,
+       only pins owned by those modules are seeded so core imports do
+       not spread heavy domain dependencies.
     2. **Project manifest** — ``[go-deps]`` / ``[go.dependencies]``
        in the nearest ``lamlib.toml`` walking up from
        ``source_dir``. Users override a stdlib pin here when they
@@ -1100,18 +1178,20 @@ def _collect_go_pins(source_dir: Path) -> dict[str, str]:
        the conflict-resolved decisions across the whole transitive
        library graph.
 
-    Returns a dict that's safe to iterate even on a standalone
-    script with no ``lamlib.toml`` — the stdlib pins still seed
-    ``go.mod`` so the build is reproducible.
+    Returns a dict that's safe to iterate even on a standalone script
+    with no ``lamlib.toml``. Passing ``stdlib_modules`` filters the
+    bundled stdlib defaults to just the modules actually used by the
+    current build; project and lockfile pins are always merged.
     """
     try:
         from compiler.manifest import Manifest, ManifestError, _parse_toml
     except ImportError:
         return {}
     try:
-        from compiler.stdlib_go_deps import STDLIB_GO_PINS
+        from compiler.stdlib_go_deps import STDLIB_GO_PINS, STDLIB_GO_PIN_MODULES
     except ImportError:
         STDLIB_GO_PINS = {}
+        STDLIB_GO_PIN_MODULES = {}
 
     here = source_dir.resolve()
     manifest_path = None
@@ -1133,10 +1213,18 @@ def _collect_go_pins(source_dir: Path) -> dict[str, str]:
             break
         here = parent
 
-    # Seed with stdlib defaults so projects that don't carry any
-    # ``lamlib.toml`` (single-file scripts, one-off tests) still
-    # build against the versions the stdlib was validated with.
-    pins: dict[str, str] = dict(STDLIB_GO_PINS)
+    # Seed with stdlib defaults. Compiler builds pass the resolved
+    # stdlib import graph so a core import like ``lamstrings`` does
+    # not drag unrelated Redis/DB/DataFrame pins into ``go.mod``.
+    if stdlib_modules is None:
+        pins: dict[str, str] = dict(STDLIB_GO_PINS)
+    else:
+        selected = set(stdlib_modules)
+        pins = {
+            path: ver
+            for path, ver in STDLIB_GO_PINS.items()
+            if selected.intersection(STDLIB_GO_PIN_MODULES.get(path, ()))
+        }
     if manifest_path is not None:
         try:
             mf = Manifest.load(manifest_path)
@@ -1157,6 +1245,33 @@ def _collect_go_pins(source_dir: Path) -> dict[str, str]:
             if isinstance(path, str) and isinstance(ver, str):
                 pins[path] = ver  # lockfile wins
     return pins
+
+
+def _effective_extlibs_dirs(
+    source_dir: Path,
+    extlibs_paths: list[str] | None,
+) -> list[Path]:
+    """Return the Lam library search path for installed third-party libs."""
+    extlibs_dirs: list[Path] = []
+    seen_extlibs: set[Path] = set()
+
+    def _push_extlibs(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in seen_extlibs or not resolved.is_dir():
+            return
+        seen_extlibs.add(resolved)
+        extlibs_dirs.append(resolved)
+
+    for p in (extlibs_paths or []):
+        _push_extlibs(Path(p))
+    env_extlibs = os.environ.get("LAMC_EXTLIBS")
+    if env_extlibs:
+        for seg in env_extlibs.split(os.pathsep):
+            if seg:
+                _push_extlibs(Path(seg))
+    _push_extlibs(source_dir / "extlibs")
+    _push_extlibs(Path.home() / ".lammergeier" / "extlibs")
+    return extlibs_dirs
 
 
 def _inject_go_requires(go_mod_path: Path,
@@ -1224,6 +1339,14 @@ def compile_lam(
     if not source_file.exists():
         print(f"error: file not found: {source_path}", file=sys.stderr)
         sys.exit(1)
+    source_dir = source_file.parent
+    extlibs_dirs = _effective_extlibs_dirs(source_dir, extlibs_paths)
+    stdlib_dir = Path(stdlib_path).resolve() if stdlib_path else PROJECT_ROOT / "lib"
+    module_index = WorkspaceIndex(
+        source_dir,
+        stdlib_dir=stdlib_dir,
+        extlibs_dirs=extlibs_dirs,
+    )
 
     source = source_file.read_text(encoding="utf-8")
 
@@ -1241,31 +1364,9 @@ def compile_lam(
     # ``_collect_function_names`` below.
     source = apply_lammergeier_aliases(source)
 
-    # ── Preprocess go! blocks ──
-    preprocessed, go_blocks = preprocess_go_blocks(source)
-
-    # ── Strip multiline comments #- ... -# ──
-    preprocessed = _re.sub(r'#-[\s\S]*?-#', '', preprocessed)
-
-    # ── Collapse multiline strings to single-line ──
-    preprocessed = _collapse_multiline_strings(preprocessed)
-
-    # ── JS-style dict destructuring: ``{a, b: alias} = expr`` ──
-    # Done before single-statement-block expansion so the rewritten
-    # multi-line assignments don't get treated as a single block body.
-    preprocessed = expand_dict_destructure(preprocessed)
-
-    # ── Expand single-statement blocks: if x > 0 print("yes") → if x > 0 { print("yes") } ──
-    preprocessed = _expand_single_statement_blocks(preprocessed)
-
-    # ── Auto-insert semicolons (Go-style) ──
-    preprocessed = auto_semicolons(preprocessed)
-
-    # ── Collapse runs of ``;`` into one (user-written + auto overlap) ──
-    preprocessed = _collapse_runaway_semicolons(preprocessed)
-
-    # ── Inject ``pass`` into empty block bodies (JS-style ``{}``) ──
-    preprocessed = _fill_empty_blocks(preprocessed)
+    parse_input = preprocess_for_parse(source)
+    preprocessed = parse_input.source
+    go_blocks = parse_input.go_blocks
 
     if verbose:
         print(f"[lamc] go! blocks found: {len(go_blocks)}", file=sys.stderr)
@@ -1292,7 +1393,11 @@ def compile_lam(
     # AST so it adds <50ms even on the largest .lam.
     if not no_semantic_check:
         from compiler import semantic as _semantic
-        sem_diags = _semantic.check_source(tree)
+        sem_diags = _semantic.check_source(
+            tree,
+            module_index=module_index,
+            source_path=source_file,
+        )
         warning_block = _semantic.render_warnings(sem_diags, source, str(source_path))
         if warning_block:
             print(warning_block, file=sys.stderr)
@@ -1414,52 +1519,20 @@ def compile_lam(
     lib_class_names = set()
     lib_static_methods = {}  # {class_name: {method_name, ...}}
     lib_static_vars = {}     # {class_name: {var_name: is_private, ...}}
-    source_dir = source_file.parent
-
-    # Assemble the extlibs search path (third-party Lam libraries).
-    # Priority inside the extlibs layer: explicit ``extlibs_paths``,
-    # then ``LAMC_EXTLIBS``, then per-project ``extlibs/``, then the
-    # user-global install under ``~/.lammergeier/extlibs``.
-    extlibs_dirs: list[Path] = []
-    seen_extlibs: set[Path] = set()
-
-    def _push_extlibs(path: Path) -> None:
-        resolved = path.resolve()
-        if resolved in seen_extlibs or not resolved.is_dir():
-            return
-        seen_extlibs.add(resolved)
-        extlibs_dirs.append(resolved)
-
-    for p in (extlibs_paths or []):
-        _push_extlibs(Path(p))
-    env_extlibs = os.environ.get("LAMC_EXTLIBS")
-    if env_extlibs:
-        for seg in env_extlibs.split(os.pathsep):
-            if seg:
-                _push_extlibs(Path(seg))
-    _push_extlibs(source_dir / "extlibs")
-    _push_extlibs(Path.home() / ".lammergeier" / "extlibs")
 
     # Overall resolution order: stdlib first (immutable, so users
     # can't accidentally shadow core modules), extlibs next, then
     # project-local directories as the fallback.
-    lib_dirs = [PROJECT_ROOT / "lib", *extlibs_dirs, source_dir, source_dir / "lib"]
+    lib_dirs = [stdlib_dir, *extlibs_dirs, source_dir, source_dir / "lib"]
 
-    def _resolve_lib_path(mod_name: str):
-        """Locate a library file for ``mod_name`` across ``lib_dirs``.
+    def _resolve_lib_path(mod_name: str, from_file: Path = source_file):
+        """Locate a Lam module through the shared workspace index.
 
         Accepts two shapes per directory: a flat ``<mod>.lam`` file,
         or a package directory ``<mod>/__init__.lam``. The flat form
         wins when both exist.
         """
-        for d in lib_dirs:
-            candidate = d / f"{mod_name}.lam"
-            if candidate.exists():
-                return candidate
-            candidate_dir = d / mod_name / "__init__.lam"
-            if candidate_dir.exists():
-                return candidate_dir
-        return None
+        return module_index.resolve_module(from_file, mod_name)
 
     def _node_loc(node) -> tuple[int, int]:
         meta = getattr(node, "meta", None)
@@ -1522,74 +1595,17 @@ def compile_lam(
     def _parse_lam_module(mod_file: Path):
         try:
             sub_source = mod_file.read_bytes().decode("utf-8")
-            sub_source = apply_lammergeier_aliases(sub_source)
-            sub_pre, _ = preprocess_go_blocks(sub_source)
-            sub_pre = _re.sub(r'#-[\s\S]*?-#', '', sub_pre)
-            sub_pre = _collapse_multiline_strings(sub_pre)
-            sub_pre = expand_dict_destructure(sub_pre)
-            sub_pre = _expand_single_statement_blocks(sub_pre)
-            sub_pre = auto_semicolons(sub_pre)
-            sub_pre = _collapse_runaway_semicolons(sub_pre)
-            sub_pre = _fill_empty_blocks(sub_pre)
+            module_index.update_file(mod_file, sub_source)
+            sub_pre = preprocess_for_parse(sub_source).source
             return create_parser().parse(sub_pre + "\n")
         except Exception:
             return None
 
-    def _module_exports(tree) -> set[str]:
-        exports: set[str] = set()
-
-        def add_name_from_func(node) -> None:
-            for child in node.children:
-                if isinstance(child, Tree) and child.data == "name" and child.children:
-                    exports.add(str(child.children[0]))
-                    return
-
-        def add_assignment_target(node) -> None:
-            if isinstance(node, Tree):
-                if node.data == "var" and node.children:
-                    exports.add(str(node.children[0].children[0])
-                                if isinstance(node.children[0], Tree) and node.children[0].children
-                                else str(node.children[0]))
-                    return
-                if node.data == "annassign":
-                    for child in node.children:
-                        if isinstance(child, Tree) and child.data == "type_expr":
-                            break
-                        add_assignment_target(child)
-                    return
-                if node.data in {"assign", "assign_stmt"} and node.children:
-                    add_assignment_target(node.children[0])
-
-        for child in getattr(tree, "children", []):
-            if not isinstance(child, Tree):
-                continue
-            target = child
-            if target.data == "import_stmt" and target.children:
-                target = next((c for c in target.children if isinstance(c, Tree)), target)
-            if target.data == "funcdef":
-                add_name_from_func(target)
-            elif target.data in {"classdef", "interfacedef"}:
-                if target.children and isinstance(target.children[0], Tree):
-                    exports.add(str(target.children[0].children[0]))
-            elif target.data == "decorated":
-                for sub in target.children:
-                    if isinstance(sub, Tree) and sub.data in {"funcdef", "classdef"}:
-                        if sub.data == "funcdef":
-                            add_name_from_func(sub)
-                        elif sub.children and isinstance(sub.children[0], Tree):
-                            exports.add(str(sub.children[0].children[0]))
-            elif target.data == "const_stmt":
-                if target.children and isinstance(target.children[0], Tree):
-                    exports.add(str(target.children[0].children[0]))
-            elif target.data in {"assign_stmt", "annassign", "assign"}:
-                add_assignment_target(target)
-            elif target.data in {"import_from", "import_name"}:
-                try:
-                    from compiler.semantic import SemanticChecker as _SemanticChecker
-                    exports.update(_SemanticChecker._import_bindings(target))
-                except Exception:
-                    pass
-        return {name for name in exports if name}
+    def _module_export_names(mod_file: Path) -> set[str]:
+        facts = module_index.facts_by_path.get(mod_file.resolve())
+        if facts is None:
+            facts = module_index.update_file(mod_file)
+        return set(facts.exports)
 
     def _format_missing_import_symbol_error(
         mod_name: str,
@@ -1623,25 +1639,22 @@ def compile_lam(
         return "\n".join(out)
 
     direct_module_files: dict[str, Path] = {}
-    direct_module_trees: dict[str, Tree] = {}
     for mod_name, import_node in _direct_import_sites:
         mod_file = direct_module_files.get(mod_name)
         if mod_file is None:
-            mod_file = _resolve_lib_path(mod_name)
+            mod_file = _resolve_lib_path(mod_name, source_file)
             if mod_file is None:
                 print(_format_missing_module_error(mod_name, import_node), file=sys.stderr)
                 sys.exit(1)
             direct_module_files[mod_name] = mod_file
         if _from_import_symbols(import_node):
-            parsed = _parse_lam_module(mod_file)
-            if parsed is not None:
-                direct_module_trees[mod_name] = parsed
+            _parse_lam_module(mod_file)
 
     for mod_name, import_node in _direct_import_sites:
         symbols = _from_import_symbols(import_node)
-        if not symbols or mod_name not in direct_module_trees:
+        if not symbols:
             continue
-        exports = _module_exports(direct_module_trees[mod_name])
+        exports = _module_export_names(direct_module_files[mod_name])
         for requested, local_name, symbol_node in symbols:
             if requested not in exports:
                 print(
@@ -1674,13 +1687,13 @@ def compile_lam(
     lib_pre_static_methods: dict[str, set[str]] = {}
     lib_pre_static_vars: dict[str, dict[str, bool]] = {}
     seen: set[str] = set()
-    worklist: list[str] = list(_pre_transpiler._lam_imports)
+    worklist: list[tuple[str, Path]] = [(mod, source_file) for mod in _pre_transpiler._lam_imports]
     while worklist:
-        mod_name = worklist.pop()
+        mod_name, from_file = worklist.pop()
         if mod_name in seen:
             continue
         seen.add(mod_name)
-        mod_file = _resolve_lib_path(mod_name)
+        mod_file = _resolve_lib_path(mod_name, from_file)
         if mod_file is None:
             continue
         lib_mod_files[mod_name] = mod_file
@@ -1690,22 +1703,15 @@ def compile_lam(
         # diagnostics).
         try:
             sub_source = mod_file.read_bytes().decode("utf-8")
-            sub_source = apply_lammergeier_aliases(sub_source)
-            sub_pre, _ = preprocess_go_blocks(sub_source)
-            sub_pre = _re.sub(r'#-[\s\S]*?-#', '', sub_pre)
-            sub_pre = _collapse_multiline_strings(sub_pre)
-            sub_pre = expand_dict_destructure(sub_pre)
-            sub_pre = _expand_single_statement_blocks(sub_pre)
-            sub_pre = auto_semicolons(sub_pre)
-            sub_pre = _collapse_runaway_semicolons(sub_pre)
-            sub_pre = _fill_empty_blocks(sub_pre)
+            module_index.update_file(mod_file, sub_source)
+            sub_pre = preprocess_for_parse(sub_source).source
             sub_parser = create_parser()
             sub_tree = sub_parser.parse(sub_pre + "\n")
         except Exception:
             continue
         for imp in _extract_imports(sub_tree):
             if imp not in seen:
-                worklist.append(imp)
+                worklist.append((imp, mod_file))
         # If this library calls any string method that the
         # built-in dispatcher routes through ``Strings_*``,
         # ``lamstrings`` has to be in the import graph too —
@@ -1715,10 +1721,10 @@ def compile_lam(
         if (
             mod_name != "lamstrings"
             and "lamstrings" not in seen
-            and "lamstrings" not in worklist
+            and all(mod != "lamstrings" for mod, _ in worklist)
             and _lam_string_method_re.search(sub_pre)
         ):
-            worklist.append("lamstrings")
+            worklist.append(("lamstrings", mod_file))
         # Harvest this library's class names and static members so
         # cross-library static-member access can be lowered correctly.
         try:
@@ -1832,18 +1838,12 @@ def compile_lam(
             return (mod_name, go_src, cls, stat, svars, defs, counts, var,
                     ufns, pfns, mret, pnames)
 
-        # Apply the LAMMERGEIER.* alias rewrite for libraries too —
-        # this is what makes the public namespace work uniformly
-        # across user code and stdlib code.
+        # Apply the same parse preprocessing pipeline used for main
+        # files, including LAMMERGEIER.* aliases and go! extraction.
+        lib_parse_input = preprocess_for_parse(lib_source)
         lib_source = apply_lammergeier_aliases(lib_source)
-        lib_preprocessed, lib_go_blocks = preprocess_go_blocks(lib_source)
-        lib_preprocessed = _re.sub(r'#-[\s\S]*?-#', '', lib_preprocessed)
-        lib_preprocessed = _collapse_multiline_strings(lib_preprocessed)
-        lib_preprocessed = expand_dict_destructure(lib_preprocessed)
-        lib_preprocessed = _expand_single_statement_blocks(lib_preprocessed)
-        lib_preprocessed = auto_semicolons(lib_preprocessed)
-        lib_preprocessed = _collapse_runaway_semicolons(lib_preprocessed)
-        lib_preprocessed = _fill_empty_blocks(lib_preprocessed)
+        lib_preprocessed = lib_parse_input.source
+        lib_go_blocks = lib_parse_input.go_blocks
         lib_parser = create_parser()
         try:
             lib_tree = lib_parser.parse(lib_preprocessed + "\n")
@@ -2117,7 +2117,7 @@ def compile_lam(
         # Without this step, ``go mod tidy`` would simply pick the
         # newest tag for each unknown import — silently undoing the
         # version conflict resolution the install CLI just did.
-        go_pins = _collect_go_pins(source_dir)
+        go_pins = _collect_go_pins(source_dir, stdlib_modules=seen)
         if go_pins:
             try:
                 _inject_go_requires(Path(tmpdir) / "go.mod", go_pins)
@@ -2241,7 +2241,7 @@ def compile_lam(
 # is routed to its dedicated handler; anything else is treated as
 # the legacy ``lamc <source.lam>`` invocation — so existing scripts,
 # docs, and tests keep working verbatim.
-_LAMC_SUBCOMMANDS = ("build", "migrate")
+_LAMC_SUBCOMMANDS = ("build", "fmt", "doctor", "migrate")
 
 
 def _build_build_parser() -> "argparse.ArgumentParser":
@@ -2356,6 +2356,107 @@ def _cmd_build(argv: list) -> int:
     return 0
 
 
+def _build_fmt_parser() -> "argparse.ArgumentParser":
+    ap = argparse.ArgumentParser(
+        prog="lamc fmt",
+        description="Format a Lammergeier source file.",
+    )
+    ap.add_argument("source", help="Path to .lam source file")
+    ap.add_argument("--stdout", action="store_true",
+                    help="Print formatted source instead of writing the file")
+    ap.add_argument("--check", action="store_true",
+                    help="Exit non-zero if the file is not already formatted")
+    return ap
+
+
+def _cmd_fmt(argv: list) -> int:
+    from compiler.formatter import FormatError, format_lam_source
+
+    args = _build_fmt_parser().parse_args(argv)
+    path = Path(args.source)
+    try:
+        source = path.read_text(encoding="utf-8")
+        result = format_lam_source(source)
+    except OSError as e:
+        print(f"error: cannot read {path}: {e}", file=sys.stderr)
+        return 1
+    except FormatError as e:
+        print(f"error: cannot format {path}: {e}", file=sys.stderr)
+        return 1
+    if args.check:
+        if result.changed:
+            print(f"{path} is not formatted", file=sys.stderr)
+            return 1
+        return 0
+    if args.stdout:
+        print(result.text, end="")
+        return 0
+    if result.changed:
+        path.write_text(result.text, encoding="utf-8")
+    return 0
+
+
+def _doctor_go_status() -> str:
+    go = shutil.which("go")
+    if not go:
+        return "missing (go not found on PATH)"
+    try:
+        proc = subprocess.run(
+            [go, "version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except OSError as e:
+        return f"error running {go}: {e}"
+    except subprocess.TimeoutExpired:
+        return f"error running {go}: timed out"
+    output = (proc.stdout or proc.stderr).strip()
+    if proc.returncode != 0:
+        detail = output or f"exit {proc.returncode}"
+        return f"error ({detail})"
+    return f"{output} ({go})"
+
+
+def _doctor_lark_status() -> str:
+    if _LARK_IMPORT_ERROR is not None or _lark is None:
+        return f"missing ({_LARK_IMPORT_ERROR})"
+    version = getattr(_lark, "__version__", "unknown")
+    location = getattr(_lark, "__file__", "")
+    if location:
+        return f"{version} ({Path(location).resolve()})"
+    return str(version)
+
+
+def _doctor_lsp_status() -> str:
+    found = shutil.which("lammergeier-lsp")
+    checkout = PROJECT_ROOT / "bin" / "lammergeier-lsp"
+    if found:
+        return f"found at {found}"
+    if checkout.exists():
+        return f"not on PATH (checkout launcher exists at {checkout})"
+    return "missing (lammergeier-lsp not found on PATH)"
+
+
+def _cmd_doctor(argv: list) -> int:
+    ap = argparse.ArgumentParser(
+        prog="lamc doctor",
+        description="Report local Lammergeier toolchain paths and versions.",
+    )
+    ap.parse_args(argv)
+
+    stdlib_path = PROJECT_ROOT / "lib"
+    print("Lammergeier doctor")
+    print(f"python: {sys.version.split()[0]} ({sys.executable})")
+    print(f"go: {_doctor_go_status()}")
+    print(f"lark: {_doctor_lark_status()}")
+    print(f"project root: {PROJECT_ROOT}")
+    print(f"stdlib path: {stdlib_path}")
+    print(f"cache path: {_lamcache.cache_dir()}")
+    print(f"lammergeier-lsp: {_doctor_lsp_status()}")
+    return 0
+
+
 _LAMC_TOP_HELP = """\
 usage: lamc [<subcommand>] <args...>
 
@@ -2365,6 +2466,10 @@ Subcommands:
   build      Compile (and optionally run) a .lam source file.
              Also the default when no subcommand is given, so
              ``lamc foo.lam`` is equivalent to ``lamc build foo.lam``.
+  fmt        Format a .lam source file. Use ``--check`` for CI or
+             ``--stdout`` to print without writing.
+  doctor     Report Python, Go, lark, project, stdlib, cache, and
+             language-server availability.
   init       Scaffold a fresh project (``lamlib.toml`` + entry-point
              ``.lam`` + ``.gitignore``). Flags: ``--name``, ``--version``,
              ``--scope``, ``--license``, ``--bin`` / ``--lib``, ``--force``.
@@ -2430,6 +2535,9 @@ def main():
         print(_LAMC_TOP_HELP)
         return
 
+    if argv[0] == "--doctor":
+        sys.exit(_cmd_doctor(argv[1:]))
+
     verb = argv[0]
 
     if verb == "migrate":
@@ -2443,6 +2551,12 @@ def main():
 
     if verb == "build":
         sys.exit(_cmd_build(argv[1:]))
+
+    if verb == "fmt":
+        sys.exit(_cmd_fmt(argv[1:]))
+
+    if verb == "doctor":
+        sys.exit(_cmd_doctor(argv[1:]))
 
     # Legacy: ``lamc <source.lam> [flags]`` — inject the ``build``
     # verb invisibly so existing scripts keep working.

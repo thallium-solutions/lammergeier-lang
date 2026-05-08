@@ -225,6 +225,33 @@ func main() {
     print("PASS: unused local silenced for go build, semantic warning still surfaces")
 
 
+def test_unused_block_local_does_not_break_go_build() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "main.lam"
+        _write(src, """
+func main() {
+    if True {
+        inside: int = 42;
+    }
+    if True {
+        _ignored: int = 99;
+    }
+    print("ok");
+}
+""".lstrip())
+        emit = _run(str(src), "--emit-go", cwd=Path(tmp))
+        assert emit.returncode == 0, (emit.returncode, emit.stderr)
+        assert "unused local `inside`" in emit.stderr, emit.stderr
+        assert "unused local `_ignored`" not in emit.stderr, emit.stderr
+        assert "_ = inside" in emit.stdout, emit.stdout
+        assert "_ = _ignored" in emit.stdout, emit.stdout
+
+        run = _run(str(src), "--run", cwd=Path(tmp))
+        assert run.returncode == 0, (run.returncode, run.stderr)
+        assert "ok" in run.stdout, run.stdout
+    print("PASS: unused block local warns and is silenced for go build")
+
+
 # ── Phase 2 CLI — errors still abort, warnings don't ────────
 
 def test_genuine_error_still_aborts_build() -> None:
@@ -367,6 +394,7 @@ def main() -> int:
         test_underscore_param_silences_warning,
         test_self_does_not_warn,
         test_unused_local_does_not_break_go_build,
+        test_unused_block_local_does_not_break_go_build,
         test_genuine_error_still_aborts_build,
         test_unused_manifest_dep_warns,
         test_multifile_project_does_not_false_positive,

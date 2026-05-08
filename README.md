@@ -63,7 +63,7 @@ area: 78.53981633974483
   and private members, operator overloading, interfaces.
 - **Python-style niceties** — f-strings, list/dict comprehensions,
   unpacking, `for … else` / `while … else`, `match`/`case`,
-  generators with `yield`.
+  generators with `yield`, nested helpers, and generic functions.
 - **Go-powered runtime** — compiles to portable native binaries via the
   Go toolchain; no VM, no GC surprises.
 - **Raw Go escape hatch** — drop into plain Go with `go! { ... }` or
@@ -111,6 +111,9 @@ cd lammergeier-lang
 
 lamc tests/rosetta_tests/hello_world.lam --run
 
+# Check local toolchain health:
+lamc doctor
+
 # Emit the generated Go for inspection:
 lamc tests/rosetta_tests/hello_world.lam --emit-go
 
@@ -136,6 +139,14 @@ verifying the install, uninstalling): [`docs/installation.md`](docs/installation
 | `--emit-go`          | Print the generated Go source and exit.                      |
 | `--emit-ast`         | Print the parsed Lark AST and exit.                          |
 | `--go-ldflags FLAGS` | Forward `FLAGS` to `go build`.                               |
+
+Useful subcommands:
+
+- **`lamc doctor` / `lamc --doctor`:** report Python, Go, `lark`,
+  checkout root, stdlib path, cache path, and `lammergeier-lsp`
+  availability.
+- **`lamc fmt`:** format `.lam` files with the same parser-validated
+  formatter used by the editor integration.
 
 ### Package manager
 
@@ -234,37 +245,53 @@ func main() {
 
 ## Running the tests
 
-The language ships with four complementary suites:
+Install Python dependencies once:
 
 ```bash
-# 200+ focused language + stdlib tests
-python3 tests/tests/run_tests.py
-
-# ~50 longer "rosetta" programs that exercise realistic idioms
-python3 tests/rosetta_tests/run_rosetta.py
-
-# Transpilation-output tests: assert the Go the compiler emits
-python3 tests/transpilation/run_transpilation_tests.py
-
-# Semantic-check tests: assert pre-emission errors fire where expected
-python3 tests/semantic/run_semantic_tests.py
-
-# LSP server (JSON-RPC over stdio): smoke-tested with a black-box harness
-python3 tests/lsp/test_lsp.py
-
-# Filter any suite by filename substring:
-python3 tests/tests/run_tests.py --filter fstring
+python3 -m pip install -r requirements.txt
 ```
 
-The first two runners compile each `.lam` file with the in-tree `lamc`,
-execute the resulting binary, and compare stdout against `# expect:`
-lines embedded in the test source. The transpilation runner compares
-the output of `lamc --emit-go` against `# expect-go:` substrings — this
-is the canary for Lam → Go mapping regressions described in
-[`docs/TRANSPILATION.md`](docs/TRANSPILATION.md). The semantic runner verifies
-that `lamc`'s pre-emission checker catches undefined names, duplicate
-class members, and misplaced flow statements via `# expect-error:` /
-`# expect-pass` headers.
+The local workflow is driven by POSIX shell scripts, so no `make`
+dependency is required:
+
+```bash
+# Fast smoke test
+sh scripts/smoke.sh
+
+# Full local quality gate
+sh scripts/test.sh
+
+# Individual suites
+sh scripts/test.sh semantic
+sh scripts/test.sh syntax
+sh scripts/test.sh transpile
+sh scripts/test.sh lsp
+sh scripts/test.sh import
+sh scripts/test.sh unit
+sh scripts/test.sh core
+sh scripts/test.sh rosetta
+
+# Filter suites that support filename filters
+sh scripts/test.sh core fstring
+sh scripts/test.sh semantic undef
+sh scripts/test.sh transpile generics
+
+# Benchmarks
+sh scripts/bench.sh --runs 5
+```
+
+The full gate runs semantic, syntax, transpilation, LSP, import
+resolution, Python unit checks, core compile-and-run, and rosetta tests
+in that order. The core and rosetta runners compile each `.lam` file
+with the in-tree `lamc`, execute the resulting binary, and compare
+stdout against `# expect:` lines embedded in the test source. The
+transpilation runner compares `lamc --emit-go` output against
+`# expect-go:` substrings — the canary for Lam → Go mapping regressions
+described in
+[`docs/TRANSPILATION.md`](docs/TRANSPILATION.md). The semantic runner
+verifies that `lamc`'s pre-emission checker catches undefined names,
+duplicate class members, and misplaced flow statements via
+`# expect-error:` / `# expect-pass` headers.
 
 ## Editor support
 

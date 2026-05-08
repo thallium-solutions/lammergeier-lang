@@ -1,0 +1,5 @@
+# expect-pass
+
+func exportedThing() -> int {
+    return 1
+}

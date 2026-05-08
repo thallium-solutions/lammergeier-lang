@@ -155,10 +155,7 @@ class ExpressionVisitorMixin:
             obj = self._expr_to_go(obj_node)
             if obj in LOWER_PKGS:
                 return f"{obj}.{attr}"
-            all_private_methods = set()
-            for methods in self._private_methods.values():
-                all_private_methods.update(methods)
-            if attr in all_private_methods:
+            if self._is_private_method_name(attr):
                 return f"{obj}.{self._go_private_name(attr)}"
             return f"{obj}.{self._go_public_name(attr)}"
 
@@ -171,10 +168,7 @@ class ExpressionVisitorMixin:
             # annotated variable (the assignment site will unbox).
             obj = self._expr_to_go(node.children[0])
             attr = self._get_name(node.children[1])
-            all_private_methods = set()
-            for methods in self._private_methods.values():
-                all_private_methods.update(methods)
-            if attr in all_private_methods:
+            if self._is_private_method_name(attr):
                 field = self._go_private_name(attr)
             else:
                 field = self._go_public_name(attr)
@@ -445,6 +439,85 @@ class ExpressionVisitorMixin:
 
     # ─── Function calls ───────────────────────────────────────
 
+    def _args_to_go(self, args: List[str]) -> str:
+        return ", ".join(args)
+
+    def _is_private_method_name(self, method_name: str) -> bool:
+        return any(method_name in methods for methods in self._private_methods.values())
+
+    def _go_user_function_name(self, func_name: str) -> str:
+        if func_name in self._private_functions:
+            return self._go_private_name(func_name)
+        if func_name != "main":
+            return self._go_public_name(func_name)
+        return func_name
+
+    def _is_user_function_reference(self, func_expr: str) -> bool:
+        if func_expr in self._user_functions:
+            return True
+        return any(
+            self._go_public_name(name) == func_expr
+            or self._go_private_name(name) == func_expr
+            for name in self._user_functions
+        )
+
+    def _user_function_call_to_go(
+        self, func_name: str, args: List[str], kwargs, args_node,
+        type_args: Optional[List[str]] = None,
+    ) -> str:
+        go_name = self._go_user_function_name(func_name)
+        call_args = self._apply_call_kwargs(func_name, args, kwargs)
+        call_args = self._fill_default_args(func_name, call_args)
+        if (len(self._overloaded_functions.get(func_name, set())) > 1
+                or len(self._overload_variants.get(func_name, [])) > 1):
+            call_sig = self._infer_call_arg_sig(args_node)
+            go_name = f"{go_name}{self._overload_suffix_for_sig(func_name, call_sig)}"
+        if type_args is not None:
+            return f"{go_name}[{self._args_to_go(type_args)}]({self._args_to_go(call_args)})"
+        return f"{go_name}({self._args_to_go(call_args)})"
+
+    def _nested_generic_call_to_go(
+        self, func_name: str, args: List[str],
+        explicit_type_args: Optional[List[str]] = None,
+    ) -> str:
+        info = self._nested_generic_functions[func_name]
+        hidden = [name for name, _ in info.get("captures", [])]
+        type_args = list(info.get("outer_type_names", []))
+        if explicit_type_args:
+            type_args.extend(explicit_type_args)
+        call_args = hidden + args
+        if type_args:
+            return f"{info['go_name']}[{self._args_to_go(type_args)}]({self._args_to_go(call_args)})"
+        return f"{info['go_name']}({self._args_to_go(call_args)})"
+
+    def _generic_getitem_call_to_go(
+        self, func, args: List[str], kwargs, args_node,
+    ) -> Optional[str]:
+        if not (
+            isinstance(func, Tree)
+            and func.data == "getitem"
+            and isinstance(func.children[0], Tree)
+            and func.children[0].data == "var"
+        ):
+            return None
+        base_name = self._get_name(func.children[0].children[0])
+        if base_name in self._nested_generic_functions:
+            type_args = self._type_arg_list(func.children[1])
+            return self._nested_generic_call_to_go(base_name, args, type_args)
+        if base_name in self._class_names and base_name in self._generic_classes:
+            type_args = self._type_arg_list(func.children[1])
+            go_cls = self._go_public_name(base_name)
+            init_key = f"{base_name}.init"
+            call_args = self._apply_call_kwargs(init_key, args, kwargs)
+            call_args = self._fill_default_args(init_key, call_args)
+            return f"New{go_cls}[{self._args_to_go(type_args)}]({self._args_to_go(call_args)})"
+        if base_name in self._user_functions:
+            type_args = self._type_arg_list(func.children[1])
+            return self._user_function_call_to_go(
+                base_name, args, kwargs, args_node, type_args=type_args,
+            )
+        return None
+
     def _funccall_to_go(self, node: Tree) -> str:
         func = node.children[0]
         args_node = node.children[1] if len(node.children) > 1 else None
@@ -456,17 +529,9 @@ class ExpressionVisitorMixin:
         # the callee expression, losing commas and producing invalid Go.
         # Intercept that shape here and emit ``NewPair[int, string](...)``
         # directly.
-        if (isinstance(func, Tree) and func.data == "getitem"
-                and isinstance(func.children[0], Tree)
-                and func.children[0].data == "var"):
-            base_name = self._get_name(func.children[0].children[0])
-            if base_name in self._class_names and base_name in self._generic_classes:
-                type_args = self._type_arg_list(func.children[1])
-                go_cls = self._go_public_name(base_name)
-                init_key = f"{base_name}.init"
-                args = self._apply_call_kwargs(init_key, args, kwargs)
-                args = self._fill_default_args(init_key, args)
-                return f"New{go_cls}[{', '.join(type_args)}]({', '.join(args)})"
+        generic_call = self._generic_getitem_call_to_go(func, args, kwargs, args_node)
+        if generic_call is not None:
+            return generic_call
 
         # ``obj?.method(args)`` — safe-navigation followed by a call.
         # We don't want the ``getattr_safe`` IIFE (which returns
@@ -475,10 +540,7 @@ class ExpressionVisitorMixin:
         if isinstance(func, Tree) and func.data == "getattr_safe":
             obj = self._expr_to_go(func.children[0])
             attr = self._get_name(func.children[1])
-            all_private_methods = set()
-            for methods in self._private_methods.values():
-                all_private_methods.update(methods)
-            if attr in all_private_methods:
+            if self._is_private_method_name(attr):
                 method = self._go_private_name(attr)
             else:
                 method = self._go_public_name(attr)
@@ -866,18 +928,11 @@ class ExpressionVisitorMixin:
 
             def _resolve_func_ref(fn_expr):
                 if fn_expr in self._user_functions:
-                    if fn_expr in self._private_functions:
-                        return self._go_private_name(fn_expr)
-                    return self._go_public_name(fn_expr)
+                    return self._go_user_function_name(fn_expr)
                 return fn_expr
 
             def _is_user_func_arg(arg_expr):
-                if arg_expr in self._user_functions:
-                    return True
-                for uf in self._user_functions:
-                    if self._go_public_name(uf) == arg_expr or self._go_private_name(uf) == arg_expr:
-                        return True
-                return False
+                return self._is_user_function_reference(arg_expr)
 
             # Raw AST nodes for the functional-method arguments — we
             # inspect the first positional arg to detect inline lambdas
@@ -1078,26 +1133,11 @@ class ExpressionVisitorMixin:
             return f"/* go inline {block_id} not found */"
 
         # ── User-defined function ──
+        if func_str in self._nested_generic_functions:
+            return self._nested_generic_call_to_go(func_str, args)
+
         if func_str in self._user_functions:
-            if func_str in self._private_functions:
-                go_name = self._go_private_name(func_str)
-            elif func_str != "main":
-                go_name = self._go_public_name(func_str)
-            else:
-                go_name = func_str
-            args = self._apply_call_kwargs(func_str, args, kwargs)
-            args = self._fill_default_args(func_str, args)
-            # Overload dispatch. Prefer a type-matching variant
-            # (``_{arity}_{sig}``) so two defs like ``foo(int)`` and
-            # ``foo(string)`` both survive to Go; when we can't
-            # infer a precise type for every argument the helper
-            # falls back to the arity-only suffix so arity-only
-            # overloads keep their pre-existing Go names.
-            if (len(self._overloaded_functions.get(func_str, set())) > 1
-                    or len(self._overload_variants.get(func_str, [])) > 1):
-                call_sig = self._infer_call_arg_sig(args_node)
-                go_name = f"{go_name}{self._overload_suffix_for_sig(func_str, call_sig)}"
-            return f"{go_name}({', '.join(args)})"
+            return self._user_function_call_to_go(func_str, args, kwargs, args_node)
 
         # ── Local variable (lambda, etc.) ──
         if func_str in self.declared_vars:

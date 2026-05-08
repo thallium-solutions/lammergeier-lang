@@ -116,6 +116,7 @@ After install, `lamc` is the single entry point for everything:
 | `lamc <file.lam> --run` | Compile and immediately execute. |
 | `lamc <file.lam> --emit-go` | Print the generated Go source and stop before `go build`. |
 | `lamc <file.lam> --emit-ast` | Print the parsed Lark AST and stop before transpilation. |
+| `lamc doctor` / `lamc --doctor` | Report Python, Go, `lark`, project root, stdlib path, cache path, and `lammergeier-lsp` availability. |
 | `lamc init` | Scaffold a fresh project (manifest + entry-point + `.gitignore`). |
 | `lamc install <spec>` | Install a third-party library — see [`docs/package_manager.md`](#/docs/package_manager). |
 | `lamc uninstall <name>` | Remove an installed library + its lockfile pin. |
@@ -128,6 +129,12 @@ After install, `lamc` is the single entry point for everything:
 
 Run `lamc --help` for the full surface; every verb has its own
 `--help` page.
+
+Use `lamc doctor` after installation or after moving a checkout to
+confirm that `lamc` can see the expected Python interpreter, Go
+toolchain, `lark` parser, stdlib directory, compiler cache, and language
+server launcher. The command exits successfully in a valid checkout and
+prints clear `missing` lines for optional or absent tools.
 
 ### 4.1 Compile-time flags worth knowing
 

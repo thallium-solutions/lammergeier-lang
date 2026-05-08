@@ -1,0 +1,47 @@
+# Test: user methods named like built-in/file/list helpers dispatch to the class method.
+# expect: obj-pop
+# expect: self-pop
+# expect: obj-read
+# expect: self-read
+# expect: obj-write:data
+# expect: obj-close
+
+class ShadowedNames {
+    func init(self) {
+        self.items: list[int] = [1, 2, 3]
+    }
+
+    func pop(self) -> str {
+        return "obj-pop"
+    }
+
+    func read(self) -> str {
+        return "obj-read"
+    }
+
+    func write(self, text: str) -> str {
+        return f"obj-write:{text}"
+    }
+
+    func close(self) -> str {
+        return "obj-close"
+    }
+
+    func call_pop_self(self) -> str {
+        return self.pop().replace("obj", "self")
+    }
+
+    func call_read_self(self) -> str {
+        return self.read().replace("obj", "self")
+    }
+}
+
+func main() {
+    obj: ShadowedNames = ShadowedNames()
+    print(obj.pop())
+    print(obj.call_pop_self())
+    print(obj.read())
+    print(obj.call_read_self())
+    print(obj.write("data"))
+    print(obj.close())
+}

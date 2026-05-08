@@ -121,6 +121,18 @@ If resolution fails, no partial lockfile is left behind. Fix the
 constraint, choose a different version, or use `[replace]` for a
 temporary fork.
 
+Go module pins are merged from three places during compilation:
+
+- **Stdlib defaults:** only for the Lam stdlib modules actually reached
+  by the import graph.
+- **`lamlib.toml` `[go-deps]`:** project-declared pins.
+- **`lamlib.lock.toml`:** resolved pins from installed libraries.
+
+Project and lockfile pins take precedence over stdlib defaults. This
+means a small import such as `from lamstrings import Strings` does not
+seed unrelated database, data-frame, cache, or protobuf modules into the
+generated `go.mod`.
+
 ### Clean a stale manifest
 
 After a refactor, the source tree may no longer import everything

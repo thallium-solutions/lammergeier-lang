@@ -60,6 +60,7 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     "_in_generator",
     "_generator_chan",
     "_propagate_cast_hint",
+    "_nested_generic_functions",
     # The Go return type of the *currently-being-emitted* Lam function.
     # Used to rewrite bare ``return`` statements found inside ``go!``
     # blocks of typed functions to ``return <zero-value>`` so the
@@ -260,6 +261,10 @@ class GoTranspiler(
         # trying to resolve them as user classes.
         self._generic_classes: Dict[str, str] = {}
         self._generic_names: set = set()
+        self._generic_constraints: Dict[str, str] = {}
+        self._nested_generic_functions: Dict[str, Dict[str, Any]] = {}
+        self._hoisted_nested_generic_funcs: List[str] = []
+        self._nested_generic_counter: int = 0
 
         # ``?`` propagation operator state. ``_q_temp_counter`` produces
         # fresh ``__qN`` names for the temporaries each ``?`` introduces.
@@ -351,6 +356,10 @@ class GoTranspiler(
         self._private_functions = set()
         self._private_methods = {}
         self._raw_go_top = []
+        self._generic_constraints = {}
+        self._nested_generic_functions = {}
+        self._hoisted_nested_generic_funcs = []
+        self._nested_generic_counter = 0
         self._static_var_go_names = {
             self._static_var_go_name(cls, name)
             for cls, fields in self._static_vars.items()
@@ -435,6 +444,9 @@ class GoTranspiler(
             header_lines.append(line)
         if self._raw_go_top:
             header_lines.append("")
+
+        if self._hoisted_nested_generic_funcs:
+            body_lines = self._hoisted_nested_generic_funcs + [""] + body_lines
 
         return "\n".join(header_lines + body_lines) + "\n"
 

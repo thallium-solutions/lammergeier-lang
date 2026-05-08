@@ -1,0 +1,12 @@
+# expect-warning: warning[unused]
+# expect-warning: unused local `inside` (prefix with `_` to silence)
+
+func main() {
+    if True {
+        inside: int = 42
+    }
+    if True {
+        _ignored: int = 99
+    }
+    print("ok")
+}

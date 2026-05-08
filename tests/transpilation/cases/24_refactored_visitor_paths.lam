@@ -1,0 +1,51 @@
+# Transpilation: refactored visitor helpers preserve body prologues and dispatch lowering.
+# expect-go: func Acc_sumPair(_tup0 []interface{}) int {
+# expect-go: a := _tup0[0].(int)
+# expect-go: b := _tup0[1].(int)
+# expect-go: var x int = 1
+# expect-go: x = 2
+# expect-go: func() interface{} { if s != nil { return s.internal_compute() }; return nil }()
+# expect-go: return s.Pop()
+
+class Acc {
+    static func sumPair((a, b): tuple[int, int]) -> int {
+        return a + b
+    }
+}
+
+class SafePrivate {
+    func init(self, value: int) {
+        self.value: int = value
+    }
+
+    private func internal_compute(self) -> str {
+        return f"internal_{self.value}"
+    }
+}
+
+class NamedPop {
+    func init(self) {
+        self.values: list[int] = [1]
+    }
+
+    func pop(self) -> str {
+        return "class-pop"
+    }
+
+    func callSelf(self) -> str {
+        return self.pop()
+    }
+}
+
+func main() {
+    x: int = 1
+    x: int = 2
+    print(x)
+    print(Acc.sumPair((3, 4)))
+
+    s: SafePrivate = SafePrivate(9)
+    print(s?.internal_compute())
+
+    p: NamedPop = NamedPop()
+    print(p.callSelf())
+}

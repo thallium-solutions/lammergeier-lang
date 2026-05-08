@@ -1,0 +1,9 @@
+# expect-error: import resolution failed
+# expect-error: module `import_helper` does not export `missingThing`
+# expect-error: exported by `import_helper`
+# expect-error: exportedThing
+from import_helper import missingThing
+
+func main() {
+    pass
+}

@@ -1,0 +1,15 @@
+# expect-pass
+
+func scale(value: float) -> float {
+    return value
+}
+
+func label(prefix: str, count: int) -> str {
+    return prefix
+}
+
+func main() {
+    count: int = 2
+    print(scale(count))
+    print(label(prefix="n", count=count))
+}

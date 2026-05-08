@@ -1,0 +1,14 @@
+# Test: TODO 7.1 acceptance case for multi-line function calls.
+# expect: 3
+
+func add(a: int, b: int) -> int {
+    return a + b
+}
+
+func main() {
+    value: int = add(
+        1,
+        2,
+    )
+    print(value)
+}

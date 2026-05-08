@@ -1,0 +1,9 @@
+# expect-error: :8:12
+# expect-error: Unexpected `=`.
+#-
+This doc comment is stripped before parsing, but diagnostics must still
+point at the original Lam source line below.
+-#
+func main() {
+    value: = 1
+}

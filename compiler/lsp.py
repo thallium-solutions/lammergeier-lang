@@ -35,6 +35,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlparse
 
 from lark import Lark, Tree, Token
 from lark.exceptions import UnexpectedInput
@@ -44,17 +45,18 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from compiler.preprocessor import (  # noqa: E402
-    apply_lammergeier_aliases,
-    expand_dict_destructure,
-    preprocess_go_blocks,
+from compiler.diagnostics import (  # noqa: E402
+    Diagnostic,
+    DiagnosticSeverity,
+    SourceSpan,
+    diagnostic_to_lsp,
 )
-from compiler.syntax_errors import lsp_syntax_message  # noqa: E402
-from compiler.lammergeier import (  # noqa: E402
-    _collapse_multiline_strings,
-    _expand_single_statement_blocks,
-    auto_semicolons,
-)
+from compiler.ast_builder import build_module  # noqa: E402
+from compiler.ast_nodes import ClassDecl, FuncDecl, InterfaceDecl, Module, Param, VarDecl  # noqa: E402
+from compiler.formatter import FormatError, format_lam_source  # noqa: E402
+from compiler.modules import WorkspaceIndex  # noqa: E402
+from compiler.syntax_errors import make_syntax_diagnostic  # noqa: E402
+from compiler.lammergeier import preprocess_for_parse  # noqa: E402
 
 # Optional: log to a file when LAMMERGEIER_LSP_LOG is set. The LSP
 # stdio channel must stay clean of stray prints, so we never log to
@@ -107,6 +109,16 @@ def _write_message(stream, msg: Dict[str, Any]) -> None:
     header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
     stream.write(header + body)
     stream.flush()
+
+
+def _uri_to_path(uri: str) -> Optional[Path]:
+    try:
+        parsed = urlparse(uri)
+        if parsed.scheme != "file":
+            return None
+        return Path(unquote(parsed.path)).resolve()
+    except Exception:
+        return None
 
 
 # ────────────────────────────────────────────────────────────
@@ -258,34 +270,32 @@ class Document:
     version: int = 0
     tree: Optional[Tree] = None
     symbols: List[Symbol] = field(default_factory=list)
-    parse_error: Optional[Tuple[int, int, str]] = None  # (line, col, msg)
-    # Semantic-checker diagnostics — list of (line, col, message, severity)
-    # tuples. ``severity`` follows the LSP scale: 1 = error, 2 = warning,
-    # 3 = info, 4 = hint.
-    semantic_diagnostics: List[Tuple[int, int, str, int]] = field(default_factory=list)
+    parse_error: Optional[Diagnostic] = None
+    semantic_diagnostics: List[Diagnostic] = field(default_factory=list)
     # Imported names from ``from lam<x> import a, b``. Maps the local
     # alias the user writes in this document to the originating
     # ``(module, exported_name)`` tuple in the stdlib.
     imports: Dict[str, Tuple[str, str]] = field(default_factory=dict)
 
 
-def _preprocess_for_parse(source: str) -> str:
-    """Mirror of the compiler preprocessor pipeline so the LSP parser
-    sees exactly the syntactic form the real build sees.
+@dataclass
+class ImportResolution:
+    module: str
+    path: Path
+    symbol: Symbol
+    stdlib: Optional[StdlibModule] = None
 
-    Order matters: ``go!`` blocks first (so braces inside Go code don't
-    confuse the block-expansion pass), then doc-comment stripping,
-    multiline-string collapsing, dict-destructure expansion, single-
-    statement block expansion, and finally auto-semicolons.
-    """
-    source = apply_lammergeier_aliases(source)
-    pre, _ = preprocess_go_blocks(source)
-    pre = re.sub(r'#-[\s\S]*?-#', '', pre)
-    pre = _collapse_multiline_strings(pre)
-    pre = expand_dict_destructure(pre)
-    pre = _expand_single_statement_blocks(pre)
-    pre = auto_semicolons(pre)
-    return pre
+
+class LspRequestError(Exception):
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _preprocess_for_parse(source: str) -> str:
+    """Return the compiler's shared parse-preprocessed source."""
+    return preprocess_for_parse(source).source
 
 
 _FUNC_RE = re.compile(
@@ -355,13 +365,11 @@ def _regex_symbols(source: str) -> List[Symbol]:
 
 
 def _collect_imports(tree: Tree) -> Dict[str, Tuple[str, str]]:
-    """Walk an ``import_from`` ladder and pull out the local-name →
-    (module, exported-name) mapping for everything imported from a
-    ``lam<x>`` stdlib module.
+    """Walk an ``import_from`` ladder and pull out local-name →
+    (module, exported-name) mappings.
 
     Only ``from <module> import a, b as alias, c`` shapes contribute;
-    plain ``import foo`` lines and non-stdlib targets are skipped
-    because we can't resolve them across files yet.
+    plain ``import foo`` lines do not bind a directly hoverable symbol.
     """
     out: Dict[str, Tuple[str, str]] = {}
 
@@ -387,11 +395,6 @@ def _collect_imports(tree: Tree) -> Dict[str, Tuple[str, str]]:
                     if names_node is None:
                         names_node = Tree("import_as_names", [child])
         if not module or names_node is None:
-            return
-        # Only resolve known stdlib modules — anything else needs the
-        # rest of the project on disk and we don't have a multi-file
-        # index yet.
-        if not _stdlib_module(module):
             return
         for entry in names_node.children:
             if not isinstance(entry, Tree) or entry.data != "import_as_name":
@@ -455,25 +458,19 @@ def analyze(doc: Document) -> None:
             checker = SemanticChecker()
             errors = checker.check(tree)
             for err in errors:
-                # SemanticError lines are 1-indexed; LSP wants 0-indexed.
-                doc.semantic_diagnostics.append(
-                    (
-                        max(0, err.line - 1),
-                        max(0, err.col - 1),
-                        err.message,
-                        2 if getattr(err, "is_warning", False) else 1,
-                    )
-                )
+                doc.semantic_diagnostics.append(err.to_diagnostic())
         except Exception:
             logger.exception("semantic check failed")
         return
     except UnexpectedInput as e:
-        line = max(0, getattr(e, "line", 1) - 1)
-        col = max(0, getattr(e, "column", 1) - 1)
-        msg = lsp_syntax_message(e, doc.text)
-        doc.parse_error = (line, col, msg)
+        doc.parse_error = make_syntax_diagnostic(e, doc.text, "<buffer>").to_diagnostic()
     except Exception as exc:
-        doc.parse_error = (0, 0, f"internal parser error: {exc}")
+        doc.parse_error = Diagnostic(
+            code="LAM0000",
+            severity=DiagnosticSeverity.ERROR,
+            message=f"internal parser error: {exc}",
+            span=SourceSpan(file=None, line=1, col=1),
+        )
         logger.exception("parse error")
 
     # Fallback: regex over the original source so positions stay
@@ -506,8 +503,6 @@ def _regex_imports(source: str) -> Dict[str, Tuple[str, str]]:
                    source)
     for m in _IMPORT_FROM_RE.finditer(flat):
         module = m.group("module")
-        if not _stdlib_module(module):
-            continue
         names = m.group("names").strip().rstrip(",")
         if names == "*":
             # ``import *`` — pull every public name in.
@@ -610,6 +605,95 @@ def _params_signature(params_node) -> str:
     return ", ".join(parts)
 
 
+def _innermost_open_paren(source: str) -> Optional[int]:
+    stack: List[int] = []
+    quote = ""
+    escape = False
+    for idx, ch in enumerate(source):
+        if quote:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                quote = ""
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+        elif ch == "(":
+            stack.append(idx)
+        elif ch == ")" and stack:
+            stack.pop()
+    return stack[-1] if stack else None
+
+
+def _active_parameter_index(source: str) -> int:
+    depth = 0
+    active = 0
+    quote = ""
+    escape = False
+    for ch in source:
+        if quote:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                quote = ""
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}" and depth > 0:
+            depth -= 1
+        elif ch == "," and depth == 0:
+            active += 1
+    return active
+
+
+def _parse_signature_detail(detail: str) -> Optional[Tuple[str, List[str]]]:
+    stripped = detail.strip()
+    match = re.search(r"\bfunc\s+\w+\s*\((?P<params>.*)\)(?:\s*->\s*[^{]+)?(?:\{|$)", stripped)
+    if not match:
+        return None
+    label = stripped[:match.end()].rstrip()
+    if label.endswith("{"):
+        label = label[:-1].rstrip()
+    params_text = match.group("params").strip()
+    params = _split_signature_params(params_text) if params_text else []
+    return label, params
+
+
+def _split_signature_params(params: str) -> List[str]:
+    out: List[str] = []
+    start = 0
+    depth = 0
+    for idx, ch in enumerate(params):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}" and depth > 0:
+            depth -= 1
+        elif ch == "," and depth == 0:
+            item = params[start:idx].strip()
+            if item:
+                out.append(item)
+            start = idx + 1
+    item = params[start:].strip()
+    if item:
+        out.append(item)
+    return out
+
+
+def _identifier_occurrences(source: str, name: str) -> List[Tuple[int, int, int]]:
+    pattern = re.compile(rf"\b{re.escape(name)}\b")
+    out: List[Tuple[int, int, int]] = []
+    for line_no, line in enumerate(source.splitlines()):
+        for match in pattern.finditer(line):
+            out.append((line_no, match.start(), match.end()))
+    return out
+
+
 def _type_to_str(node) -> str:
     """Render a ``type_expr`` subtree as Lam-flavoured source text.
 
@@ -642,6 +726,123 @@ def _type_to_str(node) -> str:
 
 
 def _collect_symbols(tree: Tree) -> List[Symbol]:
+    """Collect symbols from the canonical declaration AST.
+
+    The Lark walker remains as a fallback while the AST grows; successful
+    parse paths should use this AST-backed surface.
+    """
+    try:
+        return _symbols_from_ast(build_module(tree))
+    except Exception:
+        logger.exception("AST symbol extraction failed; falling back to Lark symbols")
+        return _collect_symbols_from_lark(tree)
+
+
+def _symbols_from_ast(module: Module) -> List[Symbol]:
+    out: List[Symbol] = []
+    for decl in module.body:
+        if isinstance(decl, FuncDecl):
+            out.append(_func_symbol(decl))
+        elif isinstance(decl, ClassDecl):
+            out.append(_class_symbol(decl))
+            for field in decl.fields:
+                out.append(_var_symbol(field, parent=decl.name))
+            for method in decl.methods:
+                out.append(_func_symbol(method))
+        elif isinstance(decl, InterfaceDecl):
+            if decl.span is not None:
+                line, col, end_line, end_col = _span_parts(decl.span)
+                out.append(Symbol(
+                    name=decl.name,
+                    kind="class",
+                    line=line,
+                    col=col,
+                    end_line=end_line,
+                    end_col=end_col,
+                    detail=f"interface {decl.name}",
+                ))
+        elif isinstance(decl, VarDecl):
+            out.append(_var_symbol(decl))
+    return out
+
+
+def _func_symbol(decl: FuncDecl) -> Symbol:
+    line, col, end_line, end_col = _span_parts(decl.span)
+    prefix = "static " if decl.is_static else ("private " if decl.is_private else "")
+    detail = f"{prefix}func {decl.name}({_param_list(decl.params)})"
+    if decl.return_type is not None and decl.return_type.name:
+        detail += f" -> {decl.return_type.name}"
+    kind = "static_method" if decl.is_static else ("method" if decl.parent else "function")
+    return Symbol(
+        name=decl.name,
+        kind=kind,
+        line=line,
+        col=col,
+        end_line=end_line,
+        end_col=end_col,
+        detail=detail,
+        parent=decl.parent or "",
+    )
+
+
+def _class_symbol(decl: ClassDecl) -> Symbol:
+    span = decl.span
+    if span is None:
+        return Symbol(name=decl.name, kind="class", line=0, col=0, detail=f"class {decl.name}")
+    line, col, end_line, end_col = _span_parts(span)
+    return Symbol(
+        name=decl.name,
+        kind="class",
+        line=line,
+        col=col,
+        end_line=end_line,
+        end_col=end_col,
+        detail=f"class {decl.name}",
+    )
+
+
+def _var_symbol(decl: VarDecl, *, parent: str = "") -> Symbol:
+    line, col, end_line, end_col = _span_parts(decl.span)
+    type_name = decl.type_ref.name if decl.type_ref is not None else ""
+    if decl.is_const:
+        detail = f"const {decl.name}: {type_name}" if type_name else f"const {decl.name}"
+    else:
+        detail = f"{decl.name}: {type_name}" if type_name else decl.name
+    return Symbol(
+        name=decl.name,
+        kind="variable",
+        line=line,
+        col=col,
+        end_line=end_line,
+        end_col=end_col,
+        detail=detail,
+        parent=parent,
+    )
+
+
+def _param_list(params: List[Param]) -> str:
+    parts: list[str] = []
+    for param in params:
+        prefix = param.variadic or ""
+        if param.type_ref is not None and param.type_ref.name:
+            item = f"{prefix}{param.name}: {param.type_ref.name}"
+        else:
+            item = f"{prefix}{param.name}"
+        if param.has_default:
+            item += " = ..."
+        parts.append(item)
+    return ", ".join(parts)
+
+
+def _span_parts(span: SourceSpan) -> tuple[int, int, int, int]:
+    line = max(0, span.line - 1)
+    col = max(0, span.col - 1)
+    end_line = max(0, (span.end_line or span.line) - 1)
+    end_col = max(0, (span.end_col or span.col) - 1)
+    return line, col, end_line, end_col
+
+
+def _collect_symbols_from_lark(tree: Tree) -> List[Symbol]:
     """Walk the AST and pull out every top-level def + class methods."""
     out: List[Symbol] = []
 
@@ -965,6 +1166,35 @@ def _scope_locals_at(tree: Tree, line: int) -> List[Symbol]:
     return uniq
 
 
+def _enclosing_func_line_range(tree: Tree, line: int) -> Optional[Tuple[int, int]]:
+    def contains(node: Tree) -> bool:
+        meta = getattr(node, "meta", None)
+        if not meta or meta.empty:
+            return False
+        start = (meta.line or 1) - 1
+        end = (getattr(meta, "end_line", None) or start + 1) - 1
+        return start <= line <= end
+
+    def find_enclosing(node, best=None):
+        if not isinstance(node, Tree):
+            return best
+        if node.data == "funcdef" and contains(node):
+            best = node
+        for c in node.children:
+            best = find_enclosing(c, best)
+        return best
+
+    func = find_enclosing(tree)
+    if func is None:
+        return None
+    meta = getattr(func, "meta", None)
+    if not meta or meta.empty:
+        return None
+    start = (meta.line or 1) - 1
+    end = (getattr(meta, "end_line", None) or start + 1) - 1
+    return start, end
+
+
 # ────────────────────────────────────────────────────────────
 # LSP server core
 # ────────────────────────────────────────────────────────────
@@ -974,6 +1204,8 @@ class LspServer:
         self.stdin = stdin
         self.stdout = stdout
         self.docs: Dict[str, Document] = {}
+        self.workspace_root = PROJECT_ROOT
+        self.workspace = WorkspaceIndex(self.workspace_root)
         self.shutdown_requested = False
         self.handlers: Dict[str, Callable[[Dict[str, Any]], Any]] = {
             "initialize": self.on_initialize,
@@ -984,8 +1216,13 @@ class LspServer:
             "textDocument/didChange": self.on_did_change,
             "textDocument/didClose": self.on_did_close,
             "textDocument/hover": self.on_hover,
+            "textDocument/signatureHelp": self.on_signature_help,
             "textDocument/completion": self.on_completion,
             "textDocument/definition": self.on_definition,
+            "textDocument/references": self.on_references,
+            "textDocument/prepareRename": self.on_prepare_rename,
+            "textDocument/rename": self.on_rename,
+            "textDocument/formatting": self.on_formatting,
             "textDocument/documentSymbol": self.on_document_symbol,
         }
 
@@ -1014,6 +1251,9 @@ class LspServer:
             elif msg_id is not None:
                 # Unknown request — return MethodNotFound rather than silently dropping.
                 self._respond_error(msg_id, -32601, f"method not found: {method}")
+        except LspRequestError as e:
+            if msg_id is not None:
+                self._respond_error(msg_id, e.code, e.message)
         except Exception as e:  # pragma: no cover — defensive net
             logger.exception("handler crashed")
             if msg_id is not None:
@@ -1031,14 +1271,33 @@ class LspServer:
     def _notify(self, method: str, params: Any) -> None:
         _write_message(self.stdout, {"jsonrpc": "2.0", "method": method, "params": params})
 
+    def _index_doc(self, doc: Document) -> None:
+        path = _uri_to_path(doc.uri)
+        if path is None:
+            return
+        try:
+            self.workspace.update_file(path, doc.text)
+        except Exception:
+            logger.exception("workspace index update failed")
+
     # ── lifecycle ───────────────────────────────────────────
     def on_initialize(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        params = msg.get("params") or {}
+        root_uri = params.get("rootUri") or ""
+        root_path = _uri_to_path(root_uri)
+        if root_path is not None:
+            self.workspace_root = root_path
+            self.workspace = WorkspaceIndex(self.workspace_root)
         return {
             "capabilities": {
                 "textDocumentSync": 1,  # full document sync
                 "hoverProvider": True,
+                "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
                 "completionProvider": {"triggerCharacters": [".", "@"]},
                 "definitionProvider": True,
+                "referencesProvider": True,
+                "renameProvider": {"prepareProvider": True},
+                "documentFormattingProvider": True,
                 "documentSymbolProvider": True,
             },
             "serverInfo": {"name": "lammergeier-lsp", "version": "0.1.0"},
@@ -1064,6 +1323,7 @@ class LspServer:
         doc = Document(uri=uri, text=text, version=version)
         analyze(doc)
         self.docs[uri] = doc
+        self._index_doc(doc)
         self._publish_diagnostics(doc)
 
     def on_did_change(self, msg: Dict[str, Any]) -> None:
@@ -1081,12 +1341,16 @@ class LspServer:
         doc.version = version
         analyze(doc)
         self.docs[uri] = doc
+        self._index_doc(doc)
         self._publish_diagnostics(doc)
 
     def on_did_close(self, msg: Dict[str, Any]) -> None:
         params = msg.get("params") or {}
         uri = (params.get("textDocument") or {}).get("uri", "")
         self.docs.pop(uri, None)
+        path = _uri_to_path(uri)
+        if path is not None:
+            self.workspace.remove_file(path)
         # Clear diagnostics on close.
         self._notify("textDocument/publishDiagnostics", {
             "uri": uri, "diagnostics": [],
@@ -1096,37 +1360,20 @@ class LspServer:
     def _publish_diagnostics(self, doc: Document) -> None:
         diags: List[Dict[str, Any]] = []
         if doc.parse_error is not None:
-            line, col, msg = doc.parse_error
-            diags.append({
-                "range": {
-                    "start": {"line": line, "character": col},
-                    "end":   {"line": line, "character": col + 1},
-                },
-                "severity": 1,  # Error
-                "source": "lammergeier",
-                "message": msg,
-            })
+            diags.append(diagnostic_to_lsp(doc.parse_error))
         # Semantic diagnostics (undefined names, duplicate members,
         # misplaced flow). Each entry is widened to a one-token range
         # so editors can underline a recognisable region; computing
         # the *exact* identifier extent would require re-walking the
         # AST and is more cost than it's worth at this point.
-        for line, col, msg, severity in doc.semantic_diagnostics:
+        for diag in doc.semantic_diagnostics:
             # Try to extract the offending identifier from the message
             # so the underline width matches the symbol the user
             # actually misspelt. Falls back to a single character.
             import re as _re
-            m = _re.search(r"`([^`]+)`", msg)
+            m = _re.search(r"`([^`]+)`", diag.message)
             width = max(1, len(m.group(1))) if m else 1
-            diags.append({
-                "range": {
-                    "start": {"line": line, "character": col},
-                    "end":   {"line": line, "character": col + width},
-                },
-                "severity": severity,
-                "source": "lammergeier",
-                "message": msg,
-            })
+            diags.append(diagnostic_to_lsp(diag, default_width=width))
         self._notify("textDocument/publishDiagnostics", {
             "uri": doc.uri, "diagnostics": diags,
         })
@@ -1174,6 +1421,27 @@ class LspServer:
             }
         }
 
+    def on_signature_help(self, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        params = msg.get("params") or {}
+        uri = (params.get("textDocument") or {}).get("uri", "")
+        pos = params.get("position") or {}
+        line = pos.get("line", 0)
+        char = pos.get("character", 0)
+        doc = self.docs.get(uri)
+        if not doc:
+            return None
+        call = self._call_context_at(doc, line, char)
+        if call is None:
+            return None
+        callee, active = call
+        sym = self._lookup_callable(doc, uri, callee)
+        if sym is None:
+            return None
+        signature = self._signature_help_for_symbol(sym, active)
+        if signature is None:
+            return None
+        return signature
+
     # ── completion ──────────────────────────────────────────
     def on_completion(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         params = msg.get("params") or {}
@@ -1199,17 +1467,27 @@ class LspServer:
         if from_match:
             module = from_match.group(1)
             sm = _stdlib_module(module)
+            already = {n.strip().split()[0]
+                        for n in from_match.group(2).split(",")
+                        if n.strip()}
             if sm:
                 # Comma-separated suggestions; offer everything that
                 # hasn't already appeared on this line.
-                already = {n.strip().split()[0]
-                            for n in from_match.group(2).split(",")
-                            if n.strip()}
                 for name, sym in sm.public.items():
                     if name in already:
                         continue
                     items.append(self._completion_item(sym))
                 return {"isIncomplete": False, "items": items}
+            path = _uri_to_path(uri)
+            if path is not None:
+                mod_path = self.workspace.resolve_module(path, module)
+                if mod_path is not None:
+                    facts = self.workspace.facts_by_path.get(mod_path) or self.workspace.update_file(mod_path)
+                    for name, export in facts.exports.items():
+                        if name in already:
+                            continue
+                        items.append(self._completion_item(self._symbol_from_export(export)))
+                    return {"isIncomplete": False, "items": items}
 
         # Member completion — `Foo.<here>`. Looks at:
         #   1. Methods of a class declared in this document.
@@ -1226,13 +1504,13 @@ class LspServer:
             # methods too.
             resolved = self._resolve_import(doc, target)
             if resolved is not None:
-                sm, sym = resolved
-                bucket = sm.methods.get(sym.name, {})
-                for name, msym in bucket.items():
-                    if name in seen:
-                        continue
-                    seen.add(name)
-                    items.append(self._completion_item(msym))
+                if resolved.stdlib is not None:
+                    bucket = resolved.stdlib.methods.get(resolved.symbol.name, {})
+                    for name, msym in bucket.items():
+                        if name in seen:
+                            continue
+                        seen.add(name)
+                        items.append(self._completion_item(msym))
             return {"isIncomplete": False, "items": items}
 
         # Identifier completion (the cursor is on a bare name or at a
@@ -1276,7 +1554,7 @@ class LspServer:
             if resolved is None:
                 continue
             seen.add(local_name)
-            _, sym = resolved
+            sym = resolved.symbol
             # Re-label the item with the local alias (so ``import X as Y``
             # offers ``Y``) while keeping the upstream signature.
             items.append({
@@ -1342,9 +1620,7 @@ class LspServer:
         if doc:
             resolved = self._resolve_import(doc, word)
             if resolved is not None:
-                stdlib_uri = _stdlib_module_uri(resolved[0].path.stem)
-                if stdlib_uri:
-                    target_uri = stdlib_uri
+                target_uri = resolved.path.as_uri()
         return {
             "uri": target_uri,
             "range": {
@@ -1353,6 +1629,127 @@ class LspServer:
                            "character": sym.end_col or (sym.col + len(sym.name))},
             },
         }
+
+    def on_references(self, msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+        params = msg.get("params") or {}
+        uri = (params.get("textDocument") or {}).get("uri", "")
+        pos = params.get("position") or {}
+        context = params.get("context") or {}
+        include_declaration = bool(context.get("includeDeclaration", True))
+        line = pos.get("line", 0)
+        char = pos.get("character", 0)
+        word = self._word_at(uri, line, char)
+        doc = self.docs.get(uri)
+        if not word or doc is None:
+            return []
+        target_uri, target_name, declaration = self._reference_target(doc, uri, word)
+        locations: List[Dict[str, Any]] = []
+        seen: set[Tuple[str, int, int]] = set()
+        for search_uri, search_doc in self._reference_docs(target_uri).items():
+            names = self._reference_names_for_doc(search_doc, search_uri, target_uri, target_name)
+            for name in sorted(names):
+                for start_line, start_col, end_col in _identifier_occurrences(search_doc.text, name):
+                    key = (search_uri, start_line, start_col)
+                    if key in seen:
+                        continue
+                    if not include_declaration and declaration == key:
+                        continue
+                    seen.add(key)
+                    locations.append({
+                        "uri": search_uri,
+                        "range": {
+                            "start": {"line": start_line, "character": start_col},
+                            "end": {"line": start_line, "character": end_col},
+                        },
+                    })
+        locations.sort(key=lambda loc: (
+            loc["uri"],
+            loc["range"]["start"]["line"],
+            loc["range"]["start"]["character"],
+        ))
+        return locations
+
+    def on_prepare_rename(self, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        params = msg.get("params") or {}
+        uri = (params.get("textDocument") or {}).get("uri", "")
+        pos = params.get("position") or {}
+        line = pos.get("line", 0)
+        char = pos.get("character", 0)
+        word = self._word_at(uri, line, char)
+        doc = self.docs.get(uri)
+        if not word or doc is None:
+            return None
+        self._ensure_rename_allowed(doc, uri, word, line)
+        word_range = self._word_range_at(uri, line, char)
+        if word_range is None:
+            return None
+        start_col, end_col = word_range
+        return {
+            "range": {
+                "start": {"line": line, "character": start_col},
+                "end": {"line": line, "character": end_col},
+            },
+            "placeholder": word,
+        }
+
+    def on_rename(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        params = msg.get("params") or {}
+        uri = (params.get("textDocument") or {}).get("uri", "")
+        pos = params.get("position") or {}
+        new_name = params.get("newName", "")
+        line = pos.get("line", 0)
+        char = pos.get("character", 0)
+        word = self._word_at(uri, line, char)
+        doc = self.docs.get(uri)
+        if not word or doc is None:
+            raise LspRequestError(-32602, "rename target is not a Lam identifier")
+        if not re.fullmatch(r"[A-Za-z_]\w*", new_name):
+            raise LspRequestError(-32602, f"invalid Lam identifier for rename: {new_name!r}")
+        self._ensure_rename_allowed(doc, uri, word, line)
+        edits: List[Dict[str, Any]] = []
+        scope_range = None
+        if self._lookup_symbol(uri, word) is None and doc.tree is not None:
+            scope_range = _enclosing_func_line_range(doc.tree, line)
+        for start_line, start_col, end_col in _identifier_occurrences(doc.text, word):
+            if scope_range is not None and not (scope_range[0] <= start_line <= scope_range[1]):
+                continue
+            edits.append({
+                "range": {
+                    "start": {"line": start_line, "character": start_col},
+                    "end": {"line": start_line, "character": end_col},
+                },
+                "newText": new_name,
+            })
+        return {"changes": {uri: edits}}
+
+    def on_formatting(self, msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+        params = msg.get("params") or {}
+        uri = (params.get("textDocument") or {}).get("uri", "")
+        doc = self.docs.get(uri)
+        if doc is None:
+            return []
+        try:
+            result = format_lam_source(doc.text)
+        except FormatError as e:
+            raise LspRequestError(-32602, f"cannot format document: {e}") from e
+        if not result.changed:
+            return []
+        lines = doc.text.splitlines()
+        end_line = len(lines)
+        end_char = 0
+        if lines:
+            end_line = len(lines) - 1
+            end_char = len(lines[-1])
+            if doc.text.endswith("\n"):
+                end_line += 1
+                end_char = 0
+        return [{
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": end_line, "character": end_char},
+            },
+            "newText": result.text,
+        }]
 
     # ── document symbol (outline) ───────────────────────────
     def on_document_symbol(self, msg: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1417,6 +1814,26 @@ class LspServer:
             return None
         return row[start:end]
 
+    def _word_range_at(self, uri: str, line: int, character: int) -> Optional[Tuple[int, int]]:
+        doc = self.docs.get(uri)
+        if not doc:
+            return None
+        try:
+            row = doc.text.splitlines()[line]
+        except IndexError:
+            return None
+        if character > len(row):
+            character = len(row)
+        start = character
+        while start > 0 and (row[start - 1].isalnum() or row[start - 1] == "_"):
+            start -= 1
+        end = character
+        while end < len(row) and (row[end].isalnum() or row[end] == "_"):
+            end += 1
+        if start == end:
+            return None
+        return start, end
+
     def _lookup_symbol(self, uri: str, name: str) -> Optional[Symbol]:
         doc = self.docs.get(uri)
         if not doc:
@@ -1427,8 +1844,144 @@ class LspServer:
         # Cross-file resolution for imported names.
         resolved = self._resolve_import(doc, name)
         if resolved is not None:
-            return resolved[1]
+            return resolved.symbol
         return None
+
+    def _lookup_callable(self, doc: Document, uri: str, callee: str) -> Optional[Symbol]:
+        if "." in callee:
+            receiver, method = callee.rsplit(".", 1)
+            return self._lookup_method(doc, receiver, method)
+        sym = self._lookup_symbol(uri, callee)
+        if sym and sym.kind in {"function", "method", "static_method"}:
+            return sym
+        return None
+
+    @staticmethod
+    def _call_context_at(doc: Document, line: int, character: int) -> Optional[Tuple[str, int]]:
+        lines = doc.text.splitlines()
+        if line >= len(lines):
+            return None
+        character = min(character, len(lines[line]))
+        prefix = "\n".join([*lines[:line], lines[line][:character]])
+        open_index = _innermost_open_paren(prefix)
+        if open_index is None:
+            return None
+        callee_end = open_index
+        callee_start = callee_end
+        while callee_start > 0 and prefix[callee_start - 1].isspace():
+            callee_start -= 1
+            callee_end -= 1
+        while callee_start > 0 and (
+            prefix[callee_start - 1].isalnum()
+            or prefix[callee_start - 1] in {"_", "."}
+        ):
+            callee_start -= 1
+        callee = prefix[callee_start:callee_end]
+        if not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", callee or ""):
+            return None
+        active = _active_parameter_index(prefix[open_index + 1:])
+        return callee, active
+
+    @staticmethod
+    def _signature_help_for_symbol(sym: Symbol, active_parameter: int) -> Optional[Dict[str, Any]]:
+        parsed = _parse_signature_detail(sym.detail)
+        if parsed is None:
+            return None
+        label, parameters = parsed
+        if parameters:
+            active_parameter = min(active_parameter, len(parameters) - 1)
+        else:
+            active_parameter = 0
+        return {
+            "signatures": [{
+                "label": label,
+                "parameters": [{"label": param} for param in parameters],
+            }],
+            "activeSignature": 0,
+            "activeParameter": active_parameter,
+        }
+
+    def _reference_target(
+        self,
+        doc: Document,
+        uri: str,
+        word: str,
+    ) -> Tuple[str, str, Optional[Tuple[str, int, int]]]:
+        resolved = self._resolve_import(doc, word)
+        if resolved is not None:
+            return (
+                resolved.path.as_uri(),
+                resolved.symbol.name,
+                (resolved.path.as_uri(), resolved.symbol.line, resolved.symbol.col),
+            )
+        sym = self._lookup_symbol(uri, word)
+        if sym is not None:
+            return uri, sym.name, (uri, sym.line, sym.col)
+        return uri, word, None
+
+    def _reference_docs(self, target_uri: str) -> Dict[str, Document]:
+        out: Dict[str, Document] = {}
+        for uri, doc in self.docs.items():
+            out[uri] = doc
+        target_doc = out.get(target_uri)
+        if target_doc is None:
+            path = _uri_to_path(target_uri)
+            if path is not None:
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError:
+                    text = ""
+                if text:
+                    target_doc = Document(uri=target_uri, text=text)
+                    analyze(target_doc)
+                    out[target_uri] = target_doc
+        return out
+
+    def _reference_names_for_doc(
+        self,
+        doc: Document,
+        uri: str,
+        target_uri: str,
+        target_name: str,
+    ) -> set[str]:
+        names: set[str] = set()
+        if uri == target_uri:
+            names.add(target_name)
+        path = _uri_to_path(target_uri)
+        for local, (module, exported) in doc.imports.items():
+            if exported != target_name:
+                continue
+            current_path = _uri_to_path(doc.uri)
+            if current_path is None:
+                continue
+            resolved_path = self.workspace.resolve_module(current_path, module)
+            if resolved_path is None and _stdlib_module(module):
+                resolved_path = (_STDLIB_DIR / f"{module}.lam").resolve()
+            if path is not None and resolved_path == path:
+                names.add(local)
+        return names
+
+    def _ensure_rename_allowed(self, doc: Document, uri: str, word: str, line: int) -> None:
+        if word in doc.imports:
+            module, _ = doc.imports[word]
+            raise LspRequestError(
+                -32602,
+                f"rename of imported symbol `{word}` from `{module}` is not supported yet",
+            )
+        for other_uri, other_doc in self.docs.items():
+            if other_uri == uri:
+                continue
+            for _local, (_module, exported) in other_doc.imports.items():
+                if exported == word:
+                    raise LspRequestError(
+                        -32602,
+                        f"rename of cross-file symbol `{word}` is not supported yet",
+                    )
+        if self._lookup_symbol(uri, word) is not None:
+            return
+        if doc.tree is not None and any(sym.name == word for sym in _scope_locals_at(doc.tree, line)):
+            return
+        raise LspRequestError(-32602, f"rename target `{word}` is not a known local symbol")
 
     def _receiver_at(self, uri: str, line: int, character: int) -> Optional[str]:
         """If the cursor sits on the right-hand side of ``foo.bar``,
@@ -1472,8 +2025,8 @@ class LspServer:
                 return sym
         resolved = self._resolve_import(doc, receiver)
         if resolved is not None:
-            sm, sym = resolved
-            return sm.methods.get(sym.name, {}).get(method)
+            if resolved.stdlib is not None:
+                return resolved.stdlib.methods.get(resolved.symbol.name, {}).get(method)
         return None
 
     def _origin_module_for(self, doc: Document, receiver: str) -> Optional[str]:
@@ -1488,14 +2041,13 @@ class LspServer:
         Local class → current document. Imported class → the lib file.
         """
         if receiver in doc.imports:
-            module = doc.imports[receiver][0]
-            stdlib_uri = _stdlib_module_uri(module)
-            if stdlib_uri:
-                return stdlib_uri
+            resolved = self._resolve_import(doc, receiver)
+            if resolved is not None:
+                return resolved.path.as_uri()
         return fallback_uri
 
     def _resolve_import(self, doc: Document, name: str
-                        ) -> Optional[Tuple[StdlibModule, Symbol]]:
+                        ) -> Optional[ImportResolution]:
         """Look ``name`` up in this document's imports.
 
         Returns ``(module_index, symbol)`` so the caller can mint a
@@ -1507,12 +2059,39 @@ class LspServer:
             return None
         module, exported = binding
         sm = _stdlib_module(module)
-        if not sm:
+        if sm:
+            sym = sm.public.get(exported)
+            if sym:
+                return ImportResolution(
+                    module=module,
+                    path=sm.path.resolve(),
+                    symbol=sym,
+                    stdlib=sm,
+                )
+
+        path = _uri_to_path(doc.uri)
+        if path is None:
             return None
-        sym = sm.public.get(exported)
-        if not sym:
+        export = self.workspace.resolve_import(path, module, exported)
+        if export is None:
             return None
-        return (sm, sym)
+        return ImportResolution(
+            module=module,
+            path=export.path.resolve(),
+            symbol=self._symbol_from_export(export),
+        )
+
+    @staticmethod
+    def _symbol_from_export(export) -> Symbol:
+        return Symbol(
+            name=export.name,
+            kind=export.kind if export.kind != "const" else "variable",
+            line=max(0, export.line - 1),
+            col=max(0, export.col - 1),
+            end_line=max(0, export.line - 1),
+            end_col=max(0, export.col - 1 + len(export.name)),
+            detail=export.detail or export.name,
+        )
 
 
 # ────────────────────────────────────────────────────────────

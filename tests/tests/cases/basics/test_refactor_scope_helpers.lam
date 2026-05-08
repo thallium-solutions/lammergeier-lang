@@ -1,0 +1,53 @@
+# Test: refactored function-body scope helpers preserve tuple prologues, captures, and assignment lowering.
+# expect: nested=7
+# expect: static=11
+# expect: reassigned=2
+# expect: ternary=yes
+# expect: attr=9
+
+class PairMath {
+    static func sum_pair((a, b): tuple[int, int]) -> int {
+        temp: int = a + b
+        return temp
+    }
+}
+
+class Box {
+    func init(self) {
+        self.value: int = 0
+    }
+
+    func set_value(self, v: int) {
+        self.value: int = v
+    }
+
+    func get_value(self) -> int {
+        return self.value
+    }
+}
+
+func main() {
+    offset: int = 3
+
+    func add_pair((a, b): tuple[int, int]) -> int {
+        total: int = a + b + offset
+        return total
+    }
+
+    nested: int = add_pair((1, 3))
+    print(f"nested={nested}")
+
+    static_sum: int = PairMath.sum_pair((5, 6))
+    print(f"static={static_sum}")
+
+    x: int = 1
+    x: int = 2
+    print(f"reassigned={x}")
+
+    label: str = "yes" if x == 2 else "no"
+    print(f"ternary={label}")
+
+    box: Box = Box()
+    box.value: int = 9
+    print(f"attr={box.get_value()}")
+}

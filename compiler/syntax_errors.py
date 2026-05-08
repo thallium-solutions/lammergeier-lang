@@ -16,6 +16,8 @@ from typing import Iterable
 from lark import Token
 from lark.exceptions import UnexpectedCharacters, UnexpectedEOF, UnexpectedInput, UnexpectedToken
 
+from compiler.diagnostics import Diagnostic, DiagnosticSeverity, SourceSpan
+
 
 class SyntaxDiagnosticError(RuntimeError):
     """Raised internally when a parsed Lam file has a syntax error."""
@@ -30,6 +32,27 @@ class SyntaxDiagnostic:
     expected: tuple[str, ...]
     hint: str | None
     source_line: str
+
+    def lsp_message(self) -> str:
+        parts = [self.message]
+        if self.expected:
+            parts.append(f"Expected {_join_labels(self.expected)}.")
+        if self.hint:
+            parts.append(self.hint)
+        return " ".join(parts)
+
+    def to_diagnostic(self) -> Diagnostic:
+        return Diagnostic(
+            code="LAM0001",
+            severity=DiagnosticSeverity.ERROR,
+            message=self.lsp_message(),
+            span=SourceSpan(
+                file=Path(self.path) if self.path != "<buffer>" else None,
+                line=self.line,
+                col=self.column,
+            ),
+            hint=self.hint,
+        )
 
     def render(self) -> str:
         out: list[str] = [f"error: syntax check failed for {self.path}"]
@@ -213,13 +236,7 @@ def make_syntax_diagnostic(exc: UnexpectedInput, source: str, path: str | Path) 
 def lsp_syntax_message(exc: UnexpectedInput, source: str) -> str:
     """Single-line syntax message for editor diagnostics."""
 
-    diag = make_syntax_diagnostic(exc, source, "<buffer>")
-    parts = [diag.message]
-    if diag.expected:
-        parts.append(f"Expected {_join_labels(diag.expected)}.")
-    if diag.hint:
-        parts.append(diag.hint)
-    return " ".join(parts)
+    return make_syntax_diagnostic(exc, source, "<buffer>").lsp_message()
 
 
 def _message_for(exc: UnexpectedInput, src_line: str) -> str:

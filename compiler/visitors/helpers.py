@@ -179,11 +179,42 @@ class HelpersMixin:
         self.output_lines.append(line)
 
     def _push_scope(self):
-        self.scope_stack.append(set(self.declared_vars))
+        self.scope_stack.append((
+            set(self.declared_vars),
+            dict(getattr(self, "_nested_generic_functions", {})),
+        ))
 
     def _pop_scope(self):
         if self.scope_stack:
-            self.declared_vars = self.scope_stack.pop()
+            snapshot = self.scope_stack.pop()
+            if isinstance(snapshot, tuple):
+                self.declared_vars = snapshot[0]
+                self._nested_generic_functions = snapshot[1]
+            else:
+                self.declared_vars = snapshot
+
+    def _pop_scope_with_unused_local_silencers(self, body_start_line: int, vars_at_start: set):
+        self._emit_unused_local_silencers(body_start_line, vars_at_start)
+        self._pop_scope()
+
+    def _scope_unused_tracking_start(self) -> tuple[int, set]:
+        return len(self.output_lines), set(self.declared_vars)
+
+    def _emit_params_prologue(self, params_node, skip_self: bool = False) -> None:
+        if params_node:
+            self._declare_params(params_node)
+            self._emit_tuple_param_prologue(params_node, skip_self=skip_self)
+
+    def _begin_scoped_body(self, params_node=None, skip_self: bool = False):
+        self.indent += 1
+        self._push_scope()
+        self._emit_params_prologue(params_node, skip_self=skip_self)
+        return self._scope_unused_tracking_start()
+
+    def _finish_scoped_body(self, body_start_line: int, vars_at_start: set) -> None:
+        self._emit_unused_local_silencers(body_start_line, vars_at_start)
+        self._pop_scope()
+        self.indent -= 1
 
     def _declare_var(self, name: str):
         self.declared_vars.add(name)
@@ -217,15 +248,9 @@ class HelpersMixin:
         declaration line) gets a trailing ``_ = name`` so Go
         accepts it.
 
-        Block-scope locals (declared inside an ``if`` / ``for`` /
-        ``with`` body) are *not* covered: the transpiler pops their
-        scope before this runs, so they no longer live in
-        ``declared_vars`` and a function-level silencer would itself
-        be an undefined-identifier error. Those cases still surface
-        as Go errors today; the user can fix them by deleting the
-        local or adding their own ``_ = name``. Adding per-block
-        silencers requires emitting a hook at every ``_pop_scope``
-        site and is left as a future iteration.
+        Block-scope locals use the same helper before their scope is
+        popped, so the generated ``_ = name`` lands while the binding
+        is still visible to Go.
         """
         new_locals = self.declared_vars - params_at_start
         if not new_locals:
@@ -241,7 +266,7 @@ class HelpersMixin:
             # Compiler-internal temporaries (``__qN``, ``__lamFoo``,
             # ``_chN``…) are bookkeeping, not user code; skip them so
             # we don't churn the output for things the user can't see.
-            if not name or name.startswith("_") or name.startswith("__"):
+            if not name or name == "_" or name.startswith("__") or _re.fullmatch(r"_ch\d*", name):
                 continue
             pat = _re.compile(rf"\b{_re.escape(name)}\b")
             if len(pat.findall(scrubbed)) <= 1:
