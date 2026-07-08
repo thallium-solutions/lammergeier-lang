@@ -1,0 +1,44 @@
+# expect: lammergeier-app
+# expect: http://localhost:4318/v1/traces
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+
+from lamotel import Otel, OtelConfig, OtelSpan
+from lamenv import Env
+
+func clearOtelEnv() {
+    Env.unset("OTEL_SERVICE_NAME")
+    Env.unset("OTEL_EXPORTER_OTLP_ENDPOINT")
+    Env.unset("OTEL_EXPORTER_OTLP_HEADERS")
+}
+
+func main() {
+    clearOtelEnv()
+
+    cfg: OtelConfig = OtelConfig.fromEnv()
+    print(cfg.serviceName)
+    print(cfg.tracesUrl())
+
+    Env.set("OTEL_SERVICE_NAME", "checkout-api")
+    Env.set("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318/")
+    Env.set("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer abc,X-Team=payments")
+
+    cfg2: OtelConfig = OtelConfig.fromEnv()
+    headers: dict[str, str] = Otel.parseHeaders(cfg2.headers)
+    print(cfg2.tracesUrl() == "http://collector:4318/v1/traces")
+    print(headers["Authorization"] == "Bearer abc")
+    print(headers["X-Team"] == "payments")
+
+    span: OtelSpan = OtelSpan("checkout")
+    span.setAttribute("order.id", "ord_123")
+    span.end()
+    spans: list[OtelSpan] = [span]
+    payload: str = Otel.tracesPayload("checkout-api", spans)
+    print(payload.contains("checkout-api"))
+    print(payload.contains("order.id"))
+
+    clearOtelEnv()
+}

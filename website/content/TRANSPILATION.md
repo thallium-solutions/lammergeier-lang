@@ -657,13 +657,15 @@ Interfaces are never wrapped in pointers.
 | `int(x)` / `float(x)`              | `int(x)` / `float64(x)`                                                   |
 | `print(...)`                       | `fmt.Println(...)`                                                        |
 | `input(prompt)`                    | `bufio.NewScanner(os.Stdin)` one-liner                                    |
-| `open(path, "w")`                  | `os.Create(path)` (likewise `"a"` → `os.OpenFile(..., O_APPEND\|...)`)     |
+| `File.open(path, "w")`             | `File_open(path, "w")`, returning a stdlib `File` instance                |
+| `xs.length()`                      | `len(xs)`                                                                  |
 | `xs.append(v)`                     | `xs = append(xs, v)`                                                      |
 | `xs.map(fn)`                       | IIFE that builds a new slice; picks `.(T)` only if `fn` isn't a user func |
 | `xs.filter(fn)`                    | IIFE that keeps elements where `fn(_v)` is true                           |
 | `xs.reduce(fn[, init])`            | IIFE that accumulates                                                     |
 | `xs.any(fn)` / `xs.all(fn)`        | IIFE with early return                                                    |
 | `xs.foreach(fn)`                   | IIFE with no result                                                       |
+| `xs.sort([compare][, inplace])`    | `sort.Slice` copy by default; when `inplace=true`, sorts and returns `xs` |
 | `sorted(xs)`                       | `sort.Slice` copy                                                         |
 | `enumerate(xs)`                    | passed through with a `/* enumerate */` marker                            |
 | `isinstance(x, T)`                 | `true /* isinstance */` (see “limitations” below)                         |

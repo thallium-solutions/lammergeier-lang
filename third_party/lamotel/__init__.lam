@@ -1,0 +1,290 @@
+from lamenv import Env
+from lamerrors import Result, Error
+from lamhttp import HttpClient, HttpResponse
+from lamjson import Json
+from lamtime import Time
+from lamuuid import Uuid
+
+class OtelConfig {
+    func __init__(self, serviceName: str = "lammergeier-app", endpoint: str = "http://localhost:4318", headers: str = "", timeoutMs: int = 30000) {
+        self.serviceName: str = serviceName
+        self.endpoint: str = endpoint
+        self.headers: str = headers
+        self.timeoutMs: int = timeoutMs
+        self.serviceVersion: str = ""
+        self.environment: str = ""
+        self.resourceAttributes: dict[str, str] = {}
+    }
+
+    static func fromEnv() -> OtelConfig {
+        cfg: OtelConfig = OtelConfig(
+            Env.getOr("OTEL_SERVICE_NAME", "lammergeier-app"),
+            Env.getOr("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),
+            Env.get("OTEL_EXPORTER_OTLP_HEADERS"),
+            30000,
+        )
+        cfg.serviceVersion = Env.get("OTEL_SERVICE_VERSION")
+        cfg.environment = Env.get("OTEL_DEPLOYMENT_ENVIRONMENT")
+        cfg.resourceAttributes = Otel.parsePairs(Env.get("OTEL_RESOURCE_ATTRIBUTES"))
+        return cfg
+    }
+
+    func isReady(self) -> bool {
+        return self.endpoint != ""
+    }
+
+    func tracesUrl(self) -> str {
+        ep: str = self.endpoint.trimRight("/")
+        if ep.endsWith("/v1/traces") {
+            return ep
+        }
+        return ep + "/v1/traces"
+    }
+
+    func resource(self) -> dict[str, str] {
+        out: dict[str, str] = {}
+        for k, v in self.resourceAttributes {
+            out[k] = v
+        }
+        out["service.name"] = self.serviceName
+        if self.serviceVersion != "" {
+            out["service.version"] = self.serviceVersion
+        }
+        if self.environment != "" {
+            out["deployment.environment"] = self.environment
+        }
+        return out
+    }
+}
+
+class OtelSpan {
+    func __init__(self, name: str, kind: str = "internal", traceId: str = "", spanId: str = "") {
+        self.name: str = name
+        self.kind: str = kind
+        self.traceId: str = traceId
+        self.spanId: str = spanId
+        self.parentSpanId: str = ""
+        self.startUnixMs: int = Time.nowUnixMilli()
+        self.endUnixMs: int = 0
+        self.attributes: dict[str, str] = {}
+        self.statusCode: str = "unset"
+        self.statusMessage: str = ""
+        self.events: list[dict[str, any]] = []
+
+        if self.traceId == "" {
+            self.traceId = Otel.idsTrace()
+        }
+        if self.spanId == "" {
+            self.spanId = Otel.idsSpan()
+        }
+    }
+
+    func setParent(self, parentSpanId: str) {
+        self.parentSpanId = parentSpanId
+    }
+
+    func setAttribute(self, key: str, value: str) {
+        _ = key
+        self.attributes[key] = value
+    }
+
+    func setStatus(self, code: str, message: str = "") {
+        self.statusCode = code.toLower()
+        self.statusMessage = message
+    }
+
+    func addEvent(self, name: str) {
+        ev: dict[str, any] = {
+            "name": name,
+            "timeUnixMs": Time.nowUnixMilli(),
+            "attributes": {},
+        }
+        self.events.append(ev)
+    }
+
+    func recordException(self, message: str) {
+        self.setStatus("error", message)
+        self.setAttribute("exception.message", message)
+        self.addEvent("exception")
+    }
+
+    func end(self) {
+        self.endUnixMs = Time.nowUnixMilli()
+    }
+
+    func durationMs(self) -> int {
+        if self.endUnixMs == 0 {
+            return Time.nowUnixMilli() - self.startUnixMs
+        }
+        return self.endUnixMs - self.startUnixMs
+    }
+
+    func toDict(self, serviceName: str) -> dict[str, any] {
+        attrs: dict[str, any] = {}
+        for k, v in self.attributes {
+            attrs[k] = v
+        }
+        attrs["service.name"] = serviceName
+        return {
+            "traceId": self.traceId,
+            "spanId": self.spanId,
+            "parentSpanId": self.parentSpanId,
+            "name": self.name,
+            "kind": self.kind,
+            "startUnixMs": self.startUnixMs,
+            "endUnixMs": self.endUnixMs,
+            "durationMs": self.durationMs(),
+            "attributes": attrs,
+            "status": {
+                "code": self.statusCode,
+                "message": self.statusMessage,
+            },
+            "events": self.events,
+        }
+    }
+}
+
+class OtelSpanBatch {
+    func __init__(self) {
+        self.spans: list[OtelSpan] = []
+    }
+
+    func add(self, span: OtelSpan) {
+        self.spans.append(span)
+    }
+
+    func size(self) -> int {
+        return len(self.spans)
+    }
+
+    func export(self, tracer: OtelTracer) -> Result {
+        return tracer.exportSpans(self.spans)
+    }
+}
+
+class Otel {
+    static func idsTrace() -> str {
+        id: str = Uuid.v4()
+        return id.replace("-", "")
+    }
+
+    static func idsSpan() -> str {
+        id: str = Uuid.v4().replace("-", "")
+        return id[:16]
+    }
+
+    static func parsePairs(headerText: str) -> dict[str, str] {
+        out: dict[str, str] = {}
+        if headerText.trim() == "" {
+            return out
+        }
+        parts: list[str] = headerText.split(",")
+        for part in parts {
+            idx: int = part.index("=")
+            if idx > 0 {
+                key: str = part[:idx].trim()
+                val: str = part[idx + 1:].trim()
+                if key != "" {
+                    out[key] = val
+                }
+            }
+        }
+        return out
+    }
+
+    static func parseHeaders(headerText: str) -> dict[str, str] {
+        return Otel.parsePairs(headerText)
+    }
+
+    static func tracesPayload(serviceName: str, spans: list[OtelSpan]) -> str {
+        resourceAttrs: dict[str, str] = {}
+        resourceAttrs["service.name"] = serviceName
+        return Otel.tracesPayloadWithResource(resourceAttrs, spans)
+    }
+
+    static func tracesPayloadWithResource(resourceAttrs: dict[str, str], spans: list[OtelSpan]) -> str {
+        encodedSpans: list[any] = []
+        serviceName: str = "lammergeier-app"
+        go! {
+            if s, ok := resourceAttrs["service.name"]; ok {
+                serviceName = s
+            }
+        }
+        for span in spans {
+            encodedSpans.append(span.toDict(serviceName))
+        }
+        payload: dict[str, any] = {
+            "resourceSpans": [{
+                "resource": {"attributes": resourceAttrs},
+                "scopeSpans": [{
+                    "scope": {"name": "lamotel", "version": "0.1.0"},
+                    "spans": encodedSpans,
+                }],
+            }],
+        }
+        return Json.encode(payload)
+    }
+}
+
+class OtelTracer {
+    func __init__(self, cfg: OtelConfig) {
+        self.cfg: OtelConfig = cfg
+        self.http: HttpClient = HttpClient("", cfg.timeoutMs)
+        self.http.setHeader("User-Agent", "lamotel/0.1.0")
+        self.http.setHeader("Content-Type", "application/json")
+        headers: dict[str, str] = Otel.parseHeaders(cfg.headers)
+        for k, v in headers {
+            self.http.setHeader(k, v)
+        }
+    }
+
+    static func fromEnv() -> OtelTracer {
+        return OtelTracer(OtelConfig.fromEnv())
+    }
+
+    func startSpan(self, name: str, kind: str = "internal") -> OtelSpan {
+        return OtelSpan(name, kind)
+    }
+
+    func childSpan(self, parent: OtelSpan, name: str, kind: str = "internal") -> OtelSpan {
+        span: OtelSpan = OtelSpan(name, kind, parent.traceId)
+        span.setParent(parent.spanId)
+        return span
+    }
+
+    func batch(self) -> OtelSpanBatch {
+        return OtelSpanBatch()
+    }
+
+    func _ready(self) -> Result {
+        if not self.cfg.isReady() {
+            return Result.Err(Error("OtelConfigError", "OTEL_EXPORTER_OTLP_ENDPOINT is required", None))
+        }
+        return Result.Ok(true)
+    }
+
+    func exportSpan(self, span: OtelSpan) -> Result {
+        spans: list[OtelSpan] = [span]
+        return self.exportSpans(spans)
+    }
+
+    func exportSpans(self, spans: list[OtelSpan]) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        payload: str = Otel.tracesPayloadWithResource(self.cfg.resource(), spans)
+        res: HttpResponse = self.http.postJson(self.cfg.tracesUrl(), payload)
+        if res.ok() {
+            return Result.Ok(res)
+        }
+        msg: str = res.error
+        if msg == "" {
+            msg = res.body
+        }
+        if msg == "" {
+            msg = "otel export failed with status " + str(res.status)
+        }
+        return Result.Err(Error("OtelExportError", msg, res))
+    }
+}

@@ -654,18 +654,6 @@ class ExpressionVisitorMixin:
                 return f'func() string {{ fmt.Print({args[0]}); scanner := bufio.NewScanner(os.Stdin); scanner.Scan(); return scanner.Text() }}()'
             return f'func() string {{ scanner := bufio.NewScanner(os.Stdin); scanner.Scan(); return scanner.Text() }}()'
 
-        if func_str == "open":
-            self._need_import("os")
-            if len(args) >= 2:
-                mode = args[1].strip('"').strip("'")
-                if mode in ('w', 'write'):
-                    return f'os.Create({args[0]})'
-                elif mode in ('a', 'append'):
-                    return f'os.OpenFile({args[0]}, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)'
-                return f"os.Open({args[0]})"
-            if args:
-                return f"os.Open({args[0]})"
-
         if func_str == "exit":
             self._need_import("os")
             return f"os.Exit({args[0] if args else '0'})"
@@ -732,6 +720,7 @@ class ExpressionVisitorMixin:
             "toUpper":    lambda o, a: _strings_call("toUpper", o),
             "toLower":    lambda o, a: _strings_call("toLower", o),
             "trim":       lambda o, a: _strings_call("trim", o),
+            "length":     lambda o, a: _strings_call("length", o),
             # ``Strings.trimLeft`` / ``trimRight`` need an explicit
             # cutset; default to ASCII whitespace when the Lam call
             # was bare (``s.trimLeft()``).
@@ -835,44 +824,6 @@ class ExpressionVisitorMixin:
                 if not is_user_instance and not is_known_non_string:
                     return string_methods[raw_method](raw_obj, args)
 
-            # File methods — the ``os.File`` sugar (``f.read()`` →
-            # ``io.ReadAll(f)``, ``f.close()`` → ``f.Close()`` etc.).
-            # Skip the transform when the receiver is a known user
-            # class instance so user-defined classes can provide
-            # their own ``read`` / ``write`` / ``close`` /
-            # ``readline`` / ``readlines`` methods (eg
-            # ``RequestBodyReader.read(maxBytes)``) without
-            # colliding with the built-in file sugar. ``self``
-            # inside a class method body is treated as a user
-            # instance too so class methods can call one another by
-            # name.
-            _file_obj_cls = self._var_types.get(raw_obj, "")
-            _file_is_user_inst = (
-                bool(_file_obj_cls) and _file_obj_cls in self._class_names
-            )
-            if (
-                not _file_is_user_inst
-                and self.current_class
-                and self._self_replacement
-                and raw_obj == self._self_replacement
-            ):
-                _file_is_user_inst = True
-            if not _file_is_user_inst:
-                if raw_method == "read":
-                    self._need_import("io")
-                    return f'func() string {{ _b, _ := io.ReadAll({raw_obj}); return string(_b) }}()'
-                if raw_method == "write":
-                    return f'{raw_obj}.WriteString({args[0]})' if args else f'{raw_obj}.WriteString("")'
-                if raw_method == "close":
-                    return f'{raw_obj}.Close()'
-                if raw_method == "readline":
-                    self._need_import("bufio")
-                    return f'func() string {{ _sc := bufio.NewScanner({raw_obj}); _sc.Scan(); return _sc.Text() }}()'
-                if raw_method == "readlines":
-                    self._need_import("bufio")
-                    self._need_import("strings")
-                    return f'func() []string {{ _b, _ := io.ReadAll({raw_obj}); return strings.Split(strings.TrimRight(string(_b), "\\n"), "\\n") }}()'
-
             # List methods — only applied when the receiver is (or may be)
             # a list. If we know the receiver is a user class instance,
             # dispatch to the user-defined method instead so `obj.pop()`
@@ -895,6 +846,8 @@ class ExpressionVisitorMixin:
                 _is_user_inst = True
             _is_non_list = _obj_go and not _obj_go.startswith("[]")
             if not _is_user_inst and not _is_non_list:
+                if raw_method == "length":
+                    return f"len({raw_obj})"
                 if raw_method == "append" and args:
                     return f"{raw_obj} = append({raw_obj}, {', '.join(args)})"
                 if raw_method == "pop":
@@ -943,6 +896,73 @@ class ExpressionVisitorMixin:
             inline_lambda = (
                 raw_args_nodes and self._is_lambda_node(raw_args_nodes[0])
             )
+
+            raw_kwargs_nodes = {}
+            if isinstance(args_node, Tree) and args_node.data == "arguments":
+                for child in args_node.children:
+                    if not (
+                        isinstance(child, Tree)
+                        and child.data == "argvalue"
+                        and len(child.children) == 2
+                    ):
+                        continue
+                    name_node = child.children[0]
+                    if (
+                        isinstance(name_node, Tree)
+                        and name_node.data == "var"
+                        and name_node.children
+                    ):
+                        raw_kwargs_nodes[
+                            self._get_name(name_node.children[0])
+                        ] = child.children[1]
+
+            if _apply_list_combinators and raw_method == "sort":
+                self._need_import("sort")
+                sort_args = list(args)
+                compare_expr = kwargs.get("compare")
+                inplace_expr = kwargs.get("inplace")
+                compare_raw = raw_kwargs_nodes.get("compare")
+                if sort_args:
+                    first = sort_args[0]
+                    if first in ("true", "false") and len(sort_args) == 1:
+                        inplace_expr = first
+                    else:
+                        compare_expr = first
+                        compare_raw = raw_args_nodes[0] if raw_args_nodes else None
+                        if len(sort_args) >= 2:
+                            inplace_expr = sort_args[1]
+                inplace = inplace_expr == "true"
+                target_expr = raw_obj if inplace else f"append({_slice_type}{{}}, {raw_obj}...)"
+                if compare_expr:
+                    if compare_raw is not None and self._is_lambda_node(compare_raw):
+                        fn = self._lambda_to_go(
+                            compare_raw,
+                            param_types=[_elem_type, _elem_type],
+                            return_type="bool",
+                        )
+                        less_expr = f"({fn})(_r[i], _r[j])"
+                    else:
+                        fn = _resolve_func_ref(compare_expr)
+                        less_expr = f"{fn}(_r[i], _r[j])"
+                elif _elem_type in (
+                    "int", "int8", "int16", "int32", "int64",
+                    "uint", "uint8", "uint16", "uint32", "uint64",
+                    "float32", "float64", "string",
+                ):
+                    less_expr = "_r[i] < _r[j]"
+                elif _elem_type == "bool":
+                    less_expr = "!_r[i] && _r[j]"
+                else:
+                    self._need_import("fmt")
+                    less_expr = (
+                        'fmt.Sprintf("%v", _r[i]) < '
+                        'fmt.Sprintf("%v", _r[j])'
+                    )
+                return (
+                    f"func() {_slice_type} {{ _r := {target_expr}; "
+                    f"sort.Slice(_r, func(i, j int) bool {{ "
+                    f"return {less_expr} }}); return _r }}()"
+                )
 
             if _apply_list_combinators and raw_method == "map" and args:
                 if inline_lambda:
@@ -1240,33 +1260,13 @@ class ExpressionVisitorMixin:
                 return f"{self._self_replacement}.{self._go_public_name(attr)}"
             expr = re.sub(r'\bself\.(\w+)', _replace_self_attr, expr)
 
-        string_method_map = {
-            "upper": ("strings", "ToUpper", False),
-            "lower": ("strings", "ToLower", False),
-            "strip": ("strings", "TrimSpace", False),
-            "title": ("strings", "Title", False),
-            "startswith": ("strings", "HasPrefix", True),
-            "endswith": ("strings", "HasSuffix", True),
-            "find": ("strings", "Index", True),
-            "count": ("strings", "Count", True),
-            "replace": ("strings", "ReplaceAll", True),
-            "contains": ("strings", "Contains", True),
-            "split": ("strings", "Split", True),
-        }
         sm_match = re.match(r'^(.+?)\.(\w+)\((.*)\)$', expr)
         if sm_match:
             obj_part = sm_match.group(1)
             method_name = sm_match.group(2)
             call_args = sm_match.group(3).strip()
 
-            if method_name in string_method_map:
-                pkg, go_func, has_args = string_method_map[method_name]
-                self._need_import(pkg)
-                obj_go = self._transform_fstring_expr(obj_part)
-                if has_args and call_args:
-                    return f"{pkg}.{go_func}({obj_go}, {call_args})"
-                return f"{pkg}.{go_func}({obj_go})"
-            elif method_name == "join":
+            if method_name == "join":
                 self._need_import("strings")
                 obj_go = self._transform_fstring_expr(obj_part)
                 return f"strings.Join({call_args}, {obj_go})"

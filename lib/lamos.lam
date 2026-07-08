@@ -24,6 +24,81 @@ go! {
     )
 }
 
+class File {
+    func __init__(self, handle: any) {
+        self.handle: any = handle
+    }
+
+    static func open(path: str, mode: str = "r") -> File {
+        go! {
+            var f *os.File
+            var err error
+            if mode == "w" || mode == "write" {
+                f, err = os.Create(path)
+            } else if mode == "a" || mode == "append" {
+                f, err = os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+            } else {
+                f, err = os.Open(path)
+            }
+            if err != nil { panic(err) }
+            return NewFile(f)
+        }
+    }
+
+    func read(self) -> str {
+        go! {
+            f, ok := self.handle.(*os.File)
+            if !ok || f == nil { return "" }
+            data, err := io.ReadAll(f)
+            if err != nil { return "" }
+            return string(data)
+        }
+    }
+
+    func write(self, content: str) -> int {
+        go! {
+            f, ok := self.handle.(*os.File)
+            if !ok || f == nil { return 0 }
+            n, err := f.WriteString(content)
+            if err != nil { return n }
+            return n
+        }
+    }
+
+    func close(self) {
+        go! {
+            f, ok := self.handle.(*os.File)
+            if ok && f != nil {
+                f.Close()
+            }
+        }
+    }
+
+    func readline(self) -> str {
+        go! {
+            f, ok := self.handle.(*os.File)
+            if !ok || f == nil { return "" }
+            reader := bufio.NewReader(f)
+            line, err := reader.ReadString('\n')
+            line = strings.TrimRight(line, "\r\n")
+            if err != nil && line == "" { return "" }
+            return line
+        }
+    }
+
+    func readlines(self) -> list[str] {
+        go! {
+            f, ok := self.handle.(*os.File)
+            if !ok || f == nil { return []string{} }
+            data, err := io.ReadAll(f)
+            if err != nil { return []string{} }
+            content := strings.TrimRight(string(data), "\n")
+            if content == "" { return []string{} }
+            return strings.Split(content, "\n")
+        }
+    }
+}
+
 class Os {
     static func getenv(key: str) -> str {
         go! {

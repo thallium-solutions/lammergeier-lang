@@ -70,6 +70,7 @@ from compiler.typesys import DictType, FuncType, GenericType, ListType, UnionTyp
 # The pattern below matches every Python-style identifier so the
 # unused-binding pass can mark referenced names regardless.
 _FSTRING_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_GO_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 _ANSI = {
     "red": "\033[31m",
@@ -120,7 +121,7 @@ BUILTIN_TYPES: Set[str] = {
     "None", "any", "bool", "str", "string", "bytes", "int", "int8",
     "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32",
     "uint64", "float", "float32", "float64", "byte", "rune",
-    "list", "dict", "set", "tuple", "func", "Result", "Option",
+    "list", "dict", "set", "tuple", "func", "Result", "Option", "File",
     "Error",
 }
 
@@ -318,7 +319,12 @@ class _MethodShape:
 class SemanticChecker:
     """Walks a parsed Lam tree and accumulates :class:`SemanticError`."""
 
-    def __init__(self, *, extra_known_names: Optional[Iterable[str]] = None):
+    def __init__(
+        self,
+        *,
+        extra_known_names: Optional[Iterable[str]] = None,
+        go_blocks: Optional[dict[str, str]] = None,
+    ):
         # Names provided externally — typically from imported libraries
         # whose own top-level definitions the caller has already parsed.
         self._extra_known: Set[str] = set(extra_known_names or ())
@@ -354,6 +360,7 @@ class SemanticChecker:
         self._class_method_shapes: dict[str, dict[str, _MethodShape]] = {}
         self._func_param_types: dict[str, list[tuple[str, ...]]] = {}
         self._ast_classes: dict[str, ClassDecl] = {}
+        self._go_blocks: dict[str, str] = dict(go_blocks or {})
 
     # ─── Public API ────────────────────────────────────────────
 
@@ -778,8 +785,9 @@ class SemanticChecker:
                     )
                 self._check_shadow_builtin_or_import(node, n)
                 self._check_go_reserved(node, n)
-                self._declare(n)
-                self._record_binding_node(n, node)
+                if self._assignment_declares_current_scope(node, n):
+                    self._declare(n)
+                    self._record_binding_node(n, node)
             self._record_assignment_types(node)
             self._visit_assignment_values(node)
             return
@@ -1398,6 +1406,8 @@ class SemanticChecker:
             return
 
         if d == "funccall":
+            if self._mark_go_marker_uses(node):
+                return
             if self._check_method_kind_call(node):
                 self._visit_call_args(node)
                 return
@@ -2242,6 +2252,52 @@ class SemanticChecker:
             else:
                 i += 1
 
+    def _mark_go_marker_uses(self, node: Tree) -> bool:
+        """Mark visible Lam names referenced by preprocessed ``go!`` text."""
+        if not node.children:
+            return False
+        callee = node.children[0]
+        if not isinstance(callee, Tree) or callee.data != "var" or not callee.children:
+            return False
+        func_name = self._name_text(callee.children[0])
+        if func_name not in {"__go_block__", "__go_inline__"}:
+            return False
+        raw = self._go_blocks.get(self._go_marker_id(node), "")
+        for match in _GO_IDENT_RE.finditer(raw):
+            self._is_resolved(match.group(0))
+        return True
+
+    @staticmethod
+    def _go_marker_id(node: Tree) -> str:
+        if len(node.children) < 2:
+            return ""
+        args_node = node.children[1]
+        if not isinstance(args_node, Tree):
+            return ""
+        for child in args_node.children:
+            raw = SemanticChecker._literal_string_text(child)
+            if raw:
+                return raw
+        return ""
+
+    @staticmethod
+    def _literal_string_text(node) -> str:
+        if isinstance(node, Token):
+            text = str(node)
+        elif isinstance(node, Tree):
+            if node.data in {"string", "literal"} and node.children:
+                return SemanticChecker._literal_string_text(node.children[0])
+            for child in node.children:
+                text = SemanticChecker._literal_string_text(child)
+                if text:
+                    return text
+            return ""
+        else:
+            return ""
+        if len(text) >= 2 and text[0] in {"'", '"'} and text[-1] == text[0]:
+            return text[1:-1]
+        return text
+
     def _suggest_name(self, name: str) -> Optional[str]:
         """Return an in-scope name similar to ``name`` (Levenshtein-ish
         via :func:`difflib.get_close_matches`) or ``None`` if nothing
@@ -2506,7 +2562,8 @@ class SemanticChecker:
         d = stmt.data
         if d in ("assign_stmt", "annassign", "assign", "augassign"):
             for n in self._assign_targets(stmt):
-                scope.names.add(n)
+                if self._stmt_def_declares_scope(stmt, scope, n):
+                    scope.names.add(n)
             return
         if d == "const_stmt":
             # Mirror the module-scope behaviour: register the name for
@@ -2587,6 +2644,13 @@ class SemanticChecker:
             for sub in stmt.children:
                 self._collect_stmt_defs(sub, scope)
             return
+
+    def _stmt_def_declares_scope(self, stmt: Tree, scope: _Scope, name: str) -> bool:
+        if not name:
+            return False
+        if stmt.data == "annassign" or name in scope.names:
+            return True
+        return not any(name in outer.names for outer in self._scopes)
 
     def _collect_pattern_names(self, node, scope: _Scope) -> None:
         """Recursively grab capture names from a match pattern."""
@@ -3604,6 +3668,13 @@ class SemanticChecker:
         if name and self._scopes:
             self._scopes[-1].names.add(name)
 
+    def _assignment_declares_current_scope(self, node: Tree, name: str) -> bool:
+        if not name or not self._scopes:
+            return False
+        if node.data == "annassign" or name in self._scopes[-1].names:
+            return True
+        return not any(name in scope.names for scope in self._scopes[:-1])
+
     def _error(self, node, kind: str, msg: str) -> None:
         line, col = self._loc(node)
         self.errors.append(SemanticError(line, col, msg, kind))
@@ -3953,12 +4024,16 @@ def check_source(
     tree: Tree,
     *,
     extra_known_names: Optional[Iterable[str]] = None,
+    go_blocks: Optional[dict[str, str]] = None,
     module_index: WorkspaceIndex | None = None,
     source_path: Path | None = None,
 ) -> List[SemanticError]:
     """Convenience wrapper used from the CLI."""
     ast_module = build_module(tree)
-    errors = SemanticChecker(extra_known_names=extra_known_names).check(
+    errors = SemanticChecker(
+        extra_known_names=extra_known_names,
+        go_blocks=go_blocks,
+    ).check(
         tree,
         ast_module=ast_module,
     )

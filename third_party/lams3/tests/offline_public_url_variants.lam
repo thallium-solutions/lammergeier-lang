@@ -1,0 +1,11 @@
+# expect: https://cdn.example.com/assets/folder/file%20name.txt
+# expect: https://bucket.example.com/a+b/c%23d.txt
+# expect: https://static.example.com/emoji/%F0%9F%AA%B6.txt
+
+from lams3 import S3
+
+func main() {
+    print(S3.publicUrl(" https://cdn.example.com/assets/ ", "folder/file name.txt"))
+    print(S3.publicUrl("http://bucket.example.com", "a+b/c#d.txt"))
+    print(S3.publicUrl("static.example.com", "emoji/🪶.txt"))
+}

@@ -1,0 +1,9 @@
+[library]
+name = "lamstripe"
+version = "0.1.0"
+description = "Stripe REST API client for Lammergeier"
+license = "MIT"
+authors = ["Lammergeier contributors"]
+
+[compatibility]
+lamc = ">=0.1.0"

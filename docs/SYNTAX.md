@@ -1076,8 +1076,10 @@ balanced `(...)`, `[...]`, or literal `{...}` are treated as whitespace.
 enclosing function returns, and multiple `defer`s run in LIFO order.
 
 ```lammergeier
+from lamos import File
+
 func load_config(path: str) -> str {
-    f: File = open(path, "r")
+    f: File = File.open(path, "r")
     defer f.close()
     return f.read()
 }
@@ -1151,13 +1153,13 @@ at compile time:
   into the import worklist whenever any of the dispatched names
   appears in your source — direct or transitive — so callers
   never need to write the import explicitly.
-- **List methods** (`append` / `map` / `filter` / `any` / `all`
-  / `foreach` / `reduce` / `sort` / …) lower to either a Go
-  primitive (`append(xs, 4)`) or an inline IIFE that builds the
-  result. Lists don't go through a stdlib library — there's no
-  `Lists` class to host them — but the dispatch convention is
-  the same: the transpiler picks the lowering only when the
-  receiver is genuinely a `list[T]`.
+- **List methods** (`length` / `append` / `map` / `filter` /
+  `any` / `all` / `foreach` / `reduce` / `sort` / …) lower to
+  either a Go primitive (`len(xs)`, `append(xs, 4)`) or an inline
+  IIFE that builds the result. Lists don't go through a stdlib
+  library — there's no `Lists` class to host them — but the dispatch
+  convention is the same: the transpiler picks the lowering only when
+  the receiver is genuinely a `list[T]`.
 
 The rewrite fires only when the receiver is known to be of the
 right primitive type (either because its declared annotation is
@@ -1180,13 +1182,17 @@ print("name=%s age=%d".format("alice", 42))
 # Lists.
 xs: list[int] = [1, 2, 3]
 xs.append(4)                       # xs = append(xs, 4)
+print(xs.length())                 # len(xs)
 doubled: list[int] = xs.map(lambda x: x * 2)
                                    # IIFE that builds a new []int
 print(xs.any(lambda x: x > 2))     # IIFE with early return -> bool
+sorted: list[int] = xs.sort()      # sorted copy; xs is unchanged
+xs = xs.sort(inplace=true)         # sort in-place and return xs
+desc: list[int] = xs.sort(compare=lambda a, b: a > b)
 ```
 
 The full set of dispatched string methods is `toUpper`,
-`toLower`, `trim`, `trimLeft`, `trimRight`, `replace`, `split`,
+`toLower`, `trim`, `length`, `trimLeft`, `trimRight`, `replace`, `split`,
 `join`, `startsWith`, `endsWith`, `index`, `count`, `contains`,
 `title`, `format` — the same identifiers `lamstrings.Strings`
 exposes as static methods. See [TRANSPILATION.md](TRANSPILATION.md)
@@ -1220,23 +1226,34 @@ It can span multiple lines.
 
 ## File Management
 
-Open, read, write, and close files:
+`File.open(path, mode="r")` returns the stdlib `lamos.File` class. The
+class owns the underlying file handle and exposes `read`, `write`,
+`readline`, `readlines`, and `close`. Modes `"r"`, `"w"`, and `"a"`
+map to read, truncate/write, and append/create respectively.
 
 ```lammergeier
+from lamos import File
+
 # Write to file
-f = open("output.txt", "w")
+f: File = File.open("output.txt", "w")
 f.write("hello world")
 f.close()
 
 # Read from file
-f = open("input.txt")
+f: File = File.open("input.txt")
 content: str = f.read()
 f.close()
 
-# With statement (auto-close)
-with open("data.txt") as f {
+# With statement (auto-close) with an as binding
+with File.open("data.txt") as f {
     content: str = f.read()
     print(content)
+}
+
+# Line-oriented helpers
+with File.open("data.txt") as f {
+    first: str = f.readline()
+    lines: list[str] = f.readlines()
 }
 ```
 
@@ -1562,6 +1579,8 @@ and lives only inside the handler.
 
 | Situation                                              | Use                       |
 |--------------------------------------------------------|---------------------------|
+| Want to jump the stack or there's a handler somewhere above | `raise` / `throw`    |
+| Want to manage the problem immiediately or force the caller to check | `Result`    |
 | Programmer mistake / impossible state / OS panic       | `raise` / `throw`         |
 | Recoverable failure the caller will handle             | return `Result`           |
 | Threading several fallible calls together              | `?` in a Result-returning function |
@@ -1574,7 +1593,7 @@ and lives only inside the handler.
 Context managers with auto-cleanup:
 
 ```lammergeier
-with open("file.txt") as f {
+with File.open("file.txt") as f {
     data: str = f.read()
     print(data)
 }
@@ -2198,7 +2217,7 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamstrings`     | `Strings`                          | String utilities (repeat, contains, trim, split, join, etc.) |
 | `lamtime`        | `Time`                             | Time operations (nowUnix, sleepMs, nowString, etc.) |
 | `lamconv`        | `Conv`                             | Type conversions (toInt/toFloat/toBool for silent defaults; `tryInt`/`tryFloat`/`tryBool` return `Result`) |
-| `lamos`          | `Os`                               | OS/filesystem (readFile, writeFile, readLines, writeLines, walk, listDir/listFiles/listDirs, tempFile, etc.); `tryReadFile`/`tryWriteFile`/`tryReadLines`/`tryWriteLines` return `Result` |
+| `lamos`          | `Os`, `File`                       | OS/filesystem helpers plus the `File` context-manager class (`File.open`, `read`, `write`, `readline`, `readlines`, `close`); `tryReadFile`/`tryWriteFile`/`tryReadLines`/`tryWriteLines` return `Result` |
 | `lamjson`        | `Json`                             | JSON encode/decode/encodePretty; `tryEncode`/`tryDecode`/`tryEncodePretty`/`tryDecodeInto` return `Result` |
 | `lamrandom`      | `Random`                           | Random numbers (randInt, randFloat, shuffle, choice, sample, uuid, randomString, randomHex) plus secure variants (secureBytes, secureToken, secureInt, secureUuid) |
 | `lamsort`        | `Sort`                             | Sorting (ints, floats, strings, reverseInts, reverseStrings, reverseFloats, reverse, isSorted) |
@@ -2830,7 +2849,7 @@ The pipeline runs in three layers:
 The Pythonic **leading-underscore** opt-out applies to every
 "unused" warning: rename a parameter `age` to `_age` (or just `_`)
 to mark it as deliberately unused, and the warning disappears. The
-same convention works for `for _ in xs`, `with open(p) as _f`, and
+same convention works for `for _ in xs`, `with File.open(p) as _f`, and
 `catch SomeError as _e`.
 
 For unused **locals** the story is split. Go normally rejects an

@@ -1,0 +1,13 @@
+from lamstripe import StripeClient
+from lamenv import Env
+
+func main() {
+    if Env.get("LAMSTRIPE_LIVE_TESTS") != "1" {
+        print("skip: set LAMSTRIPE_LIVE_TESTS=1 to run live Stripe tests")
+        return
+    }
+
+    client: StripeClient = StripeClient.fromEnv()
+    res = client.rawGet("/balance")
+    print(res.ok())
+}

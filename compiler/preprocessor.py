@@ -337,6 +337,7 @@ def preprocess_go_blocks(source: str) -> Tuple[str, Dict[str, str]]:
         match_brace = re.match(r'^(\s*)go!\s*\{', stripped)
         if match_brace:
             indent = match_brace.group(1)
+            start_i = i
             # Check if closing brace is on the same line
             after_open = stripped[match_brace.end():]
             if '}' in after_open:
@@ -384,6 +385,7 @@ def preprocess_go_blocks(source: str) -> Tuple[str, Dict[str, str]]:
             bid = str(block_id)
             go_blocks[bid] = "\n".join(raw_lines)
             result_lines.append(f'{indent}__go_block__("{bid}")')
+            result_lines.extend("" for _ in range(max(0, i - start_i - 1)))
             block_id += 1
             continue
 
@@ -391,6 +393,7 @@ def preprocess_go_blocks(source: str) -> Tuple[str, Dict[str, str]]:
         match_legacy = re.match(r'^(\s*)go!\s*:', stripped)
         if match_legacy:
             indent = match_legacy.group(1)
+            start_i = i
             block_indent_len = len(indent)
             raw_lines = []
             i += 1
@@ -412,6 +415,7 @@ def preprocess_go_blocks(source: str) -> Tuple[str, Dict[str, str]]:
             bid = str(block_id)
             go_blocks[bid] = "\n".join(raw_lines)
             result_lines.append(f'{indent}__go_block__("{bid}")')
+            result_lines.extend("" for _ in range(max(0, i - start_i - 1)))
             block_id += 1
         else:
             result_lines.append(line)

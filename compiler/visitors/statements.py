@@ -1054,6 +1054,11 @@ class StatementVisitorMixin:
         with_items = node.children[0]
         suite = node.children[1]
 
+        self._emit("{")
+        self.indent += 1
+        self._push_scope()
+        body_start, vars_at_start = self._scope_unused_tracking_start()
+
         if isinstance(with_items, Tree) and with_items.data == "with_items":
             for item in with_items.children:
                 if isinstance(item, Tree) and item.data == "with_item":
@@ -1068,10 +1073,6 @@ class StatementVisitorMixin:
                         self._emit(f"_withRes := {expr_str}")
                         self._emit(f"defer _withRes.Close()")
 
-        self._emit("{")
-        self.indent += 1
-        self._push_scope()
-        body_start, vars_at_start = self._scope_unused_tracking_start()
         self._visit_suite(suite)
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1

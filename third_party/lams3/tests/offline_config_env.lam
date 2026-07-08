@@ -1,0 +1,48 @@
+# expect: false
+# expect: false
+# expect: auto
+# expect: true
+# expect: true
+# expect: us-east-1
+# expect: false
+# expect: true
+
+from lams3 import S3
+from lams3 import S3Config
+from lamenv import Env
+
+func clearS3Env() {
+    Env.unset("S3_ACCESS_KEY_ID")
+    Env.unset("S3_SECRET_ACCESS_KEY")
+    Env.unset("S3_ENDPOINT")
+    Env.unset("S3_PUBLIC_ENDPOINT")
+    Env.unset("S3_REGION")
+    Env.unset("S3_PUBLIC_BUCKET")
+    Env.unset("S3_USE_PATH_STYLE")
+}
+
+func main() {
+    clearS3Env()
+
+    empty: S3Config = S3Config.fromEnv()
+    print(empty.isReady())
+    print(S3.hasEnv())
+    print(empty.region)
+    print(empty.usePathStyle)
+
+    Env.set("S3_ACCESS_KEY_ID", "key")
+    Env.set("S3_SECRET_ACCESS_KEY", "secret")
+    Env.set("S3_ENDPOINT", "account.r2.cloudflarestorage.com")
+    Env.set("S3_PUBLIC_ENDPOINT", "cdn.example.com")
+    Env.set("S3_REGION", "us-east-1")
+    Env.set("S3_PUBLIC_BUCKET", "bucket")
+    Env.set("S3_USE_PATH_STYLE", "false")
+
+    ready: S3Config = S3Config.fromEnv()
+    print(ready.isReady())
+    print(ready.region)
+    print(ready.usePathStyle)
+    print(S3.hasEnv())
+
+    clearS3Env()
+}

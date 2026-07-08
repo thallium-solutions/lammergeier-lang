@@ -1,0 +1,40 @@
+# Test: stdlib File class and with/as auto-close
+# expect: 12
+# expect: line1
+# expect: 2
+# expect: append-ok
+# expect: file_ok
+
+from lamos import Os, File
+
+func main() {
+    path: str = Os.tempFile("lam_file_test_", ".txt")
+
+    with File.open(path, "w") as f {
+        written: int = f.write("line1\nline2\n")
+        print(written)
+    }
+
+    with File.open(path) as f {
+        print(f.readline())
+    }
+
+    with File.open(path) as f {
+        lines: list[str] = f.readlines()
+        print(lines.length())
+    }
+
+    with File.open(path, "a") as f {
+        f.write("line3\n")
+    }
+
+    reader: File = File.open(path)
+    content: str = reader.read()
+    reader.close()
+    if content.contains("line3") {
+        print("append-ok")
+    }
+
+    Os.remove(path)
+    print("file_ok")
+}

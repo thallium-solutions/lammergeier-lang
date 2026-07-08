@@ -1,0 +1,25 @@
+# expect: https://cdn.example.com/client/file%20name.txt
+
+from lams3 import S3Client
+from lamenv import Env
+
+func main() {
+    Env.set("S3_ACCESS_KEY_ID", "key")
+    Env.set("S3_SECRET_ACCESS_KEY", "secret")
+    Env.set("S3_ENDPOINT", "account.r2.cloudflarestorage.com")
+    Env.set("S3_PUBLIC_ENDPOINT", "https://cdn.example.com")
+    Env.set("S3_REGION", "auto")
+    Env.set("S3_PUBLIC_BUCKET", "bucket")
+    Env.set("S3_USE_PATH_STYLE", "true")
+
+    client: S3Client = S3Client.fromEnv()
+    print(client.publicUrl("client/file name.txt"))
+
+    Env.unset("S3_ACCESS_KEY_ID")
+    Env.unset("S3_SECRET_ACCESS_KEY")
+    Env.unset("S3_ENDPOINT")
+    Env.unset("S3_PUBLIC_ENDPOINT")
+    Env.unset("S3_REGION")
+    Env.unset("S3_PUBLIC_BUCKET")
+    Env.unset("S3_USE_PATH_STYLE")
+}

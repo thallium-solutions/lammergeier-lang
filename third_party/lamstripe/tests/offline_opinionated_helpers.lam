@@ -1,0 +1,59 @@
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: /payment_intents
+# expect: true
+# expect: true
+# expect: pi_123
+# expect: secret_123
+
+from lamstripe import Stripe, StripeClient, StripeConfig, StripePaymentIntentOptions, StripeResponse
+from lamhttp import Http, HttpServer
+
+class Capture {
+    static path: str = ""
+    static body: str = ""
+}
+
+func handler(method: str, path: str, body: str) -> str {
+    _ = method
+    Capture.path = path
+    Capture.body = body
+    return "{\"id\":\"pi_123\",\"client_secret\":\"secret_123\"}"
+}
+
+func main() {
+    print(Stripe.normalizeCurrency(" USD ") == "usd")
+    print(not Stripe.validateAmount(0).ok())
+    print(not Stripe.validateCurrency("us").ok())
+
+    opts: StripePaymentIntentOptions = StripePaymentIntentOptions(1299, "USD")
+    opts.description = "Lam order"
+    opts.customerId = "cus_123"
+    opts.receiptEmail = "buyer@example.com"
+    opts.setMetadata("order_id", "ord_123")
+    fields: dict[str, str] = opts.fields()
+
+    print(fields["currency"] == "usd")
+    print(fields["automatic_payment_methods[enabled]"] == "true")
+    print(fields["metadata[order_id]"] == "ord_123")
+
+    srv: HttpServer = Http.serve(39283, handler)
+    cfg: StripeConfig = StripeConfig("sk_test_local", "http://127.0.0.1:39283", "", 5000)
+    client: StripeClient = StripeClient(cfg)
+    client.setIdempotencyKey("idem_123")
+    res = client.createPaymentIntentWithOptions(opts)
+    print(res.ok())
+    print(Capture.path)
+    print(Capture.body.contains("metadata%5Border_id%5D=ord_123"))
+    print(Capture.body.contains("automatic_payment_methods%5Benabled%5D=true"))
+    srv.close()
+
+    response: StripeResponse = StripeResponse(200, "{\"id\":\"pi_123\",\"client_secret\":\"secret_123\"}", "")
+    print(response.id())
+    print(response.clientSecret())
+}

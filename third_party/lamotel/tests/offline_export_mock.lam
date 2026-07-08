@@ -1,0 +1,39 @@
+# expect: true
+# expect: POST
+# expect: /v1/traces
+# expect: true
+# expect: true
+
+from lamotel import OtelConfig, OtelTracer
+from lamhttp import Http, HttpServer
+
+class Capture {
+    static method: str = ""
+    static path: str = ""
+    static body: str = ""
+}
+
+func handler(method: str, path: str, body: str) -> str {
+    Capture.method = method
+    Capture.path = path
+    Capture.body = body
+    return "{}"
+}
+
+func main() {
+    srv: HttpServer = Http.serve(39282, handler)
+    cfg: OtelConfig = OtelConfig("checkout-api", "http://127.0.0.1:39282", "", 5000)
+    tracer: OtelTracer = OtelTracer(cfg)
+    span = tracer.startSpan("checkout")
+    span.setAttribute("route", "/checkout")
+    span.end()
+
+    res = tracer.exportSpan(span)
+    print(res.ok())
+    print(Capture.method)
+    print(Capture.path)
+    print(Capture.body.contains("checkout-api"))
+    print(Capture.body.contains("checkout"))
+
+    srv.close()
+}

@@ -298,6 +298,11 @@ def _preprocess_for_parse(source: str) -> str:
     return preprocess_for_parse(source).source
 
 
+def _preprocess_result_for_parse(source: str):
+    """Return preprocessed source plus parse-time metadata."""
+    return preprocess_for_parse(source)
+
+
 _FUNC_RE = re.compile(
     r"^(?P<indent>\s*)(?P<mods>(?:static\s+|private\s+)?)func\s+"
     r"(?P<name>\w+)\s*\((?P<params>[^)]*)\)\s*"
@@ -441,7 +446,8 @@ def analyze(doc: Document) -> None:
     doc.imports = {}
 
     parser = _get_parser()
-    pre = _preprocess_for_parse(doc.text)
+    pre_result = _preprocess_result_for_parse(doc.text)
+    pre = pre_result.source
     if not pre.endswith("\n"):
         pre += "\n"
 
@@ -455,7 +461,7 @@ def analyze(doc: Document) -> None:
         # swallowed.
         try:
             from compiler.semantic import SemanticChecker
-            checker = SemanticChecker()
+            checker = SemanticChecker(go_blocks=pre_result.go_blocks)
             errors = checker.check(tree)
             for err in errors:
                 doc.semantic_diagnostics.append(err.to_diagnostic())

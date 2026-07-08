@@ -1,0 +1,11 @@
+# expect: a=1&space=hello+world&sym=a%2Bb%26c
+
+from lamstripe import Stripe
+
+func main() {
+    fields: dict[str, str] = {}
+    fields["space"] = "hello world"
+    fields["a"] = "1"
+    fields["sym"] = "a+b&c"
+    print(Stripe.encodeForm(fields))
+}

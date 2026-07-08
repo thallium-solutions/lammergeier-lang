@@ -1,0 +1,14 @@
+# expect: true
+# expect: 0
+# expect: true
+# expect: true
+
+from lams3 import S3Object
+
+func main() {
+    obj: S3Object = S3Object()
+    print(obj.key == "")
+    print(obj.size)
+    print(obj.etag == "")
+    print(obj.lastModified == "")
+}

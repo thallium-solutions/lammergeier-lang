@@ -1395,6 +1395,7 @@ def compile_lam(
         from compiler import semantic as _semantic
         sem_diags = _semantic.check_source(
             tree,
+            go_blocks=go_blocks,
             module_index=module_index,
             source_path=source_file,
         )
@@ -1497,7 +1498,7 @@ def compile_lam(
     # syntactic sugar they expect to "just work".
     _STRING_METHOD_DISPATCH_NAMES = (
         "repeat", "contains", "hasPrefix", "hasSuffix",
-        "toUpper", "toLower", "trim", "trimLeft", "trimRight",
+        "toUpper", "toLower", "trim", "length", "trimLeft", "trimRight",
         "replace", "split", "join", "count", "index", "lastIndex",
         "title", "equalFold", "fields", "capitalize", "isAlpha",
         "isDigit", "isAlnum", "isSpace", "reverse", "center",
@@ -2133,7 +2134,7 @@ def compile_lam(
         )
 
         # Build command
-        build_cmd = ["go", "build"]
+        build_cmd = ["go", "build", "-buildvcs=false"]
 
         if go_race:
             build_cmd.append("-race")

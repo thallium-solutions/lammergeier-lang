@@ -6,6 +6,22 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-05-09
+
+### Added
+
+- Expanded `third_party/lams3` offline coverage for environment configuration,
+  readiness checks, static and client-level public URL generation, URL encoding
+  variants, and `S3Object` defaults.
+- Added a more complete `third_party/lams3` README covering configuration,
+  usage, API reference, offline tests, and optional live S3-compatible
+  round-trip testing.
+
+### Changed
+
+- Updated the `lams3` package test runner to discover every `offline_*.lam`
+  regression case automatically.
+
 ## 2026-05-07
 
 ### Added

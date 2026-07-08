@@ -1,0 +1,331 @@
+from lamenv import Env
+from lamerrors import Result, Error
+from lamhttp import HttpClient, HttpResponse
+from lamjson import Json
+
+go! {
+    import "net/url"
+}
+
+class StripeConfig {
+    func __init__(self, secretKey: str = "", baseUrl: str = "https://api.stripe.com/v1", apiVersion: str = "", timeoutMs: int = 30000) {
+        self.secretKey: str = secretKey
+        self.baseUrl: str = baseUrl
+        self.apiVersion: str = apiVersion
+        self.timeoutMs: int = timeoutMs
+    }
+
+    static func fromEnv() -> StripeConfig {
+        cfg: StripeConfig = StripeConfig()
+        cfg.secretKey = Env.get("STRIPE_SECRET_KEY")
+        cfg.baseUrl = Env.getOr("STRIPE_BASE_URL", "https://api.stripe.com/v1")
+        cfg.apiVersion = Env.get("STRIPE_API_VERSION")
+        return cfg
+    }
+
+    func isReady(self) -> bool {
+        return self.secretKey != ""
+    }
+}
+
+class StripeCustomerOptions {
+    func __init__(self, email: str, name: str = "") {
+        self.email: str = email
+        self.name: str = name
+        self.metadata: dict[str, str] = {}
+    }
+
+    func setMetadata(self, key: str, value: str) {
+        _ = key
+        self.metadata[key] = value
+    }
+
+    func fields(self) -> dict[str, str] {
+        out: dict[str, str] = {}
+        out["email"] = self.email
+        if self.name != "" {
+            out["name"] = self.name
+        }
+        Stripe.addMetadata(out, self.metadata)
+        return out
+    }
+}
+
+class StripePaymentIntentOptions {
+    func __init__(self, amount: int, currency: str) {
+        self.amount: int = amount
+        self.currency: str = currency
+        self.description: str = ""
+        self.customerId: str = ""
+        self.receiptEmail: str = ""
+        self.captureMethod: str = ""
+        self.automaticPaymentMethods: bool = true
+        self.metadata: dict[str, str] = {}
+    }
+
+    func setMetadata(self, key: str, value: str) {
+        _ = key
+        self.metadata[key] = value
+    }
+
+    func fields(self) -> dict[str, str] {
+        out: dict[str, str] = {}
+        out["amount"] = str(self.amount)
+        out["currency"] = Stripe.normalizeCurrency(self.currency)
+        out["automatic_payment_methods[enabled]"] = str(self.automaticPaymentMethods).toLower()
+        if self.description != "" {
+            out["description"] = self.description
+        }
+        if self.customerId != "" {
+            out["customer"] = self.customerId
+        }
+        if self.receiptEmail != "" {
+            out["receipt_email"] = self.receiptEmail
+        }
+        if self.captureMethod != "" {
+            out["capture_method"] = self.captureMethod
+        }
+        Stripe.addMetadata(out, self.metadata)
+        return out
+    }
+}
+
+class StripeCheckoutSessionOptions {
+    func __init__(self, successUrl: str, cancelUrl: str, priceId: str, quantity: int = 1) {
+        self.successUrl: str = successUrl
+        self.cancelUrl: str = cancelUrl
+        self.priceId: str = priceId
+        self.quantity: int = quantity
+        self.mode: str = "payment"
+        self.customerEmail: str = ""
+        self.clientReferenceId: str = ""
+        self.allowPromotionCodes: bool = false
+        self.metadata: dict[str, str] = {}
+    }
+
+    func setMetadata(self, key: str, value: str) {
+        _ = key
+        self.metadata[key] = value
+    }
+
+    func fields(self) -> dict[str, str] {
+        out: dict[str, str] = {}
+        out["success_url"] = self.successUrl
+        out["cancel_url"] = self.cancelUrl
+        out["mode"] = self.mode
+        out["line_items[0][price]"] = self.priceId
+        out["line_items[0][quantity]"] = str(self.quantity)
+        if self.customerEmail != "" {
+            out["customer_email"] = self.customerEmail
+        }
+        if self.clientReferenceId != "" {
+            out["client_reference_id"] = self.clientReferenceId
+        }
+        if self.allowPromotionCodes {
+            out["allow_promotion_codes"] = "true"
+        }
+        Stripe.addMetadata(out, self.metadata)
+        return out
+    }
+}
+
+class StripeResponse {
+    func __init__(self, status: int = 0, body: str = "", transportError: str = "") {
+        self.status: int = status
+        self.body: str = body
+        self.transportError: str = transportError
+    }
+
+    func ok(self) -> bool {
+        return self.transportError == "" and self.status >= 200 and self.status < 300
+    }
+
+    func json(self) -> any {
+        if self.body == "" {
+            return {}
+        }
+        return Json.decode(self.body)
+    }
+
+    func field(self, name: str) -> str {
+        data: any = self.json()
+        _ = name
+        _ = data
+        out: str = ""
+        go! {
+            if m, ok := data.(map[string]interface{}); ok {
+                if s, ok := m[name].(string); ok {
+                    out = s
+                }
+            }
+        }
+        return out
+    }
+
+    func id(self) -> str {
+        return self.field("id")
+    }
+
+    func url(self) -> str {
+        return self.field("url")
+    }
+
+    func clientSecret(self) -> str {
+        return self.field("client_secret")
+    }
+}
+
+class Stripe {
+    static func encodeForm(fields: dict[str, str]) -> str {
+        _ = fields
+        go! {
+            vals := url.Values{}
+            for k, v := range fields {
+                vals.Set(k, v)
+            }
+            return vals.Encode()
+        }
+    }
+
+    static func errorMessage(res: StripeResponse) -> str {
+        if res.transportError != "" {
+            return res.transportError
+        }
+        if res.body != "" {
+            return res.body
+        }
+        return "stripe request failed with status " + str(res.status)
+    }
+
+    static func normalizeCurrency(currency: str) -> str {
+        return currency.trim().toLower()
+    }
+
+    static func addMetadata(fields: dict[str, str], metadata: dict[str, str]) {
+        _ = fields
+        for k, v in metadata {
+            fields["metadata[" + k + "]"] = v
+        }
+    }
+
+    static func validateAmount(amount: int) -> Result {
+        if amount <= 0 {
+            return Result.Err(Error("StripeValidationError", "amount must be greater than zero", None))
+        }
+        return Result.Ok(true)
+    }
+
+    static func validateCurrency(currency: str) -> Result {
+        if len(Stripe.normalizeCurrency(currency)) != 3 {
+            return Result.Err(Error("StripeValidationError", "currency must be a 3-letter ISO code", None))
+        }
+        return Result.Ok(true)
+    }
+}
+
+class StripeClient {
+    func __init__(self, cfg: StripeConfig) {
+        self.cfg: StripeConfig = cfg
+        self.http: HttpClient = HttpClient(cfg.baseUrl, cfg.timeoutMs)
+        self.http.setHeader("Authorization", "Bearer " + cfg.secretKey)
+        self.http.setHeader("User-Agent", "lamstripe/0.1.0")
+        if cfg.apiVersion != "" {
+            self.http.setHeader("Stripe-Version", cfg.apiVersion)
+        }
+    }
+
+    static func fromEnv() -> StripeClient {
+        return StripeClient(StripeConfig.fromEnv())
+    }
+
+    func setIdempotencyKey(self, key: str) {
+        self.http.setHeader("Idempotency-Key", key)
+    }
+
+    func _result(self, res: HttpResponse) -> Result {
+        sr: StripeResponse = StripeResponse(res.status, res.body, res.error)
+        if sr.ok() {
+            return Result.Ok(sr)
+        }
+        return Result.Err(Error("StripeApiError", Stripe.errorMessage(sr), sr))
+    }
+
+    func _ready(self) -> Result {
+        if not self.cfg.isReady() {
+            return Result.Err(Error("StripeConfigError", "STRIPE_SECRET_KEY is required", None))
+        }
+        return Result.Ok(true)
+    }
+
+    func rawGet(self, path: str) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        return self._result(self.http.get(path))
+    }
+
+    func rawPostForm(self, path: str, fields: dict[str, str]) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        body: str = Stripe.encodeForm(fields)
+        return self._result(self.http.post(path, "application/x-www-form-urlencoded", body))
+    }
+
+    func createCustomer(self, email: str, name: str = "") -> Result {
+        return self.createCustomerWithOptions(StripeCustomerOptions(email, name))
+    }
+
+    func createCustomerWithOptions(self, opts: StripeCustomerOptions) -> Result {
+        if opts.email.trim() == "" {
+            return Result.Err(Error("StripeValidationError", "customer email is required", None))
+        }
+        return self.rawPostForm("/customers", opts.fields())
+    }
+
+    func createPaymentIntent(self, amount: int, currency: str, description: str = "") -> Result {
+        opts: StripePaymentIntentOptions = StripePaymentIntentOptions(amount, currency)
+        opts.description = description
+        return self.createPaymentIntentWithOptions(opts)
+    }
+
+    func createPaymentIntentWithOptions(self, opts: StripePaymentIntentOptions) -> Result {
+        amountOk: Result = Stripe.validateAmount(opts.amount)
+        if not amountOk.ok() {
+            return amountOk
+        }
+        currencyOk: Result = Stripe.validateCurrency(opts.currency)
+        if not currencyOk.ok() {
+            return currencyOk
+        }
+        return self.rawPostForm("/payment_intents", opts.fields())
+    }
+
+    func retrievePaymentIntent(self, id: str) -> Result {
+        return self.rawGet("/payment_intents/" + id)
+    }
+
+    func createCheckoutSession(self, successUrl: str, cancelUrl: str, mode: str = "payment", priceId: str = "", quantity: int = 1) -> Result {
+        opts: StripeCheckoutSessionOptions = StripeCheckoutSessionOptions(successUrl, cancelUrl, priceId, quantity)
+        opts.mode = mode
+        return self.createCheckoutSessionWithOptions(opts)
+    }
+
+    func createCheckoutSessionWithOptions(self, opts: StripeCheckoutSessionOptions) -> Result {
+        if opts.successUrl.trim() == "" {
+            return Result.Err(Error("StripeValidationError", "successUrl is required", None))
+        }
+        if opts.cancelUrl.trim() == "" {
+            return Result.Err(Error("StripeValidationError", "cancelUrl is required", None))
+        }
+        if opts.priceId.trim() == "" {
+            return Result.Err(Error("StripeValidationError", "priceId is required", None))
+        }
+        if opts.quantity <= 0 {
+            return Result.Err(Error("StripeValidationError", "quantity must be greater than zero", None))
+        }
+        return self.rawPostForm("/checkout/sessions", opts.fields())
+    }
+}

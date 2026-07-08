@@ -1,0 +1,33 @@
+# expect: false
+# expect: https://api.stripe.com/v1
+# expect: true
+# expect: http://127.0.0.1:12111
+# expect: 2024-06-20
+
+from lamstripe import StripeConfig
+from lamenv import Env
+
+func clearStripeEnv() {
+    Env.unset("STRIPE_SECRET_KEY")
+    Env.unset("STRIPE_BASE_URL")
+    Env.unset("STRIPE_API_VERSION")
+}
+
+func main() {
+    clearStripeEnv()
+
+    empty: StripeConfig = StripeConfig.fromEnv()
+    print(empty.isReady())
+    print(empty.baseUrl)
+
+    Env.set("STRIPE_SECRET_KEY", "sk_test_local")
+    Env.set("STRIPE_BASE_URL", "http://127.0.0.1:12111")
+    Env.set("STRIPE_API_VERSION", "2024-06-20")
+
+    ready: StripeConfig = StripeConfig.fromEnv()
+    print(ready.isReady())
+    print(ready.baseUrl)
+    print(ready.apiVersion)
+
+    clearStripeEnv()
+}

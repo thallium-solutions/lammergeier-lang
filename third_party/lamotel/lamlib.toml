@@ -1,0 +1,9 @@
+[library]
+name = "lamotel"
+version = "0.1.0"
+description = "Lightweight OpenTelemetry OTLP/HTTP JSON exporter for Lammergeier"
+license = "MIT"
+authors = ["Lammergeier contributors"]
+
+[compatibility]
+lamc = ">=0.1.0"

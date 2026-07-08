@@ -1,19 +1,11 @@
 from lams3 import S3
 from lams3 import S3Client
-
-go! {
-    import (
-        "fmt"
-        "os"
-    )
-}
+from lamenv import Env
 
 func main() {
-    go! {
-        if os.Getenv("LAMS3_LIVE_TESTS") != "1" {
-            fmt.Println("skip: set LAMS3_LIVE_TESTS=1 to run live S3 tests")
-            return
-        }
+    if Env.get("LAMS3_LIVE_TESTS") != "1" {
+        print("skip: set LAMS3_LIVE_TESTS=1 to run live S3 tests")
+        return
     }
 
     if not S3.hasEnv() {

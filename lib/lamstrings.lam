@@ -10,6 +10,12 @@ go! {
 }
 
 class Strings {
+    static func length(s: str) -> int {
+        go! {
+            return len(s)
+        }
+    }
+    
     static func repeat(s: str, n: int) -> str {
         go! {
             return strings.Repeat(s, n)

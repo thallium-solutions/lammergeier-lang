@@ -39,9 +39,12 @@ echo 'from lamwebp import Encoder' >> app.lam
 lamc app.lam
 ```
 
-…without any of the ceremony Go / JS users reach for (no
-`go.mod`, no `package.json`, no `npm install` + lockfile +
-globals dance).
+…with Lam-specific project state instead of Go / JS ceremony:
+`lamlib.toml` records the intended Lam dependencies, Go module
+pins, and replacements; `lamlib.lock.toml` records the exact
+resolved sources and hashes; `extlibs/` holds the installed Lam
+source tree. Users do not hand-edit a generated `go.mod`, maintain
+a `package.json`, or juggle global package installs.
 
 ---
 
@@ -124,7 +127,7 @@ lamwebp.lam                 # one file, module = filename without ext
 ```
 lamwebp/
 ├── __init__.lam            # bundled into the parent module
-└── codec.lam               # ignored unless imported explicitly
+└── codec.lam               # helper/internal source; expose via __init__.lam
 ```
 
 The compiler imports `lamwebp` as `<dir>/lamwebp/__init__.lam` when
@@ -227,6 +230,22 @@ If options are growing, create a small class or dict schema and
 document every key. If the library wraps a Go API with many knobs,
 start with a narrow Lam-facing API and add escape hatches only
 where real users need them.
+
+### Keep stdlib boundaries clear
+
+Third-party libraries should compose the stdlib rather than mirror it.
+Prefer packages for vendor APIs, optional integrations, opinionated
+frameworks, heavyweight Go dependency trees, or domains that evolve on
+their own release cadence. Good examples are `lams3` for
+S3-compatible object stores, `lamstripe` for Stripe's API, and
+`lamotel` for OpenTelemetry export.
+
+If a feature is generic and lightweight — string handling, JSON, HTTP
+helpers, filesystem access, environment variables, time, basic crypto,
+or data structures — depend on the existing `lam...` stdlib module
+instead of copying it into your package. This keeps third-party APIs
+small, makes tests read like normal user code, and avoids surprising
+behavioural forks.
 
 ### Wrap Go dependencies deliberately
 
@@ -380,8 +399,8 @@ format = "lamc fmt src/"
 |-------|----------|-------|
 | `library.name` | ✅ | Must match the module name that consumers `import`. Ascii, `snake_case`. |
 | `library.version` | ✅ | SemVer string. `lamc install` refuses to replace an installed library with a version < the one on disk without `--force`. |
-| `library.license` | ✅ | SPDX identifier (`MIT`, `Apache-2.0`, `BSD-3-Clause`, …). |
-| `compatibility.lamc` | optional | Version range. The install command warns on mismatch but doesn't abort unless `--strict`. |
+| `library.license` | optional | SPDX identifier (`MIT`, `Apache-2.0`, `BSD-3-Clause`, …). Strongly recommended before public publishing. |
+| `compatibility.lamc` | optional | Version range. Parsed and preserved for tooling / registry display; the current install path does not hard-enforce it. |
 | `dependencies` | optional | Resolved transitively by `lamc install`; every reachable `[dependencies]` key lands under `extlibs/`. Conflicting constraints (two libs + project all pinning the same name at incompatible majors) surface as a `DependencyConflict` **before any on-disk mutation**. |
 | `go-deps` | optional | Go modules the transpiled output imports. Path must be a multi-segment Go module path (single-segment names are rejected); version must be a ``v``-prefixed SemVer or Go pseudo-version. Incompatible majors across libs + project are a hard error (Go treats each major as a different package). |
 | `[scripts]` | optional | Free-form. Reserved for the future `lamc lib run` entry point. |
@@ -474,7 +493,7 @@ stores source only; consumers compile the library on their machine.
 `README.md` should include:
 
 1. A one-sentence elevator pitch.
-2. Installation command: `lamc install lamwebp` (once available).
+2. Installation command: `lamc install lamwebp`.
 3. **Compat matrix**: minimum compiler version.
 4. A runnable ≤10-line usage example.
 5. A link to the API reference section within `README.md` itself
@@ -570,11 +589,19 @@ lamc install https://github.com/alice/lamwebp.git@v1.2.0
 lamc install git@github.com:alice/lamwebp.git@main
 ```
 
-Nothing magical — the install command just clones (shallow when
-no ref is pinned, deep when one is) into
-`~/.lammergeier/extlibs/lamwebp/`, checks out the ref, validates
-`lamlib.toml`, and records the resolved commit SHA in
+Nothing magical — the install command uses the shared git cache
+under `$LAMC_CACHE` (default `~/.lammergeier/cache/git/`), checks
+out the requested ref into a temporary working tree, validates
+`lamlib.toml`, copies the source into `./extlibs/<name>/` by
+default (`~/.lammergeier/extlibs/<name>/` only with `--global`),
+and records the resolved commit SHA plus source-tree hash in
 `lamlib.lock.toml`.
+
+Direct git specs are pinned in the lockfile, but they are not yet
+written back into `[dependencies]` as a git-form entry. If a
+project should keep using a fork or branch across fresh installs,
+declare the normal registry dependency under `[dependencies]` and
+redirect it with a project-level `[replace]` entry.
 
 ### 6.2 Registry
 

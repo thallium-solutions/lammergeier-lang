@@ -252,6 +252,66 @@ func main() {
     print("PASS: unused block local warns and is silenced for go build")
 
 
+def test_go_block_references_silence_unused_parameters() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "main.lam"
+        _write(src, """
+go! { import "fmt" }
+
+func show(x: int) {
+    go! {
+        fmt.Println(x)
+    }
+}
+
+func main() {
+    show(7);
+}
+""".lstrip())
+        r = _run(str(src), "--emit-go", cwd=Path(tmp))
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        assert "unused parameter `x`" not in r.stderr, r.stderr
+    print("PASS: go! references count as parameter usage")
+
+
+def test_unused_warning_line_numbers_survive_multiline_go_blocks() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "main.lam"
+        _write(src, """
+go! {
+    import "fmt"
+}
+
+func later(unused: int) {
+    print("ok");
+}
+""".lstrip())
+        r = _run(str(src), "--emit-go", cwd=Path(tmp))
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        assert "line 5: warning[unused]: unused parameter `unused`" in r.stderr, r.stderr
+        assert ">>>    5 | func later(unused: int) {" in r.stderr, r.stderr
+    print("PASS: multiline go! blocks preserve diagnostic line numbers")
+
+
+def test_outer_scope_local_used_inside_loop_block_does_not_warn() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "main.lam"
+        _write(src, """
+func main() {
+    running: bool = true;
+    while running {
+        if running {
+            running = false;
+        }
+    }
+}
+""".lstrip())
+        r = _run(str(src), "--emit-go", cwd=Path(tmp))
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        assert "unused local `running`" not in r.stderr, r.stderr
+    print("PASS: outer-scope locals used inside loop blocks do not warn")
+
+
 # ── Phase 2 CLI — errors still abort, warnings don't ────────
 
 def test_genuine_error_still_aborts_build() -> None:
@@ -395,6 +455,9 @@ def main() -> int:
         test_self_does_not_warn,
         test_unused_local_does_not_break_go_build,
         test_unused_block_local_does_not_break_go_build,
+        test_go_block_references_silence_unused_parameters,
+        test_unused_warning_line_numbers_survive_multiline_go_blocks,
+        test_outer_scope_local_used_inside_loop_block_does_not_warn,
         test_genuine_error_still_aborts_build,
         test_unused_manifest_dep_warns,
         test_multifile_project_does_not_false_positive,

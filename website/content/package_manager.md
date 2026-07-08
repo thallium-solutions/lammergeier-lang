@@ -65,9 +65,12 @@ lamc install --frozen --offline
 lamc uninstall lamwebp
 ```
 
-That is the whole workflow. No `package.json`, no
-`requirements.txt`, no `go.mod` to hand-edit. One command in,
-one command out.
+That is the whole workflow. Lam still has explicit project state:
+`lamlib.toml` is the human-edited manifest and
+`lamlib.lock.toml` is the committed resolution. What you avoid is
+maintaining separate Go / JS / Python package metadata by hand:
+no `package.json`, no `requirements.txt`, and no generated
+`go.mod` to edit manually. One command in, one command out.
 
 ---
 
@@ -227,7 +230,7 @@ lamc install <spec> [<spec> …] [flags]
 | `name@version` | `lamc install lamwebp@1.2.0` | Exact version. |
 | `name@<range>` | `lamc install 'lamwebp@^1.0'` | SemVer range. Quote the spec — your shell will eat the `^`. |
 | Scoped name | `lamc install @alice/lamwebp` | npm-style two-level identifier. The `@scope/` part is preserved everywhere (resolver, install path, lockfile). |
-| Git URL | `lamc install https://github.com/alice/lamwebp.git@v1.2.0` | Bypasses the registry — clones (shallow) and validates `lamlib.toml` on the checkout. Pins the resolved commit SHA in the lockfile. |
+| Git URL | `lamc install https://github.com/alice/lamwebp.git@v1.2.0` | Bypasses the registry — uses the git cache, validates `lamlib.toml` on the checkout, and pins the resolved commit SHA plus tree hash in the lockfile. |
 | Local path | `lamc install ./local-lamwebp` | Useful for in-development libs. Recursively copies the tree (no symlink — re-run after edits). |
 
 You can pass multiple specs in a single invocation; each is
@@ -246,12 +249,14 @@ lamc install                                    # everything in [dependencies]
 lamc install lamwebp@1.2.0 lamqueue@^1.0       # add two new deps
 ```
 
-When you pass explicit specs, each successful install also
-appends (or updates) the matching entry in `[dependencies]` so
-the manifest, lockfile, and on-disk install stay in lockstep.
-Git URLs do **not** auto-update the manifest yet — the
-`[dependencies]` schema gains a `git`/`ref` form when the
-`[replace]` directive lands.
+When you pass explicit registry or local-path specs, each
+successful install also appends (or updates) the matching entry in
+`[dependencies]` so the manifest, lockfile, and on-disk install
+stay in lockstep. Direct git URL installs are the exception: they
+are pinned in `lamlib.lock.toml`, but `[dependencies]` does not yet
+have a git-form entry. For a persistent fork or branch, keep the
+normal registry dependency in `[dependencies]` and redirect it with
+a project-level `[replace]` entry.
 
 ### 2.2 Flags
 
@@ -662,8 +667,9 @@ POSTs the tarball to `POST /api/v1/publish`.
 
 What the publisher needs:
 
-- A valid `lamlib.toml` with `library.name`, `library.version`,
-  and `library.license`.
+- A valid `lamlib.toml` with `library.name` and
+  `library.version`. `library.license` is optional in the parser
+  but strongly recommended for public releases.
 - A clean checkout — the publisher won't bundle anything
   gitignored (so build artefacts, `extlibs/`, `__pycache__/`
   don't leak).

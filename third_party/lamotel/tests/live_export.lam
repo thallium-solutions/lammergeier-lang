@@ -1,0 +1,16 @@
+from lamotel import OtelTracer
+from lamenv import Env
+
+func main() {
+    if Env.get("LAMOTEL_LIVE_TESTS") != "1" {
+        print("skip: set LAMOTEL_LIVE_TESTS=1 to run live OTLP tests")
+        return
+    }
+
+    tracer: OtelTracer = OtelTracer.fromEnv()
+    span = tracer.startSpan("lamotel-live-test")
+    span.setAttribute("test", "true")
+    span.end()
+    res = tracer.exportSpan(span)
+    print(res.ok())
+}

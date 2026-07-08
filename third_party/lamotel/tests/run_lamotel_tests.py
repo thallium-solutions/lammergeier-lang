@@ -28,7 +28,7 @@ def _expectations(source: str) -> list[str]:
 def _run_case(path: Path) -> tuple[bool, str]:
     source = path.read_text(encoding="utf-8")
     expected = _expectations(source)
-    with tempfile.TemporaryDirectory(prefix="lams3_test_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="lamotel_test_") as tmp:
         binary = Path(tmp) / "test_binary"
         compile_proc = subprocess.run(
             [PYTHON, str(COMPILER), str(path), "--extlibs", str(LIB_ROOT.parent), "-o", str(binary)],
@@ -58,18 +58,18 @@ def _run_case(path: Path) -> tuple[bool, str]:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="lams3 package tests")
-    ap.add_argument("--live", action="store_true", help="include live S3/R2 tests")
+    ap = argparse.ArgumentParser(description="lamotel package tests")
+    ap.add_argument("--live", action="store_true", help="include live OTLP export tests")
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args()
 
     cases = sorted((LIB_ROOT / "tests").glob("offline_*.lam"))
     if args.live:
-        cases.append(LIB_ROOT / "tests" / "live_roundtrip.lam")
+        cases.append(LIB_ROOT / "tests" / "live_export.lam")
 
     passed = 0
     failures: list[tuple[Path, str]] = []
-    print(f"Running {len(cases)} lams3 test(s)...\n")
+    print(f"Running {len(cases)} lamotel test(s)...\n")
     for case in cases:
         ok, msg = _run_case(case)
         rel = case.relative_to(LIB_ROOT)
@@ -83,7 +83,7 @@ def main() -> None:
                 for line in msg.splitlines():
                     print(f"        {line}")
 
-    print(f"\nLams3 results: {passed} passed, {len(failures)} failed, {len(cases)} total")
+    print(f"\nLamotel results: {passed} passed, {len(failures)} failed, {len(cases)} total")
     if failures and not args.verbose:
         for case, msg in failures:
             print(f"  FAIL {case.relative_to(LIB_ROOT)}")
