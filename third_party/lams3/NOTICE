@@ -1,0 +1,11 @@
+lams3
+
+Copyright 2026 Thallium Solutions di Busconi Alessandro.
+
+This product includes software developed by Thallium Solutions di Busconi
+Alessandro.
+
+lams3 is a Lammergeier third-party library for S3-compatible object storage.
+It uses the AWS SDK for Go v2. The AWS SDK for Go v2 is distributed under its
+own Apache-2.0 license and notice terms by Amazon Web Services, Inc. and its
+contributors.

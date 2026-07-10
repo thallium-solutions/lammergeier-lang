@@ -1,0 +1,48 @@
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: https://cdn.example.com/assets/lams3-tests/presigned/file%20name.txt
+
+from lams3 import S3Client
+from lamenv import Env
+from lamerrors import Result
+
+func clearS3Env() {
+    Env.unset("S3_ACCESS_KEY_ID")
+    Env.unset("S3_SECRET_ACCESS_KEY")
+    Env.unset("S3_ENDPOINT")
+    Env.unset("S3_PUBLIC_ENDPOINT")
+    Env.unset("S3_REGION")
+    Env.unset("S3_BUCKET")
+    Env.unset("S3_USE_PATH_STYLE")
+}
+
+func main() {
+    clearS3Env()
+    Env.set("S3_ACCESS_KEY_ID", "key")
+    Env.set("S3_SECRET_ACCESS_KEY", "secret")
+    Env.set("S3_ENDPOINT", "account.r2.cloudflarestorage.com")
+    Env.set("S3_PUBLIC_ENDPOINT", "cdn.example.com/assets")
+    Env.set("S3_REGION", "auto")
+    Env.set("S3_BUCKET", "bucket")
+    Env.set("S3_USE_PATH_STYLE", "true")
+
+    client: S3Client = S3Client.fromEnv()
+    key: str = "lams3-tests/presigned/file name.txt"
+
+    getRes: Result = client.presignGet(key, 60)
+    getUrl: str = str(getRes.value)
+    print(getRes.ok())
+    print(getUrl.contains("lams3-tests/presigned/file%20name.txt"))
+    print(getUrl.contains("X-Amz-Signature="))
+
+    putRes: Result = client.presignPut(key, "text/plain", 60)
+    putUrl: str = str(putRes.value)
+    print(putRes.ok() and putUrl.contains("X-Amz-Signature="))
+    print(client.presignedGetUrl(key, 60).contains("X-Amz-Signature="))
+    print(client.publicUrl(key))
+
+    clearS3Env()
+}

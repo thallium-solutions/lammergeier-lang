@@ -2,6 +2,8 @@
 # expect: 0
 # expect: true
 # expect: true
+# expect: true
+# expect: 0
 
 from lams3 import S3Object
 
@@ -11,4 +13,6 @@ func main() {
     print(obj.size)
     print(obj.etag == "")
     print(obj.lastModified == "")
+    print(obj.contentType == "")
+    print(len(obj.metadata))
 }

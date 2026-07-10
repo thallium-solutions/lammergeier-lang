@@ -5,6 +5,7 @@
 # expect: true
 # expect: us-east-1
 # expect: false
+# expect: bucket
 # expect: true
 
 from lams3 import S3
@@ -17,7 +18,7 @@ func clearS3Env() {
     Env.unset("S3_ENDPOINT")
     Env.unset("S3_PUBLIC_ENDPOINT")
     Env.unset("S3_REGION")
-    Env.unset("S3_PUBLIC_BUCKET")
+    Env.unset("S3_BUCKET")
     Env.unset("S3_USE_PATH_STYLE")
 }
 
@@ -35,13 +36,14 @@ func main() {
     Env.set("S3_ENDPOINT", "account.r2.cloudflarestorage.com")
     Env.set("S3_PUBLIC_ENDPOINT", "cdn.example.com")
     Env.set("S3_REGION", "us-east-1")
-    Env.set("S3_PUBLIC_BUCKET", "bucket")
+    Env.set("S3_BUCKET", "bucket")
     Env.set("S3_USE_PATH_STYLE", "false")
 
     ready: S3Config = S3Config.fromEnv()
     print(ready.isReady())
     print(ready.region)
     print(ready.usePathStyle)
+    print(ready.bucket)
     print(S3.hasEnv())
 
     clearS3Env()

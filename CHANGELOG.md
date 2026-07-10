@@ -6,6 +6,40 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-07-11
+
+### Added
+
+- Added standalone `third_party/lams3/CHANGELOG.md`, `LICENSE`, and `NOTICE`
+  files so lams3 can be distributed from its external repository.
+
+### Changed
+
+- Updated lams3 package metadata to advertise Apache-2.0 licensing.
+
+## 2026-07-10
+
+### Added
+
+- Expanded `third_party/lams3` with Result-returning S3 operations, including
+  text/bytes object I/O, buffer upload/download, stream upload, file
+  upload/download, object stat/head metadata, copy, move, key-only listing,
+  bulk delete, config validation, and presigned GET/PUT URL helpers.
+- Added lams3 offline coverage for `Result`/`do-catch` config handling and
+  direct configuration without environment variables, plus presigned URL
+  generation and a live R2/S3 roundtrip that uses a dedicated
+  `lams3-tests/live-roundtrip/` prefix.
+
+### Changed
+
+- Updated lams3 AWS SDK for Go v2 pins, including
+  `github.com/aws/aws-sdk-go-v2/service/s3 v1.105.0`.
+- Simplified lams3 environment configuration to use `S3_BUCKET` instead of
+  separate public/private bucket variables.
+- Updated lams3 documentation to cover direct constructors, Result-first APIs,
+  file/buffer/stream workflows, stat metadata, copy/move, bulk delete, and
+  presigned URL usage.
+
 ## 2026-05-09
 
 ### Added

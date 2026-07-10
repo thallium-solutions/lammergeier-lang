@@ -48,6 +48,20 @@ a `package.json`, or juggle global package installs.
 
 ---
 
+## Official third-party libraries
+
+These packages are maintained as official Lammergeier third-party libraries.
+Some are still mirrored under `third_party/` while they move to standalone
+repositories.
+
+| Library | Repository / docs | Description |
+|---------|-------------------|-------------|
+| `lams3` | [thallium-solutions/lams3](https://github.com/thallium-solutions/lams3) | S3-compatible object storage client for AWS S3, Cloudflare R2, MinIO, Wasabi, Backblaze B2, and custom gateways. Includes Result-first APIs, file/buffer/stream upload, metadata, public URL helpers, and presigned URLs. |
+| `lamstripe` | [`third_party/lamstripe/README.md`](../third_party/lamstripe/README.md) | Opinionated Stripe REST API helper with configuration, customers, payment intents, checkout sessions, validation, and test helpers. |
+| `lamotel` | [`third_party/lamotel/README.md`](../third_party/lamotel/README.md) | Lightweight OpenTelemetry helper for traces, spans, resource attributes, OTLP export payloads, and integration tests. |
+
+---
+
 ## 1. Resolution order *(implemented)*
 
 `lamc` (and `lamc build`) resolves every `from <module> import …`
@@ -239,6 +253,13 @@ frameworks, heavyweight Go dependency trees, or domains that evolve on
 their own release cadence. Good examples are `lams3` for
 S3-compatible object stores, `lamstripe` for Stripe's API, and
 `lamotel` for OpenTelemetry export.
+
+`third_party/lams3` is the reference shape for a Go-SDK-backed
+storage library: it exposes ergonomic bool/string helpers for quick
+scripts, direct constructors plus env loading, `try*` siblings that
+return `Result` for production flows, and live tests that operate
+inside a dedicated bucket prefix so they do not collide with existing
+objects.
 
 If a feature is generic and lightweight — string handling, JSON, HTTP
 helpers, filesystem access, environment variables, time, basic crypto,

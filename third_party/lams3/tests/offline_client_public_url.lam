@@ -9,7 +9,7 @@ func main() {
     Env.set("S3_ENDPOINT", "account.r2.cloudflarestorage.com")
     Env.set("S3_PUBLIC_ENDPOINT", "https://cdn.example.com")
     Env.set("S3_REGION", "auto")
-    Env.set("S3_PUBLIC_BUCKET", "bucket")
+    Env.set("S3_BUCKET", "bucket")
     Env.set("S3_USE_PATH_STYLE", "true")
 
     client: S3Client = S3Client.fromEnv()
@@ -20,6 +20,6 @@ func main() {
     Env.unset("S3_ENDPOINT")
     Env.unset("S3_PUBLIC_ENDPOINT")
     Env.unset("S3_REGION")
-    Env.unset("S3_PUBLIC_BUCKET")
+    Env.unset("S3_BUCKET")
     Env.unset("S3_USE_PATH_STYLE")
 }

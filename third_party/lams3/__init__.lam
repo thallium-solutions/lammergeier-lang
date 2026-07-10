@@ -1,28 +1,41 @@
+# Copyright 2026 Thallium Solutions di Busconi Alessandro.
+# SPDX-License-Identifier: Apache-2.0
+
 from lamenv import Env
+from lamerrors import Result, Error
 
 go! {
     import (
         "bytes"
         "context"
+        "fmt"
         "io"
         "net/url"
+        "os"
+        "strings"
+        "time"
 
         "github.com/aws/aws-sdk-go-v2/aws"
         "github.com/aws/aws-sdk-go-v2/config"
         "github.com/aws/aws-sdk-go-v2/credentials"
         "github.com/aws/aws-sdk-go-v2/service/s3"
+        "github.com/aws/aws-sdk-go-v2/service/s3/types"
     )
+
+    func lamS3Err(kind string, format string, args ...interface{}) *LAMMERGEIER.Error {
+        return LAMMERGEIER.Error(kind, fmt.Sprintf(format, args...), nil)
+    }
 }
 
 class S3Config {
-    func __init__(self) {
-        self.accessKeyId: str = ""
-        self.secretAccessKey: str = ""
-        self.endpoint: str = ""
-        self.publicEndpoint: str = ""
-        self.region: str = "auto"
-        self.bucket: str = ""
-        self.usePathStyle: bool = true
+    func __init__(self, accessKeyId: str = "", secretAccessKey: str = "", endpoint: str = "", bucket: str = "", region: str = "auto", publicEndpoint: str = "", usePathStyle: bool = true) {
+        self.accessKeyId: str = accessKeyId
+        self.secretAccessKey: str = secretAccessKey
+        self.endpoint: str = endpoint
+        self.publicEndpoint: str = publicEndpoint
+        self.region: str = region
+        self.bucket: str = bucket
+        self.usePathStyle: bool = usePathStyle
     }
 
     static func fromEnv() -> S3Config {
@@ -32,7 +45,7 @@ class S3Config {
         cfg.endpoint = Env.get("S3_ENDPOINT")
         cfg.publicEndpoint = Env.get("S3_PUBLIC_ENDPOINT")
         cfg.region = Env.getOr("S3_REGION", "auto")
-        cfg.bucket = Env.get("S3_PUBLIC_BUCKET")
+        cfg.bucket = Env.get("S3_BUCKET")
 
         rawUsePathStyle: str = Env.get("S3_USE_PATH_STYLE").trim().toLower()
         if rawUsePathStyle != "" {
@@ -44,6 +57,25 @@ class S3Config {
     func isReady(self) -> bool {
         return self.accessKeyId != "" and self.secretAccessKey != "" and self.endpoint != "" and self.region != "" and self.bucket != ""
     }
+
+    func validate(self) -> Result {
+        if self.accessKeyId == "" {
+            return Result.Err(Error("S3ConfigError", "S3_ACCESS_KEY_ID is required", None))
+        }
+        if self.secretAccessKey == "" {
+            return Result.Err(Error("S3ConfigError", "S3_SECRET_ACCESS_KEY is required", None))
+        }
+        if self.endpoint == "" {
+            return Result.Err(Error("S3ConfigError", "S3_ENDPOINT is required", None))
+        }
+        if self.region == "" {
+            return Result.Err(Error("S3ConfigError", "S3_REGION is required", None))
+        }
+        if self.bucket == "" {
+            return Result.Err(Error("S3ConfigError", "S3_BUCKET is required", None))
+        }
+        return Result.Ok(true)
+    }
 }
 
 class S3Object {
@@ -52,6 +84,8 @@ class S3Object {
         self.size: int = 0
         self.etag: str = ""
         self.lastModified: str = ""
+        self.contentType: str = ""
+        self.metadata: dict[str, str] = {}
     }
 }
 
@@ -77,7 +111,23 @@ class S3Client {
         return S3Client(S3Config.fromEnv())
     }
 
+    static func connect(accessKeyId: str, secretAccessKey: str, endpoint: str, bucket: str, region: str = "auto", publicEndpoint: str = "", usePathStyle: bool = true) -> S3Client {
+        return S3Client(S3Config(accessKeyId, secretAccessKey, endpoint, bucket, region, publicEndpoint, usePathStyle))
+    }
+
+    func _ready(self) -> Result {
+        return self.cfg.validate()
+    }
+
     func putText(self, key: str, text: str, contentType: str = "text/plain") -> bool {
+        return self.tryPutText(key, text, contentType).ok()
+    }
+
+    func tryPutText(self, key: str, text: str, contentType: str = "text/plain") -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
         go! {
             client := s.Raw.(*s3.Client)
             _, err := client.PutObject(context.Background(), &s3.PutObjectInput{
@@ -86,55 +136,315 @@ class S3Client {
                 Body: bytes.NewReader([]byte(text)),
                 ContentType: aws.String(contentType),
             })
-            return err == nil
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3PutError", "put %q: %v", key, err))
+            }
+            return LAMMERGEIER.Result.Ok(true)
+        }
+    }
+
+    func putBytes(self, key: str, data: str, contentType: str = "application/octet-stream") -> bool {
+        return self.tryPutBytes(key, data, contentType).ok()
+    }
+
+    func tryPutBytes(self, key: str, data: str, contentType: str = "application/octet-stream") -> Result {
+        return self.tryPutText(key, data, contentType)
+    }
+
+    func putBuffer(self, key: str, data: list[int], contentType: str = "application/octet-stream") -> bool {
+        return self.tryPutBuffer(key, data, contentType).ok()
+    }
+
+    func tryPutBuffer(self, key: str, data: list[int], contentType: str = "application/octet-stream") -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        go! {
+            buf := make([]byte, len(data))
+            for i, v := range data {
+                buf[i] = byte(v)
+            }
+            client := s.Raw.(*s3.Client)
+            _, err := client.PutObject(context.Background(), &s3.PutObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+                Body: bytes.NewReader(buf),
+                ContentType: aws.String(contentType),
+            })
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3PutError", "put buffer %q: %v", key, err))
+            }
+            return LAMMERGEIER.Result.Ok(true)
+        }
+    }
+
+    func putStream(self, key: str, stream: any, contentType: str = "application/octet-stream") -> bool {
+        return self.tryPutStream(key, stream, contentType).ok()
+    }
+
+    func tryPutStream(self, key: str, stream: any, contentType: str = "application/octet-stream") -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        go! {
+            reader, ok := stream.(io.Reader)
+            if !ok {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3TypeError", "put stream %q: value does not implement io.Reader", key))
+            }
+            client := s.Raw.(*s3.Client)
+            _, err := client.PutObject(context.Background(), &s3.PutObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+                Body: reader,
+                ContentType: aws.String(contentType),
+            })
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3PutError", "put stream %q: %v", key, err))
+            }
+            return LAMMERGEIER.Result.Ok(true)
+        }
+    }
+
+    func uploadFile(self, localPath: str, key: str, contentType: str = "application/octet-stream") -> bool {
+        return self.tryUploadFile(localPath, key, contentType).ok()
+    }
+
+    func tryUploadFile(self, localPath: str, key: str, contentType: str = "application/octet-stream") -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        go! {
+            f, err := os.Open(localPath)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3FileError", "open %q: %v", localPath, err))
+            }
+            defer f.Close()
+            client := s.Raw.(*s3.Client)
+            _, err = client.PutObject(context.Background(), &s3.PutObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+                Body: f,
+                ContentType: aws.String(contentType),
+            })
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3PutError", "upload %q to %q: %v", localPath, key, err))
+            }
+            return LAMMERGEIER.Result.Ok(true)
         }
     }
 
     func getText(self, key: str) -> str {
+        go! {
+            r := s.TryGetText(key)
+            if !r.Ok() { return "" }
+            if v, ok := r.Value.(string); ok { return v }
+            return ""
+        }
+    }
+
+    func tryGetText(self, key: str) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
         go! {
             client := s.Raw.(*s3.Client)
             out, err := client.GetObject(context.Background(), &s3.GetObjectInput{
                 Bucket: aws.String(s.Cfg.Bucket),
                 Key: aws.String(key),
             })
-            if err != nil { return "" }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3GetError", "get %q: %v", key, err))
+            }
             defer out.Body.Close()
             data, err := io.ReadAll(out.Body)
-            if err != nil { return "" }
-            return string(data)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3GetError", "read %q: %v", key, err))
+            }
+            return LAMMERGEIER.Result.Ok(string(data))
+        }
+    }
+
+    func getBytes(self, key: str) -> str {
+        return self.getText(key)
+    }
+
+    func tryGetBytes(self, key: str) -> Result {
+        return self.tryGetText(key)
+    }
+
+    func getBuffer(self, key: str) -> list[int] {
+        go! {
+            r := s.TryGetBuffer(key)
+            if !r.Ok() { return []int{} }
+            if v, ok := r.Value.([]int); ok { return v }
+            return []int{}
+        }
+    }
+
+    func tryGetBuffer(self, key: str) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        go! {
+            client := s.Raw.(*s3.Client)
+            out, err := client.GetObject(context.Background(), &s3.GetObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+            })
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3GetError", "get buffer %q: %v", key, err))
+            }
+            defer out.Body.Close()
+            data, err := io.ReadAll(out.Body)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3GetError", "read buffer %q: %v", key, err))
+            }
+            buf := make([]int, len(data))
+            for i, b := range data {
+                buf[i] = int(b)
+            }
+            return LAMMERGEIER.Result.Ok(buf)
+        }
+    }
+
+    func downloadFile(self, key: str, localPath: str) -> bool {
+        return self.tryDownloadFile(key, localPath).ok()
+    }
+
+    func tryDownloadFile(self, key: str, localPath: str) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        go! {
+            client := s.Raw.(*s3.Client)
+            out, err := client.GetObject(context.Background(), &s3.GetObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+            })
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3GetError", "download %q: %v", key, err))
+            }
+            defer out.Body.Close()
+            data, err := io.ReadAll(out.Body)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3GetError", "read %q: %v", key, err))
+            }
+            if err := os.WriteFile(localPath, data, 0644); err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3FileError", "write %q: %v", localPath, err))
+            }
+            return LAMMERGEIER.Result.Ok(true)
         }
     }
 
     func delete(self, key: str) -> bool {
+        return self.tryDelete(key).ok()
+    }
+
+    func tryDelete(self, key: str) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
         go! {
             client := s.Raw.(*s3.Client)
             _, err := client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
                 Bucket: aws.String(s.Cfg.Bucket),
                 Key: aws.String(key),
             })
-            return err == nil
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3DeleteError", "delete %q: %v", key, err))
+            }
+            return LAMMERGEIER.Result.Ok(true)
+        }
+    }
+
+    func deleteMany(self, keys: list[str]) -> bool {
+        return self.tryDeleteMany(keys).ok()
+    }
+
+    func tryDeleteMany(self, keys: list[str]) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        if len(keys) == 0 {
+            return Result.Ok(0)
+        }
+        go! {
+            client := s.Raw.(*s3.Client)
+            objects := make([]types.ObjectIdentifier, 0, len(keys))
+            for _, key := range keys {
+                objects = append(objects, types.ObjectIdentifier{Key: aws.String(key)})
+            }
+            out, err := client.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Delete: &types.Delete{Objects: objects, Quiet: aws.Bool(true)},
+            })
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3DeleteError", "delete %d objects: %v", len(keys), err))
+            }
+            if len(out.Errors) > 0 {
+                msg := "unknown delete error"
+                if out.Errors[0].Message != nil { msg = *out.Errors[0].Message }
+                return LAMMERGEIER.Result.Err(lamS3Err("S3DeleteError", "delete %d objects: %s", len(keys), msg))
+            }
+            return LAMMERGEIER.Result.Ok(len(keys))
         }
     }
 
     func exists(self, key: str) -> bool {
+        go! {
+            r := s.TryExists(key)
+            if !r.Ok() { return false }
+            if v, ok := r.Value.(bool); ok { return v }
+            return false
+        }
+    }
+
+    func tryExists(self, key: str) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
         go! {
             client := s.Raw.(*s3.Client)
             _, err := client.HeadObject(context.Background(), &s3.HeadObjectInput{
                 Bucket: aws.String(s.Cfg.Bucket),
                 Key: aws.String(key),
             })
-            return err == nil
+            return LAMMERGEIER.Result.Ok(err == nil)
         }
     }
 
     func list(self, prefix: str = "") -> list[S3Object] {
+        go! {
+            r := s.TryList(prefix)
+            if !r.Ok() { return []*S3Object{} }
+            if v, ok := r.Value.([]*S3Object); ok { return v }
+            return []*S3Object{}
+        }
+    }
+
+    func tryList(self, prefix: str = "") -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
         go! {
             client := s.Raw.(*s3.Client)
             out, err := client.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
                 Bucket: aws.String(s.Cfg.Bucket),
                 Prefix: aws.String(prefix),
             })
-            if err != nil { return []*S3Object{} }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3ListError", "list %q: %v", prefix, err))
+            }
             result := make([]*S3Object, 0, len(out.Contents))
             for _, item := range out.Contents {
                 obj := NewS3Object()
@@ -144,7 +454,167 @@ class S3Client {
                 if item.LastModified != nil { obj.LastModified = item.LastModified.Format("2006-01-02T15:04:05Z07:00") }
                 result = append(result, obj)
             }
-            return result
+            return LAMMERGEIER.Result.Ok(result)
+        }
+    }
+
+    func listKeys(self, prefix: str = "") -> list[str] {
+        go! {
+            r := s.TryListKeys(prefix)
+            if !r.Ok() { return []string{} }
+            if v, ok := r.Value.([]string); ok { return v }
+            return []string{}
+        }
+    }
+
+    func tryListKeys(self, prefix: str = "") -> Result {
+        items: list[S3Object] = self.tryList(prefix)?
+        keys: list[str] = []
+        for item in items {
+            keys.append(item.key)
+        }
+        return Result.Ok(keys)
+    }
+
+    func stat(self, key: str) -> S3Object {
+        go! {
+            r := s.TryStat(key)
+            if !r.Ok() { return NewS3Object() }
+            if v, ok := r.Value.(*S3Object); ok { return v }
+            return NewS3Object()
+        }
+    }
+
+    func tryStat(self, key: str) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        go! {
+            client := s.Raw.(*s3.Client)
+            out, err := client.HeadObject(context.Background(), &s3.HeadObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+            })
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3HeadError", "stat %q: %v", key, err))
+            }
+            obj := NewS3Object()
+            obj.Key = key
+            if out.ContentLength != nil { obj.Size = int(*out.ContentLength) }
+            if out.ETag != nil { obj.Etag = *out.ETag }
+            if out.LastModified != nil { obj.LastModified = out.LastModified.Format("2006-01-02T15:04:05Z07:00") }
+            if out.ContentType != nil { obj.ContentType = *out.ContentType }
+            obj.Metadata = out.Metadata
+            return LAMMERGEIER.Result.Ok(obj)
+        }
+    }
+
+    func copy(self, sourceKey: str, destKey: str, contentType: str = "") -> bool {
+        return self.tryCopy(sourceKey, destKey, contentType).ok()
+    }
+
+    func tryCopy(self, sourceKey: str, destKey: str, contentType: str = "") -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        go! {
+            client := s.Raw.(*s3.Client)
+            source := s.Cfg.Bucket + "/" + strings.ReplaceAll(url.PathEscape(sourceKey), "%2F", "/")
+            input := &s3.CopyObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(destKey),
+                CopySource: aws.String(source),
+            }
+            if contentType != "" {
+                input.ContentType = aws.String(contentType)
+                input.MetadataDirective = types.MetadataDirectiveReplace
+            }
+            _, err := client.CopyObject(context.Background(), input)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3CopyError", "copy %q to %q: %v", sourceKey, destKey, err))
+            }
+            return LAMMERGEIER.Result.Ok(true)
+        }
+    }
+
+    func move(self, sourceKey: str, destKey: str, contentType: str = "") -> bool {
+        return self.tryMove(sourceKey, destKey, contentType).ok()
+    }
+
+    func tryMove(self, sourceKey: str, destKey: str, contentType: str = "") -> Result {
+        copied: Result = self.tryCopy(sourceKey, destKey, contentType)
+        if not copied.ok() {
+            return copied
+        }
+        deleted: Result = self.tryDelete(sourceKey)
+        if not deleted.ok() {
+            return deleted
+        }
+        return Result.Ok(true)
+    }
+
+    func presignGet(self, key: str, expiresSeconds: int = 900) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        go! {
+            client := s.Raw.(*s3.Client)
+            presigner := s3.NewPresignClient(client)
+            if expiresSeconds <= 0 {
+                expiresSeconds = 900
+            }
+            out, err := presigner.PresignGetObject(context.Background(), &s3.GetObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+            }, s3.WithPresignExpires(time.Duration(expiresSeconds) * time.Second))
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3PresignError", "presign GET %q: %v", key, err))
+            }
+            return LAMMERGEIER.Result.Ok(out.URL)
+        }
+    }
+
+    func presignedGetUrl(self, key: str, expiresSeconds: int = 900) -> str {
+        go! {
+            r := s.PresignGet(key, expiresSeconds)
+            if !r.Ok() { return "" }
+            if v, ok := r.Value.(string); ok { return v }
+            return ""
+        }
+    }
+
+    func presignPut(self, key: str, contentType: str = "application/octet-stream", expiresSeconds: int = 900) -> Result {
+        ready: Result = self._ready()
+        if not ready.ok() {
+            return ready
+        }
+        go! {
+            client := s.Raw.(*s3.Client)
+            presigner := s3.NewPresignClient(client)
+            if expiresSeconds <= 0 {
+                expiresSeconds = 900
+            }
+            out, err := presigner.PresignPutObject(context.Background(), &s3.PutObjectInput{
+                Bucket: aws.String(s.Cfg.Bucket),
+                Key: aws.String(key),
+                ContentType: aws.String(contentType),
+            }, s3.WithPresignExpires(time.Duration(expiresSeconds) * time.Second))
+            if err != nil {
+                return LAMMERGEIER.Result.Err(lamS3Err("S3PresignError", "presign PUT %q: %v", key, err))
+            }
+            return LAMMERGEIER.Result.Ok(out.URL)
+        }
+    }
+
+    func presignedPutUrl(self, key: str, contentType: str = "application/octet-stream", expiresSeconds: int = 900) -> str {
+        go! {
+            r := s.PresignPut(key, contentType, expiresSeconds)
+            if !r.Ok() { return "" }
+            if v, ok := r.Value.(string); ok { return v }
+            return ""
         }
     }
 

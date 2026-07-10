@@ -1,0 +1,27 @@
+# expect: true
+# expect: bucket
+# expect: us-east-1
+# expect: https://cdn.example.com/direct/file.txt
+# expect: false
+# expect: S3_BUCKET is required
+
+from lams3 import S3
+from lams3 import S3Client
+from lams3 import S3Config
+from lamerrors import Result, Error
+
+func main() {
+    cfg: S3Config = S3Config("key", "secret", "account.r2.cloudflarestorage.com", "bucket", "us-east-1", "cdn.example.com", false)
+    print(cfg.isReady())
+    print(cfg.bucket)
+    print(cfg.region)
+
+    client: S3Client = S3Client(cfg)
+    print(client.publicUrl("direct/file.txt"))
+    print(cfg.usePathStyle)
+
+    missing: S3Config = S3Config("key", "secret", "endpoint")
+    res: Result = missing.validate()
+    err: Error = res.error
+    print(err.message)
+}

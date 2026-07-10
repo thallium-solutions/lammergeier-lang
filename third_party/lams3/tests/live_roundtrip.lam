@@ -1,6 +1,34 @@
+# expect: put=true
+# expect: body=true
+# expect: copy_body=true
+# expect: moved_exists=true
+# expect: list_has_moved=true
+# expect: upload_download=true
+# expect: buffer=true
+# expect: stream=true
+# expect: stat=true
+# expect: presign=true
+# expect: cleanup=true
+# expect: live_roundtrip_ok
+
 from lams3 import S3
 from lams3 import S3Client
+from lams3 import S3Object
 from lamenv import Env
+from lamos import Os
+
+go! {
+    import "strings"
+}
+
+func hasKey(keys: list[str], wanted: str) -> bool {
+    for key in keys {
+        if key == wanted {
+            return true
+        }
+    }
+    return false
+}
 
 func main() {
     if Env.get("LAMS3_LIVE_TESTS") != "1" {
@@ -14,13 +42,66 @@ func main() {
     }
 
     client: S3Client = S3Client.fromEnv()
-    key: str = "lammergeier-live-test/hello.txt"
+    prefix: str = "lams3-tests/live-roundtrip/"
+    key: str = prefix + "hello.txt"
+    copyKey: str = prefix + "hello-copy.txt"
+    movedKey: str = prefix + "hello-moved.txt"
+    uploadKey: str = prefix + "uploaded.txt"
+    bufferKey: str = prefix + "buffer.bin"
+    streamKey: str = prefix + "stream.txt"
+    preCleanKeys: list[str] = [key, copyKey, movedKey, uploadKey, bufferKey, streamKey]
+    cleanupKeys: list[str] = [key, movedKey, uploadKey, bufferKey, streamKey]
     body: str = "hello from lams3"
 
-    print(client.putText(key, body, "text/plain"))
-    print(client.exists(key))
-    print(client.getText(key))
-    print(len(client.list("lammergeier-live-test/")) > 0)
-    print(client.publicUrl(key))
-    print(client.delete(key))
+    _ = client.deleteMany(preCleanKeys)
+
+    putOk: bool = client.tryPutText(key, body, "text/plain").ok()
+    print(f"put={putOk}")
+
+    got: str = client.getText(key)
+    print(f"body={got == body}")
+
+    copyOk: bool = client.tryCopy(key, copyKey, "text/plain").ok()
+    _ = copyOk
+    copied: str = client.getText(copyKey)
+    print(f"copy_body={copied == body}")
+
+    movedOk: bool = client.tryMove(copyKey, movedKey, "text/plain").ok()
+    _ = movedOk
+    movedExists: bool = client.exists(movedKey)
+    oldCopyExists: bool = client.exists(copyKey)
+    print(f"moved_exists={movedExists and not oldCopyExists}")
+
+    keys: list[str] = client.listKeys(prefix)
+    print(f"list_has_moved={hasKey(keys, movedKey)}")
+
+    tmpIn: str = Os.tempFile("lams3-upload-", ".txt")
+    tmpOut: str = Os.tempFile("lams3-download-", ".txt")
+    Os.writeFile(tmpIn, "file body")
+    uploadOk: bool = client.tryUploadFile(tmpIn, uploadKey, "text/plain").ok()
+    downloadOk: bool = client.tryDownloadFile(uploadKey, tmpOut).ok()
+    downloaded: str = Os.readFile(tmpOut)
+    print(f"upload_download={uploadOk and downloadOk and downloaded == 'file body'}")
+    Os.remove(tmpIn)
+    Os.remove(tmpOut)
+
+    buffer: list[int] = [0, 1, 2, 255]
+    bufferOk: bool = client.tryPutBuffer(bufferKey, buffer, "application/octet-stream").ok()
+    roundBuffer: list[int] = client.getBuffer(bufferKey)
+    print(f"buffer={bufferOk and len(roundBuffer) == 4 and roundBuffer[3] == 255}")
+
+    stream: any = go!(strings.NewReader("stream body"))
+    streamOk: bool = client.tryPutStream(streamKey, stream, "text/plain").ok()
+    streamBody: str = client.getText(streamKey)
+    print(f"stream={streamOk and streamBody == 'stream body'}")
+
+    obj: S3Object = client.stat(key)
+    print(f"stat={obj.key == key and obj.size == len(body) and obj.contentType == 'text/plain'}")
+
+    signedUrl: str = client.presignedGetUrl(key, 60)
+    print(f"presign={signedUrl.contains('X-Amz-Signature=')}")
+
+    deleted: bool = client.deleteMany(cleanupKeys)
+    print(f"cleanup={deleted}")
+    print("live_roundtrip_ok")
 }

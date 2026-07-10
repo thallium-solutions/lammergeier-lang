@@ -1,0 +1,41 @@
+# expect: S3ConfigError
+# expect: caught S3ConfigError
+# expect: ready true
+# expect: result_do_catch_ok
+
+from lams3 import S3Config
+from lamerrors import Result
+
+func requireReady(cfg: S3Config) -> Result {
+    ready: Result = cfg.validate()
+    if not ready.ok() {
+        return ready
+    }
+    return Result.Ok(true)
+}
+
+func main() {
+    empty: S3Config = S3Config()
+    missing: Result = empty.validate()
+    err: Error = missing.error
+    print(err.kind)
+
+    do {
+        ready: bool = empty.validate()?
+        print(f"unexpected {ready}")
+    } catch caught {
+        kind: str = str(caught).split(":")[0]
+        print(f"caught {kind}")
+    }
+
+    cfg: S3Config = S3Config()
+    cfg.accessKeyId = "key"
+    cfg.secretAccessKey = "secret"
+    cfg.endpoint = "account.r2.cloudflarestorage.com"
+    cfg.region = "auto"
+    cfg.bucket = "bucket"
+
+    readyRes: Result = requireReady(cfg)
+    print(f"ready {readyRes.ok()}")
+    print("result_do_catch_ok")
+}
