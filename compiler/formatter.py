@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import subprocess
 from dataclasses import dataclass
 
 
@@ -42,35 +44,37 @@ def _format_lines(source: str) -> str:
     lines = source.splitlines()
     out: list[str] = []
     depth = 0
-    in_go_block = False
-    go_depth = 0
-    for raw in lines:
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
         stripped = raw.strip()
         if not stripped:
             out.append("")
+            i += 1
             continue
-        if in_go_block:
-            out.append(raw.rstrip())
-            go_depth += _brace_delta(raw)
-            if go_depth <= 0:
-                in_go_block = False
+
+        if _starts_go_block(stripped):
+            block, next_i = _collect_go_block(lines, i)
+            leading_closers = _leading_closing_braces(stripped)
+            line_depth = max(0, depth - leading_closers)
+            out.extend(_format_go_block(block, line_depth))
+            i = next_i
             continue
+
         leading_closers = _leading_closing_braces(stripped)
         line_depth = max(0, depth - leading_closers)
         formatted = _format_code_line(stripped)
         out.append("    " * line_depth + formatted)
-        if _starts_go_block(stripped):
-            in_go_block = True
-            go_depth = _brace_delta(stripped)
-            if go_depth <= 0:
-                in_go_block = False
         depth = max(0, depth + _brace_delta(stripped))
+        i += 1
     return "\n".join(out).rstrip() + "\n"
 
 
 def _format_code_line(line: str) -> str:
     code, comment = _split_inline_comment(line)
-    code = _format_code_fragment(code.strip())
+    protected, inline_go = _protect_inline_go(code.strip())
+    code = _format_code_fragment(protected)
+    code = _restore_inline_go(code, inline_go)
     if comment:
         if code:
             return f"{code}  {comment.strip()}"
@@ -128,7 +132,8 @@ def _format_code_fragment(code: str) -> str:
                 i += 1
             continue
         if ch in "([{":
-            _rstrip_spaces(out)
+            if not _space_before_opener_is_meaningful(out):
+                _rstrip_spaces(out)
             prefix = "".join(out).rstrip()
             if ch == "(" and prefix.rsplit(" ", 1)[-1] in {"if", "elif", "while", "for", "catch", "with", "match"}:
                 out.append(" ")
@@ -158,6 +163,8 @@ def _operator_at(code: str, index: int) -> str:
         if code.startswith(op, index):
             if op == "/" and _is_scoped_name_slash(code, index):
                 return ""
+            if op == "*" and _is_unary_or_variadic_star(code, index):
+                return ""
             if op == "*" and index + 1 < len(code) and code[index + 1] == "*":
                 continue
             if op == "-" and index + 1 < len(code) and code[index + 1] == ">":
@@ -166,6 +173,25 @@ def _operator_at(code: str, index: int) -> str:
                 return ""
             return op
     return ""
+
+
+def _is_unary_or_variadic_star(code: str, index: int) -> bool:
+    prev = _previous_nonspace(code, index)
+    nxt = code[index + 1] if index + 1 < len(code) else ""
+    if nxt == "*":
+        return True
+    if prev == "" or prev in "([{=,:":
+        return bool(nxt and (nxt.isalpha() or nxt == "_"))
+    return False
+
+
+def _previous_nonspace(code: str, index: int) -> str:
+    i = index - 1
+    while i >= 0 and code[i].isspace():
+        i -= 1
+    if i < 0:
+        return ""
+    return code[i]
 
 
 def _is_scoped_name_slash(code: str, index: int) -> bool:
@@ -251,7 +277,181 @@ def _leading_closing_braces(line: str) -> int:
 
 
 def _starts_go_block(line: str) -> bool:
-    return line.startswith("go! ") or line.startswith("go!{") or line == "go!"
+    return bool(re.match(r"^go!\s*\{", line)) or line == "go!"
+
+
+def _collect_go_block(lines: list[str], start: int) -> tuple[list[str], int]:
+    block: list[str] = []
+    depth = 0
+    i = start
+    while i < len(lines):
+        raw = lines[i].rstrip()
+        block.append(raw)
+        depth += _brace_delta(raw)
+        i += 1
+        if depth <= 0:
+            break
+    return block, i
+
+
+def _format_go_block(block: list[str], line_depth: int) -> list[str]:
+    indent = "    " * line_depth
+    text = "\n".join(line.strip() for line in block)
+    open_idx = text.find("{")
+    close_idx = text.rfind("}")
+    if open_idx < 0 or close_idx < open_idx:
+        return [indent + line.strip() for line in block]
+
+    inner = text[open_idx + 1:close_idx].strip("\n")
+    formatted_inner = _format_go_inner(inner)
+    if not formatted_inner:
+        return [indent + "go! {", indent + "}"]
+
+    out = [indent + "go! {"]
+    out.extend(indent + "    " + line if line else "" for line in formatted_inner)
+    out.append(indent + "}")
+    return out
+
+
+def _format_go_inner(inner: str) -> list[str]:
+    stripped = inner.strip()
+    if not stripped:
+        return []
+    decl = _gofmt_declarations(stripped)
+    if decl is not None:
+        return decl
+    stmt = _gofmt_statements(stripped)
+    if stmt is not None:
+        return stmt
+    return [line.rstrip().expandtabs(4) for line in stripped.splitlines()]
+
+
+def _gofmt_declarations(src: str) -> list[str] | None:
+    formatted = _run_gofmt("package p\n\n" + src.rstrip() + "\n")
+    if formatted is None:
+        return None
+    lines = formatted.splitlines()
+    if not lines or lines[0] != "package p":
+        return None
+    body = lines[1:]
+    while body and body[0] == "":
+        body.pop(0)
+    return [line.rstrip().expandtabs(4) for line in body]
+
+
+def _gofmt_statements(src: str) -> list[str] | None:
+    formatted = _run_gofmt("package p\n\nfunc _() {\n" + src.rstrip() + "\n}\n")
+    if formatted is None:
+        return None
+    lines = formatted.splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line == "func _() {")
+    except StopIteration:
+        return None
+    body = lines[start + 1:]
+    if body and body[-1] == "}":
+        body = body[:-1]
+    out: list[str] = []
+    for line in body:
+        if line.startswith("\t"):
+            line = line[1:]
+        out.append(line.rstrip().expandtabs(4))
+    return out
+
+
+def _run_gofmt(src: str) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["gofmt"],
+            input=src,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def _protect_inline_go(code: str) -> tuple[str, list[str]]:
+    values: list[str] = []
+    out: list[str] = []
+    i = 0
+    quote = ""
+    while i < len(code):
+        if quote:
+            out.append(code[i])
+            if code[i] == "\\" and len(quote) == 1 and i + 1 < len(code):
+                i += 1
+                out.append(code[i])
+            elif code.startswith(quote, i):
+                out.extend(code[i + 1:i + len(quote)])
+                i += len(quote) - 1
+                quote = ""
+            i += 1
+            continue
+        if code.startswith("'''", i) or code.startswith('"""', i):
+            quote = code[i:i + 3]
+            out.append(quote)
+            i += 3
+            continue
+        if code[i] in {'"', "'"}:
+            quote = code[i]
+            out.append(code[i])
+            i += 1
+            continue
+        if code.startswith("go!(", i):
+            end = _find_matching_paren(code, i + 3)
+            if end is not None:
+                placeholder = f"__LAM_INLINE_GO_{len(values)}__"
+                values.append(code[i:end + 1])
+                out.append(placeholder)
+                i = end + 1
+                continue
+        out.append(code[i])
+        i += 1
+    return "".join(out), values
+
+
+def _restore_inline_go(code: str, values: list[str]) -> str:
+    for i, value in enumerate(values):
+        code = code.replace(f"__LAM_INLINE_GO_{i}__", value)
+    return code
+
+
+def _find_matching_paren(code: str, open_index: int) -> int | None:
+    depth = 0
+    quote = ""
+    i = open_index
+    while i < len(code):
+        if quote:
+            if code[i] == "\\" and len(quote) == 1:
+                i += 2
+                continue
+            if code.startswith(quote, i):
+                i += len(quote)
+                quote = ""
+                continue
+            i += 1
+            continue
+        if code.startswith("'''", i) or code.startswith('"""', i):
+            quote = code[i:i + 3]
+            i += 3
+            continue
+        if code[i] in {'"', "'"}:
+            quote = code[i]
+            i += 1
+            continue
+        if code[i] == "(":
+            depth += 1
+        elif code[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
 
 
 def _append_space(out: list[str]) -> None:
@@ -265,3 +465,13 @@ def _rstrip_spaces(out: list[str]) -> None:
         if out[-1]:
             break
         out.pop()
+
+
+def _space_before_opener_is_meaningful(out: list[str]) -> bool:
+    text = "".join(out)
+    i = len(text) - 1
+    while i >= 0 and text[i].isspace():
+        i -= 1
+    if i < 0:
+        return False
+    return text[i] in "=,:+-*/%<>!&|^"

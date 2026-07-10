@@ -99,7 +99,9 @@ class S3Client {
                 config.WithRegion(cfg.Region),
                 config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKeyId, cfg.SecretAccessKey, "")),
             )
-            if err != nil { panic("lams3: config: " + err.Error()) }
+            if err != nil {
+                panic("lams3: config: " + err.Error())
+            }
             s.Raw = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
                 o.BaseEndpoint = aws.String("https://" + endpoint)
                 o.UsePathStyle = cfg.UsePathStyle
@@ -131,9 +133,9 @@ class S3Client {
         go! {
             client := s.Raw.(*s3.Client)
             _, err := client.PutObject(context.Background(), &s3.PutObjectInput{
-                Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
-                Body: bytes.NewReader([]byte(text)),
+                Bucket:      aws.String(s.Cfg.Bucket),
+                Key:         aws.String(key),
+                Body:        bytes.NewReader([]byte(text)),
                 ContentType: aws.String(contentType),
             })
             if err != nil {
@@ -167,9 +169,9 @@ class S3Client {
             }
             client := s.Raw.(*s3.Client)
             _, err := client.PutObject(context.Background(), &s3.PutObjectInput{
-                Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
-                Body: bytes.NewReader(buf),
+                Bucket:      aws.String(s.Cfg.Bucket),
+                Key:         aws.String(key),
+                Body:        bytes.NewReader(buf),
                 ContentType: aws.String(contentType),
             })
             if err != nil {
@@ -195,9 +197,9 @@ class S3Client {
             }
             client := s.Raw.(*s3.Client)
             _, err := client.PutObject(context.Background(), &s3.PutObjectInput{
-                Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
-                Body: reader,
+                Bucket:      aws.String(s.Cfg.Bucket),
+                Key:         aws.String(key),
+                Body:        reader,
                 ContentType: aws.String(contentType),
             })
             if err != nil {
@@ -224,9 +226,9 @@ class S3Client {
             defer f.Close()
             client := s.Raw.(*s3.Client)
             _, err = client.PutObject(context.Background(), &s3.PutObjectInput{
-                Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
-                Body: f,
+                Bucket:      aws.String(s.Cfg.Bucket),
+                Key:         aws.String(key),
+                Body:        f,
                 ContentType: aws.String(contentType),
             })
             if err != nil {
@@ -239,8 +241,12 @@ class S3Client {
     func getText(self, key: str) -> str {
         go! {
             r := s.TryGetText(key)
-            if !r.Ok() { return "" }
-            if v, ok := r.Value.(string); ok { return v }
+            if !r.Ok() {
+                return ""
+            }
+            if v, ok := r.Value.(string); ok {
+                return v
+            }
             return ""
         }
     }
@@ -254,7 +260,7 @@ class S3Client {
             client := s.Raw.(*s3.Client)
             out, err := client.GetObject(context.Background(), &s3.GetObjectInput{
                 Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
+                Key:    aws.String(key),
             })
             if err != nil {
                 return LAMMERGEIER.Result.Err(lamS3Err("S3GetError", "get %q: %v", key, err))
@@ -279,8 +285,12 @@ class S3Client {
     func getBuffer(self, key: str) -> list[int] {
         go! {
             r := s.TryGetBuffer(key)
-            if !r.Ok() { return []int{} }
-            if v, ok := r.Value.([]int); ok { return v }
+            if !r.Ok() {
+                return []int{}
+            }
+            if v, ok := r.Value.([]int); ok {
+                return v
+            }
             return []int{}
         }
     }
@@ -294,7 +304,7 @@ class S3Client {
             client := s.Raw.(*s3.Client)
             out, err := client.GetObject(context.Background(), &s3.GetObjectInput{
                 Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
+                Key:    aws.String(key),
             })
             if err != nil {
                 return LAMMERGEIER.Result.Err(lamS3Err("S3GetError", "get buffer %q: %v", key, err))
@@ -325,7 +335,7 @@ class S3Client {
             client := s.Raw.(*s3.Client)
             out, err := client.GetObject(context.Background(), &s3.GetObjectInput{
                 Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
+                Key:    aws.String(key),
             })
             if err != nil {
                 return LAMMERGEIER.Result.Err(lamS3Err("S3GetError", "download %q: %v", key, err))
@@ -355,7 +365,7 @@ class S3Client {
             client := s.Raw.(*s3.Client)
             _, err := client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
                 Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
+                Key:    aws.String(key),
             })
             if err != nil {
                 return LAMMERGEIER.Result.Err(lamS3Err("S3DeleteError", "delete %q: %v", key, err))
@@ -391,7 +401,9 @@ class S3Client {
             }
             if len(out.Errors) > 0 {
                 msg := "unknown delete error"
-                if out.Errors[0].Message != nil { msg = *out.Errors[0].Message }
+                if out.Errors[0].Message != nil {
+                    msg = *out.Errors[0].Message
+                }
                 return LAMMERGEIER.Result.Err(lamS3Err("S3DeleteError", "delete %d objects: %s", len(keys), msg))
             }
             return LAMMERGEIER.Result.Ok(len(keys))
@@ -401,8 +413,12 @@ class S3Client {
     func exists(self, key: str) -> bool {
         go! {
             r := s.TryExists(key)
-            if !r.Ok() { return false }
-            if v, ok := r.Value.(bool); ok { return v }
+            if !r.Ok() {
+                return false
+            }
+            if v, ok := r.Value.(bool); ok {
+                return v
+            }
             return false
         }
     }
@@ -416,7 +432,7 @@ class S3Client {
             client := s.Raw.(*s3.Client)
             _, err := client.HeadObject(context.Background(), &s3.HeadObjectInput{
                 Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
+                Key:    aws.String(key),
             })
             return LAMMERGEIER.Result.Ok(err == nil)
         }
@@ -425,8 +441,12 @@ class S3Client {
     func list(self, prefix: str = "") -> list[S3Object] {
         go! {
             r := s.TryList(prefix)
-            if !r.Ok() { return []*S3Object{} }
-            if v, ok := r.Value.([]*S3Object); ok { return v }
+            if !r.Ok() {
+                return []*S3Object{}
+            }
+            if v, ok := r.Value.([]*S3Object); ok {
+                return v
+            }
             return []*S3Object{}
         }
     }
@@ -448,10 +468,18 @@ class S3Client {
             result := make([]*S3Object, 0, len(out.Contents))
             for _, item := range out.Contents {
                 obj := NewS3Object()
-                if item.Key != nil { obj.Key = *item.Key }
-                if item.Size != nil { obj.Size = int(*item.Size) }
-                if item.ETag != nil { obj.Etag = *item.ETag }
-                if item.LastModified != nil { obj.LastModified = item.LastModified.Format("2006-01-02T15:04:05Z07:00") }
+                if item.Key != nil {
+                    obj.Key = *item.Key
+                }
+                if item.Size != nil {
+                    obj.Size = int(*item.Size)
+                }
+                if item.ETag != nil {
+                    obj.Etag = *item.ETag
+                }
+                if item.LastModified != nil {
+                    obj.LastModified = item.LastModified.Format("2006-01-02T15:04:05Z07:00")
+                }
                 result = append(result, obj)
             }
             return LAMMERGEIER.Result.Ok(result)
@@ -461,8 +489,12 @@ class S3Client {
     func listKeys(self, prefix: str = "") -> list[str] {
         go! {
             r := s.TryListKeys(prefix)
-            if !r.Ok() { return []string{} }
-            if v, ok := r.Value.([]string); ok { return v }
+            if !r.Ok() {
+                return []string{}
+            }
+            if v, ok := r.Value.([]string); ok {
+                return v
+            }
             return []string{}
         }
     }
@@ -479,8 +511,12 @@ class S3Client {
     func stat(self, key: str) -> S3Object {
         go! {
             r := s.TryStat(key)
-            if !r.Ok() { return NewS3Object() }
-            if v, ok := r.Value.(*S3Object); ok { return v }
+            if !r.Ok() {
+                return NewS3Object()
+            }
+            if v, ok := r.Value.(*S3Object); ok {
+                return v
+            }
             return NewS3Object()
         }
     }
@@ -494,17 +530,25 @@ class S3Client {
             client := s.Raw.(*s3.Client)
             out, err := client.HeadObject(context.Background(), &s3.HeadObjectInput{
                 Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
+                Key:    aws.String(key),
             })
             if err != nil {
                 return LAMMERGEIER.Result.Err(lamS3Err("S3HeadError", "stat %q: %v", key, err))
             }
             obj := NewS3Object()
             obj.Key = key
-            if out.ContentLength != nil { obj.Size = int(*out.ContentLength) }
-            if out.ETag != nil { obj.Etag = *out.ETag }
-            if out.LastModified != nil { obj.LastModified = out.LastModified.Format("2006-01-02T15:04:05Z07:00") }
-            if out.ContentType != nil { obj.ContentType = *out.ContentType }
+            if out.ContentLength != nil {
+                obj.Size = int(*out.ContentLength)
+            }
+            if out.ETag != nil {
+                obj.Etag = *out.ETag
+            }
+            if out.LastModified != nil {
+                obj.LastModified = out.LastModified.Format("2006-01-02T15:04:05Z07:00")
+            }
+            if out.ContentType != nil {
+                obj.ContentType = *out.ContentType
+            }
             obj.Metadata = out.Metadata
             return LAMMERGEIER.Result.Ok(obj)
         }
@@ -523,8 +567,8 @@ class S3Client {
             client := s.Raw.(*s3.Client)
             source := s.Cfg.Bucket + "/" + strings.ReplaceAll(url.PathEscape(sourceKey), "%2F", "/")
             input := &s3.CopyObjectInput{
-                Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(destKey),
+                Bucket:     aws.String(s.Cfg.Bucket),
+                Key:        aws.String(destKey),
                 CopySource: aws.String(source),
             }
             if contentType != "" {
@@ -568,8 +612,8 @@ class S3Client {
             }
             out, err := presigner.PresignGetObject(context.Background(), &s3.GetObjectInput{
                 Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
-            }, s3.WithPresignExpires(time.Duration(expiresSeconds) * time.Second))
+                Key:    aws.String(key),
+            }, s3.WithPresignExpires(time.Duration(expiresSeconds)*time.Second))
             if err != nil {
                 return LAMMERGEIER.Result.Err(lamS3Err("S3PresignError", "presign GET %q: %v", key, err))
             }
@@ -580,8 +624,12 @@ class S3Client {
     func presignedGetUrl(self, key: str, expiresSeconds: int = 900) -> str {
         go! {
             r := s.PresignGet(key, expiresSeconds)
-            if !r.Ok() { return "" }
-            if v, ok := r.Value.(string); ok { return v }
+            if !r.Ok() {
+                return ""
+            }
+            if v, ok := r.Value.(string); ok {
+                return v
+            }
             return ""
         }
     }
@@ -598,10 +646,10 @@ class S3Client {
                 expiresSeconds = 900
             }
             out, err := presigner.PresignPutObject(context.Background(), &s3.PutObjectInput{
-                Bucket: aws.String(s.Cfg.Bucket),
-                Key: aws.String(key),
+                Bucket:      aws.String(s.Cfg.Bucket),
+                Key:         aws.String(key),
                 ContentType: aws.String(contentType),
-            }, s3.WithPresignExpires(time.Duration(expiresSeconds) * time.Second))
+            }, s3.WithPresignExpires(time.Duration(expiresSeconds)*time.Second))
             if err != nil {
                 return LAMMERGEIER.Result.Err(lamS3Err("S3PresignError", "presign PUT %q: %v", key, err))
             }
@@ -612,8 +660,12 @@ class S3Client {
     func presignedPutUrl(self, key: str, contentType: str = "application/octet-stream", expiresSeconds: int = 900) -> str {
         go! {
             r := s.PresignPut(key, contentType, expiresSeconds)
-            if !r.Ok() { return "" }
-            if v, ok := r.Value.(string); ok { return v }
+            if !r.Ok() {
+                return ""
+            }
+            if v, ok := r.Value.(string); ok {
+                return v
+            }
             return ""
         }
     }

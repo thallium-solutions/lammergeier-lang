@@ -15,6 +15,8 @@ from compiler.formatter import format_lam_source  # noqa: E402
 
 MESSY_SOURCE = """func main(){
 value:int=1
+items:list[int]=[]
+lookup:dict[str,int]={}
 if value>0{
 print("x:y", value)# inline
 }
@@ -23,9 +25,49 @@ print("x:y", value)# inline
 
 FORMATTED_SOURCE = """func main() {
     value: int = 1
+    items: list[int] = []
+    lookup: dict[str, int] = {}
     if value > 0 {
         print("x:y", value)  # inline
     }
+}
+"""
+
+MESSY_GO_SOURCE = """go! { import (
+"strings"
+"fmt"
+) }
+
+func call(*items:str)->str{
+raw:any=go!(strings.NewReader("x"))
+_ = raw
+go! {
+fmt.Println(fmt.Sprintf("value:%d",42))
+if true {
+fmt.Println("ok")
+}
+}
+return ",".join(items)
+}
+"""
+
+FORMATTED_GO_SOURCE = """go! {
+    import (
+        "fmt"
+        "strings"
+    )
+}
+
+func call(*items: str) -> str {
+    raw: any = go!(strings.NewReader("x"))
+    _ = raw
+    go! {
+        fmt.Println(fmt.Sprintf("value:%d", 42))
+        if true {
+            fmt.Println("ok")
+        }
+    }
+    return ",".join(items)
 }
 """
 
@@ -43,6 +85,16 @@ def test_formatter_is_idempotent() -> None:
     assert second.text == first
     assert not second.changed
     print("PASS: formatter is idempotent")
+
+
+def test_formatter_gofmt_and_inline_go() -> None:
+    result = format_lam_source(MESSY_GO_SOURCE)
+    assert result.changed
+    assert result.text == FORMATTED_GO_SOURCE, result.text
+    second = format_lam_source(result.text)
+    assert second.text == result.text
+    assert not second.changed
+    print("PASS: formatter runs gofmt and preserves inline go")
 
 
 def test_lamc_fmt_stdout_and_check() -> None:
@@ -78,6 +130,7 @@ def main() -> int:
     tests = [
         test_formatter_snapshot,
         test_formatter_is_idempotent,
+        test_formatter_gofmt_and_inline_go,
         test_lamc_fmt_stdout_and_check,
     ]
     for test in tests:

@@ -16,6 +16,9 @@ documentation.
 ### Changed
 
 - Updated lams3 package metadata to advertise Apache-2.0 licensing.
+- Refactored `lamc fmt` / LSP document formatting to preserve inline `go!(...)`,
+  format `go! { ... }` blocks with `gofmt` when available, and keep Lam source
+  in the repository's K&R/four-space style more reliably.
 
 ## 2026-07-10
 
