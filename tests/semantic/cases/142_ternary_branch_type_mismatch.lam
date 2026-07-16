@@ -1,0 +1,6 @@
+# expect-error: ternary branches must have compatible types: got `int` and `str`
+
+func main(flag: bool) {
+    value = 1 if flag else "no"
+    print(value)
+}

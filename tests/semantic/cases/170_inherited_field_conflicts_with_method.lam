@@ -1,0 +1,18 @@
+# expect-error: class `Child` field `status` conflicts with inherited method `Base.status`
+
+class Base {
+    func status(self) -> str {
+        return "base"
+    }
+}
+
+class Child(Base) {
+    func init(self) {
+        self.status: str = "child"
+    }
+}
+
+func main() {
+    child: Child = Child()
+    print(child.status)
+}

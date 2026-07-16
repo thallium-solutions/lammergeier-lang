@@ -16,6 +16,12 @@ Use this checklist for manual Lammergeier releases while the project does not ha
 
 ## 3. Run the regression suite
 
+Confirm the local toolchain first:
+
+```bash
+lamc doctor --strict
+```
+
 ```bash
 PYTHON=python3 sh scripts/test.sh
 ```

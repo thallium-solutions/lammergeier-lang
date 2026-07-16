@@ -1,0 +1,18 @@
+# expect-error: class `Dog` overrides `Animal.speak` with return `int`, expected `str`
+
+class Animal {
+    func speak(self) -> str {
+        return "sound"
+    }
+}
+
+class Dog(Animal) {
+    func speak(self) -> int {
+        return 1
+    }
+}
+
+func main() {
+    d: Dog = Dog()
+    print(d.speak())
+}

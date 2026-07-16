@@ -1,0 +1,6 @@
+# expect-error: duplicate destructuring target `a`
+
+func main() {
+    a, a = (1, 2)
+    print(a)
+}

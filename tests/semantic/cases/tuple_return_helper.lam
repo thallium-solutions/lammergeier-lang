@@ -1,0 +1,19 @@
+# expect-pass
+
+func pair() -> tuple[int, str] {
+    return (1, "one")
+}
+
+func multiPair() -> (int, str) {
+    return (2, "two")
+}
+
+class Maker {
+    static func pair() -> tuple[int, str] {
+        return (3, "three")
+    }
+
+    func instancePair(self) -> tuple[int, str] {
+        return (4, "four")
+    }
+}

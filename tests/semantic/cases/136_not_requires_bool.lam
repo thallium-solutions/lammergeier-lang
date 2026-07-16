@@ -1,0 +1,5 @@
+# expect-error: operator `not` expects `bool`, got `str`
+
+func main() {
+    print(not "ready")
+}

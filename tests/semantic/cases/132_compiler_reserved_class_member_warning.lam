@@ -1,0 +1,10 @@
+# expect-warning: `__lamValue` uses compiler-reserved prefix `__lam`
+
+class Box {
+    __lamValue: int = 1
+}
+
+func main() {
+    box: Box = Box()
+    print(box.__lamValue)
+}

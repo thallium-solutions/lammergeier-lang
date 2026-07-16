@@ -1,0 +1,18 @@
+# expect-pass
+
+class User {
+    name: str = "Ada"
+}
+
+class Team {
+    title: str = "Core"
+}
+
+func main(flag: bool) {
+    if flag {
+        thing = User()
+    } else {
+        thing = Team()
+    }
+    print(thing.nmae)
+}

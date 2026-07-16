@@ -85,6 +85,8 @@ run_suite() {
             "$PYTHON" tests/tests/test_multiline_calls.py
             "$PYTHON" tests/tests/test_go_pins.py
             "$PYTHON" tests/tests/test_doctor.py
+            "$PYTHON" tests/tests/test_lib_run.py
+            "$PYTHON" tests/tests/test_github_lams3_install.py
             ;;
         rosetta)
             if [ -n "$filter" ]; then

@@ -1,0 +1,7 @@
+# expect-error: missing required argument `name` in call to `ich.greet`
+
+import import_call_helper as ich
+
+func main() {
+    ich.greet()
+}

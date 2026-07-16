@@ -1,0 +1,14 @@
+# expect-error: argument `value` to `Box` has type `int`, expected `str`
+
+class Box[T] {
+    value: T
+
+    func init(value: T) {
+        self.value = value
+    }
+}
+
+func main() {
+    box = Box[str](1)
+    print(box)
+}

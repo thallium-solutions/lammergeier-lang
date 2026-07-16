@@ -1,0 +1,5 @@
+# expect-error: string index must be `int`, got `str`
+
+func main() {
+    print("abc"["zero"])
+}

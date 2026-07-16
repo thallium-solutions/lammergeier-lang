@@ -1,0 +1,9 @@
+# expect-error: `go` is a reserved identifier in Go
+
+func run(go: int) {
+    print(go)
+}
+
+func main() {
+    run(1)
+}

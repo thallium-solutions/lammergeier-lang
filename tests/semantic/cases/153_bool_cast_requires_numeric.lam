@@ -1,0 +1,6 @@
+# expect-error: cast `bool` expects numeric argument, got `str`
+
+func main() {
+    value = bool("yes")
+    print(value)
+}

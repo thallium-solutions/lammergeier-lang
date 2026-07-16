@@ -1,0 +1,20 @@
+# expect-error: class `BadStore` does not satisfy interface `Store`: method `save` takes `int`, expected `str`
+
+interface Store {
+    func save(value: str) -> bool
+}
+
+class BadStore {
+    func save(self, value: int) -> bool {
+        return True
+    }
+}
+
+func use(s: Store) {
+    print(s.save("value"))
+}
+
+func main() {
+    store: BadStore = BadStore()
+    use(store)
+}

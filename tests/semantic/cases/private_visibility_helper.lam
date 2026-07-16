@@ -1,0 +1,23 @@
+# expect-pass
+
+private func hidden() -> str {
+    return "hidden"
+}
+
+func shown() -> str {
+    return "shown"
+}
+
+class Box {
+    private func secret(self) -> str {
+        return "secret"
+    }
+
+    private static func make() -> Box {
+        return Box()
+    }
+
+    func open(self) -> str {
+        return self.secret()
+    }
+}

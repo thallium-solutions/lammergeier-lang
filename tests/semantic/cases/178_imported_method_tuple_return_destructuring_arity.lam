@@ -1,0 +1,8 @@
+# expect-error: destructuring expects 3 values, but `Maker.pair()` has 2
+
+from tuple_return_helper import Maker
+
+func main() {
+    a, b, c = Maker.pair()
+    print(a)
+}

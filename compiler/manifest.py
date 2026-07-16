@@ -567,29 +567,42 @@ class Manifest:
 class DepSpec:
     """One entry in ``[dependencies]``.
 
-    Either a version-range spec or a local ``path`` override (for
-    development checkouts). Exactly one of ``range`` / ``path`` is
-    populated.
+    Either a version-range spec, a local ``path`` override, or a
+    direct ``git`` source. Exactly one of ``range`` / ``path`` /
+    ``git`` is populated.
     """
 
     name:  str
     range: Optional[str] = None
     path:  Optional[str] = None
+    git:   Optional[str] = None
+    ref:   Optional[str] = None
 
     @classmethod
     def parse(cls, name: str, raw: Any) -> "DepSpec":
         if isinstance(raw, str):
             return cls(name=name, range=raw)
         if isinstance(raw, dict):
-            if "path" in raw and "version" in raw:
+            source_keys = [k for k in ("path", "git", "version") if k in raw]
+            if len(source_keys) > 1:
                 raise ManifestError(
-                    f"dependencies.{name}: cannot set both 'path' and 'version'")
+                    f"dependencies.{name}: cannot mix 'path', 'git', and 'version'")
             if "path" in raw:
                 p = raw["path"]
                 if not isinstance(p, str):
                     raise ManifestError(
                         f"dependencies.{name}.path must be a string")
                 return cls(name=name, path=p)
+            if "git" in raw:
+                g = raw["git"]
+                if not isinstance(g, str) or not g:
+                    raise ManifestError(
+                        f"dependencies.{name}.git must be a non-empty string")
+                ref = raw.get("ref")
+                if ref is not None and not isinstance(ref, str):
+                    raise ManifestError(
+                        f"dependencies.{name}.ref must be a string")
+                return cls(name=name, git=g, ref=ref or None)
             if "version" in raw:
                 v = raw["version"]
                 if not isinstance(v, str):
@@ -597,7 +610,7 @@ class DepSpec:
                         f"dependencies.{name}.version must be a string")
                 return cls(name=name, range=v)
             raise ManifestError(
-                f"dependencies.{name} must have 'version' or 'path'")
+                f"dependencies.{name} must have 'version', 'path', or 'git'")
         raise ManifestError(f"dependencies.{name} has unsupported shape")
 
 

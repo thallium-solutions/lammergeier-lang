@@ -1,0 +1,5 @@
+# expect-error: right operand of `or` must be `bool`, got `str`
+
+func main() {
+    print(False or "fallback")
+}

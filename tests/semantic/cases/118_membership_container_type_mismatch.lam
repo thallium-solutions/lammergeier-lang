@@ -1,0 +1,5 @@
+# expect-error: right operand of `in` must be `list`, `dict`, or `str`, got `int`
+
+func main() {
+    print(1 in 2)
+}

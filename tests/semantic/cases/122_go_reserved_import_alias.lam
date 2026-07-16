@@ -1,0 +1,7 @@
+# expect-error: `select` is a reserved identifier in Go
+
+import lamstrings as select
+
+func main() {
+    print(1)
+}

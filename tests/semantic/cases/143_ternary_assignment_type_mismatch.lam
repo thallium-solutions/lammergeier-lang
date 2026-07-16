@@ -1,0 +1,6 @@
+# expect-error: cannot assign `float` to `int` variable `count`
+
+func main(flag: bool) {
+    count: int = 1 if flag else 2.5
+    print(count)
+}

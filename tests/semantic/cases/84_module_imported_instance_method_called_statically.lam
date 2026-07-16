@@ -1,0 +1,7 @@
+# expect-error: cannot call instance method `helper.Widget.label` without an instance
+
+import import_call_helper as helper
+
+func main() {
+    print(helper.Widget.label("box"))
+}

@@ -1,0 +1,28 @@
+# expect-pass
+
+func identity[T](x: T) -> T {
+    return x
+}
+
+func first[T, U](left: T, right: U) -> T {
+    return left
+}
+
+class Box[T] {
+    value: T
+
+    func init(value: T) {
+        self.value = value
+    }
+}
+
+func main() {
+    number: int = identity[int](1)
+    names: list[str] = identity[list[str]](["Ada"])
+    label: str = first[str, int]("count", number)
+    box = Box[str]("ok")
+    print(number)
+    print(names)
+    print(label)
+    print(box)
+}

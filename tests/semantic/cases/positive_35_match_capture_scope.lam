@@ -1,0 +1,12 @@
+# expect-pass
+
+func main() {
+    match 1 {
+        case value if value > 0 {
+            print(value)
+        }
+        case _ {
+            print("other")
+        }
+    }
+}

@@ -1,0 +1,9 @@
+# expect-error: `@private` is not supported; use `private func ...`
+
+@private func helper() -> str {
+    return "hidden"
+}
+
+func main() {
+    print(helper())
+}

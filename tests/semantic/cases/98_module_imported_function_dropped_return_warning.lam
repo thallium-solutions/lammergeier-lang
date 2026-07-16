@@ -1,0 +1,7 @@
+# expect-warning: dropped return value of `helper.newWidget()`
+
+import import_call_helper as helper
+
+func main() {
+    helper.newWidget("box")
+}

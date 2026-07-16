@@ -1,0 +1,20 @@
+# expect-error: class `BadStore` does not satisfy interface `Store`: method `load` returns `list[int]`, expected `list[str]`
+
+interface Store {
+    func load() -> list[str]
+}
+
+class BadStore {
+    func load(self) -> list[int] {
+        return [1]
+    }
+}
+
+func use(store: Store) {
+    print(store.load())
+}
+
+func main() {
+    store: BadStore = BadStore()
+    use(store)
+}

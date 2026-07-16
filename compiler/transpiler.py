@@ -93,6 +93,7 @@ class GoTranspiler(
         self.class_fields: Dict[str, List[Tuple[str, str]]] = {}
         self.class_static_fields: Dict[str, List[Tuple[str, str, Any, bool]]] = {}
         self.class_bases: Dict[str, List[str]] = {}
+        self.class_base_aliases: Dict[str, Dict[str, str]] = {}
 
         # Variable tracking
         self.declared_vars: Set[str] = set()
@@ -350,6 +351,7 @@ class GoTranspiler(
         self.class_fields = {}
         self.class_static_fields = {}
         self.class_bases = {}
+        self.class_base_aliases = {}
         self.declared_vars = set()
         self.scope_stack = []
         self._user_functions = set()
@@ -450,6 +452,69 @@ class GoTranspiler(
 
         return "\n".join(header_lines + body_lines) + "\n"
 
+    # ─── Class base helpers ────────────────────────────────────
+
+    def _classdef_base_specs(self, node: Tree) -> List[Tuple[str, str]]:
+        for child in node.children:
+            if not isinstance(child, Tree):
+                continue
+            if child.data == "class_bases":
+                specs: List[Tuple[str, str]] = []
+                for base_node in child.children:
+                    if not isinstance(base_node, Tree):
+                        continue
+                    if base_node.data == "named_class_base":
+                        alias = self._class_base_name(base_node.children[0]) if base_node.children else ""
+                        base = self._class_base_name(base_node.children[1]) if len(base_node.children) > 1 else ""
+                        if base:
+                            specs.append((alias, base))
+                    elif base_node.data == "unnamed_class_base":
+                        base = self._class_base_name(base_node)
+                        if base:
+                            specs.append(("", base))
+                return specs
+            if child.data == "arguments":
+                specs = []
+                for arg in child.children:
+                    base = self._class_base_name(arg)
+                    if base:
+                        specs.append(("", base))
+                return specs
+        return []
+
+    def _class_base_name(self, node) -> str:
+        if not isinstance(node, Tree):
+            return ""
+        if node.data == "var" and node.children:
+            return self._get_name(node.children[0])
+        if node.data == "name" and node.children:
+            return self._get_name(node)
+        if node.data == "dotted_name":
+            return ".".join(
+                self._get_name(child)
+                for child in node.children
+                if isinstance(child, Tree)
+            )
+        if node.data in {"getattr", "getattr_safe"} and len(node.children) >= 2:
+            prefix = self._class_base_name(node.children[0])
+            attr = self._get_name(node.children[1])
+            return f"{prefix}.{attr}" if prefix and attr else ""
+        for child in node.children:
+            name = self._class_base_name(child)
+            if name:
+                return name
+        return ""
+
+    @staticmethod
+    def _base_aliases_from_specs(specs: List[Tuple[str, str]]) -> Dict[str, str]:
+        aliases: Dict[str, str] = {}
+        if len(specs) == 1 and not specs[0][0] and specs[0][1]:
+            aliases["base"] = specs[0][1]
+        for alias, base in specs:
+            if alias and base:
+                aliases[alias] = base
+        return aliases
+
     # ─── Pass 0: Collect function names ────────────────────────
 
     def _collect_function_names(self, tree: Tree):
@@ -498,14 +563,9 @@ class GoTranspiler(
             name_node = tree.children[0]
             class_name = self._get_name(name_node)
             self._class_names.add(class_name)
-            # Collect base classes
-            for child in tree.children[1:]:
-                if isinstance(child, Tree) and child.data == "arguments":
-                    for arg in child.children:
-                        if isinstance(arg, Tree):
-                            base = self._expr_to_go(arg)
-                            if base:
-                                self.class_bases.setdefault(class_name, []).append(base)
+            base_specs = self._classdef_base_specs(tree)
+            self.class_bases[class_name] = [base for _alias, base in base_specs]
+            self.class_base_aliases[class_name] = self._base_aliases_from_specs(base_specs)
             # Scan methods
             suite = tree.children[-1]
             for child in self._suite_stmts(suite):

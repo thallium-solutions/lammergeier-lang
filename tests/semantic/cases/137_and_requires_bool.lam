@@ -1,0 +1,5 @@
+# expect-error: left operand of `and` must be `bool`, got `int`
+
+func main() {
+    print(1 and True)
+}

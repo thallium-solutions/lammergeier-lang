@@ -1,0 +1,24 @@
+# expect-error: ambiguous inherited member `label` on class `Both`
+
+class Left {
+    func label(self) -> str {
+        return "left"
+    }
+}
+
+class Right {
+    func label(self) -> str {
+        return "right"
+    }
+}
+
+class Both(left: Left, right: Right) {
+    func labelPair(self) -> str {
+        return self.label()
+    }
+}
+
+func main() {
+    b: Both = Both()
+    print(b.labelPair())
+}

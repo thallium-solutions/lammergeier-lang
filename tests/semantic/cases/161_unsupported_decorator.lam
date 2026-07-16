@@ -1,0 +1,9 @@
+# expect-error: @route decorators are parsed but not supported yet
+
+@route("GET", "/users") func listUsers() -> str {
+    return "[]"
+}
+
+func main() {
+    print(listUsers())
+}

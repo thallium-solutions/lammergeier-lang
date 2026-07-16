@@ -1,0 +1,11 @@
+# expect-error: error[import]
+# expect-error: `?` requires `from lamerrors import Result`
+
+func readValue() -> Result {
+    return 1
+}
+
+func main() -> Result {
+    value = readValue()?
+    return value
+}

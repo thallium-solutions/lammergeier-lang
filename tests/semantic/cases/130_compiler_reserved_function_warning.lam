@@ -1,0 +1,9 @@
+# expect-warning: `__lamHelper` uses compiler-reserved prefix `__lam`
+
+func __lamHelper() -> int {
+    return 1
+}
+
+func main() {
+    print(__lamHelper())
+}

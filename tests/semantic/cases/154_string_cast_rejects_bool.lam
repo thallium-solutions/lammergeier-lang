@@ -1,0 +1,6 @@
+# expect-error: cast `string` expects numeric, `str`, or `bytes` argument, got `bool`
+
+func main() {
+    value = string(false)
+    print(value)
+}

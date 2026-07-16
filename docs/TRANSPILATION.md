@@ -168,6 +168,13 @@ selection and `go mod tidy` decide the final transitive set.
 Classes always become pointer receivers: a constructor returns `*Class`, and
 methods are defined on `(s *Class)`.
 
+Go-only keywords may be used as Lam declaration names when this mapping produces
+a non-keyword Go name. For example, `func select()` lowers to `func Select()`,
+`class Query { func select(self) { ... } }` lowers to a `Select` method, and a
+static method named `switch` lowers to a namespaced function such as
+`Query_switch`. Names emitted verbatim, such as locals, parameters, import
+aliases, and private instance methods, still cannot use Go-only keywords.
+
 ## Types
 
 | Lam              | Go                          |
@@ -492,12 +499,11 @@ resolve to the Go public name so they can be used as first-class values.
 
 ### Unused-local silencer
 
-Go treats unused function-scope locals as a hard build error
+Go treats unused locals as a hard build error
 (`declared and not used`). Lam aims for warn-don't-error semantics
 on advisory diagnostics, so the transpiler defuses the conflict by
-emitting a defensive `_ = name` epilogue at the end of every
-function body for any local that the body declared but never
-referenced. Take this Lam:
+emitting defensive `_ = name` lines in function and block scopes for
+locals that were declared but never referenced. Take this Lam:
 
 ```lam
 func compute() {
@@ -519,29 +525,25 @@ func Compute() {
 ```
 
 The implementation lives in `_emit_unused_local_silencers`
-(`compiler/visitors/helpers.py`). It snapshots `declared_vars`
-right after the params are bound, lets the suite walk run, then
-diffs the post-walk set against the snapshot to find body-only
-locals. Each remaining name is searched for word-boundary
-references in the slice of `output_lines` emitted during the walk
-(with `//line` directives stripped so source paths can't
-false-positive); names that appear exactly once — i.e. only in
-their own declaration line — get a trailing `_ = name`.
+(`compiler/visitors/helpers.py`) and the block-scope wrappers in
+`compiler/visitors/statements.py`. Each scope snapshots
+`declared_vars`, lets its suite walk run, then diffs the post-walk set
+against the snapshot to find scope-local declarations. Each remaining
+name is searched for word-boundary references in the slice of
+`output_lines` emitted during that scope (with `//line` directives
+stripped so source paths can't false-positive); names that appear
+exactly once — i.e. only in their own declaration line — get a trailing
+`_ = name` before the scope closes.
 
 Limitations:
 
-- **Function scope only.** Locals declared inside an `if` / `for`
-  / `with` body are popped from `declared_vars` before the
-  silencer runs and would be undefined at function scope, so we
-  leave Go to flag them. Wrap them in a parent scope or
-  `_ = name` them yourself if Go complains.
 - **Compiler-internal names** (anything starting with `_` or
   `__`) are excluded from the diff so we don't churn output for
   things the user can't see (`__qN` from `?` propagation,
   `__lamPanicked` etc.).
 
 Pair this with the **semantic checker's unused warnings**
-(unused imports, unused parameters — see
+(unused imports, unused parameters, unused locals — see
 [`SYNTAX.md`](SYNTAX.md#compiler-diagnostics)) to get the full
 warn-don't-error stack: Lam tells the user, the transpiler keeps
 Go happy, the build proceeds.
@@ -612,9 +614,66 @@ func Point_origin() *Point {
 
 ### Inheritance
 
-`class Child(Parent)` compiles to struct embedding: `Parent` is added as
-an anonymous field on `Child`. `super().method(args)` becomes
-`s.Parent.Method(args)`.
+`class Child(Parent)` compiles to Go struct embedding: `Child` gets an
+anonymous `*Parent` field, so Go field and method promotion makes parent
+members reachable from child values. Lam code calls inherited methods normally,
+for example `self.greet()` inside a child method or `dog.greet()` at a call
+site.
+
+Inside a child with exactly one unnamed parent, `base` is a compile-time alias
+for the embedded parent field. A parent initializer call:
+
+```lam
+class Child(Parent) {
+    func init(self, name: str) {
+        base.init(name, "internal")
+    }
+}
+```
+
+lowers to assigning the embedded parent pointer from the parent constructor:
+
+```go
+s.Parent = NewParent(name, "internal")
+```
+
+`base.__init__(...)` lowers the same way as `base.init(...)`.
+
+There is no special `super()` support today. `super` is treated like an ordinary
+name and is reported as undefined unless user code defines it. If a child
+overrides a parent method, `self.method()` calls the child override. To call the
+parent implementation explicitly, use the parent alias, such as
+`base.method(...)` or a named alias.
+
+Constructors are independent. `Child(...)` is checked against `Child.init` /
+`Child.__init__`, not against the parent initializer, and the child constructor
+signature does not need to match the parent signature. Parent parameters do not
+need defaults merely because the child constructor has different parameters.
+
+When a child constructor is emitted, the compiler first allocates zero-value
+embedded parent structs, for example `s.Parent = &Parent{}`, before running the
+child constructor body. Explicit parent initializer calls replace that
+zero-value parent with the result of `NewParent(...)`. A child class without its
+own initializer now emits a fallback constructor that also initializes embedded
+parent pointers.
+
+Multiple inheritance embeds each parent pointer:
+
+```lam
+class ServiceAccount(account: Account, flags: Flags) {
+    func init(self, owner: str) {
+        account.init(owner, "service")
+        flags.init(true)
+    }
+}
+```
+
+The aliases are compile-time names for those embedded parent fields, so
+`account.label()` lowers to `s.Account.Label()`. If multiple parents provide
+the same inherited member, unqualified access through `self.member` or
+`obj.member` is rejected as ambiguous unless the child overrides that member.
+Using `base` in a multiple-parent class is also rejected; name the parent
+aliases instead.
 
 ### Interfaces
 
@@ -940,11 +999,11 @@ inputs and forward to the underlying Go API.
   surrounding scope. Use `:=` only when the value of the expression
   is what you need; for a binding that survives, use a regular
   assignment statement.
-- **Decorators are accepted but ignored:** the grammar has
+- **Decorators are parsed but unsupported:** the grammar has
   `@decorator` / `@decorator(args)` forms before functions and
-  classes, but `_visit_decorated` drops the decorator nodes and emits
-  only the wrapped `func` or `class`. `@private func f() { ... }`
-  therefore emits public `F`; use `private func f() { ... }`.
+  classes, but the semantic checker rejects them before emission.
+  `@private func f() { ... }` is rejected with a hint to use
+  `private func f() { ... }`.
 - **`nonlocal` is a no-op declaration:** nested functions and lambdas
   already capture surrounding locals directly. The visitor emits only
   a comment, so `nonlocal` does not change binding, assignment, or

@@ -1,0 +1,18 @@
+# expect-error: class `Dog` overrides `Animal.feed` with incompatible parameters: got (int), expected (str)
+
+class Animal {
+    func feed(self, food: str) -> bool {
+        return True
+    }
+}
+
+class Dog(Animal) {
+    func feed(self, food: int) -> bool {
+        return True
+    }
+}
+
+func main() {
+    d: Dog = Dog()
+    print(d.feed(1))
+}

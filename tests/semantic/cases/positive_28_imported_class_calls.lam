@@ -1,0 +1,10 @@
+# expect-pass
+
+from import_call_helper import Widget
+
+func main() {
+    w: Widget = Widget("box")
+    other: Widget = Widget.make("crate")
+    print(w)
+    print(other)
+}

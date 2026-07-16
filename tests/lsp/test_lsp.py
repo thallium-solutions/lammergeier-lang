@@ -223,6 +223,81 @@ func main() {
 }
 """
 
+INSTANCE_DOC = """class Account {
+    func __init__(self, owner: str, tenant: str) {
+        self.owner: str = owner
+        self.tenant: str = tenant
+    }
+
+    func label(self) -> str {
+        return f"{self.owner}@{self.tenant}"
+    }
+}
+
+class UserAccount(Account) {
+    func __init__(self, owner: str) {
+        base.init(owner, "internal")
+    }
+
+    func label(self) -> str {
+        return f"user:{base.label()}"
+    }
+}
+
+func main() {
+    user: UserAccount = UserAccount("alice")
+    print(user.label())
+    print(user.owner)
+}
+"""
+
+NAMED_BASE_DOC = """class Account {
+    func __init__(self, owner: str) {
+        self.owner: str = owner
+    }
+
+    func label(self) -> str {
+        return self.owner
+    }
+}
+
+class Flags {
+    func init(self, enabled: bool) {
+        self.enabled: bool = enabled
+    }
+
+    func status(self) -> str {
+        return "on"
+    }
+}
+
+class ServiceAccount(account: Account, flags: Flags) {
+    func __init__(self, owner: str) {
+        account.init(owner)
+        flags.__init__(true)
+    }
+
+    func summary(self) -> str {
+        return f"{account.label()}:{flags.status()}"
+    }
+}
+"""
+
+EXPECTED_ERROR_DOC = """# expect-error: undefined name `mystery`
+# expect-error: line 5
+
+func main() {
+    print(mystery)
+}
+"""
+
+MISMATCHED_EXPECTED_ERROR_DOC = """# expect-error: undefined name `different`
+
+func main() {
+    print(mystery)
+}
+"""
+
 RENAME_DOC = """func compute(value: int) -> int {
     total: int = value + 1
     return total
@@ -282,6 +357,7 @@ def run_tests() -> int:
             assert_true("rename prepareProvider", caps.get("renameProvider", {}).get("prepareProvider"))
             assert_true("documentFormattingProvider", caps.get("documentFormattingProvider"))
             assert_true("completionProvider", isinstance(caps.get("completionProvider"), dict))
+            assert_true("workspaceSymbolProvider", caps.get("workspaceSymbolProvider"))
             print("PASS: initialize advertises capabilities")
         except AssertionError as e:
             failures.append(str(e))
@@ -623,6 +699,158 @@ def run_tests() -> int:
         except AssertionError as e:
             failures.append(str(e))
 
+        # ── instance / inherited member completion + definition ─────
+        instance_uri = "file:///tmp/lsp_instance_members.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": instance_uri, "languageId": "lammergeier",
+                "version": 1, "text": INSTANCE_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        instance_lines = INSTANCE_DOC.splitlines()
+        user_label_line = next(i for i, l in enumerate(instance_lines) if "user.label()" in l)
+        dot_col = instance_lines[user_label_line].index("user.") + len("user.")
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": instance_uri},
+            "position": {"line": user_label_line, "character": dot_col},
+        })
+        labels = {it.get("label") for it in (resp.get("result") or {}).get("items", [])}
+        try:
+            assert_true("instance completion includes child method", "label" in labels)
+            assert_true("instance completion includes inherited field", "owner" in labels)
+            assert_true("instance completion includes inherited field tenant", "tenant" in labels)
+            print("PASS: completion resolves instance and inherited members")
+        except AssertionError as e:
+            failures.append(f"instance member completion: {e}")
+
+        owner_line = next(i for i, l in enumerate(instance_lines) if "user.owner" in l)
+        owner_col = instance_lines[owner_line].index("owner") + 1
+        resp = client.request("textDocument/definition", {
+            "textDocument": {"uri": instance_uri},
+            "position": {"line": owner_line, "character": owner_col},
+        })
+        loc = resp.get("result")
+        try:
+            assert_true("inherited field definition non-null", loc)
+            field_line = next(i for i, l in enumerate(instance_lines) if "self.owner: str" in l)
+            assert_eq("inherited field definition URI", loc.get("uri"), instance_uri)
+            assert_eq("inherited field definition line", loc["range"]["start"]["line"], field_line)
+            print("PASS: definition jumps to inherited field declaration")
+        except (AssertionError, StopIteration) as e:
+            failures.append(f"inherited field definition: {e}")
+
+        base_line = next(i for i, l in enumerate(instance_lines) if "base.label()" in l)
+        base_col = instance_lines[base_line].index("label") + 1
+        resp = client.request("textDocument/hover", {
+            "textDocument": {"uri": instance_uri},
+            "position": {"line": base_line, "character": base_col},
+        })
+        try:
+            val = ((resp.get("result") or {}).get("contents") or {}).get("value", "")
+            assert_true("base hover resolves parent method", "func label(self) -> str" in val)
+            print("PASS: hover resolves default base alias methods")
+        except AssertionError as e:
+            failures.append(f"base alias hover: {e}")
+
+        ctor_line = next(i for i, l in enumerate(instance_lines) if 'UserAccount("alice")' in l)
+        ctor_char = instance_lines[ctor_line].index("UserAccount(") + len("UserAccount(")
+        resp = client.request("textDocument/signatureHelp", {
+            "textDocument": {"uri": instance_uri},
+            "position": {"line": ctor_line, "character": ctor_char},
+        })
+        try:
+            result = resp.get("result") or {}
+            signatures = result.get("signatures") or []
+            assert_true("constructor signature help result", signatures)
+            assert_eq("constructor signature sugar",
+                      signatures[0].get("label"), "func init(owner: str)")
+            params = signatures[0].get("parameters") or []
+            assert_eq("constructor first parameter", params[0].get("label"), "owner: str")
+            print("PASS: signatureHelp uses init sugar for constructors")
+        except (AssertionError, IndexError) as e:
+            failures.append(f"constructor signatureHelp: {e}")
+
+        method_char = instance_lines[user_label_line].index("label(") + len("label(")
+        resp = client.request("textDocument/signatureHelp", {
+            "textDocument": {"uri": instance_uri},
+            "position": {"line": user_label_line, "character": method_char},
+        })
+        try:
+            result = resp.get("result") or {}
+            signatures = result.get("signatures") or []
+            assert_true("method signature help result", signatures)
+            assert_eq("method signature hides self",
+                      signatures[0].get("label"), "func label() -> str")
+            assert_eq("method signature has no explicit params",
+                      signatures[0].get("parameters"), [])
+            print("PASS: signatureHelp resolves instance methods and hides self")
+        except AssertionError as e:
+            failures.append(f"method signatureHelp: {e}")
+
+        named_uri = "file:///tmp/lsp_named_bases.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": named_uri, "languageId": "lammergeier",
+                "version": 1, "text": NAMED_BASE_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        named_lines = NAMED_BASE_DOC.splitlines()
+        account_line = next(i for i, l in enumerate(named_lines) if "account.label()" in l)
+        account_dot = named_lines[account_line].index("account.") + len("account.")
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": named_uri},
+            "position": {"line": account_line, "character": account_dot},
+        })
+        account_labels = {it.get("label") for it in (resp.get("result") or {}).get("items", [])}
+        flags_line = next(i for i, l in enumerate(named_lines) if "flags.status()" in l)
+        flags_dot = named_lines[flags_line].index("flags.") + len("flags.")
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": named_uri},
+            "position": {"line": flags_line, "character": flags_dot},
+        })
+        flags_labels = {it.get("label") for it in (resp.get("result") or {}).get("items", [])}
+        try:
+            assert_true("named base account completion", "label" in account_labels)
+            assert_true("named base flags completion", "status" in flags_labels)
+            print("PASS: completion resolves named inheritance aliases")
+        except AssertionError as e:
+            failures.append(f"named inheritance completion: {e}")
+
+        # ── semantic/syntax fixture expectation awareness ─────
+        expected_uri = "file:///tmp/lsp_expected_error_fixture.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": expected_uri, "languageId": "lammergeier",
+                "version": 1, "text": EXPECTED_ERROR_DOC,
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        try:
+            diags = notes[0].get("params", {}).get("diagnostics", []) if notes else None
+            assert_eq("matched expected-error fixture diagnostics", diags, [])
+            print("PASS: matched expected-error fixtures are quiet in the editor")
+        except AssertionError as e:
+            failures.append(f"expected fixture quieting: {e}")
+
+        mismatch_uri = "file:///tmp/lsp_mismatched_expected_error_fixture.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": mismatch_uri, "languageId": "lammergeier",
+                "version": 1, "text": MISMATCHED_EXPECTED_ERROR_DOC,
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        try:
+            diags = notes[0].get("params", {}).get("diagnostics", []) if notes else []
+            assert_true("mismatched fixture emits diagnostic", diags)
+            assert_true("mismatch message is clear",
+                        "fixture expectation not matched" in diags[0].get("message", ""))
+            print("PASS: mismatched expected-error fixtures show one clear diagnostic")
+        except AssertionError as e:
+            failures.append(f"expected fixture mismatch: {e}")
+
         # ── completion after `Greeter.` shows static methods ──
         resp = client.request("textDocument/completion", {
             "textDocument": {"uri": uri},
@@ -750,6 +978,52 @@ def run_tests() -> int:
         except AssertionError as e:
             failures.append(f"cross-file completion (top): {e}")
 
+        # ``from lam|`` should suggest module names.
+        module_uri = "file:///tmp/lsp_from_module.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": module_uri, "languageId": "lammergeier",
+                "version": 1, "text": "from lam\n",
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": module_uri},
+            "position": {"line": 0, "character": len("from lam")},
+        })
+        items = (resp.get("result") or {}).get("items", [])
+        labels = {it.get("label") for it in items}
+        try:
+            assert_true("lamenv suggested after 'from lam|'", "lamenv" in labels)
+            print("PASS: module-name completion suggests stdlib modules")
+        except AssertionError as e:
+            failures.append(f"module-name completion: {e}")
+
+        # Bare completion should suggest importable symbols without
+        # automatically editing imports.
+        suggest_uri = "file:///tmp/lsp_import_suggest.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": suggest_uri, "languageId": "lammergeier",
+                "version": 1, "text": "func main() {\n    \n}\n",
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": suggest_uri},
+            "position": {"line": 1, "character": 4},
+        })
+        items = (resp.get("result") or {}).get("items", [])
+        try:
+            dotenv = next(it for it in items if it.get("label") == "Dotenv")
+            assert_eq("import suggestion detail",
+                      dotenv.get("detail"), "from lamenv import Dotenv")
+            assert_true("import suggestion has no text edits",
+                        "additionalTextEdits" not in dotenv)
+            print("PASS: completion suggests imports without auto-editing them")
+        except (AssertionError, StopIteration) as e:
+            failures.append(f"import suggestion completion: {e}")
+
         # ``from lamenv import |`` should suggest the module's exports.
         from_uri = "file:///tmp/lsp_from.lam"
         client.notify("textDocument/didOpen", {
@@ -821,6 +1095,42 @@ def run_tests() -> int:
             },
         })
         client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("workspace/symbol", {"query": "double"})
+        workspace_symbols = resp.get("result") or []
+        try:
+            symbol_hits = {
+                (item.get("name"), item.get("location", {}).get("uri"))
+                for item in workspace_symbols
+            }
+            assert_true("workspace symbols include helper.double",
+                        ("double", helper_uri) in symbol_hits)
+            print("PASS: workspace/symbol finds open user-module exports")
+        except AssertionError as e:
+            failures.append(f"workspace symbols: {e}")
+
+        suggest_user_uri = "file:///tmp/lsp_user_import_suggest.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": suggest_user_uri, "languageId": "lammergeier",
+                "version": 1, "text": "func main() {\n    \n}\n",
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": suggest_user_uri},
+            "position": {"line": 1, "character": 4},
+        })
+        try:
+            user_items = (resp.get("result") or {}).get("items", [])
+            double = next(it for it in user_items if it.get("label") == "double")
+            assert_eq("user import suggestion detail",
+                      double.get("detail"), "from helper import double")
+            assert_true("user import suggestion has no text edits",
+                        "additionalTextEdits" not in double)
+            print("PASS: completion suggests user-module imports without edits")
+        except (AssertionError, StopIteration) as e:
+            failures.append(f"user import suggestion completion: {e}")
+
         client.notify("textDocument/didOpen", {
             "textDocument": {
                 "uri": user_main_uri, "languageId": "lammergeier",

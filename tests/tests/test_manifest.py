@@ -274,6 +274,24 @@ def test_go_deps_table_parses() -> None:
     print("PASS: [go-deps] / [go.dependencies] parse")
 
 
+def test_git_dependency_form_parses() -> None:
+    """Direct git dependencies use the same flat inline-table shape
+    as ``[replace]``: ``{ git = "...", ref = "..." }``."""
+    mf = _from_text("""
+        [library]
+        name = "lamx"
+        version = "1.0.0"
+
+        [dependencies]
+        lamgit = { git = "https://github.com/acme/lamgit.git", ref = "v1.2.0" }
+    """)
+    dep = mf.dependencies["lamgit"]
+    assert dep.git == "https://github.com/acme/lamgit.git", dep
+    assert dep.ref == "v1.2.0", dep
+    assert dep.range is None and dep.path is None, dep
+    print("PASS: git dependency form parses")
+
+
 def test_go_deps_validate_paths_and_versions() -> None:
     """Bad Go module paths (bare segment, ``UPPER`` chars at start)
     and bad versions (missing ``v`` prefix, non-SemVer body) are
@@ -348,6 +366,7 @@ def main() -> int:
         test_is_valid_helpers,
         test_parse_constraint_round_trip,
         test_go_deps_table_parses,
+        test_git_dependency_form_parses,
         test_go_deps_validate_paths_and_versions,
         test_go_version_helpers,
     ]

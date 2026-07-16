@@ -1,0 +1,13 @@
+# expect-error: requires unaliased `from lamerrors import Result`
+# expect-error: `Result as ...` is not supported
+
+from lamerrors import Result as R
+
+func readValue() -> R {
+    return R.Ok(1)
+}
+
+func main() -> R {
+    value: int = readValue()?
+    print(value)
+}

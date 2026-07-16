@@ -1,0 +1,24 @@
+# expect-error: class `Leaf` overrides `Root.save` with incompatible parameters: got (list[int]), expected (list[str])
+
+class Root {
+    func save(self, values: list[str]) -> bool {
+        return True
+    }
+}
+
+class Mid(Root) {
+    func other(self) -> str {
+        return "mid"
+    }
+}
+
+class Leaf(Mid) {
+    func save(self, values: list[int]) -> bool {
+        return True
+    }
+}
+
+func main() {
+    leaf: Leaf = Leaf()
+    print(leaf.save([1]))
+}

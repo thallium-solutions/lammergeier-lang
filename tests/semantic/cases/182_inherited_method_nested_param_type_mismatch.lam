@@ -1,0 +1,18 @@
+# expect-error: class `Child` overrides `Base.save` with incompatible parameters: got (list[int]), expected (list[str])
+
+class Base {
+    func save(self, values: list[str]) -> bool {
+        return True
+    }
+}
+
+class Child(Base) {
+    func save(self, values: list[int]) -> bool {
+        return True
+    }
+}
+
+func main() {
+    child: Child = Child()
+    print(child.save([1]))
+}

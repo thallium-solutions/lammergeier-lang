@@ -1,0 +1,8 @@
+# expect-error: missing required argument `name` in call to `import_call_helper.Widget`
+
+import import_call_helper
+
+func main() {
+    w = import_call_helper.Widget()
+    print(w)
+}

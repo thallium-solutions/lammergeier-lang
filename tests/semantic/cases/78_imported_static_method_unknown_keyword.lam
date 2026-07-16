@@ -1,0 +1,9 @@
+# expect-error: unknown keyword argument `nmae` in call to `Widget.make`
+# expect-error: did you mean `name`
+
+from import_call_helper import Widget
+
+func main() {
+    w: Widget = Widget.make(nmae="box")
+    print(w)
+}

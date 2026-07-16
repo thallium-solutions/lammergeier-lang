@@ -1,0 +1,12 @@
+# expect-pass
+
+func main() {
+    nums = [1, 2] + [3]
+    labels = {"one": 1, "two": 2}
+    name = "Lam" + "mergeier"
+    total = 1 + 2 * 3
+    print(nums[0])
+    print(labels["one"])
+    print(name[0:3])
+    print(total)
+}

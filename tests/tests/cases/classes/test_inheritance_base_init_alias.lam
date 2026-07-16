@@ -1,0 +1,33 @@
+# Test: explicit parent initialization through the default `base` alias.
+#
+# expect: user:alice@internal
+# expect: alice
+# expect: internal
+
+class Account {
+    func __init__(self, owner: str, tenant: str) {
+        self.owner: str = owner
+        self.tenant: str = tenant
+    }
+
+    func label(self) -> str {
+        return f"{self.owner}@{self.tenant}"
+    }
+}
+
+class UserAccount(Account) {
+    func __init__(self, owner: str) {
+        base.__init__(owner, "internal")
+    }
+
+    func label(self) -> str {
+        return f"user:{base.label()}"
+    }
+}
+
+func main() {
+    user: UserAccount = UserAccount("alice")
+    print(user.label())
+    print(user.owner)
+    print(user.tenant)
+}

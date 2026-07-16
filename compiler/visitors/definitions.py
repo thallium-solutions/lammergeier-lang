@@ -642,7 +642,9 @@ class DefinitionVisitorMixin:
                     class_args = self._class_type_args(class_name)
                     self._emit(f"func New{go_cls}{tp_clause}() *{go_cls}{class_args} {{")
                     self.indent += 1
-                    self._emit(f"return &{go_cls}{class_args}{{}}")
+                    self._emit(f"s := &{go_cls}{class_args}{{}}")
+                    self._emit_ancestor_init(class_name, receiver="s")
+                    self._emit("return s")
                     self.indent -= 1
                     self._emit("}")
                     self._emit("")

@@ -281,7 +281,10 @@ keyw_arg_pattern: NAME "=" as_pattern
 
 // ========================= CLASS DEFINITION =========================
 
-classdef: "class" name [type_params] ["(" [arguments] ")"] suite
+classdef: "class" name [type_params] ["(" [class_bases] ")"] suite
+class_bases: class_base ("," class_base)* ","?
+?class_base: name ":" type_expr -> named_class_base
+           | type_expr          -> unnamed_class_base
 
 interfacedef: "interface" name "{" interface_method+ "}"
 interface_method: FUNC name "(" [typed_parameters] ")" ["->" return_type] ";"

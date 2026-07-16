@@ -1,0 +1,14 @@
+# expect-pass
+
+const names: list[str] = ["Ada", "Grace"]
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    counts: dict[str, int] = {"one": 1, "two": 2}
+    ids: set[int] = {1, 2}
+    evens = [n for n in xs if n > 1]
+    print(names)
+    print(counts)
+    print(ids)
+    print(evens)
+}

@@ -1,0 +1,18 @@
+# expect-pass
+
+func pair() -> tuple[int, str] {
+    return (1, "one")
+}
+
+func main() {
+    a, b = pair()
+    x, y = (2, "two")
+    okA: int = a
+    okB: str = b
+    okX: int = x
+    okY: str = y
+    print(okA)
+    print(okB)
+    print(okX)
+    print(okY)
+}

@@ -54,7 +54,7 @@ from compiler.diagnostics import (  # noqa: E402
 from compiler.ast_builder import build_module  # noqa: E402
 from compiler.ast_nodes import ClassDecl, FuncDecl, InterfaceDecl, Module, Param, VarDecl  # noqa: E402
 from compiler.formatter import FormatError, format_lam_source  # noqa: E402
-from compiler.modules import WorkspaceIndex  # noqa: E402
+from compiler.modules import ModuleFacts, WorkspaceIndex  # noqa: E402
 from compiler.syntax_errors import make_syntax_diagnostic  # noqa: E402
 from compiler.lammergeier import preprocess_for_parse  # noqa: E402
 
@@ -233,6 +233,12 @@ def _stdlib_module_uri(module: str) -> Optional[str]:
     return path.resolve().as_uri()
 
 
+def _stdlib_module_names() -> List[str]:
+    if not _STDLIB_DIR.exists():
+        return []
+    return sorted(path.stem for path in _STDLIB_DIR.glob("*.lam"))
+
+
 def _get_parser() -> Lark:
     """Cache one Lark instance; building it is the expensive part."""
     global _PARSER
@@ -276,6 +282,9 @@ class Document:
     # alias the user writes in this document to the originating
     # ``(module, exported_name)`` tuple in the stdlib.
     imports: Dict[str, Tuple[str, str]] = field(default_factory=dict)
+    # Class inheritance aliases visible inside each class body. A single
+    # unnamed parent becomes ``base``; explicit aliases keep their Lam name.
+    class_base_aliases: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -291,6 +300,27 @@ class LspRequestError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+@dataclass(frozen=True)
+class FixtureExpectation:
+    kind: str
+    text: str
+    line: int
+
+
+@dataclass(frozen=True)
+class ResolvedMember:
+    symbol: Symbol
+    uri: str
+
+
+@dataclass(frozen=True)
+class ImportSuggestion:
+    module: str
+    symbol: Symbol
+    path: Path
+    priority: int = 1
 
 
 def _preprocess_for_parse(source: str) -> str:
@@ -444,6 +474,7 @@ def analyze(doc: Document) -> None:
     doc.parse_error = None
     doc.semantic_diagnostics = []
     doc.imports = {}
+    doc.class_base_aliases = _class_base_aliases(doc.text)
 
     parser = _get_parser()
     pre_result = _preprocess_result_for_parse(doc.text)
@@ -454,7 +485,7 @@ def analyze(doc: Document) -> None:
     try:
         tree = parser.parse(pre)
         doc.tree = tree
-        doc.symbols = _collect_symbols(tree)
+        doc.symbols = _merge_symbols(_collect_symbols(tree), _self_field_symbols(doc.text))
         doc.imports = _collect_imports(tree)
         # Semantic check — best-effort. A bug in the checker should
         # never blank the editor, so any exception is logged and
@@ -481,11 +512,158 @@ def analyze(doc: Document) -> None:
 
     # Fallback: regex over the original source so positions stay
     # meaningful even for users editing past a syntax error.
-    doc.symbols = _regex_symbols(doc.text)
+    doc.symbols = _merge_symbols(_regex_symbols(doc.text), _self_field_symbols(doc.text))
     # Imports are resolvable from the raw text even when the parser
     # gave up — a missing closing brace 200 lines down shouldn't
     # blank out cross-file hover for an import line near the top.
     doc.imports = _regex_imports(doc.text)
+
+
+_CLASS_HEADER_RE = re.compile(
+    r"^\s*class\s+(?P<name>[A-Za-z_]\w*)"
+    r"(?:\s*\[[^\]]*\])?"
+    r"(?:\s*\((?P<bases>[^)]*)\))?",
+    re.MULTILINE,
+)
+
+
+def _class_base_aliases(source: str) -> Dict[str, Dict[str, str]]:
+    """Return inheritance aliases by class from Lam class headers.
+
+    This intentionally mirrors the compiler's sugar:
+    ``class Child(Parent)`` exposes ``base`` and
+    ``class Child(p: Parent)`` exposes ``p``. The LSP only needs a
+    source-level index for editor navigation, so a small parser is less
+    disruptive than expanding the declaration AST here.
+    """
+    out: Dict[str, Dict[str, str]] = {}
+    for match in _CLASS_HEADER_RE.finditer(source):
+        class_name = match.group("name")
+        bases_text = (match.group("bases") or "").strip()
+        if not bases_text:
+            continue
+        specs: List[Tuple[str, str]] = []
+        for raw in _split_signature_params(bases_text):
+            item = raw.strip()
+            if not item:
+                continue
+            if ":" in item:
+                alias, base = item.split(":", 1)
+                specs.append((alias.strip(), _class_name_from_type(base.strip())))
+            else:
+                specs.append(("", _class_name_from_type(item)))
+        aliases: Dict[str, str] = {}
+        if len(specs) == 1 and specs[0][1] and not specs[0][0]:
+            aliases["base"] = specs[0][1]
+        for alias, base in specs:
+            if alias and base:
+                aliases[alias] = base
+        if aliases:
+            out[class_name] = aliases
+    return out
+
+
+def _class_name_from_type(type_text: str) -> str:
+    type_text = type_text.strip()
+    if "[" in type_text:
+        type_text = type_text.split("[", 1)[0].strip()
+    if "." in type_text:
+        type_text = type_text.rsplit(".", 1)[-1]
+    match = re.match(r"[A-Za-z_]\w*", type_text)
+    return match.group(0) if match else ""
+
+
+def _merge_symbols(primary: List[Symbol], extra: List[Symbol]) -> List[Symbol]:
+    seen = {(s.kind, s.parent, s.name, s.line, s.col) for s in primary}
+    out = list(primary)
+    for sym in extra:
+        key = (sym.kind, sym.parent, sym.name, sym.line, sym.col)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(sym)
+    return out
+
+
+def _self_field_symbols(source: str) -> List[Symbol]:
+    """Best-effort ``self.field`` declarations for editor navigation."""
+    out: List[Symbol] = []
+    class_stack: List[Tuple[str, int]] = []
+    depth = 0
+    for line_no, raw in enumerate(source.splitlines()):
+        class_match = _CLASS_HEADER_RE.match(raw)
+        if class_match:
+            class_stack.append((class_match.group("name"), depth))
+        current_class = class_stack[-1][0] if class_stack else ""
+        if current_class:
+            for match in re.finditer(
+                r"\bself\.([A-Za-z_]\w*)\s*(?::\s*([A-Za-z_][\w.\[\], ]*))?",
+                raw,
+            ):
+                name = match.group(1)
+                type_name = _class_name_from_type(match.group(2) or "")
+                detail = f"{name}: {type_name}" if type_name else name
+                out.append(Symbol(
+                    name=name,
+                    kind="variable",
+                    line=line_no,
+                    col=match.start(1),
+                    end_line=line_no,
+                    end_col=match.end(1),
+                    detail=detail,
+                    parent=current_class,
+                ))
+        depth += raw.count("{") - raw.count("}")
+        while class_stack and depth <= class_stack[-1][1]:
+            class_stack.pop()
+    return out
+
+
+_FIXTURE_EXPECTATION_RE = re.compile(
+    r"^\s*#\s*expect-(?P<kind>error|warning):\s*(?P<text>.*)$",
+    re.MULTILINE,
+)
+_FIXTURE_EXPECT_PASS_RE = re.compile(r"^\s*#\s*expect-pass\s*$", re.MULTILINE)
+
+
+def _fixture_expectations(source: str) -> Tuple[List[FixtureExpectation], bool]:
+    expectations: List[FixtureExpectation] = []
+    for match in _FIXTURE_EXPECTATION_RE.finditer(source):
+        line = source.count("\n", 0, match.start()) + 1
+        expectations.append(FixtureExpectation(
+            kind=match.group("kind"),
+            text=match.group("text").strip(),
+            line=line,
+        ))
+    return expectations, bool(_FIXTURE_EXPECT_PASS_RE.search(source))
+
+
+def _diagnostic_match_text(diag: Diagnostic) -> str:
+    parts = [diag.message, diag.code, f"line {diag.span.line}"]
+    if diag.hint:
+        parts.append(diag.hint)
+    if diag.severity is DiagnosticSeverity.ERROR:
+        if diag.code == "LAM0001":
+            parts.append("syntax check failed")
+        elif diag.code.startswith("LAM1"):
+            parts.append("semantic check failed")
+        parts.append("error")
+    elif diag.severity is DiagnosticSeverity.WARNING:
+        parts.append("warning")
+    return "\n".join(parts)
+
+
+def _diagnostic_matches_expectation(diag: Diagnostic, exp: FixtureExpectation) -> bool:
+    if exp.kind == "error" and diag.severity is not DiagnosticSeverity.ERROR:
+        return False
+    if exp.kind == "warning" and diag.severity is not DiagnosticSeverity.WARNING:
+        return False
+    if exp.text.startswith("line "):
+        try:
+            return diag.span.line == int(exp.text.split(None, 1)[1])
+        except (IndexError, ValueError):
+            return False
+    return exp.text in _diagnostic_match_text(diag)
 
 
 _IMPORT_FROM_RE = re.compile(
@@ -689,6 +867,20 @@ def _split_signature_params(params: str) -> List[str]:
     if item:
         out.append(item)
     return out
+
+
+def _param_name(param: str) -> str:
+    param = param.strip()
+    param = param.lstrip("*")
+    return param.split(":", 1)[0].split("=", 1)[0].strip()
+
+
+def _replace_signature_params(label: str, params: List[str]) -> str:
+    start = label.find("(")
+    end = label.find(")", start + 1)
+    if start < 0 or end < 0:
+        return label
+    return f"{label[:start + 1]}{', '.join(params)}{label[end:]}"
 
 
 def _identifier_occurrences(source: str, name: str) -> List[Tuple[int, int, int]]:
@@ -1212,6 +1404,8 @@ class LspServer:
         self.docs: Dict[str, Document] = {}
         self.workspace_root = PROJECT_ROOT
         self.workspace = WorkspaceIndex(self.workspace_root)
+        self._workspace_scan_signature: Optional[Tuple[Tuple[str, float], ...]] = None
+        self._workspace_module_facts: Dict[Path, ModuleFacts] = {}
         self.shutdown_requested = False
         self.handlers: Dict[str, Callable[[Dict[str, Any]], Any]] = {
             "initialize": self.on_initialize,
@@ -1230,6 +1424,7 @@ class LspServer:
             "textDocument/rename": self.on_rename,
             "textDocument/formatting": self.on_formatting,
             "textDocument/documentSymbol": self.on_document_symbol,
+            "workspace/symbol": self.on_workspace_symbol,
         }
 
     # ── transport ───────────────────────────────────────────
@@ -1294,6 +1489,8 @@ class LspServer:
         if root_path is not None:
             self.workspace_root = root_path
             self.workspace = WorkspaceIndex(self.workspace_root)
+            self._workspace_scan_signature = None
+            self._workspace_module_facts = {}
         return {
             "capabilities": {
                 "textDocumentSync": 1,  # full document sync
@@ -1305,6 +1502,7 @@ class LspServer:
                 "renameProvider": {"prepareProvider": True},
                 "documentFormattingProvider": True,
                 "documentSymbolProvider": True,
+                "workspaceSymbolProvider": True,
             },
             "serverInfo": {"name": "lammergeier-lsp", "version": "0.1.0"},
         }
@@ -1364,15 +1562,19 @@ class LspServer:
 
     # ── diagnostics ─────────────────────────────────────────
     def _publish_diagnostics(self, doc: Document) -> None:
-        diags: List[Dict[str, Any]] = []
+        source_diags: List[Diagnostic] = []
         if doc.parse_error is not None:
-            diags.append(diagnostic_to_lsp(doc.parse_error))
+            source_diags.append(doc.parse_error)
+        source_diags.extend(doc.semantic_diagnostics)
+        source_diags = self._apply_fixture_expectations(doc, source_diags)
+
+        diags: List[Dict[str, Any]] = []
         # Semantic diagnostics (undefined names, duplicate members,
         # misplaced flow). Each entry is widened to a one-token range
         # so editors can underline a recognisable region; computing
         # the *exact* identifier extent would require re-walking the
         # AST and is more cost than it's worth at this point.
-        for diag in doc.semantic_diagnostics:
+        for diag in source_diags:
             # Try to extract the offending identifier from the message
             # so the underline width matches the symbol the user
             # actually misspelt. Falls back to a single character.
@@ -1383,6 +1585,33 @@ class LspServer:
         self._notify("textDocument/publishDiagnostics", {
             "uri": doc.uri, "diagnostics": diags,
         })
+
+    @staticmethod
+    def _apply_fixture_expectations(doc: Document, diags: List[Diagnostic]) -> List[Diagnostic]:
+        expectations, expect_pass = _fixture_expectations(doc.text)
+        if not expectations and not expect_pass:
+            return diags
+        if expect_pass:
+            return diags
+
+        unmatched = [
+            exp for exp in expectations
+            if not any(_diagnostic_matches_expectation(diag, exp) for diag in diags)
+        ]
+        if not unmatched:
+            return []
+
+        actual = "; ".join(diag.message for diag in diags) or "no diagnostics"
+        first = unmatched[0]
+        return [Diagnostic(
+            code="LAM9001",
+            severity=DiagnosticSeverity.WARNING,
+            message=(
+                f"fixture expectation not matched: expected {first.kind} "
+                f"`{first.text}`; actual: {actual}"
+            ),
+            span=SourceSpan(file=None, line=first.line, col=1),
+        )]
 
     # ── hover ───────────────────────────────────────────────
     def on_hover(self, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1399,10 +1628,10 @@ class LspServer:
         # whether ``bar`` is local or comes from an imported class.
         receiver = self._receiver_at(uri, line, char)
         if doc and receiver:
-            method = self._lookup_method(doc, receiver, word)
-            if method:
-                origin = self._origin_module_for(doc, receiver)
-                detail = method.detail or method.name
+            member = self._lookup_member(doc, receiver, word, line)
+            if member:
+                origin = self._origin_module_for(doc, receiver, line)
+                detail = member.symbol.detail or member.symbol.name
                 if origin:
                     detail = f"# from {origin}\n{detail}"
                 return {
@@ -1440,7 +1669,7 @@ class LspServer:
         if call is None:
             return None
         callee, active = call
-        sym = self._lookup_callable(doc, uri, callee)
+        sym = self._lookup_callable(doc, uri, callee, line)
         if sym is None:
             return None
         signature = self._signature_help_for_symbol(sym, active)
@@ -1465,6 +1694,20 @@ class LspServer:
         except IndexError:
             pass
         items: List[Dict[str, Any]] = []
+
+        # ``from |`` / ``from lam|`` — suggest module names only.
+        module_match = re.match(r"^\s*from\s+([A-Za-z_][\w.]*)?$", line_text)
+        if module_match:
+            prefix = module_match.group(1) or ""
+            for name in self._module_names():
+                if prefix and not name.startswith(prefix):
+                    continue
+                items.append({
+                    "label": name,
+                    "kind": 9,  # Module
+                    "detail": "Lammergeier module",
+                })
+            return {"isIncomplete": False, "items": items}
 
         # ``from <module> import |`` — suggest exported names from
         # the stdlib module the user is targeting.
@@ -1502,21 +1745,10 @@ class LspServer:
         if m:
             target = m.group(1)
             seen = set()
-            for sym in doc.symbols:
-                if sym.parent == target and sym.name not in seen:
+            for sym in self._members_for_receiver(doc, target, line):
+                if sym.name not in seen:
                     seen.add(sym.name)
                     items.append(self._completion_item(sym))
-            # Cross-file: if ``target`` is an imported class, show its
-            # methods too.
-            resolved = self._resolve_import(doc, target)
-            if resolved is not None:
-                if resolved.stdlib is not None:
-                    bucket = resolved.stdlib.methods.get(resolved.symbol.name, {})
-                    for name, msym in bucket.items():
-                        if name in seen:
-                            continue
-                        seen.add(name)
-                        items.append(self._completion_item(msym))
             return {"isIncomplete": False, "items": items}
 
         # Identifier completion (the cursor is on a bare name or at a
@@ -1569,7 +1801,15 @@ class LspServer:
                 "detail": sym.detail,
             })
 
-        # 4) Keywords for convenience.
+        # 4) Importable names. These suggestions intentionally do not
+        # edit imports; they only show the import users may add.
+        for suggestion in self._import_suggestions(doc):
+            if suggestion.symbol.name in seen:
+                continue
+            seen.add(suggestion.symbol.name)
+            items.append(self._import_completion_item(suggestion))
+
+        # 5) Keywords for convenience.
         for kw in ("if", "elif", "else", "for", "while", "func", "class",
                    "return", "import", "from", "static", "private", "go!",
                    "true", "false", "None", "print", "len", "range"):
@@ -1591,6 +1831,26 @@ class LspServer:
             "detail": sym.detail,
         }
 
+    @staticmethod
+    def _import_completion_item(suggestion: ImportSuggestion) -> Dict[str, Any]:
+        sym = suggestion.symbol
+        kind = 7 if sym.kind in {"class", "interface"} else 3
+        if sym.kind == "variable":
+            kind = 6
+        return {
+            "label": sym.name,
+            "kind": kind,
+            "detail": f"from {suggestion.module} import {sym.name}",
+            "documentation": {
+                "kind": "markdown",
+                "value": (
+                    "Import suggestion only. Add the import manually "
+                    "when you want this symbol in scope."
+                ),
+            },
+            "sortText": f"z_import_{suggestion.module}_{sym.name}",
+        }
+
     # ── go-to-definition ────────────────────────────────────
     def on_definition(self, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         params = msg.get("params") or {}
@@ -1606,15 +1866,14 @@ class LspServer:
         # imported. Mint a Location pointing at the method declaration.
         receiver = self._receiver_at(uri, line, char)
         if doc and receiver:
-            method = self._lookup_method(doc, receiver, word)
-            if method:
-                target_uri = self._resolve_uri_for(doc, receiver, uri)
+            member = self._lookup_member(doc, receiver, word, line)
+            if member:
                 return {
-                    "uri": target_uri,
+                    "uri": member.uri,
                     "range": {
-                        "start": {"line": method.line, "character": method.col},
-                        "end":   {"line": method.end_line or method.line,
-                                   "character": method.end_col or (method.col + len(method.name))},
+                        "start": {"line": member.symbol.line, "character": member.symbol.col},
+                        "end":   {"line": member.symbol.end_line or member.symbol.line,
+                                   "character": member.symbol.end_col or (member.symbol.col + len(member.symbol.name))},
                     },
                 }
         sym = self._lookup_symbol(uri, word)
@@ -1798,7 +2057,166 @@ class LspServer:
                 top_level.append(entry)
         return top_level
 
+    def on_workspace_symbol(self, msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+        params = msg.get("params") or {}
+        query = (params.get("query") or "").lower()
+        out: List[Dict[str, Any]] = []
+        seen: set[Tuple[str, str, int, int]] = set()
+
+        def add_symbol(sym: Symbol, target_uri: str) -> None:
+            if query and query not in sym.name.lower():
+                return
+            key = (target_uri, sym.name, sym.line, sym.col)
+            if key in seen:
+                return
+            seen.add(key)
+            kind = {
+                "function": 12,
+                "class": 5,
+                "interface": 11,
+                "method": 6,
+                "static_method": 6,
+                "variable": 13,
+            }.get(sym.kind, 1)
+            out.append({
+                "name": sym.name,
+                "kind": kind,
+                "location": {
+                    "uri": target_uri,
+                    "range": {
+                        "start": {"line": sym.line, "character": sym.col},
+                        "end": {
+                            "line": sym.end_line or sym.line,
+                            "character": sym.end_col or (sym.col + len(sym.name)),
+                        },
+                    },
+                },
+                "containerName": sym.parent,
+            })
+
+        for doc in self.docs.values():
+            for sym in doc.symbols:
+                add_symbol(sym, doc.uri)
+        for module in _stdlib_module_names():
+            sm = _stdlib_module(module)
+            if sm is None:
+                continue
+            for sym in sm.symbols:
+                add_symbol(sym, sm.path.resolve().as_uri())
+        for path, facts in self._workspace_facts().items():
+            for export in facts.exports.values():
+                add_symbol(self._symbol_from_export(export), path.as_uri())
+
+        out.sort(key=lambda item: (item["name"].lower(), item["location"]["uri"]))
+        return out
+
     # ── helpers ─────────────────────────────────────────────
+    def _workspace_lam_paths(self) -> List[Path]:
+        skip_parts = {
+            ".git", ".venv", "venv", "__pycache__", "node_modules",
+            ".mypy_cache", ".pytest_cache", "dist", "build",
+        }
+        if not self.workspace_root.exists():
+            return []
+        paths: List[Path] = []
+        for path in self.workspace_root.rglob("*.lam"):
+            try:
+                rel = path.relative_to(self.workspace_root)
+            except ValueError:
+                continue
+            if any(part in skip_parts or part.startswith(".lamcache") for part in rel.parts):
+                continue
+            paths.append(path.resolve())
+        return paths
+
+    def _workspace_facts(self) -> Dict[Path, ModuleFacts]:
+        paths = self._workspace_lam_paths()
+        signature = tuple(
+            sorted(
+                (str(path), path.stat().st_mtime)
+                for path in paths
+                if path.exists()
+            )
+        )
+        if signature == self._workspace_scan_signature:
+            return self._workspace_module_facts
+
+        facts: Dict[Path, ModuleFacts] = {}
+        for path in paths:
+            try:
+                facts[path] = self.workspace.update_file(path)
+            except Exception:
+                logger.exception("workspace symbol scan failed: %s", path)
+        self._workspace_scan_signature = signature
+        self._workspace_module_facts = facts
+        return facts
+
+    def _module_names(self) -> List[str]:
+        names = set(_stdlib_module_names())
+        for facts in self.workspace.facts_by_path.values():
+            names.add(facts.module_name)
+        for facts in self._workspace_facts().values():
+            names.add(facts.module_name)
+        return sorted(names)
+
+    def _import_suggestions(self, doc: Document) -> List[ImportSuggestion]:
+        current_path = _uri_to_path(doc.uri)
+        in_scope = {sym.name for sym in doc.symbols if not sym.parent}
+        in_scope.update(doc.imports.keys())
+        out: List[ImportSuggestion] = []
+        seen: set[Tuple[str, str]] = set()
+
+        def add(module: str, sym: Symbol, path: Path, priority: int = 1) -> None:
+            if sym.name in in_scope or sym.name.startswith("_"):
+                return
+            key = (module, sym.name)
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(ImportSuggestion(
+                module=module,
+                symbol=sym,
+                path=path,
+                priority=priority,
+            ))
+
+        for module in _stdlib_module_names():
+            sm = _stdlib_module(module)
+            if sm is None:
+                continue
+            for sym in sm.public.values():
+                add(module, sym, sm.path.resolve(), priority=1)
+
+        open_paths = {
+            path for uri in self.docs
+            if (path := _uri_to_path(uri)) is not None
+        }
+        for path in open_paths:
+            facts = self.workspace.facts_by_path.get(path)
+            if facts is None:
+                continue
+            if current_path is not None and path == current_path:
+                continue
+            for export in facts.exports.values():
+                if export.kind == "import":
+                    continue
+                add(facts.module_name, self._symbol_from_export(export), path, priority=0)
+
+        for path, facts in self._workspace_facts().items():
+            if current_path is not None and path == current_path:
+                continue
+            for export in facts.exports.values():
+                if export.kind == "import":
+                    continue
+                add(facts.module_name, self._symbol_from_export(export), path, priority=2)
+
+        out.sort(key=lambda suggestion: (
+            suggestion.priority,
+            suggestion.symbol.name.lower(),
+            suggestion.module,
+        ))
+        return out
+
     def _word_at(self, uri: str, line: int, character: int) -> Optional[str]:
         doc = self.docs.get(uri)
         if not doc:
@@ -1853,13 +2271,24 @@ class LspServer:
             return resolved.symbol
         return None
 
-    def _lookup_callable(self, doc: Document, uri: str, callee: str) -> Optional[Symbol]:
+    def _lookup_callable(
+        self,
+        doc: Document,
+        uri: str,
+        callee: str,
+        line: int = 0,
+    ) -> Optional[Symbol]:
         if "." in callee:
             receiver, method = callee.rsplit(".", 1)
-            return self._lookup_method(doc, receiver, method)
+            member = self._lookup_member(doc, receiver, method, line)
+            if member and member.symbol.kind in {"function", "method", "static_method"}:
+                return member.symbol
+            return None
         sym = self._lookup_symbol(uri, callee)
         if sym and sym.kind in {"function", "method", "static_method"}:
             return sym
+        if sym and sym.kind == "class":
+            return self._constructor_for_class(doc, sym.name)
         return None
 
     @staticmethod
@@ -1894,6 +2323,10 @@ class LspServer:
         if parsed is None:
             return None
         label, parameters = parsed
+        label = label.replace("func __init__(", "func init(")
+        if sym.kind == "method" and parameters and _param_name(parameters[0]) == "self":
+            parameters = parameters[1:]
+            label = _replace_signature_params(label, parameters)
         if parameters:
             active_parameter = min(active_parameter, len(parameters) - 1)
         else:
@@ -2020,24 +2453,160 @@ class LspServer:
             return None
         return row[recv_start:recv_end]
 
-    def _lookup_method(self, doc: Document, receiver: str,
-                        method: str) -> Optional[Symbol]:
-        """Find ``method`` on ``receiver`` (a class). Searches local
-        symbols first, then methods on the imported class the alias
-        refers to.
-        """
-        for sym in doc.symbols:
-            if sym.parent == receiver and sym.name == method:
-                return sym
-        resolved = self._resolve_import(doc, receiver)
-        if resolved is not None:
-            if resolved.stdlib is not None:
-                return resolved.stdlib.methods.get(resolved.symbol.name, {}).get(method)
+    def _lookup_member(
+        self,
+        doc: Document,
+        receiver: str,
+        member_name: str,
+        line: int,
+    ) -> Optional[ResolvedMember]:
+        """Find ``member_name`` on a class, instance, ``self``, or base alias."""
+        class_name = self._receiver_type(doc, receiver, line)
+        if not class_name:
+            return None
+        for sym, target_uri in self._members_for_class(doc, class_name, include_inherited=True):
+            if sym.name == member_name:
+                return ResolvedMember(symbol=sym, uri=target_uri)
         return None
 
-    def _origin_module_for(self, doc: Document, receiver: str) -> Optional[str]:
+    def _constructor_for_class(self, doc: Document, class_name: str) -> Optional[Symbol]:
+        for sym, _target_uri in self._members_for_class(doc, class_name, include_inherited=False):
+            if sym.kind == "method" and sym.name in {"__init__", "init"}:
+                return sym
+        resolved = self._resolve_import(doc, class_name)
+        if resolved is not None and resolved.stdlib is not None:
+            for sym in resolved.stdlib.methods.get(resolved.symbol.name, {}).values():
+                if sym.kind == "method" and sym.name in {"__init__", "init"}:
+                    return sym
+        return None
+
+    def _members_for_receiver(self, doc: Document, receiver: str, line: int) -> List[Symbol]:
+        class_name = self._receiver_type(doc, receiver, line)
+        if not class_name:
+            return []
+        out: List[Symbol] = []
+        seen: set[str] = set()
+        for sym, _target_uri in self._members_for_class(doc, class_name, include_inherited=True):
+            if sym.name in seen:
+                continue
+            seen.add(sym.name)
+            out.append(sym)
+        return out
+
+    def _members_for_class(
+        self,
+        doc: Document,
+        class_name: str,
+        *,
+        include_inherited: bool,
+        seen_classes: Optional[set[str]] = None,
+    ) -> List[Tuple[Symbol, str]]:
+        seen_classes = seen_classes or set()
+        if class_name in seen_classes:
+            return []
+        seen_classes.add(class_name)
+        out: List[Tuple[Symbol, str]] = []
+        uri = doc.uri
+        for sym in doc.symbols:
+            if sym.parent == class_name and sym.kind in {"method", "static_method", "variable"}:
+                out.append((sym, uri))
+        resolved = self._resolve_import(doc, class_name)
+        if resolved is not None:
+            if resolved.stdlib is not None:
+                for bucket in resolved.stdlib.methods.get(resolved.symbol.name, {}).values():
+                    out.append((bucket, resolved.path.as_uri()))
+            else:
+                imported_doc = self._document_for_path(resolved.path)
+                if imported_doc is not None:
+                    for sym in imported_doc.symbols:
+                        if sym.parent == resolved.symbol.name and sym.kind in {"method", "static_method", "variable"}:
+                            out.append((sym, resolved.path.as_uri()))
+                    if include_inherited:
+                        for parent in imported_doc.class_base_aliases.get(resolved.symbol.name, {}).values():
+                            out.extend(self._members_for_class(
+                                imported_doc,
+                                parent,
+                                include_inherited=True,
+                                seen_classes=seen_classes,
+                            ))
+        if include_inherited:
+            for parent in doc.class_base_aliases.get(class_name, {}).values():
+                out.extend(self._members_for_class(
+                    doc,
+                    parent,
+                    include_inherited=True,
+                    seen_classes=seen_classes,
+                ))
+        return out
+
+    def _receiver_type(self, doc: Document, receiver: str, line: int) -> Optional[str]:
+        if receiver in {"self", "base"}:
+            cls = self._class_at(doc, line)
+            if receiver == "self":
+                return cls
+            if cls:
+                return doc.class_base_aliases.get(cls, {}).get("base")
+        cls = self._class_at(doc, line)
+        if cls and receiver in doc.class_base_aliases.get(cls, {}):
+            return doc.class_base_aliases[cls][receiver]
+        for sym in doc.symbols:
+            if sym.name == receiver and sym.kind == "class" and not sym.parent:
+                return sym.name
+        resolved = self._resolve_import(doc, receiver)
+        if resolved is not None and resolved.symbol.kind in {"class", "interface"}:
+            return resolved.symbol.name
+        return self._type_of_name_at(doc, receiver, line)
+
+    def _type_of_name_at(self, doc: Document, name: str, line: int) -> Optional[str]:
+        for local, type_name in self._scope_types_at(doc, line).items():
+            if local == name:
+                return type_name
+        return None
+
+    def _scope_types_at(self, doc: Document, line: int) -> Dict[str, str]:
+        """Best-effort local type environment for completions and definitions."""
+        out: Dict[str, str] = {}
+        lines = doc.text.splitlines()
+        upto = min(line + 1, len(lines))
+        for raw in lines[:upto]:
+            for match in re.finditer(r"\b([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w.]*)", raw):
+                out[match.group(1)] = _class_name_from_type(match.group(2))
+            for match in re.finditer(
+                r"\b([A-Za-z_]\w*)\s*=\s*([A-Za-z_][\w.]*)\s*(?:\[.*?\])?\s*\(",
+                raw,
+            ):
+                out.setdefault(match.group(1), _class_name_from_type(match.group(2)))
+        return out
+
+    def _class_at(self, doc: Document, line: int) -> Optional[str]:
+        best: Optional[Symbol] = None
+        for sym in doc.symbols:
+            if sym.kind != "class":
+                continue
+            end = sym.end_line or sym.line
+            if sym.line <= line <= end:
+                if best is None or sym.line >= best.line:
+                    best = sym
+        return best.name if best else None
+
+    def _document_for_path(self, path: Path) -> Optional[Document]:
+        uri = path.resolve().as_uri()
+        if uri in self.docs:
+            return self.docs[uri]
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        doc = Document(uri=uri, text=text)
+        analyze(doc)
+        return doc
+
+    def _origin_module_for(self, doc: Document, receiver: str, line: int) -> Optional[str]:
         if receiver in doc.imports:
             return doc.imports[receiver][0]
+        class_name = self._receiver_type(doc, receiver, line)
+        if class_name and class_name in doc.imports:
+            return doc.imports[class_name][0]
         return None
 
     def _resolve_uri_for(self, doc: Document, receiver: str,

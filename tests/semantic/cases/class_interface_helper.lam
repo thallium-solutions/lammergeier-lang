@@ -1,0 +1,17 @@
+# expect-pass
+
+interface Store {
+    func save(values: list[str]) -> bool
+}
+
+class BadStore {
+    func save(self, values: list[int]) -> bool {
+        return True
+    }
+}
+
+class GoodStore {
+    func save(self, values: list[str]) -> bool {
+        return True
+    }
+}

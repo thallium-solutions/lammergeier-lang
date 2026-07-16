@@ -1,0 +1,17 @@
+# expect-error: class `Dog` overrides instance method `Animal.speak` with a static method
+
+class Animal {
+    func speak(self) -> str {
+        return "sound"
+    }
+}
+
+class Dog(Animal) {
+    static func speak() -> str {
+        return "woof"
+    }
+}
+
+func main() {
+    print(Dog.speak())
+}

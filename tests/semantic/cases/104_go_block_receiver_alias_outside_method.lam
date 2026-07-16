@@ -1,0 +1,7 @@
+# expect-error: `s` is only the receiver alias inside class methods
+
+func plugin(srv: int) {
+    go! {
+        s.Value = srv
+    }
+}

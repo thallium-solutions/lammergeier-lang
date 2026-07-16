@@ -1,0 +1,6 @@
+# expect-error: ternary condition must be `bool`, got `str`
+
+func main() {
+    label: str = "yes" if "ready" else "no"
+    print(label)
+}

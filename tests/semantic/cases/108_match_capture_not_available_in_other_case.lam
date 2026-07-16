@@ -1,0 +1,12 @@
+# expect-error: undefined name `value`
+
+func main() {
+    match 1 {
+        case value {
+            print(value)
+        }
+        case _ {
+            print(value)
+        }
+    }
+}

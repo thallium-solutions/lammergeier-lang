@@ -1,0 +1,20 @@
+# expect-error: class `BadStore` does not satisfy interface `Store`: method `save` takes `list[int]`, expected `list[str]`
+
+interface Store {
+    func save(values: list[str]) -> bool
+}
+
+class BadStore {
+    func save(self, values: list[int]) -> bool {
+        return True
+    }
+}
+
+func use(store: Store) {
+    print(store.save(["ok"]))
+}
+
+func main() {
+    store: BadStore = BadStore()
+    use(store)
+}

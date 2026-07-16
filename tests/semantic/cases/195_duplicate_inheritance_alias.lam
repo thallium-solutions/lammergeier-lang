@@ -1,0 +1,13 @@
+# expect-error: duplicate inheritance alias `left` in class `Both`
+
+class Left {
+}
+
+class Right {
+}
+
+class Both(left: Left, left: Right) {
+}
+
+func main() {
+}

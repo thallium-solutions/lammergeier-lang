@@ -1,0 +1,20 @@
+# expect-pass
+
+from import_call_helper import Widget, newWidget
+import import_call_helper as helper
+
+func main() {
+    direct = Widget("box")
+    made = Widget.make("crate")
+    viaFunc = newWidget("bin")
+    qualified = helper.Widget("case")
+    qualifiedMade = helper.Widget.make("chest")
+    qualifiedFunc = helper.newWidget("bag")
+
+    print(direct.name)
+    print(made.name)
+    print(viaFunc.name)
+    print(qualified.name)
+    print(qualifiedMade.name)
+    print(qualifiedFunc.name)
+}

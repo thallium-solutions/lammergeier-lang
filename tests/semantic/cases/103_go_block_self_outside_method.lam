@@ -1,0 +1,7 @@
+# expect-error: `self` is only rewritten inside class methods
+
+func main() {
+    go! {
+        self.value = 1
+    }
+}

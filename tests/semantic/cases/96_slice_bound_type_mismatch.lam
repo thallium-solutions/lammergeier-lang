@@ -1,0 +1,5 @@
+# expect-error: slice bounds must be `int`, got `str`
+
+func main() {
+    print([1, 2, 3]["start":2])
+}

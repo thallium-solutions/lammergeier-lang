@@ -1,0 +1,11 @@
+# expect-warning: dropped `Option` from `maybe()`; handle it or assign to `_`
+
+func maybe() -> Option {
+    go! {
+        return nil
+    }
+}
+
+func main() {
+    maybe()
+}

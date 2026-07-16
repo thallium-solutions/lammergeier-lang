@@ -600,30 +600,76 @@ func main() {
 
 ## Inheritance
 
-Classes can inherit from a parent class:
+Classes can inherit from one or more parent classes. With one unnamed parent,
+the compiler provides a `base` alias inside the child body:
 
 ```lammergeier
 class Animal {
-    func init(self, name: str) {
+    func init(self, name: str, species: str) {
         self.name: str = name
+        self.species: str = species
     }
 
     func speak(self) -> str {
-        return f"{self.name} makes a sound"
+        return f"{self.name} the {self.species}"
     }
 }
 
 class Dog(Animal) {
     func init(self, name: str, breed: str) {
-        self.name: str = name
+        base.init(name, "dog")
         self.breed: str = breed
     }
 
     func speak(self) -> str {
-        return f"{self.name} barks"
+        return f"{base.speak()} barks"
     }
 }
 ```
+
+`init` and `__init__` are equivalent constructor spellings. Calling
+`base.init(...)` or `base.__init__(...)` initializes the embedded parent part
+of the current child instance.
+
+When a method or field is not declared on the child, ordinary access through
+`self` or an instance can use the inherited member:
+
+```lammergeier
+dog: Dog = Dog("Rex", "labrador")
+print(dog.name)
+print(dog.speak())
+```
+
+For multiple inheritance, name the parent aliases when you need explicit parent
+dispatch:
+
+```lammergeier
+class Account {
+    func init(self, owner: str, tenant: str) {
+        self.owner: str = owner
+        self.tenant: str = tenant
+    }
+}
+
+class Flags {
+    func init(self, enabled: bool) {
+        self.enabled: bool = enabled
+    }
+}
+
+class ServiceAccount(account: Account, flags: Flags) {
+    func init(self, owner: str) {
+        account.init(owner, "service")
+        flags.init(true)
+    }
+}
+```
+
+If more than one parent provides the same inherited member, unqualified access
+such as `self.label()` or `obj.label()` is ambiguous. Override the member on
+the child or call through a named parent alias such as `left.label()`.
+`base` is only available for the single unnamed-parent case; in classes with
+multiple parents, use explicit aliases.
 
 ---
 
@@ -1547,8 +1593,11 @@ fine — each gets its own internal temporary.
 
 `?` only makes sense in a function whose return type is `Result`,
 since the propagated value must still type-check against the
-function's signature. Using `?` elsewhere will compile, but the
-resulting Go is unlikely to be useful.
+function's signature. The semantic checker warns when `?` is used
+outside a `Result`-returning function or `do/catch` body. Because `?`
+lowers to `Result` helpers, the file must also import the helper class
+with `from lamerrors import Result`; otherwise the compiler emits a
+Lam-source `error[import]` before Go runs.
 
 ### The `do { } catch err { }` block
 
@@ -1570,6 +1619,10 @@ func main() {
     }
 }
 ```
+
+`do/catch` emits a small `Result`-returning helper closure even when the
+body does not contain `?`, so it also requires
+`from lamerrors import Result`.
 
 Two consecutive `do` blocks are independent; locals declared inside
 one block don't leak into the next. The catch variable is mandatory
@@ -2796,8 +2849,8 @@ parse-compatible placeholders, not supported language features:
 
 | Accepted form | Current compiler behavior | Supported spelling to use |
 |---------------|---------------------------|---------------------------|
-| `@decorator func f() { ... }` / `@decorator class C { ... }` | The decorator node is parsed and then discarded. Decorator names and arguments are not evaluated, and do not change the emitted Go. | Use explicit Lam keywords or ordinary wrapper/helper functions. |
-| `@private func f() { ... }` | Parsed as a decorator and ignored, so the function still emits as public `F`. | `private func f() { ... }` |
+| `@decorator func f() { ... }` / `@decorator class C { ... }` | The decorator node is parsed, then rejected by the semantic checker because decorator semantics are not implemented yet. | Use explicit Lam keywords or ordinary wrapper/helper functions. |
+| `@private func f() { ... }` | Rejected by the semantic checker so it cannot silently emit a public `F`. | `private func f() { ... }` |
 | `nonlocal name` | The transpiler emits only a comment. Nested functions and lambdas already close over outer locals directly, so there is no separate nonlocal rebinding step. | Omit it unless you are documenting intent. |
 
 Decorators are only parse-compatible on the same logical line as the
@@ -2837,8 +2890,9 @@ The pipeline runs in three layers:
    - **Warnings:** unused top-level imports
      (`from lamX import Y` where `Y` is never referenced),
      unused function parameters
-     (`func f(name, age)` where `age` is never used), and
-     project-level unused manifest dependencies (a
+     (`func f(name, age)` where `age` is never used), unused locals
+     declared in functions or block bodies, and project-level unused
+     manifest dependencies (a
      `[dependencies]` entry in `lamlib.toml` that no `.lam` in
      the project tree imports).
 
@@ -2852,18 +2906,14 @@ to mark it as deliberately unused, and the warning disappears. The
 same convention works for `for _ in xs`, `with File.open(p) as _f`, and
 `catch SomeError as _e`.
 
-For unused **locals** the story is split. Go normally rejects an
-unused function-scope local with a hard `declared and not used`
-error pointing at generated code — terrible for the
-warn-don't-error contract. The transpiler defuses this by emitting
-a defensive `_ = name` epilogue at the end of every function, so
-Go accepts the unused local without complaint and the build
-proceeds. The semantic checker doesn't currently emit a Lam-side
-warning for unused locals (that's a future iteration); for now
-they pass silently through both layers. *Block-scope* locals
-declared inside an `if` / `for` / `with` body are not covered by
-the silencer and still hit Go's check — wrap them in a parent
-scope or `_ = name` them yourself if Go complains.
+Unused **locals** follow the same warn-don't-error contract. The
+semantic checker emits ``warning: unused local `name` `` for locals
+declared in a function or block body and never read. Go normally
+rejects those locals with a hard `declared and not used` error
+pointing at generated code, so the transpiler also emits defensive
+`_ = name` lines inside the affected scope. That keeps Go happy
+while Lam still tells the author what to clean up. Prefix the name
+with `_` to mark the unused local as intentional.
 
 The user-name resolver runs at go-block emit time, after the AST
 walk has populated the symbol table, so `LAMMERGEIER.<userName>`

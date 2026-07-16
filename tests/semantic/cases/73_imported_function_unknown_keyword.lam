@@ -1,0 +1,8 @@
+# expect-error: unknown keyword argument `punctuatio` in call to `hello`
+# expect-error: did you mean `punctuation`
+
+from import_call_helper import greet as hello
+
+func main() {
+    print(hello("Lam", punctuatio="?"))
+}

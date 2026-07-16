@@ -1,0 +1,9 @@
+# expect-error: unknown member `w.nmae` on class `Widget`
+# expect-error: did you mean `w.name`
+
+from import_call_helper import Widget, newWidget
+
+func main() {
+    w = newWidget("box")
+    print(w.nmae)
+}

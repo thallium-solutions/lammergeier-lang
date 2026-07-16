@@ -1,0 +1,19 @@
+# expect-error: unknown member `u.nmae` on class `User`
+# expect-error: did you mean `u.name`
+
+class User {
+    name: str = "Ada"
+}
+
+func makeUser() -> User {
+    return User()
+}
+
+func main(flag: bool) {
+    if flag {
+        u = User()
+    } else {
+        u = makeUser()
+    }
+    print(u.nmae)
+}

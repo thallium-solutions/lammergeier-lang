@@ -1,0 +1,7 @@
+# expect-error: private symbol `hidden` from module `private_visibility_helper` is not visible for import
+
+from private_visibility_helper import hidden
+
+func main() {
+    print(hidden())
+}

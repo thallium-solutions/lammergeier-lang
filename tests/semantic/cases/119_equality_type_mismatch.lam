@@ -1,0 +1,5 @@
+# expect-error: cannot compare `int` and `str`
+
+func main() {
+    print(1 == "1")
+}

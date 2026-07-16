@@ -1,0 +1,10 @@
+# expect-error: `plain` is not generic and does not accept type arguments
+
+func plain(x: int) -> int {
+    return x
+}
+
+func main() {
+    value = plain[int](1)
+    print(value)
+}

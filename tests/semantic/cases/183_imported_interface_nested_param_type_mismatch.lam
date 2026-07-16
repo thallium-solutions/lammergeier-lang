@@ -1,0 +1,8 @@
+# expect-error: class `BadStore` does not satisfy interface `Store`: method `save` takes `list[int]`, expected `list[str]`
+
+from class_interface_helper import Store, BadStore
+
+func main() {
+    store: Store = BadStore()
+    print(store.save(["ok"]))
+}

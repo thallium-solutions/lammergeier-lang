@@ -1,0 +1,14 @@
+# expect-error: generic `Box` expects 1 type argument, got 2
+
+class Box[T] {
+    value: T
+
+    func init(value: T) {
+        self.value = value
+    }
+}
+
+func main() {
+    box = Box[int, str](1)
+    print(box)
+}

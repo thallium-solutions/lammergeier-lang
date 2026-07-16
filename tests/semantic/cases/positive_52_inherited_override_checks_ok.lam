@@ -1,0 +1,39 @@
+# expect-pass
+# expect-warning: class `Both` uses multiple inheritance; multiple inheritance is not fully supported yet and is discouraged
+
+class Animal {
+    func speak(self) -> str {
+        return "sound"
+    }
+}
+
+class Dog(Animal) {
+    func speak(self) -> str {
+        return "woof"
+    }
+}
+
+class Left {
+    func label(self) -> str {
+        return "left"
+    }
+}
+
+class Right {
+    func label(self) -> str {
+        return "right"
+    }
+}
+
+class Both(Left, Right) {
+    func label(self) -> str {
+        return "both"
+    }
+}
+
+func main() {
+    d: Dog = Dog()
+    b: Both = Both()
+    print(d.speak())
+    print(b.label())
+}

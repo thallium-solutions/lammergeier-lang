@@ -135,6 +135,23 @@ def _make_lib(parent: Path, name: str, version: str,
     return d
 
 
+def _make_git_lib(parent: Path, name: str, version: str,
+                  tag: str | None = None,
+                  body: str = "func tag() -> str { return \"git\" }") -> Path:
+    repo = _make_lib(parent, name, version, body=body)
+    subprocess.run(["git", "init", "--quiet"], cwd=str(repo), check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"],
+                   cwd=str(repo), check=True)
+    subprocess.run(["git", "config", "user.name", "Lam Tests"],
+                   cwd=str(repo), check=True)
+    subprocess.run(["git", "add", "."], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "initial"],
+                   cwd=str(repo), check=True)
+    if tag:
+        subprocess.run(["git", "tag", tag], cwd=str(repo), check=True)
+    return repo
+
+
 def _publish(reg_url: str, lib_dir: Path) -> subprocess.CompletedProcess:
     """Invoke ``lamc publish`` against the test registry. Returns the
     completed process so tests can inspect rc / stderr / stdout."""
@@ -454,6 +471,62 @@ def test_install_spec_writes_manifest_dependency() -> None:
     print("PASS: spec install writes / updates manifest dependency")
 
 
+def test_git_install_writes_manifest_dependency() -> None:
+    """A direct git install should persist the git source in
+    ``[dependencies]`` so a teammate's bare ``lamc install`` can
+    reproduce the same dependency without copying the original CLI
+    command from history."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_p = Path(tmp)
+        repo = _make_git_lib(tmp_p, "lamgitwrite", "0.1.0", tag="v0.1.0")
+        proj = tmp_p / "proj"; proj.mkdir()
+        (proj / "lamlib.toml").write_text(textwrap.dedent("""
+            [library]
+            name    = "myapp"
+            version = "0.1.0"
+        """).lstrip(), encoding="utf-8")
+
+        url = repo.as_uri()
+        ok = subprocess.run(
+            LAMC + ["install", f"{url}@v0.1.0"],
+            cwd=str(proj), capture_output=True, text=True)
+        assert ok.returncode == 0, ok.stderr
+        mf = (proj / "lamlib.toml").read_text()
+        assert f'lamgitwrite = {{ git = "{url}", ref = "v0.1.0" }}' in mf, mf
+        lock = (proj / "lamlib.lock.toml").read_text()
+        assert 'source = "git"' in lock, lock
+        assert f'url = "{url}"' in lock, lock
+        assert 'requested_ref = "v0.1.0"' in lock, lock
+    print("PASS: git install writes manifest dependency")
+
+
+def test_bare_install_reads_git_dependency() -> None:
+    """The persisted git dependency form is consumed by bare
+    ``lamc install`` and materialises the git library into extlibs."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_p = Path(tmp)
+        repo = _make_git_lib(tmp_p, "lambaregit", "0.2.0", tag="v0.2.0")
+        proj = tmp_p / "proj"; proj.mkdir()
+        url = repo.as_uri()
+        (proj / "lamlib.toml").write_text(textwrap.dedent(f"""
+            [library]
+            name    = "myapp"
+            version = "0.1.0"
+
+            [dependencies]
+            lambaregit = {{ git = "{url}", ref = "v0.2.0" }}
+        """).lstrip(), encoding="utf-8")
+
+        ok = subprocess.run(
+            LAMC + ["install"],
+            cwd=str(proj), capture_output=True, text=True)
+        assert ok.returncode == 0, ok.stderr
+        assert (proj / "extlibs" / "lambaregit" / "__init__.lam").exists()
+        lock = (proj / "lamlib.lock.toml").read_text()
+        assert 'requested_ref = "v0.2.0"' in lock, lock
+    print("PASS: bare install reads git dependencies")
+
+
 def test_frozen_succeeds_when_manifest_and_lockfile_agree() -> None:
     """``--frozen`` validates the manifest \u2194 lockfile pair and then
     materialises every pin from the lockfile (skipping the resolver).
@@ -703,6 +776,8 @@ def main() -> int:
         test_lockfile_v1_schema_fields,
         test_bare_install_reads_project_manifest,
         test_install_spec_writes_manifest_dependency,
+        test_git_install_writes_manifest_dependency,
+        test_bare_install_reads_git_dependency,
         test_frozen_succeeds_when_manifest_and_lockfile_agree,
         test_frozen_refuses_on_manifest_lockfile_drift,
         test_frozen_offline_works_after_cache_warmup,

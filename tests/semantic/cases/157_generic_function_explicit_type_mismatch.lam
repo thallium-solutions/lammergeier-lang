@@ -1,0 +1,10 @@
+# expect-error: argument `x` to `identity` has type `int`, expected `str`
+
+func identity[T](x: T) -> T {
+    return x
+}
+
+func main() {
+    value = identity[str](1)
+    print(value)
+}

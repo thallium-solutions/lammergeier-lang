@@ -1,0 +1,3 @@
+# expect-error: list element for constant `names` must be `str`, got `int`
+
+const names: list[str] = ["Ada", 1]

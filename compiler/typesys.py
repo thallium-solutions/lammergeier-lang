@@ -100,6 +100,8 @@ def is_assignable(expected: Type, actual: Type) -> bool:
 
     if isinstance(expected, NamedType) and expected.name in {"any", "object"}:
         return True
+    if isinstance(actual, NamedType) and actual.name in {"any", "object"}:
+        return True
     if isinstance(actual, NamedType) and actual.name == "None":
         if isinstance(expected, NamedType):
             return expected.name in {"None", "any", "object"}
@@ -110,6 +112,12 @@ def is_assignable(expected: Type, actual: Type) -> bool:
         return any(is_assignable(option, actual) for option in expected.options)
     if isinstance(actual, UnionType):
         return all(is_assignable(expected, option) for option in actual.options)
+    if isinstance(expected, ListType) and isinstance(actual, NamedType) and actual.name == "list":
+        return True
+    if isinstance(expected, DictType) and isinstance(actual, NamedType) and actual.name == "dict":
+        return True
+    if isinstance(expected, GenericType) and isinstance(actual, NamedType) and actual.name == expected.base:
+        return expected.base in {"set", "tuple"}
     if isinstance(expected, ListType) and isinstance(actual, ListType):
         return is_assignable(expected.item, actual.item)
     if isinstance(expected, DictType) and isinstance(actual, DictType):

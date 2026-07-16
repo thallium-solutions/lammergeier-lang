@@ -1,0 +1,7 @@
+# expect-error: private member `Box.make` is not visible outside its module
+
+from private_visibility_helper import Box
+
+func main() {
+    print(Box.make())
+}

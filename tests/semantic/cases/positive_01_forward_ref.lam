@@ -1,4 +1,4 @@
-# expect-pass
+# expect-error: `later` may be used before assignment
 
 func main() {
     print(later)

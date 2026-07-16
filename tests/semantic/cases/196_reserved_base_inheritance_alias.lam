@@ -1,0 +1,13 @@
+# expect-error: inheritance alias `base` is reserved
+
+class Left {
+}
+
+class Right {
+}
+
+class Both(base: Left, right: Right) {
+}
+
+func main() {
+}

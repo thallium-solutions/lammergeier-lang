@@ -1,0 +1,6 @@
+# expect-error: dict key for `dict[str, int]` must be `str`, got `int`
+
+func main() {
+    values = {"one": 1}
+    print(values[1])
+}

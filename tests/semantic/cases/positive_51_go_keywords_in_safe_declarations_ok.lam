@@ -1,0 +1,31 @@
+# expect-pass
+
+func select() -> int {
+    return 1
+}
+
+class QueryBuilder {
+    chan: int
+
+    func select(self) -> int {
+        return self.chan
+    }
+
+    static func switch(value: int) -> int {
+        return value
+    }
+}
+
+class package {
+    func value(self) -> int {
+        return 2
+    }
+}
+
+func main() {
+    builder: QueryBuilder = QueryBuilder()
+    print(select())
+    print(builder.select())
+    print(QueryBuilder.switch(3))
+    print(package().value())
+}

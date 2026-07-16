@@ -1,0 +1,5 @@
+# expect-error: operator `-` expects numeric operand, got `str`
+
+func main() {
+    print(-"value")
+}

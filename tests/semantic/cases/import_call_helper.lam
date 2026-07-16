@@ -1,0 +1,30 @@
+# expect-pass
+
+func greet(name: str, punctuation: str = "!") -> str {
+    return name + punctuation
+}
+
+func add(left: int, right: int) -> int {
+    return left + right
+}
+
+func newWidget(name: str) -> Widget {
+    return Widget(name)
+}
+
+class Widget {
+    name: str = ""
+
+    func init(self, name: str, count: int = 1) {
+        self.name = name
+        self.count = count
+    }
+
+    static func make(name: str) -> Widget {
+        return Widget(name)
+    }
+
+    func label(self, prefix: str) -> str {
+        return prefix + self.name
+    }
+}

@@ -1,0 +1,6 @@
+# expect-error: cast `float` does not accept keyword arguments
+
+func main() {
+    value = float(value=1)
+    print(value)
+}

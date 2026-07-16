@@ -1,0 +1,7 @@
+# expect-error: missing required argument `name` in call to `greet`
+
+from import_call_helper import greet
+
+func main() {
+    greet()
+}

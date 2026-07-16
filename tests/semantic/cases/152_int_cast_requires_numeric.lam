@@ -1,0 +1,6 @@
+# expect-error: cast `int` expects numeric argument, got `str`
+
+func main() {
+    value = int("1")
+    print(value)
+}

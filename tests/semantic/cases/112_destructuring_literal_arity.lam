@@ -1,0 +1,6 @@
+# expect-error: destructuring expects 3 values, but tuple literal has 2
+
+func main() {
+    a, b, c = (1, "two")
+    print(a)
+}

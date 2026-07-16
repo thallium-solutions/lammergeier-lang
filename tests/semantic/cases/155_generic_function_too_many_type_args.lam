@@ -1,0 +1,10 @@
+# expect-error: generic `identity` expects 1 type argument, got 2
+
+func identity[T](x: T) -> T {
+    return x
+}
+
+func main() {
+    value = identity[int, str](1)
+    print(value)
+}

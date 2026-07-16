@@ -114,6 +114,9 @@ lamc tests/rosetta_tests/hello_world.lam --run
 # Check local toolchain health:
 lamc doctor
 
+# Print the compiler version:
+lamc version
+
 # Emit the generated Go for inspection:
 lamc tests/rosetta_tests/hello_world.lam --emit-go
 
@@ -142,11 +145,16 @@ verifying the install, uninstalling): [`docs/installation.md`](#/docs/installati
 
 Useful subcommands:
 
-- **`lamc doctor` / `lamc --doctor`:** report Python, Go, `lark`,
-  checkout root, stdlib path, cache path, and `lammergeier-lsp`
-  availability.
+- **`lamc version` / `lamc --version`:** print the compiler version used
+  by `compatibility.lamc` manifest ranges.
+- **`lamc doctor` / `lamc --doctor`:** report compiler, Python, Go,
+  `lark`, stdlib, cache, PATH, Go environment, dependency, manifest, and
+  editor-extension diagnostics. Use `--json` for scripts and `--strict` for
+  CI-style failure on missing required pieces.
 - **`lamc fmt`:** format `.lam` files with the same parser-validated
   formatter used by the editor integration.
+- **`lamc lib run <script>`:** run a command declared in the nearest
+  `lamlib.toml` `[scripts]` table.
 
 ### Package manager
 
@@ -158,6 +166,7 @@ lamc install --frozen --offline          # CI / Docker: lockfile is law, no netw
 lamc install --global lamwebp           # one-off install into ~/.lammergeier/extlibs
 lamc uninstall lamwebp
 lamc publish ./mylib                     # POST to a registry; auth via $LAMC_TOKEN
+lamc lib run test                        # run [scripts].test from lamlib.toml
 ```
 
 The installer resolves transitive `[dependencies]`, merges

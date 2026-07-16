@@ -1,0 +1,5 @@
+# expect-error: list index must be `int`, got `str`
+
+func main() {
+    print([1, 2]["zero"])
+}

@@ -1,0 +1,8 @@
+# expect-pass
+
+func main(flag: bool) {
+    n: int = -1
+    m: int = ~n
+    ok: bool = not flag or (n < 0 and m != 0)
+    print(ok)
+}

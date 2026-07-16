@@ -1,0 +1,7 @@
+# expect-error: private function `helper.hidden` is not visible outside its module
+
+import private_visibility_helper as helper
+
+func main() {
+    print(helper.hidden())
+}

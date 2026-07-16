@@ -1,0 +1,9 @@
+# expect-error: destructuring target `b` expects `int`, got `str`
+
+from tuple_return_helper import pair
+
+func main() {
+    a, b: tuple[int, int] = pair()
+    print(a)
+    print(b)
+}

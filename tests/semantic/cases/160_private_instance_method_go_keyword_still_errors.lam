@@ -1,0 +1,12 @@
+# expect-error: `select` is a reserved identifier in Go
+
+class Query {
+    private func select(self) -> int {
+        return 1
+    }
+}
+
+func main() {
+    q: Query = Query()
+    print(q)
+}

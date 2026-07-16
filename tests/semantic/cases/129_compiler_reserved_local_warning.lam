@@ -1,0 +1,6 @@
+# expect-warning: `__q1` uses compiler-reserved prefix `__q`
+
+func main() {
+    __q1: int = 1
+    print(__q1)
+}

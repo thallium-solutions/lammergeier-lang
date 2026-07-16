@@ -1,0 +1,12 @@
+# expect-pass
+
+func main() {
+    value: str = "pending"
+    try {
+        value = "ok"
+    } catch err {
+        value = "error"
+        print(err)
+    }
+    print(value)
+}

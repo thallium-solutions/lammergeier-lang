@@ -1,0 +1,10 @@
+# expect-error: `value` may be used before assignment
+
+func main() {
+    try {
+        value = "ok"
+    } catch err {
+        print(err)
+    }
+    print(value)
+}

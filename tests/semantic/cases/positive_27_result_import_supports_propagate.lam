@@ -1,0 +1,12 @@
+# expect-pass
+
+from lamerrors import Result
+
+func readValue() -> Result {
+    return Result.Ok(1)
+}
+
+func main() -> Result {
+    value: int = readValue()?
+    return Result.Ok(value)
+}

@@ -12,11 +12,15 @@ Usage:
     lamc source.lam --emit-ast           # print the Lark AST, don't compile
     lamc source.lam --run                # compile and run immediately
     lamc source.lam --go-ldflags='-s -w' # pass flags to go build
+    lamc version                         # print the compiler version
 """
 
 from __future__ import annotations
 import argparse
+import importlib.metadata as importlib_metadata
+import json
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -57,6 +61,7 @@ from compiler.preprocessor import (
 from compiler import cache as _lamcache
 from compiler.modules import WorkspaceIndex
 from compiler.source_map import SourceMap
+from compiler.version import LAMC_VERSION
 try:
     from compiler.syntax_errors import SyntaxDiagnosticError, render_syntax_error
 except ImportError as _err:
@@ -1602,6 +1607,44 @@ def compile_lam(
         except Exception:
             return None
 
+    compat_warned_manifests: set[Path] = set()
+
+    def _extlib_manifest_for_module(mod_file: Path) -> Path | None:
+        resolved = mod_file.resolve()
+        for root in extlibs_dirs:
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                continue
+            manifest_path = resolved.parent / "lamlib.toml"
+            if manifest_path.exists():
+                return manifest_path
+        return None
+
+    def _warn_if_lamc_incompatible(mod_name: str, mod_file: Path) -> None:
+        manifest_path = _extlib_manifest_for_module(mod_file)
+        if manifest_path is None:
+            return
+        manifest_path = manifest_path.resolve()
+        if manifest_path in compat_warned_manifests:
+            return
+        compat_warned_manifests.add(manifest_path)
+        try:
+            from compiler.manifest import Manifest, ManifestError, satisfies
+            manifest = Manifest.load(manifest_path)
+        except (ManifestError, OSError):
+            return
+        if manifest.name != mod_name:
+            return
+        if manifest.lamc_range and not satisfies(LAMC_VERSION, manifest.lamc_range):
+            print(
+                "warning: library "
+                f"{manifest.name}@{manifest.version} declares "
+                f'compatibility.lamc = "{manifest.lamc_range}", '
+                f"but this compiler is lamc {LAMC_VERSION}; continuing anyway.",
+                file=sys.stderr,
+            )
+
     def _module_export_names(mod_file: Path) -> set[str]:
         facts = module_index.facts_by_path.get(mod_file.resolve())
         if facts is None:
@@ -1648,6 +1691,7 @@ def compile_lam(
                 print(_format_missing_module_error(mod_name, import_node), file=sys.stderr)
                 sys.exit(1)
             direct_module_files[mod_name] = mod_file
+            _warn_if_lamc_incompatible(mod_name, mod_file)
         if _from_import_symbols(import_node):
             _parse_lam_module(mod_file)
 
@@ -1698,6 +1742,7 @@ def compile_lam(
         if mod_file is None:
             continue
         lib_mod_files[mod_name] = mod_file
+        _warn_if_lamc_incompatible(mod_name, mod_file)
         # Parse just to discover *its* imports — best-effort, so a
         # library that fails to parse here is silently skipped (the
         # later transpile pass will surface the error with full
@@ -2242,7 +2287,7 @@ def compile_lam(
 # is routed to its dedicated handler; anything else is treated as
 # the legacy ``lamc <source.lam>`` invocation — so existing scripts,
 # docs, and tests keep working verbatim.
-_LAMC_SUBCOMMANDS = ("build", "fmt", "doctor", "migrate")
+_LAMC_SUBCOMMANDS = ("build", "fmt", "doctor", "migrate", "version", "lib")
 
 
 def _build_build_parser() -> "argparse.ArgumentParser":
@@ -2397,10 +2442,49 @@ def _cmd_fmt(argv: list) -> int:
     return 0
 
 
-def _doctor_go_status() -> str:
+_DOCTOR_REQUIRED = {
+    "python": ">=3.10",
+    "go": ">=1.21",
+    "lark": "installed",
+    "stdlib": "present",
+    "lsp": "present",
+}
+
+
+def _doctor_path_entries() -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if entry and entry not in seen:
+            seen.add(entry)
+            out.append(entry)
+    return out
+
+
+def _version_tuple_loose(text: str) -> tuple[int, int, int]:
+    nums = _re.findall(r"\d+", text or "")
+    vals = [int(n) for n in nums[:3]]
+    while len(vals) < 3:
+        vals.append(0)
+    return tuple(vals[:3])
+
+
+def _meets_min_version(version: str, minimum: str) -> bool:
+    return _version_tuple_loose(version) >= _version_tuple_loose(minimum)
+
+
+def _doctor_go_check() -> dict:
+    searched = _doctor_path_entries()
     go = shutil.which("go")
     if not go:
-        return "missing (go not found on PATH)"
+        return {
+            "ok": False,
+            "version": "",
+            "path": "",
+            "required": _DOCTOR_REQUIRED["go"],
+            "message": "go not found on PATH",
+            "searched": searched,
+        }
     try:
         proc = subprocess.run(
             [go, "version"],
@@ -2409,34 +2493,392 @@ def _doctor_go_status() -> str:
             timeout=5,
         )
     except OSError as e:
-        return f"error running {go}: {e}"
+        return {
+            "ok": False, "version": "", "path": go,
+            "required": _DOCTOR_REQUIRED["go"],
+            "message": f"error running {go}: {e}", "searched": searched,
+        }
     except subprocess.TimeoutExpired:
-        return f"error running {go}: timed out"
+        return {
+            "ok": False, "version": "", "path": go,
+            "required": _DOCTOR_REQUIRED["go"],
+            "message": f"error running {go}: timed out", "searched": searched,
+        }
     output = (proc.stdout or proc.stderr).strip()
     if proc.returncode != 0:
         detail = output or f"exit {proc.returncode}"
-        return f"error ({detail})"
-    return f"{output} ({go})"
+        return {
+            "ok": False, "version": "", "path": go,
+            "required": _DOCTOR_REQUIRED["go"],
+            "message": f"error ({detail})", "searched": searched,
+        }
+    version = output.split()[2] if len(output.split()) >= 3 else output
+    ok = _meets_min_version(version, "1.21")
+    message = output if ok else f"{output} below required {_DOCTOR_REQUIRED['go']}"
+    return {
+        "ok": ok,
+        "version": version,
+        "path": go,
+        "required": _DOCTOR_REQUIRED["go"],
+        "message": message,
+        "searched": searched,
+    }
 
 
-def _doctor_lark_status() -> str:
+def _doctor_lark_check() -> dict:
     if _LARK_IMPORT_ERROR is not None or _lark is None:
-        return f"missing ({_LARK_IMPORT_ERROR})"
+        return {
+            "ok": False,
+            "version": "",
+            "path": "",
+            "required": _DOCTOR_REQUIRED["lark"],
+            "message": str(_LARK_IMPORT_ERROR),
+        }
     version = getattr(_lark, "__version__", "unknown")
     location = getattr(_lark, "__file__", "")
-    if location:
-        return f"{version} ({Path(location).resolve()})"
-    return str(version)
+    return {
+        "ok": True,
+        "version": str(version),
+        "path": str(Path(location).resolve()) if location else "",
+        "required": _DOCTOR_REQUIRED["lark"],
+        "message": "ok",
+    }
 
 
-def _doctor_lsp_status() -> str:
+def _doctor_lsp_check() -> dict:
+    searched = _doctor_path_entries()
     found = shutil.which("lammergeier-lsp")
     checkout = PROJECT_ROOT / "bin" / "lammergeier-lsp"
     if found:
-        return f"found at {found}"
+        return {
+            "ok": True,
+            "path": found,
+            "required": _DOCTOR_REQUIRED["lsp"],
+            "message": "found on PATH",
+            "searched": searched,
+        }
     if checkout.exists():
-        return f"not on PATH (checkout launcher exists at {checkout})"
-    return "missing (lammergeier-lsp not found on PATH)"
+        return {
+            "ok": True,
+            "path": str(checkout),
+            "required": _DOCTOR_REQUIRED["lsp"],
+            "message": "not on PATH; checkout launcher exists",
+            "searched": searched,
+        }
+    return {
+        "ok": False,
+        "path": "",
+        "required": _DOCTOR_REQUIRED["lsp"],
+        "message": "lammergeier-lsp not found on PATH",
+        "searched": searched,
+    }
+
+
+def _doctor_python_check() -> dict:
+    version = sys.version.split()[0]
+    ok = sys.version_info >= (3, 10)
+    return {
+        "ok": ok,
+        "version": version,
+        "path": sys.executable,
+        "required": _DOCTOR_REQUIRED["python"],
+        "message": "ok" if ok else f"Python {version} below required >=3.10",
+    }
+
+
+def _find_nearest_manifest(start: Path) -> Path | None:
+    here = start.resolve()
+    if here.is_file():
+        here = here.parent
+    while True:
+        cand = here / "lamlib.toml"
+        if cand.exists():
+            return cand
+        if here.parent == here:
+            break
+        here = here.parent
+    return None
+
+
+def _dir_stats(path: Path, suffix: str | None = None) -> dict:
+    files = 0
+    size = 0
+    unreadable = 0
+    if path.exists():
+        for item in path.rglob("*"):
+            if not item.is_file():
+                continue
+            if suffix and item.suffix != suffix:
+                continue
+            files += 1
+            try:
+                size += item.stat().st_size
+            except OSError:
+                unreadable += 1
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "files": files,
+        "size_bytes": size,
+        "unreadable": unreadable,
+    }
+
+
+def _doctor_cache_report() -> dict:
+    lib_root = _lamcache.cache_dir()
+    package_override = os.environ.get("LAMC_CACHE")
+    package_root = (
+        Path(package_override).expanduser()
+        if package_override
+        else Path.home() / ".lammergeier" / "cache"
+    )
+    return {
+        "library": _dir_stats(lib_root),
+        "parser": _dir_stats(lib_root / "parsers", suffix=".bin"),
+        "package": _dir_stats(package_root),
+    }
+
+
+def _doctor_go_env() -> dict:
+    go = shutil.which("go")
+    keys = ["GOMODCACHE", "GOCACHE", "GOPATH", "GOOS", "GOARCH"]
+    if not go:
+        return {"ok": False, "values": {}, "message": "go not found on PATH"}
+    try:
+        proc = subprocess.run(
+            [go, "env", "-json", *keys],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {"ok": False, "values": {}, "message": str(e)}
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "values": {},
+            "message": (proc.stderr or proc.stdout).strip() or f"exit {proc.returncode}",
+        }
+    try:
+        values = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as e:
+        return {"ok": False, "values": {}, "message": f"invalid go env json: {e}"}
+    return {"ok": True, "values": {k: values.get(k, "") for k in keys}, "message": "ok"}
+
+
+def _doctor_requirement_name(line: str) -> str:
+    return _re.split(r"[<>=!~;\[\]\s]", line, 1)[0].strip()
+
+
+def _doctor_dependencies() -> dict:
+    req_path = PROJECT_ROOT / "requirements.txt"
+    entries: list[dict] = []
+    ok = True
+    if not req_path.exists():
+        return {
+            "ok": True,
+            "requirements": entries,
+            "path": str(req_path),
+            "message": "no requirements.txt",
+        }
+    for raw in req_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        name = _doctor_requirement_name(line)
+        if not name:
+            continue
+        try:
+            installed = importlib_metadata.version(name)
+            entry_ok = True
+            message = "installed"
+        except importlib_metadata.PackageNotFoundError:
+            installed = ""
+            entry_ok = False
+            message = "not installed"
+            ok = False
+        entries.append({
+            "name": name,
+            "required": line,
+            "installed": installed,
+            "ok": entry_ok,
+            "message": message,
+        })
+    return {
+        "ok": ok,
+        "requirements": entries,
+        "path": str(req_path),
+        "message": "ok" if ok else "missing dependencies",
+    }
+
+
+def _extension_dirs() -> dict[str, Path]:
+    home = Path.home()
+    return {
+        "vscode": home / ".vscode" / "extensions",
+        "cursor": home / ".cursor" / "extensions",
+        "windsurf": home / ".windsurf" / "extensions",
+    }
+
+
+def _inspect_extension(root: Path) -> dict:
+    if not root.exists():
+        return {
+            "installed": False,
+            "path": "",
+            "version": "",
+            "message": f"{root} does not exist",
+        }
+    for pkg in root.glob("*/package.json"):
+        try:
+            data = json.loads(pkg.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            data.get("name") == "lammergeier-lang"
+            or data.get("publisher") == "lammergeier"
+        ):
+            return {
+                "installed": True,
+                "path": str(pkg.parent),
+                "version": str(data.get("version", "")),
+                "message": "installed",
+            }
+    return {
+        "installed": False,
+        "path": str(root),
+        "version": "",
+        "message": "not installed",
+    }
+
+
+def _doctor_extensions() -> dict:
+    return {name: _inspect_extension(path) for name, path in _extension_dirs().items()}
+
+
+def _doctor_report(cwd: Path | None = None) -> dict:
+    cwd = cwd or Path.cwd()
+    manifest = _find_nearest_manifest(cwd)
+    stdlib_path = PROJECT_ROOT / "lib"
+    stdlib_ok = stdlib_path.is_dir()
+    compiler_files = {
+        "compiler": (PROJECT_ROOT / "compiler").is_dir(),
+        "grammar": (PROJECT_ROOT / "lammergeier.lark").is_file(),
+    }
+    return {
+        "lamc": {
+            "ok": True,
+            "version": LAMC_VERSION,
+            "path": str(Path(__file__).resolve()),
+        },
+        "python": _doctor_python_check(),
+        "go": _doctor_go_check(),
+        "lark": _doctor_lark_check(),
+        "lsp": _doctor_lsp_check(),
+        "paths": {
+            "cwd": str(cwd.resolve()),
+            "project_root": str(manifest.parent) if manifest else "",
+            "manifest": str(manifest) if manifest else "",
+            "compiler_root": str(PROJECT_ROOT),
+            "stdlib_path": str(stdlib_path),
+        },
+        "stdlib": {
+            "ok": stdlib_ok,
+            "path": str(stdlib_path),
+            "required": _DOCTOR_REQUIRED["stdlib"],
+            "message": "ok" if stdlib_ok else "stdlib path missing",
+        },
+        "compiler_files": {
+            "ok": all(compiler_files.values()),
+            "files": compiler_files,
+            "message": "ok" if all(compiler_files.values()) else "compiler checkout is incomplete",
+        },
+        "path": {"entries": _doctor_path_entries()},
+        "cache": _doctor_cache_report(),
+        "go_env": _doctor_go_env(),
+        "dependencies": _doctor_dependencies(),
+        "extensions": _doctor_extensions(),
+        "platform": {
+            "system": platform.system(),
+            "machine": platform.machine(),
+            "platform": platform.platform(),
+        },
+    }
+
+
+def _doctor_strict_failures(report: dict) -> list[str]:
+    failures: list[str] = []
+    for key in ("python", "go", "lark", "lsp", "stdlib", "compiler_files"):
+        if not report.get(key, {}).get("ok", False):
+            failures.append(key)
+    if not report.get("dependencies", {}).get("ok", True):
+        failures.append("dependencies")
+    return failures
+
+
+def _fmt_check(item: dict) -> str:
+    path = item.get("path", "")
+    version = item.get("version", "")
+    detail = version or item.get("message", "")
+    if path:
+        detail = f"{detail} ({path})" if detail else path
+    if item.get("ok"):
+        return f"ok ({detail})"
+    return f"missing ({item.get('message', 'failed')})"
+
+
+def _fmt_size(n: int) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024 or unit == "GiB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GiB"
+
+
+def _print_doctor_human(report: dict, strict_failures: list[str]) -> None:
+    print("Lammergeier doctor")
+    print(f"lamc: {report['lamc']['version']}")
+    print(f"python: {_fmt_check(report['python'])}")
+    print(f"go: {_fmt_check(report['go'])}")
+    print(f"lark: {_fmt_check(report['lark'])}")
+    print(f"project root: {report['paths']['project_root'] or 'not found'}")
+    print(f"manifest: {report['paths']['manifest'] or 'not found'}")
+    print(f"compiler root: {report['paths']['compiler_root']}")
+    stdlib_status = "ok" if report["stdlib"]["ok"] else "missing"
+    print(f"stdlib path: {report['paths']['stdlib_path']} ({stdlib_status})")
+    print(f"cache path: {report['cache']['library']['path']}")
+    for name in ("library", "parser", "package"):
+        item = report["cache"][name]
+        print(
+            f"cache {name}: {item['files']} file(s), "
+            f"{_fmt_size(item['size_bytes'])}, unreadable={item['unreadable']} "
+            f"({item['path']})"
+        )
+    print(f"lammergeier-lsp: {_fmt_check(report['lsp'])}")
+    path_entries = os.pathsep.join(report["path"]["entries"]) or "<empty>"
+    print("path entries: " + path_entries)
+    go_env = report["go_env"]
+    if go_env["ok"]:
+        vals = ", ".join(f"{k}={v}" for k, v in go_env["values"].items())
+        print(f"go env: {vals}")
+    else:
+        print(f"go env: unavailable ({go_env['message']})")
+    deps = report["dependencies"]
+    dep_msg = "ok" if deps["ok"] else deps["message"]
+    print(f"requirements: {dep_msg} ({deps['path']})")
+    for req in deps["requirements"]:
+        status = "ok" if req["ok"] else "missing"
+        print(
+            f"  - {req['name']}: {status} "
+            f"installed={req['installed'] or '<none>'} required={req['required']}"
+        )
+    for editor, info in report["extensions"].items():
+        status = "installed" if info["installed"] else "not installed"
+        suffix = f" {info['version']}" if info.get("version") else ""
+        detail = info["path"] or info["message"]
+        print(f"extension {editor}: {status}{suffix} ({detail})")
+    if strict_failures:
+        print("strict failures: " + ", ".join(strict_failures))
 
 
 def _cmd_doctor(argv: list) -> int:
@@ -2444,17 +2886,34 @@ def _cmd_doctor(argv: list) -> int:
         prog="lamc doctor",
         description="Report local Lammergeier toolchain paths and versions.",
     )
-    ap.parse_args(argv)
+    ap.add_argument("--json", action="store_true",
+                    help="Print a machine-readable JSON report.")
+    ap.add_argument("--strict", action="store_true",
+                    help="Exit non-zero when required toolchain checks fail.")
+    args = ap.parse_args(argv)
 
-    stdlib_path = PROJECT_ROOT / "lib"
-    print("Lammergeier doctor")
-    print(f"python: {sys.version.split()[0]} ({sys.executable})")
-    print(f"go: {_doctor_go_status()}")
-    print(f"lark: {_doctor_lark_status()}")
-    print(f"project root: {PROJECT_ROOT}")
-    print(f"stdlib path: {stdlib_path}")
-    print(f"cache path: {_lamcache.cache_dir()}")
-    print(f"lammergeier-lsp: {_doctor_lsp_status()}")
+    report = _doctor_report()
+    strict_failures = _doctor_strict_failures(report) if args.strict else []
+    if args.json:
+        payload = dict(report)
+        payload["strict"] = {
+            "enabled": bool(args.strict),
+            "ok": not strict_failures,
+            "failures": strict_failures,
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        _print_doctor_human(report, strict_failures)
+    return 1 if strict_failures else 0
+
+
+def _cmd_version(argv: list) -> int:
+    ap = argparse.ArgumentParser(
+        prog="lamc version",
+        description="Print the Lammergeier compiler version.",
+    )
+    ap.parse_args(argv)
+    print(LAMC_VERSION)
     return 0
 
 
@@ -2469,6 +2928,7 @@ Subcommands:
              ``lamc foo.lam`` is equivalent to ``lamc build foo.lam``.
   fmt        Format a .lam source file. Use ``--check`` for CI or
              ``--stdout`` to print without writing.
+  version    Print the Lammergeier compiler version.
   doctor     Report Python, Go, lark, project, stdlib, cache, and
              language-server availability.
   init       Scaffold a fresh project (``lamlib.toml`` + entry-point
@@ -2492,6 +2952,8 @@ Subcommands:
   tree       Render the dependency tree (uses ``requested_by``).
   why        Explain why a particular pin is in the lockfile.
   publish    Pack a library directory and POST it to a registry.
+  lib        Library helper commands. Currently: ``lamc lib run`` for
+             ``[scripts]`` entries in ``lamlib.toml``.
   migrate    Knex-style SQL migrations (make / up / down / status).
 
 Run ``lamc <subcommand> --help`` for details on any subcommand, or
@@ -2539,13 +3001,16 @@ def main():
     if argv[0] == "--doctor":
         sys.exit(_cmd_doctor(argv[1:]))
 
+    if argv[0] == "--version":
+        sys.exit(_cmd_version(argv[1:]))
+
     verb = argv[0]
 
     if verb == "migrate":
         from compiler import migrate_cli
         sys.exit(migrate_cli.main(argv[1:]))
 
-    if verb in ("install", "uninstall", "publish",
+    if verb in ("install", "uninstall", "publish", "lib",
                 "tidy", "verify", "init", "list", "tree", "why"):
         from compiler import install_cli
         sys.exit(install_cli.main(argv))
@@ -2558,6 +3023,9 @@ def main():
 
     if verb == "doctor":
         sys.exit(_cmd_doctor(argv[1:]))
+
+    if verb == "version":
+        sys.exit(_cmd_version(argv[1:]))
 
     # Legacy: ``lamc <source.lam> [flags]`` — inject the ``build``
     # verb invisibly so existing scripts keep working.

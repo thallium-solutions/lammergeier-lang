@@ -990,9 +990,9 @@ class StatementVisitorMixin:
             }
 
         ``Result`` and ``Result_Ok`` come from ``lib/lamerrors.lam``;
-        the user must ``from lamerrors import Result`` for the
-        emitted Go to compile (we don't auto-inject the import — the
-        Go compiler's "undefined: Result" message is clear enough).
+        the semantic checker requires ``from lamerrors import Result``
+        before this emitter runs, so missing support imports point at
+        Lam source instead of generated Go.
         """
         body_suite = node.children[0]
         err_name_node = node.children[1]

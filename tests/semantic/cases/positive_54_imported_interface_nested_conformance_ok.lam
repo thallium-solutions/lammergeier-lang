@@ -1,0 +1,8 @@
+# expect-pass
+
+from class_interface_helper import Store, GoodStore
+
+func main() {
+    store: Store = GoodStore()
+    print(store.save(["ok"]))
+}

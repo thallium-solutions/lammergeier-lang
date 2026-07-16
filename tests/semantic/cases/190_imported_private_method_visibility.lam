@@ -1,0 +1,8 @@
+# expect-error: private member `Box.secret` is not visible outside its module
+
+from private_visibility_helper import Box
+
+func main() {
+    box: Box = Box()
+    print(box.secret())
+}

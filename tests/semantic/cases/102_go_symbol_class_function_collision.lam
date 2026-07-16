@@ -1,0 +1,9 @@
+# expect-error: function `widget` and class `Widget` both lower to Go symbol `Widget`
+
+func widget() -> int {
+    return 1
+}
+
+class Widget {
+    value: int = 1
+}

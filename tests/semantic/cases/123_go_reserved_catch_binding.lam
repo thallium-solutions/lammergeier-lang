@@ -1,0 +1,9 @@
+# expect-error: `select` is a reserved identifier in Go
+
+func main() {
+    try {
+        print(1)
+    } catch select {
+        print(select)
+    }
+}

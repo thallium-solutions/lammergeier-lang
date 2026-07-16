@@ -380,8 +380,9 @@ repository  = "https://github.com/alice/lamwebp"
 
 [compatibility]
 # Range of ``lamc`` versions the library has been tested against.
-# Caret matches SemVer; parsing is best-effort so malformed
-# ranges fall back to "any compiler version" with a warning.
+# Caret matches SemVer. Compile warns when an installed extlib's
+# range does not include the running compiler, but does not block
+# the build.
 lamc = "^0.4"
 
 [dependencies]
@@ -393,6 +394,8 @@ lamhttp        = "^1.0"
 "@bob/lamutil" = ">=0.4 <1.0"
 # Local path overrides for development checkouts:
 lamother = { path = "../lamother" }
+# Direct git dependencies for forks or libraries outside a registry:
+lamfork = { git = "https://github.com/alice/lamfork.git", ref = "v1.2.0" }
 
 [go-deps]
 # Go modules the library's transpiled output imports from a
@@ -408,8 +411,7 @@ lamother = { path = "../lamother" }
 "gopkg.in/yaml.v2"   = "v2.4.0"
 
 [scripts]
-# Optional commands the publisher can invoke with
-# ``lamc lib run <name>`` once that subcommand lands.
+# Optional project/library commands. Run with ``lamc lib run <name>``.
 test   = "lamc test/test_all.lam"
 format = "lamc fmt src/"
 ```
@@ -421,10 +423,10 @@ format = "lamc fmt src/"
 | `library.name` | ✅ | Must match the module name that consumers `import`. Ascii, `snake_case`. |
 | `library.version` | ✅ | SemVer string. `lamc install` refuses to replace an installed library with a version < the one on disk without `--force`. |
 | `library.license` | optional | SPDX identifier (`MIT`, `Apache-2.0`, `BSD-3-Clause`, …). Strongly recommended before public publishing. |
-| `compatibility.lamc` | optional | Version range. Parsed and preserved for tooling / registry display; the current install path does not hard-enforce it. |
+| `compatibility.lamc` | optional | Version range. `lamc version` prints the compiler version. During compile, installed extlibs whose range does not include that version emit a warning and continue; the install path does not hard-enforce it. |
 | `dependencies` | optional | Resolved transitively by `lamc install`; every reachable `[dependencies]` key lands under `extlibs/`. Conflicting constraints (two libs + project all pinning the same name at incompatible majors) surface as a `DependencyConflict` **before any on-disk mutation**. |
 | `go-deps` | optional | Go modules the transpiled output imports. Path must be a multi-segment Go module path (single-segment names are rejected); version must be a ``v``-prefixed SemVer or Go pseudo-version. Incompatible majors across libs + project are a hard error (Go treats each major as a different package). |
-| `[scripts]` | optional | Free-form. Reserved for the future `lamc lib run` entry point. |
+| `[scripts]` | optional | Free-form shell commands runnable with `lamc lib run <script>`. The command discovers the nearest `lamlib.toml`, runs from that manifest's directory, and preserves the script exit code. |
 
 Libraries without a `lamlib.toml` are still loadable — the
 compiler's search path doesn't require one. The manifest becomes
@@ -615,14 +617,14 @@ under `$LAMC_CACHE` (default `~/.lammergeier/cache/git/`), checks
 out the requested ref into a temporary working tree, validates
 `lamlib.toml`, copies the source into `./extlibs/<name>/` by
 default (`~/.lammergeier/extlibs/<name>/` only with `--global`),
-and records the resolved commit SHA plus source-tree hash in
-`lamlib.lock.toml`.
+records the resolved commit SHA plus source-tree hash in
+`lamlib.lock.toml`, and writes a git-form entry into `[dependencies]`
+when the install was an explicit command:
 
-Direct git specs are pinned in the lockfile, but they are not yet
-written back into `[dependencies]` as a git-form entry. If a
-project should keep using a fork or branch across fresh installs,
-declare the normal registry dependency under `[dependencies]` and
-redirect it with a project-level `[replace]` entry.
+```toml
+[dependencies]
+lamwebp = { git = "https://github.com/alice/lamwebp.git", ref = "v1.2.0" }
+```
 
 ### 6.2 Registry
 
@@ -774,7 +776,7 @@ escape hatch) is documented in
 | Reference registry + `lamc publish` | ✅ (Docker image under `tools/registry/`) |
 | SemVer / API-diff gate (`lamc install --allow-breaking` to override) | ✅ |
 | Unused-import / unused-parameter / unused-manifest-dep warnings | ✅ (Go-style warn-don't-error semantics) |
-| `lamc lib run <script>` | ☐ (parsed from `[scripts]` but no entry point yet) |
+| `lamc lib run <script>` | ✅ (runs `[scripts]` entries from the nearest `lamlib.toml`; supports `--list`, `--cwd`, `--dry-run`, and `--quiet`) |
 | Submodule imports (`from lamwebp.codec import …`) | ☐ |
 
 Resolved design questions:

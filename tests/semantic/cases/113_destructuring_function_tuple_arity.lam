@@ -1,0 +1,10 @@
+# expect-error: destructuring expects 3 values, but `pair()` has 2
+
+func pair() -> tuple[int, str] {
+    return (1, "one")
+}
+
+func main() {
+    a, b, c = pair()
+    print(a)
+}

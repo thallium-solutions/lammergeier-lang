@@ -1,0 +1,5 @@
+# expect-error: operator `~` expects `int` operand, got `bool`
+
+func main() {
+    print(~True)
+}

@@ -1,0 +1,24 @@
+# expect-error: `base` is ambiguous in class `Both`
+
+class Left {
+    func label(self) -> str {
+        return "left"
+    }
+}
+
+class Right {
+    func label(self) -> str {
+        return "right"
+    }
+}
+
+class Both(left: Left, right: Right) {
+    func labelPair(self) -> str {
+        return base.label()
+    }
+}
+
+func main() {
+    b: Both = Both()
+    print(b.labelPair())
+}

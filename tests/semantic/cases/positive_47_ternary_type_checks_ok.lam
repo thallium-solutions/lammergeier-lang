@@ -1,0 +1,10 @@
+# expect-pass
+
+func label(flag: bool) -> str {
+    return "yes" if flag else "no"
+}
+
+func main() {
+    value: float = 1 if True else 2.5
+    print(label(value > 0.0))
+}

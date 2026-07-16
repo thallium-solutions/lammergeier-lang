@@ -1,0 +1,7 @@
+# expect-warning: dropped return value of `Widget.make()`
+
+from import_call_helper import Widget
+
+func main() {
+    Widget.make("box")
+}

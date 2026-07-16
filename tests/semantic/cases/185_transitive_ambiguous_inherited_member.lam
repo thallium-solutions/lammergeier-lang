@@ -1,0 +1,30 @@
+# expect-error: class `Both` inherits ambiguous member `label` from `Left` and `Right`; override it in `Both` or use named base aliases
+
+class LabelBase {
+    func label(self) -> str {
+        return "base"
+    }
+}
+
+class Left(LabelBase) {
+    func left(self) -> str {
+        return "left"
+    }
+}
+
+class Right {
+    func label(self) -> str {
+        return "right"
+    }
+}
+
+class Both(Left, Right) {
+    func value(self) -> str {
+        return "both"
+    }
+}
+
+func main() {
+    both: Both = Both()
+    print(both.value())
+}

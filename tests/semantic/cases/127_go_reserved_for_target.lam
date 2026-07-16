@@ -1,0 +1,7 @@
+# expect-error: `select` is a reserved identifier in Go
+
+func main() {
+    for select in [] {
+        print(select)
+    }
+}

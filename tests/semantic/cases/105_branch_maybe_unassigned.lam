@@ -1,0 +1,8 @@
+# expect-error: `name` may be used before assignment
+
+func label(ok: bool) -> str {
+    if ok {
+        name = "ready"
+    }
+    return name
+}

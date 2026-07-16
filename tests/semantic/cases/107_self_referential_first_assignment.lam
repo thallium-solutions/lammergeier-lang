@@ -1,0 +1,6 @@
+# expect-error: `count` may be used before assignment
+
+func main() {
+    count = count + 1
+    print(count)
+}

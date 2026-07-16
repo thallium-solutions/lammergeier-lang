@@ -10,15 +10,139 @@ documentation.
 
 ### Added
 
+- Expanded the Lammergeier LSP with richer IntelliSense for instance members,
+  inherited fields/methods, `self`, `base`, named inheritance aliases, and
+  annotated local variables. Go-to-definition now resolves those members too,
+  and semantic/syntax test fixtures with `# expect-error` or
+  `# expect-warning` suppress matching expected diagnostics while surfacing
+  expectation mismatches clearly.
+- Added read-only LSP import suggestions for stdlib and workspace exports,
+  module-name completion after `from`, workspace symbol search, and richer
+  signature help for methods and constructors. Suggested imports do not edit
+  source automatically, method signatures hide implicit `self`, and
+  constructors are displayed with `init(...)` sugar.
+- Added `lamc version` / `lamc --version` to print the compiler version used
+  when evaluating library `compatibility.lamc` ranges.
+- Added `lamc lib run <script>` for running commands declared in a project's
+  `lamlib.toml` `[scripts]` table, with `--list`, `--cwd`, `--dry-run`, and
+  `--quiet` support.
+- Added git dependency write-back: explicit git installs now update
+  `lamlib.toml` with `{ git = "...", ref = "..." }`, bare `lamc install`
+  consumes that form, and lockfiles retain both the requested ref and the
+  resolved commit.
+- Added a guarded GitHub integration test for
+  `https://github.com/thallium-solutions/lams3.git` that verifies git install
+  write-back, frozen/offline replay from cache, and external lams3 import
+  transpilation when `LAMC_LIVE_GITHUB_LAMS3=1` is set.
+- Added richer `lamc doctor` diagnostics, including `--json` output,
+  `--strict` CI gating, project-manifest discovery, cache stats, PATH details,
+  selected Go environment values, Python requirement checks, and editor
+  extension inspection.
+- Added Lam-source semantic errors when `?` or `do/catch` are used without the
+  required `from lamerrors import Result` support import, avoiding generated-Go
+  `undefined: Result` failures.
+- Added semantic call-shape/type diagnostics for directly imported functions
+  from resolved Lam modules, including `from helper import f` and
+  `import helper; helper.f(...)`, so missing arguments, bad keywords, and
+  simple argument type mismatches are reported before Go emission.
+- Added semantic metadata for directly and module-qualified imported Lam
+  classes, so constructor calls, static method calls, instance-method misuse,
+  and simple constructor type mismatches are validated at the Lam source
+  location.
+- Added conservative inferred receiver types for plain assignments from known
+  constructors, static factory methods, and imported functions, so misspelled
+  members on unannotated imported Lam values are reported before Go emission.
+- Added semantic expression diagnostics for common binary operator mismatches,
+  list/string/dict index type mistakes, and non-integer slice bounds.
+- Added dropped-return warnings for non-void imported functions and imported
+  static methods, including module-qualified calls.
+- Added semantic name diagnostics for top-level functions, classes, and
+  interfaces that lower to the same Go symbol after export-name casing.
+- Added `go!` boundary diagnostics for `self` and the receiver alias `s` used
+  outside instance methods.
+- Added branch-sensitive definite-assignment diagnostics for local reads before
+  assignment, `if`/`else` joins, self-referential first assignments, and
+  conservative loop boundaries.
+- Added branch-sensitive `match` capture scopes so pattern bindings are only
+  visible in their own case arm and do not leak after the match.
+- Added conservative `try`/`catch`/`else` definite-assignment joins so values
+  assigned only on some continuing exception paths are reported before Go
+  emission.
+- Added destructuring arity diagnostics for tuple literals and local functions
+  annotated with `tuple[...]` return types.
+- Added alias-specific diagnostics for `from lamerrors import Result as ...`
+  used with `?` or `do/catch`, which require the unaliased `Result` helper
+  import today.
+- Added comparison and membership type diagnostics for incompatible ordered
+  comparisons, equality checks, `in` item types, and invalid `in` containers.
+- Added unary and boolean operator type diagnostics, including `not`, `and`,
+  `or`, unary `+`/`-`, and bitwise `~` operands.
+- Added ternary expression type diagnostics for non-boolean conditions,
+  incompatible branch values, and annotated assignment/return inference.
+- Added comprehension filter and annotated container literal diagnostics,
+  including list elements, dict keys/values, set elements, and const literals.
+- Added built-in cast diagnostics for invalid cast arity, keyword arguments,
+  and non-numeric arguments to numeric/bool casts.
+- Added explicit generic-call diagnostics for type-argument arity and concrete
+  type-parameter substitutions in function and class constructor calls.
+- Allowed Go-only keywords such as `select` in Lam declarations that lower to
+  safe Go names, including public functions, classes, class fields, static
+  methods, and public instance methods.
+- Added semantic diagnostics for parsed-but-unsupported decorators, including a
+  specific `@private` hint to use the supported `private func` spelling.
+- Added inheritance diagnostics for incompatible method overrides,
+  instance/static override mismatches, duplicate direct bases, field/method
+  conflicts, and ambiguous direct promoted members from multiple inheritance.
+- Added interface conformance diagnostics for method parameter type mismatches.
+- Extended class/interface diagnostics to compare nested generic method
+  parameter and return types, including imported interfaces/classes.
+- Extended inheritance diagnostics through transitive and imported base
+  hierarchies.
+- Added a non-fatal warning for classes with multiple distinct base classes,
+  since multiple inheritance is parsed but not fully supported yet.
+- Added module-boundary visibility diagnostics for importing private functions,
+  calling module-qualified private functions, and calling private methods on
+  imported classes.
+- Added tuple/destructuring diagnostics for annotated element type mismatches,
+  annotation arity mismatches, duplicate destructuring targets, `-> (T, U)`
+  multi-return arity, and imported tuple-returning functions/static/instance
+  methods.
+- Improved destructuring type inference so each tuple target receives its own
+  element type instead of the whole tuple type.
+- Added specialized dropped `Result`/`Option` warnings that tell callers to
+  handle the value or assign it to `_`.
+- Added conservative branch-join inference for local variable types across
+  `if`/`else`, `match`, and `try`/`catch`, so misspelled members after branches
+  are reported when every continuing path agrees on the receiver class.
+- Extended Go-reserved identifier diagnostics to import aliases, function and
+  lambda parameters, loop/comprehension targets, catch bindings, and
+  destructuring targets.
+- Added warnings for user-declared names with compiler-reserved prefixes such
+  as `__lam*` and `__q*`.
 - Added standalone `third_party/lams3/CHANGELOG.md`, `LICENSE`, and `NOTICE`
   files so lams3 can be distributed from its external repository.
+- Added explicit inheritance parent aliases: single unnamed parents expose
+  `base`, named bases use `class Child(alias: Parent)`, and
+  `base.init(...)` / `alias.__init__(...)` initialize the embedded parent via
+  the parent constructor.
 
 ### Changed
 
 - Updated lams3 package metadata to advertise Apache-2.0 licensing.
+- Compiles now warn, without blocking, when an installed extlib's
+  `compatibility.lamc` range does not include the running compiler version.
 - Refactored `lamc fmt` / LSP document formatting to preserve inline `go!(...)`,
   format `go! { ... }` blocks with `gofmt` when available, and keep Lam source
   in the repository's K&R/four-space style more reliably.
+- Updated roadmap and diagnostics documentation to reflect that unused local
+  warnings and their Go silencing are implemented for function and block
+  scopes.
+- Corrected inheritance transpilation documentation to remove unsupported
+  `super()` lowering and describe current parent embedding, constructor, and
+  inherited-method behavior.
+- Multiple inheritance is now supported through Go embedding with named parent
+  aliases, ambiguity diagnostics for unqualified inherited members, and
+  inheritance-cycle errors.
 
 ## 2026-07-10
 

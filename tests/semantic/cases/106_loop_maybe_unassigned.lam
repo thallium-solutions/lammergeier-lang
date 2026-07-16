@@ -1,0 +1,8 @@
+# expect-error: undefined name `item`
+
+func main() {
+    for n in [] {
+        item = n
+    }
+    print(item)
+}

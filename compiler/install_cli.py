@@ -48,11 +48,17 @@ from compiler.manifest import (
     is_valid_semver,
     satisfies,
 )
+from compiler.version import LAMC_VERSION
 
 
 DEFAULT_REGISTRY = os.environ.get("LAMC_REGISTRY", "http://localhost:8765")
 USER_EXTLIBS = Path.home() / ".lammergeier" / "extlibs"
 LOCKFILE_NAME = "lamlib.lock.toml"
+
+
+def _default_lamc_compat_range() -> str:
+    major, minor, *_ = LAMC_VERSION.split(".")
+    return f"^{major}.{minor}"
 
 
 # ── Content-addressed cache ─────────────────────────────────────
@@ -306,7 +312,7 @@ def _multipart_encode(field: str, filename: str,
 # ── Git source adapter ──────────────────────────────────────
 
 _GIT_SPEC_RE = re.compile(
-    r"^(?P<url>(?:https?|git|ssh)://\S+?|git@[^:]+?:\S+?)"
+    r"^(?P<url>(?:https?|git|ssh|file)://\S+?|git@[^:]+?:\S+?)"
     r"(?:@(?P<ref>[^@\s]+))?$"
 )
 
@@ -531,7 +537,7 @@ def _write_lockfile(path: Path, pins: Dict[str, Dict],
         lines.append(f"[pins.{_lock_key(name)}]")
         lines.append(f'name    = "{name}"')
         for key in ("version", "source", "sha256", "url", "ref",
-                    "tree_sha256"):
+                    "requested_ref", "tree_sha256"):
             if key in entry and entry[key]:
                 lines.append(f'{key} = "{entry[key]}"')
         rby = entry.get("requested_by") or []
@@ -688,6 +694,7 @@ class InstallPlan:
     sha256:      str = ""
     url:         str = ""
     ref:         str = ""
+    requested_ref: str = ""
     # Deterministic hash of the fetched source tree. Filled in for
     # ``git`` and ``path`` sources where there's no registry tarball
     # whose ``sha256`` already provides integrity. Empty for
@@ -780,7 +787,7 @@ def _resolve_plan(spec: str,
         return InstallPlan(
             name=mf.name, version=mf.version, source="git",
             src_dir=clone_dst, manifest=mf,
-            url=url, ref=commit,
+            url=url, ref=commit, requested_ref=ref,
             tree_sha256=_tree_sha256(clone_dst))
 
     # Registry.
@@ -1048,6 +1055,7 @@ def _walk_dependencies(root_plan: InstallPlan,
     resolved: Dict[str, ResolvedDep] = {}
     queue: List[Tuple[Manifest, str]] = [(root_plan.manifest, "<requested>")]
     install_order: List[ResolvedDep] = []
+    seen_descended: set[str] = {root_plan.name}
     resolved[root_plan.name] = ResolvedDep(
         name=root_plan.name, version=root_plan.version,
         plan=root_plan, requested_by=["<requested>"])
@@ -1061,31 +1069,56 @@ def _walk_dependencies(root_plan: InstallPlan,
         if ds.range:
             lam_demands.setdefault(n, []).append(
                 (ds.range, f"{root_plan.name}@{root_plan.version}"))
-        elif ds.path and root_plan.manifest.source_path is not None:
-            local = (root_plan.manifest.source_path.parent
-                     / ds.path).resolve()
-            if (local / "lamlib.toml").exists():
-                queue.append((Manifest.load(local / "lamlib.toml"),
-                              f"{root_plan.name}@{root_plan.version}"))
+        elif (ds.path or ds.git) and root_plan.manifest.source_path is not None:
+            spec = _dep_install_spec(n, ds, root_plan.manifest.source_path.parent)
+            if spec:
+                sub_plan = _resolve_plan(
+                    _apply_replace(spec, project_mf), registry,
+                    work=work / f"dep-{_safe_segment(n)}")
+                seen_label = f"{root_plan.name}@{root_plan.version}"
+                entry = ResolvedDep(
+                    name=n, version=sub_plan.version, plan=sub_plan,
+                    requested_by=[seen_label])
+                resolved[n] = entry
+                install_order.append(entry)
+                seen_descended.add(n)
+                queue.append((sub_plan.manifest,
+                              f"{n}@{sub_plan.version}"))
 
     # Walk the queue: for each manifest, fetch its deps' manifests
     # (registry-side), enqueue them, accumulate demand lists.
-    seen_descended: set[str] = {root_plan.name}
     while queue:
         mf, requested_by = queue.pop(0)
         for n, ds in mf.dependencies.items():
             if ds.range:
                 lam_demands.setdefault(n, []).append((ds.range, requested_by))
-            # (Path deps from non-root libs are not followed — by the
-            # time a lib hits the registry it must declare every dep
-            # via a registry constraint or shipped tarball. Keeping
-            # path-deps registry-local prevents tarballs from leaking
-            # absolute publisher-side paths into consumers' builds.)
+            # Path deps from non-root libs are not followed — by the
+            # time a lib hits the registry it must declare portable
+            # dependencies. Direct git deps are portable, so they are
+            # followed below.
         for path, ver in mf.go_deps.items():
             go_demands.setdefault(path, []).append((ver, requested_by))
 
         for n, ds in mf.dependencies.items():
-            if not ds.range or n in seen_descended:
+            if n in seen_descended:
+                continue
+            if ds.git:
+                spec = _dep_install_spec(n, ds, mf.source_path.parent if mf.source_path else None)
+                if not spec:
+                    continue
+                sub_plan = _resolve_plan(
+                    _apply_replace(spec, project_mf), registry,
+                    work=work / f"dep-{_safe_segment(n)}")
+                seen_descended.add(n)
+                entry = ResolvedDep(
+                    name=n, version=sub_plan.version, plan=sub_plan,
+                    requested_by=[requested_by])
+                resolved[n] = entry
+                install_order.append(entry)
+                queue.append((sub_plan.manifest,
+                              f"{n}@{sub_plan.version}"))
+                continue
+            if not ds.range:
                 continue
             # Resolve the version against ALL accumulated demands so
             # far so we never pick a lib version we'll later have to
@@ -1247,6 +1280,7 @@ def install_one(spec: str,
             "sha256":       plan.sha256,
             "url":          plan.url,
             "ref":          plan.ref,
+            "requested_ref": plan.requested_ref,
             "tree_sha256":  plan.tree_sha256,
             "requested_by": ["root"],
         }
@@ -1257,6 +1291,7 @@ def install_one(spec: str,
                 "sha256":       dep.plan.sha256,
                 "url":          dep.plan.url,
                 "ref":          dep.plan.ref,
+                "requested_ref": dep.plan.requested_ref,
                 "tree_sha256":  dep.plan.tree_sha256,
                 "requested_by": list(dep.requested_by),
             }
@@ -1434,6 +1469,10 @@ def _toml_quote_key(name: str) -> str:
     return f'"{name}"'
 
 
+def _toml_quote_value(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _find_section_bounds(lines: List[str],
                           section: str) -> Tuple[Optional[int], int]:
     """Return ``(start_idx, end_idx)`` for ``[section]`` in ``lines``.
@@ -1537,7 +1576,13 @@ def _format_dep_value(plan: InstallPlan, user_spec: str) -> Optional[str]:
         escaped = user_spec.replace('"', '\\"')
         return '{ path = "' + escaped + '" }'
     if plan.source == "git":
-        return None
+        m = _GIT_SPEC_RE.match(user_spec)
+        url = m.group("url") if m else plan.url
+        ref = (m.group("ref") if m else "") or plan.requested_ref
+        parts = [f"git = {_toml_quote_value(url)}"]
+        if ref:
+            parts.append(f"ref = {_toml_quote_value(ref)}")
+        return "{ " + ", ".join(parts) + " }"
     return None
 
 
@@ -1555,18 +1600,25 @@ def _maybe_write_manifest_entry(plan: InstallPlan, user_spec: str,
         return
     value = _format_dep_value(plan, user_spec)
     if value is None:
-        if not quiet and plan.source == "git":
-            print(
-                f"[lamc] note: {plan.name} from git is not auto-recorded "
-                f"in {mf_path.name} (the [dependencies] git form lands "
-                f"with [replace] in a later release).",
-                file=sys.stderr)
         return
     try:
         _write_manifest_dep(mf_path, plan.name, value, quiet=quiet)
     except OSError as e:
         print(f"[lamc] warning: could not update {mf_path.name}: {e}",
               file=sys.stderr)
+
+
+def _dep_install_spec(name: str, ds, base_dir: Path | None = None) -> str | None:
+    if ds.range:
+        return f"{name}@{ds.range}"
+    if ds.path:
+        local = Path(ds.path)
+        if not local.is_absolute() and base_dir is not None:
+            local = (base_dir / local).resolve()
+        return str(local)
+    if ds.git:
+        return f"{ds.git}@{ds.ref}" if ds.ref else ds.git
+    return None
 
 
 def _specs_from_project_manifest() -> List[str]:
@@ -1583,12 +1635,9 @@ def _specs_from_project_manifest() -> List[str]:
     mf = Manifest.load(mf_path)
     specs: List[str] = []
     for name, ds in mf.dependencies.items():
-        if ds.range:
-            specs.append(f"{name}@{ds.range}")
-        elif ds.path:
-            local = (mf_path.parent / ds.path).resolve()
-            specs.append(str(local))
-        # Future: ds.git → git URL spec (lands with [replace]).
+        spec = _dep_install_spec(name, ds, mf_path.parent)
+        if spec:
+            specs.append(spec)
     return specs
 
 
@@ -1622,6 +1671,7 @@ def _plan_from_pin(name: str, pin: Dict, registry: Registry,
     sha256 = pin.get("sha256", "")
     url = pin.get("url", "")
     ref = pin.get("ref", "")
+    requested_ref = pin.get("requested_ref", "")
 
     if source == "registry":
         if not url:
@@ -1666,7 +1716,7 @@ def _plan_from_pin(name: str, pin: Dict, registry: Registry,
         return InstallPlan(
             name=mf.name, version=mf.version, source="git",
             src_dir=clone_dst, manifest=mf,
-            url=url, ref=commit,
+            url=url, ref=commit, requested_ref=requested_ref,
             tree_sha256=_tree_sha256(clone_dst))
 
     if source == "path":
@@ -1728,6 +1778,22 @@ def _frozen_install(project: bool, override: Optional[Path],
             drift.append(
                 f"  - {name}: {mf_path.name} requires {ds.range!r}, "
                 f"{lock_path.name} pins {pin_version!r}")
+        if ds.git:
+            pin_source = pin.get("source", "")
+            pin_url = pin.get("url", "")
+            pin_requested_ref = pin.get("requested_ref", "")
+            if pin_source != "git":
+                drift.append(
+                    f"  - {name}: {mf_path.name} declares a git source, "
+                    f"{lock_path.name} pins source {pin_source!r}")
+            elif pin_url != ds.git:
+                drift.append(
+                    f"  - {name}: {mf_path.name} requires git {ds.git!r}, "
+                    f"{lock_path.name} pins {pin_url!r}")
+            elif ds.ref and pin_requested_ref and pin_requested_ref != ds.ref:
+                drift.append(
+                    f"  - {name}: {mf_path.name} requires git ref {ds.ref!r}, "
+                    f"{lock_path.name} pins requested ref {pin_requested_ref!r}")
     if drift:
         print("[lamc] error: --frozen: lockfile and manifest drift:",
               file=sys.stderr)
@@ -2244,7 +2310,7 @@ license = "{license}"
 [compatibility]
 # Range of ``lamc`` versions this project has been tested
 # against. Caret matches SemVer.
-lamc = "^0.5"
+lamc = "{lamc_compat}"
 
 [dependencies]
 # Add third-party libraries here:
@@ -2339,7 +2405,11 @@ def _cmd_init(args) -> int:
     # ``--force`` / refusal logic stays simple.
     plan: List[Tuple[Path, str]] = []
     plan.append((cwd / "lamlib.toml", _INIT_MANIFEST_TEMPLATE.format(
-        name=full_name, version=version, license=licence)))
+        name=full_name,
+        version=version,
+        license=licence,
+        lamc_compat=_default_lamc_compat_range(),
+    )))
     if is_lib:
         plan.append((cwd / f"{name}.lam",
                      _INIT_LIB_TEMPLATE.format(name=full_name, version=version)))
@@ -2589,6 +2659,84 @@ def _cmd_publish(args) -> int:
     return 0
 
 
+def _find_manifest_from(start: Path) -> Optional[Path]:
+    """Walk upward from ``start`` looking for ``lamlib.toml``.
+
+    Bound the walk so commands run from temporary directories do not
+    accidentally pick up an unrelated manifest far above the project.
+    """
+    here = start.resolve()
+    if here.is_file():
+        here = here.parent
+    for _ in range(6):
+        cand = here / "lamlib.toml"
+        if cand.exists():
+            return cand
+        if here.parent == here:
+            break
+        here = here.parent
+    return None
+
+
+def _cmd_lib_run(args) -> int:
+    """Run a command from ``lamlib.toml``'s ``[scripts]`` table."""
+    start = Path(args.cwd).resolve() if args.cwd else Path.cwd()
+    mf_path = _find_manifest_from(start)
+    if mf_path is None:
+        print("[lamc] lib run: no lamlib.toml found in cwd or any parent.",
+              file=sys.stderr)
+        return 2
+    try:
+        mf = Manifest.load(mf_path)
+    except ManifestError as e:
+        loc = f":{e.lineno}" if e.lineno else ""
+        print(f"[lamc] lib run: {mf_path}{loc}: {e}", file=sys.stderr)
+        return 2
+
+    scripts = mf.scripts
+    if args.list:
+        if not scripts:
+            print("[lamc] lib run: no scripts declared.")
+            return 0
+        for name in sorted(scripts):
+            print(f"{name}\t{scripts[name]}")
+        return 0
+
+    if not args.script:
+        print("[lamc] lib run: missing script name.", file=sys.stderr)
+        print("usage: lamc lib run <script> [--cwd DIR] [--dry-run]",
+              file=sys.stderr)
+        return 2
+
+    command = scripts.get(args.script)
+    if command is None:
+        print(f"[lamc] lib run: script {args.script!r} is not declared.",
+              file=sys.stderr)
+        if scripts:
+            print("available scripts: " + ", ".join(sorted(scripts)),
+                  file=sys.stderr)
+        return 2
+    if not command.strip():
+        print(f"[lamc] lib run: script {args.script!r} is empty.",
+              file=sys.stderr)
+        return 2
+
+    root = mf_path.parent
+    if args.dry_run:
+        print(command)
+        return 0
+
+    if not args.quiet:
+        print(f"[lamc] running {args.script}: {command}", file=sys.stderr)
+    try:
+        proc = subprocess.run(command, cwd=str(root), shell=True)
+    except OSError as e:
+        print(f"[lamc] lib run: failed to start {args.script!r}: {e}",
+              file=sys.stderr)
+        return 1
+    return proc.returncode
+
+
 def main(argv: List[str]) -> int:
     """Entry point for ``lamc install`` / ``lamc uninstall`` /
     ``lamc publish``. Called by ``compiler.lammergeier.main`` once
@@ -2640,6 +2788,32 @@ def main(argv: List[str]) -> int:
         ap.add_argument("--registry", default=DEFAULT_REGISTRY)
         ap.add_argument("-q", "--quiet", action="store_true")
         return _cmd_publish(ap.parse_args(rest))
+
+    if verb == "lib":
+        if not rest or rest[0] in ("-h", "--help"):
+            print("usage: lamc lib <subcommand> <args...>\n\n"
+                  "Subcommands:\n"
+                  "  run    Run a command declared in lamlib.toml [scripts].")
+            return 0 if rest and rest[0] in ("-h", "--help") else 2
+        subverb, subrest = rest[0], rest[1:]
+        if subverb == "run":
+            ap = argparse.ArgumentParser(prog="lamc lib run",
+                description="Run a command declared in the nearest "
+                            "lamlib.toml [scripts] table.")
+            ap.add_argument("script", nargs="?",
+                help="Script name from lamlib.toml [scripts].")
+            ap.add_argument("--cwd",
+                help="Directory to start manifest discovery from. "
+                     "The script still runs from the manifest directory.")
+            ap.add_argument("--list", action="store_true",
+                help="List available scripts instead of running one.")
+            ap.add_argument("--dry-run", action="store_true",
+                help="Print the resolved command without executing it.")
+            ap.add_argument("-q", "--quiet", action="store_true",
+                help="Suppress the '[lamc] running ...' line.")
+            return _cmd_lib_run(ap.parse_args(subrest))
+        print(f"[lamc] unknown lib subcommand: {subverb}", file=sys.stderr)
+        return 2
 
     if verb == "tidy":
         ap = argparse.ArgumentParser(prog="lamc tidy",

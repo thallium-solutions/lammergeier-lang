@@ -1,0 +1,6 @@
+# expect-error: cast `int` expects at most 1 argument, got 2
+
+func main() {
+    value = int(1, 2)
+    print(value)
+}

@@ -1,0 +1,11 @@
+# expect-pass
+
+from lamerrors import Result
+
+func fetch() -> Result {
+    return Result.Ok("ok")
+}
+
+func main() {
+    _ = fetch()
+}

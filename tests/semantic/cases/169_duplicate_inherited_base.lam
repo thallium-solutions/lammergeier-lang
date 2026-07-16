@@ -1,0 +1,18 @@
+# expect-error: class `Loop` inherits `Base` more than once
+
+class Base {
+    func value(self) -> str {
+        return "base"
+    }
+}
+
+class Loop(Base, Base) {
+    func value(self) -> str {
+        return "loop"
+    }
+}
+
+func main() {
+    loop: Loop = Loop()
+    print(loop.value())
+}

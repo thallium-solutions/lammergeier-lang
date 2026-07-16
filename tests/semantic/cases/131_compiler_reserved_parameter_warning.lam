@@ -1,0 +1,9 @@
+# expect-warning: `__qValue` uses compiler-reserved prefix `__q`
+
+func show(__qValue: int) {
+    print(__qValue)
+}
+
+func main() {
+    show(1)
+}

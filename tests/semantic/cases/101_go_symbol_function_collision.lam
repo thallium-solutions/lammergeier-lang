@@ -1,0 +1,9 @@
+# expect-error: function `userID` and function `UserID` both lower to Go symbol `UserID`
+
+func userID() -> int {
+    return 1
+}
+
+func UserID() -> int {
+    return 2
+}

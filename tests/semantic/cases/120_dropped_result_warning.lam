@@ -1,0 +1,11 @@
+# expect-warning: dropped `Result` from `fetch()`; handle it or assign to `_`
+
+from lamerrors import Result
+
+func fetch() -> Result {
+    return Result.Ok("ok")
+}
+
+func main() {
+    fetch()
+}

@@ -230,7 +230,7 @@ lamc install <spec> [<spec> …] [flags]
 | `name@version` | `lamc install lamwebp@1.2.0` | Exact version. |
 | `name@<range>` | `lamc install 'lamwebp@^1.0'` | SemVer range. Quote the spec — your shell will eat the `^`. |
 | Scoped name | `lamc install @alice/lamwebp` | npm-style two-level identifier. The `@scope/` part is preserved everywhere (resolver, install path, lockfile). |
-| Git URL | `lamc install https://github.com/alice/lamwebp.git@v1.2.0` | Bypasses the registry — uses the git cache, validates `lamlib.toml` on the checkout, and pins the resolved commit SHA plus tree hash in the lockfile. |
+| Git URL | `lamc install https://github.com/alice/lamwebp.git@v1.2.0` | Bypasses the registry — uses the git cache, validates `lamlib.toml` on the checkout, writes a git-form manifest dependency, and pins the resolved commit SHA plus tree hash in the lockfile. |
 | Local path | `lamc install ./local-lamwebp` | Useful for in-development libs. Recursively copies the tree (no symlink — re-run after edits). |
 
 You can pass multiple specs in a single invocation; each is
@@ -249,14 +249,16 @@ lamc install                                    # everything in [dependencies]
 lamc install lamwebp@1.2.0 lamqueue@^1.0       # add two new deps
 ```
 
-When you pass explicit registry or local-path specs, each
+When you pass explicit registry, git URL, or local-path specs, each
 successful install also appends (or updates) the matching entry in
 `[dependencies]` so the manifest, lockfile, and on-disk install
-stay in lockstep. Direct git URL installs are the exception: they
-are pinned in `lamlib.lock.toml`, but `[dependencies]` does not yet
-have a git-form entry. For a persistent fork or branch, keep the
-normal registry dependency in `[dependencies]` and redirect it with
-a project-level `[replace]` entry.
+stay in lockstep. Git sources use an inline table so a fresh checkout
+can recover the source URL and requested ref:
+
+```toml
+[dependencies]
+lamwebp = { git = "https://github.com/alice/lamwebp.git", ref = "v1.2.0" }
+```
 
 ### 2.2 Flags
 
@@ -275,7 +277,31 @@ Authentication: set `LAMC_TOKEN` in the environment to attach a
 `Bearer …` header to every registry request (used at publish
 time too).
 
-### 2.3 Where files actually go
+### 2.3 Manifest scripts
+
+`lamlib.toml` can carry a `[scripts]` table for project or library
+commands. Run them with `lamc lib run <name>`:
+
+```toml
+[scripts]
+test = "python3 tests/run_lams3_tests.py"
+fmt = "lamc fmt __init__.lam"
+```
+
+```bash
+lamc lib run test
+lamc lib run --list
+lamc lib run fmt --cwd third_party/lams3
+lamc lib run test --dry-run
+```
+
+`lamc lib run` discovers the nearest `lamlib.toml` from the current
+directory, or from `--cwd DIR` when provided. The script command runs
+from the manifest's directory, not from the shell's current directory,
+so relative paths behave like project-root paths. The child process exit
+code is preserved, which makes manifest scripts suitable for CI.
+
+### 2.4 Where files actually go
 
 Project mode (the default) is reproducible-by-construction:
 
@@ -319,7 +345,7 @@ All three roots (`./extlibs/`, `~/.lammergeier/extlibs/`,
 so the library is usable immediately — no `import` path or
 `PATH` change required.
 
-### 2.4 Scoped names
+### 2.5 Scoped names
 
 ```bash
 lamc install @acme/lamcolor@0.2.0
@@ -516,6 +542,16 @@ version      = "0.3.0"
 source       = "path"
 tree_sha256  = "abcdef…"           # content hash of the on-disk tree
 requested_by = ["root"]
+
+[pins.lamgit]
+name          = "lamgit"
+version       = "0.4.0"
+source        = "git"
+url           = "https://github.com/alice/lamgit.git"
+requested_ref = "v0.4.0"            # human-requested ref from lamlib.toml
+ref           = "0123456789abcdef"  # resolved commit used for reproducibility
+tree_sha256   = "123456…"
+requested_by  = ["root"]
 
 [go_pins."github.com/foo/bar"]
 path         = "github.com/foo/bar"

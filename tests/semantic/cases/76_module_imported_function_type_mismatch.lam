@@ -1,0 +1,8 @@
+# expect-error: error[type]
+# expect-error: argument `right` to `import_call_helper.add` has type `str`, expected `int`
+
+import import_call_helper
+
+func main() {
+    print(import_call_helper.add(1, "two"))
+}

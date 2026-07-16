@@ -116,7 +116,8 @@ After install, `lamc` is the single entry point for everything:
 | `lamc <file.lam> --run` | Compile and immediately execute. |
 | `lamc <file.lam> --emit-go` | Print the generated Go source and stop before `go build`. |
 | `lamc <file.lam> --emit-ast` | Print the parsed Lark AST and stop before transpilation. |
-| `lamc doctor` / `lamc --doctor` | Report Python, Go, `lark`, project root, stdlib path, cache path, and `lammergeier-lsp` availability. |
+| `lamc version` / `lamc --version` | Print the compiler version used by `compatibility.lamc` manifest ranges. |
+| `lamc doctor` / `lamc --doctor` | Report compiler, Python, Go, `lark`, stdlib, cache, PATH, Go environment, dependency, manifest, and editor-extension diagnostics. Supports `--json` and `--strict`. |
 | `lamc init` | Scaffold a fresh project (manifest + entry-point + `.gitignore`). |
 | `lamc install <spec>` | Install a third-party library — see [`docs/package_manager.md`](package_manager.md). |
 | `lamc uninstall <name>` | Remove an installed library + its lockfile pin. |
@@ -124,17 +125,20 @@ After install, `lamc` is the single entry point for everything:
 | `lamc verify` | Re-hash every installed extlib against `lamlib.lock.toml` (supply-chain integrity). |
 | `lamc list` / `tree` / `why <name>` | Lockfile introspection — flat list, indented tree, single-pin chain. |
 | `lamc publish [<dir>]` | Pack a library tree and POST it to a registry. |
+| `lamc lib run <script>` | Run a command declared in the nearest `lamlib.toml` `[scripts]` table. |
 | `lamc migrate make / up / down / status` | Knex-style SQL migrations. |
 | `lamc fmt` | Formatter (under the same project conventions used by the test corpus). |
 
 Run `lamc --help` for the full surface; every verb has its own
 `--help` page.
 
-Use `lamc doctor` after installation or after moving a checkout to
-confirm that `lamc` can see the expected Python interpreter, Go
-toolchain, `lark` parser, stdlib directory, compiler cache, and language
-server launcher. The command exits successfully in a valid checkout and
-prints clear `missing` lines for optional or absent tools.
+Use `lamc version` when you need the concrete compiler version for a
+library's `compatibility.lamc` range. Use `lamc doctor` after installation
+or after moving a checkout to confirm that `lamc` can see the expected
+Python interpreter, Go toolchain, `lark` parser, stdlib directory, compiler
+cache, language server launcher, package manifest, Python requirements, and
+editor extension installs. Use `lamc doctor --json` for scripted inspection
+and `lamc doctor --strict` when CI should fail on missing required pieces.
 
 ### 4.1 Compile-time flags worth knowing
 

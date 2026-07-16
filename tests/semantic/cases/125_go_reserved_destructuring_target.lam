@@ -1,0 +1,6 @@
+# expect-error: `chan` is a reserved identifier in Go
+
+func main() {
+    chan, value = (1, 2)
+    print(value)
+}

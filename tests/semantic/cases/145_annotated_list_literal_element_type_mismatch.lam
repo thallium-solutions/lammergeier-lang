@@ -1,0 +1,6 @@
+# expect-error: list element for variable `xs` must be `int`, got `str`
+
+func main() {
+    xs: list[int] = [1, "two"]
+    print(xs)
+}

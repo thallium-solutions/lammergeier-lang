@@ -1,0 +1,5 @@
+# expect-error: membership test for `list[int]` expects `int`, got `str`
+
+func main() {
+    print("x" in [1, 2])
+}

@@ -1,0 +1,12 @@
+# expect-pass
+
+func main() {
+    nums: list[int] = [1, 2]
+    labels: dict[str, int] = {"one": 1}
+    print(1 < 2)
+    print("a" < "b")
+    print(1 in nums)
+    print("a" in "abc")
+    print("one" in labels)
+    print(1 == 2)
+}

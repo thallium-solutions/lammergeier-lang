@@ -51,6 +51,22 @@ def _make_lib(dirpath: Path, module_name: str, tag: str) -> Path:
     return lib_path
 
 
+def _make_manifest(dirpath: Path, module_name: str, lamc_range: str) -> Path:
+    manifest_path = dirpath / "lamlib.toml"
+    _write(
+        manifest_path,
+        (
+            "[library]\n"
+            f'name = "{module_name}"\n'
+            'version = "0.1.0"\n'
+            "\n"
+            "[compatibility]\n"
+            f'lamc = "{lamc_range}"\n'
+        ),
+    )
+    return manifest_path
+
+
 def _make_main(dirpath: Path, module_name: str) -> Path:
     main_path = dirpath / "main.lam"
     _write(
@@ -333,6 +349,28 @@ def test_multiple_extlibs_dirs_in_order() -> None:
     print("PASS: leftmost --extlibs directory takes priority")
 
 
+def test_incompatible_extlib_lamc_range_warns_without_blocking() -> None:
+    """An installed library can declare a compiler compatibility range.
+    Compile should warn on mismatches, but keep building so old projects
+    are not locked out of using their dependencies.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        extlibs_dir = tmp_path / "ext"
+        _make_lib(extlibs_dir, "future_widget", "future-ok")
+        _make_manifest(extlibs_dir, "future_widget", ">=999.0.0")
+        main = _make_main(tmp_path, "future_widget")
+
+        proc = _run(["--run", "--extlibs", str(extlibs_dir), str(main)])
+        _assert_output(proc, "future-ok", "incompatible compatibility.lamc warning")
+        if "warning: library future_widget@0.1.0 declares compatibility.lamc" not in proc.stderr:
+            raise AssertionError(
+                "expected compatibility warning in stderr\n"
+                f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+            )
+    print("PASS: incompatible compatibility.lamc warns but does not block")
+
+
 def main() -> int:
     tests = [
         test_cli_flag_resolves_extlib,
@@ -346,6 +384,7 @@ def main() -> int:
         test_extlib_with_stdlib_dependency,
         test_user_global_extlibs_fallback,
         test_multiple_extlibs_dirs_in_order,
+        test_incompatible_extlib_lamc_range_warns_without_blocking,
     ]
     failures = 0
     for t in tests:

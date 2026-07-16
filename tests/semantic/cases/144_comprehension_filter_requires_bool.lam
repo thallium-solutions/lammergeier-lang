@@ -1,0 +1,6 @@
+# expect-error: comprehension filter must be `bool`, got `str`
+
+func main() {
+    xs = [n for n in [1, 2] if "yes"]
+    print(xs)
+}

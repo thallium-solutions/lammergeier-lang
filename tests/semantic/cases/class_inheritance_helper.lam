@@ -1,0 +1,31 @@
+# expect-pass
+
+class Root {
+    func save(self, values: list[str]) -> bool {
+        return True
+    }
+}
+
+class Mid(Root) {
+    func other(self) -> str {
+        return "mid"
+    }
+}
+
+class LabelBase {
+    func label(self) -> str {
+        return "base"
+    }
+}
+
+class Left(LabelBase) {
+    func left(self) -> str {
+        return "left"
+    }
+}
+
+class Right {
+    func label(self) -> str {
+        return "right"
+    }
+}

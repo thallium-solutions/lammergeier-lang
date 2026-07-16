@@ -1,0 +1,6 @@
+# expect-error: `go` is a reserved identifier in Go
+
+func main() {
+    f = lambda go: go
+    print(f(1))
+}

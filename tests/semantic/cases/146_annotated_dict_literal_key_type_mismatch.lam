@@ -1,0 +1,6 @@
+# expect-error: dict key for variable `counts` must be `str`, got `int`
+
+func main() {
+    counts: dict[str, int] = {"one": 1, 2: 2}
+    print(counts)
+}

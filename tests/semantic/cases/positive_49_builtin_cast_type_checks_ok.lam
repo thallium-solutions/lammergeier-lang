@@ -1,0 +1,18 @@
+# expect-pass
+
+func main() {
+    whole: int = int(1.5)
+    count: int = uint8(3)
+    ratio: float = float32(whole)
+    enabled: bool = bool(count)
+    label: str = str(enabled)
+    letter: str = string(65)
+    defaulted: bool = bool()
+    print(whole)
+    print(count)
+    print(ratio)
+    print(enabled)
+    print(label)
+    print(letter)
+    print(defaulted)
+}

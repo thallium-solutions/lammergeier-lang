@@ -110,19 +110,31 @@ a `.lam` file, providing:
 
 - **Diagnostics** — parse errors and semantic checks (undefined names,
   duplicate members, misplaced flow) surface live as red squiggles.
+  Semantic/syntax test fixtures that declare `# expect-error` or
+  `# expect-warning` stay quiet when the expected diagnostic matches,
+  and show one clear mismatch warning when it does not.
 - **Hover** — types and short docs for built-ins, modules, and your
   own functions/classes. **Cross-file**: hovering on a name imported
   via `from lam<x> import …` shows the signature pulled from the
   bundled stdlib file, prefixed with the originating module name.
-- **Completion** — keywords, types, builtins, identifiers harvested
-  from the current document, **plus stdlib symbols you've imported
-  from `lib/lam*.lam`**. Typing inside `from lam<x> import |`
-  suggests the module's public exports; typing `MyClass.|` lists
-  methods of an imported class as well as a local one.
-- **Go to Definition** — `F12` jumps to the function/class
-  declaration in the current document, or into the matching
-  `lib/lam<x>.lam` stdlib file when the symbol comes from an
-  import.
+- **Completion** — keywords, types, builtins, locals, parameters,
+  class fields, inherited members, `self`, `base`, named inheritance
+  aliases, and identifiers harvested from the current document,
+  **plus stdlib symbols you've imported from `lib/lam*.lam`**.
+  Typing after `from ` suggests module names; typing inside
+  `from lam<x> import |` suggests the module's public exports; typing
+  `instance.|`, `self.|`, `base.|`, or `MyClass.|` lists the available
+  members. Importable symbols from stdlib and workspace modules are
+  offered as read-only suggestions like `from lamenv import Dotenv`;
+  the extension never inserts imports automatically.
+- **Signature Help** — function, method, and constructor calls show
+  argument help. Instance methods hide implicit `self`, and constructors
+  are displayed with the preferred `init(...)` sugar instead of
+  `__init__(...)`.
+- **Go to Definition** — `F12` jumps to functions, classes, methods,
+  fields, inherited members, and imported stdlib/user-module symbols.
+- **Workspace Symbols** — workspace search can find Lam functions,
+  classes, methods, fields, and exported module symbols.
 - **Document Symbols** — outline view + breadcrumbs.
 
 The client spawns the `lammergeier-lsp` launcher

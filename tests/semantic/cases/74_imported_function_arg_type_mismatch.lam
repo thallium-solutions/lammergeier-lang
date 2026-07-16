@@ -1,0 +1,8 @@
+# expect-error: error[type]
+# expect-error: argument `left` to `add` has type `str`, expected `int`
+
+from import_call_helper import add
+
+func main() {
+    print(add("one", 2))
+}

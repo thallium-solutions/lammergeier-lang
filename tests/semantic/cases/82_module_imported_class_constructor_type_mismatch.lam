@@ -1,0 +1,8 @@
+# expect-error: argument `count` to `helper.Widget` has type `str`, expected `int`
+
+import import_call_helper as helper
+
+func main() {
+    w = helper.Widget("box", "many")
+    print(w)
+}

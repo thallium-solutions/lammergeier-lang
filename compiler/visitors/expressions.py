@@ -14,6 +14,32 @@ from compiler.constants import (
 class ExpressionVisitorMixin:
     """Handles expression-to-Go conversion, function calls, f-strings, comprehensions."""
 
+    def _parent_alias_base(self, name: str) -> str:
+        if not name or not self.current_class or not self._self_replacement:
+            return ""
+        if name in self.declared_vars:
+            return ""
+        return self.class_base_aliases.get(self.current_class, {}).get(name, "")
+
+    def _parent_alias_expr(self, name: str) -> str:
+        base = self._parent_alias_base(name)
+        if not base:
+            return ""
+        return f"{self._self_replacement}.{self._go_public_name(base)}"
+
+    def _parent_alias_call_info(self, func) -> tuple[str, str, str]:
+        if not isinstance(func, Tree) or func.data != "getattr" or len(func.children) < 2:
+            return "", "", ""
+        obj = func.children[0]
+        if not isinstance(obj, Tree) or obj.data != "var" or not obj.children:
+            return "", "", ""
+        alias = self._get_name(obj.children[0])
+        base = self._parent_alias_base(alias)
+        if not base:
+            return "", "", ""
+        receiver = f"{self._self_replacement}.{self._go_public_name(base)}"
+        return alias, base, receiver
+
     # ─── Typed value conversion ────────────────────────────────
 
     def _typed_value_to_go(self, node, go_type: str) -> str:
@@ -88,6 +114,9 @@ class ExpressionVisitorMixin:
             name = self._get_name(node.children[0])
             if name == "self" and self._self_replacement:
                 return self._self_replacement
+            parent_expr = self._parent_alias_expr(name)
+            if parent_expr:
+                return parent_expr
             # Bare references to user-defined top-level functions need to
             # resolve to their Go public name so `Http.serve(port, handler)`
             # passes the actual Go function value rather than an undefined
@@ -555,6 +584,14 @@ class ExpressionVisitorMixin:
         if isinstance(func, Tree) and func.data == "getattr":
             raw_obj = self._expr_to_go(func.children[0])
             raw_method = self._get_name(func.children[1])
+            _alias, parent_base, parent_receiver = self._parent_alias_call_info(func)
+            if parent_base and raw_method:
+                method_key = f"{parent_base}.init" if raw_method in {"init", "__init__"} else f"{parent_base}.{raw_method}"
+                args = self._apply_call_kwargs(method_key, args, kwargs)
+                args = self._fill_default_args(method_key, args)
+                if raw_method in {"init", "__init__"}:
+                    go_base = self._go_public_name(parent_base)
+                    return f"{parent_receiver} = New{go_base}({', '.join(args)})"
 
         # Resolve the callee expression without letting bare identifiers
         # be rewritten to their Go public name (that's handled here).

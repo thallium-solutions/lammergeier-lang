@@ -1,0 +1,41 @@
+# expect-pass
+
+class Account {
+    func __init__(self, owner: str, tenant: str) {
+        self.owner: str = owner
+        self.tenant: str = tenant
+    }
+
+    func label(self) -> str {
+        return f"{self.owner}@{self.tenant}"
+    }
+}
+
+class Flags {
+    func init(self, enabled: bool) {
+        self.enabled: bool = enabled
+    }
+
+    func status(self) -> str {
+        if self.enabled {
+            return "on"
+        }
+        return "off"
+    }
+}
+
+class ServiceAccount(account: Account, flags: Flags) {
+    func __init__(self, owner: str) {
+        account.init(owner, "service")
+        flags.__init__(true)
+    }
+
+    func summary(self) -> str {
+        return f"{account.label()}:{flags.status()}"
+    }
+}
+
+func main() {
+    svc: ServiceAccount = ServiceAccount("bob")
+    print(svc.summary())
+}

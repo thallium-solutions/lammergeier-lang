@@ -1,0 +1,7 @@
+# expect-error: destructuring target `b` expects `str`, got `int`
+
+func main() {
+    a, b: tuple[int, str] = (1, 2)
+    print(a)
+    print(b)
+}

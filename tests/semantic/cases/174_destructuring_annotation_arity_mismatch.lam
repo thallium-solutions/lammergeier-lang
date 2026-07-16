@@ -1,0 +1,7 @@
+# expect-error: destructuring annotation has 1 element, but target has 2
+
+func main() {
+    a, b: tuple[int] = (1, 2)
+    print(a)
+    print(b)
+}

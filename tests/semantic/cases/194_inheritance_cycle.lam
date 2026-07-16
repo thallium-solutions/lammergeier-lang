@@ -1,0 +1,13 @@
+# expect-error: inheritance cycle detected
+
+class A(C) {
+}
+
+class B(A) {
+}
+
+class C(B) {
+}
+
+func main() {
+}
