@@ -1,0 +1,20 @@
+# Test: typed anonymous values across imported module boundaries
+# expect: 10
+# expect: 2
+# expect: 11
+# expect: 30
+# expect: 21
+# expect: 6
+
+from cross_module_context_provider import sumNested, countLabels, totalByKey, defaultSum, Accumulator
+
+func main() {
+    print(sumNested([[1, 2], [3, 4]]))
+    print(countLabels({"alpha", "beta", "alpha"}))
+    print(totalByKey({"x": [5, 6], "y": [1]}, "x"))
+    print(defaultSum())
+
+    acc: Accumulator = Accumulator({"rows": [{"left": [1, 2], "right": [3]}, {"left": [4], "right": [5, 6]}]})
+    print(acc.score())
+    print(sumNested([Accumulator.flatten([[1, 1], [2, 2]])]))
+}

@@ -1,0 +1,14 @@
+# expect-warning: dropped `Result` from `client.fetch()`; handle it or assign to `_`
+
+from lamerrors import Result
+
+class Client {
+    func fetch(self) -> Result[str] {
+        return Result.Ok("ok")
+    }
+}
+
+func main() {
+    client = Client()
+    client.fetch()
+}

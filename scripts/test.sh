@@ -81,12 +81,19 @@ run_suite() {
             "$PYTHON" tests/tests/test_ast_builder.py
             "$PYTHON" tests/tests/test_typesys.py
             "$PYTHON" tests/tests/test_typed_ir.py
+            "$PYTHON" tests/tests/test_lowering_contracts.py
             "$PYTHON" tests/tests/test_formatter.py
+            "$PYTHON" tests/tests/test_vscode_grammar.py
             "$PYTHON" tests/tests/test_multiline_calls.py
             "$PYTHON" tests/tests/test_go_pins.py
+            "$PYTHON" tests/tests/test_go_dependency_diagnostics.py
+            "$PYTHON" tests/tests/test_go_error_mapping.py
+            "$PYTHON" tests/tests/test_generated_go_contracts.py
+            "$PYTHON" tests/tests/test_go_library_filenames.py
             "$PYTHON" tests/tests/test_doctor.py
             "$PYTHON" tests/tests/test_lib_run.py
             "$PYTHON" tests/tests/test_github_lams3_install.py
+            "$PYTHON" -m pytest tests/tests/test_collection_context_fuzz.py tests/tests/test_random_program_fuzz.py -q
             ;;
         rosetta)
             if [ -n "$filter" ]; then

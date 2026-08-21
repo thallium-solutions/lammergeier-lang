@@ -5,7 +5,7 @@ from __future__ import annotations
 import re as _re
 from lark import Tree, Token
 from typing import Dict, List, Optional, Tuple
-from compiler.constants import TYPE_MAP
+from compiler.constants import DUNDER_OPS, GO_BINDING_KEYWORDS, TYPE_MAP
 
 
 class HelpersMixin:
@@ -329,6 +329,26 @@ class HelpersMixin:
                 return self._get_name(node.children[0])
         return ""
 
+    def _go_binding_name(self, name: str) -> str:
+        if name in GO_BINDING_KEYWORDS or name.startswith("__lam") or name.startswith("__q"):
+            return f"{name}__lam"
+        return name
+
+    def _go_class_name(self, class_name: str) -> str:
+        return self._class_go_names.get(class_name, self._go_public_name(class_name))
+
+    def _go_method_name(self, class_name: str, method_name: str) -> str:
+        return self._method_go_names.get(
+            (class_name, method_name),
+            DUNDER_OPS.get(method_name, self._go_public_name(method_name)),
+        )
+
+    def _go_field_name(self, class_name: str, field_name: str) -> str:
+        return self._field_go_names.get(
+            (class_name, field_name),
+            self._go_public_name(field_name),
+        )
+
     def _dotted_name_to_str(self, node) -> str:
         if not isinstance(node, Tree):
             return str(node)
@@ -512,14 +532,9 @@ class HelpersMixin:
             if len(parts) == 1:
                 head = parts[0]
                 if head in self._user_functions:
-                    name = (
-                        self._go_private_name(head)
-                        if head in self._private_functions
-                        else self._go_public_name(head)
-                    )
-                    return name + paren
+                    return self._go_user_function_name(head) + paren
                 if head in self._class_names:
-                    go_cls = self._go_public_name(head)
+                    go_cls = self._go_class_name(head)
                     # Call form ``LAMMERGEIER.MyClass(args)`` instantiates;
                     # bare form is the type itself.
                     if paren:
@@ -533,7 +548,7 @@ class HelpersMixin:
                     and cls in getattr(self, "_static_methods", {})
                     and method in self._static_methods[cls]
                 ):
-                    return f"{self._go_public_name(cls)}_{method}{paren}"
+                    return f"{self._go_class_name(cls)}_{method}{paren}"
                 if (
                     cls in self._class_names
                     and cls in getattr(self, "_static_vars", {})
@@ -584,7 +599,7 @@ class HelpersMixin:
             # against the surrounding ``[T any]`` clause.
             if name in self._generic_names:
                 return name
-            go_name = self._go_public_name(name)
+            go_name = self._go_class_name(name)
             # Interfaces are not pointers
             if name in self._interfaces:
                 return go_name
@@ -602,6 +617,8 @@ class HelpersMixin:
                 if len(type_args) >= 2:
                     return f"map[{type_args[0]}]{type_args[1]}"
                 return "map[string]interface{}"
+            if base == "set":
+                return f"map[{type_args[0]}]bool" if type_args else "map[interface{}]bool"
             if base == "tuple":
                 # Tuples compile to ``[]interface{}``. A fixed-size Go
                 # array would be more precise but it would diverge
@@ -611,17 +628,21 @@ class HelpersMixin:
                 # way. Keeping a single representation simplifies
                 # interop across compiler features.
                 return "[]interface{}"
-            if base == "optional":
-                return f"*{type_args[0]}" if type_args else "interface{}"
+            if base in {"optional", "Option"}:
+                if not type_args:
+                    return "interface{}"
+                return type_args[0] if type_args[0].startswith("*") else f"*{type_args[0]}"
             if base == "chan":
                 return f"chan {type_args[0]}" if type_args else "chan interface{}"
+            if base == "Result" and len(type_args) <= 1:
+                return "*Result"
             # Instantiation of a user-defined generic class:
             # ``Box[int]`` -> ``*Box[int]``. Non-generic classes fall
             # through to the ``interface{}`` branch below — treating a
             # stray ``Foo[X]`` annotation on a plain class as a
             # catch-all avoids emitting invalid Go.
             if base in self._generic_classes:
-                go_name = self._go_public_name(base)
+                go_name = self._go_class_name(base)
                 return f"*{go_name}[{', '.join(type_args)}]"
             return "interface{}"
 
@@ -670,6 +691,21 @@ class HelpersMixin:
             return [self._type_expr_to_go(c) for c in node.children]
         return []
 
+    def _result_payload_go_type(self, type_node) -> str:
+        if not isinstance(type_node, Tree):
+            return ""
+        if type_node.data == "type_generic" and type_node.children:
+            base = self._dotted_name_to_str(type_node.children[0])
+            args = [child for child in type_node.children[1:] if isinstance(child, Tree)]
+            if base == "Result" and len(args) == 1:
+                return self._type_expr_to_go(args[0])
+            return ""
+        if type_node.data in {"single_return_type", "type_expr", "type_union"}:
+            children = [child for child in type_node.children if isinstance(child, Tree)]
+            if len(children) == 1:
+                return self._result_payload_go_type(children[0])
+        return ""
+
     def _get_raw_type_name(self, type_node) -> str:
         """Extract the raw type name string from a type_expr node (e.g. 'Vec', 'Point').
 
@@ -690,6 +726,12 @@ class HelpersMixin:
             return ""
         if d == "type_name":
             return self._dotted_name_to_str(type_node.children[0])
+        if d == "type_generic" and type_node.children:
+            base = self._dotted_name_to_str(type_node.children[0])
+            args = [child for child in type_node.children[1:] if isinstance(child, Tree)]
+            if base in {"optional", "Option"} and len(args) == 1:
+                return self._get_raw_type_name(args[0])
+            return ""
         if d == "single_return_type":
             return self._get_raw_type_name(type_node.children[0])
         if d == "multi_return_type":
@@ -724,7 +766,7 @@ class HelpersMixin:
                         type_go = self._type_expr_to_go(param_node.children[1])
                     else:
                         type_go = "interface{}"
-                    params.append(f"{name} {type_go}")
+                    params.append(f"{self._go_binding_name(name)} {type_go}")
                     # Track default value if present
                     if func_name and len(child.children) > 1:
                         default_node = child.children[1]
@@ -750,7 +792,7 @@ class HelpersMixin:
                         type_go = self._type_expr_to_go(star_param.children[1])
                     else:
                         type_go = "interface{}"
-                    params.append(f"{name} ...{type_go}")
+                    params.append(f"{self._go_binding_name(name)} ...{type_go}")
         return ", ".join(params)
 
     def _emit_tuple_param_prologue(self, params_node, skip_self=False):
@@ -825,6 +867,15 @@ class HelpersMixin:
                 ]
         return []
 
+    def _list_tuple_element_types(self, type_node):
+        if not isinstance(type_node, Tree):
+            return []
+        if type_node.data in {"type_expr", "type_union"} and len(type_node.children) == 1:
+            return self._list_tuple_element_types(type_node.children[0])
+        if type_node.data == "type_generic" and self._dotted_name_to_str(type_node.children[0]) == "list":
+            return self._tuple_element_types(type_node.children[1]) if len(type_node.children) > 1 else []
+        return []
+
     # ─── Tree inspection ───────────────────────────────────────
 
     def _suite_contains_try(self, node) -> bool:
@@ -886,9 +937,44 @@ class HelpersMixin:
         if d == "const_true" or d == "const_false":
             return "bool"
         if d == "list":
+            elem_types = [
+                self._infer_type_from_value(c)
+                for c in node.children
+                if c is not None
+            ]
+            elem_types = [t for t in elem_types if t and t != "interface{}"]
+            if elem_types and all(t == elem_types[0] for t in elem_types):
+                return "[]" + elem_types[0]
             return "[]interface{}"
         if d == "dict":
-            return "map[string]interface{}"
+            key_types = []
+            value_types = []
+            for child in node.children:
+                if isinstance(child, Tree) and child.data == "key_value":
+                    key_types.append(self._infer_type_from_value(child.children[0]))
+                    value_types.append(self._infer_type_from_value(child.children[1]))
+            key_types = [t for t in key_types if t and t != "interface{}"]
+            value_types = [t for t in value_types if t and t != "interface{}"]
+            key_type = key_types[0] if key_types and all(t == key_types[0] for t in key_types) else "string"
+            value_type = (
+                value_types[0]
+                if value_types and all(t == value_types[0] for t in value_types)
+                else "interface{}"
+            )
+            return f"map[{key_type}]{value_type}"
+        if d == "set":
+            elem_types = [
+                self._infer_type_from_value(c)
+                for c in node.children
+                if c is not None
+            ]
+            elem_types = [t for t in elem_types if t and t != "interface{}"]
+            elem_type = (
+                elem_types[0]
+                if elem_types and all(t == elem_types[0] for t in elem_types)
+                else "interface{}"
+            )
+            return f"map[{elem_type}]bool"
         if d == "var":
             var_name = self._get_name(node.children[0])
             if var_name in self._init_param_types:
@@ -904,7 +990,7 @@ class HelpersMixin:
             if isinstance(func, Tree) and func.data == "var":
                 name = self._get_name(func.children[0])
                 if name and name[0].isupper() and name not in PYTHON_EXCEPTIONS:
-                    return "*" + self._go_public_name(name)
+                    return "*" + self._go_class_name(name)
         return "interface{}"
 
     # ─── Overload-by-type signature helpers ────────────────────
@@ -1035,7 +1121,11 @@ class HelpersMixin:
             if child.data == "argvalue" and len(child.children) == 2:
                 name_node = child.children[0]
                 kw_name = ""
-                if isinstance(name_node, Tree) and name_node.data == "var" and name_node.children:
+                if (
+                    isinstance(name_node, Tree)
+                    and name_node.data == "var"
+                    and name_node.children
+                ):
                     kw_name = self._get_name(name_node.children[0]) or ""
                 if kw_name:
                     kwargs[kw_name] = self._expr_to_go(child.children[1])
@@ -1046,6 +1136,75 @@ class HelpersMixin:
             else:
                 positional.append(self._transpile_argvalue(child))
         return positional, kwargs
+
+    def _collect_call_args_for_func(
+        self, func_key: str, args_node,
+    ) -> Tuple[List[str], Dict[str, str]]:
+        """Return call arguments lowered with the callee's parameter types.
+
+        Anonymous collection literals need contextual typing at call sites:
+        ``sum([1, 2])`` must lower the argument as ``[]int{1, 2}`` when
+        ``sum`` declares ``list[int]``. When no parameter metadata is
+        available, this falls back to the regular untyped lowering.
+        """
+        param_types = self._func_param_go_types.get(func_key, [])
+        param_names = self._func_param_names.get(func_key, [])
+        if not param_types and not param_names:
+            return self._collect_call_args(args_node)
+        positional: List[str] = []
+        kwargs: Dict[str, str] = {}
+        if not isinstance(args_node, Tree) or args_node.data != "arguments":
+            return positional, kwargs
+        positional_idx = 0
+        for child in args_node.children:
+            if not isinstance(child, Tree):
+                continue
+            if child.data == "argvalue" and len(child.children) == 2:
+                name_node = child.children[0]
+                kw_name = ""
+                if (
+                    isinstance(name_node, Tree)
+                    and name_node.data == "var"
+                    and name_node.children
+                ):
+                    kw_name = self._get_name(name_node.children[0]) or ""
+                if kw_name:
+                    target_type = ""
+                    if kw_name in param_names:
+                        target_idx = param_names.index(kw_name)
+                        if target_idx < len(param_types):
+                            target_type = param_types[target_idx]
+                    kwargs[kw_name] = self._transpile_argvalue_with_type(
+                        child.children[1], target_type,
+                    )
+                else:
+                    target_type = self._param_go_type_at(
+                        param_types, positional_idx,
+                    )
+                    positional.append(
+                        self._transpile_argvalue_with_type(child, target_type),
+                    )
+                    positional_idx += 1
+            else:
+                target_type = self._param_go_type_at(
+                    param_types, positional_idx,
+                )
+                positional.append(
+                    self._transpile_argvalue_with_type(child, target_type),
+                )
+                positional_idx += 1
+        return positional, kwargs
+
+    @staticmethod
+    def _param_go_type_at(param_types: List[str], idx: int) -> str:
+        if idx < len(param_types):
+            t = param_types[idx]
+            if t.startswith("..."):
+                return t[3:]
+            return t
+        if param_types and param_types[-1].startswith("..."):
+            return param_types[-1][3:]
+        return ""
 
     def _apply_call_kwargs(
         self, func_key: str, positional: List[str], kwargs: Dict[str, str],
@@ -1096,13 +1255,19 @@ class HelpersMixin:
                 if isinstance(entry, str):
                     result.append(entry)
                 else:
-                    result.append(self._expr_to_go(entry))
+                    target_type = self._param_go_type_at(
+                        self._func_param_go_types.get(func_key, []), i,
+                    )
+                    result.append(self._typed_value_to_go(entry, target_type))
             else:
-                # No positional, no kwarg, no default — required arg
-                # left unfilled. Let Go's diagnostic surface it; the
-                # call site is pinned via ``//line`` already.
-                break
+                raise RuntimeError(self._missing_required_arg_message(func_key, i))
         return result
+
+    def _missing_required_arg_message(self, func_key: str, idx: int) -> str:
+        names = self._func_param_names.get(func_key, [])
+        if idx < len(names) and names[idx]:
+            return f"missing required argument `{names[idx]}` in call to `{func_key}`"
+        return f"missing required argument {idx + 1} in call to `{func_key}`"
 
     def _transpile_argvalue(self, node) -> str:
         """Transpile a single call argument.
@@ -1123,6 +1288,15 @@ class HelpersMixin:
         inner = node
         if isinstance(node, Tree) and node.data == "argvalue" and node.children:
             inner = node.children[0]
+        if isinstance(inner, Tree) and inner.data == "starargs":
+            parts = [
+                self._transpile_argvalue(c)
+                for c in inner.children
+                if isinstance(c, Tree)
+            ]
+            return ", ".join(parts)
+        if isinstance(inner, Tree) and inner.data == "stararg" and inner.children:
+            return self._expr_to_go(inner.children[0]) + "..."
         if isinstance(inner, Tree) and inner.data == "tuple":
             elems = [
                 self._expr_to_go(c)
@@ -1131,6 +1305,42 @@ class HelpersMixin:
             ]
             if elems:
                 return f"[]interface{{}}{{{', '.join(elems)}}}"
+        return self._expr_to_go(node)
+
+    def _transpile_argvalue_with_type(self, node, go_type: str) -> str:
+        inner = node
+        if isinstance(node, Tree) and node.data == "argvalue" and node.children:
+            inner = node.children[0]
+        if isinstance(inner, Tree) and inner.data == "starargs":
+            parts = [
+                self._transpile_argvalue_with_type(c, go_type)
+                for c in inner.children
+                if isinstance(c, Tree)
+            ]
+            return ", ".join(parts)
+        if (
+            isinstance(inner, Tree)
+            and inner.data in {"stararg", "star_expr"}
+            and inner.children
+        ):
+            if go_type:
+                typed = self._typed_value_to_go(
+                    inner.children[0], f"[]{go_type}",
+                )
+                return typed + "..."
+            if inner.data == "stararg":
+                return self._expr_to_go(inner.children[0]) + "..."
+            return self._expr_to_go(inner)
+        if isinstance(inner, Tree) and inner.data == "tuple":
+            elems = [
+                self._expr_to_go(c)
+                for c in inner.children
+                if c is not None
+            ]
+            if elems:
+                return f"[]interface{{}}{{{', '.join(elems)}}}"
+        if go_type:
+            return self._typed_value_to_go(inner, go_type)
         return self._expr_to_go(node)
 
     def _get_raw_call_args(self, args_node) -> List[Tree]:
@@ -1198,15 +1408,16 @@ class HelpersMixin:
         so the cache pipeline lowers them to their Go source before
         persisting).
         """
-        if func_key not in self._func_defaults:
-            return args
         # Don't fill defaults for variadic functions
         if func_key in self._variadic_functions:
+            return args
+        variants = self._overload_variants.get(func_key, [])
+        if len(variants) > 1 and any(v.get("arity") == len(args) for v in variants):
             return args
         total = self._func_param_counts.get(func_key, 0)
         if len(args) >= total:
             return args
-        defaults = self._func_defaults[func_key]
+        defaults = self._func_defaults.get(func_key, [])
         default_map = {idx: node for idx, node in defaults}
         result = list(args)
         for i in range(len(args), total):
@@ -1215,9 +1426,12 @@ class HelpersMixin:
                 if isinstance(entry, str):
                     result.append(entry)
                 else:
-                    result.append(self._expr_to_go(entry))
+                    target_type = self._param_go_type_at(
+                        self._func_param_go_types.get(func_key, []), i,
+                    )
+                    result.append(self._typed_value_to_go(entry, target_type))
             else:
-                break
+                raise RuntimeError(self._missing_required_arg_message(func_key, i))
         return result
 
     def _declare_params(self, params_node):
@@ -1230,7 +1444,7 @@ class HelpersMixin:
                 if isinstance(param, Tree) and param.data == "typed_param":
                     name = self._get_name(param.children[0])
                     if name and name != "self":
-                        self._declare_var(name)
+                        self._declare_var(self._go_binding_name(name))
                         # Track the declared type so method-dispatch logic
                         # knows whether this parameter is a user class
                         # instance (needed for correctly resolving calls

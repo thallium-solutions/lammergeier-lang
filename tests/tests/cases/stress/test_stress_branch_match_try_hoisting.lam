@@ -1,0 +1,22 @@
+# expect: one:ready:finally
+
+func describe(code: int, ok: bool) -> str {
+    if ok { state = "ready" } else { state = "waiting" }
+    match code {
+        case 1 { label = "one" }
+        case 2 { label = "two" }
+        case _ { label = "other" }
+    }
+    suffix: str = "unset"
+    try {
+        if code < 0 { raise "negative" }
+        suffix = "try"
+    } catch err {
+        suffix = "catch"
+    } finally {
+        suffix = "finally"
+    }
+    return f"{label}:{state}:{suffix}"
+}
+
+func main() { print(describe(1, True)) }

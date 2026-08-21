@@ -1,0 +1,7 @@
+# expect-error: too many positional arguments in call to `Json.encode`
+
+from lamjson import Json
+
+func main() {
+    _ = Json.encode(1, 2)
+}

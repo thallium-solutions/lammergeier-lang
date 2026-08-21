@@ -1,0 +1,7 @@
+# expect-error: comprehension target expects 3 values, but iterable yields 2
+
+func main() {
+    pairs: list[tuple[int, str]] = [(1, "one")]
+    values = [a for a, b, c in pairs]
+    print(values)
+}

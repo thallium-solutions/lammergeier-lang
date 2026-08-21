@@ -1,0 +1,8 @@
+# expect-pass
+
+from lamerrors import Result
+
+func parse(value: any) -> Result {
+    item = value?
+    return Result.Ok(item)
+}

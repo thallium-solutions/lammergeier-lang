@@ -1,5 +1,4 @@
-# expect-error: reserved identifier in Go
-# expect-error: `chan`
+# expect-pass
 
 func main() {
     chan: int = 5

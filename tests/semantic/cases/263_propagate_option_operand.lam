@@ -1,0 +1,12 @@
+# expect-error: `?` requires a `Result` value, got `Option[int]`
+# expect-warning: `?` operator used outside a `-> Result` function
+
+from lamerrors import Result
+
+func maybe() -> Option[int] {
+    return None
+}
+
+func parse() -> Option[int] {
+    return maybe()?
+}

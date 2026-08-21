@@ -1,0 +1,9 @@
+# expect-error: unknown member `document.rendr`
+# expect-error: did you mean `document.render`
+
+from generic_inference_package import Document, identity
+
+func main() {
+    document = identity(Document())
+    print(document.rendr())
+}

@@ -1,5 +1,4 @@
 {
-  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Lammergeier",
   "scopeName": "source.lammergeier",
   "patterns": [
@@ -117,6 +116,7 @@
           },
           "contentName": "meta.embedded.block.go",
           "patterns": [
+            { "include": "#lammergeier-namespace" },
             { "include": "source.go" }
           ]
         },
@@ -153,7 +153,7 @@
     "class-definition": {
       "patterns": [
         {
-          "match": "\\b(class)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "match": "\\b(class)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
           "captures": {
             "1": { "name": "keyword.other.class.lammergeier" },
             "2": { "name": "entity.name.type.class.lammergeier" }
@@ -164,7 +164,7 @@
     "interface-definition": {
       "patterns": [
         {
-          "match": "\\b(interface)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "match": "\\b(interface)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
           "captures": {
             "1": { "name": "keyword.other.interface.lammergeier" },
             "2": { "name": "entity.name.type.interface.lammergeier" }
@@ -176,7 +176,7 @@
       "patterns": [
         {
           "name": "keyword.control.lammergeier",
-          "match": "\\b(if|elif|else|for|while|break|continue|return|pass|try|catch|finally|raise|match|case|with|as|yield|del|assert|import|from)\\b"
+          "match": "\\b(if|elif|else|for|while|break|continue|return|pass|try|catch|finally|raise|throw|do|defer|match|case|with|as|yield|del|assert|import|from|await)\\b"
         },
         {
           "name": "keyword.operator.logical.lammergeier",
@@ -192,7 +192,7 @@
       "patterns": [
         {
           "name": "storage.modifier.lammergeier",
-          "match": "\\b(private|static|async|await)\\b"
+          "match": "\\b(private|static|async|const)\\b"
         }
       ]
     },
@@ -208,7 +208,7 @@
       "patterns": [
         {
           "name": "support.type.lammergeier",
-          "match": "\\b(int|int8|int16|int32|int64|uint|float|float32|float64|string|str|bool|byte|rune|bytes|any|error|list|dict|set|object)\\b"
+          "match": "\\b(int|int8|int16|int32|int64|uint|uint8|uint16|uint32|uint64|float|float32|float64|string|str|bool|byte|rune|bytes|any|error|list|dict|set|tuple|func|object|optional|Option|Result|None)\\b"
         },
         {
           "name": "support.type.exception.lammergeier",
@@ -235,12 +235,15 @@
     "lammergeier-namespace": {
       "patterns": [
         {
-          "name": "support.constant.lammergeier-namespace.lammergeier",
-          "match": "\\bLAMMERGEIER\\.(?:Result\\.(?:Ok|Err)|Error|None|nil)\\b"
-        },
-        {
-          "name": "invalid.illegal.lammergeier-namespace.lammergeier",
-          "match": "\\bLAMMERGEIER\\.[A-Za-z_][A-Za-z_0-9.]*\\b"
+          "name": "meta.namespace.lammergeier",
+          "match": "\\b(LAMMERGEIER)(\\.)([A-Za-z_][A-Za-z_0-9]*)(?:(\\.)([A-Za-z_][A-Za-z_0-9]*))?\\b",
+          "captures": {
+            "1": { "name": "support.namespace.lammergeier" },
+            "2": { "name": "punctuation.accessor.lammergeier" },
+            "3": { "name": "support.type.lammergeier-namespace.lammergeier" },
+            "4": { "name": "punctuation.accessor.lammergeier" },
+            "5": { "name": "entity.name.function.member.lammergeier" }
+          }
         }
       ]
     },

@@ -1,0 +1,12 @@
+# expect-error: `?` requires a `Result` value, got `int`
+
+from lamerrors import Result
+
+func count() -> int {
+    return 1
+}
+
+func parse() -> Result {
+    value = count()?
+    return Result.Ok(value)
+}

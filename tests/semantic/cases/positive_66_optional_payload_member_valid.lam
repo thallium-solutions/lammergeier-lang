@@ -1,0 +1,16 @@
+# expect-pass
+
+class Document {
+    func init(self, title: str) {
+        self.title: str = title
+    }
+
+    func render(self) -> str {
+        return self.title
+    }
+}
+
+func inspect(document: optional[Document]) {
+    print(document?.render())
+    print(document?.title)
+}

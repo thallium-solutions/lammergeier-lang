@@ -1,0 +1,7 @@
+# expect-error: operator method `Vec.__neg__` expects 0 operand parameters after `self`, got 1
+
+class Vec {
+    func __neg__(self, extra: int) -> Vec {
+        return self
+    }
+}

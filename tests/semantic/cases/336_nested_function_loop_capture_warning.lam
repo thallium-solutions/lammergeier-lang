@@ -1,0 +1,10 @@
+# expect-warning: nested function captures loop variable `i`; copy it if each closure needs its own value
+
+func main() {
+    for i in range(3) {
+        func read() -> int {
+            return i
+        }
+        print(read())
+    }
+}

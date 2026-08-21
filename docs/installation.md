@@ -127,7 +127,7 @@ After install, `lamc` is the single entry point for everything:
 | `lamc publish [<dir>]` | Pack a library tree and POST it to a registry. |
 | `lamc lib run <script>` | Run a command declared in the nearest `lamlib.toml` `[scripts]` table. |
 | `lamc migrate make / up / down / status` | Knex-style SQL migrations. |
-| `lamc fmt` | Formatter (under the same project conventions used by the test corpus). |
+| `lamc fmt <file-or-dir>` | Parser-validated formatter. Directories are walked recursively for `.lam` files; use `--check` for CI and `--stdout` for one file. |
 
 Run `lamc --help` for the full surface; every verb has its own
 `--help` page.
@@ -162,8 +162,9 @@ output.
 Protocol 3.17 implementation that speaks JSON-RPC 2.0 over
 stdio. Capabilities:
 
-- **Diagnostics** — parse-error squiggles published on every
-  `didChange`, with the line/column Lark reports.
+- **Diagnostics** — parse and semantic errors, including undefined names and
+  wrong types, publish as red squiggles on every `didChange`. Diagnostics remain
+  visible in `# expect-error` fixtures by default.
 - **Hover** — function and class signatures.
 - **Completion** — top-level functions / classes plus method
   completion after `Foo.` for static methods.
@@ -193,6 +194,8 @@ Three editors share the same VSIX-shaped tree under
     `${workspaceFolder}`).
   * `lammergeier.lsp.enabled` — master switch.
   * `lammergeier.lsp.logFile` — capture the JSON-RPC trace.
+  * `lammergeier.lsp.suppressExpectedDiagnostics` — opt into hiding diagnostics
+    matched by `# expect-error` / `# expect-warning` fixture directives.
   * `lammergeier.trace.server` — `off` / `messages` / `verbose`.
 - A **Lammergeier: Restart Language Server** command after you
   upgrade the compiler.

@@ -1,0 +1,14 @@
+# expect-error: type `set[int]` is not indexable; use membership with `in` to test set contents
+# expect-error: type `int` is not indexable
+# expect-error: type `dict[str, int]` cannot be sliced
+
+func main() {
+    ids: set[int] = {1, 2}
+    print(ids[0])
+
+    n: int = 7
+    print(n[0])
+
+    scores: dict[str, int] = {"a": 1}
+    print(scores[0:1])
+}

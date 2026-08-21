@@ -208,7 +208,10 @@ def serialise_transpile_result(
     user_functions: Optional[set] = None,
     private_functions: Optional[set] = None,
     method_return_types: Optional[Dict[str, str]] = None,
+    result_payload_go_types: Optional[Dict[str, str]] = None,
+    overload_variants: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     func_param_names: Optional[Dict[str, List[str]]] = None,
+    func_param_go_types: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, Any]:
     """Convert the tuple returned by ``_transpile_lib`` into a plain
     JSON-serialisable dict.
@@ -220,14 +223,16 @@ def serialise_transpile_result(
     caller so cross-library default-arg filling and ``_go_public_name``
     rewriting work for imported functions just like locally-defined
     ones. ``method_return_types`` powers chained-call class inference
-    (e.g. ``db.table(name).where(...)``). ``func_param_names`` carries
+    (e.g. ``db.table(name).where(...)``), while ``result_payload_go_types``
+    preserves erased ``Result[T]`` payloads. ``func_param_names`` carries
     ordered parameter names so keyword-arg call sites can reorder
-    cross-library calls.
+    cross-library calls; ``func_param_go_types`` carries the matching
+    Go types for contextual literal lowering.
     """
     return {
-        # Bumped from 4 → 5 when ``static_vars`` metadata was added.
+        # Bumped from 7 → 8 when overload return-shape metadata was added.
         # Older entries are silently ignored on load and re-transpiled.
-        "version": 5,
+        "version": 8,
         "go_src": go_src,
         "class_names": sorted(class_names),
         "static_methods": {k: sorted(v) for k, v in static_methods.items()},
@@ -244,19 +249,25 @@ def serialise_transpile_result(
         "user_functions": sorted(user_functions or set()),
         "private_functions": sorted(private_functions or set()),
         "method_return_types": dict(method_return_types or {}),
+        "result_payload_go_types": dict(result_payload_go_types or {}),
+        "overload_variants": {
+            name: [dict(variant, sig=list(variant.get("sig", ()))) for variant in variants]
+            for name, variants in (overload_variants or {}).items()
+        },
         "func_param_names": {k: list(v) for k, v in (func_param_names or {}).items()},
+        "func_param_go_types": {k: list(v) for k, v in (func_param_go_types or {}).items()},
     }
 
 
 def deserialise_transpile_result(
     entry: Dict[str, Any],
-) -> Optional[Tuple[str, set, Dict[str, set], Dict[str, Dict[str, bool]], Dict[str, List[Tuple[int, Any]]], Dict[str, int], set, set, set, Dict[str, str], Dict[str, List[str]]]]:
+) -> Optional[Tuple[str, set, Dict[str, set], Dict[str, Dict[str, bool]], Dict[str, List[Tuple[int, Any]]], Dict[str, int], set, set, set, Dict[str, str], Dict[str, str], Dict[str, List[Dict[str, Any]]], Dict[str, List[str]], Dict[str, List[str]]]]:
     """Inverse of :func:`serialise_transpile_result`.
 
     Returns ``None`` if ``entry`` is missing required keys or has the
     wrong schema version; the caller should treat that as a miss.
     """
-    if entry.get("version") != 5:
+    if entry.get("version") != 8:
         return None
     try:
         go_src = entry["go_src"]
@@ -275,7 +286,13 @@ def deserialise_transpile_result(
         user_functions = set(entry.get("user_functions", []))
         private_functions = set(entry.get("private_functions", []))
         method_return_types = dict(entry.get("method_return_types", {}))
+        result_payload_go_types = dict(entry.get("result_payload_go_types", {}))
+        overload_variants = {
+            name: [dict(variant, sig=tuple(variant.get("sig", ()))) for variant in variants]
+            for name, variants in entry.get("overload_variants", {}).items()
+        }
         func_param_names = {k: list(v) for k, v in entry.get("func_param_names", {}).items()}
+        func_param_go_types = {k: list(v) for k, v in entry.get("func_param_go_types", {}).items()}
     except (KeyError, TypeError, ValueError):
         return None
     return (
@@ -289,7 +306,10 @@ def deserialise_transpile_result(
         user_functions,
         private_functions,
         method_return_types,
+        result_payload_go_types,
+        overload_variants,
         func_param_names,
+        func_param_go_types,
     )
 
 

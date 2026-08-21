@@ -1,4 +1,4 @@
-# expect-error: `select` is a reserved identifier in Go
+# expect-pass
 
 class Query {
     private func select(self) -> int {

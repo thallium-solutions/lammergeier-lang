@@ -1,0 +1,16 @@
+# expect: 7
+# expect: compact:ignored
+
+class Odd {
+    private static func hidden(value: int) -> int { return value * 2 }
+    static func reveal(value: int) -> int { return Odd.hidden(value) + 1 }
+}
+
+func main(){
+    value:int=1
+    if True {value+=1}else{value=0}
+    for i in range(2){value+=i}
+    value=Odd.reveal(value);print(value)
+    {name,role="compact"}={"name":"ignored"}
+    print(f"{role}:{name}")
+}

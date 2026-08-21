@@ -1,0 +1,10 @@
+# expect-error: cannot reassign constant `value`
+
+func outer() {
+    const value: int = 1
+    func inner() {
+        nonlocal value
+        value = 2
+    }
+    inner()
+}

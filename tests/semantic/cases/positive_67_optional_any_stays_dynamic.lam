@@ -1,0 +1,5 @@
+# expect-pass
+
+func inspect(value: optional[any]) {
+    print(value?.dynamicMember())
+}

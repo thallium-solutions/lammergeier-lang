@@ -92,6 +92,13 @@ LOWER_PKGS = frozenset({
 })
 
 # Go builtins that should not be CamelCased
+GO_BINDING_KEYWORDS = frozenset({
+    "break", "default", "func", "interface", "select", "case", "defer",
+    "go", "map", "struct", "chan", "else", "goto", "package", "switch",
+    "const", "fallthrough", "if", "range", "type", "continue", "for",
+    "import", "return", "var", "iota", "any",
+})
+
 GO_BUILTINS = frozenset({
     "len", "cap", "make", "new", "append", "copy", "delete",
     "close", "panic", "recover", "print", "println",

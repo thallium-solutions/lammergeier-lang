@@ -1,0 +1,8 @@
+# expect-pass
+
+func first() -> int {
+    for item in [4] {
+        value = item
+    }
+    return value
+}

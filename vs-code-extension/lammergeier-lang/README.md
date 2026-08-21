@@ -5,14 +5,15 @@ Syntax highlighting and language support for **Lammergeier** (`.lam`) — a type
 ## Features
 
 - **Syntax highlighting** for all Lammergeier constructs, with dedicated scopes for stdlib modules (`lamarray`, `lamserver`, `lamxml`, `lamyaml`, `lamjwt`, `lamtemplate`, `lamretry`, `lamratelimit`, …) and built-in classes (`Result`, `Server`, `HttpClient`, `Xml`, `Template`, `JwtKeySet`, `TokenBucket`, …)
-- **`LAMMERGEIER.*` namespace** — known aliases (`LAMMERGEIER.Result.Ok`, `.Result.Err`, `.Error`, `.None`, `.nil`) highlight as constants; mistyped aliases highlight as illegal so typos surface immediately in the editor
+- **`LAMMERGEIER.*` namespace** — compiler aliases and user-defined function/class/static-member paths receive dedicated namespace/member scopes in Lam and embedded `go!`; the LSP, rather than a hardcoded color rule, reports unresolved paths
 - **Embedded Go highlighting** inside `go! { ... }` blocks (when the built-in Go grammar is available)
 - **Multiline comments** (`#- ... -#`) folded and toggled correctly via `Ctrl-/`
 - **Bracket matching** and auto-closing for `{}`, `[]`, `()`
 - **Comment toggling** with `#` (line) / `#- ... -#` (block)
-- **Code folding** on `{ }` blocks
+- **Code folding** on `{ }` blocks using VS Code's native bracket and
+  indentation folding
 - **F-string interpolation** highlighting
-- **Language Server** integration — parse + semantic diagnostics (undefined names, duplicate class members, misplaced `return` / `break` / `continue`), hover, completion, goto-definition, document symbols
+- **Language Server** integration — compiler-parity parse/preprocess/semantic diagnostics (including dict patterns, captures, `nonlocal`, and `LAMMERGEIER.*`), hover, completion, goto-definition, document symbols
 - Settings to point at a custom LSP launcher and capture trace output
 
 ## Language Highlights
@@ -72,7 +73,7 @@ silently failing to load).
 ```bash
 # From the project root:
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.vscode/extensions/lammergeier.lammergeier-lang-0.3.0
+        ~/.vscode/extensions/lammergeier.lammergeier-lang-1.0.0
 ```
 
 #### Windsurf
@@ -83,14 +84,14 @@ target-platform suffix on the folder name:
 ```bash
 # From the project root:
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.windsurf/extensions/lammergeier.lammergeier-lang-0.3.0-universal
+        ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.0.0-universal
 ```
 
 #### Cursor (same mechanism)
 
 ```bash
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.cursor/extensions/lammergeier.lammergeier-lang-0.3.0
+        ~/.cursor/extensions/lammergeier.lammergeier-lang-1.0.0
 ```
 
 After creating the symlink, reload the editor window (command palette →
@@ -99,7 +100,7 @@ activate automatically.
 
 > **Note:** The folder name inside the extensions directory **must**
 > follow the `<publisher>.<name>-<version>` convention
-> (`lammergeier.lammergeier-lang-0.3.0`). Using a bare `lammergeier-lang`
+> (`lammergeier.lammergeier-lang-1.0.0`). Using a bare `lammergeier-lang`
 > folder name is the most common reason the extension silently fails to
 > load on both VS Code and Windsurf.
 
@@ -109,10 +110,10 @@ The extension activates a Language Server Protocol client when you open
 a `.lam` file, providing:
 
 - **Diagnostics** — parse errors and semantic checks (undefined names,
-  duplicate members, misplaced flow) surface live as red squiggles.
-  Semantic/syntax test fixtures that declare `# expect-error` or
-  `# expect-warning` stay quiet when the expected diagnostic matches,
-  and show one clear mismatch warning when it does not.
+  wrong types, duplicate members, misplaced flow) surface live as red squiggles,
+  including inside `# expect-error` and `# expect-warning` test fixtures. Set
+  `lammergeier.lsp.suppressExpectedDiagnostics` to `true` to hide matched
+  fixture diagnostics explicitly.
 - **Hover** — types and short docs for built-ins, modules, and your
   own functions/classes. **Cross-file**: hovering on a name imported
   via `from lam<x> import …` shows the signature pulled from the
@@ -150,6 +151,7 @@ launcher. The setting accepts `~` and `${workspaceFolder}` substitution.
 | `lammergeier.lsp.path`          | `"lammergeier-lsp"`  | Path to the launcher (PATH-resolved if relative).  |
 | `lammergeier.lsp.args`          | `[]`                 | Extra args forwarded to the launcher.              |
 | `lammergeier.lsp.logFile`       | `""`                 | If set, exports `LAMMERGEIER_LSP_LOG=<path>`.      |
+| `lammergeier.lsp.suppressExpectedDiagnostics` | `false` | Hide errors/warnings matched by fixture directives. |
 | `lammergeier.trace.server`      | `"off"`              | `off` / `messages` / `verbose` JSON-RPC tracing.   |
 
 Use the **Lammergeier: Restart Language Server** command from the
@@ -167,7 +169,7 @@ npm run watch            # rebuilds out/extension.js on change
 ## Uninstall
 
 ```bash
-rm ~/.vscode/extensions/lammergeier.lammergeier-lang-0.3.0
-rm ~/.windsurf/extensions/lammergeier.lammergeier-lang-0.3.0-universal
-rm ~/.cursor/extensions/lammergeier.lammergeier-lang-0.3.0
+rm ~/.vscode/extensions/lammergeier.lammergeier-lang-1.0.0
+rm ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.0.0-universal
+rm ~/.cursor/extensions/lammergeier.lammergeier-lang-1.0.0
 ```

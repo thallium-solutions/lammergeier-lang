@@ -1,0 +1,10 @@
+# expect-pass
+
+func same[T](left: T, right: T) -> T {
+    return left
+}
+
+func use(left: any, right: any) {
+    value = same(left, right)
+    print(value.dynamicMember())
+}

@@ -1,0 +1,14 @@
+# expect-error: `?` requires a `Result` value, got `str`
+
+from lamerrors import Result
+
+class Labels {
+    static func current() -> str {
+        return "ready"
+    }
+}
+
+func parse() -> Result {
+    value = Labels.current()?
+    return Result.Ok(value)
+}

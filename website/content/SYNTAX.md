@@ -694,7 +694,15 @@ class Vec {
 }
 ```
 
-Supported operators: `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__floordiv__`, `__mod__`, `__pow__`, `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`, `__ge__`, `__and__`, `__or__`, `__xor__`, `__inc__`, `__dec__`
+Supported operators: `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__floordiv__`, `__mod__`, `__pow__`, `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`, `__ge__`, `__and__`, `__or__`, `__xor__`, `__inc__`, `__dec__`.
+
+Operator methods are instance methods. Binary/comparison methods take exactly
+one operand after `self`; `__neg__`, `__invert__`, `__inc__`, and `__dec__`
+take none; `__setitem__` takes key and value. Comparison and containment
+methods return `bool`. The semantic checker uses those signatures at operator
+sites, so `vec + 1` is rejected when `__add__` expects another `Vec`, while the
+declared return type flows into assignments and chained expressions. Unknown
+or `any` operands retain the dynamic fallback.
 
 ### Postfix `++` / `--`
 
@@ -873,6 +881,28 @@ for i in range(0, 10, 2) {
 }
 ```
 
+A single target over a dict or set receives keys:
+
+```lammergeier
+counts: dict[str, int] = {"a": 1, "b": 2}
+for key in counts {
+    print(counts[key])
+}
+
+ids: set[int] = {5, 8, 13}
+for id in ids {
+    print(id)
+}
+```
+
+Use a tuple target when you want both dict keys and values:
+
+```lammergeier
+for key, value in counts {
+    print(key + "=" + str(value))
+}
+```
+
 ### While Loop
 
 ```lammergeier
@@ -942,7 +972,16 @@ squares: list[int] = [x * x for x in range(10)]
 
 # With filter
 evens: list[int] = [x for x in range(20) if x % 2 == 0]
+
+# Tuple and dictionary iteration expose element/key-value target shapes.
+labels = [label for number, label in pairs]
+entries = [key for key, value in table]
 ```
+
+The semantic checker validates comprehension target arity and propagates
+iterable element types into the result/filter expressions. A scalar iterable
+cannot bind `a, b`; a `tuple[A, B]` element cannot bind three names. Tuple
+iteration targets lower consistently in list, set, and dictionary comprehensions.
 
 ---
 
@@ -990,10 +1029,16 @@ The empty literal `{}` is reserved for the empty dict; for an empty
 set, build it with a comprehension or annotate with `set[T]` and
 populate it explicitly.
 
-> **Membership note.** `x in someset` currently lowers as a
-> generic equality probe rather than a map-key lookup. Until the
-> dedicated `in` lowering lands, prefer iteration or
-> `Set.contains(...)` from `lamset` when you need set membership.
+Set literals and comprehensions also use surrounding type context. A direct
+call such as `takeIds({1, 2})`, where `takeIds` expects `set[int]`, lowers to
+Go's `map[int]bool` representation rather than the untyped fallback
+`map[interface{}]bool`; annotated declarations, reassignments, returns, and lambda
+returns behave the same way.
+
+Membership uses the set key type, so `x in someset` and `x not in someset`
+compile to a Go map-key presence check. Sets are not indexable from Lam code;
+the `map[K]bool` representation is a transpilation detail. The same `in`
+syntax also works for lists, dict keys, and strings.
 
 ---
 
@@ -1486,7 +1531,7 @@ Import them from `lamerrors`:
 ```lammergeier
 from lamerrors import Result, Error
 
-func parseInt(s: str) -> Result {
+func parseInt(s: str) -> Result[int] {
     if s == "1" {
         return Result.Ok(1)
     }
@@ -1514,11 +1559,21 @@ Inspection is by methods or fields, whichever reads better:
 | `r.unwrap()`      | the value, or panic with the error                      |
 | `r.unwrapOr(x)`   | the value, or `x` if this is an error                   |
 
-`Result` is intentionally non-generic — `value` and `error` are
-`any`. Direct `.value`, `.error`, `unwrap()`, and `unwrapOr(...)`
-reads therefore remain `any`. The `?` operator has a special typed
-assignment path (`n: int = parseInt(s)?`) and emits the matching Go
-type assertion for the unwrapped value.
+`Result` remains non-generic at runtime — `value` and `error` are
+`any` — but signatures may carry one payload annotation such as
+`Result[int]`. The compiler uses that annotation for semantic inference,
+including unannotated assignments such as `document = loadDocument()?`,
+and erases it to the same Go `*Result` representation as bare `Result`.
+The generated unwrap includes the payload's Go assertion, so inferred
+class receivers remain concrete rather than leaking `interface{}`. Public
+payload-class metadata is loaded from the function's module without binding
+that class in user scope, so importing `loadDocument` does not require a
+second, otherwise-unused `Document` import.
+Direct `.value`, `.error`, `unwrap()`, and `unwrapOr(...)` reads remain
+`any`. The `?` operator has a special typed assignment path
+(`n: int = parseInt(s)?`) and emits the matching Go type assertion for
+the unwrapped value. `Result[T, E]` is rejected because errors remain
+open `any` values rather than a second type parameter.
 
 `Result.Err(e)` is equally broad: `.error` is also `any`. Use a
 structured `Error` when callers need a kind/message/cause contract,
@@ -1591,13 +1646,21 @@ binding is annotated, so `n: int = parseInt(s)?` produces typed Go
 without any `Conv.toInt(...)` shim. Multiple `?` in one function are
 fine — each gets its own internal temporary.
 
-`?` only makes sense in a function whose return type is `Result`,
-since the propagated value must still type-check against the
-function's signature. The semantic checker warns when `?` is used
-outside a `Result`-returning function or `do/catch` body. Because `?`
-lowers to `Result` helpers, the file must also import the helper class
-with `from lamerrors import Result`; otherwise the compiler emits a
-Lam-source `error[import]` before Go runs.
+`?` only accepts a known `Result` value and only propagates normally from
+a function whose return type is bare `Result` or `Result[T]`. A known
+`int`, `str`, `Option[T]`, or other non-`Result` operand is a Lam
+`error[type]`; unknown and `any` values keep the dynamic escape hatch.
+The semantic checker warns when `?` is used outside a `Result`-returning
+function or `do/catch` body.
+
+Because `?` lowers to `Result` helpers, the file must directly import the
+helper class with `from lamerrors import Result`; otherwise the compiler
+emits a Lam-source `error[import]` before Go runs. A scoped import before
+the syntax is valid because imports are compile-time dependencies. A
+transitive import from another module does not count, so refactoring that
+module cannot silently remove syntax support. `Result as R` remains
+unsupported for helper-backed syntax because emitted helpers use the
+canonical name.
 
 ### The `do { } catch err { }` block
 
@@ -1621,8 +1684,8 @@ func main() {
 ```
 
 `do/catch` emits a small `Result`-returning helper closure even when the
-body does not contain `?`, so it also requires
-`from lamerrors import Result`.
+body does not contain `?`, so it also requires a direct
+`from lamerrors import Result` at file or preceding scoped-import level.
 
 Two consecutive `do` blocks are independent; locals declared inside
 one block don't leak into the next. The catch variable is mandatory
@@ -1736,11 +1799,11 @@ func main() {
 }
 ```
 
-`nonlocal name` is also accepted by the parser for symmetry with
-Python, but it is currently a no-op annotation: nested `func`
-declarations already capture surrounding locals by reference, so
-no extra keyword is needed (and there is no third-tier scope to
-target).
+`nonlocal name` explicitly targets a binding in an enclosing function.
+The compiler verifies that the binding exists, rejects ambiguous bindings
+redeclared in multiple enclosing functions, and prevents writes to an outer
+`const`. Go closures already capture by reference, so valid nonlocal writes
+need no runtime wrapper.
 
 ---
 
@@ -1752,7 +1815,11 @@ of the inner function's name, so the inner function can read and
 mutate the surrounding locals exactly like a `lambda`.
 
 The two forms — nested `func` and `lambda` — compile to the same
-Go closure. They differ only in what the reader sees:
+Go closure. Capturing an active `for` target emits `warning[capture]` because
+all closures may observe the loop variable's later value; copy it into a
+per-iteration local when each closure needs a snapshot. Parameters that shadow
+the loop target do not warn. The forms otherwise differ only in what the reader
+sees:
 
 - A **nested `func`** has a name. The name shows up in IDE
   outlines, `grep`, stack traces from a `throw` inside the
@@ -1850,6 +1917,10 @@ print(s[-5:])      # world
 print(s[::-1])     # dlrow olleh
 ```
 
+Indexing a string with a single integer follows Go's native behavior and
+returns the byte at that position. Use `string(s[i])` when you want a
+one-character string, or `int(s[i])` when you want the code value.
+
 The cheap `[a:b]` form (with non-negative bounds and no step) is
 lowered to Go's native slice syntax. Negative indices or a stride
 trigger a small runtime IIFE that uses `reflect` to support
@@ -1874,6 +1945,10 @@ b[2:5] = [3]
 Slice assignment uses the cheap (non-negative, no-step) form; for
 Python-style negative-index removal, build the new slice
 explicitly with the read-side `[a:b]` and assign it back.
+When the list target has a known element type, anonymous replacement
+literals are lowered to that type recursively, so nested replacements such as
+`rows[0:1] = [[6, 8]]` preserve `list[list[int]]` instead of falling back to
+`list[any]`.
 
 ---
 
@@ -2045,7 +2120,10 @@ func main() {
 ```
 
 Both operators return `interface{}`; assign to an annotated variable
-when a concrete type is required downstream.
+when a concrete type is required downstream. `optional[User]` and
+`Option[User]` annotations retain `User` as the safe-navigation receiver
+for member suggestions and call-shape checks, and lower to one `*User`
+pointer rather than a pointer-to-pointer. `optional[any]` stays dynamic.
 
 ---
 
@@ -2083,12 +2161,24 @@ n: str = name        # tighten the inferred ``any`` type
 a: int = age
 ```
 
-> **Limitations.** The destructuring rewrite happens at the
-> preprocessor layer, so the `{...}` literal must sit at statement
-> start (after optional indentation) and the entries must be plain
-> identifiers (or `key: alias` renames). Default values for
-> missing keys aren't supported yet — use `?? fallback` on the
-> introduced name afterwards.
+Defaults use `key = expression`, and combine with aliases as
+`key: localName = expression`:
+
+```lammergeier
+{name, role = "reader", age: years = 0} = payload
+```
+
+The destructuring rewrite happens at the preprocessor layer, so the pattern
+must sit at statement start. When the right side is a dictionary literal, a
+missing key without a default is a shared compiler/LSP `error[assign]`.
+Dynamic dictionaries retain runtime lookup semantics because their keys are
+not statically knowable.
+
+Tuple/list assignment destructuring (`a, b = pair()` or `a, b = [1, 2]`)
+uses selected overload signatures, imported and Go-backed Lam wrapper
+annotations, and literal element types to report arity/type errors. New targets
+emit Go `:=`; reassignments emit `=`; list/tuple literals are expanded into
+individual right-hand values.
 
 ---
 
@@ -2139,6 +2229,14 @@ func max_of[T: ordered](a: T, b: T) -> T {
     return b
 }
 ```
+
+Type arguments may be explicit (`identity[int](1)`) or inferred from bound
+arguments (`identity(1)`). Inference unifies repeated parameters recursively,
+so `same[T](left: T, right: T)` rejects `same(1, "two")`, and
+`sameList[T](list[T], list[T])` rejects mixed element types. The inferred
+mapping also specializes return types, constructors, imported generic
+functions/classes, and member inference. If an argument is `any` or otherwise
+unknown, the checker keeps the conservative fallback instead of guessing.
 
 Built-in constraints:
 
@@ -2252,7 +2350,24 @@ Library files are resolved in three layers, in this order:
    `lib/` subdirectory.
 
 The file extension is `.lam`; a library may also be a directory
-containing `__init__.lam`. See
+containing `__init__.lam`. Package submodules use dotted import paths:
+
+```text
+lamwebp/
+├── __init__.lam
+├── codec.lam
+└── io/
+    └── files.lam
+```
+
+```lammergeier
+from lamwebp.codec import Decoder
+from lamwebp.io.files import readWebp
+```
+
+Each import bundles that module plus its transitive imports. A package
+`__init__.lam` may re-export submodule names with a normal `from` import,
+so `from lamwebp import Decoder` can remain the concise public API. See
 [`docs/third_party_libraries.md`](#/docs/third_party)
 for the distribution / install workflow that layers on top of
 the resolver.
@@ -2677,9 +2792,11 @@ removes both.
 ## `LAMMERGEIER.*` — stable namespace for Lam-visible identifiers
 
 `LAMMERGEIER.<name>` is the supported, stable way to reach a
-Lam-side identifier from inside a `go!` block. Two layers cooperate
-behind the scenes — the rewrite is invisible to the surrounding
-Lam code:
+Lam-side identifier from raw Go or to request explicit compiler dispatch in
+ordinary Lam. Calls such as `LAMMERGEIER.userFunc()`,
+`LAMMERGEIER.UserClass(...)`, `LAMMERGEIER.UserClass.staticMethod()`, and
+static-variable reads work directly; existing `go!` behavior remains
+compatible. Two layers cooperate behind the scenes:
 
 1. **Compiler-emitted literal aliases.** A tiny fixed table in
    `compiler/preprocessor.py::LAMMERGEIER_ALIASES` rewrites a
@@ -2710,12 +2827,19 @@ Lam code:
 | `LAMMERGEIER.<UserClass>.<staticMethod>(…)` | `UserClass_staticMethod(…)` | Static method                                                              |
 | `LAMMERGEIER.<UserClass>.<staticVar>`     | `UserClass_staticVar`     | Static variable                                                              |
 
+The displayed Go names are preferred spellings. If two Lam declarations would
+collide after casing/operator/static/overload lowering, the compiler assigns a
+readable `__lamN` suffix and routes both ordinary and `LAMMERGEIER` calls
+through that same internal mapping.
+
 Stdlib classes participate in the dispatcher only when they're
 imported (directly or transitively): `from lamerrors import Result`
 brings `Result` and `Result.Ok` / `Result.Err` into scope; if you
 never import `lamerrors`, `LAMMERGEIER.Result` is reported as
 unknown. The same rule applies to your own classes — declare the
-class (or import it) and it appears in the dispatcher.
+class (or import it) and it appears in the dispatcher. Private symbols are
+available to raw Go in their declaring module but are rejected through a
+transitive/imported `LAMMERGEIER` reference with a visibility diagnostic.
 
 Use it from a `go!` block to call back into Lam-defined logic
 without hand-mangling Go names:
@@ -2820,14 +2944,16 @@ arrangement:
 | Trailing semicolons   | `a = 1;` (also `a = 1;;;`)                |
 | Compact if/elif/else  | `if x > 0 a = 1 elif x < 0 a = -1 else a = 0` |
 | Allman *and* compact  | `func f()\n{ return 42 }`                 |
+| Statement before close| `print(value)}` inside an open block      |
 | Backslash continuation| `a + \\\n  b`                               |
 | Inline trailing comma | `f(\n    x,\n    y,\n)`                   |
 | Empty body            | `class Empty { }` / `func nop() { }`      |
 
 Internally these are normalised by:
 
-- `_inline_block_semicolons` — inserts `;` before `}` when a single
-  line wraps the entire block (`func f() { return 1 }`).
+- `_inline_block_semicolons` — inserts `;` before `}` when a compact
+  block has a statement immediately before its close (for example,
+  `func f() { return 1 }`, or `print(value)}` inside a block).
 - `_fill_empty_blocks` — replaces `{ }` with `{ pass }` so a class
   or function with no body still parses against the grammar's
   `suite: "{" stmt+ "}"` rule.
@@ -2836,8 +2962,10 @@ Internally these are normalised by:
   a continuation of the current header (Allman braces) and skips
   inserting `;` after lines that close blocks.
 
-If you prefer one style consistently, format your code that way; the
-compiler doesn't care.
+`lamc fmt <file-or-dir>` canonicalises these shapes toward the project style:
+compact block bodies are expanded, redundant blank lines are collapsed, and a
+directory argument recursively formats every `.lam` file below it. `--stdout`
+is intentionally file-only; use `--check` on files or directories in CI.
 
 ---
 
@@ -2851,7 +2979,7 @@ parse-compatible placeholders, not supported language features:
 |---------------|---------------------------|---------------------------|
 | `@decorator func f() { ... }` / `@decorator class C { ... }` | The decorator node is parsed, then rejected by the semantic checker because decorator semantics are not implemented yet. | Use explicit Lam keywords or ordinary wrapper/helper functions. |
 | `@private func f() { ... }` | Rejected by the semantic checker so it cannot silently emit a public `F`. | `private func f() { ... }` |
-| `nonlocal name` | The transpiler emits only a comment. Nested functions and lambdas already close over outer locals directly, so there is no separate nonlocal rebinding step. | Omit it unless you are documenting intent. |
+| `nonlocal name` | Resolves the nearest unambiguous enclosing-function binding and validates outer writes before Go emission. | Use it when a nested function intentionally reassigns an outer local. |
 
 Decorators are only parse-compatible on the same logical line as the
 definition today, because the semicolon insertion pass may terminate a
@@ -2885,8 +3013,10 @@ The pipeline runs in three layers:
    errors and warnings:
    - **Errors:** undefined names, duplicate class members,
      misplaced `return` / `break` / `continue`, `const` reassignment,
-     and `LAMMERGEIER.<name>` typo detection across the
-     user-defined namespace.
+     missing/extra/unknown call arguments, typed collection element/key/value
+     mismatches in declarations, reassignments, returns, call arguments,
+     container writes and list helpers, and `LAMMERGEIER.<name>` typo
+     detection across the user-defined namespace.
    - **Warnings:** unused top-level imports
      (`from lamX import Y` where `Y` is never referenced),
      unused function parameters
@@ -2895,6 +3025,27 @@ The pipeline runs in three layers:
      manifest dependencies (a
      `[dependencies]` entry in `lamlib.toml` that no `.lam` in
      the project tree imports).
+
+   Definite-assignment tracking joins continuing `if`/`match`/`try`
+   branches, ignores paths that return or raise, keeps `with ... as`
+   resources block-local, and checks nested-function/lambda captures at
+   their definition point. Statically non-empty literal/range loops preserve
+   body assignments only when no `break` or `continue` can skip them; empty,
+   unknown, or early-exit loops remain conservative. The Go emitter hoists
+   valid joined locals so accepted Lam flow also compiles with Go block scope.
+
+   Call shapes come from the resolved Lam declaration, including stdlib
+   and package methods whose implementation body uses `go!`. Direct,
+   aliased, module-qualified, constructor, static-method, and inferred
+   instance-method calls therefore share the same checks. Truly raw Go or
+   dynamic `any` values remain conservative fallbacks.
+
+   Declared return types are checked for method calls, ternaries,
+   comprehensions, inferred generic/operator results, and propagated `?`
+   payloads. Dropping a known non-void local/imported/static/inferred-instance
+   call emits a warning; `Result`/`Option` wording asks the caller to handle it
+   or assign to `_`. A `?` outside a compatible Result-returning target remains
+   a warning because the documented dynamic fallback converts `Err` to panic.
 
    Skip with `--no-semantic-check` when chasing a transpiler bug,
    but it's on by default because it's cheap (&lt;50 ms) and catches

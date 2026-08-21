@@ -1,0 +1,11 @@
+# expect-error: too many positional arguments in call to `Document.render`
+
+class Document {
+    func render(self) -> str {
+        return "ok"
+    }
+}
+
+func inspect(document: optional[Document]) {
+    print(document?.render(1))
+}

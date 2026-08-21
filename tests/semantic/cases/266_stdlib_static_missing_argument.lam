@@ -1,0 +1,7 @@
+# expect-error: missing required argument `s` in call to `Json.decode`
+
+from lamjson import Json
+
+func main() {
+    _ = Json.decode()
+}

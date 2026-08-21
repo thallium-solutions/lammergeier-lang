@@ -1,0 +1,5 @@
+# expect-error: `nonlocal` requires an enclosing function scope
+
+func main() {
+    nonlocal value
+}

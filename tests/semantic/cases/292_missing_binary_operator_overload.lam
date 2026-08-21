@@ -1,0 +1,9 @@
+# expect-error: operator `/` is not defined for `Vec` and `Vec`
+
+class Vec {}
+
+func main() {
+    left = Vec()
+    right = Vec()
+    _ = left / right
+}

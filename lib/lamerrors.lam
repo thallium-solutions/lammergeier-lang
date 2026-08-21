@@ -55,12 +55,13 @@ class Result {
            ok  = Result.Ok(42)
            bad = Result.Err(Error("IOError", "disk full"))
 
-       ``value`` is typed ``any`` so a single ``Result`` can carry
-       any payload. Assign ``r.unwrap()`` (or ``r.value``) to a
-       typed local to recover the static type at the consumption
-       site:
+       ``value`` is typed ``any`` so a single runtime ``Result`` can carry
+       any payload. Signatures may use ``Result[T]`` as a compile-time
+       payload marker; it erases to the same runtime type. Assign
+       ``r.unwrap()`` (or ``r.value``) to a typed local to recover the
+       static type at the consumption site:
 
-           r = parseInt("42")
+           r: Result[int] = parseInt("42")
            n: int = r.unwrap()    # cast happens on assignment
     -#
 

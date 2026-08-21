@@ -1,0 +1,19 @@
+# expect-pass
+
+from destructuring_package import choose, splitPair
+
+func main() {
+    value, label = choose(1)
+    total, kind, ok = choose(1, 2)
+    left, right = splitPair("a:b")
+    first, second = [1, 2]
+    print(value)
+    print(label)
+    print(total)
+    print(kind)
+    print(ok)
+    print(left)
+    print(right)
+    print(first)
+    print(second)
+}

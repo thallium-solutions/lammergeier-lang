@@ -1,0 +1,7 @@
+# expect-pass
+
+from lamerrors import Result
+
+func makeResult() -> Result {
+    return Result.Ok(1)
+}

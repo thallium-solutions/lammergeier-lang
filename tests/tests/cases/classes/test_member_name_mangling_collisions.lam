@@ -1,0 +1,41 @@
+# expect: lower-method
+# expect: upper-method
+# expect: 1
+# expect: 2
+# expect: 33
+# expect: 3
+
+class Collision {
+    func init(self, value: int, Value: int) {
+        self.value: int = value
+        self.Value: int = Value
+    }
+
+    func label(self) -> str {
+        return "lower-method"
+    }
+
+    func Label(self) -> str {
+        return "upper-method"
+    }
+
+    func __add__(self, other: Collision) -> Collision {
+        return Collision(self.value + other.value, self.Value + other.Value)
+    }
+
+    func Add(self) -> int {
+        return self.value + self.Value
+    }
+}
+
+func main() {
+    left = Collision(1, 2)
+    right = Collision(10, 20)
+    print(left.label())
+    print(left.Label())
+    print(left.value)
+    print(left.Value)
+    total = left + right
+    print(total.Add())
+    print(left.Add())
+}

@@ -1,0 +1,11 @@
+# expect-error: function `parse` returns `int`, expected `Result[int]`
+
+from lamerrors import Result
+
+func load() -> Result[int] {
+    return Result.Ok(1)
+}
+
+func parse() -> Result[int] {
+    return load()?
+}

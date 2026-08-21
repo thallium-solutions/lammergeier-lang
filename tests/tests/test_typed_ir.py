@@ -51,11 +51,54 @@ def test_typed_ir_collects_function_signature_and_locals() -> None:
     assert locals_by_name["total"].type == NamedType("int")
     assert locals_by_name["label"].type == NamedType("str")
     assert locals_by_name["values"].type == ListType(NamedType("int"))
+    assert locals_by_name["values"].initializer is not None
+    assert locals_by_name["values"].initializer.expected_type == ListType(NamedType("int"))
     assert locals_by_name["inferred"].type == NamedType("int")
     assert locals_by_name["inferred"].initializer is not None
     assert locals_by_name["inferred"].initializer.name == "add"
+    assert locals_by_name["inferred"].initializer.expected_type is None
     assert render_type(locals_by_name["values"].type) == "list[int]"
     print("PASS: typed IR collects resolved function signatures and local variable types")
+
+
+def test_typed_ir_records_expected_initializer_contexts() -> None:
+    module = _typed_module("""func f() {
+    nums: list[int] = [1, 2]
+    names: dict[str, str] = {"a": "A"}
+    nums = [3, 4]
+    const ports: list[int] = [5432, 6380]
+}
+""")
+    func = module.body[0]
+    assert isinstance(func, TypedFunction)
+    locals_by_name = {local.name: local for local in func.locals}
+    assert locals_by_name["nums"].initializer is not None
+    assert locals_by_name["nums"].initializer.expected_type == ListType(NamedType("int"))
+    assert locals_by_name["names"].initializer is not None
+    assert render_type(locals_by_name["names"].initializer.expected_type) == "dict[str, str]"
+    assert locals_by_name["ports"].initializer is not None
+    assert locals_by_name["ports"].initializer.expected_type == ListType(NamedType("int"))
+    print("PASS: typed IR records expected types for contextual initializers")
+
+
+def test_typed_ir_records_expected_call_argument_contexts() -> None:
+    module = _typed_module("""func sumValues(values: list[int]) -> int {
+    return 0
+}
+
+func f() {
+    total = sumValues([1, 2])
+}
+""")
+    func = module.body[1]
+    assert isinstance(func, TypedFunction)
+    local = func.locals[0]
+    assert local.name == "total"
+    assert local.initializer is not None
+    call = local.initializer
+    assert call.name == "sumValues"
+    assert call.args[0].expected_type == ListType(NamedType("int"))
+    print("PASS: typed IR records expected types for known call arguments")
 
 
 def test_typed_ir_collects_class_methods_and_fields() -> None:
@@ -82,6 +125,8 @@ def test_typed_ir_collects_class_methods_and_fields() -> None:
 def main() -> int:
     tests = [
         test_typed_ir_collects_function_signature_and_locals,
+        test_typed_ir_records_expected_initializer_contexts,
+        test_typed_ir_records_expected_call_argument_contexts,
         test_typed_ir_collects_class_methods_and_fields,
     ]
     for test in tests:

@@ -1,0 +1,12 @@
+# expect-error: unknown member `document.rendr`
+# expect-error: did you mean `document.render`
+
+class Document {
+    func render(self) -> str {
+        return "ok"
+    }
+}
+
+func inspect(document: optional[Document]) {
+    print(document?.rendr())
+}

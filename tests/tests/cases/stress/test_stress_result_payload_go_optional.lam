@@ -1,0 +1,31 @@
+# expect: ADA:7
+# expect: fallback
+
+from lamerrors import Result
+
+class User {
+    func init(self, name: str, score: int) { self.name: str = name; self.score: int = score }
+    func label(self) -> str { return f"{self.name}:{self.score}" }
+}
+
+func load() -> Result[User] { return Result.Ok(User("ada", 7)) }
+func upper(value: str) -> str {
+    out: str = ""
+    go! { out = strings.ToUpper(value) }
+    return out
+}
+
+go! { import "strings" }
+
+func resolved() -> Result[str] {
+    user = load()?
+    name: str = ""
+    go! { name = LAMMERGEIER.upper(user.Name) }
+    return Result.Ok(f"{name}:{user.score}")
+}
+
+func main() {
+    print(resolved().unwrap())
+    missing: User = None
+    print(missing?.name ?? "fallback")
+}

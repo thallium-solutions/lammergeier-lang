@@ -1,0 +1,26 @@
+# expect: value: 42
+# expect: caught: invalid
+
+from lamerrors import Result
+
+func readValue(ok: bool) -> Result[int] {
+    if ok {
+        return Result.Ok(41)
+    }
+    return Result.Err("invalid")
+}
+
+func increment() -> Result[int] {
+    value: int = readValue(True)?
+    return Result.Ok(value + 1)
+}
+
+func main() {
+    print(f"value: {increment().unwrap()}")
+    do {
+        value: int = readValue(False)?
+        print(value)
+    } catch err {
+        print(f"caught: {err}")
+    }
+}

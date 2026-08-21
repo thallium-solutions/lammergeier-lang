@@ -1,0 +1,22 @@
+# expect-pass
+
+func same[T](left: T, right: T) -> T {
+    return left
+}
+
+func identity[T](value: T) -> T {
+    return value
+}
+
+class Box[T] {
+    func init(self, left: T, right: T) {
+        self.left: T = left
+        self.right: T = right
+    }
+}
+
+class Document {
+    func render(self) -> str {
+        return "ok"
+    }
+}

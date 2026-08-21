@@ -85,6 +85,15 @@ class StatementVisitorMixin:
             self._emit(f"var {target_str} {go_type} = {value_str}")
             self._declare_var(target_str)
 
+    def _record_inferred_target_type(self, target_str: str, value_node) -> None:
+        if not target_str or "." in target_str or "[" in target_str:
+            return
+        class_name = self._infer_receiver_class(value_node)
+        if not class_name or class_name not in self._class_names:
+            return
+        self._var_types[target_str] = class_name
+        self._var_go_types[target_str] = f"*{self._go_class_name(class_name)}"
+
     def _visit_annassign(self, node: Tree):
         is_private = False
         is_static = False
@@ -110,15 +119,18 @@ class StatementVisitorMixin:
 
         if go_type and "." not in target_str:
             self._var_go_types[target_str] = go_type
+            tuple_types = self._list_tuple_element_types(type_node)
+            if tuple_types:
+                self._tuple_iterable_element_types[target_str] = tuple_types
 
         if is_private and "." not in target_str:
             target_str = self._go_private_name(target_str)
 
         if value is not None:
             if isinstance(value, Tree) and value.data == "test" and len(value.children) == 3:
-                true_val = self._expr_to_go(value.children[0])
+                true_val = self._typed_value_to_go(value.children[0], go_type)
                 cond = self._expr_to_go(value.children[1])
-                false_val = self._expr_to_go(value.children[2])
+                false_val = self._typed_value_to_go(value.children[2], go_type)
                 if not self._is_declared_or_nonlocal_target(target_str):
                     self._emit(f"var {target_str} {go_type}")
                     self._declare_var(target_str)
@@ -159,7 +171,7 @@ class StatementVisitorMixin:
         type_node = children[1] if len(children) > 1 else None
         value_node = children[2] if len(children) > 2 else None
 
-        target_str = self._get_name(name_node)
+        target_str = self._go_binding_name(self._get_name(name_node))
         if type_node is not None:
             go_type = self._type_expr_to_go(type_node)
         else:
@@ -174,6 +186,8 @@ class StatementVisitorMixin:
         if go_type:
             self._var_go_types[target_str] = go_type
 
+        if type_node is None and value_node is not None:
+            self._record_inferred_target_type(target_str, value_node)
         value_str = self._typed_value_to_go(value_node, go_type) if value_node is not None else ""
         if go_type:
             self._emit(f"var {target_str} {go_type} = {value_str}")
@@ -187,11 +201,17 @@ class StatementVisitorMixin:
         if len(parts) >= 2:
             target_str = self._expr_to_go(parts[0])
             value_node = parts[-1]
+            self._record_inferred_target_type(target_str, value_node)
+            target_go_type = self._expr_go_type_hint(parts[0])
             # Ternary in plain assign
             if isinstance(value_node, Tree) and value_node.data == "test" and len(value_node.children) == 3:
-                true_val = self._expr_to_go(value_node.children[0])
+                if target_go_type:
+                    true_val = self._typed_value_to_go(value_node.children[0], target_go_type)
+                    false_val = self._typed_value_to_go(value_node.children[2], target_go_type)
+                else:
+                    true_val = self._expr_to_go(value_node.children[0])
+                    false_val = self._expr_to_go(value_node.children[2])
                 cond = self._expr_to_go(value_node.children[1])
-                false_val = self._expr_to_go(value_node.children[2])
                 if (
                     target_str not in self.declared_vars
                     and "." not in target_str
@@ -216,7 +236,11 @@ class StatementVisitorMixin:
                     self.indent -= 1
                     self._emit(f"}}")
                 return
-            value_str = self._expr_to_go(value_node)
+            if target_go_type:
+                with self._scoped(_propagate_cast_hint=target_go_type):
+                    value_str = self._typed_value_to_go(value_node, target_go_type)
+            else:
+                value_str = self._expr_to_go(value_node)
             # If assigning a list or dict/map literal to a struct field,
             # prefer the field's declared Go type so that bare `[]` / `{}`
             # literals keep their intended element type (e.g. a
@@ -242,23 +266,22 @@ class StatementVisitorMixin:
                     slice_parts = idx_node.children
                     lo = self._expr_to_go(slice_parts[0]) if len(slice_parts) > 0 and slice_parts[0] is not None else "0"
                     hi = self._expr_to_go(slice_parts[1]) if len(slice_parts) > 1 and slice_parts[1] is not None else f"len({obj_str})"
-                    var_name = self._get_name(obj_node.children[0]) if isinstance(obj_node, Tree) and obj_node.data == "var" else obj_str
-                    elem_type = self._var_go_types.get(var_name, "")
-                    if elem_type.startswith("[]"):
-                        elem_type = elem_type[2:]
-                    if elem_type and isinstance(value_node, Tree) and value_node.data == "list":
-                        elems = [self._expr_to_go(c) for c in value_node.children if c is not None]
-                        rhs = f"[]{elem_type}{{{', '.join(elems)}}}"
-                    else:
-                        rhs = value_str
+                    rhs = value_str
                     self._emit(f"{obj_str} = append({obj_str}[:{lo}], append({rhs}, {obj_str}[{hi}:]...)...)")
                     return
             # Tuple unpacking
             if isinstance(parts[0], Tree) and parts[0].data == "tuple":
                 names = [self._expr_to_go(c) for c in parts[0].children if c is not None]
-                self._emit(f"{', '.join(names)} = {value_str}")
+                if isinstance(value_node, Tree) and value_node.data in {"tuple", "list"}:
+                    values = [self._expr_to_go(child) for child in value_node.children if child is not None]
+                    unpacked_value = ", ".join(values)
+                else:
+                    unpacked_value = value_str
+                has_new = any(name != "_" and name not in self.declared_vars for name in names)
+                op = ":=" if has_new else "="
+                self._emit(f"{', '.join(names)} {op} {unpacked_value}")
                 for n in names:
-                    if n not in self.declared_vars:
+                    if n != "_" and n not in self.declared_vars:
                         self._declare_var(n)
             elif (
                 target_str in self.declared_vars
@@ -352,13 +375,22 @@ class StatementVisitorMixin:
 
         if node.children and node.children[0] is not None:
             val_node = node.children[0]
+            return_type = getattr(self, "_current_return_type", "") or ""
             if isinstance(val_node, Tree) and val_node.data == "testlist_tuple":
-                vals = [self._expr_to_go(c) for c in val_node.children if c is not None]
+                expected_types = self._split_go_tuple_type(return_type)
+                vals = []
+                for i, c in enumerate(child for child in val_node.children if child is not None):
+                    expected = expected_types[i] if i < len(expected_types) else ""
+                    vals.append(self._typed_value_to_go(c, expected) if expected else self._expr_to_go(c))
                 val = ", ".join(vals)
             elif isinstance(val_node, Tree) and val_node.data == "test" and len(val_node.children) == 3:
-                true_val = self._expr_to_go(val_node.children[0])
+                if return_type:
+                    true_val = self._typed_value_to_go(val_node.children[0], return_type)
+                    false_val = self._typed_value_to_go(val_node.children[2], return_type)
+                else:
+                    true_val = self._expr_to_go(val_node.children[0])
+                    false_val = self._expr_to_go(val_node.children[2])
                 cond = self._expr_to_go(val_node.children[1])
-                false_val = self._expr_to_go(val_node.children[2])
                 self._emit(f"if {cond} {{")
                 self.indent += 1
                 self._emit(f"return {true_val}")
@@ -370,7 +402,11 @@ class StatementVisitorMixin:
                 self._emit(f"}}")
                 return
             else:
-                val = self._expr_to_go(val_node)
+                if return_type:
+                    with self._scoped(_propagate_cast_hint=return_type):
+                        val = self._typed_value_to_go(val_node, return_type)
+                else:
+                    val = self._expr_to_go(val_node)
 
             if self._in_async_func and self._async_chan_name:
                 self._emit(f"{self._async_chan_name} <- {val}")
@@ -479,7 +515,89 @@ class StatementVisitorMixin:
 
     # ─── If / Elif / Else ──────────────────────────────────────
 
+    def _flow_assignment_types(self, node) -> dict[str, str]:
+        found: dict[str, str] = {}
+
+        def record(name: str, go_type: str) -> None:
+            if not name or name == "_" or "." in name or "[" in name:
+                return
+            go_type = go_type or "interface{}"
+            previous = found.get(name)
+            found[name] = go_type if previous in {None, go_type} else "interface{}"
+
+        def walk(cur) -> None:
+            if not isinstance(cur, Tree) or cur.data in {"funcdef", "classdef", "lambdef"}:
+                return
+            if cur.data == "annassign":
+                children = [child for child in cur.children if isinstance(child, Tree)]
+                target = children[0] if children else None
+                type_node = next((child for child in children if child.data == "type_expr"), None)
+                if isinstance(target, Tree) and target.data == "var" and target.children:
+                    record(self._get_name(target.children[0]), self._type_expr_to_go(type_node))
+                return
+            if cur.data == "assign" and len(cur.children) >= 2:
+                target = cur.children[0]
+                value = cur.children[-1]
+                if isinstance(target, Tree) and target.data == "var" and target.children:
+                    record(self._get_name(target.children[0]), self._infer_type_from_value(value))
+                return
+            for child in cur.children:
+                walk(child)
+
+        walk(node)
+        return found
+
+    def _flow_suite_terminates(self, node) -> bool:
+        if not isinstance(node, Tree):
+            return False
+        for stmt in node.children if node.data == "suite" else [node]:
+            if not isinstance(stmt, Tree):
+                continue
+            if stmt.data == "simple_stmt" and any(
+                isinstance(child, Tree) and child.data in {"return_stmt", "raise_stmt"}
+                for child in stmt.children
+            ):
+                return True
+            if stmt.data in {"return_stmt", "raise_stmt"}:
+                return True
+        return False
+
+    def _hoist_flow_locals(self, suites: List[Tree]) -> None:
+        continuing = [suite for suite in suites if not self._flow_suite_terminates(suite)]
+        if not continuing:
+            return
+        assignments = [self._flow_assignment_types(suite) for suite in continuing]
+        names = set(assignments[0])
+        for mapping in assignments[1:]:
+            names &= set(mapping)
+        for name in sorted(names):
+            if name in self.declared_vars:
+                continue
+            types = {mapping[name] for mapping in assignments}
+            go_type = next(iter(types)) if len(types) == 1 else "interface{}"
+            if go_type == "interface{}":
+                continue
+            self._emit(f"var {name} {go_type}")
+            self._declare_var(name)
+            self._var_go_types[name] = go_type
+            if go_type.startswith("*"):
+                class_name = go_type[1:].split("[", 1)[0]
+                if class_name in self._class_names:
+                    self._var_types[name] = class_name
+
     def _visit_if_stmt(self, node: Tree):
+        branch_suites = [node.children[1]] if len(node.children) > 1 and isinstance(node.children[1], Tree) else []
+        elifs = node.children[2] if len(node.children) > 2 else None
+        if isinstance(elifs, Tree):
+            branch_suites.extend(
+                child.children[1]
+                for child in elifs.children
+                if isinstance(child, Tree) and len(child.children) > 1 and isinstance(child.children[1], Tree)
+            )
+        else_suite = node.children[3] if len(node.children) > 3 else None
+        if isinstance(else_suite, Tree):
+            branch_suites.append(else_suite)
+            self._hoist_flow_locals(branch_suites)
         cond = self._expr_to_go(node.children[0])
         self._emit(f"if {cond} {{")
         self.indent += 1
@@ -541,6 +659,49 @@ class StatementVisitorMixin:
 
     # ─── For ───────────────────────────────────────────────────
 
+    def _flow_iterable_statically_nonempty(self, node) -> bool:
+        if not isinstance(node, Tree):
+            return False
+        if node.data in {"list", "tuple", "set", "dict"}:
+            return bool(node.children)
+        if node.data != "funccall" or not node.children:
+            return False
+        callee = node.children[0]
+        if not isinstance(callee, Tree) or callee.data != "var" or self._get_name(callee.children[0]) != "range":
+            return False
+        values = [self._flow_integer_literal(arg) for arg in self._get_raw_call_args(node.children[1] if len(node.children) > 1 else None)]
+        if not values or any(value is None for value in values) or len(values) > 3:
+            return False
+        try:
+            return len(range(*[int(value) for value in values])) > 0
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _flow_integer_literal(node) -> int | None:
+        if not isinstance(node, Tree):
+            return None
+        if node.data == "number" and node.children:
+            try:
+                return int(str(node.children[0]))
+            except ValueError:
+                return None
+        if node.data == "factor" and len(node.children) == 2:
+            value = StatementVisitorMixin._flow_integer_literal(node.children[1])
+            if value is not None and str(node.children[0]) in {"+", "-"}:
+                return value if str(node.children[0]) == "+" else -value
+        return None
+
+    @staticmethod
+    def _flow_contains_loop_exit(node) -> bool:
+        if not isinstance(node, Tree):
+            return False
+        if node.data in {"break_stmt", "continue_stmt"}:
+            return True
+        if node.data in {"funcdef", "classdef", "lambdef"}:
+            return False
+        return any(StatementVisitorMixin._flow_contains_loop_exit(child) for child in node.children)
+
     def _visit_for_stmt(self, node: Tree):
         target_node = node.children[0]
         iterable_node = node.children[1]
@@ -554,6 +715,22 @@ class StatementVisitorMixin:
                 var_name = self._expr_to_go(target_node)
         else:
             var_name = str(target_node)
+
+        iterable_type = self._infer_type_from_value(iterable_node)
+        is_range = (
+            isinstance(iterable_node, Tree)
+            and iterable_node.data == "funccall"
+            and bool(iterable_node.children)
+            and isinstance(iterable_node.children[0], Tree)
+            and iterable_node.children[0].data == "var"
+            and self._get_name(iterable_node.children[0].children[0]) == "range"
+        )
+        if is_range:
+            self._var_go_types[var_name] = "int"
+        elif iterable_type.startswith("[]"):
+            self._var_go_types[var_name] = iterable_type[2:]
+        if self._flow_iterable_statically_nonempty(iterable_node) and not self._flow_contains_loop_exit(suite_node):
+            self._hoist_flow_locals([suite_node])
 
         if else_suite:
             self._emit("_whileBreak := false")
@@ -615,6 +792,9 @@ class StatementVisitorMixin:
                 v_decl = val_name in self.declared_vars
                 assign_op = "=" if (k_decl and v_decl) else ":="
                 self._emit(f"for {key_name}, {val_name} {assign_op} range {iter_str} {{")
+            elif self._range_single_target_uses_key(iterable_node):
+                assign_op = "=" if already_declared else ":="
+                self._emit(f"for {var_name} {assign_op} range {iter_str} {{")
             elif already_declared:
                 self._emit(f"for _, {var_name} = range {iter_str} {{")
             else:
@@ -900,6 +1080,7 @@ class StatementVisitorMixin:
         # exception to a ``string`` at the catch site, which made
         # field access impossible without a manual type assertion.
         if as_name:
+            as_name = self._go_binding_name(as_name)
             self._emit(f'{as_name} := r')
             self._emit(f'_ = {as_name}')
             # Track the binding as ``interface{}`` so downstream
@@ -924,6 +1105,19 @@ class StatementVisitorMixin:
     # ─── Match / Switch ────────────────────────────────────────
 
     def _visit_match_stmt(self, node: Tree):
+        cases = [child for child in node.children[1:] if isinstance(child, Tree) and child.data == "case"]
+        if any(
+            len(case.children) > 2
+            and isinstance(case.children[0], Tree)
+            and case.children[0].data == "any_pattern"
+            and case.children[1] is None
+            for case in cases
+        ):
+            self._hoist_flow_locals([
+                case.children[2]
+                for case in cases
+                if len(case.children) > 2 and isinstance(case.children[2], Tree)
+            ])
         subject = self._expr_to_go(node.children[0])
         self._emit(f"switch {subject} {{")
         for child in node.children[1:]:
@@ -997,7 +1191,7 @@ class StatementVisitorMixin:
         body_suite = node.children[0]
         err_name_node = node.children[1]
         handler_suite = node.children[2]
-        err_name = self._get_name(err_name_node)
+        err_name = self._go_binding_name(self._get_name(err_name_node))
 
         self._do_counter += 1
         rdo = f"__rdo{self._do_counter}"
@@ -1066,7 +1260,7 @@ class StatementVisitorMixin:
                     as_name = item.children[1] if len(item.children) > 1 and item.children[1] is not None else None
                     expr_str = self._expr_to_go(expr)
                     if as_name:
-                        name_str = self._get_name(as_name)
+                        name_str = self._go_binding_name(self._get_name(as_name))
                         self._emit(f"{name_str} := {expr_str}")
                         self._emit(f"defer {name_str}.Close()")
                     else:

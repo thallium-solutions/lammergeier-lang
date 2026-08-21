@@ -1,0 +1,11 @@
+# expect-error: unknown member `document.rendr`
+# expect-error: did you mean `document.render`
+
+from lamerrors import Result
+from result_member_package import loadDocument
+
+func inspect() -> Result {
+    document = loadDocument()?
+    print(document.rendr())
+    return Result.Ok(None)
+}

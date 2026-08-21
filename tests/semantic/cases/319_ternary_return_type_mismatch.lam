@@ -1,0 +1,5 @@
+# expect-error: ternary branches must have compatible types
+
+func value(ok: bool) -> int {
+    return 1 if ok else "bad"
+}

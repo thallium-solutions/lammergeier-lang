@@ -121,6 +121,20 @@ def test_decl_ast_collects_imports_and_interface_methods() -> None:
     print("PASS: declaration AST collects imports and interface methods")
 
 
+def test_decl_ast_preserves_generic_type_refs() -> None:
+    module = _module("""func consume(rows: list[dict[str, list[int]]]) -> dict[str, list[int]] {
+    return {"empty": []}
+}
+""")
+    func = module.body[0]
+    assert isinstance(func, FuncDecl)
+    assert func.params[0].type_ref is not None
+    assert func.params[0].type_ref.name == "list[dict[str, list[int]]]"
+    assert func.return_type is not None
+    assert func.return_type.name == "dict[str, list[int]]"
+    print("PASS: declaration AST preserves nested generic type refs")
+
+
 def test_module_facts_include_ast_reexports() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "imports.lam"
@@ -138,6 +152,7 @@ def main() -> int:
         test_decl_ast_collects_class_members,
         test_module_facts_can_be_built_from_ast,
         test_decl_ast_collects_imports_and_interface_methods,
+        test_decl_ast_preserves_generic_type_refs,
         test_module_facts_include_ast_reexports,
     ]
     for test in tests:

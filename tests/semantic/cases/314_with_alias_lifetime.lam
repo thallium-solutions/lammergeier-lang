@@ -1,0 +1,14 @@
+# expect-error: undefined name `resource`
+
+class Resource {
+    func close(self) {
+        pass
+    }
+}
+
+func main() {
+    with Resource() as resource {
+        print(resource)
+    }
+    print(resource)
+}

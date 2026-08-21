@@ -82,6 +82,89 @@ def test_workspace_resolves_package_init() -> None:
     print("PASS: workspace resolves package __init__.lam")
 
 
+def test_workspace_resolves_nested_submodule() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = root / "main.lam"
+        codec = root / "lamwebp" / "codec.lam"
+        _write(main, "from lamwebp.codec import Decoder\n")
+        _write(codec, "class Decoder {}\n")
+        index = WorkspaceIndex(root)
+        assert index.resolve_module(main, "lamwebp.codec") == codec.resolve()
+        assert index.resolve_import(main, "lamwebp.codec", "Decoder") is not None
+    print("PASS: workspace resolves nested submodule files")
+
+
+def test_workspace_resolves_deep_package_submodule() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = root / "main.lam"
+        init_file = root / "lamwebp" / "io" / "files" / "__init__.lam"
+        _write(main, "from lamwebp.io.files import readWebp\n")
+        _write(init_file, "func readWebp(path: str) -> str { return path }\n")
+        index = WorkspaceIndex(root)
+        assert index.resolve_module(main, "lamwebp.io.files") == init_file.resolve()
+        assert index.resolve_import(main, "lamwebp.io.files", "readWebp") is not None
+    print("PASS: workspace resolves deeply nested package submodules")
+
+
+def test_nested_submodule_wins_over_legacy_dotted_file() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = root / "main.lam"
+        nested = root / "lamwebp" / "codec.lam"
+        legacy = root / "lamwebp.codec.lam"
+        _write(main, "from lamwebp.codec import Decoder\n")
+        _write(nested, "class Decoder {}\n")
+        _write(legacy, "class LegacyDecoder {}\n")
+        index = WorkspaceIndex(root)
+        assert index.resolve_module(main, "lamwebp.codec") == nested.resolve()
+    print("PASS: nested submodule path wins over legacy dotted file")
+
+
+def test_legacy_dotted_file_remains_resolvable() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = root / "main.lam"
+        legacy = root / "lamwebp.codec.lam"
+        _write(main, "from lamwebp.codec import Decoder\n")
+        _write(legacy, "class Decoder {}\n")
+        index = WorkspaceIndex(root)
+        assert index.resolve_module(main, "lamwebp.codec") == legacy.resolve()
+    print("PASS: legacy dotted module files remain resolvable")
+
+
+def test_module_search_paths_include_nested_candidates() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = root / "main.lam"
+        _write(main, "from lamwebp.io.files import readWebp\n")
+        index = WorkspaceIndex(root, stdlib_dir=root / "missing-stdlib")
+        searched = index.module_search_paths(main, "lamwebp.io.files")
+        assert searched[:3] == [
+            root / "lamwebp" / "io" / "files.lam",
+            root / "lamwebp" / "io" / "files" / "__init__.lam",
+            root / "lamwebp.io.files.lam",
+        ], searched
+    print("PASS: module diagnostics expose nested search candidates")
+
+
+def test_available_modules_use_dotted_names() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = root / "main.lam"
+        _write(main, "func main() {}\n")
+        _write(root / "lamwebp" / "codec.lam", "class Decoder {}\n")
+        _write(root / "lamwebp" / "io" / "files" / "__init__.lam", "func readWebp() {}\n")
+        index = WorkspaceIndex(root, stdlib_dir=root / "missing-stdlib")
+        names = index.available_modules(main)
+        assert "lamwebp.codec" in names
+        assert "lamwebp.io.files" in names
+        assert "codec" not in names
+        assert "files" not in names
+    print("PASS: module discovery reports qualified dotted names")
+
+
 def test_stdlib_wins_over_local_shadow() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -114,6 +197,12 @@ def main() -> int:
         test_module_facts_exports_and_imports,
         test_workspace_resolves_local_sibling,
         test_workspace_resolves_package_init,
+        test_workspace_resolves_nested_submodule,
+        test_workspace_resolves_deep_package_submodule,
+        test_nested_submodule_wins_over_legacy_dotted_file,
+        test_legacy_dotted_file_remains_resolvable,
+        test_module_search_paths_include_nested_candidates,
+        test_available_modules_use_dotted_names,
         test_stdlib_wins_over_local_shadow,
         test_missing_module_returns_none,
     ]

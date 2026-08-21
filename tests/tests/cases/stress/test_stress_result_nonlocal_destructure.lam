@@ -1,0 +1,27 @@
+# expect: Ada:reader:8:0
+
+from lamerrors import Result
+
+func parse(raw: str) -> Result[int] {
+    if raw == "ok" { return Result.Ok(3) }
+    return Result.Err("bad")
+}
+
+func pipeline() -> Result[str] {
+    total: int = 0
+    func bump(delta: int) { nonlocal total; total += delta }
+    for i in range(3) { bump(i) }
+    do { value: int = parse("bad")?; bump(value) } catch err { bump(5) }
+    {name, role = "reader", age: years = 0} = {"name": "Ada"}
+    match total {
+        case 8 {
+            total = total + 0
+        }
+        case _ {
+            total = -1
+        }
+    }
+    return Result.Ok(f"{name}:{role}:{total}:{years}")
+}
+
+func main() { print(pipeline().unwrap()) }

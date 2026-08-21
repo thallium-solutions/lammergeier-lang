@@ -1,0 +1,8 @@
+# expect-pass
+
+class Vault {
+    private static func hidden(value: int) -> int { return value + 1 }
+    static func reveal(value: int) -> int { return Vault.hidden(value) }
+}
+
+func main() { print(Vault.hidden(1)) }

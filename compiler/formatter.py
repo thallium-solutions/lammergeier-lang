@@ -41,7 +41,7 @@ def _parse_or_raise(source: str) -> None:
 
 
 def _format_lines(source: str) -> str:
-    lines = source.splitlines()
+    lines = _expand_compact_layout(source.splitlines())
     out: list[str] = []
     depth = 0
     i = 0
@@ -49,7 +49,8 @@ def _format_lines(source: str) -> str:
         raw = lines[i]
         stripped = raw.strip()
         if not stripped:
-            out.append("")
+            if out and out[-1] != "":
+                out.append("")
             i += 1
             continue
 
@@ -64,10 +65,162 @@ def _format_lines(source: str) -> str:
         leading_closers = _leading_closing_braces(stripped)
         line_depth = max(0, depth - leading_closers)
         formatted = _format_code_line(stripped)
+        if formatted == "}" and out and out[-1] == "":
+            out.pop()
+        if formatted in {"else {", "elif {", "finally {", "catch {"} and out and out[-1].strip() == "}":
+            out[-1] = out[-1] + " " + formatted[:-2].strip()
+            out[-1] = out[-1] + " {"
+            depth = max(0, depth + _brace_delta(stripped))
+            i += 1
+            continue
         out.append("    " * line_depth + formatted)
         depth = max(0, depth + _brace_delta(stripped))
         i += 1
     return "\n".join(out).rstrip() + "\n"
+
+
+_LAYOUT_LITERAL_PRECEDERS = set("=,([:+-*/%<>!&|^~?")
+_LAYOUT_LITERAL_KEYWORDS = frozenset({
+    "return", "yield", "raise", "throw", "await", "in", "and", "or",
+    "not", "is",
+})
+_LAYOUT_LAMBDA_HEAD_RE = re.compile(
+    r"\blambda\b(?:\s*\((?:[^()]|\([^)]*\))*\)|\s+\w+(?:\s*,\s*\w+)*)?"
+    r"(?:\s*->\s*[^\s{][^{]*?)?\s*$"
+)
+
+
+def _expand_compact_layout(lines: list[str]) -> list[str]:
+    expanded: list[str] = []
+    layout_stack: list[str] = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped and _starts_go_block(stripped):
+            block, next_i = _collect_go_block(lines, i)
+            expanded.extend(block)
+            i = next_i
+            continue
+        expanded.extend(_split_compact_line(lines[i], layout_stack))
+        i += 1
+    return expanded
+
+
+def _split_compact_line(line: str, layout_stack: list[str]) -> list[str]:
+    code, comment = _split_inline_comment(line)
+    if not code.strip():
+        return [line]
+    out: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    prev_meaningful = _previous_layout_char(layout_stack)
+    i = 0
+    while i < len(code):
+        ch = code[i]
+        if quote:
+            buf.append(ch)
+            if ch == "\\" and len(quote) == 1 and i + 1 < len(code):
+                i += 1
+                buf.append(code[i])
+            elif code.startswith(quote, i):
+                if len(quote) == 3:
+                    buf.extend(code[i + 1:i + 3])
+                    i += 2
+                quote = ""
+            i += 1
+            continue
+        if code.startswith("'''", i) or code.startswith('"""', i):
+            quote = code[i:i + 3]
+            buf.append(quote)
+            i += 3
+            prev_meaningful = '"'
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+            buf.append(ch)
+            i += 1
+            prev_meaningful = ch
+            continue
+        if ch == "{":
+            kind = _layout_brace_kind(prev_meaningful, "".join(buf))
+            layout_stack.append(kind)
+            buf.append(ch)
+            prev_meaningful = ch
+            if kind in {"block", "lambda_block"}:
+                _flush_layout_segment(out, buf)
+            i += 1
+            continue
+        if ch == "}":
+            kind = layout_stack.pop() if layout_stack else "block"
+            if kind in {"block", "lambda_block"} and "".join(buf).strip():
+                _flush_layout_segment(out, buf)
+            buf.append(ch)
+            prev_meaningful = ch
+            if kind in {"block", "lambda_block"}:
+                # Keep ``else``/``catch`` on the same virtual line as
+                # the closing brace so the normal line formatter can emit
+                # Go-like ``} else {``.
+                rest = code[i + 1:].lstrip()
+                if not _starts_following_clause(rest):
+                    _flush_layout_segment(out, buf)
+            i += 1
+            continue
+        if ch == ";" and not _inside_layout_expression(layout_stack):
+            _flush_layout_segment(out, buf)
+            prev_meaningful = ch
+            i += 1
+            continue
+        buf.append(ch)
+        if not ch.isspace():
+            prev_meaningful = ch
+        i += 1
+    if comment:
+        if "".join(buf).strip():
+            buf.append("  " + comment.strip())
+        else:
+            buf.append(comment.strip())
+    _flush_layout_segment(out, buf)
+    return out or [""]
+
+
+def _flush_layout_segment(out: list[str], buf: list[str]) -> None:
+    segment = "".join(buf).strip()
+    if segment:
+        out.append(segment)
+    buf.clear()
+
+
+def _layout_brace_kind(prev_meaningful: str, prefix: str) -> str:
+    if prev_meaningful in _LAYOUT_LITERAL_PRECEDERS:
+        return "literal"
+    last_word = _last_layout_word(prefix)
+    if last_word in _LAYOUT_LITERAL_KEYWORDS:
+        return "literal"
+    if _LAYOUT_LAMBDA_HEAD_RE.search(prefix):
+        return "lambda_block"
+    return "block"
+
+
+def _last_layout_word(prefix: str) -> str:
+    j = len(prefix) - 1
+    while j >= 0 and prefix[j].isspace():
+        j -= 1
+    end = j + 1
+    while j >= 0 and (prefix[j].isalnum() or prefix[j] == "_"):
+        j -= 1
+    return prefix[j + 1:end]
+
+
+def _previous_layout_char(layout_stack: list[str]) -> str:
+    return "{" if layout_stack and layout_stack[-1] in {"block", "lambda_block"} else ""
+
+
+def _inside_layout_expression(layout_stack: list[str]) -> bool:
+    return bool(layout_stack and layout_stack[-1] == "literal")
+
+
+def _starts_following_clause(text: str) -> bool:
+    return any(text.startswith(keyword) for keyword in ("else", "elif", "catch", "finally"))
 
 
 def _format_code_line(line: str) -> str:

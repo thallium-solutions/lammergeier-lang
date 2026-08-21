@@ -17,7 +17,7 @@ from lark import Tree, Token
 from typing import List, Optional, Tuple, Dict, Set, Any
 from contextlib import contextmanager
 
-from compiler.constants import STMT_NODES, PYTHON_EXCEPTIONS
+from compiler.constants import DUNDER_OPS, STMT_NODES, PYTHON_EXCEPTIONS
 from compiler.preprocessor import preprocess_go_blocks  # re-export
 from compiler.visitors.helpers import HelpersMixin
 from compiler.visitors.statements import StatementVisitorMixin
@@ -60,6 +60,7 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     "_in_generator",
     "_generator_chan",
     "_propagate_cast_hint",
+    "_expected_expr_go_type",
     "_nested_generic_functions",
     # The Go return type of the *currently-being-emitted* Lam function.
     # Used to rewrite bare ``return`` statements found inside ``go!``
@@ -162,6 +163,7 @@ class GoTranspiler(
         # Track all user-defined functions
         self._user_functions: Set[str] = set()
         self._private_functions: Set[str] = set()
+        self._function_go_names: Dict[str, str] = {}
         self._private_methods: Dict[str, Set[str]] = {}
 
         # Functions imported from libraries — survive the per-transpile
@@ -169,6 +171,8 @@ class GoTranspiler(
         # dispatcher (default-arg filling, Go-public-name rewriting).
         self._external_user_functions: Set[str] = set()
         self._external_private_functions: Set[str] = set()
+        self._external_instance_methods: Dict[str, Set[str]] = {}
+        self._external_field_names: Dict[str, Set[str]] = {}
 
         # Top-level go! raw lines
         self._raw_go_top: List[str] = []
@@ -200,6 +204,10 @@ class GoTranspiler(
         # Known interface / class names
         self._interfaces: set = set()
         self._class_names: set = set()
+        self._class_go_names: Dict[str, str] = {}
+        self._instance_methods: Dict[str, Set[str]] = {}
+        self._method_go_names: Dict[Tuple[str, str], str] = {}
+        self._field_go_names: Dict[Tuple[str, str], str] = {}
 
         # Static methods per class
         self._static_methods: Dict[str, Set[str]] = {}
@@ -226,6 +234,10 @@ class GoTranspiler(
         # (``f(name="alice", times=3)``) into the positional shape that
         # the emitted Go function actually expects.
         self._func_param_names: Dict[str, List[str]] = {}
+        # Per-function Go parameter types, in the same order as
+        # ``_func_param_names``. Call sites use this as contextual type
+        # information for anonymous collection literals.
+        self._func_param_go_types: Dict[str, List[str]] = {}
 
         # Method return types — keyed as ``Class.method`` and used by
         # ``_infer_receiver_class`` to thread receiver-class info
@@ -250,6 +262,7 @@ class GoTranspiler(
         # Variadic functions
         self._variadic_functions: set = set()
         self._var_go_types: Dict[str, str] = {}
+        self._tuple_iterable_element_types: Dict[str, List[str]] = {}
 
         # Generic type parameters.
         # ``_generic_classes[C]`` holds the Go type-parameter clause
@@ -282,6 +295,9 @@ class GoTranspiler(
         # means "no declared return", in which case ``return`` is a
         # complete Go statement on its own and no rewriting is needed.
         self._current_return_type: str = ""
+        self._expected_expr_go_type: str = ""
+        self._func_return_go_types: Dict[str, str] = {}
+        self._result_payload_go_types: Dict[str, str] = {}
 
         # ``do { } catch err { }`` block state. Each occurrence wraps
         # its body in a Go IIFE returning ``*Result``; the counter
@@ -352,10 +368,16 @@ class GoTranspiler(
         self.class_static_fields = {}
         self.class_bases = {}
         self.class_base_aliases = {}
+        self._class_go_names = {}
+        self._instance_methods = {}
+        self._method_go_names = {}
+        self._field_go_names = {}
+        self._tuple_iterable_element_types = {}
         self.declared_vars = set()
         self.scope_stack = []
         self._user_functions = set()
         self._private_functions = set()
+        self._function_go_names = {}
         self._private_methods = {}
         self._raw_go_top = []
         self._generic_constraints = {}
@@ -369,6 +391,8 @@ class GoTranspiler(
         }
 
         # Pass 0: collect user-defined function names
+        self._collect_declared_type_names(tree)
+        self._finalize_class_go_names()
         self._collect_function_names(tree)
         # Now that every definition has been registered, walk the
         # variant lists once to decide each variant's mangled
@@ -382,28 +406,18 @@ class GoTranspiler(
         # functions would bypass default-arg filling.
         self._user_functions.update(self._external_user_functions)
         self._private_functions.update(self._external_private_functions)
-
-        # Reject silent name collisions before they get to ``go build``.
-        # Lam title-cases public function names to follow Go's export
-        # convention, which can clash with a same-spelled class. The
-        # generated Go would then refuse to compile with ``XYZ
-        # redeclared in this block``. Catch it here with a clear
-        # message — the only fix is to rename one of the symbols.
-        for fn in self._user_functions:
-            if fn == "main" or fn in self._private_functions:
-                continue
-            go_name = self._go_public_name(fn)
-            if go_name in self._class_names:
-                raise RuntimeError(
-                    f"name collision: function '{fn}' compiles to Go "
-                    f"identifier '{go_name}' which is already used by "
-                    f"class '{go_name}'. Rename one of them — e.g. "
-                    f"use a verb-ish function name like 'new{go_name}' "
-                    f"or 'make{go_name}'."
-                )
+        for class_name, methods in self._external_instance_methods.items():
+            self._instance_methods.setdefault(class_name, set()).update(methods)
+        self._finalize_function_go_names()
+        self._static_var_go_names = {
+            self._static_var_go_name(cls, name)
+            for cls, fields in self._static_vars.items()
+            for name in fields
+        }
 
         # Pass 1: collect class field info
         self._collect_class_fields(tree)
+        self._finalize_member_go_names()
 
         # Pass 2: generate code
         body_lines: List[str] = []
@@ -517,11 +531,26 @@ class GoTranspiler(
 
     # ─── Pass 0: Collect function names ────────────────────────
 
+    def _collect_declared_type_names(self, tree: Tree) -> None:
+        if not isinstance(tree, Tree):
+            return
+        if tree.data == "classdef" and tree.children:
+            self._class_names.add(self._get_name(tree.children[0]))
+            return
+        if tree.data == "interfacedef" and tree.children:
+            self._interfaces.add(self._get_name(tree.children[0]))
+            return
+        if tree.data == "funcdef":
+            return
+        for child in tree.children:
+            if isinstance(child, Tree):
+                self._collect_declared_type_names(child)
+
     def _collect_function_names(self, tree: Tree):
         if not isinstance(tree, Tree):
             return
         if tree.data == "funcdef":
-            _, _, _, name_node, params_node, _, _, _ = self._parse_funcdef(tree)
+            _, _, _, name_node, params_node, return_type_node, _, _ = self._parse_funcdef(tree)
             name = self._get_name(name_node)
             self._user_functions.add(name)
             for child in tree.children:
@@ -536,6 +565,12 @@ class GoTranspiler(
             variadic = self._has_variadic(params_node) if params_node else False
             if variadic:
                 self._variadic_functions.add(name)
+            return_type = self._resolve_return_type(return_type_node)
+            if return_type:
+                self._func_return_go_types[name] = return_type
+            payload_type = self._result_payload_go_type(return_type_node)
+            if payload_type:
+                self._result_payload_go_types[name] = payload_type
             # Count params and collect defaults
             arity = self._count_params(params_node)
             self._func_param_counts[name] = arity
@@ -575,6 +610,8 @@ class GoTranspiler(
                     fn_name = self._get_name(fn_node)
                     if is_stat:
                         self._static_methods.setdefault(class_name, set()).add(fn_name)
+                    elif fn_name not in {"init", "__init__"}:
+                        self._instance_methods.setdefault(class_name, set()).add(fn_name)
                     if is_priv:
                         self._private_methods.setdefault(class_name, set()).add(fn_name)
                     # Collect defaults for methods (keyed as class_name.method).
@@ -582,6 +619,9 @@ class GoTranspiler(
                     # (which use the `Class.init` key) pick up defaults too.
                     key_name = "init" if fn_name == "__init__" else fn_name
                     method_key = f"{class_name}.{key_name}"
+                    payload_type = self._result_payload_go_type(return_type_node)
+                    if payload_type:
+                        self._result_payload_go_types[method_key] = payload_type
                     arity = self._count_params(params_node, skip_self=True)
                     self._func_param_counts[method_key] = arity
                     if params_node:
@@ -621,6 +661,99 @@ class GoTranspiler(
         for child in tree.children:
             if isinstance(child, Tree):
                 self._collect_function_names(child)
+
+    def _finalize_class_go_names(self) -> None:
+        claimed: dict[str, str] = {}
+        names = self._class_names | self._interfaces
+        for name in sorted(names, key=lambda item: (not item[:1].isupper(), item)):
+            preferred = self._go_public_name(name)
+            candidate = preferred
+            index = 2
+            while candidate in claimed and claimed[candidate] != name:
+                candidate = f"{preferred}__lam{index}"
+                index += 1
+            self._class_go_names[name] = candidate
+            claimed[candidate] = name
+
+    def _finalize_function_go_names(self) -> None:
+        claimed = {
+            go_name: f"type:{name}"
+            for name, go_name in self._class_go_names.items()
+        }
+        for class_name, methods in self._static_methods.items():
+            go_class = self._go_class_name(class_name)
+            for method in methods:
+                preferred = f"{go_class}_{method}"
+                if method in self._private_methods.get(class_name, set()):
+                    preferred = self._go_binding_name(self._go_private_name(preferred))
+                claimed[preferred] = f"static-method:{class_name}.{method}"
+        for class_name, fields in self._static_vars.items():
+            for field in fields:
+                claimed[self._static_var_go_name(class_name, field)] = f"static-field:{class_name}.{field}"
+        ordered = sorted(
+            self._user_functions,
+            key=lambda item: (item not in self._overload_variants, item[:1].isupper(), item),
+        )
+        for name in ordered:
+            if name in self._function_go_names:
+                continue
+            if name == "main":
+                preferred = "main"
+            elif name in self._private_functions:
+                preferred = self._go_binding_name(self._go_private_name(name))
+            else:
+                preferred = self._go_public_name(name)
+            preferred = self._go_binding_name(preferred)
+            suffixes = {
+                str(variant.get("suffix", ""))
+                for variant in self._overload_variants.get(name, [])
+            } or {""}
+            candidate = preferred
+            index = 2
+            owner = f"function:{name}"
+            while any(
+                candidate + suffix in claimed and claimed[candidate + suffix] != owner
+                for suffix in suffixes
+            ):
+                candidate = f"{preferred}__lam{index}"
+                index += 1
+            self._function_go_names[name] = candidate
+            for suffix in suffixes:
+                claimed[candidate + suffix] = owner
+
+    def _finalize_member_go_names(self) -> None:
+        for class_name in self._class_names:
+            entries: list[tuple[str, str, str]] = []
+            for method in self._instance_methods.get(class_name, set()):
+                if method in DUNDER_OPS:
+                    preferred = DUNDER_OPS[method]
+                elif method in self._private_methods.get(class_name, set()):
+                    preferred = self._go_binding_name(self._go_private_name(method))
+                elif method in {"__str__", "__repr__"}:
+                    preferred = "String"
+                elif method == "__len__":
+                    preferred = "Len"
+                else:
+                    preferred = self._go_public_name(method)
+                entries.append(("method", method, preferred))
+            fields = {name for name, _go_type in self.class_fields.get(class_name, [])}
+            fields.update(self._external_field_names.get(class_name, set()))
+            entries.extend(("field", field, self._go_public_name(field)) for field in fields)
+            claimed: dict[str, tuple[str, str]] = {}
+            for kind, name, preferred in sorted(
+                entries,
+                key=lambda item: (not item[1][:1].isupper(), item[2], item[0], item[1]),
+            ):
+                candidate = preferred
+                index = 2
+                while candidate in claimed and claimed[candidate] != (kind, name):
+                    candidate = f"{preferred}__lam{index}"
+                    index += 1
+                if kind == "method":
+                    self._method_go_names[(class_name, name)] = candidate
+                else:
+                    self._field_go_names[(class_name, name)] = candidate
+                claimed[candidate] = (kind, name)
 
     def _finalize_overload_variants(self) -> None:
         """Assign each overload variant a stable mangled suffix.
@@ -736,6 +869,7 @@ class GoTranspiler(
         # can't address the variadic slot, which matches Python's
         # behaviour.
         names: List[str] = []
+        go_types: List[str] = []
         for child in params_node.children:
             if child is None:
                 continue
@@ -749,6 +883,16 @@ class GoTranspiler(
                     if default_node is not None:
                         defaults.append((param_idx, default_node))
                     names.append(pname or "")
+                    if len(pnode.children) > 1:
+                        go_types.append(self._type_expr_to_go(pnode.children[1]))
+                    else:
+                        go_types.append("interface{}")
+                    param_idx += 1
+                    total += 1
+                elif isinstance(pnode, Tree) and pnode.data == "tuple_typed_param":
+                    type_node = pnode.children[-1]
+                    names.append("")
+                    go_types.append(self._type_expr_to_go(type_node))
                     param_idx += 1
                     total += 1
             elif isinstance(child, Tree) and child.data == "typed_param":
@@ -756,10 +900,23 @@ class GoTranspiler(
                 if skip_self and pname == "self":
                     continue
                 names.append(pname or "")
+                if len(child.children) > 1:
+                    go_types.append(self._type_expr_to_go(child.children[1]))
+                else:
+                    go_types.append("interface{}")
                 param_idx += 1
                 total += 1
             elif isinstance(child, Tree) and child.data == "typed_starparams":
+                star_param = child.children[0] if child.children else None
                 names.append("")
+                if (
+                    isinstance(star_param, Tree)
+                    and star_param.data == "typed_param"
+                    and len(star_param.children) > 1
+                ):
+                    go_types.append("..." + self._type_expr_to_go(star_param.children[1]))
+                else:
+                    go_types.append("...interface{}")
                 param_idx += 1
                 total += 1
         if defaults:
@@ -767,6 +924,7 @@ class GoTranspiler(
         self._func_param_counts[func_name] = total
         if names:
             self._func_param_names[func_name] = names
+            self._func_param_go_types[func_name] = go_types
 
     # ─── Pass 1: Collect class fields ──────────────────────────
 
@@ -942,10 +1100,10 @@ class GoTranspiler(
             )
 
     def _static_var_go_name(self, class_name: str, var_name: str) -> str:
-        base = f"{self._go_public_name(class_name)}_{var_name}"
+        base = f"{self._go_class_name(class_name)}_{var_name}"
         is_private = self._static_vars.get(class_name, {}).get(var_name, False)
         if is_private:
-            return self._go_private_name(base)
+            return self._go_binding_name(self._go_private_name(base))
         return self._go_public_name(base)
 
     def _is_static_var_go_name(self, name: str) -> bool:

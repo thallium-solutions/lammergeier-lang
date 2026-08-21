@@ -1,0 +1,5 @@
+# expect-error: function `values` returns `list[str]`, expected `list[int]`
+
+func values() -> list[int] {
+    return ["bad" for i in range(1)]
+}

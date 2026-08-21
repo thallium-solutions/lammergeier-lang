@@ -1,4 +1,4 @@
-# expect-error: function `widget` and class `Widget` both lower to Go symbol `Widget`
+# expect-pass
 
 func widget() -> int {
     return 1

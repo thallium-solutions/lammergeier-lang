@@ -1,0 +1,26 @@
+# expect: 1:2:3:4
+# expect: 5
+# expect: 6
+
+func userID() -> int { return 1 }
+func UserID() -> int { return 2 }
+
+class record {
+    func init(self, value: int, Value: int) { self.value: int = value; self.Value: int = Value }
+    func label(self) -> int { return self.value }
+    func Label(self) -> int { return self.Value }
+    private func select(self) -> int { return self.value + self.Value }
+    func total(self) -> int { return self.select() }
+}
+
+class Record { static code: int = 6 }
+
+func use(go: int) -> int { chan: int = go; return chan }
+
+func main() {
+    item = record(LAMMERGEIER.userID(), LAMMERGEIER.UserID())
+    print(f"{item.label()}:{item.Label()}:{item.total()}:{use(4)}")
+    direct = LAMMERGEIER.record(2, 3)
+    print(direct.total())
+    print(LAMMERGEIER.Record.code)
+}

@@ -54,6 +54,7 @@ except ImportError as _err:
         return source, []
 from compiler.preprocessor import (
     apply_lammergeier_aliases,
+    dict_destructure_diagnostics,
     expand_dict_destructure,
     find_unknown_lammergeier_aliases,
     LAMMERGEIER_ALIASES,
@@ -584,7 +585,17 @@ def _inline_block_semicolons(code: str) -> str:
             continue
 
         if ch == '{':
-            kind = _classify_brace_open(prev_meaningful, "".join(out))
+            prefix = "".join(out)
+            if not stack and not prefix.strip():
+                # This pass is intentionally line-local. A line can
+                # begin with a dict/set item inside a multiline list,
+                # so a leading ``{`` is safer as an expression literal
+                # here; the cross-line walker still classifies
+                # Allman-style block braces with full surrounding
+                # context later in ``auto_semicolons``.
+                kind = "literal"
+            else:
+                kind = _classify_brace_open(prev_meaningful, prefix)
             stack.append((kind, ""))
             out.append(ch)
         elif ch == '}':
@@ -592,6 +603,10 @@ def _inline_block_semicolons(code: str) -> str:
             inner = ""
             if stack:
                 kind, inner = stack.pop()
+            else:
+                prefix = "".join(out).lstrip()
+                kind = "literal" if prefix.startswith(("{", "[", "(")) else "block"
+                inner = prev_meaningful
             # Insert a ``;`` before this ``}`` if it closes a block
             # whose body has a statement that didn't already end in
             # one of ``; { } ,``.
@@ -606,12 +621,14 @@ def _inline_block_semicolons(code: str) -> str:
                 if trail:
                     out.append(trail)
             out.append(ch)
+            if kind == "literal" and stack:
+                stack[-1] = (stack[-1][0], "x")
         else:
             out.append(ch)
 
         if not ch.isspace():
             prev_meaningful = ch
-            if stack and ch != '{':
+            if stack and ch not in '{}':
                 stack[-1] = (stack[-1][0], ch)
         i += 1
 
@@ -741,6 +758,7 @@ class ParsePreprocessResult:
     source: str
     go_blocks: dict[str, str]
     source_map: SourceMap
+    diagnostics: tuple[tuple[int, int, str], ...] = ()
 
 
 def preprocess_for_parse(source: str) -> ParsePreprocessResult:
@@ -751,6 +769,7 @@ def preprocess_for_parse(source: str) -> ParsePreprocessResult:
     input; later phases can make individual transforms map-aware without
     changing the call sites.
     """
+    diagnostics = tuple(dict_destructure_diagnostics(source))
     rewritten = apply_lammergeier_aliases(source)
     preprocessed, go_blocks = preprocess_go_blocks(rewritten)
     preprocessed = _strip_doc_comments_preserve_lines(preprocessed)
@@ -764,6 +783,7 @@ def preprocess_for_parse(source: str) -> ParsePreprocessResult:
         source=preprocessed,
         go_blocks=go_blocks,
         source_map=SourceMap.identity(len(source.splitlines()) or 1),
+        diagnostics=diagnostics,
     )
 
 
@@ -1252,6 +1272,19 @@ def _collect_go_pins(
     return pins
 
 
+def _library_go_filename(mod_name: str) -> str:
+    """Return a buildable Go filename for a bundled Lam library.
+
+    Go excludes ``*_test.go`` files from normal ``go build`` packages. A Lam
+    module named ``test`` or ``foo_test`` must still compile into the user's
+    binary, so every generated library file carries ``_lam`` before ``.go``.
+    """
+    safe = mod_name.replace("/", "__").replace(".", "__")
+    if safe.startswith("@"):
+        safe = safe[1:]
+    return f"lib_{safe}_lam.go"
+
+
 def _effective_extlibs_dirs(
     source_dir: Path,
     extlibs_paths: list[str] | None,
@@ -1398,12 +1431,16 @@ def compile_lam(
     # AST so it adds <50ms even on the largest .lam.
     if not no_semantic_check:
         from compiler import semantic as _semantic
-        sem_diags = _semantic.check_source(
+        sem_diags = [
+            _semantic.SemanticError(line, col, message, "assign")
+            for line, col, message in parse_input.diagnostics
+        ]
+        sem_diags.extend(_semantic.check_source(
             tree,
             go_blocks=go_blocks,
             module_index=module_index,
             source_path=source_file,
-        )
+        ))
         warning_block = _semantic.render_warnings(sem_diags, source, str(source_path))
         if warning_block:
             print(warning_block, file=sys.stderr)
@@ -1552,13 +1589,9 @@ def compile_lam(
         line, col = _node_loc(node)
         src_lines = source.split("\n")
         src_line = src_lines[line - 1] if 1 <= line <= len(src_lines) else ""
-        known_modules = sorted(
-            p.stem
-            for d in lib_dirs
-            if d.exists()
-            for p in d.glob("*.lam")
-        )
+        known_modules = module_index.available_modules(source_file)
         suggestion = _get_close_matches(mod_name, known_modules, n=1, cutoff=0.72)
+        relative_candidates = module_index.module_relative_candidates(mod_name)
         out = [
             f"error: import resolution failed for {source_path}",
             f"  line {line}: module `{mod_name}` could not be found",
@@ -1568,13 +1601,11 @@ def compile_lam(
             out.append(f"        {' ' * max(0, col - 1)}^")
         if suggestion:
             out.append(f"  help: did you mean `{suggestion[0]}`?")
-        out.append(
-            f"  help: Lammergeier looked for `{mod_name}.lam` or "
-            f"`{mod_name}/__init__.lam`."
-        )
+        looked_for = " or ".join(f"`{path.as_posix()}`" for path in relative_candidates)
+        out.append(f"  help: Lammergeier looked for {looked_for}.")
         out.append("  searched:")
-        for d in lib_dirs:
-            out.append(f"    - {d}")
+        for path in module_index.module_search_paths(source_file, mod_name):
+            out.append(f"    - {path}")
         return "\n".join(out)
 
     def _from_import_symbols(node) -> list[tuple[str, str, Tree]]:
@@ -1731,6 +1762,13 @@ def compile_lam(
     lib_pre_class_names: set[str] = set()
     lib_pre_static_methods: dict[str, set[str]] = {}
     lib_pre_static_vars: dict[str, dict[str, bool]] = {}
+    lib_pre_result_payload_go_types: dict[str, str] = {}
+    lib_pre_user_functions: set[str] = set()
+    lib_pre_private_functions: set[str] = set()
+    lib_pre_instance_methods: dict[str, set[str]] = {}
+    lib_pre_private_methods: dict[str, set[str]] = {}
+    lib_pre_private_classes: set[str] = set()
+    lib_pre_field_names: dict[str, set[str]] = {}
     seen: set[str] = set()
     worklist: list[tuple[str, Path]] = [(mod, source_file) for mod in _pre_transpiler._lam_imports]
     while worklist:
@@ -1749,7 +1787,12 @@ def compile_lam(
         # diagnostics).
         try:
             sub_source = mod_file.read_bytes().decode("utf-8")
-            module_index.update_file(mod_file, sub_source)
+            module_facts = module_index.update_file(mod_file, sub_source)
+            lib_pre_private_classes.update(
+                export.name
+                for export in module_facts.exports.values()
+                if export.kind == "class" and export.detail.lstrip().startswith("private ")
+            )
             sub_pre = preprocess_for_parse(sub_source).source
             sub_parser = create_parser()
             sub_tree = sub_parser.parse(sub_pre + "\n")
@@ -1785,6 +1828,15 @@ def compile_lam(
                 lib_pre_static_methods.setdefault(cls, set()).update(meths)
             for cls, fields in sub_collector._static_vars.items():
                 lib_pre_static_vars.setdefault(cls, {}).update(fields)
+            lib_pre_result_payload_go_types.update(sub_collector._result_payload_go_types)
+            lib_pre_user_functions.update(sub_collector._user_functions)
+            lib_pre_private_functions.update(sub_collector._private_functions)
+            for cls, methods in sub_collector._instance_methods.items():
+                lib_pre_instance_methods.setdefault(cls, set()).update(methods)
+            for cls, methods in sub_collector._private_methods.items():
+                lib_pre_private_methods.setdefault(cls, set()).update(methods)
+            for cls, fields in sub_collector.class_fields.items():
+                lib_pre_field_names.setdefault(cls, set()).update(name for name, _go_type in fields)
         except Exception:
             # Pre-scan is best-effort; downstream transpile will
             # surface real errors with full positional diagnostics.
@@ -1811,13 +1863,23 @@ def compile_lam(
     # transitive imports). The emitter injects these into each
     # library transpiler too, so what the typo guard accepts here
     # matches exactly what the dispatcher will resolve later.
-    extra_valid |= set(lib_pre_class_names)
+    private_external: set[str] = set(lib_pre_private_functions) | set(lib_pre_private_classes)
+    extra_valid.update(set(lib_pre_user_functions) - set(lib_pre_private_functions))
+    extra_valid.update(set(lib_pre_class_names) - set(lib_pre_private_classes))
     for cls, methods in lib_pre_static_methods.items():
-        for m in methods:
-            extra_valid.add(f"{cls}.{m}")
+        for method in methods:
+            tail = f"{cls}.{method}"
+            if method in lib_pre_private_methods.get(cls, set()):
+                private_external.add(tail)
+            else:
+                extra_valid.add(tail)
     for cls, fields in lib_pre_static_vars.items():
-        for name in fields:
-            extra_valid.add(f"{cls}.{name}")
+        for name, is_private in fields.items():
+            tail = f"{cls}.{name}"
+            if is_private:
+                private_external.add(tail)
+            else:
+                extra_valid.add(tail)
     unknown = find_unknown_lammergeier_aliases(source, extra_valid=extra_valid)
     if unknown:
         print(f"error: unknown LAMMERGEIER.* reference in {source_path}", file=sys.stderr)
@@ -1829,8 +1891,14 @@ def compile_lam(
             tail = full.split(".", 1)[1] if "." in full else full
             match = _gcm(tail, valid_tails, n=1, cutoff=0.65)
             suffix = f" — did you mean `LAMMERGEIER.{match[0]}`?" if match else ""
-            print(f"  line {lineno}: `{full}` does not resolve to a known "
-                  f"symbol{suffix}", file=sys.stderr)
+            if tail in private_external:
+                print(
+                    f"  line {lineno}: `{full}` is private and not visible from this module",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"  line {lineno}: `{full}` does not resolve to a known "
+                      f"symbol{suffix}", file=sys.stderr)
             start = max(0, lineno - 2)
             end = min(len(src_lines), lineno + 1)
             for i in range(start, end):
@@ -1859,6 +1927,10 @@ def compile_lam(
            for cls, meths in sorted(lib_pre_static_methods.items())]
         + [f"{cls}${','.join(f'{name}:{int(is_private)}' for name, is_private in sorted(fields.items()))}"
            for cls, fields in sorted(lib_pre_static_vars.items())]
+        + [f"{name}%{go_type}" for name, go_type in sorted(lib_pre_result_payload_go_types.items())]
+        + [f"fn:{name}:{int(name in lib_pre_private_functions)}" for name in sorted(lib_pre_user_functions)]
+        + [f"methods:{cls}:{','.join(sorted(names))}" for cls, names in sorted(lib_pre_instance_methods.items())]
+        + [f"fields:{cls}:{','.join(sorted(names))}" for cls, names in sorted(lib_pre_field_names.items())]
     )).encode("utf-8")
 
     def _transpile_lib(mod_name, mod_file):
@@ -1880,9 +1952,9 @@ def compile_lam(
                 cache_hit = _lamcache.deserialise_transpile_result(entry)
         if cache_hit is not None:
             (go_src, cls, stat, svars, defs, counts, var, ufns, pfns,
-             mret, pnames) = cache_hit
+             mret, rpayloads, overloads, pnames, ptypes) = cache_hit
             return (mod_name, go_src, cls, stat, svars, defs, counts, var,
-                    ufns, pfns, mret, pnames)
+                    ufns, pfns, mret, rpayloads, overloads, pnames, ptypes)
 
         # Apply the same parse preprocessing pipeline used for main
         # files, including LAMMERGEIER.* aliases and go! extraction.
@@ -1912,6 +1984,13 @@ def compile_lam(
             lib_transpiler._static_methods.setdefault(cls, set()).update(meths)
         for cls, fields in lib_pre_static_vars.items():
             lib_transpiler._static_vars.setdefault(cls, {}).update(fields)
+        lib_transpiler._result_payload_go_types.update(lib_pre_result_payload_go_types)
+        lib_transpiler._external_user_functions.update(lib_pre_user_functions)
+        lib_transpiler._external_private_functions.update(lib_pre_private_functions)
+        for cls, methods in lib_pre_instance_methods.items():
+            lib_transpiler._external_instance_methods.setdefault(cls, set()).update(methods)
+        for cls, fields in lib_pre_field_names.items():
+            lib_transpiler._external_field_names.setdefault(cls, set()).update(fields)
         lib_go = lib_transpiler.transpile(lib_tree)
         # Remove func main() block from library — but also drop any
         # `//line` directive immediately preceding it so the stripped
@@ -1954,7 +2033,14 @@ def compile_lam(
                         lowered_pairs.append((idx, node))
                     else:
                         try:
-                            lowered_pairs.append((idx, lib_transpiler._expr_to_go(node)))
+                            target_type = lib_transpiler._param_go_type_at(
+                                lib_transpiler._func_param_go_types.get(fn, []),
+                                idx,
+                            )
+                            lowered_pairs.append((
+                                idx,
+                                lib_transpiler._typed_value_to_go(node, target_type),
+                            ))
                         except Exception:
                             # If a default can't be lowered ahead of
                             # call-site context (e.g. it references a
@@ -1977,7 +2063,10 @@ def compile_lam(
                     lib_transpiler._user_functions,
                     lib_transpiler._private_functions,
                     lib_transpiler._method_return_types,
+                    lib_transpiler._result_payload_go_types,
+                    lib_transpiler._overload_variants,
                     lib_transpiler._func_param_names,
+                    lib_transpiler._func_param_go_types,
                 ),
                 extra=_cross_lib_extra,
             )
@@ -1994,17 +2083,23 @@ def compile_lam(
             lib_transpiler._user_functions,
             lib_transpiler._private_functions,
             lib_transpiler._method_return_types,
+            lib_transpiler._result_payload_go_types,
+            lib_transpiler._overload_variants,
             lib_transpiler._func_param_names,
+            lib_transpiler._func_param_go_types,
         )
 
     # Transpile libraries in parallel
     lib_func_defaults: dict = {}
     lib_func_param_counts: dict = {}
     lib_func_param_names: dict = {}
+    lib_func_param_go_types: dict = {}
     lib_variadic_functions: set = set()
     lib_user_functions: set = set()
     lib_private_functions: set = set()
     lib_method_return_types: dict = {}
+    lib_result_payload_go_types: dict = {}
+    lib_overload_variants: dict[str, list[dict]] = {}
     from concurrent.futures import ThreadPoolExecutor
     if lib_mod_files:
         with ThreadPoolExecutor(max_workers=min(8, len(lib_mod_files))) as pool:
@@ -2014,8 +2109,8 @@ def compile_lam(
                 try:
                     (mod_name, go_src, cls_names, static_meths, static_vars,
                      fn_defaults, fn_param_counts, variadic_set,
-                     user_fns, priv_fns, method_returns,
-                     fn_param_names) = fut.result()
+                     user_fns, priv_fns, method_returns, result_payloads,
+                     overload_variants, fn_param_names, fn_param_go_types) = fut.result()
                 except SyntaxDiagnosticError as e:
                     print(str(e), file=sys.stderr)
                     sys.exit(1)
@@ -2030,10 +2125,14 @@ def compile_lam(
                 lib_func_defaults.update(fn_defaults)
                 lib_func_param_counts.update(fn_param_counts)
                 lib_func_param_names.update(fn_param_names)
+                lib_func_param_go_types.update(fn_param_go_types)
                 lib_variadic_functions.update(variadic_set)
                 lib_user_functions.update(user_fns)
                 lib_private_functions.update(priv_fns)
                 lib_method_return_types.update(method_returns)
+                lib_result_payload_go_types.update(result_payloads)
+                for name, variants in overload_variants.items():
+                    lib_overload_variants.setdefault(name, []).extend(variants)
 
     # Now transpile main with lib class/static info injected
     transpiler = GoTranspiler(
@@ -2044,6 +2143,10 @@ def compile_lam(
     )
     # Inject library class/static info
     transpiler._class_names.update(lib_class_names)
+    for cls_name, methods in lib_pre_instance_methods.items():
+        transpiler._external_instance_methods.setdefault(cls_name, set()).update(methods)
+    for cls_name, fields in lib_pre_field_names.items():
+        transpiler._external_field_names.setdefault(cls_name, set()).update(fields)
     for cls_name, methods in lib_static_methods.items():
         if cls_name not in transpiler._static_methods:
             transpiler._static_methods[cls_name] = set()
@@ -2058,6 +2161,8 @@ def compile_lam(
         transpiler._func_param_counts.setdefault(key, count)
     for key, names in lib_func_param_names.items():
         transpiler._func_param_names.setdefault(key, names)
+    for key, types in lib_func_param_go_types.items():
+        transpiler._func_param_go_types.setdefault(key, types)
     transpiler._variadic_functions.update(lib_variadic_functions)
     # Imported library functions need to be visible to the main
     # transpiler's call-site dispatcher (the ``_user_functions`` /
@@ -2072,6 +2177,13 @@ def compile_lam(
     # inference (eg ``db.table(name).where(...)``).
     for key, ret in lib_method_return_types.items():
         transpiler._method_return_types.setdefault(key, ret)
+    for key, payload_type in lib_result_payload_go_types.items():
+        transpiler._result_payload_go_types.setdefault(key, payload_type)
+    for name, variants in lib_overload_variants.items():
+        transpiler._overload_variants.setdefault(name, []).extend(variants)
+        transpiler._overloaded_functions.setdefault(name, set()).update(
+            int(variant.get("arity", 0)) for variant in variants
+        )
     try:
         go_source = transpiler.transpile(tree)
     except RuntimeError as e:
@@ -2124,18 +2236,11 @@ def compile_lam(
         with open(go_file, "w") as f:
             f.write(go_source)
 
-        # Write library Go sources. ``mod_name`` can be a scoped
-        # package (``@alice/lamwebp``) whose ``/`` would otherwise
-        # reference a subdirectory that doesn't exist in the build
-        # tempdir. Flatten to a filesystem-safe form — strip the
-        # leading ``@`` and replace the scope separator with ``__``
-        # so ``@alice/lamwebp`` → ``lib_alice__lamwebp.go`` (unique
-        # because ``__`` isn't permitted in plain module names).
+        # Write library Go sources. Flatten scoped package names into
+        # filesystem-safe files and avoid Go's reserved ``*_test.go``
+        # suffix so Lam modules named ``test`` still build normally.
         for mod_name, lib_src in lib_sources.items():
-            safe = mod_name.replace("/", "__")
-            if safe.startswith("@"):
-                safe = safe[1:]
-            lib_file = os.path.join(tmpdir, f"lib_{safe}.go")
+            lib_file = os.path.join(tmpdir, _library_go_filename(mod_name))
             with open(lib_file, "w") as f:
                 f.write(lib_src)
 
@@ -2173,10 +2278,19 @@ def compile_lam(
                           file=sys.stderr)
 
         # go mod tidy (download external dependencies if needed)
-        subprocess.run(
+        tidy_result = subprocess.run(
             ["go", "mod", "tidy"],
             cwd=tmpdir, capture_output=True, text=True,
         )
+        if tidy_result.returncode != 0:
+            print(f"error: Go module resolution failed for {source_path}", file=sys.stderr)
+            details = (tidy_result.stderr or tidy_result.stdout or "").strip()
+            if details:
+                for line in details.splitlines():
+                    print(f"  {line}", file=sys.stderr)
+            else:
+                print("  go mod tidy failed without diagnostic output.", file=sys.stderr)
+            sys.exit(1)
 
         # Build command
         build_cmd = ["go", "build", "-buildvcs=false"]
@@ -2405,9 +2519,9 @@ def _cmd_build(argv: list) -> int:
 def _build_fmt_parser() -> "argparse.ArgumentParser":
     ap = argparse.ArgumentParser(
         prog="lamc fmt",
-        description="Format a Lammergeier source file.",
+        description="Format a Lammergeier source file or directory tree.",
     )
-    ap.add_argument("source", help="Path to .lam source file")
+    ap.add_argument("source", help="Path to .lam source file or directory")
     ap.add_argument("--stdout", action="store_true",
                     help="Print formatted source instead of writing the file")
     ap.add_argument("--check", action="store_true",
@@ -2420,26 +2534,44 @@ def _cmd_fmt(argv: list) -> int:
 
     args = _build_fmt_parser().parse_args(argv)
     path = Path(args.source)
-    try:
-        source = path.read_text(encoding="utf-8")
-        result = format_lam_source(source)
-    except OSError as e:
-        print(f"error: cannot read {path}: {e}", file=sys.stderr)
-        return 1
-    except FormatError as e:
-        print(f"error: cannot format {path}: {e}", file=sys.stderr)
-        return 1
-    if args.check:
-        if result.changed:
-            print(f"{path} is not formatted", file=sys.stderr)
+    if path.is_dir():
+        if args.stdout:
+            print("error: lamc fmt --stdout requires a single .lam file", file=sys.stderr)
             return 1
-        return 0
-    if args.stdout:
-        print(result.text, end="")
-        return 0
-    if result.changed:
-        path.write_text(result.text, encoding="utf-8")
-    return 0
+        targets = sorted(p for p in path.rglob("*.lam") if p.is_file())
+        if not targets:
+            return 0
+    else:
+        targets = [path]
+
+    failed = False
+    changed = False
+    for target in targets:
+        try:
+            source = target.read_text(encoding="utf-8")
+            result = format_lam_source(source)
+        except OSError as e:
+            print(f"error: cannot read {target}: {e}", file=sys.stderr)
+            failed = True
+            continue
+        except FormatError as e:
+            print(f"error: cannot format {target}: {e}", file=sys.stderr)
+            failed = True
+            continue
+        if args.check:
+            if result.changed:
+                print(f"{target} is not formatted", file=sys.stderr)
+                changed = True
+            continue
+        if args.stdout:
+            print(result.text, end="")
+            return 0
+        if result.changed:
+            target.write_text(result.text, encoding="utf-8")
+            changed = True
+    if failed:
+        return 1
+    return 1 if args.check and changed else 0
 
 
 _DOCTOR_REQUIRED = {

@@ -1,0 +1,10 @@
+# expect-pass
+
+func label(skip: bool) -> str {
+    if skip {
+        return "skipped"
+    } else {
+        value = "ready"
+    }
+    return value
+}

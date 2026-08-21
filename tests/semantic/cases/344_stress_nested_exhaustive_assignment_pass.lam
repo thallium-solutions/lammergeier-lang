@@ -1,0 +1,13 @@
+# expect-pass
+
+func choose(flag: bool, code: int) -> str {
+    if flag {
+        match code {
+            case 1 { value = "one" }
+            case _ { value = "other" }
+        }
+    } else {
+        value = "disabled"
+    }
+    return value
+}

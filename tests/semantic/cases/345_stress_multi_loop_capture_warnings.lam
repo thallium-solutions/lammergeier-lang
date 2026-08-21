@@ -1,0 +1,17 @@
+# expect-warning: nested function captures loop variable `row`; copy it if each closure needs its own value
+# expect-warning: nested function captures loop variable `item`; copy it if each closure needs its own value
+
+func main() {
+    matrix: list[list[int]] = [[1, 2]]
+    for row in matrix {
+        for item in row {
+            match item {
+                case 1 {
+                    func read() -> int { return len(row) + item }
+                    print(read())
+                }
+                case _ { pass }
+            }
+        }
+    }
+}

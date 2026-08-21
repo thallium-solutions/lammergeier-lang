@@ -1,0 +1,8 @@
+# expect-pass
+
+func label() -> str {
+    for i in range(1) {
+        name = "ready"
+    }
+    return name
+}

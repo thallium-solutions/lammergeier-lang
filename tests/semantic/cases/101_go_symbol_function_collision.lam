@@ -1,4 +1,4 @@
-# expect-error: function `userID` and function `UserID` both lower to Go symbol `UserID`
+# expect-pass
 
 func userID() -> int {
     return 1

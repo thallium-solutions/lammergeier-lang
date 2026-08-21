@@ -1,0 +1,7 @@
+# expect-error: too many positional arguments in call to `Codec.parse`
+
+from go_backed_package import Codec
+
+func main() {
+    _ = Codec.parse("x", True, 3)
+}

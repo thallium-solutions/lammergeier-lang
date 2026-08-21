@@ -1,0 +1,7 @@
+# expect-error: argument `right` to `Box` has type `str`, expected `int`
+
+from generic_inference_package import Box
+
+func main() {
+    _ = Box(1, "two")
+}

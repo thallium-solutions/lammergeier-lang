@@ -1,0 +1,18 @@
+# expect-error: cannot reassign constant `ledger`
+
+func outer() {
+    const ledger: int = 0
+    func middle() {
+        func inner(delta: int) {
+            nonlocal ledger
+            if delta > 0 {
+                match delta {
+                    case 1 { ledger = ledger + delta }
+                    case _ { ledger = delta }
+                }
+            }
+        }
+        inner(1)
+    }
+    middle()
+}

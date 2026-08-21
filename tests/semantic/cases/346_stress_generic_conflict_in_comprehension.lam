@@ -1,0 +1,10 @@
+# expect-error: argument `right` to `same` has type `list[str]`, expected `list[int]`
+
+func same[T](left: list[T], right: list[T]) -> list[T] { return left }
+
+func main() {
+    numbers: list[int] = [1]
+    names: list[str] = ["one"]
+    nested: list[list[int]] = [same(numbers, names) for attempt in range(2) if attempt >= 0]
+    print(nested)
+}

@@ -1,0 +1,19 @@
+# expect-error: unknown member `total.rendr`
+# expect-error: did you mean `total.render`
+
+class Document {
+    func __add__(self, other: Document) -> Document {
+        return self
+    }
+
+    func render(self) -> str {
+        return "ok"
+    }
+}
+
+func main() {
+    left = Document()
+    right = Document()
+    total = left + right
+    print(total.rendr())
+}

@@ -84,7 +84,7 @@ def _assert_resolves(source: str, libs: dict[str, str]) -> None:
         _write(main, source)
         proc = _run(main)
         combined = (proc.stderr or "") + "\n" + (proc.stdout or "")
-        if "import resolution failed" in combined:
+        if proc.returncode != 0 or "import resolution failed" in combined:
             raise AssertionError(f"unexpected import-resolution failure:\n{combined}")
 
 
@@ -181,12 +181,112 @@ def test_from_import_valid_symbols_resolve() -> None:
                 "    x: int = 0\n"
                 "}\n"
                 "func origin() -> Point {\n"
-                "    return Point{}\n"
+                "    return Point()\n"
                 "}\n"
             )
         },
     )
     print("PASS: valid imported symbols resolve")
+
+
+def test_nested_submodule_resolves() -> None:
+    _assert_resolves(
+        "from lamwebp.codec import decode\n\nfunc main() {\n    print(decode(4))\n}\n",
+        {"lamwebp/codec.lam": "func decode(value: int) -> int { return value * 2 }\n"},
+    )
+    print("PASS: nested submodule resolves")
+
+
+def test_deep_nested_submodule_resolves() -> None:
+    _assert_resolves(
+        "from lamwebp.io.files import extension\n\nfunc main() {\n    print(extension())\n}\n",
+        {"lamwebp/io/files.lam": "func extension() -> str { return \".webp\" }\n"},
+    )
+    print("PASS: deeply nested submodule resolves")
+
+
+def test_nested_package_submodule_resolves() -> None:
+    _assert_resolves(
+        "from lamwebp.io.files import readWebp\n\nfunc main() {\n    print(readWebp(\"image.webp\"))\n}\n",
+        {"lamwebp/io/files/__init__.lam": "func readWebp(path: str) -> str { return path }\n"},
+    )
+    print("PASS: nested package submodule resolves")
+
+
+def test_root_package_and_submodule_resolve_together() -> None:
+    _assert_resolves(
+        "from lamwebp import version\nfrom lamwebp.codec import decode\n\nfunc main() {\n    print(version() + decode())\n}\n",
+        {
+            "lamwebp/__init__.lam": "func version() -> str { return \"v1\" }\n",
+            "lamwebp/codec.lam": "func decode() -> str { return \"-codec\" }\n",
+        },
+    )
+    print("PASS: root package and submodule resolve together")
+
+
+def test_package_reexports_submodule_symbol() -> None:
+    _assert_resolves(
+        "from lamwebp import decode\n\nfunc main() {\n    print(decode())\n}\n",
+        {
+            "lamwebp/__init__.lam": "from lamwebp.codec import decode\n",
+            "lamwebp/codec.lam": "func decode() -> str { return \"ok\" }\n",
+        },
+    )
+    print("PASS: package root reexports submodule symbol")
+
+
+def test_submodule_alias_resolves() -> None:
+    _assert_resolves(
+        "from lamwebp.codec import decode as readImage\n\nfunc main() {\n    print(readImage())\n}\n",
+        {"lamwebp/codec.lam": "func decode() -> str { return \"ok\" }\n"},
+    )
+    print("PASS: submodule import alias resolves")
+
+
+def test_submodule_transitive_import_resolves() -> None:
+    _assert_resolves(
+        "from lamwebp.codec.decoder import decode\n\nfunc main() {\n    print(decode())\n}\n",
+        {
+            "lamwebp/codec/decoder.lam": (
+                "from lamwebp.io.files import suffix\n"
+                "func decode() -> str { return \"image\" + suffix() }\n"
+            ),
+            "lamwebp/io/files.lam": "func suffix() -> str { return \".webp\" }\n",
+        },
+    )
+    print("PASS: transitive submodule import resolves")
+
+
+def test_nested_submodule_precedes_legacy_dotted_file() -> None:
+    _assert_resolves(
+        "from lamwebp.codec import decode\n\nfunc main() {\n    print(decode())\n}\n",
+        {
+            "lamwebp/codec.lam": "func decode() -> str { return \"nested\" }\n",
+            "lamwebp.codec.lam": "func legacy() -> str { return \"legacy\" }\n",
+        },
+    )
+    print("PASS: nested submodule precedes legacy dotted file")
+
+
+def test_legacy_dotted_module_file_fallback() -> None:
+    _assert_resolves(
+        "from lamwebp.codec import decode\n\nfunc main() {\n    print(decode())\n}\n",
+        {"lamwebp.codec.lam": "func decode() -> str { return \"legacy\" }\n"},
+    )
+    print("PASS: legacy dotted module file remains a fallback")
+
+
+def test_missing_nested_submodule_lists_nested_paths() -> None:
+    _assert_missing_module(
+        "from lamwebp.io.files import readWebp\n\nfunc main() {\n    pass\n}\n",
+        [
+            "module `lamwebp.io.files` could not be found",
+            "lamwebp/io/files.lam",
+            "lamwebp/io/files/__init__.lam",
+            "lamwebp.io.files.lam",
+        ],
+    )
+    print("PASS: missing nested submodule lists nested search paths")
 
 
 def main() -> None:
@@ -199,6 +299,16 @@ def main() -> None:
         test_from_import_missing_symbol_suggestion,
         test_from_import_missing_symbol_alias,
         test_from_import_valid_symbols_resolve,
+        test_nested_submodule_resolves,
+        test_deep_nested_submodule_resolves,
+        test_nested_package_submodule_resolves,
+        test_root_package_and_submodule_resolve_together,
+        test_package_reexports_submodule_symbol,
+        test_submodule_alias_resolves,
+        test_submodule_transitive_import_resolves,
+        test_nested_submodule_precedes_legacy_dotted_file,
+        test_legacy_dotted_module_file_fallback,
+        test_missing_nested_submodule_lists_nested_paths,
     ]
     for test in tests:
         test()

@@ -1,0 +1,72 @@
+# expect-error: function `badReturn` returns `list[str]`, expected `list[int]`
+# expect-error: cannot assign `list[str]` to `list[int]` target `xs`
+# expect-error: cannot assign `list[str]` to `list[int]` target `rows[...]`
+# expect-error: cannot assign `list[str]` to `list[int]` target `buckets[...]`
+# expect-error: cannot assign `list[list[str]]` to `list[list[int]]` target `grid`
+# expect-error: cannot assign `dict[str, list[str]]` to `dict[str, list[int]]` target `mapped`
+# expect-error: cannot assign `list[list[str]]` to `list[list[int]]` target `self.rows`
+# expect-error: list append expects `list[int]`, got `list[str]`
+# expect-error: list extend expects `list[int]`, got `list[str]`
+# expect-error: list insert index expects `int`, got `str`
+# expect-error: lambda returns `list[str]`, expected `list[int]`
+# expect-error: cannot assign `list[int]` to `list[str]` variable `badSorted`
+# expect-error: cannot assign `int` to `str` variable `badPop`
+# expect-error: cannot assign `list[str]` to `list[int]` variable `badMapped`
+# expect-error: cannot assign `set[str]` to `set[int]` target `ids`
+# expect-error: argument `ids` to `takeSet` has type `set[str]`, expected `set[int]`
+# expect-error: membership test for `set[int]` expects `int`, got `str`
+
+func badReturn() -> list[int] {
+    return ["bad"]
+}
+
+func takeSet(ids: set[int]) -> int {
+    return len(ids)
+}
+
+class Box {
+    func init(self) {
+        self.rows: list[list[int]] = []
+        self.rows = [["bad"]]
+    }
+}
+
+func main() {
+    xs: list[int] = [1]
+    xs = ["bad"]
+
+    rows: list[list[int]] = [[1]]
+    rows[0] = ["bad"]
+
+    buckets: dict[str, list[int]] = {}
+    buckets["a"] = ["bad"]
+
+    grid: list[list[int]] = []
+    grid = [["bad"] for i in range(1)]
+
+    mapped: dict[str, list[int]] = {}
+    mapped = {"x": ["bad"] for i in range(1)}
+
+    nested: list[list[int]] = []
+    nested.append(["bad"])
+
+    vals: list[int] = [1]
+    vals.extend(["bad"])
+    vals.insert("zero", 2)
+
+    makeNums: func() -> list[int] = lambda () -> list[int]: ["bad"]
+    print(makeNums)
+
+    badSorted: list[str] = sorted([1, 2])
+    badPop: str = vals.pop()
+    badMapped: list[int] = vals.map(lambda n: str(n))
+    ids: set[int] = {1}
+    print("bad" in ids)
+    ids = {"bad"}
+    print(badSorted)
+    print(badPop)
+    print(badMapped)
+    print(takeSet({"bad"}))
+    print(ids)
+    print(Box())
+}

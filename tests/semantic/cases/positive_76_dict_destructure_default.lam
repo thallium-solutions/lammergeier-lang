@@ -1,0 +1,8 @@
+# expect-pass
+
+func main() {
+    {name, role = "reader", age: years = 0} = {"name": "Ada"}
+    print(name)
+    print(role)
+    print(years)
+}

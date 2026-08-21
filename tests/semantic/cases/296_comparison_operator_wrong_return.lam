@@ -1,0 +1,7 @@
+# expect-error: operator method `Score.__eq__` must return `bool`, got `int`
+
+class Score {
+    func __eq__(self, other: Score) -> int {
+        return 1
+    }
+}

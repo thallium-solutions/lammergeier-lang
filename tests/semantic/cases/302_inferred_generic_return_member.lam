@@ -1,0 +1,17 @@
+# expect-error: unknown member `document.rendr`
+# expect-error: did you mean `document.render`
+
+func identity[T](value: T) -> T {
+    return value
+}
+
+class Document {
+    func render(self) -> str {
+        return "ok"
+    }
+}
+
+func main() {
+    document = identity(Document())
+    print(document.rendr())
+}

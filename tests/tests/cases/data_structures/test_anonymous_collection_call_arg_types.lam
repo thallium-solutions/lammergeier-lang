@@ -1,0 +1,125 @@
+# expect: red:3
+# expect: true
+# expect: 40
+# expect: 8
+# expect: 13
+# expect: 21
+# expect: 2
+# expect: backup
+# expect: 18
+# expect: 30
+# expect: 9
+# expect: 7
+# expect: 3
+# expect: 8
+# expect: 15
+# expect: 3
+# expect: 2
+# expect: 23
+
+func describeWords(words: list[str]) -> str {
+    return words[0] + ":" + str(len(words))
+}
+
+func allTrue(flags: list[bool]) -> bool {
+    for flag in flags {
+        if flag == False {
+            return False
+        }
+    }
+    return True
+}
+
+func floatTenths(values: list[float]) -> int {
+    return int((values[0] + values[1]) * 10.0)
+}
+
+func rowPick(rows: list[dict[str, int]]) -> int {
+    return rows[1]["right"]
+}
+
+func bucketTotal(buckets: dict[str, list[int]]) -> int {
+    return buckets["left"][0] + buckets["right"][1]
+}
+
+func nestedLookup(values: dict[str, dict[str, int]]) -> int {
+    return values["outer"]["inner"]
+}
+
+func sumAll(*nums: int) -> int {
+    total: int = 0
+    for n in nums {
+        total += n
+    }
+    return total
+}
+
+func makeNums() -> list[int] {
+    return [10, 20]
+}
+
+class Analyzer {
+    static func score(flags: list[bool]) -> int {
+        if allTrue(flags) {
+            return 2
+        }
+        return 0
+    }
+
+    func init(self, labels: list[str]) {
+        self.labels: list[str] = labels
+    }
+
+    func labelAt(self, idx: int, fallback: list[str] = ["backup"]) -> str {
+        if idx < len(self.labels) {
+            return self.labels[idx]
+        }
+        return fallback[0]
+    }
+}
+
+func main() {
+    print(describeWords(["red", "green", "blue"]))
+    print(allTrue([True, True, True]))
+    print(floatTenths([1.5, 2.5]))
+    print(rowPick([{"left": 3, "right": 5}, {"left": 7, "right": 8}]))
+    print(bucketTotal({"left": [4, 5], "right": [6, 9]}))
+    print(nestedLookup({"outer": {"inner": 21}}))
+    print(Analyzer.score([True, True]))
+
+    a: Analyzer = Analyzer(["primary"])
+    print(a.labelAt(4))
+    print(sumAll(*[5, 6, 7]))
+
+    print(sumAll(*makeNums()))
+
+    xs: list[int] = [1]
+    xs = [4, 5]
+    print(sumAll(*xs))
+
+    rows: list[list[int]] = [[0, 0]]
+    rows[0] = [6, 7]
+    print(rows[0][1])
+
+    buckets: dict[str, list[int]] = {}
+    buckets["a"] = [2, 3]
+    print(buckets["a"][1])
+
+    pairs: list[list[int]] = []
+    pairs.append([4, 8])
+    print(pairs[0][1])
+
+    vals: list[int] = [1]
+    vals.extend([2, 3])
+    vals.insert(1, 9)
+    print(sumAll(*vals))
+
+    grid: list[list[int]] = [[i, i + 1] for i in range(3)]
+    print(grid[2][1])
+
+    mapped: dict[str, list[int]] = {"x": [1, 2] for i in range(1)}
+    print(mapped["x"][1])
+
+    makeMore: func() -> list[int] = lambda () -> list[int]: [11, 12]
+    print(sumAll(*makeMore()))
+}

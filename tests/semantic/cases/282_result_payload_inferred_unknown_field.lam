@@ -1,0 +1,20 @@
+# expect-error: unknown member `document.titel`
+# expect-error: did you mean `document.title`
+
+from lamerrors import Result
+
+class Document {
+    func init(self, title: str) {
+        self.title: str = title
+    }
+}
+
+func loadDocument() -> Result[Document] {
+    return Result.Ok(Document("ok"))
+}
+
+func inspect() -> Result {
+    document = loadDocument()?
+    print(document.titel)
+    return Result.Ok(None)
+}

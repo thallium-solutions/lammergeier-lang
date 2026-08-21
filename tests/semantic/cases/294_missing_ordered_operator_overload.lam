@@ -1,0 +1,9 @@
+# expect-error: operator `<` is not defined for `Score` and `Score`
+
+class Score {}
+
+func main() {
+    left = Score()
+    right = Score()
+    print(left < right)
+}

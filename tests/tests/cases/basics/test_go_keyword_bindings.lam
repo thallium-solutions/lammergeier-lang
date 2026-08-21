@@ -1,0 +1,60 @@
+# expect: 5
+# expect: 3
+# expect: 4
+# expect: 6
+# expect: 0
+# expect: caught
+# expect: 6
+# expect: 9
+# expect: 7
+# expect: user-temp
+# expect: value
+
+from lamerrors import Result
+
+func load() -> Result[int] {
+    return Result.Ok(7)
+}
+
+func take(go: int) -> int {
+    return go
+}
+
+class Query {
+    private func select(self) -> int {
+        return 6
+    }
+
+    func value(self) -> int {
+        return self.select()
+    }
+}
+
+func main() {
+    chan: int = 5
+    print(chan)
+    first, select = [3, 4]
+    print(first)
+    print(select)
+    apply = lambda (go: int): go + 1
+    print(apply(5))
+    for select in range(1) {
+        print(select)
+    }
+    try {
+        raise "caught"
+    } catch select {
+        print(select)
+    }
+    query = Query()
+    print(query.value())
+    __q1: int = 9
+    print(__q1)
+    value: int = load()?
+    print(value)
+    _lamDestruct0: str = "user-temp"
+    data: dict[str, str] = {"item": "value"}
+    {item} = data
+    print(_lamDestruct0)
+    print(item)
+}

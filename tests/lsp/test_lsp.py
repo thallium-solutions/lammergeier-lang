@@ -160,6 +160,80 @@ WARNING_DOC = """func main() {
 }
 """
 
+ERROR_DOC = """func main() {
+    value: int = "wrong"
+    print(missing)
+}
+"""
+
+POSITION_DOC = """class Position {
+    func init(self, x: int, y: int) {
+        self.x: int = x
+        self.y: int = y
+    }
+}
+"""
+
+STATBLOCK_DOC = """class StatBlock {
+    func init(self) {
+        self.maxHp: int = 100
+        self.hp: int = 100
+        self.maxMp: int = 30
+        self.mp: int = 30
+        self.str_: int = 8
+        self.agi: int = 8
+        self.int_: int = 8
+        self.vit: int = 8
+        self.spd: int = 8
+        self.luk: int = 8
+    }
+}
+"""
+
+ENTITY_DOC = """from position import Position
+from statblock import StatBlock
+
+class Entity {
+    func init(self, name: str, pos: Position, stats: StatBlock, spriteKey: str) {
+        self.name: str = name
+        self.pos: Position = pos
+        self.stats: StatBlock = stats
+        self.spriteKey: str = spriteKey
+    }
+}
+"""
+
+PLAYER_DOC = """from entity import Entity
+from position import Position
+from statblock import StatBlock
+
+class Player(Entity) {
+    func init(self, name: str, pos: Position, stats: StatBlock, spriteKey: str, race: str, job: str) {
+        base.init(name, pos, stats, spriteKey)
+        self.race: str = race
+        self.job: str = job
+        self.level: int = 1
+        self.exp: int = 0
+        self.expToNext: int = 100
+    }
+
+    func levelUp(self) {
+        self.level += 1
+        self.expToNext = self.level * 100 + self.level * self.level * 10
+        self.stats.maxHp += 10 + self.stats.vit / 2
+        self.stats.hp = self.stats.maxHp
+        self.stats.maxMp += 5 + self.stats.int_ / 3
+        self.stats.mp = self.stats.maxMp
+        self.stats.str_ += 2
+        self.stats.agi += 1
+        self.stats.int_ += 1
+        self.stats.vit += 1
+        self.stats.spd += 1
+        self.stats.luk += 1
+    }
+}
+"""
+
 INVALID_DOC = """func main() {
     if oops_unbalanced_paren( {
         print("nope")
@@ -189,6 +263,11 @@ USER_MAIN_DOC = """from helper import double
 
 func main() {
     print(double(21))
+}
+"""
+
+SUBMODULE_DOC = """func decode(path: str) -> str {
+    return path
 }
 """
 
@@ -382,6 +461,24 @@ def run_tests() -> int:
         except AssertionError as e:
             failures.append(str(e))
 
+        error_uri = "file:///tmp/lsp_semantic_errors.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": error_uri, "languageId": "lammergeier",
+                "version": 1, "text": ERROR_DOC,
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=4)
+        try:
+            diags = notes[0].get("params", {}).get("diagnostics", []) if notes else []
+            wrong_type = next(diag for diag in diags if "cannot assign `str` to `int`" in diag.get("message", ""))
+            missing_name = next(diag for diag in diags if "undefined name `missing`" in diag.get("message", ""))
+            assert_eq("wrong-type severity", wrong_type.get("severity"), 1)
+            assert_eq("missing-name severity", missing_name.get("severity"), 1)
+            print("PASS: missing names and wrong types publish as error diagnostics")
+        except (AssertionError, StopIteration) as e:
+            failures.append(f"semantic error diagnostics: {e}")
+
         # ── didOpen valid dict destructuring syntax ─────────
         dict_uri = "file:///tmp/lsp_dict_destructure.lam"
         dict_doc = (PROJECT_ROOT / "tests" / "tests" / "cases" / "test_dict_destructure.lam").read_text(encoding="utf-8")
@@ -400,6 +497,56 @@ def run_tests() -> int:
             print("PASS: dict destructuring syntax is accepted by LSP")
         except AssertionError as e:
             failures.append(str(e))
+
+        dict_error_uri = "file:///tmp/lsp_dict_destructure_error.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": dict_error_uri, "languageId": "lammergeier", "version": 1,
+                "text": "func main() {\n    {name, role} = {\"name\": \"Ada\"}\n}\n",
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=4)
+        try:
+            diags = notes[0].get("params", {}).get("diagnostics", []) if notes else []
+            assert_true("dict missing-key diagnostic", any(
+                "key `role` is missing" in diag.get("message", "") for diag in diags
+            ))
+            print("PASS: LSP publishes dict-destructuring preprocess diagnostics")
+        except AssertionError as e:
+            failures.append(f"dict destructuring diagnostic parity: {e}")
+
+        capture_uri = "file:///tmp/lsp_loop_capture.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": capture_uri, "languageId": "lammergeier", "version": 1,
+                "text": "func main() {\n    callbacks: list[any] = []\n    for i in range(2) {\n        callbacks.append(lambda: i)\n    }\n}\n",
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=4)
+        try:
+            diags = notes[0].get("params", {}).get("diagnostics", []) if notes else []
+            warning = next(diag for diag in diags if "captures loop variable `i`" in diag.get("message", ""))
+            assert_eq("capture warning severity", warning.get("severity"), 2)
+            print("PASS: LSP publishes loop-capture warnings")
+        except (AssertionError, StopIteration) as e:
+            failures.append(f"capture diagnostic parity: {e}")
+
+        namespace_uri = "file:///tmp/lsp_lammergeier_typo.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": namespace_uri, "languageId": "lammergeier", "version": 1,
+                "text": "func main() {\n    _ = LAMMERGEIER.Missing()\n}\n",
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=4)
+        try:
+            diags = notes[0].get("params", {}).get("diagnostics", []) if notes else []
+            assert_true("LAMMERGEIER typo diagnostic", any(
+                "does not resolve to a known Lam symbol" in diag.get("message", "") for diag in diags
+            ))
+            print("PASS: LSP publishes LAMMERGEIER namespace diagnostics")
+        except AssertionError as e:
+            failures.append(f"LAMMERGEIER diagnostic parity: {e}")
 
         # ── didOpen with semantic warning ───────────────────
         warn_uri = "file:///tmp/lsp_warning.lam"
@@ -421,6 +568,35 @@ def run_tests() -> int:
             print("PASS: semantic warnings publish as LSP warning diagnostics")
         except AssertionError as e:
             failures.append(str(e))
+
+        # ── imported parent fields should not false-positive ───────
+        for dep_uri, dep_text in (
+            ("file:///tmp/position.lam", POSITION_DOC),
+            ("file:///tmp/statblock.lam", STATBLOCK_DOC),
+            ("file:///tmp/entity.lam", ENTITY_DOC),
+        ):
+            client.notify("textDocument/didOpen", {
+                "textDocument": {
+                    "uri": dep_uri, "languageId": "lammergeier",
+                    "version": 1, "text": dep_text,
+                },
+            })
+            client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        player_uri = "file:///tmp/player.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": player_uri, "languageId": "lammergeier",
+                "version": 1, "text": PLAYER_DOC,
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=3)
+        try:
+            assert_true("got player diagnostics notification", notes)
+            diags = notes[0].get("params", {}).get("diagnostics", [])
+            assert_eq("imported inherited stats member has no diagnostics", diags, [])
+            print("PASS: LSP diagnostics accept imported inherited fields")
+        except AssertionError as e:
+            failures.append(f"imported inherited fields: {e}")
 
         references_uri = "file:///tmp/lsp_references.lam"
         client.notify("textDocument/didOpen", {
@@ -828,11 +1004,12 @@ def run_tests() -> int:
         })
         notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
         try:
-            diags = notes[0].get("params", {}).get("diagnostics", []) if notes else None
-            assert_eq("matched expected-error fixture diagnostics", diags, [])
-            print("PASS: matched expected-error fixtures are quiet in the editor")
-        except AssertionError as e:
-            failures.append(f"expected fixture quieting: {e}")
+            diags = notes[0].get("params", {}).get("diagnostics", []) if notes else []
+            diagnostic = next(diag for diag in diags if "undefined name `mystery`" in diag.get("message", ""))
+            assert_eq("expected-error fixture severity", diagnostic.get("severity"), 1)
+            print("PASS: expected-error fixtures show red diagnostics by default")
+        except (AssertionError, StopIteration) as e:
+            failures.append(f"expected fixture diagnostics: {e}")
 
         mismatch_uri = "file:///tmp/lsp_mismatched_expected_error_fixture.lam"
         client.notify("textDocument/didOpen", {
@@ -844,12 +1021,11 @@ def run_tests() -> int:
         notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
         try:
             diags = notes[0].get("params", {}).get("diagnostics", []) if notes else []
-            assert_true("mismatched fixture emits diagnostic", diags)
-            assert_true("mismatch message is clear",
-                        "fixture expectation not matched" in diags[0].get("message", ""))
-            print("PASS: mismatched expected-error fixtures show one clear diagnostic")
-        except AssertionError as e:
-            failures.append(f"expected fixture mismatch: {e}")
+            diagnostic = next(diag for diag in diags if "undefined name `mystery`" in diag.get("message", ""))
+            assert_eq("mismatched fixture error severity", diagnostic.get("severity"), 1)
+            print("PASS: mismatched fixture directives do not replace source errors by default")
+        except (AssertionError, StopIteration) as e:
+            failures.append(f"expected fixture mismatch diagnostics: {e}")
 
         # ── completion after `Greeter.` shows static methods ──
         resp = client.request("textDocument/completion", {
@@ -998,6 +1174,53 @@ def run_tests() -> int:
             print("PASS: module-name completion suggests stdlib modules")
         except AssertionError as e:
             failures.append(f"module-name completion: {e}")
+
+        submodule_uri = "file:///tmp/lamwebp/codec.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": submodule_uri, "languageId": "lammergeier",
+                "version": 1, "text": SUBMODULE_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        dotted_module_uri = "file:///tmp/lsp_from_submodule.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": dotted_module_uri, "languageId": "lammergeier",
+                "version": 1, "text": "from lamwebp.\n",
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": dotted_module_uri},
+            "position": {"line": 0, "character": len("from lamwebp.")},
+        })
+        labels = {it.get("label") for it in (resp.get("result") or {}).get("items", [])}
+        try:
+            assert_true("nested module suggested after 'from lamwebp.|'",
+                        "lamwebp.codec" in labels)
+            print("PASS: module-name completion suggests nested submodules")
+        except AssertionError as e:
+            failures.append(f"submodule-name completion: {e}")
+
+        dotted_import_uri = "file:///tmp/lsp_from_submodule_import.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": dotted_import_uri, "languageId": "lammergeier",
+                "version": 1, "text": "from lamwebp.codec import \n",
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": dotted_import_uri},
+            "position": {"line": 0, "character": len("from lamwebp.codec import ")},
+        })
+        labels = {it.get("label") for it in (resp.get("result") or {}).get("items", [])}
+        try:
+            assert_true("decode suggested from nested submodule", "decode" in labels)
+            print("PASS: import completion lists nested submodule exports")
+        except AssertionError as e:
+            failures.append(f"submodule import completion: {e}")
 
         # Bare completion should suggest importable symbols without
         # automatically editing imports.
@@ -1218,6 +1441,31 @@ def run_tests() -> int:
 
     finally:
         client.shutdown()
+
+    quiet_client = LspClient()
+    try:
+        quiet_client.request("initialize", {
+            "processId": os.getpid(),
+            "rootUri": f"file://{PROJECT_ROOT}",
+            "capabilities": {},
+            "initializationOptions": {"suppressExpectedDiagnostics": True},
+        })
+        quiet_client.notify("initialized")
+        quiet_uri = "file:///tmp/lsp_quiet_expected_error_fixture.lam"
+        quiet_client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": quiet_uri, "languageId": "lammergeier",
+                "version": 1, "text": EXPECTED_ERROR_DOC,
+            },
+        })
+        notes = quiet_client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=3)
+        diags = notes[0].get("params", {}).get("diagnostics", []) if notes else None
+        assert_eq("opt-in expected diagnostic suppression", diags, [])
+        print("PASS: expected-error diagnostic suppression remains opt-in")
+    except AssertionError as e:
+        failures.append(f"opt-in expected fixture suppression: {e}")
+    finally:
+        quiet_client.shutdown()
 
     print()
     if failures:

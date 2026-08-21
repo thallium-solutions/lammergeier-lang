@@ -1,0 +1,33 @@
+# expect-pass
+
+from lamerrors import Result
+
+class Document {
+    func render(self) -> str {
+        return "document"
+    }
+}
+
+class Image {
+    func render(self) -> str {
+        return "image"
+    }
+}
+
+func loadDocument() -> Result[Document] {
+    return Result.Ok(Document())
+}
+
+func loadImage() -> Result[Image] {
+    return Result.Ok(Image())
+}
+
+func inspect(documentKind: bool) -> Result {
+    if documentKind {
+        item = loadDocument()?
+    } else {
+        item = loadImage()?
+    }
+    print(item.dynamicMember())
+    return Result.Ok(None)
+}

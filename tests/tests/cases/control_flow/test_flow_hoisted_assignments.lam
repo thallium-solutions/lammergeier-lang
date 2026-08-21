@@ -1,0 +1,42 @@
+# expect: ready
+# expect: 4
+# expect: waiting
+# expect: inside
+
+class Resource {
+    func close(self) {
+        pass
+    }
+}
+
+func branch(ok: bool) -> str {
+    if ok {
+        value = "ready"
+    } else {
+        value = "waiting"
+    }
+    return value
+}
+
+func early(skip: bool) -> str {
+    if skip {
+        return "skipped"
+    } else {
+        value = "waiting"
+    }
+    return value
+}
+
+func main() {
+    print(branch(True))
+    for item in range(4, 5) {
+        first = item
+    }
+    print(first)
+    print(early(False))
+    state: str = "before"
+    with Resource() as resource {
+        state = "inside"
+    }
+    print(state)
+}

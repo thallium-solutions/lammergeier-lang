@@ -151,12 +151,52 @@ _DESTRUCTURE_LHS_RE = re.compile(
     # expression. Captures the inner key list and the RHS expression
     # (up to a newline / semicolon — multiline RHSs aren't supported
     # here; if you need one, hoist it into a local first).
-    r"^([ \t]*)\{[ \t]*([a-zA-Z_][\w \t,:]*?)[ \t]*\}[ \t]*=[ \t]*(.+?)[ \t]*(?=\n|;|$)",
+    r"^([ \t]*)\{[ \t]*([a-zA-Z_][^{}\n]*?)[ \t]*\}[ \t]*=[ \t]*(.+?)[ \t]*(?=\n|;|$)",
     re.MULTILINE,
 )
 
 
 _DESTRUCTURE_TEMP_PREFIX = "_lamDestruct"
+
+
+def _dict_destructure_entries(keys_raw: str) -> list[tuple[str, str, str | None]] | None:
+    entries: list[tuple[str, str, str | None]] = []
+    for raw in keys_raw.split(","):
+        part = raw.strip()
+        if not part:
+            continue
+        binding, separator, default = part.partition("=")
+        default_value = default.strip() if separator else None
+        if separator and not default_value:
+            return None
+        if ":" in binding:
+            key, alias = (piece.strip() for piece in binding.split(":", 1))
+        else:
+            key = alias = binding.strip()
+        if not key.isidentifier() or not alias.isidentifier():
+            return None
+        entries.append((key, alias, default_value))
+    return entries or None
+
+
+def dict_destructure_diagnostics(source: str) -> list[tuple[int, int, str]]:
+    diagnostics: list[tuple[int, int, str]] = []
+    for match in _DESTRUCTURE_LHS_RE.finditer(source):
+        entries = _dict_destructure_entries(match.group(2))
+        rhs = match.group(3).strip()
+        if entries is None or not (rhs.startswith("{") and rhs.endswith("}")):
+            continue
+        literal_keys = re.findall(r'''["']([A-Za-z_]\w*)["']\s*:''', rhs)
+        available = set(literal_keys)
+        line = source.count("\n", 0, match.start()) + 1
+        for key, _alias, default in entries:
+            if key not in available and default is None:
+                diagnostics.append((
+                    line,
+                    len(match.group(1)) + 1,
+                    f"dictionary destructuring key `{key}` is missing from the literal; add `{key} = <default>`",
+                ))
+    return diagnostics
 
 
 def expand_dict_destructure(source: str) -> str:
@@ -176,35 +216,28 @@ def expand_dict_destructure(source: str) -> str:
     at the LHS of an ``=``.
     """
     counter = 0
+    reserved_names = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source))
 
     def _replace(m: re.Match) -> str:
         nonlocal counter
         indent = m.group(1)
         keys_raw = m.group(2)
         rhs = m.group(3).strip()
-        # Parse the key list. Each entry is either ``name`` (the key
-        # is also the local name) or ``key: alias`` (rename on bind).
-        entries = []
-        for part in keys_raw.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            if ":" in part:
-                key, alias = part.split(":", 1)
-                key = key.strip()
-                alias = alias.strip()
-            else:
-                key = alias = part
-            if not key.isidentifier() or not alias.isidentifier():
-                return m.group(0)  # bail — keep original text
-            entries.append((key, alias))
-        if not entries:
+        entries = _dict_destructure_entries(keys_raw)
+        if entries is None:
             return m.group(0)
         tmp = f"{_DESTRUCTURE_TEMP_PREFIX}{counter}"
+        while tmp in reserved_names:
+            counter += 1
+            tmp = f"{_DESTRUCTURE_TEMP_PREFIX}{counter}"
+        reserved_names.add(tmp)
         counter += 1
         lines = [f"{indent}{tmp} = {rhs}"]
-        for key, alias in entries:
-            lines.append(f'{indent}{alias} = {tmp}["{key}"]')
+        for key, alias, default in entries:
+            value = f'{tmp}["{key}"]'
+            if default is not None:
+                value = f"{value} ?? {default}"
+            lines.append(f"{indent}{alias} = {value}")
         return "\n".join(lines)
 
     return _DESTRUCTURE_LHS_RE.sub(_replace, source)

@@ -117,7 +117,9 @@ def is_assignable(expected: Type, actual: Type) -> bool:
     if isinstance(expected, DictType) and isinstance(actual, NamedType) and actual.name == "dict":
         return True
     if isinstance(expected, GenericType) and isinstance(actual, NamedType) and actual.name == expected.base:
-        return expected.base in {"set", "tuple"}
+        return expected.base in {"set", "tuple", "Result"}
+    if isinstance(expected, NamedType) and expected.name == "Result" and isinstance(actual, GenericType):
+        return actual.base == "Result" and len(actual.args) <= 1
     if isinstance(expected, ListType) and isinstance(actual, ListType):
         return is_assignable(expected.item, actual.item)
     if isinstance(expected, DictType) and isinstance(actual, DictType):
@@ -195,12 +197,18 @@ def _type_to_go(
             _type_to_go(arg, generic_names=generic_names, interfaces=interfaces, generic_classes=generic_classes) or "interface{}"
             for arg in type_.args
         ]
+        if type_.base == "set":
+            return f"map[{args[0]}]bool" if args else "map[interface{}]bool"
         if type_.base == "tuple":
             return "[]interface{}"
-        if type_.base == "optional":
-            return f"*{args[0]}" if args else "interface{}"
+        if type_.base in {"optional", "Option"}:
+            if not args:
+                return "interface{}"
+            return args[0] if args[0].startswith("*") else f"*{args[0]}"
         if type_.base == "chan":
             return f"chan {args[0]}" if args else "chan interface{}"
+        if type_.base == "Result" and len(args) <= 1:
+            return "*Result"
         if type_.base in generic_classes:
             return f"*{_go_public_name(type_.base)}[{', '.join(args)}]"
         return "interface{}"

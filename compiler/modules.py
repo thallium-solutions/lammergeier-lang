@@ -16,6 +16,10 @@ from compiler.ast_nodes import ClassDecl, FuncDecl, ImportDecl, InterfaceDecl, M
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_MODULE_SCAN_SKIP_DIRS = {
+    ".git", ".hg", ".svn", "__pycache__", "build", "dist", "node_modules",
+    ".mypy_cache", ".pytest_cache",
+}
 
 
 @dataclass(frozen=True)
@@ -241,6 +245,7 @@ class WorkspaceIndex:
         self.stdlib_dir = (stdlib_dir or PROJECT_ROOT / "lib").resolve()
         self.extlibs_dirs = [p.resolve() for p in (extlibs_dirs or []) if p.exists()]
         self.facts_by_path: dict[Path, ModuleFacts] = {}
+        self.source_by_path: dict[Path, str] = {}
 
     @classmethod
     def for_source(
@@ -263,26 +268,24 @@ class WorkspaceIndex:
         source = text if text is not None else path.read_text(encoding="utf-8")
         facts = module_facts_from_source(path, source)
         self.facts_by_path[path] = facts
+        self.source_by_path[path] = source
         return facts
 
     def remove_file(self, path: Path) -> None:
-        self.facts_by_path.pop(path.resolve(), None)
+        path = path.resolve()
+        self.facts_by_path.pop(path, None)
+        self.source_by_path.pop(path, None)
 
     def resolve_module(self, from_path: Path, module: str) -> Path | None:
-        from_dir = from_path.resolve().parent
-        roots = [self.stdlib_dir, *self.extlibs_dirs, from_dir, self.root, self.root / "lib"]
-        seen: set[Path] = set()
+        roots = self._search_roots(from_path)
         for root in roots:
-            root = root.resolve()
-            if root in seen or not root.exists():
-                continue
-            seen.add(root)
-            found = self._module_path_under(root, module)
+            found = self.module_path_under(root, module)
             if found:
                 return found
-        for path, facts in self.facts_by_path.items():
-            if facts.module_name == module and path.parent in {from_dir, self.root, self.root / "lib"}:
-                return path
+        for root in roots:
+            for path in self.facts_by_path:
+                if self.module_name_under(root, path) == module:
+                    return path
         return None
 
     def resolve_import(self, from_path: Path, module: str, name: str) -> ExportSymbol | None:
@@ -294,16 +297,95 @@ class WorkspaceIndex:
             facts = self.update_file(path)
         return facts.exports.get(name)
 
+    def module_search_paths(self, from_path: Path, module: str) -> list[Path]:
+        return [
+            root / relative
+            for root in self._search_roots(from_path)
+            for relative in self.module_relative_candidates(module)
+        ]
+
+    def available_modules(self, from_path: Path) -> list[str]:
+        roots = self._search_roots(from_path)
+        paths = set(self.facts_by_path)
+        for root in roots:
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [
+                    name
+                    for name in dirnames
+                    if name not in _MODULE_SCAN_SKIP_DIRS and not name.startswith(".lamcache")
+                ]
+                directory = Path(dirpath)
+                paths.update(
+                    (directory / filename).resolve()
+                    for filename in filenames
+                    if filename.endswith(".lam")
+                )
+        names = {
+            name
+            for path in paths
+            if (name := self.module_name_for_path(from_path, path))
+        }
+        return sorted(names)
+
+    def module_name_for_path(self, from_path: Path, module_path: Path) -> str:
+        containing = [
+            root
+            for root in self._search_roots(from_path)
+            if self._is_under(module_path, root)
+        ]
+        if not containing:
+            return ""
+        root = max(containing, key=lambda item: len(item.parts))
+        return self.module_name_under(root, module_path)
+
+    def _search_roots(self, from_path: Path) -> list[Path]:
+        from_dir = from_path.resolve().parent
+        candidates = [self.stdlib_dir, *self.extlibs_dirs, from_dir, self.root, self.root / "lib"]
+        roots: list[Path] = []
+        seen: set[Path] = set()
+        for candidate in candidates:
+            root = candidate.resolve()
+            if root in seen or not root.exists():
+                continue
+            seen.add(root)
+            roots.append(root)
+        return roots
+
     @staticmethod
-    def _module_path_under(root: Path, module: str) -> Path | None:
-        rel = Path(module.replace(".", "/"))
-        flat = root / f"{module}.lam"
-        if flat.exists():
-            return flat.resolve()
-        nested_flat = root / rel.with_suffix(".lam")
-        if nested_flat.exists():
-            return nested_flat.resolve()
-        init_file = root / rel / "__init__.lam"
-        if init_file.exists():
-            return init_file.resolve()
+    def module_relative_candidates(module: str) -> list[Path]:
+        nested = Path(module.replace(".", "/"))
+        candidates = [nested.with_suffix(".lam"), nested / "__init__.lam", Path(f"{module}.lam")]
+        return list(dict.fromkeys(candidates))
+
+    @classmethod
+    def module_path_under(cls, root: Path, module: str) -> Path | None:
+        for relative in cls.module_relative_candidates(module):
+            candidate = root / relative
+            if candidate.exists():
+                return candidate.resolve()
         return None
+
+    @staticmethod
+    def _is_under(path: Path, root: Path) -> bool:
+        try:
+            path.resolve().relative_to(root)
+        except ValueError:
+            return False
+        return True
+
+    @classmethod
+    def module_name_under(cls, root: Path, path: Path) -> str:
+        try:
+            relative = path.resolve().relative_to(root)
+        except ValueError:
+            return ""
+        if relative.name == "__init__.lam":
+            parts = relative.parent.parts
+        elif relative.suffix == ".lam":
+            parts = relative.with_suffix("").parts
+        else:
+            return ""
+        if len(parts) >= 2 and parts[0].startswith("@"):
+            base = f"{parts[0]}/{parts[1]}"
+            return ".".join((base, *parts[2:]))
+        return ".".join(parts)

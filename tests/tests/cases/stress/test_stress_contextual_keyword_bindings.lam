@@ -1,0 +1,9 @@
+# expect: 6
+
+func main() {
+    match = {"value": 1}
+    case: int = 2
+    type: int = 3
+    if match["value"] == 1 { case += type } else { case = 0 }
+    print(len(match) + case)
+}

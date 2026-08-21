@@ -1,0 +1,60 @@
+# expect: 1
+# expect: 9
+# expect: 2
+# expect: 8
+# expect: 4
+# expect: 13
+# expect: v5
+# expect: 2
+# expect: true
+# expect: 3
+# expect: true
+# expect: 3
+# expect: 2
+# expect: hardening_ok
+
+func tag(n: int) -> str {
+    return "v" + str(n)
+}
+
+func setSize(ids: set[int]) -> int {
+    return len(ids)
+}
+
+func main() {
+    nums: list[int] = [9, 1, 4]
+    ordered: list[int] = sorted(nums)
+    print(ordered[0])
+
+    stack: list[int] = [7, 8, 9]
+    top: int = stack.pop()
+    print(top)
+    print(len(stack))
+
+    rows: list[list[int]] = [[0, 0], [1, 1]]
+    rows[0:1] = [[6, 8]]
+    print(rows[0][1])
+
+    mapped: list[str] = nums.map(lambda n: str(n))
+    print(mapped[2])
+
+    changed: list[str] = [2, 13].map(lambda n: str(n))
+    print(changed[1])
+
+    tagged: list[str] = [5].map(tag)
+    print(tagged[0])
+
+    ids: set[int] = {1, 2}
+    print(len(ids))
+    print(1 in ids)
+
+    ids = {3, 4, 5}
+    print(len(ids))
+    print(5 in ids)
+
+    squares: set[int] = {i * i for i in range(3)}
+    print(len(squares))
+    print(setSize({8, 9}))
+
+    print("hardening_ok")
+}

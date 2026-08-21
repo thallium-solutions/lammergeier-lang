@@ -1,0 +1,21 @@
+# expect-pass
+
+func choose(value: int) -> (int, str) {
+    return (value, "one")
+}
+
+func choose(left: int, right: int) -> (int, str, bool) {
+    return (left + right, "two", True)
+}
+
+go! {
+    import "strings"
+}
+
+func splitPair(text: str) -> (str, str) {
+    go! {
+        parts := strings.SplitN(text, ":", 2)
+        if len(parts) < 2 { return text, "" }
+        return parts[0], parts[1]
+    }
+}

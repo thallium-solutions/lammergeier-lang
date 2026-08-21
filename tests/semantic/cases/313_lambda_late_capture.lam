@@ -1,0 +1,7 @@
+# expect-error: `message` may be used before assignment
+
+func outer() {
+    show = lambda: message
+    message = "ready"
+    print(show())
+}

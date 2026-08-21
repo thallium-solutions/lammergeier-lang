@@ -1,0 +1,12 @@
+# expect-error: cannot add `Vec` and `int`
+
+class Vec {
+    func __add__(self, other: Vec) -> Vec {
+        return self
+    }
+}
+
+func main() {
+    left = Vec()
+    _ = left + 1
+}

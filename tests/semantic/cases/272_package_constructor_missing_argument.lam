@@ -1,0 +1,7 @@
+# expect-error: missing required argument `prefix` in call to `Codec`
+
+from go_backed_package import Codec
+
+func main() {
+    _ = Codec()
+}

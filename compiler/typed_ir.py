@@ -28,6 +28,7 @@ class TypedExpr:
     span: SourceSpan
     name: str | None = None
     args: tuple["TypedExpr", ...] = ()
+    expected_type: Type | None = None
 
 
 @dataclass(frozen=True)
@@ -243,7 +244,12 @@ def _variables_from_statement(
             _name_text(name_node),
             declared,
             _span(name_node),
-            initializer=_typed_expr(value_node, env=env, signatures=signatures),
+            initializer=_typed_expr(
+                value_node,
+                env=env,
+                signatures=signatures,
+                expected_type=declared,
+            ),
         ),)
     if node.data == "const_stmt":
         name_node = _first_child(node, "name")
@@ -251,36 +257,74 @@ def _variables_from_statement(
         value_node = _const_value_node(node)
         if name_node is None:
             return ()
-        initializer = _typed_expr(value_node, env=env, signatures=signatures)
-        type_ = parse_type(type_node) if type_node is not None else initializer.type if initializer is not None and initializer.type is not None else NamedType("any")
-        return (TypedVariable(_name_text(name_node), type_, _span(name_node), is_const=True, initializer=initializer),)
+        declared = parse_type(type_node) if type_node is not None else None
+        initializer = _typed_expr(
+            value_node,
+            env=env,
+            signatures=signatures,
+            expected_type=declared,
+        )
+        if declared is not None:
+            type_ = declared
+        elif initializer is not None and initializer.type is not None:
+            type_ = initializer.type
+        else:
+            type_ = NamedType("any")
+        return (
+            TypedVariable(
+                _name_text(name_node),
+                type_,
+                _span(name_node),
+                is_const=True,
+                initializer=initializer,
+            ),
+        )
     if node.data == "assign":
         target = node.children[0] if node.children else None
         value = node.children[-1] if len(node.children) > 1 else None
         name_node = _first_name_like(target) if isinstance(target, Tree) else None
-        initializer = _typed_expr(value, env=env, signatures=signatures)
+        target_type = env.get(_name_text(name_node)) if name_node is not None else None
+        initializer = _typed_expr(
+            value,
+            env=env,
+            signatures=signatures,
+            expected_type=target_type,
+        )
         if name_node is None or initializer is None or initializer.type is None:
             return ()
-        return (TypedVariable(_name_text(name_node), initializer.type, _span(name_node), initializer=initializer),)
+        return (
+            TypedVariable(
+                _name_text(name_node),
+                initializer.type,
+                _span(name_node),
+                initializer=initializer,
+            ),
+        )
     return ()
 
 
-def _typed_expr(node, *, env: dict[str, Type], signatures: dict[str, FuncType]) -> TypedExpr | None:
+def _typed_expr(
+    node,
+    *,
+    env: dict[str, Type],
+    signatures: dict[str, FuncType],
+    expected_type: Type | None = None,
+) -> TypedExpr | None:
     if not isinstance(node, Tree):
         return None
     literal_type = _literal_type(node)
     if literal_type is not None:
-        return TypedExpr(node.data, literal_type, _span(node))
+        return TypedExpr(node.data, literal_type, _span(node), expected_type=expected_type)
     if node.data == "var":
         name = _name_text(node)
-        return TypedExpr("name", env.get(name), _span(node), name=name)
+        return TypedExpr("name", env.get(name), _span(node), name=name, expected_type=expected_type)
     if node.data == "list":
         items = tuple(
             expr for expr in (_typed_expr(child, env=env, signatures=signatures) for child in node.children)
             if expr is not None
         )
         item_type = _common_type(tuple(expr.type for expr in items if expr.type is not None)) or NamedType("any")
-        return TypedExpr("list", ListType(item_type), _span(node), args=items)
+        return TypedExpr("list", ListType(item_type), _span(node), args=items, expected_type=expected_type)
     if node.data == "dict":
         pairs = [child for child in node.children if isinstance(child, Tree) and child.data == "key_value"]
         keys: list[Type] = []
@@ -301,22 +345,52 @@ def _typed_expr(node, *, env: dict[str, Type], signatures: dict[str, FuncType]) 
                     values.append(value.type)
         key_type = _common_type(tuple(keys)) or NamedType("str")
         value_type = _common_type(tuple(values)) or NamedType("any")
-        return TypedExpr("dict", DictType(key_type, value_type), _span(node), args=tuple(args))
+        return TypedExpr(
+            "dict",
+            DictType(key_type, value_type),
+            _span(node),
+            args=tuple(args),
+            expected_type=expected_type,
+        )
     if node.data == "tuple":
         items = tuple(
             expr for expr in (_typed_expr(child, env=env, signatures=signatures) for child in node.children)
             if expr is not None
         )
-        return TypedExpr("tuple", GenericType("tuple", tuple(expr.type or NamedType("any") for expr in items)), _span(node), args=items)
+        return TypedExpr(
+            "tuple",
+            GenericType("tuple", tuple(expr.type or NamedType("any") for expr in items)),
+            _span(node),
+            args=items,
+            expected_type=expected_type,
+        )
     if node.data == "funccall" and node.children:
         callee = node.children[0]
-        args = tuple(
-            expr for expr in (_typed_expr(child, env=env, signatures=signatures) for child in _call_arg_nodes(node))
-            if expr is not None
-        )
         name = _call_name(callee)
         sig = signatures.get(name or "")
-        return TypedExpr("call", sig.ret if sig is not None else None, _span(node), name=name, args=args)
+        typed_args: list[TypedExpr] = []
+        for idx, child in enumerate(_call_arg_nodes(node)):
+            arg_expected = (
+                sig.params[idx]
+                if sig is not None and idx < len(sig.params)
+                else None
+            )
+            expr = _typed_expr(
+                child,
+                env=env,
+                signatures=signatures,
+                expected_type=arg_expected,
+            )
+            if expr is not None:
+                typed_args.append(expr)
+        return TypedExpr(
+            "call",
+            sig.ret if sig is not None else None,
+            _span(node),
+            name=name,
+            args=tuple(typed_args),
+            expected_type=expected_type,
+        )
     for child in node.children:
         expr = _typed_expr(child, env=env, signatures=signatures)
         if expr is not None:

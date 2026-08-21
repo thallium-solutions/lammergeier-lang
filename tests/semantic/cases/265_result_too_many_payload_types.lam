@@ -1,0 +1,7 @@
+# expect-error: `Result` accepts at most one payload type, got 2
+
+from lamerrors import Result
+
+func parse() -> Result[int, str] {
+    return Result.Ok(1)
+}

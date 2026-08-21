@@ -1,0 +1,21 @@
+# expect-pass
+
+go! {
+    import "strings"
+}
+
+class Codec {
+    func __init__(self, prefix: str) {
+        self.prefix: str = prefix
+    }
+
+    static func parse(text: str, strict: bool = false) -> str {
+        go! {
+            return strings.TrimSpace(text)
+        }
+    }
+
+    func format(self, text: str, times: int = 1) -> str {
+        return self.prefix + text
+    }
+}

@@ -197,6 +197,9 @@ async function startClient(context: ExtensionContext): Promise<void> {
         synchronize: {
             fileEvents: workspace.createFileSystemWatcher('**/*.lam'),
         },
+        initializationOptions: {
+            suppressExpectedDiagnostics: cfg.get<boolean>('lsp.suppressExpectedDiagnostics', false),
+        },
         outputChannel: output,
     };
 
@@ -274,7 +277,8 @@ export async function activate(context: ExtensionContext): Promise<void> {
                 e.affectsConfiguration('lammergeier.lsp.enabled') ||
                 e.affectsConfiguration('lammergeier.lsp.path') ||
                 e.affectsConfiguration('lammergeier.lsp.args') ||
-                e.affectsConfiguration('lammergeier.lsp.logFile')
+                e.affectsConfiguration('lammergeier.lsp.logFile') ||
+                e.affectsConfiguration('lammergeier.lsp.suppressExpectedDiagnostics')
             ) {
                 output?.appendLine('Configuration changed; restarting LSP.');
                 await stopClient();

@@ -1,0 +1,10 @@
+# expect-pass
+
+func main() {
+    from lamerrors import Result
+    do {
+        print("ok")
+    } catch err {
+        print(err)
+    }
+}

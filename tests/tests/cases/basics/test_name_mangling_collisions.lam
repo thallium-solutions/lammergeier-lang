@@ -1,0 +1,101 @@
+# expect: 1
+# expect: 2
+# expect: 3
+# expect: 4
+# expect: 2
+# expect: 5
+# expect: 6
+# expect: 7
+# expect: 8
+# expect: 9
+# expect: 10
+# expect: 11
+# expect: 1
+# expect: 12
+# expect: 8
+# expect: 13
+
+func userID() -> int {
+    return 1
+}
+
+func UserID() -> int {
+    return 2
+}
+
+class Widget {
+    func init(self, value: int) {
+        self.value: int = value
+    }
+}
+
+func widget() -> int {
+    return 3
+}
+
+class account {
+    func init(self, value: int) {
+        self.value: int = value
+    }
+}
+
+class Account {
+    func init(self, value: int) {
+        self.value: int = value
+    }
+}
+
+class Helpers {
+    static code: int = 13
+
+    static func run() -> int {
+        return 8
+    }
+}
+
+func Helpers_run() -> int {
+    return 9
+}
+
+func pick(value: int) -> int {
+    return 10
+}
+
+func pick(left: int, right: int) -> int {
+    return left + right
+}
+
+func Pick_1() -> int {
+    return 11
+}
+
+func main() {
+    print(userID())
+    print(UserID())
+    print(widget())
+    item = Widget(4)
+    print(item.value)
+    viaAlias: int = 0
+    go! {
+        viaAlias = LAMMERGEIER.UserID()
+    }
+    print(viaAlias)
+    lower = account(5)
+    upper = Account(6)
+    print(lower.value)
+    print(upper.value)
+    classAlias: int = 0
+    go! {
+        classAlias = LAMMERGEIER.account(7).Value
+    }
+    print(classAlias)
+    print(Helpers.run())
+    print(Helpers_run())
+    print(pick(1))
+    print(Pick_1())
+    print(LAMMERGEIER.userID())
+    direct = LAMMERGEIER.Widget(12)
+    print(direct.value)
+    print(LAMMERGEIER.Helpers.run())
+    print(LAMMERGEIER.Helpers.code)
+}

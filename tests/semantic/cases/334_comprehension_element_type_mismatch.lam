@@ -1,0 +1,7 @@
+# expect-error: cannot add `str` and `int`
+
+func main() {
+    names: list[str] = ["a"]
+    values = [name + 1 for name in names]
+    print(values)
+}

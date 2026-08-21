@@ -1,0 +1,9 @@
+# expect-error: `?` requires a `Result` value, got `bool`
+
+from lamerrors import Result
+
+func parse() -> Result {
+    ready: bool = True
+    value = ready?
+    return Result.Ok(value)
+}

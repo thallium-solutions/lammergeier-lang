@@ -1,0 +1,11 @@
+# expect-error: `do/catch` requires `from lamerrors import Result`
+
+from support_import_helper import makeResult
+
+func main() {
+    do {
+        print(makeResult())
+    } catch err {
+        print(err)
+    }
+}

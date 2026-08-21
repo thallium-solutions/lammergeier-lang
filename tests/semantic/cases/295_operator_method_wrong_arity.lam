@@ -1,0 +1,7 @@
+# expect-error: operator method `Vec.__add__` expects 1 operand parameter after `self`, got 2
+
+class Vec {
+    func __add__(self, left: Vec, right: Vec) -> Vec {
+        return self
+    }
+}

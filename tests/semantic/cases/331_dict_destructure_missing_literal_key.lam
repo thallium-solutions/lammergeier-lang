@@ -1,0 +1,7 @@
+# expect-error: dictionary destructuring key `role` is missing from the literal
+
+func main() {
+    {name, role} = {"name": "Ada"}
+    print(name)
+    print(role)
+}

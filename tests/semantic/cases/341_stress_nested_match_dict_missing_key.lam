@@ -1,0 +1,14 @@
+# expect-error: dictionary destructuring key `role` is missing from the literal
+
+func main() {
+    payload = {"name": "Ada"}
+    match len(payload) {
+        case 1 {
+            {name, role} = {"name": "Ada"}
+            print(f"{name}:{role}")
+        }
+        case _ {
+            print("empty")
+        }
+    }
+}

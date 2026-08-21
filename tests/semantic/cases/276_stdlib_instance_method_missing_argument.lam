@@ -1,0 +1,8 @@
+# expect-error: missing required argument `content` in call to `File.write`
+
+from lamos import File
+
+func main() {
+    file = File.open("/tmp/unused")
+    _ = file.write()
+}

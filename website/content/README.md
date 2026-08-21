@@ -151,8 +151,9 @@ Useful subcommands:
   `lark`, stdlib, cache, PATH, Go environment, dependency, manifest, and
   editor-extension diagnostics. Use `--json` for scripts and `--strict` for
   CI-style failure on missing required pieces.
-- **`lamc fmt`:** format `.lam` files with the same parser-validated
-  formatter used by the editor integration.
+- **`lamc fmt`:** format a `.lam` file or every `.lam` file under a
+  directory with the same parser-validated formatter used by the editor
+  integration.
 - **`lamc lib run <script>`:** run a command declared in the nearest
   `lamlib.toml` `[scripts]` table.
 
@@ -289,8 +290,19 @@ sh scripts/test.sh transpile generics
 sh scripts/bench.sh --runs 5
 ```
 
+The full core suite includes stdlib integration tests that expect local
+services:
+
+```bash
+sh scripts/test-services.sh
+```
+
+The script starts disposable `docker run --rm` containers for Postgres,
+Redis on `6380`, password-protected Redis on `6379`, memcached on `11211`,
+and the memcached auth fixture on `11212`.
+
 The full gate runs semantic, syntax, transpilation, LSP, import
-resolution, Python unit checks, core compile-and-run, and rosetta tests
+resolution, Python unit/fuzz checks, core compile-and-run, and rosetta tests
 in that order. The core and rosetta runners compile each `.lam` file
 with the in-tree `lamc`, execute the resulting binary, and compare
 stdout against `# expect:` lines embedded in the test source. The
@@ -327,6 +339,8 @@ proper `#- ... -#` block-comment toggling, and these settings:
   if relative; supports `~` and `${workspaceFolder}`).
 - `lammergeier.lsp.enabled` — master switch.
 - `lammergeier.lsp.logFile` — set to capture a verbose JSON-RPC trace.
+- `lammergeier.lsp.suppressExpectedDiagnostics` — opt into hiding diagnostics
+  matched by `# expect-error` / `# expect-warning` fixture directives.
 - `lammergeier.trace.server` — `off` / `messages` / `verbose`.
 
 Use the **Lammergeier: Restart Language Server** command after
@@ -337,8 +351,8 @@ upgrading the compiler.
 `compiler/lsp.py` is a self-contained Language Server that speaks
 JSON-RPC 2.0 over stdio per LSP v3.17. Capabilities:
 
-- **Diagnostics** — parse-error squiggles published on every
-  `didChange`, with line/column from Lark.
+- **Diagnostics** — parse and semantic errors, including undefined names and
+  wrong types, publish as red squiggles on every `didChange`.
 - **Hover** — function and class signatures (`func helper(x: int) -> int`).
 - **Completion** — top-level functions / classes plus method completion
   after `Foo.` for static methods.

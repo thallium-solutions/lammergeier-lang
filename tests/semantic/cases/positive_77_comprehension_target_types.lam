@@ -1,0 +1,10 @@
+# expect-pass
+
+func main() {
+    pairs: list[tuple[int, str]] = [(1, "one")]
+    labels: list[str] = [label for number, label in pairs]
+    table: dict[str, int] = {"one": 1}
+    entries: list[str] = [key for key, value in table]
+    print(labels)
+    print(entries)
+}

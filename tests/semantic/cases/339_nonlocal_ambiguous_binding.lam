@@ -1,0 +1,14 @@
+# expect-error: nonlocal binding `value` is ambiguous across enclosing functions
+
+func outer() {
+    value = 1
+    func middle() {
+        value: int = 2
+        func inner() {
+            nonlocal value
+            value = 3
+        }
+        inner()
+    }
+    middle()
+}

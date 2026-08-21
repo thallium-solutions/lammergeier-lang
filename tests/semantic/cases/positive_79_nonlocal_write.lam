@@ -1,0 +1,11 @@
+# expect-pass
+
+func outer() {
+    value = 1
+    func inner() {
+        nonlocal value
+        value = 2
+    }
+    inner()
+    print(value)
+}

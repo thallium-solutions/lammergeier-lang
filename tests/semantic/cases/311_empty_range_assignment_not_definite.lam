@@ -1,0 +1,8 @@
+# expect-error: undefined name `name`
+
+func label() -> str {
+    for i in range(0) {
+        name = "ready"
+    }
+    return name
+}

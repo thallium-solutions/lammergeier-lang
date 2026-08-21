@@ -53,7 +53,7 @@ from lark import Tree, Token
 
 from compiler.ast_builder import build_module
 from compiler.ast_nodes import ClassDecl, FuncDecl, ImportDecl, InterfaceDecl, Module, VarDecl
-from compiler.constants import DUNDER_OPS, OP_TO_DUNDER, PYTHON_EXCEPTIONS
+from compiler.constants import CMP_TO_DUNDER, DUNDER_OPS, OP_TO_DUNDER, PYTHON_EXCEPTIONS
 from compiler.diagnostics import (
     Diagnostic,
     DiagnosticSeverity,
@@ -326,6 +326,7 @@ class _Scope:
     # module.
     returns_result: bool = False
     binding_nodes: dict = field(default_factory=dict)
+    nonlocal_names: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -337,6 +338,7 @@ class _CallableSig:
     accepts_kwargs: bool = False
     param_types: tuple[str, ...] = ()
     generic_names: tuple[str, ...] = ()
+    return_type_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -346,6 +348,20 @@ class _MethodShape:
     return_type: str
     param_type_texts: tuple[str, ...] = ()
     return_type_text: str = ""
+
+
+@dataclass(frozen=True)
+class _SupportRequirement:
+    module: str
+    symbol: str
+    syntax: str
+    require_unaliased: bool = True
+
+
+_SUPPORT_REQUIREMENTS = {
+    "do_stmt": _SupportRequirement("lamerrors", "Result", "`do/catch`"),
+    "propagate": _SupportRequirement("lamerrors", "Result", "`?`"),
+}
 
 
 @dataclass
@@ -360,6 +376,7 @@ class _ImportedCallMetadata:
     constructor_sigs: dict[str, list[_CallableSig]] = field(default_factory=dict)
     class_members: dict[str, set[str]] = field(default_factory=dict)
     class_fields: dict[str, set[str]] = field(default_factory=dict)
+    class_field_types: dict[str, dict[str, str]] = field(default_factory=dict)
     class_static_methods: dict[str, set[str]] = field(default_factory=dict)
     class_instance_methods: dict[str, set[str]] = field(default_factory=dict)
     class_method_shapes: dict[str, dict[str, _MethodShape]] = field(default_factory=dict)
@@ -385,6 +402,7 @@ class SemanticChecker:
         imported_constructor_sigs: Optional[dict[str, list[_CallableSig]]] = None,
         imported_class_members: Optional[dict[str, set[str]]] = None,
         imported_class_fields: Optional[dict[str, set[str]]] = None,
+        imported_class_field_types: Optional[dict[str, dict[str, str]]] = None,
         imported_class_static_methods: Optional[dict[str, set[str]]] = None,
         imported_class_instance_methods: Optional[dict[str, set[str]]] = None,
         imported_class_method_shapes: Optional[dict[str, dict[str, _MethodShape]]] = None,
@@ -396,6 +414,7 @@ class SemanticChecker:
         self._extra_known: Set[str] = set(extra_known_names or ())
         self.errors: List[SemanticError] = []
         self._scopes: List[_Scope] = []
+        self._loop_target_stack: list[set[str]] = []
         # Top-level import bindings — collected during pre-scan, then
         # cross-referenced with the module scope's ``used_names`` at
         # the end of :meth:`check` to surface unused-import warnings.
@@ -452,6 +471,10 @@ class SemanticChecker:
             name: set(fields)
             for name, fields in (imported_class_fields or {}).items()
         }
+        self._class_field_types: dict[str, dict[str, str]] = {
+            name: dict(types)
+            for name, types in (imported_class_field_types or {}).items()
+        }
         self._class_static_methods: dict[str, set[str]] = {
             name: set(methods)
             for name, methods in (imported_class_static_methods or {}).items()
@@ -487,8 +510,7 @@ class SemanticChecker:
         self._func_param_types: dict[str, list[tuple[str, ...]]] = {}
         self._ast_classes: dict[str, ClassDecl] = {}
         self._go_blocks: dict[str, str] = dict(go_blocks or {})
-        self._has_lamerrors_result_import = False
-        self._has_aliased_lamerrors_result_import = False
+        self._support_imports: set[tuple[str, str, str]] = set()
 
     # ─── Public API ────────────────────────────────────────────
 
@@ -497,8 +519,7 @@ class SemanticChecker:
         # Module scope holds top-level function names, class names,
         # and import bindings. We collect these up front so forward
         # references across the file don't false-positive.
-        self._has_lamerrors_result_import = False
-        self._has_aliased_lamerrors_result_import = False
+        self._support_imports = set()
         module = _Scope(kind="module")
         module.names |= (BUILTIN_FUNCS | BUILTIN_CONSTANTS | STDLIB_MODULES
                          | PYTHON_EXCEPTIONS)
@@ -599,13 +620,6 @@ class SemanticChecker:
                     )
                 else:
                     seen_func[key] = decl
-                self._record_go_symbol_collision(
-                    decl.span,
-                    seen_go_symbol,
-                    "function",
-                    name,
-                    self._go_function_symbol(name),
-                )
                 self._module_seen[name] = "func"
             elif isinstance(decl, ClassDecl):
                 name = decl.name
@@ -621,13 +635,6 @@ class SemanticChecker:
                     self._error(decl.span, "duplicate", f"duplicate class `{name}`")
                 else:
                     seen_class[name] = decl
-                self._record_go_symbol_collision(
-                    decl.span,
-                    seen_go_symbol,
-                    "class",
-                    name,
-                    self._go_public_name(name),
-                )
                 self._module_seen[name] = "class"
             elif isinstance(decl, InterfaceDecl):
                 name = decl.name
@@ -648,13 +655,6 @@ class SemanticChecker:
                     )
                 else:
                     seen_class[name] = decl
-                self._record_go_symbol_collision(
-                    decl.span,
-                    seen_go_symbol,
-                    "interface",
-                    name,
-                    self._go_public_name(name),
-                )
                 self._module_seen[name] = "class"
             elif isinstance(decl, ImportDecl):
                 for binding in decl.bindings:
@@ -681,33 +681,6 @@ class SemanticChecker:
                             f"constant `{name}` conflicts with an imported binding of the same name",
                         )
                     self._module_seen[name] = "const"
-
-    def _record_go_symbol_collision(
-        self,
-        node,
-        seen_go_symbol: dict[str, tuple[str, str]],
-        kind: str,
-        name: str,
-        go_symbol: str,
-    ) -> None:
-        if not name or not go_symbol:
-            return
-        previous = seen_go_symbol.get(go_symbol)
-        if previous is None:
-            seen_go_symbol[go_symbol] = (kind, name)
-            return
-        prev_kind, prev_name = previous
-        if prev_name == name and prev_kind == kind:
-            return
-        self._error(
-            node,
-            "name",
-            f"{prev_kind} `{prev_name}` and {kind} `{name}` both lower to Go symbol `{go_symbol}`",
-        )
-
-    @staticmethod
-    def _go_function_symbol(name: str) -> str:
-        return "main" if name == "main" else SemanticChecker._go_public_name(name)
 
     @staticmethod
     def _go_public_name(name: str) -> str:
@@ -811,13 +784,6 @@ class SemanticChecker:
                     )
                 else:
                     seen_func[key] = node
-                self._record_go_symbol_collision(
-                    node,
-                    seen_go_symbol,
-                    "function",
-                    name,
-                    self._go_function_symbol(name),
-                )
                 self._module_seen[name] = "func"
                 if self._funcdef_has_nonvoid_return(node):
                     self._nonvoid_funcs.add(name)
@@ -849,13 +815,6 @@ class SemanticChecker:
                     )
                 else:
                     seen_class[name] = node
-                self._record_go_symbol_collision(
-                    node,
-                    seen_go_symbol,
-                    "class",
-                    name,
-                    self._go_public_name(name),
-                )
                 self._module_seen[name] = "class"
                 self._class_type_params[name] = tuple(self._funcdef_type_params(node))
                 self._class_bases[name] = tuple(self._classdef_base_names(node))
@@ -884,13 +843,6 @@ class SemanticChecker:
                     )
                 else:
                     seen_class[n] = node
-                self._record_go_symbol_collision(
-                    node,
-                    seen_go_symbol,
-                    "interface",
-                    n,
-                    self._go_public_name(n),
-                )
                 self._module_seen[n] = "class"
                 self._interface_methods[n] = self._collect_interface_methods(node)
         elif d == "decorated":
@@ -1018,6 +970,7 @@ class SemanticChecker:
                     node.children[0],
                     self._name_text(node.children[0]),
                 )
+            self._check_type_annotations(node)
             return  # No expressions inside; nothing to check.
 
         if d in ("import_from", "import_name"):
@@ -1029,6 +982,11 @@ class SemanticChecker:
             for child in node.children:
                 if isinstance(child, Tree):
                     self._visit_stmt(child)
+            return
+        if d == "nonlocal_stmt":
+            self._visit_nonlocal(node)
+            return
+        if d == "global_stmt":
             return
 
         # Bare assignment-like statements at module/function level may
@@ -1055,6 +1013,7 @@ class SemanticChecker:
                     self._declare(n)
                     self._record_binding_node(n, node)
             self._record_assignment_types(node)
+            self._visit_assignment_target_uses(node)
             self._visit_assignment_values(node)
             for n in self._assign_targets(node):
                 self._mark_definite(n)
@@ -1132,11 +1091,38 @@ class SemanticChecker:
 
     # ─── Sub-walkers (placeholders, fleshed out in next steps) ──
 
+    def _visit_nonlocal(self, node: Tree) -> None:
+        if not self._scopes or self._scopes[-1].kind != "function":
+            self._error(node, "nonlocal", "`nonlocal` can only be used inside a nested function")
+            return
+        outer_scopes = [scope for scope in self._scopes[:-1] if scope.kind in {"function", "block"}]
+        if not any(scope.kind == "function" for scope in outer_scopes):
+            self._error(node, "nonlocal", "`nonlocal` requires an enclosing function scope")
+            return
+        current = self._scopes[-1]
+        for child in node.children:
+            name = self._name_text(child)
+            if not name:
+                continue
+            candidates = [scope for scope in outer_scopes if name in scope.names]
+            if not candidates:
+                self._error(node, "nonlocal", f"nonlocal binding `{name}` was not found in an enclosing function")
+                continue
+            function_candidates = [scope for scope in candidates if scope.kind == "function"]
+            if len(function_candidates) > 1:
+                self._error(node, "nonlocal", f"nonlocal binding `{name}` is ambiguous across enclosing functions")
+                continue
+            current.names.discard(name)
+            current.definite_names.discard(name)
+            current.binding_nodes.pop(name, None)
+            current.nonlocal_names.add(name)
+
     def _visit_funcdef(self, node: Tree) -> None:
         # Function bodies get their own scope. Pre-collect every name
         # assigned anywhere in the body so forward references inside
         # the function don't false-positive (Lam permits referring to
         # a local that's introduced later in the same block).
+        self._check_result_return_shape(node)
         scope = _Scope(kind="function")
         scope.returns_result = self._funcdef_returns_result(node)
         if self._current_class_stack and not self._funcdef_is_static(node):
@@ -1162,9 +1148,12 @@ class SemanticChecker:
         suite_node = self._suite_node(node)
         if suite_node is not None:
             self._collect_block_defs(suite_node, scope)
+        if self._is_nested_funcdef(node):
+            self._warn_loop_captures(node, suite_node, scope.names, "nested function")
         self._scopes.append(scope)
         try:
             self._check_method_receiver_declaration(node, suite_node)
+            self._check_operator_method_signature(node)
             self._check_type_annotations(node)
             if suite_node is not None:
                 self._walk_suite_stmts(self._suite_stmts(suite_node))
@@ -1253,6 +1242,37 @@ class SemanticChecker:
                 f"method `{class_name}.{method}` uses `self` but does not declare `self` as its first parameter",
             )
 
+    def _check_operator_method_signature(self, node: Tree) -> None:
+        if not self._current_class_stack:
+            return
+        method = self._funcdef_name(node)
+        if method not in DUNDER_OPS:
+            return
+        class_name = self._current_class_stack[-1]
+        if self._funcdef_is_static(node):
+            self._error(node, "operator", f"operator method `{class_name}.{method}` must be an instance method")
+            return
+        params = self._param_names(self._funcdef_params(node))
+        if not params or params[0] != "self":
+            self._error(node, "operator", f"operator method `{class_name}.{method}` must declare `self` first")
+            return
+        expected_arity = 2 if method == "__setitem__" else (0 if method in {"__neg__", "__abs__", "__invert__", "__inc__", "__dec__"} else 1)
+        actual_arity = len(params) - 1
+        if actual_arity != expected_arity:
+            self._error(
+                node,
+                "operator",
+                f"operator method `{class_name}.{method}` expects {expected_arity} operand parameter{'s' if expected_arity != 1 else ''} after `self`, got {actual_arity}",
+            )
+        if method in set(CMP_TO_DUNDER.values()) | {"__contains__"}:
+            return_type = self._funcdef_return_type_text(node)
+            if return_type and return_type != "bool":
+                self._error(
+                    node,
+                    "operator",
+                    f"operator method `{class_name}.{method}` must return `bool`, got `{return_type}`",
+                )
+
     def _suite_uses_self(self, node) -> bool:
         if not isinstance(node, Tree):
             return False
@@ -1298,6 +1318,8 @@ class SemanticChecker:
 
         if class_name:
             self._check_inherited_class_shape(node, class_name)
+            for base in self._class_bases.get(class_name, ()):
+                self._is_resolved(base)
 
         # Register class-level type-parameter names so methods see them
         # even though they aren't in any per-method scope yet.
@@ -1393,23 +1415,75 @@ class SemanticChecker:
         if iterable is not None:
             self._visit_expr_subtree(iterable)
         incoming = self._definite_snapshot()
+        incoming_types = self._type_snapshot()
+        guaranteed = bool(bodies) and self._iterable_statically_nonempty(iterable) and not self._suite_contains_loop_exit(bodies[0])
+        if guaranteed and bodies:
+            self._collect_block_defs(bodies[0], self._scopes[-1])
         scope = _Scope(kind="block", is_loop=True)
-        for n in self._for_target_names(target_node):
+        loop_names = set(self._for_target_names(target_node))
+        for n in loop_names:
             self._check_go_reserved(target_node if isinstance(target_node, Tree) else node, n)
             scope.names.add(n)
             scope.definite_names.add(n)
         if bodies:
             self._collect_block_defs(bodies[0], scope)
         self._scopes.append(scope)
+        self._loop_target_stack.append(loop_names)
         try:
             if bodies:
                 self._walk_suite_stmts(self._suite_stmts(bodies[0]))
             self._emit_unused_local_warnings(scope)
         finally:
+            self._loop_target_stack.pop()
             self._scopes.pop()
-            self._restore_definite(incoming)
+            if not guaranteed:
+                self._restore_definite(incoming)
+                self._restore_types(incoming_types)
         if len(bodies) > 1:
             self._walk_suite_stmts(self._suite_stmts(bodies[1]))
+
+    def _iterable_statically_nonempty(self, node) -> bool:
+        if not isinstance(node, Tree):
+            return False
+        if node.data in {"list", "tuple", "set", "dict"}:
+            return bool(node.children)
+        if node.data != "funccall" or not node.children:
+            return False
+        callee = node.children[0]
+        if not isinstance(callee, Tree) or callee.data != "var" or self._name_text(callee.children[0]) != "range":
+            return False
+        values = [self._integer_literal_value(arg) for arg in self._call_positional_args(node)]
+        if not values or any(value is None for value in values) or len(values) > 3:
+            return False
+        try:
+            return len(range(*[int(value) for value in values])) > 0
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _integer_literal_value(node) -> int | None:
+        if not isinstance(node, Tree):
+            return None
+        if node.data == "number" and node.children:
+            try:
+                return int(str(node.children[0]))
+            except ValueError:
+                return None
+        if node.data == "factor" and len(node.children) == 2:
+            value = SemanticChecker._integer_literal_value(node.children[1])
+            if value is not None and str(node.children[0]) in {"+", "-"}:
+                return value if str(node.children[0]) == "+" else -value
+        return None
+
+    @staticmethod
+    def _suite_contains_loop_exit(node) -> bool:
+        if not isinstance(node, Tree):
+            return False
+        if node.data in {"break_stmt", "continue_stmt"}:
+            return True
+        if node.data in {"funcdef", "classdef", "lambdef"}:
+            return False
+        return any(SemanticChecker._suite_contains_loop_exit(child) for child in node.children)
 
     def _visit_while(self, node: Tree) -> None:
         cond = node.children[0] if node.children else None
@@ -1540,7 +1614,7 @@ class SemanticChecker:
         """
         if len(node.children) < 3:
             return
-        self._require_lamerrors_result(node, "`do/catch`")
+        self._require_syntax_support(node, "do_stmt")
         body_suite = node.children[0]
         err_name_node = node.children[1]
         handler_suite = node.children[2]
@@ -1819,7 +1893,8 @@ class SemanticChecker:
         # spots the intent mismatch before surprise runtime panics.
         if d == "propagate":
             if not self._inside_result_block():
-                self._require_lamerrors_result(node, "`?`")
+                self._require_syntax_support(node, "propagate")
+            self._check_propagate_operand(node)
             if not self._nearest_returns_result():
                 self._warning(
                     node, "flow",
@@ -1857,6 +1932,7 @@ class SemanticChecker:
             self._check_generic_type_args(node)
             self._check_builtin_cast_call(node)
             self._check_call_interface_args(node)
+            self._check_list_method_arg_types(node)
 
         if d in ("list_comprehension", "dict_comprehension",
                  "set_comprehension", "tuple_comprehension"):
@@ -1879,6 +1955,7 @@ class SemanticChecker:
     def _visit_lambda(self, node: Tree) -> None:
         scope = _Scope(kind="function")
         body = None
+        return_anno = None
         for c in node.children:
             if isinstance(c, Tree):
                 if c.data == "typed_parameters":
@@ -1911,8 +1988,7 @@ class SemanticChecker:
                             scope.names.add(name)
                             scope.definite_names.add(name)
                 elif c.data == "lambda_return_anno":
-                    # Skip — return type doesn't introduce names.
-                    pass
+                    return_anno = c
                 else:
                     body = c
             elif isinstance(c, Token):
@@ -1920,18 +1996,63 @@ class SemanticChecker:
                 self._check_go_reserved(node, name)
                 scope.names.add(name)
                 scope.definite_names.add(name)
+        if isinstance(body, Tree) and body.data == "suite":
+            self._collect_block_defs(body, scope)
+        self._warn_loop_captures(node, body, scope.names, "lambda")
         self._scopes.append(scope)
         try:
             if body is not None:
                 if isinstance(body, Tree) and body.data == "suite":
                     # Multi-line lambda body — visit as a regular suite
                     # so declarations + control flow check normally.
-                    self._collect_block_defs(body, scope)
                     self._walk_suite_stmts(self._suite_stmts(body))
                 else:
+                    self._check_lambda_expression_return_type(return_anno, body)
                     self._visit_expr_subtree(body)
         finally:
             self._scopes.pop()
+
+    def _warn_loop_captures(self, node, body, local_names: set[str], kind: str) -> None:
+        if not self._loop_target_stack or not isinstance(body, Tree):
+            return
+        loop_names = set().union(*self._loop_target_stack)
+        captures = self._referenced_var_names(body) & loop_names - set(local_names)
+        for name in sorted(captures):
+            self._warning(
+                node,
+                "capture",
+                f"{kind} captures loop variable `{name}`; copy it if each closure needs its own value",
+            )
+
+    @staticmethod
+    def _referenced_var_names(node) -> set[str]:
+        if not isinstance(node, Tree):
+            return set()
+        if node.data == "var" and node.children:
+            return {SemanticChecker._name_text(node.children[0])}
+        if node.data in {"funcdef", "classdef", "lambdef"}:
+            return set()
+        names: set[str] = set()
+        for child in node.children:
+            names.update(SemanticChecker._referenced_var_names(child))
+        return names
+
+    def _check_lambda_expression_return_type(self, return_anno, body) -> None:
+        if not isinstance(return_anno, Tree) or not return_anno.children:
+            return
+        if not isinstance(body, Tree):
+            return
+        expected = parse_type(return_anno.children[0])
+        actual = self._expr_simple_type(body)
+        if actual is None or self._is_unknown_open_assignment_type(actual):
+            return
+        if is_assignable(expected, actual) or self._nominal_type_assignable(expected, actual):
+            return
+        self._error(
+            body,
+            "type",
+            f"lambda returns `{render_type(actual)}`, expected `{render_type(expected)}`",
+        )
 
     def _visit_comprehension(self, node: Tree) -> None:
         # ``[expr for x in xs if cond]`` — the loop targets become
@@ -1940,19 +2061,52 @@ class SemanticChecker:
         # many ``comp_for`` nodes for chained iteration
         # (``for x in xs for y in x``).
         scope = _Scope(kind="block")
-        for cf in self._iter_comp_fors(node):
-            if cf.children:
-                for n in self._for_target_names(cf.children[0]):
-                    self._check_go_reserved(cf.children[0], n)
-                    scope.names.add(n)
-                    scope.definite_names.add(n)
         self._scopes.append(scope)
         try:
+            for cf in self._iter_comp_fors(node):
+                if len(cf.children) < 2:
+                    continue
+                target, iterable = cf.children[0], cf.children[1]
+                self._visit_expr_subtree(iterable)
+                self._bind_comprehension_target(target, self._expr_simple_type(iterable), scope)
             self._check_comprehension_filter_types(node)
             for c in node.children:
                 self._visit_expr_subtree(c)
         finally:
             self._scopes.pop()
+
+    def _bind_comprehension_target(self, target, iterable_type: Type | None, scope: _Scope) -> None:
+        names = self._for_target_names(target)
+        for name in names:
+            self._check_go_reserved(target, name)
+            scope.names.add(name)
+            scope.definite_names.add(name)
+        if iterable_type is None or self._is_any_type(iterable_type):
+            return
+        element_types: list[Type] | None = None
+        if isinstance(iterable_type, ListType):
+            item = iterable_type.item
+            if isinstance(item, GenericType) and item.base == "tuple":
+                element_types = list(item.args)
+            else:
+                element_types = [item]
+        elif isinstance(iterable_type, DictType):
+            element_types = [iterable_type.key, iterable_type.value] if len(names) == 2 else [iterable_type.key]
+        elif isinstance(iterable_type, GenericType) and iterable_type.base == "set" and iterable_type.args:
+            element_types = [iterable_type.args[0]]
+        elif isinstance(iterable_type, NamedType) and iterable_type.name == "str":
+            element_types = [NamedType("str")]
+        if element_types is None:
+            return
+        if len(names) != len(element_types):
+            self._error(
+                target,
+                "comprehension",
+                f"comprehension target expects {len(names)} values, but iterable yields {len(element_types)}",
+            )
+            return
+        for name, type_ in zip(names, element_types):
+            scope.var_types[name] = render_type(type_)
 
     def _check_comprehension_filter_types(self, node: Tree) -> None:
         for condition in self._iter_comprehension_filters(node):
@@ -2014,11 +2168,38 @@ class SemanticChecker:
                     return
                 self._check_class_member_access(node, receiver, receiver, attr)
                 return
-            receiver_type = self._var_type(receiver)
-            if receiver_type in self._class_members:
+            receiver_type = self._receiver_class_from_type_text(self._var_type(receiver))
+            if receiver_type:
                 if self._check_external_private_member(node, receiver_type, attr):
                     return
                 self._check_class_member_access(node, receiver, receiver_type, attr)
+                return
+        inferred = self._expr_simple_type(obj)
+        receiver_type = self._receiver_class_from_type(inferred)
+        if not receiver_type:
+            return
+        if self._check_external_private_member(node, receiver_type, attr):
+            return
+        display = self._expr_dotted_name(obj) or receiver_type
+        self._check_class_member_access(node, display, receiver_type, attr)
+
+    def _receiver_class_from_type_text(self, type_text: str) -> str:
+        if not type_text:
+            return ""
+        return self._receiver_class_from_type(parse_type(type_text))
+
+    def _receiver_class_from_type(self, type_: Type | None) -> str:
+        if isinstance(type_, NamedType) and type_.name in self._class_members:
+            return type_.name
+        if (
+            isinstance(type_, GenericType)
+            and type_.base in {"optional", "Option"}
+            and len(type_.args) == 1
+            and isinstance(type_.args[0], NamedType)
+            and type_.args[0].name in self._class_members
+        ):
+            return type_.args[0].name
+        return ""
 
     def _check_class_member_access(
         self,
@@ -2444,20 +2625,30 @@ class SemanticChecker:
             if type_expr.data != "type_expr" or id(type_expr) in seen:
                 continue
             seen.add(id(type_expr))
-            root = self._type_root_name(type_expr)
-            if not root or self._is_known_type(root):
-                continue
-            suggestion = self._suggest_type(root)
-            if suggestion:
-                self._error(
-                    type_expr, "type",
-                    f"unknown type `{root}` — did you mean `{suggestion}`?",
-                )
+            checked: set[str] = set()
+            for root in self._type_root_names(type_expr):
+                if root in checked:
+                    continue
+                checked.add(root)
+                # Type-only references still consume imported bindings:
+                # ``from lamerrors import Error`` followed by
+                # ``e: Error = ...`` must not be reported as unused.
+                if root:
+                    self._is_resolved(root)
+                if not root or self._is_known_type(root):
+                    continue
+                suggestion = self._suggest_type(root)
+                if suggestion:
+                    self._error(
+                        type_expr, "type",
+                        f"unknown type `{root}` — did you mean `{suggestion}`?",
+                    )
 
     def _is_known_type(self, name: str) -> bool:
         if name in BUILTIN_TYPES:
             return True
         if name in self._class_method_shapes or name in self._interface_methods:
+            self._is_resolved(name)
             return True
         return self._is_resolved(name)
 
@@ -2505,6 +2696,30 @@ class SemanticChecker:
                 if isinstance(child, Tree):
                     self._check_assignment_value_types(child)
             return
+        if node.data == "assign":
+            if self._destructuring_target(node) is not None:
+                return
+            value_node = self._assign_value(node)
+            if value_node is None:
+                return
+            actual = self._expr_simple_type(value_node)
+            if actual is None or self._is_unknown_open_assignment_type(actual):
+                return
+            for target_node in (child for child in node.children[:-1] if isinstance(child, Tree)):
+                expected = self._assignment_target_type(target_node)
+                if expected is None:
+                    continue
+                if self._is_unknown_open_assignment_type(expected):
+                    continue
+                if is_assignable(expected, actual) or self._nominal_type_assignable(expected, actual):
+                    continue
+                self._error(
+                    value_node,
+                    "type",
+                    f"cannot assign `{render_type(actual)}` to `{render_type(expected)}` target `{self._assignment_target_display(target_node)}`",
+                )
+                return
+            return
         if node.data != "annassign":
             return
         if self._destructuring_target(node) is not None:
@@ -2529,6 +2744,52 @@ class SemanticChecker:
             "type",
             f"cannot assign `{render_type(actual)}` to `{render_type(expected)}` variable `{name}`",
         )
+
+    def _assignment_target_type(self, target) -> Type | None:
+        if not isinstance(target, Tree):
+            return None
+        if target.data == "var" and target.children:
+            name = self._name_text(target.children[0])
+            type_name = self._var_type(name)
+            return parse_type(type_name) if type_name else None
+        if target.data in {"getattr", "getattr_safe"}:
+            return self._member_target_type(target)
+        if target.data == "getitem":
+            return self._getitem_result_type(target)
+        return None
+
+    def _member_target_type(self, target: Tree) -> Type | None:
+        if len(target.children) < 2:
+            return None
+        obj = target.children[0]
+        attr = self._name_text(target.children[1])
+        if not attr:
+            return None
+        class_name = ""
+        if isinstance(obj, Tree) and obj.data == "var" and obj.children:
+            receiver = self._name_text(obj.children[0])
+            if receiver == "self" and self._current_class_stack:
+                class_name = self._current_class_stack[-1]
+            else:
+                class_name = self._receiver_class_from_type_text(self._var_type(receiver))
+        if not class_name:
+            return None
+        field_types = self._class_field_types.get(class_name, {})
+        type_text = field_types.get(attr)
+        return parse_type(type_text) if type_text else None
+
+    def _assignment_target_display(self, target) -> str:
+        if not isinstance(target, Tree):
+            return "<target>"
+        if target.data == "var" and target.children:
+            return self._name_text(target.children[0]) or "<target>"
+        if target.data in {"getattr", "getattr_safe"} and len(target.children) >= 2:
+            obj = self._assignment_target_display(target.children[0])
+            attr = self._name_text(target.children[1])
+            return f"{obj}.{attr}" if obj and attr else "<target>"
+        if target.data == "getitem" and target.children:
+            return f"{self._assignment_target_display(target.children[0])}[...]"
+        return "<target>"
 
     def _check_destructuring_shape(self, node: Tree) -> None:
         if node.data == "assign_stmt":
@@ -2616,12 +2877,12 @@ class SemanticChecker:
     def _destructuring_value_types(self, node) -> tuple[list[Type] | None, str]:
         if not isinstance(node, Tree):
             return None, "value"
-        if node.data == "tuple":
+        if node.data in {"tuple", "list"}:
             return [
                 self._expr_simple_type(child) or NamedType("any")
                 for child in node.children
                 if isinstance(child, Tree)
-            ], "tuple literal"
+            ], f"{node.data} literal"
         if node.data == "var" and node.children:
             name = self._name_text(node.children[0])
             return self._tuple_element_types_from_text(self._var_type(name)), f"`{name}`"
@@ -2656,6 +2917,9 @@ class SemanticChecker:
         target = self._call_target_name(node)
         if not target:
             return ""
+        selected = self._selected_call_return_types(node)
+        if len(selected) == 1:
+            return next(iter(selected))
         if "." in target:
             receiver, method = target.split(".", 1)
             receiver_type = self._var_type(receiver)
@@ -2664,13 +2928,45 @@ class SemanticChecker:
                     self._method_return_type_texts.get(f"{receiver_type}.{method}", set())
                 )
                 if receiver_method_type:
-                    return receiver_method_type
+                    return self._specialize_call_return_type(node, receiver_method_type)
         method_type = self._single_known_return_type(
             self._method_return_type_texts.get(target, set())
         )
         if method_type:
-            return method_type
-        return self._single_known_return_type(self._func_return_type_texts.get(target, set()))
+            return self._specialize_call_return_type(node, method_type)
+        return_type = self._single_known_return_type(self._func_return_type_texts.get(target, set()))
+        return self._specialize_call_return_type(node, return_type)
+
+    def _selected_call_return_types(self, call: Tree) -> set[str]:
+        _target, sigs = self._call_target_sigs(call)
+        pos_count, keywords, has_starargs, has_kwargs = self._call_args_shape(call)
+        selected: set[str] = set()
+        for sig in sigs:
+            if not sig.return_type_text:
+                continue
+            if not self._call_matches_sig(sig, pos_count, keywords, has_starargs, has_kwargs):
+                continue
+            if self._call_type_mismatches(call, sig):
+                continue
+            type_ = parse_type(sig.return_type_text)
+            mapping = self._generic_type_mapping(call, sig)
+            if mapping:
+                type_ = self._substitute_generic_type(type_, mapping)
+            selected.add(render_type(type_))
+        return selected
+
+    def _specialize_call_return_type(self, call: Tree, return_type: str) -> str:
+        if not return_type:
+            return ""
+        _target, sigs = self._call_target_sigs(call)
+        specialized: set[str] = set()
+        for sig in sigs:
+            mapping = self._generic_type_mapping(call, sig)
+            type_ = parse_type(return_type)
+            if mapping:
+                type_ = self._substitute_generic_type(type_, mapping)
+            specialized.add(render_type(type_))
+        return next(iter(specialized)) if len(specialized) == 1 else return_type
 
     def _destructuring_value_arity(self, node) -> tuple[int | None, str]:
         types, source = self._destructuring_value_types(node)
@@ -3158,6 +3454,46 @@ class SemanticChecker:
             return {}
         return dict(zip(sig.generic_names, type_args))
 
+    def _generic_type_mapping(self, call: Tree, sig: _CallableSig) -> dict[str, Type]:
+        explicit = self._explicit_generic_type_mapping(call, sig)
+        if explicit or not sig.generic_names:
+            return explicit
+        mapping: dict[str, Type] = {}
+        for _param_name, expected_name, arg_node in self._call_arg_bindings(call, sig):
+            actual = self._expr_simple_type(arg_node)
+            if actual is None or self._is_any_type(actual):
+                continue
+            self._infer_generic_mapping(parse_type(expected_name), actual, set(sig.generic_names), mapping)
+        return mapping
+
+    def _infer_generic_mapping(
+        self,
+        expected: Type,
+        actual: Type,
+        generic_names: set[str],
+        mapping: dict[str, Type],
+    ) -> None:
+        if isinstance(expected, NamedType) and expected.name in generic_names:
+            mapping.setdefault(expected.name, actual)
+            return
+        if isinstance(expected, ListType) and isinstance(actual, ListType):
+            self._infer_generic_mapping(expected.item, actual.item, generic_names, mapping)
+            return
+        if isinstance(expected, DictType) and isinstance(actual, DictType):
+            self._infer_generic_mapping(expected.key, actual.key, generic_names, mapping)
+            self._infer_generic_mapping(expected.value, actual.value, generic_names, mapping)
+            return
+        if isinstance(expected, GenericType) and isinstance(actual, GenericType):
+            if expected.base == actual.base and len(expected.args) == len(actual.args):
+                for expected_arg, actual_arg in zip(expected.args, actual.args):
+                    self._infer_generic_mapping(expected_arg, actual_arg, generic_names, mapping)
+            return
+        if isinstance(expected, FuncType) and isinstance(actual, FuncType):
+            if len(expected.params) == len(actual.params):
+                for expected_param, actual_param in zip(expected.params, actual.params):
+                    self._infer_generic_mapping(expected_param, actual_param, generic_names, mapping)
+                self._infer_generic_mapping(expected.ret, actual.ret, generic_names, mapping)
+
     def _explicit_type_arg_types(self, call: Tree) -> list[Type] | None:
         callee = call.children[0] if isinstance(call, Tree) and call.children else None
         if not isinstance(callee, Tree) or callee.data != "getitem" or len(callee.children) < 2:
@@ -3336,37 +3672,68 @@ class SemanticChecker:
         return False
 
     def _record_support_import(self, node: Tree) -> None:
-        """Record imports required by syntax that lowers to stdlib helpers."""
         if node.data != "import_from":
             return
-        if _import_module_name(node) != "lamerrors":
-            return
+        module = _import_module_name(node)
         for imported, local in self._from_import_pairs(node):
-            if imported != "Result":
-                continue
-            if local == "Result":
-                self._has_lamerrors_result_import = True
-            else:
-                self._has_aliased_lamerrors_result_import = True
+            self._support_imports.add((module, imported, local))
 
-    def _require_lamerrors_result(self, node, syntax: str) -> None:
-        if self._has_lamerrors_result_import:
+    def _require_syntax_support(self, node, construct: str) -> None:
+        requirement = _SUPPORT_REQUIREMENTS[construct]
+        imports = {
+            local
+            for module, imported, local in self._support_imports
+            if module == requirement.module and imported == requirement.symbol
+        }
+        if requirement.symbol in imports:
             return
-        if self._has_aliased_lamerrors_result_import:
+        expected = f"from {requirement.module} import {requirement.symbol}"
+        if imports and requirement.require_unaliased:
             self._error(
                 node,
                 "import",
-                f"{syntax} requires unaliased `from lamerrors import Result`; "
-                "`Result as ...` is not supported because this syntax lowers "
-                "to `Result` helpers",
+                f"{requirement.syntax} requires unaliased `{expected}`; "
+                f"`{requirement.symbol} as ...` is not supported because this syntax "
+                f"lowers to `{requirement.symbol}` helpers",
             )
             return
         self._error(
             node,
             "import",
-            f"{syntax} requires `from lamerrors import Result` "
-            "because it lowers to `Result` helpers",
+            f"{requirement.syntax} requires `{expected}` because it lowers to "
+            f"`{requirement.symbol}` helpers",
         )
+
+    def _check_propagate_operand(self, node: Tree) -> None:
+        actual = self._propagate_operand_type(node)
+        if actual is None or self._is_unknown_open_assignment_type(actual):
+            return
+        if isinstance(actual, NamedType) and actual.name in {"any", "object"}:
+            return
+        if self._is_result_type(actual):
+            return
+        self._error(
+            node,
+            "type",
+            f"`?` requires a `Result` value, got `{render_type(actual)}`",
+        )
+
+    def _propagate_operand_type(self, node: Tree) -> Type | None:
+        operand = next((child for child in node.children if isinstance(child, Tree)), None)
+        type_text = self._call_return_type_text(operand) if isinstance(operand, Tree) else ""
+        return parse_type(type_text) if type_text else self._expr_simple_type(operand)
+
+    def _propagated_payload_type(self, node: Tree) -> Type | None:
+        result_type = self._propagate_operand_type(node)
+        if isinstance(result_type, GenericType) and result_type.base == "Result" and len(result_type.args) == 1:
+            return result_type.args[0]
+        return None
+
+    @staticmethod
+    def _is_result_type(type_: Type) -> bool:
+        if isinstance(type_, NamedType):
+            return type_.name == "Result"
+        return isinstance(type_, GenericType) and type_.base == "Result" and len(type_.args) <= 1
 
     def _check_call_shape(self, call: Tree) -> None:
         target, sigs = self._call_target_sigs(call)
@@ -3445,6 +3812,7 @@ class SemanticChecker:
                 if receiver_target.endswith(".init"):
                     class_target = receiver_target.rsplit(".", 1)[0]
                     return receiver_target, self._constructor_sigs.get(class_target, [])
+                return receiver_target, self._method_sigs.get(receiver_target, [])
             target = self._expr_dotted_name(callee)
             if target in self._class_method_shapes:
                 return target, self._constructor_sigs.get(target, [_CallableSig(target, 0, 0, (), False)])
@@ -3466,7 +3834,7 @@ class SemanticChecker:
             if receiver_name == "self" and self._current_class_stack:
                 receiver_type = self._current_class_stack[-1]
             else:
-                receiver_type = self._var_type(receiver_name)
+                receiver_type = self._receiver_class_from_type_text(self._var_type(receiver_name))
         if not receiver_type:
             return ""
         if attr in {"init", "__init__"} and self._class_has_direct_member(receiver_type, attr):
@@ -3497,6 +3865,62 @@ class SemanticChecker:
             f"argument `{param_name}` to `{target}` has type `{render_type(actual)}`, expected `{render_type(expected)}`",
         )
 
+    def _check_list_method_arg_types(self, call: Tree) -> None:
+        callee = call.children[0] if isinstance(call, Tree) and call.children else None
+        if not isinstance(callee, Tree) or callee.data not in {"getattr", "getattr_safe"}:
+            return
+        if len(callee.children) < 2:
+            return
+        method = self._name_text(callee.children[1])
+        if method not in {"append", "extend", "insert"}:
+            return
+        receiver_type = self._expr_simple_type(callee.children[0])
+        if not isinstance(receiver_type, ListType):
+            return
+        args = [arg for arg in self._call_positional_args(call) if isinstance(arg, Tree)]
+        if method == "append" and args:
+            self._check_expected_expr_type(
+                args[0],
+                receiver_type.item,
+                f"list append expects `{render_type(receiver_type.item)}`, got `{{actual}}`",
+            )
+            return
+        if method == "extend" and args:
+            self._check_expected_expr_type(
+                args[0],
+                ListType(receiver_type.item),
+                f"list extend expects `list[{render_type(receiver_type.item)}]`, got `{{actual}}`",
+            )
+            return
+        if method == "insert":
+            if args:
+                self._check_expected_expr_type(
+                    args[0],
+                    NamedType("int"),
+                    "list insert index expects `int`, got `{actual}`",
+                )
+            if len(args) >= 2:
+                self._check_expected_expr_type(
+                    args[1],
+                    receiver_type.item,
+                    f"list insert expects `{render_type(receiver_type.item)}`, got `{{actual}}`",
+                )
+
+    def _check_expected_expr_type(self, node: Tree, expected: Type, message_template: str) -> bool:
+        actual = self._expr_simple_type(node)
+        if actual is None:
+            return True
+        if self._is_any_type(actual) or self._is_open_type(actual):
+            return True
+        if is_assignable(expected, actual) or self._nominal_type_assignable(expected, actual):
+            return True
+        self._error(
+            node,
+            "type",
+            message_template.format(actual=render_type(actual)),
+        )
+        return False
+
     def _call_type_mismatches(
         self,
         call: Tree,
@@ -3504,7 +3928,7 @@ class SemanticChecker:
     ) -> list[tuple[str, Type, Type, Tree]]:
         if not sig.param_types:
             return []
-        generic_mapping = self._explicit_generic_type_mapping(call, sig)
+        generic_mapping = self._generic_type_mapping(call, sig)
         out: list[tuple[str, Type, Type, Tree]] = []
         for param_name, expected_name, arg_node in self._call_arg_bindings(call, sig):
             if expected_name in {"", "any", "object"}:
@@ -3680,29 +4104,12 @@ class SemanticChecker:
         """Emit a warning when ``expr_stmt`` is a bare function call
         that drops a known non-void return value.
 
-        Covered call shapes:
+        Local/imported functions, static methods, and inferred instance
+        methods participate when their declaration has a non-void return.
+        Unannotated functions remain void to avoid false positives in
+        early-draft code.
 
-        * ``foo(...)`` where ``foo`` is a top-level ``func`` declared
-          in this file with a non-``None`` return annotation.
-        * ``Class.method(...)`` (static or bare-class receiver) where
-          ``Class`` is a user-defined class in this file and its
-          ``method`` declares a non-void return.
-
-        Intentionally *not* covered:
-
-        * Instance calls ``obj.method()`` — we'd need type inference
-          to know the receiver's class, and the current semantic
-          walker is deliberately flow-insensitive. The transpiler
-          has the inference tables but runs too late to participate
-          in a pre-emission warning.
-        * Calls to imported / library-defined functions — we'd need
-          their return-type map, which isn't shared with this pass.
-        * Unannotated functions (``func f() {...}``) — treated as
-          void because users who cared about the return would have
-          annotated it. Avoids a large false-positive surface on
-          early-draft code.
-
-        The opt-out for every shape we *do* cover is the standard
+        The opt-out for every covered shape is the standard
         Lam idiom: ``_ = foo(x)``, which parses as an assignment
         and never reaches this method.
         """
@@ -3729,14 +4136,14 @@ class SemanticChecker:
                 )
             return
 
-        # Static / class-qualified call: ``Class.method(...)``.
         if callee.data in {"getattr", "getattr_safe"}:
-            key = self._expr_dotted_name(callee)
+            display = self._expr_dotted_name(callee)
+            key = self._receiver_method_target(callee) or display
             if key in self._nonvoid_methods:
                 self._warning(
                     expr_stmt,
                     "unused",
-                    self._dropped_return_warning_message(key, self._method_return_type(key)),
+                    self._dropped_return_warning_message(display or key, self._method_return_type(key)),
                 )
 
     @staticmethod
@@ -4025,14 +4432,6 @@ class SemanticChecker:
         checks cleanly — it's only the user-facing identifier that
         needs to change.
         """
-        if name in GO_ONLY_KEYWORDS:
-            self._error(
-                node, "go_reserved",
-                f"`{name}` is a reserved identifier in Go and cannot "
-                f"be used as a Lam name (the Go compiler would reject "
-                f"the emitted code)",
-            )
-            return
         self._check_compiler_reserved_prefix(node, name)
 
     def _check_go_reserved_funcdef(self, node: Tree, name: str) -> None:
@@ -4219,6 +4618,62 @@ class SemanticChecker:
             return
         self._visit_expr_subtree(node)
 
+    def _visit_assignment_target_uses(self, node: Tree) -> None:
+        """Visit reads embedded in assignment targets.
+
+        Plain assignment targets bind names, so ``x = 1`` should not
+        count as a read of ``x``. Mutation targets are different:
+        ``obj.field = 1`` reads ``obj`` and ``xs[i] = 1`` reads both
+        ``xs`` and ``i``.
+        """
+        if not isinstance(node, Tree):
+            return
+
+        def visit_target(target) -> None:
+            if not isinstance(target, Tree):
+                return
+            d = target.data
+            if d in {"name", "var"}:
+                return
+            if d in ("testlist_star_expr", "testlist_tuple", "tuple",
+                     "exprlist", "test", "star_expr"):
+                for child in target.children:
+                    visit_target(child)
+                return
+            if d in {"getattr", "getattr_safe"}:
+                self._check_member_access(target)
+                if target.children:
+                    self._visit_expr_subtree(target.children[0])
+                return
+            if d == "getitem":
+                self._visit_expr_subtree(target)
+                return
+            self._visit_expr_subtree(target)
+
+        def visit_assignment(assign_node: Tree) -> None:
+            d = assign_node.data
+            if d == "assign_stmt":
+                for child in assign_node.children:
+                    if isinstance(child, Tree):
+                        visit_assignment(child)
+                return
+            if d == "annassign":
+                for child in assign_node.children:
+                    if not isinstance(child, Tree):
+                        continue
+                    if child.data == "type_expr":
+                        break
+                    visit_target(child)
+                return
+            if d == "assign" and assign_node.children:
+                for child in assign_node.children[:-1]:
+                    visit_target(child)
+                return
+            if d == "augassign" and assign_node.children:
+                visit_target(assign_node.children[0])
+
+        visit_assignment(node)
+
     @staticmethod
     def _const_target_name(node: Tree) -> str:
         """Extract the bound name from a ``const_stmt`` node."""
@@ -4239,7 +4694,11 @@ class SemanticChecker:
         if not isinstance(stmt, Tree):
             return
         d = stmt.data
-        if d in ("assign_stmt", "annassign", "assign", "augassign"):
+        if d == "assign_stmt":
+            for child in stmt.children:
+                self._collect_stmt_defs(child, scope)
+            return
+        if d in ("annassign", "assign", "augassign"):
             for n in self._assign_targets(stmt):
                 if self._stmt_def_declares_scope(stmt, scope, n):
                     scope.names.add(n)
@@ -4260,13 +4719,6 @@ class SemanticChecker:
             # The loop body's defs are collected when we enter it.
             return
         if d == "with_stmt":
-            for c in stmt.children:
-                if isinstance(c, Tree) and c.data == "with_items":
-                    for item in c.children:
-                        if isinstance(item, Tree) and item.data == "with_item":
-                            for sub in item.children[1:]:
-                                if isinstance(sub, Tree) and sub.data == "name":
-                                    scope.names.add(self._name_text(sub))
             return
         if d == "funcdef":
             name = self._funcdef_name(stmt)
@@ -4372,6 +4824,7 @@ class SemanticChecker:
     def _collect_class_members(self, class_name: str, classdef: Tree) -> None:
         members = self._class_members.setdefault(class_name, set())
         fields = self._class_fields.setdefault(class_name, set())
+        field_types = self._class_field_types.setdefault(class_name, {})
         static_methods = self._class_static_methods.setdefault(class_name, set())
         instance_methods = self._class_instance_methods.setdefault(class_name, set())
         private_methods = self._class_private_methods.setdefault(class_name, set())
@@ -4398,18 +4851,20 @@ class SemanticChecker:
                     if self._funcdef_is_private(target):
                         private_methods.add(name)
                 if name in {"__init__", "init"}:
-                    self._collect_init_self_fields(target, members, fields)
+                    self._collect_init_self_fields(target, members, fields, field_types)
                 continue
             if target.data in {"annassign", "assign_stmt", "assign"}:
                 for name in self._class_field_names_from_stmt(target):
                     members.add(name)
                     fields.add(name)
+                self._collect_class_field_types_from_stmt(target, field_types)
 
     def _collect_init_self_fields(
         self,
         funcdef: Tree,
         members: set[str],
         fields: set[str],
+        field_types: dict[str, str],
     ) -> None:
         suite = self._suite_node(funcdef)
         if suite is None:
@@ -4420,6 +4875,50 @@ class SemanticChecker:
             for name in self._self_field_assignments(stmt):
                 members.add(name)
                 fields.add(name)
+            self._collect_class_field_types_from_stmt(stmt, field_types, self_only=True)
+
+    def _collect_class_field_types_from_stmt(
+        self,
+        node: Tree,
+        field_types: dict[str, str],
+        *,
+        self_only: bool = False,
+    ) -> None:
+        def target_name(target) -> str:
+            if not isinstance(target, Tree):
+                return ""
+            if target.data == "var" and target.children and not self_only:
+                return self._name_text(target.children[0])
+            if target.data == "getattr" and len(target.children) >= 2:
+                obj = target.children[0]
+                if isinstance(obj, Tree) and obj.data == "var" and obj.children:
+                    if self._name_text(obj.children[0]) == "self":
+                        return self._name_text(target.children[1])
+            return ""
+
+        if not isinstance(node, Tree):
+            return
+        if node.data == "assign_stmt":
+            for child in node.children:
+                if isinstance(child, Tree):
+                    self._collect_class_field_types_from_stmt(
+                        child, field_types, self_only=self_only,
+                    )
+            return
+        if node.data != "annassign":
+            return
+        name = ""
+        type_node = None
+        for child in node.children:
+            if not isinstance(child, Tree):
+                continue
+            if child.data == "type_expr":
+                type_node = child
+                break
+            if not name:
+                name = target_name(child)
+        if name and type_node is not None:
+            field_types[name] = render_type(parse_type(type_node))
 
     def _class_field_names_from_stmt(self, node: Tree) -> list[str]:
         names: list[str] = []
@@ -4609,10 +5108,20 @@ class SemanticChecker:
             sig = self._callable_signature_from_params(
                 self._funcdef_params(fn_node),
                 f"{class_name}.{name}",
-                skip_self=False,
+                skip_self=not self._funcdef_is_static(fn_node),
                 generic_names=generic_names,
             )
             if sig is not None:
+                sig = _CallableSig(
+                    sig.name,
+                    sig.required_pos,
+                    sig.max_pos,
+                    sig.params,
+                    sig.accepts_kwargs,
+                    sig.param_types,
+                    sig.generic_names,
+                    return_type_text,
+                )
                 self._method_sigs.setdefault(f"{class_name}.{name}", []).append(sig)
 
     def _check_function_returns(self, funcdef: Tree, suite_node: Tree) -> None:
@@ -4867,6 +5376,10 @@ class SemanticChecker:
             return self._dict_expr_type(node)
         if node.data == "set":
             return self._set_expr_type(node)
+        if node.data == "list_comprehension":
+            return self._list_comprehension_type(node)
+        if node.data == "dict_comprehension":
+            return self._dict_comprehension_type(node)
         if node.data == "tuple":
             items = [
                 self._expr_simple_type(child) or NamedType("any")
@@ -4886,11 +5399,16 @@ class SemanticChecker:
             return NamedType("bool")
         if node.data == "getitem":
             return self._getitem_result_type(node)
+        if node.data == "propagate":
+            return self._propagated_payload_type(node)
         if node.data == "funccall":
             cast_type = self._builtin_cast_result_type(node)
             if cast_type is not None:
                 return cast_type
-            call_type = self._call_return_type(node)
+            collection_type = self._collection_call_result_type(node)
+            if collection_type is not None:
+                return collection_type
+            call_type = self._call_return_type_text(node) or self._call_return_type(node)
             if call_type:
                 return parse_type(call_type)
         if node.data == "test":
@@ -4898,6 +5416,67 @@ class SemanticChecker:
         value_type = self._constructor_value_type(node)
         if value_type:
             return NamedType(value_type)
+        return None
+
+    def _collection_call_result_type(self, call: Tree) -> Type | None:
+        if not isinstance(call, Tree) or call.data != "funccall" or not call.children:
+            return None
+        callee = call.children[0]
+        if isinstance(callee, Tree) and callee.data == "var" and callee.children:
+            name = self._name_text(callee.children[0])
+            if name == "sorted":
+                args = [arg for arg in self._call_positional_args(call) if isinstance(arg, Tree)]
+                return self._expr_simple_type(args[0]) if args else None
+            return None
+        if not isinstance(callee, Tree) or callee.data not in {"getattr", "getattr_safe"}:
+            return None
+        if len(callee.children) < 2:
+            return None
+        receiver_type = self._expr_simple_type(callee.children[0])
+        if not isinstance(receiver_type, ListType):
+            return None
+        method = self._name_text(callee.children[1])
+        if method == "pop":
+            return receiver_type.item
+        if method in {"filter", "sort"}:
+            return receiver_type
+        if method == "reduce":
+            return receiver_type.item
+        if method != "map":
+            return None
+        args = [arg for arg in self._call_positional_args(call) if isinstance(arg, Tree)]
+        if not args:
+            return None
+        result_type = self._callable_expr_return_type(args[0])
+        return ListType(result_type or receiver_type.item)
+
+    def _callable_expr_return_type(self, node) -> Type | None:
+        if not isinstance(node, Tree):
+            return None
+        if node.data == "argvalue" and node.children:
+            return self._callable_expr_return_type(node.children[0])
+        if node.data == "lambdef":
+            return self._lambda_expression_body_type(node)
+        if node.data == "var" and node.children:
+            name = self._name_text(node.children[0])
+            type_name = self._single_known_return_type(self._func_return_types.get(name, set()))
+            return parse_type(type_name) if type_name else None
+        return None
+
+    def _lambda_expression_body_type(self, node: Tree) -> Type | None:
+        body = None
+        explicit_return = None
+        for child in node.children:
+            if not isinstance(child, Tree):
+                continue
+            if child.data == "lambda_return_anno":
+                explicit_return = child
+            elif child.data not in {"typed_parameters", "paren_lambda_params", "inline_lambda_params"}:
+                body = child
+        if explicit_return is not None and explicit_return.children:
+            return parse_type(explicit_return.children[0])
+        if isinstance(body, Tree) and body.data != "suite":
+            return self._expr_simple_type(body)
         return None
 
     def _check_expression_type_errors(self, node: Tree) -> None:
@@ -4924,7 +5503,18 @@ class SemanticChecker:
         if not isinstance(operand, Tree):
             return
         operand_type = self._expr_simple_type(operand)
-        if operand_type is None or self._is_any_type(operand_type) or self._is_open_type(operand_type):
+        if operand_type is None or self._is_any_type(operand_type):
+            return
+        if self._class_unary_operator_result_type(op, operand_type) is not None:
+            return
+        if self._receiver_class_from_type(operand_type):
+            self._error(
+                node,
+                "type",
+                f"operator `{op}` is not defined for `{render_type(operand_type)}`",
+            )
+            return
+        if self._is_open_type(operand_type):
             return
         if op in {"+", "-"}:
             if self._is_numeric_type(operand_type):
@@ -5053,7 +5643,7 @@ class SemanticChecker:
                         self._report_membership_type_error(node, op, left_type, right_type)
                         return
                 elif op in {"<", ">", "<=", ">="}:
-                    if not self._ordered_comparison_allowed(left_type, right_type):
+                    if not self._ordered_comparison_allowed(left_type, right_type, op):
                         self._error(
                             node,
                             "type",
@@ -5062,7 +5652,7 @@ class SemanticChecker:
                         )
                         return
                 elif op in {"==", "!="}:
-                    if not self._equality_comparison_allowed(left_type, right_type):
+                    if not self._equality_comparison_allowed(left_type, right_type, op):
                         self._error(
                             node,
                             "type",
@@ -5075,18 +5665,26 @@ class SemanticChecker:
     def _comp_op_text(node: Tree) -> str:
         return " ".join(str(child) for child in node.children if isinstance(child, Token))
 
-    def _ordered_comparison_allowed(self, left: Type, right: Type) -> bool:
+    def _ordered_comparison_allowed(self, left: Type, right: Type, op: str = "<") -> bool:
         if self._is_any_type(left) or self._is_any_type(right):
             return True
+        if isinstance(left, NamedType) and left.name in self._class_method_shapes:
+            shape = self._class_method_shapes[left.name].get(CMP_TO_DUNDER.get(op, ""))
+            return shape is not None and self._operator_shape_accepts_operand(shape, right)
         if self._is_open_type(left) or self._is_open_type(right):
             return True
         if self._is_numeric_type(left) and self._is_numeric_type(right):
             return True
         return self._is_named_type(left, "str") and self._is_named_type(right, "str")
 
-    def _equality_comparison_allowed(self, left: Type, right: Type) -> bool:
+    def _equality_comparison_allowed(self, left: Type, right: Type, op: str = "==") -> bool:
         if self._is_any_type(left) or self._is_any_type(right):
             return True
+        if isinstance(left, NamedType) and left.name in self._class_method_shapes:
+            shape = self._class_method_shapes[left.name].get(CMP_TO_DUNDER.get(op, ""))
+            if shape is not None:
+                return self._operator_shape_accepts_operand(shape, right)
+            return is_assignable(left, right) or is_assignable(right, left)
         if self._is_open_type(left) or self._is_open_type(right):
             return True
         return is_assignable(left, right) or is_assignable(right, left)
@@ -5109,6 +5707,8 @@ class SemanticChecker:
             return container.item
         if isinstance(container, DictType):
             return container.key
+        if isinstance(container, GenericType) and container.base == "set" and container.args:
+            return container.args[0]
         if isinstance(container, NamedType) and container.name == "str":
             return NamedType("str")
         return None
@@ -5119,7 +5719,7 @@ class SemanticChecker:
             self._error(
                 node,
                 "type",
-                f"right operand of `{op}` must be `list`, `dict`, or `str`, "
+                f"right operand of `{op}` must be `list`, `dict`, `set`, or `str`, "
                 f"got `{render_type(container)}`",
             )
             return
@@ -5137,15 +5737,19 @@ class SemanticChecker:
         index = node.children[1]
         if not isinstance(receiver, Tree) or not isinstance(index, Tree):
             return
-        if index.data == "slice":
-            self._check_slice_index_types(node, receiver, index)
-            return
         receiver_type = self._expr_simple_type(receiver)
+        if receiver_type is None:
+            return
+        if index.data == "slice":
+            self._check_slice_index_types(node, receiver_type, index)
+            return
         index_type = self._expr_simple_type(index)
-        if receiver_type is None or index_type is None:
+        if index_type is None:
             return
         expected = self._getitem_index_type(receiver_type)
         if expected is None:
+            if self._getitem_receiver_check_is_conclusive(receiver_type):
+                self._report_non_indexable_getitem(node, receiver_type)
             return
         if is_assignable(expected, index_type):
             return
@@ -5162,11 +5766,14 @@ class SemanticChecker:
             return
         self._error(node, "type", msg)
 
-    def _check_slice_index_types(self, node: Tree, receiver, slice_node: Tree) -> None:
-        receiver_type = self._expr_simple_type(receiver)
-        if receiver_type is None:
-            return
+    def _check_slice_index_types(self, node: Tree, receiver_type: Type, slice_node: Tree) -> None:
         if not self._is_sliceable_type(receiver_type):
+            if self._getitem_receiver_check_is_conclusive(receiver_type):
+                self._error(
+                    node,
+                    "type",
+                    f"type `{render_type(receiver_type)}` cannot be sliced",
+                )
             return
         for bound in (child for child in slice_node.children if isinstance(child, Tree) and child.data != "sliceop"):
             bound_type = self._expr_simple_type(bound)
@@ -5179,6 +5786,24 @@ class SemanticChecker:
                     f"slice bounds must be `int`, got `{render_type(bound_type)}`",
                 )
                 return
+
+    def _report_non_indexable_getitem(self, node: Tree, receiver_type: Type) -> None:
+        receiver_text = render_type(receiver_type)
+        if self._is_set_type(receiver_type):
+            self._error(
+                node,
+                "type",
+                f"type `{receiver_text}` is not indexable; use membership with `in` to test set contents",
+            )
+            return
+        self._error(node, "type", f"type `{receiver_text}` is not indexable")
+
+    def _getitem_receiver_check_is_conclusive(self, receiver_type: Type) -> bool:
+        return not (
+            self._is_any_type(receiver_type)
+            or self._is_open_type(receiver_type)
+            or self._is_unknown_open_assignment_type(receiver_type)
+        )
 
     def _list_expr_type(self, node: Tree) -> Type | None:
         item_types = [
@@ -5226,6 +5851,28 @@ class SemanticChecker:
             return None
         return GenericType("set", (self._homogeneous_type_or_any(item_types, NamedType("any")),))
 
+    def _list_comprehension_type(self, node: Tree) -> Type | None:
+        comp = node.children[0] if node.children else None
+        if not isinstance(comp, Tree) or comp.data != "comprehension" or not comp.children:
+            return None
+        result_type = self._expr_simple_type(comp.children[0])
+        if result_type is None:
+            return None
+        return ListType(result_type)
+
+    def _dict_comprehension_type(self, node: Tree) -> Type | None:
+        comp = node.children[0] if node.children else None
+        if not isinstance(comp, Tree) or comp.data != "comprehension" or not comp.children:
+            return None
+        kv = comp.children[0]
+        if not isinstance(kv, Tree) or kv.data != "key_value" or len(kv.children) < 2:
+            return None
+        key_type = self._expr_simple_type(kv.children[0])
+        value_type = self._expr_simple_type(kv.children[1])
+        if key_type is None or value_type is None:
+            return None
+        return DictType(key_type, value_type)
+
     @staticmethod
     def _homogeneous_type_or_any(types: list[Type], default: Type) -> Type:
         if not types:
@@ -5261,6 +5908,9 @@ class SemanticChecker:
         operand_type = self._expr_simple_type(node.children[1])
         if operand_type is None:
             return None
+        class_result = self._class_unary_operator_result_type(op, operand_type)
+        if class_result is not None:
+            return class_result
         if op in {"+", "-"} and self._is_numeric_type(operand_type):
             return operand_type
         if op == "~" and self._is_named_type(operand_type, "int"):
@@ -5331,26 +5981,31 @@ class SemanticChecker:
             return NamedType("int")
         return None
 
+    def _class_unary_operator_result_type(self, op: str, operand: Type) -> Type | None:
+        dunder = {"-": "__neg__", "~": "__invert__"}.get(op)
+        if not dunder or not isinstance(operand, NamedType):
+            return None
+        shape = self._class_method_shapes.get(operand.name, {}).get(dunder)
+        if shape is None or shape.param_types:
+            return None
+        return parse_type(shape.return_type_text) if shape.return_type_text else operand
+
+    def _operator_shape_accepts_operand(self, shape: _MethodShape, operand: Type) -> bool:
+        if not shape.param_type_texts:
+            return False
+        expected = parse_type(shape.param_type_texts[0])
+        if self._is_any_type(expected) or self._is_unknown_open_assignment_type(expected):
+            return True
+        return is_assignable(expected, operand) or self._nominal_type_assignable(expected, operand)
+
     def _class_binary_operator_result_type(self, op: str, left: Type, right: Type) -> Type | None:
         dunder = OP_TO_DUNDER.get(op)
         if not dunder or not isinstance(left, NamedType):
             return None
-        class_name = left.name
-        if class_name not in self._class_method_shapes:
+        shape = self._class_method_shapes.get(left.name, {}).get(dunder)
+        if shape is None or not self._operator_shape_accepts_operand(shape, right):
             return None
-        shape = self._class_method_shapes.get(class_name, {}).get(dunder)
-        if shape is None:
-            return None
-        if shape.param_types:
-            expected = parse_type(shape.param_types[0])
-            if (
-                not self._is_any_type(expected)
-                and not self._is_unknown_open_assignment_type(expected)
-                and not is_assignable(expected, right)
-                and not self._nominal_type_assignable(expected, right)
-            ):
-                return None
-        return parse_type(shape.return_type) if shape.return_type else left
+        return parse_type(shape.return_type_text) if shape.return_type_text else left
 
     def _getitem_result_type(self, node: Tree) -> Type | None:
         if len(node.children) < 2:
@@ -5369,7 +6024,7 @@ class SemanticChecker:
         if isinstance(receiver_type, DictType):
             return receiver_type.value
         if self._is_named_type(receiver_type, "str"):
-            return NamedType("str")
+            return NamedType("byte")
         return None
 
     @staticmethod
@@ -5381,6 +6036,10 @@ class SemanticChecker:
         if isinstance(receiver_type, NamedType) and receiver_type.name == "str":
             return NamedType("int")
         return None
+
+    @staticmethod
+    def _is_set_type(type_: Type) -> bool:
+        return isinstance(type_, GenericType) and type_.base == "set"
 
     @staticmethod
     def _is_sliceable_type(type_: Type) -> bool:
@@ -5572,22 +6231,31 @@ class SemanticChecker:
 
         return scan(single_return_type)
 
+    def _check_result_return_shape(self, node: Tree) -> None:
+        payload_arity = self._result_payload_arity(node)
+        if payload_arity is not None and payload_arity > 1:
+            self._error(
+                node,
+                "type",
+                f"`Result` accepts at most one payload type, got {payload_arity}",
+            )
+
     @staticmethod
     def _funcdef_returns_result(node: Tree) -> bool:
-        """True if the funcdef's single return annotation has
-        ``Result`` as its root type (``Result``, ``Result[T]``,
-        ``Result[T, E]`` all qualify).
+        payload_arity = SemanticChecker._result_payload_arity(node)
+        return payload_arity is not None and payload_arity <= 1
 
-        Multi-return tuples are treated as *not* Result-returning:
-        ``?`` in a ``-> (int, str)`` function still can't propagate
-        a ``*Result`` value into the Go signature, so the warning
-        should still fire there.
-        """
-        for c in node.children:
-            if not isinstance(c, Tree) or c.data != "single_return_type":
-                continue
-            return SemanticChecker._type_root_name(c) == "Result"
-        return False
+    @staticmethod
+    def _result_payload_arity(node: Tree) -> int | None:
+        type_text = SemanticChecker._funcdef_return_type_text(node)
+        if not type_text:
+            return None
+        type_ = parse_type(type_text)
+        if isinstance(type_, NamedType) and type_.name == "Result":
+            return 0
+        if isinstance(type_, GenericType) and type_.base == "Result":
+            return len(type_.args)
+        return None
 
     @staticmethod
     def _type_root_name(type_node: Tree) -> str:
@@ -5632,6 +6300,31 @@ class SemanticChecker:
         return ""
 
     @staticmethod
+    def _type_root_names(type_node: Tree) -> list[str]:
+        """Return every named type root under a type subtree."""
+        names: list[str] = []
+        if not isinstance(type_node, Tree):
+            return names
+        for descendant in type_node.iter_subtrees():
+            if descendant.data not in {"type_name", "type_generic"}:
+                continue
+            for child in descendant.children:
+                if not isinstance(child, Tree) or child.data != "dotted_name":
+                    continue
+                for sub in child.children:
+                    if isinstance(sub, Tree) and sub.data == "name":
+                        name = SemanticChecker._name_text(sub)
+                    elif isinstance(sub, Token):
+                        name = str(sub)
+                    else:
+                        name = ""
+                    if name:
+                        names.append(name)
+                    break
+                break
+        return names
+
+    @staticmethod
     def _funcdef_type_params(node: Tree) -> List[str]:
         for c in node.children:
             if isinstance(c, Tree) and c.data == "type_params":
@@ -5644,11 +6337,21 @@ class SemanticChecker:
         return []
 
     def _func_signature(self, node: Tree, name: str) -> Optional[_CallableSig]:
-        return self._callable_signature_from_params(
+        sig = self._callable_signature_from_params(
             self._funcdef_params(node),
             name,
             skip_self=False,
             generic_names=tuple(self._funcdef_type_params(node)),
+        )
+        return _CallableSig(
+            sig.name,
+            sig.required_pos,
+            sig.max_pos,
+            sig.params,
+            sig.accepts_kwargs,
+            sig.param_types,
+            sig.generic_names,
+            self._funcdef_return_type_text(node),
         )
 
     def _callable_signature_from_params(
@@ -6005,6 +6708,8 @@ class SemanticChecker:
 
     def _assignment_declares_current_scope(self, node: Tree, name: str) -> bool:
         if not name or not self._scopes:
+            return False
+        if name in self._scopes[-1].nonlocal_names:
             return False
         if node.data == "annassign" or name in self._scopes[-1].names:
             return True
@@ -6540,7 +7245,9 @@ def _imported_call_metadata(
         if path in parsed_cache:
             return parsed_cache[path]
         try:
-            source = path.read_text(encoding="utf-8")
+            source = module_index.source_by_path.get(path)
+            if source is None:
+                source = path.read_text(encoding="utf-8")
             from compiler.lammergeier import create_parser, preprocess_for_parse
             parse_input = preprocess_for_parse(source)
             parsed_cache[path] = create_parser().parse(parse_input.source)
@@ -6605,6 +7312,18 @@ def _imported_call_metadata(
         except Exception:
             return type_text
 
+    def remap_sig(sig: _CallableSig, name: str, class_aliases: dict[str, str]) -> _CallableSig:
+        return _CallableSig(
+            name,
+            sig.required_pos,
+            sig.max_pos,
+            sig.params,
+            sig.accepts_kwargs,
+            tuple(remap_type_text(type_text, class_aliases) for type_text in sig.param_types),
+            sig.generic_names,
+            remap_type_text(sig.return_type_text, class_aliases),
+        )
+
     def remap_base_name(base: str, class_aliases: dict[str, str]) -> str:
         if not base:
             return ""
@@ -6647,6 +7366,8 @@ def _imported_call_metadata(
             metadata.class_members[local] = set(class_helper._class_members[local])
         if local in class_helper._class_fields:
             metadata.class_fields[local] = set(class_helper._class_fields[local])
+        if local in class_helper._class_field_types:
+            metadata.class_field_types[local] = dict(class_helper._class_field_types[local])
         if local in class_helper._class_static_methods:
             metadata.class_static_methods[local] = set(class_helper._class_static_methods[local])
         if local in class_helper._class_instance_methods:
@@ -6667,7 +7388,9 @@ def _imported_call_metadata(
         prefix = f"{local}."
         for name, sigs in class_helper._method_sigs.items():
             if name.startswith(prefix):
-                metadata.method_sigs.setdefault(name, []).extend(sigs)
+                metadata.method_sigs.setdefault(name, []).extend(
+                    remap_sig(sig, name, aliases) for sig in sigs
+                )
         for name, return_types in class_helper._method_return_type_texts.items():
             if name.startswith(prefix):
                 metadata.method_return_type_texts.setdefault(name, set()).update(
@@ -6699,6 +7422,14 @@ def _imported_call_metadata(
             if (facts.exports.get(requested) is not None
                 and facts.exports[requested].kind == "class")
         }
+        collected_classes: set[str] = set()
+        for export in facts.exports.values():
+            if export.kind != "class" or _export_is_private(export):
+                continue
+            local = class_aliases.get(export.name, export.name)
+            for classdef in collect_classdefs(imported_tree, export.name):
+                collect_imported_class(classdef, local, class_aliases)
+                collected_classes.add(local)
         for requested, local, _symbol_node in _from_import_symbols(node):
             export = facts.exports.get(requested)
             if export is None:
@@ -6710,9 +7441,11 @@ def _imported_call_metadata(
                 for funcdef in collect_funcdefs(imported_tree, requested):
                     sig = helper._func_signature(funcdef, local)
                     if sig is not None:
-                        metadata.func_sigs.setdefault(local, []).append(sig)
+                        metadata.func_sigs.setdefault(local, []).append(
+                            remap_sig(sig, local, class_aliases)
+                        )
                     record_func_return_type(funcdef, local, class_aliases)
-            elif export.kind == "class":
+            elif export.kind == "class" and local not in collected_classes:
                 for classdef in collect_classdefs(imported_tree, requested):
                     collect_imported_class(classdef, local, class_aliases)
             elif export.kind == "interface":
@@ -6747,7 +7480,9 @@ def _imported_call_metadata(
                     for funcdef in collect_funcdefs(imported_tree, export.name):
                         sig = helper._func_signature(funcdef, target)
                         if sig is not None:
-                            metadata.method_sigs.setdefault(target, []).append(sig)
+                            metadata.method_sigs.setdefault(target, []).append(
+                                remap_sig(sig, target, class_aliases)
+                            )
                         record_func_return_type(funcdef, target, class_aliases)
                 elif export.kind == "class":
                     for classdef in collect_classdefs(imported_tree, export.name):
@@ -6788,6 +7523,7 @@ def check_source(
         imported_constructor_sigs=imported_calls.constructor_sigs,
         imported_class_members=imported_calls.class_members,
         imported_class_fields=imported_calls.class_fields,
+        imported_class_field_types=imported_calls.class_field_types,
         imported_class_static_methods=imported_calls.class_static_methods,
         imported_class_instance_methods=imported_calls.class_instance_methods,
         imported_class_method_shapes=imported_calls.class_method_shapes,

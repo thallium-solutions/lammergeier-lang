@@ -1,0 +1,5 @@
+# expect-error: function `values` returns `dict[str, str]`, expected `dict[str, int]`
+
+func values() -> dict[str, int] {
+    return {"key": "bad" for i in range(1)}
+}

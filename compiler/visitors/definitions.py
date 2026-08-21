@@ -291,7 +291,7 @@ class DefinitionVisitorMixin:
     ):
         if self.current_class:
             if is_static:
-                go_name = self._go_public_name(self.current_class) + "_" + func_name
+                go_name = self._go_class_name(self.current_class) + "_" + func_name
                 if is_private:
                     go_name = self._go_private_name(go_name)
                 else:
@@ -315,21 +315,17 @@ class DefinitionVisitorMixin:
             elif func_name == "__init__" or func_name == "init":
                 self._emit_constructor(func_name, params_node, suite_node)
             elif func_name == "__str__" or func_name == "__repr__":
-                self._emit_method("String", "string", params_node, suite_node, tp_clause=tp_clause)
+                self._emit_method(self._go_method_name(self.current_class, func_name), "string", params_node, suite_node, tp_clause=tp_clause)
             elif func_name == "__len__":
-                self._emit_method("Len", "int", params_node, suite_node, tp_clause=tp_clause)
+                self._emit_method(self._go_method_name(self.current_class, func_name), "int", params_node, suite_node, tp_clause=tp_clause)
             elif func_name in DUNDER_OPS:
-                go_method = DUNDER_OPS[func_name]
+                go_method = self._go_method_name(self.current_class, func_name)
                 if self.current_class not in self._class_dunder_methods:
                     self._class_dunder_methods[self.current_class] = {}
                 self._class_dunder_methods[self.current_class][func_name] = go_method
                 self._emit_method(go_method, return_type, params_node, suite_node, tp_clause=tp_clause)
             else:
-                method_name = func_name
-                if is_private:
-                    method_name = self._go_private_name(func_name)
-                else:
-                    method_name = self._go_public_name(func_name)
+                method_name = self._go_method_name(self.current_class, func_name)
                 self._emit_method(method_name, return_type, params_node, suite_node, tp_clause=tp_clause)
             return
 
@@ -343,12 +339,12 @@ class DefinitionVisitorMixin:
         sig = self._param_types_sig(params_node) if params_node else ()
         name_suffix = self._overload_suffix_for_sig(func_name, sig)
 
-        if func_name == "main":
-            go_name = "main"
-        elif is_private:
-            go_name = self._go_private_name(func_name) + name_suffix
-        else:
-            go_name = self._go_public_name(func_name) + name_suffix
+        go_name = self._function_go_names.get(
+            func_name,
+            "main" if func_name == "main" else (
+                self._go_private_name(func_name) if is_private else self._go_public_name(func_name)
+            ),
+        ) + name_suffix
 
         params_str = self._typed_params_to_go(params_node)
 
@@ -470,7 +466,7 @@ class DefinitionVisitorMixin:
             if base in visited:
                 continue
             visited.add(base)
-            go_base = self._go_public_name(base)
+            go_base = self._go_class_name(base)
             path = f"{receiver}.{go_base}"
             self._emit(f"{path} = &{go_base}{{}}")
             # Recurse to cover grandparents (``Puppy -> Dog ->
@@ -480,7 +476,7 @@ class DefinitionVisitorMixin:
 
     def _emit_constructor(self, func_name, params_node, suite_node):
         cls = self.current_class
-        go_cls = self._go_public_name(cls)
+        go_cls = self._go_class_name(cls)
         params_str = self._typed_params_to_go(params_node, skip_self=True)
 
         # Generic classes need their type parameters on both the
@@ -525,7 +521,7 @@ class DefinitionVisitorMixin:
     def _emit_method(self, go_method, return_type, params_node, suite_node,
                      tp_clause: str = ""):
         cls = self.current_class
-        go_cls = self._go_public_name(cls)
+        go_cls = self._go_class_name(cls)
         params_str = self._typed_params_to_go(params_node, skip_self=True)
         ret_str = f" {return_type}" if return_type else ""
 
@@ -574,7 +570,7 @@ class DefinitionVisitorMixin:
         name_node = node.children[0]
         suite_node = node.children[-1]
         class_name = self._get_name(name_node)
-        go_cls = self._go_public_name(class_name)
+        go_cls = self._go_class_name(class_name)
 
         # Detect and register an optional type-parameter clause
         # ``class Box[T any] { ... }``. The clause needs to be visible
@@ -614,13 +610,13 @@ class DefinitionVisitorMixin:
             self._emit(f"type {go_cls}{tp_clause} struct {{")
             self.indent += 1
             for base in self.class_bases.get(class_name, []):
-                go_base = self._go_public_name(base)
+                go_base = self._go_class_name(base)
                 self._emit(f"*{go_base}")
             for field_name, go_type in fields:
                 if field_name in parent_fields:
                     continue
                 json_tag = field_name
-                self._emit(f'{self._go_public_name(field_name)} {go_type} `json:"{json_tag}"`')
+                self._emit(f'{self._go_field_name(class_name, field_name)} {go_type} `json:"{json_tag}"`')
             self.indent -= 1
             self._emit("}")
             self._emit("")
@@ -670,7 +666,7 @@ class DefinitionVisitorMixin:
     def _visit_interfacedef(self, node: Tree):
         name_node = node.children[0]
         iface_name = self._get_name(name_node)
-        go_name = self._go_public_name(iface_name)
+        go_name = self._go_class_name(iface_name)
         self._emit(f"type {go_name} interface {{")
         self.indent += 1
         for child in node.children[1:]:

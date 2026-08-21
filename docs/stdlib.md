@@ -860,8 +860,10 @@ value: any = divide(10, 2).unwrap()       # 5
 `.cause`; `str(error)` renders `Kind: message` and appends the cause
 when present.
 
-`Result` is deliberately non-generic. Both `.value` and `.error` are
-typed `any`, and the implemented API is:
+`Result` is non-generic at runtime. Both `.value` and `.error` are typed
+`any`, while signatures may use one erased payload marker such as
+`Result[int]` to improve Lam-side propagation inference. The implemented
+runtime API is:
 
 | Signature | Meaning |
 |---|---|

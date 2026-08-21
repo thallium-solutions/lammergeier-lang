@@ -54,7 +54,7 @@
 from lamredis import Redis, PubSub
 
 func main() {
-    r: Redis = Redis.connect("localhost:6379", password="redispass123")
+    r: Redis = Redis.connect("localhost:6379", password="Password")
     r.flushDb()
 
     pong: str = r.ping()
@@ -188,7 +188,7 @@ func main() {
     # ambiguity about connection reuse.
     ps: PubSub = r.subscribe(["events"])
     ps.setTimeout(3000)
-    publisher: Redis = Redis.connect("localhost:6379", password="redispass123")
+    publisher: Redis = Redis.connect("localhost:6379", password="Password")
     publisher.publish("events", "hello-subscribers")
     publisher.close()
     msg: str = ps.next()

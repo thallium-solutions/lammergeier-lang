@@ -1,0 +1,8 @@
+# expect-error: destructuring expects 3 values, but list literal has 2
+
+func main() {
+    first, second, third = [1, 2]
+    print(first)
+    print(second)
+    print(third)
+}

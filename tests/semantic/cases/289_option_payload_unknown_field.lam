@@ -1,0 +1,12 @@
+# expect-error: unknown member `document.titel`
+# expect-error: did you mean `document.title`
+
+class Document {
+    func init(self, title: str) {
+        self.title: str = title
+    }
+}
+
+func inspect(document: Option[Document]) {
+    print(document?.titel)
+}

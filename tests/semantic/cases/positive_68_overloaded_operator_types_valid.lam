@@ -1,0 +1,23 @@
+# expect-pass
+
+class Vec {
+    func __add__(self, other: Vec) -> Vec {
+        return self
+    }
+
+    func __neg__(self) -> Vec {
+        return self
+    }
+
+    func __lt__(self, other: Vec) -> bool {
+        return True
+    }
+}
+
+func main() {
+    left = Vec()
+    right = Vec()
+    total = left + right
+    negated = -total
+    print(negated < right)
+}

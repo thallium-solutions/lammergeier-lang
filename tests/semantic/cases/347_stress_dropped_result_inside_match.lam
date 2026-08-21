@@ -1,0 +1,15 @@
+# expect-warning: dropped `Result` from `fetch()`; handle it or assign to `_`
+
+from lamerrors import Result
+
+func fetch() -> Result[int] { return Result.Ok(1) }
+
+func main() {
+    state: int = 1
+    match state {
+        case 1 {
+            if True { fetch() } else { _ = fetch() }
+        }
+        case _ { _ = fetch() }
+    }
+}

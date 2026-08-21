@@ -1,0 +1,49 @@
+func sumNested(rows: list[list[int]]) -> int {
+    total: int = 0
+    for row in rows {
+        for value in row {
+            total += value
+        }
+    }
+    return total
+}
+
+func countLabels(labels: set[str]) -> int {
+    return len(labels)
+}
+
+func totalByKey(table: dict[str, list[int]], key: str) -> int {
+    return sumNested([table[key]])
+}
+
+func defaultSum(values: list[int] = [10, 20]) -> int {
+    return sumNested([values])
+}
+
+class Accumulator {
+    static func flatten(rows: list[list[int]]) -> list[int] {
+        out: list[int] = []
+        for row in rows {
+            for value in row {
+                out.append(value)
+            }
+        }
+        return out
+    }
+
+    func init(self, table: dict[str, list[dict[str, list[int]]]]) {
+        self.table: dict[str, list[dict[str, list[int]]]] = table
+    }
+
+    func score(self) -> int {
+        total: int = 0
+        for record in self.table["rows"] {
+            total += sumNested([record["left"], record["right"]])
+        }
+        return total
+    }
+}
+
+func main() {
+    pass
+}

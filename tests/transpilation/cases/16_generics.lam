@@ -13,7 +13,7 @@
 # expect-go: type Box[T any] struct
 # expect-go: func (s *Box[T]) Unwrap() T
 # expect-go: func NewBox[T any]() *Box[T]
-# expect-go: return &Box[T]{}
+# expect-go: s := &Box[T]{}
 # expect-go: func Helpers_wrap[T any](x T) T
 
 func identity[T](x: T) -> T {
@@ -34,7 +34,7 @@ func max_of[T: ordered](a: T, b: T) -> T {
 class Box[T] {
     value: T
 
-    func unwrap() -> T {
+    func unwrap(self) -> T {
         return self.value
     }
 }

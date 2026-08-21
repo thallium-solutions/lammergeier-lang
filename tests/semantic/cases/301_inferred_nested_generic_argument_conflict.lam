@@ -1,0 +1,9 @@
+# expect-error: argument `right` to `sameList` has type `list[str]`, expected `list[int]`
+
+func sameList[T](left: list[T], right: list[T]) -> list[T] {
+    return left
+}
+
+func main() {
+    _ = sameList([1], ["two"])
+}

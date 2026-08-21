@@ -1,0 +1,12 @@
+# expect-error: operator `<` is not defined for `Score` and `int`
+
+class Score {
+    func __lt__(self, other: Score) -> bool {
+        return True
+    }
+}
+
+func main() {
+    score = Score()
+    print(score < 1)
+}

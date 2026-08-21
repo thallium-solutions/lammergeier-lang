@@ -1,0 +1,15 @@
+# expect-error: destructuring expects 2 values, but `choose()` has 3
+
+func choose(value: int) -> (int, str) {
+    return (value, "one")
+}
+
+func choose(left: int, right: int) -> (int, str, bool) {
+    return (left + right, "two", True)
+}
+
+func main() {
+    value, label = choose(1, 2)
+    print(value)
+    print(label)
+}

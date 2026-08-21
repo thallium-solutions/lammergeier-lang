@@ -1,0 +1,7 @@
+# expect-error: cannot add `str` and `int`
+
+func main() {
+    pairs: list[tuple[int, str]] = [(1, "one")]
+    values: list[str] = [label + number for number, label in pairs for repeat in range(2) if repeat >= 0]
+    print(values)
+}

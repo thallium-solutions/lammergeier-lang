@@ -2,7 +2,7 @@
   "name": "lammergeier-lang",
   "displayName": "Lammergeier Lang",
   "description": "Syntax highlighting and LSP client for Lammergeier (.lam) — a typed Python-like language that compiles to Go.",
-  "version": "0.3.0",
+  "version": "1.1.1",
   "publisher": "lammergeier",
   "icon": "icon.png",
   "engines": {
@@ -27,8 +27,14 @@
     "languages": [
       {
         "id": "lammergeier",
-        "aliases": ["Lammergeier", "lammergeier", "lam"],
-        "extensions": [".lam"],
+        "aliases": [
+          "Lammergeier",
+          "lammergeier",
+          "lam"
+        ],
+        "extensions": [
+          ".lam"
+        ],
         "configuration": "./language-configuration.json",
         "icon": {
           "light": "./icon.png",
@@ -60,7 +66,9 @@
         "lammergeier.lsp.args": {
           "type": "array",
           "default": [],
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Extra command-line arguments forwarded to lammergeier-lsp."
         },
         "lammergeier.lsp.logFile": {
@@ -68,9 +76,18 @@
           "default": "",
           "description": "If set, the LSP server writes a verbose trace to this file (LAMMERGEIER_LSP_LOG)."
         },
+        "lammergeier.lsp.suppressExpectedDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Hide diagnostics that match # expect-error or # expect-warning fixture directives. Disabled by default so test fixtures still show editor errors."
+        },
         "lammergeier.trace.server": {
           "type": "string",
-          "enum": ["off", "messages", "verbose"],
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
           "default": "off",
           "description": "Traces JSON-RPC traffic between VS Code and the Lammergeier language server."
         }

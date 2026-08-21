@@ -1,0 +1,9 @@
+# expect-pass
+
+class account {
+    value: int = 1
+}
+
+class Account {
+    value: int = 2
+}

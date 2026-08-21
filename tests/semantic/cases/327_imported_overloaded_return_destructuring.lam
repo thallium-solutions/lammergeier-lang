@@ -1,0 +1,9 @@
+# expect-error: destructuring expects 2 values, but `choose()` has 3
+
+from destructuring_package import choose
+
+func main() {
+    value, label = choose(1, 2)
+    print(value)
+    print(label)
+}

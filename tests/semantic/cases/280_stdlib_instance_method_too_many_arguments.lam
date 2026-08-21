@@ -1,0 +1,8 @@
+# expect-error: too many positional arguments in call to `File.read`
+
+from lamos import File
+
+func main() {
+    file = File.open("/tmp/unused")
+    _ = file.read(1)
+}

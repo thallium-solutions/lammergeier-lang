@@ -1,0 +1,7 @@
+# expect-error: missing required argument `text` in call to `pkg.Codec.parse`
+
+import go_backed_package as pkg
+
+func main() {
+    _ = pkg.Codec.parse()
+}

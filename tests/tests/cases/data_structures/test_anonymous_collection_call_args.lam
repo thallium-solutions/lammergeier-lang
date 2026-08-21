@@ -1,0 +1,51 @@
+# expect: 108
+# expect: 15
+# expect: 7
+# expect: 8
+# expect: 9
+# expect: 13
+
+func sum(values: list[int]) -> int {
+    total: int = 0
+    for value in values {
+        total += value
+    }
+    return total
+}
+
+func nestedFirst(values: list[list[int]]) -> int {
+    return values[0][1]
+}
+
+func pick(values: dict[str, int], key: str) -> int {
+    return values[key]
+}
+
+class Bag {
+    func init(self, values: list[int]) {
+        self.values: list[int] = values
+    }
+
+    func totalWith(self, extra: list[int]) -> int {
+        return sum(self.values) + sum(extra)
+    }
+}
+
+class Defaults {
+    func init(self, values: list[int] = [6, 7]) {
+        self.values: list[int] = values
+    }
+
+    func total(self) -> int {
+        return sum(self.values)
+    }
+}
+
+func main() {
+    print(sum([4, 8, 15, 16, 23, 42]))
+    print(Bag([1, 2, 3]).totalWith([4, 5]))
+    print(nestedFirst([[1, 7], [2, 8]]))
+    print(pick({"left": 3, "right": 8}, "right"))
+    print(sum(values=[2, 3, 4]))
+    print(Defaults().total())
+}

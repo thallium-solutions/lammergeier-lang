@@ -72,10 +72,13 @@ def test_parse_text_function_and_union_types() -> None:
 
 def test_go_lowering_preserves_current_generic_rules() -> None:
     assert type_to_go(parse_type("optional[int]")) == "*int"
+    assert type_to_go(parse_type("optional[Document]")) == "*Document"
+    assert type_to_go(parse_type("Option[Document]")) == "*Document"
     assert type_to_go(parse_type("chan[str]")) == "chan string"
     assert type_to_go(parse_type("tuple[int, str]")) == "[]interface{}"
     assert type_to_go(parse_type("Box[int]")) == "interface{}"
     assert type_to_go(parse_type("Box[int]"), generic_classes={"Box"}) == "*Box[int]"
+    assert type_to_go(parse_type("Result[int]")) == "*Result"
     assert type_to_go(NamedType("T"), generic_names={"T"}) == "T"
     assert type_to_go(NamedType("Reader"), interfaces={"Reader"}) == "Reader"
     assert isinstance(parse_type("Box[int]"), GenericType)
@@ -90,6 +93,9 @@ def test_assignability_covers_simple_type_rules() -> None:
     assert not is_assignable(parse_type("int"), parse_type("str"))
     assert not is_assignable(parse_type("list[int]"), parse_type("list[str]"))
     assert is_assignable(parse_type("dict[str, float]"), parse_type("dict[str, int]"))
+    assert is_assignable(parse_type("Result[int]"), parse_type("Result"))
+    assert is_assignable(parse_type("Result"), parse_type("Result[int]"))
+    assert not is_assignable(parse_type("Result[int]"), parse_type("Result[str]"))
     print("PASS: assignability covers simple type rules")
 
 

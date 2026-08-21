@@ -1,0 +1,23 @@
+# expect-pass
+
+from lamerrors import Result
+
+class Document {
+    func init(self, title: str) {
+        self.title: str = title
+    }
+
+    func render(self) -> str {
+        return self.title
+    }
+}
+
+class Loader {
+    static func fetch() -> Result[Document] {
+        return Result.Ok(Document("loaded"))
+    }
+}
+
+func loadDocument() -> Result[Document] {
+    return Result.Ok(Document("loaded"))
+}

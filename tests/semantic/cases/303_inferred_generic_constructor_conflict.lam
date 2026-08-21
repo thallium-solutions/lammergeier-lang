@@ -1,0 +1,12 @@
+# expect-error: argument `right` to `Pair` has type `str`, expected `int`
+
+class Pair[T] {
+    func init(self, left: T, right: T) {
+        self.left: T = left
+        self.right: T = right
+    }
+}
+
+func main() {
+    _ = Pair(1, "two")
+}

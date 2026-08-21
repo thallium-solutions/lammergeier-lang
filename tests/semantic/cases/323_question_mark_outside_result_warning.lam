@@ -1,0 +1,12 @@
+# expect-warning: `?` operator used outside a `-> Result` function
+
+from lamerrors import Result
+
+func load() -> Result[int] {
+    return Result.Ok(1)
+}
+
+func main() {
+    value: int = load()?
+    print(value)
+}

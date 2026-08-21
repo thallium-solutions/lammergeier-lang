@@ -1,0 +1,8 @@
+# expect-error: operator `-` is not defined for `Document`
+
+class Document {}
+
+func main() {
+    document = Document()
+    _ = -document
+}

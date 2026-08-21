@@ -1,0 +1,16 @@
+# expect-pass
+
+class Resource {
+    func close(self) {
+        pass
+    }
+}
+
+func main() {
+    value: str = "before"
+    with Resource() as resource {
+        value = "inside"
+        print(resource)
+    }
+    print(value)
+}

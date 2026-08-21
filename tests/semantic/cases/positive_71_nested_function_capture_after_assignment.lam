@@ -1,0 +1,9 @@
+# expect-pass
+
+func outer() {
+    message = "ready"
+    func show() {
+        print(message)
+    }
+    show()
+}

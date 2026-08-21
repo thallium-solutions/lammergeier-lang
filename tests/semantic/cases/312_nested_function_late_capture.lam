@@ -1,0 +1,9 @@
+# expect-error: `message` may be used before assignment
+
+func outer() {
+    func show() {
+        print(message)
+    }
+    message = "ready"
+    show()
+}

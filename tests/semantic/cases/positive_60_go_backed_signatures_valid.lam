@@ -1,0 +1,14 @@
+# expect-pass
+
+from lamjson import Json
+from lamos import File
+from go_backed_package import Codec
+
+func main() {
+    text: str = Json.encode({"ok": True})
+    parsed: any = Json.decode(text)
+    codec = Codec("value:")
+    print(codec.format(str(parsed), times = 1))
+    file = File.open("/tmp/unused")
+    _ = file.write(text)
+}

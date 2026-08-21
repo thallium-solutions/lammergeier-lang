@@ -449,6 +449,19 @@ def _type_to_str(node) -> str:
             return str(node.children[0]) if node.children else ""
         if node.data == "dotted_name":
             return ".".join(filter(None, (_type_to_str(c) for c in node.children)))
+        if node.data == "type_expr":
+            return _type_to_str(node.children[0]) if node.children else ""
+        if node.data == "type_union":
+            parts = [text for text in (_type_to_str(c) for c in node.children) if text]
+            return " | ".join(parts)
+        if node.data == "type_name":
+            return _type_to_str(node.children[0]) if node.children else ""
+        if node.data == "type_generic" and node.children:
+            base = _type_to_str(node.children[0])
+            args = ", ".join(
+                filter(None, (_type_to_str(c) for c in node.children[1:]))
+            )
+            return f"{base}[{args}]" if args else base
         if node.data == "type_subscript" and node.children:
             base = _type_to_str(node.children[0])
             inner = ", ".join(filter(None, (_type_to_str(c) for c in node.children[1:])))

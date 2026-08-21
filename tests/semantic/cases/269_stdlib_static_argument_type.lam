@@ -1,0 +1,7 @@
+# expect-error: argument `url` to `Http.get` has type `int`, expected `str`
+
+from lamhttp import Http
+
+func main() {
+    _ = Http.get(123)
+}

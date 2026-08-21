@@ -1,0 +1,13 @@
+# expect-pass
+
+from lamerrors import Result
+
+func loadValue() -> Result {
+    return Result.Ok("dynamic")
+}
+
+func inspect() -> Result {
+    value = loadValue()?
+    print(value.unknownMember())
+    return Result.Ok(None)
+}

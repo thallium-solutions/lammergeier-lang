@@ -1,0 +1,19 @@
+# expect-pass
+
+from lamerrors import Result
+
+class Document {
+    func render(self) -> str {
+        return "ok"
+    }
+}
+
+func loadDocument() -> Result[Document] {
+    return Result.Ok(Document())
+}
+
+func inspect() -> Result {
+    document = loadDocument()?
+    print(document.render())
+    return Result.Ok(None)
+}

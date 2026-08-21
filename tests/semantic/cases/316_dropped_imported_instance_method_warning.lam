@@ -1,0 +1,8 @@
+# expect-warning: dropped return value of `file.read()`
+
+from lamos import File
+
+func main() {
+    file = File.open("/tmp/unused")
+    file.read()
+}

@@ -1,0 +1,9 @@
+# expect-error: argument `right` to `same` has type `str`, expected `int`
+
+func same[T](left: T, right: T) -> T {
+    return left
+}
+
+func main() {
+    _ = same(1, "two")
+}

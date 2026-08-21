@@ -1,0 +1,11 @@
+# expect: scoped: ok
+
+func main() {
+    from lamerrors import Result
+    do {
+        value: str = Result.Ok("ok")?
+        print(f"scoped: {value}")
+    } catch err {
+        print(err)
+    }
+}

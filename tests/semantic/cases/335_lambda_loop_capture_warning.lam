@@ -1,0 +1,8 @@
+# expect-warning: lambda captures loop variable `i`; copy it if each closure needs its own value
+
+func main() {
+    callbacks: list[any] = []
+    for i in range(3) {
+        callbacks.append(lambda: i)
+    }
+}

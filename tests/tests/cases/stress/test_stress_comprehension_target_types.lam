@@ -1,0 +1,25 @@
+# expect: [two three]
+# expect: [one1]
+# expect: 15
+# expect: 4
+# expect: 6
+
+func main() {
+    pairs: list[tuple[int, str]] = [(1, "one"), (2, "two"), (3, "three")]
+    triples: list[tuple[int, str, bool]] = [(1, "one", True), (2, "two", False)]
+    labels: list[str] = [label for number, label in pairs if number > 1]
+    enabledLabels: list[str] = [label + str(number) for number, label, enabled in triples if enabled]
+    table: dict[str, int] = {"a": 1, "b": 2}
+    weighted: list[int] = [value * len(key) for key, value in table]
+    cube: list[int] = [x + y + z for x in range(2) for y in range(2) for z in range(2)]
+    uniqueLabels: set[str] = {label for number, label in pairs if number > 0}
+    inverse: dict[str, int] = {label: number for number, label in pairs}
+    total: int = 0
+    for value in weighted { total += value }
+    for value in cube { total += value }
+    print(labels)
+    print(enabledLabels)
+    print(total)
+    print(len({value for value in cube}))
+    print(len(uniqueLabels) + inverse["three"])
+}

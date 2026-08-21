@@ -1,0 +1,12 @@
+# expect-pass
+
+func label(ok: bool) -> str {
+    for i in range(1) {
+        if ok {
+            name = "ready"
+        } else {
+            name = "waiting"
+        }
+    }
+    return name
+}

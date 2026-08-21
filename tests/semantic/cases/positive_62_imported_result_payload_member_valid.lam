@@ -1,0 +1,11 @@
+# expect-pass
+
+from lamerrors import Result
+from result_member_package import loadDocument
+
+func inspect() -> Result {
+    document = loadDocument()?
+    print(document.render())
+    print(document.title)
+    return Result.Ok(None)
+}

@@ -1,0 +1,8 @@
+# expect-error: missing required argument `text` in call to `Codec.format`
+
+from go_backed_package import Codec
+
+func main() {
+    codec = Codec("item:")
+    _ = codec.format()
+}

@@ -1,0 +1,15 @@
+# expect-error: destructuring target `flag` expects `str`, got `bool`
+
+func choose(value: int) -> (int, str) {
+    return (value, "int")
+}
+
+func choose(value: str) -> (str, bool) {
+    return (value, True)
+}
+
+func main() {
+    text, flag: tuple[str, str] = choose("ok")
+    print(text)
+    print(flag)
+}

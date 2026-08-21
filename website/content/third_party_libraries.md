@@ -140,15 +140,29 @@ lamwebp.lam                 # one file, module = filename without ext
 
 ```
 lamwebp/
-├── __init__.lam            # bundled into the parent module
-└── codec.lam               # helper/internal source; expose via __init__.lam
+├── __init__.lam
+├── codec.lam
+└── io/
+    └── files.lam
 ```
 
-The compiler imports `lamwebp` as `<dir>/lamwebp/__init__.lam` when
-the package form is used. Submodule imports (`from lamwebp.codec
-import Decoder`) aren't supported *yet* — the current resolver is
-flat, matching how stdlib modules are organised. This is the first
-enhancement on the roadmap once third-party libraries ship.
+The compiler imports `lamwebp` as `<dir>/lamwebp/__init__.lam`, while
+`from lamwebp.codec import Decoder` and
+`from lamwebp.io.files import readWebp` resolve the corresponding nested
+files directly. A nested directory may also use its own `__init__.lam`.
+Only imported modules and their transitive imports are bundled.
+
+Package roots may re-export a submodule symbol with a normal import:
+
+```lammergeier
+# lamwebp/__init__.lam
+from lamwebp.codec import Decoder
+```
+
+Consumers can then choose either `from lamwebp import Decoder` or the
+explicit submodule path. Canonical nested paths win over legacy files
+whose names contain literal dots, but those dotted filenames remain a
+compatibility fallback.
 
 The accepted file extension is `.lam`. (The earlier `.tpy`
 transitional extension has been retired; rename any such files in
@@ -284,6 +298,12 @@ Go pins from every installed library, writes the result into the
 synthesised `go.mod`, and refuses incompatible majors before the
 build starts.
 
+Keep the surrounding Lam wrapper signature precise even when the whole
+body is `go!`. The semantic checker exports that declaration metadata to
+consumers, so constructors, static methods, aliases, module-qualified
+calls, and inferred instance calls all receive normal argument diagnostics.
+Only genuinely raw Go or intentionally dynamic `any` values are opaque.
+
 For Go standard-library packages (`net/http`, `crypto/hmac`,
 `strings`, etc.), do not add a `[go-deps]` entry; those are part
 of the target Go toolchain.
@@ -415,6 +435,10 @@ lamfork = { git = "https://github.com/alice/lamfork.git", ref = "v1.2.0" }
 test   = "lamc test/test_all.lam"
 format = "lamc fmt src/"
 ```
+
+`lamc fmt <directory>` walks the directory recursively and formats every
+`.lam` file it finds, so a single script can cover a whole library source tree.
+Use `lamc fmt <directory> --check` when you want CI to fail on formatter drift.
 
 ### Validation rules
 
@@ -777,7 +801,7 @@ escape hatch) is documented in
 | SemVer / API-diff gate (`lamc install --allow-breaking` to override) | ✅ |
 | Unused-import / unused-parameter / unused-manifest-dep warnings | ✅ (Go-style warn-don't-error semantics) |
 | `lamc lib run <script>` | ✅ (runs `[scripts]` entries from the nearest `lamlib.toml`; supports `--list`, `--cwd`, `--dry-run`, and `--quiet`) |
-| Submodule imports (`from lamwebp.codec import …`) | ☐ |
+| Submodule imports (`from lamwebp.codec import …`) | ✅ (nested files/packages, root re-exports, transitive bundling, diagnostics, and LSP completion) |
 
 Resolved design questions:
 

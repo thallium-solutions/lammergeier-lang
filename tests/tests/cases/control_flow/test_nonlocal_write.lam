@@ -1,0 +1,15 @@
+# expect: 2
+
+func outer() -> int {
+    value = 1
+    func inner() {
+        nonlocal value
+        value = 2
+    }
+    inner()
+    return value
+}
+
+func main() {
+    print(outer())
+}

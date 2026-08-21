@@ -1,0 +1,7 @@
+# expect-error: missing required argument `text` in call to `C.parse`
+
+from go_backed_package import Codec as C
+
+func main() {
+    _ = C.parse()
+}

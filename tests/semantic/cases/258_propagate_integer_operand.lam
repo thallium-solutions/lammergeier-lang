@@ -1,0 +1,8 @@
+# expect-error: `?` requires a `Result` value, got `int`
+
+from lamerrors import Result
+
+func parse() -> Result {
+    value = 1?
+    return Result.Ok(value)
+}

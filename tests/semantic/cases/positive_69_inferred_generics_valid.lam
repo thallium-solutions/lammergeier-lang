@@ -1,0 +1,16 @@
+# expect-pass
+
+func same[T](left: T, right: T) -> T {
+    return left
+}
+
+func sameList[T](left: list[T], right: list[T]) -> list[T] {
+    return left
+}
+
+func main() {
+    number: int = same(1, 2)
+    values: list[str] = sameList(["a"], ["b"])
+    print(number)
+    print(values)
+}

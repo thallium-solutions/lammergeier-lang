@@ -55,6 +55,7 @@ from compiler.ast_builder import build_module  # noqa: E402
 from compiler.ast_nodes import ClassDecl, FuncDecl, InterfaceDecl, Module, Param, VarDecl  # noqa: E402
 from compiler.formatter import FormatError, format_lam_source  # noqa: E402
 from compiler.modules import ModuleFacts, WorkspaceIndex  # noqa: E402
+from compiler.preprocessor import find_unknown_lammergeier_aliases  # noqa: E402
 from compiler.syntax_errors import make_syntax_diagnostic  # noqa: E402
 from compiler.lammergeier import preprocess_for_parse  # noqa: E402
 
@@ -209,8 +210,8 @@ def _stdlib_module(name: str) -> Optional[StdlibModule]:
     Re-indexes on stale mtime, so editing the stdlib in another
     window shows up immediately on the next hover / completion.
     """
-    path = _STDLIB_DIR / f"{name}.lam"
-    if not path.exists():
+    path = WorkspaceIndex.module_path_under(_STDLIB_DIR, name)
+    if path is None:
         return None
     with _STDLIB_INDEX_LOCK:
         cached = _STDLIB_INDEX.get(name)
@@ -227,16 +228,20 @@ def _stdlib_module(name: str) -> Optional[StdlibModule]:
 
 
 def _stdlib_module_uri(module: str) -> Optional[str]:
-    path = _STDLIB_DIR / f"{module}.lam"
-    if not path.exists():
+    path = WorkspaceIndex.module_path_under(_STDLIB_DIR, module)
+    if path is None:
         return None
-    return path.resolve().as_uri()
+    return path.as_uri()
 
 
 def _stdlib_module_names() -> List[str]:
     if not _STDLIB_DIR.exists():
         return []
-    return sorted(path.stem for path in _STDLIB_DIR.glob("*.lam"))
+    return sorted(
+        name
+        for path in _STDLIB_DIR.rglob("*.lam")
+        if (name := WorkspaceIndex.module_name_under(_STDLIB_DIR, path))
+    )
 
 
 def _get_parser() -> Lark:
@@ -455,7 +460,12 @@ def _collect_imports(tree: Tree) -> Dict[str, Tuple[str, str]]:
     return out
 
 
-def analyze(doc: Document) -> None:
+def analyze(
+    doc: Document,
+    *,
+    module_index: WorkspaceIndex | None = None,
+    source_path: Path | None = None,
+) -> None:
     """Parse the document, populate ``tree``, ``symbols``, ``parse_error``,
     and ``semantic_diagnostics``.
 
@@ -491,11 +501,52 @@ def analyze(doc: Document) -> None:
         # never blank the editor, so any exception is logged and
         # swallowed.
         try:
-            from compiler.semantic import SemanticChecker
-            checker = SemanticChecker(go_blocks=pre_result.go_blocks)
-            errors = checker.check(tree)
+            from compiler.semantic import check_source
+            for line, col, message in pre_result.diagnostics:
+                doc.semantic_diagnostics.append(Diagnostic(
+                    code="LAM2008",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=message,
+                    span=SourceSpan(file=source_path, line=line, col=col),
+                ))
+            errors = check_source(
+                tree,
+                go_blocks=pre_result.go_blocks,
+                module_index=module_index,
+                source_path=source_path,
+            )
             for err in errors:
                 doc.semantic_diagnostics.append(err.to_diagnostic())
+            lammergeier_names = {
+                symbol.name
+                for symbol in doc.symbols
+                if not symbol.parent and symbol.kind in {"function", "class"}
+            }
+            lammergeier_names.update(doc.imports)
+            if module_index is not None and source_path is not None:
+                for local, (module, original) in doc.imports.items():
+                    module_path = module_index.resolve_module(source_path, module)
+                    indexed = _index_stdlib_module(module_path) if module_path is not None else None
+                    if indexed is not None:
+                        lammergeier_names.update(
+                            f"{local}.{method}"
+                            for method in indexed.methods.get(original, {})
+                        )
+            lammergeier_names.update(
+                f"{symbol.parent}.{symbol.name}"
+                for symbol in doc.symbols
+                if symbol.parent and symbol.kind == "static_method"
+            )
+            for line, col, full in find_unknown_lammergeier_aliases(
+                doc.text,
+                extra_valid=lammergeier_names,
+            ):
+                doc.semantic_diagnostics.append(Diagnostic(
+                    code="LAM2009",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=f"`{full}` does not resolve to a known Lam symbol",
+                    span=SourceSpan(file=source_path, line=line, col=col, end_col=col + len(full)),
+                ))
         except Exception:
             logger.exception("semantic check failed")
         return
@@ -1406,6 +1457,7 @@ class LspServer:
         self.workspace = WorkspaceIndex(self.workspace_root)
         self._workspace_scan_signature: Optional[Tuple[Tuple[str, float], ...]] = None
         self._workspace_module_facts: Dict[Path, ModuleFacts] = {}
+        self.suppress_expected_diagnostics = False
         self.shutdown_requested = False
         self.handlers: Dict[str, Callable[[Dict[str, Any]], Any]] = {
             "initialize": self.on_initialize,
@@ -1484,6 +1536,10 @@ class LspServer:
     # ── lifecycle ───────────────────────────────────────────
     def on_initialize(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         params = msg.get("params") or {}
+        initialization_options = params.get("initializationOptions") or {}
+        self.suppress_expected_diagnostics = bool(
+            initialization_options.get("suppressExpectedDiagnostics", False)
+        )
         root_uri = params.get("rootUri") or ""
         root_path = _uri_to_path(root_uri)
         if root_path is not None:
@@ -1525,7 +1581,13 @@ class LspServer:
         text = td.get("text", "")
         version = td.get("version", 0)
         doc = Document(uri=uri, text=text, version=version)
-        analyze(doc)
+        path = _uri_to_path(uri)
+        if path is not None:
+            try:
+                self.workspace.update_file(path, text)
+            except Exception:
+                logger.exception("workspace index update failed")
+        analyze(doc, module_index=self.workspace, source_path=path)
         self.docs[uri] = doc
         self._index_doc(doc)
         self._publish_diagnostics(doc)
@@ -1543,7 +1605,13 @@ class LspServer:
         doc = self.docs.get(uri) or Document(uri=uri, text=text)
         doc.text = text
         doc.version = version
-        analyze(doc)
+        path = _uri_to_path(uri)
+        if path is not None:
+            try:
+                self.workspace.update_file(path, text)
+            except Exception:
+                logger.exception("workspace index update failed")
+        analyze(doc, module_index=self.workspace, source_path=path)
         self.docs[uri] = doc
         self._index_doc(doc)
         self._publish_diagnostics(doc)
@@ -1566,7 +1634,8 @@ class LspServer:
         if doc.parse_error is not None:
             source_diags.append(doc.parse_error)
         source_diags.extend(doc.semantic_diagnostics)
-        source_diags = self._apply_fixture_expectations(doc, source_diags)
+        if self.suppress_expected_diagnostics:
+            source_diags = self._apply_fixture_expectations(doc, source_diags)
 
         diags: List[Dict[str, Any]] = []
         # Semantic diagnostics (undefined names, duplicate members,
@@ -1699,7 +1768,8 @@ class LspServer:
         module_match = re.match(r"^\s*from\s+([A-Za-z_][\w.]*)?$", line_text)
         if module_match:
             prefix = module_match.group(1) or ""
-            for name in self._module_names():
+            path = _uri_to_path(uri)
+            for name in self._module_names(path):
                 if prefix and not name.startswith(prefix):
                     continue
                 items.append({
@@ -2151,13 +2221,10 @@ class LspServer:
         self._workspace_module_facts = facts
         return facts
 
-    def _module_names(self) -> List[str]:
-        names = set(_stdlib_module_names())
-        for facts in self.workspace.facts_by_path.values():
-            names.add(facts.module_name)
-        for facts in self._workspace_facts().values():
-            names.add(facts.module_name)
-        return sorted(names)
+    def _module_names(self, from_path: Path | None = None) -> List[str]:
+        source = from_path or self.workspace_root / "__lsp__.lam"
+        self._workspace_facts()
+        return self.workspace.available_modules(source)
 
     def _import_suggestions(self, doc: Document) -> List[ImportSuggestion]:
         current_path = _uri_to_path(doc.uri)
@@ -2187,6 +2254,7 @@ class LspServer:
             for sym in sm.public.values():
                 add(module, sym, sm.path.resolve(), priority=1)
 
+        source = current_path or self.workspace_root / "__lsp__.lam"
         open_paths = {
             path for uri in self.docs
             if (path := _uri_to_path(uri)) is not None
@@ -2197,18 +2265,20 @@ class LspServer:
                 continue
             if current_path is not None and path == current_path:
                 continue
+            module = self.workspace.module_name_for_path(source, path)
             for export in facts.exports.values():
                 if export.kind == "import":
                     continue
-                add(facts.module_name, self._symbol_from_export(export), path, priority=0)
+                add(module or facts.module_name, self._symbol_from_export(export), path, priority=0)
 
         for path, facts in self._workspace_facts().items():
             if current_path is not None and path == current_path:
                 continue
+            module = self.workspace.module_name_for_path(source, path)
             for export in facts.exports.values():
                 if export.kind == "import":
                     continue
-                add(facts.module_name, self._symbol_from_export(export), path, priority=2)
+                add(module or facts.module_name, self._symbol_from_export(export), path, priority=2)
 
         out.sort(key=lambda suggestion: (
             suggestion.priority,

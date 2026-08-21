@@ -1,0 +1,26 @@
+# expect: 8:eight
+# expect: xy:2
+# expect: 19
+# expect: right
+
+func decode(value: int) -> (int, str) { return (value * 2, "eight") }
+func decode(value: str) -> (str, int) { size: int = len(value); return (value, size) }
+func choose[T](left: T, right: T, takeLeft: bool) -> T { return left if takeLeft else right }
+
+class Pair[T] {
+    func init(self, left: T, right: T) { self.left: T = left; self.right: T = right }
+    func selected(self, first: bool) -> T { return self.left if first else self.right }
+}
+
+func main() {
+    doubled, label = decode(4)
+    text, size = decode("xy")
+    grid: list[int] = [x + y for x in range(2) for y in range(3) if x + y > 0]
+    accumulated: int = 0
+    for value in grid { accumulated += value }
+    pair = Pair[str](choose("left", "ignored", True), choose("ignored", "right", False))
+    print(f"{doubled}:{label}")
+    print(f"{text}:{size}")
+    print(accumulated + size + doubled)
+    print(pair.selected(False))
+}

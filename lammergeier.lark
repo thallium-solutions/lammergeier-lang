@@ -238,7 +238,8 @@ with_item: test ["as" name]
 
 // ========================= MATCH =========================
 
-match_stmt: "match" test "{" case+ "}"
+match_stmt: _MATCH_KW test "{" case+ "}"
+_MATCH_KW.4: /match(?=[\t ]+(?![=:]|[+\-*\/%&|^<>]=)[^\n;]*\{)/
 
 case: "case" pattern ["if" test] suite
 
@@ -456,7 +457,7 @@ number: DEC_NUMBER | HEX_NUMBER | BIN_NUMBER | OCT_NUMBER | FLOAT_NUMBER | IMAG_
 %ignore COMMENT
 %ignore BLOCK_COMMENT
 
-!name: NAME | "match" | "case" | "type"
+!name: NAME | "case" | "type"
 NAME: /(?!func\b)[^\W\d]\w*/
 COMMENT: /#(?!-)[^\n]*/
 BLOCK_COMMENT: /#-[\s\S]*?-#/

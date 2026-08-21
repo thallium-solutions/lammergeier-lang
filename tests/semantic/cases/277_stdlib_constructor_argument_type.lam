@@ -1,0 +1,7 @@
+# expect-error: argument `baseUrl` to `HttpClient` has type `int`, expected `str`
+
+from lamhttp import HttpClient
+
+func main() {
+    _ = HttpClient(5)
+}

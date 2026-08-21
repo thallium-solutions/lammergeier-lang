@@ -151,6 +151,15 @@ unrelated data, database, cache, or protobuf dependencies.
 Manifest and lockfile pins still take precedence over stdlib defaults.
 After the compiler writes the initial `go.mod`, Go's normal module
 selection and `go mod tidy` decide the final transitive set.
+If `go mod tidy` cannot resolve those modules, Lammergeier stops at
+module resolution and prints the Go diagnostic as a compiler error instead of
+continuing to a later, misleading `go build` failure.
+
+This failure path is tested without relying on live network state by
+monkeypatching the driver-level `go mod tidy` subprocess. The contract is that
+`go build` is not attempted after a module-resolution failure, and the user
+still sees the underlying Go diagnostic under Lammergeier's
+`Go module resolution failed` heading.
 
 ## Naming
 
@@ -168,12 +177,27 @@ selection and `go mod tidy` decide the final transitive set.
 Classes always become pointer receivers: a constructor returns `*Class`, and
 methods are defined on `(s *Class)`.
 
-Go-only keywords may be used as Lam declaration names when this mapping produces
-a non-keyword Go name. For example, `func select()` lowers to `func Select()`,
-`class Query { func select(self) { ... } }` lowers to a `Select` method, and a
-static method named `switch` lowers to a namespaced function such as
-`Query_switch`. Names emitted verbatim, such as locals, parameters, import
-aliases, and private instance methods, still cannot use Go-only keywords.
+Preferred Go names stay unchanged. If casing, a class/function boundary,
+operator lowering, a field/method pair, a static namespace, or an overload
+wrapper would reuse an emitted symbol, the later deterministic entry receives
+a readable `__lamN` suffix. For example, `userID` / `UserID` become `UserID` /
+`UserID__lam2`, while colliding `value` / `Value` fields become `Value__lam2` /
+`Value`. Calls, constructors, inheritance, operator dispatch, and
+`LAMMERGEIER.*` all consult the same mapping.
+
+When a Lam class value is recovered from an `any` field, such as
+`e: Error = result.error`, the transpiler emits a Go type assertion
+(`result.Error.(*Error)`). The assertion is skipped for fields already known to
+have the exact pointer type, so passing `self.retryPolicy: RetryPolicy` into a
+constructor remains a direct `s.RetryPolicy` value rather than an invalid
+double assertion.
+
+Go-only keywords may be used as Lam names. Declarations that naturally become
+non-keywords keep their preferred mapping (`func select()` → `Select`, static
+`switch` → `Query_switch`); raw lexical bindings receive a readable `__lam`
+suffix (`chan` → `chan__lam`, private `select` → `select__lam`). Parameters,
+locals, destructuring/loop/comprehension targets, catch/with bindings, and
+compiler-prefix-looking names all route through this binding map.
 
 ## Types
 
@@ -193,12 +217,54 @@ aliases, and private instance methods, still cannot use Go-only keywords.
 | `list[T]`        | `[]T`                       |
 | `dict[K, V]`     | `map[K]V`                   |
 | `set[T]`         | `map[T]bool`                |
+| `optional[T]`, `Option[T]` | `*T` for value types; an existing class pointer is not doubled |
+| `Result[T]`      | `*Result` (payload metadata is compile-time only) |
 | `T \| None`      | `T` (pointer if applicable) |
 | `Callable[[A], B]` / `func(A) -> B` | `func(A) B` |
 
 `list`, `dict` and `set` without type arguments default to
 `[]interface{}`, `map[string]interface{}` and `map[interface{}]bool`
 respectively. See `TYPE_MAP` in `compiler/constants.py`.
+
+### Typed collection contexts
+
+Anonymous collection literals and comprehensions have a broad fallback when no
+expected type is available: lists become `[]interface{}`, dicts become
+`map[K]interface{}` or `map[string]interface{}`, and sets become
+`map[interface{}]bool`. When an enclosing Lam construct supplies a type, the
+transpiler lowers the literal recursively to that exact Go shape instead.
+
+Typed contexts include annotated declarations, returns, reassignments, indexed
+container writes, slice replacement, default arguments, function/method/static
+method/constructor call arguments, variadic splats, explicit lambda returns,
+and list helpers such as `map`, `pop`, and `sorted`.
+
+```lam
+func sum(values: list[int]) -> int { ... }
+func size(ids: set[int]) -> int { return len(ids) }
+
+sum([4, 8, 15])           # []int{4, 8, 15}
+size({1, 2, 2})           # map[int]bool built by an IIFE
+rows[0:1] = [[6, 8]]      # replacement is lowered as [][]int
+```
+
+Set values remain Lam sets even though they lower to Go maps. User code should
+test `value in ids`; `ids[value]` is rejected by semantic analysis instead of
+leaking a Go map-indexing detail.
+
+The semantic checker reports incompatible element/key/value types in those
+contexts before Go is invoked; the transpiler still applies the contextual
+lowering when semantic checking is disabled so valid Lam source does not fall
+through into invalid Go.
+
+The incremental typed IR records those contexts as `TypedExpr.expected_type`
+for annotated initializers, const initializers, and typed reassignments. The
+current Go emitter still returns strings, but the tested contract is that any
+site with a known target type reaches `_typed_value_to_go` rather than lowering
+the value directly through `_expr_to_go`. The unit gate has a static
+`test_lowering_contracts.py` check for these choke points and generated-Go
+contract tests for the cases most likely to regress: anonymous collection call
+arguments, contextual `?` unboxing, and class-pointer argument passing.
 
 ## Variable declarations
 
@@ -336,15 +402,26 @@ if x > 0 {
 }
 ```
 
+When a local is assigned on every continuing branch, Lam treats it as
+available after the conditional. Go does not leak block-local declarations, so
+the emitter hoists one typed `var` before the `if` and lowers branch writes to
+assignments. Branches that return or raise do not participate in the join.
+
 ### `for` / `while`
 
-`for x in iterable` becomes `for _, x := range iterable`.
+`for x in iterable` becomes `for _, x := range iterable` for slices/channels
+and `for x := range iterable` for dict/set-shaped maps, so a single loop
+target receives keys. Use `for k, v in mapping` when both map keys and values
+are needed.
 `for i, x in enumerate(xs)` becomes `for i, x := range xs`.
 `for i in range(n)` becomes `for i := 0; i < n; i += 1`.
 `while cond` becomes `for cond`.
 Both loop kinds support an `else` suite, which is emitted using a small
 `broke` boolean guard — see `_for_else_break` / `_while_else_break` in the
-transpiler.
+transpiler. A statically non-empty literal or integer `range` can promote
+body assignments to the continuing outer flow when the loop contains no
+`break`/`continue`; the emitter hoists matching typed storage. Empty, unknown,
+or early-exit loops keep conservative assignment state.
 
 ### `try` / `catch`
 
@@ -406,12 +483,31 @@ func Double(s string) *Result {
 }
 ```
 
-The `.Value.(int)` cast is injected automatically when the enclosing
-annassign supplies a target Go type — `_visit_annassign` publishes the
-type via `_propagate_cast_hint` on the scoped-context stack and the
-`propagate` branch in `_expr_to_go` reads it when emitting the
-substitution. In untyped contexts (e.g. `return Result.Ok(parseInt(s)?)`)
-the substitution is plain `__qN.Value` of type `interface{}`.
+The `.Value.(int)` cast is injected automatically when the immediate typed
+context supplies a target Go type. Typed assignments, returns, call arguments,
+and collection elements all route through `_typed_value_to_go`, which publishes
+the expected type for the `propagate` branch in `_expr_to_go`. In `any`
+contexts, such as `return Result.Ok(parseInt(s)?)`, the immediate argument type
+wins over the enclosing `-> Result` return type and the substitution stays
+plain `__qN.Value`.
+
+A signature-level payload marker such as `Result[int]` lowers to the same
+`*Result` shown above. The marker improves Lam-side inference but is erased
+because the runtime `Result.Value` and `Result.Error` fields remain
+`interface{}`. At most one payload marker is accepted. For an unannotated
+assignment, the compiler carries the payload through local/imported function
+and static-method metadata, emits the matching assertion (for example
+`__q1.Value.(*Document)`), and records the concrete receiver for later member
+and default-argument dispatch. Public payload-class metadata is harvested from
+the resolved module without creating a user-scope binding, so callers import
+only the function they use. This metadata is part of the versioned library
+cache so warm builds behave like cold builds. Before emission, the semantic
+pass also rejects known non-`Result` operands, while unknown/`any` operands
+retain the dynamic fallback. The same expression model validates propagated,
+ternary, comprehension, operator/generic, and instance-method return values.
+Known non-void function/static/inferred-instance calls used as bare statements
+produce Lam warnings; dropped `Result`/`Option` calls use handle-or-discard
+wording instead of surfacing as generated-Go noise.
 
 Multiple `?` in one statement just allocate consecutive temps
 (`__q2`, `__q3`, …); the prelude lines are emitted in source order so
@@ -451,9 +547,10 @@ Inside the IIFE, the same `?` lowering applies — but the `return __qN`
 exits the closure, not the surrounding function, so the error pops
 out as the IIFE's value. `_visit_do_stmt` pushes a fresh
 `declared_vars` scope around both the body and the handler so locals
-don't leak between consecutive `do` blocks. The user must
+don't leak between consecutive `do` blocks. The source must directly
 `from lamerrors import Result` for the emitted `*Result` /
-`Result_Ok` references to resolve; we don't auto-inject the import.
+`Result_Ok` references to resolve; scoped imports are accepted, while a
+transitive import is deliberately insufficient.
 
 ### `match`
 
@@ -699,18 +796,19 @@ Interfaces are never wrapped in pointers.
 |------------------------------------|---------------------------------------------------------------------------|
 | `a + b`                            | `a + b`                                                                   |
 | `a // b`                           | integer `a / b`                                                           |
-| `a ** b`                           | `math.Pow(float64(a), float64(b))`                                        |
-| `a in xs`                          | `a == xs` (placeholder — see *Limitations*; container-aware lowering pending) |
+| `a ** b`                           | `math.Pow(float64(a), float64(b))`; typed non-`float64` numeric contexts cast the result |
+| `a in xs`, `a not in xs`           | Container-aware membership test for strings, lists, dicts, and sets          |
 | `not x`                            | `!x`                                                                      |
 | `x and y`, `x or y`                | `x && y`, `x \|\| y`                                                      |
 | `a if c else b`                    | Go ternary via IIFE                                                       |
 | `name := expr`                     | IIFE binding `name` locally and returning it (binding does *not* escape)  |
 | f-strings `f"x={x}"`               | `fmt.Sprintf("x=%v", x)` with method-call translation                     |
+| `s[i]` / `s[a:b]`                  | Go string byte indexing / string slicing                                 |
 | `[expr for x in xs if c]`          | IIFE building a `[]T` slice                                                |
 | `{k: v for x in xs}`               | IIFE building a `map[K]V`                                                  |
-| `{expr for x in xs}`               | IIFE building a `map[interface{}]bool` (set)                               |
+| `{expr for x in xs}`               | IIFE building a `map[K]bool` in a typed set context, otherwise `map[interface{}]bool` |
 | `(expr for x in xs)`               | Same lowering as the list comprehension form                              |
-| `{a, b, c}` (set literal)          | IIFE that inserts each element into a `map[interface{}]bool` (deduplicates) |
+| `{a, b, c}` (set literal)          | IIFE that inserts each element into a `map[K]bool` in typed contexts (deduplicates) |
 | `len(x)`                           | `len(x)`                                                                  |
 | `str(x)` / `repr(x)`               | `fmt.Sprintf("%v", x)` / `fmt.Sprintf("%#v", x)`                           |
 | `int(x)` / `float(x)`              | `int(x)` / `float64(x)`                                                   |
@@ -719,20 +817,46 @@ Interfaces are never wrapped in pointers.
 | `File.open(path, "w")`             | `File_open(path, "w")`, returning a stdlib `File` instance                |
 | `xs.length()`                      | `len(xs)`                                                                  |
 | `xs.append(v)`                     | `xs = append(xs, v)`                                                      |
-| `xs.map(fn)`                       | IIFE that builds a new slice; picks `.(T)` only if `fn` isn't a user func |
+| `xs.pop()`                         | IIFE that returns the removed element and shrinks `xs`                    |
+| `xs.map(fn)`                       | IIFE that builds a typed result slice from callback/context information   |
 | `xs.filter(fn)`                    | IIFE that keeps elements where `fn(_v)` is true                           |
 | `xs.reduce(fn[, init])`            | IIFE that accumulates                                                     |
 | `xs.any(fn)` / `xs.all(fn)`        | IIFE with early return                                                    |
 | `xs.foreach(fn)`                   | IIFE with no result                                                       |
 | `xs.sort([compare][, inplace])`    | `sort.Slice` copy by default; when `inplace=true`, sorts and returns `xs` |
-| `sorted(xs)`                       | `sort.Slice` copy                                                         |
-| `enumerate(xs)`                    | passed through with a `/* enumerate */` marker                            |
+| `sorted(xs)`                       | `sort.Slice` copy preserving the receiver/context element type            |
+| `enumerate(xs)`                    | IIFE materializing index/value pairs as `[]interface{}` tuples            |
 | `isinstance(x, T)`                 | `true /* isinstance */` (see “limitations” below)                         |
+
+For class operands, arithmetic/unary/comparison expressions dispatch through
+the corresponding dunder method. Before emission, semantic analysis validates
+operator-method arity, required boolean comparison returns, right-operand
+compatibility, and the declared result type; unknown/`any` operands remain
+dynamic. Generic call signatures use the same recursive unifier when type
+arguments are omitted, including nested containers, imported functions/classes,
+and return-type specialization.
 
 The `xs.map`, `xs.filter`, `xs.any`, `xs.all` lowerings detect whether the
 argument refers to a user function (in any of its renamed forms: raw,
-`_go_public_name`, `_go_private_name`) and skip the `.(bool)` /
-`.(elem_type)` interface assertion when it does.
+`_go_public_name`, `_go_private_name`) and skip unnecessary interface
+assertions when the callback already has a concrete return type. For lambdas,
+an explicit `lambda (...) -> T` return annotation or an enclosing assignment
+such as `names: list[str] = nums.map(...)` shapes the emitted result slice.
+
+Membership lowering follows the container shape: strings use
+`strings.Contains`, maps and sets emit a key-presence lookup, and lists emit a
+small loop using `reflect.DeepEqual` so nested collection elements can be
+tested without triggering Go's non-comparable-slice errors. Chained comparisons
+such as `1 < x < 10` are lowered pairwise with `&&`.
+
+### Destructuring assignments
+
+New tuple targets use `:=`; fully existing targets use `=`. Literal tuple/list
+right sides are emitted as individual Go values. Function calls retain Go
+multi-return form, while semantic analysis chooses the matching overload and
+uses its linked return annotation for arity/element checks. The same metadata
+survives imported-library cache entries and covers Go-backed wrappers declared
+with `-> (T, U)`.
 
 ## Modules and imports
 
@@ -741,17 +865,32 @@ from lammath import Math
 from lamos import Os
 ```
 
-- Every module under `lib/<name>.lam` is transpiled to its own Go source
-  file alongside the user program. Classes, static methods, and top-level
-  defaults are exposed under `<ModuleName>_symbol` names. For the most
-  common case (`from mod import Class`), the transpiler rewrites
-  `Class.method(...)` to the flat `Class_method(...)` function.
+- Every imported module is transpiled to its own Go source file alongside
+  the user program. Dotted modules map to nested Lam paths, so
+  `from lamwebp.io.files import readWebp` resolves
+  `lamwebp/io/files.lam` or `lamwebp/io/files/__init__.lam`. Only that
+  module and its transitive imports are bundled; sibling package files do
+  not become implicit dependencies.
+- Classes, static methods, and top-level defaults are exposed under
+  `<ModuleName>_symbol` names. For the common case
+  (`from mod import Class`), the transpiler rewrites `Class.method(...)`
+  to the flat `Class_method(...)` function.
+- Bundled Lam libraries are written with a neutral `_lam.go` suffix, for
+  example `test` becomes `lib_test_lam.go` and `lamwebp.codec` becomes
+  `lib_lamwebp__codec_lam.go`. This avoids Go's special `*_test.go`
+  convention, where files are excluded from normal `go build`. A user
+  module named `test` or `foo_test` therefore still links into the binary.
 - A module may opt into a Go import by writing `go! { import "pkg" }`.
   Imports from go blocks are consolidated into a single Go import group.
-- Defaults, arities, variadic markers and static-method metadata from
-  library modules are merged into the main transpiler before it walks the
-  main file, so call sites in the user's program can fill in library
-  defaults exactly like their in-file counterparts.
+- Defaults, arities, parameter names, Go parameter types, variadic markers and
+  static-method metadata from library modules are merged into the main
+  transpiler before it walks the main file, so call sites in the user's program
+  can fill in library defaults and contextually lower anonymous collection
+  arguments exactly like their in-file counterparts. A `go!` implementation
+  body does not hide its surrounding Lam signature: stdlib/package constructors,
+  static methods, and inferred instance methods receive the same Lam-side call
+  diagnostics as ordinary methods. Raw Go values and dynamic `any` receivers
+  intentionally keep the conservative fallback.
 
 ## `go!` escape hatches
 
@@ -846,6 +985,32 @@ requiring users to manage Go modules manually. The relevant flow:
 If you want a stdlib-only build (no network at compile time), pin every
 dependency by vendoring or by writing equivalent kernels in pure Go via
 inline `go!` blocks. There are no Lam-side hooks for offline builds yet.
+
+Raw Go remains an escape hatch, so some invalid programs can still fail in
+the Go toolchain. Lammergeier preserves `//line` provenance for generated Go
+and reports those failures with Lam source snippets for both the main file and
+imported Lam modules. The regression tests intentionally inject a bad `go!`
+declaration in each location and assert the final diagnostic points at the
+original `.lam` line.
+
+### Fuzz and generated-Go contracts
+
+The local unit gate includes deterministic random-program fuzz tests for
+broad Lam-to-Go lowering. They generate nested anonymous list/dict/set values,
+classes, defaults, lambdas, comprehensions, membership checks, chained
+comparisons, ternaries, numeric expressions, and imported typed contexts. The
+suite has three layers:
+
+1. compile and run generated Lam programs;
+2. compile deeper programs that stress nested typed literals;
+3. write `lamc --emit-go` output to a fresh Go module, run `gofmt`, and
+   compile it with `go test ./...`.
+
+When a generated Lam program unexpectedly fails to emit or build, the fuzz
+helper keeps the original source and also attempts a simple line-based shrink
+that preserves the same diagnostic signal. The failure message prints the
+reduced numbered source so the next regression can be promoted into a focused
+`.lam` case quickly.
 
 ### Stdlib Go-module pins
 
@@ -975,11 +1140,6 @@ inputs and forward to the underlying Go API.
   iter.filter(p); b: Iter = a.map(f); ...`). The functional combinators
   on plain lists (`xs.filter(...).map(...)`) are exempt because the
   transpiler unwinds them into IIFEs of known element type.
-- **Nested typed list literals don't infer:** `rows: list[list[float]]
-  = [[1.0, 2.0], [3.0, 4.0]]` keeps the inner literals as
-  `[]interface{}`. Build them via a typed intermediate or a small
-  helper that returns `list[float]`. Top-level typed literals
-  (`xs: list[float] = [1.0, 2.0]`) work fine.
 - **F-string interpolations are textual:** the f-string lowerer runs
   string-level regex transforms on each `{expr}`. It doesn't accept
   escaped quotes (`f"x={d[\"key\"]}"`) and may not rewrite every
@@ -987,13 +1147,9 @@ inputs and forward to the underlying Go API.
   expression into a `:= …` line above the `print(...)` and interpolate
   the simple variable.
 - **Lam `int(s)` is a Go type-conversion, not a parser:** to coerce a
-  string into an integer at runtime, call `strconv.Atoi(s)` from a
-  `go!` block (or use `Conv.toInt` for a silent default).
-- **`in` is a placeholder lowering:** `a in xs` currently emits a raw
-  `==` comparison rather than the container-aware membership test
-  used in Python. For lists use a `for` loop or `xs.contains(...)`,
-  for dicts/sets use `_, ok := m[k]` from a `go!` block until the
-  proper lowering lands.
+  whole string into an integer at runtime, call `strconv.Atoi(s)` from a
+  `go!` block (or use `Conv.toInt` for a silent default). `int(s[i])`
+  is different: string indexing yields a byte-like numeric value.
 - **Walrus (`name := expr`) binds locally:** the lowering wraps the
   binding in an IIFE, so the introduced name is *not* visible in the
   surrounding scope. Use `:=` only when the value of the expression

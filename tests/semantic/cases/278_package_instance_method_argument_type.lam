@@ -1,0 +1,8 @@
+# expect-error: argument `text` to `Codec.format` has type `int`, expected `str`
+
+from go_backed_package import Codec
+
+func main() {
+    codec = Codec("item:")
+    _ = codec.format(1)
+}

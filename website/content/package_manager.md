@@ -134,7 +134,15 @@ Go module pins are merged from three places during compilation:
 Project and lockfile pins take precedence over stdlib defaults. This
 means a small import such as `from lamstrings import Strings` does not
 seed unrelated database, data-frame, cache, or protobuf modules into the
-generated `go.mod`.
+generated `go.mod`. The compiler injects the selected requirements and runs
+`go mod tidy` automatically; Lam developers do not run `go get` or maintain a
+`go.mod`. Resolution failures stop before `go build` under a Lam module-error
+heading.
+
+Service-backed modules do not probe Redis/Postgres/etc. during ordinary
+compilation. Service availability is an application/runtime responsibility;
+live integration tests remain explicitly guarded, and
+`scripts/test-services.sh` starts the repository's disposable test services.
 
 ### Clean a stale manifest
 

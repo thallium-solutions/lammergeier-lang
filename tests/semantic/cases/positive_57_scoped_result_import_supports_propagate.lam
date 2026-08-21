@@ -1,0 +1,7 @@
+# expect-pass
+
+func parse() -> Result {
+    from lamerrors import Result
+    value: int = Result.Ok(1)?
+    return Result.Ok(value)
+}

@@ -1,0 +1,36 @@
+# expect: 1
+# expect: 2
+# expect: [0 1]
+# expect: 1
+
+from lamerrors import Result
+
+class Counter {
+    func value(self) -> int {
+        return 1
+    }
+}
+
+func methodValue() -> int {
+    counter = Counter()
+    return counter.value()
+}
+
+func selected(ok: bool) -> int {
+    return 1 if ok else 2
+}
+
+func values() -> list[int] {
+    return [i for i in range(2)]
+}
+
+func wrapped() -> Result[int] {
+    return Result.Ok(methodValue())
+}
+
+func main() {
+    print(methodValue())
+    print(selected(False))
+    print(values())
+    print(wrapped().unwrap())
+}

@@ -100,6 +100,50 @@ func main() {
     print("PASS: used import does not warn")
 
 
+def test_import_used_in_generic_return_type_does_not_warn() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = Path(tmp)
+        _write(proj / "core.lam", """
+class MonsterProjection {
+    func init(self) {
+    }
+}
+""".lstrip())
+        _write(proj / "main.lam", """
+from core import MonsterProjection;
+
+func projectedMonsters() -> list[MonsterProjection] {
+    return [];
+}
+""".lstrip())
+        r = _run(str(proj / "main.lam"), "--emit-go", cwd=proj)
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        assert "unused import `MonsterProjection`" not in r.stderr, r.stderr
+    print("PASS: imported generic return type does not warn")
+
+
+def test_import_used_in_interface_return_type_does_not_warn() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = Path(tmp)
+        _write(proj / "core.lam", """
+class Rect {
+    func init(self) {
+    }
+}
+""".lstrip())
+        _write(proj / "main.lam", """
+from core import Rect;
+
+interface Drawable {
+    func project(self) -> Rect;
+}
+""".lstrip())
+        r = _run(str(proj / "main.lam"), "--emit-go", cwd=proj)
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        assert "unused import `Rect`" not in r.stderr, r.stderr
+    print("PASS: imported interface return type does not warn")
+
+
 def test_missing_import_export_suggests_close_name() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         proj = Path(tmp)
@@ -312,6 +356,43 @@ func main() {
     print("PASS: outer-scope locals used inside loop blocks do not warn")
 
 
+def test_attribute_assignment_receiver_counts_as_parameter_use() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "main.lam"
+        _write(src, """
+class Monster {
+    func init(self) {
+        self.alive: bool = true;
+    }
+}
+
+class ShooterGame {
+    func killMonster(self, monster: Monster) {
+        monster.alive = false;
+    }
+}
+""".lstrip())
+        r = _run(str(src), "--emit-go", cwd=Path(tmp))
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        assert "unused parameter `monster`" not in r.stderr, r.stderr
+    print("PASS: attribute assignment receiver counts as parameter use")
+
+
+def test_subscript_assignment_container_counts_as_local_use() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "main.lam"
+        _write(src, """
+func main() {
+    xs: list[int] = [1];
+    xs[0] = 2;
+}
+""".lstrip())
+        r = _run(str(src), "--emit-go", cwd=Path(tmp))
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        assert "unused local `xs`" not in r.stderr, r.stderr
+    print("PASS: subscript assignment container counts as local use")
+
+
 # ── Phase 2 CLI — errors still abort, warnings don't ────────
 
 def test_genuine_error_still_aborts_build() -> None:
@@ -449,6 +530,8 @@ def main() -> int:
     tests = [
         test_unused_import_emits_warning,
         test_used_import_does_not_warn,
+        test_import_used_in_generic_return_type_does_not_warn,
+        test_import_used_in_interface_return_type_does_not_warn,
         test_missing_import_export_suggests_close_name,
         test_unused_parameter_emits_warning,
         test_underscore_param_silences_warning,
@@ -458,6 +541,8 @@ def main() -> int:
         test_go_block_references_silence_unused_parameters,
         test_unused_warning_line_numbers_survive_multiline_go_blocks,
         test_outer_scope_local_used_inside_loop_block_does_not_warn,
+        test_attribute_assignment_receiver_counts_as_parameter_use,
+        test_subscript_assignment_container_counts_as_local_use,
         test_genuine_error_still_aborts_build,
         test_unused_manifest_dep_warns,
         test_multifile_project_does_not_false_positive,

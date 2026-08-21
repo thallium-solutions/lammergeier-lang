@@ -1,0 +1,12 @@
+# expect-error: function `label` returns `int`, expected `str`
+
+class Counter {
+    func value(self) -> int {
+        return 1
+    }
+}
+
+func label() -> str {
+    counter = Counter()
+    return counter.value()
+}

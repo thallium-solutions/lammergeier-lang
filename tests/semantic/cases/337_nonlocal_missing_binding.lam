@@ -1,0 +1,9 @@
+# expect-error: nonlocal binding `missing` was not found in an enclosing function
+
+func outer() {
+    func inner() {
+        nonlocal missing
+        missing = 1
+    }
+    inner()
+}
