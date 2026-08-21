@@ -61,9 +61,13 @@ area: 78.53981633974483
   parameters, inference for locals.
 - **OOP done right** — classes, constructors, `self`, inheritance, static
   and private members, operator overloading, interfaces.
-- **Python-style niceties** — f-strings, list/dict comprehensions,
-  unpacking, `for … else` / `while … else`, `match`/`case`,
-  generators with `yield`, nested helpers, and generic functions.
+- **Python-style niceties** — f-strings, list/dict/set comprehensions,
+  tuple-target unpacking, `for … else` / `while … else`, `match`/`case`,
+  generators with `yield`, nested helpers with validated `nonlocal` writes,
+  and generic functions.
+- **Pre-emission safety** — branch-sensitive definite assignment, call-shape
+  and type checks, `Result[T]` / `Option[T]` propagation checks, operator
+  validation, and Go-name collision diagnostics run before Go generation.
 - **Go-powered runtime** — compiles to portable native binaries via the
   Go toolchain; no VM, no GC surprises.
 - **Raw Go escape hatch** — drop into plain Go with `go! { ... }` or
@@ -82,8 +86,10 @@ area: 78.53981633974483
   hooks and a plug-in mechanism, a lazy `Iter` combinator suite, an
   `LruCache` + `TtlCache` pair, and RFC 4122 v4/v7 `Uuid` generation.
 - **Editor support** — built-in **LSP server** (`bin/lammergeier-lsp`)
-  with diagnostics, hover, completion, goto-definition and document
-  outline, plus a VS Code / Cursor / Windsurf extension.
+  with live red diagnostics for syntax, missing names, wrong types, captures,
+  `nonlocal`, and `LAMMERGEIER.*`, plus hover, signature help, completion,
+  references, rename, goto-definition, formatting, and document/workspace
+  symbols through the VS Code / Cursor / Windsurf extension.
 - **Batteries for real scripts** — HTTP client *and* blocking server,
   TCP sockets, DNS, gzip/zlib, HMAC + constant-time comparison,
   cryptographically-secure random tokens, a CLI flag parser, and a
@@ -303,7 +309,10 @@ and the memcached auth fixture on `11212`.
 
 The full gate runs semantic, syntax, transpilation, LSP, import
 resolution, Python unit/fuzz checks, core compile-and-run, and rosetta tests
-in that order. The core and rosetta runners compile each `.lam` file
+in that order. Hand-written stress fixtures combine nested control flow,
+`Result`, `nonlocal`, destructuring, comprehensions, generics, overloads,
+name mangling, and raw-Go boundaries in deliberately adversarial programs.
+The core and rosetta runners compile each `.lam` file
 with the in-tree `lamc`, execute the resulting binary, and compare
 stdout against `# expect:` lines embedded in the test source. The
 transpilation runner compares `lamc --emit-go` output against

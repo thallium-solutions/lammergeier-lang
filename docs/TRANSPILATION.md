@@ -363,13 +363,15 @@ each parameter type and joining them as `func(P1, P2, ...) R` (or
 appear anywhere a regular type does — parameters, return clauses,
 variable annotations, generics, container element types.
 
-`Result` is not a compiler generic. The stdlib class has two
-`any` fields (`value`, `error`), so both `Result.Ok(v)` and
-`Result.Err(e)` lower to ordinary static-method calls and preserve
-the payload as `interface{}`. The `?` propagation path can cast into
-an annotated target; direct `.value`, `.error`, `unwrap()`, and
-`unwrapOr(...)` reads stay `interface{}` unless the user asserts in
-`go!`:
+`Result[T]` is a compile-time payload annotation rather than a runtime Go
+generic. The stdlib class still has two `any` fields (`value`, `error`), so
+`Result.Ok(v)` and `Result.Err(e)` lower to ordinary static-method calls and
+store payloads as `interface{}`. The compiler carries `T` through local,
+imported, overloaded, and propagated calls for Lam-side member/type checks;
+contextual lowering inserts a Go assertion when an annotated assignment,
+return, call argument, or collection element needs one. Direct untyped
+`.value`, `.error`, `unwrap()`, and `unwrapOr(...)` reads retain the dynamic
+fallback:
 
 ```lam
 err: Result = Result.Err({"code": 400})
@@ -403,9 +405,10 @@ if x > 0 {
 ```
 
 When a local is assigned on every continuing branch, Lam treats it as
-available after the conditional. Go does not leak block-local declarations, so
-the emitter hoists one typed `var` before the `if` and lowers branch writes to
-assignments. Branches that return or raise do not participate in the join.
+available after the control-flow join. Go does not leak block-local
+declarations, so the emitter hoists one typed `var` before an `if` or exhaustive
+unguarded-wildcard `match` and lowers branch writes to assignments. Branches
+that return or raise do not participate in the join.
 
 ### `for` / `while`
 
@@ -807,7 +810,8 @@ Interfaces are never wrapped in pointers.
 | `[expr for x in xs if c]`          | IIFE building a `[]T` slice                                                |
 | `{k: v for x in xs}`               | IIFE building a `map[K]V`                                                  |
 | `{expr for x in xs}`               | IIFE building a `map[K]bool` in a typed set context, otherwise `map[interface{}]bool` |
-| `(expr for x in xs)`               | Same lowering as the list comprehension form                              |
+| `(expr for x in xs)`               | Same eager slice lowering as the list comprehension form                   |
+| `[expr for a, b in pairs]`         | IIFE loop with typed positional unpacking; map targets lower directly to `for a, b := range` |
 | `{a, b, c}` (set literal)          | IIFE that inserts each element into a `map[K]bool` in typed contexts (deduplicates) |
 | `len(x)`                           | `len(x)`                                                                  |
 | `str(x)` / `repr(x)`               | `fmt.Sprintf("%v", x)` / `fmt.Sprintf("%#v", x)`                           |
@@ -1160,11 +1164,12 @@ inputs and forward to the underlying Go API.
   classes, but the semantic checker rejects them before emission.
   `@private func f() { ... }` is rejected with a hint to use
   `private func f() { ... }`.
-- **`nonlocal` is a no-op declaration:** nested functions and lambdas
-  already capture surrounding locals directly. The visitor emits only
-  a comment, so `nonlocal` does not change binding, assignment, or
-  closure behavior. Module-level state should be touched via
-  `global` instead.
+- **`nonlocal` is validated before emission:** it resolves one unambiguous
+  binding in an enclosing function and rejects missing bindings, declarations
+  outside a nested function, ambiguous redeclarations, and writes to outer
+  `const` values. Valid declarations emit no Go statement because Go closures
+  already capture the resolved local by reference. Module-level state should be
+  touched via `global` instead.
 
 ## Where to look when something breaks
 

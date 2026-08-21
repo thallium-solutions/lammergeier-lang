@@ -6,6 +6,24 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-08-22
+
+### Changed
+
+- Changed the homepage “Tour the language” cards to a responsive three-column,
+  two-column, then one-column layout across desktop, tablet, and mobile widths.
+- Updated homepage examples to describe eager comprehensions accurately and use
+  typed `Result[T]` signatures and tuple-target collection comprehensions.
+
+### Documentation
+
+- Refreshed the project README with current semantic diagnostics, editor
+  features, `nonlocal`, typed comprehension, and adversarial stress-test
+  coverage.
+- Corrected the transpilation guide for validated `nonlocal`, compile-time
+  `Result[T]` payload metadata, exhaustive-`match` hoisting, and tuple-target
+  comprehension lowering.
+
 ## 2026-08-21
 
 ### Added

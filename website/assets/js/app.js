@@ -274,8 +274,8 @@ func main() {
 }`;
 
     // Tour cards: each highlights a distinct, idiomatic pattern.
-    // Six cards lay out as a 2-column grid (3 rows). The order is
-    // chosen so reading top-to-bottom, left-to-right walks the user
+    // Six cards lay out as a 3-column grid (2 rows) on wide screens.
+    // The order is chosen so reading top-to-bottom, left-to-right walks the user
     // from data shape → control flow → error handling → escape hatch.
     const tourCards = [
         {
@@ -296,8 +296,8 @@ func main() {
 }`,
         },
         {
-            heading: "List, dict & generator comprehensions",
-            blurb: `Python-style comprehensions over lists, dicts, and sets — plus lazy generator expressions in <code>(…)</code>. All lower to plain Go loops with no allocator overhead.`,
+            heading: "List, dict & set comprehensions",
+            blurb: `Python-style comprehensions support filters, multiple clauses, and typed tuple targets. They lower to ordinary Go loops building concrete slices and maps.`,
             code: `func main() {
     squares: list[int] = [x*x for x in range(10)]
 
@@ -309,10 +309,10 @@ func main() {
     even_sq: dict[int, int] = {i: i*i for i in range(20)
                                        if i % 2 == 0}
 
-    # Generator expression — lazy, no list allocated
-    for n in (x*x for x in range(5)) {
-        print(n)                    # 0, 1, 4, 9, 16
-    }
+    # Tuple-target unpacking works across comprehension forms
+    points: list[tuple[int, int]] = [(1, 2), (3, 4)]
+    totals: set[int] = {x+y for x, y in points}
+    print(totals)
 }`,
         },
         {
@@ -341,7 +341,7 @@ func main() {
             blurb: `Recoverable failures use <code>Result</code>. <code>?</code> short-circuits a function on <code>Result.Err</code>; <code>do / catch</code> contains it locally.`,
             code: `from lamerrors import Result, Error
 
-func parsePort(s: str) -> Result {
+func parsePort(s: str) -> Result[int] {
     n: int = parseInt(s)?           # bubble parse errors up
     if n < 1 or n > 65535 {
         return Result.Err(Error("range", "port out of bounds"))
