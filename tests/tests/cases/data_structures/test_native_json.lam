@@ -1,0 +1,58 @@
+# expect: 2
+# expect: 101
+# expect: object:3
+# expect: Ada
+# expect: {"height":8,"width":16}
+# expect: runtime-reject
+# expect: numeric|dash|empty|space
+
+from lamjson import Json
+
+class Image {
+    func init(self, width: int, height: int) {
+        self.width: int = width
+        self.height: int = height
+    }
+
+    func toJson(self) -> json {
+        return {"width": self.width, "height": self.height}
+    }
+}
+
+func main() {
+    payload: json = [{
+        "hello": 100,
+        "nested": {
+            "y": [1, 2, 3]
+        }
+    }]
+    second: int = payload[0].nested.y[1]
+    print(second)
+    payload[0].hello = 101
+    hello: int = payload[0]["hello"]
+    print(hello)
+
+    obj: json = Json.decode('{"name":"Ada","flags":[true,false],"meta":null}')
+    name: str = obj.name
+    print(f"{Json.kind(obj)}:{len(obj)}")
+    print(name)
+
+    image: json = {"image": Image(16, 8)}
+    imageData: dict[str, any] = Json.toDict(image.image)
+    print(Json.encode(Json.fromDict(imageData)))
+
+    dynamic: any = {1: "bad"}
+    try {
+        invalid: json = Json.fromValue(dynamic)
+        print(invalid)
+    } catch err {
+        print("runtime-reject")
+    }
+
+    unusual: json = {"123": "numeric", "first-name": "dash", "": "empty", " ": "space"}
+    numeric: str = unusual["123"]
+    dash: str = unusual["first-name"]
+    empty: str = unusual[""]
+    spaced: str = unusual[" "]
+    print(f"{numeric}|{dash}|{empty}|{spaced}")
+}

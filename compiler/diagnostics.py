@@ -103,6 +103,7 @@ _SEMANTIC_CODES: dict[str, str] = {
     "unreachable": "LAM1011",
     "unused": "LAM1012",
     "match": "LAM1013",
+    "json": "LAM1014",
 }
 
 

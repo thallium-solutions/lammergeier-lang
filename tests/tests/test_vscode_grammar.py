@@ -21,6 +21,8 @@ def main() -> int:
         assert keyword in keywords
     modifiers = repository["storage-modifiers"]["patterns"][0]["match"]
     assert "const" in modifiers and "await" not in modifiers
+    builtin_types = repository["types"]["patterns"][0]["match"]
+    assert "json" in builtin_types
     print("PASS: VS Code grammar scopes LAMMERGEIER and contextual keywords")
     return 0
 

@@ -84,7 +84,7 @@ MAX_UPLOAD = 20 * 1024 * 1024  # 20 MiB
 # ── Name <-> alias helpers ──────────────────────────────────
 
 _MODULE_NAME_RE = re.compile(
-    r"^(@[a-z0-9_][a-z0-9_\-]*\/[a-z_][a-z0-9_\-]*|[a-z_][a-z0-9_]*)$")
+    r"^(@[A-Za-z0-9_][A-Za-z0-9_\-]*\/[A-Za-z_][A-Za-z0-9_\-]*|[A-Za-z_][A-Za-z0-9_]*)$")
 
 
 def _alias(name: str) -> str:

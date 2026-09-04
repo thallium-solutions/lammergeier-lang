@@ -1,0 +1,9 @@
+# expect: library:3
+
+from native_json_provider import makePayload
+
+func main() {
+    payload: json = makePayload()
+    source: str = payload.source
+    print(f"{source}:{len(payload.values)}")
+}

@@ -39,6 +39,8 @@ SOURCE = """func accepts(
 def test_parse_text_builtin_and_collection_types() -> None:
     assert parse_type("int") == NamedType("int")
     assert type_to_go(parse_type("int")) == "int"
+    assert parse_type("json") == NamedType("json")
+    assert type_to_go(parse_type("json")) == "LamJSON"
 
     list_type = parse_type("list[int]")
     assert list_type == ListType(NamedType("int"))
@@ -96,6 +98,11 @@ def test_assignability_covers_simple_type_rules() -> None:
     assert is_assignable(parse_type("Result[int]"), parse_type("Result"))
     assert is_assignable(parse_type("Result"), parse_type("Result[int]"))
     assert not is_assignable(parse_type("Result[int]"), parse_type("Result[str]"))
+    assert is_assignable(parse_type("json"), parse_type("dict[str, list[int]]"))
+    assert is_assignable(parse_type("json"), parse_type("str"))
+    assert not is_assignable(parse_type("json"), parse_type("dict[int, str]"))
+    assert not is_assignable(parse_type("json"), parse_type("any"))
+    assert is_assignable(parse_type("int"), parse_type("json"))
     print("PASS: assignability covers simple type rules")
 
 

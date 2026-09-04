@@ -1,0 +1,6 @@
+# expect-error: json index must be `str` for objects or `int` for arrays, got `bool`
+
+func main() {
+    payload: json = {"ok": true}
+    print(payload[false])
+}

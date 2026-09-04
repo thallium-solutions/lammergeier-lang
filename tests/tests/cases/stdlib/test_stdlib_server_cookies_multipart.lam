@@ -22,6 +22,7 @@
 # expect: upload-multifile-count: 2
 
 from lamserver import Server, Request, Response
+from lamjson import Json
 
 go! {
     import (
@@ -72,14 +73,14 @@ func upload(req: Request, res: Response) {
             }
         }
     }
-    res.json(out)
+    res.json(Json.fromDict(out))
 }
 
 func uploadMany(req: Request, res: Response) {
     files: list[any] = req.formFiles("docs")
     n: int = len(files)
     payload: dict[str, any] = {"count": n}
-    res.json(payload)
+    res.json(Json.fromDict(payload))
 }
 
 func main() {

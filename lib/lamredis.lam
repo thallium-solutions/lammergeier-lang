@@ -45,6 +45,7 @@ from lamerrors import Result, Error
 go! {
     import (
         "context"
+        "encoding/json"
         "errors"
         "fmt"
         "strconv"
@@ -357,6 +358,33 @@ class Redis {
             out = v
         }
         return out
+    }
+
+    func setJson(self, key: str, value: json, ttlSec: int = 0) {
+        go! {
+            c := s._client.(*rdb.Client)
+            encoded, err := json.Marshal(value)
+            if err != nil { panic(fmt.Sprintf("redis: JSON encode %s: %v", key, err)) }
+            d := time.Duration(0)
+            if ttlSec > 0 { d = time.Duration(ttlSec) * time.Second }
+            if err := c.Set(lamRedisCtx, key, string(encoded), d).Err(); err != nil {
+                panic(fmt.Sprintf("redis: SET JSON %s: %v", key, err))
+            }
+        }
+    }
+
+    func getJson(self, key: str) -> json {
+        go! {
+            c := s._client.(*rdb.Client)
+            encoded, err := c.Get(lamRedisCtx, key).Result()
+            if err != nil {
+                if lamRedisIsNil(err) { return lamJSONMust(nil) }
+                panic(fmt.Sprintf("redis: GET JSON %s: %v", key, err))
+            }
+            parsed, parseErr := lamJSONParse(encoded)
+            if parseErr != nil { panic(fmt.Sprintf("redis: invalid JSON at %s: %v", key, parseErr)) }
+            return parsed
+        }
     }
 
     func getDel(self, key: str) -> str {

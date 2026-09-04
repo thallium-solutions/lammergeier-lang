@@ -1,0 +1,8 @@
+# expect-error: `Broken.toJson` must declare only `self`
+# expect-error: `Broken.toJson` must return `json`, got `str`
+
+class Broken {
+    func toJson(self, extra: int) -> str { return str(extra) }
+}
+
+func main() { print("unused class is still checked") }

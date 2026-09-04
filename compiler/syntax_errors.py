@@ -422,7 +422,7 @@ def _hint_for(
         return "`finally` must follow a `try { ... }` block."
 
     if token_type == "AT" and "SCOPED_NAME" in expected_names:
-        return "Scoped imports must be lowercase and use `@scope/name`, for example `from @alice/lamwebp import Encoder`."
+        return "Scoped imports use `@scope/name` and preserve letter case, for example `from @Alice/LamWebP import Encoder`."
     if isinstance(exc, UnexpectedCharacters):
         char = getattr(exc, "char", "")
         if char == "!":
@@ -432,7 +432,7 @@ def _hint_for(
         if char == "|" and "||" in src_line:
             return "Lammergeier uses `or` for logical disjunction, not `||`."
         if char == "@":
-            return "Decorators are `@name` before `func`/`class`; scoped imports must be lowercase like `from @scope/name import X`."
+            return "Decorators are `@name` before `func`/`class`; scoped imports use the case-preserving `from @scope/name import X` form."
         if char in {"'", '"'}:
             return "Check that the string literal is closed on the same line, or use triple quotes for multiline text."
 

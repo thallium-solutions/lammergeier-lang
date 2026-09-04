@@ -6,6 +6,60 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-08-27
+
+### Added
+
+- Added a native `json` type backed by canonical recursive JSON values. It
+  validates string object keys and JSON-compatible members before Go emission,
+  supports chained property/index access and mutation, and accepts classes only
+  through `toJson() -> json`.
+- Expanded `lamjson.Json` with native decode/encode types, `Result[json]`,
+  `fromValue` / `fromDict` / `fromList`, `toDict` / `toList`, and `kind`.
+- Added native JSON integration for server request/response bodies, typed HTTP
+  client helpers, SQL/JSONB parameters and result columns, Redis values,
+  DataFrames, and JSON Schema validation.
+- Added semantic, LSP, runtime, HTTP, SQLite, PostgreSQL JSONB, and Redis tests.
+- Added compile-time diagnostics for invalid JSON index types, malformed/unused
+  `toJson` declarations, invalid literal `Json.decode` input, and malformed
+  literal schemas passed to `Schema.register` or `Server.addSchema`.
+
+### Changed
+
+- Fixed multiline nested dictionary literals so the final entry in each nested
+  dictionary no longer needs a trailing comma; commas remain required between
+  different entries.
+- Bumped the compiler version to 1.15.0 and editor extension to 1.2.0.
+
+### Documentation
+
+- Documented nested dictionary literals and final-entry comma behavior.
+- Added native JSON syntax, lowering, conversion, HTTP/server, database,
+  Redis, DataFrame, schema, and migration guidance across the README, syntax,
+  transpilation, stdlib, extension, and website references.
+
+## 2026-08-25
+
+### Added
+
+- Added case-preserving library and module naming across manifests, dependency
+  and replacement keys, scoped imports, registries, installation directories,
+  lockfiles, LSP module discovery, generated library filenames, and `lamc init`.
+  Authors may choose snake_case, camelCase, PascalCase, or
+  SCREAMING_SNAKE_CASE and must import the exact spelling.
+
+### Changed
+
+- `lamc init` now preserves directory/requested casing instead of forcing the
+  inferred module name to lowercase.
+- Bumped the compiler version to 1.14.0.
+
+### Documentation
+
+- Documented case-preserving, case-sensitive library/file naming and audited
+  recent compiler changes against their README, docs, extension, changelog, and
+  website updates.
+
 ## 2026-08-22
 
 ### Changed

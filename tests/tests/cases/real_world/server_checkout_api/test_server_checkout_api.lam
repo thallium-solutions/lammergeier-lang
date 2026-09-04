@@ -29,7 +29,7 @@ func checkoutHandler(req: Request, res: Response) {
         return
     }
 
-    payload: dict[str, any] = {}
+    payload: json = {}
     payload["status"] = "accepted"
     payload["requestId"] = req.id()
     payload["queued"] = true

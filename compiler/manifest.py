@@ -306,11 +306,11 @@ def _parse_toml(text: str) -> Dict[str, Any]:
 
 # ── Manifest dataclass & validation ─────────────────────────
 
-# Legal module-name characters: the regular ``lamwebp``-style names
-# plus the ``@scope/name`` npm-style shape. Matches the grammar-side
+# Legal module-name characters: case-preserving Lam identifiers plus
+# the ``@scope/name`` npm-style shape. Matches the grammar-side
 # SCOPED_NAME regex so manifest validation and import resolution
 # agree on what a legal library name looks like.
-_MODULE_NAME_RE = re.compile(r"^(@[a-z0-9_][a-z0-9_\-]*\/[a-z_][a-z0-9_\-]*|[a-z_][a-z0-9_]*)$")
+_MODULE_NAME_RE = re.compile(r"^(@[A-Za-z0-9_][A-Za-z0-9_\-]*\/[A-Za-z_][A-Za-z0-9_\-]*|[A-Za-z_][A-Za-z0-9_]*)$")
 
 # SemVer MAJOR.MINOR.PATCH with an optional ``-prerelease`` /
 # ``+build``. Deliberately stricter than PEP 440 — published Lam
@@ -410,7 +410,7 @@ class Manifest:
         if not _MODULE_NAME_RE.match(name):
             raise ManifestError(
                 f"library.name {name!r} is not a legal module name "
-                "(expected snake_case or @scope/name)")
+                "(expected an ASCII identifier or @scope/name)")
         version = _require_str(lib, "version", "library.version")
         if not _SEMVER_RE.match(version):
             raise ManifestError(

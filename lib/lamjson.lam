@@ -1,135 +1,400 @@
-# Lammergeier standard library: JSON utilities
+# Lammergeier standard library: native JSON values and utilities
 # Import with: from lamjson import Json
 #
-# The ``encode``/``decode``/``decodeInto`` family panics on malformed
-# input or values that don't round-trip through ``encoding/json``.
-# The ``try*`` family returns a ``Result`` so callers can inspect
-# the failure (or propagate with ``?``):
-#
-#     out: str = Json.tryEncode(data)?
-#     v: any   = Json.tryDecode(payload).unwrapOr(default)
+# The native ``json`` type accepts null, booleans, strings, finite numbers,
+# arrays, string-keyed objects, nested json values, and class instances that
+# implement ``func toJson(self) -> json``. The direct methods panic on malformed
+# input; the ``try*`` family returns ``Result``.
 
 from lamerrors import Result, Error
 
 go! {
     import (
+        "database/sql/driver"
         "encoding/json"
         "fmt"
+        "io"
+        "math"
+        "reflect"
+        "strconv"
+        "strings"
     )
+
+    type LamJSON struct {
+        value interface{}
+    }
+
+    type lamJSONMarshaler interface {
+        ToJson() LamJSON
+    }
+
+    func lamJSONNormalize(value interface{}, depth int) (interface{}, error) {
+        if depth > 256 {
+            return nil, fmt.Errorf("json nesting exceeds 256 levels or contains a cycle")
+        }
+        switch v := value.(type) {
+        case LamJSON:
+            return lamJSONNormalize(v.value, depth+1)
+        case *LamJSON:
+            if v == nil { return nil, nil }
+            return lamJSONNormalize(v.value, depth+1)
+        case lamJSONMarshaler:
+            return lamJSONNormalize(v.ToJson(), depth+1)
+        case nil, bool, string,
+             int, int8, int16, int32, int64,
+             uint, uint8, uint16, uint32, uint64:
+            return v, nil
+        case float32:
+            f := float64(v)
+            if math.IsNaN(f) || math.IsInf(f, 0) { return nil, fmt.Errorf("json numbers must be finite") }
+            return v, nil
+        case float64:
+            if math.IsNaN(v) || math.IsInf(v, 0) { return nil, fmt.Errorf("json numbers must be finite") }
+            return v, nil
+        case json.Number:
+            if i, err := strconv.ParseInt(string(v), 10, 64); err == nil {
+                if int64(int(i)) == i { return int(i), nil }
+                return i, nil
+            }
+            f, err := strconv.ParseFloat(string(v), 64)
+            if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+                return nil, fmt.Errorf("invalid json number %q", v)
+            }
+            return f, nil
+        }
+
+        rv := reflect.ValueOf(value)
+        if !rv.IsValid() { return nil, nil }
+        switch rv.Kind() {
+        case reflect.Map:
+            if rv.Type().Key().Kind() != reflect.String {
+                return nil, fmt.Errorf("json object keys must be strings, got %s", rv.Type().Key())
+            }
+            out := make(map[string]interface{}, rv.Len())
+            iter := rv.MapRange()
+            for iter.Next() {
+                normalized, err := lamJSONNormalize(iter.Value().Interface(), depth+1)
+                if err != nil { return nil, err }
+                out[iter.Key().String()] = normalized
+            }
+            return out, nil
+        case reflect.Slice, reflect.Array:
+            out := make([]interface{}, rv.Len())
+            for i := 0; i < rv.Len(); i++ {
+                normalized, err := lamJSONNormalize(rv.Index(i).Interface(), depth+1)
+                if err != nil { return nil, err }
+                out[i] = normalized
+            }
+            return out, nil
+        }
+        return nil, fmt.Errorf("value of type %T is not JSON-compatible; implement ToJson", value)
+    }
+
+    func lamJSONFrom(value interface{}) (LamJSON, error) {
+        normalized, err := lamJSONNormalize(value, 0)
+        if err != nil { return LamJSON{}, err }
+        return LamJSON{value: normalized}, nil
+    }
+
+    func lamJSONMust(value interface{}) LamJSON {
+        result, err := lamJSONFrom(value)
+        if err != nil { panic(fmt.Sprintf("json value error: %v", err)) }
+        return result
+    }
+
+    func lamJSONParse(text string) (LamJSON, error) {
+        decoder := json.NewDecoder(strings.NewReader(text))
+        decoder.UseNumber()
+        var raw interface{}
+        if err := decoder.Decode(&raw); err != nil { return LamJSON{}, err }
+        var extra interface{}
+        if err := decoder.Decode(&extra); err != io.EOF {
+            if err == nil { return LamJSON{}, fmt.Errorf("multiple JSON values") }
+            return LamJSON{}, err
+        }
+        return lamJSONFrom(raw)
+    }
+
+    func lamJSONParseMust(text string) LamJSON {
+        result, err := lamJSONParse(text)
+        if err != nil { panic(fmt.Sprintf("json decode error: %v", err)) }
+        return result
+    }
+
+    func lamJSONRaw(value LamJSON) interface{} {
+        return value.value
+    }
+
+    func lamJSONIsNull(value LamJSON) bool {
+        return value.value == nil
+    }
+
+    func lamJSONEqual(left LamJSON, right LamJSON) bool {
+        return reflect.DeepEqual(left.value, right.value)
+    }
+
+    func lamJSONIndex(key interface{}) (int, bool) {
+        switch v := key.(type) {
+        case int: return v, true
+        case int8: return int(v), true
+        case int16: return int(v), true
+        case int32: return int(v), true
+        case int64: return int(v), true
+        case uint: return int(v), true
+        case uint8: return int(v), true
+        case uint16: return int(v), true
+        case uint32: return int(v), true
+        case uint64: return int(v), true
+        }
+        return 0, false
+    }
+
+    func lamJSONGet(value LamJSON, key interface{}) LamJSON {
+        switch current := value.value.(type) {
+        case map[string]interface{}:
+            text, ok := key.(string)
+            if !ok { panic(fmt.Sprintf("json object index must be str, got %T", key)) }
+            return LamJSON{value: current[text]}
+        case []interface{}:
+            index, ok := lamJSONIndex(key)
+            if !ok { panic(fmt.Sprintf("json array index must be int, got %T", key)) }
+            if index < 0 || index >= len(current) { panic("json array index out of range") }
+            return LamJSON{value: current[index]}
+        default:
+            panic(fmt.Sprintf("cannot index json %s", lamJSONKind(value)))
+        }
+    }
+
+    func lamJSONSet(value LamJSON, key interface{}, replacement LamJSON) {
+        switch current := value.value.(type) {
+        case map[string]interface{}:
+            text, ok := key.(string)
+            if !ok { panic(fmt.Sprintf("json object index must be str, got %T", key)) }
+            current[text] = replacement.value
+        case []interface{}:
+            index, ok := lamJSONIndex(key)
+            if !ok { panic(fmt.Sprintf("json array index must be int, got %T", key)) }
+            if index < 0 || index >= len(current) { panic("json array index out of range") }
+            current[index] = replacement.value
+        default:
+            panic(fmt.Sprintf("cannot assign through json %s", lamJSONKind(value)))
+        }
+    }
+
+    func lamJSONDelete(value LamJSON, key interface{}) {
+        switch current := value.value.(type) {
+        case map[string]interface{}:
+            text, ok := key.(string)
+            if !ok { panic(fmt.Sprintf("json object index must be str, got %T", key)) }
+            delete(current, text)
+        case []interface{}:
+            index, ok := lamJSONIndex(key)
+            if !ok { panic(fmt.Sprintf("json array index must be int, got %T", key)) }
+            if index < 0 || index >= len(current) { panic("json array index out of range") }
+            current[index] = nil
+        default:
+            panic(fmt.Sprintf("cannot delete from json %s", lamJSONKind(value)))
+        }
+    }
+
+    func lamJSONLen(value LamJSON) int {
+        switch current := value.value.(type) {
+        case map[string]interface{}: return len(current)
+        case []interface{}: return len(current)
+        case string: return len(current)
+        case nil: return 0
+        default: panic(fmt.Sprintf("json %s has no length", lamJSONKind(value)))
+        }
+    }
+
+    func lamJSONKind(value LamJSON) string {
+        switch value.value.(type) {
+        case nil: return "null"
+        case bool: return "boolean"
+        case string: return "string"
+        case int, int8, int16, int32, int64,
+             uint, uint8, uint16, uint32, uint64,
+             float32, float64: return "number"
+        case []interface{}: return "array"
+        case map[string]interface{}: return "object"
+        default: return "invalid"
+        }
+    }
+
+    func lamJSONToDict(value LamJSON) map[string]interface{} {
+        result, ok := value.value.(map[string]interface{})
+        if !ok { panic(fmt.Sprintf("json %s cannot convert to dict", lamJSONKind(value))) }
+        return result
+    }
+
+    func lamJSONToList(value LamJSON) []interface{} {
+        result, ok := value.value.([]interface{})
+        if !ok { panic(fmt.Sprintf("json %s cannot convert to list", lamJSONKind(value))) }
+        return result
+    }
+
+    func (value LamJSON) MarshalJSON() ([]byte, error) {
+        return json.Marshal(value.value)
+    }
+
+    func (value *LamJSON) UnmarshalJSON(data []byte) error {
+        parsed, err := lamJSONParse(string(data))
+        if err != nil { return err }
+        *value = parsed
+        return nil
+    }
+
+    func (value LamJSON) Value() (driver.Value, error) {
+        data, err := json.Marshal(value)
+        if err != nil { return nil, err }
+        return string(data), nil
+    }
+
+    func (value *LamJSON) Scan(source interface{}) error {
+        switch raw := source.(type) {
+        case nil:
+            *value = LamJSON{value: nil}
+            return nil
+        case []byte:
+            parsed, err := lamJSONParse(string(raw))
+            if err != nil { return err }
+            *value = parsed
+            return nil
+        case string:
+            parsed, err := lamJSONParse(raw)
+            if err != nil { return err }
+            *value = parsed
+            return nil
+        default:
+            return fmt.Errorf("cannot scan %T into json", source)
+        }
+    }
+
+    func (value LamJSON) String() string {
+        data, err := json.Marshal(value)
+        if err != nil { return "null" }
+        return string(data)
+    }
 }
 
 class Json {
-    static func encode(data: any) -> str {
+    static func encode(data: json) -> str {
         go! {
             b, err := json.Marshal(data)
-            if err != nil {
-                panic(fmt.Sprintf("json encode error: %v", err))
-            }
+            if err != nil { panic(fmt.Sprintf("json encode error: %v", err)) }
             return string(b)
         }
     }
 
-    static func tryEncode(data: any) -> Result {
-        #- Marshal ``data`` as JSON. Returns ``Result.Ok(str)`` or a
-           ``Result.Err(Error("JsonEncodeError", ...))``. -#
+    static func tryEncode(data: json) -> Result[str] {
         go! {
             b, err := json.Marshal(data)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
-                    "JsonEncodeError",
-                    fmt.Sprintf("encode failed: %v", err),
-                    nil,
+                    "JsonEncodeError", fmt.Sprintf("encode failed: %v", err), nil,
                 ))
             }
             return LAMMERGEIER.Result.Ok(string(b))
         }
     }
 
-    static func encodePretty(data: any) -> str {
+    static func encodePretty(data: json) -> str {
         go! {
             b, err := json.MarshalIndent(data, "", "  ")
-            if err != nil {
-                panic(fmt.Sprintf("json encode error: %v", err))
-            }
+            if err != nil { panic(fmt.Sprintf("json encode error: %v", err)) }
             return string(b)
         }
     }
 
-    static func tryEncodePretty(data: any) -> Result {
-        #- Like ``tryEncode`` but emits indented JSON. -#
+    static func tryEncodePretty(data: json) -> Result[str] {
         go! {
             b, err := json.MarshalIndent(data, "", "  ")
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
-                    "JsonEncodeError",
-                    fmt.Sprintf("encodePretty failed: %v", err),
-                    nil,
+                    "JsonEncodeError", fmt.Sprintf("encodePretty failed: %v", err), nil,
                 ))
             }
             return LAMMERGEIER.Result.Ok(string(b))
         }
     }
 
-    static func decode(s: str) -> any {
+    static func decode(s: str) -> json {
         go! {
-            var result interface{}
-            json.Unmarshal([]byte(s), &result)
-            return result
+            return lamJSONParseMust(s)
         }
     }
 
-    static func tryDecode(s: str) -> Result {
-        #- Decode a JSON string. Returns ``Result.Ok(any)`` (the
-           parsed value, typically a map / slice / scalar) or a
-           ``Result.Err(Error("JsonDecodeError", ...))``. -#
+    static func tryDecode(s: str) -> Result[json] {
         go! {
-            var result interface{}
-            err := json.Unmarshal([]byte(s), &result)
+            parsed, err := lamJSONParse(s)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
-                    "JsonDecodeError",
-                    fmt.Sprintf("decode failed: %v", err),
-                    nil,
+                    "JsonDecodeError", fmt.Sprintf("decode failed: %v", err), nil,
                 ))
             }
-            return LAMMERGEIER.Result.Ok(result)
+            return LAMMERGEIER.Result.Ok(parsed)
         }
     }
 
     static func decodeInto(s: str, target: any) {
-        #- Unmarshal JSON string into a struct pointer.
-           Usage: Json.decodeInto(jsonStr, myObj)
-        -#
         go! {
             err := json.Unmarshal([]byte(s), target)
-            if err != nil {
-                panic(fmt.Sprintf("json decode error: %v", err))
-            }
+            if err != nil { panic(fmt.Sprintf("json decode error: %v", err)) }
         }
     }
 
     static func tryDecodeInto(s: str, target: any) -> Result {
-        #- Like ``decodeInto`` but reports failures via ``Result``.
-           ``Result.Ok(None)`` is returned on success since the
-           decoded value lives in ``target``. -#
         go! {
             err := json.Unmarshal([]byte(s), target)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
-                    "JsonDecodeError",
-                    fmt.Sprintf("decodeInto failed: %v", err),
-                    nil,
+                    "JsonDecodeError", fmt.Sprintf("decodeInto failed: %v", err), nil,
                 ))
             }
             return LAMMERGEIER.Result.Ok(nil)
         }
     }
 
+    static func fromValue(data: any) -> json {
+        go! {
+            return lamJSONMust(data)
+        }
+    }
+
+    static func fromDict(data: any) -> json {
+        go! {
+            return lamJSONMust(data)
+        }
+    }
+
+    static func fromList(data: any) -> json {
+        go! {
+            return lamJSONMust(data)
+        }
+    }
+
+    static func toDict(data: json) -> dict[str, any] {
+        go! {
+            return lamJSONToDict(data)
+        }
+    }
+
+    static func toList(data: json) -> list[any] {
+        go! {
+            return lamJSONToList(data)
+        }
+    }
+
+    static func kind(data: json) -> str {
+        go! {
+            return lamJSONKind(data)
+        }
+    }
 
     static func isValid(s: str) -> bool {
-        #- True if `s` is syntactically valid JSON. -#
         go! {
-            return json.Valid([]byte(s))
+            _, err := lamJSONParse(s)
+            return err == nil
         }
     }
 }

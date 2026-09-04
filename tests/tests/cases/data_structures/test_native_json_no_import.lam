@@ -1,0 +1,17 @@
+# expect: true
+# expect: 2
+# expect: true
+# expect: true
+# expect: fallback
+
+func main() {
+    value: json = {"ok": true, "items": [1, 2]}
+    ok: bool = value.ok
+    count: int = len(value.items)
+    print(ok)
+    print(count)
+    print(value.ok == true)
+    print(value.missing == None)
+    fallback: str = value.missing ?? "fallback"
+    print(fallback)
+}

@@ -14,9 +14,9 @@
 > dependency resolution with cross-library + cross-project
 > conflict detection (Lammergeier deps + Go module deps), and the
 > reference registry server (Docker + docker-compose) all ship in
-> the current build. Coverage: `tests/tests/test_manifest.py` (14
-> cases), `test_apidiff.py` (13), `test_scoped_imports.py` (6),
-> `test_install_cli.py` (7), `test_dependency_crash.py` (9 — the
+> the current build. Coverage: `tests/tests/test_manifest.py` (16
+> cases), `test_apidiff.py` (13), `test_scoped_imports.py` (7),
+> `test_install_cli.py` (19), `test_dependency_crash.py` (9 — the
 > "two libs, same dep, incompatible versions" battery).
 
 This document covers how third-party Lammergeier libraries are
@@ -170,8 +170,12 @@ flight before compiling against the current toolchain.)
 
 ### Conventions
 
-- Module names use `snake_case` (e.g. `lamwebp`, `json_schema`,
-  `pdf_forms`), not `lowerCamel` or `PascalCase`.
+- Module names are case-preserving: choose `snake_case`, `camelCase`,
+  `PascalCase`, or `SCREAMING_SNAKE_CASE` and use that exact spelling in the
+  filename/package directory, `library.name`, dependency keys, registry specs,
+  and imports. Resolution is case-sensitive. Plain names are Lam identifiers
+  (`[A-Za-z_][A-Za-z0-9_]*`); scoped `@scope/name` segments may additionally
+  contain hyphens after the first character.
 - Prefix community libraries with `lam` (e.g. `lamwebp`,
   `lamkafka`) to mirror the stdlib naming so they feel native.
   This is a convention, not a hard rule.
@@ -444,7 +448,7 @@ Use `lamc fmt <directory> --check` when you want CI to fail on formatter drift.
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `library.name` | ✅ | Must match the module name that consumers `import`. Ascii, `snake_case`. |
+| `library.name` | ✅ | Must exactly match the case-sensitive module name consumers import. ASCII identifier in any casing style, or case-preserving `@scope/name`. |
 | `library.version` | ✅ | SemVer string. `lamc install` refuses to replace an installed library with a version < the one on disk without `--force`. |
 | `library.license` | optional | SPDX identifier (`MIT`, `Apache-2.0`, `BSD-3-Clause`, …). Strongly recommended before public publishing. |
 | `compatibility.lamc` | optional | Version range. `lamc version` prints the compiler version. During compile, installed extlibs whose range does not include that version emit a warning and continue; the install path does not hard-enforce it. |

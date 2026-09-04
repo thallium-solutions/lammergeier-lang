@@ -30,13 +30,13 @@ SemVer / API-diff gate, the `[replace]` directive, and the
 reserved `[workspace]` keyword.
 
 Every behaviour described here is implemented and exercised by
-`tests/tests/test_install_cli.py` (17 cases),
+`tests/tests/test_install_cli.py` (19 cases),
 `test_dependency_crash.py` (9 cases), `test_tidy_verify.py`
-(9 cases), `test_init_introspection.py` (8 cases),
+(9 cases), `test_init_introspection.py` (10 cases),
 `test_replace_workspace.py` (6 cases),
-`test_semantic_warnings.py` (10 cases),
-`test_apidiff.py` (13), `test_manifest.py` (14), and
-`test_scoped_imports.py` (6).
+`test_semantic_warnings.py` (19 cases),
+`test_apidiff.py` (13), `test_manifest.py` (16), and
+`test_scoped_imports.py` (7).
 
 ---
 
@@ -855,12 +855,16 @@ Flags cover the common shapes:
 
 | Flag | Default | Notes |
 |------|---------|-------|
-| `--name NAME` | sanitised cwd name (or `myproj` if it isn't a valid module name) | Must be `snake_case`, starting with a letter. |
+| `--name NAME` | case-preserving sanitised cwd name (or `myproj` if it isn't valid) | ASCII Lam identifier in snake_case, camelCase, PascalCase, or SCREAMING_SNAKE_CASE. |
 | `--version VER` | `0.1.0` | SemVer, validated against the same regex used by the registry. |
-| `--scope @S` | *(unscoped)* | Result becomes `@scope/name` in the manifest. Must start with `@`. |
+| `--scope @S` | *(unscoped)* | Result becomes case-preserving `@scope/name` in the manifest. Must start with `@`. |
 | `--license SPDX` | `MIT` | Anything goes; convention is an SPDX identifier. |
 | `--bin` / `--lib` | `--bin` | `--bin` writes `main.lam`; `--lib` writes `<name>.lam` with a `tag()` helper. |
 | `--force` | off | Overwrite existing files. The verb is otherwise refusal-by-default. |
+
+`lamc init --lib` writes `<name>.lam` with the exact requested casing. Registry
+keys, dependency entries, installation directories, lockfile pins, and imports
+preserve that spelling and are case-sensitive.
 
 The generated `.gitignore` excludes `extlibs/`, `build/`, and
 the transpilation cache by default. Comment out the `extlibs/`

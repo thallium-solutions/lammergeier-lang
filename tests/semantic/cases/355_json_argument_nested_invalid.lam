@@ -1,0 +1,8 @@
+# expect-error: argument `value` to `accept`: value of type `Image` is not JSON-compatible
+
+class Image {}
+func accept(value: json) {}
+
+func main() {
+    accept({"nested": [Image()]})
+}

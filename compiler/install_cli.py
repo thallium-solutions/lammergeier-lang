@@ -2335,11 +2335,12 @@ def _safe_default_name(cwd: Path) -> str:
     """Return a legal module name based on the current directory.
 
     ``Path.name`` may be empty (root) or contain hyphens / digits
-    that the strict ``_MODULE_NAME_RE`` rejects. Fall back to
-    ``"myproj"`` when nothing usable comes back so the
-    no-flag invocation always produces a valid manifest.
+    that the module-name validator rejects. Preserve the directory's
+    letter case, replacing only characters that cannot appear in a Lam
+    identifier. Fall back to ``"myproj"`` when nothing usable comes
+    back so the no-flag invocation always produces a valid manifest.
     """
-    raw = cwd.name.lower().replace("-", "_")
+    raw = cwd.name.replace("-", "_")
     candidate = "".join(c for c in raw if c.isalnum() or c == "_").lstrip("_")
     if candidate and is_valid_module_name(candidate):
         return candidate
@@ -2369,9 +2370,10 @@ def _cmd_init(args) -> int:
     """
     cwd = Path.cwd()
     name = (args.name or _safe_default_name(cwd)).strip()
-    if not is_valid_module_name(name):
+    if not is_valid_module_name(name) or name.startswith("@"):
         print(f"[lamc] init: '{name}' is not a legal module name "
-              f"(snake_case, starting with a letter).",
+              f"(use snake_case, camelCase, PascalCase, or "
+              f"SCREAMING_SNAKE_CASE, starting with a letter).",
               file=sys.stderr)
         return 2
 
@@ -2382,6 +2384,10 @@ def _cmd_init(args) -> int:
                   f"(got {scope!r}).", file=sys.stderr)
             return 2
         full_name = f"{scope}/{name}"
+        if not is_valid_module_name(full_name):
+            print(f"[lamc] init: scoped module name {full_name!r} contains "
+                  f"unsupported characters.", file=sys.stderr)
+            return 2
     else:
         full_name = name
 

@@ -1,0 +1,8 @@
+# expect-error: invalid JSON string passed to `Json.decode`
+
+from lamjson import Json
+
+func main() {
+    payload: json = Json.decode("{not-json}")
+    print(payload)
+}

@@ -316,25 +316,23 @@ func main() {
 }`,
         },
         {
-            heading: "Try / catch / raise",
-            blurb: `Exceptions for programmer-mistake territory. <code>try / catch</code> mirrors Python; <code>raise</code> and <code>throw</code> are aliases. Compiles to Go panic / recover under the hood.`,
-            code: `func validate(n: int) -> int {
-    if n < 0 {
-        raise ValueError("n must be non-negative")
-    }
-    return n * 2
+            heading: "Native JSON for APIs and config",
+            blurb: `<code>json</code> enforces real JSON recursively: string keys, arrays, finite numbers, booleans, strings, and null. Objects support JavaScript-style property access; classes opt in with <code>toJson</code>.`,
+            code: `from lamjson import Json
+
+payload: json = {
+    "user": {"name": "Ada"},
+    "roles": ["admin", "writer"],
+    "active": true
 }
 
-func main() {
-    try {
-        v: int = validate(-1)
-        print(v)
-    } catch e {
-        print(f"caught: {e}")       # caught: n must be non-negative
-    } finally {
-        print("done")
-    }
-}`,
+name: str = payload.user.name
+payload["requestId"] = "req_123"
+wire: str = Json.encode(payload)
+
+# dict/list conversion stays explicit and easy
+plain: dict[str, any] = Json.toDict(payload)
+back: json = Json.fromDict(plain)`,
         },
         {
             heading: "Result + the ? propagation operator",
@@ -521,8 +519,8 @@ func main() {
     <section class="band alt">
         <h2>Tour the language</h2>
         <p class="band-lede">
-            A quick look at typed functions, comprehensions, control
-            flow, Result propagation, list combinators, and raw Go
+            A quick look at typed functions, comprehensions, native JSON,
+            Result propagation, list combinators, and raw Go
             interop.
         </p>
         <div class="tour">

@@ -199,8 +199,22 @@ class StatementVisitorMixin:
     def _visit_assign(self, node: Tree):
         parts = [c for c in node.children if c is not None]
         if len(parts) >= 2:
-            target_str = self._expr_to_go(parts[0])
+            target_node = parts[0]
             value_node = parts[-1]
+            if isinstance(target_node, Tree) and target_node.data == "getitem":
+                obj_node, index_node = target_node.children[0], target_node.children[1]
+                if self._expr_go_type_hint(obj_node) == "LamJSON":
+                    value_str = self._typed_value_to_go(value_node, "LamJSON")
+                    self._emit(f"lamJSONSet({self._expr_to_go(obj_node)}, {self._expr_to_go(index_node)}, {value_str})")
+                    return
+            if isinstance(target_node, Tree) and target_node.data == "getattr":
+                obj_node = target_node.children[0]
+                if self._expr_go_type_hint(obj_node) == "LamJSON":
+                    attr = self._get_name(target_node.children[1])
+                    value_str = self._typed_value_to_go(value_node, "LamJSON")
+                    self._emit(f'lamJSONSet({self._expr_to_go(obj_node)}, "{attr}", {value_str})')
+                    return
+            target_str = self._expr_to_go(target_node)
             self._record_inferred_target_type(target_str, value_node)
             target_go_type = self._expr_go_type_hint(parts[0])
             # Ternary in plain assign
@@ -454,8 +468,12 @@ class StatementVisitorMixin:
         if node.children:
             target = node.children[0]
             if isinstance(target, Tree) and target.data == "getitem":
-                obj = self._expr_to_go(target.children[0])
+                obj_node = target.children[0]
+                obj = self._expr_to_go(obj_node)
                 idx = self._expr_to_go(target.children[1])
+                if self._expr_go_type_hint(obj_node) == "LamJSON":
+                    self._emit(f"lamJSONDelete({obj}, {idx})")
+                    return
                 self._emit(f"delete({obj}, {idx})")
                 return
             target_str = self._expr_to_go(target)

@@ -16,6 +16,7 @@
 
 from lamserver import Server, Request, Response
 from lamhttp import Http
+from lamjson import Json
 from lamos import Os
 
 go! {
@@ -48,24 +49,13 @@ go! {
 }
 
 func jsonHandler(req: Request, res: Response) {
-    body: any = req.jsonBody()
-    if body == None {
+    body: json = req.jsonBody()
+    if Json.kind(body) == "null" {
         res.error_(400, "bad json")
         return
     }
-    go! {
-        m, ok := body.(map[string]interface{})
-        if !ok {
-            res.Status = 400
-            res.Body = "bad json shape"
-            res.Sent = true
-            return
-        }
-        name, _ := m["name"].(string)
-        res.Headers["Content-Type"] = "text/plain; charset=utf-8"
-        res.Body = "hello, " + name
-        res.Sent = true
-    }
+    name: str = body.name
+    res.text("hello, " + name)
 }
 
 func cookieHandler(req: Request, res: Response) {

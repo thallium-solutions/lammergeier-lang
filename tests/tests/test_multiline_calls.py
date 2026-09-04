@@ -80,12 +80,51 @@ def test_auto_semicolons_preserves_nested_literal_continuation_closes() -> None:
     print("PASS: auto-semicolons preserves nested literal continuation closes")
 
 
+def test_parser_accepts_nested_dict_without_final_commas() -> None:
+    source = """func main() {
+    x: dict[str, dict[str, any]] = {
+        "hello": {
+            "salve": {
+                "ciao": 200
+            }
+        }
+    }
+    print(x["hello"])
+}
+"""
+    preprocessed = preprocess_for_parse(source).source
+    assert '"ciao": 200;' not in preprocessed
+    assert '};\n        };' not in preprocessed
+    parsed = create_parser().parse(preprocessed + "\n")
+    assert "dict" in parsed.pretty()
+    print("PASS: parser accepts nested dict literals without final commas")
+
+
+def test_parser_rejects_dict_entries_without_separator_commas() -> None:
+    source = """func main() {
+    x: dict[str, int] = {
+        "a": 1
+        "b": 2
+    }
+}
+"""
+    preprocessed = preprocess_for_parse(source).source
+    try:
+        create_parser().parse(preprocessed + "\n")
+    except Exception:
+        print("PASS: parser rejects dict entries without separator commas")
+        return
+    raise AssertionError("dict entries parsed without a comma separator")
+
+
 def main() -> int:
     tests = [
         test_auto_semicolons_preserves_multiline_call_arguments,
         test_parser_accepts_multiline_call_with_trailing_comma,
         test_parser_accepts_statement_before_closing_block_brace,
         test_auto_semicolons_preserves_nested_literal_continuation_closes,
+        test_parser_accepts_nested_dict_without_final_commas,
+        test_parser_rejects_dict_entries_without_separator_commas,
     ]
     for test in tests:
         test()

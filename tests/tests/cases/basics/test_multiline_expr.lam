@@ -10,7 +10,8 @@
 # expect: PASS 8 trailing commas tolerated
 # expect: PASS 9 f-string arg across lines
 # expect: PASS 10 return across lines
-# expect: 10 passed, 0 failed, 10 total
+# expect: PASS 11 nested dict final commas optional
+# expect: 11 passed, 0 failed, 11 total
 
 from lamtest import Test
 from lamfmt import Fmt
@@ -97,6 +98,15 @@ func main() {
     Test.assertEqual(greeting, "hi world", "9 f-string arg across lines")
 
     Test.assertEqual(add5(1, 2, 3, 4, 5), 15, "10 return across lines")
+
+    nested: dict[str, dict[str, any]] = {
+        "hello": {
+            "salve": {
+                "ciao": 200
+            }
+        }
+    }
+    Test.assertEqual(len(nested), 1, "11 nested dict final commas optional")
 
     Test.summary()
 }

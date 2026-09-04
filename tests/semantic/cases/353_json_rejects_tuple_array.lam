@@ -1,0 +1,6 @@
+# expect-error: json arrays must use list syntax, not tuple or set syntax
+
+func main() {
+    payload: json = (1, 2, 3)
+    print(payload)
+}

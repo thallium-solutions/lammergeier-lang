@@ -67,16 +67,16 @@ func main() {
 
 ### Choosing Types
 
-Use concrete types at module boundaries and public functions. Use
-`any` only when the value is genuinely dynamic, such as decoded JSON,
-plugin state, or Go interop payloads.
+Use concrete types at module boundaries and public functions. Use the native
+`json` type for decoded JSON; reserve `any` for values whose shape is genuinely
+unrestricted, such as plugin state or Go interop payloads.
 
 ```lammergeier
 typeName: str = "invoice"
 ids: list[int] = [10, 11, 12]
 labels: dict[str, str] = {"new": "New", "paid": "Paid"}
 seen: set[str] = {"a", "b", "c"}
-payload: any = {"id": 10, "status": "new"}
+payload: json = {"id": 10, "status": "new"}
 
 func total(values: list[float]) -> float {
     acc: float = 0.0
@@ -118,19 +118,92 @@ func main() {
     nums[1:3] = [20, 30]
 
     user: dict[str, any] = {"id": 1, "email": "ada@example.com"}
+    cfg: dict[str, dict[str, any]] = {
+        "service": {
+            "host": "localhost",
+            "port": 8080
+        }
+    }
     { email } = user
     print(email)
 }
 ```
 
 Use `list[T]`, `dict[K, V]`, and `set[T]` annotations when the
-literal is empty or when Go needs an exact element type.
+literal is empty or when Go needs an exact element type. Nested
+dictionary literals work in typed contexts and lower recursively; a
+comma is required between entries, but the final entry in a dictionary
+does not need a trailing comma.
 
 ```lammergeier
 names: list[str] = []
 counts: dict[str, int] = {}
 flags: set[str] = {}
 ```
+
+### Native JSON
+
+`json` is a native recursive value type for REST payloads, configuration files,
+database JSON/JSONB columns, and caches. It accepts JSON null (`None`), booleans,
+strings, finite integer/float numbers, arrays, string-keyed objects, nested
+`json` values, and class instances implementing `func toJson(self) -> json`.
+Numeric object keys, sets/tuples, arbitrary `any`, and other class instances are
+rejected before Go emission.
+
+```lammergeier
+from lamjson import Json
+
+class Image {
+    func init(self, width: int, height: int) {
+        self.width: int = width
+        self.height: int = height
+    }
+    func toJson(self) -> json {
+        return {"width": self.width, "height": self.height}
+    }
+}
+
+payload: json = [{
+    "hello": 100,
+    "nested": {"y": [1, 2, 3]},
+    "image": Image(1024, 1024)
+}]
+
+second: int = payload[0].nested.y[1]
+payload[0].hello = 101
+encoded: str = Json.encode(payload)
+```
+
+Dot access is available only when the key is a Lam identifier (`value.name`,
+`value.camelCase`, `value._private`). Every JSON string remains a valid key;
+numeric strings, punctuation, empty strings, and whitespace use brackets:
+`value["123"]`, `value["first-name"]`, `value[""]`, and `value[" "]`.
+`value.123` is invalid Lam syntax because `123` is not an identifier.
+
+Object bracket/property access and integer array indexing return `json`; an
+annotated primitive assignment performs the runtime extraction
+(`name: str = payload.name`). `len` works on objects, arrays, and strings; `del
+value["key"]` removes an object member. JSON values compare
+structurally with `==` / `!=`, compare to `None` as JSON null, and support
+`missing ?? fallback` in typed contexts.
+
+`Json.fromDict`, `Json.fromList`, and `Json.fromValue` validate dynamic Lam
+values and convert them to `json`. `Json.toDict` / `Json.toList` convert an
+object/array back for algorithms where ordinary collections are more useful.
+`Json.decode` returns `json`; `Json.tryDecode` returns `Result[json]`. Native
+`json` automatically brings in its runtime support, so literals and annotations
+do not require an explicit import.
+
+The semantic checker reports statically knowable JSON mistakes during Lam
+compilation: non-string object keys; tuple/set arrays; incompatible nested
+values; direct `any`; classes without a valid zero-argument instance
+`toJson() -> json`; invalid `toJson` declarations even when unused; invalid
+boolean/class/etc. indices (only `str` or `int` are allowed); incompatible
+assignments/returns/call arguments; and malformed literal strings passed to
+`Json.decode`, `Json.decodeInto`, `Schema.register`, or `Server.addSchema`.
+Dynamic `Json.fromValue(any)` data, decoded wire shapes, object-vs-array access,
+missing keys, bounds, cycles/depth, and non-finite runtime floats remain runtime
+checks because their values are not knowable from source.
 
 ### Control Flow
 
@@ -2365,6 +2438,14 @@ from lamwebp.codec import Decoder
 from lamwebp.io.files import readWebp
 ```
 
+Module paths preserve the author's casing. `snake_case`, `camelCase`,
+`PascalCase`, and `SCREAMING_SNAKE_CASE` are all valid, including scoped
+packages such as `from @AliceTeam/LamWebP import Decoder`. Imports are
+case-sensitive and must match the `.lam` filename, package directory, and
+`library.name` spelling exactly. Plain module segments remain Lam identifiers,
+so use `_` rather than `-`; scoped names may use hyphens after their first
+character.
+
 Each import bundles that module plus its transitive imports. A package
 `__init__.lam` may re-export submodule names with a normal `from` import,
 so `from lamwebp import Decoder` can remain the concise public API. See
@@ -2386,7 +2467,7 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamtime`        | `Time`                             | Time operations (nowUnix, sleepMs, nowString, etc.) |
 | `lamconv`        | `Conv`                             | Type conversions (toInt/toFloat/toBool for silent defaults; `tryInt`/`tryFloat`/`tryBool` return `Result`) |
 | `lamos`          | `Os`, `File`                       | OS/filesystem helpers plus the `File` context-manager class (`File.open`, `read`, `write`, `readline`, `readlines`, `close`); `tryReadFile`/`tryWriteFile`/`tryReadLines`/`tryWriteLines` return `Result` |
-| `lamjson`        | `Json`                             | JSON encode/decode/encodePretty; `tryEncode`/`tryDecode`/`tryEncodePretty`/`tryDecodeInto` return `Result` |
+| `lamjson`        | `Json`                             | Native `json` runtime, encode/decode/pretty/validate, dict/list conversion, and `Result[json]` try APIs |
 | `lamrandom`      | `Random`                           | Random numbers (randInt, randFloat, shuffle, choice, sample, uuid, randomString, randomHex) plus secure variants (secureBytes, secureToken, secureInt, secureUuid) |
 | `lamsort`        | `Sort`                             | Sorting (ints, floats, strings, reverseInts, reverseStrings, reverseFloats, reverse, isSorted) |
 | `lamre`          | `Re`                               | Regex (match, find, findAll, replaceAll, split); `tryMatch`/`tryFind`/`tryFindAll`/`tryReplaceAll`/`trySplit` return `Result` |

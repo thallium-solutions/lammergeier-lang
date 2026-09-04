@@ -11,6 +11,7 @@
 #     body: str = Http.tryGet(url).unwrapOr("")     # legacy behaviour
 
 from lamerrors import Result, Error
+from lamjson import Json
 
 go! {
     import (
@@ -114,13 +115,21 @@ class Http {
     }
 
     static func postJson(url: str, jsonBody: str) -> str {
-        #- Shorthand for post(url, "application/json", jsonBody). -#
+        #- Compatibility form for an already-encoded JSON string. -#
         return Http.post(url, "application/json", jsonBody)
     }
 
-    static func tryPostJson(url: str, jsonBody: str) -> Result {
-        #- Shorthand for ``tryPost(url, "application/json", jsonBody)``. -#
+    static func postJsonValue(url: str, value: json) -> str {
+        return Http.post(url, "application/json", Json.encode(value))
+    }
+
+    static func tryPostJson(url: str, jsonBody: str) -> Result[str] {
+        #- Compatibility form for an already-encoded JSON string. -#
         return Http.tryPost(url, "application/json", jsonBody)
+    }
+
+    static func tryPostJsonValue(url: str, value: json) -> Result[str] {
+        return Http.tryPost(url, "application/json", Json.encode(value))
     }
 
     static func getHeader(url: str, header: str) -> str {
@@ -387,6 +396,10 @@ class HttpClient {
         return self._do("POST", path, "application/json", jsonBody)
     }
 
+    func postJsonValue(self, path: str, value: json) -> HttpResponse {
+        return self._do("POST", path, "application/json", Json.encode(value))
+    }
+
     func put(self, path: str, contentType: str, body: str) -> HttpResponse {
         return self._do("PUT", path, contentType, body)
     }
@@ -395,12 +408,20 @@ class HttpClient {
         return self._do("PUT", path, "application/json", jsonBody)
     }
 
+    func putJsonValue(self, path: str, value: json) -> HttpResponse {
+        return self._do("PUT", path, "application/json", Json.encode(value))
+    }
+
     func patch(self, path: str, contentType: str, body: str) -> HttpResponse {
         return self._do("PATCH", path, contentType, body)
     }
 
     func patchJson(self, path: str, jsonBody: str) -> HttpResponse {
         return self._do("PATCH", path, "application/json", jsonBody)
+    }
+
+    func patchJsonValue(self, path: str, value: json) -> HttpResponse {
+        return self._do("PATCH", path, "application/json", Json.encode(value))
     }
 }
 

@@ -68,6 +68,13 @@ area: 78.53981633974483
 - **Pre-emission safety** — branch-sensitive definite assignment, call-shape
   and type checks, `Result[T]` / `Option[T]` propagation checks, operator
   validation, and Go-name collision diagnostics run before Go generation.
+- **Native JSON** — `json` recursively enforces real JSON values and string
+  object keys, supports JavaScript-style property/index access, requires
+  `toJson() -> json` for classes, converts cleanly to/from dict/list, and flows
+  directly through HTTP, Redis, and SQL JSON/JSONB parameters.
+- **Your module casing** — library, package, and `.lam` module names preserve
+  snake_case, camelCase, PascalCase, or SCREAMING_SNAKE_CASE; imports use the
+  exact spelling selected by the author.
 - **Go-powered runtime** — compiles to portable native binaries via the
   Go toolchain; no VM, no GC surprises.
 - **Raw Go escape hatch** — drop into plain Go with `go! { ... }` or

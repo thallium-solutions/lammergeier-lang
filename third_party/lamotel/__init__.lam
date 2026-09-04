@@ -222,7 +222,7 @@ class Otel {
                 }],
             }],
         }
-        return Json.encode(payload)
+        return Json.encode(Json.fromDict(payload))
     }
 }
 

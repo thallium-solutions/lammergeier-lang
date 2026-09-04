@@ -135,7 +135,8 @@ func main() {
     cloned: DocumentPrototype = template.clone("invoice-copy")
     print(f"prototype={cloned.title}:{len(cloned.tags)}:{cloned.signed}")
 
-    payload: str = Json.encode(cloned.title + ":" + cloned.tags[0])
+    payloadValue: str = cloned.title + ":" + cloned.tags[0]
+    payload: str = Json.encode(payloadValue)
     encoded: str = Base64.encode(payload)
     print(f"encoded_len={len(encoded)}")
 }

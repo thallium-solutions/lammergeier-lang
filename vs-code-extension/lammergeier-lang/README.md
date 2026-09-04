@@ -13,7 +13,7 @@ Syntax highlighting and language support for **Lammergeier** (`.lam`) — a type
 - **Code folding** on `{ }` blocks using VS Code's native bracket and
   indentation folding
 - **F-string interpolation** highlighting
-- **Language Server** integration — compiler-parity parse/preprocess/semantic diagnostics (including dict patterns, captures, `nonlocal`, and `LAMMERGEIER.*`), hover, completion, goto-definition, document symbols
+- **Language Server** integration — compiler-parity parse/preprocess/semantic diagnostics (including native `json`, dict patterns, captures, `nonlocal`, and `LAMMERGEIER.*`), hover, completion, goto-definition, document symbols
 - Settings to point at a custom LSP launcher and capture trace output
 
 ## Language Highlights
@@ -73,7 +73,7 @@ silently failing to load).
 ```bash
 # From the project root:
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.vscode/extensions/lammergeier.lammergeier-lang-1.1.1
+        ~/.vscode/extensions/lammergeier.lammergeier-lang-1.2.0
 ```
 
 #### Windsurf
@@ -84,14 +84,14 @@ target-platform suffix on the folder name:
 ```bash
 # From the project root:
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.1.1-universal
+        ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.2.0-universal
 ```
 
 #### Cursor (same mechanism)
 
 ```bash
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.cursor/extensions/lammergeier.lammergeier-lang-1.1.1
+        ~/.cursor/extensions/lammergeier.lammergeier-lang-1.2.0
 ```
 
 After creating the symlink, reload the editor window (command palette →
@@ -100,7 +100,7 @@ activate automatically.
 
 > **Note:** The folder name inside the extensions directory **must**
 > follow the `<publisher>.<name>-<version>` convention
-> (`lammergeier.lammergeier-lang-1.1.1`). Using a bare `lammergeier-lang`
+> (`lammergeier.lammergeier-lang-1.2.0`). Using a bare `lammergeier-lang`
 > folder name is the most common reason the extension silently fails to
 > load on both VS Code and Windsurf.
 
@@ -169,7 +169,7 @@ npm run watch            # rebuilds out/extension.js on change
 ## Uninstall
 
 ```bash
-rm ~/.vscode/extensions/lammergeier.lammergeier-lang-1.1.1
-rm ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.1.1-universal
-rm ~/.cursor/extensions/lammergeier.lammergeier-lang-1.1.1
+rm ~/.vscode/extensions/lammergeier.lammergeier-lang-1.2.0
+rm ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.2.0-universal
+rm ~/.cursor/extensions/lammergeier.lammergeier-lang-1.2.0
 ```

@@ -29,13 +29,15 @@ from dataclasses import dataclass
 from pathlib import Path
 try:
     import lark as _lark
-    from lark import Lark, Tree
+    from lark import Lark, Token, Tree
     from lark.exceptions import UnexpectedInput
     _LARK_IMPORT_ERROR: ImportError | None = None
 except ImportError as _err:
     _lark = None
     Lark = None
     class Tree:
+        pass
+    class Token:
         pass
     UnexpectedInput = Exception
     _LARK_IMPORT_ERROR = _err
@@ -181,7 +183,10 @@ def auto_semicolons(source: str) -> str:
         last = code[-1]
 
         # Inside an unclosed (..) or [..] — no semicolon, statement continues.
-        if paren_depth > 0:
+        # The same is true while still nested in a dict/set literal: entries
+        # inside ``{...}`` are separated by commas, not statement terminators.
+        inside_literal_brace = any(kind == "literal" for kind, _ in brace_stack)
+        if paren_depth > 0 or inside_literal_brace:
             result.append(rewritten)
             continue
 
@@ -1514,8 +1519,24 @@ def compile_lam(
     def _extract_imports(node) -> list[str]:
         return [mod for mod, _ in _extract_import_sites(node)]
 
+    def _uses_native_json(node) -> bool:
+        if not isinstance(node, Tree):
+            return False
+        if node.data == "type_name":
+            return any(
+                str(token) == "json"
+                for token in node.scan_values(lambda value: isinstance(value, Token))
+            )
+        return any(_uses_native_json(child) for child in node.children if isinstance(child, Tree))
+
     _direct_import_sites = _extract_import_sites(tree)
     _pre_transpiler._lam_imports.extend(mod for mod, _ in _direct_import_sites)
+    if (
+        _uses_native_json(tree)
+        and source_file.resolve() != (stdlib_dir / "lamjson.lam").resolve()
+        and "lamjson" not in _pre_transpiler._lam_imports
+    ):
+        _pre_transpiler._lam_imports.append("lamjson")
 
     # ── Auto-inject ``lamstrings`` when the source uses any of
     #    the built-in string-method dispatch names ──
@@ -1801,6 +1822,13 @@ def compile_lam(
         for imp in _extract_imports(sub_tree):
             if imp not in seen:
                 worklist.append((imp, mod_file))
+        if (
+            mod_name != "lamjson"
+            and _uses_native_json(sub_tree)
+            and "lamjson" not in seen
+            and all(mod != "lamjson" for mod, _ in worklist)
+        ):
+            worklist.append(("lamjson", mod_file))
         # If this library calls any string method that the
         # built-in dispatcher routes through ``Strings_*``,
         # ``lamstrings`` has to be in the import graph too —

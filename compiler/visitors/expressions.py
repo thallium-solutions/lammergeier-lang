@@ -57,6 +57,9 @@ class ExpressionVisitorMixin:
         Go sees them.
         """
         go_type = (go_type or "").strip()
+        if go_type == "LamJSON":
+            raw = self._json_value_to_go(node)
+            return raw if self._expr_go_type_hint(node) == "LamJSON" else f"lamJSONMust({raw})"
         if isinstance(node, Tree):
             if node.data == "list" and go_type.startswith("[]"):
                 return self._typed_list_literal_to_go(node, go_type)
@@ -89,6 +92,11 @@ class ExpressionVisitorMixin:
                 raw = self._expr_to_go(node)
         else:
             raw = self._expr_to_go(node)
+        if (
+            go_type not in {"", "LamJSON", "interface{}"}
+            and self._expr_go_type_hint(node) == "LamJSON"
+        ):
+            return f"lamJSONRaw({raw}).({go_type})"
         if (
             go_type in self._NUMERIC_GO_TYPES
             and go_type != "float64"
@@ -136,6 +144,24 @@ class ExpressionVisitorMixin:
                     if self._var_go_types.get(var_name) == "interface{}":
                         return f"{raw}.({go_type})"
         return raw
+
+    def _json_value_to_go(self, node) -> str:
+        if isinstance(node, Tree) and node.data == "dict":
+            entries = []
+            for child in node.children:
+                if isinstance(child, Tree) and child.data == "key_value" and len(child.children) >= 2:
+                    key = self._typed_value_to_go(child.children[0], "string")
+                    value = self._json_value_to_go(child.children[1])
+                    entries.append(f"{key}: {value}")
+            return f"map[string]interface{{}}{{{', '.join(entries)}}}"
+        if isinstance(node, Tree) and node.data == "list":
+            values = [self._json_value_to_go(child) for child in node.children if child is not None]
+            return f"[]interface{{}}{{{', '.join(values)}}}"
+        if isinstance(node, Tree) and node.data in {"list_comprehension", "tuple_comprehension"}:
+            return self._list_comp_to_go(node, elem_type="[]interface{}")
+        if isinstance(node, Tree) and node.data == "dict_comprehension":
+            return self._dict_comp_to_go(node, map_type="map[string]interface{}")
+        return self._expr_to_go(node)
 
     def _typed_list_literal_to_go(self, node: Tree, go_type: str) -> str:
         elem_type = self._slice_elem_go_type(go_type)
@@ -234,6 +260,8 @@ class ExpressionVisitorMixin:
         if node.data == "getitem" and len(node.children) >= 2:
             receiver_type = self._expr_go_type_hint(node.children[0])
             index = node.children[1]
+            if receiver_type == "LamJSON":
+                return "LamJSON"
             if isinstance(index, Tree) and index.data == "slice":
                 return receiver_type
             elem_type = self._slice_elem_go_type(receiver_type)
@@ -245,6 +273,8 @@ class ExpressionVisitorMixin:
             return ""
         if node.data in {"getattr", "getattr_safe"} and len(node.children) >= 2:
             obj = node.children[0]
+            if self._expr_go_type_hint(obj) == "LamJSON":
+                return "LamJSON"
             attr = self._get_name(node.children[1])
             class_name = ""
             if isinstance(obj, Tree) and obj.data == "var" and obj.children:
@@ -338,6 +368,8 @@ class ExpressionVisitorMixin:
         if d == "getattr":
             attr = self._get_name(node.children[1])
             obj_node = node.children[0]
+            if self._expr_go_type_hint(obj_node) == "LamJSON":
+                return f'lamJSONGet({self._expr_to_go(obj_node)}, "{attr}")'
             if isinstance(obj_node, Tree) and obj_node.data == "var":
                 raw_obj = self._get_name(obj_node.children[0])
                 if attr in self._static_vars.get(raw_obj, {}):
@@ -381,6 +413,8 @@ class ExpressionVisitorMixin:
             obj_node = node.children[0]
             obj = self._expr_to_go(obj_node)
             attr = self._get_name(node.children[1])
+            if self._expr_go_type_hint(obj_node) == "LamJSON":
+                return f'lamJSONGet({obj}, "{attr}")'
             class_name = self._infer_receiver_class(obj_node)
             field_names = {name for name, _type in self.class_fields.get(class_name, [])}
             field_names.update(self._external_field_names.get(class_name, set()))
@@ -449,6 +483,16 @@ class ExpressionVisitorMixin:
             # comparison so Go doesn't complain about untyped-nil or
             # primitive-to-nil comparisons (``"s" != nil`` and
             # ``nil != nil`` are both compile errors otherwise).
+            nodes = [c for c in node.children if isinstance(c, Tree)]
+            if len(nodes) == 2 and self._expr_go_type_hint(nodes[0]) == "LamJSON":
+                left = self._expr_to_go(nodes[0])
+                expected = (getattr(self, "_expected_expr_go_type", "") or "").strip()
+                if expected and expected not in {"LamJSON", "interface{}"}:
+                    left_value = f"lamJSONRaw({left}).({expected})"
+                    fallback = self._typed_value_to_go(nodes[1], expected)
+                    return f"func() {expected} {{ if !lamJSONIsNull({left}) {{ return {left_value} }}; return {fallback} }}()"
+                fallback = self._expr_to_go(nodes[1])
+                return f"func() interface{{}} {{ if !lamJSONIsNull({left}) {{ return {left} }}; return {fallback} }}()"
             parts = [self._expr_to_go(c) for c in node.children if c is not None]
             if not parts:
                 return "nil"
@@ -464,6 +508,8 @@ class ExpressionVisitorMixin:
 
         if d == "getitem":
             inner = node.children[1]
+            if self._expr_go_type_hint(node.children[0]) == "LamJSON":
+                return f"lamJSONGet({self._expr_to_go(node.children[0])}, {self._expr_to_go(inner)})"
             if isinstance(inner, Tree) and inner.data == "slice":
                 obj_go = self._expr_to_go(node.children[0])
                 return self._slice_to_go(obj_go, inner, node.children[0])
@@ -893,6 +939,9 @@ class ExpressionVisitorMixin:
             return f'fmt.Println({", ".join(args)})'
 
         if func_str == "len":
+            raw_args = self._get_raw_call_args(args_node)
+            if raw_args and self._expr_go_type_hint(raw_args[0]) == "LamJSON":
+                return f"lamJSONLen({args[0]})"
             return f"len({args[0]})" if args else "0"
 
         if func_str == "str":
@@ -2546,6 +2595,13 @@ class ExpressionVisitorMixin:
             return f"!({self._membership_to_go(left, right)})"
         left_go = self._expr_to_go(left)
         right_go = self._expr_to_go(right)
+        left_json = self._expr_go_type_hint(left) == "LamJSON"
+        right_json = self._expr_go_type_hint(right) == "LamJSON"
+        if (left_json or right_json) and op in {"==", "!=", "is", "is not"}:
+            left_value = left_go if left_json else f"lamJSONMust({left_go})"
+            right_value = right_go if right_json else f"lamJSONMust({right_go})"
+            equal = f"lamJSONEqual({left_value}, {right_value})"
+            return f"!({equal})" if op in {"!=", "is not"} else equal
         if op == "is not":
             return f"{left_go} != {right_go}"
         if op == "is":

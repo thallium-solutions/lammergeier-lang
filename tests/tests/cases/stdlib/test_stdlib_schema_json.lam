@@ -1,0 +1,12 @@
+# expect: schema-json-valid: true
+# expect: schema-json-invalid: false
+
+from lamschema import Schema
+
+func main() {
+    schema: str = '{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}'
+    valid: json = {"name": "Ada"}
+    invalid: json = {"name": 12}
+    print(f"schema-json-valid: {Schema.validateValue(schema, valid)}")
+    print(f"schema-json-invalid: {Schema.validateValue(schema, invalid)}")
+}

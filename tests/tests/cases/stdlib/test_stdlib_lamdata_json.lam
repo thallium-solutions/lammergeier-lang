@@ -1,0 +1,14 @@
+# expect: dataframe-json:array:2
+
+from lamdata import DataFrame
+from lamjson import Json
+
+func main() {
+    rows: json = [
+        {"name": "Ada", "score": 10},
+        {"name": "Lin", "score": 12}
+    ]
+    frame: DataFrame = DataFrame.readJsonValue(rows)
+    restored: json = frame.jsonValue()
+    print(f"dataframe-json:{Json.kind(restored)}:{len(restored)}")
+}

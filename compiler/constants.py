@@ -23,6 +23,7 @@ TYPE_MAP: Dict[str, str] = {
     "list": "[]interface{}",
     "dict": "map[string]interface{}",
     "set": "map[interface{}]bool",
+    "json": "LamJSON",
     "any": "interface{}",
     "object": "interface{}",
     "error": "error",

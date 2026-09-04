@@ -9,8 +9,8 @@ func main() {
     src: str = "{\"user\":\"alice\",\"meta\":{\"active\":true,\"score\":42,\"tags\":[\"t0\",\"t1\",\"t2\",\"t3\",\"t4\",\"t5\"]}}"
     total: int = 0
     for __i in range(50000) {
-        v: any = Json.decode(src)
-        if v != None {
+        v: json = Json.decode(src)
+        if Json.kind(v) != "null" {
             total = total + 1
         }
     }

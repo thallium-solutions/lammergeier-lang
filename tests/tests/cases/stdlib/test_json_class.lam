@@ -1,4 +1,4 @@
-# expect: {"name":"Alice","age":30}
+# expect: {"age":30,"name":"Alice"}
 # expect: Alice
 # expect: 30
 # expect: Bob
@@ -10,6 +10,10 @@ class Person {
     func init(self, name: str, age: int) {
         self.name: str = name
         self.age: int = age
+    }
+
+    func toJson(self) -> json {
+        return {"name": self.name, "age": self.age}
     }
 }
 

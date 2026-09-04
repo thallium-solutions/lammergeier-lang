@@ -59,6 +59,7 @@
 #   — pandas muscle memory transfers over cleanly.
 
 from lamerrors import Result, Error
+from lamjson import Json
 
 go! {
     import (
@@ -239,6 +240,10 @@ class DataFrame {
         go! {
             return lamDfWrap(dataframe.ReadJSON(strings.NewReader(content)))
         }
+    }
+
+    static func readJsonValue(content: json) -> DataFrame {
+        return DataFrame.readJSON(Json.encode(content))
     }
 
     # ─── introspection ───────────────────────────────────────
@@ -653,6 +658,10 @@ class DataFrame {
             }
             return buf.String()
         }
+    }
+
+    func jsonValue(self) -> json {
+        return Json.decode(self.writeJSON())
     }
 
     # ─── summary / grouping ──────────────────────────────────

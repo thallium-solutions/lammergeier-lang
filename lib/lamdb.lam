@@ -383,6 +383,52 @@ class Db {
         return out
     }
 
+    func queryJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> list[dict[str, any]] {
+        rows: list[dict[str, any]] = self.query(query, params)
+        go! {
+            selected := map[string]bool{}
+            for _, column := range jsonColumns { selected[column] = true }
+            for _, row := range rows {
+                for column := range selected {
+                    raw, ok := row[column]
+                    if !ok || raw == nil { row[column] = lamJSONMust(nil); continue }
+                    var text string
+                    switch value := raw.(type) {
+                    case []byte: text = string(value)
+                    case string: text = value
+                    case LamJSON: row[column] = value; continue
+                    default: row[column] = lamJSONMust(value); continue
+                    }
+                    parsed, err := lamJSONParse(text)
+                    if err != nil { panic(fmt.Sprintf("db: column %s contains invalid JSON: %v", column, err)) }
+                    row[column] = parsed
+                }
+            }
+        }
+        return rows
+    }
+
+    func firstJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> dict[str, any] {
+        rows: list[dict[str, any]] = self.queryJson(query, jsonColumns, params)
+        if len(rows) == 0 {
+            empty: dict[str, any] = {}
+            return empty
+        }
+        return rows[0]
+    }
+
+    func scalarJson(self, query: str, params: list[any] = []) -> json {
+        raw: any = self.scalar(query, params)
+        go! {
+            switch value := raw.(type) {
+            case []byte: return lamJSONParseMust(string(value))
+            case string: return lamJSONParseMust(value)
+            case LamJSON: return value
+            default: return lamJSONMust(value)
+            }
+        }
+    }
+
     func first(self, query: str, params: list[any] = []) -> dict[str, any] {
         #- Run a SELECT and return only the first row (``{}`` if no
            rows were returned). Equivalent to

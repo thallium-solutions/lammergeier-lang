@@ -344,15 +344,14 @@ section.band h2 {
 /* ─── Tour cards (home page "Tour the language") ──────────── */
 .tour {
     display: grid;
-    /* Three equal columns capped at the same 1150px the ``.grid`` rule
-       uses for the "Why Lammergeier" section, so the cards line up
-       with the section ``<h2>`` (which is also 1150px max-width).
+    /* Three equal columns use a wider canvas so each code sample keeps
+       roughly the same reading width as the earlier two-column layout.
        ``minmax(0, 1fr)`` is critical: without the ``0`` lower bound,
        long ``<pre>`` content forces the column to grow past its 1fr
        share, breaking the equal-width layout. */
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 1.25rem;
-    max-width: 1150px;
+    gap: 1.5rem;
+    max-width: 1680px;
     margin: 0 auto;
 }
 .tour-card {
@@ -360,7 +359,7 @@ section.band h2 {
     background: var(--bg-elev-1);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 1.25rem 1.4rem 1.4rem;
+    padding: 1.5rem 1.6rem 1.6rem;
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
@@ -373,13 +372,13 @@ section.band h2 {
 .tour-card h3 {
     margin: 0;
     color: var(--accent-bright);
-    font-size: 1.1rem;
+    font-size: 1.15rem;
     font-family: var(--font-sans);
 }
 .tour-card p {
     margin: 0;
     color: var(--text-dim);
-    font-size: 0.95rem;
+    font-size: 1rem;
     line-height: 1.5;
 }
 .tour-card pre {
@@ -388,8 +387,8 @@ section.band h2 {
     /* Slightly smaller font so multi-line snippets fit comfortably
        in the side-by-side card grid without horizontal scrolling
        on mid-sized viewports. */
-    font-size: 0.85rem;
-    line-height: 1.5;
+    font-size: 0.88rem;
+    line-height: 1.52;
     background: var(--code-bg);
     border: 1px solid var(--border);
     /* ``min-width: 0`` allows the column's ``minmax(0, 1fr)`` rule
@@ -414,8 +413,8 @@ section.band h2 {
 @media (max-width: 1100px) {
     .tour {
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        max-width: 900px;
-        gap: 1rem;
+        max-width: 1050px;
+        gap: 1.25rem;
     }
 }
 

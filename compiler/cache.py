@@ -230,9 +230,10 @@ def serialise_transpile_result(
     Go types for contextual literal lowering.
     """
     return {
-        # Bumped from 7 → 8 when overload return-shape metadata was added.
+        # Bumped from 8 → 9 when native json signatures began lowering to
+        # LamJSON instead of interface{}.
         # Older entries are silently ignored on load and re-transpiled.
-        "version": 8,
+        "version": 9,
         "go_src": go_src,
         "class_names": sorted(class_names),
         "static_methods": {k: sorted(v) for k, v in static_methods.items()},
@@ -267,7 +268,7 @@ def deserialise_transpile_result(
     Returns ``None`` if ``entry`` is missing required keys or has the
     wrong schema version; the caller should treat that as a miss.
     """
-    if entry.get("version") != 8:
+    if entry.get("version") != 9:
         return None
     try:
         go_src = entry["go_src"]

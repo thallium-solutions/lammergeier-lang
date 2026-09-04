@@ -140,7 +140,7 @@ class StripeResponse {
         return self.transportError == "" and self.status >= 200 and self.status < 300
     }
 
-    func json(self) -> any {
+    func json(self) -> json {
         if self.body == "" {
             return {}
         }
@@ -148,15 +148,12 @@ class StripeResponse {
     }
 
     func field(self, name: str) -> str {
-        data: any = self.json()
-        _ = name
-        _ = data
+        data: dict[str, any] = Json.toDict(self.json())
+        if name == "" and len(data) < 0 { return "" }
         out: str = ""
         go! {
-            if m, ok := data.(map[string]interface{}); ok {
-                if s, ok := m[name].(string); ok {
-                    out = s
-                }
+            if s, ok := data[name].(string); ok {
+                out = s
             }
         }
         return out

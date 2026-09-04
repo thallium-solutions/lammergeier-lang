@@ -43,20 +43,9 @@ func ctxHandler(req: Request, res: Response) {
 }
 
 func jsonHandler(req: Request, res: Response) {
-    body: any = req.parsedBody()
-    go! {
-        m, ok := body.(map[string]interface{})
-        if !ok {
-            res.Status = 400
-            res.Body = "not a json object"
-            res.Sent = true
-            return
-        }
-        name, _ := m["name"].(string)
-        res.Headers["Content-Type"] = "text/plain; charset=utf-8"
-        res.Body = "json:" + name
-        res.Sent = true
-    }
+    body: json = req.jsonBody()
+    name: str = body.name
+    res.text("json:" + name)
 }
 
 func formHandler(req: Request, res: Response) {

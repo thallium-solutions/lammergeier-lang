@@ -1,0 +1,7 @@
+# expect-error: value of type `any` is not JSON-compatible; convert it explicitly with `Json.fromValue`
+
+func main() {
+    dynamic: any = {"ok": true}
+    payload: json = dynamic
+    print(payload)
+}

@@ -217,6 +217,7 @@ compiler-prefix-looking names all route through this binding map.
 | `list[T]`        | `[]T`                       |
 | `dict[K, V]`     | `map[K]V`                   |
 | `set[T]`         | `map[T]bool`                |
+| `json`           | `LamJSON` (canonical recursive JSON wrapper) |
 | `optional[T]`, `Option[T]` | `*T` for value types; an existing class pointer is not doubled |
 | `Result[T]`      | `*Result` (payload metadata is compile-time only) |
 | `T \| None`      | `T` (pointer if applicable) |
@@ -265,6 +266,35 @@ the value directly through `_expr_to_go`. The unit gate has a static
 `test_lowering_contracts.py` check for these choke points and generated-Go
 contract tests for the cases most likely to regress: anonymous collection call
 arguments, contextual `?` unboxing, and class-pointer argument passing.
+
+### Native JSON lowering
+
+A `json` annotation triggers the compiler-managed `lamjson` support module and
+lowers to `LamJSON`, a wrapper around canonical Go JSON values
+(`map[string]interface{}`, `[]interface{}`, primitives, or nil). Contextual
+literal lowering emits string-keyed maps and interface slices, then
+`lamJSONMust(...)` recursively validates and normalizes the value. Classes are
+accepted only when their generated Go method set satisfies `ToJson() LamJSON`.
+
+```lam
+payload: json = {"user": {"name": "Ada"}, "scores": [8, 13]}
+name: str = payload.user.name
+payload["active"] = true
+```
+
+Conceptually lowers to:
+
+```go
+var payload LamJSON = lamJSONMust(map[string]interface{}{...})
+var name string = lamJSONRaw(lamJSONGet(lamJSONGet(payload, "user"), "name")).(string)
+lamJSONSet(payload, "active", lamJSONMust(true))
+```
+
+`LamJSON` implements `json.Marshaler`, `json.Unmarshaler`, `fmt.Stringer`,
+`driver.Valuer`, and `sql.Scanner`. This lets `encoding/json`, HTTP responses,
+Redis helpers, and JSON/JSONB database parameters consume the same native value
+without exposing ordinary dictionaries. `Json.toDict` / `toList` deliberately
+unwrap it when collection algorithms are desired.
 
 ## Variable declarations
 
@@ -884,6 +914,8 @@ from lamos import Os
   `lib_lamwebp__codec_lam.go`. This avoids Go's special `*_test.go`
   convention, where files are excluded from normal `go build`. A user
   module named `test` or `foo_test` therefore still links into the binary.
+  Module casing is preserved (`PascalCaseLib` becomes
+  `lib_PascalCaseLib_lam.go`) rather than normalized during emission.
 - A module may opt into a Go import by writing `go! { import "pkg" }`.
   Imports from go blocks are consolidated into a single Go import group.
 - Defaults, arities, parameter names, Go parameter types, variadic markers and

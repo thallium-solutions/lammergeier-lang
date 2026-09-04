@@ -1,0 +1,22 @@
+# expect: result-json:Ada
+# expect: decode-error:true
+
+from lamjson import Json
+from lamerrors import Result
+
+func load(text: str) -> Result[json] {
+    return Json.tryDecode(text)
+}
+
+func nameFrom(text: str) -> Result[str] {
+    payload: json = load(text)?
+    name: str = payload.name
+    return Result.Ok(name)
+}
+
+func main() {
+    source: str = '{"name":"Ada"}'
+    print(f"result-json:{nameFrom(source).unwrap()}")
+    failed: Result[json] = load("not-json")
+    print(f"decode-error:{not failed.ok()}")
+}

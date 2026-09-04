@@ -108,7 +108,7 @@ from lamos import Os
 from lamjson import Json
 from lamerrors import Result
 
-func loadJson(path: str) -> Result {
+func loadJson(path: str) -> Result[json] {
     text: str = Os.tryReadFile(path)?
     return Json.tryDecode(text)
 }
@@ -118,7 +118,7 @@ func main() {
     pretty: bool = Cli.hasFlag("pretty")
 
     do {
-        value: any = loadJson(input)?
+        value: json = loadJson(input)?
         if pretty {
             print(Json.encodePretty(value))
         } else {
@@ -160,13 +160,8 @@ func listUsers(req: Request, res: Response) {
 }
 
 func createUser(req: Request, res: Response) {
-    body: any = req.jsonBody()
-    name: str = ""
-    go! {
-        if m, ok := body.(map[string]interface{}); ok {
-            if v, ok := m["name"].(string); ok { name = v }
-        }
-    }
+    body: json = req.jsonBody()
+    name: str = body.name
     res.code(201).json({"id": "u_2", "name": name})
 }
 
@@ -487,28 +482,42 @@ out: str = Csv.formatAll([["x", "y"], ["1", "2"]])
 | `Csv.formatRow(fields)` | `str` |
 | `Csv.formatAll(rows)` | `str` |
 
-### `lamjson` — `Json`
+### Native `json` and `lamjson` — `Json`
 
-Wraps `encoding/json`. The throwing methods are named after the
-wire operation (`encode`, `decode`, `decodeInto`); `try*` siblings
-return `Result` for recoverable parsing/encoding.
+The native `json` type is backed by `lamjson` and only contains real JSON
+values: null, booleans, strings, finite numbers, arrays, string-keyed objects,
+nested values, or classes implementing `toJson() -> json`. `Json` handles wire
+encoding/decoding and explicit conversion to/from ordinary Lam collections.
 
 ```lammergeier
 from lamjson import Json
 
-obj: any = Json.decode('{"name":"alice"}')
+obj: json = Json.decode('{"name":"alice","roles":["admin"]}')
+name: str = obj.name
+obj["active"] = true
 out: str = Json.encode(obj)
 pretty: str = Json.encodePretty(obj)
-ok: bool = Json.isValid(out)
+
+asDict: dict[str, any] = Json.toDict(obj)
+back: json = Json.fromDict(asDict)
 ```
 
 | Method | Returns |
 |--------|---------|
-| `Json.encode(data)` / `Json.tryEncode(data)` | `str` / `Result` |
-| `Json.encodePretty(data)` / `Json.tryEncodePretty(data)` | `str` / `Result` |
-| `Json.decode(s)` / `Json.tryDecode(s)` | `any` / `Result` |
-| `Json.decodeInto(s, target)` / `Json.tryDecodeInto(s, target)` | `None` / `Result` |
+| `Json.encode(data)` / `Json.tryEncode(data)` | `str` / `Result[str]` |
+| `Json.encodePretty(data)` / `Json.tryEncodePretty(data)` | `str` / `Result[str]` |
+| `Json.decode(s)` / `Json.tryDecode(s)` | `json` / `Result[json]` |
+| `Json.fromValue(value)` / `fromDict(value)` / `fromList(value)` | validated `json` |
+| `Json.toDict(data)` / `Json.toList(data)` | `dict[str, any]` / `list[any]` |
+| `Json.kind(data)` | `str`: `null`, `boolean`, `string`, `number`, `array`, or `object` |
+| `Json.decodeInto(s, target)` / `Json.tryDecodeInto(s, target)` | `None` / `Result` (Go/class compatibility) |
 | `Json.isValid(s)` | `bool` |
+
+`Json.fromValue` is the runtime boundary for dynamic `any`; it rejects numeric
+map keys, non-finite floats, cycles/excessive nesting, sets, functions, and
+classes without `toJson`. Native values implement Go JSON marshaling and
+`database/sql` value/scanner interfaces, so they can be passed directly as
+JSON/JSONB query parameters.
 
 ### `lamurl` — `Url`
 
@@ -674,7 +683,8 @@ means: DataFrame = byCountry.aggregate(aggTypes, aggCols)
 ```
 
 **DataFrame surface.** Constructors `fromRecords` (header + rows),
-`fromMaps`, `readCSV`, `readJSON`. Introspection `nrow`, `ncol`,
+`fromMaps`, `readCSV`, `readJSON`, and native `readJsonValue(json)`.
+Introspection `nrow`, `ncol`,
 `dims`, `names`, `types`, `describe`, `toString`, `error`. Access
 `col`, `elem`, `records`, `maps`, `copy`. Subsetting `head`, `tail`,
 `slice`, `subset`, `selectCols`, `dropCols`. Mutation `rename`,
@@ -686,7 +696,8 @@ sugar `filterEq` / `filterNeq` / `filterGt` / `filterGte` /
 `filterLt` / `filterLte` / `filterIn`. Sorting `sort` and multi-key
 `sortBy`. Joins `innerJoin`, `leftJoin`, `rightJoin`, `outerJoin`,
 `crossJoin`. Combine `rbind`, `cbind`, `concat`. I/O `writeCSV`,
-`writeJSON`. Group-by via `groupBy(cols) -> DataFrameGroups`.
+`writeJSON`, and `jsonValue() -> json`. Group-by via
+`groupBy(cols) -> DataFrameGroups`.
 
 **Series surface.** `fromStrings` / `fromInts` / `fromFloats` /
 `fromBools` constructors. Introspection `name`, `typeName`,
@@ -1213,10 +1224,14 @@ from lamhttp import Http
 body: str = Http.get("https://api.example.com/users")
 status: int = Http.statusCode("https://example.com")
 out: str = Http.postJson("https://api.example.com/echo", '{"x":1}')
+nativeOut: str = Http.postJsonValue("https://api.example.com/echo", {"x": 1})
 ```
 
+`postJson` / `tryPostJson` retain the already-encoded string form;
+`postJsonValue` / `tryPostJsonValue` accept native `json` and encode it.
 `Http`: `get`, `tryGet`, `post`, `tryPost`, `postJson`, `tryPostJson`,
-`getWithHeaders`, `getHeader`, `statusCode`, `serve`.
+`postJsonValue`, `tryPostJsonValue`, `getWithHeaders`, `getHeader`,
+`statusCode`, `serve`.
 `HttpServer.close()` stops the throwaway server.
 
 ### `lamserver` — `Server`, `Request`, `Response`, `SseEmitter`, `HttpError`
@@ -1258,13 +1273,8 @@ func auth(req: Request, res: Response) {
 }
 
 func createUser(req: Request, res: Response) {
-    body: any = req.jsonBody()
-    name: str = ""
-    go! {
-        if m, ok := body.(map[string]interface{}); ok {
-            if v, ok := m["name"].(string); ok { name = v }
-        }
-    }
+    body: json = req.jsonBody()
+    name: str = body.name
     res.code(201).json({
         "id": "u_1",
         "name": name,
@@ -1480,6 +1490,17 @@ Schemas are JSON Schema draft-07. Put route input under `body`,
 Response schemas are status-keyed. Exact status wins, then status
 family, then `default`.
 
+Internally, lamserver still marshals dictionary-defined schemas to JSON text and
+unmarshals schema documents while resolving `$ref`, projecting responses, and
+building OpenAPI. Compiled validation is delegated to `gojsonschema`; request
+JSON reaches it as decoded native/raw JSON data. This marshal/unmarshal boundary
+is intentional because JSON Schema and OpenAPI are wire specifications, while
+application payloads use Lam's native `json`. Malformed literal schema strings
+passed directly to `Schema.register` or `Server.addSchema` are diagnosed by the
+Lam compiler; dynamically constructed schemas remain runtime-validated by the
+schema compiler (an invalid shared registration is ignored and unresolved route
+validation surfaces through the normal validation error path).
+
 ```lammergeier
 func createOrderOpts() -> dict[str, any] {
     return {
@@ -1664,7 +1685,8 @@ routes: list[any] = srv.listRoutes()
 **`Request`** — `.method`, `.path`, `.body`, `.headers`, `.query`,
 `.params`, `.remoteAddr`, `.ctx` (plugin-shared dict). Methods:
 `header(name)`, `queryGet(name, fallback)`, `cookie(name)`,
-`signedCookie(name, secret)`, `jsonBody()`, `parsedBody()`,
+`signedCookie(name, secret)`, `jsonBody() -> json`, `parsedBody()` (returns native
+`json` for `application/json` and dynamic form/text values otherwise),
 `formField(name, fallback)`, `formFile(name)`, `formFiles(name)`,
 `realIP()`, `realScheme(fallback="http")`, `dec(name)`,
 `hasDec(name)`, `id()`, `setId(value)`.
@@ -2085,7 +2107,7 @@ spec.
 | Method | Returns |
 |--------|---------|
 | `Schema.validateJson(schemaText, jsonDoc)` | `bool` |
-| `Schema.validateValue(schemaText, value)` | `bool` (skip JSON re-parse) |
+| `Schema.validateValue(schemaText, value: json)` | `bool` (skip JSON re-parse) |
 | `Schema.errors(schemaText, jsonDoc)` | `list[str]` (empty = valid) |
 | `Schema.register(key, schemaText)` | `str` (`""` ok, else error) |
 | `Schema.validateByKey(key, jsonDoc)` / `validateValueByKey(key, value)` | `bool` |
@@ -2209,6 +2231,7 @@ rewrites to `$1`, `$2`, … on Postgres.
 
 ```lammergeier
 from lamdb import Db, Tx, QueryBuilder
+from lamjson import Json
 
 db: Db = Db.connect("sqlite", ":memory:")
 db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER)")
@@ -2233,6 +2256,15 @@ page: dict[str, any] = db.table("users").orderBy("id").paginate(1, 15)
 
 # Upsert (ON CONFLICT for sqlite/postgres, ON DUPLICATE KEY UPDATE for mysql).
 db.table("users").upsert({"name": "alice", "age": 31}, ["name"])
+
+# Native json implements driver.Valuer, so JSON/JSONB parameters need no manual encode.
+db.exec("CREATE TABLE configs (id INTEGER, payload JSON)")
+config: json = {"theme": "dark", "features": ["api", "jobs"]}
+db.exec("INSERT INTO configs (id, payload) VALUES (?, ?)", [1, config])
+jsonRows: list[dict[str, any]] = db.queryJson(
+    "SELECT payload FROM configs WHERE id = ?", ["payload"], [1]
+)
+restored: json = Json.fromValue(jsonRows[0]["payload"])
 ```
 
 `Db`: `connect(driver, dsn)` / `tryConnect` (returns `Result`),
@@ -2240,7 +2272,8 @@ db.table("users").upsert({"name": "alice", "age": 31}, ["name"])
 `setRetries(maxRetries, baseMs)` (transient-error retry with
 exponential backoff), `ping`, `close`, `driverName`, `raw` (escape
 hatch for the underlying `*sql.DB`), `exec` / `tryExec`, `query` /
-`first` / `scalar`, `table(name)` → `QueryBuilder`, `transaction(fn)`
+`first` / `scalar`, JSON-aware `queryJson(query, columns, params)` /
+`firstJson` / `scalarJson`, `table(name)` → `QueryBuilder`, `transaction(fn)`
 (auto-commit / auto-rollback on panic), `begin()` → explicit `Tx`.
 
 `QueryBuilder` predicates (chainable, AND-joined by default):
@@ -2424,6 +2457,12 @@ hello: str = r.get("greeting")          # "hello"
 missing: str = r.get("does-not-exist")  # "" (use ``r.exists(["k"])``
                                         #     to disambiguate)
 
+# Native JSON is encoded/decoded automatically and can carry a TTL.
+payload: json = {"name": "Ada", "roles": ["admin", "writer"]}
+r.setJson("user:json:1", payload, ttlSec=60)
+restored: json = r.getJson("user:json:1")
+name: str = restored.name
+
 # Atomic counters.
 n: int = r.incr("hits")
 r.incrBy("hits", 9)
@@ -2529,9 +2568,9 @@ have to inspect every result.
 | Receive multipart form uploads | `Request.formField` / `formFile` (in `lamserver`) |
 | Make HTTP calls (one-shot) | `lamhttp.Http.get` / `.post` / `.postJson` |
 | Make HTTP calls (reusable client w/ baseUrl, headers, timeout) | `lamhttp.HttpClient` (`get`/`head`/`delete`/`post(Json)`/`put(Json)`/`patch(Json)`) |
-| Talk to a SQL database | `lamdb` (raw SQL, `QueryBuilder`, transactions + savepoints) |
+| Talk to a SQL database | `lamdb` (raw SQL, native JSON/JSONB values, `QueryBuilder`, transactions + savepoints) |
 | Run schema migrations | `lammigrate` + `lamc migrate make/up/down/status` |
-| Talk to Redis (strings / lists / hashes / sets / zsets / pub-sub / pipelines) | `lamredis` (`Redis`, `PubSub`) |
+| Talk to Redis (strings / native JSON / lists / hashes / sets / zsets / pub-sub / pipelines) | `lamredis` (`Redis`, `PubSub`) |
 | Talk to memcached over the binary protocol (incl. SASL PLAIN auth) | `lamemcached` (`Memcached`) |
 | Read / write files | `lamos`, `lampath` |
 | Hash or sign data | `lamhash`, `lambase64`, `lamuuid` |
@@ -2617,9 +2656,10 @@ if res.ok() {
     print(res.body)
 }
 
-api.postJson("/users", "{\"name\":\"alice\"}")
-api.putJson("/users/42", "{\"name\":\"alice2\"}")
-api.patchJson("/users/42", "{\"age\":31}")
+api.postJson("/users", "{\"name\":\"alice\"}")       # encoded-string compatibility
+api.postJsonValue("/users", {"name": "alice"})
+api.putJsonValue("/users/42", {"name": "alice2"})
+api.patchJsonValue("/users/42", {"age": 31})
 api.delete("/users/42")
 ```
 
@@ -2729,8 +2769,8 @@ index lists the public classes and top-level functions you can import.
   `rateLimit(srv, 100, 60000)`.
 - `Result`-returning methods use `Result.Ok(value)` /
   `Result.Err(error)`. The error payload is `any`.
-- Methods returning `any` usually wrap dynamic Go values, decoded
-  JSON/YAML/XML, or plugin state. Keep the value as `any`, pass it to
+- Methods returning `any` usually wrap dynamic Go values, decoded YAML/XML,
+  or plugin state. Decoded JSON uses native `json`. Keep other values as `any`, pass them to
   another dynamic API, or assert with a small `go!` block.
 
 | Module | Import | Public surface |
@@ -2759,7 +2799,7 @@ index lists the public classes and top-level functions you can import.
 | `lamheap` | `from lamheap import Heap, PriorityHeap` | Numeric heap and priority queue. |
 | `lamhttp` | `from lamhttp import Http, HttpClient, HttpResponse, HttpServer` | One-shot HTTP helpers, reusable client, tiny blocking server. |
 | `lamiter` | `from lamiter import Iter` | Lazy iterator pipelines: map/filter/take/drop/reduce/enumerate. |
-| `lamjson` | `from lamjson import Json` | JSON encode/decode/pretty/validate plus `try*` forms. |
+| `lamjson` | `from lamjson import Json` | Native `json`, wire encoding/decoding, collection conversion, kind inspection, and `try*` forms. |
 | `lamjwt` | `from lamjwt import Jwt, JwtKeySet` | JWT sign/verify, HMAC/RSA, kid/JWKS key rotation. |
 | `lamlog` | `from lamlog import Log` | Leveled logging and formatted log helpers. |
 | `lammath` | `from lammath import Math` | Constants, trig, logs, rounding, combinatorics, number theory. |
@@ -2821,11 +2861,11 @@ srv.setSchemaErrorFormatter(fn: any)
 srv.inject(method: str, path: str, body: str = "", headers: any = None) -> dict[str, any]
 req.header(name: str) -> str
 req.queryGet(name: str, fallback: str = "") -> str
-req.jsonBody() -> any
+req.jsonBody() -> json
 req.bodyReader() -> RequestBodyReader
 res.code(n: int) -> Response
 res.header(name: str, value: str) -> Response
-res.json(obj: any) -> Response
+res.json(obj: json) -> Response
 res.text(body: str) -> Response
 res.streamFile(path: str, contentType: str = "") -> Response
 

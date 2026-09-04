@@ -108,6 +108,20 @@ def test_workspace_resolves_deep_package_submodule() -> None:
     print("PASS: workspace resolves deeply nested package submodules")
 
 
+def test_workspace_preserves_mixed_case_module_paths() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = root / "main.lam"
+        module = root / "PascalPackage" / "camelModule.lam"
+        _write(main, "from PascalPackage.camelModule import MixedCaseType\n")
+        _write(module, "class MixedCaseType {}\n")
+        index = WorkspaceIndex(root, stdlib_dir=root / "missing-stdlib")
+        assert index.resolve_module(main, "PascalPackage.camelModule") == module.resolve()
+        assert index.resolve_import(main, "PascalPackage.camelModule", "MixedCaseType") is not None
+        assert "PascalPackage.camelModule" in index.available_modules(main)
+    print("PASS: workspace preserves mixed-case module paths")
+
+
 def test_nested_submodule_wins_over_legacy_dotted_file() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -199,6 +213,7 @@ def main() -> int:
         test_workspace_resolves_package_init,
         test_workspace_resolves_nested_submodule,
         test_workspace_resolves_deep_package_submodule,
+        test_workspace_preserves_mixed_case_module_paths,
         test_nested_submodule_wins_over_legacy_dotted_file,
         test_legacy_dotted_file_remains_resolvable,
         test_module_search_paths_include_nested_candidates,

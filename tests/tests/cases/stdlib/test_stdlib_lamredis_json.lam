@@ -1,0 +1,24 @@
+# expect: redis-json:Ada:2
+# expect: object
+# expect: null
+
+from lamredis import Redis
+from lamjson import Json
+
+func main() {
+    redis: Redis = Redis.connect("localhost:6379", password="Password")
+    redis.delete(["lam:native:json"])
+    payload: json = {"name": "Ada", "roles": ["admin", "writer"]}
+    redis.setJson("lam:native:json", payload, 30)
+
+    restored: json = redis.getJson("lam:native:json")
+    name: str = restored.name
+    count: int = len(restored.roles)
+    print(f"redis-json:{name}:{count}")
+    print(Json.kind(restored))
+
+    redis.delete(["lam:native:json"])
+    missing: json = redis.getJson("lam:native:json")
+    print(Json.kind(missing))
+    redis.close()
+}

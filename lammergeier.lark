@@ -177,7 +177,7 @@ scoped_name: SCOPED_NAME
 // collide with the decorator ``@foo`` syntax). Giving it a higher
 // priority than NAME ensures ``@alice/lamwebp`` always tokenizes as
 // one SCOPED_NAME rather than a decorator-plus-division soup.
-SCOPED_NAME.2: /@[a-z0-9_][a-z0-9_\-]*\/[a-z_][a-z0-9_\-]*/
+SCOPED_NAME.2: /@[A-Za-z0-9_][A-Za-z0-9_\-]*\/[A-Za-z_][A-Za-z0-9_\-]*/
 
 global_stmt: "global" name ("," name)*
 nonlocal_stmt: "nonlocal" name ("," name)*

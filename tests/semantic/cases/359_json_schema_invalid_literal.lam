@@ -1,0 +1,7 @@
+# expect-error: invalid JSON string passed to `Schema.register`
+
+from lamschema import Schema
+
+func main() {
+    Schema.register("broken", "{not-schema}")
+}

@@ -1168,18 +1168,14 @@ class Request {
         }
     }
 
-    func jsonBody(self) -> any {
-        #- Parse ``self.body`` as JSON and return the result as a Lam
-           value (typically ``dict[str, any]`` or ``list[any]``).
-           Returns ``None`` on parse failure. Use ``req.body`` directly
-           if you need the raw bytes. -#
+    func jsonBody(self) -> json {
+        #- Parse ``self.body`` as a native json value. Returns JSON null
+           on an empty or malformed body; use ``req.body`` for raw text. -#
         go! {
-            if s.Body == "" { return nil }
-            var out interface{}
-            if err := json.Unmarshal([]byte(s.Body), &out); err != nil {
-                return nil
-            }
-            return out
+            if s.Body == "" { return lamJSONMust(nil) }
+            parsed, err := lamJSONParse(s.Body)
+            if err != nil { return lamJSONMust(nil) }
+            return parsed
         }
     }
 
@@ -1215,7 +1211,7 @@ class Request {
 
     func parsedBody(self) -> any {
         #- Parse ``self.body`` according to ``Content-Type``:
-             * ``application/json``                  → ``dict``/``list``
+             * ``application/json``                  → native ``json``
              * ``application/x-www-form-urlencoded`` → ``dict[str, str]``
              * ``text/*``                            → raw ``str``
              * anything else                          → raw ``str`` body
@@ -1229,11 +1225,9 @@ class Request {
             switch {
             case strings.Contains(ctLower, "application/json"):
                 if s.Body == "" { return nil }
-                var out interface{}
-                if err := json.Unmarshal([]byte(s.Body), &out); err != nil {
-                    return nil
-                }
-                return out
+                parsed, err := lamJSONParse(s.Body)
+                if err != nil { return nil }
+                return parsed
             case strings.Contains(ctLower, "application/x-www-form-urlencoded"):
                 vals, err := url.ParseQuery(s.Body)
                 if err != nil { return map[string]string{} }
@@ -1774,8 +1768,8 @@ class Response {
         return self
     }
 
-    func json(self, obj: any) -> Response {
-        #- Marshal ``obj`` with Go's ``encoding/json`` and send it. -#
+    func json(self, obj: json) -> Response {
+        #- Marshal a native json value and send it with the JSON content type. -#
         go! {
             b, err := json.Marshal(obj)
             if err != nil {

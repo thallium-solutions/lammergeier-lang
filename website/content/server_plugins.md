@@ -575,6 +575,7 @@ Plugins can teach the server about vendor media types:
 
 ```lammergeier
 from lamstrings import Strings
+from lamjson import Json
 
 func lineProtocol(srv: Server) {
     func parse(body: str) -> any {
@@ -584,7 +585,7 @@ func lineProtocol(srv: Server) {
 }
 
 func handler(req: Request, res: Response) {
-    res.json(req.parsedBody())
+    res.json(Json.fromValue(req.parsedBody()))
 }
 
 lineProtocol(srv)
@@ -807,8 +808,7 @@ func validateUserCreate(req: Request, res: Response) {
     errs: list[str] = Schema.errorsByKey("user.create", req.body)
     if len(errs) > 0 {
         res.setStatus(400)
-        body: dict[str, any] = {}
-        body["errors"] = errs
+        body: json = {"errors": errs}
         res.json(body)
     }
 }

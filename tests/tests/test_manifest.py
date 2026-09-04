@@ -165,18 +165,41 @@ def test_bad_version_strings_rejected() -> None:
     print("PASS: bad versions rejected")
 
 
+def test_module_name_case_styles_accepted() -> None:
+    """Library, dependency, and replacement names preserve the user's
+    chosen ASCII casing instead of forcing snake_case."""
+    for name in ["snake_case", "camelCase", "PascalCase", "SCREAMING_SNAKE_CASE",
+                 "@MyTeam/camelCase", "@my_team/Pascal-Lib"]:
+        mf = _from_text(f'[library]\nname = "{name}"\nversion = "1.0.0"\n')
+        assert mf.name == name
+    mf = _from_text("""
+        [library]
+        name = "MyLibrary"
+        version = "1.0.0"
+
+        [dependencies]
+        camelCaseDep = "^1.0"
+        "@MyTeam/PascalDep" = "^2.0"
+
+        [replace]
+        PascalReplacement = { path = "../replacement" }
+    """)
+    assert set(mf.dependencies) == {"camelCaseDep", "@MyTeam/PascalDep"}
+    assert set(mf.replace) == {"PascalReplacement"}
+    print("PASS: module names preserve snake/camel/Pascal/uppercase styles")
+
+
 def test_bad_module_names_rejected() -> None:
-    """Module names follow the same lexical shape the grammar uses
-    for imports — plain ``[a-z_][a-z0-9_]*`` or scoped
-    ``@scope/name``. UPPERCASE, dotted, and empty names are out."""
-    for bad in ["LAMWEBP", "lam.webp", "lam-webp", "@/lamwebp",
-                "@alice/", "/lamwebp", "@alice/lamWEBP"]:
+    """Names remain path-safe Lam identifiers: dots, spaces, traversal,
+    plain-name hyphens, missing scoped segments, and leading digits are out."""
+    for bad in ["1library", "lam.webp", "lam-webp", "has space", "../escape",
+                "@/lamwebp", "@alice/", "/lamwebp", "@Team/1Library"]:
         try:
             _from_text(f'[library]\nname = "{bad}"\nversion = "1.0.0"\n')
         except ManifestError:
             continue
         raise AssertionError(f"expected rejection of name={bad!r}")
-    print("PASS: bad names rejected")
+    print("PASS: unsafe module names rejected")
 
 
 def test_unknown_top_level_section_warns_only() -> None:
@@ -216,8 +239,11 @@ def test_is_valid_helpers() -> None:
     """The ``is_valid_*`` helpers are also exposed for the install
     CLI's spec parser, so verify them directly here."""
     assert is_valid_module_name("lamwebp")
-    assert is_valid_module_name("@alice/lamwebp")
-    assert not is_valid_module_name("Lamwebp")
+    assert is_valid_module_name("LamWebP")
+    assert is_valid_module_name("camelCase")
+    assert is_valid_module_name("SCREAMING_SNAKE_CASE")
+    assert is_valid_module_name("@Alice/LamWebP")
+    assert not is_valid_module_name("1Lamwebp")
     assert not is_valid_module_name("@/lamwebp")
     assert is_valid_semver("1.0.0")
     assert is_valid_semver("1.0.0-rc.1")
@@ -360,6 +386,7 @@ def main() -> int:
         test_load_from_file,
         test_missing_required_keys_fail,
         test_bad_version_strings_rejected,
+        test_module_name_case_styles_accepted,
         test_bad_module_names_rejected,
         test_unknown_top_level_section_warns_only,
         test_satisfies_basic,

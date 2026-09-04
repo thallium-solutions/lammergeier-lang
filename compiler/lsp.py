@@ -1882,7 +1882,7 @@ class LspServer:
         # 5) Keywords for convenience.
         for kw in ("if", "elif", "else", "for", "while", "func", "class",
                    "return", "import", "from", "static", "private", "go!",
-                   "true", "false", "None", "print", "len", "range"):
+                   "true", "false", "None", "json", "print", "len", "range"):
             if kw in seen:
                 continue
             items.append({"label": kw, "kind": 14})  # 14 == Keyword

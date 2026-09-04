@@ -191,24 +191,24 @@ class Schema {
     }
 
     #- Validate an already-decoded value (e.g. the result of
-       ``Json.parse`` or ``req.parsedBody()``) against an inline
+       ``Json.decode`` or ``req.jsonBody()``) against an inline
        schema, avoiding the JSON round-trip. -#
-    static func validateValue(schemaText: str, value: any) -> bool {
+    static func validateValue(schemaText: str, value: json) -> bool {
         ok: bool = false
         go! {
             if s, err := lamSchemaCompileText(schemaText); err == nil {
-                ok = len(lamSchemaValidateAny(s, value)) == 0
+                ok = len(lamSchemaValidateAny(s, lamJSONRaw(value))) == 0
             }
         }
         return ok
     }
 
     #- Same as ``validateValue`` but resolves the schema by key. -#
-    static func validateValueByKey(key: str, value: any) -> bool {
+    static func validateValueByKey(key: str, value: json) -> bool {
         ok: bool = false
         go! {
             if s, err := lamSchemaResolveKey(key); err == nil {
-                ok = len(lamSchemaValidateAny(s, value)) == 0
+                ok = len(lamSchemaValidateAny(s, lamJSONRaw(value))) == 0
             }
         }
         return ok

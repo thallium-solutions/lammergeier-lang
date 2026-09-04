@@ -479,6 +479,22 @@ def run_tests() -> int:
         except (AssertionError, StopIteration) as e:
             failures.append(f"semantic error diagnostics: {e}")
 
+        json_error_uri = "file:///tmp/lsp_native_json_error.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": json_error_uri, "languageId": "lammergeier", "version": 1,
+                "text": "func main() {\n    payload: json = {1: \"bad\"}\n}\n",
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=4)
+        try:
+            diags = notes[0].get("params", {}).get("diagnostics", []) if notes else []
+            diagnostic = next(diag for diag in diags if "json object keys must be strings" in diag.get("message", ""))
+            assert_eq("native-json severity", diagnostic.get("severity"), 1)
+            print("PASS: native json diagnostics publish as editor errors")
+        except (AssertionError, StopIteration) as e:
+            failures.append(f"native json diagnostics: {e}")
+
         # ── didOpen valid dict destructuring syntax ─────────
         dict_uri = "file:///tmp/lsp_dict_destructure.lam"
         dict_doc = (PROJECT_ROOT / "tests" / "tests" / "cases" / "test_dict_destructure.lam").read_text(encoding="utf-8")

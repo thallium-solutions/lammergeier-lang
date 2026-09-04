@@ -41,6 +41,8 @@ transpiler, so it's cheap to run on every build.
 
 from __future__ import annotations
 
+import ast
+import json as _json
 import os
 import re
 import sys
@@ -138,7 +140,7 @@ BUILTIN_TYPES: Set[str] = {
     "None", "any", "bool", "str", "string", "bytes", "int", "int8",
     "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32",
     "uint64", "float", "float32", "float64", "byte", "rune",
-    "list", "dict", "set", "tuple", "func", "Result", "Option", "File",
+    "list", "dict", "set", "tuple", "json", "func", "Result", "Option", "File",
     "Error",
 }
 
@@ -1154,6 +1156,7 @@ class SemanticChecker:
         try:
             self._check_method_receiver_declaration(node, suite_node)
             self._check_operator_method_signature(node)
+            self._check_to_json_method_signature(node)
             self._check_type_annotations(node)
             if suite_node is not None:
                 self._walk_suite_stmts(self._suite_stmts(suite_node))
@@ -1272,6 +1275,25 @@ class SemanticChecker:
                     "operator",
                     f"operator method `{class_name}.{method}` must return `bool`, got `{return_type}`",
                 )
+
+    def _check_to_json_method_signature(self, node: Tree) -> None:
+        if not self._current_class_stack or self._funcdef_name(node) != "toJson":
+            return
+        class_name = self._current_class_stack[-1]
+        if self._funcdef_is_static(node):
+            self._error(node, "json", f"`{class_name}.toJson` must be an instance method")
+            return
+        params = self._param_names(self._funcdef_params(node))
+        if params != ["self"]:
+            self._error(
+                node,
+                "json",
+                f"`{class_name}.toJson` must declare only `self`, got {len(params)} parameter{'s' if len(params) != 1 else ''}",
+            )
+        return_type = self._funcdef_return_type_text(node)
+        if return_type != "json":
+            rendered = return_type or "None"
+            self._error(node, "json", f"`{class_name}.toJson` must return `json`, got `{rendered}`")
 
     def _suite_uses_self(self, node) -> bool:
         if not isinstance(node, Tree):
@@ -1931,6 +1953,7 @@ class SemanticChecker:
             self._check_call_shape(node)
             self._check_generic_type_args(node)
             self._check_builtin_cast_call(node)
+            self._check_json_literal_call(node)
             self._check_call_interface_args(node)
             self._check_list_method_arg_types(node)
 
@@ -2702,12 +2725,17 @@ class SemanticChecker:
             value_node = self._assign_value(node)
             if value_node is None:
                 return
+            target_nodes = [child for child in node.children[:-1] if isinstance(child, Tree)]
+            for target_node in target_nodes:
+                expected = self._assignment_target_type(target_node)
+                if isinstance(expected, NamedType) and expected.name == "json":
+                    self._check_json_expr(value_node, f"cannot assign to json target `{self._assignment_target_display(target_node)}`")
             actual = self._expr_simple_type(value_node)
             if actual is None or self._is_unknown_open_assignment_type(actual):
                 return
-            for target_node in (child for child in node.children[:-1] if isinstance(child, Tree)):
+            for target_node in target_nodes:
                 expected = self._assignment_target_type(target_node)
-                if expected is None:
+                if expected is None or (isinstance(expected, NamedType) and expected.name == "json"):
                     continue
                 if self._is_unknown_open_assignment_type(expected):
                     continue
@@ -2729,6 +2757,10 @@ class SemanticChecker:
         if type_node is None or value_node is None:
             return
         expected = parse_type(type_node)
+        if isinstance(expected, NamedType) and expected.name == "json":
+            name = next((target for target in self._assign_targets(node) if target), "<target>")
+            self._check_json_expr(value_node, f"invalid json value for variable `{name}`")
+            return
         if self._check_annotated_container_literal(node, expected, value_node):
             return
         actual = self._expr_simple_type(value_node)
@@ -2853,6 +2885,60 @@ class SemanticChecker:
     @staticmethod
     def _is_unknown_type(type_: Type) -> bool:
         return isinstance(type_, NamedType) and type_.name in {"any", "object"}
+
+    def _json_expr_issue(self, node: Tree) -> tuple[Tree, str] | None:
+        if not isinstance(node, Tree):
+            return None
+        if node.data == "dict":
+            for child in node.children:
+                if not isinstance(child, Tree) or child.data != "key_value" or len(child.children) < 2:
+                    return node, "json objects do not support dictionary expansion"
+                key, value = child.children[0], child.children[1]
+                key_type = self._expr_simple_type(key) if isinstance(key, Tree) else None
+                if not (isinstance(key_type, NamedType) and key_type.name in {"str", "string"}):
+                    rendered = render_type(key_type) if key_type is not None else "unknown"
+                    return key if isinstance(key, Tree) else child, f"json object keys must be strings, got `{rendered}`"
+                if isinstance(value, Tree):
+                    issue = self._json_expr_issue(value)
+                    if issue is not None:
+                        return issue
+            return None
+        if node.data == "list":
+            for child in node.children:
+                if isinstance(child, Tree):
+                    issue = self._json_expr_issue(child)
+                    if issue is not None:
+                        return issue
+            return None
+        if node.data in {"tuple", "set", "tuple_comprehension", "set_comprehension"}:
+            return node, "json arrays must use list syntax, not tuple or set syntax"
+        if node.data == "test" and len(node.children) == 3:
+            for child in (node.children[0], node.children[2]):
+                if isinstance(child, Tree):
+                    issue = self._json_expr_issue(child)
+                    if issue is not None:
+                        return issue
+            return None
+        actual = self._expr_simple_type(node)
+        if actual is None and node.data in {"getattr", "getattr_safe"}:
+            actual = self._member_target_type(node)
+        if actual is not None and is_assignable(NamedType("json"), actual):
+            return None
+        if isinstance(actual, NamedType) and actual.name in self._class_method_shapes:
+            shape = self._class_method_shapes.get(actual.name, {}).get("toJson")
+            if shape is not None and not shape.param_types and (shape.return_type_text or shape.return_type) == "json":
+                return None
+            return node, f"value of type `{actual.name}` is not JSON-compatible; implement `func toJson(self) -> json`"
+        rendered = render_type(actual) if actual is not None else "unknown"
+        return node, f"value of type `{rendered}` is not JSON-compatible; convert it explicitly with `Json.fromValue`"
+
+    def _check_json_expr(self, node: Tree, context: str) -> bool:
+        issue = self._json_expr_issue(node)
+        if issue is None:
+            return True
+        bad_node, message = issue
+        self._error(bad_node, "json", f"{context}: {message}")
+        return False
 
     def _destructuring_target(self, node: Tree) -> Tree | None:
         if node.data == "assign" and node.children:
@@ -3005,6 +3091,10 @@ class SemanticChecker:
         if type_node is None or value_node is None:
             return
         expected = parse_type(type_node)
+        if isinstance(expected, NamedType) and expected.name == "json":
+            name = self._const_target_name(node) or "<target>"
+            self._check_json_expr(value_node, f"invalid json value for constant `{name}`")
+            return
         if self._check_annotated_container_literal(node, expected, value_node, binding_kind="constant"):
             return
         actual = self._expr_simple_type(value_node)
@@ -3085,6 +3175,8 @@ class SemanticChecker:
         *,
         binding_kind: str,
     ) -> bool:
+        if isinstance(expected, NamedType) and expected.name == "json":
+            return not self._check_json_expr(item, f"invalid {label} for {binding_kind}")
         actual = self._expr_simple_type(item)
         if actual is None:
             return False
@@ -3852,6 +3944,20 @@ class SemanticChecker:
         target: str,
         sigs: list[_CallableSig],
     ) -> None:
+        json_attempts: list[list[tuple[str, Tree, tuple[Tree, str]]]] = []
+        for sig in sigs:
+            issues: list[tuple[str, Tree, tuple[Tree, str]]] = []
+            for param_name, expected_name, arg_node in self._call_arg_bindings(call, sig):
+                if expected_name != "json":
+                    continue
+                issue = self._json_expr_issue(arg_node)
+                if issue is not None:
+                    issues.append((param_name, arg_node, issue))
+            json_attempts.append(issues)
+        if json_attempts and all(issues for issues in json_attempts):
+            param_name, _arg_node, (bad_node, message) = json_attempts[0][0]
+            self._error(bad_node, "json", f"argument `{param_name}` to `{target}`: {message}")
+            return
         attempts = [self._call_type_mismatches(call, sig) for sig in sigs]
         if any(not mismatches for mismatches in attempts):
             return
@@ -3864,6 +3970,29 @@ class SemanticChecker:
             "type",
             f"argument `{param_name}` to `{target}` has type `{render_type(actual)}`, expected `{render_type(expected)}`",
         )
+
+    def _check_json_literal_call(self, call: Tree) -> None:
+        target, _sigs = self._call_target_sigs(call)
+        arg_indexes = {
+            "Json.decode": (0,),
+            "Json.decodeInto": (0,),
+            "Schema.register": (1,),
+            "Server.addSchema": (0,),
+        }.get(target, ())
+        if not arg_indexes:
+            return
+        args = self._call_positional_args(call)
+        for index in arg_indexes:
+            if index >= len(args) or not isinstance(args[index], Tree) or args[index].data != "string":
+                continue
+            token = next((child for child in args[index].children if isinstance(child, Token)), None)
+            if token is None:
+                continue
+            try:
+                text = ast.literal_eval(str(token))
+                _json.loads(text)
+            except Exception as exc:
+                self._error(args[index], "json", f"invalid JSON string passed to `{target}`: {exc}")
 
     def _check_list_method_arg_types(self, call: Tree) -> None:
         callee = call.children[0] if isinstance(call, Tree) and call.children else None
@@ -3931,7 +4060,7 @@ class SemanticChecker:
         generic_mapping = self._generic_type_mapping(call, sig)
         out: list[tuple[str, Type, Type, Tree]] = []
         for param_name, expected_name, arg_node in self._call_arg_bindings(call, sig):
-            if expected_name in {"", "any", "object"}:
+            if expected_name in {"", "any", "object", "json"}:
                 continue
             actual = self._expr_simple_type(arg_node)
             if actual is None:
@@ -5156,6 +5285,12 @@ class SemanticChecker:
                         f"`return` in `{name}` must return a value because the function declares a return type",
                     )
                     continue
+                value_node = self._return_value(ret)
+                if (isinstance(expected_model, NamedType)
+                        and expected_model.name == "json"
+                        and isinstance(value_node, Tree)):
+                    self._check_json_expr(value_node, f"invalid json return from `{name}`")
+                    continue
                 actual_model = self._return_value_type(ret)
                 actual_type = render_type(actual_model) if actual_model is not None else ""
                 expected_name = render_type(expected_model) if expected_model is not None else expected_type
@@ -5399,6 +5534,10 @@ class SemanticChecker:
             return NamedType("bool")
         if node.data == "getitem":
             return self._getitem_result_type(node)
+        if node.data in {"getattr", "getattr_safe"} and node.children:
+            receiver_type = self._expr_simple_type(node.children[0])
+            if isinstance(receiver_type, NamedType) and receiver_type.name == "json":
+                return NamedType("json")
         if node.data == "propagate":
             return self._propagated_payload_type(node)
         if node.data == "funccall":
@@ -5746,6 +5885,17 @@ class SemanticChecker:
         index_type = self._expr_simple_type(index)
         if index_type is None:
             return
+        if isinstance(receiver_type, NamedType) and receiver_type.name == "json":
+            if isinstance(index_type, NamedType) and (
+                index_type.name in {"str", "string"} or index_type.name in INTEGER_CAST_FUNCS
+            ):
+                return
+            self._error(
+                index,
+                "json",
+                f"json index must be `str` for objects or `int` for arrays, got `{render_type(index_type)}`",
+            )
+            return
         expected = self._getitem_index_type(receiver_type)
         if expected is None:
             if self._getitem_receiver_check_is_conclusive(receiver_type):
@@ -6019,6 +6169,8 @@ class SemanticChecker:
             return None
         if index.data == "slice":
             return receiver_type if self._is_sliceable_type(receiver_type) else None
+        if isinstance(receiver_type, NamedType) and receiver_type.name == "json":
+            return NamedType("json")
         if isinstance(receiver_type, ListType):
             return receiver_type.item
         if isinstance(receiver_type, DictType):

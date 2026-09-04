@@ -10,6 +10,7 @@
 # expect: head-status: 200
 # expect: post-status: 200
 # expect: post-method-path: POST /things {"name":"x"}
+# expect: native-post-method-path: POST /native {"name":"native"}
 # expect: put-status: 200
 # expect: put-method-path: PUT /things/1 {"name":"y"}
 # expect: patch-status: 200
@@ -95,6 +96,14 @@ func main() {
         if i := strings.Index(body3, "|auth="); i >= 0 { mp3 = body3[:i] }
     }
     print(f"post-method-path: {mp3}")
+
+    nativeResponse: HttpResponse = api.postJsonValue("/native", {"name": "native"})
+    nativeBody: str = nativeResponse.body
+    nativeMethodPath: str = ""
+    go! {
+        if i := strings.Index(nativeBody, "|auth="); i >= 0 { nativeMethodPath = nativeBody[:i] }
+    }
+    print(f"native-post-method-path: {nativeMethodPath}")
 
     # ── PUT JSON
     r4: HttpResponse = api.putJson("/things/1", "{\"name\":\"y\"}")

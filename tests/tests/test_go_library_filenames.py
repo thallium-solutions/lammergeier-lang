@@ -64,6 +64,8 @@ def test_library_filename_never_uses_go_test_suffix() -> None:
     assert _library_go_filename("test") == "lib_test_lam.go"
     assert _library_go_filename("unit_test") == "lib_unit_test_lam.go"
     assert _library_go_filename("lamwebp.codec") == "lib_lamwebp__codec_lam.go"
+    assert _library_go_filename("PascalCaseLib") == "lib_PascalCaseLib_lam.go"
+    assert _library_go_filename("camelCase.modName") == "lib_camelCase__modName_lam.go"
     assert not _library_go_filename("test").endswith("_test.go")
     assert not _library_go_filename("unit_test").endswith("_test.go")
     print("PASS: bundled library filenames avoid Go's *_test.go suffix")

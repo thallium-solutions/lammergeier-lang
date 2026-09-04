@@ -67,18 +67,21 @@ def test_parser_accepts_scoped_import() -> None:
     print("PASS: parser accepts scoped import")
 
 
-def test_parser_rejects_uppercase_scope() -> None:
-    """SCOPED_NAME deliberately enforces lowercase. ``@Alice/foo``
-    must NOT lex as a single SCOPED_NAME (so the parser fails)."""
+def test_parser_accepts_case_preserving_scope() -> None:
+    """Scoped package tokens preserve camelCase/PascalCase in both
+    the scope and package segment."""
     from compiler.lammergeier import auto_semicolons, create_parser
+    from lark import Tree
     parser = create_parser()
-    pre = auto_semicolons("from @Alice/foo import x\n")
-    try:
-        parser.parse(pre + "\n")
-    except Exception:
-        print("PASS: parser rejects uppercase scope")
-        return
-    raise AssertionError("expected parser failure for @Alice/foo")
+    pre = auto_semicolons("from @AliceTeam/LamWebP import Decoder\n")
+    tree = parser.parse(pre + "\n")
+    scoped = [
+        str(node.children[0])
+        for node in tree.iter_subtrees_topdown()
+        if isinstance(node, Tree) and node.data == "scoped_name"
+    ]
+    assert scoped == ["@AliceTeam/LamWebP"], scoped
+    print("PASS: parser preserves scoped package casing")
 
 
 # ── Resolution + compile end-to-end ─────────────────────────
@@ -187,6 +190,30 @@ def test_scoped_lib_alongside_plain_lib() -> None:
     print("PASS: scoped + plain libs coexist")
 
 
+def test_mixed_case_scoped_and_file_modules_run() -> None:
+    """Manifest/import casing is exact and case-preserving for both a
+    scoped package directory and a plain PascalCase ``.lam`` filename."""
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        ext = d / "extlibs"
+        _write_lib(ext, "@AliceTeam/LamHello",
+                   "func scopedTag() -> str { return 'Scoped' }\n")
+        plain = ext / "PascalCaseLib.lam"
+        plain.write_text(
+            "func plainTag() -> str { return 'Plain' }\n",
+            encoding="utf-8",
+        )
+        main = _write_main(d, (
+            "from @AliceTeam/LamHello import scopedTag\n"
+            "from PascalCaseLib import plainTag\n"
+            "func main() { print(scopedTag() + plainTag()) }\n"
+        ))
+        proc = _compile(main, ext)
+        assert proc.returncode == 0, f"compile failed: {proc.stdout}\n{proc.stderr}"
+        assert proc.stdout.strip() == "ScopedPlain", proc.stdout
+    print("PASS: mixed-case scoped and file modules compile + run")
+
+
 def test_missing_scoped_lib_fails_when_used() -> None:
     """A scoped import that names a non-existent library must
     produce a build failure as soon as the imported symbol is
@@ -217,10 +244,11 @@ def test_missing_scoped_lib_fails_when_used() -> None:
 def main() -> int:
     tests = [
         test_parser_accepts_scoped_import,
-        test_parser_rejects_uppercase_scope,
+        test_parser_accepts_case_preserving_scope,
         test_scoped_lib_resolves_and_runs,
         test_two_scoped_libs_in_same_program,
         test_scoped_lib_alongside_plain_lib,
+        test_mixed_case_scoped_and_file_modules_run,
         test_missing_scoped_lib_fails_when_used,
     ]
     failures = 0

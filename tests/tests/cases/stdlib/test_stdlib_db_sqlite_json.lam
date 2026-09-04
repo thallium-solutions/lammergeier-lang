@@ -1,0 +1,25 @@
+# expect: Ada:2
+# expect: true
+# expect: object
+
+from lamdb import Db
+from lamjson import Json
+
+func main() {
+    db: Db = Db.connect("sqlite", ":memory:")
+    db.exec("CREATE TABLE records (id INTEGER PRIMARY KEY, payload TEXT)")
+    payload: json = {"name": "Ada", "roles": ["admin", "writer"], "active": true}
+    db.exec("INSERT INTO records (id, payload) VALUES (?, ?)", [1, payload])
+
+    rows: list[dict[str, any]] = db.queryJson("SELECT payload FROM records WHERE id = ?", ["payload"], [1])
+    restored: json = Json.fromValue(rows[0]["payload"])
+    name: str = restored.name
+    roleCount: int = len(restored.roles)
+    active: bool = restored.active
+    print(f"{name}:{roleCount}")
+    print(active)
+
+    scalar: json = db.scalarJson("SELECT payload FROM records WHERE id = ?", [1])
+    print(Json.kind(scalar))
+    db.close()
+}

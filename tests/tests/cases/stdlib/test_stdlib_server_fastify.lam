@@ -36,6 +36,7 @@
 
 from lamserver import Server, Request, Response, HttpError
 from lamserver_plugins import requestId
+from lamjson import Json
 
 go! {
     import (
@@ -96,7 +97,7 @@ func decoratorRoute(req: Request, res: Response) {
     # the server-level decorator is reachable via req.dec via the
     # threaded RequestDecorators map; for the server-level dec we
     # also inject it into RequestDecorators below for ergonomics.
-    res.json(out)
+    res.json(Json.fromDict(out))
 }
 
 func httpErrRoute(req: Request, res: Response) {

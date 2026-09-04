@@ -95,9 +95,39 @@ def type_to_lam_name(type_: Type) -> str:
     return render_type(type_)
 
 
+def _is_json_assignable_type(type_: Type) -> bool:
+    if isinstance(type_, NamedType):
+        return type_.name in {
+            "json", "None", "bool", "str", "string",
+            "int", "int8", "int16", "int32", "int64",
+            "uint", "uint8", "uint16", "uint32", "uint64",
+            "float", "float32", "float64", "byte", "rune",
+        }
+    if isinstance(type_, ListType):
+        return _is_json_assignable_type(type_.item)
+    if isinstance(type_, DictType):
+        return (
+            isinstance(type_.key, NamedType)
+            and type_.key.name in {"str", "string"}
+            and _is_json_assignable_type(type_.value)
+        )
+    if isinstance(type_, UnionType):
+        return all(_is_json_assignable_type(option) for option in type_.options)
+    return False
+
+
 def is_assignable(expected: Type, actual: Type) -> bool:
     """Return True when a value of ``actual`` can be assigned to ``expected``."""
 
+    if isinstance(expected, NamedType) and expected.name == "json":
+        return _is_json_assignable_type(actual)
+    if isinstance(actual, NamedType) and actual.name == "json" and isinstance(expected, NamedType):
+        return expected.name in {
+            "json", "any", "object", "None", "bool", "str", "string",
+            "int", "int8", "int16", "int32", "int64",
+            "uint", "uint8", "uint16", "uint32", "uint64",
+            "float", "float32", "float64", "byte", "rune",
+        }
     if isinstance(expected, NamedType) and expected.name in {"any", "object"}:
         return True
     if isinstance(actual, NamedType) and actual.name in {"any", "object"}:

@@ -1,0 +1,6 @@
+# expect-error: json object keys must be strings, got `int`
+
+func main() {
+    payload: json = {1: "invalid"}
+    print(payload)
+}

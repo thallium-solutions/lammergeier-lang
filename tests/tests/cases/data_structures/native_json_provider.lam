@@ -1,0 +1,5 @@
+func makePayload() -> json {
+    return {"source": "library", "values": [3, 5, 8]}
+}
+
+func main() { pass }

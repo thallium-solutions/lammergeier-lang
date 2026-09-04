@@ -142,17 +142,30 @@ def test_init_default_scaffold_runs() -> None:
     print("PASS: init default scaffold builds + runs")
 
 
+def test_init_default_preserves_directory_case() -> None:
+    """The inferred project name preserves the directory's casing while
+    replacing punctuation that cannot appear in a module identifier."""
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = Path(tmp) / "My-CamelProject"
+        proj.mkdir()
+        r = _run("init", "-q", cwd=proj)
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        text = (proj / "lamlib.toml").read_text()
+        assert 'name    = "My_CamelProject"' in text, text
+    print("PASS: init preserves inferred directory casing")
+
+
 def test_init_custom_name_version_scope() -> None:
     """``--name``/``--version``/``--scope`` flags flow into the
     manifest. The scope must start with ``@``; a missing leading
     ``@`` is rejected at the CLI before any file is written."""
     with tempfile.TemporaryDirectory() as tmp:
         proj = Path(tmp)
-        r = _run("init", "--name", "widget", "--version", "0.5.1",
-                 "--scope", "@alice", "-q", cwd=proj)
+        r = _run("init", "--name", "camelCaseWidget", "--version", "0.5.1",
+                 "--scope", "@AliceTeam", "-q", cwd=proj)
         assert r.returncode == 0, (r.returncode, r.stderr)
         text = (proj / "lamlib.toml").read_text()
-        assert 'name    = "@alice/widget"' in text, text
+        assert 'name    = "@AliceTeam/camelCaseWidget"' in text, text
         assert 'version = "0.5.1"' in text, text
     print("PASS: init honours --name / --version / --scope")
 
@@ -163,11 +176,11 @@ def test_init_lib_writes_named_module() -> None:
     cheap smoke-test entry point."""
     with tempfile.TemporaryDirectory() as tmp:
         proj = Path(tmp)
-        r = _run("init", "--name", "lamutil", "--lib", "-q", cwd=proj)
+        r = _run("init", "--name", "PascalCaseLib", "--lib", "-q", cwd=proj)
         assert r.returncode == 0, (r.returncode, r.stderr)
-        assert (proj / "lamutil.lam").exists()
+        assert (proj / "PascalCaseLib.lam").exists()
         assert not (proj / "main.lam").exists()
-        body = (proj / "lamutil.lam").read_text()
+        body = (proj / "PascalCaseLib.lam").read_text()
         assert "func tag()" in body, body
     print("PASS: init --lib writes <name>.lam, no main.lam")
 
@@ -211,10 +224,49 @@ def test_init_rejects_invalid_name_and_version() -> None:
         assert r.returncode == 2, (r.returncode, r.stderr)
         assert "must look like '@alice'" in r.stderr, r.stderr
 
+        r = _run("init", "--name", "fine", "--scope", "@bad!scope",
+                 cwd=proj)
+        assert r.returncode == 2, (r.returncode, r.stderr)
+        assert "unsupported characters" in r.stderr, r.stderr
+
         # No files should have been written by any of the failed
         # invocations.
         assert not (proj / "lamlib.toml").exists()
     print("PASS: init validates --name / --version / --scope")
+
+
+def test_registry_install_preserves_library_case() -> None:
+    """Publish, resolve, install, and import a PascalCase package without
+    normalizing its registry key or installation directory."""
+    with tempfile.TemporaryDirectory() as tmp, registry() as url:
+        root = Path(tmp)
+        published = _publish(
+            url,
+            _make_lib(root, "PascalCaseRegistry", "1.0.0",
+                      'func registryTag() -> str { return "MixedCase" }'),
+        )
+        assert published.returncode == 0, (published.returncode, published.stderr)
+        proj = root / "project"
+        proj.mkdir()
+        (proj / "lamlib.toml").write_text(textwrap.dedent("""
+            [library]
+            name = "CaseAwareApp"
+            version = "0.1.0"
+
+            [dependencies]
+            PascalCaseRegistry = "^1.0"
+        """).lstrip(), encoding="utf-8")
+        (proj / "main.lam").write_text(textwrap.dedent("""
+            from PascalCaseRegistry import registryTag
+            func main() { print(registryTag()) }
+        """).lstrip(), encoding="utf-8")
+        installed = _run("install", "--registry", url, "-q", cwd=proj)
+        assert installed.returncode == 0, (installed.returncode, installed.stderr)
+        assert (proj / "extlibs" / "PascalCaseRegistry" / "lamlib.toml").exists()
+        run = _run(str(proj / "main.lam"), "--run", cwd=proj)
+        assert run.returncode == 0, (run.returncode, run.stderr)
+        assert run.stdout.strip() == "MixedCase", run.stdout
+    print("PASS: registry publish/install/import preserves library casing")
 
 
 # ── lamc list / tree / why ──────────────────────────────────
@@ -332,10 +384,12 @@ def test_introspection_fails_without_lockfile() -> None:
 def main() -> int:
     tests = [
         test_init_default_scaffold_runs,
+        test_init_default_preserves_directory_case,
         test_init_custom_name_version_scope,
         test_init_lib_writes_named_module,
         test_init_refuses_overwrite_without_force,
         test_init_rejects_invalid_name_and_version,
+        test_registry_install_preserves_library_case,
         test_list_tree_why_render_correctly,
         test_why_rejects_unknown_pin,
         test_introspection_fails_without_lockfile,

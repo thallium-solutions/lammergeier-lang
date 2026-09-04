@@ -445,7 +445,7 @@ def test_go_pins_materialise_in_synthesised_go_mod() -> None:
         assert ok.returncode == 0, ok.stderr
 
         # Step 1 — lockfile lookup.
-        pins = _collect_go_pins(proj)
+        pins = _collect_go_pins(proj, stdlib_modules=set())
         assert pins == {
             "github.com/foo/bar": "v1.2.3",
             "gopkg.in/yaml.v2":   "v2.4.0",
