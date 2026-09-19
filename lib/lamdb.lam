@@ -1501,7 +1501,7 @@ class QueryBuilder {
            predicates. Pair with a transaction for a race-free
            upsert. -#
         for k, v in lookup {
-            self.whereEq(k, v)
+            _ = self.whereEq(k, v)
         }
         existing: dict[str, any] = self.first()
         if len(existing) > 0 {
@@ -1517,7 +1517,7 @@ class QueryBuilder {
         # Reset conditions so insert() doesn't try to honour them.
         cleared: list[any] = []
         self.conds = cleared
-        self.insert(record)
+        _ = self.insert(record)
         return record
     }
 
@@ -1526,11 +1526,11 @@ class QueryBuilder {
            ``values`` via UPDATE; otherwise INSERT ``lookup`` ⊕
            ``values``. Returns the resulting row. -#
         for k, v in lookup {
-            self.whereEq(k, v)
+            _ = self.whereEq(k, v)
         }
         existing: dict[str, any] = self.first()
         if len(existing) > 0 {
-            self.update(values)
+            _ = self.update(values)
             for k, v in values {
                 existing[k] = v
             }
@@ -1545,7 +1545,7 @@ class QueryBuilder {
         }
         cleared: list[any] = []
         self.conds = cleared
-        self.insert(record)
+        _ = self.insert(record)
         return record
     }
 
@@ -1564,7 +1564,7 @@ class QueryBuilder {
             }
         }
         empty: list[any] = []
-        self._runExec(sqlText, empty)
+        _ = self._runExec(sqlText, empty)
     }
 }
 

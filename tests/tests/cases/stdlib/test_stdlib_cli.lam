@@ -7,10 +7,22 @@
 # expect: PASS flag default
 # expect: PASS int default
 # expect: PASS positional empty
-# expect: 8 passed, 0 failed, 8 total
+# expect: PASS argCount populated
+# expect: PASS arg populated
+# expect: PASS negative arg out-of-range
+# expect: PASS boolean flag populated
+# expect: PASS equals flag populated
+# expect: PASS two-token flag populated
+# expect: PASS positional populated
+# expect: PASS args snapshot populated
+# expect: 16 passed, 0 failed, 16 total
 
 from lamcli import Cli
 from lamtest import Test
+
+go! {
+    import "os"
+}
 
 func main() {
     Test.assertEqual(Cli.argCount(), 0, "argCount zero")
@@ -22,5 +34,21 @@ func main() {
     Test.assertEqual(Cli.getFlag("missing", "fallback"), "fallback", "flag default")
     Test.assertEqual(Cli.getInt("missing", 42), 42, "int default")
     Test.assertLen(Cli.positional(), 0, "positional empty")
+
+    go! {
+        os.Args = []string{
+            "lam-test", "--verbose", "--port=8080", "input.txt",
+            "--output", "result.txt", "tail.txt",
+        }
+    }
+    Test.assertEqual(Cli.argCount(), 6, "argCount populated")
+    Test.assertEqual(Cli.arg(0), "--verbose", "arg populated")
+    Test.assertEqual(Cli.arg(-1), "", "negative arg out-of-range")
+    Test.assertTrue(Cli.hasFlag("verbose"), "boolean flag populated")
+    Test.assertEqual(Cli.getFlag("port"), "8080", "equals flag populated")
+    Test.assertEqual(Cli.getFlag("output"), "result.txt", "two-token flag populated")
+    expectedPositionals: list[str] = ["input.txt", "tail.txt"]
+    Test.assertEqual(Cli.positional(), expectedPositionals, "positional populated")
+    Test.assertLen(Cli.args(), 6, "args snapshot populated")
     Test.summary()
 }

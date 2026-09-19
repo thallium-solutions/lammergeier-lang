@@ -1,25 +1,152 @@
-# Test: Sort standard library
-# expect: [1 2 3 4 5]
-# expect: [5 4 3 2 1]
-# expect: true
-# expect: [1.2 2.5 3.1]
-# expect: [3 2 1]
-# expect: sort_ok
+# Test: generic Sort standard library API
+# expect: PASS 1 generic int sort defaults ascending
+# expect: PASS 2 natural sort supports descending direction
+# expect: PASS 3 generic natural sort supports strings
+# expect: PASS 4 generic natural sort supports floats
+# expect: PASS 5 sort does not mutate its input
+# expect: PASS 6 sortWith supports arbitrary types
+# expect: PASS 7 sortWith supports descending direction
+# expect: PASS 8 sortWith does not mutate its input
+# expect: PASS 9 isSorted defaults ascending
+# expect: PASS 10 isSorted supports descending direction
+# expect: PASS 11 isSorted detects the wrong direction
+# expect: PASS 12 isSortedWith supports arbitrary types
+# expect: PASS 13 isSortedWith supports descending direction
+# expect: PASS 14 sort rejects invalid direction strictly
+# expect: PASS 15 isSortedWith rejects invalid direction strictly
+# expect: PASS 16 iterSorted yields natural order incrementally
+# expect: PASS 17 iterSortedWith yields custom order incrementally
+# expect: PASS 18 bubble natural ordering
+# expect: PASS 19 bubbleWith comparator and direction
+# expect: PASS 20 insertion natural ordering and direction
+# expect: PASS 21 insertionWith comparator
+# expect: PASS 22 selection natural ordering
+# expect: PASS 23 selectionWith comparator and direction
+# expect: PASS 24 merge natural ordering and direction
+# expect: PASS 25 mergeWith comparator
+# expect: PASS 26 quick natural ordering
+# expect: PASS 27 quickWith comparator and direction
+# expect: PASS 28 named algorithms do not mutate inputs
+# expect: PASS 29 generic sort handles empty lists
+# expect: PASS 30 named algorithms reject invalid direction strictly
+# expect: PASS 31 reverse supports generic typed lists
+# expect: 31 passed, 0 failed, 31 total
 
 from lamsort import Sort
+from lamtest import Test
+
+class WorkItem {
+    func init(self, priority: int, label: str) {
+        self.priority: int = priority
+        self.label: str = label
+    }
+}
+
+func compareWork(left: WorkItem, right: WorkItem) -> int {
+    if left.priority < right.priority {
+        return - 1
+    }
+    if left.priority > right.priority {
+        return 1
+    }
+    if left.label < right.label {
+        return - 1
+    }
+    if left.label > right.label {
+        return 1
+    }
+    return 0
+}
+
+func labels(items: list[WorkItem]) -> list[str] {
+    result: list[str] = []
+    for item: WorkItem in items {
+        result.append(item.label)
+    }
+    return result
+}
 
 func main() {
     nums: list[int] = [3, 1, 4, 5, 2]
-    sorted_nums: list[int] = Sort.ints(nums)
-    print(sorted_nums)
-    reversed_nums: list[int] = Sort.reverseInts(sorted_nums)
-    print(reversed_nums)
-    if Sort.isSorted(sorted_nums) {
-        print("true")
+    originalNums: list[int] = [3, 1, 4, 5, 2]
+    ascendingNums: list[int] = [1, 2, 3, 4, 5]
+    descendingNums: list[int] = [5, 4, 3, 2, 1]
+    ascendingWords: list[str] = ["alpha", "beta", "gamma"]
+    ascendingFloats: list[float] = [1.2, 2.5, 3.1]
+    ascendingLabels: list[str] = ["alpha", "beta", "middle", "late"]
+    descendingLabels: list[str] = ["late", "middle", "beta", "alpha"]
+    originalLabels: list[str] = ["late", "beta", "middle", "alpha"]
+
+    Test.assertEqual(Sort.sort([3, 1, 4, 5, 2]), ascendingNums, "1 generic int sort defaults ascending")
+    Test.assertEqual(Sort.sort(nums, "desc"), descendingNums, "2 natural sort supports descending direction")
+    Test.assertEqual(Sort.sort(["beta", "alpha", "gamma"]), ascendingWords, "3 generic natural sort supports strings")
+    Test.assertEqual(Sort.sort([3.1, 1.2, 2.5]), ascendingFloats, "4 generic natural sort supports floats")
+    Test.assertEqual(nums, originalNums, "5 sort does not mutate its input")
+
+    work: list[WorkItem] = [
+    WorkItem(3, "late"),
+    WorkItem(1, "beta"),
+    WorkItem(2, "middle"),
+    WorkItem(1, "alpha"),
+    ]
+    byPriority: list[WorkItem] = Sort.sortWith(work, compareWork)
+    Test.assertEqual(labels(byPriority), ascendingLabels, "6 sortWith supports arbitrary types")
+    Test.assertEqual(labels(Sort.sortWith(work, compareWork, "desc")), descendingLabels, "7 sortWith supports descending direction")
+    Test.assertEqual(labels(work), originalLabels, "8 sortWith does not mutate its input")
+
+    Test.assertTrue(Sort.isSorted([1, 2, 2, 3]), "9 isSorted defaults ascending")
+    Test.assertTrue(Sort.isSorted([3, 2, 2, 1], "desc"), "10 isSorted supports descending direction")
+    Test.assertFalse(Sort.isSorted([1, 2, 3], "desc"), "11 isSorted detects the wrong direction")
+    Test.assertTrue(Sort.isSortedWith(byPriority, compareWork), "12 isSortedWith supports arbitrary types")
+    Test.assertTrue(Sort.isSortedWith(Sort.sortWith(work, compareWork, "desc"), compareWork, "desc"), "13 isSortedWith supports descending direction")
+
+    try {
+        Sort.sort(nums, "ASC")
+        Test.fail("14 sort rejects invalid direction strictly")
+    } catch err {
+        Test.assertContains(str(err), "direction must be 'asc' or 'desc'", "14 sort rejects invalid direction strictly")
     }
-    floats: list[float] = [3.1, 1.2, 2.5]
-    print(Sort.floats(floats))
-    any_list: list[any] = [1, 2, 3]
-    print(Sort.reverse(any_list))
-    print("sort_ok")
+    try {
+        Sort.isSortedWith(work, compareWork, "backwards")
+        Test.fail("15 isSortedWith rejects invalid direction strictly")
+    } catch err {
+        Test.assertContains(str(err), "direction must be 'asc' or 'desc'", "15 isSortedWith rejects invalid direction strictly")
+    }
+
+    generated: list[int] = []
+    for value in Sort.iterSorted([3, 1, 4, 5, 2]) {
+        generated.append(value)
+    }
+    Test.assertEqual(generated, ascendingNums, "16 iterSorted yields natural order incrementally")
+
+    generatedLabels: list[str] = []
+    for item in Sort.iterSortedWith(work, compareWork, "desc") {
+        generatedLabels.append(item.label)
+    }
+    Test.assertEqual(generatedLabels, descendingLabels, "17 iterSortedWith yields custom order incrementally")
+
+    Test.assertEqual(Sort.bubble(nums), ascendingNums, "18 bubble natural ordering")
+    Test.assertEqual(labels(Sort.bubbleWith(work, compareWork, "desc")), descendingLabels, "19 bubbleWith comparator and direction")
+    Test.assertEqual(Sort.insertion(nums, "desc"), descendingNums, "20 insertion natural ordering and direction")
+    Test.assertEqual(labels(Sort.insertionWith(work, compareWork)), ascendingLabels, "21 insertionWith comparator")
+    Test.assertEqual(Sort.selection(nums), ascendingNums, "22 selection natural ordering")
+    Test.assertEqual(labels(Sort.selectionWith(work, compareWork, "desc")), descendingLabels, "23 selectionWith comparator and direction")
+    Test.assertEqual(Sort.merge(nums, "desc"), descendingNums, "24 merge natural ordering and direction")
+    Test.assertEqual(labels(Sort.mergeWith(work, compareWork)), ascendingLabels, "25 mergeWith comparator")
+    Test.assertEqual(Sort.quick(nums), ascendingNums, "26 quick natural ordering")
+    Test.assertEqual(labels(Sort.quickWith(work, compareWork, "desc")), descendingLabels, "27 quickWith comparator and direction")
+    Test.assertEqual(nums, originalNums, "28 named algorithms do not mutate inputs")
+
+    empty: list[str] = []
+    Test.assertEqual(Sort.sort(empty), empty, "29 generic sort handles empty lists")
+    try {
+        Sort.bubble(nums, "descending")
+        Test.fail("30 named algorithms reject invalid direction strictly")
+    } catch err {
+        Test.assertContains(str(err), "direction must be 'asc' or 'desc'", "30 named algorithms reject invalid direction strictly")
+    }
+
+    reversedWords: list[str] = ["c", "b", "a"]
+    Test.assertEqual(Sort.reverse(["a", "b", "c"]), reversedWords, "31 reverse supports generic typed lists")
+    Test.summary()
 }

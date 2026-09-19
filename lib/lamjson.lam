@@ -3,7 +3,7 @@
 #
 # The native ``json`` type accepts null, booleans, strings, finite numbers,
 # arrays, string-keyed objects, nested json values, and class instances that
-# implement ``func toJson(self) -> json``. The direct methods panic on malformed
+# implement ``func __json__(self) -> json``. The direct methods panic on malformed
 # input; the ``try*`` family returns ``Result``.
 
 from lamerrors import Result, Error
@@ -25,7 +25,7 @@ go! {
     }
 
     type lamJSONMarshaler interface {
-        ToJson() LamJSON
+        LamJSON() LamJSON
     }
 
     func lamJSONNormalize(value interface{}, depth int) (interface{}, error) {
@@ -39,7 +39,7 @@ go! {
             if v == nil { return nil, nil }
             return lamJSONNormalize(v.value, depth+1)
         case lamJSONMarshaler:
-            return lamJSONNormalize(v.ToJson(), depth+1)
+            return lamJSONNormalize(v.LamJSON(), depth+1)
         case nil, bool, string,
              int, int8, int16, int32, int64,
              uint, uint8, uint16, uint32, uint64:
@@ -87,7 +87,7 @@ go! {
             }
             return out, nil
         }
-        return nil, fmt.Errorf("value of type %T is not JSON-compatible; implement ToJson", value)
+        return nil, fmt.Errorf("value of type %T is not JSON-compatible; implement __json__", value)
     }
 
     func lamJSONFrom(value interface{}) (LamJSON, error) {
@@ -221,14 +221,24 @@ go! {
         }
     }
 
-    func lamJSONToDict(value LamJSON) map[string]interface{} {
+    func lamJSONTryToDict(value LamJSON) (map[string]interface{}, bool) {
         result, ok := value.value.(map[string]interface{})
+        return result, ok
+    }
+
+    func lamJSONToDict(value LamJSON) map[string]interface{} {
+        result, ok := lamJSONTryToDict(value)
         if !ok { panic(fmt.Sprintf("json %s cannot convert to dict", lamJSONKind(value))) }
         return result
     }
 
-    func lamJSONToList(value LamJSON) []interface{} {
+    func lamJSONTryToList(value LamJSON) ([]interface{}, bool) {
         result, ok := value.value.([]interface{})
+        return result, ok
+    }
+
+    func lamJSONToList(value LamJSON) []interface{} {
+        result, ok := lamJSONTryToList(value)
         if !ok { panic(fmt.Sprintf("json %s cannot convert to list", lamJSONKind(value))) }
         return result
     }
@@ -362,15 +372,11 @@ class Json {
     }
 
     static func fromDict(data: any) -> json {
-        go! {
-            return lamJSONMust(data)
-        }
+        return Json.fromValue(data)
     }
 
     static func fromList(data: any) -> json {
-        go! {
-            return lamJSONMust(data)
-        }
+        return Json.fromValue(data)
     }
 
     static func toDict(data: json) -> dict[str, any] {
@@ -379,10 +385,36 @@ class Json {
         }
     }
 
+    static func tryToDict(data: json) -> Result[dict[str, any]] {
+        converted: dict[str, any] = {}
+        conversionOk: bool = false
+        go! {
+            converted, conversionOk = lamJSONTryToDict(data)
+        }
+        if not conversionOk {
+            valueKind: str = Json.kind(data)
+            return Result.Err(Error("JsonConversionError", f"json {valueKind} cannot convert to dict", None))
+        }
+        return Result.Ok(converted)
+    }
+
     static func toList(data: json) -> list[any] {
         go! {
             return lamJSONToList(data)
         }
+    }
+
+    static func tryToList(data: json) -> Result[list[any]] {
+        converted: list[any] = []
+        conversionOk: bool = false
+        go! {
+            converted, conversionOk = lamJSONTryToList(data)
+        }
+        if not conversionOk {
+            valueKind: str = Json.kind(data)
+            return Result.Err(Error("JsonConversionError", f"json {valueKind} cannot convert to list", None))
+        }
+        return Result.Ok(converted)
     }
 
     static func kind(data: json) -> str {

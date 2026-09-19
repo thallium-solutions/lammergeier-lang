@@ -1,4 +1,4 @@
-# expect: dataframe-json:array:2
+# expect: dataframe-json:array:2:2
 
 from lamdata import DataFrame
 from lamjson import Json
@@ -8,7 +8,8 @@ func main() {
         {"name": "Ada", "score": 10},
         {"name": "Lin", "score": 12}
     ]
-    frame: DataFrame = DataFrame.readJsonValue(rows)
-    restored: json = frame.jsonValue()
-    print(f"dataframe-json:{Json.kind(restored)}:{len(restored)}")
+    frame: DataFrame = DataFrame.readJSON(rows)
+    restored: json = json(frame)
+    legacy: DataFrame = DataFrame.readJsonValue(rows)
+    print(f"dataframe-json:{Json.kind(restored)}:{len(restored)}:{legacy.nrow()}")
 }

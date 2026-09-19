@@ -1,5 +1,7 @@
 # expect: time_ok
 # expect: year_ok
+# expect: add_ok
+# expect: elapsed_ok
 
 from lamtime import Time
 
@@ -12,5 +14,14 @@ func main() {
     y: int = Time.nowYear()
     if y >= 2024 {
         print("year_ok")
+    }
+
+    if Time.addSeconds(100, 25) == 125 and Time.addSeconds(100, -25) == 75 {
+        print("add_ok")
+    }
+
+    started: int = Time.nowUnixMilli()
+    if Time.elapsedSince(started) >= 0 {
+        print("elapsed_ok")
     }
 }

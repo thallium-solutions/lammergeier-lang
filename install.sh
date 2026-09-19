@@ -5,7 +5,7 @@
 #   1. the `lamc` compiler launcher (symlinked onto PATH)
 #   2. the `lammergeier-lsp` language-server launcher (same target dir)
 #   3. the Python `lark` parser dependency
-#   4. (optional) the VS Code / Cursor / Windsurf editor extension
+#   4. (optional) the VS Code / Cursor / Windsurf / Devin editor extension
 #
 # Prefix selection:
 #   --user            Install symlinks into $HOME/.local/bin  (no sudo)
@@ -15,7 +15,7 @@
 #                     $HOME/.local/bin.
 #
 # Extension:
-#   --with-editor [vscode|windsurf|cursor|all]
+#   --with-editor [vscode|windsurf|cursor|devin|all]
 #                     Also install the editor extension. Accepts any
 #                     value accepted by vs-code-extension/install.sh.
 #                     Defaults to "all" when the flag is bare.
@@ -202,5 +202,5 @@ esac
 
 log "done. Run 'lamc --help' to verify."
 if [[ -z "$EDITOR_TARGET" && $NO_EDITOR -eq 0 ]]; then
-    log "tip: re-run with --with-editor to install the VS Code / Cursor / Windsurf extension."
+    log "tip: re-run with --with-editor to install the VS Code / Cursor / Windsurf / Devin extension."
 fi

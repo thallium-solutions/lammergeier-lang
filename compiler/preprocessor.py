@@ -314,6 +314,63 @@ def _update_go_block_depth(line: str, depth: int) -> int:
     return depth
 
 
+def _find_go_brace_open(line: str, start: int = 0) -> tuple[int, int] | None:
+    """Return ``(go_start, brace_index)`` for a braced go marker in code."""
+    quote = ""
+    i = start
+    while i < len(line):
+        if quote:
+            if line[i] == "\\" and quote != "`" and i + 1 < len(line):
+                i += 2
+                continue
+            if line[i] == quote:
+                quote = ""
+            i += 1
+            continue
+        if line.startswith("//", i):
+            return None
+        if line[i] in {'"', "'", "`"}:
+            quote = line[i]
+            i += 1
+            continue
+        if line.startswith("go!", i) and (i == 0 or not (line[i - 1].isalnum() or line[i - 1] == "_")):
+            brace = i + 3
+            while brace < len(line) and line[brace].isspace():
+                brace += 1
+            if brace < len(line) and line[brace] == "{":
+                return i, brace
+        i += 1
+    return None
+
+
+def _matching_brace_on_line(line: str, open_index: int) -> int | None:
+    """Find a Go block's matching brace on one physical source line."""
+    depth = 0
+    quote = ""
+    i = open_index
+    while i < len(line):
+        if quote:
+            if line[i] == "\\" and quote != "`" and i + 1 < len(line):
+                i += 2
+                continue
+            if line[i] == quote:
+                quote = ""
+            i += 1
+            continue
+        if line.startswith("//", i):
+            return None
+        if line[i] in {'"', "'", "`"}:
+            quote = line[i]
+        elif line[i] == "{":
+            depth += 1
+        elif line[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
 def preprocess_go_blocks(source: str) -> Tuple[str, Dict[str, str]]:
     """
     Find go! { ... } blocks and replace them with __go_block__("id") calls.
@@ -362,6 +419,35 @@ def preprocess_go_blocks(source: str) -> Tuple[str, Dict[str, str]]:
                 go_blocks[bid] = expr
                 new_line = new_line[:start] + f'__go_inline__("{bid}")' + new_line[j+1:]
                 block_id += 1
+            result_lines.append(new_line)
+            i += 1
+            continue
+
+        # Replace braced go markers that open and close on this physical line,
+        # including markers nested in a compact Lam block such as
+        # ``func hook() { go! { nativeCall() } }``. The old anchored matcher
+        # left the inner ``go!`` token for Lark, which then reported ``!`` as
+        # an unexpected character.
+        new_line = stripped
+        search_at = 0
+        replaced_inline_brace = False
+        while True:
+            found = _find_go_brace_open(new_line, search_at)
+            if found is None:
+                break
+            go_start, brace_open = found
+            brace_close = _matching_brace_on_line(new_line, brace_open)
+            if brace_close is None:
+                break
+            content = new_line[brace_open + 1:brace_close].strip()
+            bid = str(block_id)
+            go_blocks[bid] = content
+            marker = f'__go_block__("{bid}")'
+            new_line = new_line[:go_start] + marker + new_line[brace_close + 1:]
+            block_id += 1
+            replaced_inline_brace = True
+            search_at = go_start + len(marker)
+        if replaced_inline_brace:
             result_lines.append(new_line)
             i += 1
             continue

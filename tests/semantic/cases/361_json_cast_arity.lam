@@ -1,0 +1,7 @@
+# expect-error: cast `json` expects exactly 1 argument, got 0
+# expect-error: cast `json` expects exactly 1 argument, got 2
+
+func main() {
+    print(json())
+    print(json(1, 2))
+}

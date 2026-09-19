@@ -51,24 +51,16 @@ STDLIB_GO_PINS: Dict[str, str] = {
     "github.com/go-gota/gota":              "v0.12.0",
     # ``lamdb`` — MySQL + Postgres drivers (blank-imported).
     "github.com/go-sql-driver/mysql":       "v1.10.0",
-    # ``lamjwt`` — JSON Web Tokens.
-    "github.com/golang-jwt/jwt/v5":         "v5.3.1",
-    # ``lamserver_tus``, ``lamuuid`` — RFC 4122 UUIDs.
+    # ``lamuuid`` — RFC 4122 UUIDs.
     "github.com/google/uuid":               "v1.6.0",
-    # ``lamserver_ws`` — WebSocket upgrades.
-    "github.com/gorilla/websocket":         "v1.5.3",
     # ``lamdb`` — Postgres driver (blank-imported).
     "github.com/lib/pq":                    "v1.12.3",
-    # ``lamemcached`` — memcached client.
-    "github.com/memcachier/mc/v3":          "v3.0.3",
-    # ``lamredis`` — Redis client.
-    "github.com/redis/go-redis/v9":         "v9.19.0",
     # ``lamcron`` — cron scheduler.
     "github.com/robfig/cron/v3":            "v3.0.1",
-    # ``lamschema`` / ``lamserver`` — JSON Schema (draft-07).
+    # ``lamschema`` — pure-Go XSD validation.
+    "github.com/moolekkari/validatexml-go": "v0.1.1",
+    # ``lamschema`` — JSON Schema (draft-07).
     "github.com/xeipuuv/gojsonschema":      "v1.2.0",
-    # ``lamprotobuf`` — Protocol Buffers wire format.
-    "google.golang.org/protobuf":           "v1.36.11",
     # ``lamyaml``, ``lamenv`` — YAML codec.
     "gopkg.in/yaml.v3":                     "v3.0.1",
     # ``lamdb`` — SQLite driver. Pure-Go (no CGo / C toolchain),
@@ -82,15 +74,11 @@ STDLIB_GO_PIN_MODULES: Dict[str, tuple[str, ...]] = {
     "github.com/BurntSushi/toml":           ("lamenv",),
     "github.com/go-gota/gota":              ("lamdata",),
     "github.com/go-sql-driver/mysql":       ("lamdb",),
-    "github.com/golang-jwt/jwt/v5":         ("lamjwt",),
-    "github.com/google/uuid":               ("lamserver_tus", "lamuuid"),
-    "github.com/gorilla/websocket":         ("lamserver_ws",),
+    "github.com/google/uuid":               ("lamuuid",),
     "github.com/lib/pq":                    ("lamdb",),
-    "github.com/memcachier/mc/v3":          ("lamemcached",),
-    "github.com/redis/go-redis/v9":         ("lamredis",),
     "github.com/robfig/cron/v3":            ("lamcron",),
-    "github.com/xeipuuv/gojsonschema":      ("lamschema", "lamserver"),
-    "google.golang.org/protobuf":           ("lamprotobuf",),
-    "gopkg.in/yaml.v3":                     ("lamyaml", "lamenv"),
+    "github.com/moolekkari/validatexml-go": ("lamschema",),
+    "github.com/xeipuuv/gojsonschema":      ("lamschema",),
+    "gopkg.in/yaml.v3":                     ("lamyaml", "lamenv", "lamschema"),
     "modernc.org/sqlite":                   ("lamdb",),
 }

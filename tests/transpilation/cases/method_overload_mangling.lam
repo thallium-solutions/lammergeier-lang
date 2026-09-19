@@ -1,0 +1,23 @@
+# expect-go: func Formatter_render_1_int(value int) string {
+# expect-go: func Formatter_render_1_str(value string) string {
+# expect-go: func (s *Formatter) Describe_1_int(value int) string {
+# expect-go: func (s *Formatter) Describe_1_str(value string) string {
+# expect-go: Formatter_render_1_int(7)
+# expect-go: Formatter_render_1_str("Ada")
+# expect-go: formatter.Describe_1_int(9)
+# expect-go: formatter.Describe_1_str("Lam")
+
+class Formatter {
+    static func render(value: int) -> str { return str(value) }
+    static func render(value: str) -> str { return value }
+    func describe(self, value: int) -> str { return str(value) }
+    func describe(self, value: str) -> str { return value }
+}
+
+func main() {
+    formatter: Formatter = Formatter()
+    print(Formatter.render(7))
+    print(Formatter.render("Ada"))
+    print(formatter.describe(9))
+    print(formatter.describe("Lam"))
+}

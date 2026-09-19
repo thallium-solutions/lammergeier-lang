@@ -1,0 +1,37 @@
+# expect: xml-valid: true
+# expect: xml-invalid: false
+# expect: xml-invalid-kind: SchemaValidationError
+# expect: xsd-kind: SchemaCompileError
+# expect: xml-document-kind: SchemaParseError
+# expect: xsd-external-kind: SchemaCompileError
+
+from lamerrors import Result, Error
+from lamschema import Schema
+
+func main() {
+    xsd: str = "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"><xs:element name=\"person\"><xs:complexType><xs:sequence><xs:element name=\"name\" type=\"xs:string\"/><xs:element name=\"age\" type=\"xs:integer\"/></xs:sequence></xs:complexType></xs:element></xs:schema>"
+    valid: str = "<person><name>Ada</name><age>30</age></person>"
+    invalid: str = "<person><name>Ada</name><age>wrong</age></person>"
+
+    accepted: Result[str] = Schema.validate(xsd, valid, "xml")
+    rejected: Result[str] = Schema.validate(xsd, invalid, "xml")
+    print(f"xml-valid: {accepted.ok()}")
+    print(f"xml-invalid: {rejected.ok()}")
+    rejectedError: Error = rejected.error
+    print(f"xml-invalid-kind: {rejectedError.kind}")
+
+    badXsdText: str = "<xs:schema>"
+    badXsd: Result[str] = Schema.validate(badXsdText, valid, "xml")
+    badXsdError: Error = badXsd.error
+    print(f"xsd-kind: {badXsdError.kind}")
+
+    badXmlText: str = "<person>"
+    badXml: Result[str] = Schema.validate(xsd, badXmlText, "xml")
+    badXmlError: Error = badXml.error
+    print(f"xml-document-kind: {badXmlError.kind}")
+
+    externalXsdText: str = "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"><xs:include schemaLocation=\"https://example.com/external.xsd\"/></xs:schema>"
+    externalXsd: Result[str] = Schema.validate(externalXsdText, valid, "xml")
+    externalXsdError: Error = externalXsd.error
+    print(f"xsd-external-kind: {externalXsdError.kind}")
+}

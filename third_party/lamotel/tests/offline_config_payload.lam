@@ -36,9 +36,9 @@ func main() {
     span.setAttribute("order.id", "ord_123")
     span.end()
     spans: list[OtelSpan] = [span]
-    payload: str = Otel.tracesPayload("checkout-api", spans)
-    print(payload.contains("checkout-api"))
-    print(payload.contains("order.id"))
+    payload: json = Otel.tracesPayload("checkout-api", spans)
+    print(payload.resourceSpans[0].resource.attributes["service.name"] == "checkout-api")
+    print(payload.resourceSpans[0].scopeSpans[0].spans[0].attributes["order.id"] == "ord_123")
 
     clearOtelEnv()
 }

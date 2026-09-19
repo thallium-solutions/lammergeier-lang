@@ -1,7 +1,6 @@
 from lamenv import Env
 from lamerrors import Result, Error
 from lamhttp import HttpClient, HttpResponse
-from lamjson import Json
 from lamtime import Time
 from lamuuid import Uuid
 
@@ -196,14 +195,14 @@ class Otel {
         return Otel.parsePairs(headerText)
     }
 
-    static func tracesPayload(serviceName: str, spans: list[OtelSpan]) -> str {
+    static func tracesPayload(serviceName: str, spans: list[OtelSpan]) -> json {
         resourceAttrs: dict[str, str] = {}
         resourceAttrs["service.name"] = serviceName
         return Otel.tracesPayloadWithResource(resourceAttrs, spans)
     }
 
-    static func tracesPayloadWithResource(resourceAttrs: dict[str, str], spans: list[OtelSpan]) -> str {
-        encodedSpans: list[any] = []
+    static func tracesPayloadWithResource(resourceAttrs: dict[str, str], spans: list[OtelSpan]) -> json {
+        encodedSpans: list[json] = []
         serviceName: str = "lammergeier-app"
         go! {
             if s, ok := resourceAttrs["service.name"]; ok {
@@ -211,9 +210,9 @@ class Otel {
             }
         }
         for span in spans {
-            encodedSpans.append(span.toDict(serviceName))
+            encodedSpans.append(json(span.toDict(serviceName)))
         }
-        payload: dict[str, any] = {
+        payload: json = {
             "resourceSpans": [{
                 "resource": {"attributes": resourceAttrs},
                 "scopeSpans": [{
@@ -222,7 +221,7 @@ class Otel {
                 }],
             }],
         }
-        return Json.encode(Json.fromDict(payload))
+        return payload
     }
 }
 
@@ -273,8 +272,8 @@ class OtelTracer {
         if not ready.ok() {
             return ready
         }
-        payload: str = Otel.tracesPayloadWithResource(self.cfg.resource(), spans)
-        res: HttpResponse = self.http.postJson(self.cfg.tracesUrl(), payload)
+        payload: json = Otel.tracesPayloadWithResource(self.cfg.resource(), spans)
+        res: HttpResponse = self.http.post(self.cfg.tracesUrl(), payload)
         if res.ok() {
             return Result.Ok(res)
         }

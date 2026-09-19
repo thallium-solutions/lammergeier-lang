@@ -61,6 +61,7 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     "_generator_chan",
     "_propagate_cast_hint",
     "_expected_expr_go_type",
+    "_generic_names",
     "_nested_generic_functions",
     # The Go return type of the *currently-being-emitted* Lam function.
     # Used to rewrite bare ``return`` statements found inside ``go!``
@@ -173,6 +174,7 @@ class GoTranspiler(
         self._external_private_functions: Set[str] = set()
         self._external_instance_methods: Dict[str, Set[str]] = {}
         self._external_field_names: Dict[str, Set[str]] = {}
+        self._external_field_types: Dict[str, Dict[str, str]] = {}
 
         # Top-level go! raw lines
         self._raw_go_top: List[str] = []
@@ -215,7 +217,7 @@ class GoTranspiler(
         self._static_vars: Dict[str, Dict[str, bool]] = {}
         self._static_var_go_names: Set[str] = set()
 
-        # Known generator function names
+        # Known generator call keys: top-level names and Class.method keys.
         self._generator_functions: set = set()
 
         # Variable type tracking
@@ -238,6 +240,10 @@ class GoTranspiler(
         # ``_func_param_names``. Call sites use this as contextual type
         # information for anonymous collection literals.
         self._func_param_go_types: Dict[str, List[str]] = {}
+        # Generic type-parameter names per callable. Call-site contextual
+        # lowering uses these to replace list[T] with a literal's inferred
+        # concrete slice type rather than leaking T into caller Go.
+        self._func_generic_params: Dict[str, Set[str]] = {}
 
         # Method return types — keyed as ``Class.method`` and used by
         # ``_infer_receiver_class`` to thread receiver-class info
@@ -550,49 +556,52 @@ class GoTranspiler(
         if not isinstance(tree, Tree):
             return
         if tree.data == "funcdef":
-            _, _, _, name_node, params_node, return_type_node, _, _ = self._parse_funcdef(tree)
+            (_, _, _, name_node, params_node, return_type_node,
+             suite_node, type_params_node) = self._parse_funcdef(tree)
             name = self._get_name(name_node)
             self._user_functions.add(name)
             for child in tree.children:
                 if isinstance(child, Token) and str(child) == "private":
                     self._private_functions.add(name)
                     break
-            # Check for generator
-            suite_node = tree.children[-1]
             if self._tree_contains(suite_node, "yield_expr"):
                 self._generator_functions.add(name)
-            # Check variadic
-            variadic = self._has_variadic(params_node) if params_node else False
-            if variadic:
-                self._variadic_functions.add(name)
-            return_type = self._resolve_return_type(return_type_node)
-            if return_type:
-                self._func_return_go_types[name] = return_type
-            payload_type = self._result_payload_go_type(return_type_node)
-            if payload_type:
-                self._result_payload_go_types[name] = payload_type
-            # Count params and collect defaults
-            arity = self._count_params(params_node)
-            self._func_param_counts[name] = arity
-            if params_node:
-                self._collect_param_defaults(name, params_node)
-            # Track overloading (only for non-variadic). We keep
-            # the legacy arity-indexed set alongside the richer
-            # variants list because several call sites still check
-            # the set to decide whether *any* overload mangling is
-            # needed at all — that's cheaper than walking
-            # ``_overload_variants[name]`` on every call.
-            if not variadic:
-                if name not in self._overloaded_functions:
-                    self._overloaded_functions[name] = set()
-                self._overloaded_functions[name].add(arity)
-                sig = self._param_types_sig(params_node) if params_node else ()
-                self._overload_variants.setdefault(name, []).append({
-                    "arity": arity,
-                    "sig": sig,
-                    # Filled in by ``_finalize_overload_variants``.
-                    "suffix": "",
-                })
+
+            _, type_param_names, _ = self._type_params_to_go(type_params_node)
+            if type_param_names:
+                self._func_generic_params[name] = set(type_param_names)
+            generic_names = self._generic_names | set(type_param_names)
+            with self._scoped(_generic_names=generic_names):
+                variadic = self._has_variadic(params_node) if params_node else False
+                if variadic:
+                    self._variadic_functions.add(name)
+                return_type = self._resolve_return_type(return_type_node)
+                if return_type:
+                    self._func_return_go_types[name] = return_type
+                payload_type = self._result_payload_go_type(return_type_node)
+                if payload_type:
+                    self._result_payload_go_types[name] = payload_type
+                # Count params and collect defaults.
+                arity = self._count_params(params_node)
+                self._func_param_counts[name] = arity
+                if params_node:
+                    self._collect_param_defaults(name, params_node)
+                # Track overloading (only for non-variadic). We keep
+                # the legacy arity-indexed set alongside the richer
+                # variants list because several call sites still check
+                # the set to decide whether *any* overload mangling is
+                # needed at all.
+                if not variadic:
+                    if name not in self._overloaded_functions:
+                        self._overloaded_functions[name] = set()
+                    self._overloaded_functions[name].add(arity)
+                    sig = self._param_types_sig(params_node) if params_node else ()
+                    self._overload_variants.setdefault(name, []).append({
+                        "arity": arity,
+                        "sig": sig,
+                        # Filled in by ``_finalize_overload_variants``.
+                        "suffix": "",
+                    })
 
         elif tree.data == "classdef":
             name_node = tree.children[0]
@@ -601,12 +610,19 @@ class GoTranspiler(
             base_specs = self._classdef_base_specs(tree)
             self.class_bases[class_name] = [base for _alias, base in base_specs]
             self.class_base_aliases[class_name] = self._base_aliases_from_specs(base_specs)
+            class_type_params = next(
+                (child for child in tree.children
+                 if isinstance(child, Tree) and child.data == "type_params"),
+                None,
+            )
+            _, class_type_param_names, _ = self._type_params_to_go(class_type_params)
             # Scan methods
             suite = tree.children[-1]
             for child in self._suite_stmts(suite):
                 if isinstance(child, Tree) and child.data == "funcdef":
                     (is_priv, is_stat, _, fn_node, params_node,
-                     return_type_node, _, _) = self._parse_funcdef(child)
+                     return_type_node, method_suite,
+                     method_type_params) = self._parse_funcdef(child)
                     fn_name = self._get_name(fn_node)
                     if is_stat:
                         self._static_methods.setdefault(class_name, set()).add(fn_name)
@@ -619,25 +635,75 @@ class GoTranspiler(
                     # (which use the `Class.init` key) pick up defaults too.
                     key_name = "init" if fn_name == "__init__" else fn_name
                     method_key = f"{class_name}.{key_name}"
-                    payload_type = self._result_payload_go_type(return_type_node)
-                    if payload_type:
-                        self._result_payload_go_types[method_key] = payload_type
-                    arity = self._count_params(params_node, skip_self=True)
-                    self._func_param_counts[method_key] = arity
-                    if params_node:
-                        self._collect_param_defaults(method_key, params_node, skip_self=True)
-                    # Track the *raw* Lam return-type name so
-                    # ``_infer_receiver_class`` can thread the class
-                    # forward across chained calls. Only single-return
-                    # types referencing a known user class are useful
-                    # here; ``list[...]``/``dict[...]``/``str``/etc.
-                    # have no class identity and are skipped.
-                    raw_return = self._get_raw_type_name(return_type_node) if return_type_node else ""
-                    if raw_return:
-                        self._method_return_types[method_key] = raw_return
+                    if is_stat and self._tree_contains(method_suite, "yield_expr"):
+                        self._generator_functions.add(method_key)
+                    _, method_type_param_names, _ = self._type_params_to_go(
+                        method_type_params,
+                    )
+                    declared_generic_names = (
+                        set(class_type_param_names) | set(method_type_param_names)
+                    )
+                    if declared_generic_names:
+                        self._func_generic_params[method_key] = declared_generic_names
+                    callable_generic_names = self._generic_names | declared_generic_names
+                    with self._scoped(_generic_names=callable_generic_names):
+                        payload_type = self._result_payload_go_type(return_type_node)
+                        if payload_type:
+                            self._result_payload_go_types[method_key] = payload_type
+                        skip_self = not is_stat
+                        arity = self._count_params(params_node, skip_self=skip_self)
+                        self._func_param_counts[method_key] = arity
+                        if params_node:
+                            self._collect_param_defaults(method_key, params_node, skip_self=skip_self)
+                        variadic = self._has_variadic(params_node) if params_node else False
+                        if not variadic and fn_name not in {"init", "__init__", "__str__", "__repr__", "__len__", "__json__"} and fn_name not in DUNDER_OPS:
+                            self._overloaded_functions.setdefault(method_key, set()).add(arity)
+                            sig = self._param_types_sig(params_node, skip_self=skip_self) if params_node else ()
+                            meta_key = f"{method_key}#{self._sig_suffix(sig)}"
+                            if declared_generic_names:
+                                self._func_generic_params[meta_key] = declared_generic_names
+                            if params_node:
+                                self._collect_param_defaults(meta_key, params_node, skip_self=skip_self)
+                            required = arity - len(self._func_defaults.get(meta_key, []))
+                            self._overload_variants.setdefault(method_key, []).append({
+                                "arity": arity,
+                                "required": required,
+                                "sig": sig,
+                                "suffix": "",
+                                "meta_key": meta_key,
+                            })
+                        # Track the *raw* Lam return-type name so
+                        # ``_infer_receiver_class`` can thread the class
+                        # forward across chained calls. Only single-return
+                        # types referencing a known user class are useful
+                        # here; ``list[...]``/``dict[...]``/``str``/etc.
+                        # have no class identity and are skipped.
+                        raw_return = self._get_raw_type_name(return_type_node) if return_type_node else ""
+                        if raw_return:
+                            self._method_return_types[method_key] = raw_return
         elif tree.data == "interfacedef":
             name_node = tree.children[0]
-            self._interfaces.add(self._get_name(name_node))
+            interface_name = self._get_name(name_node)
+            self._interfaces.add(interface_name)
+            for child in tree.children[1:]:
+                if not isinstance(child, Tree) or child.data != "interface_method":
+                    continue
+                parts = [part for part in child.children if isinstance(part, Tree)]
+                if not parts:
+                    continue
+                method_name = self._get_name(parts[0])
+                params_node = next((part for part in parts[1:] if part.data == "typed_parameters"), None)
+                method_key = f"{interface_name}.{method_name}"
+                arity = self._count_params(params_node)
+                sig = self._param_types_sig(params_node) if params_node else ()
+                self._overloaded_functions.setdefault(method_key, set()).add(arity)
+                self._overload_variants.setdefault(method_key, []).append({
+                    "arity": arity,
+                    "required": arity,
+                    "sig": sig,
+                    "suffix": "",
+                    "meta_key": method_key,
+                })
 
         # Don't recurse into class / interface bodies — their methods
         # are already harvested above. Recursing would dump every
@@ -731,6 +797,8 @@ class GoTranspiler(
                     preferred = self._go_binding_name(self._go_private_name(method))
                 elif method in {"__str__", "__repr__"}:
                     preferred = "String"
+                elif method == "__json__":
+                    preferred = "LamJSON"
                 elif method == "__len__":
                     preferred = "Len"
                 else:
@@ -742,7 +810,7 @@ class GoTranspiler(
             claimed: dict[str, tuple[str, str]] = {}
             for kind, name, preferred in sorted(
                 entries,
-                key=lambda item: (not item[1][:1].isupper(), item[2], item[0], item[1]),
+                key=lambda item: (item[1] != "__json__", not item[1][:1].isupper(), item[2], item[0], item[1]),
             ):
                 candidate = preferred
                 index = 2
@@ -784,6 +852,50 @@ class GoTranspiler(
         instance produces the same suffixes (useful for repeat
         compiles from the same driver).
         """
+        for name, variants in list(self._overload_variants.items()):
+            unique: list[dict] = []
+            seen: set[tuple] = set()
+            for variant in variants:
+                identity = (
+                    int(variant.get("arity", 0)),
+                    int(variant.get("required", variant.get("arity", 0))),
+                    tuple(variant.get("sig") or ()),
+                    str(variant.get("meta_key") or ""),
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                unique.append(variant)
+            self._overload_variants[name] = unique
+
+        for _ in range(max(1, len(self.class_bases))):
+            changed = False
+            for class_name, bases in self.class_bases.items():
+                for base in bases:
+                    prefix = f"{base}."
+                    for base_key, base_variants in list(self._overload_variants.items()):
+                        if not base_key.startswith(prefix):
+                            continue
+                        method_name = base_key[len(prefix):]
+                        if "." in method_name or method_name not in self._instance_methods.get(base, set()):
+                            continue
+                        child_key = f"{class_name}.{method_name}"
+                        child_variants = self._overload_variants.setdefault(child_key, [])
+                        own_signatures = {tuple(v.get("sig") or ()) for v in child_variants}
+                        for variant in base_variants:
+                            signature = tuple(variant.get("sig") or ())
+                            if signature in own_signatures:
+                                continue
+                            child_variants.append(dict(variant, suffix=""))
+                            own_signatures.add(signature)
+                            changed = True
+                        if child_variants:
+                            self._instance_methods.setdefault(class_name, set()).add(method_name)
+                            self._overloaded_functions[child_key] = {
+                                int(v.get("arity", 0)) for v in child_variants
+                            }
+            if not changed:
+                break
         for name, variants in self._overload_variants.items():
             if name == "main":
                 # ``main`` is fixed by Go's runtime; we never mangle it
@@ -810,23 +922,40 @@ class GoTranspiler(
                 else:
                     v["suffix"] = f"_{a}"
 
-    def _overload_suffix_for_sig(self, name: str, sig):
-        """Return the Go name suffix for the variant of ``name``
-        whose parameter signature equals ``sig``.
-
-        Used at both def sites (to mangle the emitted function
-        header) and call sites (after resolving which variant
-        the caller targets). Falls back to the arity-only
-        suffix when no exact signature match is found — that
-        keeps arity-only overloads (the pre-existing case)
-        working even if the caller can't type-infer one of the
-        arguments.
-        """
+    def _overload_variant_for_sig(self, name: str, sig):
         variants = self._overload_variants.get(name) or []
-        for v in variants:
-            if tuple(v.get("sig") or ()) == tuple(sig):
-                return v.get("suffix", "") or ""
-        # Fallback: arity-only match (legacy path).
+        actual = tuple(sig)
+        for variant in variants:
+            if tuple(variant.get("sig") or ()) == actual:
+                return variant
+        candidates = []
+        for variant in variants:
+            expected = tuple(variant.get("sig") or ())
+            required = int(variant.get("required", len(expected)))
+            matches = all(
+                expected_type == actual_type
+                or expected_type == "LamJSON" and (
+                    actual_type.startswith("map[")
+                    or actual_type.startswith("[]")
+                    or actual_type in {"bool", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float32", "float64"}
+                )
+                for expected_type, actual_type in zip(expected, actual)
+            )
+            if required <= len(actual) <= len(expected) and matches:
+                candidates.append(variant)
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _overload_suffix_for_sig(self, name: str, sig):
+        """Return the Go name suffix for the best variant of ``name``.
+
+        Definition sites match the complete parameter signature. Call
+        sites may match a unique typed prefix when the remaining
+        parameters have defaults. The arity fallback preserves legacy
+        dispatch when argument types cannot be inferred.
+        """
+        variant = self._overload_variant_for_sig(name, sig)
+        if variant is not None:
+            return variant.get("suffix", "") or ""
         if len(self._overloaded_functions.get(name, set())) > 1:
             return f"_{len(sig)}"
         return ""

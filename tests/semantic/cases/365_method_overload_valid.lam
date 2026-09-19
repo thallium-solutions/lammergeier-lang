@@ -1,0 +1,17 @@
+# expect-pass
+
+class Formatter {
+    static func render(value: int) -> str { return f"int:{value}" }
+    static func render(value: str) -> str { return f"str:{value}" }
+
+    func describe(self, value: int) -> str { return f"int:{value}" }
+    func describe(self, value: str) -> str { return f"str:{value}" }
+}
+
+func main() {
+    formatter: Formatter = Formatter()
+    print(Formatter.render(1))
+    print(Formatter.render("x"))
+    print(formatter.describe(2))
+    print(formatter.describe("y"))
+}

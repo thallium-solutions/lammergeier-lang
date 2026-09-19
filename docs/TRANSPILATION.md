@@ -273,8 +273,10 @@ A `json` annotation triggers the compiler-managed `lamjson` support module and
 lowers to `LamJSON`, a wrapper around canonical Go JSON values
 (`map[string]interface{}`, `[]interface{}`, primitives, or nil). Contextual
 literal lowering emits string-keyed maps and interface slices, then
-`lamJSONMust(...)` recursively validates and normalizes the value. Classes are
-accepted only when their generated Go method set satisfies `ToJson() LamJSON`.
+`lamJSONMust(...)` recursively validates and normalizes the value. The builtin
+`json(value)` uses the same normalizer. A Lam `__json__()` method lowers to the
+stable internal Go protocol `LamJSON() LamJSON`; custom classes require the
+explicit `json(instance)` conversion.
 
 ```lam
 payload: json = {"user": {"name": "Ada"}, "scores": [8, 13]}
@@ -621,8 +623,13 @@ func Add(a int, b int) int {
   the same signature from each argument's inferred Go type
   (`_infer_call_arg_sig`) and pick the matching suffix; typed
   locals participate via `_var_go_types` so `nums: list[int]`
-  routes to the `list[int]` overload. Variadic functions
-  (`*args`) still can't be overloaded.
+  routes to the `list[int]` overload. Instance, static, inherited, and
+  interface methods use class-qualified variant keys and the same suffix policy;
+  defaulted variants also retain signature-specific call metadata. The complete
+  overload set is injected into every imported-library transpiler, so an
+  external package field such as `self.http: HttpClient` can call an overloaded
+  instance method and receive the same mangled dispatch as main code. Variadic
+  functions (`*args`) still can't be overloaded.
 
 Bare references to user functions (e.g. passing `handler` as a value)
 resolve to the Go public name so they can be used as first-class values.
@@ -990,6 +997,27 @@ User-facing examples and a good/bad cheatsheet live in
 | `with f as x: body`   | Go defer pattern (`defer x.Close()`) + inline body                         |
 | `yield expr`          | `chan <- expr`; generators compile to a goroutine + channel pair           |
 
+Top-level, instance, and static generator functions share this lowering.
+Generic static generators preserve their type parameter and return a typed
+channel:
+
+```lammergeier
+class Streams {
+    static func values[T](items: list[T]) -> T {
+        for item: T in items { yield item }
+    }
+}
+
+for value in Streams.values([3, 1, 2]) { print(value) }
+```
+
+The generated signature is `func Streams_values[T any]([]T) chan T`, and the
+loop becomes `for value := range Streams_values([]int{3, 1, 2})`. Imported
+generator metadata follows the module graph, so the same lowering applies when
+`Streams` comes from an external library. Generic callable arguments also
+contextually lower non-empty inline list literals to their concrete slice type
+instead of leaking the callee's `T` into caller Go.
+
 ## Concurrency
 
 - `async func` is implemented by wrapping the body in a goroutine that
@@ -1053,9 +1081,10 @@ reduced numbered source so the next regression can be promoted into a focused
 Third-party Go modules that the Lam stdlib itself depends on are
 listed with frozen versions in
 `compiler/stdlib_go_deps.py::STDLIB_GO_PINS`. Examples: `lamdb`
-blank-imports `modernc.org/sqlite`, `lamserver_ws` imports
-`github.com/gorilla/websocket`, `lamenv` reaches into
-`github.com/BurntSushi/toml` and `gopkg.in/yaml.v3`, and so on.
+blank-imports `modernc.org/sqlite`, while `lamenv` reaches into
+`github.com/BurntSushi/toml` and `gopkg.in/yaml.v3`. External packages own
+their pins: `@lam/vulture/ws-plugin`, for example, declares
+`github.com/gorilla/websocket` in its `lamlib.toml`.
 Each entry is a `<go_module_path> = "<v…>"` pair sorted by
 module path for diff stability.
 
@@ -1139,7 +1168,7 @@ through:
 |-------------------------------|-------------------------------------|------------|
 | `lamarray.Array`              | `[]float64`                         | `Data`     |
 | `lamarray.Matrix`             | `*gonum.org/v1/gonum/mat.Dense`     | `Dense`    |
-| `lamserver.Server`            | `*http.Server` (+ `[]any` route table) | `RawSrv`   |
+| `@lam/vulture.Server`         | `*http.Server` (+ `[]any` route table) | `RawSrv`   |
 | `lamcache.LruCache`           | `*container/list.List` + map        | `Lst`/`Idx`|
 | `lamcache.TtlCache`           | `map[any]*ttlEntry`                 | `Idx`      |
 | `lamconcurrency.Channel`      | `chan interface{}`                  | `Ch`       |

@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+from compiler.version import LAMC_VERSION  # noqa: E402
+
 LSP_SCRIPT = PROJECT_ROOT / "compiler" / "lsp.py"
 
 
@@ -163,6 +166,7 @@ WARNING_DOC = """func main() {
 ERROR_DOC = """func main() {
     value: int = "wrong"
     print(missing)
+    print(1 == None)
 }
 """
 
@@ -241,16 +245,23 @@ INVALID_DOC = """func main() {
 }
 """
 
-# Document that imports from the bundled stdlib so we can exercise
-# cross-file hover / completion / go-to-definition. ``Dotenv``,
-# ``Config``, and ``basicAuth`` are real public names in
-# ``lib/lamenv.lam`` and ``lib/lamserver_plugins.lam``.
+# Document that imports from the bundled stdlib and an open user module so we
+# can exercise cross-file hover / completion / go-to-definition for classes
+# and functions.
 CROSS_DOC = """from lamenv import Dotenv, Config
-from lamserver_plugins import basicAuth
+from helper import double
 
 func main() {
     env: Dotenv = Dotenv.parse(\"K=v\")
     print(env.get(\"K\"))
+}
+"""
+
+STDLIB_FIELD_DOC = """from lamdb import Db
+
+func main() {
+    db: Db = Db()
+    print(db.driver)
 }
 """
 
@@ -326,6 +337,7 @@ class UserAccount(Account) {
 func main() {
     user: UserAccount = UserAccount("alice")
     print(user.label())
+    print(user?.label())
     print(user.owner)
 }
 """
@@ -379,6 +391,7 @@ func main() {
 
 RENAME_DOC = """func compute(value: int) -> int {
     total: int = value + 1
+    print("total")
     return total
 }
 
@@ -399,6 +412,89 @@ FORMAT_EXPECTED = """func main() {
     value: int = 1
     if value > 0 {
         print("x:y", value)  # inline
+    }
+}
+"""
+
+EDITOR_REGRESSION_DOC = """go! {
+    func ready(s *Schema) bool {
+        return s.Ready()
+    }
+}
+
+go! {
+    func (s *Schema) valid() bool {
+        return s.Ready()
+    }
+}
+
+func hasAttrs(attrs: dict[str, str] = None) -> bool {
+    return attrs != None
+}
+
+func discard(fields: dict[str, str]) {
+    _ = fields
+}
+"""
+
+JSON_CONVERSION_DOC = """class Profile {
+    func __init__(self, name: str) {
+        self.name: str = name
+    }
+
+    func __json__(self) -> json {
+        return {"name": self.name}
+    }
+}
+
+func main() {
+    payload: json = json(Profile("Ada"))
+    print(payload)
+}
+"""
+
+OVERLOADED_METHOD_DOC = """class Formatter {
+    static func render(value: int) -> str { return str(value) }
+    static func render(value: str) -> str { return value }
+}
+
+func main() {
+    print(Formatter.render("Ada"))
+}
+"""
+
+TYPE_DETAIL_DOC = """func inspect(values: list[int], fallback: int | str) -> list[int] {
+    _ = fallback
+    return values
+}
+"""
+
+SYMBOL_ACCURACY_DOC = """class Profile {
+    func init(self) {
+        self.name: str = "Ada"
+        print(self.name)
+        print(self.missing)
+    }
+}
+"""
+
+FOLDING_DOC = """#-
+A foldable module description.
+-#
+
+class Folder {
+    func nested(self) {
+        if True {
+            print("inside")
+        }
+    }
+
+    func legacy(self) -> bool {
+        go!:
+            if nativeReady() {
+                return true
+            }
+        return false
     }
 }
 """
@@ -437,6 +533,12 @@ def run_tests() -> int:
             assert_true("documentFormattingProvider", caps.get("documentFormattingProvider"))
             assert_true("completionProvider", isinstance(caps.get("completionProvider"), dict))
             assert_true("workspaceSymbolProvider", caps.get("workspaceSymbolProvider"))
+            assert_true("foldingRangeProvider", caps.get("foldingRangeProvider"))
+            semantic_provider = caps.get("semanticTokensProvider")
+            assert_true("semanticTokensProvider", isinstance(semantic_provider, dict))
+            assert_true("semantic tokens full", semantic_provider.get("full"))
+            assert_true("semantic token legend", semantic_provider.get("legend", {}).get("tokenTypes"))
+            assert_eq("server version", resp.get("result", {}).get("serverInfo", {}).get("version"), LAMC_VERSION)
             print("PASS: initialize advertises capabilities")
         except AssertionError as e:
             failures.append(str(e))
@@ -461,6 +563,22 @@ def run_tests() -> int:
         except AssertionError as e:
             failures.append(str(e))
 
+        regression_uri = "file:///tmp/lsp_editor_regressions.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": regression_uri, "languageId": "lammergeier",
+                "version": 1, "text": EDITOR_REGRESSION_DOC,
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=4)
+        try:
+            assert_true("got editor regression diagnostics notification", notes)
+            assert_eq("no false-positive editor diagnostics",
+                      notes[0].get("params", {}).get("diagnostics"), [])
+            print("PASS: valid discard, None comparison, and raw-Go parameter avoid false diagnostics")
+        except AssertionError as e:
+            failures.append(f"editor diagnostic regressions: {e}")
+
         error_uri = "file:///tmp/lsp_semantic_errors.lam"
         client.notify("textDocument/didOpen", {
             "textDocument": {
@@ -473,8 +591,10 @@ def run_tests() -> int:
             diags = notes[0].get("params", {}).get("diagnostics", []) if notes else []
             wrong_type = next(diag for diag in diags if "cannot assign `str` to `int`" in diag.get("message", ""))
             missing_name = next(diag for diag in diags if "undefined name `missing`" in diag.get("message", ""))
+            invalid_none = next(diag for diag in diags if "cannot compare `int` and `None`" in diag.get("message", ""))
             assert_eq("wrong-type severity", wrong_type.get("severity"), 1)
             assert_eq("missing-name severity", missing_name.get("severity"), 1)
+            assert_eq("invalid None comparison severity", invalid_none.get("severity"), 1)
             print("PASS: missing names and wrong types publish as error diagnostics")
         except (AssertionError, StopIteration) as e:
             failures.append(f"semantic error diagnostics: {e}")
@@ -494,6 +614,22 @@ def run_tests() -> int:
             print("PASS: native json diagnostics publish as editor errors")
         except (AssertionError, StopIteration) as e:
             failures.append(f"native json diagnostics: {e}")
+
+        json_conversion_uri = "file:///tmp/lsp_json_conversion.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": json_conversion_uri, "languageId": "lammergeier", "version": 1,
+                "text": JSON_CONVERSION_DOC,
+            },
+        })
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=4)
+        try:
+            assert_true("got json conversion diagnostics notification", notes)
+            assert_eq("clean diagnostics for __json__ and json(value)",
+                      notes[0].get("params", {}).get("diagnostics"), [])
+            print("PASS: __json__ and json(value) are recognized by the LSP")
+        except AssertionError as e:
+            failures.append(f"json conversion diagnostics: {e}")
 
         # ── didOpen valid dict destructuring syntax ─────────
         dict_uri = "file:///tmp/lsp_dict_destructure.lam"
@@ -660,6 +796,22 @@ def run_tests() -> int:
         rename_lines = RENAME_DOC.splitlines()
         local_line = next(i for i, l in enumerate(rename_lines) if "return total" in l)
         local_col = rename_lines[local_line].index("total") + 1
+        resp = client.request("textDocument/definition", {
+            "textDocument": {"uri": rename_uri},
+            "position": {"line": local_line, "character": local_col},
+        })
+        local_definition = resp.get("result") or {}
+        try:
+            assert_eq("local definition URI", local_definition.get("uri"), rename_uri)
+            assert_eq("local definition line",
+                      local_definition.get("range", {}).get("start", {}).get("line"), 1)
+            assert_eq("local definition character",
+                      local_definition.get("range", {}).get("start", {}).get("character"),
+                      rename_lines[1].index("total"))
+            print("PASS: go-to-definition resolves local declarations")
+        except AssertionError as e:
+            failures.append(f"local definition: {e}")
+
         resp = client.request("textDocument/prepareRename", {
             "textDocument": {"uri": rename_uri},
             "position": {"line": local_line, "character": local_col},
@@ -772,6 +924,101 @@ def run_tests() -> int:
         except (AssertionError, StopIteration) as e:
             failures.append(f"generic documentSymbol: {e}")
 
+        type_uri = "file:///tmp/lsp_type_details.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": type_uri, "languageId": "lammergeier",
+                "version": 1, "text": TYPE_DETAIL_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("textDocument/hover", {
+            "textDocument": {"uri": type_uri},
+            "position": {"line": 0, "character": TYPE_DETAIL_DOC.splitlines()[0].index("inspect") + 1},
+        })
+        try:
+            val = ((resp.get("result") or {}).get("contents") or {}).get("value", "")
+            assert_true("hover preserves generic types", "list[int]" in val)
+            assert_true("hover preserves union types", "int | str" in val)
+            print("PASS: hover preserves generic and union type details")
+        except AssertionError as e:
+            failures.append(f"type detail hover: {e}")
+
+        accuracy_uri = "file:///tmp/lsp_symbol_accuracy.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": accuracy_uri, "languageId": "lammergeier",
+                "version": 1, "text": SYMBOL_ACCURACY_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("textDocument/documentSymbol", {
+            "textDocument": {"uri": accuracy_uri},
+        })
+        try:
+            profile = next(s for s in (resp.get("result") or []) if s.get("name") == "Profile")
+            child_names = [child.get("name") for child in profile.get("children", [])]
+            assert_eq("field declaration appears once", child_names.count("name"), 1)
+            assert_true("field reads are not declarations", "missing" not in child_names)
+            print("PASS: document symbols contain field declarations without read-site duplicates")
+        except (AssertionError, StopIteration) as e:
+            failures.append(f"symbol field accuracy: {e}")
+
+        folding_uri = "file:///tmp/lsp_folding.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": folding_uri, "languageId": "lammergeier",
+                "version": 1, "text": FOLDING_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("textDocument/foldingRange", {
+            "textDocument": {"uri": folding_uri},
+        })
+        try:
+            ranges = resp.get("result") or []
+            starts = {item.get("startLine") for item in ranges}
+            assert_true("block comment folding range", 0 in starts)
+            assert_true("class folding range", 4 in starts)
+            assert_true("function folding range", 5 in starts)
+            assert_true("control-flow folding range", 6 in starts)
+            assert_true("legacy go folding range", 12 in starts)
+            assert_true("comment folding kind", any(
+                item.get("startLine") == 0 and item.get("kind") == "comment" for item in ranges
+            ))
+            print("PASS: folding ranges cover comments and nested brace blocks")
+        except AssertionError as e:
+            failures.append(f"folding ranges: {e}")
+
+        resp = client.request("textDocument/semanticTokens/full", {
+            "textDocument": {"uri": folding_uri},
+        })
+        try:
+            data = (resp.get("result") or {}).get("data") or []
+            token_lines = []
+            current_line = 0
+            for index in range(0, len(data), 5):
+                current_line += data[index]
+                token_lines.append(current_line)
+            assert_true("legacy go body is excluded from semantic tokens",
+                        not any(13 <= line <= 15 for line in token_lines))
+            print("PASS: semantic tokens exclude legacy indented Go bodies")
+        except AssertionError as e:
+            failures.append(f"legacy go semantic tokens: {e}")
+
+        resp = client.request("textDocument/semanticTokens/full", {
+            "textDocument": {"uri": uri},
+        })
+        try:
+            data = (resp.get("result") or {}).get("data") or []
+            token_types = caps.get("semanticTokensProvider", {}).get("legend", {}).get("tokenTypes", [])
+            emitted = {token_types[data[i + 3]] for i in range(0, len(data), 5)}
+            for token_type in ("class", "function", "method", "parameter", "type", "property"):
+                assert_true(f"semantic token type {token_type}", token_type in emitted)
+            print("PASS: semantic tokens distinguish declarations, parameters, types, and members")
+        except (AssertionError, IndexError) as e:
+            failures.append(f"semantic tokens: {e}")
+
         # ── hover on `helper` ───────────────────────────────
         # Find "helper" in the source.
         for line_idx, line in enumerate(VALID_DOC.splitlines()):
@@ -790,6 +1037,19 @@ def run_tests() -> int:
                 except AssertionError as e:
                     failures.append(str(e))
                 break
+
+        builtin_line = next(i for i, text in enumerate(VALID_DOC.splitlines()) if "print(g.greet())" in text)
+        builtin_col = VALID_DOC.splitlines()[builtin_line].index("print") + 1
+        resp = client.request("textDocument/hover", {
+            "textDocument": {"uri": uri},
+            "position": {"line": builtin_line, "character": builtin_col},
+        })
+        try:
+            value = ((resp.get("result") or {}).get("contents") or {}).get("value", "")
+            assert_true("builtin hover detail", "builtin func print" in value)
+            print("PASS: hover describes Lammergeier builtins")
+        except AssertionError as e:
+            failures.append(f"builtin hover: {e}")
 
         signature_uri = "file:///tmp/lsp_signature.lam"
         client.notify("textDocument/didOpen", {
@@ -845,7 +1105,10 @@ def run_tests() -> int:
             assert_true("completion has helper", "helper" in labels)
             assert_true("completion has Greeter", "Greeter" in labels)
             assert_true("completion has 'func' keyword", "func" in labels)
-            print("PASS: completion lists user functions and classes")
+            assert_true("completion has async keyword", "async" in labels)
+            assert_true("completion has True constant", "True" in labels)
+            assert_true("completion has panic builtin", "panic" in labels)
+            print("PASS: completion lists symbols, language keywords, constants, and builtins")
         except AssertionError as e:
             failures.append(str(e))
 
@@ -916,6 +1179,20 @@ def run_tests() -> int:
         except AssertionError as e:
             failures.append(f"instance member completion: {e}")
 
+        safe_line = next(i for i, l in enumerate(instance_lines) if "user?.label()" in l)
+        safe_dot = instance_lines[safe_line].index("user?.") + len("user?.")
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": instance_uri},
+            "position": {"line": safe_line, "character": safe_dot},
+        })
+        safe_labels = {it.get("label") for it in (resp.get("result") or {}).get("items", [])}
+        try:
+            assert_true("safe-navigation completion includes members", "label" in safe_labels)
+            assert_true("safe-navigation completion includes inherited fields", "owner" in safe_labels)
+            print("PASS: completion resolves members after safe navigation")
+        except AssertionError as e:
+            failures.append(f"safe-navigation completion: {e}")
+
         owner_line = next(i for i, l in enumerate(instance_lines) if "user.owner" in l)
         owner_col = instance_lines[owner_line].index("owner") + 1
         resp = client.request("textDocument/definition", {
@@ -979,6 +1256,31 @@ def run_tests() -> int:
             print("PASS: signatureHelp resolves instance methods and hides self")
         except AssertionError as e:
             failures.append(f"method signatureHelp: {e}")
+
+        overload_uri = "file:///tmp/lsp_method_overloads.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": overload_uri, "languageId": "lammergeier",
+                "version": 1, "text": OVERLOADED_METHOD_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        overload_lines = OVERLOADED_METHOD_DOC.splitlines()
+        overload_line = next(i for i, text in enumerate(overload_lines) if "Formatter.render" in text)
+        overload_char = overload_lines[overload_line].index('"Ada"') + len('"Ada"')
+        resp = client.request("textDocument/signatureHelp", {
+            "textDocument": {"uri": overload_uri},
+            "position": {"line": overload_line, "character": overload_char},
+        })
+        try:
+            signatures = (resp.get("result") or {}).get("signatures") or []
+            labels = {signature.get("label") for signature in signatures}
+            assert_true("overloaded static method int signature", "static func render(value: int) -> str" in labels)
+            assert_true("overloaded static method str signature", "static func render(value: str) -> str" in labels)
+            assert_eq("overloaded static method active signature", signatures[(resp.get("result") or {}).get("activeSignature", 0)].get("label"), "static func render(value: str) -> str")
+            print("PASS: signatureHelp shows and selects method overloads")
+        except AssertionError as e:
+            failures.append(f"overloaded method signatureHelp: {e}")
 
         named_uri = "file:///tmp/lsp_named_bases.lam"
         client.notify("textDocument/didOpen", {
@@ -1096,7 +1398,15 @@ def run_tests() -> int:
                     failures.append(f"definition: {e}")
                 break
 
-        # ── cross-file resolution against the bundled stdlib ────
+        # ── cross-file resolution against stdlib and user modules ─
+        helper_uri = "file:///tmp/helper.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": helper_uri, "languageId": "lammergeier",
+                "version": 1, "text": USER_HELPER_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
         cross_uri = "file:///tmp/lsp_cross.lam"
         client.notify("textDocument/didOpen", {
             "textDocument": {
@@ -1106,6 +1416,28 @@ def run_tests() -> int:
         })
         client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
         cross_lines = CROSS_DOC.splitlines()
+
+        module_col = cross_lines[0].index("lamenv") + 1
+        resp = client.request("textDocument/definition", {
+            "textDocument": {"uri": cross_uri},
+            "position": {"line": 0, "character": module_col},
+        })
+        try:
+            module_location = resp.get("result") or {}
+            assert_true("module definition target", "lib/lamenv.lam" in module_location.get("uri", ""))
+            print("PASS: go-to-definition resolves imported module paths")
+        except AssertionError as e:
+            failures.append(f"module definition: {e}")
+        resp = client.request("textDocument/hover", {
+            "textDocument": {"uri": cross_uri},
+            "position": {"line": 0, "character": module_col},
+        })
+        try:
+            value = ((resp.get("result") or {}).get("contents") or {}).get("value", "")
+            assert_true("module hover detail", "module lamenv" in value)
+            print("PASS: hover describes imported modules")
+        except AssertionError as e:
+            failures.append(f"module hover: {e}")
 
         # Hover on the ``Dotenv`` annotation: should return a markdown
         # block that mentions the originating module.
@@ -1124,35 +1456,35 @@ def run_tests() -> int:
         except AssertionError as e:
             failures.append(f"cross-file hover: {e}")
 
-        # Hover on ``basicAuth`` (an imported function — not a class).
-        ba_line = next(i for i, l in enumerate(cross_lines)
-                        if "import basicAuth" in l)
-        ba_col = cross_lines[ba_line].index("basicAuth") + 1
+        # Hover on ``double`` (an imported function — not a class).
+        imported_func_line = next(i for i, line in enumerate(cross_lines)
+                                  if "import double" in line)
+        imported_func_col = cross_lines[imported_func_line].index("double") + 1
         resp = client.request("textDocument/hover", {
             "textDocument": {"uri": cross_uri},
-            "position": {"line": ba_line, "character": ba_col},
+            "position": {"line": imported_func_line, "character": imported_func_col},
         })
         try:
             val = ((resp.get("result") or {}).get("contents") or {}).get("value", "")
-            assert_true("hover on imported func", "basicAuth" in val)
-            assert_true("hover origin", "lamserver_plugins" in val)
-            print("PASS: hover resolves imported stdlib function")
+            assert_true("hover on imported func", "double" in val)
+            assert_true("hover origin", "helper" in val)
+            print("PASS: hover resolves imported function")
         except AssertionError as e:
             failures.append(f"cross-file hover (func): {e}")
 
         resp = client.request("textDocument/rename", {
             "textDocument": {"uri": cross_uri},
-            "position": {"line": ba_line, "character": ba_col},
-            "newName": "renamedAuth",
+            "position": {"line": imported_func_line, "character": imported_func_col},
+            "newName": "renamedDouble",
         })
         try:
             err = resp.get("error") or {}
-            assert_true("stdlib rename rejected", err)
-            assert_true("stdlib rename clear error",
-                        "imported symbol `basicAuth`" in err.get("message", ""))
-            print("PASS: rename rejects imported stdlib symbols clearly")
+            assert_true("imported rename rejected", err)
+            assert_true("imported rename clear error",
+                        "imported symbol `double`" in err.get("message", ""))
+            print("PASS: rename rejects imported symbols clearly")
         except AssertionError as e:
-            failures.append(f"stdlib rename rejection: {e}")
+            failures.append(f"imported rename rejection: {e}")
 
         # Top-level completion should expose every imported alias.
         resp = client.request("textDocument/completion", {
@@ -1164,9 +1496,8 @@ def run_tests() -> int:
         try:
             assert_true("Dotenv in top-level completion", "Dotenv" in labels)
             assert_true("Config in top-level completion", "Config" in labels)
-            assert_true("basicAuth in top-level completion",
-                         "basicAuth" in labels)
-            print("PASS: completion lists imported stdlib aliases")
+            assert_true("double in top-level completion", "double" in labels)
+            print("PASS: completion lists imported aliases")
         except AssertionError as e:
             failures.append(f"cross-file completion (top): {e}")
 
@@ -1324,16 +1655,41 @@ def run_tests() -> int:
         except AssertionError as e:
             failures.append(f"cross-file definition: {e}")
 
-        # ── cross-file user module resolution ───────────────
-        helper_uri = "file:///tmp/helper.lam"
-        user_main_uri = "file:///tmp/user_main.lam"
+        stdlib_field_uri = "file:///tmp/lsp_stdlib_field.lam"
         client.notify("textDocument/didOpen", {
             "textDocument": {
-                "uri": helper_uri, "languageId": "lammergeier",
-                "version": 1, "text": USER_HELPER_DOC,
+                "uri": stdlib_field_uri, "languageId": "lammergeier",
+                "version": 1, "text": STDLIB_FIELD_DOC,
             },
         })
         client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        stdlib_field_lines = STDLIB_FIELD_DOC.splitlines()
+        field_line = next(i for i, text in enumerate(stdlib_field_lines) if "db.driver" in text)
+        field_dot = stdlib_field_lines[field_line].index("db.") + len("db.")
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": stdlib_field_uri},
+            "position": {"line": field_line, "character": field_dot},
+        })
+        try:
+            labels = {item.get("label") for item in (resp.get("result") or {}).get("items", [])}
+            assert_true("imported stdlib field completion", "driver" in labels)
+            print("PASS: completion includes imported stdlib class fields")
+        except AssertionError as e:
+            failures.append(f"stdlib field completion: {e}")
+        resp = client.request("textDocument/definition", {
+            "textDocument": {"uri": stdlib_field_uri},
+            "position": {"line": field_line, "character": field_dot + 1},
+        })
+        try:
+            location = resp.get("result") or {}
+            assert_true("imported stdlib field definition URI",
+                        "lib/lamdb.lam" in location.get("uri", ""))
+            print("PASS: go-to-definition resolves imported stdlib class fields")
+        except AssertionError as e:
+            failures.append(f"stdlib field definition: {e}")
+
+        # ── cross-file user module resolution ───────────────
+        user_main_uri = "file:///tmp/user_main.lam"
         resp = client.request("workspace/symbol", {"query": "double"})
         workspace_symbols = resp.get("result") or []
         try:

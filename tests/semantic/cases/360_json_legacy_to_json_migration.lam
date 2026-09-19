@@ -1,0 +1,10 @@
+# expect-error: class `Legacy` defines legacy `toJson`; rename it to `func __json__(self) -> json` and call `json(value)`
+
+class Legacy {
+    func toJson(self) -> json { return {"legacy": true} }
+}
+
+func main() {
+    value: json = json(Legacy())
+    print(value)
+}

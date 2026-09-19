@@ -7,10 +7,12 @@ v3.17, supporting:
 * ``initialize`` / ``initialized`` / ``shutdown`` / ``exit`` lifecycle
 * ``textDocument/didOpen``, ``didChange`` (full sync), ``didClose``
 * ``textDocument/publishDiagnostics`` (pushed on change)
-* ``textDocument/hover``      — type / signature for the symbol under the cursor
-* ``textDocument/completion`` — top-level functions, classes, methods of receiver
-* ``textDocument/definition`` — jump to top-level definitions
-* ``textDocument/documentSymbol`` — outline tree for the editor
+* ``textDocument/hover`` / ``signatureHelp`` — type and call information
+* ``textDocument/completion`` — scoped names, imports, builtins, and members
+* ``textDocument/definition`` / ``references`` / ``rename`` — source navigation
+* ``textDocument/documentSymbol`` / ``workspace/symbol`` — searchable outlines
+* ``textDocument/foldingRange`` / ``semanticTokens`` — structural presentation
+* ``textDocument/formatting`` — parser-validated full-document formatting
 
 The server piggy-backs on the existing Lark grammar and the static
 metadata gathered by ``GoTranspiler`` (class names, function defaults,
@@ -26,6 +28,7 @@ Editors should launch it as a child process and pipe LSP messages.
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import os
@@ -56,8 +59,10 @@ from compiler.ast_nodes import ClassDecl, FuncDecl, InterfaceDecl, Module, Param
 from compiler.formatter import FormatError, format_lam_source  # noqa: E402
 from compiler.modules import ModuleFacts, WorkspaceIndex  # noqa: E402
 from compiler.preprocessor import find_unknown_lammergeier_aliases  # noqa: E402
+from compiler.semantic import BUILTIN_CONSTANTS, BUILTIN_FUNCS, LAM_KEYWORDS  # noqa: E402
 from compiler.syntax_errors import make_syntax_diagnostic  # noqa: E402
 from compiler.lammergeier import preprocess_for_parse  # noqa: E402
+from compiler.version import LAMC_VERSION  # noqa: E402
 
 # Optional: log to a file when LAMMERGEIER_LSP_LOG is set. The LSP
 # stdio channel must stay clean of stray prints, so we never log to
@@ -129,6 +134,18 @@ def _uri_to_path(uri: str) -> Optional[Path]:
 _PARSER: Optional[Lark] = None
 _PARSER_LOCK = threading.Lock()
 
+_SEMANTIC_TOKEN_TYPES = (
+    "namespace", "type", "class", "interface", "parameter", "variable",
+    "property", "function", "method", "keyword", "modifier", "decorator",
+)
+_SEMANTIC_TOKEN_MODIFIERS = ("declaration", "readonly", "static", "async")
+_BUILTIN_TYPE_NAMES = {
+    "any", "bool", "byte", "bytes", "dict", "error", "float", "float32",
+    "float64", "func", "int", "int8", "int16", "int32", "int64", "json",
+    "list", "object", "optional", "Option", "Result", "rune", "set", "str",
+    "string", "tuple", "uint", "uint8", "uint16", "uint32", "uint64",
+}
+
 # ── stdlib symbol index ─────────────────────────────────────
 # Lazy-built map ``module_name -> StdlibModule`` for the curated
 # stdlib under ``lib/*.lam``. The entries cache parsed symbols
@@ -184,11 +201,11 @@ def _index_stdlib_module(path: Path) -> Optional[StdlibModule]:
     except Exception:
         logger.exception("stdlib parse failed: %s", path)
         return None
-    symbols = _collect_symbols(tree)
+    symbols = _merge_symbols(_collect_symbols(tree, text), _self_field_symbols(text))
     public: Dict[str, Symbol] = {}
     methods: Dict[str, Dict[str, Symbol]] = {}
     for sym in symbols:
-        if sym.kind == "class":
+        if sym.kind in {"class", "interface"}:
             public[sym.name] = sym
             methods.setdefault(sym.name, {})
         elif sym.kind == "function" and not sym.name.startswith("_"):
@@ -339,8 +356,8 @@ def _preprocess_result_for_parse(source: str):
 
 
 _FUNC_RE = re.compile(
-    r"^(?P<indent>\s*)(?P<mods>(?:static\s+|private\s+)?)func\s+"
-    r"(?P<name>\w+)\s*\((?P<params>[^)]*)\)\s*"
+    r"^(?P<indent>\s*)(?P<mods>(?:(?:private|static|async)\s+)*)func\s+"
+    r"(?P<name>\w+)\s*(?:\[[^\]]*\])?\s*\((?P<params>[^)]*)\)\s*"
     r"(?:->\s*(?P<ret>[^\{]+?))?\s*\{?",
     re.MULTILINE,
 )
@@ -368,7 +385,7 @@ def _regex_symbols(source: str) -> List[Symbol]:
         cls_match = _CLASS_RE.match(raw)
         if cls_match:
             cname = cls_match.group("name")
-            col = raw.index("class")
+            col = cls_match.start("name")
             out.append(Symbol(
                 name=cname, kind="class",
                 line=i, col=col, end_line=i, end_col=col + len(cname),
@@ -389,11 +406,11 @@ def _regex_symbols(source: str) -> List[Symbol]:
             detail = f"{mods + ' ' if mods else ''}func {name}({params})"
             if ret:
                 detail += f" -> {ret}"
-            col = raw.find("func")
+            col = fn.start("name")
             out.append(Symbol(
                 name=name, kind=kind,
                 line=i, col=col,
-                end_line=i, end_col=col + len(name) + 5,
+                end_line=i, end_col=col + len(name),
                 detail=detail.strip(), parent=parent,
             ))
 
@@ -426,7 +443,7 @@ def _collect_imports(tree: Tree) -> Dict[str, Tuple[str, str]]:
         names_node: Optional[Tree] = None
         for child in node.children:
             if isinstance(child, Tree):
-                if child.data == "dotted_name" and not module:
+                if child.data in {"dotted_name", "scoped_name"} and not module:
                     module = module_name(child)
                 elif child.data == "import_as_names":
                     names_node = child
@@ -495,7 +512,7 @@ def analyze(
     try:
         tree = parser.parse(pre)
         doc.tree = tree
-        doc.symbols = _merge_symbols(_collect_symbols(tree), _self_field_symbols(doc.text))
+        doc.symbols = _merge_symbols(_collect_symbols(tree, doc.text), _self_field_symbols(doc.text))
         doc.imports = _collect_imports(tree)
         # Semantic check — best-effort. A bug in the checker should
         # never blank the editor, so any exception is logged and
@@ -639,28 +656,35 @@ def _merge_symbols(primary: List[Symbol], extra: List[Symbol]) -> List[Symbol]:
 def _self_field_symbols(source: str) -> List[Symbol]:
     """Best-effort ``self.field`` declarations for editor navigation."""
     out: List[Symbol] = []
+    seen: set[Tuple[str, str]] = set()
     class_stack: List[Tuple[str, int]] = []
     depth = 0
+    field_pattern = re.compile(
+        r"\bself\.(?P<name>[A-Za-z_]\w*)\s*"
+        r"(?::\s*(?P<type>[A-Za-z_][\w.\[\], |]*?))?\s*"
+        r"(?:\*\*=|//=|<<=|>>=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=(?!=))"
+    )
     for line_no, raw in enumerate(source.splitlines()):
         class_match = _CLASS_HEADER_RE.match(raw)
         if class_match:
             class_stack.append((class_match.group("name"), depth))
         current_class = class_stack[-1][0] if class_stack else ""
         if current_class:
-            for match in re.finditer(
-                r"\bself\.([A-Za-z_]\w*)\s*(?::\s*([A-Za-z_][\w.\[\], ]*))?",
-                raw,
-            ):
-                name = match.group(1)
-                type_name = _class_name_from_type(match.group(2) or "")
+            for match in field_pattern.finditer(raw):
+                name = match.group("name")
+                key = (current_class, name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                type_name = (match.group("type") or "").strip()
                 detail = f"{name}: {type_name}" if type_name else name
                 out.append(Symbol(
                     name=name,
                     kind="variable",
                     line=line_no,
-                    col=match.start(1),
+                    col=match.start("name"),
                     end_line=line_no,
-                    end_col=match.end(1),
+                    end_col=match.end("name"),
                     detail=detail,
                     parent=current_class,
                 ))
@@ -718,7 +742,8 @@ def _diagnostic_matches_expectation(diag: Diagnostic, exp: FixtureExpectation) -
 
 
 _IMPORT_FROM_RE = re.compile(
-    r"^\s*from\s+(?P<module>[A-Za-z_][\w.]*)\s+import\s+(?P<names>[^\n#]+)",
+    r"^\s*from\s+(?P<module>@[A-Za-z0-9_][A-Za-z0-9_-]*/[A-Za-z_][A-Za-z0-9_-]*|\.*[A-Za-z_][\w.]*)"
+    r"\s+import\s+(?P<names>[^\n#]+)",
     re.MULTILINE,
 )
 
@@ -937,7 +962,8 @@ def _replace_signature_params(label: str, params: List[str]) -> str:
 def _identifier_occurrences(source: str, name: str) -> List[Tuple[int, int, int]]:
     pattern = re.compile(rf"\b{re.escape(name)}\b")
     out: List[Tuple[int, int, int]] = []
-    for line_no, line in enumerate(source.splitlines()):
+    masked, _ = _mask_lam_source(source)
+    for line_no, line in enumerate(masked.splitlines()):
         for match in pattern.finditer(line):
             out.append((line_no, match.start(), match.end()))
     return out
@@ -955,36 +981,76 @@ def _type_to_str(node) -> str:
         return str(node)
     if isinstance(node, Tree):
         if node.data == "name":
-            return str(node.children[0])
+            return str(node.children[0]) if node.children else ""
         if node.data == "dotted_name":
-            return ".".join(_type_to_str(c) for c in node.children if c is not None)
-        if node.data == "type_subscript" and node.children:
+            return ".".join(filter(None, (_type_to_str(c) for c in node.children)))
+        if node.data == "type_none":
+            return "None"
+        if node.data == "type_union":
+            return " | ".join(filter(None, (_type_to_str(c) for c in node.children)))
+        if node.data in {"type_generic", "type_subscript"} and node.children:
             base = _type_to_str(node.children[0])
-            inner = ", ".join(_type_to_str(c) for c in node.children[1:])
+            inner = ", ".join(filter(None, (_type_to_str(c) for c in node.children[1:])))
             return f"{base}[{inner}]" if inner else base
+        if node.data == "type_func_params":
+            return ", ".join(filter(None, (_type_to_str(c) for c in node.children)))
         if node.data == "type_func":
-            params = ", ".join(_type_to_str(c) for c in (node.children[:-1] or []))
-            ret = _type_to_str(node.children[-1]) if node.children else ""
-            return f"func({params}) -> {ret}"
-        # Generic unwrap for type_expr / type_union / type_name etc.
+            params = next(
+                (_type_to_str(c) for c in node.children
+                 if isinstance(c, Tree) and c.data == "type_func_params"),
+                "",
+            )
+            ret = next(
+                (_type_to_str(c) for c in reversed(node.children)
+                 if isinstance(c, Tree) and c.data == "type_expr"),
+                "",
+            )
+            return f"func({params}) -> {ret}" if ret else f"func({params})"
         for c in node.children:
-            s = _type_to_str(c)
-            if s:
-                return s
+            text = _type_to_str(c)
+            if text:
+                return text
     return ""
 
 
-def _collect_symbols(tree: Tree) -> List[Symbol]:
+def _collect_symbols(tree: Tree, source: str = "") -> List[Symbol]:
     """Collect symbols from the canonical declaration AST.
 
     The Lark walker remains as a fallback while the AST grows; successful
     parse paths should use this AST-backed surface.
     """
     try:
-        return _symbols_from_ast(build_module(tree))
+        symbols = _symbols_from_ast(build_module(tree))
     except Exception:
         logger.exception("AST symbol extraction failed; falling back to Lark symbols")
-        return _collect_symbols_from_lark(tree)
+        symbols = _collect_symbols_from_lark(tree)
+    if source:
+        _align_symbol_columns(symbols, source)
+    return symbols
+
+
+def _align_symbol_columns(symbols: List[Symbol], source: str) -> None:
+    lines = source.splitlines()
+    for sym in symbols:
+        if not (0 <= sym.line < len(lines)):
+            continue
+        if sym.kind in {"function", "method", "static_method"}:
+            pattern = rf"\bfunc\s+(?P<name>{re.escape(sym.name)})\b"
+        elif sym.kind == "class":
+            pattern = rf"\bclass\s+(?P<name>{re.escape(sym.name)})\b"
+        elif sym.kind == "interface":
+            pattern = rf"\binterface\s+(?P<name>{re.escape(sym.name)})\b"
+        elif sym.parent:
+            pattern = rf"\bself\.(?P<name>{re.escape(sym.name)})\b"
+        else:
+            pattern = rf"\b(?P<name>{re.escape(sym.name)})\b"
+        last_line = min(max(sym.line, sym.end_line), len(lines) - 1)
+        for line_no in range(sym.line, last_line + 1):
+            match = re.search(pattern, lines[line_no])
+            if match is not None:
+                sym.line = line_no
+                sym.col = match.start("name")
+                break
 
 
 def _symbols_from_ast(module: Module) -> List[Symbol]:
@@ -1003,7 +1069,7 @@ def _symbols_from_ast(module: Module) -> List[Symbol]:
                 line, col, end_line, end_col = _span_parts(decl.span)
                 out.append(Symbol(
                     name=decl.name,
-                    kind="class",
+                    kind="interface",
                     line=line,
                     col=col,
                     end_line=end_line,
@@ -1017,8 +1083,16 @@ def _symbols_from_ast(module: Module) -> List[Symbol]:
 
 def _func_symbol(decl: FuncDecl) -> Symbol:
     line, col, end_line, end_col = _span_parts(decl.span)
-    prefix = "static " if decl.is_static else ("private " if decl.is_private else "")
-    detail = f"{prefix}func {decl.name}({_param_list(decl.params)})"
+    modifiers = [
+        name for enabled, name in (
+            (decl.is_private, "private"),
+            (decl.is_static, "static"),
+            (decl.is_async, "async"),
+        )
+        if enabled
+    ]
+    prefix = " ".join(modifiers)
+    detail = f"{prefix + ' ' if prefix else ''}func {decl.name}({_param_list(decl.params)})"
     if decl.return_type is not None and decl.return_type.name:
         detail += f" -> {decl.return_type.name}"
     kind = "static_method" if decl.is_static else ("method" if decl.parent else "function")
@@ -1301,7 +1375,7 @@ def _assign_bindings(node: Tree) -> List[Tuple[str, str]]:
     return results
 
 
-def _scope_locals_at(tree: Tree, line: int) -> List[Symbol]:
+def _scope_locals_at(tree: Tree, line: int, source: str = "") -> List[Symbol]:
     """Return the parameter list + local assignments of the ``funcdef``
     enclosing ``line`` (0-indexed).
 
@@ -1357,9 +1431,12 @@ def _scope_locals_at(tree: Tree, line: int) -> List[Symbol]:
                         type_str = _type_to_str(target.children[1])
                     if name:
                         detail = f"{name}: {type_str}" if type_str else f"param {name}"
+                        start_line, start_col = _node_pos(target)
                         locals_out.append(Symbol(
                             name=name, kind="variable",
-                            line=0, col=0, detail=detail,
+                            line=start_line, col=start_col,
+                            end_line=start_line, end_col=start_col + len(name),
+                            detail=detail,
                         ))
             elif isinstance(child, Token):
                 tok = str(child)
@@ -1379,10 +1456,13 @@ def _scope_locals_at(tree: Tree, line: int) -> List[Symbol]:
         if node.data == "classdef":
             return
         if node.data in ("annassign", "assign_stmt", "const_stmt"):
+            start_line, start_col = _node_pos(node)
             for tgt, detail in _assign_bindings(node):
                 locals_out.append(Symbol(
                     name=tgt, kind="variable",
-                    line=0, col=0, detail=detail or tgt,
+                    line=start_line, col=start_col,
+                    end_line=start_line, end_col=start_col + len(tgt),
+                    detail=detail or tgt,
                 ))
             return
         if node.data == "for_stmt":
@@ -1390,9 +1470,12 @@ def _scope_locals_at(tree: Tree, line: int) -> List[Symbol]:
             if node.children and isinstance(node.children[0], Tree):
                 n = _name_token(node.children[0])
                 if n and n != "_":
+                    start_line, start_col = _node_pos(node.children[0])
                     locals_out.append(Symbol(
                         name=n, kind="variable",
-                        line=0, col=0, detail=f"for-target {n}",
+                        line=start_line, col=start_col,
+                        end_line=start_line, end_col=start_col + len(n),
+                        detail=f"for-target {n}",
                     ))
         for c in node.children:
             walk_body(c)
@@ -1402,6 +1485,16 @@ def _scope_locals_at(tree: Tree, line: int) -> List[Symbol]:
             collect_params(child)
 
     walk_body(func)
+
+    if source:
+        lines = source.splitlines()
+        for symbol in locals_out:
+            if not (0 <= symbol.line < len(lines)):
+                continue
+            match = re.search(rf"\b{re.escape(symbol.name)}\b", lines[symbol.line])
+            if match is not None:
+                symbol.col = match.start()
+                symbol.end_col = match.end()
 
     # De-duplicate by name — inner shadows outer, but we only want
     # one entry per identifier in the completion list.
@@ -1444,6 +1537,314 @@ def _enclosing_func_line_range(tree: Tree, line: int) -> Optional[Tuple[int, int
     return start, end
 
 
+def _mask_lam_source(source: str) -> Tuple[str, List[Tuple[int, int, Optional[str]]]]:
+    masked = list(source)
+    folds: List[Tuple[int, int, Optional[str]]] = []
+    n = len(source)
+
+    def line_at(index: int) -> int:
+        return source.count("\n", 0, index)
+
+    def mask(start: int, end: int) -> None:
+        for pos in range(start, min(end, n)):
+            if masked[pos] != "\n":
+                masked[pos] = " "
+
+    def quoted_end(start: int, quote: str) -> int:
+        pos = start + len(quote)
+        while pos < n:
+            if source.startswith(quote, pos):
+                escapes = 0
+                scan = pos - 1
+                while scan >= start and source[scan] == "\\":
+                    escapes += 1
+                    scan -= 1
+                if escapes % 2 == 0:
+                    return pos + len(quote)
+            if len(quote) == 1 and quote != "`" and source[pos] == "\n":
+                return pos
+            pos += 1
+        return n
+
+    def go_end(open_pos: int, opener: str) -> int:
+        closer = "}" if opener == "{" else ")"
+        depth = 1
+        pos = open_pos + 1
+        while pos < n:
+            if source.startswith("//", pos):
+                newline = source.find("\n", pos + 2)
+                pos = n if newline < 0 else newline + 1
+                continue
+            if source.startswith("/*", pos):
+                close = source.find("*/", pos + 2)
+                pos = n if close < 0 else close + 2
+                continue
+            char = source[pos]
+            if char in {'"', "'", "`"}:
+                pos = quoted_end(pos, char)
+                continue
+            if char == opener:
+                depth += 1
+            elif char == closer:
+                depth -= 1
+                if depth == 0:
+                    return pos + 1
+            pos += 1
+        return n
+
+    def indented_go_end(marker_pos: int) -> int:
+        line_start = source.rfind("\n", 0, marker_pos) + 1
+        base_indent = len(source[line_start:marker_pos])
+        cursor = source.find("\n", marker_pos)
+        if cursor < 0:
+            return n
+        cursor += 1
+        while cursor < n:
+            line_end = source.find("\n", cursor)
+            line_end = n if line_end < 0 else line_end
+            row = source[cursor:line_end]
+            if row.strip():
+                indent = len(row) - len(row.lstrip("\t "))
+                if indent <= base_indent:
+                    return cursor
+            cursor = line_end + 1
+        return n
+
+    pos = 0
+    string_start = re.compile(r"(?i:[rubf]{0,2})(\"\"\"|'''|\"|')")
+    while pos < n:
+        if source.startswith("#-", pos):
+            end = source.find("-#", pos + 2)
+            end = n if end < 0 else end + 2
+            start_line, end_line = line_at(pos), line_at(max(pos, end - 1))
+            if end_line > start_line:
+                folds.append((start_line, end_line, "comment"))
+            mask(pos, end)
+            pos = end
+            continue
+        if source[pos] == "#":
+            end = source.find("\n", pos + 1)
+            end = n if end < 0 else end
+            mask(pos, end)
+            pos = end
+            continue
+        legacy_go_match = re.match(r"go!\s*:", source[pos:])
+        if legacy_go_match and (pos == 0 or not (source[pos - 1].isalnum() or source[pos - 1] == "_")):
+            end = indented_go_end(pos)
+            start_line, end_line = line_at(pos), line_at(max(pos, end - 1))
+            if end_line > start_line:
+                folds.append((start_line, end_line, None))
+            mask(pos, end)
+            pos = end
+            continue
+        go_match = re.match(r"go!\s*([({])", source[pos:])
+        if go_match and (pos == 0 or not (source[pos - 1].isalnum() or source[pos - 1] == "_")):
+            open_pos = pos + go_match.end(1) - 1
+            end = go_end(open_pos, go_match.group(1))
+            start_line, end_line = line_at(pos), line_at(max(pos, end - 1))
+            if end_line > start_line:
+                folds.append((start_line, end_line, None))
+            mask(pos, end)
+            pos = end
+            continue
+        string_match = string_start.match(source, pos)
+        if string_match and (
+            source[pos] in {'"', "'"}
+            or pos == 0
+            or not (source[pos - 1].isalnum() or source[pos - 1] == "_")
+        ):
+            quote = string_match.group(1)
+            quote_pos = string_match.end(1) - len(quote)
+            end = quoted_end(quote_pos, quote)
+            start_line, end_line = line_at(pos), line_at(max(pos, end - 1))
+            if len(quote) == 3 and end_line > start_line:
+                folds.append((start_line, end_line, None))
+            mask(pos, end)
+            pos = end
+            continue
+        pos += 1
+    return "".join(masked), folds
+
+
+def _folding_ranges(source: str) -> List[Dict[str, Any]]:
+    masked, special = _mask_lam_source(source)
+    ranges: List[Dict[str, Any]] = []
+    stack: List[Tuple[int, int]] = []
+    line = 0
+    col = 0
+    for char in masked:
+        if char == "{":
+            stack.append((line, col))
+        elif char == "}" and stack:
+            start_line, start_col = stack.pop()
+            if line > start_line:
+                ranges.append({
+                    "startLine": start_line,
+                    "startCharacter": start_col,
+                    "endLine": line,
+                    "endCharacter": col,
+                })
+        if char == "\n":
+            line += 1
+            col = 0
+        else:
+            col += 1
+    for start_line, end_line, kind in special:
+        item: Dict[str, Any] = {"startLine": start_line, "endLine": end_line}
+        if kind:
+            item["kind"] = kind
+        ranges.append(item)
+    lines = source.splitlines()
+    start: Optional[int] = None
+    for line_no in range(len(lines) + 1):
+        is_comment = line_no < len(lines) and bool(re.match(r"^\s*#(?!-)", lines[line_no]))
+        if is_comment and start is None:
+            start = line_no
+        elif not is_comment and start is not None:
+            if line_no - start > 1:
+                ranges.append({"startLine": start, "endLine": line_no - 1, "kind": "comment"})
+            start = None
+    unique = {
+        (item["startLine"], item["endLine"], item.get("kind")): item
+        for item in ranges
+        if item["endLine"] > item["startLine"]
+    }
+    return sorted(unique.values(), key=lambda item: (item["startLine"], item["endLine"]))
+
+
+def _semantic_token_data(doc: Document) -> List[int]:
+    masked, _ = _mask_lam_source(doc.text)
+    spans: set[Tuple[int, int, int, str, int]] = set()
+    line_offsets = [0]
+    for match in re.finditer("\n", masked):
+        line_offsets.append(match.end())
+
+    def position(index: int) -> Tuple[int, int]:
+        line = bisect.bisect_right(line_offsets, index) - 1
+        return line, index - line_offsets[line]
+
+    def add(index: int, length: int, token_type: str, *modifiers: str) -> None:
+        if length <= 0 or token_type not in _SEMANTIC_TOKEN_TYPES:
+            return
+        line, col = position(index)
+        bits = sum(
+            1 << _SEMANTIC_TOKEN_MODIFIERS.index(modifier)
+            for modifier in modifiers
+            if modifier in _SEMANTIC_TOKEN_MODIFIERS
+        )
+        spans.add((line, col, length, token_type, bits))
+
+    lines = masked.splitlines()
+    for sym in doc.symbols:
+        if sym.line >= len(lines):
+            continue
+        row = lines[sym.line]
+        match = re.search(rf"\b{re.escape(sym.name)}\b", row)
+        if match is None:
+            continue
+        index = line_offsets[sym.line] + match.start()
+        token_type = {
+            "class": "class",
+            "interface": "interface",
+            "function": "function",
+            "method": "method",
+            "static_method": "method",
+            "variable": "property" if sym.parent else "variable",
+        }.get(sym.kind)
+        if token_type:
+            modifiers = ["declaration"]
+            if sym.kind == "static_method":
+                modifiers.append("static")
+            add(index, len(sym.name), token_type, *modifiers)
+
+    declaration_pattern = re.compile(
+        r"(?m)^\s*(?P<mods>(?:(?:private|static|async)\s+)*)func\s+"
+        r"(?P<name>[A-Za-z_]\w*)(?:\s*\[[^\]]*\])?\s*\((?P<params>.*?)\)"
+    )
+    for match in declaration_pattern.finditer(masked):
+        params = match.group("params")
+        params_start = match.start("params")
+        for param in re.finditer(
+            r"(?:^|,)\s*\*{0,2}\s*(?:\([^)]*\)\s*:\s*)?([A-Za-z_]\w*)"
+            r"(?=\s*(?::|=|,|$))",
+            params,
+        ):
+            add(params_start + param.start(1), len(param.group(1)), "parameter", "declaration")
+        for modifier in re.finditer(r"\b(private|static|async)\b", match.group("mods")):
+            add(match.start("mods") + modifier.start(1), len(modifier.group(1)), "modifier")
+
+    type_pattern = re.compile(
+        r"(?::|->)\s*(?P<type>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?"
+        r"(?:\s*\[[^\]\n]*\])?(?:\s*\|\s*[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?"
+        r"(?:\s*\[[^\]\n]*\])?)*)"
+    )
+    for match in type_pattern.finditer(masked):
+        text = match.group("type")
+        for name in re.finditer(r"[A-Za-z_]\w*", text):
+            add(match.start("type") + name.start(), len(name.group(0)), "type")
+
+    import_pattern = re.compile(
+        r"(?m)^\s*(?:from\s+(?P<from>@[A-Za-z0-9_-]+/[A-Za-z0-9_-]+|\.*[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
+        r"\s+import|import\s+(?P<import>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*))"
+    )
+    for match in import_pattern.finditer(masked):
+        group = "from" if match.group("from") else "import"
+        add(match.start(group), len(match.group(group)), "namespace")
+
+    for match in re.finditer(r"(?m)^\s*@(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)", masked):
+        add(match.start("name"), len(match.group("name")), "decorator")
+    for match in re.finditer(
+        r"\b(?:func\s+[A-Za-z_]\w*|class\s+[A-Za-z_]\w*)\s*\[(?P<params>[^\]\n]+)\]",
+        masked,
+    ):
+        for name in re.finditer(r"\b[A-Za-z_]\w*\b", match.group("params")):
+            add(match.start("params") + name.start(), len(name.group(0)), "type", "declaration")
+    for match in re.finditer(r"\bLAMMERGEIER\b", masked):
+        add(match.start(), len(match.group(0)), "namespace")
+    for match in re.finditer(r"\.\s*(?P<name>[A-Za-z_]\w*)", masked):
+        tail = masked[match.end("name"):]
+        token_type = "method" if re.match(r"\s*\(", tail) else "property"
+        add(match.start("name"), len(match.group("name")), token_type)
+    top_level_kinds = {
+        sym.name: sym.kind for sym in doc.symbols if not sym.parent
+    }
+    for match in re.finditer(
+        r"(?<![.\w])(?P<name>[A-Za-z_]\w*)\s*(?:\[[^\]\n]+\]\s*)?(?=\()",
+        masked,
+    ):
+        name = match.group("name")
+        if re.search(r"\bfunc\s+$", masked[max(0, match.start("name") - 32):match.start("name")]):
+            continue
+        kind = top_level_kinds.get(name)
+        if kind in {"class", "interface"}:
+            add(match.start("name"), len(name), kind)
+        elif kind == "function" or name in BUILTIN_FUNCS:
+            add(match.start("name"), len(name), "function")
+
+    ordered = sorted(spans)
+    filtered: List[Tuple[int, int, int, str, int]] = []
+    for span in ordered:
+        if filtered and span[0] == filtered[-1][0] and span[1] < filtered[-1][1] + filtered[-1][2]:
+            continue
+        filtered.append(span)
+    data: List[int] = []
+    previous_line = 0
+    previous_col = 0
+    for line, col, length, token_type, modifiers in filtered:
+        delta_line = line - previous_line
+        delta_col = col - previous_col if delta_line == 0 else col
+        data.extend([
+            delta_line,
+            delta_col,
+            length,
+            _SEMANTIC_TOKEN_TYPES.index(token_type),
+            modifiers,
+        ])
+        previous_line = line
+        previous_col = col
+    return data
+
+
 # ────────────────────────────────────────────────────────────
 # LSP server core
 # ────────────────────────────────────────────────────────────
@@ -1467,6 +1868,7 @@ class LspServer:
             "textDocument/didOpen": self.on_did_open,
             "textDocument/didChange": self.on_did_change,
             "textDocument/didClose": self.on_did_close,
+            "workspace/didChangeWatchedFiles": self.on_did_change_watched_files,
             "textDocument/hover": self.on_hover,
             "textDocument/signatureHelp": self.on_signature_help,
             "textDocument/completion": self.on_completion,
@@ -1476,6 +1878,8 @@ class LspServer:
             "textDocument/rename": self.on_rename,
             "textDocument/formatting": self.on_formatting,
             "textDocument/documentSymbol": self.on_document_symbol,
+            "textDocument/foldingRange": self.on_folding_range,
+            "textDocument/semanticTokens/full": self.on_semantic_tokens_full,
             "workspace/symbol": self.on_workspace_symbol,
         }
 
@@ -1558,9 +1962,17 @@ class LspServer:
                 "renameProvider": {"prepareProvider": True},
                 "documentFormattingProvider": True,
                 "documentSymbolProvider": True,
+                "foldingRangeProvider": True,
+                "semanticTokensProvider": {
+                    "legend": {
+                        "tokenTypes": list(_SEMANTIC_TOKEN_TYPES),
+                        "tokenModifiers": list(_SEMANTIC_TOKEN_MODIFIERS),
+                    },
+                    "full": True,
+                },
                 "workspaceSymbolProvider": True,
             },
-            "serverInfo": {"name": "lammergeier-lsp", "version": "0.1.0"},
+            "serverInfo": {"name": "lammergeier-lsp", "version": LAMC_VERSION},
         }
 
     def on_initialized(self, msg: Dict[str, Any]) -> None:
@@ -1628,6 +2040,24 @@ class LspServer:
             "uri": uri, "diagnostics": [],
         })
 
+    def on_did_change_watched_files(self, msg: Dict[str, Any]) -> None:
+        params = msg.get("params") or {}
+        for change in params.get("changes") or []:
+            uri = change.get("uri", "")
+            path = _uri_to_path(uri)
+            if path is None or uri in self.docs:
+                continue
+            try:
+                if change.get("type") == 3 or not path.exists():
+                    self.workspace.remove_file(path)
+                else:
+                    self.workspace.update_file(path)
+            except Exception:
+                logger.exception("workspace watched-file update failed: %s", path)
+        self._workspace_scan_signature = None
+        self._workspace_module_facts = {}
+        return None
+
     # ── diagnostics ─────────────────────────────────────────
     def _publish_diagnostics(self, doc: Document) -> None:
         source_diags: List[Diagnostic] = []
@@ -1689,10 +2119,18 @@ class LspServer:
         pos = params.get("position") or {}
         line = pos.get("line", 0)
         char = pos.get("character", 0)
+        doc = self.docs.get(uri)
+        module = self._module_at(uri, line, char)
+        if module:
+            return {
+                "contents": {
+                    "kind": "markdown",
+                    "value": f"```lam\nmodule {module}\n```",
+                }
+            }
         word = self._word_at(uri, line, char)
         if not word:
             return None
-        doc = self.docs.get(uri)
         # Dotted-member hover: ``Foo.bar`` — show the method signature
         # whether ``bar`` is local or comes from an imported class.
         receiver = self._receiver_at(uri, line, char)
@@ -1709,9 +2147,35 @@ class LspServer:
                         "value": f"```lam\n{detail}\n```",
                     }
                 }
+        if doc and doc.tree is not None:
+            local = next(
+                (candidate for candidate in _scope_locals_at(doc.tree, line, doc.text)
+                 if candidate.name == word),
+                None,
+            )
+            if local is not None:
+                return {
+                    "contents": {
+                        "kind": "markdown",
+                        "value": f"```lam\n{local.detail or local.name}\n```",
+                    }
+                }
         sym = self._lookup_symbol(uri, word)
         if not sym:
-            return None
+            if word in _BUILTIN_TYPE_NAMES:
+                body = f"type {word}"
+            elif word in BUILTIN_FUNCS:
+                body = f"builtin func {word}(...)"
+            elif word in BUILTIN_CONSTANTS:
+                body = f"constant {word}"
+            else:
+                return None
+            return {
+                "contents": {
+                    "kind": "markdown",
+                    "value": f"```lam\n{body}\n```",
+                }
+            }
         body = sym.detail or sym.name
         # Annotate cross-file resolutions so the user knows which lib
         # file owns the symbol.
@@ -1741,10 +2205,64 @@ class LspServer:
         sym = self._lookup_callable(doc, uri, callee, line)
         if sym is None:
             return None
-        signature = self._signature_help_for_symbol(sym, active)
-        if signature is None:
+        symbols = [sym]
+        if "." in callee:
+            receiver, method = callee.rsplit(".", 1)
+            class_name = self._receiver_type(doc, receiver, line)
+            if class_name:
+                symbols = [
+                    candidate
+                    for candidate, _target_uri in self._members_for_class(
+                        doc, class_name, include_inherited=True,
+                    )
+                    if candidate.name == method and candidate.kind == sym.kind
+                ] or symbols
+        else:
+            symbols = [
+                candidate
+                for candidate in doc.symbols
+                if candidate.name == callee and not candidate.parent and candidate.kind == sym.kind
+            ] or symbols
+        signatures = []
+        seen = set()
+        for candidate in symbols:
+            signature = self._signature_help_for_symbol(candidate, active)
+            if signature is None:
+                continue
+            for item in signature.get("signatures", []):
+                label = item.get("label")
+                if label in seen:
+                    continue
+                seen.add(label)
+                signatures.append(item)
+        if not signatures:
             return None
-        return signature
+        active_signature = 0
+        row = doc.text.splitlines()[line][:char] if line < len(doc.text.splitlines()) else ""
+        argument = row[row.rfind("(") + 1:].strip()
+        type_hint = ""
+        if argument.startswith(('"', "'")):
+            type_hint = "str"
+        elif re.match(r"^[+-]?\d+\.\d+", argument):
+            type_hint = "float"
+        elif re.match(r"^[+-]?\d+", argument):
+            type_hint = "int"
+        elif argument.startswith(("true", "false", "True", "False")):
+            type_hint = "bool"
+        if type_hint:
+            for index, item in enumerate(signatures):
+                parameters = item.get("parameters", [])
+                if not parameters:
+                    continue
+                parameter = parameters[min(active, len(parameters) - 1)].get("label", "")
+                if re.search(rf":\s*{re.escape(type_hint)}\b", parameter):
+                    active_signature = index
+                    break
+        return {
+            "signatures": signatures,
+            "activeSignature": active_signature,
+            "activeParameter": min(active, max(0, len(signatures[active_signature].get("parameters", [])) - 1)),
+        }
 
     # ── completion ──────────────────────────────────────────
     def on_completion(self, msg: Dict[str, Any]) -> Dict[str, Any]:
@@ -1765,7 +2283,7 @@ class LspServer:
         items: List[Dict[str, Any]] = []
 
         # ``from |`` / ``from lam|`` — suggest module names only.
-        module_match = re.match(r"^\s*from\s+([A-Za-z_][\w.]*)?$", line_text)
+        module_match = re.match(r"^\s*from\s+([@A-Za-z0-9_./-]*)$", line_text)
         if module_match:
             prefix = module_match.group(1) or ""
             path = _uri_to_path(uri)
@@ -1782,7 +2300,8 @@ class LspServer:
         # ``from <module> import |`` — suggest exported names from
         # the stdlib module the user is targeting.
         from_match = re.match(
-            r"^\s*from\s+([A-Za-z_][\w.]*)\s+import\s+(.*)$", line_text)
+            r"^\s*from\s+(@[A-Za-z0-9_][A-Za-z0-9_-]*/[A-Za-z_][A-Za-z0-9_-]*|\.*[A-Za-z_][\w.]*)"
+            r"\s+import\s+(.*)$", line_text)
         if from_match:
             module = from_match.group(1)
             sm = _stdlib_module(module)
@@ -1811,7 +2330,7 @@ class LspServer:
         # Member completion — `Foo.<here>`. Looks at:
         #   1. Methods of a class declared in this document.
         #   2. Methods of an *imported* class (e.g. ``Dotenv.parse``).
-        m = re.search(r"(\w+)\.\s*$", line_text)
+        m = re.search(r"(\w+)(?:\.|\?\.)\s*$", line_text)
         if m:
             target = m.group(1)
             seen = set()
@@ -1834,7 +2353,7 @@ class LspServer:
         #    of the function containing the cursor. Gives real
         #    IntelliSense for variables the user has actually bound.
         if doc.tree is not None:
-            for sym in _scope_locals_at(doc.tree, line):
+            for sym in _scope_locals_at(doc.tree, line, doc.text):
                 if sym.name in seen:
                     continue
                 seen.add(sym.name)
@@ -1847,7 +2366,7 @@ class LspServer:
                 # Methods / class fields — surface only via dot
                 # completion on the owning class.
                 continue
-            if sym.kind not in ("function", "class", "variable"):
+            if sym.kind not in ("function", "class", "interface", "variable"):
                 continue
             if sym.name in seen:
                 continue
@@ -1880,19 +2399,33 @@ class LspServer:
             items.append(self._import_completion_item(suggestion))
 
         # 5) Keywords for convenience.
-        for kw in ("if", "elif", "else", "for", "while", "func", "class",
-                   "return", "import", "from", "static", "private", "go!",
-                   "true", "false", "None", "json", "print", "len", "range"):
+        for name in sorted(_BUILTIN_TYPE_NAMES):
+            if name in seen:
+                continue
+            seen.add(name)
+            items.append({"label": name, "kind": 7, "detail": "Lammergeier type"})
+        for name in sorted(BUILTIN_FUNCS - _BUILTIN_TYPE_NAMES):
+            if name.startswith("__") or name in seen:
+                continue
+            seen.add(name)
+            items.append({"label": name, "kind": 3, "detail": "Lammergeier builtin"})
+        for name in sorted(BUILTIN_CONSTANTS - {"_"}):
+            if name in seen:
+                continue
+            seen.add(name)
+            items.append({"label": name, "kind": 21, "detail": "Lammergeier constant"})
+        for kw in sorted(LAM_KEYWORDS | {"go!"}):
             if kw in seen:
                 continue
-            items.append({"label": kw, "kind": 14})  # 14 == Keyword
+            seen.add(kw)
+            items.append({"label": kw, "kind": 14})
         return {"isIncomplete": False, "items": items}
 
     @staticmethod
     def _completion_item(sym: Symbol) -> Dict[str, Any]:
         # LSP CompletionItemKind: Function=3, Class=7, Method=2, Variable=6
         kind_map = {
-            "function": 3, "class": 7, "method": 2,
+            "function": 3, "class": 7, "interface": 8, "method": 2,
             "static_method": 2, "variable": 6,
         }
         return {
@@ -1928,10 +2461,25 @@ class LspServer:
         pos = params.get("position") or {}
         line = pos.get("line", 0)
         char = pos.get("character", 0)
+        doc = self.docs.get(uri)
+        module = self._module_at(uri, line, char)
+        if doc and module:
+            current_path = _uri_to_path(uri)
+            path = self.workspace.resolve_module(current_path, module) if current_path else None
+            stdlib = _stdlib_module(module)
+            if path is None and stdlib is not None:
+                path = stdlib.path.resolve()
+            if path is not None:
+                return {
+                    "uri": path.as_uri(),
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 0},
+                    },
+                }
         word = self._word_at(uri, line, char)
         if not word:
             return None
-        doc = self.docs.get(uri)
         # Dotted-member jump: ``Foo.bar`` where ``Foo`` is local or
         # imported. Mint a Location pointing at the method declaration.
         receiver = self._receiver_at(uri, line, char)
@@ -1942,8 +2490,22 @@ class LspServer:
                     "uri": member.uri,
                     "range": {
                         "start": {"line": member.symbol.line, "character": member.symbol.col},
-                        "end":   {"line": member.symbol.end_line or member.symbol.line,
-                                   "character": member.symbol.end_col or (member.symbol.col + len(member.symbol.name))},
+                        "end": {"line": member.symbol.line,
+                                "character": member.symbol.col + len(member.symbol.name)},
+                    },
+                }
+        if doc and doc.tree is not None:
+            local = next(
+                (candidate for candidate in _scope_locals_at(doc.tree, line, doc.text)
+                 if candidate.name == word),
+                None,
+            )
+            if local is not None:
+                return {
+                    "uri": uri,
+                    "range": {
+                        "start": {"line": local.line, "character": local.col},
+                        "end": {"line": local.end_line, "character": local.end_col},
                     },
                 }
         sym = self._lookup_symbol(uri, word)
@@ -1960,8 +2522,7 @@ class LspServer:
             "uri": target_uri,
             "range": {
                 "start": {"line": sym.line, "character": sym.col},
-                "end":   {"line": sym.end_line or sym.line,
-                           "character": sym.end_col or (sym.col + len(sym.name))},
+                "end": {"line": sym.line, "character": sym.col + len(sym.name)},
             },
         }
 
@@ -2043,10 +2604,21 @@ class LspServer:
         self._ensure_rename_allowed(doc, uri, word, line)
         edits: List[Dict[str, Any]] = []
         scope_range = None
-        if self._lookup_symbol(uri, word) is None and doc.tree is not None:
-            scope_range = _enclosing_func_line_range(doc.tree, line)
+        local_target = False
+        if doc.tree is not None:
+            local_target = any(
+                candidate.name == word for candidate in _scope_locals_at(doc.tree, line, doc.text)
+            )
+            if local_target:
+                scope_range = _enclosing_func_line_range(doc.tree, line)
+        lines = doc.text.splitlines()
         for start_line, start_col, end_col in _identifier_occurrences(doc.text, word):
             if scope_range is not None and not (scope_range[0] <= start_line <= scope_range[1]):
+                continue
+            row = lines[start_line] if start_line < len(lines) else ""
+            if re.match(r"^\s*(?:from|import)\b", row):
+                continue
+            if local_target and re.search(r"\.\s*$", row[:start_col]):
                 continue
             edits.append({
                 "range": {
@@ -2086,6 +2658,18 @@ class LspServer:
             "newText": result.text,
         }]
 
+    def on_folding_range(self, msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+        params = msg.get("params") or {}
+        uri = (params.get("textDocument") or {}).get("uri", "")
+        doc = self.docs.get(uri)
+        return _folding_ranges(doc.text) if doc is not None else []
+
+    def on_semantic_tokens_full(self, msg: Dict[str, Any]) -> Dict[str, List[int]]:
+        params = msg.get("params") or {}
+        uri = (params.get("textDocument") or {}).get("uri", "")
+        doc = self.docs.get(uri)
+        return {"data": _semantic_token_data(doc) if doc is not None else []}
+
     # ── document symbol (outline) ───────────────────────────
     def on_document_symbol(self, msg: Dict[str, Any]) -> List[Dict[str, Any]]:
         params = msg.get("params") or {}
@@ -2095,7 +2679,7 @@ class LspServer:
             return []
         # SymbolKind: Function=12, Class=5, Method=6, Variable=13, Constant=14
         kind_map = {
-            "function": 12, "class": 5, "method": 6,
+            "function": 12, "class": 5, "interface": 11, "method": 6,
             "static_method": 6, "variable": 13,
         }
         # First pass: build per-class buckets so we can nest methods.
@@ -2118,13 +2702,26 @@ class LspServer:
                 },
                 "children": [],
             }
-            if sym.kind == "class":
+            if sym.kind in {"class", "interface"}:
                 classes[sym.name] = entry
                 top_level.append(entry)
             elif sym.parent and sym.parent in classes:
                 classes[sym.parent]["children"].append(entry)
             else:
                 top_level.append(entry)
+        for entry in classes.values():
+            children = sorted(
+                entry["children"],
+                key=lambda child: (
+                    child["range"]["start"]["line"],
+                    child["range"]["start"]["character"],
+                ),
+            )
+            entry["children"] = list({child["name"]: child for child in children}.values())
+        top_level.sort(key=lambda item: (
+            item["range"]["start"]["line"],
+            item["range"]["start"]["character"],
+        ))
         return top_level
 
     def on_workspace_symbol(self, msg: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -2287,6 +2884,23 @@ class LspServer:
         ))
         return out
 
+    def _module_at(self, uri: str, line: int, character: int) -> Optional[str]:
+        doc = self.docs.get(uri)
+        if not doc:
+            return None
+        try:
+            row = doc.text.splitlines()[line]
+        except IndexError:
+            return None
+        match = re.match(
+            r"^\s*(?:from|import)\s+"
+            r"(?P<module>@[A-Za-z0-9_][A-Za-z0-9_-]*/[A-Za-z_][A-Za-z0-9_-]*|\.*[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)",
+            row,
+        )
+        if match is None:
+            return None
+        return match.group("module") if match.start("module") <= character <= match.end("module") else None
+
     def _word_at(self, uri: str, line: int, character: int) -> Optional[str]:
         doc = self.docs.get(uri)
         if not doc:
@@ -2333,7 +2947,7 @@ class LspServer:
         if not doc:
             return None
         for sym in doc.symbols:
-            if sym.name == name:
+            if sym.name == name and not sym.parent:
                 return sym
         # Cross-file resolution for imported names.
         resolved = self._resolve_import(doc, name)
@@ -2488,7 +3102,7 @@ class LspServer:
                     )
         if self._lookup_symbol(uri, word) is not None:
             return
-        if doc.tree is not None and any(sym.name == word for sym in _scope_locals_at(doc.tree, line)):
+        if doc.tree is not None and any(sym.name == word for sym in _scope_locals_at(doc.tree, line, doc.text)):
             return
         raise LspRequestError(-32602, f"rename target `{word}` is not a known local symbol")
 
@@ -2516,6 +3130,8 @@ class LspServer:
             return None
         # Now skip the dot and walk back over the receiver name.
         recv_end = start - 1
+        if recv_end > 0 and row[recv_end - 1] == "?":
+            recv_end -= 1
         recv_start = recv_end
         while recv_start > 0 and (row[recv_start - 1].isalnum() or row[recv_start - 1] == "_"):
             recv_start -= 1
@@ -2585,6 +3201,9 @@ class LspServer:
             if resolved.stdlib is not None:
                 for bucket in resolved.stdlib.methods.get(resolved.symbol.name, {}).values():
                     out.append((bucket, resolved.path.as_uri()))
+                for field in resolved.stdlib.symbols:
+                    if field.parent == resolved.symbol.name and field.kind == "variable":
+                        out.append((field, resolved.path.as_uri()))
             else:
                 imported_doc = self._document_for_path(resolved.path)
                 if imported_doc is not None:

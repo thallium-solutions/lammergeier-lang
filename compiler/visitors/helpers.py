@@ -579,14 +579,11 @@ class HelpersMixin:
             return self._type_expr_to_go(node.children[0])
 
         if d == "type_union":
-            for c in node.children:
-                if isinstance(c, Tree) and c.data == "type_none":
-                    return ""
             types = [self._type_expr_to_go(c) for c in node.children if c is not None]
             types = [t for t in types if t]
             if not types:
                 return ""
-            if len(types) == 1:
+            if len(node.children) == 1:
                 return types[0]
             return "interface{}"
 
@@ -909,6 +906,11 @@ class HelpersMixin:
         if node.data == "var":
             var_name = self._get_name(node.children[0])
             return self._var_types.get(var_name, "")
+        if node.data in {"getattr", "getattr_safe"}:
+            go_type = self._expr_go_type_hint(node)
+            class_name = go_type.removeprefix("*").split("[", 1)[0]
+            if class_name in self._class_names:
+                return class_name
         if node.data == "funccall":
             func = node.children[0]
             if isinstance(func, Tree) and func.data == "var":
@@ -920,7 +922,15 @@ class HelpersMixin:
     def _get_dunder_method(self, class_name: str, dunder: str) -> str:
         """Return the Go method name for a dunder on a class, or empty string."""
         methods = self._class_dunder_methods.get(class_name, {})
-        return methods.get(dunder, "")
+        if dunder in methods:
+            return methods[dunder]
+        if dunder in self._instance_methods.get(class_name, set()):
+            return DUNDER_OPS.get(dunder, "")
+        for base in self.class_bases.get(class_name, []):
+            method = self._get_dunder_method(base, dunder)
+            if method:
+                return method
+        return ""
 
     def _infer_type_from_value(self, node) -> str:
         from compiler.constants import PYTHON_EXCEPTIONS
@@ -1137,6 +1147,27 @@ class HelpersMixin:
                 positional.append(self._transpile_argvalue(child))
         return positional, kwargs
 
+    def _concretize_generic_literal_param_type(
+        self, func_key: str, node, go_type: str,
+    ) -> str:
+        """Resolve a generic list parameter from a non-empty list literal."""
+        generic_names = self._func_generic_params.get(func_key, set())
+        if not generic_names or not go_type.startswith("[]"):
+            return go_type
+        inner = node
+        if isinstance(node, Tree) and node.data == "argvalue" and node.children:
+            inner = node.children[0]
+        if not isinstance(inner, Tree) or inner.data != "list":
+            return go_type
+        declared_elem = self._slice_elem_go_type(go_type)
+        if declared_elem not in generic_names:
+            return go_type
+        inferred_type = self._infer_type_from_value(inner)
+        inferred_elem = self._slice_elem_go_type(inferred_type)
+        if inferred_elem and inferred_elem != "interface{}":
+            return inferred_type
+        return go_type
+
     def _collect_call_args_for_func(
         self, func_key: str, args_node,
     ) -> Tuple[List[str], Dict[str, str]]:
@@ -1174,12 +1205,19 @@ class HelpersMixin:
                         target_idx = param_names.index(kw_name)
                         if target_idx < len(param_types):
                             target_type = param_types[target_idx]
+                    value_node = child.children[1]
+                    target_type = self._concretize_generic_literal_param_type(
+                        func_key, value_node, target_type,
+                    )
                     kwargs[kw_name] = self._transpile_argvalue_with_type(
-                        child.children[1], target_type,
+                        value_node, target_type,
                     )
                 else:
                     target_type = self._param_go_type_at(
                         param_types, positional_idx,
+                    )
+                    target_type = self._concretize_generic_literal_param_type(
+                        func_key, child, target_type,
                     )
                     positional.append(
                         self._transpile_argvalue_with_type(child, target_type),
@@ -1188,6 +1226,9 @@ class HelpersMixin:
             else:
                 target_type = self._param_go_type_at(
                     param_types, positional_idx,
+                )
+                target_type = self._concretize_generic_literal_param_type(
+                    func_key, child, target_type,
                 )
                 positional.append(
                     self._transpile_argvalue_with_type(child, target_type),
@@ -1452,7 +1493,9 @@ class HelpersMixin:
                         # mis-dispatched to string built-ins).
                         if len(param.children) > 1:
                             raw_type = self._get_raw_type_name(param.children[1])
-                            if raw_type and raw_type in getattr(self, "_class_names", set()):
+                            if raw_type and raw_type in (
+                                getattr(self, "_class_names", set()) | getattr(self, "_interfaces", set())
+                            ):
                                 self._var_types[name] = raw_type
                             go_type = self._type_expr_to_go(param.children[1])
                             if go_type:

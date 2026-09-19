@@ -307,10 +307,10 @@ def _parse_toml(text: str) -> Dict[str, Any]:
 # ── Manifest dataclass & validation ─────────────────────────
 
 # Legal module-name characters: case-preserving Lam identifiers plus
-# the ``@scope/name`` npm-style shape. Matches the grammar-side
+# the ``@scope/name[/subname...]`` scoped shape. Matches the grammar-side
 # SCOPED_NAME regex so manifest validation and import resolution
 # agree on what a legal library name looks like.
-_MODULE_NAME_RE = re.compile(r"^(@[A-Za-z0-9_][A-Za-z0-9_\-]*\/[A-Za-z_][A-Za-z0-9_\-]*|[A-Za-z_][A-Za-z0-9_]*)$")
+_MODULE_NAME_RE = re.compile(r"^(@[A-Za-z0-9_][A-Za-z0-9_\-]*(?:\/[A-Za-z_][A-Za-z0-9_\-]*)+|[A-Za-z_][A-Za-z0-9_]*)$")
 
 # SemVer MAJOR.MINOR.PATCH with an optional ``-prerelease`` /
 # ``+build``. Deliberately stricter than PEP 440 — published Lam
@@ -410,7 +410,7 @@ class Manifest:
         if not _MODULE_NAME_RE.match(name):
             raise ManifestError(
                 f"library.name {name!r} is not a legal module name "
-                "(expected an ASCII identifier or @scope/name)")
+                "(expected an ASCII identifier or @scope/name[/subname...])")
         version = _require_str(lib, "version", "library.version")
         if not _SEMVER_RE.match(version):
             raise ManifestError(
@@ -535,7 +535,7 @@ class Manifest:
 
     @property
     def is_scoped(self) -> bool:
-        """``True`` iff this library uses a ``@scope/name`` identifier."""
+        """``True`` iff this library uses a scoped package identifier."""
         return self.name.startswith("@")
 
     @property
@@ -548,9 +548,9 @@ class Manifest:
 
     @property
     def bare_name(self) -> str:
-        """The portion after ``/`` for scoped names; the full name
-        otherwise. Used by tooling that wants the symbol-friendly
-        identifier without the scope prefix."""
+        """The complete path after the scope for scoped names; the full
+        name otherwise. Used by tooling that wants the identifier without
+        the scope prefix."""
         if self.is_scoped:
             return self.name.split("/", 1)[1]
         return self.name

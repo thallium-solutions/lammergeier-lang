@@ -42,6 +42,7 @@ copy_doc() {
 copy_doc "${DOCS}/SYNTAX.md"                "${CONTENT}/SYNTAX.md"
 copy_doc "${DOCS}/TRANSPILATION.md"         "${CONTENT}/TRANSPILATION.md"
 copy_doc "${DOCS}/stdlib.md"                "${CONTENT}/stdlib.md"
+copy_doc "${DOCS}/libraries.md"             "${CONTENT}/libraries.md"
 copy_doc "${DOCS}/server_plugins.md"        "${CONTENT}/server_plugins.md"
 copy_doc "${DOCS}/third_party_libraries.md" "${CONTENT}/third_party_libraries.md"
 copy_doc "${DOCS}/installation.md"          "${CONTENT}/installation.md"
@@ -72,6 +73,8 @@ rewrite_file() {
         -e 's|](TRANSPILATION\.md#|](#/docs/transpilation?h=|g' \
         -e 's|](stdlib\.md)|](#/docs/stdlib)|g' \
         -e 's|](stdlib\.md#|](#/docs/stdlib?h=|g' \
+        -e 's|](libraries\.md)|](#/docs/libraries)|g' \
+        -e 's|](libraries\.md#|](#/docs/libraries?h=|g' \
         -e 's|](server_plugins\.md)|](#/docs/server_plugins)|g' \
         -e 's|](server_plugins\.md#|](#/docs/server_plugins?h=|g' \
         -e 's|](third_party_libraries\.md)|](#/docs/third_party)|g' \
@@ -88,6 +91,8 @@ rewrite_file() {
         -e 's|](docs/TRANSPILATION\.md#|](#/docs/transpilation?h=|g' \
         -e 's|](docs/stdlib\.md)|](#/docs/stdlib)|g' \
         -e 's|](docs/stdlib\.md#|](#/docs/stdlib?h=|g' \
+        -e 's|](docs/libraries\.md)|](#/docs/libraries)|g' \
+        -e 's|](docs/libraries\.md#|](#/docs/libraries?h=|g' \
         -e 's|](docs/server_plugins\.md)|](#/docs/server_plugins)|g' \
         -e 's|](docs/server_plugins\.md#|](#/docs/server_plugins?h=|g' \
         -e 's|](docs/third_party_libraries\.md)|](#/docs/third_party)|g' \
@@ -102,6 +107,7 @@ rewrite_file() {
     sed -i \
         -e 's|href="docs/SYNTAX\.md"|href="#/docs/syntax"|g' \
         -e 's|href="docs/stdlib\.md"|href="#/docs/stdlib"|g' \
+        -e 's|href="docs/libraries\.md"|href="#/docs/libraries"|g' \
         -e 's|href="docs/installation\.md"|href="#/docs/installation"|g' \
         -e 's|href="docs/package_manager\.md"|href="#/docs/package_manager"|g' \
         -e 's|href="docs/TRANSPILATION\.md"|href="#/docs/transpilation"|g' \

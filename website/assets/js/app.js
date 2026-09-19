@@ -17,7 +17,10 @@ const DOCS = [
       summary: "How every Lam construct lowers to Go. Authoritative mapping used by the compiler pipeline." },
     { id: "stdlib",          file: "content/stdlib.md",
       title: "Standard library",
-      summary: "Full reference for every lam* module — classes, methods, examples, cheatsheet index." },
+      summary: "Full reference for every compiler-bundled lam* module — classes, methods, examples, cheatsheet index." },
+    { id: "libraries",       file: "content/libraries.md",
+      title: "Libraries",
+      summary: "Search official @lam packages for JWT, Redis, Memcached, Protobuf, S3, SFTP, SSH, and more." },
     { id: "server_plugins",  file: "content/server_plugins.md",
       title: "Server plugin guide",
       summary: "Authoring plugins for lamserver: hook ladder, encapsulation, decorators, testing with inject()." },
@@ -203,6 +206,7 @@ async function render() {
         $("#doc-content").innerHTML =
             `<div class="content">${renderMarkdown(md, target.id)}</div>`;
         applyHighlight($("#doc-content"));
+        if (target.id === "libraries") installLibraryFilter($("#doc-content"));
         document.title = `${target.title} · Lammergeier Lang`;
         // Scroll to heading if the route asked for one, otherwise
         // reset to the top on navigation.
@@ -237,13 +241,13 @@ function renderHome() {
         ["Go is the target, not the costume",
          "<code>lamc</code> emits readable Go and then lets <code>go build</code> do what it is good at: fast builds, native binaries, cross-compilation, and deployment without a language runtime."],
         ["The stdlib is broad by default",
-         "<code>lamserver</code>, plugins, JWT, schemas, SQL, migrations, Redis, SMTP, WebSockets, TUS uploads, cron, structured logging, numerics, and dataframes all ship as <code>lam*</code> modules."],
+         "<code>lamserver</code>, plugins, schemas, SQL, migrations, SMTP, WebSockets, TUS uploads, crypto, cancellation contexts, structured logging, numerics, and dataframes ship as <code>lam*</code> modules."],
         ["Raw Go stays one block away",
          "<code>go! { ... }</code> lets you call goroutines, channels, and Go packages directly. Use Lam for the application shape and drop into Go where the ecosystem already solved the problem."],
         ["Tooling belongs to the language",
          "The repo includes the compiler, package manager, LSP, diagnostics, completion, hover, goto-definition, document symbols, and editor extension wiring."],
-        ["Packages are reproducible",
-         "<code>lamc install</code> handles registry, git, and local paths with scoped names, lockfiles, transitive resolution, Go-module pins, conflict detection, and API-diff checks."],
+        ["Libraries scale independently",
+         "Official <code>@lam/jwt</code>, Redis, Memcached, Protobuf, S3, SFTP, and SSH packages use reproducible registry, Git, or local installs with lockfiles and transitive Go-module pins."],
     ];
 
     // Hero sample: a fully-functional HTTP service with CORS,
@@ -641,12 +645,46 @@ lamc uninstall lamwebp</code></pre>
     `;
 }
 
+function installLibraryFilter(root) {
+    const table = $("table", root);
+    if (!table) return;
+
+    table.classList.add("libraries-table");
+    const rows = $$("tbody tr", table);
+    const controls = document.createElement("div");
+    controls.className = "library-filter";
+    controls.innerHTML = `
+        <label for="library-filter-input">Filter libraries</label>
+        <input id="library-filter-input" type="search"
+               placeholder="Try redis, storage, ssh…"
+               autocomplete="off" spellcheck="false">
+        <span class="library-filter-count" aria-live="polite"></span>`;
+    table.parentNode.insertBefore(controls, table);
+
+    const input = $("#library-filter-input", controls);
+    const count = $(".library-filter-count", controls);
+    const apply = () => {
+        const tokens = input.value.toLowerCase().trim().split(/\s+/).filter(Boolean);
+        let visible = 0;
+        for (const row of rows) {
+            const text = row.textContent.toLowerCase();
+            const matches = tokens.every(token => text.includes(token));
+            row.hidden = !matches;
+            if (matches) visible++;
+        }
+        count.textContent = `${visible} of ${rows.length}`;
+        table.classList.toggle("no-library-matches", visible === 0);
+    };
+    input.addEventListener("input", apply);
+    apply();
+}
+
 function renderDocsShell(activePage) {
     const sections = [
         ["Get started", ["readme", "installation"]],
         ["Language", ["syntax", "transpilation"]],
         ["Standard Library", ["stdlib", "server_plugins"]],
-        ["Packages", ["package_manager", "third_party"]],
+        ["Packages", ["libraries", "package_manager", "third_party"]],
         ["Project", ["contributing"]],
     ];
     const sidebar = sections.map(([label, ids]) => `

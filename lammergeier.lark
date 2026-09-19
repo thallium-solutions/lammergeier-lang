@@ -159,10 +159,10 @@ defer_stmt: "defer" test
 
 import_stmt: import_name | import_from
 import_name: "import" dotted_as_names
-// ``scoped_name`` lets third-party libraries use the ``@scope/name``
-// npm-style namespace (e.g. ``from @alice/lamwebp import Encoder``).
-// It's only legal in import positions — the resolver maps the scope
-// + name pair straight to ``<extlibs>/@scope/name{.lam,/__init__.lam}``
+// ``scoped_name`` lets third-party libraries use scoped package paths
+// (e.g. ``from @alice/lamwebp import Encoder``).
+// It's only legal in import positions — the resolver maps the complete
+// path straight to ``<extlibs>/@scope/name{.lam,/__init__.lam}``
 // on disk, so no grammar changes leak into the rest of the language.
 import_from: "from" (dots? (dotted_name | scoped_name) | dots) "import" ("*" | "(" import_as_names ")" | import_as_names)
 !dots: "."+
@@ -172,12 +172,12 @@ import_as_names: import_as_name ("," import_as_name)* [","]
 dotted_as_names: dotted_as_name ("," dotted_as_name)*
 dotted_name: name ("." name)*
 scoped_name: SCOPED_NAME
-// ``SCOPED_NAME`` is a single token spanning the ``/`` so the lexer
+// ``SCOPED_NAME`` is a single token spanning each ``/`` so the lexer
 // can't split it into ``@`` + NAME + ``/`` + NAME (which would also
 // collide with the decorator ``@foo`` syntax). Giving it a higher
 // priority than NAME ensures ``@alice/lamwebp`` always tokenizes as
 // one SCOPED_NAME rather than a decorator-plus-division soup.
-SCOPED_NAME.2: /@[A-Za-z0-9_][A-Za-z0-9_\-]*\/[A-Za-z_][A-Za-z0-9_\-]*/
+SCOPED_NAME.2: /@[A-Za-z0-9_][A-Za-z0-9_\-]*(?:\/[A-Za-z_][A-Za-z0-9_\-]*)+/
 
 global_stmt: "global" name ("," name)*
 nonlocal_stmt: "nonlocal" name ("," name)*

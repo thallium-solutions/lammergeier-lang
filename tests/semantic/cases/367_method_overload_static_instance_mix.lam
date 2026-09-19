@@ -1,0 +1,8 @@
+# expect-error: class method `render` cannot mix static and instance overloads
+
+class Renderer {
+    static func render(value: str) -> str { return value }
+    func render(self, value: int) -> str { return str(value) }
+}
+
+func main() { pass }

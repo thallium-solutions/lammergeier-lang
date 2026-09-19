@@ -1,8 +1,12 @@
 # expect: result-json:Ada
 # expect: decode-error:true
+# expect: dict-ok:Ada
+# expect: list-ok:3
+# expect: dict-error:JsonConversionError:json array cannot convert to dict
+# expect: list-error:JsonConversionError:json object cannot convert to list
 
 from lamjson import Json
-from lamerrors import Result
+from lamerrors import Result, Error
 
 func load(text: str) -> Result[json] {
     return Json.tryDecode(text)
@@ -14,9 +18,33 @@ func nameFrom(text: str) -> Result[str] {
     return Result.Ok(name)
 }
 
+func nameFromValue(data: json) -> Result[str] {
+    value: dict[str, any] = Json.tryToDict(data)?
+    name: str = str(value["name"])
+    return Result.Ok(name)
+}
+
+func countFromValue(data: json) -> Result[int] {
+    value: list[any] = Json.tryToList(data)?
+    return Result.Ok(len(value))
+}
+
 func main() {
     source: str = '{"name":"Ada"}'
     print(f"result-json:{nameFrom(source).unwrap()}")
     failed: Result[json] = load("not-json")
     print(f"decode-error:{not failed.ok()}")
+
+    dictSuccess: Result[str] = nameFromValue( {"name": "Ada"})
+    print(f"dict-ok:{dictSuccess.unwrap()}")
+    listSuccess: Result[int] = countFromValue([1, 2, 3])
+    print(f"list-ok:{listSuccess.unwrap()}")
+
+    wrongDict: Result[dict[str, any]] = Json.tryToDict([1, 2, 3])
+    dictError: Error = wrongDict.error
+    print(f"dict-error:{dictError.kind}:{dictError.message}")
+
+    wrongList: Result[list[any]] = Json.tryToList( {"name": "Ada"})
+    listError: Error = wrongList.error
+    print(f"list-error:{listError.kind}:{listError.message}")
 }

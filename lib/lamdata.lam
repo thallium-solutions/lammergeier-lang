@@ -58,7 +58,6 @@
 #   and ``list[str]`` name collections instead of numeric indices
 #   — pandas muscle memory transfers over cleanly.
 
-from lamerrors import Result, Error
 from lamjson import Json
 
 go! {
@@ -70,6 +69,10 @@ go! {
         "github.com/go-gota/gota/dataframe"
         "github.com/go-gota/gota/series"
     )
+
+    type lamSeriesValue interface {
+        ~int | ~float64 | ~string | ~bool
+    }
 
     // ─── Internal helpers ───────────────────────────────────
     //
@@ -184,6 +187,36 @@ go! {
         w.Ser = s
         return w
     }
+
+    // Construct a gota series from the concrete Lam slice type. Keeping
+    // this at the Go boundary lets generic/static Lam APIs retain []T while
+    // gota receives the explicit type enum it requires. The []interface{}
+    // branch preserves the original dynamic mutate compatibility surface.
+    func lamSeriesNew(values interface{}, name string) series.Series {
+        typ := series.String
+        switch typed := values.(type) {
+        case []int, []int64:
+            typ = series.Int
+        case []float32, []float64:
+            typ = series.Float
+        case []string:
+            typ = series.String
+        case []bool:
+            typ = series.Bool
+        case []interface{}:
+            if len(typed) > 0 {
+                switch typed[0].(type) {
+                case int, int64:
+                    typ = series.Int
+                case float32, float64:
+                    typ = series.Float
+                case bool:
+                    typ = series.Bool
+                }
+            }
+        }
+        return series.New(values, typ, name)
+    }
 }
 
 class DataFrame {
@@ -242,8 +275,17 @@ class DataFrame {
         }
     }
 
+    static func readJSON(content: json) -> DataFrame {
+        #- Load rows directly from a native ``json`` array. -#
+        encoded: str = Json.encode(content)
+        go! {
+            return lamDfWrap(dataframe.ReadJSON(strings.NewReader(encoded)))
+        }
+    }
+
     static func readJsonValue(content: json) -> DataFrame {
-        return DataFrame.readJSON(Json.encode(content))
+        #- Compatibility alias for the native-json ``readJSON`` overload. -#
+        return DataFrame.readJSON(content)
     }
 
     # ─── introspection ───────────────────────────────────────
@@ -427,61 +469,58 @@ class DataFrame {
     }
 
     func mutate(self, name: str, values: list[any]) -> DataFrame {
-        #- Replace column ``name`` with ``values`` (or add it if the
-           column doesn't exist yet). The incoming slice is auto-typed
-           by gota based on its concrete element kind. Prefer the
-           typed variants (``mutateInts`` / ``mutateFloats`` /
-           ``mutateStrings`` / ``mutateBools``) — Lam emits
-           ``list[int]`` as ``[]int`` (not ``[]interface{}``), so
-           passing a typed list directly to this ``list[any]``
-           parameter would be a compile-time mismatch. -#
+        #- Dynamic-list compatibility overload. Typed lists select one of
+           the overloads below and retain their concrete slice type. -#
         go! {
-            ser := series.New(values, series.String, name)
-            // Re-infer type from the element kind where possible to
-            // avoid forcing everything to string. gota picks Float /
-            // Int / Bool automatically when the elements are numeric
-            // / boolean, so we try the more specific constructor
-            // first and fall back to the string-typed one.
-            if len(values) > 0 {
-                switch values[0].(type) {
-                case int, int64:
-                    ser = series.New(values, series.Int, name)
-                case float32, float64:
-                    ser = series.New(values, series.Float, name)
-                case bool:
-                    ser = series.New(values, series.Bool, name)
-                }
-            }
+            ser := lamSeriesNew(values, name)
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
+        }
+    }
+
+    # Go does not support method-level type parameters, so Lam's supported
+    # ``mutate[T]`` surface is represented as a compile-time overload set.
+    func mutate(self, name: str, values: list[int]) -> DataFrame {
+        go! {
+            ser := lamSeriesNew(values, name)
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
+        }
+    }
+
+    func mutate(self, name: str, values: list[float]) -> DataFrame {
+        go! {
+            ser := lamSeriesNew(values, name)
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
+        }
+    }
+
+    func mutate(self, name: str, values: list[str]) -> DataFrame {
+        go! {
+            ser := lamSeriesNew(values, name)
+            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
+        }
+    }
+
+    func mutate(self, name: str, values: list[bool]) -> DataFrame {
+        go! {
+            ser := lamSeriesNew(values, name)
             return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
         }
     }
 
     func mutateInts(self, name: str, values: list[int]) -> DataFrame {
-        go! {
-            ser := series.New(values, series.Int, name)
-            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
-        }
+        return self.mutate(name, values)
     }
 
     func mutateFloats(self, name: str, values: list[float]) -> DataFrame {
-        go! {
-            ser := series.New(values, series.Float, name)
-            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
-        }
+        return self.mutate(name, values)
     }
 
     func mutateStrings(self, name: str, values: list[str]) -> DataFrame {
-        go! {
-            ser := series.New(values, series.String, name)
-            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
-        }
+        return self.mutate(name, values)
     }
 
     func mutateBools(self, name: str, values: list[bool]) -> DataFrame {
-        go! {
-            ser := series.New(values, series.Bool, name)
-            return lamDfWrap(s.Df.(dataframe.DataFrame).Mutate(ser))
-        }
+        return self.mutate(name, values)
     }
 
     # ─── filtering ───────────────────────────────────────────
@@ -664,6 +703,11 @@ class DataFrame {
         return Json.decode(self.writeJSON())
     }
 
+    func __json__(self) -> json {
+        #- Native ``json(frame)`` conversion uses gota's row-object output. -#
+        return self.jsonValue()
+    }
+
     # ─── summary / grouping ──────────────────────────────────
     func describe(self) -> DataFrame {
         #- ``mean / median / stddev / min / quartiles / max`` per
@@ -732,8 +776,8 @@ class DataFrameGroups {
 
 class Series {
     #- Single typed column. Mirrors ``gota/series.Series`` with a
-       Lam-friendly surface. Constructed either directly via the
-       ``fromXxx`` static helpers or by calling ``DataFrame.col``. -#
+       Lam-friendly surface. Constructed via generic ``from``, the
+       compatibility ``fromXxx`` helpers, or ``DataFrame.col``. -#
 
     func __init__(self) {
         # Internal slot holding the gota ``series.Series``.
@@ -741,20 +785,26 @@ class Series {
     }
 
     # ─── constructors ────────────────────────────────────────
+    static func from[T: lamSeriesValue](values: list[T], name: str) -> Series {
+        #- Build an int, float, string, or bool series from the concrete
+           element type. Typed empty lists retain their declared type. -#
+        go! { return lamSeriesWrap(lamSeriesNew(values, name)) }
+    }
+
     static func fromStrings(values: list[str], name: str) -> Series {
-        go! { return lamSeriesWrap(series.New(values, series.String, name)) }
+        return Series.from(values, name)
     }
 
     static func fromInts(values: list[int], name: str) -> Series {
-        go! { return lamSeriesWrap(series.New(values, series.Int, name)) }
+        return Series.from(values, name)
     }
 
     static func fromFloats(values: list[float], name: str) -> Series {
-        go! { return lamSeriesWrap(series.New(values, series.Float, name)) }
+        return Series.from(values, name)
     }
 
     static func fromBools(values: list[bool], name: str) -> Series {
-        go! { return lamSeriesWrap(series.New(values, series.Bool, name)) }
+        return Series.from(values, name)
     }
 
     # ─── introspection ───────────────────────────────────────

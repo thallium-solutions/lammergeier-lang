@@ -25,7 +25,6 @@ behaviour.
 - [OS, filesystem, env, CLI](#os-filesystem-env-cli)
 - [Network & web](#network--web)
 - [Validation, auth & APIs](#validation-auth--apis)
-- [Serialization](#serialization)
 - [Crypto, encoding, IDs](#crypto-encoding-ids)
 - [Database](#database)
 - [Cookbook](#cookbook)
@@ -44,10 +43,10 @@ form regardless of tier.
 | --- | --- | --- |
 | core | Small, general-purpose modules expected to stay lightweight and broadly useful. | `lamstrings`, `lammath`, `lampath`, `lamjson`, `lamerrors`, `lamenv`, `lamtime`, `lamdatetime`, `lamconv`, `lamfmt`, `lamlog`, `lamtest` |
 | data | File formats, tabular/numeric data, and data-shaping helpers. | `lamcsv`, `lamyaml`, `lamxml`, `lamdata`, `lamarray`, `lamstats`, `lamrandom` |
-| net | Network protocols, web servers/clients, auth tokens, and wire formats. | `lamhttp`, `lamserver`, `lamserver_plugins`, `lamserver_ws`, `lamserver_tus`, `lamsmtp`, `lamnet`, `lamurl`, `lamjwt`, `lamprotobuf` |
-| infra | External services and operational infrastructure. | `lamdb`, `lamredis`, `lamemcached`, `lammigrate`, `lamcron`, `lamexec`, `lamcache` |
-| concurrency | Concurrency primitives, async coordination, and resilience helpers. | `lamactor`, `lamconcurrency`, `lamretry`, `lamratelimit`, `lamqueue`, `lamdeque`, `lamheap`, `lamstack`, `lamset`, `lamiter`, `lamsort` |
-| encoding & crypto | Encoding, hashing, compression, bytes, UUIDs, templates, and text validation helpers. | `lambase64`, `lambytes`, `lamcompress`, `lamhash`, `lamuuid`, `lamtemplate`, `lamunicode`, `lamre`, `lamschema`, `lamsecurity` |
+| net | Network protocols and clients. | `lamhttp`, `lamsmtp`, `lamnet`, `lamurl` |
+| infra | Database and operational infrastructure. | `lamdb`, `lammigrate`, `lamcron`, `lamexec`, `lamcache` |
+| concurrency | Concurrency primitives, cancellation, async coordination, and resilience helpers. | `lamactor`, `lamconcurrency`, `lamcontext`, `lamretry`, `lamratelimit`, `lamqueue`, `lamdeque`, `lamheap`, `lamstack`, `lamset`, `lamiter`, `lamsort` |
+| encoding & crypto | Encryption, keys, encoding, hashing, compression, bytes, UUIDs, templates, and text validation helpers. | `lamcrypto`, `lambase64`, `lambytes`, `lamcompress`, `lamhash`, `lamuuid`, `lamtemplate`, `lamunicode`, `lamre`, `lamschema`, `lamsecurity` |
 | CLI & OS | Program entrypoint, filesystem, environment, and host-process helpers. | `lamcli`, `lamos` |
 
 The tiers are intentionally coarse. A module can compose across tiers
@@ -138,13 +137,18 @@ lamc tools/report.lam --run -- --input=orders.json --pretty
 
 ### Build a production-style HTTP API
 
-`lamserver` gives you Fastify-like routing, lifecycle hooks,
+`@lam/vulture` gives you Fastify-like routing, lifecycle hooks,
 validation, decorators, schemas, OpenAPI, test injection, TLS,
-timeouts, and plugins.
+timeouts, and plugins. Install the external packages first:
+
+```bash
+lamc install @lam/vulture@1.0.0
+lamc install @lam/vulture/std-plugin@1.0.0
+```
 
 ```lammergeier
-from lamserver import Server, Request, Response, HttpError
-from lamserver_plugins import requestId, requestLog, helmet, metrics
+from @lam/vulture import Server, Request, Response, HttpError
+from @lam/vulture/std-plugin import requestId, requestLog, helmet, metrics
 
 func requireJson(req: Request, res: Response) {
     if not req.is_("json") {
@@ -287,7 +291,7 @@ common resilience patterns.
 ```lammergeier
 from lamcache import TtlCache
 from lamretry import Retry
-from lamserver_plugins import CircuitBreaker
+from @lam/vulture/std-plugin import CircuitBreaker
 from lamerrors import Result
 
 func expensiveFetch() -> Result {
@@ -486,10 +490,12 @@ out: str = Csv.formatAll([["x", "y"], ["1", "2"]])
 
 The native `json` type is backed by `lamjson` and only contains real JSON
 values: null, booleans, strings, finite numbers, arrays, string-keyed objects,
-nested values, or classes implementing `toJson() -> json`. `Json` handles wire
-encoding/decoding and explicit conversion to/from ordinary Lam collections.
+and nested values. Classes implement `__json__() -> json` and are converted with
+`json(instance)`. `Json` handles wire encoding/decoding and explicit conversion
+to/from ordinary Lam collections.
 
 ```lammergeier
+from lamerrors import Result
 from lamjson import Json
 
 obj: json = Json.decode('{"name":"alice","roles":["admin"]}')
@@ -499,7 +505,8 @@ out: str = Json.encode(obj)
 pretty: str = Json.encodePretty(obj)
 
 asDict: dict[str, any] = Json.toDict(obj)
-back: json = Json.fromDict(asDict)
+back: json = Json.fromValue(asDict)
+safeDict: Result[dict[str, any]] = Json.tryToDict(obj)
 ```
 
 | Method | Returns |
@@ -508,14 +515,16 @@ back: json = Json.fromDict(asDict)
 | `Json.encodePretty(data)` / `Json.tryEncodePretty(data)` | `str` / `Result[str]` |
 | `Json.decode(s)` / `Json.tryDecode(s)` | `json` / `Result[json]` |
 | `Json.fromValue(value)` / `fromDict(value)` / `fromList(value)` | validated `json` |
-| `Json.toDict(data)` / `Json.toList(data)` | `dict[str, any]` / `list[any]` |
+| `Json.toDict(data)` / `Json.toList(data)` | `dict[str, any]` / `list[any]`; throw on wrong kind |
+| `Json.tryToDict(data)` / `Json.tryToList(data)` | Result-based collection conversion without panics |
 | `Json.kind(data)` | `str`: `null`, `boolean`, `string`, `number`, `array`, or `object` |
 | `Json.decodeInto(s, target)` / `Json.tryDecodeInto(s, target)` | `None` / `Result` (Go/class compatibility) |
 | `Json.isValid(s)` | `bool` |
 
-`Json.fromValue` is the runtime boundary for dynamic `any`; it rejects numeric
-map keys, non-finite floats, cycles/excessive nesting, sets, functions, and
-classes without `toJson`. Native values implement Go JSON marshaling and
+`Json.fromValue` is the runtime boundary for dynamic `any`; `fromDict` and
+`fromList` remain compatibility aliases that delegate to it. The conversion
+rejects numeric map keys, non-finite floats, cycles/excessive nesting, sets, functions, and
+classes without `__json__`. Native values implement Go JSON marshaling and
 `database/sql` value/scanner interfaces, so they can be passed directly as
 JSON/JSONB query parameters.
 
@@ -680,27 +689,36 @@ byCountry: DataFrameGroups = df.groupBy(groupCols)
 aggTypes: list[str] = ["mean"]
 aggCols:  list[str] = ["Pop"]
 means: DataFrame = byCountry.aggregate(aggTypes, aggCols)
+
+# Native JSON and generic typed columns use the primary method names.
+rows: json = [{"name": "Ada"}, {"name": "Lin"}]
+nativeDf: DataFrame = DataFrame.readJSON(rows)
+scores: list[int] = [10, 12]
+enriched: DataFrame = nativeDf.mutate("score", scores)
+scoreSeries: Series = Series.from(scores, "score")
+wireValue: json = json(enriched)
 ```
 
 **DataFrame surface.** Constructors `fromRecords` (header + rows),
-`fromMaps`, `readCSV`, `readJSON`, and native `readJsonValue(json)`.
+`fromMaps`, `readCSV`, and overloaded `readJSON(str | json)`.
 Introspection `nrow`, `ncol`,
 `dims`, `names`, `types`, `describe`, `toString`, `error`. Access
 `col`, `elem`, `records`, `maps`, `copy`. Subsetting `head`, `tail`,
 `slice`, `subset`, `selectCols`, `dropCols`. Mutation `rename`,
-`setNames`, `mutate` / `mutateInts` / `mutateFloats` /
-`mutateStrings` / `mutateBools` (typed variants because Lam emits
-`list[int]` as `[]int` — use the matching mutate function when you
-already have a typed list). Filtering `filter(col, op, value)` plus
+`setNames`, and overloaded `mutate(name, values)` for dynamic, int, float,
+string, and bool lists. `mutateInts` / `mutateFloats` / `mutateStrings` /
+`mutateBools` remain compatibility wrappers. Filtering `filter(col, op, value)` plus
 sugar `filterEq` / `filterNeq` / `filterGt` / `filterGte` /
 `filterLt` / `filterLte` / `filterIn`. Sorting `sort` and multi-key
 `sortBy`. Joins `innerJoin`, `leftJoin`, `rightJoin`, `outerJoin`,
 `crossJoin`. Combine `rbind`, `cbind`, `concat`. I/O `writeCSV`,
-`writeJSON`, and `jsonValue() -> json`. Group-by via
-`groupBy(cols) -> DataFrameGroups`.
+`writeJSON`, `jsonValue() -> json`, and native `json(frame)` through
+`__json__`. `readJsonValue(json)` remains an alias for the native `readJSON`
+overload. Group-by via `groupBy(cols) -> DataFrameGroups`.
 
-**Series surface.** `fromStrings` / `fromInts` / `fromFloats` /
-`fromBools` constructors. Introspection `name`, `typeName`,
+**Series surface.** Generic `Series.from(values, name)` supports int, float,
+string, and bool lists. `fromStrings` / `fromInts` / `fromFloats` /
+`fromBools` remain compatibility wrappers. Introspection `name`, `typeName`,
 `length`, `records`, `isNaN`, `error`, `toString`. Access `at(i)`,
 `elemStr(i)`. Aggregations `sum`, `mean`, `median`, `stddev`,
 `minVal`, `maxVal`, `quantile(p)`. Conversion `toStringList`,
@@ -718,9 +736,9 @@ use `.error()` to read it (empty string means success). This
 matches the upstream `gota` convention.
 
 **Typed-list convention.** Lam emits `list[str]` as `[]string` and
-`list[int]` as `[]int`. When a method takes `list[str]`, pass a
-pre-declared typed variable (inline literals compile to
-`[]interface{}`). See the example above for the canonical shape.
+`list[int]` as `[]int`. Generic calls such as `Series.from([1, 2], "score")`
+infer the literal element type. For non-generic APIs with nested or dynamic
+collections, a pre-declared typed variable remains the clearest shape.
 
 ### `lamconv` — `Conv`
 
@@ -729,15 +747,19 @@ parsing.
 
 ```lammergeier
 from lamconv import Conv
+from lamerrors import Result
 
 n: int = Conv.toInt("42")
 hx: str = Conv.toHex(255)        # "ff"
 ok: bool = Conv.toBool("true")
+parsedHex: Result[int] = Conv.tryFromHex("ff")
 ```
 
-16 helpers: `toInt`, `tryInt`, `toFloat`, `tryFloat`, `toString`,
-`floatToString`, `intToBase`, `toBool`, `tryBool`, `boolToString`,
-`toHex`/`toOctal`/`toBin`, `fromHex`/`fromOctal`/`fromBin`.
+The `to*` and `from*` compatibility methods retain their silent defaults.
+`tryInt`, `tryFloat`, `tryBool`, `tryFromHex`, `tryFromOctal`, and
+`tryFromBin` return structured `ParseError` Results. Formatting helpers are
+`toString`, `floatToString`, `intToBase`, `boolToString`, `toHex`, `toOctal`,
+and `toBin`.
 
 ---
 
@@ -833,17 +855,55 @@ Terminals: `toList`, `forEach`, `reduce`, `count_`, `first`,
 
 ### `lamsort` — `Sort`
 
-In-place sort utilities.
+Generic, non-mutating sorting for every naturally ordered Lam type and for
+arbitrary classes through a typed three-way comparator. `direction` is
+`"asc"` by default and accepts only `"asc"` or `"desc"`.
 
 ```lammergeier
 from lamsort import Sort
 
-asc: list[int] = Sort.ints([3, 1, 2])      # [1, 2, 3]
-rev: list[str] = Sort.reverseStrings(["a", "b"])
+asc: list[int] = Sort.sort([3, 1, 2])
+desc: list[str] = Sort.sort(["a", "c", "b"], "desc")
+
+class Job {
+    func __init__(self, priority: int) { self.priority: int = priority }
+}
+
+jobs: list[Job] = [Job(3), Job(1), Job(2)]
+byPriority: list[Job] = Sort.sortWith(
+    jobs,
+    lambda (left: Job, right: Job) -> int: left.priority - right.priority,
+)
+
+if Sort.isSorted(asc, "asc") { print("ordered") }
+if Sort.isSortedWith(byPriority, lambda (a: Job, b: Job) -> int: a.priority - b.priority) {
+    print("custom order")
+}
+
+# Generator form computes and yields each next ordered value incrementally.
+for value in Sort.iterSorted([3, 1, 2]) {
+    print(value)
+}
 ```
 
-`ints`, `floats`, `strings`, `reverseInts`, `reverseFloats`,
-`reverseStrings`, `reverse` (any), `isSorted`.
+A comparator returns a negative number when `left` precedes `right`, zero when
+they are equivalent, and a positive number when `right` precedes `left`.
+Comparator-aware APIs use the `With` suffix.
+
+| API | Purpose |
+|---|---|
+| `sort(values, direction="asc")` / `sortWith(values, compare, direction="asc")` | Default stable merge sort. |
+| `isSorted(...)` / `isSortedWith(...)` | Check ordering in the requested direction. |
+| `iterSorted(...)` / `iterSortedWith(...)` | Lazy selection generator; copies the input and yields one next value at a time. |
+| `bubble` / `bubbleWith` | Bubble sort; useful for teaching or tiny nearly sorted inputs. |
+| `insertion` / `insertionWith` | Insertion sort; stable and effective for small inputs. |
+| `selection` / `selectionWith` | Selection sort with predictable swaps. |
+| `merge` / `mergeWith` | Stable O(n log n) merge sort. |
+| `quick` / `quickWith` | Pivot-based quick sort. |
+| `reverse(values)` | Return a reversed generic copy without sorting. |
+
+All eager algorithms and generators copy their input; none mutate the caller's
+list. Invalid directions throw `ValueError`.
 
 ---
 
@@ -972,6 +1032,55 @@ wg.wait()
 `Mutex` / `RWMutex`: `lock`, `unlock`, plus `rLock`/`rUnlock` on RW.
 `Atomic`: `get`, `set`, `increment`, `decrement`, `add`,
 `compareAndSwap` over `int64`.
+
+### `lamcontext` — `Context`
+
+`Context` carries cancellation, expiration, and inherited values through a tree
+of operations. The API is intentionally Lam-first: derive a cancellable or
+expirable child, attach request data, and ask direct questions such as
+`expired()`, `expiresIn(unit)`, or `reason()` instead of managing Go channels.
+
+```lammergeier
+from lamcontext import Context
+
+root: Context = Context.simple().valued("requestId", "req-42")
+work: Context = root.expirable(2, "seconds")
+work["user"] = "Ada"
+
+if not work.expired() and "requestId" in work {
+    print(work["requestId"])
+    print(work.expiresIn("milliseconds"))
+}
+
+work.cancel("user left")
+print(work.reason())
+```
+
+`expirable(unixMs, None)` creates an absolute expiry from a Unix-millisecond
+timestamp. Supplying a unit instead creates a relative expiry; accepted units
+are nanoseconds, microseconds, milliseconds, seconds, minutes, hours, and days,
+including their common abbreviations. `expiresIn(None)` returns the absolute
+Unix-millisecond expiry, while `expiresIn(unit)` returns the remaining duration
+rounded up.
+
+Parent cancellation reaches every descendant, while cancelling a child leaves
+its parent and siblings alive. `valued` creates an immutable child layer; `set`
+mutates only the current layer. Values, cancellation, and native Go
+`context.Context` interop are goroutine-safe.
+
+| Method | Purpose |
+|--------|---------|
+| `Context.simple()` | Live root context. |
+| `Context.cancelled(reason)` | Already-cancelled context, useful in tests and shutdown paths. |
+| `Context.fromNative(value)` / `native()` | Bridge an existing Go context at ecosystem boundaries. |
+| `child()` / `cancellable()` | Independently cancellable descendant. |
+| `expirable(expiration, unit=None)` | Absolute Unix-ms expiry without a unit, or relative expiry in the supplied unit. |
+| `valued(key, value)` / `set(key, value)` | Immutable child value or mutable current-layer value. |
+| `get(key, fallback)` / `value(...)` / `has(key)` | Read inherited values without magic reserved keys. |
+| `ctx[key]` / `ctx[key] = value` / `key in ctx` | Sugar for `get`, `set`, and `has`. |
+| `cancel(reason)` / `expired()` / `reason()` | Cancel or inspect completion. |
+| `expiresIn(unit=None)` | Absolute Unix-ms expiry or remaining duration (`-1` means none, `0` means elapsed). |
+| `wait(timeoutMs)` | Bounded wait; `true` means the context completed first. |
 
 ### `lamactor` — `Mailbox`, `ActorRef`, `ActorSystem`
 
@@ -1145,10 +1254,14 @@ loading in one module.
 
 ```lammergeier
 from lamenv import Env, Dotenv, Config
+from lamerrors import Result
 
-# Plain env access
-port: str = Env.getOr("PORT", "8080")
-if Env.has("DEBUG") { print("debug mode") }
+# Plain and typed env access
+portText: str = Env.getOr("PORT", "8080")
+port: int = Env.getInt("PORT", 8080)
+debug: bool = Env.getBool("DEBUG", false)
+ratio: float = Env.getFloat("SAMPLE_RATE", 1.0)
+parsedPort: Result[int] = Env.tryGetInt("PORT")
 
 # Dotenv — supports export, quoted values, escapes, and ${VAR}
 #          interpolation (both file-local and process env).
@@ -1166,7 +1279,10 @@ merged: dict[str, any] = Config.merge([
 ])
 ```
 
-- **Env**: `get`, `getOr`, `set`, `unset`, `has`, `all`.
+- **Env**: `get`, `getOr`, typed `getInt` / `getFloat` / `getBool`,
+  Result-based `tryGetInt` / `tryGetFloat` / `tryGetBool`, `set`, `unset`,
+  `has`, `all`. Typed getters use their fallback for unset, empty, or malformed
+  values; `tryGet*` reports a structured `ParseError` instead.
 - **Dotenv**: `parse`, `parseFile`, `load`, `loadOverride`,
   `applyToEnv`. The parser handles `export KEY=val`, single- and
   double-quoted values (with `\n` / `\t` / `\"` / `\$` escapes in
@@ -1212,29 +1328,42 @@ files: str = Exec.output("ls", ["-la", "/tmp"])
 
 ## Network & web
 
-### `lamhttp` — `Http`, `HttpServer`
+### `lamhttp` — `Http`, `HttpServer`, `HttpClient`, `HttpResponse`, `HttpCookie`
 
 HTTP **client** plus a tiny blocking server for one-off scripts.
-Use [`lamserver`](#lamserver--server-request-response-sseemitter)
-for real applications.
+Use [`@lam/vulture`](#lamvulture--server-request-response-sseemitter-httperror)
+for production HTTP servers.
 
 ```lammergeier
 from lamhttp import Http
 
 body: str = Http.get("https://api.example.com/users")
 status: int = Http.statusCode("https://example.com")
-out: str = Http.postJson("https://api.example.com/echo", '{"x":1}')
-nativeOut: str = Http.postJsonValue("https://api.example.com/echo", {"x": 1})
+
+# The two-argument overload sets application/json automatically.
+encodedOut: str = Http.post("https://api.example.com/echo", '{"x":1}')
+nativeOut: str = Http.post("https://api.example.com/echo", {"x": 1})
+
+# Explicit content type + string body remains available.
+textOut: str = Http.post("https://api.example.com/echo", "text/plain", "hello")
 ```
 
-`postJson` / `tryPostJson` retain the already-encoded string form;
-`postJsonValue` / `tryPostJsonValue` accept native `json` and encode it.
-`Http`: `get`, `tryGet`, `post`, `tryPost`, `postJson`, `tryPostJson`,
-`postJsonValue`, `tryPostJsonValue`, `getWithHeaders`, `getHeader`,
-`statusCode`, `serve`.
-`HttpServer.close()` stops the throwaway server.
+`Http.post` and `Http.tryPost` overload on an encoded JSON `str`, native
+`json`, or the explicit `(contentType, body)` pair. Native values are encoded
+as JSON and sent with `application/json`; separate `postJson*` names are no
+longer needed.
 
-### `lamserver` — `Server`, `Request`, `Response`, `SseEmitter`, `HttpError`
+`Http`: `get`, `tryGet`, overloaded `post`, overloaded `tryPost`,
+`getWithHeaders`, `getHeader`, `statusCode`, `serve`.
+`HttpServer.close()` stops the throwaway server. Use `HttpClient` below when
+status, repeated headers, cookies, or reusable defaults matter.
+
+### `@lam/vulture` — `Server`, `Request`, `Response`, `SseEmitter`, `HttpError`
+
+Vulture is an independently versioned official package, not a compiler-bundled
+stdlib module. Install it with `lamc install @lam/vulture@1.0.0`; its
+[repository README](https://github.com/thallium-solutions/lam-vulture) is the
+authoritative API and security reference.
 
 Fastify-style HTTP server with the full lifecycle ladder, schema-
 based validation, decorators, plugin encapsulation, content-type
@@ -1242,7 +1371,7 @@ parsers, a trie router, app-lifecycle hooks, OpenAPI generation,
 streaming, SSE, signed cookies, an in-process test harness, and TLS.
 
 ```lammergeier
-from lamserver import Server, Request, Response, HttpError
+from @lam/vulture import Server, Request, Response, HttpError
 
 func helloHandler(req: Request, res: Response) {
     name: str = req.queryGet("name", "world")
@@ -1264,7 +1393,7 @@ runs the same dispatcher in-process, which makes server examples and
 tests deterministic:
 
 ```lammergeier
-from lamserver import Server, Request, Response
+from @lam/vulture import Server, Request, Response
 
 func auth(req: Request, res: Response) {
     if req.header("Authorization") != "Bearer dev" {
@@ -1323,9 +1452,9 @@ func main() {
 }
 ```
 
-### `lamserver` mental model
+### Vulture mental model
 
-`lamserver` follows the same shape as Fastify:
+`@lam/vulture` follows the same shape as Fastify:
 
 - A `Server` owns routes, hooks, decorators, schemas, parsers, and
   app-lifecycle callbacks.
@@ -1490,16 +1619,20 @@ Schemas are JSON Schema draft-07. Put route input under `body`,
 Response schemas are status-keyed. Exact status wins, then status
 family, then `default`.
 
-Internally, lamserver still marshals dictionary-defined schemas to JSON text and
-unmarshals schema documents while resolving `$ref`, projecting responses, and
-building OpenAPI. Compiled validation is delegated to `gojsonschema`; request
-JSON reaches it as decoded native/raw JSON data. This marshal/unmarshal boundary
-is intentional because JSON Schema and OpenAPI are wire specifications, while
-application payloads use Lam's native `json`. Malformed literal schema strings
-passed directly to `Schema.register` or `Server.addSchema` are diagnosed by the
-Lam compiler; dynamically constructed schemas remain runtime-validated by the
-schema compiler (an invalid shared registration is ignored and unresolved route
-validation surfaces through the normal validation error path).
+`@lam/vulture` uses the same private compilation cache and validation core as
+`lamschema`. The simple route helpers accept an optional request-body schema and
+format; invalid documents short-circuit with HTTP 400 before `preHandler` and the
+handler. JSON is the default, while text schemas may select YAML or XML/XSD:
+
+```lammergeier
+srv.post("/users", createUser, userSchema)
+srv.post("/events", ingestYaml, yamlSchema, "yaml")
+srv.post("/legacy", ingestXml, xsdSchema, "xml")
+```
+
+The `*Opts` APIs remain available for query, params, headers, response schemas,
+and OpenAPI metadata. OpenAPI request media types follow the selected schema
+format.
 
 ```lammergeier
 func createOrderOpts() -> dict[str, any] {
@@ -1610,9 +1743,13 @@ func whoami(req: Request, res: Response) {
 }
 ```
 
-Plugins usually prefer `req.ctx` for per-request values and
-decorators for server-wide values or default request/reply slots.
-Use a unique prefix such as `__myPluginName` for internal keys.
+Plugins usually prefer `req.ctx` for per-request values and decorators for
+server-wide values or default request/reply slots. `req.ctx` keeps dictionary
+indexing but is backed by `lamcontext.Context`, so `has`, `in`, cancellation,
+deadlines, reasons, and waiting are available on the same object. `res.ctx` and
+`srv.ctx` remain ordinary plugin scratch dictionaries because they do not model
+request cancellation. Use a unique prefix such as `__myPluginName` for internal
+keys.
 
 ### Error handling
 
@@ -1885,7 +2022,10 @@ cached on the request.
 See [`docs/server_plugins.md`](#/docs/server_plugins) for the plugin
 authoring guide.
 
-### `lamserver_plugins`
+### `@lam/vulture/std-plugin`
+
+Install with `lamc install @lam/vulture/std-plugin@1.0.0`; see the
+[package README](https://github.com/thallium-solutions/lam-vulture-std-plugin).
 
 Ready-made plugins. Each is a top-level
 `func(srv: Server, ...config)` you call after constructing the Server:
@@ -1914,7 +2054,7 @@ The module also exports a `CircuitBreaker` class for downstream-call
 protection:
 
 ```lammergeier
-from lamserver_plugins import CircuitBreaker
+from @lam/vulture/std-plugin import CircuitBreaker
 
 cb = CircuitBreaker(5, 2000)        # threshold=5 failures, cooldown=2000ms
 out: any = cb.callFn(callRemoteAPI)  # a Result stored as any
@@ -1929,14 +2069,17 @@ Inspect via `cb.state()`.
 See [`docs/server_plugins.md`](#/docs/server_plugins) for the plugin
 authoring guide and recipes.
 
-### `lamserver_ws` — `WebSocket`
+### `@lam/vulture/ws-plugin` — `WebSocket`
+
+Install with `lamc install @lam/vulture/ws-plugin@1.0.0`; see the
+[package README](https://github.com/thallium-solutions/lam-vulture-ws-plugin).
 
 WebSocket helper using `github.com/gorilla/websocket` (auto-fetched
 on build). Supports subprotocols + permessage-deflate compression
 (RFC 7692) via `wsRouteOpts`.
 
 ```lammergeier
-from lamserver_ws import WebSocket, wsRoute, wsRouteOpts
+from @lam/vulture/ws-plugin import WebSocket, wsRoute, wsRouteOpts
 
 func chatHandler(ws: WebSocket, req: Request) {
     while not ws.isClosed() {
@@ -1961,15 +2104,18 @@ wsRouteOpts(srv, "/rpc", rpcHandler, opts)
 `sendBytes(data)`, `recv()`, `recvBytes()`, `ping()`, `close()`,
 `isClosed()`, `rawConn()`.
 
-### `lamserver_tus` — tus.io resumable uploads
+### `@lam/vulture/tus-plugin` — tus.io resumable uploads
+
+Install with `lamc install @lam/vulture/tus-plugin@1.0.0`; see the
+[package README](https://github.com/thallium-solutions/lam-vulture-tus-plugin).
 
 Implements the [tus 1.0.0](https://tus.io) protocol — Creation +
-Patch + Head + Termination — on top of `lamserver`. Compatible
+Patch + Head + Termination — on top of Vulture. Compatible
 with every official tus client (uppy, tus-js-client, Go/Python/iOS
 SDKs).
 
 ```lammergeier
-from lamserver_tus import tusUploads, tusGc
+from @lam/vulture/tus-plugin import tusUploads, tusGc
 
 tusUploads(srv, "/uploads", "/var/lib/uploads", 200_000_000)
 # Optional: garbage-collect stale uploads from a periodic task.
@@ -2068,122 +2214,100 @@ with a nested alternative part.
 
 ### `lamschema` — `Schema`
 
-Declarative JSON Schema validation backed by
-`xeipuuv/gojsonschema` (draft-07 compliant). Schemas are compiled
-lazily on first use and cached, so registering the same schema in a
-hot path is just a map lookup. Full coverage of types, ranges,
-patterns, formats, and combinators (`oneOf`/`anyOf`/`allOf`/`not`).
+`Schema.validate` validates JSON Schema draft-07, JSON Schema represented in
+YAML, or XML against XSD. Schemas are compiled lazily and cached privately by
+content; applications keep named schemas in ordinary `dict[str, json]` or
+`dict[str, str]` values.
 
 ```lammergeier
+from lamerrors import Result, Error
 from lamschema import Schema
 
-userSchema: str = """
-{
-  "type": "object",
-  "required": ["name", "age"],
-  "properties": {
-    "name":  {"type": "string", "minLength": 1},
-    "age":   {"type": "integer", "minimum": 0, "maximum": 150},
-    "email": {"type": "string", "format": "email"}
-  }
-}
-"""
-
-ok: bool = Schema.validateJson(userSchema, '{"name":"alice","age":30}')
-
-# Pre-compile once for hot-path validation:
-Schema.register("user.create", userSchema)
-ok2: bool = Schema.validateByKey("user.create", body)
-errors: list[str] = Schema.errorsByKey("user.create", body)
-```
-
-Why JSON Schema rather than struct-decode? Struct-decode catches
-type errors and required fields but misses ranges, patterns, enums,
-formats (`email`, `uri`, `uuid`), and combinatory schemas — about
-90% of what real REST APIs need to enforce. JSON Schema is also the
-format OpenAPI uses, so the schema you write here doubles as your
-spec.
-
-| Method | Returns |
-|--------|---------|
-| `Schema.validateJson(schemaText, jsonDoc)` | `bool` |
-| `Schema.validateValue(schemaText, value: json)` | `bool` (skip JSON re-parse) |
-| `Schema.errors(schemaText, jsonDoc)` | `list[str]` (empty = valid) |
-| `Schema.register(key, schemaText)` | `str` (`""` ok, else error) |
-| `Schema.validateByKey(key, jsonDoc)` / `validateValueByKey(key, value)` | `bool` |
-| `Schema.errorsByKey(key, jsonDoc)` | `list[str]` |
-| `Schema.isJson(s)` | `bool` (cheap pre-check) |
-| `Schema.unregister(key)` | `bool` |
-
-### `lamjwt` — `Jwt`
-
-JSON Web Tokens — sign + verify with HS256/HS512/RS256, automatic
-`iat` + `exp`, configurable verify-side leeway (default 30 s per
-RFC 7519). Built on `github.com/golang-jwt/jwt/v5`.
-
-```lammergeier
-from lamjwt import Jwt
-
-claims: dict[str, any] = {}
-claims["sub"]  = "alice"
-claims["role"] = "admin"
-
-token: str = Jwt.signHS256(claims, "supersecret", 3600)
-ok: bool = Jwt.verifyHS256(token, "supersecret")
-payload: dict[str, any] = Jwt.decodeHS256(token, "supersecret")
-
-Jwt.setLeeway(60)   # seconds — RFC 7519 recommends ≤300
-```
-
-Sign/verify pairs for HS256, HS512, RS256 plus `try*` siblings that
-return `Result`. `parseUnverified(token)` exposes the payload
-without checking the signature — diagnostic only.
-
----
-
-## Serialization
-
-### `lamprotobuf` — `Pb`
-
-Protocol Buffers wire-format codec on top of
-`google.golang.org/protobuf`. Lam doesn't compile `.proto` files
-itself; the workflow is:
-
-1. Run `protoc --go_out=. *.proto` to generate Go types (one-off).
-2. Import the generated package inside a `go!` block.
-3. Use `Pb.marshal(msg)` / `Pb.unmarshal(data, msg)` from Lam.
-
-```lammergeier
-from lamprotobuf import Pb
-
-go! {
-    import myproto "github.com/me/app/proto/v1"
+schemas: dict[str, json] = {
+    "user.create": {
+        "type": "object",
+        "required": ["name", "age"],
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "age": {"type": "integer", "minimum": 0, "maximum": 150},
+        },
+    },
 }
 
-func main() {
-    msg: any = None
-    go! { msg = &myproto.User{Name: "alice", Age: 30} }
-    wire: str = Pb.marshal(msg)
-
-    decoded: any = None
-    go! { decoded = &myproto.User{} }
-    Pb.unmarshal(wire, decoded)
+result: Result[json] = Schema.validate(
+    schemas["user.create"],
+    {"name": "Ada", "age": 30},
+)
+if not result.ok() {
+    validationError: Error = result.error
+    print(validationError.kind)
 }
 ```
 
-| Method | Returns |
-|--------|---------|
-| `Pb.marshal(msg)` / `tryMarshal(msg)` | `str` / `Result` |
-| `Pb.unmarshal(data, msg)` / `tryUnmarshal(...)` | `bool` / `Result` |
-| `Pb.toJson(msg)` (canonical proto-JSON) / `fromJson(...)` | `str` / `bool` |
-| `Pb.toText(msg)` (text-format) / `fromText(...)` | `str` / `bool` |
-| `Pb.equal(a, b)` | `bool` (descriptor-aware) |
-| `Pb.size(msg)` | `int` (without serialising) |
-| `Pb.clone(msg)` | `any` (deep copy) |
+The overload returns the original document on success. Failures use
+`SchemaFormatError`, `SchemaParseError`, `SchemaCompileError`, or
+`SchemaValidationError`; machine-readable issue details are stored in
+`Error.cause`.
+
+| Signature | Returns |
+|---|---|
+| `Schema.validate(schema: str, document: str, format: str = "json")` | `Result[str]` |
+| `Schema.validate(schema: str, document: json)` | `Result[json]` |
+| `Schema.validate(schema: json, document: str)` | `Result[str]` |
+| `Schema.validate(schema: json, document: json)` | `Result[json]` |
+
+The text format names are exactly `json`, `yaml`, and `xml`. YAML schemas are
+JSON Schema written in YAML. XML uses the pinned pure-Go
+`github.com/moolekkari/validatexml-go` XSD 1.0 validator and disables external
+XSD imports/includes/redefines. Use `Json.isValid(text)` when only JSON
+syntax—not schema conformance—needs checking.
+
+> JSON Web Tokens and Protocol Buffers now release independently as
+> [`@lam/jwt`](#/docs/libraries) and
+> [`@lam/protobuf`](#/docs/libraries). They are not compiler-bundled
+> stdlib modules; install them before using their scoped imports.
 
 ---
 
 ## Crypto, encoding, IDs
+
+### `lamcrypto` — `Crypto`, `CryptoKeyPair`, `CryptoCertificate`
+
+A practical cryptography layer built only on Go's standard library. Binary
+values use `list[int]`, encrypted payloads and signatures are portable strings,
+and asymmetric keys stay in PEM format so applications do not need Go key
+objects.
+
+```lammergeier
+from lamcrypto import Crypto
+
+key: list[int] = Crypto.randomBytes(32)
+sealed: str = Crypto.encrypt("private message", key, "tenant:42")
+plain: str = Crypto.decrypt(sealed, key, "tenant:42")
+
+stored: str = Crypto.passwordHash("correct horse battery staple")
+print(Crypto.verifyPassword("correct horse battery staple", stored))
+
+pair: CryptoKeyPair = Crypto.generateEd25519KeyPair()
+signature: str = Crypto.sign("release manifest", pair.privateKey)
+print(Crypto.verify("release manifest", signature, pair.publicKey))
+```
+
+AES-GCM envelopes carry a fresh nonce and a `lamcrypto:v1:` version prefix.
+Wrong keys, altered ciphertext, and mismatched authenticated data fail closed.
+Password hashes use self-describing PBKDF2-HMAC-SHA256 records with a random
+salt. Prefer `tryEncrypt`, `tryDecrypt`, `tryPasswordHash`, `tryVerifyPassword`,
+`tryGenerateEd25519KeyPair`, `tryGenerateRSAKeyPair`, `trySign`, `tryVerify`, and
+`tryParseCertificate` when invalid input belongs in normal control flow.
+
+| Capability | Methods |
+|------------|---------|
+| Secure random data | `randomBytes`, `randomToken`, `randomHex` and `try*` variants |
+| Authenticated encryption | `encrypt`, `decrypt`, `tryEncrypt`, `tryDecrypt`, `isAesKey` |
+| Password storage | `passwordHash`, `verifyPassword`, `tryPasswordHash`, `tryVerifyPassword` |
+| Keys and signatures | Ed25519/RSA key generation, `sign`, `verify`, and `try*` variants |
+| Certificates | `parseCertificate`, `tryParseCertificate` with typed X.509 metadata |
+| Secret comparison | `constantTimeEquals` (delegates to `lamhash.Hash`) |
 
 ### `lamhash` — `Hash`
 
@@ -2424,130 +2548,10 @@ the runtime path is exactly the same as production code.
 
 ---
 
-### `lamredis` — Redis client
-
-A thin wrapper around `github.com/redis/go-redis/v9`. The Go client
-manages the connection pool, transparent reconnects, ACL auth, and
-pipelining for us, so this module focuses on giving Lam code an
-idiomatic surface: GET/SET with TTL, list / hash / set / sorted-set
-helpers, pub/sub with a blocking iterator, pipelines, and a generic
-`exec` escape hatch for commands the wrapper doesn't expose.
-
-```lammergeier
-from lamredis import Redis, PubSub
-
-# No-auth, default DB.
-r: Redis = Redis.connect("localhost:6379")
-
-# Auth + non-default DB. ``db`` selects a logical database; Redis
-# 6+ ACLs also accept a username.
-r2: Redis = Redis.connect(
-    "localhost:6380",
-    password="secret",
-    db=1,
-    username="alice",
-)
-
-# Or parse a redis://… URL straight out of an env var.
-r3: Redis = Redis.fromUrl("rediss://user:pw@host:6380/2")
-
-# Strings + TTL.
-r.set("greeting", "hello", ttlSec=60)
-hello: str = r.get("greeting")          # "hello"
-missing: str = r.get("does-not-exist")  # "" (use ``r.exists(["k"])``
-                                        #     to disambiguate)
-
-# Native JSON is encoded/decoded automatically and can carry a TTL.
-payload: json = {"name": "Ada", "roles": ["admin", "writer"]}
-r.setJson("user:json:1", payload, ttlSec=60)
-restored: json = r.getJson("user:json:1")
-name: str = restored.name
-
-# Atomic counters.
-n: int = r.incr("hits")
-r.incrBy("hits", 9)
-
-# Lists.
-r.rpush("jobs", ["a", "b", "c"])        # tail-push three values
-job: str = r.lpop("jobs")               # "a"
-
-# Hashes.
-r.hsetMap("user:1", {"name": "alice", "tier": "gold"})
-profile: dict[str, str] = r.hgetAll("user:1")
-
-# Sets / sorted sets.
-r.sadd("tags", ["go", "rust"])
-r.zadd("scores", 100.0, "alice")
-top: list[dict[str, any]] = r.zrangeWithScores("scores", -1, -1)
-
-# Pub/sub — ``subscribe`` returns a blocking iterator.
-ps: PubSub = r.subscribe(["events"])
-ps.setTimeout(3000)                     # ms; 0 == wait forever
-msg: str = ps.next()
-ps.close()
-
-# Pipelines — one round-trip for many commands.
-results: list[any] = r.pipeline([
-    {"cmd": "GET",  "args": ["key"]},
-    {"cmd": "INCR", "args": ["counter"]},
-])
-
-r.close()
-```
-
-Missing-key semantics: `get`, `hget`, `lpop`, … all return `""` for
-absent keys (mirroring how Lam treats empty values). Use `exists`
-when you need to distinguish "missing" from "empty string".
-
-### `lamemcached` — Memcached client
-
-Wraps `github.com/memcachier/mc/v3` — picked over the more popular
-`bradfitz/gomemcache` because it speaks the *binary* protocol, which
-is the only memcached dialect that supports SASL PLAIN auth. The
-same client therefore talks to an unauthenticated dev container and
-a SASL-protected production cluster with no API surface change.
-
-```lammergeier
-from lamemcached import Memcached
-
-# No-auth.
-m: Memcached = Memcached.connect("localhost:11211")
-m.set("greeting", "hello", ttlSec=60)
-hello: str = m.get("greeting")           # "hello"
-
-# SASL auth (requires a memcached built with ``-S`` and a SASL DB).
-m2: Memcached = Memcached.connect(
-    "localhost:11211",
-    username="memuser",
-    password="mempass123",
-)
-
-# ADD / REPLACE return ``false`` on the no-op cases instead of
-# raising — handy for "set if absent" / "set if present" idioms.
-created: bool = m.add("only-once", "v1")     # true the first time
-again:   bool = m.add("only-once", "v2")     # false thereafter
-swapped: bool = m.replace("only-once", "v3") # true while it's there
-
-# Atomic counters with seed-on-miss.
-n0: int = m.incr("hits", 1, 0)               # first call → 0
-n1: int = m.incr("hits")                     # → 1, then 2, …
-n2: int = m.decr("hits")
-
-# APPEND / PREPEND for log-style accumulation.
-m.set("buf", "head")
-m.append("buf", "|tail")
-m.prepend("buf", "front|")
-
-# Maintenance.
-versions: dict[str, str] = m.version()
-stats:    dict[str, dict[str, str]] = m.stats()
-m.flush()                                    # wipe every key
-m.close()
-```
-
-The eager `noop` performed by `connect` surfaces bad credentials at
-connect time rather than the first command, so the call site doesn't
-have to inspect every result.
+> Redis and Memcached clients now release independently as
+> [`@lam/redis`](#/docs/libraries) and
+> [`@lam/memcached`](#/docs/libraries). Their service fixtures and
+> integration tests live with those packages rather than the compiler suite.
 
 ---
 
@@ -2559,29 +2563,30 @@ have to inspect every result.
 | Parse / build JSON | `lamjson` |
 | Parse / build YAML (Kubernetes manifests, CI configs, …) | `lamyaml` |
 | Parse / build XML (RSS feeds, SOAP, OpenSearch) | `lamxml` |
-| Build a web service | `lamserver` + `lamserver_plugins` |
+| Build a web service | `@lam/vulture` + `@lam/vulture/std-plugin` |
 | Validate request bodies | `lamschema` (JSON Schema) |
-| Issue / verify JWTs (with kid + JWKS rotation) | `lamjwt` (`Jwt`, `JwtKeySet`) |
-| Encode / decode protobuf | `lamprotobuf` |
-| Add WebSockets | `lamserver_ws` (subprotocols + permessage-deflate via `wsRouteOpts`) |
-| Receive resumable uploads (concat + checksum) | `lamserver_tus` (tus.io 1.0.0) |
-| Receive multipart form uploads | `Request.formField` / `formFile` (in `lamserver`) |
-| Make HTTP calls (one-shot) | `lamhttp.Http.get` / `.post` / `.postJson` |
+| Issue / verify JWTs (with kid + JWKS rotation) | External [`@lam/jwt`](#/docs/libraries) package |
+| Encode / decode protobuf | External [`@lam/protobuf`](#/docs/libraries) package |
+| Add WebSockets | `@lam/vulture/ws-plugin` (subprotocols + permessage-deflate via `wsRouteOpts`) |
+| Receive resumable uploads (concat + checksum) | `@lam/vulture/tus-plugin` (tus.io 1.0.0) |
+| Receive multipart form uploads | `Request.formField` / `formFile` (in `@lam/vulture`) |
+| Make HTTP calls (one-shot) | `lamhttp.Http.get` / overloaded `.post` / `.tryPost` |
 | Make HTTP calls (reusable client w/ baseUrl, headers, timeout) | `lamhttp.HttpClient` (`get`/`head`/`delete`/`post(Json)`/`put(Json)`/`patch(Json)`) |
 | Talk to a SQL database | `lamdb` (raw SQL, native JSON/JSONB values, `QueryBuilder`, transactions + savepoints) |
 | Run schema migrations | `lammigrate` + `lamc migrate make/up/down/status` |
-| Talk to Redis (strings / native JSON / lists / hashes / sets / zsets / pub-sub / pipelines) | `lamredis` (`Redis`, `PubSub`) |
-| Talk to memcached over the binary protocol (incl. SASL PLAIN auth) | `lamemcached` (`Memcached`) |
+| Talk to Redis (strings / native JSON / lists / hashes / sets / zsets / pub-sub / pipelines) | External [`@lam/redis`](#/docs/libraries) package |
+| Talk to memcached over the binary protocol (incl. SASL PLAIN auth) | External [`@lam/memcached`](#/docs/libraries) package |
 | Read / write files | `lamos`, `lampath` |
-| Hash or sign data | `lamhash`, `lambase64`, `lamuuid` |
+| Encrypt, hash, sign, or store passwords safely | `lamcrypto`, `lamhash`, `lambase64`, `lamuuid` |
 | Compute statistics or matrix algebra | `lamstats`, `lamarray` |
+| Propagate cancellation, deadlines, and request values | `lamcontext.Context` |
 | Schedule work concurrently | `lamconcurrency`, `lamactor` (message-passing) |
 | Cache lookup results | `lamcache` |
 | Iterate lazily | `lamiter` |
 | Render text / HTML templates | `lamtemplate` (`Template`, `HtmlTemplate`) |
 | Retry with exponential backoff + jitter | `lamretry.Retry` |
 | Throttle outbound calls (token bucket) | `lamratelimit.TokenBucket` |
-| Trip a circuit on downstream failure | `lamserver_plugins.CircuitBreaker` |
+| Trip a circuit on downstream failure | `@lam/vulture/std-plugin.CircuitBreaker` |
 | Test code | `lamtest` |
 | Parse CLI flags | `lamcli` |
 | Run behind a reverse proxy | `Server.trustProxy(...)` + `Request.realIP()` |
@@ -2643,30 +2648,48 @@ Backed by `gopkg.in/yaml.v3`. Non-string YAML keys are stringified
 during normalisation so the result still slots into Lam's `dict[str,
 any]`.
 
-### `lamhttp.HttpClient` — reusable HTTP client
+### `lamhttp.HttpClient` — reusable HTTP client and response metadata
 
 ```lammergeier
-from lamhttp import HttpClient, HttpResponse
+from lamhttp import HttpClient, HttpCookie, HttpResponse
 
 api: HttpClient = HttpClient("https://api.example.com", 5000)
 api.setHeader("Authorization", "Bearer xyz")
 
 res: HttpResponse = api.get("/users/42")
 if res.ok() {
-    print(res.body)
+    body: json = res.json()
+    requestId: str = res.header("X-Request-Id", "missing")
+    allTraceValues: list[str] = res.headerValues("X-Trace")
+    session: HttpCookie = res.cookie("session")
+    if session != None { print(session.value) }
 }
 
-api.postJson("/users", "{\"name\":\"alice\"}")       # encoded-string compatibility
-api.postJsonValue("/users", {"name": "alice"})
-api.putJsonValue("/users/42", {"name": "alice2"})
-api.patchJsonValue("/users/42", {"age": 31})
+api.post("/users", {"name": "alice"})
+api.put("/users/42", {"name": "alice2"})
+api.patch("/users/42", {"age": 31})
+api.post("/events", "text/plain", "ready")
 api.delete("/users/42")
 ```
 
-Absolute URLs (`http://`/`https://`) bypass the configured base URL
-so the same client can call out to a third-party API by full URL
-when needed. `HttpResponse.ok()` returns `true` only for 2xx
-responses with no transport error.
+`post`, `put`, and `patch` each provide a native-`json` overload that encodes
+the value and supplies `application/json`, plus an explicit
+`(contentType, body: str)` form. Absolute URLs (`http://`/`https://`) bypass
+the configured base URL.
+
+`HttpResponse` exposes `status`, `body`, `error`, and
+`headers: dict[str, list[str]]`. `ok()` accepts only completed 2xx responses;
+`json()` decodes the body to native JSON and `tryJson()` returns
+`Result[json]`. Header lookups are case-insensitive: `header(name,
+fallback="")` returns the first value and `headerValues(name)` preserves every
+value.
+
+`cookies()` parses each repeated `Set-Cookie` value in wire order;
+`cookie(name)` returns the first exact-name match or `None`. `HttpCookie.parse`
+is also available directly. `HttpCookie` preserves `name`, `value`, `path`,
+`domain`, `expires`, `maxAge`, `secure`, `httpOnly`, `sameSite`,
+`partitioned`, the original `raw` header, and unknown or malformed extension
+attributes in `unparsed`.
 
 ### `lamtemplate` — text and HTML templating
 
@@ -2726,28 +2749,6 @@ wait for a reply. Unhandled panics in handlers are recovered (and
 optionally observed via `onError`) so a buggy actor can't bring down
 its neighbours.
 
-### `lamjwt.JwtKeySet` — JWKS-style key rotation
-
-```lammergeier
-from lamjwt import Jwt, JwtKeySet
-
-ks: JwtKeySet = JwtKeySet()
-ks.addHS("k1", "secret1")
-ks.addHS("k2", "secret2")
-
-# Later — rotate:
-ks.remove("k1")
-
-# Or load a JSON Web Key Set:
-ks.loadJwks(jwksJson)
-
-# Verify — iterates kid-first then falls back to every other key:
-claims: any = ks.verifyHS256(token)
-```
-
-`Jwt.signRS256Kid` / `signHS256Kid` stamp the `kid` header.
-`Jwt.extractKid` reads the kid without verifying.
-
 For deeper dives, every module file in [`lib/`](https://github.com/thallium-solutions/lammergeier-lang/blob/main/lib) opens with a
 docstring and example block.
 
@@ -2783,45 +2784,43 @@ index lists the public classes and top-level functions you can import.
 | `lamcli` | `from lamcli import Cli` | Args, flags, positional arguments, typed integer flags. |
 | `lamcompress` | `from lamcompress import Compress` | gzip/gunzip and zlib deflate/inflate as base64 strings. |
 | `lamconcurrency` | `from lamconcurrency import Channel, WaitGroup, Mutex, RWMutex, Atomic` | Go-style concurrency primitives. |
-| `lamconv` | `from lamconv import Conv` | String/int/float/bool/base conversions plus `try*` Result forms. |
+| `lamcontext` | `from lamcontext import Context` | Cancellation trees, unit-aware expiration, values, bounded waits, and Go context interop. |
+| `lamconv` | `from lamconv import Conv` | String/int/float/bool/base conversions with decimal, hex, octal, and binary Result forms. |
+| `lamcrypto` | `from lamcrypto import Crypto, CryptoKeyPair, CryptoCertificate` | Secure random data, AES-GCM, password hashes, PEM keys/signatures, and X.509 metadata. |
 | `lamcron` | `from lamcron import Cron` | Cron scheduler, seconds-aware mode, start/stop/remove. |
 | `lamcsv` | `from lamcsv import Csv` | Parse/format CSV rows and whole documents. |
-| `lamdata` | `from lamdata import DataFrame, DataFrameGroups, Series` | DataFrames, Series, joins, filters, group-by aggregation. |
+| `lamdata` | `from lamdata import DataFrame, DataFrameGroups, Series` | DataFrames and Series with generic typed columns, native JSON, joins, filters, and group-by aggregation. |
 | `lamdatetime` | `from lamdatetime import DateTime` | Calendar-style date/time helpers. |
 | `lamdb` | `from lamdb import Db, Tx, QueryBuilder` | SQL connections, transactions, raw queries, query builder. |
 | `lamdeque` | `from lamdeque import Deque` | Double-ended queue helpers. |
-| `lamemcached` | `from lamemcached import Memcached` | Memcached client: get/set/add/replace/delete/touch/counters/stats. |
-| `lamenv` | `from lamenv import Env, Dotenv, Config` | Environment variables, dotenv parsing/loading, layered config. |
+| `lamenv` | `from lamenv import Env, Dotenv, Config` | Typed/Result environment access, dotenv parsing/loading, and layered config. |
 | `lamerrors` | `from lamerrors import Error, Result` | Structured errors and success/error containers. |
 | `lamexec` | `from lamexec import Exec` | Run shell-like commands or command + arg lists. |
 | `lamfmt` | `from lamfmt import Fmt` | `sprintf`, printing, padding, integer bases, float formatting. |
 | `lamhash` | `from lamhash import Hash` | SHA/MD5/CRC/HMAC and constant-time comparison. |
 | `lamheap` | `from lamheap import Heap, PriorityHeap` | Numeric heap and priority queue. |
-| `lamhttp` | `from lamhttp import Http, HttpClient, HttpResponse, HttpServer` | One-shot HTTP helpers, reusable client, tiny blocking server. |
+| `lamhttp` | `from lamhttp import Http, HttpClient, HttpResponse, HttpCookie, HttpServer` | Overloaded native-JSON requests, repeated response headers, cookies, reusable client, tiny blocking server. |
 | `lamiter` | `from lamiter import Iter` | Lazy iterator pipelines: map/filter/take/drop/reduce/enumerate. |
-| `lamjson` | `from lamjson import Json` | Native `json`, wire encoding/decoding, collection conversion, kind inspection, and `try*` forms. |
-| `lamjwt` | `from lamjwt import Jwt, JwtKeySet` | JWT sign/verify, HMAC/RSA, kid/JWKS key rotation. |
+| `lamjson` | `from lamjson import Json` | Native `json`, wire encoding/decoding, safe Result-based collection conversion, and kind inspection. |
 | `lamlog` | `from lamlog import Log` | Leveled logging and formatted log helpers. |
 | `lammath` | `from lammath import Math` | Constants, trig, logs, rounding, combinatorics, number theory. |
 | `lammigrate` | `from lammigrate import Migrator, Schema` | SQL migrations and schema helpers. |
 | `lamnet` | `from lamnet import Net, TcpConn, TcpListener` | DNS, reachability, TCP dial/listen/send/recv. |
 | `lamos` | `from lamos import Os` | Filesystem, process, path, directory, temp-file helpers. |
 | `lampath` | `from lampath import Path` | Path joining/splitting/ext/base/dir/existence helpers. |
-| `lamprotobuf` | `from lamprotobuf import Pb` | Protobuf marshal/unmarshal/JSON/descriptor helpers. |
 | `lamqueue` | `from lamqueue import Queue` | FIFO queue. |
 | `lamrandom` | `from lamrandom import Random` | Pseudo-random, secure random, tokens, UUID-like helpers. |
 | `lamratelimit` | `from lamratelimit import TokenBucket` | Thread-safe token bucket throttling. |
 | `lamre` | `from lamre import Re` | Regex match/find/findAll/replace/split/groups plus `try*`. |
-| `lamredis` | `from lamredis import Redis, PubSub` | Redis strings, hashes, lists, sets, sorted sets, pub/sub, pipelines. |
 | `lamretry` | `from lamretry import Retry` | Retry `Result`-returning calls and poll predicates. |
 | `lamschema` | `from lamschema import Schema` | JSON Schema validation and registry. |
-| `lamserver` | `from lamserver import Server, Request, Response, HttpError, SseEmitter, RequestBodyReader` | Fastify-style HTTP framework. |
-| `lamserver_plugins` | `from lamserver_plugins import requestId, rateLimit, compress, helmet, etag, healthcheck, metrics, CircuitBreaker, ...` | Ready-made server plugins and a circuit breaker. |
-| `lamserver_tus` | `from lamserver_tus import tusUploads, tusGc` | tus.io resumable upload routes and garbage collection. |
-| `lamserver_ws` | `from lamserver_ws import WebSocket, wsRoute, wsRouteOpts` | WebSocket route helper and socket wrapper. |
+| `@lam/vulture` | `from @lam/vulture import Server, Request, Response, HttpError, SseEmitter, RequestBodyReader` | Fastify-style HTTP framework. |
+| `@lam/vulture/std-plugin` | `from @lam/vulture/std-plugin import requestId, rateLimit, compress, helmet, etag, healthcheck, metrics, CircuitBreaker, ...` | Ready-made server plugins and a circuit breaker. |
+| `@lam/vulture/tus-plugin` | `from @lam/vulture/tus-plugin import tusUploads, tusGc` | tus.io resumable upload routes and garbage collection. |
+| `@lam/vulture/ws-plugin` | `from @lam/vulture/ws-plugin import WebSocket, wsRoute, wsRouteOpts` | WebSocket route helper and socket wrapper. |
 | `lamset` | `from lamset import Set` | Set operations: add/remove/contains/union/intersect/difference/subset. |
 | `lamsmtp` | `from lamsmtp import Smtp, Mail` | SMTP send helpers and MIME mail builder. |
-| `lamsort` | `from lamsort import Sort` | Typed sort/reverse helpers. |
+| `lamsort` | `from lamsort import Sort` | Generic natural/comparator sorting, direction checks, named algorithms, and lazy sorted generators. |
 | `lamstack` | `from lamstack import Stack` | LIFO stack. |
 | `lamstats` | `from lamstats import Stats` | Descriptive statistics and percentiles. |
 | `lamstrings` | `from lamstrings import Strings` | UTF-8 string manipulation and formatting helpers. |
@@ -2849,19 +2848,20 @@ r.ok() -> bool
 r.unwrap() -> any
 r.unwrapOr(fallback: any) -> any
 
-# lamserver
-srv.route(method: str, path: str, handler: any)
+# @lam/vulture
+srv.route(method: str, path: str, handler: any, schema: str | json | None = None, schemaFormat: str = "json")
 srv.routeOpts(method: str, path: str, handler: any, opts: any)
-srv.get/post/put/del/patch/head/options/all(path: str, handler: any)
+srv.get/post/put/del/patch/head/options/all(path: str, handler: any, schema: str | json | None = None, schemaFormat: str = "json")
 srv.getOpts/postOpts/putOpts/delOpts/patchOpts/headOpts/optionsOpts(path, handler, opts)
 srv.onRequest/preParsing/preValidation/preHandler/preSerialization/onSend/onResponse/onError(fn)
 srv.register(plugin: any, prefix: str = "", encapsulate: bool = false)
-srv.addSchema(schema: any)
 srv.setSchemaErrorFormatter(fn: any)
 srv.inject(method: str, path: str, body: str = "", headers: any = None) -> dict[str, any]
 req.header(name: str) -> str
 req.queryGet(name: str, fallback: str = "") -> str
 req.jsonBody() -> json
+req.ctx[key] / req.ctx.has(key) / key in req.ctx
+req.ctx.cancel(reason) / expired() / reason() / wait(timeoutMs)
 req.bodyReader() -> RequestBodyReader
 res.code(n: int) -> Response
 res.header(name: str, value: str) -> Response

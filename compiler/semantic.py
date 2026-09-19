@@ -88,6 +88,11 @@ _GO_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _GO_SELF_RE = re.compile(r"\bself\b")
 _GO_RECEIVER_ALIAS_RE = re.compile(r"\bs\s*\.")
 _GO_LOCAL_S_DECL_RE = re.compile(r"(?:^|[;{\n])\s*(?:var\s+s\b|s\s*:=)")
+_GO_FUNC_S_PARAM_RE = re.compile(
+    r"\bfunc(?:\s*\([^)]*\))?(?:\s+[A-Za-z_]\w*)?\s*\("
+    r"(?:[^)]*,\s*)?s\s+(?:\*?[A-Za-z_]|\[)"
+)
+_GO_S_RECEIVER_RE = re.compile(r"\bfunc\s*\(\s*s\s+(?:\*?[A-Za-z_]|\[)")
 
 _ANSI = {
     "red": "\033[31m",
@@ -167,7 +172,7 @@ BUILTIN_FUNCS: Set[str] = {
     "len", "range", "enumerate", "sorted", "reversed",
     "append", "format",
     # Type constructors / casts
-    "str", "string", "int", "float", "bool", "bytes",
+    "str", "string", "json", "int", "float", "bool", "bytes",
     "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",
     "uint32", "uint64", "float32", "float64", "byte", "rune",
     "list", "dict", "set", "tuple",
@@ -205,7 +210,7 @@ INTEGER_CAST_FUNCS: Set[str] = {
 FLOAT_CAST_FUNCS: Set[str] = {"float", "float32", "float64"}
 
 BUILTIN_CAST_FUNCS: Set[str] = {
-    "str", "string", "bool", *INTEGER_CAST_FUNCS, *FLOAT_CAST_FUNCS,
+    "str", "string", "json", "bool", *INTEGER_CAST_FUNCS, *FLOAT_CAST_FUNCS,
 }
 
 # Standard-library module names that get auto-imported via ``from
@@ -221,7 +226,7 @@ STDLIB_MODULES: Set[str] = {
     "lamlog", "lamcsv", "lamerr", "lamerrors", "lamfmt",
     "lamtest", "lamtypes", "lamio", "lamnet", "lamsecurity",
     "lamunicode", "lamurl", "lambase64", "lamcompress",
-    "lamcrypto", "lamdatetime", "lamarray", "lamdata",
+    "lamcrypto", "lamcontext", "lamdatetime", "lamarray", "lamdata",
     "lamiter", "lamuuid", "lamcache", "lambytes",
     "lamtemplate", "lamratelimit", "lamretry", "lamexec",
     # Collections / concurrency
@@ -229,12 +234,9 @@ STDLIB_MODULES: Set[str] = {
     "lamcollections", "lamfunctools", "lamitertools",
     "lamthreading", "lamasync", "lamconcurrency", "lamactor",
     # Database / migrations / messaging
-    "lamdb", "lammigrate", "lamredis", "lamemcached",
-    "lamcron", "lamsmtp",
+    "lamdb", "lammigrate", "lamcron", "lamsmtp",
     # Web stack
-    "lamserver", "lamserver_ws", "lamserver_plugins",
-    "lamserver_tus", "lamschema", "lamjwt", "lamprotobuf",
-    "lamcli",
+    "lamschema", "lamcli",
 }
 
 
@@ -495,6 +497,10 @@ class SemanticChecker:
             name: dict(methods)
             for name, methods in (imported_interface_methods or {}).items()
         }
+        self._interface_method_overloads: dict[str, dict[str, list[_MethodShape]]] = {
+            name: {method: [shape] for method, shape in methods.items()}
+            for name, methods in (imported_interface_methods or {}).items()
+        }
         self._class_method_shapes: dict[str, dict[str, _MethodShape]] = {
             name: dict(methods)
             for name, methods in (imported_class_method_shapes or {}).items()
@@ -728,7 +734,11 @@ class SemanticChecker:
             if node.children and isinstance(node.children[0], Tree):
                 name = self._name_text(node.children[0])
                 if name:
-                    self._interface_methods[name] = self._collect_interface_methods(node)
+                    overloads = self._collect_interface_method_overloads(node)
+                    self._interface_method_overloads[name] = overloads
+                    self._interface_methods[name] = {
+                        method: shapes[-1] for method, shapes in overloads.items() if shapes
+                    }
         elif d in ("import_from", "import_name"):
             self._record_support_import(node)
         elif d == "decorated":
@@ -846,7 +856,11 @@ class SemanticChecker:
                 else:
                     seen_class[n] = node
                 self._module_seen[n] = "class"
-                self._interface_methods[n] = self._collect_interface_methods(node)
+                overloads = self._collect_interface_method_overloads(node)
+                self._interface_method_overloads[n] = overloads
+                self._interface_methods[n] = {
+                    method: shapes[-1] for method, shapes in overloads.items() if shapes
+                }
         elif d == "decorated":
             for c in node.children:
                 if isinstance(c, Tree) and c.data in ("classdef", "funcdef"):
@@ -1156,7 +1170,7 @@ class SemanticChecker:
         try:
             self._check_method_receiver_declaration(node, suite_node)
             self._check_operator_method_signature(node)
-            self._check_to_json_method_signature(node)
+            self._check_json_method_signature(node)
             self._check_type_annotations(node)
             if suite_node is not None:
                 self._walk_suite_stmts(self._suite_stmts(suite_node))
@@ -1276,24 +1290,24 @@ class SemanticChecker:
                     f"operator method `{class_name}.{method}` must return `bool`, got `{return_type}`",
                 )
 
-    def _check_to_json_method_signature(self, node: Tree) -> None:
-        if not self._current_class_stack or self._funcdef_name(node) != "toJson":
+    def _check_json_method_signature(self, node: Tree) -> None:
+        if not self._current_class_stack or self._funcdef_name(node) != "__json__":
             return
         class_name = self._current_class_stack[-1]
         if self._funcdef_is_static(node):
-            self._error(node, "json", f"`{class_name}.toJson` must be an instance method")
+            self._error(node, "json", f"`{class_name}.__json__` must be an instance method")
             return
         params = self._param_names(self._funcdef_params(node))
         if params != ["self"]:
             self._error(
                 node,
                 "json",
-                f"`{class_name}.toJson` must declare only `self`, got {len(params)} parameter{'s' if len(params) != 1 else ''}",
+                f"`{class_name}.__json__` must declare only `self`, got {len(params)} parameter{'s' if len(params) != 1 else ''}",
             )
         return_type = self._funcdef_return_type_text(node)
         if return_type != "json":
             rendered = return_type or "None"
-            self._error(node, "json", f"`{class_name}.toJson` must return `json`, got `{rendered}`")
+            self._error(node, "json", f"`{class_name}.__json__` must return `json`, got `{rendered}`")
 
     def _suite_uses_self(self, node) -> bool:
         if not isinstance(node, Tree):
@@ -1312,31 +1326,70 @@ class SemanticChecker:
         # Duplicate-member check.
         class_name = self._classdef_name(node)
         ast_class = self._ast_classes.get(class_name)
-        seen: Set[str] = set()
         if ast_class is not None:
-            for member in [*ast_class.fields, *ast_class.methods]:
-                name = member.name
-                if name and name in seen:
-                    self._error(member.span, "duplicate",
-                                f"duplicate class member `{name}`")
-                if name:
-                    seen.add(name)
+            field_names: Set[str] = set()
+            for field in ast_class.fields:
+                if field.name and field.name in field_names:
+                    self._error(field.span, "duplicate", f"duplicate class member `{field.name}`")
+                if field.name:
+                    field_names.add(field.name)
+            method_sigs: dict[str, set[tuple[str, ...]]] = {}
+            method_kinds: dict[str, bool] = {}
+            for method in ast_class.methods:
+                name = method.name
+                if not name:
+                    continue
+                if name in field_names:
+                    self._error(method.span, "duplicate", f"duplicate class member `{name}`")
+                kind = method.is_static
+                if name in method_kinds and method_kinds[name] != kind:
+                    self._error(method.span, "duplicate", f"class method `{name}` cannot mix static and instance overloads")
+                else:
+                    method_kinds[name] = kind
+                params = method.params if method.is_static else [p for p in method.params if p.name != "self"]
+                signature = tuple(p.type_ref.name if p.type_ref is not None else "any" for p in params)
+                seen = method_sigs.setdefault(name, set())
+                if signature in seen:
+                    self._error(
+                        method.span,
+                        "duplicate",
+                        f"duplicate class member `{name}`; duplicate class method `{name}` with the same type signature",
+                    )
+                seen.add(signature)
         elif suite_node is not None:
+            field_names: Set[str] = set()
+            method_sigs: dict[str, set[tuple[str, ...]]] = {}
+            method_kinds: dict[str, bool] = {}
             for stmt in self._suite_stmts(suite_node):
                 if not isinstance(stmt, Tree):
                     continue
                 if stmt.data == "funcdef":
                     name = self._funcdef_name(stmt)
+                    if name in field_names:
+                        self._error(stmt, "duplicate", f"duplicate class member `{name}`")
+                    kind = self._funcdef_is_static(stmt)
+                    if name in method_kinds and method_kinds[name] != kind:
+                        self._error(stmt, "duplicate", f"class method `{name}` cannot mix static and instance overloads")
+                    else:
+                        method_kinds[name] = kind
+                    signature = self._param_type_sig(self._funcdef_params(stmt))
+                    if not kind and self._param_names(self._funcdef_params(stmt))[:1] == ["self"]:
+                        signature = signature[1:]
+                    seen = method_sigs.setdefault(name, set())
+                    if signature in seen:
+                        self._error(
+                            stmt,
+                            "duplicate",
+                            f"duplicate class member `{name}`; duplicate class method `{name}` with the same type signature",
+                        )
+                    seen.add(signature)
                 elif stmt.data in ("annassign", "assign_stmt", "assign"):
                     targets = self._assign_targets(stmt)
                     name = targets[0] if targets else ""
-                else:
-                    name = ""
-                if name and name in seen:
-                    self._error(stmt, "duplicate",
-                                f"duplicate class member `{name}`")
-                if name:
-                    seen.add(name)
+                    if name and (name in field_names or name in method_sigs):
+                        self._error(stmt, "duplicate", f"duplicate class member `{name}`")
+                    if name:
+                        field_names.add(name)
 
         if class_name:
             self._check_inherited_class_shape(node, class_name)
@@ -2572,6 +2625,22 @@ class SemanticChecker:
             )
             return
 
+        child_overloads = self._method_sigs.get(f"{class_name}.{method_name}", [])
+        base_overloads = self._method_sigs.get(f"{base}.{method_name}", [])
+        for child_sig in child_overloads:
+            for base_sig in base_overloads:
+                if child_sig.param_types != base_sig.param_types:
+                    continue
+                if child_sig.return_type_text != base_sig.return_type_text:
+                    self._error(
+                        node,
+                        "inheritance",
+                        f"class `{class_name}` overrides `{base}.{method_name}` with return "
+                        f"`{child_sig.return_type_text or 'None'}`, expected "
+                        f"`{base_sig.return_type_text or 'None'}`",
+                    )
+                return
+
         if len(child_shape.param_types) != len(base_shape.param_types):
             got = len(child_shape.param_types)
             expected = len(base_shape.param_types)
@@ -2734,6 +2803,8 @@ class SemanticChecker:
             if actual is None or self._is_unknown_open_assignment_type(actual):
                 return
             for target_node in target_nodes:
+                if self._assignment_target_display(target_node) == "_":
+                    continue
                 expected = self._assignment_target_type(target_node)
                 if expected is None or (isinstance(expected, NamedType) and expected.name == "json"):
                     continue
@@ -2786,7 +2857,12 @@ class SemanticChecker:
             return parse_type(type_name) if type_name else None
         if target.data in {"getattr", "getattr_safe"}:
             return self._member_target_type(target)
-        if target.data == "getitem":
+        if target.data == "getitem" and target.children:
+            receiver_type = self._expr_simple_type(target.children[0])
+            if isinstance(receiver_type, NamedType):
+                shape = self._class_method_shape(receiver_type.name, "__setitem__")
+                if shape is not None and len(shape.param_type_texts) > 1:
+                    return parse_type(shape.param_type_texts[1])
             return self._getitem_result_type(target)
         return None
 
@@ -2925,12 +3001,30 @@ class SemanticChecker:
         if actual is not None and is_assignable(NamedType("json"), actual):
             return None
         if isinstance(actual, NamedType) and actual.name in self._class_method_shapes:
-            shape = self._class_method_shapes.get(actual.name, {}).get("toJson")
-            if shape is not None and not shape.param_types and (shape.return_type_text or shape.return_type) == "json":
-                return None
-            return node, f"value of type `{actual.name}` is not JSON-compatible; implement `func toJson(self) -> json`"
+            return node, f"custom class `{actual.name}` requires explicit conversion with `json(value)`"
         rendered = render_type(actual) if actual is not None else "unknown"
         return node, f"value of type `{rendered}` is not JSON-compatible; convert it explicitly with `Json.fromValue`"
+
+    def _json_cast_issue(self, node: Tree) -> tuple[Tree, str] | None:
+        actual = self._expr_simple_type(node)
+        if actual is None and node.data in {"getattr", "getattr_safe"}:
+            actual = self._member_target_type(node)
+        if self._is_any_type(actual):
+            rendered = render_type(actual) if actual is not None else "unknown"
+            return node, f"cast `json` cannot statically convert `{rendered}`; use `Json.fromValue` for dynamic values"
+        if isinstance(actual, NamedType) and actual.name in self._class_method_shapes:
+            methods = self._class_method_shapes.get(actual.name, {})
+            shape = methods.get("__json__")
+            if shape is not None and not shape.param_types and (shape.return_type_text or shape.return_type) == "json":
+                return None
+            if "toJson" in methods:
+                return (
+                    node,
+                    f"class `{actual.name}` defines legacy `toJson`; rename it to "
+                    "`func __json__(self) -> json` and call `json(value)`",
+                )
+            return node, f"value of type `{actual.name}` is not JSON-compatible; implement `func __json__(self) -> json`"
+        return self._json_expr_issue(node)
 
     def _check_json_expr(self, node: Tree, context: str) -> bool:
         issue = self._json_expr_issue(node)
@@ -3218,7 +3312,30 @@ class SemanticChecker:
             return
         required = self._interface_methods.get(iface_name, {})
         available = self._class_method_shapes.get(class_name, {})
+        overloads = self._interface_method_overloads.get(iface_name, {})
+        for method_name, required_shapes in overloads.items():
+            if len(required_shapes) <= 1:
+                continue
+            class_sigs = self._method_sigs_for_target(f"{class_name}.{method_name}")
+            for iface_shape in required_shapes:
+                expected_params = self._shape_param_texts(iface_shape)
+                matching = [
+                    sig for sig in class_sigs
+                    if len(sig.param_types) == len(expected_params)
+                    and all("any" in {got, expected} or got == expected for got, expected in zip(sig.param_types, expected_params))
+                ]
+                expected_return = self._shape_return_text(iface_shape)
+                if any((sig.return_type_text or "None") == expected_return for sig in matching):
+                    continue
+                signature = f"{method_name}{self._format_param_types(expected_params)} -> {expected_return}"
+                self._error(
+                    node,
+                    "interface",
+                    f"class `{class_name}` does not satisfy interface `{iface_name}`: missing overload `{signature}`",
+                )
         for method_name, iface_shape in required.items():
+            if len(overloads.get(method_name, [])) > 1:
+                continue
             class_shape = available.get(method_name)
             if class_shape is None:
                 self._error(
@@ -3276,6 +3393,8 @@ class SemanticChecker:
         if not names or not type_name or not self._scopes:
             return
         for name in names:
+            if name == "_":
+                continue
             self._type_storage_scope(node, name).var_types[name] = type_name
 
     def _record_destructuring_assignment_types(self, node: Tree) -> bool:
@@ -3444,6 +3563,13 @@ class SemanticChecker:
         if keywords or has_kwargs:
             self._error(call, "call", f"cast `{name}` does not accept keyword arguments")
             return
+        if name == "json" and (has_starargs or pos_count != 1):
+            self._error(
+                call,
+                "call",
+                f"cast `json` expects exactly 1 argument, got {pos_count}",
+            )
+            return
         if not has_starargs and pos_count > 1:
             self._error(
                 call,
@@ -3453,6 +3579,12 @@ class SemanticChecker:
             return
         args = self._call_positional_args(call)
         if len(args) != 1 or not isinstance(args[0], Tree):
+            return
+        if name == "json":
+            issue = self._json_cast_issue(args[0])
+            if issue is not None:
+                bad_node, message = issue
+                self._error(bad_node, "json", message)
             return
         actual = self._expr_simple_type(args[0])
         if actual is None or self._is_any_type(actual) or self._is_open_type(actual):
@@ -3844,6 +3976,16 @@ class SemanticChecker:
             if self._call_matches_sig(sig, pos_count, keywords, has_starargs, has_kwargs)
         ]
         if matching_sigs:
+            viable_sigs = [sig for sig in matching_sigs if not self._call_type_mismatches(call, sig)]
+            if len(viable_sigs) > 1 and "." in target:
+                dynamic = any(
+                    self._is_any_type(self._expr_simple_type(arg))
+                    for arg in self._call_positional_args(call)
+                    if isinstance(arg, Tree)
+                )
+                if dynamic:
+                    self._error(call, "call", f"ambiguous call to `{target}` for dynamic argument types")
+                    return
             self._check_call_arg_types(call, target, matching_sigs)
             return
         for sig in sigs:
@@ -3904,12 +4046,30 @@ class SemanticChecker:
                 if receiver_target.endswith(".init"):
                     class_target = receiver_target.rsplit(".", 1)[0]
                     return receiver_target, self._constructor_sigs.get(class_target, [])
-                return receiver_target, self._method_sigs.get(receiver_target, [])
+                return receiver_target, self._method_sigs_for_target(receiver_target)
             target = self._expr_dotted_name(callee)
             if target in self._class_method_shapes:
                 return target, self._constructor_sigs.get(target, [_CallableSig(target, 0, 0, (), False)])
-            return target, self._method_sigs.get(target, [])
+            return target, self._method_sigs_for_target(target)
         return "", []
+
+    def _method_sigs_for_target(self, target: str) -> list[_CallableSig]:
+        direct = list(self._method_sigs.get(target, []))
+        for class_name in sorted(self._class_method_shapes, key=len, reverse=True):
+            prefix = f"{class_name}."
+            if not target.startswith(prefix):
+                continue
+            method_name = target[len(prefix):]
+            if "." in method_name:
+                return direct
+            signatures = {sig.param_types for sig in direct}
+            for base in self._all_base_names(class_name):
+                for sig in self._method_sigs.get(f"{base}.{method_name}", []):
+                    if sig.param_types not in signatures:
+                        direct.append(sig)
+                        signatures.add(sig.param_types)
+            return direct
+        return direct
 
     def _receiver_method_target(self, callee: Tree) -> str:
         if not isinstance(callee, Tree) or callee.data not in {"getattr", "getattr_safe"}:
@@ -3976,12 +4136,16 @@ class SemanticChecker:
         arg_indexes = {
             "Json.decode": (0,),
             "Json.decodeInto": (0,),
-            "Schema.register": (1,),
+            "Schema.validate": (0,),
             "Server.addSchema": (0,),
         }.get(target, ())
         if not arg_indexes:
             return
         args = self._call_positional_args(call)
+        if target == "Schema.validate" and len(args) > 2:
+            format_text = self._literal_string_text(args[2])
+            if format_text and format_text != "json":
+                return
         for index in arg_indexes:
             if index >= len(args) or not isinstance(args[index], Tree) or args[index].data != "string":
                 continue
@@ -4356,7 +4520,8 @@ class SemanticChecker:
             return False
         raw = self._go_blocks.get(self._go_marker_id(node), "")
         self._check_go_boundary_diagnostics(node, raw)
-        for match in _GO_IDENT_RE.finditer(raw):
+        scan = self._go_text_without_comments_and_strings(raw)
+        for match in _GO_IDENT_RE.finditer(scan):
             self._is_resolved(match.group(0))
         return True
 
@@ -4374,6 +4539,8 @@ class SemanticChecker:
         if (
             _GO_RECEIVER_ALIAS_RE.search(scan)
             and not _GO_LOCAL_S_DECL_RE.search(scan)
+            and not _GO_FUNC_S_PARAM_RE.search(scan)
+            and not _GO_S_RECEIVER_RE.search(scan)
             and not self._name_in_scope("s")
         ):
             self._error(
@@ -5097,13 +5264,20 @@ class SemanticChecker:
         return names
 
     def _collect_interface_methods(self, node: Tree) -> dict[str, _MethodShape]:
-        methods: dict[str, _MethodShape] = {}
+        return {
+            name: shapes[-1]
+            for name, shapes in self._collect_interface_method_overloads(node).items()
+            if shapes
+        }
+
+    def _collect_interface_method_overloads(self, node: Tree) -> dict[str, list[_MethodShape]]:
+        methods: dict[str, list[_MethodShape]] = {}
         for child in node.children[1:]:
             if not isinstance(child, Tree) or child.data != "interface_method":
                 continue
             shape = self._interface_method_shape(child)
             if shape is not None:
-                methods[shape.name] = shape
+                methods.setdefault(shape.name, []).append(shape)
         return methods
 
     def _collect_class_method_shapes(self, class_name: str, classdef: Tree) -> None:
@@ -5817,6 +5991,16 @@ class SemanticChecker:
         return self._is_named_type(left, "str") and self._is_named_type(right, "str")
 
     def _equality_comparison_allowed(self, left: Type, right: Type, op: str = "==") -> bool:
+        if self._is_named_type(left, "None") or self._is_named_type(right, "None"):
+            other = right if self._is_named_type(left, "None") else left
+            return (
+                isinstance(other, (ListType, DictType, FuncType))
+                or self._is_any_type(other)
+                or self._is_open_type(other)
+                or isinstance(other, GenericType) and other.base in {"list", "dict", "set"}
+                or isinstance(other, NamedType) and other.name in {"None", "error"}
+                or isinstance(other, NamedType) and other.name in self._class_method_shapes
+            )
         if self._is_any_type(left) or self._is_any_type(right):
             return True
         if isinstance(left, NamedType) and left.name in self._class_method_shapes:
@@ -5831,6 +6015,9 @@ class SemanticChecker:
     def _membership_allowed(self, item: Type, container: Type) -> bool:
         if self._is_any_type(item) or self._is_any_type(container):
             return True
+        if isinstance(container, NamedType) and container.name in self._class_method_shapes:
+            shape = self._class_method_shape(container.name, "__contains__")
+            return shape is not None and self._operator_shape_accepts_operand(shape, item)
         expected = self._membership_item_type(container)
         if expected is None:
             return False
@@ -6140,6 +6327,16 @@ class SemanticChecker:
             return None
         return parse_type(shape.return_type_text) if shape.return_type_text else operand
 
+    def _class_method_shape(self, class_name: str, method_name: str) -> _MethodShape | None:
+        shape = self._class_method_shapes.get(class_name, {}).get(method_name)
+        if shape is not None:
+            return shape
+        for base in self._all_base_names(class_name):
+            shape = self._class_method_shapes.get(base, {}).get(method_name)
+            if shape is not None:
+                return shape
+        return None
+
     def _operator_shape_accepts_operand(self, shape: _MethodShape, operand: Type) -> bool:
         if not shape.param_type_texts:
             return False
@@ -6171,6 +6368,10 @@ class SemanticChecker:
             return receiver_type if self._is_sliceable_type(receiver_type) else None
         if isinstance(receiver_type, NamedType) and receiver_type.name == "json":
             return NamedType("json")
+        if isinstance(receiver_type, NamedType) and receiver_type.name in self._class_method_shapes:
+            shape = self._class_method_shape(receiver_type.name, "__getitem__")
+            if shape is not None and shape.return_type_text:
+                return parse_type(shape.return_type_text)
         if isinstance(receiver_type, ListType):
             return receiver_type.item
         if isinstance(receiver_type, DictType):
@@ -6179,8 +6380,11 @@ class SemanticChecker:
             return NamedType("byte")
         return None
 
-    @staticmethod
-    def _getitem_index_type(receiver_type: Type) -> Type | None:
+    def _getitem_index_type(self, receiver_type: Type) -> Type | None:
+        if isinstance(receiver_type, NamedType) and receiver_type.name in self._class_method_shapes:
+            shape = self._class_method_shape(receiver_type.name, "__getitem__")
+            if shape is not None and shape.param_type_texts:
+                return parse_type(shape.param_type_texts[0])
         if isinstance(receiver_type, ListType):
             return NamedType("int")
         if isinstance(receiver_type, DictType):
@@ -6243,6 +6447,8 @@ class SemanticChecker:
             return NamedType("float")
         if name in {"str", "string"}:
             return NamedType("str")
+        if name == "json":
+            return NamedType("json")
         if name == "bool":
             return NamedType("bool")
         return None

@@ -1,0 +1,17 @@
+# expect-go: func (s *Profile) LamJSON() LamJSON {
+# expect-go: var profile LamJSON = lamJSONMust(NewProfile("Ada"))
+
+class Profile {
+    func __init__(self, name: str) {
+        self.name: str = name
+    }
+
+    func __json__(self) -> json {
+        return {"name": self.name}
+    }
+}
+
+func main() {
+    profile: json = json(Profile("Ada"))
+    print(profile)
+}

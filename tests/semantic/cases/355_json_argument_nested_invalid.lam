@@ -1,4 +1,4 @@
-# expect-error: argument `value` to `accept`: value of type `Image` is not JSON-compatible
+# expect-error: argument `value` to `accept`: custom class `Image` requires explicit conversion with `json(value)`
 
 class Image {}
 func accept(value: json) {}

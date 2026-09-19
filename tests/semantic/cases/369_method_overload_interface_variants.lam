@@ -1,0 +1,20 @@
+# expect-pass
+
+interface Parser {
+    func parse(value: int) -> str
+    func parse(value: str) -> str
+}
+
+class ValueParser {
+    func parse(self, value: int) -> str { return str(value) }
+    func parse(self, value: str) -> str { return value }
+}
+
+func use(parser: Parser) {
+    print(parser.parse(1))
+    print(parser.parse("x"))
+}
+
+func main() {
+    use(ValueParser())
+}

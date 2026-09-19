@@ -10,6 +10,14 @@
 # expect: trunc: 3
 # expect: copysign: -3
 # expect: cbrt: 3
+# expect: clamp: 0,3,10
+# expect: lerp: 5
+# expect: map-range: 50
+# expect: sign: -1,0,1
+# expect: degrees: 180
+# expect: gcd-negative: 6
+# expect: gcd-zero: 12
+# expect: lcm-negative: 12
 # expect: math_ok
 
 from lammath import Math
@@ -26,5 +34,13 @@ func main() {
     print(f"trunc: {Math.trunc(3.7)}")
     print(f"copysign: {Math.copysign(3.0, -1.0)}")
     print(f"cbrt: {Math.cbrt(27.0)}")
+    print(f"clamp: {Math.clamp(-1.0, 0.0, 10.0)},{Math.clamp(3.0, 0.0, 10.0)},{Math.clamp(11.0, 0.0, 10.0)}")
+    print(f"lerp: {Math.lerp(0.0, 10.0, 0.5)}")
+    print(f"map-range: {Math.mapRange(5.0, 0.0, 10.0, 0.0, 100.0)}")
+    print(f"sign: {Math.sign(-2.0)},{Math.sign(0.0)},{Math.sign(2.0)}")
+    print(f"degrees: {Math.radToDeg(Math.degToRad(180.0))}")
+    print(f"gcd-negative: {Math.gcd(-12, 18)}")
+    print(f"gcd-zero: {Math.gcd(0, 12)}")
+    print(f"lcm-negative: {Math.lcm(-4, 6)}")
     print("math_ok")
 }

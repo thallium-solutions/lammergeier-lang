@@ -5,11 +5,13 @@
     { "include": "#comments" },
     { "include": "#strings" },
     { "include": "#go-block" },
+    { "include": "#imports" },
     { "include": "#decorators" },
     { "include": "#function-definition" },
     { "include": "#class-definition" },
     { "include": "#interface-definition" },
     { "include": "#lammergeier-namespace" },
+    { "include": "#contextual-keywords" },
     { "include": "#keywords" },
     { "include": "#storage-modifiers" },
     { "include": "#constants" },
@@ -45,33 +47,113 @@
     "strings": {
       "patterns": [
         {
-          "name": "string.quoted.triple.lammergeier",
-          "begin": "\"\"\"",
-          "end": "\"\"\"",
+          "name": "string.quoted.triple.double.interpolated.lammergeier",
+          "begin": "(?<![A-Za-z0-9_])(?i:f)(\"\"\")",
+          "end": "(?<!\\\\)(?:\\\\\\\\)*\"\"\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.lammergeier" }
+          },
           "patterns": [
             { "include": "#fstring-interpolation" }
           ]
         },
         {
-          "name": "string.quoted.double.lammergeier",
-          "begin": "f\"",
-          "end": "\"",
+          "name": "string.quoted.triple.single.interpolated.lammergeier",
+          "begin": "(?<![A-Za-z0-9_])(?i:f)(''')",
+          "end": "(?<!\\\\)(?:\\\\\\\\)*'''",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.lammergeier" }
+          },
           "patterns": [
             { "include": "#fstring-interpolation" }
           ]
         },
         {
+          "name": "string.quoted.double.interpolated.lammergeier",
+          "begin": "(?<![A-Za-z0-9_])(?i:f)(\")(?!\"\")",
+          "end": "(?<!\\\\)(?:\\\\\\\\)*\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.lammergeier" }
+          },
+          "patterns": [
+            { "include": "#fstring-interpolation" }
+          ]
+        },
+        {
+          "name": "string.quoted.single.interpolated.lammergeier",
+          "begin": "(?<![A-Za-z0-9_])(?i:f)(')(?!'')",
+          "end": "(?<!\\\\)(?:\\\\\\\\)*'",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.lammergeier" }
+          },
+          "patterns": [
+            { "include": "#fstring-interpolation" }
+          ]
+        },
+        {
+          "name": "string.quoted.triple.double.lammergeier",
+          "begin": "(?<![A-Za-z0-9_])(?i:(?:[ubf]?r?|r[ubf]))(\"\"\")",
+          "end": "(?<!\\\\)(?:\\\\\\\\)*\"\"\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.lammergeier" }
+          },
+          "patterns": [
+            { "include": "#string-escape" }
+          ]
+        },
+        {
+          "name": "string.quoted.triple.single.lammergeier",
+          "begin": "(?<![A-Za-z0-9_])(?i:(?:[ubf]?r?|r[ubf]))(''')",
+          "end": "(?<!\\\\)(?:\\\\\\\\)*'''",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.lammergeier" }
+          },
+          "patterns": [
+            { "include": "#string-escape" }
+          ]
+        },
+        {
           "name": "string.quoted.double.lammergeier",
-          "begin": "\"",
-          "end": "\"",
+          "begin": "(?<![A-Za-z0-9_])(?i:(?:[ubf]?r?|r[ubf]))(\")(?!\"\")",
+          "end": "(?<!\\\\)(?:\\\\\\\\)*\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.lammergeier" }
+          },
           "patterns": [
             { "include": "#string-escape" }
           ]
         },
         {
           "name": "string.quoted.single.lammergeier",
-          "begin": "'",
-          "end": "'",
+          "begin": "(?<![A-Za-z0-9_])(?i:(?:[ubf]?r?|r[ubf]))(')(?!'')",
+          "end": "(?<!\\\\)(?:\\\\\\\\)*'",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.lammergeier" }
+          },
           "patterns": [
             { "include": "#string-escape" }
           ]
@@ -82,13 +164,21 @@
       "patterns": [
         {
           "name": "meta.embedded.expression.lammergeier",
-          "begin": "\\{",
-          "end": "\\}",
-          "beginCaptures": { "0": { "name": "punctuation.definition.interpolation.begin.lammergeier" } },
-          "endCaptures": { "0": { "name": "punctuation.definition.interpolation.end.lammergeier" } },
+          "begin": "(?<!\\{)\\{(?!\\{)",
+          "end": "(?<!\\})\\}(?!\\})",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.interpolation.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.interpolation.end.lammergeier" }
+          },
           "patterns": [
             { "include": "source.lammergeier" }
           ]
+        },
+        {
+          "name": "constant.character.escape.brace.lammergeier",
+          "match": "\\{\\{|\\}\\}"
         },
         { "include": "#string-escape" }
       ]
@@ -97,16 +187,16 @@
       "patterns": [
         {
           "name": "constant.character.escape.lammergeier",
-          "match": "\\\\[\\\\\"'nrtbf0]"
+          "match": "\\\\(?:[\\\\\"'abfnrtv]|[0-7]{1,3}|x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|N\\{[^}\\n]+\\}|\\r?\\n)"
         }
       ]
     },
     "go-block": {
       "patterns": [
         {
-          "name": "meta.embedded.block.go.lammergeier",
-          "begin": "(\\bgo!)\\s*(\\{)",
-          "end": "^\\s*\\}\\s*$",
+          "name": "meta.embedded.block.go.inline.lammergeier",
+          "begin": "(\\bgo!)[\\t ]*(\\{)(?=[^\\n]*\\}[\\t ]*(?:#.*)?$)",
+          "end": "\\}(?=[\\t ]*(?:#.*)?$)",
           "beginCaptures": {
             "1": { "name": "keyword.control.go-block.lammergeier" },
             "2": { "name": "punctuation.section.block.begin.lammergeier" }
@@ -121,8 +211,73 @@
           ]
         },
         {
-          "name": "keyword.control.go-inline.lammergeier",
-          "match": "\\bgo!\\s*\\("
+          "name": "meta.embedded.block.go.lammergeier",
+          "begin": "^([\\t ]*)(go!)[\\t ]*(\\{)[\\t ]*(?:#.*)?$",
+          "end": "^\\1\\}[\\t ]*(?:#.*)?$",
+          "beginCaptures": {
+            "2": { "name": "keyword.control.go-block.lammergeier" },
+            "3": { "name": "punctuation.section.block.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.section.block.end.lammergeier" }
+          },
+          "contentName": "meta.embedded.block.go",
+          "patterns": [
+            { "include": "#lammergeier-namespace" },
+            { "include": "source.go" }
+          ]
+        },
+        {
+          "name": "meta.embedded.block.go.indented.lammergeier",
+          "begin": "^([\\t ]*)(go!)[\\t ]*(:)[\\t ]*(?:#.*)?$",
+          "end": "^(?!\\1[\\t ]+)(?=[\\t ]*\\S)",
+          "beginCaptures": {
+            "2": { "name": "keyword.control.go-block.lammergeier" },
+            "3": { "name": "punctuation.section.block.begin.lammergeier" }
+          },
+          "contentName": "meta.embedded.block.go",
+          "patterns": [
+            { "include": "#lammergeier-namespace" },
+            { "include": "source.go" }
+          ]
+        },
+        {
+          "name": "meta.embedded.expression.go.lammergeier",
+          "begin": "(\\bgo!)[\\t ]*(\\()",
+          "end": "\\)",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.go-inline.lammergeier" },
+            "2": { "name": "punctuation.section.group.begin.lammergeier" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.section.group.end.lammergeier" }
+          },
+          "contentName": "meta.embedded.expression.go",
+          "patterns": [
+            { "include": "#lammergeier-namespace" },
+            { "include": "source.go" }
+          ]
+        }
+      ]
+    },
+    "imports": {
+      "patterns": [
+        {
+          "name": "meta.import.from.lammergeier",
+          "match": "^([\\t ]*)(from)\\b[\\t ]+((?:\\.*[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*|\\.+|@[A-Za-z0-9_][A-Za-z0-9_-]*(?:/[A-Za-z_][A-Za-z0-9_-]*)+))[\\t ]+(import)\\b",
+          "captures": {
+            "2": { "name": "keyword.control.import.from.lammergeier" },
+            "3": { "name": "entity.name.namespace.import.lammergeier" },
+            "4": { "name": "keyword.control.import.lammergeier" }
+          }
+        },
+        {
+          "name": "meta.import.lammergeier",
+          "match": "^([\\t ]*)(import)\\b[\\t ]+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+          "captures": {
+            "2": { "name": "keyword.control.import.lammergeier" },
+            "3": { "name": "entity.name.namespace.import.lammergeier" }
+          }
         }
       ]
     },
@@ -130,10 +285,10 @@
       "patterns": [
         {
           "name": "meta.decorator.lammergeier",
-          "match": "(@)(\\w+)",
+          "match": "^([\\t ]*)(@)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)(?=[\\t ]*(?:\\(|(?:func|class)\\b|(?:#.*)?$))",
           "captures": {
-            "1": { "name": "punctuation.definition.decorator.lammergeier" },
-            "2": { "name": "entity.name.function.decorator.lammergeier" }
+            "2": { "name": "punctuation.definition.decorator.lammergeier" },
+            "3": { "name": "entity.name.function.decorator.lammergeier" }
           }
         }
       ]
@@ -141,11 +296,12 @@
     "function-definition": {
       "patterns": [
         {
-          "match": "(?:\\b(private|static|async)\\s+)*\\b(func)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+          "match": "\\b((?:(?:private|static|async)[\\t ]+)*)(func)[\\t ]+([A-Za-z_][A-Za-z0-9_]*)([\\t ]*\\[[^\\]\\n]+\\])?[\\t ]*(?=\\()",
           "captures": {
             "1": { "name": "storage.modifier.lammergeier" },
             "2": { "name": "keyword.other.func.lammergeier" },
-            "3": { "name": "entity.name.function.lammergeier" }
+            "3": { "name": "entity.name.function.lammergeier" },
+            "4": { "name": "meta.type.parameters.lammergeier" }
           }
         }
       ]
@@ -153,10 +309,11 @@
     "class-definition": {
       "patterns": [
         {
-          "match": "\\b(class)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "match": "\\b(class)[\\t ]+([A-Za-z_][A-Za-z0-9_]*)([\\t ]*\\[[^\\]\\n]+\\])?",
           "captures": {
             "1": { "name": "keyword.other.class.lammergeier" },
-            "2": { "name": "entity.name.type.class.lammergeier" }
+            "2": { "name": "entity.name.type.class.lammergeier" },
+            "3": { "name": "meta.type.parameters.lammergeier" }
           }
         }
       ]
@@ -164,10 +321,26 @@
     "interface-definition": {
       "patterns": [
         {
-          "match": "\\b(interface)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "match": "\\b(interface)[\\t ]+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": { "name": "keyword.other.interface.lammergeier" },
             "2": { "name": "entity.name.type.interface.lammergeier" }
+          }
+        }
+      ]
+    },
+    "contextual-keywords": {
+      "patterns": [
+        {
+          "match": "^[\\t ]*(match)\\b(?=[\\t ]+(?![=:]|[+\\-*/%&|^<>]=)[^#\\n;]*\\{)",
+          "captures": {
+            "1": { "name": "keyword.control.match.lammergeier" }
+          }
+        },
+        {
+          "match": "^[\\t ]*(case)\\b(?=[\\t ]+(?![=:]|[+\\-*/%&|^<>]=)[^#\\n;]*\\{)",
+          "captures": {
+            "1": { "name": "keyword.control.case.lammergeier" }
           }
         }
       ]
@@ -176,7 +349,7 @@
       "patterns": [
         {
           "name": "keyword.control.lammergeier",
-          "match": "\\b(if|elif|else|for|while|break|continue|return|pass|try|catch|finally|raise|throw|do|defer|match|case|with|as|yield|del|assert|import|from|await)\\b"
+          "match": "\\b(if|elif|else|for|while|break|continue|return|pass|try|catch|finally|raise|throw|do|defer|with|as|yield|del|assert|import|from|await)\\b"
         },
         {
           "name": "keyword.operator.logical.lammergeier",
@@ -200,7 +373,7 @@
       "patterns": [
         {
           "name": "constant.language.lammergeier",
-          "match": "\\b(True|False|None)\\b"
+          "match": "\\b(True|False|None|true|false|nil|null)\\b"
         }
       ]
     },
@@ -220,7 +393,7 @@
       "patterns": [
         {
           "name": "support.class.stdlib.module.lammergeier",
-          "match": "\\b(lamarray|lambase64|lamcache|lamcompress|lamconcurrency|lamconv|lamcrypto|lamcsv|lamdb|lamenv|lamerrors|lamfs|lamhash|lamheap|lamhttp|lamiter|lamitertools|lamjson|lamjwt|lamlog|lammath|lamnet|lamos|lampath|lamprotobuf|lamqueue|lamrandom|lamratelimit|lamre|lamretry|lamsecurity|lamserver|lamserver_plugins|lamserver_tus|lamset|lamsort|lamstack|lamstats|lamstrings|lamsys|lamtemplate|lamtest|lamthreading|lamtime|lamtypes|lamunicode|lamurl|lamuuid|lamxml|lamyaml)\\b"
+          "match": "\\b(lamactor|lamarray|lambase64|lambytes|lamcache|lamcli|lamcompress|lamconcurrency|lamcontext|lamconv|lamcron|lamcrypto|lamcsv|lamdata|lamdatetime|lamdb|lamdeque|lamenv|lamerrors|lamexec|lamfmt|lamhash|lamheap|lamhttp|lamiter|lamjson|lamlog|lammath|lammigrate|lamnet|lamos|lampath|lamqueue|lamrandom|lamratelimit|lamre|lamretry|lamschema|lamset|lamsmtp|lamsort|lamstack|lamstats|lamstrings|lamtemplate|lamtest|lamtime|lamunicode|lamurl|lamuuid|lamxml|lamyaml)\\b"
         }
       ]
     },
@@ -228,7 +401,7 @@
       "patterns": [
         {
           "name": "support.class.stdlib.type.lammergeier",
-          "match": "\\b(Result|Error|Array|Matrix|Iter|LruCache|TtlCache|Uuid|Server|Request|Response|Http|HttpClient|HttpResponse|Heap|WaitGroup|Channel|Mutex|Atomic|Time|Duration|Path|File|Json|Csv|Xml|XmlNode|Yaml|Template|HtmlTemplate|Retry|TokenBucket|CircuitBreaker|HttpError|Jwt|JwtKeySet|TusServer|Db|QueryBuilder)\\b"
+          "match": "\\b(Result|Error|Crypto|CryptoKeyPair|CryptoCertificate|Context|Array|Matrix|Iter|LruCache|TtlCache|Uuid|Server|Request|Response|Http|HttpClient|HttpResponse|Heap|WaitGroup|Channel|Mutex|Atomic|Time|Duration|Path|File|Json|Csv|Xml|XmlNode|Yaml|Template|HtmlTemplate|Retry|TokenBucket|CircuitBreaker|HttpError|TusServer|Db|QueryBuilder)\\b"
         }
       ]
     },
@@ -236,13 +409,10 @@
       "patterns": [
         {
           "name": "meta.namespace.lammergeier",
-          "match": "\\b(LAMMERGEIER)(\\.)([A-Za-z_][A-Za-z_0-9]*)(?:(\\.)([A-Za-z_][A-Za-z_0-9]*))?\\b",
+          "match": "\\b(LAMMERGEIER)((?:\\.[A-Za-z_][A-Za-z0-9_]*)+)\\b",
           "captures": {
             "1": { "name": "support.namespace.lammergeier" },
-            "2": { "name": "punctuation.accessor.lammergeier" },
-            "3": { "name": "support.type.lammergeier-namespace.lammergeier" },
-            "4": { "name": "punctuation.accessor.lammergeier" },
-            "5": { "name": "entity.name.function.member.lammergeier" }
+            "2": { "name": "support.type.lammergeier-namespace.lammergeier" }
           }
         }
       ]
@@ -251,7 +421,7 @@
       "patterns": [
         {
           "name": "support.function.builtin.lammergeier",
-          "match": "\\b(print|println|len|append|range|enumerate|map|filter|zip|sorted|reversed|sum|min|max|abs|open|input|type|isinstance|hasattr|getattr|setattr|int|float|str|bool|list|dict|set|tuple|format|round|pow|divmod|hex|oct|bin|ord|chr|hash|id|repr|vars|dir|all|any|iter|next|super|staticmethod|classmethod|property)\\b"
+          "match": "\\b(print|input|open|exit|len|range|enumerate|sorted|reversed|append|format|type|isinstance|repr|abs|max|min|panic|recover|make|new|cap|copy|delete|close)\\b(?=[\\t ]*\\()"
         }
       ]
     },
@@ -262,55 +432,71 @@
           "match": "->"
         },
         {
-          "name": "keyword.operator.try.lammergeier",
-          "match": "(?<=[\\w\\)\\]])\\?"
+          "name": "keyword.operator.null-coalescing.lammergeier",
+          "match": "\\?\\?"
         },
         {
-          "name": "keyword.operator.assignment.lammergeier",
-          "match": "(=|\\+=|-=|\\*=|/=|//=|%=|\\*\\*=|&=|\\|=|\\^=|<<=|>>=)"
+          "name": "keyword.operator.safe-navigation.lammergeier",
+          "match": "\\?\\."
+        },
+        {
+          "name": "keyword.operator.propagation.lammergeier",
+          "match": "(?<=[A-Za-z0-9_\\)\\]\\}])\\?(?![?.])"
         },
         {
           "name": "keyword.operator.comparison.lammergeier",
-          "match": "(==|!=|<=|>=|<|>)"
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.assignment.lammergeier",
+          "match": "<<=|>>=|\\*\\*=|//=|\\+=|-=|\\*=|@=|/=|%=|&=|\\|=|\\^=|:=|="
+        },
+        {
+          "name": "keyword.operator.increment-decrement.lammergeier",
+          "match": "\\+\\+|--"
         },
         {
           "name": "keyword.operator.arithmetic.lammergeier",
-          "match": "(\\+|-|\\*\\*|\\*|//|/|%)"
+          "match": "\\*\\*|//|\\+|-|\\*|@|/|%"
         },
         {
           "name": "keyword.operator.bitwise.lammergeier",
-          "match": "(&|\\||\\^|~|<<|>>)"
+          "match": "<<|>>|&|\\||\\^|~"
         }
       ]
     },
     "numbers": {
       "patterns": [
         {
+          "name": "constant.numeric.imaginary.lammergeier",
+          "match": "(?<![A-Za-z0-9_])(?:(?:(?:[0-9](?:_?[0-9])*)\\.(?:[0-9](?:_?[0-9])*)?|\\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*(?:[eE][+-]?[0-9](?:_?[0-9])*)?)[jJ](?![A-Za-z0-9_])"
+        },
+        {
           "name": "constant.numeric.float.lammergeier",
-          "match": "\\b\\d+\\.\\d+([eE][+-]?\\d+)?\\b"
+          "match": "(?<![A-Za-z0-9_])(?:(?:(?:[0-9](?:_?[0-9])*)\\.(?:[0-9](?:_?[0-9])*)?|\\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*)(?![A-Za-z0-9_])"
         },
         {
           "name": "constant.numeric.hex.lammergeier",
-          "match": "\\b0[xX][0-9a-fA-F]+\\b"
+          "match": "(?<![A-Za-z0-9_])0[xX](?:_?[0-9A-Fa-f])+(?![A-Za-z0-9_])"
         },
         {
           "name": "constant.numeric.octal.lammergeier",
-          "match": "\\b0[oO][0-7]+\\b"
+          "match": "(?<![A-Za-z0-9_])0[oO](?:_?[0-7])+(?![A-Za-z0-9_])"
         },
         {
           "name": "constant.numeric.binary.lammergeier",
-          "match": "\\b0[bB][01]+\\b"
+          "match": "(?<![A-Za-z0-9_])0[bB](?:_?[01])+(?![A-Za-z0-9_])"
         },
         {
           "name": "constant.numeric.integer.lammergeier",
-          "match": "\\b\\d+\\b"
+          "match": "(?<![A-Za-z0-9_])[0-9](?:_?[0-9])*(?![A-Za-z0-9_])"
         }
       ]
     },
     "function-call": {
       "patterns": [
         {
-          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?=[\\t ]*(?:\\[[^\\]\\n]+\\][\\t ]*)?\\()",
           "captures": {
             "1": { "name": "entity.name.function.call.lammergeier" }
           }
@@ -321,7 +507,7 @@
       "patterns": [
         {
           "name": "variable.other.lammergeier",
-          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
         }
       ]
     }

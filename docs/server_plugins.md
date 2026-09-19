@@ -1,8 +1,14 @@
-# `lamserver` Plugin Authoring Guide
+# `@lam/vulture` Plugin Authoring Guide
 
-This guide walks through the conventions used by every plugin shipped
-in [`lib/lamserver_plugins.lam`](../lib/lamserver_plugins.lam) and
-shows how to build, test, and ship your own.
+This guide walks through the conventions used by the official
+[`@lam/vulture/std-plugin`](https://github.com/thallium-solutions/lam-vulture-std-plugin)
+collection and shows how to build, test, and ship your own. The HTTP framework
+lives in the independent
+[`@lam/vulture`](https://github.com/thallium-solutions/lam-vulture) package;
+WebSocket and resumable-upload support live in
+[`@lam/vulture/ws-plugin`](https://github.com/thallium-solutions/lam-vulture-ws-plugin)
+and
+[`@lam/vulture/tus-plugin`](https://github.com/thallium-solutions/lam-vulture-tus-plugin).
 
 If you've used Fastify before, the model is recognisable: a plugin
 attaches hooks to the request lifecycle and (optionally) registers
@@ -11,11 +17,28 @@ top-level functions — there's no factory layer, no closure
 type-erasure, and no async setup. They run synchronously and they
 type-check at compile time.
 
+## Installation
+
+Install only the packages an application uses:
+
+```bash
+lamc install @lam/vulture@1.0.0
+lamc install @lam/vulture/std-plugin@1.0.0
+lamc install @lam/vulture/ws-plugin@1.0.0
+lamc install @lam/vulture/tus-plugin@1.0.0
+```
+
+Each plugin declares `@lam/vulture` as a dependency. Core Vulture owns HTTP
+routing, request/response types, lifecycle hooks, schemas, streaming, SSE,
+OpenAPI, and test injection. The standard plugin collection owns common auth,
+security, observability, caching, session, and resilience helpers; WebSocket
+and tus protocol support remain separate opt-in packages.
+
 ---
 
 ## 1. The lifecycle hooks
 
-`lamserver` exposes the main Fastify-style hook ladder. They fire **in this order**
+`@lam/vulture` exposes the main Fastify-style hook ladder. They fire **in this order**
 around every request:
 
 | Hook | When | Can short-circuit? | Typical use |
@@ -55,7 +78,7 @@ func myPlugin(srv: Server, ...config) {
 That's the entire interface. Call it from `main()`:
 
 ```lammergeier
-from lamserver import Server
+from @lam/vulture import Server
 from my_plugins import myPlugin
 
 func main() {
@@ -158,7 +181,7 @@ hold the resolved setting. Hook closures capture the local value.
 The whole plugin in 14 lines:
 
 ```lammergeier
-from lamserver import Server, Request, Response
+from @lam/vulture import Server, Request, Response
 
 func bearerAuth(srv: Server, secret: str) {
     func guard(req: Request, res: Response) {
@@ -184,9 +207,9 @@ Three things to notice:
 
 If your plugin needs *mutable* state across requests (a cache, a
 counter), drop into a `go!` block to declare a Go-typed struct + mutex
-and capture a pointer to it from the hook closure. See
-[`lib/lamserver_plugins.lam`](../lib/lamserver_plugins.lam)'s
-`rateLimit` for the canonical pattern.
+and capture a pointer to it from the hook closure. See the
+[`@lam/vulture/std-plugin` implementation](https://github.com/thallium-solutions/lam-vulture-std-plugin)
+of `rateLimit` for the canonical pattern.
 
 ### Production auth plugin pattern
 
@@ -198,7 +221,7 @@ A production auth plugin usually does three things:
    handlers.
 
 ```lammergeier
-from lamserver import Server, Request, Response
+from @lam/vulture import Server, Request, Response
 
 func tokenAuth(srv: Server, verify: any, header: str = "Authorization") {
     func guard(req: Request, res: Response) {
@@ -242,9 +265,11 @@ srv.register(privateApi, "/api", true)
 
 ## 4. Sharing data between hooks: `req.ctx`
 
-Every `Request` has a `ctx: dict[str, any]` you can stash anything
-on. Use it to thread state from `onRequest` to the handler to
-`onResponse`:
+Every `Request` has a context-backed `ctx` that preserves dictionary indexing.
+`req.ctx[key]` delegates to `Context.get`/`set`; `req.ctx.has(key)` and
+`key in req.ctx` distinguish a missing key from a stored `None`. Cancellation,
+deadline, reason, and wait methods are available on the same object. Use it to
+thread state from `onRequest` to the handler to `onResponse`:
 
 ```lammergeier
 func tracePlugin(srv: Server) {
@@ -261,7 +286,7 @@ func tracePlugin(srv: Server) {
 ```
 
 Keys with a `__` prefix are an informal convention for "internal use
-only" — `lamserver_ws`, for instance, uses `req.ctx["__wsHandler"]`
+only" — `@lam/vulture/ws-plugin`, for instance, uses `req.ctx["__wsHandler"]`
 to pass the WebSocket callback to the upgrade handler.
 
 ### `req.ctx` vs decorators
@@ -562,12 +587,12 @@ if res.StreamHandler != nil || res.SseHandler != nil || res.Hijacked {
 }
 ```
 
-WebSocket plugins are essentially `lamserver_ws`'s `wsRoute` —
+WebSocket plugins are essentially `@lam/vulture/ws-plugin`'s `wsRoute` —
 register a normal GET route, attach a `preHandler` that puts your
 WebSocket callback on `req.ctx`, and let the route handler call
-`websocket.Upgrade` from inside a `go!` block. Read
-[`lib/lamserver_ws.lam`](../lib/lamserver_ws.lam) for the full
-implementation.
+`websocket.Upgrade` from inside a `go!` block. Read the
+[`@lam/vulture/ws-plugin` repository](https://github.com/thallium-solutions/lam-vulture-ws-plugin)
+for the full implementation.
 
 ### Custom content-type parser plugin
 
@@ -632,7 +657,7 @@ a synthetic request without binding a port, so tests stay
 deterministic in CI:
 
 ```lammergeier
-from lamserver import Server, Request, Response
+from @lam/vulture import Server, Request, Response
 
 func main() {
     srv: Server = Server()
@@ -783,40 +808,27 @@ Recognised keys:
 
 ## Validating request bodies with `lamschema`
 
-Pair `routeOpts.preHandler` with `lamschema` for declarative,
-spec-compliant request validation:
+Route helpers accept a schema directly and validate the request body before
+`preHandler` and the handler:
 
 ```lammergeier
-from lamserver import Server, Request, Response
-from lamschema import Schema
+from @lam/vulture import Server
 
-userCreateSchema: str = """
-{
-  "type": "object",
-  "required": ["name", "email"],
-  "properties": {
-    "name":  {"type": "string", "minLength": 1, "maxLength": 80},
-    "email": {"type": "string", "format": "email"}
-  }
-}
-"""
-
-# Pre-compile once on startup.
-Schema.register("user.create", userCreateSchema)
-
-func validateUserCreate(req: Request, res: Response) {
-    errs: list[str] = Schema.errorsByKey("user.create", req.body)
-    if len(errs) > 0 {
-        res.setStatus(400)
-        body: json = {"errors": errs}
-        res.json(body)
-    }
+userCreateSchema: json = {
+    "type": "object",
+    "required": ["name", "email"],
+    "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 80},
+        "email": {"type": "string", "format": "email"},
+    },
 }
 
-opts: dict[str, any] = {}
-opts["preHandler"] = validateUserCreate
-srv.postOpts("/users", createUserHandler, opts)
+srv.post("/users", createUserHandler, userCreateSchema)
 ```
+
+The same position accepts schema text. A fourth argument selects `"yaml"` or
+`"xml"`; JSON is the default. Use `Schema.validate(...)` directly when
+validation is needed outside request routing.
 
 Why JSON Schema rather than struct decode? The struct-decode
 shortcut catches type errors and required fields but misses ranges,
@@ -855,7 +867,7 @@ spoof any IP via the `X-Forwarded-For` header.
 
 ### Rate limit a single route
 
-`rateLimit` from `lamserver_plugins` is global. To rate-limit a
+`rateLimit` from `@lam/vulture/std-plugin` is global. To rate-limit a
 single endpoint, call it inside a registered prefix:
 
 ```lammergeier
@@ -869,7 +881,7 @@ srv.register(limitedAuth, "/auth")
 
 ### Add a request id
 
-A `requestId` plugin is already bundled in `lamserver_plugins`; use this
+A `requestId` plugin is already bundled in `@lam/vulture/std-plugin`; use this
 recipe as a template if you need a custom variant (different header
 name, custom ID format, etc.). Pick a unique plugin name to avoid
 colliding with the built-in:
@@ -921,7 +933,7 @@ func stripForwarded(srv: Server) {
 
 ## Bundled plugin reference
 
-The current `lamserver_plugins` catalogue, grouped by concern:
+The current `@lam/vulture/std-plugin` catalogue, grouped by concern:
 
 ### Request lifecycle
 - `requestId(srv, header="X-Request-Id")` — stable per-request ID,
@@ -980,8 +992,8 @@ The current `lamserver_plugins` catalogue, grouped by concern:
 
 ## See also
 
-- [`lib/lamserver.lam`](../lib/lamserver.lam) — Server / Request / Response classes
-- [`lib/lamserver_plugins.lam`](../lib/lamserver_plugins.lam) — bundled plugins
-- [`lib/lamserver_ws.lam`](../lib/lamserver_ws.lam) — WebSocket plugin example
-- [`lib/lamserver_tus.lam`](../lib/lamserver_tus.lam) — TUS resumable upload plugin
+- [`@lam/vulture`](https://github.com/thallium-solutions/lam-vulture) — Server / Request / Response classes
+- [`@lam/vulture/std-plugin`](https://github.com/thallium-solutions/lam-vulture-std-plugin) — standard plugin collection
+- [`@lam/vulture/ws-plugin`](https://github.com/thallium-solutions/lam-vulture-ws-plugin) — WebSocket plugin
+- [`@lam/vulture/tus-plugin`](https://github.com/thallium-solutions/lam-vulture-tus-plugin) — tus resumable-upload plugin
 - [`docs/stdlib.md`](stdlib.md) — full standard-library reference

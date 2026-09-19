@@ -1,0 +1,6 @@
+# expect-error: cast `json` cannot statically convert `any`; use `Json.fromValue` for dynamic values
+
+func main() {
+    dynamic: any = {"ok": true}
+    print(json(dynamic))
+}

@@ -1,65 +1,50 @@
-# Test: lamschema — JSON Schema validation via gojsonschema.
-# Verifies declarative validation, error-list reporting, and
-# the compile-once-cache via ``register``.
-#
-# expect: simple ok: true
-# expect: simple bad: false
-# expect: errs: 2
-# expect: registered ok: true
-# expect: registered bad: false
-# expect: registered errs: 1
-# expect: complex ok: true
-# expect: complex bad: false
-# expect: not-json: false
+# Test: lamschema Result-based JSON Schema validation.
+# expect: text/text: true
+# expect: text/json: true
+# expect: json/text: true
+# expect: json/json: true
+# expect: invalid: false
+# expect: invalid-kind: SchemaValidationError
+# expect: bad-schema-kind: SchemaParseError
+# expect: bad-document-kind: SchemaParseError
 # expect: is-json: true
-# expect: unregister: true
-# expect: unregister miss: false
 
+from lamerrors import Result, Error
+from lamjson import Json
 from lamschema import Schema
 
 func main() {
-    simple: str = "{\"type\":\"object\",\"required\":[\"name\",\"age\"],\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1},\"age\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":150}}}"
-
-    okGood: bool = Schema.validateJson(simple, "{\"name\":\"alice\",\"age\":30}")
-    okBad: bool = Schema.validateJson(simple, "{\"name\":\"\",\"age\":-5}")
-    print(f"simple ok: {okGood}")
-    print(f"simple bad: {okBad}")
-
-    errs: list[str] = Schema.errors(simple, "{\"name\":\"\",\"age\":-5}")
-    n: int = len(errs)
-    print(f"errs: {n}")
-
-    # ── register-by-key flow
-    err: str = Schema.register("user.create", simple)
-    if err != "" {
-        print(f"unexpected register error: {err}")
-        return
+    schemaText: str = '{"type":"object","required":["name"],"properties":{"name":{"type":"string","minLength":1}}}'
+    schemaValue: json = {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string", "minLength": 1}},
     }
-    okReg: bool = Schema.validateByKey("user.create", "{\"name\":\"bob\",\"age\":42}")
-    badReg: bool = Schema.validateByKey("user.create", "{\"name\":\"\",\"age\":42}")
-    print(f"registered ok: {okReg}")
-    print(f"registered bad: {badReg}")
-    regErrs: list[str] = Schema.errorsByKey("user.create", "{\"name\":\"\",\"age\":42}")
-    rn: int = len(regErrs)
-    print(f"registered errs: {rn}")
+    documentText: str = '{"name":"Ada"}'
+    documentValue: json = {"name": "Ada"}
 
-    # ── complex schema: oneOf
-    complex_: str = "{\"oneOf\":[{\"type\":\"string\"},{\"type\":\"integer\",\"minimum\":0}]}"
-    okStr: bool = Schema.validateJson(complex_, "\"hello\"")
-    okInt: bool = Schema.validateJson(complex_, "42")
-    badType: bool = Schema.validateJson(complex_, "true")
-    print(f"complex ok: {okStr && okInt}")
-    print(f"complex bad: {badType}")
+    textText: Result[str] = Schema.validate(schemaText, documentText)
+    textValue: Result[json] = Schema.validate(schemaText, documentValue)
+    valueText: Result[str] = Schema.validate(schemaValue, documentText)
+    valueValue: Result[json] = Schema.validate(schemaValue, documentValue)
+    print(f"text/text: {textText.ok()}")
+    print(f"text/json: {textValue.ok()}")
+    print(f"json/text: {valueText.ok()}")
+    print(f"json/json: {valueValue.ok()}")
 
-    # ── isJson
-    nope: bool = Schema.isJson("{not-valid}")
-    yes: bool = Schema.isJson("{\"a\":1}")
-    print(f"not-json: {nope}")
-    print(f"is-json: {yes}")
+    invalid: Result[json] = Schema.validate(schemaValue, {"name": ""})
+    print(f"invalid: {invalid.ok()}")
+    invalidError: Error = invalid.error
+    print(f"invalid-kind: {invalidError.kind}")
 
-    # ── unregister
-    rem: bool = Schema.unregister("user.create")
-    print(f"unregister: {rem}")
-    miss: bool = Schema.unregister("nonexistent")
-    print(f"unregister miss: {miss}")
+    badSchemaText: str = "{not-" + "json}"
+    badSchema: Result[str] = Schema.validate(badSchemaText, documentText)
+    badSchemaError: Error = badSchema.error
+    print(f"bad-schema-kind: {badSchemaError.kind}")
+
+    badDocument: Result[str] = Schema.validate(schemaText, "{not-json}")
+    badDocumentError: Error = badDocument.error
+    print(f"bad-document-kind: {badDocumentError.kind}")
+
+    print(f"is-json: {Json.isValid(documentText)}")
 }

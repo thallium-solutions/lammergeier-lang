@@ -1,0 +1,6 @@
+class ImportedFormatter {
+    static func render(value: int) -> str { return f"imported-int:{value}" }
+    static func render(value: str) -> str { return f"imported-str:{value}" }
+}
+
+func main() { pass }

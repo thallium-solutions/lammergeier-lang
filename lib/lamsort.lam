@@ -1,83 +1,401 @@
-# Lammergeier standard library: sort utilities
+# Lammergeier standard library: generic sort utilities
 # Import with: from lamsort import Sort
 
-go! {
-    import "sort"
-}
-
 class Sort {
-    static func ints(arr: list[int]) -> list[int] {
-        go! {
-            result := make([]int, len(arr))
-            copy(result, arr)
-            sort.Ints(result)
-            return result
+    private static func _validateDirection(direction: str) {
+        if direction != "asc" and direction != "desc" {
+            throw ValueError("Sort: direction must be 'asc' or 'desc'")
         }
     }
 
-    static func strings(arr: list[str]) -> list[str] {
-        go! {
-            result := make([]string, len(arr))
-            copy(result, arr)
-            sort.Strings(result)
-            return result
+    private static func _copy[T](values: list[T]) -> list[T] {
+        result: list[T] = []
+        for value: T in values {
+            result.append(value)
         }
+        return result
     }
 
-    static func reverseInts(arr: list[int]) -> list[int] {
-        go! {
-            result := make([]int, len(arr))
-            for i, v := range arr {
-                result[len(arr)-1-i] = v
+    private static func _naturalAfter[T: ordered](left: T, right: T, direction: str) -> bool {
+        if direction == "asc" {
+            return left > right
+        }
+        return left < right
+    }
+
+    private static func _customAfter[T](left: T, right: T, compare: func(T, T) -> int, direction: str) -> bool {
+        order: int = compare(left, right)
+        if direction == "asc" {
+            return order > 0
+        }
+        return order < 0
+    }
+
+    static func sort[T: ordered](values: list[T], direction: str = "asc") -> list[T] {
+        #- Return a non-mutating merge sort using T's natural ordering. -#
+        return Sort.merge(values, direction)
+    }
+
+    static func sortWith[T](values: list[T], compare: func(T, T) -> int, direction: str = "asc") -> list[T] {
+        #- Sort arbitrary T values with a three-way comparator. -#
+        # A negative result orders left first, zero makes them equivalent,
+        # and a positive result orders right first.
+        return Sort.mergeWith(values, compare, direction)
+    }
+
+    static func reverse[T](values: list[T]) -> list[T] {
+        #- Return a reversed copy of any typed list. -#
+        result: list[T] = []
+        for i in range(len(values) - 1, - 1, - 1) {
+            result.append(values[i])
+        }
+        return result
+    }
+
+    static func isSorted[T: ordered](values: list[T], direction: str = "asc") -> bool {
+        #- Report whether values follow their natural order in direction. -#
+        Sort._validateDirection(direction)
+        for i in range(1, len(values)) {
+            if Sort._naturalAfter(values[i - 1], values[i], direction) {
+                return false
             }
-            return result
         }
+        return true
     }
 
-    static func reverseStrings(arr: list[str]) -> list[str] {
-        go! {
-            result := make([]string, len(arr))
-            for i, v := range arr {
-                result[len(arr)-1-i] = v
+    static func isSortedWith[T](values: list[T], compare: func(T, T) -> int, direction: str = "asc") -> bool {
+        #- Report whether values follow compare in direction. -#
+        Sort._validateDirection(direction)
+        for i in range(1, len(values)) {
+            if Sort._customAfter(values[i - 1], values[i], compare, direction) {
+                return false
             }
-            return result
         }
+        return true
     }
 
-    static func isSorted(arr: list[int]) -> bool {
-        go! {
-            return sort.IntsAreSorted(arr)
-        }
-    }
-
-    static func floats(arr: list[float]) -> list[float] {
-        go! {
-            result := make([]float64, len(arr))
-            copy(result, arr)
-            sort.Float64s(result)
-            return result
-        }
-    }
-
-    static func reverseFloats(arr: list[float]) -> list[float] {
-        go! {
-            result := make([]float64, len(arr))
-            for i, v := range arr {
-                result[len(arr)-1-i] = v
+    static func iterSorted[T: ordered](values: list[T], direction: str = "asc") -> T {
+        #- Select and yield each next value lazily without mutating input. -#
+        Sort._validateDirection(direction)
+        remaining: list[T] = Sort._copy(values)
+        while len(remaining) > 0 {
+            selected: int = 0
+            for i in range(1, len(remaining)) {
+                if Sort._naturalAfter(remaining[selected], remaining[i], direction) {
+                    selected = i
+                }
             }
-            return result
+            nextValue: T = remaining[selected]
+            nextRemaining: list[T] = []
+            for i in range(len(remaining)) {
+                if i != selected {
+                    nextRemaining.append(remaining[i])
+                }
+            }
+            remaining = nextRemaining
+            yield nextValue
         }
     }
 
-    static func reverse(arr: list[any]) -> list[any] {
-        #- Reverse any list without sorting. -#
-        go! {
-            result := make([]interface{}, len(arr))
-            for i, v := range arr {
-                result[len(arr)-1-i] = v
+    static func iterSortedWith[T](values: list[T], compare: func(T, T) -> int, direction: str = "asc") -> T {
+        #- Select and yield each next value lazily using compare. -#
+        Sort._validateDirection(direction)
+        remaining: list[T] = Sort._copy(values)
+        while len(remaining) > 0 {
+            selected: int = 0
+            for i in range(1, len(remaining)) {
+                if Sort._customAfter(remaining[selected], remaining[i], compare, direction) {
+                    selected = i
+                }
             }
-            return result
+            nextValue: T = remaining[selected]
+            nextRemaining: list[T] = []
+            for i in range(len(remaining)) {
+                if i != selected {
+                    nextRemaining.append(remaining[i])
+                }
+            }
+            remaining = nextRemaining
+            yield nextValue
         }
+    }
+
+    static func bubble[T: ordered](values: list[T], direction: str = "asc") -> list[T] {
+        #- Return a non-mutating bubble sort using natural ordering. -#
+        Sort._validateDirection(direction)
+        result: list[T] = Sort._copy(values)
+        n: int = len(result)
+        for i in range(n) {
+            swapped: bool = false
+            for j in range(0, n - i - 1) {
+                if Sort._naturalAfter(result[j], result[j + 1], direction) {
+                    current: T = result[j]
+                    result[j] = result[j + 1]
+                    result[j + 1] = current
+                    swapped = true
+                }
+            }
+            if not swapped {
+                return result
+            }
+        }
+        return result
+    }
+
+    static func bubbleWith[T](values: list[T], compare: func(T, T) -> int, direction: str = "asc") -> list[T] {
+        #- Return a non-mutating bubble sort using compare. -#
+        Sort._validateDirection(direction)
+        result: list[T] = Sort._copy(values)
+        n: int = len(result)
+        for i in range(n) {
+            swapped: bool = false
+            for j in range(0, n - i - 1) {
+                if Sort._customAfter(result[j], result[j + 1], compare, direction) {
+                    current: T = result[j]
+                    result[j] = result[j + 1]
+                    result[j + 1] = current
+                    swapped = true
+                }
+            }
+            if not swapped {
+                return result
+            }
+        }
+        return result
+    }
+
+    static func insertion[T: ordered](values: list[T], direction: str = "asc") -> list[T] {
+        #- Return a non-mutating insertion sort using natural ordering. -#
+        Sort._validateDirection(direction)
+        result: list[T] = Sort._copy(values)
+        for i in range(1, len(result)) {
+            current: T = result[i]
+            j: int = i - 1
+            while j >= 0 and Sort._naturalAfter(result[j], current, direction) {
+                result[j + 1] = result[j]
+                j -= 1
+            }
+            result[j + 1] = current
+        }
+        return result
+    }
+
+    static func insertionWith[T](values: list[T], compare: func(T, T) -> int, direction: str = "asc") -> list[T] {
+        #- Return a non-mutating insertion sort using compare. -#
+        Sort._validateDirection(direction)
+        result: list[T] = Sort._copy(values)
+        for i in range(1, len(result)) {
+            current: T = result[i]
+            j: int = i - 1
+            while j >= 0 and Sort._customAfter(result[j], current, compare, direction) {
+                result[j + 1] = result[j]
+                j -= 1
+            }
+            result[j + 1] = current
+        }
+        return result
+    }
+
+    static func selection[T: ordered](values: list[T], direction: str = "asc") -> list[T] {
+        #- Return a non-mutating selection sort using natural ordering. -#
+        Sort._validateDirection(direction)
+        result: list[T] = Sort._copy(values)
+        n: int = len(result)
+        for i in range(n) {
+            selected: int = i
+            for j in range(i + 1, n) {
+                if Sort._naturalAfter(result[selected], result[j], direction) {
+                    selected = j
+                }
+            }
+            if selected != i {
+                current: T = result[i]
+                result[i] = result[selected]
+                result[selected] = current
+            }
+        }
+        return result
+    }
+
+    static func selectionWith[T](values: list[T], compare: func(T, T) -> int, direction: str = "asc") -> list[T] {
+        #- Return a non-mutating selection sort using compare. -#
+        Sort._validateDirection(direction)
+        result: list[T] = Sort._copy(values)
+        n: int = len(result)
+        for i in range(n) {
+            selected: int = i
+            for j in range(i + 1, n) {
+                if Sort._customAfter(result[selected], result[j], compare, direction) {
+                    selected = j
+                }
+            }
+            if selected != i {
+                current: T = result[i]
+                result[i] = result[selected]
+                result[selected] = current
+            }
+        }
+        return result
+    }
+
+    static func merge[T: ordered](values: list[T], direction: str = "asc") -> list[T] {
+        #- Return a non-mutating merge sort using natural ordering. -#
+        Sort._validateDirection(direction)
+        if len(values) <= 1 {
+            return Sort._copy(values)
+        }
+
+        middle: int = len(values) / 2
+        leftValues: list[T] = []
+        rightValues: list[T] = []
+        for i in range(len(values)) {
+            if i < middle {
+                leftValues.append(values[i])
+            } else {
+                rightValues.append(values[i])
+            }
+        }
+        left: list[T] = Sort.merge(leftValues, direction)
+        right: list[T] = Sort.merge(rightValues, direction)
+        result: list[T] = []
+        leftIndex: int = 0
+        rightIndex: int = 0
+
+        while leftIndex < len(left) and rightIndex < len(right) {
+            if Sort._naturalAfter(left[leftIndex], right[rightIndex], direction) {
+                result.append(right[rightIndex])
+                rightIndex += 1
+            } else {
+                result.append(left[leftIndex])
+                leftIndex += 1
+            }
+        }
+        while leftIndex < len(left) {
+            result.append(left[leftIndex])
+            leftIndex += 1
+        }
+        while rightIndex < len(right) {
+            result.append(right[rightIndex])
+            rightIndex += 1
+        }
+        return result
+    }
+
+    static func mergeWith[T](values: list[T], compare: func(T, T) -> int, direction: str = "asc") -> list[T] {
+        #- Return a non-mutating merge sort using compare. -#
+        Sort._validateDirection(direction)
+        if len(values) <= 1 {
+            return Sort._copy(values)
+        }
+
+        middle: int = len(values) / 2
+        leftValues: list[T] = []
+        rightValues: list[T] = []
+        for i in range(len(values)) {
+            if i < middle {
+                leftValues.append(values[i])
+            } else {
+                rightValues.append(values[i])
+            }
+        }
+        left: list[T] = Sort.mergeWith(leftValues, compare, direction)
+        right: list[T] = Sort.mergeWith(rightValues, compare, direction)
+        result: list[T] = []
+        leftIndex: int = 0
+        rightIndex: int = 0
+
+        while leftIndex < len(left) and rightIndex < len(right) {
+            if Sort._customAfter(left[leftIndex], right[rightIndex], compare, direction) {
+                result.append(right[rightIndex])
+                rightIndex += 1
+            } else {
+                result.append(left[leftIndex])
+                leftIndex += 1
+            }
+        }
+        while leftIndex < len(left) {
+            result.append(left[leftIndex])
+            leftIndex += 1
+        }
+        while rightIndex < len(right) {
+            result.append(right[rightIndex])
+            rightIndex += 1
+        }
+        return result
+    }
+
+    static func quick[T: ordered](values: list[T], direction: str = "asc") -> list[T] {
+        #- Return a non-mutating quick sort using natural ordering. -#
+        Sort._validateDirection(direction)
+        if len(values) <= 1 {
+            return Sort._copy(values)
+        }
+
+        pivot: T = values[len(values) - 1]
+        before: list[T] = []
+        equal: list[T] = [pivot]
+        after: list[T] = []
+        for i in range(0, len(values) - 1) {
+            value: T = values[i]
+            if Sort._naturalAfter(pivot, value, direction) {
+                before.append(value)
+            } elif Sort._naturalAfter(value, pivot, direction) {
+                after.append(value)
+            } else {
+                equal.append(value)
+            }
+        }
+
+        orderedBefore: list[T] = Sort.quick(before, direction)
+        orderedAfter: list[T] = Sort.quick(after, direction)
+        result: list[T] = []
+        for value: T in orderedBefore {
+            result.append(value)
+        }
+        for value: T in equal {
+            result.append(value)
+        }
+        for value: T in orderedAfter {
+            result.append(value)
+        }
+        return result
+    }
+
+    static func quickWith[T](values: list[T], compare: func(T, T) -> int, direction: str = "asc") -> list[T] {
+        #- Return a non-mutating quick sort using compare. -#
+        Sort._validateDirection(direction)
+        if len(values) <= 1 {
+            return Sort._copy(values)
+        }
+
+        pivot: T = values[len(values) - 1]
+        before: list[T] = []
+        equal: list[T] = [pivot]
+        after: list[T] = []
+        for i in range(0, len(values) - 1) {
+            value: T = values[i]
+            if Sort._customAfter(pivot, value, compare, direction) {
+                before.append(value)
+            } elif Sort._customAfter(value, pivot, compare, direction) {
+                after.append(value)
+            } else {
+                equal.append(value)
+            }
+        }
+
+        orderedBefore: list[T] = Sort.quickWith(before, compare, direction)
+        orderedAfter: list[T] = Sort.quickWith(after, compare, direction)
+        result: list[T] = []
+        for value: T in orderedBefore {
+            result.append(value)
+        }
+        for value: T in equal {
+            result.append(value)
+        }
+        for value: T in orderedAfter {
+            result.append(value)
+        }
+        return result
     }
 }
 

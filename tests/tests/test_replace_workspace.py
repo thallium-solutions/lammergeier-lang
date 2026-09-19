@@ -284,7 +284,7 @@ def test_replace_propagates_to_transitive_deps() -> None:
             version = "1.0.0"
 
             [dependencies]
-            lamrep_b = "^1.0"
+            lamrep_b = { git = "https://example.invalid/lamrep_b.git", ref = "v1.0.0" }
         """).lstrip(), encoding="utf-8")
         (a_dir / "__init__.lam").write_text(
             'from lamrep_b import tag;\n'

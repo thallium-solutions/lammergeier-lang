@@ -1,0 +1,21 @@
+# Transpilation: generic static generators lower to channels and calls range naturally.
+# Also verifies inline list literals use their inferred concrete type rather than
+# leaking the callee's generic T into caller Go.
+# expect-go: func Streams_iter[T any](values []T) chan T {
+# expect-go: _ch := make(chan T)
+# expect-go: _ch <- value
+# expect-go: for value := range Streams_iter([]int{3, 1, 2}) {
+
+class Streams {
+    static func iter[T](values: list[T]) -> T {
+        for value: T in values {
+            yield value
+        }
+    }
+}
+
+func main() {
+    for value: int in Streams.iter([3, 1, 2]) {
+        print(value)
+    }
+}

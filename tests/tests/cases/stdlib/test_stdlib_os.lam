@@ -11,7 +11,8 @@
 # expect: PASS 10 walk finds file
 # expect: PASS 11 copyFile duplicates
 # expect: PASS 12 hostname non-empty
-# expect: 12 passed, 0 failed, 12 total
+# expect: PASS 13 user environment precedence
+# expect: 13 passed, 0 failed, 13 total
 
 from lamos import Os
 from lamtest import Test
@@ -67,6 +68,8 @@ func main() {
 
     # hostname (on Linux CI this should never be empty)
     Test.assertTrue(len(Os.hostname()) > 0, "12 hostname non-empty")
+    Os.setenv("USER", "lam-user")
+    Test.assertEqual(Os.user(), "lam-user", "13 user environment precedence")
 
     # cleanup
     Os.remove(tmp)

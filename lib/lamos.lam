@@ -399,12 +399,12 @@ class Os {
 
     static func user() -> str {
         #- Current user's login name. Looks at $USER/$LOGNAME/$USERNAME. -#
-        go! {
-            for _, key := range []string{"USER", "LOGNAME", "USERNAME"} {
-                if v := os.Getenv(key); v != "" { return v }
-            }
-            return ""
+        keys: list[str] = ["USER", "LOGNAME", "USERNAME"]
+        for key in keys {
+            value: str = Os.getenv(key)
+            if value != "" { return value }
         }
+        return ""
     }
 
     static func hostname() -> str {

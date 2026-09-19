@@ -49,6 +49,16 @@ def test_parser_accepts_multiline_call_with_trailing_comma() -> None:
     print("PASS: parser accepts multi-line calls with trailing comma")
 
 
+def test_parser_accepts_compact_function_containing_go_block() -> None:
+    source = 'func hook(value: int) { go! { println(value) } }\n'
+    parse_input = preprocess_for_parse(source)
+    assert len(parse_input.go_blocks) == 1, parse_input.go_blocks
+    assert "go!" not in parse_input.source
+    parsed = create_parser().parse(parse_input.source + "\n")
+    assert "funcdef" in parsed.pretty()
+    print("PASS: parser accepts compact functions containing raw Go blocks")
+
+
 def test_parser_accepts_statement_before_closing_block_brace() -> None:
     source = """func main(){
     print("ok")}
@@ -78,6 +88,21 @@ def test_auto_semicolons_preserves_nested_literal_continuation_closes() -> None:
     parsed = create_parser().parse(preprocessed + "\n")
     assert "dict" in parsed.pretty()
     print("PASS: auto-semicolons preserves nested literal continuation closes")
+
+
+def test_parser_accepts_dict_continuation_closing_after_final_entry() -> None:
+    source = """func main() {
+    payload: dict[str, any] = {"status": "accepted", "queued": true,
+                               "internal": "hidden"}
+    print(payload["status"])
+}
+"""
+    preprocessed = preprocess_for_parse(source).source
+    assert '"internal": "hidden";}' not in preprocessed
+    assert '"internal": "hidden"};' in preprocessed
+    parsed = create_parser().parse(preprocessed + "\n")
+    assert "dict" in parsed.pretty()
+    print("PASS: parser accepts a final dict entry on its continuation line")
 
 
 def test_parser_accepts_nested_dict_without_final_commas() -> None:
@@ -121,8 +146,10 @@ def main() -> int:
     tests = [
         test_auto_semicolons_preserves_multiline_call_arguments,
         test_parser_accepts_multiline_call_with_trailing_comma,
+        test_parser_accepts_compact_function_containing_go_block,
         test_parser_accepts_statement_before_closing_block_brace,
         test_auto_semicolons_preserves_nested_literal_continuation_closes,
+        test_parser_accepts_dict_continuation_closing_after_final_entry,
         test_parser_accepts_nested_dict_without_final_commas,
         test_parser_rejects_dict_entries_without_separator_commas,
     ]

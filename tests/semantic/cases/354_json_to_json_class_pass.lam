@@ -2,12 +2,12 @@
 
 class Image {
     func init(self, width: int) { self.width: int = width }
-    func toJson(self) -> json { return {"width": self.width} }
+    func __json__(self) -> json { return {"width": self.width} }
 }
 
 func wrap(value: json) -> json { return {"value": value} }
 
 func main() {
-    payload: json = wrap(Image(10))
+    payload: json = wrap(json(Image(10)))
     print(payload)
 }

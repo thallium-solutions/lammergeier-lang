@@ -36,7 +36,6 @@
 # ``Schema`` is optional — migrations can also be plain SQL, which is
 # often the most honest way to describe irreversible changes.
 
-from lamerrors import Result, Error
 from lamdb import Db
 
 go! {

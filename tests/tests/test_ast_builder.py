@@ -135,6 +135,20 @@ def test_decl_ast_preserves_generic_type_refs() -> None:
     print("PASS: declaration AST preserves nested generic type refs")
 
 
+def test_decl_ast_preserves_function_type_refs() -> None:
+    module = _module("""func apply(callback: func(int, str) -> bool) -> func(str) -> int {
+    pass
+}
+""")
+    func = module.body[0]
+    assert isinstance(func, FuncDecl)
+    assert func.params[0].type_ref is not None
+    assert func.params[0].type_ref.name == "func(int, str) -> bool"
+    assert func.return_type is not None
+    assert func.return_type.name == "func(str) -> int"
+    print("PASS: declaration AST preserves function type refs")
+
+
 def test_module_facts_include_ast_reexports() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "imports.lam"
@@ -153,6 +167,7 @@ def main() -> int:
         test_module_facts_can_be_built_from_ast,
         test_decl_ast_collects_imports_and_interface_methods,
         test_decl_ast_preserves_generic_type_refs,
+        test_decl_ast_preserves_function_type_refs,
         test_module_facts_include_ast_reexports,
     ]
     for test in tests:

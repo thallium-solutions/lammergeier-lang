@@ -1,0 +1,44 @@
+# expect: {"name":"Ada"}
+# expect: string
+# expect: "{\"x\":1}"
+# expect: [1,true,null]
+# expect: true
+# expect: {"value":"kept"}
+
+from lamjson import Json
+
+class Profile {
+    func __init__(self, name: str) {
+        self.name: str = name
+    }
+
+    func __json__(self) -> json {
+        return {"name": self.name}
+    }
+}
+
+class CollidingName {
+    func __init__(self) {
+        self.lamJSON: str = "kept"
+    }
+
+    func __json__(self) -> json {
+        return {"value": self.lamJSON}
+    }
+}
+
+func main() {
+    profile: json = json(Profile("Ada"))
+    print(Json.encode(profile))
+
+    text: json = json('{"x":1}')
+    print(Json.kind(text))
+    print(Json.encode(text))
+
+    values: json = json([1, true, None])
+    print(Json.encode(values))
+
+    same: json = json(profile)
+    print(same == profile)
+    print(Json.encode(json(CollidingName())))
+}

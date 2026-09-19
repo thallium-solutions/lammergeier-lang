@@ -1,0 +1,17 @@
+# expect: child-int:1
+# expect: base-str:x
+
+class BaseParser {
+    func parse(self, value: int) -> str { return f"base-int:{value}" }
+    func parse(self, value: str) -> str { return f"base-str:{value}" }
+}
+
+class ChildParser(BaseParser) {
+    func parse(self, value: int) -> str { return f"child-int:{value}" }
+}
+
+func main() {
+    parser: ChildParser = ChildParser()
+    print(parser.parse(1))
+    print(parser.parse("x"))
+}

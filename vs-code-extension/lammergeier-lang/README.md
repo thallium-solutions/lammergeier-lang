@@ -1,19 +1,25 @@
-# Lammergeier Lang — VS Code / Windsurf Extension
+<p align="center">
+  <img src="https://raw.githubusercontent.com/thallium-solutions/lammergeier-lang/main/vs-code-extension/lammergeier-lang/icon.png" alt="Lammergeier Lang logo" width="160">
+</p>
 
-Syntax highlighting and language support for **Lammergeier** (`.lam`) — a typed Python-like language that compiles to Go.
+<h1 align="center">Lammergeier Lang for VS Code</h1>
+
+<p align="center">
+  Syntax highlighting and rich language support for <strong>Lammergeier</strong> (<code>.lam</code>) — a typed Python-like language that compiles to Go.
+</p>
+
+<p align="center">
+  Semantic coloring · Accurate folding · Diagnostics · Completion · Navigation · Refactoring · Formatting
+</p>
 
 ## Features
 
-- **Syntax highlighting** for all Lammergeier constructs, with dedicated scopes for stdlib modules (`lamarray`, `lamserver`, `lamxml`, `lamyaml`, `lamjwt`, `lamtemplate`, `lamretry`, `lamratelimit`, …) and built-in classes (`Result`, `Server`, `HttpClient`, `Xml`, `Template`, `JwtKeySet`, `TokenBucket`, …)
-- **`LAMMERGEIER.*` namespace** — compiler aliases and user-defined function/class/static-member paths receive dedicated namespace/member scopes in Lam and embedded `go!`; the LSP, rather than a hardcoded color rule, reports unresolved paths
+- **Syntax highlighting** for all Lammergeier constructs, including f-string interpolation, with dedicated scopes for stdlib modules (`lamarray`, `lamxml`, `lamyaml`, `lamcrypto`, `lamcontext`, `lamtemplate`, `lamretry`, …) and built-in classes (`Result`, `Server`, `HttpClient`, `Crypto`, `Context`, `Xml`, `Template`, `TokenBucket`, …)
+- **Semantic coloring** distinguishes classes, interfaces, functions, methods, parameters, properties, types, decorators, imports, and `LAMMERGEIER.*` namespace paths
 - **Embedded Go highlighting** inside `go! { ... }` blocks (when the built-in Go grammar is available)
-- **Multiline comments** (`#- ... -#`) folded and toggled correctly via `Ctrl-/`
-- **Bracket matching** and auto-closing for `{}`, `[]`, `()`
-- **Comment toggling** with `#` (line) / `#- ... -#` (block)
-- **Code folding** on `{ }` blocks using VS Code's native bracket and
-  indentation folding
-- **F-string interpolation** highlighting
-- **Language Server** integration — compiler-parity parse/preprocess/semantic diagnostics (including native `json`, dict patterns, captures, `nonlocal`, and `LAMMERGEIER.*`), hover, completion, goto-definition, document symbols
+- **Accurate folding** for nested `{ }` blocks, raw `go!` blocks, multiline strings, consecutive comments, and multiline comments (`#- ... -#`)
+- **Editing basics** — bracket matching and auto-closing for `{}`, `[]`, and `()` plus comment toggling with `#` (line) / `#- ... -#` (block)
+- **Language Server** integration — compiler-parity parse/preprocess/semantic diagnostics (including `json(value)` / `__json__`, method overloads, dict patterns, captures, `nonlocal`, and `LAMMERGEIER.*`), overload-aware signature help, hover, completion, local and imported go-to-definition, references, rename, formatting, and document/workspace symbols
 - Settings to point at a custom LSP launcher and capture trace output
 
 ## Language Highlights
@@ -21,14 +27,14 @@ Syntax highlighting and language support for **Lammergeier** (`.lam`) — a type
 | Construct   | Example                                 |
 |-------------|-----------------------------------------|
 | Functions   | `func add(x: int, y: int) -> int { }`   |
-| Classes     | `class Point(x: int, y: int) { }`       |
-| Interfaces  | `interface Shape { }`                   |
+| Classes     | `class Point { func init(self) { } }`   |
+| Interfaces  | `interface Shape { func area(self) -> float; }` |
 | Modifiers   | `private static async func helper() { }`|
 | Go blocks   | `go! { fmt.Println("raw Go") }`         |
 | Inline Go   | `go!(someGoExpr)`                       |
 | Decorators  | `@decorator`                            |
 | Variadic    | `func sum(*args: int) -> int { }`       |
-| Match       | `match value { case 1: ... }`           |
+| Match       | `match value { case 1 { ... } }`        |
 
 ## Installation
 
@@ -46,7 +52,7 @@ From the project root run:
 
 The install script symlinks the extension into every detected editor
 (`~/.vscode/extensions/`, `~/.windsurf/extensions/`,
-`~/.cursor/extensions/`) with the correct
+`~/.cursor/extensions/`,`~/.devin/extensions/`) with the correct
 `<publisher>.<name>-<version>` folder name. Reload the editor
 window afterwards.
 
@@ -56,6 +62,7 @@ You can target a single editor:
 ./vs-code-extension/install.sh vscode
 ./vs-code-extension/install.sh windsurf
 ./vs-code-extension/install.sh cursor
+./vs-code-extension/install.sh devin
 ```
 
 If you skip step 1, the highlighting still works; only the LSP client
@@ -73,7 +80,7 @@ silently failing to load).
 ```bash
 # From the project root:
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.vscode/extensions/lammergeier.lammergeier-lang-1.2.0
+        ~/.vscode/extensions/lammergeier.lammergeier-lang-1.4.0
 ```
 
 #### Windsurf
@@ -84,14 +91,25 @@ target-platform suffix on the folder name:
 ```bash
 # From the project root:
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.2.0-universal
+        ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.4.0-universal
+```
+
+#### Devin
+
+Devin uses `~/.devin/extensions/` and requires the `-universal`
+target-platform suffix on the folder name:
+
+```bash
+# From the project root:
+ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
+        ~/.devin/extensions/lammergeier.lammergeier-lang-1.4.0-universal
 ```
 
 #### Cursor (same mechanism)
 
 ```bash
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.cursor/extensions/lammergeier.lammergeier-lang-1.2.0
+        ~/.cursor/extensions/lammergeier.lammergeier-lang-1.4.0
 ```
 
 After creating the symlink, reload the editor window (command palette →
@@ -100,7 +118,7 @@ activate automatically.
 
 > **Note:** The folder name inside the extensions directory **must**
 > follow the `<publisher>.<name>-<version>` convention
-> (`lammergeier.lammergeier-lang-1.2.0`). Using a bare `lammergeier-lang`
+> (`lammergeier.lammergeier-lang-1.4.0`). Using a bare `lammergeier-lang`
 > folder name is the most common reason the extension silently fails to
 > load on both VS Code and Windsurf.
 
@@ -114,6 +132,8 @@ a `.lam` file, providing:
   including inside `# expect-error` and `# expect-warning` test fixtures. Set
   `lammergeier.lsp.suppressExpectedDiagnostics` to `true` to hide matched
   fixture diagnostics explicitly.
+- **Semantic Tokens** — contextual roles supplement the TextMate grammar so declarations, types, parameters, members, decorators, imports, and calls remain distinct.
+- **Folding Ranges** — nested Lam blocks, `go!` blocks, multiline strings, and comment groups collapse without braces inside strings or comments confusing the editor.
 - **Hover** — types and short docs for built-ins, modules, and your
   own functions/classes. **Cross-file**: hovering on a name imported
   via `from lam<x> import …` shows the signature pulled from the
@@ -122,18 +142,26 @@ a `.lam` file, providing:
   class fields, inherited members, `self`, `base`, named inheritance
   aliases, and identifiers harvested from the current document,
   **plus stdlib symbols you've imported from `lib/lam*.lam`**.
-  Typing after `from ` suggests module names; typing inside
-  `from lam<x> import |` suggests the module's public exports; typing
-  `instance.|`, `self.|`, `base.|`, or `MyClass.|` lists the available
-  members. Importable symbols from stdlib and workspace modules are
+  Typing after `from ` suggests stdlib, workspace, and scoped package modules;
+  typing inside `from lam<x> import |` suggests public exports; typing
+  `instance.|`, `instance?.|`, `self.|`, `base.|`, or `MyClass.|` lists the
+  available members. Importable symbols from stdlib and workspace modules are
   offered as read-only suggestions like `from lamenv import Dotenv`;
   the extension never inserts imports automatically.
 - **Signature Help** — function, method, and constructor calls show
   argument help. Instance methods hide implicit `self`, and constructors
   are displayed with the preferred `init(...)` sugar instead of
   `__init__(...)`.
-- **Go to Definition** — `F12` jumps to functions, classes, methods,
-  fields, inherited members, and imported stdlib/user-module symbols.
+- **Go to Definition** — `F12` jumps to local variables, parameters, functions,
+  classes, methods, fields, inherited members, imported module paths, and
+  imported stdlib/user-module symbols.
+- **References** — `Shift+F12` finds usages in open Lam documents and follows
+  imported aliases back to the defining module.
+- **Rename** — `F2` validates and renames known local symbols in the current
+  document; imported and cross-file renames are rejected rather than applied
+  partially.
+- **Formatting** — Format Document uses the same parser-validated formatter as
+  `lamc fmt`.
 - **Workspace Symbols** — workspace search can find Lam functions,
   classes, methods, fields, and exported module symbols.
 - **Document Symbols** — outline view + breadcrumbs.
@@ -169,7 +197,8 @@ npm run watch            # rebuilds out/extension.js on change
 ## Uninstall
 
 ```bash
-rm ~/.vscode/extensions/lammergeier.lammergeier-lang-1.2.0
-rm ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.2.0-universal
-rm ~/.cursor/extensions/lammergeier.lammergeier-lang-1.2.0
+rm ~/.vscode/extensions/lammergeier.lammergeier-lang-1.4.0
+rm ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.4.0-universal
+rm ~/.devin/extensions/lammergeier.lammergeier-lang-1.4.0-universal
+rm ~/.cursor/extensions/lammergeier.lammergeier-lang-1.4.0
 ```

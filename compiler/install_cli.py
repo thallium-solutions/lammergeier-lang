@@ -579,7 +579,7 @@ _TREE_HASH_SKIP = frozenset({".git", "__pycache__", ".DS_Store",
                              ".pytest_cache", ".mypy_cache",
                              "node_modules", "extlibs"})
 
-def _tree_sha256(root: Path) -> str:
+def _tree_sha256(root: Path, excluded_dirs: Tuple[Path, ...] = ()) -> str:
     """Deterministic SHA-256 of a directory tree.
 
     Hashes ``(relative-path ‖ NUL ‖ file-bytes ‖ NUL)`` for every
@@ -594,12 +594,16 @@ def _tree_sha256(root: Path) -> str:
     if not root.is_dir():
         raise InstallError(f"_tree_sha256: not a directory: {root}")
     h = hashlib.sha256()
+    excluded = tuple(path.relative_to(root) for path in excluded_dirs)
     files: List[Path] = []
     for p in root.rglob("*"):
         if not p.is_file():
             continue
         rel = p.relative_to(root)
         if any(seg in _TREE_HASH_SKIP for seg in rel.parts):
+            continue
+        if any(rel == directory or directory in rel.parents
+               for directory in excluded):
             continue
         files.append(rel)
     files.sort()
@@ -722,7 +726,8 @@ def _parse_spec(spec: str) -> Tuple[str, str]:
 
 
 def _apply_replace(spec: str,
-                   project_mf: Optional[Manifest]) -> str:
+                   project_mf: Optional[Manifest],
+                   dependency_name: str = "") -> str:
     """Rewrite ``spec`` through the project's ``[replace]`` table
     if it has a matching override.
 
@@ -742,10 +747,12 @@ def _apply_replace(spec: str,
     # Don't rewrite raw paths or git URLs the user passed
     # explicitly — those are an opt-out from registry resolution
     # entirely and shouldn't be silently re-rewritten.
-    if (spec.startswith(("./", "/", "../"))
-            or _looks_like_git(spec)):
+    if not dependency_name and (spec.startswith(("./", "/", "../"))
+                                or _looks_like_git(spec)):
         return spec
-    name, _ = _parse_spec(spec)
+    name = dependency_name
+    if not name:
+        name, _ = _parse_spec(spec)
     rs = project_mf.replace.get(name)
     if rs is None:
         return spec
@@ -908,22 +915,20 @@ def _installed_manifests(extlibs: Path) -> List[Manifest]:
     every consumer of the still-installed ``lamone``.
 
     Best-effort: malformed manifests are skipped, scoped libs are
-    walked one extra level deep (``extlibs/@scope/<name>``)."""
+    walked recursively below ``extlibs/@scope``."""
     if not extlibs.exists() or not extlibs.is_dir():
         return []
     out: List[Manifest] = []
     for entry in extlibs.iterdir():
         if not entry.is_dir():
             continue
-        # Scoped: walk one level into ``@scope/<name>``.
+        # Scoped: discover root and nested package manifests below ``@scope``.
         if entry.name.startswith("@"):
-            for child in entry.iterdir():
-                mf_path = child / "lamlib.toml"
-                if mf_path.exists():
-                    try:
-                        out.append(Manifest.load(mf_path))
-                    except ManifestError:
-                        continue
+            for mf_path in sorted(entry.rglob("lamlib.toml")):
+                try:
+                    out.append(Manifest.load(mf_path))
+                except ManifestError:
+                    continue
             continue
         mf_path = entry / "lamlib.toml"
         if mf_path.exists():
@@ -1073,7 +1078,7 @@ def _walk_dependencies(root_plan: InstallPlan,
             spec = _dep_install_spec(n, ds, root_plan.manifest.source_path.parent)
             if spec:
                 sub_plan = _resolve_plan(
-                    _apply_replace(spec, project_mf), registry,
+                    _apply_replace(spec, project_mf, n), registry,
                     work=work / f"dep-{_safe_segment(n)}")
                 seen_label = f"{root_plan.name}@{root_plan.version}"
                 entry = ResolvedDep(
@@ -1107,7 +1112,7 @@ def _walk_dependencies(root_plan: InstallPlan,
                 if not spec:
                     continue
                 sub_plan = _resolve_plan(
-                    _apply_replace(spec, project_mf), registry,
+                    _apply_replace(spec, project_mf, n), registry,
                     work=work / f"dep-{_safe_segment(n)}")
                 seen_descended.add(n)
                 entry = ResolvedDep(
@@ -1137,7 +1142,7 @@ def _walk_dependencies(root_plan: InstallPlan,
             # ``lamhttp`` resolves to that checkout, matching
             # Go's ``go.mod replace`` semantics.
             sub_spec = _apply_replace(
-                f"{n}@{chosen.version}", project_mf)
+                f"{n}@{chosen.version}", project_mf, n)
             sub_plan = _resolve_plan(
                 sub_spec, registry,
                 work=work / f"dep-{_safe_segment(n)}")
@@ -1314,6 +1319,29 @@ def install_one(spec: str,
     return plan
 
 
+def _nested_installed_package_dirs(extlibs: Path, name: str,
+                                   dst: Path) -> List[Path]:
+    candidates: List[Path] = []
+    for mf_path in sorted(dst.rglob("lamlib.toml"),
+                          key=lambda path: len(path.parts)):
+        package_dir = mf_path.parent
+        if package_dir == dst:
+            continue
+        try:
+            manifest = Manifest.load(mf_path)
+        except ManifestError:
+            continue
+        if not manifest.name.startswith(name + "/"):
+            continue
+        if package_dir.resolve() != _lib_dir(extlibs, manifest.name).resolve():
+            continue
+        if any(parent == package_dir or parent in package_dir.parents
+               for parent in candidates):
+            continue
+        candidates.append(package_dir)
+    return candidates
+
+
 def _materialise_one(plan: InstallPlan,
                      extlibs: Path,
                      allow_breaking: bool,
@@ -1333,10 +1361,23 @@ def _materialise_one(plan: InstallPlan,
         _check_semver_gate(plan.name, current, plan.src_dir,
                            plan.version, allow_breaking)
     dst = _lib_dir(extlibs, plan.name)
-    if dst.exists():
-        shutil.rmtree(dst)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(plan.src_dir, dst)
+    nested = _nested_installed_package_dirs(extlibs, plan.name, dst) \
+        if dst.exists() else []
+    with tempfile.TemporaryDirectory(prefix="lamc-nested-packages-") as tmp:
+        backup_root = Path(tmp)
+        for package_dir in nested:
+            shutil.copytree(package_dir, backup_root / package_dir.relative_to(dst))
+        if dst.exists():
+            shutil.rmtree(dst)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(plan.src_dir, dst)
+        for package_dir in nested:
+            relative = package_dir.relative_to(dst)
+            restored = dst / relative
+            if restored.exists():
+                shutil.rmtree(restored)
+            restored.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(backup_root / relative, restored)
     if not quiet:
         print(f"[lamc] installed {plan.name}@{plan.version} "
               f"({plan.source}) → {dst}")
@@ -1952,17 +1993,14 @@ _STDLIB_MODS = frozenset({
     "lamlog", "lamcsv", "lamerr", "lamerrors", "lamfmt",
     "lamtest", "lamtypes", "lamio", "lamnet", "lamsecurity",
     "lamunicode", "lamurl", "lambase64", "lamcompress",
-    "lamcrypto", "lamdatetime", "lamarray", "lamdata",
+    "lamcrypto", "lamcontext", "lamdatetime", "lamarray", "lamdata",
     "lamiter", "lamuuid", "lamcache", "lambytes",
     "lamtemplate", "lamratelimit", "lamretry", "lamexec",
     "lamset", "lamqueue", "lamstack", "lamheap", "lamdeque",
     "lamcollections", "lamfunctools", "lamitertools",
     "lamthreading", "lamasync", "lamconcurrency", "lamactor",
-    "lamdb", "lammigrate", "lamredis", "lamemcached",
-    "lamcron", "lamsmtp",
-    "lamserver", "lamserver_ws", "lamserver_plugins",
-    "lamserver_tus", "lamschema", "lamjwt", "lamprotobuf",
-    "lamcli",
+    "lamdb", "lammigrate", "lamcron", "lamsmtp",
+    "lamschema", "lamcli",
 })
 
 
@@ -2004,7 +2042,7 @@ def _tidy_scan_imports(project_root: Path) -> Dict[str, Path]:
             continue
         for m in _TIDY_IMPORT_RE.finditer(text):
             mod = m.group("from_mod") or m.group("imp_mod")
-            if not mod:
+            if not mod or mod.startswith("."):
                 continue
             seen.setdefault(mod, path)
             if "." in mod and not mod.startswith("@"):
@@ -2108,7 +2146,7 @@ def _cmd_tidy(args) -> int:
 
     declared = set(mf.dependencies.keys())
     imports = set(_tidy_scan_imports(project_root).keys())
-    used = {m for m in imports if m not in _STDLIB_MODS}
+    used = {m for m in imports if m not in _STDLIB_MODS and m != mf.name}
 
     unused = sorted(declared - used)
     missing = sorted(used - declared)
@@ -2197,7 +2235,8 @@ def _cmd_tidy(args) -> int:
     return 0 if failures == 0 else 1
 
 
-def _verify_pin(name: str, pin: Dict, extlibs_root: Path) -> Tuple[bool, str]:
+def _verify_pin(name: str, pin: Dict, extlibs_root: Path,
+                pinned_names: set[str]) -> Tuple[bool, str]:
     """Compare the on-disk install of ``name`` to the lockfile pin.
 
     Returns ``(ok, detail)``. ``ok=False`` either means the library
@@ -2213,7 +2252,12 @@ def _verify_pin(name: str, pin: Dict, extlibs_root: Path) -> Tuple[bool, str]:
         # Older v0 / v1 lockfiles for registry pins didn't carry
         # tree_sha256. We fall back to a soft "present" check.
         return True, "present (no tree_sha256 recorded — re-run `lamc install` to populate)"
-    actual = _tree_sha256(src)
+    nested = tuple(
+        _lib_dir(extlibs_root, nested_name)
+        for nested_name in pinned_names
+        if nested_name.startswith(name + "/")
+    )
+    actual = _tree_sha256(src, nested)
     if actual != expected:
         return False, (f"tree drifted: expected {expected[:12]}…, "
                        f"got {actual[:12]}…")
@@ -2253,8 +2297,9 @@ def _cmd_verify(args) -> int:
 
     extlibs_root = project_root / "extlibs"
     failures: List[Tuple[str, str]] = []
+    pinned_names = set(pins)
     for name in sorted(pins):
-        ok, detail = _verify_pin(name, pins[name], extlibs_root)
+        ok, detail = _verify_pin(name, pins[name], extlibs_root, pinned_names)
         if not args.quiet:
             marker = "✓" if ok else "✗"
             print(f"  {marker} {name:<30} {detail}")

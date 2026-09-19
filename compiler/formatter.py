@@ -54,6 +54,12 @@ def _format_lines(source: str) -> str:
             i += 1
             continue
 
+        if stripped.startswith("#-"):
+            block, next_i = _collect_doc_comment(lines, i)
+            out.extend(block)
+            i = next_i
+            continue
+
         if _starts_go_block(stripped):
             block, next_i = _collect_go_block(lines, i)
             leading_closers = _leading_closing_braces(stripped)
@@ -96,6 +102,11 @@ def _expand_compact_layout(lines: list[str]) -> list[str]:
     i = 0
     while i < len(lines):
         stripped = lines[i].strip()
+        if stripped.startswith("#-"):
+            block, next_i = _collect_doc_comment(lines, i)
+            expanded.extend(block)
+            i = next_i
+            continue
         if stripped and _starts_go_block(stripped):
             block, next_i = _collect_go_block(lines, i)
             expanded.extend(block)
@@ -314,7 +325,7 @@ def _format_code_fragment(code: str) -> str:
 def _operator_at(code: str, index: int) -> str:
     for op in _BINARY_OPS:
         if code.startswith(op, index):
-            if op == "/" and _is_scoped_name_slash(code, index):
+            if op in {"/", "-"} and _is_scoped_name_punctuation(code, index):
                 return ""
             if op == "*" and _is_unary_or_variadic_star(code, index):
                 return ""
@@ -347,9 +358,9 @@ def _previous_nonspace(code: str, index: int) -> str:
     return code[i]
 
 
-def _is_scoped_name_slash(code: str, index: int) -> bool:
+def _is_scoped_name_punctuation(code: str, index: int) -> bool:
     left = index - 1
-    while left >= 0 and (code[left].isalnum() or code[left] in "@_-"):
+    while left >= 0 and (code[left].isalnum() or code[left] in "@_-/"):
         left -= 1
     right = index + 1
     while right < len(code) and (code[right].isalnum() or code[right] in "_-"):
@@ -427,6 +438,17 @@ def _leading_closing_braces(line: str) -> int:
         else:
             break
     return count
+
+
+def _collect_doc_comment(lines: list[str], start: int) -> tuple[list[str], int]:
+    block: list[str] = []
+    i = start
+    while i < len(lines):
+        block.append(lines[i])
+        i += 1
+        if re.search(r"-\s*#", lines[i - 1]):
+            break
+    return block, i
 
 
 def _starts_go_block(line: str) -> bool:

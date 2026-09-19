@@ -167,7 +167,12 @@ def auto_semicolons(source: str) -> str:
         #    auto-semicolon pass below. Empty blocks (``{}``) are left
         #    alone because ``;`` after ``{`` would land in
         #    ``small_stmt`` territory.
-        code = _inline_block_semicolons(code).rstrip()
+        # A closing ``}`` on a continuation line of a multi-line literal is
+        # not a compact statement block. The local inline-block scanner cannot
+        # see the opener from a prior line, so let the stateful ``_walk_line``
+        # pass below handle it instead of inserting ``;`` before the brace.
+        if not any(kind == "literal" for kind, _ in brace_stack):
+            code = _inline_block_semicolons(code).rstrip()
         # Reconstruct the line for any path that decides not to add a
         # trailing ``;`` — without this the early-exit branches would
         # output the original (un-rewritten) line.
@@ -793,9 +798,15 @@ def preprocess_for_parse(source: str) -> ParsePreprocessResult:
 
 
 def _strip_doc_comments_preserve_lines(source: str) -> str:
-    """Strip ``#- ... -#`` comments without shifting later line numbers."""
+    """Strip ``#- ... -#`` comments without shifting later line numbers.
+
+    Accept horizontal whitespace between the closing ``-`` and ``#``. The
+    formatter and hand-aligned comments can produce ``-  #``; treating that as
+    unterminated used to consume following declarations and make their raw Go
+    blocks appear at the preceding function scope.
+    """
     return _re.sub(
-        r'#-[\s\S]*?-#',
+        r'#-[\s\S]*?-[ \t]*#',
         lambda m: "\n" * m.group(0).count("\n"),
         source,
     )
@@ -1480,7 +1491,11 @@ def compile_lam(
             if not isinstance(n, Tree):
                 return
             if n.data == "import_from":
+                relative_prefix = ""
                 for child in n.children:
+                    if isinstance(child, Tree) and child.data == "dots":
+                        relative_prefix = "".join(str(token) for token in child.children)
+                        continue
                     if isinstance(child, Tree) and child.data == "dotted_name":
                         parts: list[str] = []
                         for c in child.children:
@@ -1488,7 +1503,7 @@ def compile_lam(
                                 parts.append(str(c.children[0]))
                             else:
                                 parts.append(str(c))
-                        out.append((".".join(parts), n))
+                        out.append((relative_prefix + ".".join(parts), n))
                         break
                     # ``scoped_name`` — ``from @alice/lamwebp import ...``.
                     # One child, a single SCOPED_NAME token.
@@ -1527,6 +1542,13 @@ def compile_lam(
                 str(token) == "json"
                 for token in node.scan_values(lambda value: isinstance(value, Token))
             )
+        if node.data == "funccall" and node.children:
+            callee = node.children[0]
+            if isinstance(callee, Tree) and callee.data == "var":
+                return any(
+                    str(token) == "json"
+                    for token in callee.scan_values(lambda value: isinstance(value, Token))
+                )
         return any(_uses_native_json(child) for child in node.children if isinstance(child, Tree))
 
     _direct_import_sites = _extract_import_sites(tree)
@@ -1784,23 +1806,36 @@ def compile_lam(
     lib_pre_static_methods: dict[str, set[str]] = {}
     lib_pre_static_vars: dict[str, dict[str, bool]] = {}
     lib_pre_result_payload_go_types: dict[str, str] = {}
+    lib_pre_func_defaults: dict = {}
+    lib_pre_func_param_counts: dict = {}
+    lib_pre_func_param_names: dict = {}
+    lib_pre_func_param_go_types: dict = {}
+    lib_pre_func_generic_params: dict[str, set[str]] = {}
+    lib_pre_generator_functions: set[str] = set()
+    lib_pre_overload_variants: dict[str, list[dict]] = {}
     lib_pre_user_functions: set[str] = set()
     lib_pre_private_functions: set[str] = set()
     lib_pre_instance_methods: dict[str, set[str]] = {}
     lib_pre_private_methods: dict[str, set[str]] = {}
     lib_pre_private_classes: set[str] = set()
     lib_pre_field_names: dict[str, set[str]] = {}
+    lib_pre_field_types: dict[str, dict[str, str]] = {}
     seen: set[str] = set()
+    seen_module_files: set[Path] = set()
     worklist: list[tuple[str, Path]] = [(mod, source_file) for mod in _pre_transpiler._lam_imports]
     while worklist:
         mod_name, from_file = worklist.pop()
-        if mod_name in seen:
-            continue
-        seen.add(mod_name)
         mod_file = _resolve_lib_path(mod_name, from_file)
         if mod_file is None:
             continue
-        lib_mod_files[mod_name] = mod_file
+        mod_file = mod_file.resolve()
+        if mod_file in seen_module_files:
+            continue
+        seen_module_files.add(mod_file)
+        if not mod_name.startswith("."):
+            seen.add(mod_name)
+        canonical_name = module_index.module_name_for_path(source_file, mod_file) or mod_name
+        lib_mod_files[canonical_name] = mod_file
         _warn_if_lamc_incompatible(mod_name, mod_file)
         # Parse just to discover *its* imports — best-effort, so a
         # library that fails to parse here is silently skipped (the
@@ -1820,8 +1855,11 @@ def compile_lam(
         except Exception:
             continue
         for imp in _extract_imports(sub_tree):
-            if imp not in seen:
-                worklist.append((imp, mod_file))
+            # Relative names are meaningful only together with ``mod_file``;
+            # two packages may both have a ``.impl`` without referring to the
+            # same source. Physical-path de-duplication happens at the top of
+            # the worklist loop after resolution.
+            worklist.append((imp, mod_file))
         if (
             mod_name != "lamjson"
             and _uses_native_json(sub_tree)
@@ -1857,6 +1895,19 @@ def compile_lam(
             for cls, fields in sub_collector._static_vars.items():
                 lib_pre_static_vars.setdefault(cls, {}).update(fields)
             lib_pre_result_payload_go_types.update(sub_collector._result_payload_go_types)
+            # Calls made *inside* one library need the same imported default-
+            # argument metadata that the main transpiler receives later. This
+            # is especially important for constructors such as ``Error(...)``
+            # reached through a package leaf re-export.
+            lib_pre_func_defaults.update(sub_collector._func_defaults)
+            lib_pre_func_param_counts.update(sub_collector._func_param_counts)
+            lib_pre_func_param_names.update(sub_collector._func_param_names)
+            lib_pre_func_param_go_types.update(sub_collector._func_param_go_types)
+            for key, names in sub_collector._func_generic_params.items():
+                lib_pre_func_generic_params.setdefault(key, set()).update(names)
+            lib_pre_generator_functions.update(sub_collector._generator_functions)
+            for key, variants in sub_collector._overload_variants.items():
+                lib_pre_overload_variants.setdefault(key, []).extend(variants)
             lib_pre_user_functions.update(sub_collector._user_functions)
             lib_pre_private_functions.update(sub_collector._private_functions)
             for cls, methods in sub_collector._instance_methods.items():
@@ -1865,6 +1916,7 @@ def compile_lam(
                 lib_pre_private_methods.setdefault(cls, set()).update(methods)
             for cls, fields in sub_collector.class_fields.items():
                 lib_pre_field_names.setdefault(cls, set()).update(name for name, _go_type in fields)
+                lib_pre_field_types.setdefault(cls, {}).update(dict(fields))
         except Exception:
             # Pre-scan is best-effort; downstream transpile will
             # surface real errors with full positional diagnostics.
@@ -1956,9 +2008,17 @@ def compile_lam(
         + [f"{cls}${','.join(f'{name}:{int(is_private)}' for name, is_private in sorted(fields.items()))}"
            for cls, fields in sorted(lib_pre_static_vars.items())]
         + [f"{name}%{go_type}" for name, go_type in sorted(lib_pre_result_payload_go_types.items())]
+        + [f"defaults:{name}:{repr(pairs)}" for name, pairs in sorted(lib_pre_func_defaults.items())]
+        + [f"params:{name}:{count}" for name, count in sorted(lib_pre_func_param_counts.items())]
+        + [f"param-names:{name}:{','.join(names)}" for name, names in sorted(lib_pre_func_param_names.items())]
+        + [f"param-types:{name}:{','.join(types)}" for name, types in sorted(lib_pre_func_param_go_types.items())]
+        + [f"generic-params:{name}:{','.join(sorted(types))}" for name, types in sorted(lib_pre_func_generic_params.items())]
+        + [f"generator:{name}" for name in sorted(lib_pre_generator_functions)]
+        + [f"overloads:{name}:{repr(variants)}" for name, variants in sorted(lib_pre_overload_variants.items())]
         + [f"fn:{name}:{int(name in lib_pre_private_functions)}" for name in sorted(lib_pre_user_functions)]
         + [f"methods:{cls}:{','.join(sorted(names))}" for cls, names in sorted(lib_pre_instance_methods.items())]
         + [f"fields:{cls}:{','.join(sorted(names))}" for cls, names in sorted(lib_pre_field_names.items())]
+        + [f"field-types:{cls}:{','.join(f'{name}={go_type}' for name, go_type in sorted(fields.items()))}" for cls, fields in sorted(lib_pre_field_types.items())]
     )).encode("utf-8")
 
     def _transpile_lib(mod_name, mod_file):
@@ -2013,12 +2073,30 @@ def compile_lam(
         for cls, fields in lib_pre_static_vars.items():
             lib_transpiler._static_vars.setdefault(cls, {}).update(fields)
         lib_transpiler._result_payload_go_types.update(lib_pre_result_payload_go_types)
+        for key, defaults in lib_pre_func_defaults.items():
+            lib_transpiler._func_defaults.setdefault(key, defaults)
+        for key, count in lib_pre_func_param_counts.items():
+            lib_transpiler._func_param_counts.setdefault(key, count)
+        for key, names in lib_pre_func_param_names.items():
+            lib_transpiler._func_param_names.setdefault(key, names)
+        for key, types in lib_pre_func_param_go_types.items():
+            lib_transpiler._func_param_go_types.setdefault(key, types)
+        for key, names in lib_pre_func_generic_params.items():
+            lib_transpiler._func_generic_params.setdefault(key, set()).update(names)
+        lib_transpiler._generator_functions.update(lib_pre_generator_functions)
+        for key, variants in lib_pre_overload_variants.items():
+            lib_transpiler._overload_variants.setdefault(key, []).extend(variants)
+            lib_transpiler._overloaded_functions.setdefault(key, set()).update(
+                int(variant.get("arity", 0)) for variant in variants
+            )
         lib_transpiler._external_user_functions.update(lib_pre_user_functions)
         lib_transpiler._external_private_functions.update(lib_pre_private_functions)
         for cls, methods in lib_pre_instance_methods.items():
             lib_transpiler._external_instance_methods.setdefault(cls, set()).update(methods)
         for cls, fields in lib_pre_field_names.items():
             lib_transpiler._external_field_names.setdefault(cls, set()).update(fields)
+        for cls, fields in lib_pre_field_types.items():
+            lib_transpiler._external_field_types.setdefault(cls, {}).update(fields)
         lib_go = lib_transpiler.transpile(lib_tree)
         # Remove func main() block from library — but also drop any
         # `//line` directive immediately preceding it so the stripped
@@ -2175,6 +2253,8 @@ def compile_lam(
         transpiler._external_instance_methods.setdefault(cls_name, set()).update(methods)
     for cls_name, fields in lib_pre_field_names.items():
         transpiler._external_field_names.setdefault(cls_name, set()).update(fields)
+    for cls_name, fields in lib_pre_field_types.items():
+        transpiler._external_field_types.setdefault(cls_name, {}).update(fields)
     for cls_name, methods in lib_static_methods.items():
         if cls_name not in transpiler._static_methods:
             transpiler._static_methods[cls_name] = set()
@@ -2191,6 +2271,9 @@ def compile_lam(
         transpiler._func_param_names.setdefault(key, names)
     for key, types in lib_func_param_go_types.items():
         transpiler._func_param_go_types.setdefault(key, types)
+    for key, names in lib_pre_func_generic_params.items():
+        transpiler._func_generic_params.setdefault(key, set()).update(names)
+    transpiler._generator_functions.update(lib_pre_generator_functions)
     transpiler._variadic_functions.update(lib_variadic_functions)
     # Imported library functions need to be visible to the main
     # transpiler's call-site dispatcher (the ``_user_functions`` /
@@ -2878,6 +2961,7 @@ def _extension_dirs() -> dict[str, Path]:
         "vscode": home / ".vscode" / "extensions",
         "cursor": home / ".cursor" / "extensions",
         "windsurf": home / ".windsurf" / "extensions",
+        "devin": home / ".devin" / "extensions",
     }
 
 

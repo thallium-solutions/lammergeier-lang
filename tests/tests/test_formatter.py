@@ -197,6 +197,37 @@ def test_lamc_fmt_directory_recurses_lam_files() -> None:
     print("PASS: lamc fmt directory recursively formats .lam files")
 
 
+def test_formatter_preserves_doc_comment_text() -> None:
+    source = (
+        "class Client{\n"
+        "    #- HTTP-date, Set-Cookie, transport-level, User-Agent.\n"
+        "       Keep https://example.com and application/json verbatim. -  #\n"
+        "func ok(self)->bool{return true}\n"
+        "}\n"
+    )
+    result = format_lam_source(source)
+    expected_comment = (
+        "    #- HTTP-date, Set-Cookie, transport-level, User-Agent.\n"
+        "       Keep https://example.com and application/json verbatim. -  #"
+    )
+    assert expected_comment in result.text, result.text
+    assert format_lam_source(result.text).text == result.text
+    print("PASS: formatter preserves documentation comment text")
+
+
+def test_formatter_preserves_nested_scoped_import() -> None:
+    source = (
+        "from @lam/vulture/std-plugin import requestLog\n"
+        "func main() {\n"
+        "    print(requestLog)\n"
+        "}\n"
+    )
+    result = format_lam_source(source)
+    assert result.text == source
+    assert not result.changed
+    print("PASS: formatter preserves nested scoped imports")
+
+
 def main() -> int:
     tests = [
         test_formatter_snapshot,
@@ -205,6 +236,8 @@ def main() -> int:
         test_formatter_expands_compact_blocks_and_collapses_blank_lines,
         test_lamc_fmt_stdout_and_check,
         test_lamc_fmt_directory_recurses_lam_files,
+        test_formatter_preserves_doc_comment_text,
+        test_formatter_preserves_nested_scoped_import,
     ]
     for test in tests:
         test()

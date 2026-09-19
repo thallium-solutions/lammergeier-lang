@@ -35,8 +35,6 @@
 # * Shape mismatches panic with a descriptive message. For recoverable
 #   error handling, wrap calls in ``do { ... } catch err { ... }``.
 
-from lamerrors import Result, Error
-
 go! {
     import (
         "fmt"

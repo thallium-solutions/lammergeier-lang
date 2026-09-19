@@ -11,7 +11,7 @@ func main() {
     for __i in range(100000) {
         vals = append(vals, Random.randInt(0, 1000000))
     }
-    out: list[int] = Sort.ints(vals)
+    out: list[int] = Sort.sort(vals)
     if out[0] > out[len(out) - 1] {
         print("unreachable")
     }

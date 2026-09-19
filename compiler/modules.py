@@ -277,6 +277,9 @@ class WorkspaceIndex:
         self.source_by_path.pop(path, None)
 
     def resolve_module(self, from_path: Path, module: str) -> Path | None:
+        if module.startswith("."):
+            return self._resolve_relative_module(from_path, module)
+
         roots = self._search_roots(from_path)
         for root in roots:
             found = self.module_path_under(root, module)
@@ -288,6 +291,24 @@ class WorkspaceIndex:
                     return path
         return None
 
+    def _resolve_relative_module(self, from_path: Path, module: str) -> Path | None:
+        """Resolve ``.sibling``/``..parent.sibling`` from ``from_path``.
+
+        Relative imports must never fall through to the global stdlib/extlibs
+        search. Besides making ``from .impl`` deterministic, this prevents two
+        package ``__init__.lam`` files that both re-export ``.impl`` from being
+        conflated by the compiler's transitive import walk.
+        """
+        level = len(module) - len(module.lstrip("."))
+        tail = module[level:]
+        base = from_path.resolve().parent
+        for _ in range(max(0, level - 1)):
+            base = base.parent
+        if not tail:
+            package_init = base / "__init__.lam"
+            return package_init.resolve() if package_init.exists() else None
+        return self.module_path_under(base, tail)
+
     def resolve_import(self, from_path: Path, module: str, name: str) -> ExportSymbol | None:
         path = self.resolve_module(from_path, module)
         if path is None:
@@ -298,6 +319,15 @@ class WorkspaceIndex:
         return facts.exports.get(name)
 
     def module_search_paths(self, from_path: Path, module: str) -> list[Path]:
+        if module.startswith("."):
+            level = len(module) - len(module.lstrip("."))
+            tail = module[level:]
+            base = from_path.resolve().parent
+            for _ in range(max(0, level - 1)):
+                base = base.parent
+            if not tail:
+                return [base / "__init__.lam"]
+            return [base / relative for relative in self.module_relative_candidates(tail)]
         return [
             root / relative
             for root in self._search_roots(from_path)

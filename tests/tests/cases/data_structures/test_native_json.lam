@@ -3,6 +3,7 @@
 # expect: object:3
 # expect: Ada
 # expect: {"height":8,"width":16}
+# expect: [1,true,null]
 # expect: runtime-reject
 # expect: numeric|dash|empty|space
 
@@ -14,7 +15,7 @@ class Image {
         self.height: int = height
     }
 
-    func toJson(self) -> json {
+    func __json__(self) -> json {
         return {"width": self.width, "height": self.height}
     }
 }
@@ -37,9 +38,10 @@ func main() {
     print(f"{Json.kind(obj)}:{len(obj)}")
     print(name)
 
-    image: json = {"image": Image(16, 8)}
+    image: json = {"image": json(Image(16, 8))}
     imageData: dict[str, any] = Json.toDict(image.image)
     print(Json.encode(Json.fromDict(imageData)))
+    print(Json.encode(Json.fromList([1, true, None])))
 
     dynamic: any = {1: "bad"}
     try {

@@ -1,0 +1,11 @@
+# expect-error: ambiguous call to `Formatter.render` for dynamic argument types
+
+class Formatter {
+    static func render(value: int) -> str { return str(value) }
+    static func render(value: str) -> str { return value }
+}
+
+func main() {
+    value: any = 1
+    print(Formatter.render(value))
+}

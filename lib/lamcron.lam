@@ -208,13 +208,6 @@ class Cron {
     func count(self) -> int {
         #- Number of currently-scheduled entries. Handy for tests
            and readiness checks. -#
-        n: int = 0
-        go! {
-            h := s._handle.(*lamCronHandle)
-            h.mu.Lock()
-            defer h.mu.Unlock()
-            n = len(h.c.Entries())
-        }
-        return n
+        return len(self.entryIds())
     }
 }

@@ -1,0 +1,5 @@
+# expect-error: cast `json` does not accept keyword arguments
+
+func main() {
+    print(json(value=1))
+}

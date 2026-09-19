@@ -12,14 +12,14 @@ class Person {
         self.age: int = age
     }
 
-    func toJson(self) -> json {
+    func __json__(self) -> json {
         return {"name": self.name, "age": self.age}
     }
 }
 
 func main() {
     p: Person = Person("Alice", 30)
-    jsonStr: str = Json.encode(p)
+    jsonStr: str = Json.encode(json(p))
     print(jsonStr)
 
     # Decode back into a new Person
@@ -30,7 +30,7 @@ func main() {
 
     # Encode/decode another
     p3: Person = Person("Bob", 25)
-    json3: str = Json.encode(p3)
+    json3: str = Json.encode(json(p3))
     p4: Person = Person("", 0)
     Json.decodeInto(json3, p4)
     print(p4.name)

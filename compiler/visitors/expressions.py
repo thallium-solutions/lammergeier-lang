@@ -143,6 +143,10 @@ class ExpressionVisitorMixin:
                     var_name = self._get_name(node.children[0])
                     if self._var_go_types.get(var_name) == "interface{}":
                         return f"{raw}.({go_type})"
+        if go_type not in {"", "interface{}"} and isinstance(node, Tree) and node.data == "getitem":
+            class_name = self._infer_expr_class(node.children[0])
+            if self._method_return_types.get(f"{class_name}.__getitem__") in {"any", "object"}:
+                return f"{raw}.({go_type})"
         return raw
 
     def _json_value_to_go(self, node) -> str:
@@ -257,6 +261,11 @@ class ExpressionVisitorMixin:
             if name == "self" and self.current_class:
                 return f"*{self._go_class_name(self.current_class)}"
             return self._var_go_types.get(name, "")
+        if node.data == "funccall" and node.children:
+            callee = node.children[0]
+            if isinstance(callee, Tree) and callee.data == "var" and callee.children:
+                if self._get_name(callee.children[0]) == "json":
+                    return "LamJSON"
         if node.data == "getitem" and len(node.children) >= 2:
             receiver_type = self._expr_go_type_hint(node.children[0])
             index = node.children[1]
@@ -287,6 +296,9 @@ class ExpressionVisitorMixin:
                 for field_name, field_type in self.class_fields.get(class_name, []):
                     if field_name == attr or self._go_field_name(class_name, field_name) == attr:
                         return field_type
+                field_type = self._external_field_types.get(class_name, {}).get(attr)
+                if field_type:
+                    return field_type
         return ""
 
     # ─── Main expression dispatcher ───────────────────────────
@@ -510,6 +522,14 @@ class ExpressionVisitorMixin:
             inner = node.children[1]
             if self._expr_go_type_hint(node.children[0]) == "LamJSON":
                 return f"lamJSONGet({self._expr_to_go(node.children[0])}, {self._expr_to_go(inner)})"
+            class_name = self._infer_expr_class(node.children[0])
+            method = self._get_dunder_method(class_name, "__getitem__") if class_name else ""
+            if method and not (isinstance(inner, Tree) and inner.data == "slice"):
+                method_key = f"{class_name}.__getitem__"
+                param_types = self._func_param_go_types.get(method_key, [])
+                index_type = param_types[0] if param_types else "interface{}"
+                index = self._typed_value_to_go(inner, index_type)
+                return f"{self._expr_to_go(node.children[0])}.{method}({index})"
             if isinstance(inner, Tree) and inner.data == "slice":
                 obj_go = self._expr_to_go(node.children[0])
                 return self._slice_to_go(obj_go, inner, node.children[0])
@@ -774,11 +794,19 @@ class ExpressionVisitorMixin:
         ):
             return None
         go_cls = self._go_class_name(class_name)
-        go_name = f"{go_cls}_{method_name}"
+        method_key = f"{class_name}.{method_name}"
+        suffix = ""
+        call_key = method_key
+        if len(self._overload_variants.get(method_key, [])) > 1:
+            call_sig = self._infer_call_arg_sig(args_node)
+            variant = self._overload_variant_for_sig(method_key, call_sig)
+            suffix = self._overload_suffix_for_sig(method_key, call_sig)
+            if variant is not None:
+                call_key = str(variant.get("meta_key") or method_key)
+        go_name = f"{go_cls}_{method_name}{suffix}"
         if method_name in self._private_methods.get(class_name, set()):
             go_name = self._go_private_name(go_name)
-        method_key = f"{class_name}.{method_name}"
-        call_args = self._planned_call_args(method_key, args_node)
+        call_args = self._planned_call_args(call_key, args_node)
         return f"{go_name}({', '.join(call_args)})"
 
     def _receiver_class_for_call(self, raw_obj: str, func) -> str:
@@ -792,6 +820,13 @@ class ExpressionVisitorMixin:
             return self.current_class
         if not obj_class and isinstance(func, Tree) and func.data == "getattr":
             obj_class = self._infer_receiver_class(func.children[0])
+        if not obj_class and self.current_class and self._self_replacement:
+            for field_name, field_type in self.class_fields.get(self.current_class, []):
+                go_field = self._go_field_name(self.current_class, field_name)
+                if raw_obj == f"{self._self_replacement}.{go_field}":
+                    candidate = field_type.removeprefix("*").split("[", 1)[0]
+                    if candidate in self._class_names:
+                        return candidate
         return obj_class
 
     def _known_instance_method_call_to_go(
@@ -801,8 +836,16 @@ class ExpressionVisitorMixin:
         if not obj_class:
             return None
         method_key = f"{obj_class}.{method_name}"
-        call_args = self._planned_call_args(method_key, args_node)
-        return f"{func_str}({', '.join(call_args)})"
+        suffix = ""
+        call_key = method_key
+        if len(self._overload_variants.get(method_key, [])) > 1:
+            call_sig = self._infer_call_arg_sig(args_node)
+            variant = self._overload_variant_for_sig(method_key, call_sig)
+            suffix = self._overload_suffix_for_sig(method_key, call_sig)
+            if variant is not None:
+                call_key = str(variant.get("meta_key") or method_key)
+        call_args = self._planned_call_args(call_key, args_node)
+        return f"{func_str}{suffix}({', '.join(call_args)})"
 
     def _nested_generic_call_to_go(
         self, func_name: str, args: List[str],
@@ -947,6 +990,10 @@ class ExpressionVisitorMixin:
         if func_str == "str":
             self._need_import("fmt")
             return f'fmt.Sprintf("%v", {args[0]})' if args else '""'
+
+        if func_str == "json":
+            raw_args = self._get_raw_call_args(args_node)
+            return self._typed_value_to_go(raw_args[0], "LamJSON") if raw_args else "lamJSONMust(nil)"
 
         if func_str == "repr":
             self._need_import("fmt")
@@ -1542,25 +1589,40 @@ class ExpressionVisitorMixin:
                     raw = _re_self.sub(r'\bself\.(\w+)', _self_to_recv, raw)
                 lines_raw = raw.strip().split("\n")
                 in_import_group = False
+
+                def _record_import_specs(text: str) -> bool:
+                    specs = re.findall(
+                        r'(?:[A-Za-z_]\w*|[._])?\s*(?:"(?:\\.|[^"\\])*"|`[^`]+`)',
+                        text,
+                    )
+                    for spec in specs:
+                        spec = spec.strip()
+                        if spec:
+                            self.user_go_imports.add(spec)
+                    return bool(specs)
+
                 for line in lines_raw:
                     stripped = line.strip()
-                    if stripped == "import (":
-                        in_import_group = True
+                    if stripped.startswith("import ("):
+                        remainder = stripped[len("import ("):].strip()
+                        if remainder.endswith(")"):
+                            _record_import_specs(remainder[:-1])
+                        else:
+                            in_import_group = True
+                            _record_import_specs(remainder)
                         continue
                     if in_import_group:
-                        if stripped == ")":
+                        if stripped.endswith(")"):
+                            _record_import_specs(stripped[:-1])
                             in_import_group = False
-                            continue
-                        if '"' in stripped and not stripped.startswith('"'):
-                            self.user_go_imports.add(stripped)
                         else:
-                            imp = stripped.strip('"').strip()
-                            if imp:
-                                self.user_go_imports.add(imp)
+                            _record_import_specs(stripped)
                         continue
                     if stripped.startswith("import "):
-                        imp = stripped.replace("import ", "").strip().strip('"')
-                        self.user_go_imports.add(imp)
+                        if not _record_import_specs(stripped[len("import "):]):
+                            imp = stripped[len("import "):].strip().strip('"')
+                            if imp:
+                                self.user_go_imports.add(imp)
                     else:
                         self._emit(stripped)
                 return ""
@@ -2086,6 +2148,11 @@ class ExpressionVisitorMixin:
         if obj_node.data == "var":
             name = self._get_name(obj_node.children[0])
             return self._var_types.get(name, "")
+        if obj_node.data in {"getattr", "getattr_safe"}:
+            go_type = self._expr_go_type_hint(obj_node)
+            class_name = go_type.removeprefix("*").split("[", 1)[0]
+            if class_name in self._class_names:
+                return class_name
         if obj_node.data == "propagate" and obj_node.children:
             go_type = self._propagated_payload_go_type(obj_node.children[0])
             class_name = go_type.removeprefix("*").split("[", 1)[0]
@@ -2612,6 +2679,14 @@ class ExpressionVisitorMixin:
         container_go = self._expr_to_go(container_node)
         container_type = self._expr_go_type_hint(container_node) or self._infer_type_from_value(container_node)
         container_type = (container_type or "").strip()
+        class_name = self._infer_expr_class(container_node)
+        method = self._get_dunder_method(class_name, "__contains__") if class_name else ""
+        if method:
+            method_key = f"{class_name}.__contains__"
+            param_types = self._func_param_go_types.get(method_key, [])
+            item_type = param_types[0] if param_types else "interface{}"
+            item_go = self._typed_value_to_go(item_node, item_type)
+            return f"{container_go}.{method}({item_go})"
 
         if container_type == "string":
             self._need_import("strings")

@@ -51,12 +51,18 @@ a `package.json`, or juggle global package installs.
 ## Official third-party libraries
 
 These packages are maintained as official Lammergeier third-party libraries.
-Some are still mirrored under `third_party/` while they move to standalone
-repositories.
+The [Libraries catalog](libraries.md) is the consumer-facing, searchable list;
+this specification focuses on authoring and resolution details.
 
 | Library | Repository / docs | Description |
 |---------|-------------------|-------------|
-| `lams3` | [thallium-solutions/lams3](https://github.com/thallium-solutions/lams3) | S3-compatible object storage client for AWS S3, Cloudflare R2, MinIO, Wasabi, Backblaze B2, and custom gateways. Includes Result-first APIs, file/buffer/stream upload, metadata, public URL helpers, and presigned URLs. |
+| `@lam/jwt` | [thallium-solutions/lam-jwt](https://github.com/thallium-solutions/lam-jwt) | JWT signing, verification, claims, `kid`, and JWKS key rotation. |
+| `@lam/memcached` | [thallium-solutions/lam-memcached](https://github.com/thallium-solutions/lam-memcached) | Binary-protocol Memcached client with SASL authentication, counters, and cluster statistics. |
+| `@lam/protobuf` | [thallium-solutions/lam-protobuf](https://github.com/thallium-solutions/lam-protobuf) | Protocol Buffers binary, JSON, text, equality, size, and clone helpers. |
+| `@lam/redis` | [thallium-solutions/lam-redis](https://github.com/thallium-solutions/lam-redis) | Redis strings, native JSON, collections, sorted sets, pub/sub, and pipelines. |
+| `@lam/s3` | [thallium-solutions/lam-s3](https://github.com/thallium-solutions/lam-s3) | S3-compatible object storage with Result-first APIs, files, buffers, streams, metadata, and presigned URLs. |
+| `@lam/sftp` | [thallium-solutions/lam-sftp](https://github.com/thallium-solutions/lam-sftp) | Callback-driven, storage-agnostic SFTP server built on `@lam/ssh`. |
+| `@lam/ssh` | [thallium-solutions/lam-ssh](https://github.com/thallium-solutions/lam-ssh) | Strictly verified SSH clients, commands, sessions, keys, cancellation, and direct TCP channels. |
 | `lamstripe` | [`third_party/lamstripe/README.md`](../third_party/lamstripe/README.md) | Opinionated Stripe REST API helper with configuration, customers, payment intents, checkout sessions, validation, and test helpers. |
 | `lamotel` | [`third_party/lamotel/README.md`](../third_party/lamotel/README.md) | Lightweight OpenTelemetry helper for traces, spans, resource attributes, OTLP export payloads, and integration tests. |
 
@@ -69,7 +75,7 @@ statement by walking three layers, in order:
 
 | # | Layer | Path(s) | Purpose |
 |---|-------|---------|---------|
-| 1 | **stdlib** | `<compiler>/lib/` | Modules shipped by the compiler itself (`lamhttp`, `lamdb`, `lamredis`, …). Always wins so users can't accidentally shadow a stdlib module by dropping a same-named file in their project. |
+| 1 | **stdlib** | `<compiler>/lib/` | Modules shipped by the compiler itself (`lamhttp`, `lamdb`, `lamcrypto`, …). Always wins so users can't accidentally shadow a stdlib module by dropping a same-named file in their project. |
 | 2 | **extlibs** | see below | Third-party libraries, in one of four flavours. |
 | 3 | **project** | `<source-dir>/`, `<source-dir>/lib/` | The user's own source files and any project-local helpers. Lowest priority so it never overrides the stdlib or an installed dep. |
 
@@ -174,8 +180,8 @@ flight before compiling against the current toolchain.)
   `PascalCase`, or `SCREAMING_SNAKE_CASE` and use that exact spelling in the
   filename/package directory, `library.name`, dependency keys, registry specs,
   and imports. Resolution is case-sensitive. Plain names are Lam identifiers
-  (`[A-Za-z_][A-Za-z0-9_]*`); scoped `@scope/name` segments may additionally
-  contain hyphens after the first character.
+  (`[A-Za-z_][A-Za-z0-9_]*`); scoped `@scope/name[/subname...]` path
+  segments may additionally contain hyphens after the first character.
 - Prefix community libraries with `lam` (e.g. `lamwebp`,
   `lamkafka`) to mirror the stdlib naming so they feel native.
   This is a convention, not a hard rule.
@@ -268,16 +274,16 @@ where real users need them.
 Third-party libraries should compose the stdlib rather than mirror it.
 Prefer packages for vendor APIs, optional integrations, opinionated
 frameworks, heavyweight Go dependency trees, or domains that evolve on
-their own release cadence. Good examples are `lams3` for
-S3-compatible object stores, `lamstripe` for Stripe's API, and
-`lamotel` for OpenTelemetry export.
+their own release cadence. Good examples are `@lam/s3` for
+S3-compatible object stores, `@lam/redis` for an external service client,
+`lamstripe` for Stripe's API, and `lamotel` for OpenTelemetry export.
 
-`third_party/lams3` is the reference shape for a Go-SDK-backed
-storage library: it exposes ergonomic bool/string helpers for quick
-scripts, direct constructors plus env loading, `try*` siblings that
-return `Result` for production flows, and live tests that operate
-inside a dedicated bucket prefix so they do not collide with existing
-objects.
+[`@lam/s3`](https://github.com/thallium-solutions/lam-s3) is the reference
+shape for a Go-SDK-backed storage library: it exposes ergonomic bool/string
+helpers for quick scripts, direct constructors plus env loading, `try*`
+siblings that return `Result` for production flows, and guarded live tests
+that operate inside a dedicated bucket prefix so they do not collide with
+existing objects.
 
 If a feature is generic and lightweight — string handling, JSON, HTTP
 helpers, filesystem access, environment variables, time, basic crypto,
@@ -448,7 +454,7 @@ Use `lamc fmt <directory> --check` when you want CI to fail on formatter drift.
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `library.name` | ✅ | Must exactly match the case-sensitive module name consumers import. ASCII identifier in any casing style, or case-preserving `@scope/name`. |
+| `library.name` | ✅ | Must exactly match the case-sensitive module name consumers import. ASCII identifier in any casing style, or case-preserving `@scope/name[/subname...]`. |
 | `library.version` | ✅ | SemVer string. `lamc install` refuses to replace an installed library with a version < the one on disk without `--force`. |
 | `library.license` | optional | SPDX identifier (`MIT`, `Apache-2.0`, `BSD-3-Clause`, …). Strongly recommended before public publishing. |
 | `compatibility.lamc` | optional | Version range. `lamc version` prints the compiler version. During compile, installed extlibs whose range does not include that version emit a warning and continue; the install path does not hard-enforce it. |
@@ -592,10 +598,10 @@ lamc install                 # reads lamlib.toml + lamlib.lock.toml
 
 ---
 
-## 5. Scoped names — `@scope/name` *(implemented)*
+## 5. Scoped names — `@scope/name[/subname...]` *(implemented)*
 
-Libraries can opt into a two-level identifier the same way npm
-packages do:
+Libraries can opt into a scoped identifier. Additional package-family
+segments are supported after the package root:
 
 ```toml
 [library]
@@ -605,10 +611,11 @@ version = "1.2.0"
 
 ```lammergeier
 from @alice/lamwebp import Encoder
+from @lam/vulture/ws-plugin import WebSocket
 ```
 
-Grammar, resolver and registry all treat the full `@alice/lamwebp`
-string as the canonical key. The on-disk install layout uses the
+Grammar, resolver and registry treat the entire scoped path, such as
+`@alice/lamwebp` or `@lam/vulture/ws-plugin`, as the canonical key. The on-disk install layout uses the
 scope as a real directory:
 
 ```
@@ -787,7 +794,7 @@ escape hatch) is documented in
 | `--extlibs` flag + `LAMC_EXTLIBS` env var | ✅ |
 | Auto-discovery of `./extlibs/` and `~/.lammergeier/extlibs/` | ✅ |
 | `lamlib.toml` parser in the compiler | ✅ |
-| `@scope/name` library identifiers | ✅ |
+| `@scope/name[/subname...]` library identifiers | ✅ |
 | `lamc init` scaffold (`--name`, `--version`, `--scope`, `--bin` / `--lib`, `--force`) | ✅ |
 | `lamc install <name>@<ver>` (registry / git / path) | ✅ |
 | Bare `lamc install` reads `[dependencies]` + `--frozen` / `--offline` flags | ✅ |
@@ -809,8 +816,8 @@ escape hatch) is documented in
 
 Resolved design questions:
 
-- **Namespacing:** scoped names (`@scope/name`) shipped, plain
-  names continue to work.
+- **Namespacing:** scoped names (`@scope/name[/subname...]`) shipped,
+  plain names continue to work.
 - **Binary-only distribution:** rejected — libraries always ship
   source so the host's Go toolchain reproduces the binary
   deterministically across OS / arch boundaries.

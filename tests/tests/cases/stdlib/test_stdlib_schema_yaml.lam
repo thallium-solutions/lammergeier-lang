@@ -1,0 +1,36 @@
+# expect: yaml-valid: true
+# expect: yaml-invalid: false
+# expect: yaml-invalid-kind: SchemaValidationError
+# expect: yaml-schema-kind: SchemaParseError
+# expect: yaml-document-kind: SchemaParseError
+# expect: format-kind: SchemaFormatError
+
+from lamerrors import Result, Error
+from lamschema import Schema
+
+func main() {
+    schema: str = "type: object\nrequired: [name]\nproperties:\n  name:\n    type: string\n    minLength: 2\n"
+    valid: str = "name: Ada\n"
+    invalid: str = "name: A\n"
+
+    accepted: Result[str] = Schema.validate(schema, valid, "yaml")
+    rejected: Result[str] = Schema.validate(schema, invalid, "yaml")
+    print(f"yaml-valid: {accepted.ok()}")
+    print(f"yaml-invalid: {rejected.ok()}")
+    rejectedError: Error = rejected.error
+    print(f"yaml-invalid-kind: {rejectedError.kind}")
+
+    brokenSchemaText: str = "type: [object"
+    brokenSchema: Result[str] = Schema.validate(brokenSchemaText, valid, "yaml")
+    brokenSchemaError: Error = brokenSchema.error
+    print(f"yaml-schema-kind: {brokenSchemaError.kind}")
+
+    brokenDocumentText: str = "name: [Ada"
+    brokenDocument: Result[str] = Schema.validate(schema, brokenDocumentText, "yaml")
+    brokenDocumentError: Error = brokenDocument.error
+    print(f"yaml-document-kind: {brokenDocumentError.kind}")
+
+    badFormat: Result[str] = Schema.validate(schema, valid, "YAML")
+    badFormatError: Error = badFormat.error
+    print(f"format-kind: {badFormatError.kind}")
+}

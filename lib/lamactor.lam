@@ -51,8 +51,6 @@
 # can return ``True`` to keep going, ``False`` to stop. The default
 # is to stop on any unhandled panic.
 
-from lamerrors import Result, Error
-
 go! {
     import (
         "fmt"

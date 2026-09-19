@@ -1,5 +1,7 @@
 # expect: encode_ok
 # expect: decode_ok
+# expect: contains_ok
+# expect: count_ok
 
 from lambytes import Bytes
 
@@ -14,5 +16,12 @@ func main() {
     d: str = Bytes.hexDecode(h)
     if d == "hello" {
         print("decode_ok")
+    }
+
+    if Bytes.contains("hello bytes", "bytes") and not Bytes.contains("hello", "z") {
+        print("contains_ok")
+    }
+    if Bytes.count("aaaa", "aa") == 2 {
+        print("count_ok")
     }
 }

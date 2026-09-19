@@ -1,0 +1,29 @@
+# expect: name=Ada
+# expect: has-name=true
+# expect: has-nil=true
+# expect: missing-is-none=true
+# expect: child-name=Grace
+# expect: parent-name=Ada
+
+from lamcontext import Context
+
+func main() {
+    ctx: Context = Context.simple()
+    ctx["name"] = "Ada"
+    name: str = ctx["name"]
+    print(f"name={name}")
+    hasName: bool = ctx.has("name") and "name" in ctx
+    print(f"has-name={hasName}")
+
+    ctx["nil"] = None
+    hasNil: bool = ctx.has("nil") and "nil" in ctx
+    missingIsNone: bool = ctx["missing"] == None
+    print(f"has-nil={hasNil}")
+    print(f"missing-is-none={missingIsNone}")
+
+    child: Context = ctx.valued("name", "Grace")
+    childName: str = child["name"]
+    parentName: str = ctx["name"]
+    print(f"child-name={childName}")
+    print(f"parent-name={parentName}")
+}

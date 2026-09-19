@@ -10,10 +10,10 @@ usage() {
 Usage:
   sh scripts/test-services.sh
 
-Starts the Docker services required by the full Lammergeier test suite:
-Postgres, Redis without auth, Redis with auth, memcached, and the memcached
-auth fixture. Containers are started with docker run --rm and are stopped when
-this script exits.
+Starts the PostgreSQL Docker service required by the Lammergeier stdlib test
+suite. Redis and memcached fixtures now live with their standalone @lam
+packages. Containers are started with docker run --rm and are stopped when this
+script exits.
 EOF
 }
 
@@ -75,25 +75,6 @@ start_container postgres-test \
     -e POSTGRES_DB=postgres \
     -p 5432:5432 \
     postgres:16.9-alpine3.22
-
-start_container redis-test \
-    -p 6380:6379 \
-    redis:latest
-
-start_container redis-test-auth \
-    -p 6379:6379 \
-    redis:latest \
-    redis-server --requirepass Password
-
-start_container memcached-test \
-    -p 11211:11211 \
-    memcached:latest
-
-start_container memcached-test-auth \
-    -p 11212:11211 \
-    -e MEMCACHED_USERNAME=memuser \
-    -e MEMCACHED_PASSWORD=mempass123 \
-    memcached:1.6
 
 cat <<EOF
 

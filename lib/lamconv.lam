@@ -137,12 +137,60 @@ class Conv {
         go! { v, _ := strconv.ParseInt(s, 16, 64); return int(v) }
     }
 
+    static func tryFromHex(s: str) -> Result[int] {
+        #- Parse ``s`` as a hexadecimal integer without silently losing
+           parse failures. -#
+        go! {
+            v, err := strconv.ParseInt(s, 16, 64)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ParseError",
+                    fmt.Sprintf("cannot parse %q as hexadecimal int: %v", s, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(int(v))
+        }
+    }
+
     static func fromOctal(s: str) -> int {
         go! { v, _ := strconv.ParseInt(s, 8, 64); return int(v) }
     }
 
+    static func tryFromOctal(s: str) -> Result[int] {
+        #- Parse ``s`` as an octal integer without silently losing parse
+           failures. -#
+        go! {
+            v, err := strconv.ParseInt(s, 8, 64)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ParseError",
+                    fmt.Sprintf("cannot parse %q as octal int: %v", s, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(int(v))
+        }
+    }
+
     static func fromBin(s: str) -> int {
         go! { v, _ := strconv.ParseInt(s, 2, 64); return int(v) }
+    }
+
+    static func tryFromBin(s: str) -> Result[int] {
+        #- Parse ``s`` as a binary integer without silently losing parse
+           failures. -#
+        go! {
+            v, err := strconv.ParseInt(s, 2, 64)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ParseError",
+                    fmt.Sprintf("cannot parse %q as binary int: %v", s, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(int(v))
+        }
     }
 }
 

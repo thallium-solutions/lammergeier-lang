@@ -9,7 +9,11 @@
 # expect: PASS 8 popBack
 # expect: PASS 9 toList round-trip
 # expect: PASS 10 clear empties
-# expect: 10 passed, 0 failed, 10 total
+# expect: PASS 11 popFront throws
+# expect: PASS 12 popBack throws
+# expect: PASS 13 peekFront throws
+# expect: PASS 14 peekBack throws
+# expect: 14 passed, 0 failed, 14 total
 
 from lamdeque import Deque
 from lamtest import Test
@@ -41,6 +45,22 @@ func main() {
 
     d.clear()
     Test.assertTrue(d.isEmpty(), "10 clear empties")
+
+    popFrontThrows: bool = false
+    try { d.popFront() } catch err { popFrontThrows = true }
+    Test.assertTrue(popFrontThrows, "11 popFront throws")
+
+    popBackThrows: bool = false
+    try { d.popBack() } catch err { popBackThrows = true }
+    Test.assertTrue(popBackThrows, "12 popBack throws")
+
+    peekFrontThrows: bool = false
+    try { d.peekFront() } catch err { peekFrontThrows = true }
+    Test.assertTrue(peekFrontThrows, "13 peekFront throws")
+
+    peekBackThrows: bool = false
+    try { d.peekBack() } catch err { peekBackThrows = true }
+    Test.assertTrue(peekBackThrows, "14 peekBack throws")
 
     Test.summary()
 }

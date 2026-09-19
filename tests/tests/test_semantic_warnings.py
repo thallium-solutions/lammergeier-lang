@@ -318,6 +318,23 @@ func main() {
     print("PASS: go! references count as parameter usage")
 
 
+def test_go_comments_and_strings_do_not_count_as_parameter_usage() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "main.lam"
+        _write(src, """
+func show(x: int) {
+    go! {
+        // x is text, not a reference
+        println("x")
+    }
+}
+""".lstrip())
+        result = _run(str(src), "--emit-go", cwd=Path(tmp))
+        assert result.returncode == 0, (result.returncode, result.stderr)
+        assert "unused parameter `x`" in result.stderr, result.stderr
+    print("PASS: Go comments and strings do not count as Lam parameter usage")
+
+
 def test_unused_warning_line_numbers_survive_multiline_go_blocks() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "main.lam"
@@ -539,6 +556,7 @@ def main() -> int:
         test_unused_local_does_not_break_go_build,
         test_unused_block_local_does_not_break_go_build,
         test_go_block_references_silence_unused_parameters,
+        test_go_comments_and_strings_do_not_count_as_parameter_usage,
         test_unused_warning_line_numbers_survive_multiline_go_blocks,
         test_outer_scope_local_used_inside_loop_block_does_not_warn,
         test_attribute_assignment_receiver_counts_as_parameter_use,

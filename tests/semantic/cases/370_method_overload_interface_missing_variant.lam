@@ -1,0 +1,16 @@
+# expect-error: missing overload `parse(int) -> str`
+
+interface Parser {
+    func parse(value: int) -> str
+    func parse(value: str) -> str
+}
+
+class PartialParser {
+    func parse(self, value: str) -> str { return value }
+}
+
+func use(parser: Parser) {}
+
+func main() {
+    use(PartialParser())
+}

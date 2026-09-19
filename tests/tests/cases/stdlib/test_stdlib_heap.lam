@@ -59,7 +59,7 @@ func main() {
     toListHeap.push(2.0)
     items: list[float] = toListHeap.toList()
     # sort so we get a stable representation regardless of heap layout
-    sorted_items: list[float] = Sort.floats(items)
+    sorted_items: list[float] = Sort.sort(items)
     expectedList: list[float] = [1.0, 2.0, 3.0]
     Test.assertEqual(sorted_items, expectedList, "8 toList has all elements")
 

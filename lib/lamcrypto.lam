@@ -1,0 +1,646 @@
+# Lammergeier standard library: practical cryptographic helpers.
+#
+# This module builds a small Python/JavaScript-style API on Go's standard
+# ``crypto`` packages. It provides secure random values, versioned AES-GCM
+# envelopes, PBKDF2-SHA256 password hashes, Ed25519/RSA PEM keys and signing,
+# and typed X.509 certificate metadata without exposing Go key objects.
+#
+# Binary values stay friendly to Lam programs: random bytes are ``list[int]``;
+# encrypted values, password hashes, and signatures are portable strings; key
+# material remains PEM. Recoverable input failures are available through each
+# ``try*`` method, while convenience methods either unwrap or return a safe
+# boolean sentinel as documented.
+#
+# Import with: ``from lamcrypto import Crypto, CryptoKeyPair, CryptoCertificate``.
+
+from lamerrors import Result, Error
+from lamhash import Hash
+from lambase64 import Base64
+from lambytes import Bytes
+
+go! {
+    import (
+        "crypto"
+        "crypto/aes"
+        "crypto/cipher"
+        "crypto/ed25519"
+        "crypto/hmac"
+        "crypto/rand"
+        "crypto/rsa"
+        "crypto/sha256"
+        "crypto/x509"
+        "encoding/pem"
+        "fmt"
+        "strconv"
+        "time"
+    )
+
+    func lamCryptoAESGCMSeal(key []byte, nonce []byte, plaintext []byte, aad []byte) ([]byte, error) {
+        block, err := aes.NewCipher(key)
+        if err != nil { return nil, err }
+        gcm, err := cipher.NewGCM(block)
+        if err != nil { return nil, err }
+        if len(nonce) != gcm.NonceSize() {
+            return nil, fmt.Errorf("AES-GCM nonce must be %d bytes", gcm.NonceSize())
+        }
+        return gcm.Seal(nil, nonce, plaintext, aad), nil
+    }
+
+    func lamCryptoAESGCMOpen(key []byte, nonce []byte, ciphertext []byte, aad []byte) ([]byte, error) {
+        block, err := aes.NewCipher(key)
+        if err != nil { return nil, err }
+        gcm, err := cipher.NewGCM(block)
+        if err != nil { return nil, err }
+        if len(nonce) != gcm.NonceSize() {
+            return nil, fmt.Errorf("AES-GCM nonce must be %d bytes", gcm.NonceSize())
+        }
+        return gcm.Open(nil, nonce, ciphertext, aad)
+    }
+
+    // PBKDF2 from RFC 8018, specialised to HMAC-SHA256. Keeping this small
+    // implementation here avoids pulling golang.org/x/crypto into the stdlib.
+    func lamCryptoPBKDF2SHA256(password []byte, salt []byte, iterations int, keyLength int) []byte {
+        hashLength := sha256.Size
+        blockCount := (keyLength + hashLength - 1) / hashLength
+        derived := make([]byte, 0, blockCount*hashLength)
+        counter := make([]byte, 4)
+
+        for blockIndex := 1; blockIndex <= blockCount; blockIndex++ {
+            counter[0] = byte(blockIndex >> 24)
+            counter[1] = byte(blockIndex >> 16)
+            counter[2] = byte(blockIndex >> 8)
+            counter[3] = byte(blockIndex)
+
+            mac := hmac.New(sha256.New, password)
+            mac.Write(salt)
+            mac.Write(counter)
+            u := mac.Sum(nil)
+            t := append([]byte(nil), u...)
+
+            for round := 1; round < iterations; round++ {
+                mac = hmac.New(sha256.New, password)
+                mac.Write(u)
+                u = mac.Sum(nil)
+                for i := range t { t[i] ^= u[i] }
+            }
+            derived = append(derived, t...)
+        }
+        return derived[:keyLength]
+    }
+
+    func lamCryptoParsePrivateKey(privateKeyPEM string) (interface{}, string, error) {
+        block, _ := pem.Decode([]byte(privateKeyPEM))
+        if block == nil { return nil, "", fmt.Errorf("no PEM private key found") }
+
+        if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+            switch typed := key.(type) {
+            case ed25519.PrivateKey:
+                return typed, "Ed25519", nil
+            case *rsa.PrivateKey:
+                return typed, "RSA", nil
+            default:
+                return nil, "", fmt.Errorf("unsupported PKCS#8 private key type %T", key)
+            }
+        }
+        if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+            return key, "RSA", nil
+        }
+        return nil, "", fmt.Errorf("invalid or unsupported PEM private key")
+    }
+
+    func lamCryptoParsePublicKey(publicKeyPEM string) (interface{}, string, error) {
+        block, _ := pem.Decode([]byte(publicKeyPEM))
+        if block == nil { return nil, "", fmt.Errorf("no PEM public key or certificate found") }
+
+        var key interface{}
+        if block.Type == "CERTIFICATE" {
+            cert, err := x509.ParseCertificate(block.Bytes)
+            if err != nil { return nil, "", fmt.Errorf("invalid certificate: %v", err) }
+            key = cert.PublicKey
+        } else if parsed, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
+            key = parsed
+        } else if parsed, err := x509.ParsePKCS1PublicKey(block.Bytes); err == nil {
+            key = parsed
+        } else {
+            return nil, "", fmt.Errorf("invalid or unsupported PEM public key")
+        }
+
+        switch typed := key.(type) {
+        case ed25519.PublicKey:
+            return typed, "Ed25519", nil
+        case *rsa.PublicKey:
+            return typed, "RSA", nil
+        default:
+            return nil, "", fmt.Errorf("unsupported public key type %T", key)
+        }
+    }
+
+    func lamCryptoSign(data []byte, privateKeyPEM string) ([]byte, string, error) {
+        key, algorithm, err := lamCryptoParsePrivateKey(privateKeyPEM)
+        if err != nil { return nil, "", err }
+
+        switch typed := key.(type) {
+        case ed25519.PrivateKey:
+            return ed25519.Sign(typed, data), algorithm, nil
+        case *rsa.PrivateKey:
+            digest := sha256.Sum256(data)
+            options := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: crypto.SHA256}
+            signature, signErr := rsa.SignPSS(rand.Reader, typed, crypto.SHA256, digest[:], options)
+            return signature, algorithm, signErr
+        default:
+            return nil, "", fmt.Errorf("unsupported private key type %T", key)
+        }
+    }
+
+    func lamCryptoVerify(data []byte, signature []byte, publicKeyPEM string) (bool, error) {
+        key, _, err := lamCryptoParsePublicKey(publicKeyPEM)
+        if err != nil { return false, err }
+
+        switch typed := key.(type) {
+        case ed25519.PublicKey:
+            return ed25519.Verify(typed, data, signature), nil
+        case *rsa.PublicKey:
+            digest := sha256.Sum256(data)
+            options := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: crypto.SHA256}
+            verifyErr := rsa.VerifyPSS(typed, crypto.SHA256, digest[:], signature, options)
+            return verifyErr == nil, nil
+        default:
+            return false, fmt.Errorf("unsupported public key type %T", key)
+        }
+    }
+
+}
+
+
+class CryptoKeyPair {
+    #- Portable asymmetric key pair. ``privateKey`` and ``publicKey`` are PEM
+       strings. ``algorithm`` is ``"Ed25519"`` or ``"RSA"`` and ``bits`` is
+       256 for Ed25519 or the requested RSA modulus size. -#
+
+    func __init__(self, privateKey: str, publicKey: str, algorithm: str, bits: int) {
+        self.privateKey: str = privateKey
+        self.publicKey: str = publicKey
+        self.algorithm: str = algorithm
+        self.bits: int = bits
+    }
+}
+
+
+class CryptoCertificate {
+    #- Parsed X.509 certificate information. Dates use UTC RFC 3339 strings;
+       the SHA-256 fingerprint is lowercase hexadecimal. The original PEM and
+       Go certificate object are deliberately not retained. -#
+
+    func __init__(self,
+                  commonName: str,
+                  subject: str,
+                  issuer: str,
+                  serialNumber: str,
+                  notBefore: str,
+                  notAfter: str,
+                  dnsNames: list[str],
+                  emailAddresses: list[str],
+                  ipAddresses: list[str],
+                  isCA: bool,
+                  signatureAlgorithm: str,
+                  publicKeyAlgorithm: str,
+                  fingerprintSha256: str) {
+        self.commonName: str = commonName
+        self.subject: str = subject
+        self.issuer: str = issuer
+        self.serialNumber: str = serialNumber
+        self.notBefore: str = notBefore
+        self.notAfter: str = notAfter
+        self.dnsNames: list[str] = dnsNames
+        self.emailAddresses: list[str] = emailAddresses
+        self.ipAddresses: list[str] = ipAddresses
+        self.isCA: bool = isCA
+        self.signatureAlgorithm: str = signatureAlgorithm
+        self.publicKeyAlgorithm: str = publicKeyAlgorithm
+        self.fingerprintSha256: str = fingerprintSha256
+    }
+}
+
+
+class Crypto {
+    #- Static cryptographic helpers. AES keys are byte lists of length 16, 24,
+       or 32. AES envelopes use ``lamcrypto:v1:<base64>`` and contain a fresh
+       12-byte nonce followed by authenticated ciphertext. -#
+
+    static func isAesKey(key: list[int]) -> bool {
+        size: int = len(key)
+        if size != 16 and size != 24 and size != 32 {
+            return false
+        }
+        for value in key {
+            if value < 0 or value > 255 {
+                return false
+            }
+        }
+        return true
+    }
+
+    static func tryRandomBytes(count: int = 32) -> Result {
+        #- Return secure random bytes. Counts from zero through 16 MiB are
+           accepted; larger requests are rejected to avoid accidental memory
+           exhaustion. -#
+        if count < 0 or count > 16777216 {
+            return Result.Err(Error("CryptoValueError", "random byte count must be between 0 and 16777216", None))
+        }
+        output: list[int] = []
+        randomError: str = ""
+        go! {
+            raw := make([]byte, count)
+            if _, err := rand.Read(raw); err != nil {
+                randomError = err.Error()
+            } else {
+                output = make([]int, len(raw))
+                for i, value := range raw { output[i] = int(value) }
+            }
+        }
+        if randomError != "" {
+            return Result.Err(Error("CryptoRandomError", randomError, None))
+        }
+        return Result.Ok(output)
+    }
+
+    static func randomBytes(count: int = 32) -> list[int] {
+        #- Convenience form of ``tryRandomBytes``; panics only if secure random
+           generation fails or the count is invalid. -#
+        result: Result = Crypto.tryRandomBytes(count)
+        output: list[int] = []
+        go! { output = result.Unwrap().([]int) }
+        return output
+    }
+
+    static func tryRandomToken(count: int = 32) -> Result {
+        #- Return ``count`` secure bytes as an unpadded URL-safe base64 token. -#
+        result: Result = Crypto.tryRandomBytes(count)
+        if not result.ok() {
+            return result
+        }
+        raw: list[int] = []
+        go! { raw = result.Value.([]int) }
+        token: str = Base64.encodeURL(Bytes.fromBytes(raw)).replace("=", "")
+        return Result.Ok(token)
+    }
+
+    static func randomToken(count: int = 32) -> str {
+        result: Result = Crypto.tryRandomToken(count)
+        token: str = ""
+        go! { token = result.Unwrap().(string) }
+        return token
+    }
+
+    static func tryRandomHex(count: int = 32) -> Result {
+        #- Return ``count`` secure bytes as lowercase hexadecimal. -#
+        result: Result = Crypto.tryRandomBytes(count)
+        if not result.ok() {
+            return result
+        }
+        raw: list[int] = []
+        go! { raw = result.Value.([]int) }
+        return Result.Ok(Bytes.hexEncode(Bytes.fromBytes(raw)))
+    }
+
+    static func randomHex(count: int = 32) -> str {
+        result: Result = Crypto.tryRandomHex(count)
+        value: str = ""
+        go! { value = result.Unwrap().(string) }
+        return value
+    }
+
+    static func tryEncrypt(plaintext: str, key: list[int], aad: str = "") -> Result {
+        #- Encrypt UTF-8/plain string data with AES-GCM. AAD is authenticated
+           but not stored, so the same value must be supplied to decrypt. -#
+        if not Crypto.isAesKey(key) {
+            return Result.Err(Error("CryptoValueError", "AES key must contain 16, 24, or 32 bytes in the range 0..255", None))
+        }
+        nonceResult: Result = Crypto.tryRandomBytes(12)
+        if not nonceResult.ok() {
+            return nonceResult
+        }
+        nonce: list[int] = []
+        go! { nonce = nonceResult.Value.([]int) }
+        keyRaw: str = Bytes.fromBytes(key)
+        nonceRaw: str = Bytes.fromBytes(nonce)
+        ciphertextRaw: str = ""
+        encryptError: str = ""
+        go! {
+            sealed, err := lamCryptoAESGCMSeal([]byte(keyRaw), []byte(nonceRaw), []byte(plaintext), []byte(aad))
+            if err != nil { encryptError = err.Error() } else { ciphertextRaw = string(sealed) }
+        }
+        if encryptError != "" {
+            return Result.Err(Error("CryptoEncryptError", encryptError, None))
+        }
+        envelope: str = "lamcrypto:v1:" + Base64.encode(nonceRaw + ciphertextRaw)
+        return Result.Ok(envelope)
+    }
+
+    static func encrypt(plaintext: str, key: list[int], aad: str = "") -> str {
+        #- Convenience form of ``tryEncrypt``; unwraps input or runtime errors. -#
+        result: Result = Crypto.tryEncrypt(plaintext, key, aad)
+        envelope: str = ""
+        go! { envelope = result.Unwrap().(string) }
+        return envelope
+    }
+
+    static func tryDecrypt(envelope: str, key: list[int], aad: str = "") -> Result {
+        #- Authenticate and decrypt a ``lamcrypto:v1`` envelope. Tampering,
+           wrong keys, and wrong AAD return ``CryptoAuthenticationError``. -#
+        if not Crypto.isAesKey(key) {
+            return Result.Err(Error("CryptoValueError", "AES key must contain 16, 24, or 32 bytes in the range 0..255", None))
+        }
+        if not envelope.startsWith("lamcrypto:v1:") {
+            return Result.Err(Error("CryptoEnvelopeError", "unsupported or malformed encrypted envelope", None))
+        }
+        encoded: str = envelope[13:]
+        payload: str = Base64.decode(encoded)
+        if len(payload) < 28 {
+            return Result.Err(Error("CryptoEnvelopeError", "encrypted envelope payload is malformed", None))
+        }
+        keyRaw: str = Bytes.fromBytes(key)
+        nonceRaw: str = payload[:12]
+        ciphertextRaw: str = payload[12:]
+        plaintext: str = ""
+        decryptError: str = ""
+        go! {
+            opened, err := lamCryptoAESGCMOpen([]byte(keyRaw), []byte(nonceRaw), []byte(ciphertextRaw), []byte(aad))
+            if err != nil { decryptError = err.Error() } else { plaintext = string(opened) }
+        }
+        if decryptError != "" {
+            return Result.Err(Error("CryptoAuthenticationError", "AES-GCM authentication failed", None))
+        }
+        return Result.Ok(plaintext)
+    }
+
+    static func decrypt(envelope: str, key: list[int], aad: str = "") -> str {
+        #- Convenience form of ``tryDecrypt``; unwraps malformed or unauthentic
+           envelopes instead of silently returning plaintext. -#
+        result: Result = Crypto.tryDecrypt(envelope, key, aad)
+        plaintext: str = ""
+        go! { plaintext = result.Unwrap().(string) }
+        return plaintext
+    }
+
+    static func constantTimeEquals(a: str, b: str) -> bool {
+        #- Constant-time secret comparison delegated to ``lamhash.Hash``. -#
+        return Hash.constantTimeEquals(a, b)
+    }
+
+    static func tryPasswordHash(password: str, iterations: int = 210000, saltBytes: int = 16) -> Result {
+        #- Hash a password into a self-describing
+           ``pbkdf2-sha256$iterations$salt$hash`` string. -#
+        if iterations < 1000 or iterations > 10000000 {
+            return Result.Err(Error("CryptoValueError", "PBKDF2 iterations must be between 1000 and 10000000", None))
+        }
+        if saltBytes < 8 or saltBytes > 1024 {
+            return Result.Err(Error("CryptoValueError", "password salt byte count must be between 8 and 1024", None))
+        }
+        saltResult: Result = Crypto.tryRandomBytes(saltBytes)
+        if not saltResult.ok() {
+            return saltResult
+        }
+        salt: list[int] = []
+        go! { salt = saltResult.Value.([]int) }
+        saltRaw: str = Bytes.fromBytes(salt)
+        derivedRaw: str = ""
+        go! {
+            derivedRaw = string(lamCryptoPBKDF2SHA256([]byte(password), []byte(saltRaw), iterations, 32))
+        }
+        encoded: str = "pbkdf2-sha256$" + str(iterations) + "$" + Base64.encode(saltRaw) + "$" + Bytes.hexEncode(derivedRaw)
+        return Result.Ok(encoded)
+    }
+
+    static func passwordHash(password: str, iterations: int = 210000, saltBytes: int = 16) -> str {
+        result: Result = Crypto.tryPasswordHash(password, iterations, saltBytes)
+        encoded: str = ""
+        go! { encoded = result.Unwrap().(string) }
+        return encoded
+    }
+
+    static func tryVerifyPassword(password: str, encoded: str) -> Result {
+        #- Verify a self-describing PBKDF2 hash. A wrong password is
+           ``Result.Ok(false)``; malformed or unsafe parameters are errors. -#
+        parts: list[str] = encoded.split("$")
+        if len(parts) != 4 or parts[0] != "pbkdf2-sha256" {
+            return Result.Err(Error("CryptoPasswordHashError", "malformed PBKDF2-SHA256 password hash", None))
+        }
+        iterations: int = 0
+        parseOk: bool = false
+        go! {
+            parsed, err := strconv.Atoi(parts[1])
+            if err == nil { iterations = parsed; parseOk = true }
+        }
+        if not parseOk or iterations < 1000 or iterations > 10000000 {
+            return Result.Err(Error("CryptoPasswordHashError", "PBKDF2 iterations are invalid or outside the safe range", None))
+        }
+        saltRaw: str = Base64.decode(parts[2])
+        if len(saltRaw) < 8 or len(saltRaw) > 1024 {
+            return Result.Err(Error("CryptoPasswordHashError", "PBKDF2 salt is malformed or outside the safe range", None))
+        }
+        expectedRaw: str = Bytes.hexDecode(parts[3])
+        if len(parts[3]) != 64 or len(expectedRaw) != 32 {
+            return Result.Err(Error("CryptoPasswordHashError", "PBKDF2 digest must be 32 bytes of hexadecimal", None))
+        }
+        actualRaw: str = ""
+        go! {
+            actualRaw = string(lamCryptoPBKDF2SHA256([]byte(password), []byte(saltRaw), iterations, 32))
+        }
+        return Result.Ok(Crypto.constantTimeEquals(Bytes.hexEncode(actualRaw), parts[3]))
+    }
+
+    static func verifyPassword(password: str, encoded: str) -> bool {
+        #- Verify a password, returning false for both mismatch and malformed
+           stored hashes. Use ``tryVerifyPassword`` to distinguish them. -#
+        result: Result = Crypto.tryVerifyPassword(password, encoded)
+        if not result.ok() {
+            return false
+        }
+        verified: bool = false
+        go! { verified = result.Value.(bool) }
+        return verified
+    }
+
+    static func tryGenerateEd25519KeyPair() -> Result {
+        publicPEM: str = ""
+        privatePEM: str = ""
+        generateError: str = ""
+        go! {
+            publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+            if err != nil {
+                generateError = err.Error()
+            } else {
+                privateDER, marshalErr := x509.MarshalPKCS8PrivateKey(privateKey)
+                if marshalErr != nil {
+                    generateError = marshalErr.Error()
+                } else {
+                    publicDER, publicErr := x509.MarshalPKIXPublicKey(publicKey)
+                    if publicErr != nil {
+                        generateError = publicErr.Error()
+                    } else {
+                        privatePEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}))
+                        publicPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}))
+                    }
+                }
+            }
+        }
+        if generateError != "" {
+            return Result.Err(Error("CryptoKeyError", generateError, None))
+        }
+        return Result.Ok(CryptoKeyPair(privatePEM, publicPEM, "Ed25519", 256))
+    }
+
+    static func generateEd25519KeyPair() -> CryptoKeyPair {
+        result: Result = Crypto.tryGenerateEd25519KeyPair()
+        pair: CryptoKeyPair = None
+        go! { pair = result.Unwrap().(*CryptoKeyPair) }
+        return pair
+    }
+
+    static func tryGenerateRSAKeyPair(bits: int = 2048) -> Result {
+        #- Generate an RSA key pair. Sizes below 2048 are rejected; sizes above
+           8192 or not divisible by eight are treated as input errors. -#
+        if bits < 2048 or bits > 8192 or bits % 8 != 0 {
+            return Result.Err(Error("CryptoValueError", "RSA bits must be divisible by 8 and between 2048 and 8192", None))
+        }
+        publicPEM: str = ""
+        privatePEM: str = ""
+        generateError: str = ""
+        go! {
+            privateKey, err := rsa.GenerateKey(rand.Reader, bits)
+            if err != nil {
+                generateError = err.Error()
+            } else if err = privateKey.Validate(); err != nil {
+                generateError = err.Error()
+            } else {
+                privateDER, marshalErr := x509.MarshalPKCS8PrivateKey(privateKey)
+                if marshalErr != nil {
+                    generateError = marshalErr.Error()
+                } else {
+                    publicDER, publicErr := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+                    if publicErr != nil {
+                        generateError = publicErr.Error()
+                    } else {
+                        privatePEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}))
+                        publicPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}))
+                    }
+                }
+            }
+        }
+        if generateError != "" {
+            return Result.Err(Error("CryptoKeyError", generateError, None))
+        }
+        return Result.Ok(CryptoKeyPair(privatePEM, publicPEM, "RSA", bits))
+    }
+
+    static func generateRSAKeyPair(bits: int = 2048) -> CryptoKeyPair {
+        result: Result = Crypto.tryGenerateRSAKeyPair(bits)
+        pair: CryptoKeyPair = None
+        go! { pair = result.Unwrap().(*CryptoKeyPair) }
+        return pair
+    }
+
+    static func trySign(data: str, privateKeyPEM: str) -> Result {
+        #- Sign data with an Ed25519 or RSA private PEM key. RSA signatures use
+           SHA-256 with PSS; returned signatures are standard base64 strings. -#
+        signatureRaw: str = ""
+        signError: str = ""
+        go! {
+            signature, _, err := lamCryptoSign([]byte(data), privateKeyPEM)
+            if err != nil { signError = err.Error() } else { signatureRaw = string(signature) }
+        }
+        if signError != "" {
+            return Result.Err(Error("CryptoKeyError", signError, None))
+        }
+        return Result.Ok(Base64.encode(signatureRaw))
+    }
+
+    static func sign(data: str, privateKeyPEM: str) -> str {
+        result: Result = Crypto.trySign(data, privateKeyPEM)
+        signature: str = ""
+        go! { signature = result.Unwrap().(string) }
+        return signature
+    }
+
+    static func tryVerify(data: str, signature: str, publicKeyPEM: str) -> Result {
+        #- Verify a base64 signature with a public-key PEM or X.509 certificate.
+           A well-formed but non-matching signature returns ``Ok(false)``. -#
+        signatureRaw: str = Base64.decode(signature)
+        if signature == "" or signatureRaw == "" {
+            return Result.Err(Error("CryptoSignatureError", "signature is not valid non-empty base64", None))
+        }
+        verified: bool = false
+        verifyError: str = ""
+        go! {
+            ok, err := lamCryptoVerify([]byte(data), []byte(signatureRaw), publicKeyPEM)
+            if err != nil { verifyError = err.Error() } else { verified = ok }
+        }
+        if verifyError != "" {
+            return Result.Err(Error("CryptoKeyError", verifyError, None))
+        }
+        return Result.Ok(verified)
+    }
+
+    static func verify(data: str, signature: str, publicKeyPEM: str) -> bool {
+        #- Verify a signature, returning false for mismatch or malformed input.
+           Use ``tryVerify`` when parse errors must be distinguished. -#
+        result: Result = Crypto.tryVerify(data, signature, publicKeyPEM)
+        if not result.ok() {
+            return false
+        }
+        verified: bool = false
+        go! { verified = result.Value.(bool) }
+        return verified
+    }
+
+    static func tryParseCertificate(certificatePEM: str) -> Result {
+        #- Parse the first X.509 ``CERTIFICATE`` PEM block into portable,
+           inspection-only metadata. -#
+        go! {
+            block, _ := pem.Decode([]byte(certificatePEM))
+            if block == nil || block.Type != "CERTIFICATE" {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CryptoCertificateError", "no X.509 CERTIFICATE PEM block found", nil,
+                ))
+            }
+            certificate, err := x509.ParseCertificate(block.Bytes)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CryptoCertificateError", fmt.Sprintf("invalid X.509 certificate: %v", err), nil,
+                ))
+            }
+            ipAddresses := make([]string, len(certificate.IPAddresses))
+            for i, address := range certificate.IPAddresses { ipAddresses[i] = address.String() }
+            fingerprint := sha256.Sum256(certificate.Raw)
+            info := NewCryptoCertificate(
+                certificate.Subject.CommonName,
+                certificate.Subject.String(),
+                certificate.Issuer.String(),
+                certificate.SerialNumber.String(),
+                certificate.NotBefore.UTC().Format(time.RFC3339),
+                certificate.NotAfter.UTC().Format(time.RFC3339),
+                append([]string(nil), certificate.DNSNames...),
+                append([]string(nil), certificate.EmailAddresses...),
+                ipAddresses,
+                certificate.IsCA,
+                certificate.SignatureAlgorithm.String(),
+                certificate.PublicKeyAlgorithm.String(),
+                fmt.Sprintf("%x", fingerprint[:]),
+            )
+            return LAMMERGEIER.Result.Ok(info)
+        }
+    }
+
+    static func parseCertificate(certificatePEM: str) -> CryptoCertificate {
+        result: Result = Crypto.tryParseCertificate(certificatePEM)
+        info: CryptoCertificate = None
+        go! { info = result.Unwrap().(*CryptoCertificate) }
+        return info
+    }
+}
+
+
+func main() {
+    pass
+}

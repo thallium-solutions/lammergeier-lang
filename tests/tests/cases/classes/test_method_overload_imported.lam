@@ -1,0 +1,9 @@
+# expect: imported-int:4
+# expect: imported-str:Ada
+
+from method_overload_provider import ImportedFormatter
+
+func main() {
+    print(ImportedFormatter.render(4))
+    print(ImportedFormatter.render("Ada"))
+}

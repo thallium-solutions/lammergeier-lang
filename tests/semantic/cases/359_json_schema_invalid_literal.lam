@@ -1,7 +1,7 @@
-# expect-error: invalid JSON string passed to `Schema.register`
+# expect-error: invalid JSON string passed to `Schema.validate`
 
 from lamschema import Schema
 
 func main() {
-    Schema.register("broken", "{not-schema}")
+    Schema.validate("{not-schema}", "{}")
 }

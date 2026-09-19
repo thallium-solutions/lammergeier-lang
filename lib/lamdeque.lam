@@ -24,10 +24,10 @@ class Deque {
     }
 
     func popBack(self) -> any {
-        #- Remove and return the last element. Panics on empty. -#
+        #- Remove and return the last element. Throws on empty. -#
         n: int = len(self.items)
         if n == 0 {
-            go! { panic("Deque.popBack: empty deque") }
+            throw RuntimeError("Deque.popBack: empty deque")
         }
         last: any = self.items[n-1]
         self.items = self.items[:n-1]
@@ -35,9 +35,9 @@ class Deque {
     }
 
     func popFront(self) -> any {
-        #- Remove and return the first element. Panics on empty. -#
+        #- Remove and return the first element. Throws on empty. -#
         if len(self.items) == 0 {
-            go! { panic("Deque.popFront: empty deque") }
+            throw RuntimeError("Deque.popFront: empty deque")
         }
         first: any = self.items[0]
         self.items = self.items[1:]
@@ -46,14 +46,14 @@ class Deque {
 
     func peekBack(self) -> any {
         if len(self.items) == 0 {
-            go! { panic("Deque.peekBack: empty deque") }
+            throw RuntimeError("Deque.peekBack: empty deque")
         }
         return self.items[len(self.items)-1]
     }
 
     func peekFront(self) -> any {
         if len(self.items) == 0 {
-            go! { panic("Deque.peekFront: empty deque") }
+            throw RuntimeError("Deque.peekFront: empty deque")
         }
         return self.items[0]
     }

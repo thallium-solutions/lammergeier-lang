@@ -1,10 +1,26 @@
 {
   "name": "lammergeier-lang",
   "displayName": "Lammergeier Lang",
-  "description": "Syntax highlighting and LSP client for Lammergeier (.lam) — a typed Python-like language that compiles to Go.",
-  "version": "1.2.0",
+  "description": "Syntax highlighting and rich LSP support for Lammergeier (.lam), a typed Python-like language that compiles to Go.",
+  "version": "1.4.0",
   "publisher": "lammergeier",
   "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thallium-solutions/lammergeier-lang.git",
+    "directory": "vs-code-extension/lammergeier-lang"
+  },
+  "homepage": "https://github.com/thallium-solutions/lammergeier-lang#readme",
+  "bugs": {
+    "url": "https://github.com/thallium-solutions/lammergeier-lang/issues"
+  },
+  "license": "Apache-2.0",
+  "author": "Thallium Solutions di Busconi Alessandro",
+  "galleryBanner": {
+    "color": "#222f38",
+    "theme": "dark"
+  },
+  "pricing": "Free",
   "engines": {
     "vscode": "^1.82.0"
   },
@@ -56,7 +72,7 @@
         "lammergeier.lsp.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable the Lammergeier language server (diagnostics, hover, completion, goto-definition, document symbols)."
+          "description": "Enable the Lammergeier language server (diagnostics, semantic coloring, folding, hover, completion, signature help, go to definition, references, rename, formatting, and document/workspace symbols)."
         },
         "lammergeier.lsp.path": {
           "type": "string",

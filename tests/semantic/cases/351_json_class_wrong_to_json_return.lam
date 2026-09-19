@@ -1,10 +1,10 @@
-# expect-error: value of type `Image` is not JSON-compatible; implement `func toJson(self) -> json`
+# expect-error: `Image.__json__` must return `json`, got `dict[str, int]`
 
 class Image {
-    func toJson(self) -> dict[str, int] { return {"width": 10} }
+    func __json__(self) -> dict[str, int] { return {"width": 10} }
 }
 
 func main() {
-    payload: json = Image()
+    payload: json = json(Image())
     print(payload)
 }

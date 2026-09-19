@@ -1,16 +1,18 @@
-# Test: Http.serve + Http.get/post/postJson + getHeader/getWithHeaders
+# Test: Http.serve + Http get/post overloads + getHeader/getWithHeaders
 # expect: PASS 1 server created
 # expect: PASS 2 GET /hello
 # expect: PASS 3 GET root
 # expect: PASS 4 POST echoes body
-# expect: PASS 5 postJson echoes payload
-# expect: PASS 6 native json payload
-# expect: PASS 7 statusCode 200
-# expect: PASS 8 statusCode 0 unreachable
-# expect: PASS 9 getHeader Content-Type
-# expect: PASS 10 getWithHeaders echoes header
-# expect: PASS 11 server closed
-# expect: 11 passed, 0 failed, 11 total
+# expect: PASS 5 encoded JSON string post overload
+# expect: PASS 6 native JSON post overload
+# expect: PASS 7 encoded JSON string tryPost overload
+# expect: PASS 8 native JSON tryPost overload
+# expect: PASS 9 statusCode 200
+# expect: PASS 10 statusCode 0 unreachable
+# expect: PASS 11 getHeader Content-Type
+# expect: PASS 12 getWithHeaders echoes header
+# expect: PASS 13 server closed
+# expect: 13 passed, 0 failed, 13 total
 
 from lamhttp import Http
 from lamhttp import HttpServer
@@ -41,29 +43,31 @@ func main() {
     echoed: str = Http.post("http://127.0.0.1:38271/echo", "text/plain", "ping")
     Test.assertEqual(echoed, "echo:ping", "4 POST echoes body")
 
-    # postJson
-    jsonEcho: str = Http.postJson("http://127.0.0.1:38271/json", '{"a":1}')
-    Test.assertEqual(jsonEcho, 'echo:{"a":1}', "5 postJson echoes payload")
-    nativeEcho: str = Http.postJsonValue("http://127.0.0.1:38271/json", {"a": 1})
-    Test.assertEqual(nativeEcho, 'echo:{"a":1}', "6 native json payload")
+    # Already-encoded string and native JSON post overloads.
+    jsonEcho: str = Http.post("http://127.0.0.1:38271/json", '{"a":1}')
+    Test.assertEqual(jsonEcho, 'echo:{"a":1}', "5 encoded JSON string post overload")
+    nativeEcho: str = Http.post("http://127.0.0.1:38271/json", {"a": 1})
+    Test.assertEqual(nativeEcho, 'echo:{"a":1}', "6 native JSON post overload")
+    Test.assertEqual(Http.tryPost("http://127.0.0.1:38271/json", '{"b":2}').unwrap(), 'echo:{"b":2}', "7 encoded JSON string tryPost overload")
+    Test.assertEqual(Http.tryPost("http://127.0.0.1:38271/json", {"c": 3}).unwrap(), 'echo:{"c":3}', "8 native JSON tryPost overload")
 
     # statusCode
-    Test.assertEqual(Http.statusCode("http://127.0.0.1:38271/hello"), 200, "7 statusCode 200")
-    Test.assertEqual(Http.statusCode("http://127.0.0.1:1/"), 0, "8 statusCode 0 unreachable")
+    Test.assertEqual(Http.statusCode("http://127.0.0.1:38271/hello"), 200, "9 statusCode 200")
+    Test.assertEqual(Http.statusCode("http://127.0.0.1:1/"), 0, "10 statusCode 0 unreachable")
 
     # getHeader should return the default content type Go adds
     ct: str = Http.getHeader("http://127.0.0.1:38271/hello", "Content-Type")
-    Test.assertTrue(len(ct) > 0, "9 getHeader Content-Type")
+    Test.assertTrue(len(ct) > 0, "11 getHeader Content-Type")
 
     # getWithHeaders — we don't round-trip the header body in this handler,
     # but the call should succeed and return the same payload.
     hdrs: dict[str, str] = {"X-Custom": "1"}
     customBody: str = Http.getWithHeaders("http://127.0.0.1:38271/hdr", hdrs)
-    Test.assertEqual(customBody, "method=GET path=/hdr", "10 getWithHeaders echoes header")
+    Test.assertEqual(customBody, "method=GET path=/hdr", "12 getWithHeaders echoes header")
 
     srv.close()
     aftermath: str = Http.get("http://127.0.0.1:38271/")
-    Test.assertEqual(aftermath, "", "11 server closed")
+    Test.assertEqual(aftermath, "", "13 server closed")
 
     Test.summary()
 }

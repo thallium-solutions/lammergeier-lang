@@ -17,6 +17,7 @@
 #   ``.toml``) and merges the result into a single ``dict``,
 #   later sources overriding earlier ones.
 
+from lamconv import Conv
 from lamerrors import Result, Error
 
 go! {
@@ -41,13 +42,74 @@ class Env {
     static func getOr(key: str, fallback: str) -> str {
         #- Return ``key``'s value, or ``fallback`` if it is unset
            OR explicitly empty. -#
-        go! {
-            val := os.Getenv(key)
-            if val == "" {
-                return fallback
-            }
-            return val
+        value: str = Env.get(key)
+        if value == "" {
+            return fallback
         }
+        return value
+    }
+
+    static func getInt(key: str, fallback: int = 0) -> int {
+        #- Parse ``key`` as a decimal integer. Return ``fallback`` when
+           the variable is unset, empty, or malformed. -#
+        parsed: Result[int] = Env.tryGetInt(key)
+        if not parsed.ok() {
+            return fallback
+        }
+        value: int = fallback
+        go! {
+            value = parsed.Value.(int)
+        }
+        return value
+    }
+
+    static func tryGetInt(key: str) -> Result[int] {
+        #- Parse ``key`` as a decimal integer, returning a ``ParseError``
+           instead of falling back when the value cannot be parsed. Unset
+           and empty variables are errors because they parse as ``""``. -#
+        return Conv.tryInt(Env.get(key))
+    }
+
+    static func getFloat(key: str, fallback: float = 0.0) -> float {
+        #- Parse ``key`` as a 64-bit float. Return ``fallback`` when the
+           variable is unset, empty, or malformed. -#
+        parsed: Result[float] = Env.tryGetFloat(key)
+        if not parsed.ok() {
+            return fallback
+        }
+        value: float = fallback
+        go! {
+            value = parsed.Value.(float64)
+        }
+        return value
+    }
+
+    static func tryGetFloat(key: str) -> Result[float] {
+        #- Parse ``key`` as a 64-bit float, returning a ``ParseError``
+           instead of falling back when the value cannot be parsed. Unset
+           and empty variables are errors because they parse as ``""``. -#
+        return Conv.tryFloat(Env.get(key))
+    }
+
+    static func getBool(key: str, fallback: bool = false) -> bool {
+        #- Parse ``key`` using ``Conv.tryBool``. Return ``fallback`` when
+           the variable is unset, empty, or malformed. -#
+        parsed: Result[bool] = Env.tryGetBool(key)
+        if not parsed.ok() {
+            return fallback
+        }
+        value: bool = fallback
+        go! {
+            value = parsed.Value.(bool)
+        }
+        return value
+    }
+
+    static func tryGetBool(key: str) -> Result[bool] {
+        #- Parse ``key`` as a boolean, returning a ``ParseError`` instead
+           of falling back when the value cannot be parsed. Unset and empty
+           variables are errors because they parse as ``""``. -#
+        return Conv.tryBool(Env.get(key))
     }
 
     static func set(key: str, val: str) {

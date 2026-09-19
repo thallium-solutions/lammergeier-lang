@@ -11,7 +11,18 @@
 # expect: PASS 10 min/max
 # expect: PASS 11 range
 # expect: PASS 12 percentile median
-# expect: 12 passed, 0 failed, 12 total
+# expect: PASS 13 mean rejects empty
+# expect: PASS 14 median rejects empty
+# expect: PASS 15 mode rejects empty
+# expect: PASS 16 variance rejects empty
+# expect: PASS 17 sampleVariance rejects one value
+# expect: PASS 18 stddev rejects empty
+# expect: PASS 19 min rejects empty
+# expect: PASS 20 max rejects empty
+# expect: PASS 21 range rejects empty
+# expect: PASS 22 percentile rejects empty
+# expect: PASS 23 percentile rejects out of range
+# expect: 23 passed, 0 failed, 23 total
 
 from lamstats import Stats
 from lamtest import Test
@@ -44,6 +55,51 @@ func main() {
 
     # 50th percentile == median
     Test.assertAlmostEqual(Stats.percentile(xs, 50.0), 3.0, 0.0001, "12 percentile median")
+
+    empty: list[float] = []
+    meanThrows: bool = false
+    try { Stats.mean(empty) } catch err { meanThrows = true }
+    Test.assertTrue(meanThrows, "13 mean rejects empty")
+
+    medianThrows: bool = false
+    try { Stats.median(empty) } catch err { medianThrows = true }
+    Test.assertTrue(medianThrows, "14 median rejects empty")
+
+    modeThrows: bool = false
+    try { Stats.mode(empty) } catch err { modeThrows = true }
+    Test.assertTrue(modeThrows, "15 mode rejects empty")
+
+    varianceThrows: bool = false
+    try { Stats.variance(empty) } catch err { varianceThrows = true }
+    Test.assertTrue(varianceThrows, "16 variance rejects empty")
+
+    sampleThrows: bool = false
+    try { Stats.sampleVariance([1.0]) } catch err { sampleThrows = true }
+    Test.assertTrue(sampleThrows, "17 sampleVariance rejects one value")
+
+    stddevThrows: bool = false
+    try { Stats.stddev(empty) } catch err { stddevThrows = true }
+    Test.assertTrue(stddevThrows, "18 stddev rejects empty")
+
+    minThrows: bool = false
+    try { Stats.minVal(empty) } catch err { minThrows = true }
+    Test.assertTrue(minThrows, "19 min rejects empty")
+
+    maxThrows: bool = false
+    try { Stats.maxVal(empty) } catch err { maxThrows = true }
+    Test.assertTrue(maxThrows, "20 max rejects empty")
+
+    rangeThrows: bool = false
+    try { Stats.range_(empty) } catch err { rangeThrows = true }
+    Test.assertTrue(rangeThrows, "21 range rejects empty")
+
+    percentileEmptyThrows: bool = false
+    try { Stats.percentile(empty, 50.0) } catch err { percentileEmptyThrows = true }
+    Test.assertTrue(percentileEmptyThrows, "22 percentile rejects empty")
+
+    percentileRangeThrows: bool = false
+    try { Stats.percentile(xs, 101.0) } catch err { percentileRangeThrows = true }
+    Test.assertTrue(percentileRangeThrows, "23 percentile rejects out of range")
 
     Test.summary()
 }

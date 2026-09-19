@@ -1,0 +1,20 @@
+# expect: inherited-get=value:key
+# expect: inherited-contains=true
+# expect: inherited-set=ok
+
+class BaseBag {
+    func __getitem__(self, key: str) -> str { return "value:" + key }
+    func __setitem__(self, key: str, value: str) { print(f"inherited-set={value}") }
+    func __contains__(self, key: str) -> bool { return key == "key" }
+}
+
+class ChildBag(BaseBag) {}
+
+func main() {
+    bag: ChildBag = ChildBag()
+    value: str = bag["key"]
+    contains: bool = "key" in bag
+    print(f"inherited-get={value}")
+    print(f"inherited-contains={contains}")
+    bag["key"] = "ok"
+}

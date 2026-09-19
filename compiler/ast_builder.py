@@ -456,19 +456,27 @@ def _type_to_str(node) -> str:
             return " | ".join(parts)
         if node.data == "type_name":
             return _type_to_str(node.children[0]) if node.children else ""
-        if node.data == "type_generic" and node.children:
+        if node.data == "type_none":
+            return "None"
+        if node.data in {"type_generic", "type_subscript"} and node.children:
             base = _type_to_str(node.children[0])
             args = ", ".join(
                 filter(None, (_type_to_str(c) for c in node.children[1:]))
             )
             return f"{base}[{args}]" if args else base
-        if node.data == "type_subscript" and node.children:
-            base = _type_to_str(node.children[0])
-            inner = ", ".join(filter(None, (_type_to_str(c) for c in node.children[1:])))
-            return f"{base}[{inner}]" if inner else base
+        if node.data == "type_func_params":
+            return ", ".join(filter(None, (_type_to_str(c) for c in node.children)))
         if node.data == "type_func":
-            params = ", ".join(_type_to_str(c) for c in node.children[:-1])
-            ret = _type_to_str(node.children[-1]) if node.children else ""
+            params = next(
+                (_type_to_str(c) for c in node.children
+                 if isinstance(c, Tree) and c.data == "type_func_params"),
+                "",
+            )
+            ret = next(
+                (_type_to_str(c) for c in reversed(node.children)
+                 if isinstance(c, Tree) and c.data == "type_expr"),
+                "",
+            )
             return f"func({params}) -> {ret}" if ret else f"func({params})"
         for child in node.children:
             text = _type_to_str(child)

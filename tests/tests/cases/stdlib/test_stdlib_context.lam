@@ -1,0 +1,185 @@
+# Test: lamcontext cancellation trees, expiration units, values, waits, and Go interop.
+# expect: PASS 1 simple context starts live
+# expect: PASS 2 no expiration uses sentinels
+# expect: PASS 3 mutable set/get/has
+# expect: PASS 4 value supports fallback
+# expect: PASS 5 stored None remains present
+# expect: PASS 6 collection keys need no magic encoding
+# expect: PASS 7 children observe later parent updates
+# expect: PASS 8 child set shadows only the child
+# expect: PASS 9 valued leaves its parent unchanged
+# expect: PASS 10 child cancellation spares parent
+# expect: PASS 11 cancellation reaches descendants
+# expect: PASS 12 descendant inherits cancellation reason
+# expect: PASS 13 parent cancellation reaches every child
+# expect: PASS 14 parent reason propagates
+# expect: PASS 15 cancellable derives a child
+# expect: PASS 16 pre-cancelled context is expired
+# expect: PASS 17 pre-cancelled context keeps reason
+# expect: PASS 18 native returns context.Context
+# expect: PASS 19 fromNative inherits native values
+# expect: PASS 20 native roundtrip keeps Lam values
+# expect: PASS 21 native roundtrip propagates cancellation
+# expect: PASS 22 native roundtrip keeps cancellation reason
+# expect: PASS 23 relative expiration exposes absolute and remaining values
+# expect: PASS 24 expiration wait observes expiry
+# expect: PASS 25 expiration marks context expired
+# expect: PASS 26 expiration has a clear reason
+# expect: PASS 27 absolute Unix-ms expiration is retained
+# expect: PASS 28 absolute expiration reaches parent and child
+# expect: PASS 29 absolute expiration marks child expired
+# expect: PASS 30 seconds conversion
+# expect: PASS 31 minutes conversion
+# expect: PASS 32 hours conversion
+# expect: PASS 33 days conversion
+# expect: PASS 34 zero relative expiration is immediate
+# expect: PASS 35 negative expiration is rejected clearly
+# expect: PASS 36 unsupported expiration unit is rejected clearly
+# expect: PASS 37 unsupported expiresIn unit is rejected clearly
+# expect: PASS 38 negative wait is rejected clearly
+# expect: 38 passed, 0 failed, 38 total
+
+from lamcontext import Context
+from lamtest import Test
+from lamtime import Time
+
+go! {
+    import "context"
+}
+
+func main() {
+    root: Context = Context.simple()
+    Test.assertFalse(root.expired(), "1 simple context starts live")
+    Test.assertTrue(root.expiresIn(None) == -1 and root.expiresIn("milliseconds") == -1, "2 no expiration uses sentinels")
+
+    root.set("tenant", "alpha")
+    Test.assertTrue(root.has("tenant") and root.get("tenant") == "alpha", "3 mutable set/get/has")
+    Test.assertEqual(root.value("missing", "fallback"), "fallback", "4 value supports fallback")
+
+    root.set("nil-value", None)
+    Test.assertTrue(root.has("nil-value") and root.get("nil-value", "wrong") == None, "5 stored None remains present")
+
+    collectionKey: list[str] = ["request", "id"]
+    root.set(collectionKey, 42)
+    equivalentKey: list[str] = ["request", "id"]
+    Test.assertEqual(root.get(equivalentKey), 42, "6 collection keys need no magic encoding")
+
+    valueChild: Context = root.child()
+    root.set("late", "visible")
+    Test.assertEqual(valueChild.get("late"), "visible", "7 children observe later parent updates")
+    valueChild.set("tenant", "beta")
+    Test.assertTrue(valueChild.get("tenant") == "beta" and root.get("tenant") == "alpha", "8 child set shadows only the child")
+
+    immutableChild: Context = root.valued("tenant", "gamma")
+    Test.assertTrue(immutableChild.get("tenant") == "gamma" and root.get("tenant") == "alpha", "9 valued leaves its parent unchanged")
+
+    treeParent: Context = Context.simple()
+    treeChild: Context = treeParent.child()
+    treeGrandchild: Context = treeChild.child()
+    treeChild.cancel("child stopped")
+    Test.assertFalse(treeParent.expired(), "10 child cancellation spares parent")
+    Test.assertTrue(treeChild.wait(100) and treeGrandchild.wait(100), "11 cancellation reaches descendants")
+    Test.assertEqual(treeGrandchild.reason(), "child stopped", "12 descendant inherits cancellation reason")
+
+    fanoutParent: Context = Context.simple()
+    fanoutLeft: Context = fanoutParent.child()
+    fanoutRight: Context = fanoutParent.child()
+    fanoutParent.cancel({"code": 499})
+    Test.assertTrue(fanoutLeft.wait(100) and fanoutRight.wait(100), "13 parent cancellation reaches every child")
+    Test.assertEqual(fanoutRight.reason(), {"code": 499}, "14 parent reason propagates")
+
+    aliasParent: Context = Context.simple()
+    aliasChild: Context = aliasParent.cancellable()
+    aliasChild.cancel("alias")
+    Test.assertTrue(aliasChild.expired() and not aliasParent.expired(), "15 cancellable derives a child")
+
+    stopped: Context = Context.cancelled(["shutdown", 7])
+    Test.assertTrue(stopped.expired() and stopped.wait(0), "16 pre-cancelled context is expired")
+    Test.assertEqual(stopped.reason(), ["shutdown", 7], "17 pre-cancelled context keeps reason")
+
+    raw: any = root.native()
+    nativeOk: bool = false
+    go! {
+        _, nativeOk = raw.(context.Context)
+    }
+    Test.assertTrue(nativeOk, "18 native returns context.Context")
+
+    nativeInput: any = None
+    go! {
+        nativeInput = context.WithValue(context.Background(), "native-key", "native-value")
+    }
+    wrappedNative: Context = Context.fromNative(nativeInput)
+    Test.assertEqual(wrappedNative.get("native-key"), "native-value", "19 fromNative inherits native values")
+
+    roundtripSource: Context = root.valued("roundtrip", "preserved")
+    roundtrip: Context = Context.fromNative(roundtripSource.native())
+    Test.assertEqual(roundtrip.get("roundtrip"), "preserved", "20 native roundtrip keeps Lam values")
+    roundtripSource.cancel("interop stopped")
+    Test.assertTrue(roundtrip.wait(200), "21 native roundtrip propagates cancellation")
+    Test.assertEqual(roundtrip.reason(), "interop stopped", "22 native roundtrip keeps cancellation reason")
+
+    nowMs: int = Time.nowUnixMilli()
+    expirationMetadata: Context = Context.simple().expirable(1000, "milliseconds")
+    metadataRemaining: int = expirationMetadata.expiresIn("milliseconds")
+    Test.assertTrue(expirationMetadata.expiresIn(None) >= nowMs and metadataRemaining > 0 and metadataRemaining <= 1000, "23 relative expiration exposes absolute and remaining values")
+    expirationMetadata.cancel("cleanup")
+
+    expiringContext: Context = Context.simple().expirable(80, "milliseconds")
+    Test.assertTrue(expiringContext.wait(1000), "24 expiration wait observes expiry")
+    Test.assertTrue(expiringContext.expired(), "25 expiration marks context expired")
+    Test.assertEqual(expiringContext.reason(), "deadline exceeded", "26 expiration has a clear reason")
+
+    expiresAt: int = Time.nowUnixMilli() + 120
+    absoluteContext: Context = Context.simple().expirable(expiresAt, None)
+    absoluteChild: Context = absoluteContext.child()
+    Test.assertEqual(absoluteContext.expiresIn(None), expiresAt, "27 absolute Unix-ms expiration is retained")
+    Test.assertTrue(absoluteContext.wait(1000) and absoluteChild.wait(100), "28 absolute expiration reaches parent and child")
+    Test.assertTrue(absoluteChild.expired(), "29 absolute expiration marks child expired")
+
+    secondsContext: Context = Context.simple().expirable(2, "seconds")
+    Test.assertTrue(secondsContext.expiresIn("seconds") > 0 and secondsContext.expiresIn("seconds") <= 2, "30 seconds conversion")
+    secondsContext.cancel("cleanup")
+    minutesContext: Context = Context.simple().expirable(1, "minutes")
+    Test.assertEqual(minutesContext.expiresIn("minutes"), 1, "31 minutes conversion")
+    minutesContext.cancel("cleanup")
+    hoursContext: Context = Context.simple().expirable(1, "hours")
+    Test.assertEqual(hoursContext.expiresIn("hours"), 1, "32 hours conversion")
+    hoursContext.cancel("cleanup")
+    daysContext: Context = Context.simple().expirable(1, "days")
+    Test.assertEqual(daysContext.expiresIn("days"), 1, "33 days conversion")
+    daysContext.cancel("cleanup")
+
+    immediate: Context = Context.simple().expirable(0, "milliseconds")
+    Test.assertTrue(immediate.wait(200) and immediate.expired(), "34 zero relative expiration is immediate")
+
+    try {
+        invalidExpiration: Context = root.expirable(-1, "seconds")
+        Test.fail("35 negative expiration is rejected clearly")
+    } catch err {
+        Test.assertContains(str(err), "expiration must be >= 0", "35 negative expiration is rejected clearly")
+    }
+
+    try {
+        invalidUnit: Context = root.expirable(1, "fortnights")
+        Test.fail("36 unsupported expiration unit is rejected clearly")
+    } catch err {
+        Test.assertContains(str(err), "unsupported time unit", "36 unsupported expiration unit is rejected clearly")
+    }
+
+    try {
+        expiringUnitCheck: Context = root.expirable(1, "seconds")
+        invalidRemaining: int = expiringUnitCheck.expiresIn("fortnights")
+        Test.fail("37 unsupported expiresIn unit is rejected clearly")
+    } catch err {
+        Test.assertContains(str(err), "unsupported time unit", "37 unsupported expiresIn unit is rejected clearly")
+    }
+
+    try {
+        invalidWait: bool = root.wait(-1)
+        Test.fail("38 negative wait is rejected clearly")
+    } catch err {
+        Test.assertContains(str(err), "timeoutMs must be >= 0", "38 negative wait is rejected clearly")
+    }
+
+    Test.summary()
+}

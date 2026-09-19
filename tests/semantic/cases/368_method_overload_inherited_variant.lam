@@ -1,0 +1,16 @@
+# expect-pass
+
+class Base {
+    func parse(self, value: int) -> str { return str(value) }
+    func parse(self, value: str) -> str { return value }
+}
+
+class Child(Base) {
+    func parse(self, value: int) -> str { return f"child:{value}" }
+}
+
+func main() {
+    child: Child = Child()
+    print(child.parse(1))
+    print(child.parse("x"))
+}

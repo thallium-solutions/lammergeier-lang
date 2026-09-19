@@ -283,6 +283,33 @@ class DefinitionVisitorMixin:
             if isinstance(child, Tree):
                 self._collect_nested_var_refs(child, out, seen)
 
+    def _emit_generator_func(
+        self, go_name, type_clause, params_str, return_type,
+        params_node, suite_node,
+    ):
+        """Emit a top-level or static generator as an unbuffered channel."""
+        chan_type = return_type if return_type else "interface{}"
+        self._emit(f"func {go_name}{type_clause}({params_str}) chan {chan_type} {{")
+        self.indent += 1
+        self._emit(f"_ch := make(chan {chan_type})")
+        self._emit("go func() {")
+        self.indent += 1
+        self._emit("defer close(_ch)")
+        self._push_scope()
+        self._emit_params_prologue(params_node)
+        body_start = len(self.output_lines)
+        params_at_start = set(self.declared_vars)
+        with self._scoped(_in_generator=True, _generator_chan="_ch"):
+            self._visit_suite(suite_node)
+        self._emit_unused_local_silencers(body_start, params_at_start)
+        self._pop_scope()
+        self.indent -= 1
+        self._emit("}()")
+        self._emit("return _ch")
+        self.indent -= 1
+        self._emit("}")
+        self._emit("")
+
     def _visit_funcdef_body(
         self, is_private, is_static, is_async,
         func_name, params_node, return_type_node,
@@ -290,8 +317,11 @@ class DefinitionVisitorMixin:
         tp_clause: str = "",
     ):
         if self.current_class:
+            method_key = f"{self.current_class}.{'init' if func_name == '__init__' else func_name}"
+            method_sig = self._param_types_sig(params_node, skip_self=not is_static) if params_node else ()
+            method_suffix = self._overload_suffix_for_sig(method_key, method_sig)
             if is_static:
-                go_name = self._go_class_name(self.current_class) + "_" + func_name
+                go_name = self._go_class_name(self.current_class) + "_" + func_name + method_suffix
                 if is_private:
                     go_name = self._go_private_name(go_name)
                 else:
@@ -306,26 +336,32 @@ class DefinitionVisitorMixin:
                     self._generic_classes.get(self.current_class, ""),
                     tp_clause,
                 )
-                self._emit(f"func {go_name}{static_clause}({params_str}){ret_str} {{")
-                body_start, params_at_start = self._begin_scoped_body(params_node)
-                self._visit_suite(suite_node)
-                self._finish_scoped_body(body_start, params_at_start)
-                self._emit("}")
-                self._emit("")
+                if self._tree_contains(suite_node, "yield_expr"):
+                    self._emit_generator_func(
+                        go_name, static_clause, params_str, return_type,
+                        params_node, suite_node,
+                    )
+                else:
+                    self._emit(f"func {go_name}{static_clause}({params_str}){ret_str} {{")
+                    body_start, params_at_start = self._begin_scoped_body(params_node)
+                    self._visit_suite(suite_node)
+                    self._finish_scoped_body(body_start, params_at_start)
+                    self._emit("}")
+                    self._emit("")
             elif func_name == "__init__" or func_name == "init":
                 self._emit_constructor(func_name, params_node, suite_node)
             elif func_name == "__str__" or func_name == "__repr__":
-                self._emit_method(self._go_method_name(self.current_class, func_name), "string", params_node, suite_node, tp_clause=tp_clause)
+                self._emit_method(self._go_method_name(self.current_class, func_name) + method_suffix, "string", params_node, suite_node, tp_clause=tp_clause)
             elif func_name == "__len__":
-                self._emit_method(self._go_method_name(self.current_class, func_name), "int", params_node, suite_node, tp_clause=tp_clause)
+                self._emit_method(self._go_method_name(self.current_class, func_name) + method_suffix, "int", params_node, suite_node, tp_clause=tp_clause)
             elif func_name in DUNDER_OPS:
-                go_method = self._go_method_name(self.current_class, func_name)
+                go_method = self._go_method_name(self.current_class, func_name) + method_suffix
                 if self.current_class not in self._class_dunder_methods:
                     self._class_dunder_methods[self.current_class] = {}
                 self._class_dunder_methods[self.current_class][func_name] = go_method
                 self._emit_method(go_method, return_type, params_node, suite_node, tp_clause=tp_clause)
             else:
-                method_name = self._go_method_name(self.current_class, func_name)
+                method_name = self._go_method_name(self.current_class, func_name) + method_suffix
                 self._emit_method(method_name, return_type, params_node, suite_node, tp_clause=tp_clause)
             return
 
@@ -377,27 +413,10 @@ class DefinitionVisitorMixin:
 
         # ── Generator function → goroutine + channel ──
         if has_yield:
-            chan_type = return_type if return_type else "interface{}"
-            self._emit(f"func {go_name}{tp_clause}({params_str}) chan {chan_type} {{")
-            self.indent += 1
-            self._emit(f"_ch := make(chan {chan_type})")
-            self._emit(f"go func() {{")
-            self.indent += 1
-            self._emit(f"defer close(_ch)")
-            self._push_scope()
-            self._emit_params_prologue(params_node)
-            body_start = len(self.output_lines)
-            params_at_start = set(self.declared_vars)
-            with self._scoped(_in_generator=True, _generator_chan="_ch"):
-                self._visit_suite(suite_node)
-            self._emit_unused_local_silencers(body_start, params_at_start)
-            self._pop_scope()
-            self.indent -= 1
-            self._emit(f"}}()")
-            self._emit(f"return _ch")
-            self.indent -= 1
-            self._emit("}")
-            self._emit("")
+            self._emit_generator_func(
+                go_name, tp_clause, params_str, return_type,
+                params_node, suite_node,
+            )
             return
 
         if is_multi_return:
@@ -671,12 +690,12 @@ class DefinitionVisitorMixin:
         self.indent += 1
         for child in node.children[1:]:
             if isinstance(child, Tree) and child.data == "interface_method":
-                self._emit_interface_method(child)
+                self._emit_interface_method(child, iface_name)
         self.indent -= 1
         self._emit("}")
         self._emit("")
 
-    def _emit_interface_method(self, node: Tree):
+    def _emit_interface_method(self, node: Tree, interface_name: str):
         # Grammar: ``interface_method: FUNC name "(" [typed_parameters] ")"
         # ["->" return_type] ";"`` — the ``FUNC`` keyword token leaks
         # into ``node.children`` because the rule keeps it named, so
@@ -688,8 +707,11 @@ class DefinitionVisitorMixin:
                     if c is not None and not isinstance(c, Token)]
         if not children:
             return
-        method_name = self._go_public_name(self._get_name(children[0]))
+        raw_method_name = self._get_name(children[0])
         params_node = children[1] if len(children) > 1 and isinstance(children[1], Tree) and children[1].data == "typed_parameters" else None
+        method_key = f"{interface_name}.{raw_method_name}"
+        signature = self._param_types_sig(params_node) if params_node else ()
+        method_name = self._go_public_name(raw_method_name) + self._overload_suffix_for_sig(method_key, signature)
         ret_node = None
         for c in children[1:]:
             if isinstance(c, Tree) and c.data in ("single_return_type", "multi_return_type"):

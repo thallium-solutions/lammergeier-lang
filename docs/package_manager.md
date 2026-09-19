@@ -86,7 +86,7 @@ is knowing which file is the source of truth at each step.
 ```bash
 mkdir api && cd api
 lamc init --name api --bin
-lamc install lamjwt lamschema
+lamc install @lam/jwt
 lamc main.lam --run
 ```
 
@@ -110,12 +110,12 @@ tree matches the lockfile.
 Use an explicit install when you know the library you want:
 
 ```bash
-lamc install lamredis@^1.0
+lamc install '@lam/redis@^1.0'
 ```
 
 This does four things as one transaction:
 
-1. Resolves `lamredis` plus its transitive Lam and Go dependencies.
+1. Resolves `@lam/redis` plus its transitive Lam and Go dependencies.
 2. Copies the resolved source into `./extlibs/`.
 3. Adds or updates the `[dependencies]` entry in `lamlib.toml`.
 4. Rewrites `lamlib.lock.toml` with exact versions and hashes.
@@ -299,7 +299,7 @@ fmt = "lamc fmt __init__.lam"
 ```bash
 lamc lib run test
 lamc lib run --list
-lamc lib run fmt --cwd third_party/lams3
+lamc lib run fmt --cwd ../lam-s3
 lamc lib run test --dry-run
 ```
 
@@ -490,9 +490,8 @@ picking the newest tag at random.
 ### 4.4 Stdlib pins (compiler-bundled)
 
 The Lam stdlib itself wraps third-party Go modules
-(`modernc.org/sqlite` for `lamdb`, `gorilla/websocket` for
-`lamserver_ws`, `BurntSushi/toml` + `gopkg.in/yaml.v3` for
-`lamenv`, …). Their versions are pinned in
+(`modernc.org/sqlite` for `lamdb`, and `BurntSushi/toml` plus
+`gopkg.in/yaml.v3` for `lamenv`, for example). Their versions are pinned in
 [`compiler/stdlib_go_deps.py`](https://github.com/thallium-solutions/lammergeier-lang/blob/main/compiler/stdlib_go_deps.py)
 under the `STDLIB_GO_PINS` table — moving in lockstep with the
 stdlib source, so a PR that adopts a new upstream API bumps the
@@ -504,8 +503,8 @@ project's pin map with `STDLIB_GO_PINS` first, then layers your
 
 - A vanilla project with no `[go-deps]` still gets a fully
   pinned, reproducible build for every stdlib transitive.
-- A project that sets `"github.com/redis/go-redis/v9" = "v9.20.0"`
-  in its own `[go-deps]` overrides the stdlib's pin via Go's
+- A project that sets `"github.com/robfig/cron/v3" = "v3.1.0"`
+  in its own `[go-deps]` overrides the stdlib's `lamcron` pin via Go's
   MVS rule (the higher version wins).
 - The stdlib's pin set never reaches `lamlib.lock.toml` — the
   lockfile only carries pins **you** declared, so future stdlib

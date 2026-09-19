@@ -3,13 +3,13 @@
 #
 # The historical ``get``/``post`` family returns the response body as
 # a string and silently maps network failures to ``""``. The ``try*``
-# siblings (``tryGet``, ``tryPost``, ``tryPostJson``) return a
-# ``Result[str]`` so callers can distinguish "empty body" from "server
-# unreachable":
+# siblings (``tryGet``, ``tryPost``) return a ``Result[str]`` so callers
+# can distinguish "empty body" from "server unreachable":
 #
 #     body: str = Http.tryGet(url)?
 #     body: str = Http.tryGet(url).unwrapOr("")     # legacy behaviour
 
+from lamconv import Conv
 from lamerrors import Result, Error
 from lamjson import Json
 
@@ -38,11 +38,11 @@ class Http {
 
     static func tryGet(url: str) -> Result {
         #- GET ``url`` and return the response body. Returns
-           ``Result.Ok(str)`` on a successful HTTP exchange, or
-           ``Result.Err(Error("HttpError", ...))`` if the request
-           couldn't even be made (DNS failure, connection refused,
-           etc.). Non-2xx responses are still ``Ok`` — inspect the
-           body or use ``tryStatusCode`` if the status matters. -#
+        ``Result.Ok(str)`` on a successful HTTP exchange, or
+        ``Result.Err(Error("HttpError", ...))`` if the request
+        couldn't even be made (DNS failure, connection refused,
+        etc.). Non-2xx responses are still ``Ok`` — inspect the
+        body or use ``tryStatusCode`` if the status matters. -#
         go! {
             resp, err := http.Get(url)
             if err != nil {
@@ -76,7 +76,7 @@ class Http {
         }
     }
 
-    static func post(url: str, contentType: str, body: str) -> str {
+    private static func _postText(url: str, contentType: str, body: str) -> str {
         go! {
             resp, err := http.Post(url, contentType, strings.NewReader(body))
             if err != nil {
@@ -88,10 +88,7 @@ class Http {
         }
     }
 
-    static func tryPost(url: str, contentType: str, body: str) -> Result {
-        #- POST ``body`` to ``url`` with the given content type.
-           Returns ``Result.Ok(responseBody)`` or
-           ``Result.Err(Error("HttpError", ...))``. -#
+    private static func _tryPostText(url: str, contentType: str, body: str) -> Result[str] {
         go! {
             resp, err := http.Post(url, contentType, strings.NewReader(body))
             if err != nil {
@@ -114,28 +111,42 @@ class Http {
         }
     }
 
-    static func postJson(url: str, jsonBody: str) -> str {
-        #- Compatibility form for an already-encoded JSON string. -#
-        return Http.post(url, "application/json", jsonBody)
+    static func post(url: str, contentType: str, body: str) -> str {
+        #- POST a string body with an explicit content type. -#
+        return Http._postText(url, contentType, body)
     }
 
-    static func postJsonValue(url: str, value: json) -> str {
-        return Http.post(url, "application/json", Json.encode(value))
+    static func tryPost(url: str, contentType: str, body: str) -> Result[str] {
+        #- POST a string body with an explicit content type and return a Result. -#
+        return Http._tryPostText(url, contentType, body)
     }
 
-    static func tryPostJson(url: str, jsonBody: str) -> Result[str] {
-        #- Compatibility form for an already-encoded JSON string. -#
-        return Http.tryPost(url, "application/json", jsonBody)
+    static func post(url: str, jsonBody: str) -> str {
+        #- POST an already-encoded JSON string as ``application/json``. -#
+        return Http._postText(url, "application/json", jsonBody)
     }
 
-    static func tryPostJsonValue(url: str, value: json) -> Result[str] {
-        return Http.tryPost(url, "application/json", Json.encode(value))
+    static func tryPost(url: str, jsonBody: str) -> Result[str] {
+        #- Result-returning overload for an already-encoded JSON string. -#
+        return Http._tryPostText(url, "application/json", jsonBody)
+    }
+
+    static func post(url: str, value: json) -> str {
+        #- Encode a native JSON value and POST it as ``application/json``. -#
+        return Http._postText(url, "application/json", str(value))
+    }
+
+    static func tryPost(url: str, value: json) -> Result[str] {
+        #- Result-returning native JSON POST overload. -#
+        return Http._tryPostText(url, "application/json", str(value))
     }
 
     static func getHeader(url: str, header: str) -> str {
         go! {
             resp, err := http.Get(url)
-            if err != nil { return "" }
+            if err != nil {
+                return ""
+            }
             defer resp.Body.Close()
             return resp.Header.Get(header)
         }
@@ -145,13 +156,17 @@ class Http {
         #- GET with custom request headers (e.g. Authorization). -#
         go! {
             req, err := http.NewRequest("GET", url, nil)
-            if err != nil { return "" }
+            if err != nil {
+                return ""
+            }
             for k, v := range headers {
                 req.Header.Set(k, v)
             }
             client := &http.Client{Timeout: 30 * time.Second}
             resp, err := client.Do(req)
-            if err != nil { return "" }
+            if err != nil {
+                return ""
+            }
             defer resp.Body.Close()
             body, _ := io.ReadAll(resp.Body)
             return string(body)
@@ -160,8 +175,8 @@ class Http {
 
     static func serve(port: int, handler: any) -> HttpServer {
         #- Start a blocking HTTP server on `:port`. `handler` must be a
-           `func(method str, path str, body str) -> str` that returns the
-           response body. For more control drop into go! with net/http. -#
+        `func(method str, path str, body str) -> str` that returns the
+        response body. For more control drop into go! with net/http. -#
         go! {
             mux := http.NewServeMux()
             mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +233,9 @@ go! {
             rdr = strings.NewReader(body)
         }
         req, err := http.NewRequest(method, url, rdr)
-        if err != nil { return "", 0, err }
+        if err != nil {
+            return "", 0, err
+        }
         if contentType != "" {
             req.Header.Set("Content-Type", contentType)
         }
@@ -227,54 +244,205 @@ go! {
         }
         client := &http.Client{Timeout: 30 * time.Second}
         resp, err := client.Do(req)
-        if err != nil { return "", 0, err }
+        if err != nil {
+            return "", 0, err
+        }
         defer resp.Body.Close()
         b, err := io.ReadAll(resp.Body)
-        if err != nil { return "", resp.StatusCode, err }
+        if err != nil {
+            return "", resp.StatusCode, err
+        }
         return string(b), resp.StatusCode, nil
+    }
+}
+
+class HttpCookie {
+    #- Parsed representation of one ``Set-Cookie`` response header.
+    ``expires`` preserves the HTTP-date text, ``raw`` preserves the
+    complete header value, and ``unparsed`` retains unknown or malformed
+    attributes instead of discarding them. -#
+
+    func __init__(self, name: str = "", value: str = "") {
+        self.name: str = name
+        self.value: str = value
+        self.path: str = ""
+        self.domain: str = ""
+        self.expires: str = ""
+        self.maxAge: int = 0
+        self.secure: bool = false
+        self.httpOnly: bool = false
+        self.sameSite: str = ""
+        self.partitioned: bool = false
+        self.raw: str = ""
+        self.unparsed: list[str] = []
+    }
+
+    private static func _isInteger(text: str) -> bool {
+        return Conv.tryInt(text.trim()).ok()
+    }
+
+    private static func _integer(text: str) -> int {
+        return Conv.toInt(text.trim())
+    }
+
+    static func parse(raw: str) -> HttpCookie {
+        #- Parse one Set-Cookie header without dropping extension attributes. -#
+        cookie: HttpCookie = HttpCookie()
+        cookie.raw = raw
+        parts: list[str] = raw.split(";")
+        if len(parts) == 0 {
+            return cookie
+        }
+
+        pair: list[str] = parts[0].trim().splitN("=", 2)
+        if len(pair) != 2 or pair[0].trim() == "" {
+            cookie.unparsed.append(parts[0].trim())
+            return cookie
+        }
+        cookie.name = pair[0].trim()
+        cookie.value = pair[1].trim()
+        if len(cookie.value) >= 2 {
+            quoted: bool = cookie.value.startsWith("\"") and cookie.value.endsWith("\"")
+            if quoted {
+                cookie.value = cookie.value[1: len(cookie.value) - 1]
+            }
+        }
+
+        for i in range(1, len(parts)) {
+            attribute: str = parts[i].trim()
+            if attribute == "" {
+                continue
+            }
+            attributeParts: list[str] = attribute.splitN("=", 2)
+            attributeName: str = attributeParts[0].trim().toLower()
+            hasValue: bool = len(attributeParts) == 2
+            attributeValue: str = ""
+            if hasValue {
+                attributeValue = attributeParts[1].trim()
+            }
+
+            if attributeName == "path" and hasValue {
+                cookie.path = attributeValue
+            } elif attributeName == "domain" and hasValue {
+                cookie.domain = attributeValue
+            } elif attributeName == "expires" and hasValue {
+                cookie.expires = attributeValue
+            } elif attributeName == "max-age" and hasValue and HttpCookie._isInteger(attributeValue) {
+                cookie.maxAge = HttpCookie._integer(attributeValue)
+            } elif attributeName == "secure" and not hasValue {
+                cookie.secure = true
+            } elif attributeName == "httponly" and not hasValue {
+                cookie.httpOnly = true
+            } elif attributeName == "samesite" and hasValue {
+                cookie.sameSite = attributeValue
+            } elif attributeName == "partitioned" and not hasValue {
+                cookie.partitioned = true
+            } else {
+                cookie.unparsed.append(attribute)
+            }
+        }
+        return cookie
     }
 }
 
 class HttpResponse {
     #- Result of a request from ``HttpClient`` or ``Http.request``.
-       ``status`` is the HTTP status code (0 if the request never
-       reached the server). ``body`` is the response body as a
-       string. ``error`` is set on transport-level failures only
-       (DNS, refused, timeout) — non-2xx HTTP responses are NOT
-       errors. -#
+    ``status`` is the HTTP status code (0 if the request never
+    reached the server). ``body`` is the response body as a
+    string. ``error`` is set on transport-level failures only
+    (DNS, refused, timeout) — non-2xx HTTP responses are NOT
+    errors. ``headers`` retains every response header value and
+    ``parsedCookies`` retains parsed Set-Cookie values. -#
 
-    func __init__(self, status: int = 0, body: str = "", error: str = "") {
+    func __init__(self, status: int = 0, body: str = "", error: str = "", headers: dict[str, list[str]] = {}) {
         self.status: int = status
         self.body: str = body
         self.error: str = error
+        self.headers: dict[str, list[str]] = headers
+        self.parsedCookies: list[HttpCookie] = []
+        for rawCookie in self.headerValues("Set-Cookie") {
+            self.parsedCookies.append(HttpCookie.parse(rawCookie))
+        }
     }
 
     func ok(self) -> bool {
         #- True if the request completed (no transport error) and
-           the status code is in the 2xx range. -#
+        the status code is in the 2xx range. -#
         return self.error == "" and self.status >= 200 and self.status < 300
+    }
+
+    func headerValues(self, name: str) -> list[str] {
+        #- Return all values for ``name`` using case-insensitive matching. -#
+        matches: list[str] = []
+        for headerName, values in self.headers {
+            if headerName.equalFold(name) {
+                for value in values {
+                    matches.append(value)
+                }
+            }
+        }
+        return matches
+    }
+
+    func header(self, name: str, fallback: str = "") -> str {
+        #- Return the first matching response header value, or ``fallback``. -#
+        values: list[str] = self.headerValues(name)
+        if len(values) == 0 {
+            return fallback
+        }
+        return values[0]
+    }
+
+    func json(self) -> json {
+        #- Decode the response body as native JSON. -#
+        return Json.decode(self.body)
+    }
+
+    func tryJson(self) -> Result[json] {
+        #- Decode the response body without panicking on malformed JSON. -#
+        return Json.tryDecode(self.body)
+    }
+
+    func cookies(self) -> list[HttpCookie] {
+        #- Return parsed response cookies in Set-Cookie header order. -#
+        values: list[HttpCookie] = []
+        for cookie in self.parsedCookies {
+            values.append(cookie)
+        }
+        return values
+    }
+
+    func cookie(self, name: str) -> HttpCookie {
+        #- Return the first cookie named ``name``, or ``None``. Cookie names
+        are case-sensitive as required by the cookie specification. -#
+        for cookie in self.parsedCookies {
+            if cookie.name == name {
+                return cookie
+            }
+        }
+        return None
     }
 }
 
 class HttpClient {
     #- Reusable HTTP client with a base URL, default headers, and
-       a configurable timeout. Use one client per logical "API I'm
-       talking to" — the default headers are the right place to
-       hang an Authorization token, an API key, a User-Agent, etc.
+    a configurable timeout. Use one client per logical "API I'm
+    talking to" — the default headers are the right place to
+    hang an Authorization token, an API key, a User-Agent, etc.
 
-       Usage::
+    Usage::
 
-           api: HttpClient = HttpClient("https://api.example.com")
-           api.setHeader("Authorization", "Bearer xyz")
-           api.setTimeoutMs(5000)
+    api: HttpClient = HttpClient("https://api.example.com")
+    api.setHeader("Authorization", "Bearer xyz")
+    api.setTimeoutMs(5000)
 
-           res: HttpResponse = api.get("/users/42")
-           if res.ok() {
-               body = res.body
-           }
+    res: HttpResponse = api.get("/users/42")
+    if res.ok() {
+        body = res.body
+    }
 
-       Method paths can be absolute (``https://...``) or relative
-       to the configured base URL. -#
+    Method paths can be absolute (``https://...``) or relative
+    to the configured base URL. -#
 
     func __init__(self, baseUrl: str = "", timeoutMs: int = 30000) {
         self.baseUrl: str = baseUrl
@@ -287,8 +455,8 @@ class HttpClient {
     }
 
     func removeHeader(self, name: str) {
-        go! {
-            delete(s.Headers, name)
+        if name in self.headers {
+            del self.headers[name]
         }
     }
 
@@ -297,32 +465,22 @@ class HttpClient {
     }
 
     func _resolveUrl(self, path: str) -> str {
-        out: str = ""
-        bu: str = self.baseUrl
-        go! {
-            // The composition is wrapped in an immediately-invoked
-            // func literal so the early-return shortcuts apply only
-            // to this composition step — bare ``return`` here would
-            // exit the surrounding Lam method and skip the trailing
-            // ``return out`` that the lowering inserts.
-            out = func() string {
-                // Absolute URL → use as-is.
-                if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
-                    return path
-                }
-                if path == "" { return bu }
-                if bu == "" { return path }
-                // Compose with baseUrl, normalising the slash.
-                if strings.HasSuffix(bu, "/") && strings.HasPrefix(path, "/") {
-                    return bu[:len(bu)-1] + path
-                }
-                if !strings.HasSuffix(bu, "/") && !strings.HasPrefix(path, "/") {
-                    return bu + "/" + path
-                }
-                return bu + path
-            }()
+        if path.startsWith("http://") or path.startsWith("https://") {
+            return path
         }
-        return out
+        if path == "" {
+            return self.baseUrl
+        }
+        if self.baseUrl == "" {
+            return path
+        }
+        if self.baseUrl.endsWith("/") and path.startsWith("/") {
+            return self.baseUrl[: len(self.baseUrl) - 1] + path
+        }
+        if not self.baseUrl.endsWith("/") and not path.startsWith("/") {
+            return self.baseUrl + "/" + path
+        }
+        return self.baseUrl + path
     }
 
     func _do(self, method: str, path: str, contentType: str, body: str) -> HttpResponse {
@@ -331,20 +489,15 @@ class HttpClient {
         for k, v in self.headers {
             merged[k] = v
         }
-        if contentType != "" {
-            hasCT: bool = false
-            go! {
-                if _, ok := merged["Content-Type"]; ok { hasCT = true }
-            }
-            if not hasCT {
-                merged["Content-Type"] = contentType
-            }
+        if contentType != "" and "Content-Type" not in merged {
+            merged["Content-Type"] = contentType
         }
         timeoutMs: int = self.timeoutMs
 
         status: int = 0
         respBody: str = ""
         errMsg: str = ""
+        respHeaders: dict[str, list[str]] = {}
         go! {
             var rdr io.Reader
             if body != "" {
@@ -365,6 +518,9 @@ class HttpClient {
                 } else {
                     defer resp.Body.Close()
                     status = resp.StatusCode
+                    for name, values := range resp.Header {
+                        respHeaders[name] = append([]string(nil), values...)
+                    }
                     if b, err := io.ReadAll(resp.Body); err == nil {
                         respBody = string(b)
                     } else {
@@ -373,7 +529,7 @@ class HttpClient {
                 }
             }
         }
-        return HttpResponse(status, respBody, errMsg)
+        return HttpResponse(status, respBody, errMsg, respHeaders)
     }
 
     func get(self, path: str) -> HttpResponse {
@@ -392,36 +548,24 @@ class HttpClient {
         return self._do("POST", path, contentType, body)
     }
 
-    func postJson(self, path: str, jsonBody: str) -> HttpResponse {
-        return self._do("POST", path, "application/json", jsonBody)
-    }
-
-    func postJsonValue(self, path: str, value: json) -> HttpResponse {
-        return self._do("POST", path, "application/json", Json.encode(value))
+    func post(self, path: str, value: json) -> HttpResponse {
+        return self._do("POST", path, "application/json", str(value))
     }
 
     func put(self, path: str, contentType: str, body: str) -> HttpResponse {
         return self._do("PUT", path, contentType, body)
     }
 
-    func putJson(self, path: str, jsonBody: str) -> HttpResponse {
-        return self._do("PUT", path, "application/json", jsonBody)
-    }
-
-    func putJsonValue(self, path: str, value: json) -> HttpResponse {
-        return self._do("PUT", path, "application/json", Json.encode(value))
+    func put(self, path: str, value: json) -> HttpResponse {
+        return self._do("PUT", path, "application/json", str(value))
     }
 
     func patch(self, path: str, contentType: str, body: str) -> HttpResponse {
         return self._do("PATCH", path, contentType, body)
     }
 
-    func patchJson(self, path: str, jsonBody: str) -> HttpResponse {
-        return self._do("PATCH", path, "application/json", jsonBody)
-    }
-
-    func patchJsonValue(self, path: str, value: json) -> HttpResponse {
-        return self._do("PATCH", path, "application/json", Json.encode(value))
+    func patch(self, path: str, value: json) -> HttpResponse {
+        return self._do("PATCH", path, "application/json", str(value))
     }
 }
 

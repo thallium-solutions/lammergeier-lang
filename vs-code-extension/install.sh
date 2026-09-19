@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the Lammergeier Lang VS Code / Windsurf / Cursor extension
+# Install the Lammergeier Lang VS Code / Windsurf / Cursor / Devin extension
 # by symlinking it into the editor's extensions directory AND
 # registering it in the editor's ``extensions.json`` manifest so the
 # editor actually loads it.
@@ -8,7 +8,7 @@
 #   ./install.sh           # install into every editor detected
 #   ./install.sh vscode    # install only into VS Code
 #   ./install.sh windsurf  # install only into Windsurf
-#   ./install.sh cursor    # install only into Cursor
+#   ./install.sh TARGET    # vscode, windsurf, cursor, devin, or all
 #
 # Why register in ``extensions.json``?
 #   Windsurf (VS Code fork) still auto-scans ``$HOME/.windsurf/extensions/``
@@ -168,6 +168,9 @@ if [[ "$targets" == "all" || "$targets" == "windsurf" ]]; then
 fi
 if [[ "$targets" == "all" || "$targets" == "cursor" ]]; then
     install_into "Cursor"   "$HOME/.cursor/extensions"             ""
+fi
+if [[ "$targets" == "all" || "$targets" == "devin" ]]; then
+    install_into "Devin"    "$HOME/.devin/extensions"              "-universal"
 fi
 
 echo

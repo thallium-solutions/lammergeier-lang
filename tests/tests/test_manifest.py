@@ -102,6 +102,18 @@ def test_full_manifest_fields() -> None:
     print("PASS: full manifest fields")
 
 
+def test_nested_scoped_manifest_fields() -> None:
+    mf = _from_text("""
+        [library]
+        name = "@lam/vulture/std-plugin"
+        version = "1.0.0"
+    """)
+    assert mf.is_scoped is True
+    assert mf.scope == "lam"
+    assert mf.bare_name == "vulture/std-plugin"
+    print("PASS: nested scoped manifest fields")
+
+
 def test_string_escapes() -> None:
     """Standard JSON-style escapes inside ``"..."`` strings (``\\n``
     et al.) decode to the intended characters; literal ``'...'``
@@ -169,7 +181,8 @@ def test_module_name_case_styles_accepted() -> None:
     """Library, dependency, and replacement names preserve the user's
     chosen ASCII casing instead of forcing snake_case."""
     for name in ["snake_case", "camelCase", "PascalCase", "SCREAMING_SNAKE_CASE",
-                 "@MyTeam/camelCase", "@my_team/Pascal-Lib"]:
+                 "@MyTeam/camelCase", "@my_team/Pascal-Lib",
+                 "@lam/vulture/std-plugin"]:
         mf = _from_text(f'[library]\nname = "{name}"\nversion = "1.0.0"\n')
         assert mf.name == name
     mf = _from_text("""
@@ -243,6 +256,7 @@ def test_is_valid_helpers() -> None:
     assert is_valid_module_name("camelCase")
     assert is_valid_module_name("SCREAMING_SNAKE_CASE")
     assert is_valid_module_name("@Alice/LamWebP")
+    assert is_valid_module_name("@lam/vulture/ws-plugin")
     assert not is_valid_module_name("1Lamwebp")
     assert not is_valid_module_name("@/lamwebp")
     assert is_valid_semver("1.0.0")
@@ -382,6 +396,7 @@ def main() -> int:
     tests = [
         test_minimal_manifest_parses,
         test_full_manifest_fields,
+        test_nested_scoped_manifest_fields,
         test_string_escapes,
         test_load_from_file,
         test_missing_required_keys_fail,

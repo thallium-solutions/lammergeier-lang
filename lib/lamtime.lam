@@ -104,17 +104,12 @@ class Time {
     }
 
     static func addSeconds(unixTime: int, seconds: int) -> int {
-        go! {
-            t := time.Unix(int64(unixTime), 0).Add(time.Duration(seconds) * time.Second)
-            return int(t.Unix())
-        }
+        return unixTime + seconds
     }
 
     static func elapsedSince(startUnixMilli: int) -> int {
         #- Milliseconds elapsed since the given wall-clock timestamp. -#
-        go! {
-            return int(time.Now().UnixMilli() - int64(startUnixMilli))
-        }
+        return Time.nowUnixMilli() - startUnixMilli
     }
 
     static func measureMs(fn: any) -> int {

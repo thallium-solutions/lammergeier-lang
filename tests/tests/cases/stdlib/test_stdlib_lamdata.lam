@@ -31,7 +31,16 @@
 # expect: PASS 25 series min/max
 # expect: PASS 26 series toFloatList
 # expect: PASS 27 Series.fromFloats + stats
-# expect: 27 passed, 0 failed, 27 total
+# expect: PASS 28 mutate infers int series
+# expect: PASS 29 mutate infers float series
+# expect: PASS 30 mutate infers string series
+# expect: PASS 31 mutate infers bool series
+# expect: PASS 32 Series.from infers int series
+# expect: PASS 33 Series.from infers float series
+# expect: PASS 34 Series.from infers string series
+# expect: PASS 35 Series.from infers bool series
+# expect: PASS 36 dynamic mutate remains compatible
+# expect: 36 passed, 0 failed, 36 total
 
 from lamdata import DataFrame, Series, DataFrameGroups
 from lamtest import Test
@@ -192,6 +201,52 @@ func main() {
     ser: Series = Series.fromFloats(vals, "v")
     serOk: bool = (ser.length() == 5) and (ser.sum() == 15.0) and (ser.mean() == 3.0)
     Test.assertTrue(serOk, "27 Series.fromFloats + stats")
+
+    # 28-31. Generic-style mutate overloads preserve each supported list type.
+    intValues: list[int] = [10, 20, 30, 40]
+    intFrame: DataFrame = df.mutate("Count", intValues)
+    intMutateOk: bool = (intFrame.col("Count").typeName() == "int") and (intFrame.col("Count").toIntList()[3] == 40)
+    Test.assertTrue(intMutateOk, "28 mutate infers int series")
+
+    floatValues: list[float] = [1.25, 2.5, 3.75, 5.0]
+    floatFrame: DataFrame = df.mutate("Ratio", floatValues)
+    floatMutateOk: bool = (floatFrame.col("Ratio").typeName() == "float") and (floatFrame.col("Ratio").toFloatList()[1] == 2.5)
+    Test.assertTrue(floatMutateOk, "29 mutate infers float series")
+
+    stringValues: list[str] = ["a", "b", "c", "d"]
+    stringFrame: DataFrame = df.mutate("Label", stringValues)
+    stringMutateOk: bool = (stringFrame.col("Label").typeName() == "string") and (stringFrame.col("Label").toStringList()[2] == "c")
+    Test.assertTrue(stringMutateOk, "30 mutate infers string series")
+
+    boolValues: list[bool] = [true, false, true, false]
+    boolFrame: DataFrame = df.mutate("Active", boolValues)
+    boolMutateOk: bool = (boolFrame.col("Active").typeName() == "bool") and (not boolFrame.col("Active").toBoolList()[1])
+    Test.assertTrue(boolMutateOk, "31 mutate infers bool series")
+
+    # 32-35. Series.from infers its gota type, including from an empty typed list.
+    fromInts: Series = Series.from(intValues, "ints")
+    emptyInts: list[int] = []
+    emptyIntSeries: Series = Series.from(emptyInts, "empty")
+    fromIntsOk: bool = (fromInts.typeName() == "int") and (fromInts.toIntList()[0] == 10) and (emptyIntSeries.typeName() == "int")
+    Test.assertTrue(fromIntsOk, "32 Series.from infers int series")
+
+    fromFloats: Series = Series.from(floatValues, "floats")
+    fromFloatsOk: bool = (fromFloats.typeName() == "float") and (fromFloats.toFloatList()[2] == 3.75)
+    Test.assertTrue(fromFloatsOk, "33 Series.from infers float series")
+
+    fromStrings: Series = Series.from(stringValues, "strings")
+    fromStringsOk: bool = (fromStrings.typeName() == "string") and (fromStrings.toStringList()[3] == "d")
+    Test.assertTrue(fromStringsOk, "34 Series.from infers string series")
+
+    fromBools: Series = Series.from(boolValues, "bools")
+    fromBoolsOk: bool = (fromBools.typeName() == "bool") and fromBools.toBoolList()[0]
+    Test.assertTrue(fromBoolsOk, "35 Series.from infers bool series")
+
+    # 36. Preserve the original list[any] mutate entry point and inference.
+    dynamicValues: list[any] = [5, 6, 7, 8]
+    dynamicFrame: DataFrame = df.mutate("Dynamic", dynamicValues)
+    dynamicOk: bool = (dynamicFrame.col("Dynamic").typeName() == "int") and (dynamicFrame.col("Dynamic").toIntList()[3] == 8)
+    Test.assertTrue(dynamicOk, "36 dynamic mutate remains compatible")
 
     Test.summary()
 }

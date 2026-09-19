@@ -1,278 +1,425 @@
-# JSON Schema validation backed by ``xeipuuv/gojsonschema``
-# (draft-07 compliant). Schemas are compiled lazily on first use and
-# cached in a goroutine-safe registry, so registering the same schema
-# in a hot path costs ~one map lookup.
+# Lammergeier standard library: schema validation for JSON, YAML, and XML.
 #
-# Usage::
+# ``Schema.validate`` is overloaded for text and native ``json`` schemas and
+# documents. Successful validation returns the original document in ``Result``;
+# failures return a structured ``Error``. JSON is the default text backend.
 #
-#     from lamschema import Schema
-#
-#     userSchema: str = """
-#     {
-#       "type": "object",
-#       "required": ["name", "age"],
-#       "properties": {
-#         "name": {"type": "string", "minLength": 1},
-#         "age":  {"type": "integer", "minimum": 0, "maximum": 150},
-#         "email": {"type": "string", "format": "email"}
-#       }
-#     }
-#     """
-#
-#     ok: bool = Schema.validateJson(userSchema, '{"name":"alice","age":30}')
-#
-# For better error messages::
-#
-#     errors: list[str] = Schema.errors(userSchema, badJson)
-#     for msg in errors {
-#         print(msg)
-#     }
-#
-# Pre-compile a schema once when its key is known up front (e.g.
-# during route registration) so request-time work is just the
-# document validation:
-#
-#     Schema.register("user.create", userSchema)
-#     ok: bool = Schema.validateByKey("user.create", body)
+# Import with: ``from lamschema import Schema``.
+
+from lamerrors import Result, Error
 
 go! {
     import (
         "encoding/json"
+        "encoding/xml"
         "fmt"
+        "io"
+        "strings"
         "sync"
 
+        xmlparser "github.com/moolekkari/validatexml-go"
         gojsonschema "github.com/xeipuuv/gojsonschema"
+        yaml "gopkg.in/yaml.v3"
     )
 
-    // ─── compiled-schema cache ──────────────────────────────────
-    type schemaEntry struct {
+    type lamSchemaEntry struct {
         schema *gojsonschema.Schema
-        err    error
     }
+
+    type lamSchemaFailure struct {
+        kind    string
+        message string
+        cause   interface{}
+    }
+
+    const lamSchemaCacheLimit = 1024
 
     var (
-        lamSchemaMu       sync.RWMutex
-        lamSchemaByText   = map[string]*schemaEntry{}
-        lamSchemaByKey    = map[string]*schemaEntry{}
+        lamSchemaMu        sync.RWMutex
+        lamSchemaByText    = map[string]*lamSchemaEntry{}
+        lamSchemaXSDByText = map[string]*xmlparser.Schema{}
     )
 
-    // compileFromText compiles a schema document given its JSON
-    // source. We dedupe on the source string itself so callers
-    // building schemas inline still benefit from the cache.
-    func lamSchemaCompileText(src string) (*gojsonschema.Schema, error) {
-        lamSchemaMu.RLock()
-        if e, ok := lamSchemaByText[src]; ok {
-            lamSchemaMu.RUnlock()
-            return e.schema, e.err
+    func lamSchemaCompileText(source string) (*gojsonschema.Schema, *lamSchemaFailure) {
+        var parsed interface{}
+        if err := json.Unmarshal([]byte(source), &parsed); err != nil {
+            return nil, &lamSchemaFailure{
+                kind: "SchemaParseError",
+                message: "schema is not valid JSON: " + err.Error(),
+                cause: map[string]interface{}{"backend": "json", "target": "schema"},
+            }
         }
-        lamSchemaMu.RUnlock()
 
-        loader := gojsonschema.NewStringLoader(src)
-        s, err := gojsonschema.NewSchema(loader)
-        e := &schemaEntry{schema: s, err: err}
+        lamSchemaMu.RLock()
+        entry := lamSchemaByText[source]
+        lamSchemaMu.RUnlock()
+        if entry != nil {
+            return entry.schema, nil
+        }
+
+        compiled, err := gojsonschema.NewSchema(gojsonschema.NewStringLoader(source))
+        if err != nil {
+            return nil, &lamSchemaFailure{
+                kind: "SchemaCompileError",
+                message: "schema compilation failed: " + err.Error(),
+                cause: map[string]interface{}{"backend": "gojsonschema", "target": "schema"},
+            }
+        }
 
         lamSchemaMu.Lock()
-        lamSchemaByText[src] = e
+        if len(lamSchemaByText) >= lamSchemaCacheLimit {
+            lamSchemaByText = map[string]*lamSchemaEntry{}
+        }
+        lamSchemaByText[source] = &lamSchemaEntry{schema: compiled}
         lamSchemaMu.Unlock()
-        return s, err
+        return compiled, nil
     }
 
-    func lamSchemaResolveKey(key string) (*gojsonschema.Schema, error) {
-        lamSchemaMu.RLock()
-        defer lamSchemaMu.RUnlock()
-        if e, ok := lamSchemaByKey[key]; ok {
-            return e.schema, e.err
-        }
-        return nil, fmt.Errorf("schema key not registered: %s", key)
-    }
-
-    // lamSchemaErrorList runs the validation and returns a flat
-    // string slice of human-readable errors. Returns nil on success.
-    func lamSchemaErrorList(s *gojsonschema.Schema, doc string) []string {
-        if s == nil {
-            return []string{"schema not compiled"}
-        }
-        result, err := s.Validate(gojsonschema.NewStringLoader(doc))
+    func lamSchemaText(value LamJSON) (string, *lamSchemaFailure) {
+        encoded, err := json.Marshal(lamJSONRaw(value))
         if err != nil {
-            return []string{"validate: " + err.Error()}
+            return "", &lamSchemaFailure{
+                kind: "SchemaCompileError",
+                message: "schema encoding failed: " + err.Error(),
+                cause: map[string]interface{}{"backend": "json", "target": "schema"},
+            }
         }
+        return string(encoded), nil
+    }
+
+    func lamSchemaIssues(result *gojsonschema.Result) []interface{} {
+        issues := make([]interface{}, 0, len(result.Errors()))
+        for _, issue := range result.Errors() {
+            issues = append(issues, map[string]interface{}{
+                "field": issue.Field(),
+                "keyword": issue.Type(),
+                "description": issue.Description(),
+                "value": issue.Value(),
+                "details": issue.Details(),
+                "backend": "gojsonschema",
+            })
+        }
+        return issues
+    }
+
+    func lamSchemaValidationFailure(result *gojsonschema.Result) *lamSchemaFailure {
         if result.Valid() {
             return nil
         }
-        out := make([]string, 0, len(result.Errors()))
-        for _, e := range result.Errors() {
-            out = append(out, e.String())
+        issues := lamSchemaIssues(result)
+        return &lamSchemaFailure{
+            kind: "SchemaValidationError",
+            message: fmt.Sprintf("document does not satisfy schema (%d issue(s))", len(issues)),
+            cause: issues,
         }
-        return out
     }
 
-    // lamSchemaValidateAny accepts either a string (JSON text) or an
-    // already-decoded value (map / list / scalar) and validates it
-    // against the schema. The two-input form lets callers reuse a
-    // value they've already parsed without re-marshalling.
-    func lamSchemaValidateAny(s *gojsonschema.Schema, doc interface{}) []string {
-        if s == nil {
-            return []string{"schema not compiled"}
+    func lamSchemaValidateText(schemaText string, document string) *lamSchemaFailure {
+        compiled, failure := lamSchemaCompileText(schemaText)
+        if failure != nil {
+            return failure
         }
-        var loader gojsonschema.JSONLoader
-        switch v := doc.(type) {
-        case string:
-            loader = gojsonschema.NewStringLoader(v)
-        case []byte:
-            loader = gojsonschema.NewStringLoader(string(v))
+        var parsed interface{}
+        if err := json.Unmarshal([]byte(document), &parsed); err != nil {
+            return &lamSchemaFailure{
+                kind: "SchemaParseError",
+                message: "document is not valid JSON: " + err.Error(),
+                cause: map[string]interface{}{"backend": "json", "target": "document"},
+            }
+        }
+        result, err := compiled.Validate(gojsonschema.NewStringLoader(document))
+        if err != nil {
+            return &lamSchemaFailure{
+                kind: "SchemaParseError",
+                message: "document validation failed: " + err.Error(),
+                cause: map[string]interface{}{"backend": "gojsonschema", "target": "document"},
+            }
+        }
+        return lamSchemaValidationFailure(result)
+    }
+
+    func lamSchemaValidateValue(schemaText string, document LamJSON) *lamSchemaFailure {
+        compiled, failure := lamSchemaCompileText(schemaText)
+        if failure != nil {
+            return failure
+        }
+        result, err := compiled.Validate(gojsonschema.NewGoLoader(lamJSONRaw(document)))
+        if err != nil {
+            return &lamSchemaFailure{
+                kind: "SchemaValidationError",
+                message: "document validation failed: " + err.Error(),
+                cause: map[string]interface{}{"backend": "gojsonschema", "target": "document"},
+            }
+        }
+        return lamSchemaValidationFailure(result)
+    }
+
+    func lamSchemaNormalizeYAML(value interface{}) (interface{}, error) {
+        switch current := value.(type) {
+        case map[string]interface{}:
+            out := make(map[string]interface{}, len(current))
+            for key, child := range current {
+                normalized, err := lamSchemaNormalizeYAML(child)
+                if err != nil { return nil, err }
+                out[key] = normalized
+            }
+            return out, nil
+        case map[interface{}]interface{}:
+            out := make(map[string]interface{}, len(current))
+            for key, child := range current {
+                text, ok := key.(string)
+                if !ok { return nil, fmt.Errorf("YAML mapping keys must be strings") }
+                normalized, err := lamSchemaNormalizeYAML(child)
+                if err != nil { return nil, err }
+                out[text] = normalized
+            }
+            return out, nil
+        case []interface{}:
+            out := make([]interface{}, len(current))
+            for index, child := range current {
+                normalized, err := lamSchemaNormalizeYAML(child)
+                if err != nil { return nil, err }
+                out[index] = normalized
+            }
+            return out, nil
         default:
-            loader = gojsonschema.NewGoLoader(v)
+            return value, nil
         }
-        result, err := s.Validate(loader)
-        if err != nil {
-            return []string{"validate: " + err.Error()}
-        }
-        if result.Valid() {
-            return nil
-        }
-        out := make([]string, 0, len(result.Errors()))
-        for _, e := range result.Errors() {
-            out = append(out, e.String())
-        }
-        return out
     }
 
-    // lamSchemaIsValidJSON is a low-cost shape-only sanity check used
-    // by the boolean entry points before invoking the schema engine.
-    func lamSchemaIsValidJSON(s string) bool {
-        var v interface{}
-        return json.Unmarshal([]byte(s), &v) == nil
+    func lamSchemaYAMLToJSON(source string) (string, error) {
+        var raw interface{}
+        if err := yaml.Unmarshal([]byte(source), &raw); err != nil { return "", err }
+        normalized, err := lamSchemaNormalizeYAML(raw)
+        if err != nil { return "", err }
+        encoded, err := json.Marshal(normalized)
+        if err != nil { return "", err }
+        return string(encoded), nil
+    }
+
+    func lamSchemaValidateYAML(schemaText string, document string) *lamSchemaFailure {
+        var rawSchema interface{}
+        if err := yaml.Unmarshal([]byte(schemaText), &rawSchema); err != nil {
+            return &lamSchemaFailure{
+                kind: "SchemaParseError",
+                message: "schema is not valid YAML: " + err.Error(),
+                cause: map[string]interface{}{"backend": "yaml", "target": "schema"},
+            }
+        }
+        normalizedSchema, err := lamSchemaNormalizeYAML(rawSchema)
+        if err != nil {
+            return &lamSchemaFailure{
+                kind: "SchemaParseError",
+                message: "schema is not JSON-compatible YAML: " + err.Error(),
+                cause: map[string]interface{}{"backend": "yaml", "target": "schema"},
+            }
+        }
+        encodedSchema, err := json.Marshal(normalizedSchema)
+        if err != nil {
+            return &lamSchemaFailure{
+                kind: "SchemaCompileError",
+                message: "YAML schema encoding failed: " + err.Error(),
+                cause: map[string]interface{}{"backend": "yaml", "target": "schema"},
+            }
+        }
+        compiled, failure := lamSchemaCompileText(string(encodedSchema))
+        if failure != nil { return failure }
+
+        var rawDocument interface{}
+        if err = yaml.Unmarshal([]byte(document), &rawDocument); err != nil {
+            return &lamSchemaFailure{
+                kind: "SchemaParseError",
+                message: "document is not valid YAML: " + err.Error(),
+                cause: map[string]interface{}{"backend": "yaml", "target": "document"},
+            }
+        }
+        normalizedDocument, err := lamSchemaNormalizeYAML(rawDocument)
+        if err != nil {
+            return &lamSchemaFailure{
+                kind: "SchemaParseError",
+                message: "document is not JSON-compatible YAML: " + err.Error(),
+                cause: map[string]interface{}{"backend": "yaml", "target": "document"},
+            }
+        }
+        result, err := compiled.Validate(gojsonschema.NewGoLoader(normalizedDocument))
+        if err != nil {
+            return &lamSchemaFailure{
+                kind: "SchemaValidationError",
+                message: "YAML document validation failed: " + err.Error(),
+                cause: map[string]interface{}{"backend": "yaml", "target": "document"},
+            }
+        }
+        return lamSchemaValidationFailure(result)
+    }
+
+    func lamSchemaRejectExternalXSD(source string) error {
+        decoder := xml.NewDecoder(strings.NewReader(source))
+        for {
+            token, err := decoder.Token()
+            if err == io.EOF { return nil }
+            if err != nil { return err }
+            start, ok := token.(xml.StartElement)
+            if !ok || start.Name.Space != "http://www.w3.org/2001/XMLSchema" {
+                continue
+            }
+            if start.Name.Local == "include" || start.Name.Local == "import" || start.Name.Local == "redefine" {
+                return fmt.Errorf("external XSD includes, imports, and redefines are disabled")
+            }
+        }
+    }
+
+    func lamSchemaCompileXSD(source string) (*xmlparser.Schema, *lamSchemaFailure) {
+        if err := lamSchemaRejectExternalXSD(source); err != nil {
+            return nil, &lamSchemaFailure{
+                kind: "SchemaCompileError",
+                message: "XSD compilation failed: " + err.Error(),
+                cause: map[string]interface{}{"backend": "xsd", "target": "schema"},
+            }
+        }
+        lamSchemaMu.RLock()
+        compiled := lamSchemaXSDByText[source]
+        lamSchemaMu.RUnlock()
+        if compiled != nil { return compiled, nil }
+
+        parsed, err := xmlparser.ParseXSD([]byte(source))
+        if err != nil {
+            return nil, &lamSchemaFailure{
+                kind: "SchemaCompileError",
+                message: "XSD compilation failed: " + err.Error(),
+                cause: map[string]interface{}{"backend": "xsd", "target": "schema"},
+            }
+        }
+        lamSchemaMu.Lock()
+        if len(lamSchemaXSDByText) >= lamSchemaCacheLimit {
+            lamSchemaXSDByText = map[string]*xmlparser.Schema{}
+        }
+        lamSchemaXSDByText[source] = parsed
+        lamSchemaMu.Unlock()
+        return parsed, nil
+    }
+
+    func lamSchemaValidateXML(schemaText string, document string) *lamSchemaFailure {
+        compiled, failure := lamSchemaCompileXSD(schemaText)
+        if failure != nil { return failure }
+        parsed, err := xmlparser.Parse([]byte(document))
+        if err != nil {
+            return &lamSchemaFailure{
+                kind: "SchemaParseError",
+                message: "document is not valid XML: " + err.Error(),
+                cause: map[string]interface{}{"backend": "xml", "target": "document"},
+            }
+        }
+        if err = compiled.Validate(parsed); err != nil {
+            issues := []interface{}{map[string]interface{}{
+                "description": err.Error(),
+                "backend": "xsd",
+            }}
+            if validation, ok := err.(*xmlparser.ValidationError); ok {
+                issues = make([]interface{}, 0, len(validation.Errors))
+                for _, message := range validation.Errors {
+                    issues = append(issues, map[string]interface{}{
+                        "description": message,
+                        "backend": "xsd",
+                    })
+                }
+            }
+            return &lamSchemaFailure{
+                kind: "SchemaValidationError",
+                message: fmt.Sprintf("XML document does not satisfy XSD (%d issue(s))", len(issues)),
+                cause: issues,
+            }
+        }
+        return nil
+    }
+
+    func lamSchemaFailureMessages(failure *lamSchemaFailure) []string {
+        if failure == nil { return nil }
+        messages := []string{}
+        if issues, ok := failure.cause.([]interface{}); ok {
+            for _, raw := range issues {
+                if issue, ok := raw.(map[string]interface{}); ok {
+                    if description, ok := issue["description"].(string); ok {
+                        messages = append(messages, description)
+                    }
+                }
+            }
+        }
+        if len(messages) == 0 { messages = append(messages, failure.message) }
+        return messages
+    }
+
+    func lamSchemaFailureResult(failure *lamSchemaFailure) *Result {
+        return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+            failure.kind, failure.message, failure.cause,
+        ))
+    }
+
+    func lamSchemaFormatFailure(format string) *Result {
+        return lamSchemaFailureResult(&lamSchemaFailure{
+            kind: "SchemaFormatError",
+            message: fmt.Sprintf("unsupported schema format %q; expected json, yaml, or xml", format),
+            cause: map[string]interface{}{"format": format},
+        })
     }
 }
 
 class Schema {
-    #- Compile a schema text and cache it under ``key``. Subsequent
-       ``validateByKey`` calls bypass parsing and run straight against
-       the compiled schema. Returns an error message on bad schemas;
-       an empty string on success. -#
-    static func register(key: str, schemaText: str) -> str {
-        out: str = ""
+    static func validate(schema: str, document: str, format: str = "json") -> Result[str] {
         go! {
-            s, err := lamSchemaCompileText(schemaText)
-            if err != nil {
-                out = "compile: " + err.Error()
-            } else {
-                lamSchemaMu.Lock()
-                lamSchemaByKey[key] = &schemaEntry{schema: s, err: nil}
-                lamSchemaMu.Unlock()
+            var failure *lamSchemaFailure
+            switch format {
+            case "json":
+                failure = lamSchemaValidateText(schema, document)
+            case "yaml":
+                failure = lamSchemaValidateYAML(schema, document)
+            case "xml":
+                failure = lamSchemaValidateXML(schema, document)
+            default:
+                return lamSchemaFormatFailure(format)
             }
-        }
-        return out
-    }
-
-    #- Validate a JSON document text against an inline schema. Returns
-       true if the document is valid. For diagnostic detail, prefer
-       ``errors`` or ``errorsByKey``. -#
-    static func validateJson(schemaText: str, jsonDoc: str) -> bool {
-        ok: bool = false
-        go! {
-            if s, err := lamSchemaCompileText(schemaText); err == nil {
-                ok = len(lamSchemaErrorList(s, jsonDoc)) == 0
+            if failure != nil {
+                return lamSchemaFailureResult(failure)
             }
+            return LAMMERGEIER.Result.Ok(document)
         }
-        return ok
     }
 
-    #- Validate using a previously ``register``ed schema. Saves the
-       compile cost on the hot path. -#
-    static func validateByKey(key: str, jsonDoc: str) -> bool {
-        ok: bool = false
+    static func validate(schema: str, document: json) -> Result[json] {
         go! {
-            if s, err := lamSchemaResolveKey(key); err == nil {
-                ok = len(lamSchemaErrorList(s, jsonDoc)) == 0
+            if failure := lamSchemaValidateValue(schema, document); failure != nil {
+                return lamSchemaFailureResult(failure)
             }
+            return LAMMERGEIER.Result.Ok(document)
         }
-        return ok
     }
 
-    #- Validate an already-decoded value (e.g. the result of
-       ``Json.decode`` or ``req.jsonBody()``) against an inline
-       schema, avoiding the JSON round-trip. -#
-    static func validateValue(schemaText: str, value: json) -> bool {
-        ok: bool = false
+    static func validate(schema: json, document: str) -> Result[str] {
         go! {
-            if s, err := lamSchemaCompileText(schemaText); err == nil {
-                ok = len(lamSchemaValidateAny(s, lamJSONRaw(value))) == 0
+            schemaText, failure := lamSchemaText(schema)
+            if failure != nil {
+                return lamSchemaFailureResult(failure)
             }
-        }
-        return ok
-    }
-
-    #- Same as ``validateValue`` but resolves the schema by key. -#
-    static func validateValueByKey(key: str, value: json) -> bool {
-        ok: bool = false
-        go! {
-            if s, err := lamSchemaResolveKey(key); err == nil {
-                ok = len(lamSchemaValidateAny(s, lamJSONRaw(value))) == 0
+            if failure = lamSchemaValidateText(schemaText, document); failure != nil {
+                return lamSchemaFailureResult(failure)
             }
+            return LAMMERGEIER.Result.Ok(document)
         }
-        return ok
     }
 
-    #- Return the list of human-readable validation errors for an
-       inline schema. Empty list = valid. -#
-    static func errors(schemaText: str, jsonDoc: str) -> list[str] {
-        out: list[str] = []
+    static func validate(schema: json, document: json) -> Result[json] {
         go! {
-            if s, err := lamSchemaCompileText(schemaText); err != nil {
-                out = []string{"compile: " + err.Error()}
-            } else {
-                out = lamSchemaErrorList(s, jsonDoc)
-                if out == nil { out = []string{} }
+            schemaText, failure := lamSchemaText(schema)
+            if failure != nil {
+                return lamSchemaFailureResult(failure)
             }
-        }
-        return out
-    }
-
-    #- Return the list of validation errors for a registered schema. -#
-    static func errorsByKey(key: str, jsonDoc: str) -> list[str] {
-        out: list[str] = []
-        go! {
-            if s, err := lamSchemaResolveKey(key); err != nil {
-                out = []string{err.Error()}
-            } else {
-                out = lamSchemaErrorList(s, jsonDoc)
-                if out == nil { out = []string{} }
+            if failure = lamSchemaValidateValue(schemaText, document); failure != nil {
+                return lamSchemaFailureResult(failure)
             }
+            return LAMMERGEIER.Result.Ok(document)
         }
-        return out
-    }
-
-    #- Convenience: ``true`` if the input is syntactically valid JSON
-       (no schema). Useful as a cheap pre-check before throwing the
-       full validator at a request body. -#
-    static func isJson(s: str) -> bool {
-        ok: bool = false
-        go! {
-            ok = lamSchemaIsValidJSON(s)
-        }
-        return ok
-    }
-
-    #- Drop a registration. Returns true if a key existed. -#
-    static func unregister(key: str) -> bool {
-        existed: bool = false
-        go! {
-            lamSchemaMu.Lock()
-            _, existed = lamSchemaByKey[key]
-            delete(lamSchemaByKey, key)
-            lamSchemaMu.Unlock()
-        }
-        return existed
     }
 }
 
 func main() {
-    #- Self-test when run directly. -#
-    schemaText: str = "{\"type\":\"object\",\"required\":[\"name\"],\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1}}}"
-    print(Schema.validateJson(schemaText, "{\"name\":\"alice\"}"))
-    print(Schema.validateJson(schemaText, "{}"))
-    errors: list[str] = Schema.errors(schemaText, "{}")
-    n: int = len(errors)
-    print(f"errors: {n}")
+    pass
 }

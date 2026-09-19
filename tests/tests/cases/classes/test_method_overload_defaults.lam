@@ -1,0 +1,17 @@
+# expect: text:Ada!
+# expect: number:7
+
+class Reporter {
+    static func emit(value: str, suffix: str = "!") -> str {
+        return f"text:{value}{suffix}"
+    }
+
+    static func emit(value: int) -> str {
+        return f"number:{value}"
+    }
+}
+
+func main() {
+    print(Reporter.emit("Ada"))
+    print(Reporter.emit(7))
+}

@@ -53,7 +53,7 @@ func main() {
         }
     }
 
-    levelNames: list[str] = Sort.strings(levels)
+    levelNames: list[str] = Sort.sort(levels)
 
     avg: int = int(Stats.mean(latencies))
     maxMs: int = int(Stats.maxVal(latencies))

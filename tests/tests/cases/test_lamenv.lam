@@ -5,6 +5,16 @@
 # expect: EMPTY=
 # expect: loaded=5
 # expect: NAME env=alice
+# expect: missing env=fallback
+# expect: present env=alice
+# expect: typed int=41
+# expect: typed float=2.5
+# expect: typed bool=true
+# expect: typed fallbacks=7,1.25,true
+# expect: typed defaults ok
+# expect: typed try=41,2.5,true
+# expect: typed try errors=ParseError,ParseError,ParseError
+# expect: typed try missing=ParseError
 # expect: title=Example
 # expect: db.host=localhost
 # expect: db.port=5432
@@ -14,7 +24,7 @@
 # expect: merged.NAME=alice
 
 from lamenv import Env, Dotenv, Config
-from lamos import Os
+from lamerrors import Result, Error
 
 go! {
     import "os"
@@ -54,6 +64,45 @@ func main() {
     loaded: int = Dotenv.load(dir + "/.env")
     print(f"loaded={loaded}")
     print(f"NAME env={Env.get('NAME')}")
+    print(f"missing env={Env.getOr('_LAMENV_MISSING', 'fallback')}")
+    print(f"present env={Env.getOr('NAME', 'fallback')}")
+
+    Env.set("_LAMENV_TYPED_INT", "41")
+    Env.set("_LAMENV_TYPED_FLOAT", "2.5")
+    Env.set("_LAMENV_TYPED_BOOL", "true")
+    Env.set("_LAMENV_TYPED_INVALID", "not-a-value")
+    Env.set("_LAMENV_TYPED_EMPTY", "")
+    Env.unset("_LAMENV_TYPED_MISSING")
+
+    print(f"typed int={Env.getInt('_LAMENV_TYPED_INT', -1)}")
+    print(f"typed float={Env.getFloat('_LAMENV_TYPED_FLOAT', -1.0)}")
+    print(f"typed bool={Env.getBool('_LAMENV_TYPED_BOOL', false)}")
+    missingInt: int = Env.getInt("_LAMENV_TYPED_MISSING", 7)
+    emptyFloat: float = Env.getFloat("_LAMENV_TYPED_EMPTY", 1.25)
+    invalidBool: bool = Env.getBool("_LAMENV_TYPED_INVALID", true)
+    print(f"typed fallbacks={missingInt},{emptyFloat},{invalidBool}")
+    defaultIntOk: bool = Env.getInt("_LAMENV_TYPED_MISSING") == 0
+    defaultFloatOk: bool = Env.getFloat("_LAMENV_TYPED_EMPTY") == 0.0
+    defaultBoolOk: bool = not Env.getBool("_LAMENV_TYPED_INVALID")
+    if defaultIntOk and defaultFloatOk and defaultBoolOk {
+        print("typed defaults ok")
+    }
+
+    intResult: Result[int] = Env.tryGetInt("_LAMENV_TYPED_INT")
+    floatResult: Result[float] = Env.tryGetFloat("_LAMENV_TYPED_FLOAT")
+    boolResult: Result[bool] = Env.tryGetBool("_LAMENV_TYPED_BOOL")
+    print(f"typed try={intResult.value},{floatResult.value},{boolResult.value}")
+
+    badInt: Result[int] = Env.tryGetInt("_LAMENV_TYPED_INVALID")
+    badFloat: Result[float] = Env.tryGetFloat("_LAMENV_TYPED_INVALID")
+    badBool: Result[bool] = Env.tryGetBool("_LAMENV_TYPED_INVALID")
+    intError: Error = badInt.error
+    floatError: Error = badFloat.error
+    boolError: Error = badBool.error
+    print(f"typed try errors={intError.kind},{floatError.kind},{boolError.kind}")
+    missingResult: Result[int] = Env.tryGetInt("_LAMENV_TYPED_MISSING")
+    missingError: Error = missingResult.error
+    print(f"typed try missing={missingError.kind}")
 
     toml: dict[str, any] = Config.load(dir + "/config.toml")
     print(f"title={toml['title']}")

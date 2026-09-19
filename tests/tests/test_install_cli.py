@@ -353,6 +353,27 @@ def test_path_install_works_offline() -> None:
     print("PASS: path-based install works offline")
 
 
+def test_nested_scoped_install_survives_parent_upgrade() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        ext = root / "extlibs"
+        parent_v1 = _make_lib(root, "@lam/vulture", "1.0.0")
+        plugin = _make_lib(root, "@lam/vulture/ws-plugin", "1.0.0")
+        parent_v2 = _make_lib(root, "@lam/vulture", "1.0.1")
+
+        for source in (parent_v1, plugin, parent_v2):
+            proc = subprocess.run(
+                LAMC + ["install", "--global", "--allow-breaking",
+                        "--extlibs-dir", str(ext), str(source)],
+                capture_output=True, text=True,
+            )
+            assert proc.returncode == 0, proc.stderr
+
+        assert (ext / "@lam" / "vulture" / "__init__.lam").exists()
+        assert (ext / "@lam" / "vulture" / "ws-plugin" / "__init__.lam").exists()
+    print("PASS: nested scoped package survives parent package upgrade")
+
+
 def test_lockfile_v1_schema_fields() -> None:
     """The lockfile carries the v1 markers we rely on:
 
@@ -773,6 +794,7 @@ def main() -> int:
         test_uninstall_removes_tree_and_lock_pin,
         test_semver_gate_blocks_silent_break,
         test_path_install_works_offline,
+        test_nested_scoped_install_survives_parent_upgrade,
         test_lockfile_v1_schema_fields,
         test_bare_install_reads_project_manifest,
         test_install_spec_writes_manifest_dependency,

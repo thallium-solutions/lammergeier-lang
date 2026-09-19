@@ -272,6 +272,29 @@ def test_tidy_refuses_when_import_not_installed() -> None:
     print("PASS: tidy refuses to add a not-yet-installed import")
 
 
+# ── tidy: package-internal imports aren't dependencies ───────
+
+def test_tidy_ignores_self_and_relative_imports() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = Path(tmp)
+        _write(proj / "lamlib.toml", textwrap.dedent("""
+            [library]
+            name = "@lam/vulture/std-plugin"
+            version = "1.0.0"
+        """).lstrip())
+        _write(proj / "__init__.lam", "from .impl import tag\n")
+        _write(proj / "impl.lam", "func tag() -> str { return \"ok\" }\n")
+        _write(proj / "tests" / "test_package.lam", (
+            "from @lam/vulture/std-plugin import tag\n"
+            "func main() { print(tag()) }\n"
+        ))
+
+        result = _run("tidy", "--check", cwd=proj)
+        assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+        assert "already in sync" in result.stdout, result.stdout
+    print("PASS: tidy ignores self and explicit relative imports")
+
+
 # ── tidy: stdlib imports don't trip the missing-dep path ─────
 
 def test_tidy_ignores_stdlib_imports() -> None:
@@ -332,6 +355,51 @@ def test_verify_passes_on_clean_install() -> None:
         assert "lamver_a" in r.stdout, r.stdout
         assert "all" in r.stdout, r.stdout
     print("PASS: verify reports clean on an untampered install")
+
+
+# ── verify: nested packages don't drift their parent ─────────
+
+def test_verify_nested_scoped_packages_independently() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        core = _make_lib(root, "@lam/vulture", "1.0.0")
+        plugin = root / "plugin"
+        plugin.mkdir()
+        _write(plugin / "lamlib.toml", textwrap.dedent("""
+            [library]
+            name = "@lam/vulture/ws-plugin"
+            version = "1.0.0"
+
+            [dependencies]
+            "@lam/vulture" = { git = "https://example.invalid/lam-vulture.git", ref = "v1.0.0" }
+        """).lstrip())
+        _write(plugin / "__init__.lam", (
+            "from @lam/vulture import tag\n"
+            "func pluginTag() -> str { return tag() }\n"
+        ))
+        project = root / "project"
+        project.mkdir()
+        _write(project / "lamlib.toml", textwrap.dedent(f"""
+            [library]
+            name = "nested_verify"
+            version = "0.1.0"
+
+            [dependencies]
+            "@lam/vulture/ws-plugin" = {{ path = "{plugin}" }}
+
+            [replace]
+            "@lam/vulture" = {{ path = "{core}" }}
+        """).lstrip())
+
+        installed = _run("install", "-q", cwd=project)
+        assert installed.returncode == 0, (installed.returncode, installed.stderr)
+        verified = _run("verify", cwd=project)
+        assert verified.returncode == 0, (
+            verified.returncode, verified.stdout, verified.stderr
+        )
+        assert "@lam/vulture" in verified.stdout
+        assert "@lam/vulture/ws-plugin" in verified.stdout
+    print("PASS: verify hashes nested scoped packages independently")
 
 
 # ── verify: catches on-disk tampering ───────────────────────
@@ -442,8 +510,10 @@ def main() -> int:
         test_tidy_removes_unused_dep,
         test_tidy_check_exits_nonzero_on_diff,
         test_tidy_refuses_when_import_not_installed,
+        test_tidy_ignores_self_and_relative_imports,
         test_tidy_ignores_stdlib_imports,
         test_verify_passes_on_clean_install,
+        test_verify_nested_scoped_packages_independently,
         test_verify_catches_tampering,
         test_verify_catches_missing_install,
         test_verify_fails_without_lockfile,

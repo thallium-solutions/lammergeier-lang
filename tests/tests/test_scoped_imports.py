@@ -84,6 +84,25 @@ def test_parser_accepts_case_preserving_scope() -> None:
     print("PASS: parser preserves scoped package casing")
 
 
+def test_parser_accepts_nested_scoped_import() -> None:
+    """Official package families can add path segments after the package
+    root without giving up the scoped namespace."""
+    from compiler.lammergeier import auto_semicolons, create_parser
+    from lark import Tree
+    parser = create_parser()
+    pre = auto_semicolons(
+        "from @lam/vulture/std-plugin import requestLog\n"
+    )
+    tree = parser.parse(pre + "\n")
+    scoped = [
+        str(node.children[0])
+        for node in tree.iter_subtrees_topdown()
+        if isinstance(node, Tree) and node.data == "scoped_name"
+    ]
+    assert scoped == ["@lam/vulture/std-plugin"], scoped
+    print("PASS: parser accepts nested scoped package paths")
+
+
 # ── Resolution + compile end-to-end ─────────────────────────
 
 def _write_lib(extlibs: Path, scoped_name: str, body: str) -> Path:
@@ -131,6 +150,119 @@ def test_scoped_lib_resolves_and_runs() -> None:
         assert proc.stdout.strip() == "hi-from-scoped", \
             f"got: {proc.stdout!r}"
     print("PASS: scoped library resolves + runs")
+
+
+def test_nested_scoped_lib_resolves_and_runs() -> None:
+    """Nested package paths resolve beneath the scoped package root."""
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        ext = d / "extlibs"
+        _write_lib(ext, "@lam/vulture/std-plugin",
+                   "func pluginTag() -> str { return 'std-plugin' }\n")
+        main = _write_main(d, (
+            "from @lam/vulture/std-plugin import pluginTag\n"
+            "func main() { print(pluginTag()) }\n"
+        ))
+        proc = _compile(main, ext)
+        assert proc.returncode == 0, \
+            f"compile failed: {proc.stdout}\n{proc.stderr}"
+        assert proc.stdout.strip() == "std-plugin", proc.stdout
+    print("PASS: nested scoped library resolves + runs")
+
+
+def test_nested_scoped_reexport_keeps_leaf_context() -> None:
+    """A package re-export must transpile its relative leaf as that leaf.
+
+    This covers defaulted parameters referenced by raw Go, an underscore-private
+    helper class in the same leaf, and compact grouped Go imports.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        ext = d / "extlibs"
+        init = _write_lib(ext, "@lam/vulture/std-plugin",
+                          "from .impl import configure\n")
+        (ext / "dependency.lam").write_text(
+            "class Dependency {\n"
+            "    func __init__(self, value: int, increment: int = 5) {\n"
+            "        self.value: int = value\n"
+            "        self.increment: int = increment\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (init.parent / "impl.lam").write_text(
+            "from dependency import Dependency\n"
+            "go! { import ( \"fmt\" ) }\n"
+            "class _Hooks {\n"
+            "    func __init__(self, offset: int) { self.offset: int = offset }\n"
+            "}\n"
+            "func configure(value: int = 7) {\n"
+            "    #- The spaced terminator must not consume this function body.\n"
+            "    -  #\n"
+            "    hooks: _Hooks = _Hooks(value)\n"
+            "    dependency: Dependency = Dependency(value)\n"
+            "    go! { fmt.Println(value + hooks.Offset + dependency.Increment) }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        main = _write_main(d, (
+            "from @lam/vulture/std-plugin import configure\n"
+            "func main() { configure() }\n"
+        ))
+        proc = _compile(main, ext)
+        assert proc.returncode == 0, f"compile failed: {proc.stdout}\n{proc.stderr}"
+        assert proc.stdout.strip() == "19", proc.stdout
+    print("PASS: nested scoped re-export preserves leaf transpilation context")
+
+
+def test_distinct_packages_can_reexport_same_relative_leaf_name() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        ext = d / "extlibs"
+        alpha = _write_lib(ext, "@alice/alpha", "from .impl import alphaValue\n")
+        beta = _write_lib(ext, "@bob/beta", "from .impl import betaValue\n")
+        (alpha.parent / "impl.lam").write_text(
+            "func alphaValue() -> str { return \"alpha\" }\n", encoding="utf-8")
+        (beta.parent / "impl.lam").write_text(
+            "func betaValue() -> str { return \"beta\" }\n", encoding="utf-8")
+        main = _write_main(d, (
+            "from @alice/alpha import alphaValue\n"
+            "from @bob/beta import betaValue\n"
+            "func main() { print(alphaValue() + \"-\" + betaValue()) }\n"
+        ))
+        proc = _compile(main, ext)
+        assert proc.returncode == 0, f"compile failed: {proc.stdout}\n{proc.stderr}"
+        assert proc.stdout.strip() == "alpha-beta", proc.stdout
+    print("PASS: package-relative leaf names are resolved by physical module")
+
+
+def test_imported_library_calls_external_instance_overload() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        ext = d / "extlibs"
+        ext.mkdir()
+        (ext / "client.lam").write_text(
+            "class Client {\n"
+            "    func send(self, value: str) -> str { return \"str:\" + value }\n"
+            "    func send(self, value: int) -> str { return \"int:\" + str(value) }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        _write_lib(ext, "@alice/wrapper", (
+            "from client import Client\n"
+            "class Wrapper {\n"
+            "    func __init__(self) { self.client: Client = Client() }\n"
+            "    func emit(self) -> str { return self.client.send(7) }\n"
+            "}\n"
+        ))
+        main = _write_main(d, (
+            "from @alice/wrapper import Wrapper\n"
+            "func main() { print(Wrapper().emit()) }\n"
+        ))
+        proc = _compile(main, ext)
+        assert proc.returncode == 0, f"compile failed: {proc.stdout}\n{proc.stderr}"
+        assert proc.stdout.strip() == "int:7", proc.stdout
+    print("PASS: imported libraries resolve external instance overloads")
 
 
 def test_two_scoped_libs_in_same_program() -> None:
@@ -245,7 +377,12 @@ def main() -> int:
     tests = [
         test_parser_accepts_scoped_import,
         test_parser_accepts_case_preserving_scope,
+        test_parser_accepts_nested_scoped_import,
         test_scoped_lib_resolves_and_runs,
+        test_nested_scoped_lib_resolves_and_runs,
+        test_nested_scoped_reexport_keeps_leaf_context,
+        test_distinct_packages_can_reexport_same_relative_leaf_name,
+        test_imported_library_calls_external_instance_overload,
         test_two_scoped_libs_in_same_program,
         test_scoped_lib_alongside_plain_lib,
         test_mixed_case_scoped_and_file_modules_run,

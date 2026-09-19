@@ -31,7 +31,7 @@ def _run_case(path: Path) -> tuple[bool, str]:
     with tempfile.TemporaryDirectory(prefix="lamotel_test_") as tmp:
         binary = Path(tmp) / "test_binary"
         compile_proc = subprocess.run(
-            [PYTHON, str(COMPILER), str(path), "--extlibs", str(LIB_ROOT.parent), "-o", str(binary)],
+            [PYTHON, str(COMPILER), str(path), "--extlibs", str(LIB_ROOT.parent), "--no-cache", "-o", str(binary)],
             cwd=str(PROJECT_ROOT),
             capture_output=True,
             text=True,

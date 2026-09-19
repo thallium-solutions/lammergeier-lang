@@ -1,0 +1,10 @@
+# expect-error: custom class `Image` requires explicit conversion with `json(value)`
+
+class Image {
+    func __json__(self) -> json { return {"width": 10} }
+}
+
+func main() {
+    value: json = Image()
+    print(value)
+}

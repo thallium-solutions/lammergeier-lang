@@ -207,6 +207,17 @@ class StatementVisitorMixin:
                     value_str = self._typed_value_to_go(value_node, "LamJSON")
                     self._emit(f"lamJSONSet({self._expr_to_go(obj_node)}, {self._expr_to_go(index_node)}, {value_str})")
                     return
+                class_name = self._infer_expr_class(obj_node)
+                method = self._get_dunder_method(class_name, "__setitem__") if class_name else ""
+                if method:
+                    method_key = f"{class_name}.__setitem__"
+                    param_types = self._func_param_go_types.get(method_key, [])
+                    key_type = param_types[0] if param_types else "interface{}"
+                    value_type = param_types[1] if len(param_types) > 1 else "interface{}"
+                    key_str = self._typed_value_to_go(index_node, key_type)
+                    value_str = self._typed_value_to_go(value_node, value_type)
+                    self._emit(f"{self._expr_to_go(obj_node)}.{method}({key_str}, {value_str})")
+                    return
             if isinstance(target_node, Tree) and target_node.data == "getattr":
                 obj_node = target_node.children[0]
                 if self._expr_go_type_hint(obj_node) == "LamJSON":
@@ -878,6 +889,12 @@ class StatementVisitorMixin:
         if isinstance(func, Tree) and func.data == "var":
             name = self._get_name(func.children[0])
             return name in self._generator_functions
+        if isinstance(func, Tree) and func.data == "getattr" and len(func.children) >= 2:
+            receiver = func.children[0]
+            if isinstance(receiver, Tree) and receiver.data == "var" and receiver.children:
+                class_name = self._get_name(receiver.children[0])
+                method_name = self._get_name(func.children[1])
+                return f"{class_name}.{method_name}" in self._generator_functions
         return False
 
     def _split_tuple_target(self, target_node):

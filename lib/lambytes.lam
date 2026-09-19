@@ -1,11 +1,10 @@
 # Lammergeier standard library: bytes/buffer utilities
 # Import with: from lambytes import Bytes
 
+from lamstrings import Strings
+
 go! {
-    import (
-        "bytes"
-        "encoding/hex"
-    )
+    import "encoding/hex"
 }
 
 class Bytes {
@@ -46,15 +45,11 @@ class Bytes {
     }
 
     static func contains(data: str, sub: str) -> bool {
-        go! {
-            return bytes.Contains([]byte(data), []byte(sub))
-        }
+        return Strings.contains(data, sub)
     }
 
     static func count(data: str, sub: str) -> int {
-        go! {
-            return bytes.Count([]byte(data), []byte(sub))
-        }
+        return Strings.count(data, sub)
     }
 }
 

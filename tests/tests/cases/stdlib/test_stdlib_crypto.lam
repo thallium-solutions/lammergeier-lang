@@ -1,0 +1,148 @@
+# Test: practical cryptography helpers and their recoverable error paths.
+# No generated keys, password hashes, ciphertext, or signatures are printed.
+# expect: PASS 1 randomBytes length
+# expect: PASS 2 randomBytes values
+# expect: PASS 3 randomBytes zero
+# expect: PASS 4 randomToken shape
+# expect: PASS 5 randomHex shape
+# expect: PASS 6 random count validation
+# expect: PASS 7 AES key validation
+# expect: PASS 8 AES byte validation
+# expect: PASS 9 AES envelope version
+# expect: PASS 10 AES round trip with AAD
+# expect: PASS 11 AES tamper rejected
+# expect: PASS 12 AES wrong AAD rejected
+# expect: PASS 13 AES wrong key rejected
+# expect: PASS 14 AES invalid key result
+# expect: PASS 15 AES envelope validation
+# expect: PASS 16 constant-time equality true
+# expect: PASS 17 constant-time equality false
+# expect: PASS 18 password hash format
+# expect: PASS 19 password verifies
+# expect: PASS 20 wrong password rejected
+# expect: PASS 21 malformed password hash result
+# expect: PASS 22 PBKDF2 iteration validation
+# expect: PASS 23 Ed25519 metadata
+# expect: PASS 24 Ed25519 PEM shape
+# expect: PASS 25 Ed25519 sign verify
+# expect: PASS 26 Ed25519 changed message rejected
+# expect: PASS 27 invalid signing key result
+# expect: PASS 28 RSA size validation
+# expect: PASS 29 RSA metadata
+# expect: PASS 30 RSA PEM shape
+# expect: PASS 31 RSA sign verify
+# expect: PASS 32 RSA changed message rejected
+# expect: PASS 33 certificate common name
+# expect: PASS 34 certificate serial
+# expect: PASS 35 certificate subject
+# expect: PASS 36 certificate DNS SANs
+# expect: PASS 37 certificate email and IP SANs
+# expect: PASS 38 certificate CA metadata
+# expect: PASS 39 certificate algorithm metadata
+# expect: PASS 40 certificate fingerprint
+# expect: PASS 41 certificate date metadata
+# expect: PASS 42 invalid certificate result
+# expect: 42 passed, 0 failed, 42 total
+
+from lamcrypto import Crypto, CryptoKeyPair, CryptoCertificate
+from lamtest import Test
+
+func main() {
+    random: list[int] = Crypto.randomBytes(24)
+    Test.assertLen(random, 24, "1 randomBytes length")
+    valuesOk: bool = true
+    for value in random {
+        if value < 0 or value > 255 {
+            valuesOk = false
+        }
+    }
+    Test.assertTrue(valuesOk, "2 randomBytes values")
+    Test.assertLen(Crypto.randomBytes(0), 0, "3 randomBytes zero")
+    token: str = Crypto.randomToken(12)
+    Test.assertTrue(len(token) == 16 and not token.contains("="), "4 randomToken shape")
+    randomHex: str = Crypto.randomHex(12)
+    Test.assertTrue(len(randomHex) == 24, "5 randomHex shape")
+    Test.assertFalse(Crypto.tryRandomBytes(-1).ok(), "6 random count validation")
+
+    key: list[int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                            16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    wrongKey: list[int] = [31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16,
+                                 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+    Test.assertTrue(Crypto.isAesKey(key), "7 AES key validation")
+    Test.assertFalse(Crypto.isAesKey([0, 1, 256, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]), "8 AES byte validation")
+    envelope: str = Crypto.encrypt("payment=42", key, "account:alice")
+    Test.assertTrue(envelope.startsWith("lamcrypto:v1:"), "9 AES envelope version")
+    Test.assertEqual(Crypto.decrypt(envelope, key, "account:alice"), "payment=42", "10 AES round trip with AAD")
+    replacement: str = "A"
+    if envelope.endsWith("A") {
+        replacement = "B"
+    }
+    tampered: str = ""
+    go! { tampered = envelope[:len(envelope)-1] + replacement }
+    Test.assertFalse(Crypto.tryDecrypt(tampered, key, "account:alice").ok(), "11 AES tamper rejected")
+    Test.assertFalse(Crypto.tryDecrypt(envelope, key, "account:bob").ok(), "12 AES wrong AAD rejected")
+    Test.assertFalse(Crypto.tryDecrypt(envelope, wrongKey, "account:alice").ok(), "13 AES wrong key rejected")
+    Test.assertFalse(Crypto.tryEncrypt("x", [1, 2, 3], "").ok(), "14 AES invalid key result")
+    Test.assertFalse(Crypto.tryDecrypt("lamcrypto:v2:AAAA", key, "").ok(), "15 AES envelope validation")
+
+    Test.assertTrue(Crypto.constantTimeEquals("same-secret", "same-secret"), "16 constant-time equality true")
+    Test.assertFalse(Crypto.constantTimeEquals("same-secret", "different"), "17 constant-time equality false")
+
+    stored: str = Crypto.passwordHash("correct horse battery staple", 1000, 8)
+    Test.assertTrue(stored.startsWith("pbkdf2-sha256$1000$"), "18 password hash format")
+    Test.assertTrue(Crypto.verifyPassword("correct horse battery staple", stored), "19 password verifies")
+    Test.assertFalse(Crypto.verifyPassword("wrong password", stored), "20 wrong password rejected")
+    Test.assertFalse(Crypto.tryVerifyPassword("password", "not-a-password-hash").ok(), "21 malformed password hash result")
+    Test.assertFalse(Crypto.tryPasswordHash("password", 999, 16).ok(), "22 PBKDF2 iteration validation")
+
+    ed: CryptoKeyPair = Crypto.generateEd25519KeyPair()
+    Test.assertTrue(ed.algorithm == "Ed25519" and ed.bits == 256, "23 Ed25519 metadata")
+    Test.assertTrue(ed.privateKey.startsWith("-----BEGIN PRIVATE KEY-----") and ed.publicKey.startsWith("-----BEGIN PUBLIC KEY-----"), "24 Ed25519 PEM shape")
+    edSignature: str = Crypto.sign("signed message", ed.privateKey)
+    Test.assertTrue(Crypto.verify("signed message", edSignature, ed.publicKey), "25 Ed25519 sign verify")
+    Test.assertFalse(Crypto.verify("changed message", edSignature, ed.publicKey), "26 Ed25519 changed message rejected")
+    Test.assertFalse(Crypto.trySign("message", "not a private key").ok(), "27 invalid signing key result")
+
+    Test.assertFalse(Crypto.tryGenerateRSAKeyPair(1024).ok(), "28 RSA size validation")
+    rsa: CryptoKeyPair = Crypto.generateRSAKeyPair(2048)
+    Test.assertTrue(rsa.algorithm == "RSA" and rsa.bits == 2048, "29 RSA metadata")
+    Test.assertTrue(rsa.privateKey.startsWith("-----BEGIN PRIVATE KEY-----") and rsa.publicKey.startsWith("-----BEGIN PUBLIC KEY-----"), "30 RSA PEM shape")
+    rsaSignature: str = Crypto.sign("release manifest", rsa.privateKey)
+    Test.assertTrue(Crypto.verify("release manifest", rsaSignature, rsa.publicKey), "31 RSA sign verify")
+    Test.assertFalse(Crypto.verify("changed manifest", rsaSignature, rsa.publicKey), "32 RSA changed message rejected")
+
+    certificatePEM: str = """-----BEGIN CERTIFICATE-----
+MIIDgjCCAmqgAwIBAgIBKjANBgkqhkiG9w0BAQsFADA1MRcwFQYDVQQDDA5sYW1j
+cnlwdG8udGVzdDEaMBgGA1UECgwRTGFtbWVyZ2VpZXIgVGVzdHMwHhcNMjYwOTEz
+MTkwNTM0WhcNMzYwOTEwMTkwNTM0WjA1MRcwFQYDVQQDDA5sYW1jcnlwdG8udGVz
+dDEaMBgGA1UECgwRTGFtbWVyZ2VpZXIgVGVzdHMwggEiMA0GCSqGSIb3DQEBAQUA
+A4IBDwAwggEKAoIBAQClRYsDGY7shtCM6brptPpSZJW0OPxEwitt4IEy5FoGj+1g
+DcKNQlows9P6ewiUj06oPnIn0t1esF5+Etvk0kpF7oBL7sJHhvORk9x8AB979ctF
+sO6S5qhxNcqggbOy8ePo1mZoWP81cfxUa75r2NAjQtugrChulczpfu+1p1ui5xHI
+q1JZ0gP8SZQY4M3NWb3x0shyginIy9Ml9U01ud+QkZdRHehGjfOlpYatPDUtGItc
+RtXs45r6pHExVlIfuj239ZlXWhbInTDVIJKNl4bumy6/cR5/iUnAmwqzr1iNNhh0
+BWh7iGy5MbnXYLHncJAHDHjawK9Gex17Jk4PM0ZNAgMBAAGjgZwwgZkwHQYDVR0O
+BBYEFKrKqjS0aUDQCj0tH+srbXY0mg6MMB8GA1UdIwQYMBaAFKrKqjS0aUDQCj0t
+H+srbXY0mg6MMEkGA1UdEQRCMECCDmxhbWNyeXB0by50ZXN0ghJ3d3cubGFtY3J5
+cHRvLnRlc3SBFGFkbWluQGxhbWNyeXB0by50ZXN0hwR/AAABMAwGA1UdEwEB/wQC
+MAAwDQYJKoZIhvcNAQELBQADggEBAGp/DANe+Sxr/eGha/RHTr6jXlTqxNcujOr4
+nozK3y7ora7H/ZsjAyozhdS7HN7cboTvDbegYbOGiLHnsm+Rn5AS3sDCsrDXXBm8
+XcaYwsKV2P4QbivxVCHGFP8NoSwhPVnkzitxo06QyGPmjAiW5usqnU0fdcv3n+CD
+GMlbDAWp/EG8s8dJ3/DgBBlPO71CZhLEjzyQSjCSCx6TKbXdZwBLXlQgevoeA9NV
+gJOZ4ibuKUaJwW1Gzl8OYnWmDThB13HjtOX035S34HJY+eTRAJmXc0jqFuE1h6VB
+qcGwcxqh6wxbONkCIotUhXIjGkr1CGj8QwCUuXcW7tJYVtgN0VI=
+-----END CERTIFICATE-----"""
+    certificate: CryptoCertificate = Crypto.parseCertificate(certificatePEM)
+    Test.assertEqual(certificate.commonName, "lamcrypto.test", "33 certificate common name")
+    Test.assertEqual(certificate.serialNumber, "42", "34 certificate serial")
+    Test.assertTrue(certificate.subject.contains("Lammergeier Tests"), "35 certificate subject")
+    Test.assertTrue(len(certificate.dnsNames) == 2 and certificate.dnsNames[0] == "lamcrypto.test" and certificate.dnsNames[1] == "www.lamcrypto.test", "36 certificate DNS SANs")
+    Test.assertTrue(len(certificate.emailAddresses) == 1 and certificate.emailAddresses[0] == "admin@lamcrypto.test" and len(certificate.ipAddresses) == 1 and certificate.ipAddresses[0] == "127.0.0.1", "37 certificate email and IP SANs")
+    Test.assertFalse(certificate.isCA, "38 certificate CA metadata")
+    Test.assertTrue(certificate.publicKeyAlgorithm == "RSA" and certificate.signatureAlgorithm == "SHA256-RSA", "39 certificate algorithm metadata")
+    Test.assertTrue(len(certificate.fingerprintSha256) == 64, "40 certificate fingerprint")
+    Test.assertTrue(certificate.notBefore.startsWith("2026-") and certificate.notAfter.startsWith("2036-"), "41 certificate date metadata")
+    Test.assertFalse(Crypto.tryParseCertificate("not a certificate").ok(), "42 invalid certificate result")
+
+    Test.summary()
+}

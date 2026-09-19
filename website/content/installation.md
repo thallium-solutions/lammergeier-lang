@@ -24,7 +24,7 @@ lamc --help                             # verify
 Add the editor extension at the same time:
 
 ```bash
-./install.sh --with-editor all          # VS Code, Cursor, Windsurf — whichever it can detect
+./install.sh --with-editor all          # VS Code, Cursor, Windsurf, Devin — whichever it can detect
 ```
 
 Three things land on disk:
@@ -80,10 +80,11 @@ just need to source them.
 | Flag | Behaviour |
 |------|-----------|
 | *(none)* | Skip the editor extension. |
-| `--with-editor` | Install into every detected editor (`vscode`, `cursor`, `windsurf`). |
+| `--with-editor` | Install into every detected editor (`vscode`, `cursor`, `windsurf`, `devin`). |
 | `--with-editor vscode` | Only the VS Code extensions directory. |
 | `--with-editor cursor` | Only Cursor. |
 | `--with-editor windsurf` | Only Windsurf. |
+| `--with-editor devin` | Only Devin. |
 | `--no-editor` | Belt-and-braces: never install the extension, even if a future default flips on. |
 
 Under the hood this delegates to `vs-code-extension/install.sh`,
@@ -207,6 +208,7 @@ directly:
 ```bash
 ./vs-code-extension/install.sh           # all detected editors
 ./vs-code-extension/install.sh vscode    # just VS Code
+./vs-code-extension/install.sh devin     # just Devin
 ```
 
 ---
@@ -254,6 +256,7 @@ editor's per-user extensions directory:
 | VS Code | `~/.vscode/extensions/lammergeier-lang/` |
 | Cursor | `~/.cursor/extensions/lammergeier-lang/` |
 | Windsurf | `~/.windsurf/extensions/lammergeier-lang/` |
+| Devin | `~/.devin/extensions/lammergeier-lang/` |
 
 `rm -rf` whichever ones you'd like to remove.
 

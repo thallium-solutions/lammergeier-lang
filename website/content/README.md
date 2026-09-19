@@ -11,6 +11,7 @@
 <p align="center">
   <a href="#/docs/syntax">Syntax</a> ·
   <a href="#/docs/stdlib">Stdlib</a> ·
+  <a href="#/docs/libraries">Libraries</a> ·
   <a href="#/docs/installation">Install</a> ·
   <a href="#/docs/package_manager">Package manager</a> ·
   <a href="#/docs/transpilation">Transpilation</a> ·
@@ -69,9 +70,9 @@ area: 78.53981633974483
   and type checks, `Result[T]` / `Option[T]` propagation checks, operator
   validation, and Go-name collision diagnostics run before Go generation.
 - **Native JSON** — `json` recursively enforces real JSON values and string
-  object keys, supports JavaScript-style property/index access, requires
-  `toJson() -> json` for classes, converts cleanly to/from dict/list, and flows
-  directly through HTTP, Redis, and SQL JSON/JSONB parameters.
+  object keys, supports JavaScript-style property/index access, converts classes
+  through `json(value)` / `__json__()`, converts cleanly to/from dict/list, and
+  flows directly through HTTP, Redis, and SQL JSON/JSONB parameters.
 - **Your module casing** — library, package, and `.lam` module names preserve
   snake_case, camelCase, PascalCase, or SCREAMING_SNAKE_CASE; imports use the
   exact spelling selected by the author.
@@ -80,26 +81,32 @@ area: 78.53981633974483
 - **Raw Go escape hatch** — drop into plain Go with `go! { ... }` or
   `go!(expr)` when you need stdlib access the language does not wrap.
 - **OOP standard library** — static classes like `Math`, `Strings`,
-  `Json`, `Path`, `Random`, `Http`, `Db`, `Hash`, `Stats`, `Compress`,
-  `Net`, `Cli`, `Test`, plus data structures (`Stack`, `Queue`, `Set`,
-  `Deque`, `Heap`, `PriorityHeap`) and concurrency primitives (`Channel`,
-  `Mutex`, `RWMutex`, `WaitGroup`, `Atomic`).
+  `Json`, `Path`, `Random`, `Http`, `Db`, `Hash`, `Crypto`, `Stats`,
+  `Compress`, `Net`, `Cli`, `Test`, plus `Context`, data structures (`Stack`,
+  `Queue`, `Set`, `Deque`, `Heap`, `PriorityHeap`), and concurrency primitives
+  (`Channel`, `Mutex`, `RWMutex`, `WaitGroup`, `Atomic`).
+- **Official external libraries** — independently versioned scoped packages for
+  JWT, Protobuf, Redis, Memcached, S3, SFTP, SSH, and the Vulture HTTP server
+  with its standard, tus, and WebSocket plugins. Browse the
+  [Libraries catalog](#/docs/libraries) and install them with `lamc install`.
 - **Numerics & web stack** — `Array` / `Matrix` backed by **gonum**
   (BLAS-accelerated matmul, LU solve, inverse, det, trace, SVD-flavoured
   helpers), pandas-style `DataFrame` / `Series` / `DataFrameGroups`
-  backed by **go-gota** (CSV/JSON I/O, `selectCols` / `filter*` /
-  `sort` / `innerJoin` / `groupBy` / `aggregate`, full Series
-  statistics), a Fastify-style `Server` with route params, lifecycle
-  hooks and a plug-in mechanism, a lazy `Iter` combinator suite, an
-  `LruCache` + `TtlCache` pair, and RFC 4122 v4/v7 `Uuid` generation.
+  backed by **go-gota** (native JSON I/O, generic typed columns,
+  `selectCols` / `filter*` / `innerJoin` / `groupBy` / `aggregate`, full
+  Series statistics), generic natural/comparator `Sort` algorithms and sorted
+  generators, a Fastify-style `Server` with route params and lifecycle hooks,
+  a lazy `Iter` combinator suite, an `LruCache` + `TtlCache` pair, and RFC 4122
+  v4/v7 `Uuid` generation.
 - **Editor support** — built-in **LSP server** (`bin/lammergeier-lsp`)
   with live red diagnostics for syntax, missing names, wrong types, captures,
   `nonlocal`, and `LAMMERGEIER.*`, plus hover, signature help, completion,
   references, rename, goto-definition, formatting, and document/workspace
   symbols through the VS Code / Cursor / Windsurf extension.
-- **Batteries for real scripts** — HTTP client *and* blocking server,
-  TCP sockets, DNS, gzip/zlib, HMAC + constant-time comparison,
-  cryptographically-secure random tokens, a CLI flag parser, and a
+- **Batteries for real scripts** — native-JSON HTTP requests, repeated response
+  headers and full cookie parsing, a blocking HTTP server, TCP sockets, DNS,
+  gzip/zlib, AES-GCM, password hashing, PEM keys and
+  signatures, cancellation/deadline propagation, a CLI flag parser, and a
   `Test` framework with `describe` / `assert*` / `summary`.
 
 See [`docs/SYNTAX.md`](#/docs/syntax) for the complete language reference, and
@@ -120,7 +127,7 @@ cd lammergeier-lang
 
 # One-shot install: lamc + LSP + (optionally) the editor extension.
 ./install.sh                            # auto: system-wide if writable, else ~/.local/bin
-./install.sh --with-editor all          # also wire up VS Code / Cursor / Windsurf
+./install.sh --with-editor all          # also wire up VS Code / Cursor / Windsurf / Devin
 
 lamc tests/rosetta_tests/hello_world.lam --run
 
@@ -259,7 +266,7 @@ func main() {
 
 - A **comprehensive reference** for every stdlib module — classes,
   methods, examples — lives in [`docs/stdlib.md`](#/docs/stdlib).
-- A **plugin-authoring guide** for the `lamserver` HTTP toolkit
+- A **plugin-authoring guide** for the external `@lam/vulture` HTTP toolkit
   (lifecycle hooks, state via `req.ctx`, route prefixes,
   testing with `Server.inject`, recipes) is in
   [`docs/server_plugins.md`](#/docs/server_plugins).
@@ -310,9 +317,9 @@ services:
 sh scripts/test-services.sh
 ```
 
-The script starts disposable `docker run --rm` containers for Postgres,
-Redis on `6380`, password-protected Redis on `6379`, memcached on `11211`,
-and the memcached auth fixture on `11212`.
+The script starts the disposable PostgreSQL container used by the remaining
+stdlib integration tests. Redis and Memcached fixtures moved to the
+`@lam/redis` and `@lam/memcached` package repositories with their tests.
 
 The full gate runs semantic, syntax, transpilation, LSP, import
 resolution, Python unit/fuzz checks, core compile-and-run, and rosetta tests

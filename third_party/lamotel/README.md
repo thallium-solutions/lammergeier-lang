@@ -51,8 +51,16 @@ func main() {
 - `OtelSpan.recordException(message)` sets error status, records `exception.message`, and adds an `exception` event.
 - `OtelTracer.childSpan(parent, name, kind="internal")` creates a child span sharing the parent trace ID.
 - `OtelTracer.batch()` creates an `OtelSpanBatch` for scoped export.
+- `Otel.tracesPayload(...)` and `tracesPayloadWithResource(...)` return native
+  `json`, which can be inspected directly or passed to `HttpClient.post`.
 
 ## API reference
+
+### `Otel`
+
+- `tracesPayload(serviceName, spans) -> json` builds a native OTLP payload.
+- `tracesPayloadWithResource(resourceAttrs, spans) -> json` includes explicit
+  resource attributes without a text encode/decode round trip.
 
 ### `OtelConfig`
 

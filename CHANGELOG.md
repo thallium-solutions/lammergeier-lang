@@ -6,6 +6,99 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-09-18
+
+### Added
+
+- Added nested scoped package paths such as `@lam/vulture/ws-plugin` across the
+  parser, manifest validation, resolver, formatter, installer, and editor grammar.
+- Added generic natural and comparator-based sorting, asc/desc validation, five
+  named algorithms, generic reverse, and static sorted generators.
+- Added native-JSON HTTP overloads, repeated response headers, JSON response
+  decoding, and complete `Set-Cookie` attribute parsing through `HttpCookie`.
+- Added generic typed DataFrame/Series APIs, safe JSON collection conversions,
+  typed environment accessors, and Result-based base-number parsing.
+
+### Changed
+
+- Moved the HTTP server and its standard, WebSocket, and tus plugins into the
+  independently versioned `@lam/vulture` package family.
+- Replaced additional raw-Go standard-library implementation logic with native
+  Lam control flow where the language provides equivalent behavior.
+- Extended generic static generator lowering, concrete inline-list inference,
+  and overloaded instance-method dispatch inside imported libraries.
+- Updated Lamotel payload construction and export to use native JSON end to end.
+
+### Removed
+
+- Removed the compiler-bundled `lamserver`, `lamserver_plugins`, `lamserver_ws`,
+  and `lamserver_tus` modules; applications now install their Vulture packages.
+- Removed type-specific `Sort.ints` / `strings` / `floats` and `*JsonValue`
+  HTTP method names in favor of generic and overloaded primary APIs.
+
+## 2026-09-16
+
+### Added
+
+- Added the `json(value)` builtin and `__json__() -> json` class conversion
+  protocol, with explicit conversion diagnostics and LSP support.
+- Extended signature-based overloading to instance methods, static methods,
+  inheritance, interfaces, imported classes, and defaulted variants.
+- Added Result-based JSON, YAML, and XML/XSD validation through overloaded
+  `Schema.validate` methods.
+- Added optional request schemas and schema formats to the simple `lamserver`
+  route helpers.
+
+### Changed
+
+- Bumped the compiler feature version to 1.17.0 and the editor extension to 1.4.0.
+- Backed `Request.ctx` with `lamcontext.Context` while preserving `req.ctx[key]`
+  syntax through indexing and containment dunders.
+- Unified `lamserver` request/response schema validation with the `lamschema`
+  compilation cache and validation core.
+
+### Removed
+
+- Removed the legacy `toJson` conversion protocol and the registry/boolean/error
+  method family from `lamschema`; schema failures now use `Result` and `Error`.
+
+## 2026-09-13
+
+### Added
+
+- Added `lamcrypto` with secure random values, versioned AES-GCM envelopes,
+  PBKDF2-HMAC-SHA256 password storage, Ed25519/RSA PEM key generation and
+  signatures, constant-time comparison, and typed X.509 certificate metadata.
+- Added the Lam-first `lamcontext.Context` API for cancellation trees,
+  unit-aware expiration, inherited values, bounded waits, reasons, and native
+  Go context interop.
+- Added a searchable official-libraries catalog to the documentation website.
+
+### Changed
+
+- Bumped the compiler feature version to 1.16.0.
+- Simplified `lamcontext` naming around `simple`, `cancellable`, `expirable`,
+  `valued`, `expired`, and unit-aware `expiresIn` operations.
+- Moved JWT, Protocol Buffers, Redis, and Memcached to independently versioned
+  `@lam/jwt`, `@lam/protobuf`, `@lam/redis`, and `@lam/memcached` packages,
+  preserving their public class APIs under scoped imports.
+- Moved each integration's Go-module pins and regression tests into its package.
+  Redis and Memcached now own their Docker service fixtures.
+- Aligned `@lam/s3` and `@lam/sftp` with Lam 1.16. `@lam/sftp` now consumes
+  `@lam/ssh` for host keys and exposes request cancellation through
+  `lamcontext`; `@lam/ssh` composes `lamcrypto` and `lamcontext`.
+
+### Removed
+
+- Removed compiler-bundled `lamjwt`, `lamprotobuf`, `lamredis`, and
+  `lamemcached`, including their stdlib Go dependency pins and duplicate tests.
+
+### Documentation
+
+- Documented the new crypto/context APIs, scoped-package migration, package
+  relationships, installation workflows, and standalone repositories across
+  the README, stdlib, package-manager, library-authoring, and website guides.
+
 ## 2026-08-27
 
 ### Added

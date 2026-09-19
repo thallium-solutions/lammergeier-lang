@@ -219,9 +219,9 @@ def _type_to_go(
     if isinstance(type_, UnionType):
         options = [_type_to_go(option, generic_names=generic_names, interfaces=interfaces, generic_classes=generic_classes) for option in type_.options]
         options = [option for option in options if option]
-        if len(options) == len(type_.options):
-            return options[0] if len(options) == 1 else "interface{}"
-        return ""
+        if not options:
+            return ""
+        return options[0] if len(type_.options) == 1 else "interface{}"
     if isinstance(type_, GenericType):
         args = [
             _type_to_go(arg, generic_names=generic_names, interfaces=interfaces, generic_classes=generic_classes) or "interface{}"

@@ -148,41 +148,33 @@ class Math {
 
     static func clamp(x: float, lo: float, hi: float) -> float {
         #- Clamp x to the range [lo, hi] -#
-        go! {
-            if x < lo { return lo }
-            if x > hi { return hi }
-            return x
-        }
+        if x < lo { return lo }
+        if x > hi { return hi }
+        return x
     }
 
     static func lerp(a: float, b: float, t: float) -> float {
         #- Linear interpolation between a and b by t (0..1) -#
-        go! {
-            return a + (b-a)*t
-        }
+        return a + (b-a)*t
     }
 
     static func mapRange(x: float, inMin: float, inMax: float, outMin: float, outMax: float) -> float {
         #- Map x from range [inMin, inMax] to [outMin, outMax] -#
-        go! {
-            return outMin + (x-inMin)*(outMax-outMin)/(inMax-inMin)
-        }
+        return outMin + (x-inMin)*(outMax-outMin)/(inMax-inMin)
     }
 
     static func sign(x: float) -> int {
-        go! {
-            if x > 0 { return 1 }
-            if x < 0 { return -1 }
-            return 0
-        }
+        if x > 0 { return 1 }
+        if x < 0 { return -1 }
+        return 0
     }
 
     static func degToRad(deg: float) -> float {
-        go! { return deg * math.Pi / 180.0 }
+        return deg * Math.pi() / 180.0
     }
 
     static func radToDeg(rad: float) -> float {
-        go! { return rad * 180.0 / math.Pi }
+        return rad * 180.0 / Math.pi()
     }
 
     static func fmod(x: float, y: float) -> float {
@@ -219,30 +211,26 @@ class Math {
 
     static func gcd(a: int, b: int) -> int {
         #- Greatest common divisor (Euclidean algorithm). -#
-        go! {
-            if a < 0 { a = -a }
-            if b < 0 { b = -b }
-            for b != 0 {
-                a, b = b, a%b
-            }
-            return a
+        left: int = a
+        right: int = b
+        if left < 0 { left = -left }
+        if right < 0 { right = -right }
+        while right != 0 {
+            remainder: int = left % right
+            left = right
+            right = remainder
         }
+        return left
     }
 
     static func lcm(a: int, b: int) -> int {
         #- Least common multiple. Returns 0 if either value is 0. -#
-        go! {
-            if a == 0 || b == 0 { return 0 }
-            ax, bx := a, b
-            if ax < 0 { ax = -ax }
-            if bx < 0 { bx = -bx }
-            g := ax
-            h := bx
-            for h != 0 {
-                g, h = h, g%h
-            }
-            return ax / g * bx
-        }
+        if a == 0 or b == 0 { return 0 }
+        left: int = a
+        right: int = b
+        if left < 0 { left = -left }
+        if right < 0 { right = -right }
+        return left / Math.gcd(left, right) * right
     }
 }
 

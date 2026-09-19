@@ -82,6 +82,22 @@ def test_workspace_resolves_package_init() -> None:
     print("PASS: workspace resolves package __init__.lam")
 
 
+def test_workspace_resolves_explicit_relative_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        init_file = root / "packages" / "widget" / "__init__.lam"
+        sibling = init_file.parent / "impl.lam"
+        shadow = root / "impl.lam"
+        _write(init_file, "from .impl import build\n")
+        _write(sibling, "func build() -> str { return \"relative\" }\n")
+        _write(shadow, "func build() -> str { return \"shadow\" }\n")
+        index = WorkspaceIndex(root, stdlib_dir=root / "missing-stdlib")
+        assert index.resolve_module(init_file, ".impl") == sibling.resolve()
+        assert index.resolve_import(init_file, ".impl", "build") is not None
+        assert index.module_search_paths(init_file, ".impl")[0] == sibling
+    print("PASS: workspace resolves explicit relative modules without global fallback")
+
+
 def test_workspace_resolves_nested_submodule() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -211,6 +227,7 @@ def main() -> int:
         test_module_facts_exports_and_imports,
         test_workspace_resolves_local_sibling,
         test_workspace_resolves_package_init,
+        test_workspace_resolves_explicit_relative_module,
         test_workspace_resolves_nested_submodule,
         test_workspace_resolves_deep_package_submodule,
         test_workspace_preserves_mixed_case_module_paths,

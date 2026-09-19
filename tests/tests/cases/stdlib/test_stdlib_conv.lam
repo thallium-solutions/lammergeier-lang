@@ -2,8 +2,12 @@
 # expect: float_ok
 # expect: str_ok
 # expect: bool_ok
+# expect: base_parse_ok=255,15,10
+# expect: base_parse_errs=ParseError,ParseError,ParseError
+# expect: legacy_base_fallback_ok
 
 from lamconv import Conv
+from lamerrors import Result, Error
 
 func main() {
     # Int conversion
@@ -28,5 +32,24 @@ func main() {
     b: bool = Conv.toBool("true")
     if b {
         print("bool_ok")
+    }
+
+    # Result-returning base conversions
+    hexResult: Result[int] = Conv.tryFromHex("ff")
+    octalResult: Result[int] = Conv.tryFromOctal("17")
+    binResult: Result[int] = Conv.tryFromBin("1010")
+    print(f"base_parse_ok={hexResult.value},{octalResult.value},{binResult.value}")
+
+    badHex: Result[int] = Conv.tryFromHex("xyz")
+    badOctal: Result[int] = Conv.tryFromOctal("89")
+    badBin: Result[int] = Conv.tryFromBin("102")
+    hexError: Error = badHex.error
+    octalError: Error = badOctal.error
+    binError: Error = badBin.error
+    print(f"base_parse_errs={hexError.kind},{octalError.kind},{binError.kind}")
+
+    # Existing compatibility methods remain silent on malformed input.
+    if Conv.fromHex("xyz") == 0 and Conv.fromOctal("89") == 0 and Conv.fromBin("102") == 0 {
+        print("legacy_base_fallback_ok")
     }
 }

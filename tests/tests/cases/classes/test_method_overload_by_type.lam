@@ -1,0 +1,34 @@
+# expect: static-int:7
+# expect: static-str:Ada
+# expect: instance-int:9
+# expect: instance-str:Lam
+# expect: embedded=static-int:8
+# expect: embedded=instance-str:Bird
+
+class Formatter {
+    static func render(value: int) -> str {
+        return f"static-int:{value}"
+    }
+
+    static func render(value: str) -> str {
+        return f"static-str:{value}"
+    }
+
+    func describe(self, value: int) -> str {
+        return f"instance-int:{value}"
+    }
+
+    func describe(self, value: str) -> str {
+        return f"instance-str:{value}"
+    }
+}
+
+func main() {
+    formatter: Formatter = Formatter()
+    print(Formatter.render(7))
+    print(Formatter.render("Ada"))
+    print(formatter.describe(9))
+    print(formatter.describe("Lam"))
+    print(f"embedded={Formatter.render(8)}")
+    print(f"embedded={formatter.describe('Bird')}")
+}

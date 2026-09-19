@@ -1,0 +1,438 @@
+# Lammergeier standard library: ergonomic cancellation contexts.
+#
+# ``Context`` wraps Go's ``context`` package with a compact Lam-first API for
+# cancellation trees, expiration, bounded waits, and request-scoped values.
+# Every derived context observes parent cancellation, while cancelling a child
+# never affects its parent.
+#
+# Values live in explicit inherited layers rather than reserved context keys.
+# ``valued`` creates a new layer and ``set`` mutates only the current layer;
+# indexing delegates to ``get``/``set`` and containment delegates to ``has``.
+# All value operations are goroutine-safe. Cancellation causes preserve arbitrary
+# Lam values and follow the first cancellation that reaches a context.
+#
+# ``expirable(unixMs)`` uses an absolute Unix-millisecond timestamp, while
+# ``expirable(amount, unit)`` uses a relative duration. ``expiresIn()`` returns
+# the absolute Unix-millisecond expiry and ``expiresIn(unit)`` returns the
+# remaining duration. Missing expiration reports ``-1``; elapsed duration
+# reports ``0``. ``native`` and ``fromNative`` are the Go interop boundary.
+#
+# Import with: ``from lamcontext import Context``.
+
+go! {
+    import (
+        "context"
+        "fmt"
+        "reflect"
+        "strings"
+        "sync"
+        "time"
+    )
+
+    type lamContextCause struct {
+        reason interface{}
+    }
+
+    func (cause *lamContextCause) Error() string {
+        if cause.reason == nil {
+            return "cancelled"
+        }
+        return fmt.Sprint(cause.reason)
+    }
+
+    type lamContextValueEntry struct {
+        key   interface{}
+        value interface{}
+    }
+
+    type lamContextValueLayer struct {
+        mu      sync.RWMutex
+        entries []lamContextValueEntry
+        parent  *lamContextValueLayer
+    }
+
+    func (layer *lamContextValueLayer) lookup(key interface{}) (interface{}, bool) {
+        for current := layer; current != nil; current = current.parent {
+            current.mu.RLock()
+            for index := len(current.entries) - 1; index >= 0; index-- {
+                entry := current.entries[index]
+                if reflect.DeepEqual(entry.key, key) {
+                    current.mu.RUnlock()
+                    return entry.value, true
+                }
+            }
+            current.mu.RUnlock()
+        }
+        return nil, false
+    }
+
+    func (layer *lamContextValueLayer) set(key interface{}, value interface{}) {
+        layer.mu.Lock()
+        defer layer.mu.Unlock()
+        for index := len(layer.entries) - 1; index >= 0; index-- {
+            if reflect.DeepEqual(layer.entries[index].key, key) {
+                layer.entries[index].value = value
+                return
+            }
+        }
+        layer.entries = append(layer.entries, lamContextValueEntry{key: key, value: value})
+    }
+
+    type lamNativeContext struct {
+        context.Context
+        values *lamContextValueLayer
+    }
+
+    func (native *lamNativeContext) Value(key interface{}) interface{} {
+        if value, ok := native.values.lookup(key); ok {
+            return value
+        }
+        return native.Context.Value(key)
+    }
+
+    type lamContextState struct {
+        native       *lamNativeContext
+        cancel       context.CancelCauseFunc
+        stopDeadline context.CancelFunc
+    }
+
+    func lamContextStateFor(value *Context) *lamContextState {
+        state, ok := value._state.(*lamContextState)
+        if !ok || state == nil {
+            panic("Context: uninitialized context")
+        }
+        return state
+    }
+
+    func lamContextLayerFor(parent context.Context) *lamContextValueLayer {
+        layer := &lamContextValueLayer{}
+        if native, ok := parent.(*lamNativeContext); ok {
+            layer.parent = native.values
+        }
+        return layer
+    }
+
+    func lamContextCreate(parent context.Context, layer *lamContextValueLayer) *Context {
+        nativeContext, cancel := context.WithCancelCause(parent)
+        native := &lamNativeContext{Context: nativeContext, values: layer}
+        state := &lamContextState{native: native, cancel: cancel}
+        return &Context{_state: state}
+    }
+
+    func lamContextCreateDeadline(parent context.Context, layer *lamContextValueLayer, deadline time.Time) *Context {
+        deadlineParent, stopDeadline := context.WithDeadline(parent, deadline)
+        nativeContext, cancel := context.WithCancelCause(deadlineParent)
+        native := &lamNativeContext{Context: nativeContext, values: layer}
+        state := &lamContextState{
+            native:       native,
+            cancel:       cancel,
+            stopDeadline: stopDeadline,
+        }
+        return &Context{_state: state}
+    }
+
+    func lamContextCancel(state *lamContextState, reason interface{}) {
+        state.cancel(&lamContextCause{reason: reason})
+        if state.stopDeadline != nil {
+            state.stopDeadline()
+        }
+    }
+
+    func lamContextLookup(state *lamContextState, key interface{}) (interface{}, bool) {
+        if value, ok := state.native.values.lookup(key); ok {
+            return value, true
+        }
+        value := state.native.Context.Value(key)
+        return value, value != nil
+    }
+
+    func lamContextDone(state *lamContextState) bool {
+        select {
+        case <-state.native.Done():
+            return true
+        default:
+            return false
+        }
+    }
+
+    func lamContextReason(state *lamContextState) interface{} {
+        cause := context.Cause(state.native)
+        if cause == nil {
+            return nil
+        }
+        if custom, ok := cause.(*lamContextCause); ok {
+            return custom.reason
+        }
+        if cause == context.DeadlineExceeded {
+            return "deadline exceeded"
+        }
+        if cause == context.Canceled {
+            return "cancelled"
+        }
+        return cause.Error()
+    }
+
+    func lamContextUnit(unit interface{}) (time.Duration, error) {
+        name, ok := unit.(string)
+        if !ok {
+            return 0, fmt.Errorf("time unit must be a string")
+        }
+        switch strings.ToLower(strings.TrimSpace(name)) {
+        case "nanosecond", "nanoseconds", "ns":
+            return time.Nanosecond, nil
+        case "microsecond", "microseconds", "us":
+            return time.Microsecond, nil
+        case "millisecond", "milliseconds", "ms":
+            return time.Millisecond, nil
+        case "second", "seconds", "s":
+            return time.Second, nil
+        case "minute", "minutes", "min", "m":
+            return time.Minute, nil
+        case "hour", "hours", "h":
+            return time.Hour, nil
+        case "day", "days", "d":
+            return 24 * time.Hour, nil
+        default:
+            return 0, fmt.Errorf("unsupported time unit %q", name)
+        }
+    }
+
+    func lamContextRelativeDeadline(amount int, unit interface{}) (time.Time, error) {
+        if amount < 0 {
+            return time.Time{}, fmt.Errorf("amount must be >= 0")
+        }
+        scale, err := lamContextUnit(unit)
+        if err != nil {
+            return time.Time{}, err
+        }
+        maxDuration := int64(^uint64(0) >> 1)
+        value := int64(amount)
+        if value > maxDuration/int64(scale) {
+            return time.Time{}, fmt.Errorf("expiration duration is too large")
+        }
+        return time.Now().Add(time.Duration(value) * scale), nil
+    }
+}
+
+class Context {
+    #- A goroutine-safe cancellation scope with inherited values.
+
+       Prefer ``simple`` at application boundaries, then derive narrower
+       scopes with ``cancellable``, ``expirable``, or ``valued``. ``wait``
+       returns true when cancellation wins and false when its own timeout
+       elapses. -#
+
+    func __init__(self) {
+        self._state: any = None
+        go! {
+            root := lamContextCreate(context.Background(), &lamContextValueLayer{})
+            s._state = root._state
+        }
+    }
+
+    static func simple() -> Context {
+        #- Create a live root context with no expiration or values. -#
+        go! {
+            return lamContextCreate(context.Background(), &lamContextValueLayer{})
+        }
+    }
+
+    static func fromNative(nativeContext: any) -> Context {
+        #- Wrap a Go ``context.Context``. Panics when ``nativeContext`` does
+           not implement that interface. The returned wrapper is independently
+           cancellable and still observes the native parent's cancellation,
+           deadline, and values. -#
+        go! {
+            parent, ok := nativeContext.(context.Context)
+            if !ok || parent == nil {
+                panic("Context.fromNative: expected context.Context")
+            }
+            return lamContextCreate(parent, lamContextLayerFor(parent))
+        }
+    }
+
+    static func cancelled(reason: any = "cancelled") -> Context {
+        #- Create an already-cancelled context carrying ``reason``. -#
+        go! {
+            value := lamContextCreate(context.Background(), &lamContextValueLayer{})
+            lamContextCancel(lamContextStateFor(value), reason)
+            return value
+        }
+    }
+
+    func child(self) -> Context {
+        #- Derive an independently cancellable child. -#
+        go! {
+            state := lamContextStateFor(s)
+            layer := &lamContextValueLayer{parent: state.native.values}
+            return lamContextCreate(state.native, layer)
+        }
+    }
+
+    func cancellable(self) -> Context {
+        #- Derive an independently cancellable child. -#
+        return self.child()
+    }
+
+    func expirable(self, expiration: int, unit: any = None) -> Context {
+        #- Derive an expiring child. Without ``unit``, ``expiration`` is an
+           absolute Unix-millisecond timestamp. With a unit such as
+           ``"seconds"`` or ``"minutes"``, it is a relative duration. -#
+        if expiration < 0 {
+            throw ValueError("Context.expirable: expiration must be >= 0")
+        }
+        go! {
+            state := lamContextStateFor(s)
+            layer := &lamContextValueLayer{parent: state.native.values}
+            deadline := time.Time{}
+            if unit == nil {
+                deadline = time.UnixMilli(int64(expiration))
+            } else {
+                relative, err := lamContextRelativeDeadline(expiration, unit)
+                if err != nil {
+                    panic("Context.expirable: " + err.Error())
+                }
+                deadline = relative
+            }
+            return lamContextCreateDeadline(state.native, layer, deadline)
+        }
+    }
+
+    func valued(self, key: any, value: any) -> Context {
+        #- Return a child whose value layer shadows ``key`` without mutating
+           this context. Keys may be any Lam value, including collections. -#
+        go! {
+            state := lamContextStateFor(s)
+            layer := &lamContextValueLayer{parent: state.native.values}
+            layer.set(key, value)
+            return lamContextCreate(state.native, layer)
+        }
+    }
+
+    func set(self, key: any, value: any) {
+        #- Mutate only this context's value layer. Existing children that have
+           not shadowed ``key`` observe the update. -#
+        go! {
+            lamContextStateFor(s).native.values.set(key, value)
+        }
+    }
+
+    func get(self, key: any, fallback: any = None) -> any {
+        #- Return the nearest inherited value, or ``fallback`` when absent.
+           A stored ``None`` is present and does not trigger the fallback. -#
+        go! {
+            value, ok := lamContextLookup(lamContextStateFor(s), key)
+            if ok {
+                return value
+            }
+            return fallback
+        }
+    }
+
+    func value(self, key: any, fallback: any = None) -> any {
+        #- Alias for ``get`` for code written in Go-context style. -#
+        return self.get(key, fallback)
+    }
+
+    func has(self, key: any) -> bool {
+        go! {
+            _, ok := lamContextLookup(lamContextStateFor(s), key)
+            return ok
+        }
+    }
+
+    func __getitem__(self, key: any) -> any {
+        return self.get(key)
+    }
+
+    func __setitem__(self, key: any, value: any) {
+        self.set(key, value)
+    }
+
+    func __contains__(self, key: any) -> bool {
+        return self.has(key)
+    }
+
+    func cancel(self, reason: any = "cancelled") {
+        #- Cancel this context and its descendants with ``reason``. The first
+           cancellation wins; ancestors and siblings are unaffected. -#
+        go! {
+            lamContextCancel(lamContextStateFor(s), reason)
+        }
+    }
+
+    func expired(self) -> bool {
+        #- Return true after cancellation or expiration. Inspect ``reason`` to
+           distinguish a deadline from explicit cancellation. -#
+        go! {
+            return lamContextDone(lamContextStateFor(s))
+        }
+    }
+
+    func reason(self) -> any {
+        #- Return the winning Lam cancellation reason, ``"deadline exceeded"``
+           for a deadline, ``"cancelled"`` for a native cancellation, or
+           ``None`` while active. -#
+        go! {
+            return lamContextReason(lamContextStateFor(s))
+        }
+    }
+
+    func expiresIn(self, unit: any = None) -> int {
+        #- Return the absolute Unix-millisecond expiry when ``unit`` is omitted.
+           With a unit, return the remaining duration rounded up. ``-1`` means
+           no expiry and ``0`` means the expiry has elapsed. -#
+        go! {
+            deadline, ok := lamContextStateFor(s).native.Deadline()
+            if !ok {
+                return -1
+            }
+            if unit == nil {
+                return int(deadline.UnixMilli())
+            }
+            scale, err := lamContextUnit(unit)
+            if err != nil {
+                panic("Context.expiresIn: " + err.Error())
+            }
+            remaining := time.Until(deadline)
+            if remaining <= 0 {
+                return 0
+            }
+            return int((remaining-1)/scale + 1)
+        }
+    }
+
+    func wait(self, timeoutMs: int) -> bool {
+        #- Wait at most ``timeoutMs`` milliseconds. Returns true if this
+           context became done and false if the bound elapsed first.
+           ``timeoutMs`` must be non-negative; zero is a non-blocking poll. -#
+        if timeoutMs < 0 {
+            throw ValueError("Context.wait: timeoutMs must be >= 0")
+        }
+        go! {
+            state := lamContextStateFor(s)
+            if timeoutMs == 0 {
+                return lamContextDone(state)
+            }
+            timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
+            defer timer.Stop()
+            select {
+            case <-state.native.Done():
+                return true
+            case <-timer.C:
+                return false
+            }
+        }
+    }
+
+    func native(self) -> any {
+        #- Return the wrapped Go ``context.Context`` for ecosystem interop. -#
+        go! {
+            return context.Context(lamContextStateFor(s).native)
+        }
+    }
+}
+
+func main() {
+    pass
+}

@@ -145,10 +145,10 @@ flags: set[str] = {}
 
 `json` is a native recursive value type for REST payloads, configuration files,
 database JSON/JSONB columns, and caches. It accepts JSON null (`None`), booleans,
-strings, finite integer/float numbers, arrays, string-keyed objects, nested
-`json` values, and class instances implementing `func toJson(self) -> json`.
-Numeric object keys, sets/tuples, arbitrary `any`, and other class instances are
-rejected before Go emission.
+strings, finite integer/float numbers, arrays, string-keyed objects, and nested
+`json` values. Classes opt in with `func __json__(self) -> json` and are converted
+explicitly with `json(instance)`. Numeric object keys, sets/tuples, arbitrary
+`any`, and direct class values are rejected before Go emission.
 
 ```lammergeier
 from lamjson import Json
@@ -158,7 +158,7 @@ class Image {
         self.width: int = width
         self.height: int = height
     }
-    func toJson(self) -> json {
+    func __json__(self) -> json {
         return {"width": self.width, "height": self.height}
     }
 }
@@ -166,7 +166,7 @@ class Image {
 payload: json = [{
     "hello": 100,
     "nested": {"y": [1, 2, 3]},
-    "image": Image(1024, 1024)
+    "image": json(Image(1024, 1024))
 }]
 
 second: int = payload[0].nested.y[1]
@@ -187,6 +187,9 @@ value["key"]` removes an object member. JSON values compare
 structurally with `==` / `!=`, compare to `None` as JSON null, and support
 `missing ?? fallback` in typed contexts.
 
+The builtin `json(value)` performs statically checked conversion. A string stays
+a JSON string; use `Json.decode(text)` to parse encoded JSON. A custom class must
+implement `__json__` and still be passed explicitly to `json(instance)`.
 `Json.fromDict`, `Json.fromList`, and `Json.fromValue` validate dynamic Lam
 values and convert them to `json`. `Json.toDict` / `Json.toList` convert an
 object/array back for algorithms where ordinary collections are more useful.
@@ -196,11 +199,11 @@ do not require an explicit import.
 
 The semantic checker reports statically knowable JSON mistakes during Lam
 compilation: non-string object keys; tuple/set arrays; incompatible nested
-values; direct `any`; classes without a valid zero-argument instance
-`toJson() -> json`; invalid `toJson` declarations even when unused; invalid
-boolean/class/etc. indices (only `str` or `int` are allowed); incompatible
-assignments/returns/call arguments; and malformed literal strings passed to
-`Json.decode`, `Json.decodeInto`, `Schema.register`, or `Server.addSchema`.
+values; direct `any`; missing or malformed `__json__` declarations; implicit
+class conversion; invalid `json(value)` arguments; invalid boolean/class/etc.
+indices (only `str` or `int` are allowed); incompatible assignments/returns/call
+arguments; and malformed literal strings passed to `Json.decode`,
+`Json.decodeInto`, or `Schema.validate`.
 Dynamic `Json.fromValue(any)` data, decoded wire shapes, object-vs-array access,
 missing keys, bounds, cycles/depth, and non-finite runtime floats remain runtime
 checks because their values are not knowable from source.
@@ -767,7 +770,7 @@ class Vec {
 }
 ```
 
-Supported operators: `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__floordiv__`, `__mod__`, `__pow__`, `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`, `__ge__`, `__and__`, `__or__`, `__xor__`, `__inc__`, `__dec__`.
+Supported operators: `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__floordiv__`, `__mod__`, `__pow__`, `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`, `__ge__`, `__and__`, `__or__`, `__xor__`, `__contains__`, `__getitem__`, `__setitem__`, `__inc__`, `__dec__`.
 
 Operator methods are instance methods. Binary/comparison methods take exactly
 one operand after `self`; `__neg__`, `__invert__`, `__inc__`, and `__dec__`
@@ -2046,6 +2049,22 @@ func main() {
 }
 ```
 
+Generators may also be generic static methods, including methods imported from
+another module. The compiler infers concrete element types for inline list
+literals and ranges directly over the returned channel:
+
+```lammergeier
+from lamsort import Sort
+
+for value in Sort.iterSorted([3, 1, 2]) {
+    print(value)
+}
+```
+
+`Sort.iterSorted` uses natural ordering; `Sort.iterSortedWith` accepts a typed
+three-way comparator for arbitrary classes. Both copy the input and select each
+next value incrementally.
+
 ---
 
 ## Functional Programming
@@ -2440,11 +2459,12 @@ from lamwebp.io.files import readWebp
 
 Module paths preserve the author's casing. `snake_case`, `camelCase`,
 `PascalCase`, and `SCREAMING_SNAKE_CASE` are all valid, including scoped
-packages such as `from @AliceTeam/LamWebP import Decoder`. Imports are
-case-sensitive and must match the `.lam` filename, package directory, and
-`library.name` spelling exactly. Plain module segments remain Lam identifiers,
-so use `_` rather than `-`; scoped names may use hyphens after their first
-character.
+packages such as `from @AliceTeam/LamWebP import Decoder`. Scoped package
+families may add segments, as in `from @lam/vulture/ws-plugin import WebSocket`.
+Imports are case-sensitive and must match the `.lam` filename, package
+directory, and `library.name` spelling exactly. Plain module segments remain
+Lam identifiers, so use `_` rather than `-`; scoped path segments may use
+hyphens after their first character.
 
 Each import bundles that module plus its transitive imports. A package
 `__init__.lam` may re-export submodule names with a normal `from` import,
@@ -2465,15 +2485,16 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lammath`        | `Math`                             | Math functions (sqrt, sin, cos, pow, log, etc.) |
 | `lamstrings`     | `Strings`                          | String utilities (repeat, contains, trim, split, join, etc.) |
 | `lamtime`        | `Time`                             | Time operations (nowUnix, sleepMs, nowString, etc.) |
-| `lamconv`        | `Conv`                             | Type conversions (toInt/toFloat/toBool for silent defaults; `tryInt`/`tryFloat`/`tryBool` return `Result`) |
+| `lamconv`        | `Conv`                             | Type conversions with silent defaults plus Result-based decimal/hex/octal/binary parsing |
 | `lamos`          | `Os`, `File`                       | OS/filesystem helpers plus the `File` context-manager class (`File.open`, `read`, `write`, `readline`, `readlines`, `close`); `tryReadFile`/`tryWriteFile`/`tryReadLines`/`tryWriteLines` return `Result` |
-| `lamjson`        | `Json`                             | Native `json` runtime, encode/decode/pretty/validate, dict/list conversion, and `Result[json]` try APIs |
+| `lamjson`        | `Json`                             | Native `json` runtime, encode/decode/pretty/validate, dict/list conversion, and non-panicking Result APIs |
 | `lamrandom`      | `Random`                           | Random numbers (randInt, randFloat, shuffle, choice, sample, uuid, randomString, randomHex) plus secure variants (secureBytes, secureToken, secureInt, secureUuid) |
-| `lamsort`        | `Sort`                             | Sorting (ints, floats, strings, reverseInts, reverseStrings, reverseFloats, reverse, isSorted) |
+| `lamsort`        | `Sort`                             | Generic natural/comparator sorting, asc/desc checks, named algorithms, reverse, and lazy sorted generators |
 | `lamre`          | `Re`                               | Regex (match, find, findAll, replaceAll, split); `tryMatch`/`tryFind`/`tryFindAll`/`tryReplaceAll`/`trySplit` return `Result` |
-| `lamhttp`        | `Http`, `HttpServer`               | HTTP client (get, post, postJson, statusCode, getHeader, getWithHeaders) and a blocking server (`Http.serve`) |
+| `lamhttp`        | `Http`, `HttpClient`, `HttpResponse`, `HttpCookie`, `HttpServer` | Overloaded native-JSON requests, response headers/cookies, and a blocking server (`Http.serve`) |
 | `lamdb`          | `Db`                               | Database connectivity (connect, close, exec, queryRow, queryAll, queryRows) |
 | `lamhash`        | `Hash`                             | Hashing (sha256, sha1, sha512, md5, crc32) plus HMAC (hmacSha1/256/512), `constantTimeEquals`, `verifyHmacSha256` |
+| `lamcrypto`      | `Crypto`, `CryptoKeyPair`, `CryptoCertificate` | Secure random data, AES-GCM envelopes, PBKDF2 password hashes, PEM keys/signatures, and X.509 metadata |
 | `lambase64`      | `Base64`                           | Base64 encoding/decoding (encode, decode, encodeURL, decodeURL) |
 | `lampath`        | `Path`                             | Path/filepath utilities (join, base, dir, ext, abs, glob, exists, splitExt, withExt, split) |
 | `lamcsv`         | `Csv`                              | CSV parsing and formatting (parseAll, formatRow, formatAll) |
@@ -2483,7 +2504,7 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lambytes`       | `Bytes`                            | Byte/hex utilities (toBytes, fromBytes, hexEncode, hexDecode) |
 | `lamexec`        | `Exec`                             | Process execution (run, runSilent, output) |
 | `lamunicode`     | `Unicode`                          | Unicode/UTF-8 (runeCount, isValid, isLetter, isDigit, etc.) |
-| `lamenv`         | `Env`                              | Environment variables (get, set, unset, all) |
+| `lamenv`         | `Env`                              | String, typed, and Result-based environment access plus set/unset/all |
 | `lamdatetime`    | `DateTime`                         | Date/time formatting and parsing |
 | `lamstack`       | `Stack`                            | Stack data structure (push, pop, peek, size, isEmpty, clear, toList) |
 | `lamqueue`       | `Queue`                            | Queue data structure (enqueue, dequeue, peek, size, isEmpty, clear, toList) |
@@ -2496,18 +2517,18 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamcli`         | `Cli`                              | CLI argument parsing (args, program, argCount, arg, hasFlag, getFlag, getInt, positional) |
 | `lamtest`        | `Test`                             | Assertion/test framework (assertTrue, assertFalse, assertEqual, assertNotEqual, assertNil, assertNotNil, assertLen, assertContains, assertAlmostEqual, describe, pass, fail, summary) |
 | `lamconcurrency` | `Channel`, `WaitGroup`, `Mutex`, `RWMutex`, `Atomic` | Concurrency primitives (channels, sync, mutexes, atomic counters via `sync/atomic`) |
+| `lamcontext`     | `Context`                          | Cancellation trees, unit-aware expiration, inherited values, bounded waits, and native Go context interop |
 | `lamarray`       | `Array`, `Matrix`                  | NumPy-style numerics backed by **gonum** — `fromList`, `zeros`, `ones`, `linspace`, `arange`, element-wise add/sub/mul/div, BLAS `matmul`, `mulVec`, `transpose`, `inverse`, `det`, `trace`, `solve`, `dot`, `norm`, reductions (sum/mean/std/min/max/argMin/argMax) |
-| `lamdata`        | `DataFrame`, `Series`, `DataFrameGroups` | Pandas-style dataframes backed by **go-gota** — `fromRecords`/`fromMaps`/`readCSV`/`readJSON`, `selectCols`/`dropCols`, `head`/`tail`/`slice`/`subset`, `filter`/`filterEq`/`filterGt`/…, `sort`/`sortBy`, `innerJoin`/`leftJoin`/`rightJoin`/`outerJoin`/`crossJoin`, `rbind`/`cbind`/`concat`, `mutate*`, `groupBy(…).aggregate(["mean", …], …)`, `writeCSV`/`writeJSON`, `describe`; Series adds `sum`/`mean`/`median`/`stddev`/`min`/`max`/`quantile` plus `toFloatList`/`toIntList`/`toStringList`/`toBoolList` |
-| `lamserver`      | `Server`, `Request`, `Response`, `SseEmitter` | Fastify-style HTTP server: routes (`get`/`post`/`put`/`del`/`patch`), path params (`/users/:id`), lifecycle hooks (`onRequest`/`preHandler`/`onResponse`/`onError`), plug-ins via `register(func(Server), prefix=...)`, CORS, static mounts, signed cookies, request `ctx`, content-type-aware body parsing, file streaming, Server-Sent Events, TLS, body-size limits, in-process `inject(...)` test harness, `listRoutes()` introspection, graceful `shutdown(timeoutMs)` |
-| `lamserver_ws`   | `WebSocket`, `wsRoute`, `wsRouteOpts` | WebSocket support on top of `lamserver` (gorilla/websocket): text + binary messages, ping/pong, subprotocols, permessage-deflate compression (RFC 7692), Origin allow-list |
-| `lamserver_plugins` | (functions)                     | Bundled plugins for `lamserver`: `requestLog`, sliding-window `rateLimit`, gzip `compress`, `helmet` (security headers), `etag` (304 caching), `healthcheck` (`/healthz` + `/readyz`), Prometheus-style `metrics` |
-| `lamserver_tus`  | (functions)                        | tus.io 1.0.0 resumable-upload protocol — `tusUploads(srv, mountPath, storeDir, maxBytes)` registers Creation/Patch/Head/Termination endpoints; `tusGc` for stale-upload cleanup |
+| `lamdata`        | `DataFrame`, `Series`, `DataFrameGroups` | Pandas-style dataframes backed by **go-gota** — overloaded text/native-JSON `readJSON`, generic typed `mutate`/`Series.from`, native `json(frame)`, selection/filtering/sorting/joins/grouping, CSV/JSON output, and Series statistics |
 | `lamschema`      | `Schema`                           | JSON Schema validation (draft-07) via `xeipuuv/gojsonschema` with compile-once caching; declarative validation reusable as OpenAPI specs |
-| `lamjwt`         | `Jwt`                              | JSON Web Tokens — sign/verify HS256/HS512/RS256, automatic `iat`/`exp`, configurable verify-side leeway |
-| `lamprotobuf`    | `Pb`                               | Protocol Buffers wire-format codec on top of `google.golang.org/protobuf` — marshal/unmarshal/JSON/text round-trips, `equal`, `clone`, `size` |
 | `lamiter`        | `Iter`                             | Lazy iterator combinators: `fromList`, `range_`, `count`, `repeat`; `map`, `filter`, `take`, `drop`, `takeWhile`, `dropWhile`, `enumerate`, `chain`; terminals `toList`, `forEach`, `reduce`, `count_`, `first`, `anyMatch`, `allMatch` |
 | `lamcache`       | `LruCache`, `TtlCache`             | In-memory caches — fixed-capacity LRU (eviction on overflow) and per-entry TTL (lazy expiry on read), both goroutine-safe |
 | `lamuuid`        | `Uuid`                             | RFC 4122 UUID generation: `v4` (cryptographically-random), `v7` (time-ordered, k-sortable), plus `nil_`, `isValid`, `parse` |
+
+The HTTP server is distributed separately as `@lam/vulture`; its standard,
+WebSocket, and tus integrations are `@lam/vulture/std-plugin`,
+`@lam/vulture/ws-plugin`, and `@lam/vulture/tus-plugin`. See the
+[official package catalog](#/docs/libraries) for installation and imports.
 
 **Example:**
 
@@ -2784,6 +2805,26 @@ expression shape (`42` → `int`, `"hi"` → `string`, `[1, 2, 3]` →
 `[]int`). When the inference is ambiguous (untyped local, opaque
 return value, …) the call is routed to whichever variant the
 compiler can match — see the `_infer_call_arg_sig` helper.
+
+### Class method overloads
+
+Instance and static methods follow the same signature rules. Instance signatures
+exclude `self`; static signatures include every parameter. A class cannot mix a
+static and instance overload under one name, and return type alone never selects
+a variant.
+
+```lammergeier
+class Formatter {
+    static func render(value: int) -> str { return f"int:{value}" }
+    static func render(value: str) -> str { return f"str:{value}" }
+
+    func describe(self, value: int) -> str { return f"int:{value}" }
+    func describe(self, value: str) -> str { return f"str:{value}" }
+}
+```
+
+Overload metadata crosses imports and inheritance boundaries. Interfaces may
+declare overload sets; an implementing class must provide every signature.
 
 ### Mangling rules
 
