@@ -31,6 +31,9 @@ documentation.
   numeric/data/time workflows, and resilient network/database services.
 - Added bound-listener tracking and `HttpServer.port() -> Result[int]` so
   `Http.serve(0, ...)` supports discoverable ephemeral ports.
+- Added a website/documentation consistency gate covering deterministic,
+  idempotent content generation, SPA routes and heading links, complete stdlib
+  and official-package inventories, removed-API guidance, and homepage snippets.
 
 ### Changed
 
@@ -64,6 +67,10 @@ documentation.
   compiler payload keys distinguish them despite runtime Result erasure. Radix
   parsers remain explicit because their same `Result[int]` type cannot express
   the semantic difference between hexadecimal, octal, and binary input.
+- Refreshed the website from its authoritative documentation, including current
+  official-package exports/imports, the complete compiler-bundled stdlib module
+  inventory, compatibility-shim labels, deploy-safe third-party links, and a
+  concise Vulture hello-world homepage example.
 
 ### Fixed
 
@@ -74,6 +81,9 @@ documentation.
   itself and deadlocks a pending `ask` before delivering its failure sentinel.
 - Fixed async Result propagation, async ternary returns, reserved-handle name
   collisions, and channel send/close races detected by Go's race detector.
+- Fixed SPA heading IDs and cross-document routes by decoding Marked's HTML
+  entities before slugging and preserving the adjacent dashes used by Markdown
+  heading links, rather than leaking an `amp` encoding artifact into URLs.
 
 ### Removed
 

@@ -12,8 +12,8 @@ Lammergeier is easiest to learn if you think in three layers:
    explicit typed APIs, braces for blocks, and Go-backed runtime
    semantics.
 2. **Stdlib classes** for batteries-included work: `Math`, `Strings`,
-   `Json`, `Server`, `Db`, `DataFrame`, `Result`, and the rest of
-   `lib/`.
+   `Json`, `Db`, `DataFrame`, `Result`, and the rest of `lib/`. The Vulture
+   `Server` lives in the separately installed `@lam/vulture` package.
 3. **`go!` interop** for the rare cases where you need exact Go
    syntax, Go packages, type assertions, or low-level concurrency.
 
@@ -44,6 +44,7 @@ keep `main` empty with `pass`.
 
 ```lammergeier
 from lamstrings import Strings
+from lamconv import Conv
 from lamerrors import Result, Error
 
 const AppName: str = "orders"
@@ -52,12 +53,12 @@ func normalizeSku(s: str) -> str {
     return Strings.toUpper(Strings.trim(s))
 }
 
-func parseQty(raw: str) -> Result {
+func parseQty(raw: str) -> Result[int] {
     if raw == "" {
         return Result.Err(Error("ValidationError", "quantity is required"))
     }
-    # Real code would assign Conv.parse(raw) to Result[int] and propagate it.
-    return Result.Ok(raw)
+    parsed: Result[int] = Conv.parse(raw)
+    return parsed
 }
 
 func main() {
@@ -953,6 +954,11 @@ preserved, including `Result[T]`. Each invocation creates an independent handle
 with capacity one, so a completed task can publish its result before its caller
 is ready to await it.
 
+`lamconcurrency.Channel` and `lamactor.Mailbox` use the same operation names:
+`send` / `receive` block, `asyncSend` / `asyncReceive` return awaitable handles,
+and `offer` / `poll` decide immediately. All six operations preserve explicit
+`Result` outcomes rather than masking closed, empty, or full states.
+
 ---
 
 ## Control Flow
@@ -1184,9 +1190,9 @@ once.
 > as `[...]`. A `(x for x in range(10_000_000))` will allocate
 > 10 million entries before the loop body runs. For truly lazy
 > iteration (stream one element at a time, short-circuit via
-> `take` / `takeWhile`) reach for the [`lamiter`](#/docs/stdlib?h=lamiter)
+> `take` / `takeWhile`) reach for the [`lamiter`](#/docs/stdlib?h=lamiter--iter)
 > stdlib module or a hand-rolled `yield`-generator function
-> ([see Generators](#generators)).
+> ([see Generators](#generators--yield)).
 
 ---
 
@@ -1286,10 +1292,11 @@ balanced `(...)`, `[...]`, or literal `{...}` are treated as whitespace.
 enclosing function returns, and multiple `defer`s run in LIFO order.
 
 ```lammergeier
+from lamerrors import Result
 from lamos import File
 
-func load_config(path: str) -> str {
-    f: File = File.open(path, "r")
+func load_config(path: str) -> Result[str] {
+    f: File = File.open(path, "r")?
     defer f.close()
     return f.read()
 }
@@ -1439,34 +1446,36 @@ are syntax errors. `lamc fmt` can repair a spaced closing delimiter to `-#`.
 
 ## File Management
 
-`File.open(path, mode="r")` returns the stdlib `lamos.File` class. The
-class owns the underlying file handle and exposes `read`, `write`,
-`readline`, `readlines`, and `close`. Modes `"r"`, `"w"`, and `"a"`
+`File.open(path, mode="r")` returns `Result[File]`. The opened `lamos.File`
+owns the underlying handle; `read`, `write`, `readline`, `readlines`, and
+`close` also use unsuffixed `Result` contracts. Modes `"r"`, `"w"`, and `"a"`
 map to read, truncate/write, and append/create respectively.
 
 ```lammergeier
 from lamos import File
 
 # Write to file
-f: File = File.open("output.txt", "w")
-f.write("hello world")
-f.close()
+f: File = File.open("output.txt", "w").unwrap()
+f.write("hello world").unwrap()
+f.close().unwrap()
 
 # Read from file
-f: File = File.open("input.txt")
-content: str = f.read()
-f.close()
+reader: File = File.open("input.txt").unwrap()
+content: str = reader.read().unwrap()
+reader.close().unwrap()
 
 # With statement (auto-close) with an as binding
-with File.open("data.txt") as f {
-    content: str = f.read()
+managed: File = File.open("data.txt").unwrap()
+with managed as f {
+    content: str = f.read().unwrap()
     print(content)
 }
 
 # Line-oriented helpers
-with File.open("data.txt") as f {
-    first: str = f.readline()
-    lines: list[str] = f.readlines()
+lineFile: File = File.open("data.txt").unwrap()
+with lineFile as f {
+    first: str = f.readline().unwrap()
+    lines: list[str] = f.readlines().unwrap()
 }
 ```
 
@@ -1727,16 +1736,15 @@ func main() {
 }
 ```
 
-If you directly unwrap and need a concrete type, assert it explicitly
-inside `go!`:
+A payload annotation plus typed assignment gives `unwrap()` the concrete
+result type without a raw-Go assertion:
 
 ```lammergeier
 from lamerrors import Result
 
 func main() {
-    r: Result = Result.Ok(42)
-    n: int = 0
-    go! { n = r.Unwrap().(int) }
+    r: Result[int] = Result.Ok(42)
+    n: int = r.unwrap()
     print(n)
 }
 ```
@@ -1749,14 +1757,14 @@ to the value. The two snippets below are equivalent:
 
 ```lammergeier
 # With ?
-func double(s: str) -> Result {
+func double(s: str) -> Result[int] {
     n: int = parseInt(s)?
     return Result.Ok(n * 2)
 }
 
 # What the compiler desugars it to (sketch)
-func double(s: str) -> Result {
-    __r: Result = parseInt(s)
+func double(s: str) -> Result[int] {
+    __r: Result[int] = parseInt(s)
     if not __r.ok() {
         return __r
     }
@@ -1833,8 +1841,11 @@ and lives only inside the handler.
 Context managers with auto-cleanup:
 
 ```lammergeier
-with File.open("file.txt") as f {
-    data: str = f.read()
+from lamos import File
+
+file: File = File.open("file.txt").unwrap()
+with file as f {
+    data: str = f.read().unwrap()
     print(data)
 }
 ```
@@ -2128,7 +2139,7 @@ the first definitive result.
 If you want pipeline-style laziness — one element flowing through
 the chain at a time, `take` / `takeWhile` bailing out before the
 rest of the input is touched — reach for the
-[`lamiter` stdlib module](#/docs/stdlib?h=lamiter) (`Iter.fromList(xs)
+[`lamiter` stdlib module](#/docs/stdlib?h=lamiter--iter) (`Iter.fromList(xs)
 .map(f).filter(g).take(10).toList()`). That's the only place in
 the language where the combinator chain is deferred to the
 terminal call.
@@ -2517,7 +2528,7 @@ hyphens after their first character.
 Each import bundles that module plus its transitive imports. A package
 `__init__.lam` may re-export submodule names with a normal `from` import,
 so `from lamwebp import Decoder` can remain the concise public API. See
-[`docs/third_party_libraries.md`](#/docs/third_party)
+[`third_party_libraries.md`](#/docs/third_party)
 for the distribution / install workflow that layers on top of
 the resolver.
 
@@ -2532,15 +2543,21 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamerrors`      | `Result`, `Error`                  | Structured errors and `Result` (Ok/Err/unwrap/unwrapOr) for the `?` and `do/catch` system. See [Errors & Results](#errors--results) |
 | `lammath`        | `Math`                             | Math functions (sqrt, sin, cos, pow, log, etc.) |
 | `lamstrings`     | `Strings`                          | String utilities (repeat, contains, trim, split, join, etc.) |
+| `lamtemplate`    | `Template`, `HtmlTemplate`         | Result-based Go text and autoescaped HTML templates with file, named-template, and helper support |
 | `lamtime`        | `Time`                             | Duration units/arithmetic plus Unix time, sleeps, parsing, formatting, and measurement |
-| `lamconv`        | `Conv`                             | Result-based decimal/float/bool and explicitly named hex/octal/binary string parsers |
+| `lamcron`        | `Cron`                             | Cron scheduling with standard/seconds-aware expressions, descriptors, and lifecycle controls |
+| `lamconv`        | `Conv`                             | Return-type-overloaded `parse` for decimal int/float/bool plus explicitly named hex/octal/binary parsers |
 | `lamos`          | `Os`, `File`, `FileLineGenerator`  | Result-based OS/filesystem helpers plus streaming file lines and batches |
 | `lamjson`        | `Json`                             | Native `json` runtime, Result-based encode/decode/pretty, validation, and dict/list conversion |
+| `lamyaml`        | `Yaml`                             | Result-returning YAML encoding, decoding, and multi-document decoding |
+| `lamxml`         | `Xml`, `XmlNode`                   | Result-based XML encoding/decoding plus DOM-style node traversal |
 | `lamrandom`      | `Random`                           | Pseudo-random values and secure bytes/tokens; UUID generation belongs to `lamuuid` |
 | `lamsort`        | `Sort`                             | Generic natural/comparator sorting, asc/desc checks, named algorithms, reverse, and lazy sorted generators |
 | `lamre`          | `Re`                               | Result-returning regex match, find, findAll, replaceAll, split, and groups |
 | `lamhttp`        | `Http`, `HttpClient`, `HttpResponse`, `HttpCookie`, `HttpServer` | Overloaded native-JSON requests, response headers/cookies, and a blocking server (`Http.serve`) |
+| `lamsmtp`        | `Smtp`, `Mail`                     | Result-based SMTP delivery and MIME mail construction for text, HTML, and attachments |
 | `lamdb`          | `Db`                               | Database connectivity (connect, close, exec, queryRow, queryAll, queryRows) |
+| `lammigrate`     | `Migrator`, `Schema`               | SQL migration batches and portable programmatic schema helpers |
 | `lamhash`        | `Hash`                             | Hashing (sha256, sha1, sha512, md5, crc32) plus HMAC (hmacSha1/256/512), `constantTimeEquals`, `verifyHmacSha256` |
 | `lamcrypto`      | `Crypto`, `CryptoKeyPair`, `CryptoCertificate` | Secure random data, AES-GCM envelopes, PBKDF2 password hashes, PEM keys/signatures, and X.509 metadata |
 | `lambase64`      | `Base16`, `Base32`, `Base64`, `Hex` | Standard/raw Base16/Base32/Base64 codecs and compatibility aliases |
@@ -2554,19 +2571,22 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamunicode`     | `Unicode`                          | Unicode/UTF-8 (runeCount, isValid, isLetter, isDigit, etc.) |
 | `lamenv`         | `Env`                              | String, typed, and Result-based environment access plus set/unset/all |
 | `lamdatetime`    | `DateTime`                         | Date/time formatting and parsing |
-| `lamdatastructures` | `Queue`, `Deque`, `Stack`, `Set`, `Heap`, `PriorityHeap` | Canonical collection implementations; legacy modules re-export them |
-| `lamstack`       | `Stack`                            | Compatibility import for the canonical stack |
-| `lamqueue`       | `Queue`                            | Queue data structure (enqueue, dequeue, peek, size, isEmpty, clear, toList) |
-| `lamdeque`       | `Deque`                            | Double-ended queue (pushFront/pushBack, popFront/popBack, peekFront/peekBack, size, isEmpty, clear, toList) |
-| `lamheap`        | `Heap`, `PriorityHeap`             | Binary heap / priority queue (push, pop, peek, size, isEmpty, clear; min by default, `maxHeap=true` for max) |
-| `lamset`         | `Set`                              | Set data structure (add, addAll, remove, contains, size, isEmpty, clear, toList, union, intersect, difference, isSubsetOf, equals) |
+| `lamdatastructures` | `Queue`, `Deque`, `Stack`, `Set`, `Heap`, `PriorityHeap` | Canonical collection implementations with Result-returning empty-state operations |
+| `lamstack`       | `Stack`                            | Compatibility re-export from `lamdatastructures` |
+| `lamqueue`       | `Queue`, `Deque`                   | Compatibility re-exports from `lamdatastructures` |
+| `lamdeque`       | `Deque`                            | Compatibility re-export from `lamdatastructures` |
+| `lamheap`        | `Heap`, `PriorityHeap`             | Compatibility re-exports from `lamdatastructures` |
+| `lamset`         | `Set`                              | Compatibility re-export from `lamdatastructures` |
 | `lamstats`       | `Stats`                            | Statistics (sum, product, mean, median, mode, variance, sampleVariance, stddev, minVal, maxVal, range_, percentile) |
 | `lamcompress`    | `Compress`                         | Compression (gzip/gunzip and zlibDeflate/zlibInflate; outputs base64 strings) |
-| `lamnet`         | `Net`, `TcpConn`, `TcpListener`, `UdpConn`, `UdpPacket` | DNS plus TCP/TLS/UDP sockets, deadlines, and addresses |
+| `lamnet`         | `Net`, `TcpConn`, `TcpListener`, `UdpConn`, `UdpPacket` | Result-based DNS and TCP/TLS/UDP sockets; reads use `receive` / `receiveFrom` |
 | `lamcli`         | `Cli`                              | CLI args/positionals and overloaded string/integer `getFlag` |
 | `lamtest`        | `Test`                             | Assertion/test framework (assertTrue, assertFalse, assertEqual, assertNotEqual, assertNil, assertNotNil, assertLen, assertContains, assertAlmostEqual, describe, pass, fail, summary) |
-| `lamconcurrency` | `Channel`, `WaitGroup`, `Mutex`, `RWMutex`, `Atomic` | Concurrency primitives (channels, sync, mutexes, atomic counters via `sync/atomic`) |
+| `lamconcurrency` | `Channel`, `WaitGroup`, `Mutex`, `RWMutex`, `Atomic` | Blocking `send` / `receive`, awaitable `asyncSend` / `asyncReceive`, immediate `offer` / `poll`, and synchronization primitives |
 | `lamcontext`     | `Context`                          | Cancellation trees, unit-aware expiration, inherited values, bounded waits, and native Go context interop |
+| `lamactor`       | `Mailbox`, `ActorRef`, `ActorSystem` | Actor messaging; mailboxes share Channel's blocking, awaitable, and immediate Result APIs |
+| `lamretry`       | `Retry`                            | Result-aware retries and predicate polling with capped exponential backoff and optional jitter |
+| `lamratelimit`   | `TokenBucket`                      | Goroutine-safe token-bucket rate limiting with blocking and immediate acquisition |
 | `lamarray`       | `Array`, `Matrix`                  | NumPy-style numerics backed by **gonum** — `fromList`, `zeros`, `ones`, `linspace`, `arange`, element-wise add/sub/mul/div, BLAS `matmul`, `mulVec`, `transpose`, `inverse`, `det`, `trace`, `solve`, `dot`, `norm`, reductions (sum/mean/std/min/max/argMin/argMax) |
 | `lamdata`        | `DataFrame`, `Series`, `DataFrameGroups` | Pandas-style dataframes backed by **go-gota** — overloaded text/native-JSON `readJSON`, generic typed `mutate`/`Series.from`, native `json(frame)`, selection/filtering/sorting/joins/grouping, CSV/JSON output, and Series statistics |
 | `lamschema`      | `Schema`                           | JSON Schema validation (draft-07) via `xeipuuv/gojsonschema` with compile-once caching; declarative validation reusable as OpenAPI specs |
@@ -2576,8 +2596,9 @@ All standard library modules use OOP-style static classes with camelCase naming:
 
 The HTTP server is distributed separately as `@lam/vulture`; its standard,
 WebSocket, and tus integrations are `@lam/vulture/std-plugin`,
-`@lam/vulture/ws-plugin`, and `@lam/vulture/tus-plugin`. See the
-[official package catalog](#/docs/libraries) for installation and imports.
+`@lam/vulture/ws-plugin`, and `@lam/vulture/tus-plugin`. Their current releases
+are 2.0.0 and target `lamc` 1.18. See the [official package catalog](#/docs/libraries)
+for installation and imports.
 
 **Example:**
 
@@ -3263,7 +3284,7 @@ The pipeline runs in three layers:
 The Pythonic **leading-underscore** opt-out applies to every
 "unused" warning: rename a parameter `age` to `_age` (or just `_`)
 to mark it as deliberately unused, and the warning disappears. The
-same convention works for `for _ in xs`, `with File.open(p) as _f`, and
+same convention works for `for _ in xs`, `with file as _f`, and
 `catch SomeError as _e`.
 
 Unused **locals** follow the same warn-don't-error contract. The

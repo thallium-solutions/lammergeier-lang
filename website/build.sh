@@ -9,7 +9,8 @@
 # Also rewrites a handful of relative links so they continue to
 # resolve once the files live at a flat path:
 #   - sibling docs   (``stdlib.md``)         → ``#/docs/stdlib``
-#   - lib links      (``../lib/foo.lam``)    → absolute GitHub URL
+#   - repo links     (``../lib/foo.lam`` or ``../third_party/...``)
+#                                             → absolute GitHub URL
 #
 # Run this once before you deploy:
 #
@@ -124,6 +125,7 @@ rewrite_file() {
         -e "s#\]\((\.\./)+(tests/[^)\"]+)\)#](${GITHUB_BASE}/\2)#g" \
         -e "s#\]\((\.\./)+(bin/[^)\"]+)\)#](${GITHUB_BASE}/\2)#g" \
         -e "s#\]\((\.\./)+(tools/[^)\"]+)\)#](${GITHUB_BASE}/\2)#g" \
+        -e "s#\]\((\.\./)+(third_party/[^)\"]+)\)#](${GITHUB_BASE}/\2)#g" \
         -e "s#\]\(\.\./(vs-code-extension/[^)\"]+)\)#](${GITHUB_BASE}/\1)#g" \
         -e "s#\]\(\.\./lib\)#](${GITHUB_BASE}/lib)#g" \
         "${f}"
@@ -136,6 +138,7 @@ rewrite_file() {
         -e "s#\]\((compiler/[^)\"]+)\)#](${GITHUB_BASE}/\1)#g" \
         -e "s#\]\((bin/[^)\"]+)\)#](${GITHUB_BASE}/\1)#g" \
         -e "s#\]\((tools/[^)\"]+)\)#](${GITHUB_BASE}/\1)#g" \
+        -e "s#\]\((third_party/[^)\"]+)\)#](${GITHUB_BASE}/\1)#g" \
         -e "s#\]\((vs-code-extension/[^)\"]+)\)#](${GITHUB_BASE}/\1)#g" \
         -e "s#\]\((website/README\.md)\)#](${GITHUB_BASE}/\1)#g" \
         -e "s#\]\((website)\)#](${GITHUB_BASE}/\1)#g" \

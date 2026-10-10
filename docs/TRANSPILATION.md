@@ -855,7 +855,7 @@ Interfaces are never wrapped in pointers.
 | `int(x)` / `float(x)`              | `int(x)` / `float64(x)`                                                   |
 | `print(...)`                       | `fmt.Println(...)`                                                        |
 | `input(prompt)`                    | `bufio.NewScanner(os.Stdin)` one-liner                                    |
-| `File.open(path, "w")`             | `File_open(path, "w")`, returning a stdlib `File` instance                |
+| `File.open(path, "w")`             | `File_open(path, "w")`, returning `*Result` with `File` payload metadata   |
 | `xs.length()`                      | `len(xs)`                                                                  |
 | `xs.append(v)`                     | `xs = append(xs, v)`                                                      |
 | `xs.pop()`                         | IIFE that returns the removed element and shrinks `xs`                    |
@@ -867,7 +867,7 @@ Interfaces are never wrapped in pointers.
 | `xs.sort([compare][, inplace])`    | `sort.Slice` copy by default; when `inplace=true`, sorts and returns `xs` |
 | `sorted(xs)`                       | `sort.Slice` copy preserving the receiver/context element type            |
 | `enumerate(xs)`                    | IIFE materializing index/value pairs as `[]interface{}` tuples            |
-| `isinstance(x, T)`                 | `true /* isinstance */` (see “limitations” below)                         |
+| `isinstance(x, T)`                 | Type-specific runtime check: assertion, nil test, or `reflect.Kind`        |
 
 For class operands, arithmetic/unary/comparison expressions dispatch through
 the corresponding dunder method. Before emission, semantic analysis validates
@@ -1025,33 +1025,38 @@ instead of leaking the callee's `T` into caller Go.
   with `<-`. The same emitter is used for top-level functions, instance methods,
   and static methods, so receiver type arguments, private/static Go naming, and
   `Result[T]` payloads are preserved.
-- User-facing channel operations belong in `lamconcurrency.Channel`. Its raw Go
-  channel is the runtime boundary; blocking, immediate (`poll`/`offer`), and
-  awaitable (`asyncReceive`/`asyncSend`) orchestration is exposed through Lam
-  methods rather than copied into callers' `go!` blocks.
+- User-facing channel operations belong in `lamconcurrency.Channel`; actor queues
+  compose it through `lamactor.Mailbox`. Both expose blocking `send` / `receive`,
+  immediate `offer` / `poll`, and awaitable `asyncSend` / `asyncReceive` methods
+  with explicit `Result` outcomes. Their raw Go channels remain runtime
+  boundaries rather than leaking into callers' `go!` blocks.
 
 ## External Go modules
 
-The compiler runs `go mod tidy` after writing the generated source, so
-any `go!` block that imports a third-party package will trigger an
-automatic `go get`. The toolchain caches downloads under `$GOPATH/pkg`,
-so repeat builds incur the network cost only once.
+The compiler synthesizes a temporary `go.mod`, injects the applicable pinned
+versions, and runs `go mod tidy` after writing generated source. Pins come from
+the reached stdlib modules, the project's `lamlib.toml` `[go-deps]`, and
+resolved package pins in `lamlib.lock.toml`; project and lockfile pins take
+precedence over compiler defaults.
 
 This is how `lamarray` pulls in **gonum** (`gonum.org/v1/gonum/mat`,
-`floats`, `stat`) for BLAS-accelerated dense linear algebra without
-requiring users to manage Go modules manually. The relevant flow:
+`floats`, `stat`) for BLAS-accelerated dense linear algebra without requiring
+users to maintain a `go.mod`. The relevant flow:
 
-1. The library `.lam` file declares its imports inside a `go! { import (...) }`
-   block. Those import paths land verbatim in the emitted `.go` file.
-2. `lamc` writes the generated Go to a temporary directory, invokes
-   `go mod init`, then `go mod tidy`. `tidy` resolves the new imports
-   against the public proxy and downloads them.
-3. `go build` runs against the populated module — same toolchain, same
-   build cache as any hand-written Go program.
+1. The library `.lam` file declares imports inside a `go! { import (...) }`
+   block. Stdlib dependencies are pinned by the compiler; third-party package
+   authors declare external modules under `[go-deps]` in `lamlib.toml`.
+2. `lamc` writes generated Go to a temporary directory, invokes `go mod init`,
+   injects the selected `require` directives, then runs `go mod tidy`. Missing
+   modules may be downloaded through the configured Go proxy and cached in the
+   normal Go module cache.
+3. `go build` runs against the populated module with the same module and build
+   caches as hand-written Go code.
 
-If you want a stdlib-only build (no network at compile time), pin every
-dependency by vendoring or by writing equivalent kernels in pure Go via
-inline `go!` blocks. There are no Lam-side hooks for offline builds yet.
+For network-free builds, materialize Lam dependencies with `lamc install
+--frozen --offline` and pre-populate the Go module cache (or configure the Go
+toolchain for offline use). The package-manager flag governs Lam package
+fetches; it does not turn an empty Go module cache into a vendored build.
 
 Raw Go remains an escape hatch, so some invalid programs can still fail in
 the Go toolchain. Lammergeier preserves `//line` provenance for generated Go
@@ -1091,15 +1096,14 @@ their pins: `@lam/vulture/ws-plugin`, for example, declares
 Each entry is a `<go_module_path> = "<v…>"` pair sorted by
 module path for diff stability.
 
-`_collect_go_pins` in `compiler/transpiler.py` seeds the
-project's pin map with `STDLIB_GO_PINS` first and then layers
-project-side pins (from `lamlib.toml` `[go-deps]` and
-`lamlib.lock.toml` `[go_pins.*]`) on top. Project pins win over
-stdlib pins via Go's MVS rule (the higher version is selected),
-so users can still upgrade an individual stdlib transitive
-without forking the compiler. Every other stdlib module stays
-reproducible across builds — no silent upgrade between when the
-stdlib was last tested and when `go mod tidy` runs in your build.
+`_collect_go_pins` in `compiler/lammergeier.py` selects defaults for the
+stdlib modules reached by the import graph through `STDLIB_GO_PIN_MODULES`, then
+layers project-side pins (from `lamlib.toml` `[go-deps]` and
+`lamlib.lock.toml` `[go_pins.*]`) on top. Project pins win over stdlib pins via
+Go's MVS rule (the higher version is selected), so users can upgrade an
+individual stdlib transitive without forking the compiler. Reached stdlib
+modules remain reproducible without adding unrelated requirements to a small
+program's `go.mod`.
 
 Updating a pin: bump the entry in `STDLIB_GO_PINS`, update the
 stdlib library's `go!` block if the new module API changed, and
@@ -1176,7 +1180,7 @@ through:
 | `lamcache.TtlCache`           | `map[any]*ttlEntry`                 | `Idx`      |
 | `lamconcurrency.Channel`      | `*lamChannel` (data + close signal) | `Ch`       |
 | `lamconcurrency.WaitGroup`    | `*sync.WaitGroup`                   | `Wg`       |
-| `lamheap.Heap`                | `*container/heap` adapter           | `Items`    |
+| `lamdatastructures.Heap`      | `*container/heap` adapter           | `Inner`    |
 
 When debugging a stdlib module, that field is a good first place to
 inspect — the Lam method bodies usually do little more than typecheck
@@ -1184,11 +1188,6 @@ inputs and forward to the underlying Go API.
 
 ## Limitations and pitfalls
 
-- **Nested function definitions:** a nested `func` declaration is
-  rewritten to a Go closure assignment (``name := func(...) { ... }``),
-  so it cannot carry its own generic type-parameter list. The semantic
-  checker rejects nested generic functions with a Lam diagnostic; lift
-  the generic helper to module scope if you need type parameters.
 - **Multi-line function calls:** calls may break after `(` and after
   comma-separated arguments, with an optional trailing comma before
   `)`. Positional and keyword arguments use the same semantics as
@@ -1202,13 +1201,6 @@ inputs and forward to the underlying Go API.
   single `defer recover()` per function, so two consecutive try/catch
   blocks won't both fire. Wrap each `try` in its own helper if you
   need independent recovery sites.
-- **Chained user-method calls lose return-type info:** the transpiler
-  doesn't yet thread class-method return types through chains, so
-  `iter.filter(p).map(f).take(3)` fails to type-resolve the inner
-  receivers. Bind each step to a typed intermediate (`a: Iter =
-  iter.filter(p); b: Iter = a.map(f); ...`). The functional combinators
-  on plain lists (`xs.filter(...).map(...)`) are exempt because the
-  transpiler unwinds them into IIFEs of known element type.
 - **F-string interpolations are textual:** the f-string lowerer runs
   string-level regex transforms on each `{expr}`. It doesn't accept
   escaped quotes (`f"x={d[\"key\"]}"`) and may not rewrite every

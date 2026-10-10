@@ -91,17 +91,16 @@ lammergeier-lang/
 ├── lammergeier.lark          ← Lark grammar (LALR)
 │
 ├── tests/
-│   ├── tests/                ← end-to-end "compile-and-run" tests
+│   ├── tests/                ← end-to-end cases plus Python unit/fuzz checks
 │   │   ├── run_tests.py
 │   │   └── cases/            ← .lam cases with `# expect:` lines
 │   ├── semantic/             ← semantic-checker diagnostics
-│   │   ├── run_semantic_tests.py
-│   │   └── cases/            ← `# expect-error:` / `# expect-pass`
-│   ├── benchmarks/           ← compile + run + size measurements
-│   │   ├── run_benchmarks.py
-│   │   └── cases/language|stdlib/
+│   ├── syntax/               ← parser and syntax-diagnostic contracts
+│   ├── transpilation/        ← Go-output snapshot comparisons
+│   ├── lsp/                  ← language-server protocol checks
+│   ├── import_resolution/    ← module layout and resolver checks
 │   ├── rosetta_tests/        ← larger realistic programs
-│   └── transpilation/        ← Go-output snapshot comparisons
+│   └── benchmarks/           ← compile + run + size measurements
 │
 ├── docs/                     ← language + stdlib docs
 │   ├── SYNTAX.md             ←   language surface reference
@@ -181,15 +180,14 @@ change belongs is usually the hardest part of a PR.
 # 1. Make your change (grammar / semantic / transpiler / stdlib).
 
 # 2. Iterate on the affected layer, running just those tests:
-python3 tests/semantic/run_semantic_tests.py -f <keyword>
-python3 tests/tests/run_tests.py -f <keyword>
+PYTHON=/usr/bin/python3 sh scripts/test.sh semantic <keyword>
+PYTHON=/usr/bin/python3 sh scripts/test.sh core <keyword>
 
-# 3. Run the *full* suites before opening a PR:
-python3 tests/tests/run_tests.py             # compile+run end-to-end
-python3 tests/semantic/run_semantic_tests.py # semantic diagnostics
+# 3. Run the full local gate before opening a PR:
+PYTHON=/usr/bin/python3 sh scripts/test.sh
 
 # 4. If the change might affect performance:
-python3 tests/benchmarks/run_benchmarks.py --runs 5
+sh scripts/bench.sh --runs 5
 
 # 5. Update docs touched by the change:
 #    - docs/SYNTAX.md (language surface)
@@ -241,17 +239,16 @@ a regression test that would have caught the bug.
 Short feedback loops save hours:
 
 ```bash
-python3 tests/semantic/run_semantic_tests.py -f my_change
-python3 tests/tests/run_tests.py -f my_change --verbose
+PYTHON=/usr/bin/python3 sh scripts/test.sh semantic my_change
+PYTHON=/usr/bin/python3 sh scripts/test.sh core my_change
 ```
 
 ### 5. Run the full suites before PR
 
-Nothing ships without:
+Nothing ships without the complete local gate:
 
 ```bash
-python3 tests/tests/run_tests.py
-python3 tests/semantic/run_semantic_tests.py
+PYTHON=/usr/bin/python3 sh scripts/test.sh
 ```
 
 If the change is performance-sensitive, also run benchmarks and
@@ -281,16 +278,20 @@ Walk the diff one more time and ask:
 
 ## Testing Discipline
 
-Lammergeier ships with **five** test families. Know them; use the
-right one.
+Lammergeier's local quality gate has **eight** test families, plus a separate
+benchmark harness. Know them; use the right one.
 
 | Suite | Location | Purpose |
 |-------|----------|---------|
-| End-to-end | `tests/tests/` | Compile + run with `# expect:` stdout assertions. The primary regression shield. |
+| Core end-to-end | `tests/tests/cases/` | Compile + run with `# expect:` stdout assertions. The primary regression shield. |
 | Semantic | `tests/semantic/` | Compile-time diagnostics (`# expect-error:`, `# expect-pass`). |
+| Syntax | `tests/syntax/` | Parser and syntax-diagnostic contracts. |
 | Transpilation | `tests/transpilation/` | Snapshot-compare the emitted Go (for lowering changes). |
+| LSP | `tests/lsp/` | Language-server protocol behavior and editor-facing diagnostics. |
+| Import resolution | `tests/import_resolution/` | Module layouts, precedence, and import diagnostics. |
+| Python unit / fuzz | `tests/tests/test_*.py` | Compiler helpers, tooling, generated-Go contracts, and fuzz checks. |
 | Rosetta | `tests/rosetta_tests/` | Realistic end-to-end programs proving day-to-day composition. |
-| Benchmarks | `tests/benchmarks/` | Compile + run + binary-size stats. Not a pass/fail suite. |
+| Benchmarks | `tests/benchmarks/` | Compile + run + binary-size stats. Not part of the pass/fail gate. |
 
 ### End-to-end tests
 
@@ -380,31 +381,26 @@ expectation to preserve incorrect behavior.
 ## Running Tests
 
 ```bash
-# Full end-to-end pipeline (277+ cases today)
-python3 tests/tests/run_tests.py
+# Full local quality gate
+PYTHON=/usr/bin/python3 sh scripts/test.sh
 
-# Filter by substring (case-insensitive)
-python3 tests/tests/run_tests.py -f xml
-
-# Verbose output for the failures
-python3 tests/tests/run_tests.py -v
-
-# Semantic diagnostics suite
-python3 tests/semantic/run_semantic_tests.py
-
-# One specific semantic case
-python3 tests/semantic/run_semantic_tests.py -f shadow
+# Individual families (core, semantic, syntax, and transpile accept filters)
+PYTHON=/usr/bin/python3 sh scripts/test.sh core xml
+PYTHON=/usr/bin/python3 sh scripts/test.sh semantic shadow
+PYTHON=/usr/bin/python3 sh scripts/test.sh syntax
+PYTHON=/usr/bin/python3 sh scripts/test.sh transpile generics
+PYTHON=/usr/bin/python3 sh scripts/test.sh lsp
+PYTHON=/usr/bin/python3 sh scripts/test.sh import
+PYTHON=/usr/bin/python3 sh scripts/test.sh unit
+PYTHON=/usr/bin/python3 sh scripts/test.sh rosetta
 
 # Benchmarks
-python3 tests/benchmarks/run_benchmarks.py
-python3 tests/benchmarks/run_benchmarks.py --warm
-python3 tests/benchmarks/run_benchmarks.py --json out/bench.json
+sh scripts/bench.sh --runs 5
 ```
 
-The tests assume `python3 -m compiler.lammergeier <file>` works
-from the repo root. If your Python environment doesn't have Lark
-on the default path, export `PYTHONPATH` to include the install
-location of `lark-parser`.
+The test scripts run from the repository root and invoke the in-tree compiler.
+Set `PYTHON` when the default interpreter does not have Lark; the maintained
+local setup uses `/usr/bin/python3` for syntax diagnostics.
 
 ---
 
@@ -738,8 +734,7 @@ Before opening the PR:
 - [ ] New features ship with ≥10 tests from simple to composed.
 - [ ] Bug fixes ship with a regression test that previously failed.
 - [ ] Stdlib additions follow the camelCase + `LAMMERGEIER.*` rules.
-- [ ] `python3 tests/tests/run_tests.py` is green.
-- [ ] `python3 tests/semantic/run_semantic_tests.py` is green.
+- [ ] `PYTHON=/usr/bin/python3 sh scripts/test.sh` is green.
 - [ ] For performance-sensitive changes, benchmarks run clean and
       before/after numbers are in the PR description.
 - [ ] `docs/SYNTAX.md` / `docs/stdlib.md` / module docstrings updated.

@@ -88,8 +88,9 @@ area: 78.53981633974483
   while `Conv` owns parsing and `Fmt` owns presentation.
 - **Official external libraries** — independently versioned scoped packages for
   JWT, Protobuf, Redis, Memcached, S3, SFTP, SSH, and the Vulture HTTP server
-  with its standard, tus, and WebSocket plugins. Browse the
-  [Libraries catalog](#/docs/libraries) and install them with `lamc install`.
+  with its standard, tus, and WebSocket plugins. The current v2 package line
+  targets `lamc` 1.18. Browse the [Libraries catalog](#/docs/libraries) and
+  install them with `lamc install`.
 - **Numerics & web stack** — `Array` / `Matrix` backed by **gonum**
   (BLAS-accelerated matmul, LU solve, inverse, det, trace, SVD-flavoured
   helpers), pandas-style `DataFrame` / `Series` / `DataFrameGroups`
@@ -253,13 +254,13 @@ module:
 ```lammergeier
 from lamstrings import Strings
 from lamfmt import Fmt
-from lamstack import Stack
+from lamdatastructures import Stack
 
 func main() {
     s: Stack = Stack()
     s.push(10)
     s.push(20)
-    print(Fmt.sprintf("top = %d (size=%d)", s.peek(), s.size()))
+    print(Fmt.sprintf("top = %d (size=%d)", s.peek().unwrap(), s.size()))
     print(Strings.toUpper("lammergeier"))
 }
 ```

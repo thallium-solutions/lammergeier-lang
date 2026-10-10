@@ -10,25 +10,27 @@ WebSocket and resumable-upload support live in
 and
 [`@lam/vulture/tus-plugin`](https://github.com/thallium-solutions/lam-vulture-tus-plugin).
 
-If you've used Fastify before, the model is recognisable: a plugin
-attaches hooks to the request lifecycle and (optionally) registers
-routes. The big difference is that Lammergeier plugins are plain
-top-level functions — there's no factory layer, no closure
-type-erasure, and no async setup. They run synchronously and they
-type-check at compile time.
+If you've used Fastify before, the model is recognisable: a plugin attaches
+hooks to the request lifecycle and optionally registers routes. A plugin passed
+to `Server.register` has the compile-time-checked type `func(Server)` and runs
+synchronously. A parameterless installer can be registered directly; a
+configurable plugin can expose a typed factory that captures configuration and
+returns `func(Server)`. The official collection provides both direct installers
+and `*Plugin(...)` factories.
 
 ## Installation
 
 Install only the packages an application uses:
 
 ```bash
-lamc install @lam/vulture@1.0.0
-lamc install @lam/vulture/std-plugin@1.0.0
-lamc install @lam/vulture/ws-plugin@1.0.0
-lamc install @lam/vulture/tus-plugin@1.0.0
+lamc install @lam/vulture@2.0.0
+lamc install @lam/vulture/std-plugin@2.0.0
+lamc install @lam/vulture/ws-plugin@2.0.0
+lamc install @lam/vulture/tus-plugin@2.0.0
 ```
 
-Each plugin declares `@lam/vulture` as a dependency. Core Vulture owns HTTP
+Each plugin declares `@lam/vulture` as a dependency. These are independently
+versioned packages, not standard-library modules. Core Vulture owns HTTP
 routing, request/response types, lifecycle hooks, schemas, streaming, SSE,
 OpenAPI, and test injection. The standard plugin collection owns common auth,
 security, observability, caching, session, and resilience helpers; WebSocket
@@ -67,15 +69,15 @@ route-level `timeoutMs` deadline wins the race.
 
 ## 2. The plugin contract
 
-A plugin is just:
+The value accepted by `register` is exactly `func(Server)`:
 
 ```lammergeier
-func myPlugin(srv: Server, ...config) {
-    # Install hooks / routes / state on `srv`.
+func myPlugin(srv: Server) {
+    # Install hooks, routes, schemas, decorators, or state on `srv`.
 }
 ```
 
-That's the entire interface. Call it from `main()`:
+Register a parameterless plugin directly:
 
 ```lammergeier
 from @lam/vulture import Server
@@ -83,25 +85,31 @@ from my_plugins import myPlugin
 
 func main() {
     srv: Server = Server()
-    myPlugin(srv, "config-value")
-    srv.listen(8080)
+    srv.register(myPlugin)
+    _ = srv.listen(8080).unwrap()
 }
 ```
 
-If you'd rather use the Fastify-flavoured `srv.register(...)` form,
-write a thin wrapper:
+For configurable plugins, keep the direct installer if useful and expose a
+typed factory. Lam 1.18 closures preserve the captured configuration while
+satisfying `func(Server)`:
 
 ```lammergeier
-func myPluginWrapper(srv: Server) {
-    myPlugin(srv, "default-config")
+func installMyPlugin(srv: Server, label: str) {
+    # Install configured hooks or routes.
 }
 
-# Now srv.register(myPluginWrapper) works.
+func myPlugin(label: str = "default") -> func(Server) {
+    return lambda(srv: Server) -> None {
+        installMyPlugin(srv, label)
+    }
+}
+
+srv.register(myPlugin("api"))
 ```
 
-The wrapper exists because Lam's `register()` requires a
-`func(*Server)`-typed value, which top-level named functions satisfy
-but closures do not.
+This is the pattern used by the official `requestLogPlugin`,
+`rateLimitPlugin`, `compressPlugin`, and other configurable factories.
 
 ### Plugin categories
 
@@ -131,7 +139,7 @@ func main() {
     apiPlugins(srv)
     srv.register(userRoutes, "/users", true)
     srv.register(orderRoutes, "/orders", true)
-    srv.listen(8080)
+    _ = srv.listen(8080).unwrap()
 }
 ```
 
@@ -223,7 +231,7 @@ A production auth plugin usually does three things:
 ```lammergeier
 from @lam/vulture import Server, Request, Response
 
-func tokenAuth(srv: Server, verify: any, header: str = "Authorization") {
+func tokenAuth(srv: Server, verify: func(str) -> any, header: str = "Authorization") {
     func guard(req: Request, res: Response) {
         raw: str = req.header(header)
         if raw == "" {
@@ -231,13 +239,7 @@ func tokenAuth(srv: Server, verify: any, header: str = "Authorization") {
             return
         }
 
-        claims: any = None
-        _ = verify  # used inside go!
-        go! {
-            if fn, ok := verify.(func(string) interface{}); ok {
-                claims = fn(raw)
-            }
-        }
+        claims: any = verify(raw)
         if claims == None {
             res.code(401).json({"error": "invalid token"})
             return
@@ -246,11 +248,22 @@ func tokenAuth(srv: Server, verify: any, header: str = "Authorization") {
     }
     srv.preHandler(guard)
 }
+
+func tokenAuthPlugin(
+    verify: func(str) -> any,
+    header: str = "Authorization",
+) -> func(Server) {
+    return lambda(srv: Server) -> None {
+        tokenAuth(srv, verify, header)
+    }
+}
 ```
 
-Handlers can then read `req.ctx["user"]`. If you want this auth to
-apply only to one mounted feature, register the feature with
-encapsulation and install the auth plugin inside it:
+Handlers can then read `req.ctx["user"]`. A cookie-based variant must handle
+`req.cookie(name) -> Result[str]`; absence and parse failures are no longer an
+empty-string sentinel. If you want this auth to apply only to one mounted
+feature, register the feature with encapsulation and install the direct auth
+installer inside it:
 
 ```lammergeier
 func privateApi(srv: Server) {
@@ -347,7 +360,7 @@ func adminRoutes(srv: Server) {
 func main() {
     srv: Server = Server()
     srv.register(adminRoutes, "/admin/v1")  # → /admin/v1/users
-    srv.listen(8080)
+    _ = srv.listen(8080).unwrap()
 }
 ```
 
@@ -406,7 +419,10 @@ func v1(srv: Server) {
 srv.register(v1, "/api/v1", true)
 ```
 
-The final routes are `/api/v1/users/` and `/api/v1/users/:id`.
+The final routes are `/api/v1/users/` and `/api/v1/users/:id`. At runtime the
+named value is `req.params[":id"]`; Vulture preserves the colon in
+`Request.params`. A `RouteOptions` params schema uses the unmarked property name
+`"id"`, which Vulture normalizes only for validation and OpenAPI.
 
 ---
 
@@ -575,11 +591,10 @@ listeners run handlers concurrently.
 
 ## 7. Streaming responses & WebSocket plugins
 
-`Response.streamFile` and `Response.sse` set internal `streamHandler`
-/ `sseHandler` slots. The dispatcher honours them after running
-`onResponse` hooks, so plugins can still inspect streaming responses
-to (for example) skip compression — the bundled `compress` plugin
-does exactly that:
+`Response.streamFile` and `Response.sse` set internal `streamHandler` /
+`sseHandler` slots. The dispatcher honours them after running `onResponse`
+hooks, so plugins can still inspect streaming responses to (for example) skip
+compression — the maintained `compress` plugin does exactly that:
 
 ```lammergeier
 if res.StreamHandler != nil || res.SseHandler != nil || res.Hijacked {
@@ -587,40 +602,96 @@ if res.StreamHandler != nil || res.SseHandler != nil || res.Hijacked {
 }
 ```
 
-WebSocket plugins are essentially `@lam/vulture/ws-plugin`'s `wsRoute` —
-register a normal GET route, attach a `preHandler` that puts your
-WebSocket callback on `req.ctx`, and let the route handler call
-`websocket.Upgrade` from inside a `go!` block. Read the
+Use `@lam/vulture/ws-plugin` rather than implementing the native upgrade
+boundary in an application plugin. Its `wsRoute` function has default and typed
+`RouteOptions` overloads, both returning `Result[bool]`:
+
+```lammergeier
+from @lam/vulture import Request, RouteOptions
+from @lam/vulture/ws-plugin import WebSocket, wsRoute
+from lamerrors import Result
+
+func echo(ws: WebSocket, req: Request) {
+    incoming: Result[str] = ws.receive()
+    if incoming.ok() {
+        _sent: bool = ws.send(incoming.unwrap()).unwrap()
+    }
+}
+
+options: RouteOptions = RouteOptions(0, 30000)
+_ = options.metadata("originAllowList", ["https://app.example.com"])
+_ = options.metadata("subprotocols", ["events-v2"])
+_ = options.metadata("compression", true)
+_registered: bool = wsRoute(srv, "/events", echo, options).unwrap()
+```
+
+`receive() -> Result[str]` and `receiveBytes() -> Result[any]` distinguish
+valid empty frames from closure and transport failures; `send`, `sendBytes`,
+and `ping` also return Results. Read the
 [`@lam/vulture/ws-plugin` repository](https://github.com/thallium-solutions/lam-vulture-ws-plugin)
-for the full implementation.
+for upgrade and lifecycle details.
+
+### Composing the tus plugin
+
+`@lam/vulture/tus-plugin` owns the protocol routes and filesystem store. Both
+public operations use v2 Result contracts:
+
+```lammergeier
+from @lam/vulture/tus-plugin import tusGc, tusUploads
+
+_mounted: bool = tusUploads(
+    srv,
+    "/uploads",
+    "/var/lib/uploads",
+    200 * 1024 * 1024,
+).unwrap()
+removed: int = tusGc("/var/lib/uploads", 72).unwrap()
+```
+
+`tusUploads(...) -> Result[bool]` reports invalid route/storage configuration;
+`tusGc(...) -> Result[int]` reports directory, metadata, and deletion failures.
+Keep authentication/authorization in Vulture hooks registered before the tus
+routes, and keep completion work behind `srv.ctx["__tusComplete"]` short.
 
 ### Custom content-type parser plugin
 
 Plugins can teach the server about vendor media types:
 
 ```lammergeier
+from lamerrors import Result
 from lamstrings import Strings
 from lamjson import Json
 
 func lineProtocol(srv: Server) {
-    func parse(body: str) -> any {
-        return {"lines": Strings.splitLines(body)}
+    func parse(req: Request) -> any {
+        return {"lines": Strings.splitLines(req.body)}
     }
     srv.addContentTypeParser("text/x-lines", parse)
 }
 
 func handler(req: Request, res: Response) {
-    res.json(Json.fromValue(req.parsedBody()))
+    parsed: Result[any] = req.parsedBody()
+    if not parsed.ok() {
+        res.code(400).text(str(parsed.error))
+        return
+    }
+    converted: Result[json] = Json.fromValue(parsed.unwrap())
+    if not converted.ok() {
+        res.code(400).text(str(converted.error))
+        return
+    }
+    res.json(converted.unwrap())
 }
 
 lineProtocol(srv)
 srv.post("/ingest", handler)
 ```
 
-Use this for signed webhook formats, log-forwarding protocols, or
-legacy services that are not JSON/form/multipart. Parser functions
-should return quickly and leave expensive validation to schemas or
-`preValidation` hooks.
+Use this for signed webhook formats, log-forwarding protocols, or legacy
+services that are not JSON/form/multipart. The parser type is
+`func(Request) -> any`, not `func(str) -> any`, and `parsedBody` preserves parse
+failures as `Result.Err`. Parser functions should return quickly and leave
+expensive validation to schemas or `preValidation` hooks.
 
 ### Response-transform plugin
 
@@ -644,9 +715,9 @@ func envelope(srv: Server) {
 }
 ```
 
-For large responses, streaming responses, SSE, WebSocket hijacks, and
-file downloads, inspect the Go fields as the bundled `compress`
-plugin does before mutating the body.
+For large responses, streaming responses, SSE, WebSocket hijacks, and file
+downloads, inspect the Go fields as the `compress` plugin shipped by
+`@lam/vulture/std-plugin` does before mutating the body.
 
 ---
 
@@ -657,7 +728,7 @@ a synthetic request without binding a port, so tests stay
 deterministic in CI:
 
 ```lammergeier
-from @lam/vulture import Server, Request, Response
+from @lam/vulture import InjectResponse, Server, Request, Response
 
 func main() {
     srv: Server = Server()
@@ -665,24 +736,25 @@ func main() {
     srv.get("/protected", lambda req, res: res.text("ok"))
 
     # Without auth header → 401
-    r1: dict[str, any] = srv.inject("GET", "/protected")
-    assert(r1["status"] == 401)
+    r1: InjectResponse = srv.inject("GET", "/protected")
+    assert(r1.status == 401)
 
     # With correct header → 200
     h: dict[str, str] = {}
     h["Authorization"] = "Bearer s3cret"
-    r2: dict[str, any] = srv.inject("GET", "/protected", "", h)
-    assert(r2["status"] == 200)
+    r2: InjectResponse = srv.inject("GET", "/protected", "", h)
+    assert(r2.status == 200)
+    assert(r2.header("content-type") != "")
 }
 ```
 
-`inject` returns `{status: int, body: str, headers: dict[str, str]}`.
-Streaming responses fall through `streamFallback` so `res.body` is
-populated with the bytes that *would* have been streamed, making the
-test path identical to a real request.
+`inject` returns a typed `InjectResponse` with `status`, `body`, `headers`, and
+a case-insensitive `header(name)` helper. Streaming responses fall through
+`streamFallback` so `body` contains the bytes that would have been streamed.
 
-For real network tests (TLS, WebSocket, SSE), see the suite under
-[`tests/tests/cases/stdlib/test_stdlib_server_*`](../tests/tests/cases/stdlib).
+For the installed-package network and cross-feature coverage, see the `tests/`
+directories in the sibling `lam-vulture`, `lam-vulture-std-plugin`, and
+`lam-vulture-ws-plugin` repositories.
 
 ### What to test
 
@@ -725,20 +797,10 @@ srv: Server = Server()
 srv.register(privateRoutes, "/p", true)
 srv.get("/outside", outsideHandler)
 
-inside: dict[str, any] = srv.inject("GET", "/p/inside")
-outside: dict[str, any] = srv.inject("GET", "/outside")
-insideHeader: str = ""
-outsideHeader: str = ""
-go! {
-    if h, ok := inside["headers"].(map[string]string); ok {
-        insideHeader = h["X-Private"]
-    }
-    if h, ok := outside["headers"].(map[string]string); ok {
-        outsideHeader = h["X-Private"]
-    }
-}
-assert(insideHeader == "1")
-assert(outsideHeader == "")
+inside: InjectResponse = srv.inject("GET", "/p/inside")
+outside: InjectResponse = srv.inject("GET", "/outside")
+assert(inside.header("X-Private") == "1")
+assert(outside.header("X-Private") == "")
 ```
 
 The important assertion is negative: a private hook must not mutate a
@@ -776,33 +838,29 @@ Plugin README checklist:
 
 ## Per-route options
 
-For options that should only apply to one endpoint, prefer the
-`*Opts` family over a global plugin:
+For behavior that should apply to one endpoint rather than the whole server,
+pass a typed `RouteOptions` value to the ordinary route or verb overload:
 
 ```lammergeier
-optsCreateUser: dict[str, any] = {}
-optsCreateUser["bodyLimit"]    = 8192
-optsCreateUser["preHandler"]   = validateUserSchema
-optsCreateUser["onResponse"]   = auditUserCreate
-optsCreateUser["summary"]      = "Create a user"
-optsCreateUser["tags"]         = ["users", "write"]
+from @lam/vulture import RouteOptions
 
-srv.postOpts("/users", createUserHandler, optsCreateUser)
+createUserOptions: RouteOptions = RouteOptions(bodyLimit = 8192)
+_ = createUserOptions.preHandler(validateUserSchema)
+_ = createUserOptions.onResponse(auditUserCreate)
+createUserOptions.summary = "Create a user"
+createUserOptions.tags = ["users", "write"]
+
+srv.post("/users", createUserHandler, createUserOptions)
 ```
 
-Recognised keys:
-
-- **`bodyLimit`** — int. Returns 413 if the request body exceeds it
-  (overrides `Server.bodyLimit` for this route).
-- **`preHandler`** — `func(Request, Response)`. Runs *after* every
-  global preHandler hook but before the route handler. Can
-  short-circuit by populating `res`.
-- **`onResponse`** — `func(Request, Response)`. Runs *before* every
-  global onResponse hook. Useful for route-specific metrics or
-  audit logging.
-- **`summary`** / **`tags`** — `str` / `list[str]`. Surfaced via
-  `Server.listRoutes()` for OpenAPI generation. Don't affect
-  request handling.
+`RouteOptions(bodyLimit=0, timeoutMs=0, streamBody=false)` configures request
+limits, handler timeout, and streaming. Typed chainable methods install
+`preParsing`, `preValidation`, `preHandler`, `preSerialization`, `onSend`,
+`onResponse`, and `onError` hooks. `withSchema(schema, format="json")` carries
+body, query, parameter, header, and response schemas. Public fields
+`summary`, `description`, `operationId`, `tags`, `deprecated`, `hidden`,
+`consumes`, and `produces` carry OpenAPI metadata; `metadata(name, value)`
+stores intentionally heterogeneous application or protocol data.
 
 ---
 
@@ -823,11 +881,11 @@ userCreateSchema: json = {
     },
 }
 
-srv.post("/users", createUserHandler, userCreateSchema)
+srv.post("/users", createUserHandler, userCreateSchema, "json")
 ```
 
-The same position accepts schema text. A fourth argument selects `"yaml"` or
-`"xml"`; JSON is the default. Use `Schema.validate(...)` directly when
+The same overload accepts schema text. Its explicit fourth argument is
+`"json"`, `"yaml"`, or `"xml"`. Use `Schema.validate(...)` directly when
 validation is needed outside request routing.
 
 Why JSON Schema rather than struct decode? The struct-decode
@@ -881,17 +939,23 @@ srv.register(limitedAuth, "/auth")
 
 ### Add a request id
 
-A `requestId` plugin is already bundled in `@lam/vulture/std-plugin`; use this
-recipe as a template if you need a custom variant (different header
-name, custom ID format, etc.). Pick a unique plugin name to avoid
-colliding with the built-in:
+The `@lam/vulture/std-plugin` package already ships `requestId` and the
+`requestIdPlugin(...)` factory. Use this recipe as a template only for a custom
+variant (different header name, custom ID format, and so on), and choose a
+unique plugin name:
 
 ```lammergeier
+from lamerrors import Result
 from lamuuid import Uuid
 
 func uuidRequestId(srv: Server) {
     func emit(req: Request, res: Response) {
-        id: str = Uuid.v4()
+        generated: Result[str] = Uuid.v4()
+        if not generated.ok() {
+            res.code(500).text(str(generated.error))
+            return
+        }
+        id: str = generated.unwrap()
         req.ctx["reqId"] = id
         res.setHeader("X-Request-Id", id)
     }
@@ -931,9 +995,10 @@ func stripForwarded(srv: Server) {
 
 ---
 
-## Bundled plugin reference
+## Standard plugin package reference
 
-The current `@lam/vulture/std-plugin` catalogue, grouped by concern:
+The current independent `@lam/vulture/std-plugin` catalogue, grouped by
+concern:
 
 ### Request lifecycle
 - `requestId(srv, header="X-Request-Id")` — stable per-request ID,
@@ -982,7 +1047,7 @@ The current `@lam/vulture/std-plugin` catalogue, grouped by concern:
   client advertises `Accept-Encoding: gzip`, across JSON, text,
   and streamed responses.
 - `etag(srv)` — weak ETag + `If-None-Match` short-circuiting.
-- `cacheControl(srv, directive="no-store", ifMissing=True)` —
+- `cacheControl(srv, directive="no-store", ifMissing=true)` —
   default `Cache-Control` for every response.
 
 ### Operations
@@ -990,10 +1055,26 @@ The current `@lam/vulture/std-plugin` catalogue, grouped by concern:
   plus `markReady(srv)` / `markNotReady(srv)` for
   Kubernetes-style probes.
 
+### `func(Server)` factories
+
+Configurable installers have matching factories for `Server.register`:
+`requestLogPlugin`, `rateLimitPlugin`, `compressPlugin`, `healthcheckPlugin`,
+`metricsPlugin`, `tracingPlugin`, `idempotencyPlugin`, `requestIdPlugin`,
+`basicAuthPlugin`, `bearerAuthPlugin`, `ipFilterPlugin`, `cacheControlPlugin`,
+`sessionPlugin`, and `csrfPlugin`. Parameterless `helmet`, `etag`, and
+`serverTiming` can be registered directly.
+
+```lammergeier
+srv.register(requestLogPlugin("[api]"))
+srv.register(rateLimitPlugin(max=100, windowMs=60000))
+srv.register(bearerAuthPlugin(verifyToken))
+srv.register(helmet)
+```
+
 ## See also
 
 - [`@lam/vulture`](https://github.com/thallium-solutions/lam-vulture) — Server / Request / Response classes
 - [`@lam/vulture/std-plugin`](https://github.com/thallium-solutions/lam-vulture-std-plugin) — standard plugin collection
 - [`@lam/vulture/ws-plugin`](https://github.com/thallium-solutions/lam-vulture-ws-plugin) — WebSocket plugin
 - [`@lam/vulture/tus-plugin`](https://github.com/thallium-solutions/lam-vulture-tus-plugin) — tus resumable-upload plugin
-- [`docs/stdlib.md`](stdlib.md) — full standard-library reference
+- [`docs/stdlib.md`](stdlib.md) — standard-library reference and clearly marked official-package companion sections

@@ -8,10 +8,11 @@ from lammath import Math
 from lamstrings import Strings
 ```
 
-Every module is listed below, organised by topic. Method signatures
-are extracted directly from the source — when in doubt, open the
-`.lam` file (each is heavily commented) for the authoritative
-behaviour.
+Every standard-library module is listed below, organised by topic. Clearly
+marked companion sections also show how independently versioned official
+packages compose with the standard library; those packages are not part of
+`lib/`. Method signatures are extracted directly from source — when in doubt,
+open the relevant `.lam` file for authoritative behaviour.
 
 ## Table of contents
 
@@ -45,8 +46,8 @@ form regardless of tier.
 | data | File formats, tabular/numeric data, and data-shaping helpers. | `lamcsv`, `lamyaml`, `lamxml`, `lamdata`, `lamarray`, `lamstats`, `lamrandom` |
 | net | Network protocols and clients. | `lamhttp`, `lamsmtp`, `lamnet`, `lamurl` |
 | infra | Database and operational infrastructure. | `lamdb`, `lammigrate`, `lamcron`, `lamexec`, `lamcache` |
-| concurrency | Concurrency primitives, cancellation, async coordination, and resilience helpers. | `lamactor`, `lamconcurrency`, `lamcontext`, `lamretry`, `lamratelimit`, `lamqueue`, `lamdeque`, `lamheap`, `lamstack`, `lamset`, `lamiter`, `lamsort` |
-| encoding & crypto | Encryption, keys, encoding, hashing, compression, bytes, UUIDs, templates, and text validation helpers. | `lamcrypto`, `lambase64`, `lambytes`, `lamcompress`, `lamhash`, `lamuuid`, `lamtemplate`, `lamunicode`, `lamre`, `lamschema`, `lamsecurity` |
+| concurrency | Concurrency primitives, cancellation, async coordination, resilience, and collections. | `lamactor`, `lamconcurrency`, `lamcontext`, `lamretry`, `lamratelimit`, `lamdatastructures` (canonical), `lamqueue`, `lamdeque`, `lamheap`, `lamstack`, and `lamset` (compatibility re-exports), `lamiter`, `lamsort` |
+| encoding & crypto | Encryption, keys, encoding, hashing, compression, bytes, UUIDs, templates, and text validation helpers. | `lamcrypto`, `lambase64`, `lambytes`, `lamcompress`, `lamhash`, `lamuuid`, `lamtemplate`, `lamunicode`, `lamre`, `lamschema` |
 | CLI & OS | Program entrypoint, filesystem, environment, and host-process helpers. | `lamcli`, `lamos` |
 
 The tiers are intentionally coarse. A module can compose across tiers
@@ -57,9 +58,9 @@ composition accidentally spreads heavy Go dependencies.
 
 ## Cookbook
 
-This section shows how the stdlib pieces compose in real programs.
-The reference sections below list the individual methods; these
-recipes show the intended workflow.
+This section shows how standard-library modules and clearly marked official
+packages compose in real programs. The reference sections below list the
+individual methods; these recipes show the intended workflow.
 
 ### Parse, validate, and propagate with `Result`
 
@@ -140,16 +141,18 @@ lamc tools/report.lam --run -- --input=orders.json --pretty
 
 `@lam/vulture` gives you Fastify-like routing, lifecycle hooks,
 validation, decorators, schemas, OpenAPI, test injection, TLS,
-timeouts, and plugins. Install the external packages first:
+timeouts, and plugins. It is an independently versioned official package, not
+part of the standard library. Install the v2 packages first:
 
 ```bash
-lamc install @lam/vulture@1.0.0
-lamc install @lam/vulture/std-plugin@1.0.0
+lamc install @lam/vulture@2.0.0
+lamc install @lam/vulture/std-plugin@2.0.0
 ```
 
 ```lammergeier
-from @lam/vulture import Server, Request, Response, HttpError
-from @lam/vulture/std-plugin import requestId, requestLog, helmet, metrics
+from @lam/vulture import InjectResponse, Request, Response, RouteOptions, Server, HttpError
+from @lam/vulture/std-plugin import helmet, metricsPlugin, requestIdPlugin, requestLogPlugin
+from lamerrors import Result
 
 func requireJson(req: Request, res: Response) {
     if not req.is_("json") {
@@ -165,7 +168,12 @@ func listUsers(req: Request, res: Response) {
 }
 
 func createUser(req: Request, res: Response) {
-    body: json = req.jsonBody()
+    bodyResult: Result[json] = req.jsonBody()
+    if not bodyResult.ok() {
+        res.code(400).text(str(bodyResult.error))
+        return
+    }
+    body: json = bodyResult.unwrap()
     name: str = body.name
     res.code(201).json({"id": "u_2", "name": name})
 }
@@ -173,10 +181,10 @@ func createUser(req: Request, res: Response) {
 func main() {
     srv: Server = Server()
     srv.setRequestTimeout(3000)
-    requestId(srv)
-    requestLog(srv, "[api]")
-    helmet(srv)
-    metrics(srv, "/metrics")
+    srv.register(requestIdPlugin())
+    srv.register(requestLogPlugin("[api]"))
+    srv.register(helmet)
+    srv.register(metricsPlugin("/metrics"))
 
     userBody: dict[str, any] = {
         "type": "object",
@@ -184,31 +192,33 @@ func main() {
         "properties": {"name": {"type": "string", "minLength": 1}},
     }
 
-    srv.getOpts("/users", listUsers, {
-        "summary": "List users",
-        "tags": ["users"],
-    })
-    srv.postOpts("/users", createUser, {
-        "preHandler": requireJson,
-        "schema": {"body": userBody},
-        "summary": "Create user",
-        "tags": ["users"],
-    })
+    listOptions: RouteOptions = RouteOptions()
+    listOptions.summary = "List users"
+    listOptions.tags = ["users"]
+    srv.get("/users", listUsers, listOptions)
+
+    createOptions: RouteOptions = RouteOptions()
+    _ = createOptions.preHandler(requireJson)
+    _ = createOptions.withSchema({"body": userBody})
+    createOptions.summary = "Create user"
+    createOptions.tags = ["users"]
+    srv.post("/users", createUser, createOptions)
 
     print(srv.printRoutes())
     print(srv.openapi({"title": "Users API", "version": "1.0.0"}))
-    srv.listen(8080)
+    _ = srv.listen(8080).unwrap()
 }
 ```
 
-Test the same API without binding a port:
+Test the same API without binding a port. `inject` returns a typed
+`InjectResponse`, not a dictionary:
 
 ```lammergeier
 headers: dict[str, str] = {"Content-Type": "application/json"}
-out: dict[str, any] = srv.inject("POST", "/users", "{\"name\":\"Grace\"}", headers)
-print(out["status"])     # 201
-print(out["headers"])    # includes request/security/plugin headers
-print(out["body"])
+out: InjectResponse = srv.inject("POST", "/users", "{\"name\":\"Grace\"}", headers)
+print(out.status)          # 201
+print(out.headers)         # includes request/security/plugin headers
+print(out.body)
 ```
 
 ### Analyze CSV data with `DataFrame` and `Stats`
@@ -320,7 +330,7 @@ func main() {
     }
 
     breaker: CircuitBreaker = CircuitBreaker(5, 2000)
-    guarded: any = breaker.callFn(downstreamSideEffect)  # holds a Result
+    guarded: Result = breaker.call(downstreamSideEffect)
     print(guarded)
     print(f"breaker state: {breaker.state()}")
 }
@@ -1511,7 +1521,7 @@ overloaded `post` / `put` / `patch`, `statusCode`, `getHeader`, and
 ### `@lam/vulture` — `Server`, `Request`, `Response`, `SseEmitter`, `HttpError`
 
 Vulture is an independently versioned official package, not a compiler-bundled
-stdlib module. Install it with `lamc install @lam/vulture@1.0.0`; its
+standard-library module. Install it with `lamc install @lam/vulture@2.0.0`; its
 [repository README](https://github.com/thallium-solutions/lam-vulture) is the
 authoritative API and security reference.
 
@@ -1532,18 +1542,19 @@ func main() {
     srv: Server = Server()
     srv.useCors()
     srv.get("/hello", helloHandler)
-    srv.listen(8080)
+    _ = srv.listen(8080).unwrap()
 }
 ```
 
-Routes can be as small as a handler function, or they can carry
-Fastify-style options for validation, route-local hooks, metadata,
-timeouts, streaming, and response serialization. `Server.inject`
-runs the same dispatcher in-process, which makes server examples and
-tests deterministic:
+Routes can be as small as a handler function, or they can carry typed
+`RouteOptions` for validation, route-local hooks, metadata, timeouts, streaming,
+and response serialization. `Server.inject` runs the same dispatcher in-process
+and returns an `InjectResponse`, which makes server examples and tests
+deterministic:
 
 ```lammergeier
-from @lam/vulture import Server, Request, Response
+from @lam/vulture import InjectResponse, Request, Response, RouteOptions, Server
+from lamerrors import Result
 
 func auth(req: Request, res: Response) {
     if req.header("Authorization") != "Bearer dev" {
@@ -1552,7 +1563,12 @@ func auth(req: Request, res: Response) {
 }
 
 func createUser(req: Request, res: Response) {
-    body: json = req.jsonBody()
+    bodyResult: Result[json] = req.jsonBody()
+    if not bodyResult.ok() {
+        res.code(400).text(str(bodyResult.error))
+        return
+    }
+    body: json = bodyResult.unwrap()
     name: str = body.name
     res.code(201).json({
         "id": "u_1",
@@ -1569,36 +1585,36 @@ func main() {
         "minLength": 1,
     })
 
-    srv.postOpts("/users", createUser, {
-        "preHandler": auth,
-        "summary": "Create a user",
-        "tags": ["users"],
-        "schema": {
-            "body": {
+    options: RouteOptions = RouteOptions()
+    _ = options.preHandler(auth)
+    _ = options.withSchema({
+        "body": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"$ref": "userName"}},
+        },
+        "response": {
+            "201": {
                 "type": "object",
-                "required": ["name"],
-                "properties": {"name": {"$ref": "userName"}},
-            },
-            "response": {
-                "201": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "id": {"type": "string"},
-                        "name": {"type": "string"},
-                    },
+                "additionalProperties": false,
+                "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
                 },
             },
         },
     })
+    options.summary = "Create a user"
+    options.tags = ["users"]
+    srv.post("/users", createUser, options)
 
     headers: dict[str, str] = {
         "Authorization": "Bearer dev",
         "Content-Type": "application/json",
     }
-    out: dict[str, any] = srv.inject("POST", "/users", "{\"name\":\"Ada\"}", headers)
-    print(out["status"])   # 201
-    print(out["body"])     # response schema strips "internal"
+    out: InjectResponse = srv.inject("POST", "/users", "{\"name\":\"Ada\"}", headers)
+    print(out.status)   # 201
+    print(out.body)     # response schema strips "internal"
 }
 ```
 
@@ -1635,18 +1651,19 @@ func main() {
     srv.addSchema({"$id": "Id", "type": "string", "minLength": 1})
 
     srv.get("/health", healthHandler)
-    srv.postOpts("/orders", createOrderHandler, createOrderOpts())
+    srv.post("/orders", createOrderHandler, createOrderOptions())
 
     # Startup visibility.
     print(srv.printRoutes())
-    srv.listen(8080)
+    _ = srv.listen(8080).unwrap()
 }
 ```
 
 ### Routing guide
 
-Use method helpers for normal routes and `route` / `routeOpts` when
-the method is dynamic:
+Use the verb helpers for normal routes and the `route` overload when the method
+is dynamic. Each helper has overloads for a plain handler, typed `RouteOptions`,
+and a body schema plus explicit schema format:
 
 ```lammergeier
 srv.get("/users", listUsers)
@@ -1658,7 +1675,10 @@ srv.all("/debug/*", debugCatchAll)
 srv.route("OPTIONS", "/custom", customOptions)
 ```
 
-Path parameters are stored with their marker included:
+`Request.params` preserves the route marker in lookup keys: a `:id` segment is
+read as `req.params[":id"]`, while a trailing wildcard is `req.params["*"]`.
+Parameter JSON Schemas use the unmarked property name (`"id"`), because Vulture
+strips the leading colon only for schema validation and OpenAPI output:
 
 ```lammergeier
 func getUser(req: Request, res: Response) {
@@ -1684,11 +1704,13 @@ route table rather than inventing a hidden `GET` fallback.
 Request helpers normalize common HTTP access:
 
 ```lammergeier
+from lamerrors import Result
+
 func inspect(req: Request, res: Response) {
     ct: str = req.header("Content-Type")
     page: str = req.queryGet("page", "1")
-    sid: str = req.cookie("sid")
-    signed: str = req.signedCookie("sid", "secret")
+    sid: Result[str] = req.cookie("sid")
+    signed: Result[str] = req.signedCookie("sid", "secret")
     ip: str = req.realIP()
     scheme: str = req.realScheme("http")
 
@@ -1696,13 +1718,16 @@ func inspect(req: Request, res: Response) {
     res.json({
         "contentType": ct,
         "page": page,
-        "hasSession": sid != "",
-        "signedSession": signed,
+        "hasSession": sid.ok(),
+        "signedSession": signed.unwrapOr(""),
         "ip": ip,
         "scheme": scheme,
     })
 }
 ```
+
+Missing cookies, malformed `Cookie` headers, and invalid signatures are typed
+errors; an empty cookie value remains a successful `Ok("")`.
 
 Response methods are chainable, so handlers can read like Fastify
 reply code:
@@ -1726,10 +1751,14 @@ func redirectOld(req: Request, res: Response) {
 
 ### Route options in practice
 
-Use `*Opts` routes when behavior belongs to one endpoint rather than
-the whole server.
+Use a typed `RouteOptions` value when behavior belongs to one endpoint rather
+than the whole server, then pass it to the ordinary `route`, `get`, `post`,
+`put`, `del`, `patch`, `head`, `options`, or `all` overload.
 
 ```lammergeier
+from @lam/vulture import RequestBodyReader, RouteOptions
+from lamerrors import Result
+
 func requireAuth(req: Request, res: Response) {
     if req.header("Authorization") == "" {
         res.code(401).json({"error": "missing token"})
@@ -1742,19 +1771,20 @@ func afterAudit(req: Request, res: Response) {
 
 func upload(req: Request, res: Response) {
     reader: RequestBodyReader = req.bodyReader()
-    n: int = reader.copyTo("/tmp/upload.bin")
-    res.json({"bytes": n})
+    copied: Result[int] = reader.copyTo("/tmp/upload.bin")
+    if not copied.ok() {
+        res.code(500).text(str(copied.error))
+        return
+    }
+    res.json({"bytes": copied.unwrap()})
 }
 
-srv.routeOpts("POST", "/upload", upload, {
-    "preHandler": requireAuth,
-    "onResponse": afterAudit,
-    "bodyLimit": 20_000_000,
-    "streamBody": true,
-    "timeoutMs": 10000,
-    "summary": "Upload a binary object",
-    "tags": ["uploads"],
-})
+uploadOptions: RouteOptions = RouteOptions(20_000_000, 10000, true)
+_ = uploadOptions.preHandler(requireAuth)
+_ = uploadOptions.onResponse(afterAudit)
+uploadOptions.summary = "Upload a binary object"
+uploadOptions.tags = ["uploads"]
+srv.route("POST", "/upload", upload, uploadOptions)
 ```
 
 Route-local hooks run in the same phase as global hooks. They are the
@@ -1770,53 +1800,53 @@ Response schemas are status-keyed. Exact status wins, then status
 family, then `default`.
 
 `@lam/vulture` uses the same private compilation cache and validation core as
-`lamschema`. The simple route helpers accept an optional request-body schema and
-format; invalid documents short-circuit with HTTP 400 before `preHandler` and the
-handler. JSON is the default, while text schemas may select YAML or XML/XSD:
+`lamschema`. Route helpers have a request-body schema overload with an explicit
+format; invalid documents short-circuit with HTTP 400 before `preHandler` and
+the handler. Select JSON, YAML, or XML/XSD as appropriate:
 
 ```lammergeier
-srv.post("/users", createUser, userSchema)
+srv.post("/users", createUser, userSchema, "json")
 srv.post("/events", ingestYaml, yamlSchema, "yaml")
 srv.post("/legacy", ingestXml, xsdSchema, "xml")
 ```
 
-The `*Opts` APIs remain available for query, params, headers, response schemas,
-and OpenAPI metadata. OpenAPI request media types follow the selected schema
-format.
+`RouteOptions.withSchema(...)` carries query, params, headers, and status-keyed
+response schemas as well as body schemas. Its typed fields carry OpenAPI
+metadata; request media types follow the selected schema format.
 
 ```lammergeier
-func createOrderOpts() -> dict[str, any] {
-    return {
-        "operationId": "createOrder",
-        "summary": "Create an order",
-        "description": "Validates the body and returns the public order view.",
-        "tags": ["orders"],
-        "schema": {
-            "body": {
-                "type": "object",
-                "required": ["sku", "quantity"],
-                "properties": {
-                    "sku": {"type": "string", "minLength": 1},
-                    "quantity": {"type": "integer", "minimum": 1},
-                },
-            },
-            "response": {
-                "201": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "id": {"type": "string"},
-                        "sku": {"type": "string"},
-                        "quantity": {"type": "integer"},
-                    },
-                },
-                "400": {
-                    "type": "object",
-                    "properties": {"error": {"type": "string"}},
-                },
+func createOrderOptions() -> RouteOptions {
+    options: RouteOptions = RouteOptions()
+    options.operationId = "createOrder"
+    options.summary = "Create an order"
+    options.description = "Validates the body and returns the public order view."
+    options.tags = ["orders"]
+    _ = options.withSchema({
+        "body": {
+            "type": "object",
+            "required": ["sku", "quantity"],
+            "properties": {
+                "sku": {"type": "string", "minLength": 1},
+                "quantity": {"type": "integer", "minimum": 1},
             },
         },
-    }
+        "response": {
+            "201": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "id": {"type": "string"},
+                    "sku": {"type": "string"},
+                    "quantity": {"type": "integer"},
+                },
+            },
+            "400": {
+                "type": "object",
+                "properties": {"error": {"type": "string"}},
+            },
+        },
+    })
+    return options
 }
 ```
 
@@ -1832,11 +1862,11 @@ srv.addSchema({
     },
 })
 
-srv.getOpts("/orders", listOrders, {
-    "schema": {"querystring": {"$ref": "PaginationQuery"}},
-    "summary": "List orders",
-    "tags": ["orders"],
-})
+listOptions: RouteOptions = RouteOptions()
+_ = listOptions.withSchema({"querystring": {"$ref": "PaginationQuery"}})
+listOptions.summary = "List orders"
+listOptions.tags = ["orders"]
+srv.get("/orders", listOrders, listOptions)
 ```
 
 Export an OpenAPI document from the route table:
@@ -1851,20 +1881,32 @@ spec: str = srv.openapi({
 
 ### Custom parsers
 
-`addContentTypeParser(mediaType, fn)` lets a server accept custom
-request bodies. The parser receives the raw body string and returns
-any value; handlers read the result through `req.parsedBody()`.
+`addContentTypeParser(mediaType, fn)` lets a server accept custom request
+bodies. The typed parser is `func(Request) -> any`, so it can inspect headers as
+well as `req.body`. Handlers read the cached value through the Result-returning
+`req.parsedBody()`.
 
 ```lammergeier
+from lamerrors import Result
+from lamjson import Json
 from lamstrings import Strings
 
-func parseLineBody(body: str) -> any {
-    return {"lines": Strings.splitLines(body)}
+func parseLineBody(req: Request) -> any {
+    return {"lines": Strings.splitLines(req.body)}
 }
 
 func ingest(req: Request, res: Response) {
-    parsed: any = req.parsedBody()
-    res.json(parsed)
+    parsed: Result[any] = req.parsedBody()
+    if not parsed.ok() {
+        res.code(400).text(str(parsed.error))
+        return
+    }
+    value: Result[json] = Json.fromValue(parsed.unwrap())
+    if not value.ok() {
+        res.code(400).text(str(value.error))
+        return
+    }
+    res.json(value.unwrap())
 }
 
 srv.addContentTypeParser("text/x-lines", parseLineBody)
@@ -1931,18 +1973,19 @@ panic, the built-in fallback takes over.
 
 ### Testing and inspection
 
-`inject` returns a dict with `status`, `body`, and `headers`.
-Headers can be passed as `dict[str, str]`.
+`inject` returns a typed `InjectResponse` with `status`, `body`, `headers`, and
+a case-insensitive `header(name)` helper. Request headers are passed as
+`dict[str, str]`.
 
 ```lammergeier
 func testCreateOrder() {
     srv: Server = Server()
-    srv.postOpts("/orders", createOrder, createOrderOpts())
+    srv.post("/orders", createOrder, createOrderOptions())
 
     h: dict[str, str] = {"Content-Type": "application/json"}
-    out: dict[str, any] = srv.inject("POST", "/orders", "{\"sku\":\"A\",\"quantity\":2}", h)
-    assert(out["status"] == 201)
-    assert(out["body"] != "")
+    out: InjectResponse = srv.inject("POST", "/orders", "{\"sku\":\"A\",\"quantity\":2}", h)
+    assert(out.status == 201)
+    assert(out.body != "")
 }
 ```
 
@@ -1970,13 +2013,16 @@ routes: list[any] = srv.listRoutes()
   behind a proxy, terminate TLS at the proxy and use `listen`.
 
 **`Request`** — `.method`, `.path`, `.body`, `.headers`, `.query`,
-`.params`, `.remoteAddr`, `.ctx` (plugin-shared dict). Methods:
-`header(name)`, `queryGet(name, fallback)`, `cookie(name)`,
-`signedCookie(name, secret)`, `jsonBody() -> json`, `parsedBody()` (returns native
-`json` for `application/json` and dynamic form/text values otherwise),
-`formField(name, fallback)`, `formFile(name)`, `formFiles(name)`,
-`realIP()`, `realScheme(fallback="http")`, `dec(name)`,
-`hasDec(name)`, `id()`, `setId(value)`.
+`.params`, `.remoteAddr`, and cancellation-aware `.ctx`. Named parameter keys
+retain their leading colon (`req.params[":id"]`); wildcard capture uses `"*"`.
+Methods: `header(name)`, `queryGet(name, fallback)`, `cookie(name) ->
+Result[str]`, `signedCookie(name, secret) -> Result[str]`, `jsonBody() ->
+Result[json]`, and `parsedBody() -> Result[any]` (native `json` for
+`application/json`, dynamic form values, or text otherwise). Missing/malformed
+cookies and invalid JSON or signatures are errors rather than sentinels. Other
+helpers are `formField(name, fallback)`, `formFile(name)`, `formFiles(name)`,
+`realIP()`, `realScheme(fallback="http")`, `dec(name)`, `hasDec(name)`, `id()`,
+and `setId(value)`.
 
 Fastify-parity sugar:
 `protocol()` (alias over `realScheme`), `hostname()` (Host header
@@ -2020,9 +2066,10 @@ JSON response. Static shortcuts: `HttpError.badRequest`,
 `unauthorized`, `forbidden`, `notFound`, `conflict`, `unprocessable`,
 `tooManyRequests`, `internal`, `badGateway`, `serviceUnavailable`.
 
-**`Server`** — Routes: `route`, `get`, `post`, `put`, `del`, `patch`,
-`head`, `options`, `all` plus matching `*Opts` siblings for per-route
-options. `notFound(handler)` / `setNotFoundHandler(handler)`.
+**`Server`** — Routes: overloaded `route`, `get`, `post`, `put`, `del`,
+`patch`, `head`, `options`, and `all`. Pass a typed `RouteOptions` value to the
+same method; v2 does not use separate suffixed route helpers.
+`notFound(handler)` / `setNotFoundHandler(handler)`.
 `static_(urlPrefix, dir)` for static files.
 `versionedRoute(method, path, handlers, fallback="", header="Accept-Version")`
 registers one route that dispatches to the handler in `handlers` matching
@@ -2038,8 +2085,10 @@ overridable via `opts` and respects handler-set values).
 Introspection: `hasRoute(method, path)` (exact-pattern match; the
 `:id` placeholder is literal). Trust proxy:
 `trustProxy(headers=["X-Forwarded-For"], hops=1)`. Runtime: `listen`,
-`listenBackground`, `listenTLS`, `listenTLSBackground`, `close`,
-`shutdown(timeoutMs=5000)`. Decorators: `decorate(name, value)` /
+`listenBackground`, `listenTLS`, and `listenTLSBackground` return
+`Result[bool]`; bind, certificate, and synchronous serving failures remain
+explicit. `close` is immediate and `shutdown(timeoutMs=5000)` drains gracefully.
+Decorators: `decorate(name, value)` /
 `dec(name)` / `hasDecorator(name)`, `decorateRequest(name, value)`,
 `decorateResponse(name, value)` (alias `decorateReply`). Content-type
 parsers: `addContentTypeParser(mediaType, fn)`. Shared schemas:
@@ -2050,8 +2099,8 @@ shape for 400 validation bodies — signature
 `func(where, errs, req) -> dict | str`).  Per-request timeout:
 `setRequestTimeout(ms)` (server-wide default; `0` disables) +
 `onTimeout(fn)` hook (signature `func(req: Request, res:
-Response)`); per-route override via `routeOpts({"timeoutMs": ...})`
-or its alias `"timeout"`. When a handler exceeds the deadline
+Response)`); per-route override via `RouteOptions(0, timeoutMs)`.
+When a handler exceeds the deadline
 the dispatcher snapshots a fresh response, runs every `onTimeout`
 hook against it, and writes a Fastify-style 408 envelope
 (`{"statusCode": 408, "error": "Request Timeout", "message":
@@ -2060,8 +2109,8 @@ own (orphaned) response object so it can't race the writer.
 Introspection / test: `listRoutes()`, `printRoutes()` (sorted
 pretty-printed table with `[stream]` / `[deprecated]` / `[hidden]`
 / `[timeout=...]` flags — good for startup banners),
-`openapi(info=None)`,
-`inject(method, path, body="", headers=None)`. Response-side
+`openapi(info=None)`, and typed
+`inject(method, path, body="", headers={}) -> InjectResponse`. Response-side
 serialisation: `res.serialize(payload=None)` applies the matched
 route's response schema (exact status → family → `default`) and
 returns the on-the-wire string without mutating the response —
@@ -2073,16 +2122,16 @@ after listen succeeds), `.requestTimeoutMs`.
 **Request lifecycle hooks** (Fastify-compatible ladder; each phase
 has both a global hook list and a route-level slot):
 
-| Phase | Server method | Route-opts key | Notes |
+| Phase | Server method | `RouteOptions` method | Notes |
 |---|---|---|---|
-| `onRequest` | `onRequest(fn)` | `onRequest` | First touch; body still raw. |
-| `preParsing` | `preParsing(fn)` | `preParsing` | Before content-type parser. |
-| `preValidation` | `preValidation(fn)` | `preValidation` | After parsing, before schema validation. |
-| `preHandler` | `preHandler(fn)` | `preHandler` | After validation, before the handler. |
-| `preSerialization` | `preSerialization(fn)` | `preSerialization` | After handler, before response serializer. |
-| `onSend` | `onSend(fn)` | `onSend` | Last chance to mutate body / headers. |
-| `onResponse` | `onResponse(fn)` | `onResponse` | Observational; status/body locked in. |
-| `onError` | `onError(fn)` | `onError` | Fires on panic in any of the above. |
+| `onRequest` | `onRequest(fn)` | — | First touch; body still raw. |
+| `preParsing` | `preParsing(fn)` | `preParsing(fn)` | Before content-type parser. |
+| `preValidation` | `preValidation(fn)` | `preValidation(fn)` | After parsing, before schema validation. |
+| `preHandler` | `preHandler(fn)` | `preHandler(fn)` | After validation, before the handler. |
+| `preSerialization` | `preSerialization(fn)` | `preSerialization(fn)` | After handler, before response serializer. |
+| `onSend` | `onSend(fn)` | `onSend(fn)` | Last chance to mutate body / headers. |
+| `onResponse` | `onResponse(fn)` | `onResponse(fn)` | Observational; status/body locked in. |
+| `onError` | `onError(fn)` | `onError(fn)` | Typed signature `func(Request, Response, any)`; fires on panic. |
 | `onRequestAbort` | `onRequestAbort(fn)` | — | Fires when the HTTP client disconnects before the handler finishes. Signature: `func(req: Request)`. Runs on a side goroutine; use to cancel background work keyed off the request. Inject path never triggers it. |
 | `onTimeout` | `onTimeout(fn)` | — | Fires when the per-request handler timeout (`setRequestTimeout` or per-route `timeoutMs`) elapses before the handler returns. Signature: `func(req: Request, res: Response)`. The hook can mutate `res` (status, headers, body) before the dispatcher writes the 408 envelope. Inject path never triggers it. |
 
@@ -2095,35 +2144,36 @@ transition. Signature: `func(srv: Server)`.
 | `onListen` | After bind succeeds (`srv.boundAddr` is populated). |
 | `onClose` | During `close()` / `shutdown()`, in reverse registration order. |
 
-**Per-route options** — pass a `dict[str, any]` to any `*Opts` method:
+**Per-route options** — construct `RouteOptions(bodyLimit=0, timeoutMs=0,
+streamBody=false)` and pass it to an ordinary route overload:
 
-| Key | Type | Effect |
+| Member | Type | Effect |
 |---|---|---|
 | `bodyLimit` | `int` | Reject this route's body over N bytes with 413. |
-| `timeoutMs` (alias `timeout`) | `int` | Per-request handler timeout for this route only; overrides `srv.setRequestTimeout(...)`. `0` means inherit. |
-| `streamBody` (alias `stream`) | `bool` | Skip the buffered body read. `req.body` stays `""`; pull chunks via `req.bodyReader()`. |
-| `preParsing` / `preValidation` / `preHandler` / `preSerialization` / `onSend` / `onResponse` / `onError` | `func` | Route-scoped lifecycle hook. |
-| `schema` | `dict` | `body` / `querystring` / `params` / `headers` / `response` (status-keyed) JSON Schemas. |
-| `summary` / `description` / `operationId` | `str` | OpenAPI metadata. |
-| `tags` | `list[str]` | Categorisation. |
-| `deprecated` / `hidden` | `bool` | Mark deprecated; hide from `listRoutes()` and OpenAPI. |
-| `consumes` / `produces` | `list[str]` | OpenAPI media types. |
+| `timeoutMs` | `int` | Handler timeout for this route; overrides `srv.setRequestTimeout(...)`. `0` means inherit. |
+| `streamBody` | `bool` | Skip the buffered body read. `req.body` stays `""`; pull chunks via `req.bodyReader()`. |
+| `preParsing(fn)` / `preValidation(fn)` / `preHandler(fn)` / `preSerialization(fn)` / `onSend(fn)` / `onResponse(fn)` / `onError(fn)` | typed methods | Install one route-scoped lifecycle hook for each phase. |
+| `withSchema(schema, format="json")` | method | Attach `body` / `querystring` / `params` / `headers` / status-keyed `response` schemas. |
+| `summary` / `description` / `operationId` | `str` fields | OpenAPI metadata. |
+| `tags` | `list[str]` field | Categorisation. |
+| `deprecated` / `hidden` | `bool` fields | Mark deprecated; hide from `listRoutes()` and OpenAPI. |
+| `consumes` / `produces` | `list[str]` fields | OpenAPI media types. |
+| `metadata(name, value)` | typed method | Store an opaque application value exposed as route `meta`. |
 
-**Streaming request bodies** — set `streamBody: true` in a route's
-opts to tell the dispatcher not to `io.ReadAll` the body.
-`req.body` then stays `""` and you read chunks off the wire
-yourself via `req.bodyReader()` (returns a `RequestBodyReader`).
-The reader is also available on buffered routes — it just wraps
-`req.body` in a `strings.Reader` so a single handler can work
-with both modes.
-Methods: `.read(maxBytes=8192) -> str` returns `""` on EOF;
-`.readAll() -> str` drains; `.copyTo(path) -> int` streams to disk
-and returns the bytes written; `.close()` releases the underlying
-connection reader; `.isEOF() -> bool` surfaces the read-state.
-`bodyLimit` still caps streamed reads — the reader raises a 413
-`HttpError` via the server's error pipeline when the limit is
-crossed. Content-type parsers / schema validation don't run on
-streamed routes (they need the whole body buffered).
+**Streaming request bodies** — construct `RouteOptions(...,
+streamBody=true)` to tell the dispatcher not to `io.ReadAll` the body.
+`req.body` then stays `""` and you read chunks off the wire yourself via
+`req.bodyReader()` (returns a `RequestBodyReader`). The reader is also available
+on buffered routes — it wraps `req.body` in a `strings.Reader` so one handler can
+work with both modes.
+
+The operational methods are Result-based: `.read(maxBytes=8192) -> Result[str]`
+returns `Ok("")` on EOF; `.readAll() -> Result[str]` drains; `.copyTo(path) ->
+Result[int]` streams to disk; and `.close() -> Result[bool]` releases the reader.
+`.isEOF() -> bool` surfaces read state. `bodyLimit` still caps streamed reads,
+but limit, transport, file, and close failures remain explicit errors. Content-
+type parsers and schema validation do not run on streamed routes because they
+need the whole body buffered.
 
 **Schema validation** — schemas are JSON Schema (draft-07), passed
 either as a raw string or a Lam dict (auto-marshalled). Validation
@@ -2174,11 +2224,14 @@ authoring guide.
 
 ### `@lam/vulture/std-plugin`
 
-Install with `lamc install @lam/vulture/std-plugin@1.0.0`; see the
+Install with `lamc install @lam/vulture/std-plugin@2.0.0`; see the
 [package README](https://github.com/thallium-solutions/lam-vulture-std-plugin).
+This official package is independent of the standard library.
 
-Ready-made plugins. Each is a top-level
-`func(srv: Server, ...config)` you call after constructing the Server:
+Every ready-made plugin has a direct installer such as
+`requestId(srv, header)`. Configurable installers also expose a typed
+`*Plugin(...) -> func(Server)` factory for `srv.register(...)`; parameterless
+`helmet`, `etag`, and `serverTiming` already match `func(Server)` directly:
 
 | Plugin | What it does |
 |---|---|
@@ -2200,14 +2253,26 @@ Ready-made plugins. Each is a top-level
 | `session(srv, secret, cookieName="sid", maxAge=86400, secure=false, sameSite="Lax")` | In-memory signed-cookie sessions exposed through `req.ctx["session"]`. |
 | `csrf(srv, secret, cookieName="csrf", headerName="X-CSRF-Token", safeMethods=[...])` | Double-submit-cookie CSRF protection for unsafe methods. |
 
+Factories are `requestLogPlugin`, `rateLimitPlugin`, `compressPlugin`,
+`healthcheckPlugin`, `metricsPlugin`, `tracingPlugin`, `idempotencyPlugin`,
+`requestIdPlugin`, `basicAuthPlugin`, `bearerAuthPlugin`, `ipFilterPlugin`,
+`cacheControlPlugin`, `sessionPlugin`, and `csrfPlugin`. For example:
+
+```lammergeier
+srv.register(requestIdPlugin())
+srv.register(rateLimitPlugin(max=60, windowMs=60000))
+srv.register(helmet)
+```
+
 The module also exports a `CircuitBreaker` class for downstream-call
 protection:
 
 ```lammergeier
 from @lam/vulture/std-plugin import CircuitBreaker
+from lamerrors import Result
 
-cb = CircuitBreaker(5, 2000)        # threshold=5 failures, cooldown=2000ms
-out: any = cb.callFn(callRemoteAPI)  # a Result stored as any
+cb: CircuitBreaker = CircuitBreaker(5, 2000)  # threshold=5, cooldown=2000ms
+out: Result = cb.call(callRemoteAPI)
 print(f"breaker={cb.state()} result={out}")
 ```
 
@@ -2221,59 +2286,78 @@ authoring guide and recipes.
 
 ### `@lam/vulture/ws-plugin` — `WebSocket`
 
-Install with `lamc install @lam/vulture/ws-plugin@1.0.0`; see the
+Install the independent package with
+`lamc install @lam/vulture/ws-plugin@2.0.0`; see the
 [package README](https://github.com/thallium-solutions/lam-vulture-ws-plugin).
 
-WebSocket helper using `github.com/gorilla/websocket` (auto-fetched
-on build). Supports subprotocols + permessage-deflate compression
-(RFC 7692) via `wsRouteOpts`.
+The plugin uses `github.com/gorilla/websocket` and supports subprotocols plus
+RFC 7692 permessage-deflate compression. v2 uses overloaded `wsRoute` calls
+for both default and configured routes.
 
 ```lammergeier
-from @lam/vulture/ws-plugin import WebSocket, wsRoute, wsRouteOpts
+from @lam/vulture import Request, RouteOptions
+from @lam/vulture/ws-plugin import WebSocket, wsRoute
+from lamerrors import Result
 
 func chatHandler(ws: WebSocket, req: Request) {
     while not ws.isClosed() {
-        msg: str = ws.receive()
-        if msg == "" { break }
-        ws.send(f"echo: {msg}")
+        incoming: Result[str] = ws.receive()
+        if not incoming.ok() {
+            return
+        }
+        message: str = incoming.unwrap()  # Ok("") is a valid empty frame
+        if not ws.send(f"echo: {message}").ok() {
+            return
+        }
     }
 }
 
-# Plain (permissive Origin, no compression).
-wsRoute(srv, "/chat", chatHandler)
+# Plain route: permissive Origin and no compression.
+_registered: bool = wsRoute(srv, "/chat", chatHandler).unwrap()
 
-# Production: subprotocols + deflate + Origin allow-list.
-opts: dict[str, any] = {}
-opts["subprotocols"]    = ["jsonrpc-v2"]
-opts["compression"]     = true
-opts["originAllowList"] = ["https://app.example.com"]
-wsRouteOpts(srv, "/rpc", rpcHandler, opts)
+# Production route: metadata configures the WebSocket upgrade.
+options: RouteOptions = RouteOptions(0, 30000)
+_ = options.metadata("subprotocols", ["jsonrpc-v2"])
+_ = options.metadata("compression", true)
+_ = options.metadata("originAllowList", ["https://app.example.com"])
+_registeredRpc: bool = wsRoute(srv, "/rpc", rpcHandler, options).unwrap()
 ```
 
-`WebSocket` fields: `.subprotocol` (negotiated). Methods: `send(text)`,
-`sendBytes(data)`, `receive()`, `receiveBytes()`, `ping()`, `close()`,
-`isClosed()`, `rawConn()`.
+`wsRoute(server, path, handler)` and its four-argument `RouteOptions` overload
+return `Result[bool]`. `WebSocket.send(text)`, `sendBytes(data)`, and `ping()`
+return `Result[bool]`; `receive() -> Result[str]` and `receiveBytes() ->
+Result[any]` distinguish valid empty frames from close and transport errors.
+`close()` is idempotent; `isClosed()`, negotiated `.subprotocol`, and
+`rawConn()` cover state and advanced native access.
 
 ### `@lam/vulture/tus-plugin` — tus.io resumable uploads
 
-Install with `lamc install @lam/vulture/tus-plugin@1.0.0`; see the
+Install the independent package with
+`lamc install @lam/vulture/tus-plugin@2.0.0`; see the
 [package README](https://github.com/thallium-solutions/lam-vulture-tus-plugin).
 
-Implements the [tus 1.0.0](https://tus.io) protocol — Creation +
-Patch + Head + Termination — on top of Vulture. Compatible
-with every official tus client (uppy, tus-js-client, Go/Python/iOS
-SDKs).
+It implements [tus 1.0.0](https://tus.io) Creation, Creation With Upload,
+`HEAD`, `PATCH`, Termination, Concatenation, and Checksum on top of Vulture.
 
 ```lammergeier
 from @lam/vulture/tus-plugin import tusUploads, tusGc
 
-tusUploads(srv, "/uploads", "/var/lib/uploads", 200_000_000)
-# Optional: garbage-collect stale uploads from a periodic task.
-n: int = tusGc("/var/lib/uploads", 24)  # purge >24h-old uploads
+_mounted: bool = tusUploads(
+    srv,
+    "/uploads",
+    "/var/lib/uploads",
+    200_000_000,
+).unwrap()
+
+# Optional: garbage-collect uploads older than 24 hours from a periodic task.
+removed: int = tusGc("/var/lib/uploads", 24).unwrap()
 ```
 
-Storage is a flat directory: each upload gets `<id>` (the bytes) +
-`<id>.json` (metadata). Hook completion via
+`tusUploads(...) -> Result[bool]` reports invalid mount/store configuration and
+directory creation failures. `tusGc(...) -> Result[int]` reports directory,
+metadata, and removal failures instead of returning a partial count. Storage is
+a flat directory: each upload gets `<id>` (the bytes) plus `<id>.json`
+(metadata). Hook completion via
 `srv.ctx["__tusComplete"] = lambda info: …`.
 
 ### `lamnet` — TCP, TLS, UDP, and DNS
@@ -2724,12 +2808,12 @@ the runtime path is exactly the same as production code.
 | Parse / build JSON | `lamjson` |
 | Parse / build YAML (Kubernetes manifests, CI configs, …) | `lamyaml` |
 | Parse / build XML (RSS feeds, SOAP, OpenSearch) | `lamxml` |
-| Build a web service | `@lam/vulture` + `@lam/vulture/std-plugin` |
+| Build a web service | External `@lam/vulture` + `@lam/vulture/std-plugin` packages |
 | Validate request bodies | `lamschema` (JSON Schema) |
 | Issue / verify JWTs (with kid + JWKS rotation) | External [`@lam/jwt`](#/docs/libraries) package |
 | Encode / decode protobuf | External [`@lam/protobuf`](#/docs/libraries) package |
-| Add WebSockets | `@lam/vulture/ws-plugin` (subprotocols + permessage-deflate via `wsRouteOpts`) |
-| Receive resumable uploads (concat + checksum) | `@lam/vulture/tus-plugin` (tus.io 1.0.0) |
+| Add WebSockets | External `@lam/vulture/ws-plugin` package (`wsRoute` + typed `RouteOptions`) |
+| Receive resumable uploads (concat + checksum) | External `@lam/vulture/tus-plugin` package (tus.io 1.0.0) |
 | Receive multipart form uploads | `Request.formField` / `formFile` (in `@lam/vulture`) |
 | Make HTTP calls (one-shot) | Result-returning `lamhttp.Http.get` / overloaded `.post` |
 | Make HTTP calls (reusable client w/ baseUrl, headers, timeout) | `lamhttp.HttpClient` (`get`/`head`/`delete`/`post(Json)`/`put(Json)`/`patch(Json)`) |
@@ -2944,8 +3028,8 @@ index lists the public classes and top-level functions you can import.
   constructed: `Stack()`, `Queue()`, `Set()`, `Heap()`. Legacy module imports
   remain compatibility re-exports. Cache classes use `LruCache(100)` or
   `TtlCache()`.
-- Server plugins are top-level functions: `requestId(srv)`,
-  `rateLimit(srv, 100, 60000)`.
+- External Vulture plugins provide direct installers such as `requestId(srv)`
+  and typed factories such as `requestIdPlugin()` for `srv.register(...)`.
 - `Result`-returning methods use `Result.Ok(value)` /
   `Result.Err(error)`. The error payload is `any`.
 - Methods returning `any` usually wrap dynamic Go values, decoded YAML/XML,
@@ -2993,10 +3077,6 @@ index lists the public classes and top-level functions you can import.
 | `lamre` | `from lamre import Re` | Result-returning regex match/find/findAll/replace/split/groups. |
 | `lamretry` | `from lamretry import Retry` | Retry `Result`-returning calls and poll predicates. |
 | `lamschema` | `from lamschema import Schema` | JSON Schema validation and registry. |
-| `@lam/vulture` | `from @lam/vulture import Server, Request, Response, HttpError, SseEmitter, RequestBodyReader` | Fastify-style HTTP framework. |
-| `@lam/vulture/std-plugin` | `from @lam/vulture/std-plugin import requestId, rateLimit, compress, helmet, etag, healthcheck, metrics, CircuitBreaker, ...` | Ready-made server plugins and a circuit breaker. |
-| `@lam/vulture/tus-plugin` | `from @lam/vulture/tus-plugin import tusUploads, tusGc` | tus.io resumable upload routes and garbage collection. |
-| `@lam/vulture/ws-plugin` | `from @lam/vulture/ws-plugin import WebSocket, wsRoute, wsRouteOpts` | WebSocket route helper and socket wrapper. |
 | `lamset` | `from lamset import Set` | Compatibility re-export of canonical insertion-ordered `Set`. |
 | `lamsmtp` | `from lamsmtp import Smtp, Mail` | SMTP send helpers and MIME mail builder. |
 | `lamsort` | `from lamsort import Sort` | Generic natural/comparator sorting, direction checks, named algorithms, and lazy sorted generators. |
@@ -3011,6 +3091,17 @@ index lists the public classes and top-level functions you can import.
 | `lamuuid` | `from lamuuid import Uuid` | UUID v4/v7/nil/parse/validate. |
 | `lamxml` | `from lamxml import Xml, XmlNode` | XML encode/decode/parse and node traversal. |
 | `lamyaml` | `from lamyaml import Yaml` | Result-returning YAML encode/decode/decodeAll. |
+
+### Official external packages used in this guide
+
+These independently versioned packages are **not** standard-library modules:
+
+| Package | Import | Public surface |
+|---|---|---|
+| `@lam/vulture` | `from @lam/vulture import Server, Request, Response, RouteOptions, InjectResponse, HttpError, SseEmitter, RequestBodyReader` | Fastify-style HTTP framework. |
+| `@lam/vulture/std-plugin` | `from @lam/vulture/std-plugin import requestId, requestIdPlugin, rateLimit, rateLimitPlugin, helmet, CircuitBreaker, ...` | Direct plugin installers, `func(Server)` factories, and a circuit breaker. |
+| `@lam/vulture/tus-plugin` | `from @lam/vulture/tus-plugin import tusUploads, tusGc` | Result-returning tus.io route registration and garbage collection. |
+| `@lam/vulture/ws-plugin` | `from @lam/vulture/ws-plugin import WebSocket, wsRoute, wsUpgrade` | Result-returning WebSocket routes, upgrades, and frame I/O. |
 
 ### High-value signatures
 
@@ -3027,21 +3118,34 @@ r.ok() -> bool
 r.unwrap() -> any
 r.unwrapOr(fallback: any) -> any
 
-# @lam/vulture
-srv.route(method: str, path: str, handler: any, schema: str | json | None = None, schemaFormat: str = "json")
-srv.routeOpts(method: str, path: str, handler: any, opts: any)
-srv.get/post/put/del/patch/head/options/all(path: str, handler: any, schema: str | json | None = None, schemaFormat: str = "json")
-srv.getOpts/postOpts/putOpts/delOpts/patchOpts/headOpts/optionsOpts(path, handler, opts)
-srv.onRequest/preParsing/preValidation/preHandler/preSerialization/onSend/onResponse/onError(fn)
-srv.register(plugin: any, prefix: str = "", encapsulate: bool = false)
-srv.setSchemaErrorFormatter(fn: any)
-srv.inject(method: str, path: str, body: str = "", headers: any = None) -> dict[str, any]
+# @lam/vulture (official external package, not stdlib)
+RouteOptions(bodyLimit: int = 0, timeoutMs: int = 0, streamBody: bool = false)
+opts.withSchema(schema: any, format: str = "json") -> RouteOptions
+opts.preHandler(fn: func(Request, Response)) -> RouteOptions
+opts.metadata(name: str, value: any) -> RouteOptions
+srv.route(method: str, path: str, handler: func(Request, Response))
+srv.route(method: str, path: str, handler: func(Request, Response), opts: RouteOptions)
+srv.route(method: str, path: str, handler: func(Request, Response), schema: str | json, schemaFormat: str)
+srv.get/post/put/del/patch/head/options/all(path: str, handler: func(Request, Response))
+srv.get/post/put/del/patch/head/options/all(path: str, handler: func(Request, Response), opts: RouteOptions)
+srv.get/post/put/del/patch/head/options/all(path: str, handler: func(Request, Response), schema: str | json, schemaFormat: str)
+srv.onRequest/preParsing/preValidation/preHandler/preSerialization/onSend/onResponse(fn: func(Request, Response))
+srv.onError(fn: func(Request, Response, any))
+srv.register(plugin: func(Server), prefix: str = "", encapsulate: bool = false)
+srv.setSchemaErrorFormatter(fn: func(str, list[str], Request) -> any)
+srv.inject(method: str, path: str, body: str = "", headers: dict[str, str] = {}) -> InjectResponse
+srv.listen/listenBackground(port: int) -> Result[bool]
 req.header(name: str) -> str
 req.queryGet(name: str, fallback: str = "") -> str
-req.jsonBody() -> json
+req.cookie(name: str) / signedCookie(name: str, secret: str) -> Result[str]
+req.jsonBody() -> Result[json]
+req.parsedBody() -> Result[any]
 req.ctx[key] / req.ctx.has(key) / key in req.ctx
 req.ctx.cancel(reason) / expired() / reason() / wait(timeoutMs)
 req.bodyReader() -> RequestBodyReader
+reader.read(maxBytes: int = 8192) / readAll() -> Result[str]
+reader.copyTo(path: str) -> Result[int]
+reader.close() -> Result[bool]
 res.code(n: int) -> Response
 res.header(name: str, value: str) -> Response
 res.json(obj: json) -> Response

@@ -16,14 +16,14 @@ const DOCS = [
       title: "Transpilation rules",
       summary: "How every Lam construct lowers to Go. Authoritative mapping used by the compiler pipeline." },
     { id: "stdlib",          file: "content/stdlib.md",
-      title: "Standard library",
-      summary: "Full reference for every compiler-bundled lam* module — classes, methods, examples, cheatsheet index." },
+      title: "Compiler-bundled standard library",
+      summary: "Reference for the lam* modules bundled with the compiler — classes, Result APIs, examples, and the public API index." },
     { id: "libraries",       file: "content/libraries.md",
-      title: "Libraries",
-      summary: "Search official @lam packages for JWT, Redis, Memcached, Protobuf, S3, SFTP, SSH, and more." },
+      title: "Official packages",
+      summary: "Independently versioned @lam packages: Vulture, JWT, Redis, Memcached, Protobuf, S3, SFTP, SSH, and protocol plugins." },
     { id: "server_plugins",  file: "content/server_plugins.md",
-      title: "Server plugin guide",
-      summary: "Authoring plugins for lamserver: hook ladder, encapsulation, decorators, testing with inject()." },
+      title: "Vulture plugin guide",
+      summary: "Authoring plugins for the independently versioned @lam/vulture server: hooks, decorators, encapsulation, and inject()." },
     { id: "installation",    file: "content/installation.md",
       title: "Installing Lammergeier",
       summary: "The toolchain installer (install.sh): prerequisites, flags, where lamc and the LSP land, editor extension wiring, upgrading, uninstalling." },
@@ -46,12 +46,24 @@ const DOCS = [
 function $(sel, root = document) { return root.querySelector(sel); }
 function $$(sel, root = document) { return Array.from(root.querySelectorAll(sel)); }
 
+function decodeHtmlEntities(s) {
+    // Marked passes rendered inline HTML to the heading renderer, so a literal
+    // ampersand arrives as ``&amp;``. Decode once before slugging; otherwise the
+    // encoding artifact incorrectly becomes the word ``amp`` in every ID.
+    const textarea = document.createElement("textarea");
+    textarea.innerHTML = s;
+    return textarea.value;
+}
+
 function slugify(s) {
-    return s.toLowerCase()
+    // Match the Markdown/GitHub heading convention used by the source docs:
+    // discard punctuation and replace each whitespace character with a dash.
+    // Keeping adjacent dashes matters for headings such as ``Errors & Results``
+    // and ``Async / Await``, whose checked-in Markdown links use ``--``.
+    return decodeHtmlEntities(s).toLowerCase()
             .replace(/[^\w\s-]/g, "")
             .trim()
-            .replace(/\s+/g, "-")
-            .replace(/-+/g, "-");
+            .replace(/\s/g, "-");
 }
 
 function escapeHtml(s) {
@@ -240,41 +252,29 @@ function renderHome() {
          "It borrows the pleasant parts: Python-like flow, JavaScript-familiar method names, C-style braces where they make structure obvious, and explicit types where programs need contracts."],
         ["Go is the target, not the costume",
          "<code>lamc</code> emits readable Go and then lets <code>go build</code> do what it is good at: fast builds, native binaries, cross-compilation, and deployment without a language runtime."],
-        ["The stdlib is broad by default",
-         "<code>lamserver</code>, plugins, schemas, SQL, migrations, SMTP, WebSockets, TUS uploads, crypto, cancellation contexts, structured logging, numerics, and dataframes ship as <code>lam*</code> modules."],
+        ["Batteries, with clear boundaries",
+         "Compiler-bundled <code>lam*</code> modules cover data, SQL, migrations, SMTP and HTTP clients, crypto, cancellation, logging, and numerics. Servers, WebSockets, tus, and service integrations stay opt-in."],
         ["Raw Go stays one block away",
          "<code>go! { ... }</code> lets you call goroutines, channels, and Go packages directly. Use Lam for the application shape and drop into Go where the ecosystem already solved the problem."],
         ["Tooling belongs to the language",
          "The repo includes the compiler, package manager, LSP, diagnostics, completion, hover, goto-definition, document symbols, and editor extension wiring."],
-        ["Libraries scale independently",
-         "Official <code>@lam/jwt</code>, Redis, Memcached, Protobuf, S3, SFTP, and SSH packages use reproducible registry, Git, or local installs with lockfiles and transitive Go-module pins."],
+        ["Official packages scale independently",
+         "Vulture and other official <code>@lam/...</code> packages for servers, protocols, JWT, Redis, Memcached, Protobuf, S3, SFTP, and SSH version independently from the compiler and install with reproducible lockfiles."],
     ];
 
-    // Hero sample: a fully-functional HTTP service with CORS,
-    // Helmet-equivalent security headers, structured logging, and
-    // graceful shutdown — under thirty lines, no fastify.js overhead.
-    const heroSample = `from lamserver        import Server, Request, Response, HttpError
-from lamserver_plugins import requestLog, rateLimit
-from lamerrors        import Result
+    // Hero sample: the smallest complete Vulture service. Advanced routing,
+    // plugins, validation, and Result handling live in the package guides.
+    const heroSample = `from @lam/vulture import Request, Response, Server
 
-func getUser(req: Request, res: Response) {
-    id: str = req.params[":id"]
-    if id == "" {
-        raise HttpError.badRequest("missing :id")
-    }
-    res.json({"id": id, "name": f"user-{id}"})
+func hello(req: Request, res: Response) {
+    name: str = req.queryGet("name", "world")
+    res.text(f"Hello, {name}!")
 }
 
 func main() {
-    srv: Server = Server()
-
-    requestLog(srv)                       # built-in plugin
-    rateLimit(srv, 100, 60_000)           # 100 req / minute / IP
-    srv.useCors()
-    srv.useSecurityHeaders({})            # Helmet-class defaults
-
-    srv.get("/users/:id", getUser)
-    srv.listen(8080)
+    app: Server = Server()
+    app.get("/hello", hello)
+    app.listen(8080).unwrap()
 }`;
 
     // Tour cards: each highlights a distinct, idiomatic pattern.
@@ -284,7 +284,7 @@ func main() {
     const tourCards = [
         {
             heading: "Typed functions, named arguments",
-            blurb: `Every binding is annotated; every call site can be positional, keyword, or both. Defaults are evaluated at call time, just like Python.`,
+            blurb: `Parameters and return contracts are explicit; locals may be annotated or inferred. Calls can be positional, keyword, or mixed, and defaults are evaluated at call time.`,
             code: `func greet(name: str = "world", times: int = 1) -> str {
     out: str = ""
     for i in range(times) {
@@ -321,32 +321,34 @@ func main() {
         },
         {
             heading: "Native JSON for APIs and config",
-            blurb: `<code>json</code> enforces real JSON recursively: string keys, arrays, finite numbers, booleans, strings, and null. Objects support JavaScript-style property access; classes opt in with <code>toJson</code>.`,
-            code: `from lamjson import Json
+            blurb: `<code>json</code> enforces real JSON recursively: string keys, arrays, finite numbers, booleans, strings, and null. Objects support property access; classes implement <code>__json__</code> and convert with <code>json(value)</code>.`,
+            code: `from lamerrors import Result
+from lamjson import Json
 
-payload: json = {
-    "user": {"name": "Ada"},
-    "roles": ["admin", "writer"],
-    "active": true
-}
+func encodePayload() -> Result[str] {
+    payload: json = {
+        "user": {"name": "Ada"},
+        "roles": ["admin", "writer"],
+        "active": true
+    }
+    payload["requestId"] = "req_123"
 
-name: str = payload.user.name
-payload["requestId"] = "req_123"
-wire: str = Json.encode(payload)
-
-# dict/list conversion stays explicit and easy
-plain: dict[str, any] = Json.toDict(payload)
-back: json = Json.fromDict(plain)`,
+    # Conversions and encoding keep failures explicit.
+    plain: dict[str, any] = Json.toDict(payload)?
+    back: json = Json.fromDict(plain)?
+    return Json.encode(back)
+}`,
         },
         {
             heading: "Result + the ? propagation operator",
             blurb: `Recoverable failures use <code>Result</code>. <code>?</code> short-circuits a function on <code>Result.Err</code>; <code>do / catch</code> contains it locally.`,
-            code: `from lamerrors import Result, Error
+            code: `from lamconv import Conv
+from lamerrors import Result, Error
 
 func parsePort(s: str) -> Result[int] {
-    n: int = parseInt(s)?           # bubble parse errors up
+    n: int = Conv.parse(s)?         # bubble parse errors up
     if n < 1 or n > 65535 {
-        return Result.Err(Error("range", "port out of bounds"))
+        return Result.Err(Error("PortRange", "port out of bounds"))
     }
     return Result.Ok(n)
 }
@@ -356,7 +358,7 @@ func main() {
         p: int = parsePort("8080")?
         print(f"listening on {p}")
     } catch err {
-        print(f"bad port: {err.message}")
+        print(f"bad port: {err}")
     }
 }`,
         },
@@ -379,8 +381,12 @@ func main() {
         },
         {
             heading: "Drop into raw Go when you have to",
-            blurb: `<code>go!</code> blocks let you inline Go for goroutines, channels, or any external package. The transpiler stitches the surrounding scopes together for you.`,
-            code: `func crunch(items: list[int]) -> int {
+            blurb: `<code>go!</code> blocks let you inline Go for goroutines, channels, or any external package. Declare Go imports explicitly; the transpiler stitches surrounding Lam scopes into the block.`,
+            code: `go! {
+    import "sync"
+}
+
+func crunch(items: list[int]) -> int {
     total: int = 0
     go! {
         var mu sync.Mutex
@@ -412,17 +418,17 @@ func main() {
     // Concrete, decision-friendly cases.
     const whenCards = [
         ["Backend services that need to be small, fast, and self-contained",
-         "Use Lammergeier when the service wants Fastify-like ergonomics but should deploy as one binary."],
+         "Install the official, independently versioned <code>@lam/vulture</code> package for Fastify-like ergonomics and deploy the result as one binary."],
         ["Glue code that touches multiple Go libraries",
          "Keep the Lam code readable and call the Go package directly from <code>go! { ... }</code>."],
         ["Numerical / data work where you want pandas ergonomics on a real binary",
-         "<code>lamdata</code> and <code>lamarray</code> wrap Go data and numeric libraries without shipping a Python process."],
+         "Compiler-bundled <code>lamdata</code> and <code>lamarray</code> wrap Go data and numeric libraries without shipping a Python process."],
         ["Internal CLIs and operational tools",
-         "Typed argument parsing, logging, SQL, migrations, JWT, Redis, and cron in a single deployable executable."],
+         "Use bundled argument parsing, logging, SQL, migrations, and cron; add official <code>@lam/jwt</code> or <code>@lam/redis</code> only when the tool needs them."],
         ["When *not* to use Lammergeier",
          "Skip it for desktop GUIs, mobile apps, browser front-ends, or Python-only libraries you cannot replace yet."],
         ["Migrating off Node + TypeScript",
-         "The <code>lamserver</code> API is intentionally familiar, while the output is a Go binary instead of a Node service."],
+         "The official <code>@lam/vulture</code> 2.0 API is intentionally familiar, while the output is a Go binary instead of a Node service."],
     ];
 
     return `
@@ -449,8 +455,8 @@ func main() {
     <section class="band">
         <h2>What is Lammergeier?</h2><br>
         <p class="band-lede">
-            Lammergeier is a programming language that aims to be sugary and fast. Who said you couldn't have both?<br>
-            The Pythonish/Javaish syntax gets transpiled in Go-lang and then compiled, no VMs, no fuss.
+            Lammergeier is a typed, Python-flavoured language that compiles to Go.<br>
+            The compiler emits readable Go, then invokes the Go toolchain to produce a native binary.
         </p><br>
         <div class="prose-2col">
             <div>
@@ -474,19 +480,21 @@ func main() {
             </div>
             <div>
                 <p>
-                    The standard library is part of the core pitch:<br>
-                    <br>• HTTP servers
-                    <br>• Plugins
-                    <br>• Data tools
-                    <br>• Persistence
-                    <br>• Auth
-                    <br>• Queues
-                    <br>• Encoding
-                    <br>• Time
-                    <br>• Networking
-                    <br>• Testing
-                    <br>• Operational helpers
-                    <br>live under <code>lib/</code>.
+                    The compiler-bundled standard library lives under
+                    <code>lib/</code> and covers:<br>
+                    <br>• Data and numerics
+                    <br>• SQL and migrations
+                    <br>• HTTP and SMTP clients
+                    <br>• Queues and concurrency
+                    <br>• Crypto and encoding
+                    <br>• Time and networking
+                    <br>• Testing and operations
+                </p>
+                <p>
+                    Official <code>@lam/...</code> packages are a separate,
+                    independently versioned layer. Install Vulture for HTTP
+                    servers, its WebSocket or tus plugins when needed, and
+                    service packages such as JWT or Redis per project.
                 </p>
                 <p>
                     When you need the Go ecosystem directly, use
@@ -512,9 +520,9 @@ func main() {
         <h2>A real HTTP service before your coffee cools</h2>
         <div class="hero-sample">
             <p class="muted">
-                CORS, security headers, request logging, rate limits,
-                routed handlers, and structured <code>HttpError</code>
-                helpers come from the stdlib.
+                Install the official <code>@lam/vulture@2.0.0</code> package,
+                define a handler, and start serving. Typed route options,
+                plugins, validation, and testing are there when you need them.
             </p>
             <pre><code class="language-python">${escapeHtml(heroSample)}</code></pre>
         </div>
@@ -610,7 +618,7 @@ func main() {
 <pre><code class="language-bash">git clone https://github.com/thallium-solutions/lammergeier-lang.git
 cd lammergeier-lang
 ./install.sh                            # auto: sys-wide if writable, else ~/.local/bin
-./install.sh --with-editor all          # also wire up VS Code / Cursor / Windsurf
+./install.sh --with-editor all          # also wire up VS Code / Cursor / Windsurf / Devin
 lamc --help</code></pre>
                 <p class="band-cta">
                     Full installer reference:
@@ -618,12 +626,12 @@ lamc --help</code></pre>
                 </p>
             </div>
             <div>
-                <h3>Add a third-party library</h3>
-<pre><code class="language-bash">lamc install                             # read lamlib.toml, install everything
-lamc install lamwebp@1.2.0              # add to ./extlibs + lamlib.toml + lockfile
-lamc install ./local-checkout           # local path
-lamc install --frozen --offline          # CI / Docker: lockfile is law, no network
-lamc uninstall lamwebp</code></pre>
+                <h3>Add an official package</h3>
+<pre><code class="language-bash">lamc install                             # install the dependencies in lamlib.toml
+lamc install @lam/vulture@2.0.0          # independently versioned HTTP server
+lamc install @lam/vulture/std-plugin@2.0.0
+lamc install ./local-checkout             # local development copy
+lamc install --frozen --offline           # CI: exact lockfile, no network</code></pre>
                 <p class="band-cta">
                     Full package-manager reference:
                     <a href="#/docs/package_manager">docs / Package manager</a>.
@@ -683,8 +691,8 @@ function renderDocsShell(activePage) {
     const sections = [
         ["Get started", ["readme", "installation"]],
         ["Language", ["syntax", "transpilation"]],
-        ["Standard Library", ["stdlib", "server_plugins"]],
-        ["Packages", ["libraries", "package_manager", "third_party"]],
+        ["Compiler-bundled stdlib", ["stdlib"]],
+        ["Official & third-party packages", ["libraries", "server_plugins", "package_manager", "third_party"]],
         ["Project", ["contributing"]],
     ];
     const sidebar = sections.map(([label, ids]) => `

@@ -84,6 +84,7 @@ run_suite() {
             "$PYTHON" tests/tests/test_lowering_contracts.py
             "$PYTHON" tests/tests/test_formatter.py
             "$PYTHON" tests/tests/test_doc_comments.py
+            "$PYTHON" tests/tests/test_website_consistency.py
             "$PYTHON" tests/tests/test_vscode_grammar.py
             "$PYTHON" tests/tests/test_multiline_calls.py
             "$PYTHON" tests/tests/test_go_pins.py

@@ -2,9 +2,9 @@
 
 Lammergeier keeps general-purpose building blocks in the standard library and
 ships service clients, fast-moving protocols, and vendor integrations as
-independently versioned packages. Every official package below targets
-`lamc` 1.17, uses a scoped `@lam/...` import, and carries its own tests,
-release notes, and pinned Go dependencies.
+independently versioned packages. Every current official package below is at
+`2.0.0`, targets `lamc` 1.18 (`^1.18` compatibility), uses a scoped `@lam/...`
+import, and carries its own tests, release notes, and pinned Go dependencies.
 
 Use the **Filter libraries** field on the website to narrow this table by
 package name, capability, or keyword.
@@ -14,27 +14,27 @@ package name, capability, or keyword.
 | `@lam/jwt` | Sign and verify JWTs with HS256, HS512, and RS256; manage `kid` and JWKS key rotation. | `Jwt`, `JwtKeySet` | [thallium-solutions/lam-jwt](https://github.com/thallium-solutions/lam-jwt) |
 | `@lam/memcached` | Binary-protocol Memcached client with SASL authentication, TTLs, counters, mutation helpers, and statistics. | `Memcached` | [thallium-solutions/lam-memcached](https://github.com/thallium-solutions/lam-memcached) |
 | `@lam/protobuf` | Protocol Buffers binary, canonical JSON, text, equality, size, and clone helpers for generated Go messages. | `Pb` | [thallium-solutions/lam-protobuf](https://github.com/thallium-solutions/lam-protobuf) |
-| `@lam/redis` | Redis strings, native JSON, keys, lists, hashes, sets, sorted sets, pub/sub, scans, and pipelines. | `Redis`, `PubSub` | [thallium-solutions/lam-redis](https://github.com/thallium-solutions/lam-redis) |
+| `@lam/redis` | Redis strings, native JSON, keys, lists, hashes, sets, sorted sets, pub/sub, scans, and pipelines. | `PubSub`, `Redis`, `RedisCommand`, `RedisScanPage`, `RedisZMember` | [thallium-solutions/lam-redis](https://github.com/thallium-solutions/lam-redis) |
 | `@lam/s3` | AWS S3 and compatible object storage with text, buffers, streams, files, metadata, bulk operations, and presigned URLs. | `S3`, `S3Config`, `S3Client`, `S3Object` | [thallium-solutions/lam-s3](https://github.com/thallium-solutions/lam-s3) |
 | `@lam/sftp` | Callback-driven, storage-agnostic SFTP server with authentication, streaming backends, policy hooks, and metrics. | `SftpServer`, `SftpConfig`, `SftpHandlers`, `SftpRequest` | [thallium-solutions/lam-sftp](https://github.com/thallium-solutions/lam-sftp) |
-| `@lam/ssh` | Strictly verified SSH clients, commands, reusable sessions, OpenSSH keys, cancellation, and direct TCP channels. | `SshClient`, `SshConfig`, `SshSession`, `SshKeyPair` | [thallium-solutions/lam-ssh](https://github.com/thallium-solutions/lam-ssh) |
-| `@lam/vulture` | Fastify-style HTTP server with routing, hooks, native JSON/schema validation, contexts, streaming, OpenAPI, and in-process injection. | `Server`, `Request`, `Response`, `SseEmitter`, `HttpError` | [thallium-solutions/lam-vulture](https://github.com/thallium-solutions/lam-vulture) |
-| `@lam/vulture/std-plugin` | Common Vulture plugins for logging, security, compression, metrics, tracing, authentication, sessions, CSRF, and resilience. | `requestLog`, `rateLimit`, `compress`, `helmet`, `metrics`, `tracing`, `CircuitBreaker`, … | [thallium-solutions/lam-vulture-std-plugin](https://github.com/thallium-solutions/lam-vulture-std-plugin) |
-| `@lam/vulture/tus-plugin` | tus.io resumable-upload routes and garbage collection for Vulture. | `tusUploads`, `tusGc` | [thallium-solutions/lam-vulture-tus-plugin](https://github.com/thallium-solutions/lam-vulture-tus-plugin) |
-| `@lam/vulture/ws-plugin` | WebSocket upgrades, frames, deadlines, subprotocols, compression, and origin policy for Vulture. | `WebSocket`, `wsRoute`, `wsRouteOpts` | [thallium-solutions/lam-vulture-ws-plugin](https://github.com/thallium-solutions/lam-vulture-ws-plugin) |
+| `@lam/ssh` | Strictly verified SSH clients, commands, reusable sessions, OpenSSH keys, cancellation, and direct TCP channels. | `SshClient`, `SshCommandResult`, `SshConfig`, `SshKeyPair`, `SshSession` | [thallium-solutions/lam-ssh](https://github.com/thallium-solutions/lam-ssh) |
+| `@lam/vulture` | Fastify-style HTTP server with typed routes, hooks, native JSON/schema validation, contexts, streaming, OpenAPI, and in-process injection. | `Server`, `Request`, `Response`, `RouteOptions`, `InjectResponse`, `RequestBodyReader`, `SseEmitter`, `HttpError` | [thallium-solutions/lam-vulture](https://github.com/thallium-solutions/lam-vulture) |
+| `@lam/vulture/std-plugin` | Common Vulture plugins for logging, security, compression, metrics, tracing, authentication, sessions, CSRF, and resilience. | `CircuitBreaker`, `compress`, `helmet`, `metrics`, `rateLimit`, `requestLog` (plus other direct installers and `*Plugin` factories) | [thallium-solutions/lam-vulture-std-plugin](https://github.com/thallium-solutions/lam-vulture-std-plugin) |
+| `@lam/vulture/tus-plugin` | Result-returning tus.io resumable-upload route registration and garbage collection for Vulture. | `tusUploads`, `tusGc` | [thallium-solutions/lam-vulture-tus-plugin](https://github.com/thallium-solutions/lam-vulture-tus-plugin) |
+| `@lam/vulture/ws-plugin` | Result-returning WebSocket upgrades, frames, subprotocols, compression, and origin policy for Vulture. | `WebSocket`, `wsRoute`, `wsUpgrade` | [thallium-solutions/lam-vulture-ws-plugin](https://github.com/thallium-solutions/lam-vulture-ws-plugin) |
 
 ## Installation
 
-Install from Git before the first registry release:
+Install a tagged release directly from Git:
 
 ```bash
-lamc install https://github.com/thallium-solutions/lam-redis.git@v1.0.0
+lamc install https://github.com/thallium-solutions/lam-redis.git@v2.0.0
 ```
 
-After a registry release, use the scoped package and a SemVer constraint:
+From a configured registry, use the scoped package and a SemVer constraint:
 
 ```bash
-lamc install '@lam/redis@^1.0'
+lamc install '@lam/redis@^2.0'
 ```
 
 For sibling checkouts during development, install by path:
@@ -46,13 +46,15 @@ lamc install ../lam-redis
 All forms install to `extlibs/@lam/<name>` and use the same import:
 
 ```lammergeier
-from @lam/redis import Redis
+from @lam/redis import PubSub, Redis, RedisCommand, RedisScanPage, RedisZMember
+from lamerrors import Result
 
-func main() {
-    redis: Redis = Redis.connect("127.0.0.1:6379")
-    redis.set("greeting", "hello", 60)
-    print(redis.get("greeting"))
-    redis.close()
+func cacheGreeting() -> Result[str] {
+    redis: Redis = Redis.connect("127.0.0.1:6379")?
+    _ = redis.set("greeting", "hello", 60)?
+    value: str = redis.get("greeting")?
+    _ = redis.close()?
+    return Result.Ok(value)
 }
 ```
 
@@ -61,43 +63,217 @@ passwords, private keys, access keys, or tokens in package configuration files.
 See the [package-manager guide](package_manager.md) for frozen installs,
 lockfile verification, local replacements, and transitive Go-module pins.
 
-## Migrating from Lam 1.15
+## Version 2 Result contracts
 
-Four integrations moved out of the compiler-bundled standard library in Lam
-1.16. Their public class APIs remain available from scoped packages:
+Version 2 package APIs use unsuffixed `Result[T]` operations for expected
+configuration, transport, service, filesystem, and codec failures. Propagate
+with `?`, inspect `ok()` / `error`, or deliberately `unwrap()` at a process or
+test boundary. The Redis example above shows the current `connect`, command,
+and `close` contract; the other package families follow the same policy.
 
-| Lam 1.15 import | Lam 1.16 package import |
+### Memcached
+
+```lammergeier
+from @lam/memcached import Memcached
+from lamerrors import Result
+
+func cachedGreeting() -> Result[str] {
+    cache: Memcached = Memcached.connect("127.0.0.1:11211")?
+    _ = cache.set("greeting", "hello", ttlSec = 60)?
+    value: str = cache.get("greeting")?
+    _ = cache.close()?
+    return Result.Ok(value)
+}
+```
+
+A missing key is `Result.Err(MemcachedNotFound)` rather than `""`;
+conditional mutations such as `add`, `replace`, and `delete` use `Ok(false)`
+for their normal negative outcomes.
+
+### JWT and Protocol Buffers
+
+```lammergeier
+from @lam/jwt import Jwt
+from lamerrors import Result
+
+func issueAndDecode() -> Result[dict[str, any]] {
+    claims: dict[str, any] = {"sub": "alice", "role": "admin"}
+    token: str = Jwt.signHS256(claims, "replace-with-a-strong-secret", 3600)?
+    return Jwt.decodeHS256(token, "replace-with-a-strong-secret")
+}
+```
+
+The v2 JWT Result surface covers `Jwt.signHS256`, `Jwt.decodeHS256`,
+`Jwt.decodeRS256`, `JwtKeySet.decodeRS256`, `JwtKeySet.addRSA`,
+`JwtKeySet.addJwk`, and `JwtKeySet.loadJwks`. Boolean verification helpers and
+legacy algorithm-specific operations that cannot report details retain their
+documented direct return types.
+
+```lammergeier
+from @lam/protobuf import Pb
+from lamerrors import Result
+
+go! {
+    import "google.golang.org/protobuf/types/known/structpb"
+}
+
+func protobufRoundTrip() -> Result[bool] {
+    source: any = None
+    target: any = None
+    go! {
+        source, _ = structpb.NewStruct(map[string]interface{}{"name": "Ada"})
+        target = &structpb.Struct{}
+    }
+    wire: str = Pb.marshal(source)?
+    return Pb.unmarshal(wire, target)
+}
+```
+
+`Pb.marshal -> Result[str]` and `Pb.unmarshal -> Result[bool]`; JSON/text,
+equality, size, and clone helpers retain the direct contracts documented by the
+package.
+
+### S3
+
+```lammergeier
+from @lam/s3 import S3Client, S3Object
+from lamerrors import Result
+
+func archiveReport() -> Result[bool] {
+    client: S3Client = S3Client.fromEnv()?
+    _ = client.put("reports/daily.txt", "ready", "text/plain")?
+    body: str = client.get("reports/daily.txt")?
+    objects: list[S3Object] = client.list("reports/")?
+    _ = client.copy("reports/daily.txt", "archive/daily.txt")?
+    print(f"{len(body)} bytes across {len(objects)} report objects")
+    return client.delete("reports/daily.txt")
+}
+```
+
+Use `S3Client.connect(...) -> Result[S3Client]` or `fromEnv`; v2 consolidates
+string, `list[int]`, and native stream uploads under overloaded `put`. `get`,
+`uploadFile`, `downloadFile`, `list`, `keys`, `stat`, `copy`, `move`, deletes,
+and presigning all return typed Results.
+
+### SFTP and SSH
+
+```lammergeier
+from @lam/sftp import SftpConfig, SftpServer
+from lamerrors import Result
+
+func serveSftp(server: SftpServer) -> Result[bool] {
+    return server.listen()
+}
+
+func loadSftpConfig(path: str) -> Result[SftpConfig] {
+    return SftpConfig.fromKeyFile(path)
+}
+```
+
+Configure SFTP authentication and typed storage callbacks before calling
+`listen()` or `listenBackground()`; both lifecycle methods return
+`Result[bool]`. `SftpRequest.context()`, `cancelled()`, and `deadlineUnix()` are
+also Result-returning.
+
+```lammergeier
+from @lam/ssh import SshClient, SshCommandResult, SshConfig, SshKeyPair, SshSession
+from lamerrors import Result
+
+func inspectHost() -> Result[SshCommandResult] {
+    config: SshConfig = SshConfig("ssh.example.com", "deploy", 22)
+    config.withPassword("read-this-from-a-secret-store")
+    config.withHostKeyFingerprint("SHA256:REPLACE_WITH_VERIFIED_FINGERPRINT")
+
+    client: SshClient = SshClient.connect(config)?
+    result: SshCommandResult = client.run("uname -a")?
+    _ = client.close()?
+    return Result.Ok(result)
+}
+```
+
+SSH v2 uses Results for `connect`, `close`, command/context runs, session open,
+direct dialing, and TCP channel send/receive/close. A nonzero remote exit is a
+successful transport Result whose `SshCommandResult.success` is `false`.
+
+## Migrating legacy integrations to v2
+
+Applications upgrading compiler-era imports should install the matching scoped
+2.0.0 package and update imports:
+
+| Legacy import | Current package import |
 |---|---|
 | `from lamjwt import Jwt, JwtKeySet` | `from @lam/jwt import Jwt, JwtKeySet` |
 | `from lamemcached import Memcached` | `from @lam/memcached import Memcached` |
 | `from lamprotobuf import Pb` | `from @lam/protobuf import Pb` |
 | `from lamredis import Redis, PubSub` | `from @lam/redis import Redis, PubSub` |
 
-Install the matching package, update the import, and keep the rest of the call
-sites unchanged. Redis and Memcached integration fixtures now live in their
-package repositories, so the language repository's service script only starts
-services needed by the remaining stdlib tests.
+Imports are not the only change in v2:
 
-## Migrating the HTTP server from Lam 1.17
+- Redis and Memcached connection, command, maintenance, Pub/Sub, and close
+  operations return typed Results; missing values are errors rather than empty
+  strings.
+- JWT's HS256 signing plus HS256/RS256 decode paths use Results where failure
+  details matter.
+- Protobuf binary `marshal` and `unmarshal` return `Result[str]` and
+  `Result[bool]`.
+- Constructors use Lam 1.18 `init`; package tests and service fixtures live in
+  the sibling package repositories.
 
-The Vulture server family moved from compiler-bundled modules to scoped packages.
-The API remains Vulture's Fastify-style server surface; update imports and install
-the packages used by the application:
+## Migrating legacy Vulture applications to v2
 
-| Bundled import | External package import |
+Vulture, its standard plugin collection, WebSocket support, and tus support are
+independent scoped packages. Replace legacy compiler-era imports with:
+
+| Legacy import | Current package import |
 |---|---|
-| `from lamserver import Server, Request, Response` | `from @lam/vulture import Server, Request, Response` |
-| `from lamserver_plugins import requestLog, metrics` | `from @lam/vulture/std-plugin import requestLog, metrics` |
+| `from lamserver import Server, Request, Response` | `from @lam/vulture import Server, Request, Response, RouteOptions, InjectResponse` |
+| `from lamserver_plugins import requestLog, metrics` | `from @lam/vulture/std-plugin import requestLogPlugin, metricsPlugin` |
 | `from lamserver_tus import tusUploads, tusGc` | `from @lam/vulture/tus-plugin import tusUploads, tusGc` |
 | `from lamserver_ws import WebSocket, wsRoute` | `from @lam/vulture/ws-plugin import WebSocket, wsRoute` |
 
 ```bash
-lamc install https://github.com/thallium-solutions/lam-vulture.git@v1.0.0
-lamc install https://github.com/thallium-solutions/lam-vulture-std-plugin.git@v1.0.0
+lamc install @lam/vulture@2.0.0
+lamc install @lam/vulture/std-plugin@2.0.0
+# Install only when used:
+lamc install @lam/vulture/ws-plugin@2.0.0
+lamc install @lam/vulture/tus-plugin@2.0.0
 ```
 
-Each plugin manifest resolves `@lam/vulture` transitively. Install tus/WebSocket
-plugins only when the application uses those protocols.
+The standard plugin package's canonical direct-installer imports are:
+
+```lammergeier
+from @lam/vulture import Server
+from @lam/vulture/std-plugin import CircuitBreaker, compress, helmet, metrics, rateLimit, requestLog
+
+func installHttpDefaults(srv: Server) {
+    requestLog(srv)
+    rateLimit(srv)
+    compress(srv)
+    helmet(srv)
+    metrics(srv)
+}
+```
+
+`CircuitBreaker` protects downstream calls; the direct installers above also
+have configurable `*Plugin(...)` factory forms where configuration is needed.
+
+Then migrate call sites to the v2 contracts:
+
+- Construct typed `RouteOptions` and pass them to the actual `route`, `get`,
+  `post`, `put`, `del`, `patch`, `head`, `options`, or `all` overload.
+- Treat `Server.inject` as `InjectResponse`; use `.status`, `.body`, `.headers`,
+  and case-insensitive `.header(name)`.
+- Handle Results from request JSON/content parsing, cookie reads/signature
+  checks, body-reader read/copy/close operations, and listener startup.
+- Use `func(Server)` plugin values. The standard plugin package exposes
+  configurable `*Plugin(...)` factories for `register`; `helmet`, `etag`, and
+  `serverTiming` can be registered directly.
+- Use the configured `wsRoute(..., RouteOptions)` overload and handle its
+  registration Result. WebSocket `send`, `receive`, `sendBytes`,
+  `receiveBytes`, and `ping` are Result-based.
+- Handle `tusUploads -> Result[bool]` and `tusGc -> Result[int]`.
+
+Each plugin manifest resolves `@lam/vulture` v2 transitively.
 
 ## Package relationships
 

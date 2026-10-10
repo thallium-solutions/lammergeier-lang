@@ -86,7 +86,7 @@ is knowing which file is the source of truth at each step.
 ```bash
 mkdir api && cd api
 lamc init --name api --bin
-lamc install @lam/jwt
+lamc install '@lam/jwt@^2.0'
 lamc main.lam --run
 ```
 
@@ -110,7 +110,7 @@ tree matches the lockfile.
 Use an explicit install when you know the library you want:
 
 ```bash
-lamc install '@lam/redis@^1.0'
+lamc install '@lam/redis@^2.0'
 ```
 
 This does four things as one transaction:
@@ -133,8 +133,8 @@ Go module pins are merged from three places during compilation:
 
 Project and lockfile pins take precedence over stdlib defaults. This
 means a small import such as `from lamstrings import Strings` does not
-seed unrelated database, data-frame, cache, or protobuf modules into the
-generated `go.mod`. The compiler injects the selected requirements and runs
+seed unrelated database, data-frame, or cache modules into the generated
+`go.mod`. The compiler injects the selected requirements and runs
 `go mod tidy` automatically; Lam developers do not run `go get` or maintain a
 `go.mod`. Resolution failures stop before `go build` under a Lam module-error
 heading.
@@ -254,7 +254,7 @@ resolved against the registry (or replayed from
 
 ```bash
 lamc install                                    # everything in [dependencies]
-lamc install lamwebp@1.2.0 lamqueue@^1.0       # add two new deps
+lamc install lamwebp@1.2.0 'lamcodec@^1.0'     # add two new deps
 ```
 
 When you pass explicit registry, git URL, or local-path specs, each
@@ -497,19 +497,18 @@ under the `STDLIB_GO_PINS` table — moving in lockstep with the
 stdlib source, so a PR that adopts a new upstream API bumps the
 pin in the same commit.
 
-`_collect_go_pins` in `compiler/transpiler.py` seeds the
-project's pin map with `STDLIB_GO_PINS` first, then layers your
-`[go-deps]` and `[go_pins.*]` on top — so:
+`_collect_go_pins` in `compiler/lammergeier.py` starts with pins for the
+stdlib modules reached by the program's import graph, then layers project
+`[go-deps]` and lockfile `[go_pins.*]` on top — so:
 
-- A vanilla project with no `[go-deps]` still gets a fully
-  pinned, reproducible build for every stdlib transitive.
+- A project importing only `lamstrings` receives no unrelated stdlib Go-module
+  requirements; importing `lamcron` selects its compiler-bundled cron pin.
 - A project that sets `"github.com/robfig/cron/v3" = "v3.1.0"`
   in its own `[go-deps]` overrides the stdlib's `lamcron` pin via Go's
   MVS rule (the higher version wins).
-- The stdlib's pin set never reaches `lamlib.lock.toml` — the
-  lockfile only carries pins **you** declared, so future stdlib
-  bumps don't churn it. The compiler-bundled set is the
-  single source of truth.
+- The stdlib's pin set never reaches `lamlib.lock.toml` — the lockfile only
+  carries project and package pins, so future stdlib bumps do not churn it.
+  The compiler-bundled table remains the source of truth for stdlib defaults.
 
 If `go mod tidy` ever surprises you by picking a different
 version for a stdlib dep, check whether you have a competing
@@ -769,9 +768,9 @@ $ lamc tidy
 would remove (declared but never imported):
   - lamwebp
 would add (imported, version inferred from extlibs/):
-  + lamhttp = "^1.4.0"
+  + lamcodec = "^1.4.0"
 [lamc] removed lamwebp from lamlib.toml
-[lamc] added lamhttp in lamlib.toml
+[lamc] added lamcodec in lamlib.toml
 [lamc] tidy: refreshing lockfile…
 ```
 
@@ -804,8 +803,8 @@ a manual edit.
 
 ```text
 $ lamc verify
-  ✓ lamhttp                        ok (a3b4f9c2e1f0…)
-  ✓ lamjson                        ok (61c2bd5d8a90…)
+  ✓ lamcodec                       ok (a3b4f9c2e1f0…)
+  ✓ lamutil                        ok (61c2bd5d8a90…)
   ✗ lamwebp                        tree drifted: expected b2c3d4…, got d5e6f7…
 [lamc] verify: 1 integrity failure:
   - lamwebp: tree drifted: expected b2c3d4…, got d5e6f7…
@@ -884,7 +883,7 @@ tag:
 ```text
 $ lamc list
 @acme/lamcolor@0.2.0  [registry]
-lamhttp@1.4.2         [registry]
+lamcodec@1.4.2        [registry]
 lamwebp@1.2.0         [path]
 
 # Go modules
@@ -898,7 +897,7 @@ lockfile's `requested_by` array:
 $ lamc tree
 myapp@0.1.0
 ├── lamwebp@1.2.0
-│   └── lamhttp@1.4.2
+│   └── lamcodec@1.4.2
 └── @acme/lamcolor@0.2.0
 ```
 
@@ -906,8 +905,8 @@ myapp@0.1.0
 walking `requested_by` back to the project root:
 
 ```text
-$ lamc why lamhttp
-lamhttp@1.4.2
+$ lamc why lamcodec
+lamcodec@1.4.2
   └── requested by lamwebp@1.2.0
     └── requested by root
 ```
@@ -945,8 +944,8 @@ Semantics:
   ignored at install time so a transitive dep can't sneak in a
   rewrite of an unrelated lib. Only the *project's* manifest is
   consulted.
-- **Applies transitively.** Replacing `lamhttp` redirects every
-  library that pulls in `lamhttp` to the override. Same as Go.
+- **Applies transitively.** Replacing `lamwebp` redirects every
+  library that pulls in `lamwebp` to the override. Same as Go.
 - **Path or git, never both.** Mixing `path` with `git`/`ref`
   is rejected at parse time.
 - **Lockfile-honest.** The pin records the *replacement's*

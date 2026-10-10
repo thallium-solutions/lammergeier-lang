@@ -54,17 +54,25 @@ These packages are maintained as official Lammergeier third-party libraries.
 The [Libraries catalog](#/docs/libraries) is the consumer-facing, searchable list;
 this specification focuses on authoring and resolution details.
 
-| Library | Repository / docs | Description |
-|---------|-------------------|-------------|
-| `@lam/jwt` | [thallium-solutions/lam-jwt](https://github.com/thallium-solutions/lam-jwt) | JWT signing, verification, claims, `kid`, and JWKS key rotation. |
-| `@lam/memcached` | [thallium-solutions/lam-memcached](https://github.com/thallium-solutions/lam-memcached) | Binary-protocol Memcached client with SASL authentication, counters, and cluster statistics. |
-| `@lam/protobuf` | [thallium-solutions/lam-protobuf](https://github.com/thallium-solutions/lam-protobuf) | Protocol Buffers binary, JSON, text, equality, size, and clone helpers. |
-| `@lam/redis` | [thallium-solutions/lam-redis](https://github.com/thallium-solutions/lam-redis) | Redis strings, native JSON, collections, sorted sets, pub/sub, and pipelines. |
-| `@lam/s3` | [thallium-solutions/lam-s3](https://github.com/thallium-solutions/lam-s3) | S3-compatible object storage with Result-first APIs, files, buffers, streams, metadata, and presigned URLs. |
-| `@lam/sftp` | [thallium-solutions/lam-sftp](https://github.com/thallium-solutions/lam-sftp) | Callback-driven, storage-agnostic SFTP server built on `@lam/ssh`. |
-| `@lam/ssh` | [thallium-solutions/lam-ssh](https://github.com/thallium-solutions/lam-ssh) | Strictly verified SSH clients, commands, sessions, keys, cancellation, and direct TCP channels. |
-| `lamstripe` | [`third_party/lamstripe/README.md`](../third_party/lamstripe/README.md) | Opinionated Stripe REST API helper with configuration, customers, payment intents, checkout sessions, validation, and test helpers. |
-| `lamotel` | [`third_party/lamotel/README.md`](../third_party/lamotel/README.md) | Lightweight OpenTelemetry helper for traces, spans, resource attributes, OTLP export payloads, and integration tests. |
+| Library | Current version | Repository / docs | Description |
+|---------|-----------------|-------------------|-------------|
+| `@lam/jwt` | `2.0.0` | [thallium-solutions/lam-jwt](https://github.com/thallium-solutions/lam-jwt) | JWT signing, verification, claims, `kid`, and JWKS key rotation. |
+| `@lam/memcached` | `2.0.0` | [thallium-solutions/lam-memcached](https://github.com/thallium-solutions/lam-memcached) | Binary-protocol Memcached client with SASL authentication, counters, and cluster statistics. |
+| `@lam/protobuf` | `2.0.0` | [thallium-solutions/lam-protobuf](https://github.com/thallium-solutions/lam-protobuf) | Protocol Buffers binary, JSON, text, equality, size, and clone helpers. |
+| `@lam/redis` | `2.0.0` | [thallium-solutions/lam-redis](https://github.com/thallium-solutions/lam-redis) | Redis strings, native JSON, collections, sorted sets, pub/sub, and pipelines. |
+| `@lam/s3` | `2.0.0` | [thallium-solutions/lam-s3](https://github.com/thallium-solutions/lam-s3) | S3-compatible object storage with unsuffixed Result APIs, files, buffers, streams, metadata, and presigned URLs. |
+| `@lam/sftp` | `2.0.0` | [thallium-solutions/lam-sftp](https://github.com/thallium-solutions/lam-sftp) | Callback-driven, storage-agnostic SFTP server built on `@lam/ssh`. |
+| `@lam/ssh` | `2.0.0` | [thallium-solutions/lam-ssh](https://github.com/thallium-solutions/lam-ssh) | Strictly verified SSH clients, commands, sessions, keys, cancellation, and direct TCP channels. |
+| `@lam/vulture` | `2.0.0` | [thallium-solutions/lam-vulture](https://github.com/thallium-solutions/lam-vulture) | Fastify-style HTTP server with routing, hooks, native JSON, schemas, streaming, OpenAPI, and in-process injection. |
+| `@lam/vulture/std-plugin` | `2.0.0` | [thallium-solutions/lam-vulture-std-plugin](https://github.com/thallium-solutions/lam-vulture-std-plugin) | Common logging, security, metrics, tracing, authentication, session, and resilience plugins. |
+| `@lam/vulture/tus-plugin` | `2.0.0` | [thallium-solutions/lam-vulture-tus-plugin](https://github.com/thallium-solutions/lam-vulture-tus-plugin) | tus.io resumable-upload routes and garbage collection. |
+| `@lam/vulture/ws-plugin` | `2.0.0` | [thallium-solutions/lam-vulture-ws-plugin](https://github.com/thallium-solutions/lam-vulture-ws-plugin) | WebSocket upgrades, frames, deadlines, subprotocols, compression, and origin policy. |
+| `lamstripe` | `0.2.0` | [`third_party/lamstripe/README.md`](https://github.com/thallium-solutions/lammergeier-lang/blob/main/third_party/lamstripe/README.md) | Opinionated Stripe REST API helper with configuration, customers, payment intents, checkout sessions, validation, and test helpers. |
+| `lamotel` | `0.2.0` | [`third_party/lamotel/README.md`](https://github.com/thallium-solutions/lammergeier-lang/blob/main/third_party/lamotel/README.md) | Lightweight OpenTelemetry helper for traces, spans, resource attributes, OTLP export payloads, and integration tests. |
+
+Every scoped `@lam/...` package above is on the v2 line and declares
+`compatibility.lamc = "^1.18"`. Install an exact release such as
+`lamc install @lam/redis@2.0.0` or use a v2 range in a manifest.
 
 ---
 
@@ -279,18 +287,17 @@ S3-compatible object stores, `@lam/redis` for an external service client,
 `lamstripe` for Stripe's API, and `lamotel` for OpenTelemetry export.
 
 [`@lam/s3`](https://github.com/thallium-solutions/lam-s3) is the reference
-shape for a Go-SDK-backed storage library: it exposes ergonomic bool/string
-helpers for quick scripts, direct constructors plus env loading, `try*`
-siblings that return `Result` for production flows, and guarded live tests
-that operate inside a dedicated bucket prefix so they do not collide with
-existing objects.
+shape for a Go-SDK-backed storage library: fallible factories and operations use
+one unsuffixed, payload-typed `Result[T]` API; `put` overloads cover strings,
+byte buffers, and streams; and guarded live tests operate inside a dedicated
+bucket prefix so they do not collide with existing objects.
 
 If a feature is generic and lightweight — string handling, JSON, HTTP
 helpers, filesystem access, environment variables, time, basic crypto,
-or data structures — depend on the existing `lam...` stdlib module
-instead of copying it into your package. This keeps third-party APIs
-small, makes tests read like normal user code, and avoids surprising
-behavioural forks.
+or data structures — import the existing `lam...` stdlib module instead of
+copying it into your package. Compiler-bundled stdlib imports do not belong in
+manifest `[dependencies]`. This keeps third-party APIs small, makes tests read
+like normal user code, and avoids surprising behavioural forks.
 
 ### Wrap Go dependencies deliberately
 
@@ -413,14 +420,14 @@ repository  = "https://github.com/alice/lamwebp"
 # Caret matches SemVer. Compile warns when an installed extlib's
 # range does not include the running compiler, but does not block
 # the build.
-lamc = "^0.4"
+lamc = "^1.18"
 
 [dependencies]
 # Other Lammergeier libraries this library pulls in transitively.
 # Keys are module names, values are version specifiers. Scoped
 # names need quoting because the bare-key character set excludes
 # the leading ``@`` for grammatical reasons.
-lamhttp        = "^1.0"
+lamcodec       = "^1.0"
 "@bob/lamutil" = ">=0.4 <1.0"
 # Local path overrides for development checkouts:
 lamother = { path = "../lamother" }
@@ -521,10 +528,7 @@ license     = "MIT"
 description = "Small greeting helpers"
 
 [compatibility]
-lamc = "^0.4"
-
-[dependencies]
-lamstrings = "^1.0"
+lamc = "^1.18"
 ```
 
 ```lammergeier
@@ -567,7 +571,7 @@ dependency under `extlibs/`.
 
 ```toml
 [dependencies]
-lamstrings = "^1.0"
+lamcodec = "^1.0"
 "@acme/lamcolor" = ">=0.2 <1.0"
 ```
 
@@ -585,7 +589,7 @@ top-level dep is a one-liner that updates the manifest, the
 lockfile, and the on-disk install in one shot:
 
 ```bash
-lamc install lamstrings@^1.0 @acme/lamcolor@0.2.0
+lamc install 'lamcodec@^1.0' @acme/lamcolor@0.2.0
 ```
 
 Transitive dependencies declared by those libraries are automatic.
