@@ -1,0 +1,269 @@
+# Integration stress regression: generic numeric, tabular, streaming, collection, and time composition.
+# expect: PASS 1 generic helper preserves int
+# expect: PASS 2 generic helper preserves float
+# expect: PASS 3 comprehension and lambda compose
+# expect: PASS 4 Stats preserves int reduction
+# expect: PASS 5 Stats preserves float reduction
+# expect: PASS 6 Array consumes generic numeric output
+# expect: PASS 7 Matrix composes with Array
+# expect: PASS 8 singular Matrix returns Result error
+# expect: PASS 9 CSV row generator preserves records
+# expect: PASS 10 CSV batch generator preserves final partial batch
+# expect: PASS 11 invalid CSV batch size returns Result error
+# expect: PASS 12 Queue transports generated batches
+# expect: PASS 13 DataFrame infers CSV column types
+# expect: PASS 14 Series preserves integer values
+# expect: PASS 15 Series preserves float values
+# expect: PASS 16 DataFrame Series feeds Stats and Array
+# expect: PASS 17 invalid Series conversion returns Result error
+# expect: PASS 18 Queue preserves heterogeneous payloads
+# expect: PASS 19 Deque preserves nested payload order
+# expect: PASS 20 Stack preserves DataFrame payload
+# expect: PASS 21 Set distinguishes heterogeneous values
+# expect: PASS 22 Heap preserves int values
+# expect: PASS 23 Heap preserves float values
+# expect: PASS 24 Heap rejects mixed numeric types
+# expect: PASS 25 PriorityHeap preserves heterogeneous payloads
+# expect: PASS 26 empty collections return Result errors
+# expect: PASS 27 compatibility modules re-export canonical structures
+# expect: PASS 28 timezone conversion preserves instant
+# expect: PASS 29 calendar day differs from fixed duration across DST
+# expect: PASS 30 calendar month differs from fixed duration
+# expect: PASS 31 invalid date time and duration parse return errors
+# expect: PASS 32 Time arithmetic composes
+# expect: PASS 33 DateTime compatibility helpers remain available
+# expect: PASS 34 typed Result fallback preserves int
+# expect: 34 passed, 0 failed, 34 total
+
+from lamarray import Array, Matrix
+from lamcsv import Csv
+from lamdata import DataFrame, Series
+from lamdatastructures import Queue, Deque, Stack, Set, Heap, PriorityHeap
+from lamdatetime import DateTime
+from lamerrors import Result, Error
+from lamos import Os
+from lamstats import Stats
+from lamtest import Test
+from lamtime import Time
+from numeric_data_time_shim_support import compatibilityShimsWork
+
+func preserve[T](value: T) -> T {
+    return value
+}
+
+func resultBatch(result: Result) -> list[list[str]] {
+    go! { return result.Value.([][]string) }
+}
+
+func resultRow(result: Result) -> list[str] {
+    go! { return result.Value.([]string) }
+}
+
+func resultFrame(result: Result) -> DataFrame {
+    go! { return result.Value.(*DataFrame) }
+}
+
+func resultInts(result: Result) -> list[int] {
+    go! { return result.Value.([]int) }
+}
+
+func resultInt(result: Result) -> int {
+    go! { return result.Value.(int) }
+}
+
+func resultFloat(result: Result) -> float {
+    go! { return result.Value.(float64) }
+}
+
+func main() {
+    Test.assertEqual(preserve(11), 11, "1 generic helper preserves int")
+    Test.assertEqual(preserve(2.5), 2.5, "2 generic helper preserves float")
+
+    base: list[int] = [1, 2, 3, 4, 5]
+    oddSquares: list[int] = [value * value for value in base if value % 2 == 1]
+    shifted: list[int] = oddSquares.map(lambda value: value + 1)
+    expectedShifted: list[int] = [2, 10, 26]
+    Test.assertEqual(shifted, expectedShifted, "3 comprehension and lambda compose")
+    Test.assertEqual(Stats.sum(oddSquares), 35, "4 Stats preserves int reduction")
+
+    floatValues: list[float] = [1.5, 2.0, 4.0]
+    Test.assertEqual(Stats.product(floatValues), 12.0, "5 Stats preserves float reduction")
+
+    shiftedArray: Array = Array.fromList(shifted)
+    Test.assertTrue(shiftedArray.size() == 3 and shiftedArray.sum() == 38.0, "6 Array consumes generic numeric output")
+
+    matrix: Matrix = Matrix.fromRows([[2, 4], [6, 8]])
+    product: list[float] = matrix.mulVec(Array.fromList([1, 2])).toList()
+    Test.assertTrue(product[0] == 10.0 and product[1] == 22.0, "7 Matrix composes with Array")
+
+    singular: Matrix = Matrix.fromList(2, 2, [2, 4, 4, 8])
+    Test.assertFalse(singular.inverse().ok(), "8 singular Matrix returns Result error")
+
+    csvRows: list[list[str]] = [
+        ["name", "count", "ratio"],
+        ["alpha", "2", "1.25"],
+        ["beta", "4", "2.50"],
+        ["gamma", "6", "3.75"],
+        ["delta", "8", "5.00"],
+        ["epsilon", "10", "6.25"],
+    ]
+    path: str = Os.tempFile("lam_numeric_time_", ".csv").unwrap()
+    Os.writeFile(path, Csv.formatAll(csvRows)).unwrap()
+
+    rowCount: int = 0
+    rowsOk: bool = true
+    for rowResult in Csv.rows(path) {
+        if not rowResult.ok() {
+            rowsOk = false
+        } else {
+            row: list[str] = resultRow(rowResult)
+            rowCount += 1
+            if len(row) != 3 {
+                rowsOk = false
+            }
+        }
+    }
+    Test.assertTrue(rowsOk and rowCount == 6, "9 CSV row generator preserves records")
+
+    batchQueue: Queue = Queue()
+    batchSizes: list[int] = []
+    for batchResult in Csv.streamBatches(path, 4) {
+        if batchResult.ok() {
+            batch: list[list[str]] = resultBatch(batchResult)
+            batchSizes.append(len(batch))
+            batchQueue.enqueue(batch)
+        }
+    }
+    Test.assertTrue(len(batchSizes) == 2 and batchSizes[0] == 4 and batchSizes[1] == 2, "10 CSV batch generator preserves final partial batch")
+
+    invalidBatchErrors: int = 0
+    for invalidBatch in Csv.batches(path, 0) {
+        if not invalidBatch.ok() {
+            invalidBatchErrors += 1
+        }
+    }
+    Test.assertEqual(invalidBatchErrors, 1, "11 invalid CSV batch size returns Result error")
+
+    records: list[any] = []
+    while not batchQueue.isEmpty() {
+        queuedBatch: list[list[str]] = resultBatch(batchQueue.dequeue())
+        for record in queuedBatch {
+            records.append(record)
+        }
+    }
+    Test.assertTrue(len(records) == 6 and batchQueue.isEmpty(), "12 Queue transports generated batches")
+
+    frame: DataFrame = DataFrame.fromRecords(records)
+    frameTypes: list[str] = frame.types()
+    typesOk: bool = frame.nrow() == 5 and frame.ncol() == 3
+    typesOk = typesOk and frameTypes[0] == "string" and frameTypes[1] == "int" and frameTypes[2] == "float"
+    Test.assertTrue(typesOk, "13 DataFrame infers CSV column types")
+
+    countsSeries: Series = frame.col("count")
+    counts: list[int] = resultInts(countsSeries.toIntList())
+    Test.assertTrue(countsSeries.typeName() == "int" and counts[0] == 2 and counts[4] == 10, "14 Series preserves integer values")
+
+    ratiosSeries: Series = frame.col("ratio")
+    ratios: list[float] = ratiosSeries.toFloatList()
+    Test.assertTrue(ratiosSeries.typeName() == "float" and ratios[1] == 2.5 and ratios[4] == 6.25, "15 Series preserves float values")
+
+    countsArray: Array = Array.fromList(counts)
+    Test.assertTrue(Stats.sum(counts) == 30 and countsArray.mean() == 6.0 and ratiosSeries.sum() == 18.75, "16 DataFrame Series feeds Stats and Array")
+
+    invalidInts: Result[list[int]] = Series.from(["1", "not-an-int"], "bad").toIntList()
+    Test.assertFalse(invalidInts.ok(), "17 invalid Series conversion returns Result error")
+
+    payloadQueue: Queue = Queue()
+    payloadQueue.enqueue(frame)
+    payloadQueue.enqueue("complete")
+    recoveredFrame: DataFrame = resultFrame(payloadQueue.dequeue())
+    Test.assertTrue(recoveredFrame.nrow() == 5 and payloadQueue.dequeue().unwrap() == "complete", "18 Queue preserves heterogeneous payloads")
+
+    deque: Deque = Deque()
+    deque.pushBack(counts)
+    deque.pushFront("header")
+    dequeCounts: list[int] = resultInts(deque.popBack())
+    Test.assertTrue(deque.popFront().unwrap() == "header" and dequeCounts[2] == 6, "19 Deque preserves nested payload order")
+
+    stack: Stack = Stack()
+    stack.push("sentinel")
+    stack.push(frame)
+    stackedFrame: DataFrame = resultFrame(stack.pop())
+    Test.assertTrue(stackedFrame.ncol() == 3 and stack.pop().unwrap() == "sentinel", "20 Stack preserves DataFrame payload")
+
+    distinct: Set = Set()
+    distinct.add(5)
+    distinct.add(5.0)
+    distinct.add("5")
+    distinct.add(5)
+    Test.assertTrue(distinct.size() == 3 and distinct.contains(5.0) and distinct.contains("5"), "21 Set distinguishes heterogeneous values")
+
+    intHeap: Heap = Heap()
+    intHeap.push(9)
+    intHeap.push(3)
+    intHeap.push(6)
+    Test.assertEqual(resultInt(intHeap.pop()), 3, "22 Heap preserves int values")
+
+    floatHeap: Heap = Heap(true)
+    floatHeap.push(1.25)
+    floatHeap.push(6.25)
+    floatHeap.push(2.5)
+    Test.assertEqual(resultFloat(floatHeap.pop()), 6.25, "23 Heap preserves float values")
+
+    mixedHeap: Heap = Heap()
+    mixedHeap.push(1)
+    mixedRejected: bool = false
+    try { mixedHeap.push(1.0) } catch err { mixedRejected = true }
+    Test.assertTrue(mixedRejected, "24 Heap rejects mixed numeric types")
+
+    priority: PriorityHeap = PriorityHeap()
+    priority.push(3, "later")
+    priority.push(1, counts)
+    priorityCounts: list[int] = resultInts(priority.pop())
+    Test.assertTrue(priorityCounts[4] == 10 and priority.pop().unwrap() == "later", "25 PriorityHeap preserves heterogeneous payloads")
+
+    emptyQueue: Queue = Queue()
+    emptyDeque: Deque = Deque()
+    emptyStack: Stack = Stack()
+    emptyHeap: Heap = Heap()
+    emptyPriority: PriorityHeap = PriorityHeap()
+    emptyErrors: bool = not emptyQueue.dequeue().ok() and not emptyDeque.popBack().ok()
+    emptyErrors = emptyErrors and not emptyStack.pop().ok() and not emptyHeap.pop().ok() and not emptyPriority.pop().ok()
+    Test.assertTrue(emptyErrors, "26 empty collections return Result errors")
+
+    Test.assertTrue(compatibilityShimsWork(), "27 compatibility modules re-export canonical structures")
+
+    utc: DateTime = DateTime.parseRfc3339("2024-07-01T12:00:00Z").unwrap()
+    newYork: DateTime = utc.inLocation("America/New_York").unwrap()
+    tokyo: DateTime = utc.inLocation("Asia/Tokyo").unwrap()
+    timezoneOk: bool = utc.unix() == newYork.unix() and newYork.unix() == tokyo.unix()
+    timezoneOk = timezoneOk and newYork.format("15:04 MST") == "08:00 EDT" and tokyo.format("15:04 MST") == "21:00 JST"
+    Test.assertTrue(timezoneOk, "28 timezone conversion preserves instant")
+
+    spring: DateTime = DateTime.parse("2006-01-02 15:04", "2024-03-09 12:00", "America/New_York").unwrap()
+    springFixed: DateTime = spring.add(Time.Days(1))
+    springCalendar: DateTime = spring.addDays(1)
+    dstOk: bool = springFixed.format("15:04 MST") == "13:00 EDT" and springCalendar.format("15:04 MST") == "12:00 EDT"
+    dstOk = dstOk and springCalendar.since(spring).inHours() == 23 and springFixed.since(spring).inHours() == 24
+    Test.assertTrue(dstOk, "29 calendar day differs from fixed duration across DST")
+
+    january: DateTime = DateTime.parse("2006-01-02 15:04", "2024-01-31 08:00", "UTC").unwrap()
+    Test.assertTrue(january.addMonths(1).date() == "2024-02-29" and january.add(Time.Months(1)).date() == "2024-03-01", "30 calendar month differs from fixed duration")
+
+    invalidDate: Result[DateTime] = DateTime.parse("2006-01-02", "2024-02-30", "UTC")
+    invalidTime: Result[int] = Time.parse("2006-01-02", "not-a-date")
+    invalidDuration: Result[Time] = Time.parseDuration("three fortnights")
+    Test.assertTrue(not invalidDate.ok() and not invalidTime.ok() and not invalidDuration.ok(), "31 invalid date time and duration parse return errors")
+
+    duration: Time = Time.parseDuration("1h45m").unwrap()
+    Test.assertTrue(duration.add(Time.Minutes(15)).inHours() == 2 and duration.subtract(Time.Minutes(30)).inMinutes() == 75, "32 Time arithmetic composes")
+
+    Test.assertTrue(DateTime.diffSeconds(10, 25) == 15 and DateTime.isLeapYear(2024) and not DateTime.isLeapYear(2100), "33 DateTime compatibility helpers remain available")
+
+    failed: Result[int] = Result.Err(Error("CompositionError", "intentional fallback"))
+    fallback: int = failed.unwrapOr(99)
+    Test.assertTrue(not failed.ok() and fallback == 99, "34 typed Result fallback preserves int")
+
+    Os.remove(path).unwrap()
+    Test.summary()
+}

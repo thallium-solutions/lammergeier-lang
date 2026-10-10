@@ -9,12 +9,31 @@
 # expect: PASS 8 toList has all elements
 # expect: PASS 9 priority pop order
 # expect: PASS 10 priority peek
-# expect: 10 passed, 0 failed, 10 total
+# expect: PASS 11 int heap preserves values
+# expect: PASS 12 int priority with mixed values
+# expect: PASS 13 mixed numeric types rejected
+# expect: 13 passed, 0 failed, 13 total
 
-from lamheap import Heap
-from lamheap import PriorityHeap
+from lamdatastructures import Heap, PriorityHeap
 from lamtest import Test
 from lamsort import Sort
+from lamerrors import Result
+
+func resultFloat(r: Result) -> float {
+    go! { return r.Value.(float64) }
+}
+
+func resultInt(r: Result) -> int {
+    go! { return r.Value.(int) }
+}
+
+func anyFloats(values: list[any]) -> list[float] {
+    go! {
+        out := make([]float64, len(values))
+        for i, value := range values { out[i] = value.(float64) }
+        return out
+    }
+}
 
 func main() {
     h: Heap = Heap()
@@ -27,11 +46,11 @@ func main() {
     h.push(4.0)
     Test.assertEqual(h.size(), 5, "2 size after pushes")
 
-    Test.assertAlmostEqual(h.peek(), 1.0, 0.0001, "3 min-heap peek")
+    Test.assertAlmostEqual(resultFloat(h.peek()), 1.0, 0.0001, "3 min-heap peek")
 
     popped: list[float] = []
     while not h.isEmpty() {
-        popped.append(h.pop())
+        popped.append(resultFloat(h.pop()))
     }
     expectedMin: list[float] = [1.0, 2.0, 3.0, 4.0, 5.0]
     Test.assertEqual(popped, expectedMin, "4 min-heap pop order")
@@ -44,11 +63,11 @@ func main() {
     maxH.push(5.0)
     maxH.push(1.0)
     maxH.push(3.0)
-    Test.assertAlmostEqual(maxH.peek(), 5.0, 0.0001, "6 max-heap peek")
+    Test.assertAlmostEqual(resultFloat(maxH.peek()), 5.0, 0.0001, "6 max-heap peek")
 
     popMax: list[float] = []
     while not maxH.isEmpty() {
-        popMax.append(maxH.pop())
+        popMax.append(resultFloat(maxH.pop()))
     }
     expectedMax: list[float] = [5.0, 3.0, 1.0]
     Test.assertEqual(popMax, expectedMax, "7 max-heap pop order")
@@ -57,9 +76,9 @@ func main() {
     toListHeap.push(3.0)
     toListHeap.push(1.0)
     toListHeap.push(2.0)
-    items: list[float] = toListHeap.toList()
-    # sort so we get a stable representation regardless of heap layout
-    sorted_items: list[float] = Sort.sort(items)
+    items: list[any] = toListHeap.toList()
+    # Convert the comparator-backed snapshot for a stable sorted assertion.
+    sorted_items: list[float] = Sort.sort(anyFloats(items))
     expectedList: list[float] = [1.0, 2.0, 3.0]
     Test.assertEqual(sorted_items, expectedList, "8 toList has all elements")
 
@@ -70,14 +89,34 @@ func main() {
     pq.push(2.0, "mid")
     order: list[any] = []
     while not pq.isEmpty() {
-        order.append(pq.pop())
+        order.append(pq.pop().unwrap())
     }
     Test.assertEqual(order, ["high", "mid", "low"], "9 priority pop order")
 
     pq2: PriorityHeap = PriorityHeap()
     pq2.push(5.0, "a")
     pq2.push(2.0, "b")
-    Test.assertEqual(pq2.peek(), "b", "10 priority peek")
+    Test.assertEqual(pq2.peek().unwrap(), "b", "10 priority peek")
+
+    intHeap: Heap = Heap()
+    intHeap.push(9)
+    intHeap.push(2)
+    intHeap.push(5)
+    intHeapValues: list[any] = intHeap.toList()
+    intHeapOk: bool = (resultInt(intHeap.pop()) == 2) and (len(intHeapValues) == 3)
+    Test.assertTrue(intHeapOk, "11 int heap preserves values")
+
+    intPriority: PriorityHeap = PriorityHeap()
+    intPriority.push(2, "later")
+    intPriority.push(1, 99)
+    intPriorityOk: bool = intPriority.pop().unwrap() == 99 and intPriority.pop().unwrap() == "later"
+    Test.assertTrue(intPriorityOk, "12 int priority with mixed values")
+
+    homogeneous: Heap = Heap()
+    homogeneous.push(1)
+    mixedTypeThrows: bool = false
+    try { homogeneous.push(1.0) } catch err { mixedTypeThrows = true }
+    Test.assertTrue(mixedTypeThrows, "13 mixed numeric types rejected")
 
     Test.summary()
 }

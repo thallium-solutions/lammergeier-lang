@@ -4,6 +4,8 @@
 # Compressed output is returned as a base64 string so callers don't have
 # to worry about binary-safety. Decompression accepts the same format.
 
+from lamerrors import Result, Error
+
 go! {
     import (
         "bytes"
@@ -26,17 +28,30 @@ class Compress {
         }
     }
 
-    static func gunzip(b64: str) -> str {
-        #- Decode a base64 string and GZip-decompress it. -#
+    static func gunzip(b64: str) -> Result[str] {
+        #- Decode a base64 string and GZip-decompress it. Malformed or
+           truncated input is returned as a structured error. -#
         go! {
             raw, err := base64.StdEncoding.DecodeString(b64)
-            if err != nil { panic("gunzip: base64 decode: " + err.Error()) }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "DecodeError", "gunzip base64 decode failed", err.Error(),
+                ))
+            }
             r, err := gzip.NewReader(bytes.NewReader(raw))
-            if err != nil { panic("gunzip: " + err.Error()) }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CompressionError", "invalid gzip stream", err.Error(),
+                ))
+            }
             defer r.Close()
             out, err := io.ReadAll(r)
-            if err != nil { panic("gunzip: " + err.Error()) }
-            return string(out)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CompressionError", "gzip decompression failed", err.Error(),
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(out))
         }
     }
 
@@ -51,16 +66,29 @@ class Compress {
         }
     }
 
-    static func zlibInflate(b64: str) -> str {
+    static func zlibInflate(b64: str) -> Result[str] {
+        #- Decode and inflate zlib data, reporting malformed input. -#
         go! {
             raw, err := base64.StdEncoding.DecodeString(b64)
-            if err != nil { panic("zlibInflate: base64 decode: " + err.Error()) }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "DecodeError", "zlib base64 decode failed", err.Error(),
+                ))
+            }
             r, err := zlib.NewReader(bytes.NewReader(raw))
-            if err != nil { panic("zlibInflate: " + err.Error()) }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CompressionError", "invalid zlib stream", err.Error(),
+                ))
+            }
             defer r.Close()
             out, err := io.ReadAll(r)
-            if err != nil { panic("zlibInflate: " + err.Error()) }
-            return string(out)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CompressionError", "zlib decompression failed", err.Error(),
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(out))
         }
     }
 }

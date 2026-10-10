@@ -17,7 +17,7 @@
 # expect: Counter(10)
 
 class Counter {
-    func __init__(self, n: int) {
+    func init(self, n: int) {
         self.n: int = n
     }
     func __inc__(self) -> Counter {

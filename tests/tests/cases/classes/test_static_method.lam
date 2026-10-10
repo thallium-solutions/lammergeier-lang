@@ -3,7 +3,7 @@
 # expect: instance: hello
 
 class MyClass {
-    func __init__(self, name: str) {
+    func init(self, name: str) {
         self.name: str = name
     }
 

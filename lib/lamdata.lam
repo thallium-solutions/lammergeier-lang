@@ -59,6 +59,15 @@
 #   — pandas muscle memory transfers over cleanly.
 
 from lamjson import Json
+from lamerrors import Result, Error
+
+func _dataResultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
+
+func _dataResultJson(result: Result) -> json {
+    go! { return result.Value.(LamJSON) }
+}
 
 go! {
     import (
@@ -224,7 +233,7 @@ class DataFrame {
        returns a new table leaves the receiver unchanged — go-gota's
        ``DataFrame`` is already a value type. -#
 
-    func __init__(self) {
+    func init(self) {
         # Internal slot that holds the gota ``dataframe.DataFrame``.
         # Users should never touch it directly; the class methods
         # assert the type on every access.
@@ -277,7 +286,7 @@ class DataFrame {
 
     static func readJSON(content: json) -> DataFrame {
         #- Load rows directly from a native ``json`` array. -#
-        encoded: str = Json.encode(content)
+        encoded: str = _dataResultString(Json.encode(content))
         go! {
             return lamDfWrap(dataframe.ReadJSON(strings.NewReader(encoded)))
         }
@@ -507,22 +516,6 @@ class DataFrame {
         }
     }
 
-    func mutateInts(self, name: str, values: list[int]) -> DataFrame {
-        return self.mutate(name, values)
-    }
-
-    func mutateFloats(self, name: str, values: list[float]) -> DataFrame {
-        return self.mutate(name, values)
-    }
-
-    func mutateStrings(self, name: str, values: list[str]) -> DataFrame {
-        return self.mutate(name, values)
-    }
-
-    func mutateBools(self, name: str, values: list[bool]) -> DataFrame {
-        return self.mutate(name, values)
-    }
-
     # ─── filtering ───────────────────────────────────────────
     func filter(self, col: str, op: str, value: any) -> DataFrame {
         #- Single-predicate filter. ``op`` is one of ``"eq"``,
@@ -677,30 +670,37 @@ class DataFrame {
     }
 
     # ─── I/O ─────────────────────────────────────────────────
-    func writeCSV(self) -> str {
-        #- Serialise to CSV. Errors bubble up via ``error()``. -#
+    func writeCSV(self) -> Result[str] {
+        #- Serialise to CSV, returning any dataframe or encoder error. -#
         go! {
             var buf bytes.Buffer
             if err := s.Df.(dataframe.DataFrame).WriteCSV(&buf); err != nil {
-                return ""
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "DataFrameWriteError", "CSV serialization failed", err.Error(),
+                ))
             }
-            return buf.String()
+            return LAMMERGEIER.Result.Ok(buf.String())
         }
     }
 
-    func writeJSON(self) -> str {
-        #- Serialise to a JSON array of row-objects. -#
+    func writeJSON(self) -> Result[str] {
+        #- Serialise to a JSON array of row objects, preserving errors. -#
         go! {
             var buf bytes.Buffer
             if err := s.Df.(dataframe.DataFrame).WriteJSON(&buf); err != nil {
-                return ""
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "DataFrameWriteError", "JSON serialization failed", err.Error(),
+                ))
             }
-            return buf.String()
+            return LAMMERGEIER.Result.Ok(buf.String())
         }
     }
 
     func jsonValue(self) -> json {
-        return Json.decode(self.writeJSON())
+        # The native json conversion protocol cannot return Result. The public
+        # writeJSON operation remains recoverable; conversion explicitly unwraps.
+        encoded: str = _dataResultString(self.writeJSON())
+        return _dataResultJson(Json.decode(encoded))
     }
 
     func __json__(self) -> json {
@@ -734,7 +734,7 @@ class DataFrameGroups {
        ``aggregate`` produces a summary DataFrame; ``getGroups``
        returns every partition keyed by its composite group name. -#
 
-    func __init__(self) {
+    func init(self) {
         self.groups: any = None
     }
 
@@ -776,10 +776,10 @@ class DataFrameGroups {
 
 class Series {
     #- Single typed column. Mirrors ``gota/series.Series`` with a
-       Lam-friendly surface. Constructed via generic ``from``, the
-       compatibility ``fromXxx`` helpers, or ``DataFrame.col``. -#
+       Lam-friendly surface. Constructed via generic ``from`` or
+       ``DataFrame.col``. -#
 
-    func __init__(self) {
+    func init(self) {
         # Internal slot holding the gota ``series.Series``.
         self.ser: any = None
     }
@@ -789,22 +789,6 @@ class Series {
         #- Build an int, float, string, or bool series from the concrete
            element type. Typed empty lists retain their declared type. -#
         go! { return lamSeriesWrap(lamSeriesNew(values, name)) }
-    }
-
-    static func fromStrings(values: list[str], name: str) -> Series {
-        return Series.from(values, name)
-    }
-
-    static func fromInts(values: list[int], name: str) -> Series {
-        return Series.from(values, name)
-    }
-
-    static func fromFloats(values: list[float], name: str) -> Series {
-        return Series.from(values, name)
-    }
-
-    static func fromBools(values: list[bool], name: str) -> Series {
-        return Series.from(values, name)
     }
 
     # ─── introspection ───────────────────────────────────────
@@ -890,13 +874,16 @@ class Series {
         go! { return s.Ser.(series.Series).Records() }
     }
 
-    func toIntList(self) -> list[int] {
-        #- Coerces every element to ``int``. Errors surface through
-           ``error()``. -#
+    func toIntList(self) -> Result[list[int]] {
+        #- Coerce every element to ``int``, preserving conversion errors. -#
         go! {
             out, err := s.Ser.(series.Series).Int()
-            if err != nil { return []int{} }
-            return out
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "SeriesConversionError", "integer conversion failed", err.Error(),
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(out)
         }
     }
 
@@ -905,13 +892,16 @@ class Series {
         go! { return s.Ser.(series.Series).Float() }
     }
 
-    func toBoolList(self) -> list[bool] {
-        #- Coerces every element to ``bool``. Errors surface through
-           ``error()``. -#
+    func toBoolList(self) -> Result[list[bool]] {
+        #- Coerce every element to ``bool``, preserving conversion errors. -#
         go! {
             out, err := s.Ser.(series.Series).Bool()
-            if err != nil { return []bool{} }
-            return out
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "SeriesConversionError", "boolean conversion failed", err.Error(),
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(out)
         }
     }
 

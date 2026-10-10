@@ -21,18 +21,22 @@
 #     ttl.put("token", "abcd", 30)            # expires in 30 seconds
 #     v: any = ttl.get("token")               # nil after the TTL fires
 
+from lamconcurrency import Mutex
+
 go! {
     import (
         "container/list"
-        "sync"
         "time"
     )
-}
 
-go! {
     type lruEntry struct {
         key interface{}
         value interface{}
+    }
+
+    type ttlEntry struct {
+        value     interface{}
+        expiresAt time.Time
     }
 }
 
@@ -41,26 +45,24 @@ class LruCache {
        map for O(1) lookups. ``capacity`` must be > 0; on every ``put``
        above the limit, the tail (least-recently-used) is evicted. -#
 
-    func __init__(self, capacity: int) {
+    func init(self, capacity: int) {
         self.capacity: int = capacity
         self.lst: any = None
         self.idx: any = None
-        self.mu: any = None
+        self.mu: Mutex = Mutex()
         go! {
             if capacity <= 0 {
                 panic("LruCache: capacity must be > 0")
             }
             s.Lst = list.New()
             s.Idx = map[interface{}]*list.Element{}
-            s.Mu = &sync.Mutex{}
         }
     }
 
     func get(self, key: any) -> any {
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             idx := s.Idx.(map[interface{}]*list.Element)
             elem, ok := idx[key]
             if !ok { return nil }
@@ -70,10 +72,9 @@ class LruCache {
     }
 
     func put(self, key: any, value: any) {
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             lst := s.Lst.(*list.List)
             idx := s.Idx.(map[interface{}]*list.Element)
             if elem, ok := idx[key]; ok {
@@ -95,10 +96,9 @@ class LruCache {
     }
 
     func contains(self, key: any) -> bool {
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             _, ok := s.Idx.(map[interface{}]*list.Element)[key]
             return ok
         }
@@ -107,10 +107,9 @@ class LruCache {
     func remove(self, key: any) -> bool {
         #- Drop ``key`` from the cache. Returns true iff the key was
            actually present. -#
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             idx := s.Idx.(map[interface{}]*list.Element)
             elem, ok := idx[key]
             if !ok { return false }
@@ -121,29 +120,20 @@ class LruCache {
     }
 
     func size(self) -> int {
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             return s.Lst.(*list.List).Len()
         }
     }
 
     func clear(self) {
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             s.Lst.(*list.List).Init()
             s.Idx = map[interface{}]*list.Element{}
         }
-    }
-}
-
-go! {
-    type ttlEntry struct {
-        value     interface{}
-        expiresAt time.Time
     }
 }
 
@@ -153,12 +143,11 @@ class TtlCache {
        expiry check inline, so there's no background goroutine — the
        cache only does work when you call into it. -#
 
-    func __init__(self) {
+    func init(self) {
         self.idx: any = None
-        self.mu: any = None
+        self.mu: Mutex = Mutex()
         go! {
             s.Idx = map[interface{}]*ttlEntry{}
-            s.Mu = &sync.Mutex{}
         }
     }
 
@@ -166,10 +155,9 @@ class TtlCache {
         #- Cache ``value`` under ``key`` with a TTL of ``ttlSeconds``.
            Use ``putForever`` if you want the entry to live until
            explicitly removed. -#
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             s.Idx.(map[interface{}]*ttlEntry)[key] = &ttlEntry{
                 value:     value,
                 expiresAt: time.Now().Add(time.Duration(ttlSeconds) * time.Second),
@@ -178,10 +166,9 @@ class TtlCache {
     }
 
     func putForever(self, key: any, value: any) {
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             s.Idx.(map[interface{}]*ttlEntry)[key] = &ttlEntry{
                 value:     value,
                 expiresAt: time.Time{},  // zero value -> never expires
@@ -190,10 +177,9 @@ class TtlCache {
     }
 
     func get(self, key: any) -> any {
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             idx := s.Idx.(map[interface{}]*ttlEntry)
             entry, ok := idx[key]
             if !ok { return nil }
@@ -210,10 +196,9 @@ class TtlCache {
     }
 
     func remove(self, key: any) -> bool {
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             idx := s.Idx.(map[interface{}]*ttlEntry)
             if _, ok := idx[key]; !ok { return false }
             delete(idx, key)
@@ -224,20 +209,18 @@ class TtlCache {
     func size(self) -> int {
         #- Number of entries, including expired ones that haven't been
            reaped yet. Call ``purgeExpired`` first for a strict count. -#
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             return len(s.Idx.(map[interface{}]*ttlEntry))
         }
     }
 
     func purgeExpired(self) -> int {
         #- Drop every expired entry. Returns how many were removed. -#
+        self.mu.lock()
+        defer self.mu.unlock()
         go! {
-            mu := s.Mu.(*sync.Mutex)
-            mu.Lock()
-            defer mu.Unlock()
             idx := s.Idx.(map[interface{}]*ttlEntry)
             now := time.Now()
             removed := 0

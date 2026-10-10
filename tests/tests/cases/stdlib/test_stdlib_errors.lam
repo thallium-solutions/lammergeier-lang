@@ -11,6 +11,7 @@
 # expect: unwrap_ok=hello
 # expect: unwrap_panic_caught: RuntimeError: unwrap on error result: just-a-string
 # expect: chained: ParseError: bad json (cause: IOError: read failed)
+# expect: typed-static-unwrap=bird
 # expect: errors_ok
 
 from lamerrors import Result, Error
@@ -20,6 +21,16 @@ func divide(a: int, b: int) -> Result {
         return Result.Err(Error("DivByZero", "denominator was 0"))
     }
     return Result.Ok(a / b)
+}
+
+class ResultFactory {
+    static func text() -> Result[str] {
+        return Result.Ok("bird")
+    }
+
+    static func flag() -> Result[bool] {
+        return Result.Ok(true)
+    }
 }
 
 func tryUnwrapOnErr() {
@@ -63,6 +74,12 @@ func main() {
     inner: Error = Error("IOError", "read failed")
     outer: Error = Error("ParseError", "bad json", inner)
     print(f"chained: {outer}")
+
+    typedText: str = ResultFactory.text().unwrap()
+    print(f"typed-static-unwrap={typedText}")
+
+    _ = Error("Ignored", "blank target type must not leak")
+    _ = ResultFactory.flag().unwrap()
 
     print("errors_ok")
 }

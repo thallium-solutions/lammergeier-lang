@@ -1,18 +1,54 @@
 # expect: inserted: 1
+# expect: exec-error: true
+# expect: query-error: true
+# expect: first-error: true
+# expect: scalar-error: true
+# expect: connect-error: true
+# expect: transaction-error: true
+# expect: begin-error: true
 # expect: db_test_ok
 
-from lamdb import Db
+from lamdb import Db, Tx
+from lamerrors import Result
+
+func resultDb(result: Result) -> Db {
+    go! { return result.Value.(*Db) }
+}
+
+func resultInt(result: Result) -> int {
+    go! { return result.Value.(int) }
+}
 
 func main() {
-    db: Db = Db.connect("sqlite", ":memory:")
+    db: Db = resultDb(Db.connect("sqlite", ":memory:"))
 
-    db.exec("DROP TABLE IF EXISTS lam_test")
-    db.exec("CREATE TABLE lam_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+    db.exec("DROP TABLE IF EXISTS lam_test").unwrap()
+    db.exec("CREATE TABLE lam_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)").unwrap()
 
-    n: int = db.exec("INSERT INTO lam_test (name) VALUES ('hello')")
+    n: int = resultInt(db.exec("INSERT INTO lam_test (name) VALUES ('hello')"))
     print(f"inserted: {n}")
 
-    db.exec("DROP TABLE lam_test")
-    db.close()
+    badExec: Result[int] = db.exec("INSERT INTO missing_table VALUES (1)")
+    print(f"exec-error: {not badExec.ok()}")
+    badQuery: Result[list[dict[str, any]]] = db.query("SELECT * FROM missing_table")
+    print(f"query-error: {not badQuery.ok()}")
+    badFirst: Result[dict[str, any]] = db.first("SELECT * FROM missing_table")
+    print(f"first-error: {not badFirst.ok()}")
+    badScalar: Result[any] = db.scalar("SELECT value FROM missing_table")
+    print(f"scalar-error: {not badScalar.ok()}")
+
+    badConnect: Result[Db] = Db.connect("not-a-driver", "unused")
+    print(f"connect-error: {not badConnect.ok()}")
+
+    func badTransactionFn(tx: Tx) -> Result[bool] {
+        _ = tx.exec("INSERT INTO missing_table VALUES (1)")?
+        return Result.Ok(true)
+    }
+    badTransaction: Result[bool] = db.transaction(badTransactionFn)
+    print(f"transaction-error: {not badTransaction.ok()}")
+
+    db.exec("DROP TABLE lam_test").unwrap()
+    db.close().unwrap()
+    print(f"begin-error: {not db.begin().ok()}")
     print("db_test_ok")
 }

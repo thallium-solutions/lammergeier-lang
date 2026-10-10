@@ -1,0 +1,162 @@
+# Test: lamdb.QueryBuilder — nested predicate groups, cloning, and terminals.
+#
+# expect: basic-and-group: true
+# expect: leading-group: true
+# expect: or-group: true
+# expect: nested-group: true
+# expect: empty-and-group: true
+# expect: empty-or-group: true
+# expect: mixed-and-or: true
+# expect: json-group: true
+# expect: parameter-order: true
+# expect: clone-base-isolated: true
+# expect: clone-copy-isolated: true
+# expect: sqlite-get-result: true
+# expect: sqlite-count-result: true
+# expect: sqlite-update-result: true
+# expect: sqlite-delete-result: true
+#
+from lamdb import Db, QueryBuilder
+from lamerrors import Result
+
+func resultDb(result: Result) -> Db {
+    go! { return result.Value.(*Db) }
+}
+
+func resultRows(result: Result) -> list[dict[str, any]] {
+    go! { return result.Value.([]map[string]interface{}) }
+}
+
+func resultInt(result: Result) -> int {
+    go! { return result.Value.(int) }
+}
+
+func planSql(plan: dict[str, any]) -> str {
+    value: str = ""
+    go! { value, _ = plan["sql"].(string) }
+    return value
+}
+
+func planParams(plan: dict[str, any]) -> list[any] {
+    values: list[any] = []
+    go! { values, _ = plan["params"].([]interface{}) }
+    return values
+}
+
+func assertPlan(label: str, plan: dict[str, any], expectedSql: str, expectedParams: list[any]) {
+    actualParams: list[any] = planParams(plan)
+    ok: bool = planSql(plan) == expectedSql and len(actualParams) == len(expectedParams)
+    if ok {
+        for i in range(len(expectedParams)) {
+            if str(actualParams[i]) != str(expectedParams[i]) {
+                ok = false
+            }
+        }
+    }
+    print(label + ": " + str(ok))
+}
+
+func main() {
+    db: Db = resultDb(Db.connect("sqlite", ":memory:"))
+
+    assertPlan(
+        "basic-and-group",
+        db.table("items").whereEq("a", 2).whereGroup(lambda (group: QueryBuilder): group.whereEq("a", 3).orWhereEq("a", 4)).toSql(),
+        "SELECT * FROM items WHERE a = ? AND (a = ? OR a = ?)",
+        [2, 3, 4],
+    )
+
+    assertPlan(
+        "leading-group",
+        db.table("items").whereGroup(lambda (group: QueryBuilder): group.whereEq("b", 2).orWhereEq("b", 3)).toSql(),
+        "SELECT * FROM items WHERE (b = ? OR b = ?)",
+        [2, 3],
+    )
+
+    assertPlan(
+        "or-group",
+        db.table("items").whereEq("a", 1).orWhereGroup(lambda (group: QueryBuilder): group.whereEq("b", 2).orWhereEq("b", 3)).toSql(),
+        "SELECT * FROM items WHERE a = ? OR (b = ? OR b = ?)",
+        [1, 2, 3],
+    )
+
+    assertPlan(
+        "nested-group",
+        db.table("items").whereEq("a", 1).whereGroup(lambda (group: QueryBuilder): group.whereEq("b", 2).orWhereGroup(lambda (nested: QueryBuilder): nested.whereEq("c", 3).whereEq("d", 4))).toSql(),
+        "SELECT * FROM items WHERE a = ? AND (b = ? OR (c = ? AND d = ?))",
+        [1, 2, 3, 4],
+    )
+
+    assertPlan(
+        "empty-and-group",
+        db.table("items").whereEq("a", 1).whereGroup(lambda (group: QueryBuilder): group).whereEq("b", 2).toSql(),
+        "SELECT * FROM items WHERE a = ? AND b = ?",
+        [1, 2],
+    )
+
+    assertPlan(
+        "empty-or-group",
+        db.table("items").orWhereGroup(lambda (group: QueryBuilder): group).toSql(),
+        "SELECT * FROM items",
+        [],
+    )
+
+    assertPlan(
+        "mixed-and-or",
+        db.table("items").whereGroup(lambda (group: QueryBuilder): group.orWhereEq("a", 1).whereEq("b", 2)).orWhereEq("c", 3).whereEq("d", 4).toSql(),
+        "SELECT * FROM items WHERE (a = ? AND b = ?) OR c = ? AND d = ?",
+        [1, 2, 3, 4],
+    )
+
+    assertPlan(
+        "json-group",
+        db.table("items").whereEq("kind", "user").whereGroup(lambda (group: QueryBuilder): group.whereRaw("json_extract(payload, '$.active') = ?", [1]).orWhereRaw("payload IS NULL", [])).toSql(),
+        "SELECT * FROM items WHERE kind = ? AND (json_extract(payload, '$.active') = ? OR payload IS NULL)",
+        ["user", 1],
+    )
+
+    assertPlan(
+        "parameter-order",
+        db.table("items").whereEq("a", 1).whereGroup(lambda (group: QueryBuilder): group.whereBetween("b", 2, 3).orWhereRaw("json_extract(payload, '$.role') = ?", ["admin"])).whereIn("c", [4, 5]).whereRaw("d = ?", [6]).toSql(),
+        "SELECT * FROM items WHERE a = ? AND (b BETWEEN ? AND ? OR json_extract(payload, '$.role') = ?) AND c IN (?,?) AND d = ?",
+        [1, 2, 3, "admin", 4, 5, 6],
+    )
+
+    base: QueryBuilder = db.table("items").whereEq("tenant_id", 7).whereGroup(lambda (group: QueryBuilder): group.whereEq("b", 2).orWhereEq("b", 3))
+    cloned: QueryBuilder = base.clone()
+    _ = base.whereEq("base_only", 9)
+    _ = cloned.orWhereEq("clone_only", 8)
+    assertPlan(
+        "clone-base-isolated",
+        base.toSql(),
+        "SELECT * FROM items WHERE tenant_id = ? AND (b = ? OR b = ?) AND base_only = ?",
+        [7, 2, 3, 9],
+    )
+    assertPlan(
+        "clone-copy-isolated",
+        cloned.toSql(),
+        "SELECT * FROM items WHERE tenant_id = ? AND (b = ? OR b = ?) OR clone_only = ?",
+        [7, 2, 3, 8],
+    )
+
+    db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, payload TEXT, mark TEXT)").unwrap()
+    db.exec("INSERT INTO items (id, a, b, payload) VALUES (?, ?, ?, ?)", [1, 1, 2, "{\"active\":true}"]).unwrap()
+    db.exec("INSERT INTO items (id, a, b, payload) VALUES (?, ?, ?, ?)", [2, 1, 3, "{\"active\":true}"]).unwrap()
+    db.exec("INSERT INTO items (id, a, b, payload) VALUES (?, ?, ?, ?)", [3, 1, 4, "{\"active\":false}"]).unwrap()
+    db.exec("INSERT INTO items (id, a, b, payload) VALUES (?, ?, ?, ?)", [4, 2, 2, "{\"active\":true}"]).unwrap()
+
+    rowsResult: Result[list[dict[str, any]]] = db.table("items").whereEq("a", 1).whereGroup(lambda (group: QueryBuilder): group.whereEq("b", 2).orWhereEq("b", 3)).orderBy("id").get()
+    rows: list[dict[str, any]] = resultRows(rowsResult)
+    print("sqlite-get-result: " + str(rowsResult.ok() and len(rows) == 2))
+
+    countResult: Result[int] = db.table("items").whereGroup(lambda (group: QueryBuilder): group.whereRaw("json_extract(payload, '$.active') = ?", [1]).orWhereRaw("payload IS NULL", [])).count()
+    print("sqlite-count-result: " + str(countResult.ok() and resultInt(countResult) == 3))
+
+    updateResult: Result[int] = db.table("items").whereEq("a", 1).whereGroup(lambda (group: QueryBuilder): group.whereEq("b", 2).orWhereEq("b", 3)).update({"mark": "hit"})
+    print("sqlite-update-result: " + str(updateResult.ok() and resultInt(updateResult) == 2))
+
+    deleteResult: Result[int] = db.table("items").whereEq("a", 2).orWhereGroup(lambda (group: QueryBuilder): group.whereEq("b", 4).whereEq("a", 1)).delete()
+    print("sqlite-delete-result: " + str(deleteResult.ok() and resultInt(deleteResult) == 2))
+
+    db.close().unwrap()
+}

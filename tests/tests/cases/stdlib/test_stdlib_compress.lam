@@ -20,27 +20,27 @@ func main() {
 
     enc: str = Compress.gzip(msg)
     Test.assertTrue(len(enc) > 0, "1 gzip non-empty")
-    Test.assertEqual(Compress.gunzip(enc), msg, "2 gzip round-trip")
+    Test.assertEqual(Compress.gunzip(enc).unwrap(), msg, "2 gzip round-trip")
 
     encEmpty: str = Compress.gzip("")
-    Test.assertEqual(Compress.gunzip(encEmpty), "", "3 gzip empty")
+    Test.assertEqual(Compress.gunzip(encEmpty).unwrap(), "", "3 gzip empty")
 
     utf8: str = "ciao 🪶 lammergeier"
-    Test.assertEqual(Compress.gunzip(Compress.gzip(utf8)), utf8, "4 gzip utf8")
+    Test.assertEqual(Compress.gunzip(Compress.gzip(utf8)).unwrap(), utf8, "4 gzip utf8")
 
     big: str = Strings.repeat("abcdefghij", 2000)
-    Test.assertEqual(Compress.gunzip(Compress.gzip(big)), big, "5 gzip large payload")
+    Test.assertEqual(Compress.gunzip(Compress.gzip(big)).unwrap(), big, "5 gzip large payload")
 
     z: str = Compress.zlibDeflate(msg)
     Test.assertTrue(len(z) > 0, "6 zlib non-empty")
-    Test.assertEqual(Compress.zlibInflate(z), msg, "7 zlib round-trip")
-    Test.assertEqual(Compress.zlibInflate(Compress.zlibDeflate("")), "", "8 zlib empty")
+    Test.assertEqual(Compress.zlibInflate(z).unwrap(), msg, "7 zlib round-trip")
+    Test.assertEqual(Compress.zlibInflate(Compress.zlibDeflate("")).unwrap(), "", "8 zlib empty")
 
     # gzip and zlib produce different byte streams for the same input
     Test.assertNotEqual(Compress.gzip(msg), Compress.zlibDeflate(msg), "9 gzip != zlib")
 
     # gzip is deterministic for the same input at default level — round trip stable
-    Test.assertEqual(Compress.gunzip(Compress.gzip(msg)), msg, "10 gzip stable")
+    Test.assertEqual(Compress.gunzip(Compress.gzip(msg)).unwrap(), msg, "10 gzip stable")
 
     Test.summary()
 }

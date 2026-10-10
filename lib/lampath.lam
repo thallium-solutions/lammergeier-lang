@@ -1,8 +1,11 @@
 # Lammergeier standard library: path/filepath utilities
 # Import with: from lampath import Path
 
+from lamerrors import Result, Error
+
 go! {
     import (
+        "fmt"
         "os"
         "path/filepath"
         "strings"
@@ -10,9 +13,30 @@ go! {
 }
 
 class Path {
-    static func join(parts: list[str]) -> str {
+    static func join(*parts: any) -> str {
+        #- Join either a single ``list[str]`` or variadic string components. -#
         go! {
-            return filepath.Join(parts...)
+            if len(parts) == 1 {
+                if listed, ok := parts[0].([]string); ok {
+                    return filepath.Join(listed...)
+                }
+                if listed, ok := parts[0].([]interface{}); ok {
+                    stringsOnly := make([]string, len(listed))
+                    for i, part := range listed {
+                        value, ok := part.(string)
+                        if !ok { panic(fmt.Sprintf("Path.join: component %d is not a string", i)) }
+                        stringsOnly[i] = value
+                    }
+                    return filepath.Join(stringsOnly...)
+                }
+            }
+            stringsOnly := make([]string, len(parts))
+            for i, part := range parts {
+                value, ok := part.(string)
+                if !ok { panic(fmt.Sprintf("Path.join: component %d is not a string", i)) }
+                stringsOnly[i] = value
+            }
+            return filepath.Join(stringsOnly...)
         }
     }
 
@@ -34,10 +58,15 @@ class Path {
         }
     }
 
-    static func abs(p: str) -> str {
+    static func abs(p: str) -> Result[str] {
         go! {
-            a, _ := filepath.Abs(p)
-            return a
+            a, err := filepath.Abs(p)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("abs %q: %v", p, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(a)
         }
     }
 
@@ -53,28 +82,46 @@ class Path {
         }
     }
 
-    static func rel(basePath: str, targPath: str) -> str {
+    static func rel(basePath: str, targPath: str) -> Result[str] {
         go! {
-            r, _ := filepath.Rel(basePath, targPath)
-            return r
-        }
-    }
-
-    static func glob(pattern: str) -> list[str] {
-        go! {
-            matches, _ := filepath.Glob(pattern)
-            if matches == nil {
-                return []string{}
+            r, err := filepath.Rel(basePath, targPath)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("rel %q to %q: %v", basePath, targPath, err), nil,
+                ))
             }
-            return matches
+            return LAMMERGEIER.Result.Ok(r)
         }
     }
 
-    static func exists(p: str) -> bool {
-        #- True if anything exists at the given path. -#
+    static func glob(pattern: str) -> Result[list[str]] {
+        go! {
+            matches, err := filepath.Glob(pattern)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("glob %q: %v", pattern, err), nil,
+                ))
+            }
+            if matches == nil {
+                matches = []string{}
+            }
+            return LAMMERGEIER.Result.Ok(matches)
+        }
+    }
+
+    static func exists(p: str) -> Result[bool] {
+        #- ``Ok(false)`` means absent; other stat failures are errors. -#
         go! {
             _, err := os.Stat(p)
-            return err == nil
+            if err == nil {
+                return LAMMERGEIER.Result.Ok(true)
+            }
+            if os.IsNotExist(err) {
+                return LAMMERGEIER.Result.Ok(false)
+            }
+            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                "IOError", fmt.Sprintf("exists %q: %v", p, err), nil,
+            ))
         }
     }
 

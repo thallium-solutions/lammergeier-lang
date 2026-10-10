@@ -1,58 +1,58 @@
 # Lammergeier standard library: URL parsing
 # Import with: from lamurl import Url
 
+from lamerrors import Result, Error
+
 go! {
     import "net/url"
+
+    func lamUrlError(raw string, err error) *Result {
+        return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+            "UrlParseError", "invalid URL " + raw, err.Error(),
+        ))
+    }
 }
 
 class Url {
-    static func parse(rawUrl: str) -> str {
+    static func parse(rawUrl: str) -> Result[str] {
         go! {
             u, err := url.Parse(rawUrl)
-            if err != nil {
-                return ""
-            }
-            return u.String()
+            if err != nil { return lamUrlError(rawUrl, err) }
+            return LAMMERGEIER.Result.Ok(u.String())
         }
     }
 
-    static func host(rawUrl: str) -> str {
+    static func host(rawUrl: str) -> Result[str] {
         go! {
             u, err := url.Parse(rawUrl)
-            if err != nil {
-                return ""
-            }
-            return u.Host
+            if err != nil { return lamUrlError(rawUrl, err) }
+            return LAMMERGEIER.Result.Ok(u.Host)
         }
     }
 
-    static func path(rawUrl: str) -> str {
+    static func path(rawUrl: str) -> Result[str] {
         go! {
             u, err := url.Parse(rawUrl)
-            if err != nil {
-                return ""
-            }
-            return u.Path
+            if err != nil { return lamUrlError(rawUrl, err) }
+            return LAMMERGEIER.Result.Ok(u.Path)
         }
     }
 
-    static func scheme(rawUrl: str) -> str {
+    static func scheme(rawUrl: str) -> Result[str] {
         go! {
             u, err := url.Parse(rawUrl)
-            if err != nil {
-                return ""
-            }
-            return u.Scheme
+            if err != nil { return lamUrlError(rawUrl, err) }
+            return LAMMERGEIER.Result.Ok(u.Scheme)
         }
     }
 
-    static func queryParam(rawUrl: str, key: str) -> str {
+    static func queryParam(rawUrl: str, key: str) -> Result[str] {
+        #- A missing key is a successful empty string; only malformed URLs
+           produce an error. -#
         go! {
             u, err := url.Parse(rawUrl)
-            if err != nil {
-                return ""
-            }
-            return u.Query().Get(key)
+            if err != nil { return lamUrlError(rawUrl, err) }
+            return LAMMERGEIER.Result.Ok(u.Query().Get(key))
         }
     }
 
@@ -62,10 +62,15 @@ class Url {
         }
     }
 
-    static func decode(s: str) -> str {
+    static func decode(s: str) -> Result[str] {
         go! {
-            decoded, _ := url.QueryUnescape(s)
-            return decoded
+            decoded, err := url.QueryUnescape(s)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "DecodeError", "invalid URL escape sequence", err.Error(),
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(decoded)
         }
     }
 }

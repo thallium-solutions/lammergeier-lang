@@ -27,7 +27,9 @@
 # expect: response-header-values: first|second
 # expect: response-header-fallback: fallback
 # expect: response-json: true
-# expect: response-try-json: true
+# expect: response-json-error: true
+# expect: non-2xx-result-ok: true
+# expect: non-2xx-response-ok: false
 # expect: response-cookies: 2
 # expect: cookie-attrs: /api|example.test|Wed, 21 Oct 2015 07:28:00 GMT|3600|true|true|Lax|true
 # expect: cookie-raw: true
@@ -39,9 +41,21 @@
 # expect: absolute-url-bypasses-base: true
 # expect: relative-url-normalization: true
 # expect: remove-header: true
+# expect: options-status: 200
+# expect: options-query: page=2&q=lam+bird
+# expect: options-header: per-request
+# expect: builder-status: 200
+# expect: builder-query: mode=fluent
+# expect: builder-header: builder
+# expect: builder-body: PATCH /builder payload
+# expect: builder-content-type: text/plain
+# expect: builder-json: POST /builder-json {"kind":"bird"}
+# expect: static-request: 200
+# expect: request-error: true
 # expect: timeout-error: true
 
-from lamhttp import HttpClient, HttpCookie, HttpResponse
+from lamerrors import Result
+from lamhttp import Http, HttpClient, HttpCookie, HttpRequestOptions, HttpResponse
 from lamtime import Time
 
 go! {
@@ -54,13 +68,21 @@ go! {
 }
 
 class NativePayload {
-    func __init__(self, name: str) {
+    func init(self, name: str) {
         self.name: str = name
     }
 
     func __json__(self) -> json {
         return {"name": self.name}
     }
+}
+
+func resultHttpResponse(result: Result) -> HttpResponse {
+    go! { return result.Value.(*HttpResponse) }
+}
+
+func resultJson(result: Result) -> json {
+    go! { return result.Value.(LamJSON) }
 }
 
 func main() {
@@ -76,6 +98,11 @@ func main() {
 
         mux := http.NewServeMux()
         mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+            if r.URL.Path == "/not-found" {
+                w.WriteHeader(404)
+                fmt.Fprint(w, "missing")
+                return
+            }
             if r.URL.Path == "/json-response" {
                 w.Header().Set("Content-Type", "application/json")
                 fmt.Fprint(w, `{"ok":true}`)
@@ -91,6 +118,8 @@ func main() {
             w.Header().Add("X-Trace", "first")
             w.Header().Add("X-Trace", "second")
             w.Header().Set("X-Request-Content-Type", r.Header.Get("Content-Type"))
+            w.Header().Set("X-Request-Query", r.URL.RawQuery)
+            w.Header().Set("X-Request-Option", r.Header.Get("X-Option"))
             w.Header().Add("Set-Cookie", "session=abc123; Path=/api; Domain=example.test; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Max-Age=3600; Secure; HttpOnly; SameSite=Lax; Partitioned; Priority=High")
             w.Header().Add("Set-Cookie", "theme=dark; Path=/prefs")
             fmt.Fprintf(w, "%s %s %s|auth=%s", r.Method, r.URL.Path, body, authHdr)
@@ -114,7 +143,7 @@ func main() {
     # ── GET. The echo body looks like ``METHOD PATH BODY|auth=...``;
     #    we slice everything before the ``|auth=`` marker so the
     #    expects don't depend on the auth header layout.
-    r1: HttpResponse = api.get("/users/42")
+    r1: HttpResponse = resultHttpResponse(api.get("/users/42"))
     print(f"get-status: {r1.status}")
     body1: str = r1.body
     mp1: str = ""
@@ -126,11 +155,11 @@ func main() {
     print(f"get-method-path: {mp1.trim()}")
 
     # ── HEAD (server doesn't return a body for HEAD, but status echoes).
-    r2: HttpResponse = api.head("/anything")
+    r2: HttpResponse = resultHttpResponse(api.head("/anything"))
     print(f"head-status: {r2.status}")
 
     # ── Native JSON overloads encode the value and supply the content type.
-    r3: HttpResponse = api.post("/things", {"name": "x"})
+    r3: HttpResponse = resultHttpResponse(api.post("/things", {"name": "x"}))
     print(f"post-status: {r3.status}")
     body3: str = r3.body
     mp3: str = ""
@@ -141,7 +170,7 @@ func main() {
     }
     print(f"post-method-path: {mp3}")
 
-    nativeResponse: HttpResponse = api.post("/native", json(NativePayload("native")))
+    nativeResponse: HttpResponse = resultHttpResponse(api.post("/native", json(NativePayload("native"))))
     nativeBody: str = nativeResponse.body
     nativeMethodPath: str = ""
     go! {
@@ -153,7 +182,7 @@ func main() {
     print(f"post-content-type: {r3.header('x-request-content-type')}")
 
     # The explicit content type + string body overload remains available.
-    plainResponse: HttpResponse = api.post("/plain", "text/plain", "ping")
+    plainResponse: HttpResponse = resultHttpResponse(api.post("/plain", "text/plain", "ping"))
     plainBody: str = plainResponse.body
     plainMethodPath: str = ""
     go! {
@@ -165,7 +194,7 @@ func main() {
     print(f"plain-post-content-type: {plainResponse.header('X-Request-Content-Type')}")
 
     # ── PUT JSON
-    r4: HttpResponse = api.put("/things/1", {"name": "y"})
+    r4: HttpResponse = resultHttpResponse(api.put("/things/1", {"name": "y"}))
     print(f"put-status: {r4.status}")
     body4: str = r4.body
     mp4: str = ""
@@ -178,7 +207,7 @@ func main() {
     print(f"put-content-type: {r4.header('X-REQUEST-CONTENT-TYPE')}")
 
     # ── PATCH JSON
-    r5: HttpResponse = api.patch("/things/1", {"name": "z"})
+    r5: HttpResponse = resultHttpResponse(api.patch("/things/1", {"name": "z"}))
     print(f"patch-status: {r5.status}")
     body5: str = r5.body
     mp5: str = ""
@@ -191,7 +220,7 @@ func main() {
     print(f"patch-content-type: {r5.header('x-request-content-type')}")
 
     # ── DELETE
-    r6: HttpResponse = api.delete("/things/1")
+    r6: HttpResponse = resultHttpResponse(api.delete("/things/1"))
     print(f"delete-status: {r6.status}")
     body6: str = r6.body
     mp6: str = ""
@@ -217,11 +246,15 @@ func main() {
     traceValues: list[str] = r1.headerValues("X-TRACE")
     print(f"response-header-values: {traceValues[0]}|{traceValues[1]}")
     print(f"response-header-fallback: {r1.header('missing', 'fallback')}")
-    jsonResponse: HttpResponse = api.get("/json-response")
-    jsonBody: json = jsonResponse.json()
+    jsonResponse: HttpResponse = resultHttpResponse(api.get("/json-response"))
+    jsonBody: json = resultJson(jsonResponse.json())
     jsonOk: bool = jsonBody.ok
     print(f"response-json: {jsonOk}")
-    print(f"response-try-json: {jsonResponse.tryJson().ok()}")
+    print(f"response-json-error: {not r1.json().ok()}")
+    non2xxResult: Result[HttpResponse] = api.get("/not-found")
+    non2xxResponse: HttpResponse = resultHttpResponse(non2xxResult)
+    print(f"non-2xx-result-ok: {non2xxResult.ok()}")
+    print(f"non-2xx-response-ok: {non2xxResponse.ok()}")
     print(f"response-cookies: {len(r1.cookies())}")
     sessionCookie: HttpCookie = r1.cookie("session")
     print(f"cookie-attrs: {sessionCookie.path}|{sessionCookie.domain}|{sessionCookie.expires}|{sessionCookie.maxAge}|{sessionCookie.secure}|{sessionCookie.httpOnly}|{sessionCookie.sameSite}|{sessionCookie.partitioned}")
@@ -233,7 +266,7 @@ func main() {
 
     # ── ok() helper.
     print(f"ok-helper-true: {r1.ok()}")
-    bad: HttpResponse = HttpResponse(404, "nope", "")
+    bad: HttpResponse = HttpResponse(404, "nope")
     print(f"ok-helper-false: {bad.ok()}")
 
     # ── Absolute URL bypasses baseUrl composition. Even when the
@@ -242,7 +275,7 @@ func main() {
     api2: HttpClient = HttpClient("http://wrong.invalid", 2000)
     api2.setHeader("Authorization", "Bearer abc123")
     absUrl: str = f"{base}/explicit"
-    rAbs: HttpResponse = api2.get(absUrl)
+    rAbs: HttpResponse = resultHttpResponse(api2.get(absUrl))
     bodyAbs: str = rAbs.body
     bypass: bool = rAbs.status == 200
     go! {
@@ -259,18 +292,45 @@ func main() {
     print(f"relative-url-normalization: {normalized}")
 
     api.removeHeader("Authorization")
-    noAuthResponse: HttpResponse = api.get("/no-auth")
+    noAuthResponse: HttpResponse = resultHttpResponse(api.get("/no-auth"))
     noAuth: bool = false
     go! {
         noAuth = strings.HasSuffix(noAuthResponse.Body, "auth=")
     }
     print(f"remove-header: {noAuth}")
 
+    options: HttpRequestOptions = HttpRequestOptions()
+    options.header("X-Option", "per-request").query("q", "lam bird").query("page", "2")
+    optionsResult: Result[HttpResponse] = api.request("GET", "/options", options)
+    optionsResponse: HttpResponse = resultHttpResponse(optionsResult)
+    print(f"options-status: {optionsResponse.status}")
+    print(f"options-query: {optionsResponse.header('X-Request-Query')}")
+    print(f"options-header: {optionsResponse.header('X-Request-Option')}")
+
+    builderResult: Result[HttpResponse] = api.build("PATCH", "/builder").header("X-Option", "builder").query("mode", "fluent").timeout(5000).text("payload", "text/plain").send()
+    builderResponse: HttpResponse = resultHttpResponse(builderResult)
+    print(f"builder-status: {builderResponse.status}")
+    print(f"builder-query: {builderResponse.header('X-Request-Query')}")
+    print(f"builder-header: {builderResponse.header('X-Request-Option')}")
+    builderMethodPath: str = builderResponse.body.split("|")[0].trim()
+    print(f"builder-body: {builderMethodPath}")
+    print(f"builder-content-type: {builderResponse.header('X-Request-Content-Type')}")
+
+    builderJsonResult: Result[HttpResponse] = api.build("POST", "/builder-json").json({"kind": "bird"}).send()
+    builderJsonResponse: HttpResponse = resultHttpResponse(builderJsonResult)
+    builderJsonMethodPath: str = builderJsonResponse.body.split("|")[0].trim()
+    print(f"builder-json: {builderJsonMethodPath}")
+
+    staticResult: Result[HttpResponse] = Http.request("GET", f"{base}/static")
+    staticResponse: HttpResponse = resultHttpResponse(staticResult)
+    print(f"static-request: {staticResponse.status}")
+    failedRequest: Result[HttpResponse] = Http.request("GET", "http://127.0.0.1:1/")
+    print(f"request-error: {not failedRequest.ok()}")
+
     # ── Tiny timeout against a non-routable address surfaces an
     #    error string. Use 10.255.255.1 (RFC 5737 is HTTP-only;
     #    this is reserved-ish private space that won't resolve).
     timeoutClient: HttpClient = HttpClient("http://10.255.255.1", 50)
-    rTo: HttpResponse = timeoutClient.get("/x")
-    timeoutFailed: bool = rTo.error != ""
-    print(f"timeout-error: {timeoutFailed}")
+    timeoutResult: Result[HttpResponse] = timeoutClient.get("/x")
+    print(f"timeout-error: {not timeoutResult.ok()}")
 }

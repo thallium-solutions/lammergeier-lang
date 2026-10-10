@@ -6,6 +6,11 @@
 
 from lamotel import OtelConfig, OtelTracer
 from lamhttp import Http, HttpServer
+from lamerrors import Result
+
+func resultServer(result: Result) -> HttpServer {
+    go! { return result.Value.(*HttpServer) }
+}
 
 class Capture {
     static method: str = ""
@@ -21,7 +26,7 @@ func handler(method: str, path: str, body: str) -> str {
 }
 
 func main() {
-    srv: HttpServer = Http.serve(39282, handler)
+    srv: HttpServer = resultServer(Http.serve(39282, handler))
     cfg: OtelConfig = OtelConfig("checkout-api", "http://127.0.0.1:39282", "", 5000)
     tracer: OtelTracer = OtelTracer(cfg)
     span = tracer.startSpan("checkout")
@@ -35,5 +40,5 @@ func main() {
     print(Capture.body.contains("checkout-api"))
     print(Capture.body.contains("checkout"))
 
-    srv.close()
+    srv.close().unwrap()
 }

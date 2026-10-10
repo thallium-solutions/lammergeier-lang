@@ -3,7 +3,7 @@
 # expect: Money(3)
 
 class Money {
-    func __init__(self, amount: int) {
+    func init(self, amount: int) {
         self.amount: int = amount
     }
 

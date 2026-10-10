@@ -1,23 +1,42 @@
-# Test: Http.serve + Http get/post overloads + getHeader/getWithHeaders
+# Test: Http.serve + Result-based one-shot HTTP helpers.
 # expect: PASS 1 server created
 # expect: PASS 2 GET /hello
 # expect: PASS 3 GET root
 # expect: PASS 4 POST echoes body
 # expect: PASS 5 encoded JSON string post overload
 # expect: PASS 6 native JSON post overload
-# expect: PASS 7 encoded JSON string tryPost overload
-# expect: PASS 8 native JSON tryPost overload
+# expect: PASS 7 encoded JSON string Result overload
+# expect: PASS 8 native JSON Result overload
 # expect: PASS 9 statusCode 200
-# expect: PASS 10 statusCode 0 unreachable
+# expect: PASS 10 unreachable is error
 # expect: PASS 11 getHeader Content-Type
 # expect: PASS 12 getWithHeaders echoes header
-# expect: PASS 13 server closed
-# expect: 13 passed, 0 failed, 13 total
+# expect: PASS 13 bind error
+# expect: PASS 14 server closed
+# expect: 14 passed, 0 failed, 14 total
 
 from lamhttp import Http
+from lamhttp import HttpResponse
 from lamhttp import HttpServer
 from lamtest import Test
 from lamfmt import Fmt
+from lamerrors import Result
+
+func resultResponse(r: Result) -> HttpResponse {
+    go! { return r.Value.(*HttpResponse) }
+}
+
+func resultServer(r: Result) -> HttpServer {
+    go! { return r.Value.(*HttpServer) }
+}
+
+func resultInt(r: Result) -> int {
+    go! { return r.Value.(int) }
+}
+
+func resultString(r: Result) -> str {
+    go! { return r.Value.(string) }
+}
 
 func handler(method: str, path: str, body: str) -> str {
     if method == "POST" {
@@ -29,45 +48,50 @@ func handler(method: str, path: str, body: str) -> str {
 func main() {
     # Port 38271 is fairly unlikely to clash with system services; if it
     # ever does in CI, bump it and adjust the assertions.
-    srv: HttpServer = Http.serve(38271, handler)
+    srv: HttpServer = resultServer(Http.serve(38271, handler))
     Test.assertNotNil(srv, "1 server created")
 
     # GET
-    body: str = Http.get("http://127.0.0.1:38271/hello")
-    Test.assertEqual(body, "method=GET path=/hello", "2 GET /hello")
+    getResponse: HttpResponse = resultResponse(Http.get("http://127.0.0.1:38271/hello"))
+    Test.assertEqual(getResponse.body, "method=GET path=/hello", "2 GET /hello")
 
-    rootBody: str = Http.get("http://127.0.0.1:38271/")
-    Test.assertEqual(rootBody, "method=GET path=/", "3 GET root")
+    rootResponse: HttpResponse = resultResponse(Http.get("http://127.0.0.1:38271/"))
+    Test.assertEqual(rootResponse.body, "method=GET path=/", "3 GET root")
 
     # POST
-    echoed: str = Http.post("http://127.0.0.1:38271/echo", "text/plain", "ping")
-    Test.assertEqual(echoed, "echo:ping", "4 POST echoes body")
+    postResponse: HttpResponse = resultResponse(Http.post("http://127.0.0.1:38271/echo", "text/plain", "ping"))
+    Test.assertEqual(postResponse.body, "echo:ping", "4 POST echoes body")
 
     # Already-encoded string and native JSON post overloads.
-    jsonEcho: str = Http.post("http://127.0.0.1:38271/json", '{"a":1}')
-    Test.assertEqual(jsonEcho, 'echo:{"a":1}', "5 encoded JSON string post overload")
-    nativeEcho: str = Http.post("http://127.0.0.1:38271/json", {"a": 1})
-    Test.assertEqual(nativeEcho, 'echo:{"a":1}', "6 native JSON post overload")
-    Test.assertEqual(Http.tryPost("http://127.0.0.1:38271/json", '{"b":2}').unwrap(), 'echo:{"b":2}', "7 encoded JSON string tryPost overload")
-    Test.assertEqual(Http.tryPost("http://127.0.0.1:38271/json", {"c": 3}).unwrap(), 'echo:{"c":3}', "8 native JSON tryPost overload")
+    jsonResponse: HttpResponse = resultResponse(Http.post("http://127.0.0.1:38271/json", '{"a":1}'))
+    Test.assertEqual(jsonResponse.body, 'echo:{"a":1}', "5 encoded JSON string post overload")
+    nativeResponse: HttpResponse = resultResponse(Http.post("http://127.0.0.1:38271/json", {"a": 1}))
+    Test.assertEqual(nativeResponse.body, 'echo:{"a":1}', "6 native JSON post overload")
+    encodedResultResponse: HttpResponse = resultResponse(Http.post("http://127.0.0.1:38271/json", '{"b":2}'))
+    Test.assertEqual(encodedResultResponse.body, 'echo:{"b":2}', "7 encoded JSON string Result overload")
+    nativeResultResponse: HttpResponse = resultResponse(Http.post("http://127.0.0.1:38271/json", {"c": 3}))
+    Test.assertEqual(nativeResultResponse.body, 'echo:{"c":3}', "8 native JSON Result overload")
 
     # statusCode
-    Test.assertEqual(Http.statusCode("http://127.0.0.1:38271/hello"), 200, "9 statusCode 200")
-    Test.assertEqual(Http.statusCode("http://127.0.0.1:1/"), 0, "10 statusCode 0 unreachable")
+    Test.assertEqual(resultInt(Http.statusCode("http://127.0.0.1:38271/hello")), 200, "9 statusCode 200")
+    Test.assertTrue(not Http.statusCode("http://127.0.0.1:1/").ok(), "10 unreachable is error")
 
     # getHeader should return the default content type Go adds
-    ct: str = Http.getHeader("http://127.0.0.1:38271/hello", "Content-Type")
+    ct: str = resultString(Http.getHeader("http://127.0.0.1:38271/hello", "Content-Type"))
     Test.assertTrue(len(ct) > 0, "11 getHeader Content-Type")
 
     # getWithHeaders — we don't round-trip the header body in this handler,
     # but the call should succeed and return the same payload.
     hdrs: dict[str, str] = {"X-Custom": "1"}
-    customBody: str = Http.getWithHeaders("http://127.0.0.1:38271/hdr", hdrs)
-    Test.assertEqual(customBody, "method=GET path=/hdr", "12 getWithHeaders echoes header")
+    customResponse: HttpResponse = resultResponse(Http.getWithHeaders("http://127.0.0.1:38271/hdr", hdrs))
+    Test.assertEqual(customResponse.body, "method=GET path=/hdr", "12 getWithHeaders echoes header")
 
-    srv.close()
-    aftermath: str = Http.get("http://127.0.0.1:38271/")
-    Test.assertEqual(aftermath, "", "13 server closed")
+    conflict: Result[HttpServer] = Http.serve(38271, handler)
+    Test.assertTrue(not conflict.ok(), "13 bind error")
+
+    srv.close().unwrap()
+    aftermathOk: bool = Http.get("http://127.0.0.1:38271/").ok()
+    Test.assertTrue(not aftermathOk, "14 server closed")
 
     Test.summary()
 }

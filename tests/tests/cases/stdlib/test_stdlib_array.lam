@@ -25,10 +25,23 @@
 # expect: inverse_ok=true
 # expect: solve_ok=true
 # expect: linspace_ok=true
+# expect: int_array_input_ok=true
+# expect: int_matrix_input_ok=true
+# expect: int_rows_input_ok=true
+# expect: int_scalar_constructors_ok=true
 # expect: array_tests_ok
 
 from lamarray import Array, Matrix
 from lamtest import Test
+from lamerrors import Result
+
+func resultArray(r: Result) -> Array {
+    go! { return r.Value.(*Array) }
+}
+
+func resultMatrix(r: Result) -> Matrix {
+    go! { return r.Value.(*Matrix) }
+}
 
 func main() {
     xs: list[float] = [1.0, 2.0, 3.0, 4.0, 5.0]
@@ -87,7 +100,7 @@ func main() {
     print(f"matmul_ok={A2.allClose(E, 0.0001)}")
 
     # A * A^-1 ≈ I
-    inv: Matrix = A.inverse()
+    inv: Matrix = resultMatrix(A.inverse())
     id: Matrix = A.matmul(inv)
     I: Matrix = Matrix.eye(2)
     print(f"inverse_ok={id.allClose(I, 0.0001)}")
@@ -95,7 +108,7 @@ func main() {
     # Linear solve: A x = rhs where rhs = [5, 11]  =>  x = [1, 2]
     rhsList: list[float] = [5.0, 11.0]
     rhs: Array = Array.fromList(rhsList)
-    soln: Array = A.solve(rhs)
+    soln: Array = resultArray(A.solve(rhs))
     expectedSolnList: list[float] = [1.0, 2.0]
     expectedSoln: Array = Array.fromList(expectedSolnList)
     print(f"solve_ok={soln.allClose(expectedSoln, 0.0001)}")
@@ -105,6 +118,27 @@ func main() {
     expectedLinList: list[float] = [0.0, 0.25, 0.5, 0.75, 1.0]
     expectedLin: Array = Array.fromList(expectedLinList)
     print(f"linspace_ok={lin.allClose(expectedLin, 0.0001)}")
+
+    intValues: list[int] = [1, 2, 3, 4]
+    intArray: Array = Array.fromList(intValues)
+    intExpectedValues: list[float] = [1.0, 2.0, 3.0, 4.0]
+    intExpected: Array = Array.fromList(intExpectedValues)
+    print(f"int_array_input_ok={intArray.allClose(intExpected, 0.0001)}")
+
+    intMatrix: Matrix = Matrix.fromList(2, 2, intValues)
+    print(f"int_matrix_input_ok={intMatrix.allClose(A, 0.0001)}")
+
+    intRows: list[list[int]] = [[1, 2], [3, 4]]
+    rowsMatrix: Matrix = Matrix.fromRows(intRows)
+    print(f"int_rows_input_ok={rowsMatrix.allClose(A, 0.0001)}")
+
+    intFull: Array = Array.full(3, 7)
+    intRange: Array = Array.arange(0, 5, 2)
+    intSpace: Array = Array.linspace(0, 4, 3)
+    expectedSevens: list[float] = [7.0, 7.0, 7.0]
+    expectedSteps: list[float] = [0.0, 2.0, 4.0]
+    intConstructorsOk: bool = intFull.allClose(Array.fromList(expectedSevens), 0.0001) and intRange.allClose(Array.fromList(expectedSteps), 0.0001) and intSpace.allClose(Array.fromList(expectedSteps), 0.0001)
+    print(f"int_scalar_constructors_ok={intConstructorsOk}")
 
     print("array_tests_ok")
 }

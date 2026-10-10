@@ -1,14 +1,23 @@
 # expect-pass
 
 from lamjson import Json
+from lamerrors import Result
 from lamos import File
 from go_backed_package import Codec
 
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
+
+func resultAny(result: Result) -> any {
+    go! { return result.Value }
+}
+
 func main() {
-    text: str = Json.encode({"ok": True})
-    parsed: any = Json.decode(text)
+    text: str = resultString(Json.encode({"ok": True}))
+    parsed: any = resultAny(Json.decode(text))
     codec = Codec("value:")
     print(codec.format(str(parsed), times = 1))
-    file = File.open("/tmp/unused")
+    file: File = File.open("/tmp/unused").unwrap()
     _ = file.write(text)
 }

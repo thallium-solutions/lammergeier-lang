@@ -3,22 +3,39 @@
 
 from lamdb import Db
 from lamjson import Json
+from lamerrors import Result
+
+func resultDb(result: Result) -> Db {
+    go! { return result.Value.(*Db) }
+}
+
+func resultRows(result: Result) -> list[dict[str, any]] {
+    go! { return result.Value.([]map[string]interface{}) }
+}
+
+func resultAny(result: Result) -> any {
+    go! { return result.Value }
+}
+
+func resultJson(result: Result) -> json {
+    go! { return result.Value.(LamJSON) }
+}
 
 func main() {
-    db: Db = Db.connect("postgres", "postgres://postgres:Password@localhost:5432/postgres?sslmode=disable")
-    db.exec("DROP TABLE IF EXISTS lam_json_native_test")
-    db.exec("CREATE TABLE lam_json_native_test (id INTEGER PRIMARY KEY, payload JSONB)")
+    db: Db = resultDb(Db.connect("postgres", "postgres://postgres:Password@localhost:5432/postgres?sslmode=disable"))
+    db.exec("DROP TABLE IF EXISTS lam_json_native_test").unwrap()
+    db.exec("CREATE TABLE lam_json_native_test (id INTEGER PRIMARY KEY, payload JSONB)").unwrap()
     payload: json = {"name": "Ada", "roles": ["admin", "writer"], "active": true}
-    db.exec("INSERT INTO lam_json_native_test (id, payload) VALUES (?, ?)", [1, payload])
+    db.exec("INSERT INTO lam_json_native_test (id, payload) VALUES (?, ?)", [1, payload]).unwrap()
 
-    rows: list[dict[str, any]] = db.queryJson("SELECT payload FROM lam_json_native_test WHERE id = ?", ["payload"], [1])
-    restored: json = Json.fromValue(rows[0]["payload"])
+    rows: list[dict[str, any]] = resultRows(db.queryJson("SELECT payload FROM lam_json_native_test WHERE id = ?", ["payload"], [1]))
+    restored: json = resultJson(Json.fromValue(rows[0]["payload"]))
     name: str = restored.name
     roleCount: int = len(restored.roles)
     print(f"postgres-json:{name}:{roleCount}")
 
-    active: any = db.scalar("SELECT payload->>'active' FROM lam_json_native_test WHERE id = ?", [1])
+    active: any = resultAny(db.scalar("SELECT payload->>'active' FROM lam_json_native_test WHERE id = ?", [1]))
     print(active)
-    db.exec("DROP TABLE lam_json_native_test")
-    db.close()
+    db.exec("DROP TABLE lam_json_native_test").unwrap()
+    db.close().unwrap()
 }

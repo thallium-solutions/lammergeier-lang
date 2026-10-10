@@ -764,6 +764,150 @@ def _strip_inline_comment(line: str) -> str:
 
 
 @dataclass(frozen=True)
+class DocCommentSpan:
+    start: int
+    end: int
+    close_start: int | None
+    terminator: str
+
+
+_DOC_SPACED_TERMINATOR_RE = _re.compile(r"-[ \t]+#")
+
+
+def _quoted_region_end(source: str, start: int, quote: str) -> int:
+    delimiter = quote * 3 if source.startswith(quote * 3, start) else quote
+    pos = start + len(delimiter)
+    while pos < len(source):
+        if source.startswith(delimiter, pos):
+            escapes = 0
+            scan = pos - 1
+            while scan >= start and source[scan] == "\\":
+                escapes += 1
+                scan -= 1
+            if delimiter == "`" or escapes % 2 == 0:
+                return pos + len(delimiter)
+        if len(delimiter) == 1 and delimiter != "`" and source[pos] == "\n":
+            return pos
+        pos += 1
+    return len(source)
+
+
+def _balanced_go_region_end(source: str, open_pos: int) -> int:
+    opener = source[open_pos]
+    closer = "}" if opener == "{" else ")"
+    depth = 1
+    pos = open_pos + 1
+    while pos < len(source):
+        if source.startswith("//", pos):
+            newline = source.find("\n", pos + 2)
+            pos = len(source) if newline < 0 else newline + 1
+            continue
+        if source.startswith("/*", pos):
+            close = source.find("*/", pos + 2)
+            pos = len(source) if close < 0 else close + 2
+            continue
+        char = source[pos]
+        if char in {'"', "'", "`"}:
+            pos = _quoted_region_end(source, pos, char)
+            continue
+        if char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return pos + 1
+        pos += 1
+    return len(source)
+
+
+def _legacy_go_region_end(source: str, marker_pos: int) -> int:
+    line_start = source.rfind("\n", 0, marker_pos) + 1
+    base_indent = len(source[line_start:marker_pos])
+    cursor = source.find("\n", marker_pos)
+    if cursor < 0:
+        return len(source)
+    cursor += 1
+    while cursor < len(source):
+        line_end = source.find("\n", cursor)
+        line_end = len(source) if line_end < 0 else line_end
+        row = source[cursor:line_end]
+        if row.strip():
+            indent = len(row) - len(row.lstrip(" \t"))
+            if indent <= base_indent:
+                return cursor
+        cursor = line_end + 1
+    return len(source)
+
+
+def _go_region_end(source: str, pos: int) -> int | None:
+    if not source.startswith("go!", pos):
+        return None
+    if pos and (source[pos - 1].isalnum() or source[pos - 1] == "_"):
+        return None
+    cursor = pos + 3
+    while cursor < len(source) and source[cursor] in " \t":
+        cursor += 1
+    if cursor < len(source) and source[cursor] in "{(":
+        return _balanced_go_region_end(source, cursor)
+    if cursor < len(source) and source[cursor] == ":":
+        return _legacy_go_region_end(source, pos)
+    return None
+
+
+def _doc_comment_span_at(source: str, start: int) -> DocCommentSpan:
+    body_start = start + 2
+    exact = source.find("-#", body_start)
+    spaced = _DOC_SPACED_TERMINATOR_RE.search(source, body_start)
+    if spaced is not None and (exact < 0 or spaced.start() < exact):
+        return DocCommentSpan(start, spaced.end(), spaced.start(), "spaced")
+    if exact < 0:
+        return DocCommentSpan(start, len(source), None, "unterminated")
+    return DocCommentSpan(start, exact + 2, exact, "exact")
+
+
+def _scan_doc_comment_spans(source: str) -> tuple[DocCommentSpan, ...]:
+    """Return Lam doc comments while skipping strings, line comments, and Go."""
+    spans: list[DocCommentSpan] = []
+    pos = 0
+    while pos < len(source):
+        go_end = _go_region_end(source, pos)
+        if go_end is not None:
+            pos = go_end
+            continue
+        char = source[pos]
+        if char in {'"', "'"}:
+            pos = _quoted_region_end(source, pos, char)
+            continue
+        if source.startswith("#-", pos):
+            span = _doc_comment_span_at(source, pos)
+            spans.append(span)
+            pos = span.end
+            continue
+        if char == "#":
+            newline = source.find("\n", pos + 1)
+            pos = len(source) if newline < 0 else newline + 1
+            continue
+        pos += 1
+    return tuple(spans)
+
+
+def _canonicalize_doc_comment_terminators(source: str) -> str:
+    """Repair spaced doc terminators without touching other Lam contexts."""
+    pieces: list[str] = []
+    cursor = 0
+    for span in _scan_doc_comment_spans(source):
+        if span.terminator != "spaced" or span.close_start is None:
+            continue
+        pieces.append(source[cursor:span.close_start])
+        pieces.append("-#")
+        cursor = span.end
+    if not pieces:
+        return source
+    pieces.append(source[cursor:])
+    return "".join(pieces)
+
+
+@dataclass(frozen=True)
 class ParsePreprocessResult:
     source: str
     go_blocks: dict[str, str]
@@ -781,8 +925,8 @@ def preprocess_for_parse(source: str) -> ParsePreprocessResult:
     """
     diagnostics = tuple(dict_destructure_diagnostics(source))
     rewritten = apply_lammergeier_aliases(source)
+    rewritten = _strip_doc_comments_preserve_lines(rewritten)
     preprocessed, go_blocks = preprocess_go_blocks(rewritten)
-    preprocessed = _strip_doc_comments_preserve_lines(preprocessed)
     preprocessed = _collapse_multiline_strings(preprocessed)
     preprocessed = expand_dict_destructure(preprocessed)
     preprocessed = _expand_single_statement_blocks(preprocessed)
@@ -798,18 +942,24 @@ def preprocess_for_parse(source: str) -> ParsePreprocessResult:
 
 
 def _strip_doc_comments_preserve_lines(source: str) -> str:
-    """Strip ``#- ... -#`` comments without shifting later line numbers.
+    """Strip exactly delimited ``#- ... -#`` comments and preserve lines.
 
-    Accept horizontal whitespace between the closing ``-`` and ``#``. The
-    formatter and hand-aligned comments can produce ``-  #``; treating that as
-    unterminated used to consume following declarations and make their raw Go
-    blocks appear at the preceding function scope.
+    Spaced or unterminated closers are deliberately left in the parser input so
+    Lark reports them as Lam syntax errors. Lexical scanning prevents doc-like
+    text in ordinary comments, strings, and raw ``go!`` regions from matching.
     """
-    return _re.sub(
-        r'#-[\s\S]*?-[ \t]*#',
-        lambda m: "\n" * m.group(0).count("\n"),
-        source,
-    )
+    pieces: list[str] = []
+    cursor = 0
+    for span in _scan_doc_comment_spans(source):
+        if span.terminator != "exact":
+            continue
+        pieces.append(source[cursor:span.start])
+        pieces.append("\n" * source[span.start:span.end].count("\n"))
+        cursor = span.end
+    if not pieces:
+        return source
+    pieces.append(source[cursor:])
+    return "".join(pieces)
 
 
 _PARSER_CACHE: "Lark | None" = None
@@ -1803,6 +1953,7 @@ def compile_lam(
     # ``Strings.ToUpper`` Go expression that won't compile.
     lib_mod_files = {}  # {mod_name: Path}
     lib_pre_class_names: set[str] = set()
+    lib_pre_interfaces: set[str] = set()
     lib_pre_static_methods: dict[str, set[str]] = {}
     lib_pre_static_vars: dict[str, dict[str, bool]] = {}
     lib_pre_result_payload_go_types: dict[str, str] = {}
@@ -1887,9 +2038,11 @@ def compile_lam(
                 go_blocks=[], stdlib_path=stdlib_path,
                 go_module_name=go_module,
             )
+            sub_collector._collect_declared_type_names(sub_tree)
             sub_collector._collect_function_names(sub_tree)
             sub_collector._collect_class_fields(sub_tree)
             lib_pre_class_names.update(sub_collector._class_names)
+            lib_pre_interfaces.update(sub_collector._interfaces)
             for cls, meths in sub_collector._static_methods.items():
                 lib_pre_static_methods.setdefault(cls, set()).update(meths)
             for cls, fields in sub_collector._static_vars.items():
@@ -1921,6 +2074,22 @@ def compile_lam(
             # Pre-scan is best-effort; downstream transpile will
             # surface real errors with full positional diagnostics.
             pass
+
+    interface_type_names = {
+        f"*{name}": name
+        for name in lib_pre_interfaces
+    }
+    for key, types in list(lib_pre_func_param_go_types.items()):
+        lib_pre_func_param_go_types[key] = [
+            interface_type_names.get(type_name, type_name)
+            for type_name in types
+        ]
+    for variants in lib_pre_overload_variants.values():
+        for variant in variants:
+            variant["sig"] = tuple(
+                interface_type_names.get(type_name, type_name)
+                for type_name in tuple(variant.get("sig") or ())
+            )
 
     # ── Deferred LAMMERGEIER.* typo guard ──
     # Runs *after* the library worklist so the ``extra_valid`` set
@@ -2003,6 +2172,7 @@ def compile_lam(
     # produce the same key.
     _cross_lib_extra = ("|".join(
         sorted(lib_pre_class_names)
+        + [f"interface:{name}" for name in sorted(lib_pre_interfaces)]
         + [f"{cls}#{','.join(sorted(meths))}"
            for cls, meths in sorted(lib_pre_static_methods.items())]
         + [f"{cls}${','.join(f'{name}:{int(is_private)}' for name, is_private in sorted(fields.items()))}"
@@ -2068,6 +2238,7 @@ def compile_lam(
         # ``lamstrings``) can lower static-method calls correctly even
         # though the called class is defined in a different file.
         lib_transpiler._class_names.update(lib_pre_class_names)
+        lib_transpiler._interfaces.update(lib_pre_interfaces)
         for cls, meths in lib_pre_static_methods.items():
             lib_transpiler._static_methods.setdefault(cls, set()).update(meths)
         for cls, fields in lib_pre_static_vars.items():
@@ -2249,6 +2420,7 @@ def compile_lam(
     )
     # Inject library class/static info
     transpiler._class_names.update(lib_class_names)
+    transpiler._interfaces.update(lib_pre_interfaces)
     for cls_name, methods in lib_pre_instance_methods.items():
         transpiler._external_instance_methods.setdefault(cls_name, set()).update(methods)
     for cls_name, fields in lib_pre_field_names.items():

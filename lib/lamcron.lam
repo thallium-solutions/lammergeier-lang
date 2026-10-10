@@ -10,7 +10,7 @@
 #
 #     # Fire every minute.
 #     c: Cron = Cron.new()
-#     id: int = c.schedule("* * * * *", lambda: print("tick"))
+#     id: int = c.schedule("* * * * *", lambda: print("tick")).unwrap()
 #     c.start()                          # non-blocking — the scheduler
 #                                        # runs in its own goroutine
 #     # …do other work…
@@ -18,21 +18,23 @@
 #
 #     # Second-resolution via the "with-seconds" factory.
 #     fast: Cron = Cron.newWithSeconds()
-#     fast.schedule("*/5 * * * * *", jobFn)   # every 5 seconds
+#     fast.schedule("*/5 * * * * *", jobFn).unwrap()  # every 5 seconds
 #     fast.start()
 #
 #     # Descriptor-style expressions work with either factory.
-#     fast.schedule("@every 2s", ping)
+#     fast.schedule("@every 2s", ping).unwrap()
 #
 # Callback shape: any zero-arg function — ``lambda: ...``, a named
 # function, or any Lam callable — is accepted. The scheduler
 # recovers panics inside a job and logs them to stderr so one
 # misbehaving callback can't take the whole scheduler down.
 
+from lamconcurrency import Mutex
+from lamerrors import Result, Error
+
 go! {
     import (
         "fmt"
-        "sync"
 
         cron "github.com/robfig/cron/v3"
     )
@@ -72,14 +74,10 @@ go! {
         }
     }
 
-    // A tiny container around *cron.Cron so we can track whether
-    // the scheduler has been started — calling ``Start`` twice on
-    // the underlying library is a no-op but hiding the state
-    // here keeps the Lam surface honest.
+    // Keep the SDK scheduler opaque at the Lam boundary. Lifecycle state
+    // lives on ``Cron`` where its lamconcurrency mutex protects it.
     type lamCronHandle struct {
-        mu      sync.Mutex
-        c       *cron.Cron
-        started bool
+        c *cron.Cron
     }
 }
 
@@ -89,8 +87,10 @@ class Cron {
        second-resolution). The two forms have identical runtime
        behaviour — only the parser differs. -#
 
-    func __init__(self) {
+    func init(self) {
         self._handle: any = None
+        self._mu: Mutex = Mutex()
+        self._started: bool = false
     }
 
     static func new() -> Cron {
@@ -117,35 +117,38 @@ class Cron {
         return c
     }
 
-    func schedule(self, expr: str, fn: any) -> int {
+    func schedule(self, expr: str, fn: any) -> Result[int] {
         #- Register ``fn`` to run whenever ``expr`` next fires.
-           Returns the entry ID assigned by the scheduler — pass it
-           to :py:meth:`remove` to cancel the job later.
-
-           Raises (panics) on malformed expressions; the error from
-           ``cron.Parse`` propagates with the offending input
-           inlined so the caller can fix their schedule string. -#
-        entryId: int = 0
+           Returns the entry ID, or a ``CronError`` for invalid input. -#
+        self._mu.lock()
+        defer self._mu.unlock()
         go! {
+            switch fn.(type) {
+            case func(), func() interface{}, func() error:
+                // Supported callback shapes.
+            default:
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CronError", fmt.Sprintf("schedule: unsupported callback signature %T", fn), nil,
+                ))
+            }
             h := s._handle.(*lamCronHandle)
-            h.mu.Lock()
-            defer h.mu.Unlock()
             id, err := h.c.AddFunc(expr, lamCronWrap(fn))
             if err != nil {
-                panic(fmt.Sprintf("lamcron: bad schedule %q: %v", expr, err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CronError", fmt.Sprintf("bad schedule %q: %v", expr, err), nil,
+                ))
             }
-            entryId = int(id)
+            return LAMMERGEIER.Result.Ok(int(id))
         }
-        return entryId
     }
 
     func remove(self, entryId: int) {
         #- Cancel a previously scheduled entry. Idempotent — passing
            an unknown or already-removed ID is a silent no-op. -#
+        self._mu.lock()
+        defer self._mu.unlock()
         go! {
             h := s._handle.(*lamCronHandle)
-            h.mu.Lock()
-            defer h.mu.Unlock()
             h.c.Remove(cron.EntryID(entryId))
         }
     }
@@ -154,16 +157,14 @@ class Cron {
         #- Start ticking. Non-blocking — the scheduler runs in its
            own goroutine so callers can continue their program.
            Calling ``start`` twice is a no-op. -#
+        self._mu.lock()
+        defer self._mu.unlock()
+        if self._started { return }
         go! {
             h := s._handle.(*lamCronHandle)
-            h.mu.Lock()
-            defer h.mu.Unlock()
-            if h.started {
-                return
-            }
             h.c.Start()
-            h.started = true
         }
+        self._started = true
     }
 
     func stop(self) {
@@ -171,18 +172,17 @@ class Cron {
            in-flight job finishes. Once stopped, a scheduler can
            be restarted by calling :py:meth:`start` again; entries
            persist across the restart. -#
+        self._mu.lock()
+        if not self._started {
+            self._mu.unlock()
+            return
+        }
+        self._started = false
+        self._mu.unlock()
         go! {
             h := s._handle.(*lamCronHandle)
-            h.mu.Lock()
-            wasStarted := h.started
-            h.started = false
-            h.mu.Unlock()
-            if !wasStarted {
-                return
-            }
-            // ``Stop`` returns a ``context.Context`` that is ``Done``
-            // once running jobs finish — block on it so callers
-            // can rely on ``stop()`` being synchronous.
+            // Do not hold the scheduler mutex while waiting: a running job
+            // may legitimately call back into this Cron instance.
             ctx := h.c.Stop()
             <-ctx.Done()
         }
@@ -194,10 +194,10 @@ class Cron {
            for iterating over all jobs to ``remove`` them during
            shutdown. -#
         out: list[int] = []
+        self._mu.lock()
+        defer self._mu.unlock()
         go! {
             h := s._handle.(*lamCronHandle)
-            h.mu.Lock()
-            defer h.mu.Unlock()
             for _, e := range h.c.Entries() {
                 out = append(out, int(e.ID))
             }

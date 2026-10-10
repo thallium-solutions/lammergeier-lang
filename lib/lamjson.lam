@@ -3,8 +3,8 @@
 #
 # The native ``json`` type accepts null, booleans, strings, finite numbers,
 # arrays, string-keyed objects, nested json values, and class instances that
-# implement ``func __json__(self) -> json``. The direct methods panic on malformed
-# input; the ``try*`` family returns ``Result``.
+# implement ``func __json__(self) -> json``. Fallible public operations return
+# ``Result`` so callers can handle malformed input without panics or sentinels.
 
 from lamerrors import Result, Error
 
@@ -288,15 +288,7 @@ go! {
 }
 
 class Json {
-    static func encode(data: json) -> str {
-        go! {
-            b, err := json.Marshal(data)
-            if err != nil { panic(fmt.Sprintf("json encode error: %v", err)) }
-            return string(b)
-        }
-    }
-
-    static func tryEncode(data: json) -> Result[str] {
+    static func encode(data: json) -> Result[str] {
         go! {
             b, err := json.Marshal(data)
             if err != nil {
@@ -308,15 +300,7 @@ class Json {
         }
     }
 
-    static func encodePretty(data: json) -> str {
-        go! {
-            b, err := json.MarshalIndent(data, "", "  ")
-            if err != nil { panic(fmt.Sprintf("json encode error: %v", err)) }
-            return string(b)
-        }
-    }
-
-    static func tryEncodePretty(data: json) -> Result[str] {
+    static func encodePretty(data: json) -> Result[str] {
         go! {
             b, err := json.MarshalIndent(data, "", "  ")
             if err != nil {
@@ -328,13 +312,7 @@ class Json {
         }
     }
 
-    static func decode(s: str) -> json {
-        go! {
-            return lamJSONParseMust(s)
-        }
-    }
-
-    static func tryDecode(s: str) -> Result[json] {
+    static func decode(s: str) -> Result[json] {
         go! {
             parsed, err := lamJSONParse(s)
             if err != nil {
@@ -346,14 +324,7 @@ class Json {
         }
     }
 
-    static func decodeInto(s: str, target: any) {
-        go! {
-            err := json.Unmarshal([]byte(s), target)
-            if err != nil { panic(fmt.Sprintf("json decode error: %v", err)) }
-        }
-    }
-
-    static func tryDecodeInto(s: str, target: any) -> Result {
+    static func decodeInto(s: str, target: any) -> Result[any] {
         go! {
             err := json.Unmarshal([]byte(s), target)
             if err != nil {
@@ -365,27 +336,27 @@ class Json {
         }
     }
 
-    static func fromValue(data: any) -> json {
+    static func fromValue(data: any) -> Result[json] {
         go! {
-            return lamJSONMust(data)
+            value, err := lamJSONFrom(data)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "JsonConversionError", fmt.Sprintf("conversion failed: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(value)
         }
     }
 
-    static func fromDict(data: any) -> json {
+    static func fromDict(data: any) -> Result[json] {
         return Json.fromValue(data)
     }
 
-    static func fromList(data: any) -> json {
+    static func fromList(data: any) -> Result[json] {
         return Json.fromValue(data)
     }
 
-    static func toDict(data: json) -> dict[str, any] {
-        go! {
-            return lamJSONToDict(data)
-        }
-    }
-
-    static func tryToDict(data: json) -> Result[dict[str, any]] {
+    static func toDict(data: json) -> Result[dict[str, any]] {
         converted: dict[str, any] = {}
         conversionOk: bool = false
         go! {
@@ -398,13 +369,7 @@ class Json {
         return Result.Ok(converted)
     }
 
-    static func toList(data: json) -> list[any] {
-        go! {
-            return lamJSONToList(data)
-        }
-    }
-
-    static func tryToList(data: json) -> Result[list[any]] {
+    static func toList(data: json) -> Result[list[any]] {
         converted: list[any] = []
         conversionOk: bool = false
         go! {

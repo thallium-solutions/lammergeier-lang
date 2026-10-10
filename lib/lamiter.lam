@@ -25,7 +25,7 @@ class Iter {
        that returns the next value, or ``(_, false)`` at end of stream.
        Combinators build new ``Iter`` instances that wrap ``next_``. -#
 
-    func __init__(self) {
+    func init(self) {
         self.next_: any = None
         self.done_: bool = false
     }

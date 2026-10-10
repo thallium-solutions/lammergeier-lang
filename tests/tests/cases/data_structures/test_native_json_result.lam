@@ -9,7 +9,7 @@ from lamjson import Json
 from lamerrors import Result, Error
 
 func load(text: str) -> Result[json] {
-    return Json.tryDecode(text)
+    return Json.decode(text)
 }
 
 func nameFrom(text: str) -> Result[str] {
@@ -19,13 +19,13 @@ func nameFrom(text: str) -> Result[str] {
 }
 
 func nameFromValue(data: json) -> Result[str] {
-    value: dict[str, any] = Json.tryToDict(data)?
+    value: dict[str, any] = Json.toDict(data)?
     name: str = str(value["name"])
     return Result.Ok(name)
 }
 
 func countFromValue(data: json) -> Result[int] {
-    value: list[any] = Json.tryToList(data)?
+    value: list[any] = Json.toList(data)?
     return Result.Ok(len(value))
 }
 
@@ -40,11 +40,11 @@ func main() {
     listSuccess: Result[int] = countFromValue([1, 2, 3])
     print(f"list-ok:{listSuccess.unwrap()}")
 
-    wrongDict: Result[dict[str, any]] = Json.tryToDict([1, 2, 3])
+    wrongDict: Result[dict[str, any]] = Json.toDict([1, 2, 3])
     dictError: Error = wrongDict.error
     print(f"dict-error:{dictError.kind}:{dictError.message}")
 
-    wrongList: Result[list[any]] = Json.tryToList( {"name": "Ada"})
+    wrongList: Result[list[any]] = Json.toList( {"name": "Ada"})
     listError: Error = wrongList.error
     print(f"list-error:{listError.kind}:{listError.message}")
 }

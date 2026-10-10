@@ -1,0 +1,189 @@
+# Integration test: Result edge semantics and recovery across stdlib modules.
+# It deliberately separates successful empty/zero/absent-optional outcomes
+# from malformed input and I/O errors, and exercises ?, do/catch, unwrap,
+# and unwrapOr without using paths outside its own temporary workspace.
+# expect: PASS 1 zero-byte File write is valid
+# expect: PASS 2 empty File read is valid
+# expect: PASS 3 empty CSV parse is valid
+# expect: PASS 4 empty base decodes are valid
+# expect: PASS 5 regex no-match is valid empty
+# expect: PASS 6 missing path is valid false
+# expect: PASS 7 explicitly empty environment value
+# expect: PASS 8 missing typed environment fallback zero
+# expect: PASS 9 conversion zero is valid
+# expect: PASS 10 missing CLI option is fallback
+# expect: PASS 11 missing File is genuine error
+# expect: PASS 12 malformed CSV is genuine error
+# expect: PASS 13 malformed CSV stream surfaces once
+# expect: PASS 14 invalid CSV batch size is error
+# expect: PASS 15 malformed base inputs are errors
+# expect: PASS 16 malformed JSON is error
+# expect: PASS 17 malformed YAML is error
+# expect: PASS 18 malformed XML is error
+# expect: PASS 19 malformed regex is error
+# expect: PASS 20 malformed conversion is error
+# expect: PASS 21 absent required environment is error
+# expect: PASS 22 malformed template is error
+# expect: PASS 23 invalid crypto request is error
+# expect: PASS 24 malformed UUID is error
+# expect: PASS 25 question mark propagates cross-module error
+# expect: PASS 26 do catch receives propagated error
+# expect: PASS 27 unwrapOr recovers from error
+# expect: PASS 28 closed File operation is error
+# expect: PASS 29 environment cleanup
+# expect: PASS 30 workspace cleanup
+# expect: 30 passed, 0 failed, 30 total
+
+from lambase64 import Base16, Base32, Base64
+from lamcli import Cli
+from lamconv import Conv
+from lamcrypto import Crypto
+from lamcsv import Csv
+from lamenv import Env
+from lamerrors import Result
+from lamjson import Json
+from lamos import File, Os
+from lampath import Path
+from lamre import Re
+from lamtemplate import Template
+from lamuuid import Uuid
+from lamxml import Xml
+from lamyaml import Yaml
+from lamtest import Test
+
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
+
+func resultInt(result: Result) -> int {
+    go! { return result.Value.(int) }
+}
+
+func resultBool(result: Result) -> bool {
+    go! { return result.Value.(bool) }
+}
+
+func resultFile(result: Result) -> File {
+    go! { return result.Value.(*File) }
+}
+
+func resultRows(result: Result) -> list[list[str]] {
+    go! { return result.Value.([][]string) }
+}
+
+func resultRow(result: Result) -> list[str] {
+    go! { return result.Value.([]string) }
+}
+
+func resultStrings(result: Result) -> list[str] {
+    go! { return result.Value.([]string) }
+}
+
+func decodeLabel(encoded: str) -> Result[str] {
+    plain: str = Base64.decode(encoded)?
+    payload: json = Json.decode(plain)?
+    label: str = payload.label
+    return Result.Ok(label)
+}
+
+func main() {
+    seed: str = resultString(Os.tempFile("lam-result-resilience-", ".seed"))
+    Os.remove(seed).unwrap()
+    workspace: str = seed + "-workspace"
+    Os.mkdir(workspace).unwrap()
+    emptyPath: str = Path.join(workspace, "empty.txt")
+    malformedCsvPath: str = Path.join(workspace, "malformed.csv")
+    missingPath: str = Path.join(workspace, "missing.txt")
+
+    emptyWriter: File = resultFile(File.open(emptyPath, "w"))
+    zeroWritten: int = resultInt(emptyWriter.write(""))
+    emptyWriter.close().unwrap()
+    Test.assertEqual(zeroWritten, 0, "1 zero-byte File write is valid")
+    emptyRead: Result[str] = Os.readFile(emptyPath)
+    Test.assertTrue(emptyRead.ok() and len(resultString(emptyRead)) == 0, "2 empty File read is valid")
+
+    emptyCsv: Result[list[list[str]]] = Csv.parseAll("")
+    Test.assertTrue(emptyCsv.ok() and len(resultRows(emptyCsv)) == 0, "3 empty CSV parse is valid")
+    empty16: str = resultString(Base16.decode(""))
+    empty32: str = resultString(Base32.decode(""))
+    empty64: str = resultString(Base64.decode(""))
+    Test.assertTrue(len(empty16) == 0 and len(empty32) == 0 and len(empty64) == 0, "4 empty base decodes are valid")
+
+    noMatch: Result[str] = Re.find("[0-9]+", "letters only")
+    noMatches: Result[list[str]] = Re.findAll("[0-9]+", "letters only")
+    Test.assertTrue(noMatch.ok() and resultString(noMatch) == "" and noMatches.ok() and len(resultStrings(noMatches)) == 0, "5 regex no-match is valid empty")
+    missingExists: Result[bool] = Path.exists(missingPath)
+    Test.assertTrue(missingExists.ok() and not resultBool(missingExists), "6 missing path is valid false")
+
+    envKey: str = "_LAM_RESULT_EMPTY_" + resultString(Crypto.randomHex(6))
+    Env.set(envKey, "").unwrap()
+    emptyEnv: Result[str] = Env.get(envKey)
+    Test.assertTrue(emptyEnv.ok() and len(resultString(emptyEnv)) == 0, "7 explicitly empty environment value")
+    Env.unset(envKey).unwrap()
+    missingTyped: Result[int] = Env.get(envKey, 0)
+    Test.assertTrue(missingTyped.ok() and resultInt(missingTyped) == 0, "8 missing typed environment fallback zero")
+
+    zero: Result[int] = Conv.parse("0")
+    Test.assertTrue(zero.ok() and resultInt(zero) == 0, "9 conversion zero is valid")
+    Test.assertEqual(Cli.getFlag("__lam_result_resilience_never_supplied__", "optional"), "optional", "10 missing CLI option is fallback")
+
+    Test.assertFalse(File.open(missingPath).ok(), "11 missing File is genuine error")
+    Test.assertFalse(Csv.parseAll("good,1\nbad,\"unterminated").ok(), "12 malformed CSV is genuine error")
+    Os.writeFile(malformedCsvPath, "good,1\nbad,\"unterminated").unwrap()
+    goodRows: int = 0
+    streamErrors: int = 0
+    for rowResult in Csv.streamRows(malformedCsvPath) {
+        if rowResult.ok() {
+            row: list[str] = resultRow(rowResult)
+            if len(row) == 2 {
+                goodRows += 1
+            }
+        } else {
+            streamErrors += 1
+        }
+    }
+    Test.assertTrue(goodRows == 1 and streamErrors == 1, "13 malformed CSV stream surfaces once")
+    invalidBatchErrors: int = 0
+    for batchResult in Csv.streamBatches(malformedCsvPath, 0) {
+        if not batchResult.ok() {
+            invalidBatchErrors += 1
+        }
+    }
+    Test.assertEqual(invalidBatchErrors, 1, "14 invalid CSV batch size is error")
+
+    Test.assertTrue(not Base16.decode("xyz").ok() and not Base32.decode("%=bad").ok() and not Base64.decode("***").ok(), "15 malformed base inputs are errors")
+    malformedJson: str = "{not-json"
+    Test.assertFalse(Json.decode(malformedJson).ok(), "16 malformed JSON is error")
+    Test.assertFalse(Yaml.decode("name: ok\n  broken: : :").ok(), "17 malformed YAML is error")
+    Test.assertFalse(Xml.decode("<root><broken></root>").ok(), "18 malformed XML is error")
+    Test.assertFalse(Re.match("[unterminated", "value").ok(), "19 malformed regex is error")
+    malformedConversion: Result[int] = Conv.parse("twelve")
+    Test.assertFalse(malformedConversion.ok(), "20 malformed conversion is error")
+    Test.assertFalse(Env.get(envKey).ok(), "21 absent required environment is error")
+
+    brokenTemplate: Template = Template()
+    Test.assertFalse(brokenTemplate.parse("{{.Unclosed").ok(), "22 malformed template is error")
+    Test.assertFalse(Crypto.randomBytes(-1).ok(), "23 invalid crypto request is error")
+    Test.assertFalse(Uuid.parse("not-a-uuid").ok(), "24 malformed UUID is error")
+
+    propagated: Result[str] = decodeLabel(Base64.encode("not json"))
+    Test.assertFalse(propagated.ok(), "25 question mark propagates cross-module error")
+    do {
+        label: str = decodeLabel(Base64.encode("still not json"))?
+        Test.fail(f"unexpected label {label}")
+    } catch err {
+        Test.assertTrue(str(err).contains("JsonDecodeError"), "26 do catch receives propagated error")
+    }
+
+    fallback: str = Base64.decode("***").unwrapOr("recovered")
+    Test.assertEqual(fallback, "recovered", "27 unwrapOr recovers from error")
+    closed: File = resultFile(File.open(emptyPath))
+    closed.close().unwrap()
+    Test.assertFalse(closed.read().ok(), "28 closed File operation is error")
+
+    Env.unset(envKey).unwrap()
+    Test.assertFalse(Env.get(envKey).ok(), "29 environment cleanup")
+    Os.removeAll(workspace).unwrap()
+    Test.assertFalse(resultBool(Path.exists(workspace)), "30 workspace cleanup")
+    Test.summary()
+}

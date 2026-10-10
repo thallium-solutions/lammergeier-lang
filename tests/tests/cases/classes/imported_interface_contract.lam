@@ -1,0 +1,15 @@
+interface ImportedReader {
+    func read() -> str
+}
+
+class ImportedValueReader {
+    func init(self, value: str) {
+        self.value: str = value
+    }
+
+    func read(self) -> str {
+        return self.value
+    }
+}
+
+func main() { pass }

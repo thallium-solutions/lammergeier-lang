@@ -8,11 +8,11 @@
 # expect: actors_after_shutdown=0
 
 from lamactor import ActorSystem, ActorRef
-from lamqueue import Queue
+from lamdatastructures import Queue
 from lamstrings import Strings
 
 class NetworkNode {
-    func __init__(self, networkName: str) {
+    func init(self, networkName: str) {
         self.networkName: str = networkName
         self.peer: ActorRef = ActorRef()
         self.log: Queue = Queue()
@@ -24,7 +24,7 @@ class NetworkNode {
 
         if Strings.startsWith(text, "ping:") {
             payload: str = Strings.replace(text, "ping:", "ack:")
-            return self.peer.ask(payload, 1000)
+            return self.peer.ask(payload, 1000).unwrap()
         }
 
         if Strings.startsWith(text, "ack:") {
@@ -46,8 +46,8 @@ func main() {
     eastNode.peer = westRef
     westNode.peer = eastRef
 
-    firstReply: any = eastRef.ask("ping:hello", 1000)
-    returnReply: any = westRef.ask("ping:return", 1000)
+    firstReply: any = eastRef.ask("ping:hello", 1000).unwrap()
+    returnReply: any = westRef.ask("ping:return", 1000).unwrap()
 
     print(f"first_reply={firstReply}")
     print(f"return_reply={returnReply}")

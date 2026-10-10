@@ -1,0 +1,49 @@
+from lamerrors import Result
+
+func remotePick(seed: int, prefix: str = "remote") -> int {
+    _ = prefix
+    return seed * 10
+}
+
+func remotePick(seed: int, prefix: str = "remote") -> str {
+    return f"{prefix}-{seed}"
+}
+
+func resultPick(seed: int) -> Result[int] {
+    return Result.Ok(seed * 2)
+}
+
+func resultPick(seed: int) -> Result[str] {
+    return Result.Ok(f"result-{seed}")
+}
+
+class RemoteFactory {
+    static func create(seed: int) -> int { return seed + 100 }
+    static func create(seed: int) -> str { return f"factory-{seed}" }
+}
+
+class BaseSelector {
+    func select(self, seed: int) -> int { return seed + 20 }
+    func select(self, seed: int) -> str { return f"base-{seed}" }
+}
+
+class ChildSelector(BaseSelector) {}
+
+interface ChoiceContract {
+    func select(seed: int) -> int
+    func select(seed: int) -> str
+}
+
+class ContractSelector {
+    func select(self, seed: int) -> int { return seed + 30 }
+    func select(self, seed: int) -> str { return f"contract-{seed}" }
+}
+
+class ChainNode {
+    func init(self, label: str) { self.label: str = label }
+    func next(self) -> ChainNode { return self }
+    func render(self, seed: int) -> int { return seed + 50 }
+    func render(self, seed: int) -> str { return f"chain-{self.label}-{seed}" }
+}
+
+func main() { pass }

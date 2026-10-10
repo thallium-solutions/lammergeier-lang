@@ -1,11 +1,370 @@
 # Lammergeier standard library: date/time utilities
 # Import with: from lamdatetime import DateTime
 
+from lamerrors import Result, Error
+from lamtime import Time
+
 go! {
-    import "time"
+    import (
+        "fmt"
+        "time"
+    )
+
+    // lamDateTimeLocation accepts IANA names and RFC 3339 numeric offsets.
+    // Keeping location handling here lets the public object remain plain Lam
+    // data (Unix nanoseconds plus a portable location name).
+    func lamDateTimeLocation(name string) (*time.Location, error) {
+        if name == "Z" || name == "UTC" {
+            return time.UTC, nil
+        }
+        if name == "Local" {
+            return time.Local, nil
+        }
+        if len(name) == 6 && (name[0] == '+' || name[0] == '-') && name[3] == ':' {
+            parsed, err := time.Parse("-07:00", name)
+            if err != nil {
+                return nil, err
+            }
+            _, offset := parsed.Zone()
+            return time.FixedZone(name, offset), nil
+        }
+        return time.LoadLocation(name)
+    }
+
+    func lamDateTimeParseCommon(value string, loc *time.Location) (time.Time, error) {
+        zonedLayouts := []string{
+            time.RFC3339Nano,
+            time.RFC3339,
+            time.RFC1123Z,
+            time.RFC1123,
+            time.RFC822Z,
+            time.RFC822,
+        }
+        var lastErr error
+        for _, layout := range zonedLayouts {
+            if parsed, err := time.Parse(layout, value); err == nil {
+                return parsed, nil
+            } else {
+                lastErr = err
+            }
+        }
+        localLayouts := []string{
+            "2006-01-02 15:04:05",
+            "2006-01-02 15:04",
+            "2006-01-02",
+            "01/02/2006 15:04:05",
+            "01/02/2006 15:04",
+            "01/02/2006",
+        }
+        for _, layout := range localLayouts {
+            if parsed, err := time.ParseInLocation(layout, value, loc); err == nil {
+                return parsed, nil
+            } else {
+                lastErr = err
+            }
+        }
+        return time.Time{}, fmt.Errorf("no common date/time format matched: %w", lastErr)
+    }
+
+    // Calendar month changes clamp to the target month's last day. This is
+    // usually more useful than time.AddDate's normalization of Jan 31 to March.
+    func lamDateTimeAddMonths(value time.Time, months int) time.Time {
+        year, month, day := value.Date()
+        hour, minute, second := value.Clock()
+        targetFirst := time.Date(year, month, 1, hour, minute, second, value.Nanosecond(), value.Location()).AddDate(0, months, 0)
+        lastDay := time.Date(targetFirst.Year(), targetFirst.Month()+1, 0, hour, minute, second, value.Nanosecond(), value.Location()).Day()
+        if day > lastDay {
+            day = lastDay
+        }
+        return time.Date(targetFirst.Year(), targetFirst.Month(), day, hour, minute, second, value.Nanosecond(), value.Location())
+    }
 }
 
 class DateTime {
+    #- An instant represented by Unix nanoseconds and a display location.
+
+       The constructor is intentionally small and instantiable:
+       ``DateTime(unixNanoseconds, location)``. Prefer ``fromUnix``, ``parse``,
+       or ``current`` when a location comes from external input, because those
+       unsuffixed fallible APIs preserve the standard ``Result`` policy.
+
+       ``add(Time)`` and ``subtract(Time)`` change elapsed time. Since Time's
+       day/month/year constructors are fixed durations, use the explicit
+       ``addDays``, ``addMonths``, and ``addYears`` methods for civil-calendar
+       behavior across DST and variable-length months.
+    -#
+
+    func init(self, unixNanoseconds: int = 0, location: str = "UTC") {
+        self.unixNanoseconds: int = unixNanoseconds
+        self.location: str = location
+    }
+
+    static func current(location: str = "UTC") -> Result[DateTime] {
+        locationError: str = ""
+        nowNanoseconds: int = 0
+        go! {
+            if _, err := lamDateTimeLocation(location); err != nil {
+                locationError = err.Error()
+            } else {
+                nowNanoseconds = int(time.Now().UnixNano())
+            }
+        }
+        if locationError != "" {
+            return Result.Err(Error("LocationError", f"DateTime.current {location}: {locationError}"))
+        }
+        return Result.Ok(DateTime(nowNanoseconds, location))
+    }
+
+    static func fromUnix(unixSeconds: int, location: str = "UTC") -> Result[DateTime] {
+        return DateTime.fromUnixNano(unixSeconds * 1000000000, location)
+    }
+
+    static func fromUnixMilli(unixMilliseconds: int, location: str = "UTC") -> Result[DateTime] {
+        return DateTime.fromUnixNano(unixMilliseconds * 1000000, location)
+    }
+
+    static func fromUnixNano(unixNanoseconds: int, location: str = "UTC") -> Result[DateTime] {
+        locationError: str = ""
+        go! {
+            if _, err := lamDateTimeLocation(location); err != nil {
+                locationError = err.Error()
+            }
+        }
+        if locationError != "" {
+            return Result.Err(Error("LocationError", f"DateTime.fromUnixNano {location}: {locationError}"))
+        }
+        return Result.Ok(DateTime(unixNanoseconds, location))
+    }
+
+    static func parse(layout: str, value: str, location: str = "UTC") -> Result[DateTime] {
+        #- Parse using a Go time layout in the supplied IANA location. -#
+        unixNanoseconds: int = 0
+        parseError: str = ""
+        go! {
+            loc, err := lamDateTimeLocation(location)
+            if err != nil {
+                parseError = err.Error()
+            } else if parsed, err := time.ParseInLocation(layout, value, loc); err != nil {
+                parseError = err.Error()
+            } else {
+                unixNanoseconds = int(parsed.UnixNano())
+            }
+        }
+        if parseError != "" {
+            return Result.Err(Error("ParseError", f"DateTime.parse {value}: {parseError}"))
+        }
+        return Result.Ok(DateTime(unixNanoseconds, location))
+    }
+
+    static func parseRfc3339(value: str) -> Result[DateTime] {
+        unixNanoseconds: int = 0
+        parsedLocation: str = "UTC"
+        parseError: str = ""
+        go! {
+            parsed, err := time.Parse(time.RFC3339Nano, value)
+            if err != nil {
+                parseError = err.Error()
+            } else {
+                unixNanoseconds = int(parsed.UnixNano())
+                parsedLocation = parsed.Format("Z07:00")
+                if parsedLocation == "Z" {
+                    parsedLocation = "UTC"
+                }
+            }
+        }
+        if parseError != "" {
+            return Result.Err(Error("ParseError", f"DateTime.parseRfc3339 {value}: {parseError}"))
+        }
+        return Result.Ok(DateTime(unixNanoseconds, parsedLocation))
+    }
+
+    static func parseCommon(value: str, location: str = "UTC") -> Result[DateTime] {
+        #- Parse RFC 3339/1123/822, ISO date/time, or US date/time forms. -#
+        unixNanoseconds: int = 0
+        parsedLocation: str = location
+        parseError: str = ""
+        go! {
+            loc, err := lamDateTimeLocation(location)
+            if err != nil {
+                parseError = err.Error()
+            } else if parsed, err := lamDateTimeParseCommon(value, loc); err != nil {
+                parseError = err.Error()
+            } else {
+                unixNanoseconds = int(parsed.UnixNano())
+                _, offset := parsed.Zone()
+                _, suppliedOffset := parsed.In(loc).Zone()
+                if offset != suppliedOffset {
+                    parsedLocation = parsed.Format("Z07:00")
+                    if parsedLocation == "Z" {
+                        parsedLocation = "UTC"
+                    }
+                }
+            }
+        }
+        if parseError != "" {
+            return Result.Err(Error("ParseError", f"DateTime.parseCommon {value}: {parseError}"))
+        }
+        return Result.Ok(DateTime(unixNanoseconds, parsedLocation))
+    }
+
+    static func convert(value: str, fromLayout: str, toLayout: str, location: str = "UTC") -> Result[str] {
+        #- Convert between arbitrary Go layouts without discarding parse errors. -#
+        parsed: Result[DateTime] = DateTime.parse(fromLayout, value, location)
+        if not parsed.ok() {
+            return parsed
+        }
+        dateTime: DateTime = parsed.unwrap()
+        return Result.Ok(dateTime.format(toLayout))
+    }
+
+    func unix(self) -> int {
+        return self.unixNanoseconds / 1000000000
+    }
+
+    func unixMilli(self) -> int {
+        return self.unixNanoseconds / 1000000
+    }
+
+    func unixNano(self) -> int {
+        return self.unixNanoseconds
+    }
+
+    func locationName(self) -> str {
+        return self.location
+    }
+
+    func format(self, layout: str) -> str {
+        unixNanoseconds: int = self.unixNanoseconds
+        location: str = self.location
+        go! {
+            loc, err := lamDateTimeLocation(location)
+            if err != nil {
+                panic(fmt.Sprintf("DateTime.format: invalid location %q: %v", location, err))
+            }
+            return time.Unix(0, int64(unixNanoseconds)).In(loc).Format(layout)
+        }
+    }
+
+    func rfc3339(self) -> str {
+        return self.format("2006-01-02T15:04:05Z07:00")
+    }
+
+    func date(self) -> str {
+        return self.format("2006-01-02")
+    }
+
+    func dateTime(self) -> str {
+        return self.format("2006-01-02 15:04:05")
+    }
+
+    func inLocation(self, location: str) -> Result[DateTime] {
+        #- Change presentation location while preserving the instant. -#
+        locationError: str = ""
+        go! {
+            if _, err := lamDateTimeLocation(location); err != nil {
+                locationError = err.Error()
+            }
+        }
+        if locationError != "" {
+            return Result.Err(Error("LocationError", f"DateTime.inLocation {location}: {locationError}"))
+        }
+        return Result.Ok(DateTime(self.unixNanoseconds, location))
+    }
+
+    func add(self, duration: Time) -> DateTime {
+        return DateTime(self.unixNanoseconds + duration.inNanoseconds(), self.location)
+    }
+
+    func subtract(self, duration: Time) -> DateTime {
+        return DateTime(self.unixNanoseconds - duration.inNanoseconds(), self.location)
+    }
+
+    func since(self, other: DateTime) -> Time {
+        return Time.Nanoseconds(self.unixNanoseconds - other.unixNanoseconds)
+    }
+
+    func until(self, other: DateTime) -> Time {
+        return other.since(self)
+    }
+
+    func addDays(self, days: int) -> DateTime {
+        unixNanoseconds: int = self.unixNanoseconds
+        location: str = self.location
+        resultNanoseconds: int = 0
+        go! {
+            loc, err := lamDateTimeLocation(location)
+            if err != nil {
+                panic(fmt.Sprintf("DateTime.addDays: invalid location %q: %v", location, err))
+            }
+            value := time.Unix(0, int64(unixNanoseconds)).In(loc)
+            resultNanoseconds = int(value.AddDate(0, 0, days).UnixNano())
+        }
+        return DateTime(resultNanoseconds, location)
+    }
+
+    func addMonths(self, months: int) -> DateTime {
+        unixNanoseconds: int = self.unixNanoseconds
+        location: str = self.location
+        resultNanoseconds: int = 0
+        go! {
+            loc, err := lamDateTimeLocation(location)
+            if err != nil {
+                panic(fmt.Sprintf("DateTime.addMonths: invalid location %q: %v", location, err))
+            }
+            value := time.Unix(0, int64(unixNanoseconds)).In(loc)
+            resultNanoseconds = int(lamDateTimeAddMonths(value, months).UnixNano())
+        }
+        return DateTime(resultNanoseconds, location)
+    }
+
+    func addYears(self, years: int) -> DateTime {
+        return self.addMonths(years * 12)
+    }
+
+    func before(self, other: DateTime) -> bool {
+        return self.unixNanoseconds < other.unixNanoseconds
+    }
+
+    func after(self, other: DateTime) -> bool {
+        return self.unixNanoseconds > other.unixNanoseconds
+    }
+
+    func equals(self, other: DateTime) -> bool {
+        return self.unixNanoseconds == other.unixNanoseconds
+    }
+
+    func offsetSeconds(self) -> int {
+        unixNanoseconds: int = self.unixNanoseconds
+        location: str = self.location
+        go! {
+            loc, err := lamDateTimeLocation(location)
+            if err != nil {
+                panic(fmt.Sprintf("DateTime.offsetSeconds: invalid location %q: %v", location, err))
+            }
+            _, offset := time.Unix(0, int64(unixNanoseconds)).In(loc).Zone()
+            return offset
+        }
+    }
+
+    func __add__(self, duration: Time) -> DateTime {
+        return self.add(duration)
+    }
+
+    #- ``DateTime - DateTime`` is elapsed time. Use ``subtract(Time)`` for
+       a duration subtraction; Go cannot overload the generated Sub method. -#
+    func __sub__(self, other: DateTime) -> Time {
+        return self.since(other)
+    }
+
+    func __eq__(self, other: DateTime) -> bool {
+        return self.equals(other)
+    }
+
+    func __str__(self) -> str {
+        return self.rfc3339()
+    }
+
+    # Compatibility helpers retained from the original static-only API.
     static func now() -> str {
         go! {
             return time.Now().Format("2006-01-02 15:04:05")
@@ -19,9 +378,7 @@ class DateTime {
     }
 
     static func timestamp() -> int {
-        go! {
-            return int(time.Now().Unix())
-        }
+        return Time.nowUnix()
     }
 
     static func fromTimestamp(ts: int) -> str {
@@ -35,21 +392,15 @@ class DateTime {
     }
 
     static func year() -> int {
-        go! {
-            return time.Now().Year()
-        }
+        return Time.nowYear()
     }
 
     static func month() -> int {
-        go! {
-            return int(time.Now().Month())
-        }
+        return Time.nowMonth()
     }
 
     static func day() -> int {
-        go! {
-            return time.Now().Day()
-        }
+        return Time.nowDay()
     }
 
     static func weekday() -> str {

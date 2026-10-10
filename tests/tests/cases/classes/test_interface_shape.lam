@@ -30,7 +30,7 @@ interface Shape {
 }
 
 class Circle {
-    func __init__(self, r: float) {
+    func init(self, r: float) {
         self.r: float = r
     }
     func area(self) -> float {
@@ -45,7 +45,7 @@ class Circle {
 }
 
 class Square {
-    func __init__(self, side: float) {
+    func init(self, side: float) {
         self.side: float = side
     }
     func area(self) -> float {
@@ -60,7 +60,7 @@ class Square {
 }
 
 class Triangle {
-    func __init__(self, a: float, b: float, c: float) {
+    func init(self, a: float, b: float, c: float) {
         self.a: float = a
         self.b: float = b
         self.c: float = c

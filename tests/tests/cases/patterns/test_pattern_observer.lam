@@ -7,7 +7,7 @@
 # expect: Total events fired: 5
 
 class EventBus {
-    func __init__(self) {
+    func init(self) {
         self.listeners: list[str] = []
         self.event_count: int = 0
         self.num_listeners: int = 0
@@ -38,7 +38,7 @@ class EventBus {
 }
 
 class OrderService {
-    func __init__(self, bus: EventBus) {
+    func init(self, bus: EventBus) {
         self.bus: EventBus = bus
         self.next_id: int = 101
     }
@@ -51,7 +51,7 @@ class OrderService {
 }
 
 class PaymentService {
-    func __init__(self, bus: EventBus) {
+    func init(self, bus: EventBus) {
         self.bus: EventBus = bus
     }
 

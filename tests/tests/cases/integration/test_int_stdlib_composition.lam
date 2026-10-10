@@ -1,0 +1,222 @@
+# Integration regression: generic numerical, tabular, collection, CSV, and time workflows.
+# expect: PASS 1 generic identity preserves int
+# expect: PASS 2 comprehension and lambda pipeline
+# expect: PASS 3 Stats preserves int reductions
+# expect: PASS 4 Stats preserves float reductions
+# expect: PASS 5 Array accepts generic int output
+# expect: PASS 6 Matrix composes with Array
+# expect: PASS 7 singular Matrix returns Result error
+# expect: PASS 8 CSV generator batches nested rows
+# expect: PASS 9 Queue transports nested batches
+# expect: PASS 10 DataFrame infers generated CSV types
+# expect: PASS 11 Series preserves generated integers
+# expect: PASS 12 tabular values feed Stats and Array
+# expect: PASS 13 Queue preserves heterogeneous any payloads
+# expect: PASS 14 Deque reorders nested workflow values
+# expect: PASS 15 Stack preserves nested payload
+# expect: PASS 16 Set distinguishes heterogeneous values
+# expect: PASS 17 Heap preserves int values
+# expect: PASS 18 Heap preserves float values
+# expect: PASS 19 Heap rejects mixed numeric types
+# expect: PASS 20 PriorityHeap carries heterogeneous payloads
+# expect: PASS 21 empty collections return Result errors
+# expect: PASS 22 spring calendar day differs from fixed day
+# expect: PASS 23 fall calendar day differs from fixed day
+# expect: PASS 24 calendar month differs from fixed month
+# expect: PASS 25 invalid date and timezone return errors
+# expect: PASS 26 Time duration arithmetic composes
+# expect: PASS 27 Result error fallback remains typed
+# expect: 27 passed, 0 failed, 27 total
+
+from lamarray import Array, Matrix
+from lamcsv import Csv
+from lamdata import DataFrame, Series
+from lamdatastructures import Queue, Deque, Stack, Set, Heap, PriorityHeap
+from lamdatetime import DateTime
+from lamerrors import Result, Error
+from lamos import Os
+from lamstats import Stats
+from lamtest import Test
+from lamtime import Time
+
+func identity[T](value: T) -> T {
+    return value
+}
+
+func resultBatch(result: Result) -> list[list[str]] {
+    go! { return result.Value.([][]string) }
+}
+
+func resultFrame(result: Result) -> DataFrame {
+    go! { return result.Value.(*DataFrame) }
+}
+
+func resultInts(result: Result) -> list[int] {
+    go! { return result.Value.([]int) }
+}
+
+func resultInt(result: Result) -> int {
+    go! { return result.Value.(int) }
+}
+
+func resultFloat(result: Result) -> float {
+    go! { return result.Value.(float64) }
+}
+
+func main() {
+    Test.assertEqual(identity(7), 7, "1 generic identity preserves int")
+
+    raw: list[int] = [1, 2, 3, 4]
+    evenSquares: list[int] = [value * value for value in raw if value % 2 == 0]
+    shifted: list[int] = evenSquares.map(lambda value: value + 1)
+    expectedShifted: list[int] = [5, 17]
+    Test.assertEqual(shifted, expectedShifted, "2 comprehension and lambda pipeline")
+
+    Test.assertEqual(Stats.sum(evenSquares), 20, "3 Stats preserves int reductions")
+    floatValues: list[float] = [1.5, 2.5, 4.0]
+    Test.assertEqual(Stats.product(floatValues), 15.0, "4 Stats preserves float reductions")
+
+    numeric: Array = Array.fromList(evenSquares)
+    numericValues: list[float] = numeric.toList()
+    Test.assertTrue(len(numericValues) == 2 and numericValues[0] == 4.0 and numericValues[1] == 16.0 and numeric.sum() == 20.0, "5 Array accepts generic int output")
+
+    matrixRows: list[list[int]] = [[1, 2], [3, 4]]
+    matrix: Matrix = Matrix.fromRows(matrixRows)
+    vector: Array = Array.fromList([2, 1])
+    expectedProduct: list[float] = [4.0, 10.0]
+    Test.assertEqual(matrix.mulVec(vector).toList(), expectedProduct, "6 Matrix composes with Array")
+
+    singular: Matrix = Matrix.fromList(2, 2, [1, 2, 2, 4])
+    Test.assertFalse(singular.inverse().ok(), "7 singular Matrix returns Result error")
+
+    csvRows: list[list[str]] = [
+        ["name", "score"],
+        ["one", "1"],
+        ["two", "4"],
+        ["three", "9"],
+        ["four", "16"],
+    ]
+    path: str = Os.tempFile("lam_complex_", ".csv").unwrap()
+    Os.writeFile(path, Csv.formatAll(csvRows)).unwrap()
+
+    batchQueue: Queue = Queue()
+    batchCount: int = 0
+    generatedRows: int = 0
+    batchSizes: list[int] = []
+    for batchResult in Csv.batches(path, 2) {
+        if batchResult.ok() {
+            batch: list[list[str]] = resultBatch(batchResult)
+            batchCount += 1
+            generatedRows += len(batch)
+            batchSizes.append(len(batch))
+            batchQueue.enqueue(batch)
+        }
+    }
+    batchesOk: bool = batchCount == 3 and generatedRows == 5 and len(batchSizes) == 3
+    batchesOk = batchesOk and batchSizes[0] == 2 and batchSizes[1] == 2 and batchSizes[2] == 1
+    Test.assertTrue(batchesOk, "8 CSV generator batches nested rows")
+
+    records: list[any] = []
+    while not batchQueue.isEmpty() {
+        queuedBatch: list[list[str]] = resultBatch(batchQueue.dequeue())
+        for row in queuedBatch {
+            records.append(row)
+        }
+    }
+    Test.assertTrue(len(records) == 5 and batchQueue.isEmpty(), "9 Queue transports nested batches")
+
+    frame: DataFrame = DataFrame.fromRecords(records)
+    frameTypes: list[str] = frame.types()
+    Test.assertTrue(frame.nrow() == 4 and len(frameTypes) == 2 and frameTypes[0] == "string" and frameTypes[1] == "int", "10 DataFrame infers generated CSV types")
+
+    scoreSeries: Series = frame.col("score")
+    scores: list[int] = resultInts(scoreSeries.toIntList())
+    scoresOk: bool = len(scores) == 4 and scores[0] == 1 and scores[1] == 4 and scores[2] == 9 and scores[3] == 16
+    Test.assertTrue(scoreSeries.typeName() == "int" and scoresOk, "11 Series preserves generated integers")
+
+    scoreArray: Array = Array.fromList(scores)
+    Test.assertTrue(Stats.sum(scores) == 30 and scoreArray.sum() == 30.0, "12 tabular values feed Stats and Array")
+
+    payloads: Queue = Queue()
+    payloads.enqueue(frame)
+    payloads.enqueue("complete")
+    recovered: DataFrame = resultFrame(payloads.dequeue())
+    Test.assertTrue(recovered.nrow() == 4 and payloads.dequeue().unwrap() == "complete", "13 Queue preserves heterogeneous any payloads")
+
+    deque: Deque = Deque()
+    deque.pushBack(scores)
+    deque.pushFront("header")
+    dequeHeader: any = deque.popFront().unwrap()
+    dequeScores: list[int] = resultInts(deque.popBack())
+    Test.assertTrue(dequeHeader == "header" and len(dequeScores) == 4 and dequeScores[2] == 9, "14 Deque reorders nested workflow values")
+
+    stack: Stack = Stack()
+    stack.push(scores)
+    expectedScores: list[int] = [1, 4, 9, 16]
+    Test.assertEqual(resultInts(stack.pop()), expectedScores, "15 Stack preserves nested payload")
+
+    distinct: Set = Set()
+    distinct.add(7)
+    distinct.add("7")
+    distinct.add(7.0)
+    distinct.add(7)
+    Test.assertTrue(distinct.size() == 3 and distinct.contains("7"), "16 Set distinguishes heterogeneous values")
+
+    intHeap: Heap = Heap()
+    intHeap.push(9)
+    intHeap.push(1)
+    intHeap.push(4)
+    Test.assertEqual(resultInt(intHeap.pop()), 1, "17 Heap preserves int values")
+
+    floatHeap: Heap = Heap(true)
+    floatHeap.push(1.5)
+    floatHeap.push(3.5)
+    Test.assertEqual(resultFloat(floatHeap.pop()), 3.5, "18 Heap preserves float values")
+
+    mixedHeap: Heap = Heap()
+    mixedHeap.push(1)
+    mixedRejected: bool = false
+    try { mixedHeap.push(1.0) } catch err { mixedRejected = true }
+    Test.assertTrue(mixedRejected, "19 Heap rejects mixed numeric types")
+
+    priority: PriorityHeap = PriorityHeap()
+    priority.push(2, "later")
+    priority.push(1, scores)
+    priorityScores: list[int] = resultInts(priority.pop())
+    Test.assertTrue(len(priorityScores) == 4 and priorityScores[3] == 16 and priority.pop().unwrap() == "later", "20 PriorityHeap carries heterogeneous payloads")
+
+    emptyQueue: Queue = Queue()
+    emptyDeque: Deque = Deque()
+    emptyStack: Stack = Stack()
+    emptyHeap: Heap = Heap()
+    emptyPriority: PriorityHeap = PriorityHeap()
+    emptiesFail: bool = not emptyQueue.dequeue().ok() and not emptyDeque.popFront().ok()
+    emptiesFail = emptiesFail and not emptyStack.pop().ok() and not emptyHeap.pop().ok() and not emptyPriority.pop().ok()
+    Test.assertTrue(emptiesFail, "21 empty collections return Result errors")
+
+    spring: DateTime = DateTime.parse("2006-01-02 15:04", "2024-03-09 12:00", "America/New_York").unwrap()
+    springFixed: DateTime = spring.add(Time.Days(1))
+    springCalendar: DateTime = spring.addDays(1)
+    Test.assertTrue(springFixed.format("15:04 MST") == "13:00 EDT" and springCalendar.format("15:04 MST") == "12:00 EDT" and springCalendar.since(spring).inHours() == 23, "22 spring calendar day differs from fixed day")
+
+    fall: DateTime = DateTime.parse("2006-01-02 15:04", "2024-11-02 12:00", "America/New_York").unwrap()
+    fallFixed: DateTime = fall.add(Time.Days(1))
+    fallCalendar: DateTime = fall.addDays(1)
+    Test.assertTrue(fallFixed.format("15:04 MST") == "11:00 EST" and fallCalendar.format("15:04 MST") == "12:00 EST" and fallCalendar.since(fall).inHours() == 25, "23 fall calendar day differs from fixed day")
+
+    january: DateTime = DateTime.parse("2006-01-02 15:04", "2024-01-31 08:00", "UTC").unwrap()
+    Test.assertTrue(january.addMonths(1).date() == "2024-02-29" and january.add(Time.Months(1)).date() == "2024-03-01", "24 calendar month differs from fixed month")
+
+    invalidDate: Result[DateTime] = DateTime.parse("2006-01-02", "2024-02-30", "UTC")
+    invalidZone: Result[DateTime] = january.inLocation("Mars/Olympus_Mons")
+    Test.assertTrue(not invalidDate.ok() and not invalidZone.ok(), "25 invalid date and timezone return errors")
+
+    duration: Time = Time.parseDuration("1h30m").unwrap()
+    Test.assertTrue(duration.add(Time.Minutes(30)).inHours() == 2 and duration.subtract(Time.Minutes(15)).inMinutes() == 75, "26 Time duration arithmetic composes")
+
+    failed: Result[int] = Result.Err(Error("PipelineError", "intentional regression case"))
+    Test.assertTrue(not failed.ok() and failed.unwrapOr(42) == 42, "27 Result error fallback remains typed")
+
+    Os.remove(path).unwrap()
+    Test.summary()
+}

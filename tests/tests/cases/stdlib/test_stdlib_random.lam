@@ -1,17 +1,44 @@
 # expect: random_ok
 # expect: choice_ok
+# expect: rand_error_ok
+# expect: choice_error_ok
+# expect: sample_error_ok
+# expect: empty_string_ok
 
 from lamrandom import Random
+from lamerrors import Result
+
+func resultInt(r: Result) -> int {
+    go! { return r.Value.(int) }
+}
 
 func main() {
-    n: int = Random.randInt(1, 100)
+    n: int = resultInt(Random.randInt(1, 100))
     if n >= 1 {
         print("random_ok")
     }
 
     items: list[any] = ["a", "b", "c"]
-    c: any = Random.choice(items)
-    if c != None {
+    selected: Result[any] = Random.choice(items)
+    c: any = selected.value
+    if selected.ok() and c != None {
         print("choice_ok")
+    }
+
+    invalidRange: Result[int] = Random.randInt(2, 2)
+    if not invalidRange.ok() {
+        print("rand_error_ok")
+    }
+    emptyChoice: Result[any] = Random.choice([])
+    if not emptyChoice.ok() {
+        print("choice_error_ok")
+    }
+    invalidSample: Result[list[any]] = Random.sample(items, 4)
+    if not invalidSample.ok() {
+        print("sample_error_ok")
+    }
+    emptyString: Result[str] = Random.randomString(0)
+    if emptyString.ok() and str(emptyString.value) == "" {
+        print("empty_string_ok")
     }
 }

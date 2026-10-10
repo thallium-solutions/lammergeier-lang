@@ -1,0 +1,50 @@
+# Support module for composition coverage of legacy data-structure imports.
+
+from lamqueue import Queue
+from lamdeque import Deque
+from lamstack import Stack
+from lamset import Set
+from lamheap import Heap, PriorityHeap
+
+func compatibilityShimsWork() -> bool {
+    queue: Queue = Queue()
+    queue.enqueue("queue")
+    if queue.dequeue().unwrap() != "queue" {
+        return false
+    }
+
+    deque: Deque = Deque()
+    deque.pushFront("front")
+    deque.pushBack("back")
+    if deque.popFront().unwrap() != "front" or deque.popBack().unwrap() != "back" {
+        return false
+    }
+
+    stack: Stack = Stack()
+    stack.push("stack")
+    if stack.pop().unwrap() != "stack" {
+        return false
+    }
+
+    values: Set = Set()
+    values.add("set")
+    if not values.contains("set") {
+        return false
+    }
+
+    heap: Heap = Heap()
+    heap.push(3)
+    heap.push(1)
+    if heap.pop().unwrap() != 1 {
+        return false
+    }
+
+    priority: PriorityHeap = PriorityHeap()
+    priority.push(2, "later")
+    priority.push(1, "first")
+    return priority.pop().unwrap() == "first"
+}
+
+func main() {
+    pass
+}

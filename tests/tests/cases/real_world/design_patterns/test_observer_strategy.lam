@@ -8,8 +8,7 @@
 # expect: threshold_total=1400
 # expect: active_strategy=threshold
 
-from lamqueue import Queue
-from lamstack import Stack
+from lamdatastructures import Queue, Stack
 from lamfmt import Fmt
 
 interface Observer {
@@ -17,7 +16,7 @@ interface Observer {
 }
 
 class EmailObserver {
-    func __init__(self) {
+    func init(self) {
         self.inbox: Queue = Queue()
     }
 
@@ -27,7 +26,7 @@ class EmailObserver {
 }
 
 class AuditObserver {
-    func __init__(self) {
+    func init(self) {
         self.entries: Stack = Stack()
     }
 
@@ -37,7 +36,7 @@ class AuditObserver {
 }
 
 class EventBus {
-    func __init__(self) {
+    func init(self) {
         self.observers: list[Observer] = []
     }
 
@@ -68,7 +67,7 @@ class NoDiscount {
 }
 
 class PercentOff {
-    func __init__(self, percent: int) {
+    func init(self, percent: int) {
         self.percent: int = percent
     }
 
@@ -82,7 +81,7 @@ class PercentOff {
 }
 
 class ThresholdDiscount {
-    func __init__(self, threshold: int, amount: int) {
+    func init(self, threshold: int, amount: int) {
         self.threshold: int = threshold
         self.amount: int = amount
     }
@@ -100,7 +99,7 @@ class ThresholdDiscount {
 }
 
 class Cart {
-    func __init__(self, strategy: PricingStrategy) {
+    func init(self, strategy: PricingStrategy) {
         self.items: list[int] = []
         self.strategy: PricingStrategy = strategy
     }
@@ -137,8 +136,8 @@ func main() {
     bus.publish("payment_captured", "1499")
 
     print(f"email_inbox={email.inbox.size()}")
-    print(f"email_first={email.inbox.peek()}")
-    print(f"audit_top={audit.entries.peek()}")
+    print(f"email_first={email.inbox.peek().unwrap()}")
+    print(f"audit_top={audit.entries.peek().unwrap()}")
 
     cart: Cart = Cart(PercentOff(20))
     cart.add(1000)

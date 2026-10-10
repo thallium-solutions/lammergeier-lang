@@ -16,7 +16,7 @@ func formatGreeting(name: str) -> str {
 }
 
 class Counter {
-    func __init__(self, start: int = 0) {
+    func init(self, start: int = 0) {
         self.value: int = start
     }
 

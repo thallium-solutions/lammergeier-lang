@@ -1,10 +1,103 @@
 # expect: exec_ok
+# expect: exec_empty_ok
+# expect: exec_error_ok
+# expect: exec_output_ok
+# expect: exec_silent_ok
+# expect: exec_typed_args_ok
+# expect: exec_streams_status_ok
+# expect: exec_options_ok
+# expect: exec_timeout_ok
+# expect: exec_invalid_timeout_ok
+# expect: exec_cancel_ok
 
-from lamexec import Exec
+from lamexec import Exec, ExecCommand, ExecResult
+from lamerrors import Result, Error
+
+go! {
+    import "time"
+}
+
+func resultExecCommand(r: Result) -> ExecCommand {
+    go! { return r.Value.(*ExecCommand) }
+}
+
+func resultExecResult(r: Result) -> ExecResult {
+    go! { return r.Value.(*ExecResult) }
+}
 
 func main() {
-    out: str = Exec.run("echo hello_exec")
-    if len(out) > 0 {
+    out: Result[str] = Exec.run("echo hello_exec")
+    if out.ok() and len(str(out.value)) > 0 {
         print("exec_ok")
+    }
+
+    empty: Result[str] = Exec.run("true")
+    if empty.ok() and str(empty.value) == "" {
+        print("exec_empty_ok")
+    }
+
+    missing: Result[str] = Exec.run("/definitely/not/a/real/lam-command")
+    if not missing.ok() {
+        err: Error = missing.error
+        if err.kind == "ExecError" {
+            print("exec_error_ok")
+        }
+    }
+
+    output: Result[str] = Exec.output("echo", ["hello_output"])
+    if output.ok() and len(str(output.value)) > 0 {
+        print("exec_output_ok")
+    }
+
+    silent: Result[int] = Exec.runSilent("true")
+    if silent.ok() and silent.value == 0 {
+        print("exec_silent_ok")
+    }
+
+    typed: ExecCommand = resultExecCommand(Exec.command("printf", ["%s", "hello typed world"]))
+    typedResult: ExecResult = resultExecResult(typed.execute())
+    if typedResult.stdout == "hello typed world" and typedResult.stderr == "" and typedResult.exitCode == 0 {
+        print("exec_typed_args_ok")
+    }
+
+    streams: ExecCommand = ExecCommand("sh", ["-c", "cat; printf problem >&2; exit 7"], {}, "", "input", 0)
+    streamResult: ExecResult = resultExecResult(Exec.runCommand(streams))
+    if streamResult.stdout == "input" and streamResult.stderr == "problem" and streamResult.exitCode == 7 and not streamResult.success() {
+        print("exec_streams_status_ok")
+    }
+
+    configured: ExecCommand = ExecCommand("sh", ["-c", "printf %s:$PWD \"$LAM_EXEC_CASE\""], {"LAM_EXEC_CASE": "env-ok"}, "/tmp", "", 1000)
+    configuredResult: ExecResult = resultExecResult(configured.execute())
+    if configuredResult.stdout == "env-ok:/tmp" {
+        print("exec_options_ok")
+    }
+
+    timed: ExecCommand = ExecCommand("sh", ["-c", "sleep 1"], {}, "", "", 20)
+    if not timed.execute().ok() {
+        print("exec_timeout_ok")
+    }
+
+    invalidTimeout: ExecCommand = ExecCommand("true", [], {}, "", "", -1)
+    if not invalidTimeout.execute().ok() {
+        print("exec_invalid_timeout_ok")
+    }
+
+    cancellable: ExecCommand = ExecCommand("sh", ["-c", "sleep 2"], {}, "", "", 0)
+    wasCancelled: bool = false
+    go! {
+        finished := make(chan *Result, 1)
+        go func() { finished <- cancellable.Execute() }()
+        deadline := time.Now().Add(time.Second)
+        var cancelResult *Result
+        for time.Now().Before(deadline) {
+            cancelResult = cancellable.Cancel()
+            if cancelResult.Error == nil { break }
+            time.Sleep(time.Millisecond)
+        }
+        executionResult := <-finished
+        wasCancelled = cancelResult != nil && cancelResult.Error == nil && executionResult.Error != nil
+    }
+    if wasCancelled {
+        print("exec_cancel_ok")
     }
 }

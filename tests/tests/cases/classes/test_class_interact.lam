@@ -10,7 +10,7 @@
 # expect: cls_interact_ok
 
 class Rect2 {
-    func __init__(self, width: int, height: int) {
+    func init(self, width: int, height: int) {
         self.width: int = width
         self.height: int = height
     }

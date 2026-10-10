@@ -17,24 +17,24 @@
 #
 #     from lamdb import Db, QueryBuilder
 #
-#     db: Db = Db.connect("sqlite", ":memory:")
-#     db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+#     db: Db = Db.connect("sqlite", ":memory:")?
+#     _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?
 #
 #     # Raw SQL with positional parameters (driver-agnostic ``?``).
-#     db.exec("INSERT INTO users (name, age) VALUES (?, ?)", ["alice", 30])
+#     _ = db.exec("INSERT INTO users (name, age) VALUES (?, ?)", ["alice", 30])?
 #
 #     # Knex-style builder.
 #     rows: list[dict[str, any]] = db.table("users")
-#         .select("id", "name")
+#         .select(["id", "name"])
 #         .where("age", ">", 18)
 #         .orderBy("name", "asc")
 #         .limit(10)
-#         .get()
+#         .get()?
 #
-#     # Insert / update / delete return the affected-row count.
-#     n: int = db.table("users").insert({"name": "bob", "age": 42})
-#     n2: int = db.table("users").where("id", 1).update({"age": 31})
-#     n3: int = db.table("users").where("id", 1).delete()
+#     # Insert / update / delete return affected-row counts in Results.
+#     n: int = db.table("users").insert({"name": "bob", "age": 42})?
+#     n2: int = db.table("users").whereEq("id", 1).update({"age": 31})?
+#     n3: int = db.table("users").whereEq("id", 1).delete()?
 #
 # Driver compatibility notes:
 #   * SQLite uses ``?`` placeholders and ``[INTEGER PRIMARY KEY
@@ -44,10 +44,9 @@
 #     query builder rewrites ``?`` → ``$1``/``$2``/… automatically
 #     when the driver is ``postgres``.
 #
-# The library never silently swallows errors — driver-level failures
-# bubble up via ``panic`` for ergonomic call sites that don't want to
-# care, and via ``try*`` siblings (``Db.tryConnect``,
-# ``Db.tryExec`` etc.) returning ``Result`` for code that does.
+# Expected database failures are returned through unsuffixed ``Result[T]``
+# APIs. Callers can inspect errors, use ``?`` to propagate them, or opt into
+# a panic explicitly with ``unwrap()``.
 
 from lamerrors import Result, Error
 
@@ -114,6 +113,37 @@ go! {
         return b.String()
     }
 
+    // Render the QueryBuilder's flat condition triples. Predicate
+    // groups use this same renderer before wrapping the result in
+    // parentheses, so nesting preserves both boolean order and parameter
+    // order without introducing a second condition representation.
+    func lamDbRenderConditions(conds []interface{}) (string, []interface{}) {
+        var b strings.Builder
+        params := []interface{}{}
+        rendered := 0
+        for _, raw := range conds {
+            triple, ok := raw.([]interface{})
+            if !ok || len(triple) < 3 {
+                continue
+            }
+            logic, _ := triple[0].(string)
+            fragment, _ := triple[1].(string)
+            values, _ := triple[2].([]interface{})
+            if fragment == "" {
+                continue
+            }
+            if rendered > 0 {
+                b.WriteString(" ")
+                b.WriteString(logic)
+                b.WriteString(" ")
+            }
+            b.WriteString(fragment)
+            params = append(params, values...)
+            rendered++
+        }
+        return b.String(), params
+    }
+
     // ─── Transient error detection ────────────────────────────
     // A transient error is one that the driver/DB might recover
     // from on retry: closed connection, broken pipe, server
@@ -150,10 +180,10 @@ go! {
 
 class Db {
     #- Pooled connection handle around a ``*sql.DB``. Goroutine-safe
-       (the underlying ``database/sql`` pool is). Every query method
-       has a ``try`` sibling that returns ``Result``. -#
+       (the underlying ``database/sql`` pool is). Expected driver failures
+       are returned as structured ``Result`` errors. -#
 
-    func __init__(self) {
+    func init(self) {
         self.driver: str = ""
         self.dsn: str = ""
         self.handle: any = None      # *sql.DB
@@ -161,35 +191,9 @@ class Db {
         self.retryBaseMs: int = 50
     }
 
-    static func connect(driver: str, dsn: str) -> Db {
-        #- Open a new database connection. Panics on failure; use
-           ``tryConnect`` for a Result-returning variant. -#
-        db: Db = Db()
-        db.driver = ""
-        go! {
-            db.Driver = lamDbResolveDriver(driver)
-        }
-        db.dsn = dsn
-        go! {
-            handle, err := sql.Open(db.Driver, dsn)
-            if err != nil {
-                panic(fmt.Sprintf("db: cannot open %s: %v", db.Driver, err))
-            }
-            // Sane defaults — overridable via ``setPool``.
-            handle.SetMaxOpenConns(25)
-            handle.SetMaxIdleConns(5)
-            handle.SetConnMaxIdleTime(5 * time.Minute)
-            handle.SetConnMaxLifetime(30 * time.Minute)
-            if err := handle.Ping(); err != nil {
-                panic(fmt.Sprintf("db: cannot ping %s: %v", db.Driver, err))
-            }
-            db.Handle = handle
-        }
-        return db
-    }
-
-    static func tryConnect(driver: str, dsn: str) -> Result {
-        #- Result-returning variant of ``connect``. -#
+    static func connect(driver: str, dsn: str) -> Result[Db] {
+        #- Open and verify a pooled database connection. Driver resolution,
+           open, and ping failures are returned as ``DbConnectError``. -#
         go! {
             d := lamDbResolveDriver(driver)
             handle, err := sql.Open(d, dsn)
@@ -209,7 +213,7 @@ class Db {
         }
     }
 
-    func setPool(self, maxOpen: int, maxIdle: int, idleSec: int, lifetimeSec: int) {
+    func setPool(self, maxOpen: int, maxIdle: int, idleSec: int, lifetimeSec: int) -> Result[bool] {
         #- Tune the underlying connection pool. ``maxOpen`` caps the
            number of concurrent connections, ``maxIdle`` how many to
            keep warm, ``idleSec``/``lifetimeSec`` recycle stale
@@ -217,7 +221,9 @@ class Db {
            default. -#
         go! {
             handle, ok := self.Handle.(*sql.DB)
-            if !ok { return }
+            if !ok || handle == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbConfigError", "database is not connected", nil))
+            }
             handle.SetMaxOpenConns(maxOpen)
             handle.SetMaxIdleConns(maxIdle)
             if idleSec > 0 {
@@ -226,6 +232,7 @@ class Db {
             if lifetimeSec > 0 {
                 handle.SetConnMaxLifetime(time.Duration(lifetimeSec) * time.Second)
             }
+            return LAMMERGEIER.Result.Ok(true)
         }
     }
 
@@ -238,24 +245,30 @@ class Db {
         self.retryBaseMs = baseMs
     }
 
-    func close(self) {
+    func close(self) -> Result[bool] {
         go! {
-            if h, ok := self.Handle.(*sql.DB); ok {
-                h.Close()
+            h, ok := self.Handle.(*sql.DB)
+            if !ok || h == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbCloseError", "database is not connected", nil))
             }
+            if err := h.Close(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbCloseError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(true)
         }
     }
 
-    func ping(self) -> bool {
-        ok: bool = false
+    func ping(self) -> Result[bool] {
         go! {
-            if h, hok := self.Handle.(*sql.DB); hok {
-                if err := h.Ping(); err == nil {
-                    ok = true
-                }
+            h, ok := self.Handle.(*sql.DB)
+            if !ok || h == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbPingError", "database is not connected", nil))
             }
+            if err := h.Ping(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbPingError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(true)
         }
-        return ok
     }
 
     func driverName(self) -> str {
@@ -270,41 +283,15 @@ class Db {
     }
 
     # ── Raw SQL ────────────────────────────────────────────────
-    func exec(self, query: str, params: list[any] = []) -> int {
-        #- Execute an INSERT / UPDATE / DELETE / DDL statement.
-           Returns affected-row count. Retries on transient errors. -#
-        affected: int = 0
+    func exec(self, query: str, params: list[any] = []) -> Result[int] {
+        #- Execute an INSERT / UPDATE / DELETE / DDL statement and return
+           the affected-row count. Transient failures are retried; the final
+           driver failure is returned as ``DbExecError``. -#
         go! {
-            handle, _ := self.Handle.(*sql.DB)
-            q := lamDbRewritePlaceholders(query, self.Driver)
-            args := make([]interface{}, len(params))
-            for i, p := range params { args[i] = p }
-            attempts := self.MaxRetries + 1
-            var lastErr error
-            for k := 0; k < attempts; k++ {
-                res, err := handle.Exec(q, args...)
-                if err == nil {
-                    n, _ := res.RowsAffected()
-                    affected = int(n)
-                    lastErr = nil
-                    break
-                }
-                lastErr = err
-                if !lamDbIsTransient(err) {
-                    break
-                }
-                time.Sleep(time.Duration(self.RetryBaseMs<<k) * time.Millisecond)
+            handle, ok := self.Handle.(*sql.DB)
+            if !ok || handle == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", "database is not connected", nil))
             }
-            if lastErr != nil {
-                panic(fmt.Sprintf("db: exec failed: %v", lastErr))
-            }
-        }
-        return affected
-    }
-
-    func tryExec(self, query: str, params: list[any] = []) -> Result {
-        go! {
-            handle, _ := self.Handle.(*sql.DB)
             q := lamDbRewritePlaceholders(query, self.Driver)
             args := make([]interface{}, len(params))
             for i, p := range params { args[i] = p }
@@ -314,9 +301,11 @@ class Db {
             for k := 0; k < attempts; k++ {
                 res, err := handle.Exec(q, args...)
                 if err == nil {
-                    affected, _ = res.RowsAffected()
-                    lastErr = nil
-                    break
+                    affected, err = res.RowsAffected()
+                    if err == nil {
+                        lastErr = nil
+                        break
+                    }
                 }
                 lastErr = err
                 if !lamDbIsTransient(err) { break }
@@ -329,14 +318,15 @@ class Db {
         }
     }
 
-    func query(self, query: str, params: list[any] = []) -> list[dict[str, any]] {
-        #- Run a SELECT and return all rows as a list of dicts keyed
-           by column name. Values come back as ``interface{}`` so a
-           caller can decide how to coerce them (most drivers return
-           ``string``/``int64``/``float64``/``[]byte``/``time.Time``). -#
-        out: list[dict[str, any]] = []
+    func query(self, query: str, params: list[any] = []) -> Result[list[dict[str, any]]] {
+        #- Run a SELECT and return all rows as dictionaries keyed by column
+           name. Query, metadata, scan, iteration, and connection failures
+           are returned as ``DbQueryError``. -#
         go! {
-            handle, _ := self.Handle.(*sql.DB)
+            handle, ok := self.Handle.(*sql.DB)
+            if !ok || handle == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", "database is not connected", nil))
+            }
             q := lamDbRewritePlaceholders(query, self.Driver)
             args := make([]interface{}, len(params))
             for i, p := range params { args[i] = p }
@@ -344,109 +334,139 @@ class Db {
             var lastErr error
             for k := 0; k < attempts; k++ {
                 rows, err := handle.Query(q, args...)
-                if err == nil {
-                    cols, _ := rows.Columns()
-                    for rows.Next() {
-                        vals := make([]interface{}, len(cols))
-                        ptrs := make([]interface{}, len(cols))
-                        for i := range vals { ptrs[i] = &vals[i] }
-                        if err := rows.Scan(ptrs...); err != nil {
-                            rows.Close()
-                            lastErr = err
-                            break
-                        }
-                        row := map[string]interface{}{}
-                        for i, c := range cols {
-                            // SQLite returns []byte for TEXT in some
-                            // build modes — coerce to string here so
-                            // Lam-side comparisons work intuitively.
-                            if b, ok := vals[i].([]byte); ok {
-                                row[c] = string(b)
-                            } else {
-                                row[c] = vals[i]
-                            }
-                        }
-                        out = append(out, row)
+                if err != nil {
+                    lastErr = err
+                    if lamDbIsTransient(err) {
+                        time.Sleep(time.Duration(self.RetryBaseMs<<k) * time.Millisecond)
+                        continue
                     }
-                    rows.Close()
-                    lastErr = nil
                     break
                 }
-                lastErr = err
-                if !lamDbIsTransient(err) { break }
-                time.Sleep(time.Duration(self.RetryBaseMs<<k) * time.Millisecond)
+                cols, err := rows.Columns()
+                if err != nil {
+                    rows.Close()
+                    lastErr = err
+                    break
+                }
+                out := []map[string]interface{}{}
+                for rows.Next() {
+                    vals := make([]interface{}, len(cols))
+                    ptrs := make([]interface{}, len(cols))
+                    for i := range vals { ptrs[i] = &vals[i] }
+                    if err = rows.Scan(ptrs...); err != nil { break }
+                    row := map[string]interface{}{}
+                    for i, c := range cols {
+                        if b, ok := vals[i].([]byte); ok {
+                            row[c] = string(b)
+                        } else {
+                            row[c] = vals[i]
+                        }
+                    }
+                    out = append(out, row)
+                }
+                if err == nil { err = rows.Err() }
+                rows.Close()
+                if err != nil {
+                    lastErr = err
+                    break
+                }
+                return LAMMERGEIER.Result.Ok(out)
             }
-            if lastErr != nil {
-                panic(fmt.Sprintf("db: query failed: %v", lastErr))
+            if lastErr == nil {
+                lastErr = fmt.Errorf("query failed without a driver error")
             }
+            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", lastErr.Error(), nil))
         }
-        return out
     }
 
-    func queryJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> list[dict[str, any]] {
-        rows: list[dict[str, any]] = self.query(query, params)
+    func queryJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> Result[list[dict[str, any]]] {
+        rows: list[dict[str, any]] = self.query(query, params)?
         go! {
             selected := map[string]bool{}
             for _, column := range jsonColumns { selected[column] = true }
             for _, row := range rows {
                 for column := range selected {
                     raw, ok := row[column]
-                    if !ok || raw == nil { row[column] = lamJSONMust(nil); continue }
+                    if !ok || raw == nil {
+                        parsed, err := lamJSONFrom(nil)
+                        if err != nil {
+                            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), nil))
+                        }
+                        row[column] = parsed
+                        continue
+                    }
                     var text string
                     switch value := raw.(type) {
                     case []byte: text = string(value)
                     case string: text = value
                     case LamJSON: row[column] = value; continue
-                    default: row[column] = lamJSONMust(value); continue
+                    default:
+                        parsed, err := lamJSONFrom(value)
+                        if err != nil {
+                            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), nil))
+                        }
+                        row[column] = parsed
+                        continue
                     }
                     parsed, err := lamJSONParse(text)
-                    if err != nil { panic(fmt.Sprintf("db: column %s contains invalid JSON: %v", column, err)) }
+                    if err != nil {
+                        return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                            "DbJsonError",
+                            fmt.Sprintf("column %s contains invalid JSON: %v", column, err),
+                            nil,
+                        ))
+                    }
                     row[column] = parsed
                 }
             }
         }
-        return rows
+        return Result.Ok(rows)
     }
 
-    func firstJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> dict[str, any] {
-        rows: list[dict[str, any]] = self.queryJson(query, jsonColumns, params)
+    func firstJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> Result[dict[str, any]] {
+        rows: list[dict[str, any]] = self.queryJson(query, jsonColumns, params)?
         if len(rows) == 0 {
             empty: dict[str, any] = {}
-            return empty
+            return Result.Ok(empty)
         }
-        return rows[0]
+        return Result.Ok(rows[0])
     }
 
-    func scalarJson(self, query: str, params: list[any] = []) -> json {
-        raw: any = self.scalar(query, params)
+    func scalarJson(self, query: str, params: list[any] = []) -> Result[json] {
+        raw: any = self.scalar(query, params)?
         go! {
-            switch value := raw.(type) {
-            case []byte: return lamJSONParseMust(string(value))
-            case string: return lamJSONParseMust(value)
-            case LamJSON: return value
-            default: return lamJSONMust(value)
+            var value LamJSON
+            var err error
+            switch typed := raw.(type) {
+            case []byte: value, err = lamJSONParse(string(typed))
+            case string: value, err = lamJSONParse(typed)
+            case LamJSON: value = typed
+            default: value, err = lamJSONFrom(typed)
             }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(value)
         }
     }
 
-    func first(self, query: str, params: list[any] = []) -> dict[str, any] {
-        #- Run a SELECT and return only the first row (``{}`` if no
-           rows were returned). Equivalent to
-           ``query(...).first_or({})``. -#
-        rows: list[dict[str, any]] = self.query(query, params)
+    func first(self, query: str, params: list[any] = []) -> Result[dict[str, any]] {
+        #- Run a SELECT and return only the first row (``{}`` if no rows
+           were returned). Query failures remain visible as errors. -#
+        rows: list[dict[str, any]] = self.query(query, params)?
         if len(rows) == 0 {
             empty: dict[str, any] = {}
-            return empty
+            return Result.Ok(empty)
         }
-        return rows[0]
+        return Result.Ok(rows[0])
     }
 
-    func scalar(self, query: str, params: list[any] = []) -> any {
+    func scalar(self, query: str, params: list[any] = []) -> Result[any] {
         #- Run a SELECT and return the first column of the first row.
-           Useful for aggregations like ``SELECT COUNT(*)``. -#
-        rows: list[dict[str, any]] = self.query(query, params)
+           An empty result set is ``Ok(None)``; query failures are errors. -#
+        rows: list[dict[str, any]] = self.query(query, params)?
         if len(rows) == 0 {
-            return None
+            return Result.Ok(None)
         }
         first_: dict[str, any] = rows[0]
         out: any = None
@@ -456,60 +476,80 @@ class Db {
                 break
             }
         }
-        return out
+        return Result.Ok(out)
     }
 
     # ── Transactions ───────────────────────────────────────────
-    func transaction(self, fn: any) -> bool {
-        #- Run ``fn(tx: Tx)`` in a transaction. Commits on success,
-           rolls back on panic / explicit ``tx.rollback()``. Returns
-           ``true`` on commit, ``false`` if the user code rolled back
-           manually. Re-raises any panic *after* the rollback so
-           callers can still see the original error. -#
-        ok: bool = false
+    func transaction(self, fn: any) -> Result[bool] {
+        #- Run ``fn(tx: Tx)`` in a transaction. ``Ok(true)`` means the
+           transaction committed and ``Ok(false)`` means user code explicitly
+           rolled it back. Begin and commit failures are returned as errors.
+           Unexpected callback panics are rolled back and re-raised. -#
         go! {
-            handle, _ := self.Handle.(*sql.DB)
+            handle, ok := self.Handle.(*sql.DB)
+            if !ok || handle == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "database is not connected", nil))
+            }
             tx, err := handle.Begin()
             if err != nil {
-                panic(fmt.Sprintf("db: cannot begin transaction: %v", err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
             }
             txObj := &Tx{Conn: tx, Driver: self.Driver, RolledBack: false, Committed: false}
-            // Run user code, recovering panics so we always rollback.
             defer func() {
                 if r := recover(); r != nil {
-                    tx.Rollback()
+                    _ = tx.Rollback()
                     panic(r)
                 }
-                if !txObj.RolledBack && !txObj.Committed {
-                    if err := tx.Commit(); err == nil {
-                        ok = true
-                        txObj.Committed = true
-                    }
-                }
             }()
-            if cb, isFn := fn.(func(*Tx)); isFn {
+            switch cb := fn.(type) {
+            case func(*Tx) *Result:
+                callbackResult := cb(txObj)
+                if callbackResult == nil {
+                    _ = tx.Rollback()
+                    txObj.RolledBack = true
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "callback returned no Result", nil))
+                }
+                if !callbackResult.Ok() {
+                    _ = tx.Rollback()
+                    txObj.RolledBack = true
+                    return LAMMERGEIER.Result.Err(callbackResult.Error)
+                }
+            case func(*Tx):
                 cb(txObj)
+            default:
+                _ = tx.Rollback()
+                txObj.RolledBack = true
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "callback must accept a Tx", nil))
             }
+            if txObj.RolledBack {
+                return LAMMERGEIER.Result.Ok(false)
+            }
+            if txObj.Committed {
+                return LAMMERGEIER.Result.Ok(true)
+            }
+            if err := tx.Commit(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+            }
+            txObj.Committed = true
+            return LAMMERGEIER.Result.Ok(true)
         }
-        return ok
     }
 
-    func begin(self) -> Tx {
-        #- Open an explicit transaction. The caller owns the
-           lifecycle: call ``tx.commit()`` or ``tx.rollback()``
-           exactly once. For most code, ``transaction(fn)`` is
-           safer because it rolls back automatically on panic. -#
-        txObj: Tx = Tx()
+    func begin(self) -> Result[Tx] {
+        #- Open an explicit transaction. The caller owns the lifecycle and
+           must call ``commit`` or ``rollback`` exactly once. -#
         go! {
-            handle, _ := self.Handle.(*sql.DB)
+            handle, ok := self.Handle.(*sql.DB)
+            if !ok || handle == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "database is not connected", nil))
+            }
             tx, err := handle.Begin()
             if err != nil {
-                panic(fmt.Sprintf("db: cannot begin transaction: %v", err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
             }
-            txObj.Conn = tx
-            txObj.Driver = self.Driver
+            txObj := &Tx{Conn: tx, Driver: self.Driver, RolledBack: false, Committed: false}
+            return LAMMERGEIER.Result.Ok(txObj)
         }
-        return txObj
     }
 
     # ── Knex-style query builder ───────────────────────────────
@@ -529,47 +569,58 @@ class Db {
 class Tx {
     #- Active transaction handle yielded by ``Db.transaction``. -#
 
-    func __init__(self) {
+    func init(self) {
         self.conn: any = None       # *sql.Tx
         self.driver: str = ""
         self.rolledBack: bool = false
         self.committed: bool = false
     }
 
-    func exec(self, query: str, params: list[any] = []) -> int {
-        affected: int = 0
+    func exec(self, query: str, params: list[any] = []) -> Result[int] {
         go! {
-            tx, _ := self.Conn.(*sql.Tx)
+            tx, ok := self.Conn.(*sql.Tx)
+            if !ok || tx == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", "transaction is not active", nil))
+            }
             q := lamDbRewritePlaceholders(query, self.Driver)
             args := make([]interface{}, len(params))
             for i, p := range params { args[i] = p }
             res, err := tx.Exec(q, args...)
             if err != nil {
-                panic(fmt.Sprintf("tx: exec failed: %v", err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", err.Error(), nil))
             }
-            n, _ := res.RowsAffected()
-            affected = int(n)
+            n, err := res.RowsAffected()
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(int(n))
         }
-        return affected
     }
 
-    func query(self, query: str, params: list[any] = []) -> list[dict[str, any]] {
-        out: list[dict[str, any]] = []
+    func query(self, query: str, params: list[any] = []) -> Result[list[dict[str, any]]] {
         go! {
-            tx, _ := self.Conn.(*sql.Tx)
+            tx, ok := self.Conn.(*sql.Tx)
+            if !ok || tx == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", "transaction is not active", nil))
+            }
             q := lamDbRewritePlaceholders(query, self.Driver)
             args := make([]interface{}, len(params))
             for i, p := range params { args[i] = p }
             rows, err := tx.Query(q, args...)
             if err != nil {
-                panic(fmt.Sprintf("tx: query failed: %v", err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), nil))
             }
-            cols, _ := rows.Columns()
+            cols, err := rows.Columns()
+            if err != nil {
+                rows.Close()
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), nil))
+            }
+            out := []map[string]interface{}{}
             for rows.Next() {
                 vals := make([]interface{}, len(cols))
                 ptrs := make([]interface{}, len(cols))
                 for i := range vals { ptrs[i] = &vals[i] }
-                rows.Scan(ptrs...)
+                if err = rows.Scan(ptrs...); err != nil { break }
                 row := map[string]interface{}{}
                 for i, c := range cols {
                     if b, ok := vals[i].([]byte); ok {
@@ -580,61 +631,88 @@ class Tx {
                 }
                 out = append(out, row)
             }
+            if err == nil { err = rows.Err() }
             rows.Close()
-        }
-        return out
-    }
-
-    func rollback(self) {
-        go! {
-            tx, _ := self.Conn.(*sql.Tx)
-            tx.Rollback()
-            self.RolledBack = true
-        }
-    }
-
-    func commit(self) {
-        go! {
-            tx, _ := self.Conn.(*sql.Tx)
-            if err := tx.Commit(); err == nil {
-                self.Committed = true
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), nil))
             }
+            return LAMMERGEIER.Result.Ok(out)
+        }
+    }
+
+    func rollback(self) -> Result[bool] {
+        go! {
+            tx, ok := self.Conn.(*sql.Tx)
+            if !ok || tx == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
+            }
+            if err := tx.Rollback(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+            }
+            self.RolledBack = true
+            return LAMMERGEIER.Result.Ok(true)
+        }
+    }
+
+    func commit(self) -> Result[bool] {
+        go! {
+            tx, ok := self.Conn.(*sql.Tx)
+            if !ok || tx == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
+            }
+            if err := tx.Commit(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+            }
+            self.Committed = true
+            return LAMMERGEIER.Result.Ok(true)
         }
     }
 
     # ── Savepoints (SQLite, MySQL ≥5.6, Postgres) ──────────────
-    func savepoint(self, savepointName: str) {
+    func savepoint(self, savepointName: str) -> Result[bool] {
         #- Mark a point inside the transaction that can be rolled
            back to without aborting the whole transaction. ``name``
            must be a SQL identifier; we forward it verbatim. -#
         go! {
-            tx, _ := self.Conn.(*sql.Tx)
-            if _, err := tx.Exec("SAVEPOINT " + savepointName); err != nil {
-                panic(fmt.Sprintf("tx: savepoint failed: %v", err))
+            tx, ok := self.Conn.(*sql.Tx)
+            if !ok || tx == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
             }
+            if _, err := tx.Exec("SAVEPOINT " + savepointName); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(true)
         }
     }
 
-    func rollbackTo(self, savepointName: str) {
+    func rollbackTo(self, savepointName: str) -> Result[bool] {
         #- Rewind state to the named savepoint. The transaction
            stays open afterwards — the caller can keep going,
            savepoint again, or commit/rollback normally. -#
         go! {
-            tx, _ := self.Conn.(*sql.Tx)
-            if _, err := tx.Exec("ROLLBACK TO SAVEPOINT " + savepointName); err != nil {
-                panic(fmt.Sprintf("tx: rollback to savepoint failed: %v", err))
+            tx, ok := self.Conn.(*sql.Tx)
+            if !ok || tx == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
             }
+            if _, err := tx.Exec("ROLLBACK TO SAVEPOINT " + savepointName); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(true)
         }
     }
 
-    func releaseSavepoint(self, savepointName: str) {
+    func releaseSavepoint(self, savepointName: str) -> Result[bool] {
         #- Drop the named savepoint, locking in everything done
            since it was created. -#
         go! {
-            tx, _ := self.Conn.(*sql.Tx)
-            if _, err := tx.Exec("RELEASE SAVEPOINT " + savepointName); err != nil {
-                panic(fmt.Sprintf("tx: release savepoint failed: %v", err))
+            tx, ok := self.Conn.(*sql.Tx)
+            if !ok || tx == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
             }
+            if _, err := tx.Exec("RELEASE SAVEPOINT " + savepointName); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(true)
         }
     }
 
@@ -668,8 +746,11 @@ class QueryBuilder {
            ``where(col, val)`` becomes ``col = val``. Successive calls
            AND together.
          * ``orWhere(col, op, val)`` — OR-joined predicate.
+         * ``whereGroup(fn)`` / ``orWhereGroup(fn)`` — nested predicates;
+           ``fn`` receives a child QueryBuilder used only for conditions.
          * ``whereIn(col, values)`` / ``whereNotIn`` — list membership.
          * ``whereNull(col)`` / ``whereNotNull(col)``.
+         * ``clone()`` — independently mutable copy with the same binding.
          * ``orderBy(col, dir="asc")`` / ``limit(n)`` / ``offset(n)``.
          * ``join(other, on)`` / ``leftJoin`` / ``rightJoin``.
          * ``groupBy(*cols)`` / ``having(col, op, val)``.
@@ -685,7 +766,7 @@ class QueryBuilder {
          * ``toSql()``              — preview the assembled SQL +
            parameter list without executing. -#
 
-    func __init__(self) {
+    func init(self) {
         self.db: Db = None
         self.tx: Tx = None              # set when bound to a transaction.
         self.driver: str = ""           # mirrored from db/tx for placeholder rewriting.
@@ -702,6 +783,44 @@ class QueryBuilder {
         self.distinctOn: bool = false
         self.lockMode: str = ""           # ``""``, ``FOR UPDATE``, ``FOR SHARE``.
         self.returningCols: list[str] = []
+    }
+
+    func clone(self) -> QueryBuilder {
+        #- Return an independently mutable copy of this builder. Database /
+           transaction bindings are retained, while every mutable clause and
+           condition-parameter list is copied. -#
+        cloned: QueryBuilder = QueryBuilder()
+        go! {
+            cloned.Db = s.Db
+            cloned.Tx = s.Tx
+            cloned.Driver = s.Driver
+            cloned.TableName = s.TableName
+            cloned.Cols = append([]string{}, s.Cols...)
+            cloned.Conds = make([]interface{}, 0, len(s.Conds))
+            for _, raw := range s.Conds {
+                triple, ok := raw.([]interface{})
+                if !ok || len(triple) < 3 {
+                    cloned.Conds = append(cloned.Conds, raw)
+                    continue
+                }
+                logic, _ := triple[0].(string)
+                fragment, _ := triple[1].(string)
+                values, _ := triple[2].([]interface{})
+                copiedValues := append([]interface{}{}, values...)
+                cloned.Conds = append(cloned.Conds, []interface{}{logic, fragment, copiedValues})
+            }
+            cloned.OrderClauses = append([]string{}, s.OrderClauses...)
+            cloned.GroupCols = append([]string{}, s.GroupCols...)
+            cloned.HavingFragment = s.HavingFragment
+            cloned.HavingParams = append([]interface{}{}, s.HavingParams...)
+            cloned.LimitN = s.LimitN
+            cloned.OffsetN = s.OffsetN
+            cloned.Joins = append([]string{}, s.Joins...)
+            cloned.DistinctOn = s.DistinctOn
+            cloned.LockMode = s.LockMode
+            cloned.ReturningCols = append([]string{}, s.ReturningCols...)
+        }
+        return cloned
     }
 
     func select(self, cols: list[any]) -> QueryBuilder {
@@ -749,6 +868,55 @@ class QueryBuilder {
 
     func orWhereEq(self, col: str, val: any) -> QueryBuilder {
         return self.orWhere(col, "=", val)
+    }
+
+    func _addWhereGroup(self, logic: str, callback: any) -> QueryBuilder {
+        #- Build predicates on an isolated child builder, then append their
+           rendered SQL as one parenthesized predicate. Empty groups are a
+           no-op. Callbacks may return the child builder (as Lam lambdas do)
+           or return nothing. -#
+        group: QueryBuilder = QueryBuilder()
+        group.driver = self.driver
+        go! {
+            switch cb := callback.(type) {
+            case func(*QueryBuilder) *QueryBuilder:
+                _ = cb(group)
+            case func(*QueryBuilder):
+                cb(group)
+            case func(*QueryBuilder) interface{}:
+                _ = cb(group)
+            default:
+                panic(fmt.Sprintf("QueryBuilder predicate group callback must accept a QueryBuilder, got %T", callback))
+            }
+        }
+        if len(group.conds) == 0 {
+            return self
+        }
+        fragment: str = ""
+        params: list[any] = []
+        go! {
+            rendered, values := lamDbRenderConditions(group.Conds)
+            if rendered != "" {
+                fragment = "(" + rendered + ")"
+                params = values
+            }
+        }
+        if fragment != "" {
+            self.conds.append([logic, fragment, params])
+        }
+        return self
+    }
+
+    func whereGroup(self, callback: any) -> QueryBuilder {
+        #- AND-join a parenthesized predicate group. Groups may contain any
+           ``where*`` / ``orWhere*`` predicates, including nested groups. -#
+        return self._addWhereGroup("AND", callback)
+    }
+
+    func orWhereGroup(self, callback: any) -> QueryBuilder {
+        #- OR-join a parenthesized predicate group. If this is the first
+           predicate, the leading OR is omitted just like ``orWhere``. -#
+        return self._addWhereGroup("OR", callback)
     }
 
     func whereIn(self, col: str, values: list[any]) -> QueryBuilder {
@@ -1037,7 +1205,7 @@ class QueryBuilder {
         return out
     }
 
-    func _runQuery(self, sqlText: str, params: list[any]) -> list[dict[str, any]] {
+    func _runQuery(self, sqlText: str, params: list[any]) -> Result[list[dict[str, any]]] {
         #- Internal: run a SELECT through the bound transaction
            (when ``self.tx`` is set) or through the underlying
            ``Db`` connection. -#
@@ -1047,14 +1215,14 @@ class QueryBuilder {
         return self.db.query(sqlText, params)
     }
 
-    func _runExec(self, sqlText: str, params: list[any]) -> int {
+    func _runExec(self, sqlText: str, params: list[any]) -> Result[int] {
         if self.tx != None {
             return self.tx.exec(sqlText, params)
         }
         return self.db.exec(sqlText, params)
     }
 
-    func get(self) -> list[dict[str, any]] {
+    func get(self) -> Result[list[dict[str, any]]] {
         plan: dict[str, any] = self.toSql()
         sqlText: str = ""
         params: list[any] = []
@@ -1065,17 +1233,17 @@ class QueryBuilder {
         return self._runQuery(sqlText, params)
     }
 
-    func first(self) -> dict[str, any] {
+    func first(self) -> Result[dict[str, any]] {
         self.limitN = 1
-        rows: list[dict[str, any]] = self.get()
+        rows: list[dict[str, any]] = self.get()?
         if len(rows) == 0 {
             empty: dict[str, any] = {}
-            return empty
+            return Result.Ok(empty)
         }
-        return rows[0]
+        return Result.Ok(rows[0])
     }
 
-    func count(self) -> int {
+    func count(self) -> Result[int] {
         savedCols: list[str] = self.cols
         self.cols = ["COUNT(*) AS cnt"]
         plan: dict[str, any] = self.toSql()
@@ -1086,9 +1254,9 @@ class QueryBuilder {
             if v, ok := plan["sql"].(string); ok { sqlText = v }
             if p, ok := plan["params"].([]interface{}); ok { params = p }
         }
-        rows: list[dict[str, any]] = self._runQuery(sqlText, params)
+        rows: list[dict[str, any]] = self._runQuery(sqlText, params)?
         if len(rows) == 0 {
-            return 0
+            return Result.Ok(0)
         }
         first_: dict[str, any] = rows[0]
         n: int = 0
@@ -1103,10 +1271,10 @@ class QueryBuilder {
                 }
             }
         }
-        return n
+        return Result.Ok(n)
     }
 
-    func insert(self, record: dict[str, any]) -> int {
+    func insert(self, record: dict[str, any]) -> Result[int] {
         sqlText: str = ""
         params: list[any] = []
         go! {
@@ -1130,19 +1298,19 @@ class QueryBuilder {
             params = vals
         }
         if len(self.returningCols) > 0 and self.driver == "postgres" {
-            rows: list[dict[str, any]] = self._runQuery(sqlText, params)
-            return len(rows)
+            rows: list[dict[str, any]] = self._runQuery(sqlText, params)?
+            return Result.Ok(len(rows))
         }
         return self._runExec(sqlText, params)
     }
 
-    func insertReturning(self, record: dict[str, any]) -> list[dict[str, any]] {
+    func insertReturning(self, record: dict[str, any]) -> Result[list[dict[str, any]]] {
         #- Postgres-only: INSERT and return the rows the database
            generated. Combine with ``returning(cols)`` to pick which
            columns come back. Other drivers return ``[]``. -#
         if self.driver != "postgres" {
             empty: list[dict[str, any]] = []
-            return empty
+            return Result.Ok(empty)
         }
         sqlText: str = ""
         params: list[any] = []
@@ -1171,10 +1339,10 @@ class QueryBuilder {
         return self._runQuery(sqlText, params)
     }
 
-    func insertMany(self, records: list[dict[str, any]]) -> int {
+    func insertMany(self, records: list[dict[str, any]]) -> Result[int] {
         n: int = len(records)
         if n == 0 {
-            return 0
+            return Result.Ok(0)
         }
         sqlText: str = ""
         params: list[any] = []
@@ -1207,7 +1375,7 @@ class QueryBuilder {
         return self._runExec(sqlText, params)
     }
 
-    func update(self, record: dict[str, any]) -> int {
+    func update(self, record: dict[str, any]) -> Result[int] {
         sqlText: str = ""
         params: list[any] = []
         go! {
@@ -1241,7 +1409,7 @@ class QueryBuilder {
         return self._runExec(sqlText, params)
     }
 
-    func delete(self) -> int {
+    func delete(self) -> Result[int] {
         sqlText: str = ""
         params: list[any] = []
         go! {
@@ -1271,7 +1439,7 @@ class QueryBuilder {
     }
 
     # ── Aggregations ──────────────────────────────────────────
-    func _aggregate(self, expr: str) -> any {
+    func _aggregate(self, expr: str) -> Result[any] {
         #- Run a single-column aggregate (``SUM``, ``AVG``, …) and
            return the scalar value, coerced to the closest Lam
            type (``int`` / ``float`` / ``str`` / ``None``). -#
@@ -1285,9 +1453,9 @@ class QueryBuilder {
             if v, ok := plan["sql"].(string); ok { sqlText = v }
             if p, ok := plan["params"].([]interface{}); ok { params = p }
         }
-        rows: list[dict[str, any]] = self._runQuery(sqlText, params)
+        rows: list[dict[str, any]] = self._runQuery(sqlText, params)?
         if len(rows) == 0 {
-            return None
+            return Result.Ok(None)
         }
         first_: dict[str, any] = rows[0]
         out: any = None
@@ -1296,43 +1464,53 @@ class QueryBuilder {
                 out = v
             }
         }
-        return out
+        return Result.Ok(out)
     }
 
-    func sum(self, col: str) -> any {
-        #- ``SELECT SUM(col)``. Returns ``None`` if no rows. -#
+    func sum(self, col: str) -> Result[any] {
+        #- ``SELECT SUM(col)``. Returns ``Ok(None)`` if no rows. -#
         return self._aggregate("SUM(" + col + ")")
     }
 
-    func avg(self, col: str) -> any {
+    func avg(self, col: str) -> Result[any] {
         return self._aggregate("AVG(" + col + ")")
     }
 
-    func min(self, col: str) -> any {
+    func min(self, col: str) -> Result[any] {
         return self._aggregate("MIN(" + col + ")")
     }
 
-    func max(self, col: str) -> any {
+    func max(self, col: str) -> Result[any] {
         return self._aggregate("MAX(" + col + ")")
     }
 
-    func exists(self) -> bool {
+    func exists(self) -> Result[bool] {
         #- ``true`` iff at least one row matches. Cheaper than
            ``count() > 0`` because we ``LIMIT 1``. -#
         savedLimit: int = self.limitN
         self.limitN = 1
-        rows: list[dict[str, any]] = self.get()
+        rowsResult: Result[list[dict[str, any]]] = self.get()
         self.limitN = savedLimit
-        return len(rows) > 0
+        if not rowsResult.ok() {
+            return Result.Err(rowsResult.error)
+        }
+        rows: list[dict[str, any]] = []
+        go! { rows = rowsResult.Value.([]map[string]interface{}) }
+        return Result.Ok(len(rows) > 0)
     }
 
-    func pluck(self, col: str) -> list[any] {
+    func pluck(self, col: str) -> Result[list[any]] {
         #- Project a single column out of every row. Equivalent to
            ``[r[col] for r in this.select(col).get()]``. -#
         savedCols: list[str] = self.cols
         self.cols = [col]
-        rows: list[dict[str, any]] = self.get()
+        rowsResult: Result[list[dict[str, any]]] = self.get()
         self.cols = savedCols
+        if not rowsResult.ok() {
+            return Result.Err(rowsResult.error)
+        }
+        rows: list[dict[str, any]] = []
+        go! { rows = rowsResult.Value.([]map[string]interface{}) }
         out: list[any] = []
         go! {
             for _, r := range rows {
@@ -1341,10 +1519,10 @@ class QueryBuilder {
                 }
             }
         }
-        return out
+        return Result.Ok(out)
     }
 
-    func paginate(self, page: int, perPage: int) -> dict[str, any] {
+    func paginate(self, page: int, perPage: int) -> Result[dict[str, any]] {
         #- Convenience wrapper around ``limit`` + ``offset`` that
            also runs a sibling ``COUNT(*)`` so the caller can render
            page navigation. ``page`` is 1-indexed. The returned
@@ -1356,10 +1534,10 @@ class QueryBuilder {
         if perPage < 1 {
             perPage = 15
         }
-        total: int = self.count()
+        total: int = self.count()?
         self.limitN = perPage
         self.offsetN = (page - 1) * perPage
-        rows: list[dict[str, any]] = self.get()
+        rows: list[dict[str, any]] = self.get()?
         lastPage: int = 1
         if total > 0 {
             lastPage = (total + perPage - 1) / perPage
@@ -1370,21 +1548,21 @@ class QueryBuilder {
         out["page"] = page
         out["perPage"] = perPage
         out["lastPage"] = lastPage
-        return out
+        return Result.Ok(out)
     }
 
     # ── Mutating shortcuts ────────────────────────────────────
-    func increment(self, col: str, n: int = 1) -> int {
+    func increment(self, col: str, n: int = 1) -> Result[int] {
         #- ``UPDATE ... SET col = col + ?`` against the current
            WHERE clause. -#
         return self._adjust(col, n, "+")
     }
 
-    func decrement(self, col: str, n: int = 1) -> int {
+    func decrement(self, col: str, n: int = 1) -> Result[int] {
         return self._adjust(col, n, "-")
     }
 
-    func _adjust(self, col: str, n: int, op: str) -> int {
+    func _adjust(self, col: str, n: int, op: str) -> Result[int] {
         sqlText: str = ""
         params: list[any] = []
         go! {
@@ -1413,7 +1591,7 @@ class QueryBuilder {
         return self._runExec(sqlText, params)
     }
 
-    func upsert(self, record: dict[str, any], conflictCols: list[any], updateCols: list[any] = []) -> int {
+    func upsert(self, record: dict[str, any], conflictCols: list[any], updateCols: list[any] = []) -> Result[int] {
         #- INSERT a row, falling back to UPDATE on conflict against
            ``conflictCols``. Driver dialects:
 
@@ -1494,7 +1672,7 @@ class QueryBuilder {
         return self._runExec(sqlText, params)
     }
 
-    func firstOrCreate(self, lookup: dict[str, any], extra: dict[str, any] = {}) -> dict[str, any] {
+    func firstOrCreate(self, lookup: dict[str, any], extra: dict[str, any] = {}) -> Result[dict[str, any]] {
         #- Return the first row matching ``lookup`` if one exists;
            otherwise INSERT a row composed of ``lookup`` ⊕ ``extra``
            and return that. The lookup keys become equality
@@ -1503,9 +1681,9 @@ class QueryBuilder {
         for k, v in lookup {
             _ = self.whereEq(k, v)
         }
-        existing: dict[str, any] = self.first()
+        existing: dict[str, any] = self.first()?
         if len(existing) > 0 {
-            return existing
+            return Result.Ok(existing)
         }
         record: dict[str, any] = {}
         for k, v in lookup {
@@ -1517,24 +1695,24 @@ class QueryBuilder {
         # Reset conditions so insert() doesn't try to honour them.
         cleared: list[any] = []
         self.conds = cleared
-        _ = self.insert(record)
-        return record
+        _ = self.insert(record)?
+        return Result.Ok(record)
     }
 
-    func updateOrCreate(self, lookup: dict[str, any], values: dict[str, any]) -> dict[str, any] {
+    func updateOrCreate(self, lookup: dict[str, any], values: dict[str, any]) -> Result[dict[str, any]] {
         #- Upsert by composition: if a row matches ``lookup``, apply
            ``values`` via UPDATE; otherwise INSERT ``lookup`` ⊕
            ``values``. Returns the resulting row. -#
         for k, v in lookup {
             _ = self.whereEq(k, v)
         }
-        existing: dict[str, any] = self.first()
+        existing: dict[str, any] = self.first()?
         if len(existing) > 0 {
-            _ = self.update(values)
+            _ = self.update(values)?
             for k, v in values {
                 existing[k] = v
             }
-            return existing
+            return Result.Ok(existing)
         }
         record: dict[str, any] = {}
         for k, v in lookup {
@@ -1545,11 +1723,11 @@ class QueryBuilder {
         }
         cleared: list[any] = []
         self.conds = cleared
-        _ = self.insert(record)
-        return record
+        _ = self.insert(record)?
+        return Result.Ok(record)
     }
 
-    func truncate(self) {
+    func truncate(self) -> Result[int] {
         #- ``DELETE FROM table`` (portable). On Postgres / MySQL we
            emit ``TRUNCATE TABLE`` which resets identity counters
            atomically; SQLite uses the DELETE form because it lacks
@@ -1564,7 +1742,7 @@ class QueryBuilder {
             }
         }
         empty: list[any] = []
-        _ = self._runExec(sqlText, empty)
+        return self._runExec(sqlText, empty)
     }
 }
 

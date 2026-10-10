@@ -1,0 +1,9 @@
+# Test: async class methods still require the func keyword.
+# expect-error: syntax check failed
+# expect-error: expected
+
+class BrokenWorker {
+    async work(self) -> int {
+        return 1
+    }
+}

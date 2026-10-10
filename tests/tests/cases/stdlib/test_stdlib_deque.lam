@@ -9,13 +9,14 @@
 # expect: PASS 8 popBack
 # expect: PASS 9 toList round-trip
 # expect: PASS 10 clear empties
-# expect: PASS 11 popFront throws
-# expect: PASS 12 popBack throws
-# expect: PASS 13 peekFront throws
-# expect: PASS 14 peekBack throws
-# expect: 14 passed, 0 failed, 14 total
+# expect: PASS 11 popFront error
+# expect: PASS 12 popBack error
+# expect: PASS 13 peekFront error
+# expect: PASS 14 peekBack error
+# expect: PASS 15 heterogeneous values
+# expect: 15 passed, 0 failed, 15 total
 
-from lamdeque import Deque
+from lamdatastructures import Deque
 from lamtest import Test
 
 func main() {
@@ -26,17 +27,17 @@ func main() {
     d.pushBack(20)
     d.pushBack(30)
     Test.assertEqual(d.size(), 3, "2 pushBack size")
-    Test.assertEqual(d.peekFront(), 10, "3 peekFront")
-    Test.assertEqual(d.peekBack(), 30, "4 peekBack")
+    Test.assertEqual(d.peekFront().unwrap(), 10, "3 peekFront")
+    Test.assertEqual(d.peekBack().unwrap(), 30, "4 peekBack")
 
     d.pushFront(0)
     Test.assertEqual(d.size(), 4, "5 pushFront")
-    Test.assertEqual(d.peekFront(), 0, "6 front order")
+    Test.assertEqual(d.peekFront().unwrap(), 0, "6 front order")
 
-    first: any = d.popFront()
+    first: any = d.popFront().unwrap()
     Test.assertEqual(first, 0, "7 popFront")
 
-    last: any = d.popBack()
+    last: any = d.popBack().unwrap()
     Test.assertEqual(last, 30, "8 popBack")
 
     snapshot: list[any] = d.toList()
@@ -46,21 +47,17 @@ func main() {
     d.clear()
     Test.assertTrue(d.isEmpty(), "10 clear empties")
 
-    popFrontThrows: bool = false
-    try { d.popFront() } catch err { popFrontThrows = true }
-    Test.assertTrue(popFrontThrows, "11 popFront throws")
+    Test.assertFalse(d.popFront().ok(), "11 popFront error")
+    Test.assertFalse(d.popBack().ok(), "12 popBack error")
+    Test.assertFalse(d.peekFront().ok(), "13 peekFront error")
+    Test.assertFalse(d.peekBack().ok(), "14 peekBack error")
 
-    popBackThrows: bool = false
-    try { d.popBack() } catch err { popBackThrows = true }
-    Test.assertTrue(popBackThrows, "12 popBack throws")
-
-    peekFrontThrows: bool = false
-    try { d.peekFront() } catch err { peekFrontThrows = true }
-    Test.assertTrue(peekFrontThrows, "13 peekFront throws")
-
-    peekBackThrows: bool = false
-    try { d.peekBack() } catch err { peekBackThrows = true }
-    Test.assertTrue(peekBackThrows, "14 peekBack throws")
+    d.pushBack("word")
+    d.pushBack(7)
+    d.pushFront(true)
+    mixed: list[any] = d.toList()
+    mixedOk: bool = (len(mixed) == 3) and (mixed[0] == true) and (mixed[1] == "word") and (mixed[2] == 7)
+    Test.assertTrue(mixedOk, "15 heterogeneous values")
 
     Test.summary()
 }

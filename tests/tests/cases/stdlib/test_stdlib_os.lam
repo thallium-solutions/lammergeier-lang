@@ -12,68 +12,117 @@
 # expect: PASS 11 copyFile duplicates
 # expect: PASS 12 hostname non-empty
 # expect: PASS 13 user environment precedence
-# expect: 13 passed, 0 failed, 13 total
+# expect: PASS 14 empty file is success
+# expect: PASS 15 missing file is error
+# expect: PASS 16 empty lines is success
+# expect: PASS 17 missing lines is error
+# expect: PASS 18 empty environment value is success
+# expect: PASS 19 unset environment value is error
+# expect: 19 passed, 0 failed, 19 total
 
 from lamos import Os
 from lamtest import Test
 from lampath import Path
+from lamerrors import Result
+
+go! {
+    import "os"
+}
+
+func resultStr(r: Result) -> str {
+    go! { return r.Value.(string) }
+}
+
+func resultInt(r: Result) -> int {
+    go! { return r.Value.(int) }
+}
+
+func resultBool(r: Result) -> bool {
+    go! { return r.Value.(bool) }
+}
+
+func resultStrings(r: Result) -> list[str] {
+    go! { return r.Value.([]string) }
+}
 
 func main() {
-    cwd: str = Os.getcwd()
+    cwd: str = resultStr(Os.getcwd())
     Test.assertTrue(len(cwd) > 0, "1 cwd non-empty")
 
     tdir: str = Os.tempDir()
     Test.assertTrue(len(tdir) > 0, "2 tempDir non-empty")
 
     # tempFile: create and verify it exists
-    tmp: str = Os.tempFile("lamos_test_", ".txt")
-    Test.assertTrue(Path.exists(tmp), "3 tempFile created")
+    tmp: str = resultStr(Os.tempFile("lamos_test_", ".txt"))
+    exists: bool = resultBool(Path.exists(tmp))
+    Test.assertTrue(exists, "3 tempFile created")
 
     # write/read round-trip
-    Os.writeFile(tmp, "hello world")
-    roundTrip: str = Os.readFile(tmp)
+    Os.writeFile(tmp, "hello world").unwrap()
+    roundTrip: str = resultStr(Os.readFile(tmp))
     Test.assertEqual(roundTrip, "hello world", "4 writeFile/readFile round-trip")
 
     # readLines — file with two lines
-    Os.writeFile(tmp, "a\nb\nc\n")
-    lines: list[str] = Os.readLines(tmp)
+    Os.writeFile(tmp, "a\nb\nc\n").unwrap()
+    lines: list[str] = resultStrings(Os.readLines(tmp))
     Test.assertLen(lines, 3, "5 readLines count")
 
     # writeLines round-trip
     toWrite: list[str] = ["x", "y", "z"]
-    Os.writeLines(tmp, toWrite)
-    back: list[str] = Os.readLines(tmp)
+    Os.writeLines(tmp, toWrite).unwrap()
+    back: list[str] = resultStrings(Os.readLines(tmp))
     Test.assertEqual(back, toWrite, "6 writeLines round-trip")
 
     # fileSize
-    Os.writeFile(tmp, "1234567890")
-    Test.assertEqual(Os.fileSize(tmp), 10, "7 fileSize")
+    Os.writeFile(tmp, "1234567890").unwrap()
+    size: int = resultInt(Os.fileSize(tmp))
+    Test.assertEqual(size, 10, "7 fileSize")
 
     # isFile / isDir
-    Test.assertTrue(Os.isFile(tmp) and not Os.isDir(tmp), "8 isFile / isDir")
+    isFile: bool = resultBool(Os.isFile(tmp))
+    isDir: bool = resultBool(Os.isDir(tmp))
+    Test.assertTrue(isFile and not isDir, "8 isFile / isDir")
 
     # listDir of the tempdir contains the basename of tmp
     basename: str = Path.base(tmp)
-    dirEntries: list[str] = Os.listDir(tdir)
+    dirEntries: list[str] = resultStrings(Os.listDir(tdir))
     Test.assertContains(dirEntries, basename, "9 listDir contains file")
 
-    # walk over tempdir finds the file path
-    paths: list[str] = Os.walk(tdir)
+    # walking a file root includes that file
+    paths: list[str] = resultStrings(Os.walk(tmp))
     Test.assertContains(paths, tmp, "10 walk finds file")
 
     # copyFile
-    dst: str = Os.tempFile("lamos_test_copy_", ".txt")
-    Os.copyFile(tmp, dst)
-    Test.assertEqual(Os.readFile(dst), "1234567890", "11 copyFile duplicates")
+    dst: str = resultStr(Os.tempFile("lamos_test_copy_", ".txt"))
+    Os.copyFile(tmp, dst).unwrap()
+    copied: str = resultStr(Os.readFile(dst))
+    Test.assertEqual(copied, "1234567890", "11 copyFile duplicates")
 
     # hostname (on Linux CI this should never be empty)
-    Test.assertTrue(len(Os.hostname()) > 0, "12 hostname non-empty")
-    Os.setenv("USER", "lam-user")
-    Test.assertEqual(Os.user(), "lam-user", "13 user environment precedence")
+    hostname: str = resultStr(Os.hostname())
+    Test.assertTrue(len(hostname) > 0, "12 hostname non-empty")
+    Os.setenv("USER", "lam-user").unwrap()
+    Test.assertEqual(resultStr(Os.user()), "lam-user", "13 user environment precedence")
+
+    Os.writeFile(tmp, "").unwrap()
+    empty: Result[str] = Os.readFile(tmp)
+    Test.assertTrue(empty.ok() and str(empty.value) == "", "14 empty file is success")
+    missing: Result[str] = Os.readFile(tmp + ".missing")
+    Test.assertFalse(missing.ok(), "15 missing file is error")
+    emptyLines: Result[list[str]] = Os.readLines(tmp)
+    Test.assertTrue(emptyLines.ok() and len(resultStrings(emptyLines)) == 0, "16 empty lines is success")
+    missingLines: Result[list[str]] = Os.readLines(tmp + ".missing")
+    Test.assertFalse(missingLines.ok(), "17 missing lines is error")
+
+    Os.setenv("LAM_TEST_EMPTY_RESULT_VALUE", "").unwrap()
+    emptyEnv: Result[str] = Os.getenv("LAM_TEST_EMPTY_RESULT_VALUE")
+    Test.assertTrue(emptyEnv.ok() and str(emptyEnv.value) == "", "18 empty environment value is success")
+    go! { os.Unsetenv("LAM_TEST_EMPTY_RESULT_VALUE") }
+    missingEnv: Result[str] = Os.getenv("LAM_TEST_EMPTY_RESULT_VALUE")
+    Test.assertFalse(missingEnv.ok(), "19 unset environment value is error")
 
     # cleanup
-    Os.remove(tmp)
-    Os.remove(dst)
-
+    Os.remove(tmp).unwrap()
+    Os.remove(dst).unwrap()
     Test.summary()
 }

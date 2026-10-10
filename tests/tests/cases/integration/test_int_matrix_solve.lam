@@ -18,6 +18,15 @@
 
 from lamarray import Array, Matrix
 from lamtest import Test
+from lamerrors import Result
+
+func resultArray(r: Result) -> Array {
+    go! { return r.Value.(*Array) }
+}
+
+func resultMatrix(r: Result) -> Matrix {
+    go! { return r.Value.(*Matrix) }
+}
 
 func main() {
     # 4x4 well-conditioned matrix (ordered along the main diagonal so
@@ -37,7 +46,7 @@ func main() {
     # Linear solve: x_i = b_i / a_ii since A is diagonal
     bData: list[float] = [1.0, 4.0, 9.0, 16.0]
     b: Array = Array.fromList(bData)
-    x: Array = A.solve(b)               # should be [1, 2, 3, 4]
+    x: Array = resultArray(A.solve(b))               # should be [1, 2, 3, 4]
 
     # Re-multiply: A * x should reproduce b.
     rebuilt: Array = A.mulVec(x)
@@ -47,7 +56,7 @@ func main() {
     print(f"solve_residual_small={smallEnough}")
 
     # A * A^-1 ≈ I via the Frobenius-norm tolerance check.
-    inv: Matrix = A.inverse()
+    inv: Matrix = resultMatrix(A.inverse())
     AAinv: Matrix = A.matmul(inv)
     I: Matrix = Matrix.eye(4)
     print(f"A_times_inv_is_identity={AAinv.allClose(I, 0.0001)}")

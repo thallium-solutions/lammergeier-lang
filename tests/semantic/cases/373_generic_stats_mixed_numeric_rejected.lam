@@ -1,0 +1,9 @@
+# expect-error: list element for variable `mixed` must be `int`, got `float`
+
+from lamstats import Stats
+
+func main() {
+    mixed: list[int] = [1, 2.5]
+    total: int = Stats.sum(mixed)
+    print(total)
+}

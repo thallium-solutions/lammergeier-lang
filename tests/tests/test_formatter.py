@@ -197,7 +197,7 @@ def test_lamc_fmt_directory_recurses_lam_files() -> None:
     print("PASS: lamc fmt directory recursively formats .lam files")
 
 
-def test_formatter_preserves_doc_comment_text() -> None:
+def test_formatter_repairs_doc_terminator_and_preserves_text() -> None:
     source = (
         "class Client{\n"
         "    #- HTTP-date, Set-Cookie, transport-level, User-Agent.\n"
@@ -208,11 +208,12 @@ def test_formatter_preserves_doc_comment_text() -> None:
     result = format_lam_source(source)
     expected_comment = (
         "    #- HTTP-date, Set-Cookie, transport-level, User-Agent.\n"
-        "       Keep https://example.com and application/json verbatim. -  #"
+        "       Keep https://example.com and application/json verbatim. -#"
     )
     assert expected_comment in result.text, result.text
+    assert "-  #" not in result.text
     assert format_lam_source(result.text).text == result.text
-    print("PASS: formatter preserves documentation comment text")
+    print("PASS: formatter repairs documentation terminators and preserves text")
 
 
 def test_formatter_preserves_nested_scoped_import() -> None:
@@ -236,7 +237,7 @@ def main() -> int:
         test_formatter_expands_compact_blocks_and_collapses_blank_lines,
         test_lamc_fmt_stdout_and_check,
         test_lamc_fmt_directory_recurses_lam_files,
-        test_formatter_preserves_doc_comment_text,
+        test_formatter_repairs_doc_terminator_and_preserves_text,
         test_formatter_preserves_nested_scoped_import,
     ]
     for test in tests:

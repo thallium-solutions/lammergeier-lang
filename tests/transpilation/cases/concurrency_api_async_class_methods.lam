@@ -1,0 +1,54 @@
+# Transpilation: async class methods return one-slot typed channel handles.
+# expect-go: func (s *AsyncBox[T]) Get() chan T {
+# expect-go: __lam_async_ch := make(chan T, 1)
+# expect-go: __lam_async_ch <- s.Value
+# expect-go: func AsyncBox_echo[T any](value T) chan T {
+# expect-go: func (s *Secrets) hidden(value int) chan *Result {
+# expect-go: __lam_async_ch := make(chan *Result, 1)
+# expect-go: func secrets_hiddenStatic(value int) chan string {
+# expect-go: __lam_async_ch <- <-s.hidden(value)
+# expect-go: __lam_async_ch <- <-secrets_hiddenStatic(value)
+
+from lamerrors import Result
+
+class AsyncBox[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    async func get(self) -> T {
+        return self.value
+    }
+
+    static async func echo(value: T) -> T {
+        return value
+    }
+}
+
+class Secrets {
+    private async func hidden(self, value: int) -> Result[int] {
+        return Result.Ok(value)
+    }
+
+    async func reveal(self, value: int) -> Result[int] {
+        return await self.hidden(value)
+    }
+
+    private static async func hiddenStatic(value: int) -> str {
+        return f"secret-{value}"
+    }
+
+    static async func revealStatic(value: int) -> str {
+        return await Secrets.hiddenStatic(value)
+    }
+}
+
+func main() {
+    box: AsyncBox[int] = AsyncBox[int](42)
+    value: int = await box.get()
+    echoed: int = await AsyncBox.echo(42)
+    result: Result[int] = await Secrets().reveal(value)
+    print(echoed)
+    print(result.ok())
+    print(await Secrets.revealStatic(value))
+}

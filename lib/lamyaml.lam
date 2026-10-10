@@ -19,12 +19,8 @@
 #     doc: dict[str, any] = Yaml.decode("name: alice\nage: 30")
 #     yamlStr: str = Yaml.encode({"name": "alice", "age": 30})
 #
-# The ``try*`` siblings return a ``Result`` so callers can
-# distinguish "decoded successfully but the structure was wrong"
-# from "the input wasn't valid YAML at all":
-#
-#     res: Result = Yaml.tryDecode(input)
-#     if res.isErr() { … }
+# Fallible operations return a ``Result`` so callers can distinguish
+# successful empty/null values from malformed input.
 #
 # Caveats:
 #   * YAML supports anchors / aliases — yaml.v3 expands them
@@ -37,6 +33,7 @@ from lamerrors import Result, Error
 
 go! {
     import (
+        "io"
         "strings"
 
         yaml "gopkg.in/yaml.v3"
@@ -117,21 +114,8 @@ go! {
 class Yaml {
     #- Static class — no instance state. -#
 
-    static func encode(value: any) -> str {
-        #- Marshal ``value`` to a YAML string. Returns the empty
-           string on encoding error — use ``tryEncode`` if you
-           need to distinguish "intentionally empty" from
-           "encoding failed". -#
-        out: str = ""
-        go! {
-            if b, err := yaml.Marshal(value); err == nil {
-                out = string(b)
-            }
-        }
-        return out
-    }
-
-    static func tryEncode(value: any) -> Result {
+    static func encode(value: any) -> Result[str] {
+        #- Marshal ``value`` to a YAML string. -#
         #- Marshal ``value`` to YAML, returning a ``Result``. -#
         go! {
             b, err := yaml.Marshal(value)
@@ -142,23 +126,10 @@ class Yaml {
         }
     }
 
-    static func decode(yamlStr: str) -> any {
+    static func decode(yamlStr: str) -> Result[any] {
         #- Parse a YAML document. Mapping nodes lower to
            ``dict[str, any]``; sequence nodes to ``list[any]``;
-           scalars to their natural Lam type. Returns ``None``
-           on parse error. -#
-        out: any = None
-        go! {
-            var v interface{}
-            if err := yaml.Unmarshal([]byte(yamlStr), &v); err == nil {
-                out = lamYamlNormalise(v)
-            }
-        }
-        return out
-    }
-
-    static func tryDecode(yamlStr: str) -> Result {
-        #- Parse a YAML document with error surfacing. -#
+           scalars to their natural Lam type. -#
         go! {
             var v interface{}
             if err := yaml.Unmarshal([]byte(yamlStr), &v); err != nil {
@@ -168,22 +139,25 @@ class Yaml {
         }
     }
 
-    static func decodeAll(yamlStr: str) -> list[any] {
+    static func decodeAll(yamlStr: str) -> Result[list[any]] {
         #- Parse a multi-document YAML stream (``---`` separators).
            Returns one entry per document, each in the same shape
-           as ``decode``. Returns an empty list on parse error. -#
-        out: list[any] = []
+           as ``decode``. -#
         go! {
             dec := yaml.NewDecoder(strings.NewReader(yamlStr))
             var docs []interface{}
             for {
                 var v interface{}
-                if err := dec.Decode(&v); err != nil { break }
+                err := dec.Decode(&v)
+                if err == io.EOF {
+                    return LAMMERGEIER.Result.Ok(docs)
+                }
+                if err != nil {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("YamlError", err.Error(), nil))
+                }
                 docs = append(docs, lamYamlNormalise(v))
             }
-            out = docs
         }
-        return out
     }
 }
 

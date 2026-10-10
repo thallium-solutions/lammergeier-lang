@@ -34,7 +34,7 @@ func count_fizz(limit: int) -> int {
 }
 
 class Accumulator {
-    func __init__(self, initial: int) {
+    func init(self, initial: int) {
         self.total: int = initial
     }
 

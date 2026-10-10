@@ -1,4 +1,5 @@
 # expect-pass
+# Deliberately mixes `init` and `__init__` to cover both accepted spellings.
 
 class Account {
     func __init__(self, owner: str, tenant: str) {
@@ -25,7 +26,7 @@ class Flags {
 }
 
 class ServiceAccount(account: Account, flags: Flags) {
-    func __init__(self, owner: str) {
+    func init(self, owner: str) {
         account.init(owner, "service")
         flags.__init__(true)
     }

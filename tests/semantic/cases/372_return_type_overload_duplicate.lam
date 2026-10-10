@@ -1,0 +1,8 @@
+# expect-error: duplicate class method `parse` with the same parameter and return type signature
+
+class Parser {
+    static func parse(value: str) -> int { return len(value) }
+    static func parse(value: str) -> int { return len(value) + 1 }
+}
+
+func main() { pass }

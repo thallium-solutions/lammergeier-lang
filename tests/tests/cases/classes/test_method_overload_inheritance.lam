@@ -1,9 +1,13 @@
 # expect: child-int:1
 # expect: base-str:x
+# expect: inherited return int: 3
+# expect: inherited return str: base:2
 
 class BaseParser {
     func parse(self, value: int) -> str { return f"base-int:{value}" }
     func parse(self, value: str) -> str { return f"base-str:{value}" }
+    func select(self, value: int) -> int { return value + 1 }
+    func select(self, value: int) -> str { return f"base:{value}" }
 }
 
 class ChildParser(BaseParser) {
@@ -14,4 +18,8 @@ func main() {
     parser: ChildParser = ChildParser()
     print(parser.parse(1))
     print(parser.parse("x"))
+    selectedNumber: int = parser.select(2)
+    selectedText: str = parser.select(2)
+    print(f"inherited return int: {selectedNumber}")
+    print(f"inherited return str: {selectedText}")
 }

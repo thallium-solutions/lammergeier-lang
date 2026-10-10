@@ -1,14 +1,72 @@
-# Test: tpybase64 standard library
-# expect: aGVsbG8gd29ybGQ=
-# expect: hello world
-# expect: base64_ok
+# Test: base-N encoding standard library
+# expect: base64_standard=true
+# expect: base64_raw=true
+# expect: base64_url=true
+# expect: base64_url_raw=true
+# expect: base32_standard=true
+# expect: base32_raw=true
+# expect: base32_hex=true
+# expect: base32_hex_raw=true
+# expect: base16=true
+# expect: hex_alias=true
+# expect: empty_ok=true:0
+# expect: malformed_errors=true
+# expect: large_roundtrip=true:8192
+# expect: base_n_ok
 
-from lambase64 import Base64
+from lambase64 import Base64, Base32, Base16, Hex
+from lamerrors import Result
+
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
 
 func main() {
-    encoded: str = Base64.encode("hello world")
-    print(encoded)
-    decoded: str = Base64.decode(encoded)
-    print(decoded)
-    print("base64_ok")
+    standard64: str = Base64.encode("hello world")
+    print(f"base64_standard={standard64 == 'aGVsbG8gd29ybGQ=' and resultString(Base64.decode(standard64)) == 'hello world'}")
+
+    raw64: str = Base64.encodeRaw("hello")
+    print(f"base64_raw={raw64 == 'aGVsbG8' and resultString(Base64.decodeRaw(raw64)) == 'hello'}")
+
+    url64: str = Base64.encodeURL("???")
+    print(f"base64_url={url64 == 'Pz8_' and resultString(Base64.decodeURL(url64)) == '???'}")
+
+    urlRaw64: str = Base64.encodeURLRaw("??")
+    print(f"base64_url_raw={urlRaw64 == 'Pz8' and resultString(Base64.decodeURLRaw(urlRaw64)) == '??'}")
+
+    standard32: str = Base32.encode("foo")
+    print(f"base32_standard={standard32 == 'MZXW6===' and resultString(Base32.decode(standard32)) == 'foo'}")
+
+    raw32: str = Base32.encodeRaw("foo")
+    print(f"base32_raw={raw32 == 'MZXW6' and resultString(Base32.decodeRaw(raw32)) == 'foo'}")
+
+    hex32: str = Base32.encodeHex("foo")
+    print(f"base32_hex={hex32 == 'CPNMU===' and resultString(Base32.decodeHex(hex32)) == 'foo'}")
+
+    hexRaw32: str = Base32.encodeHexRaw("foo")
+    print(f"base32_hex_raw={hexRaw32 == 'CPNMU' and resultString(Base32.decodeHexRaw(hexRaw32)) == 'foo'}")
+
+    encoded16: str = Base16.encode("foo")
+    print(f"base16={encoded16 == '666f6f' and resultString(Base16.decode(encoded16)) == 'foo'}")
+    print(f"hex_alias={Hex.encode('Lam') == '4c616d' and resultString(Hex.decode('4c616d')) == 'Lam'}")
+
+    empty: Result[str] = Base64.decode("")
+    emptyValue: str = resultString(empty)
+    print(f"empty_ok={empty.ok()}:{len(emptyValue)}")
+
+    bad64: Result[str] = Base64.decode("%%not-base64%%")
+    bad64Raw: Result[str] = Base64.decodeRaw("A")
+    bad32: Result[str] = Base32.decode("%===")
+    bad32Hex: Result[str] = Base32.decodeHex("W===")
+    bad16: Result[str] = Base16.decode("0xz1")
+    print(f"malformed_errors={not bad64.ok() and not bad64Raw.ok() and not bad32.ok() and not bad32Hex.ok() and not bad16.ok()}")
+
+    payload: str = ""
+    for i in range(512) {
+        payload += "0123456789abcdef"
+    }
+    largeEncoded: str = Base64.encodeURLRaw(payload)
+    largeDecoded: str = resultString(Base64.decodeURLRaw(largeEncoded))
+    print(f"large_roundtrip={largeDecoded == payload}:{len(largeDecoded)}")
+    print("base_n_ok")
 }

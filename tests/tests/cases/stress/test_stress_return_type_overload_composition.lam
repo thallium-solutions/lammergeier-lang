@@ -1,0 +1,111 @@
+# expect: top assignment=6:local-5
+# expect: static=107:factory-7
+# expect: instance=9.5:true
+# expect: parameter=local-8
+# expect: nested=local-3
+# expect: ternary=local-4
+# expect: collections=local-1,local-2:local-6
+# expect: fallback=12
+# expect: imported defaults=90:bird-9
+# expect: imported static=factory-10
+# expect: inheritance=31:base-11
+# expect: interface=42:contract-12
+# expect: generic=generic-vault-13
+# expect: result=28:result-14
+# expect: chain=chain-node-15
+# expect: init=local-16:2
+
+from return_type_overload_support import remotePick, resultPick, RemoteFactory, ChildSelector, ChoiceContract, ContractSelector, ChainNode
+from lamerrors import Result
+
+func localPick(seed: int) -> int { return seed + 1 }
+func localPick(seed: int) -> str { return f"local-{seed}" }
+
+class LocalSource {
+    static func select(seed: int) -> int { return seed + 100 }
+    static func select(seed: int) -> str { return f"static-{seed}" }
+
+    func value(self, seed: int) -> float { return float(seed) + 0.5 }
+    func value(self, seed: int) -> bool { return seed > 0 }
+}
+
+class Packet {
+    func init(self, label: str, count: int = 1) {
+        self.label: str = label
+        self.count: int = count
+    }
+}
+
+class GenericVault[T] {
+    func init(self, value: T) { self.value: T = value }
+    func project(self, seed: int) -> int { return seed + 40 }
+    func project(self, seed: int) -> str { return f"generic-{self.value}-{seed}" }
+}
+
+func requireText(value: str) -> str { return value }
+
+func nestedText() -> str { return localPick(3) }
+
+func useContract(source: ChoiceContract) -> str {
+    number: int = source.select(12)
+    text: str = source.select(12)
+    return f"{number}:{text}"
+}
+
+func main() {
+    source: LocalSource = LocalSource()
+
+    topNumber: int = localPick(5)
+    topText: str = localPick(5)
+    print(f"top assignment={topNumber}:{topText}")
+
+    staticNumber: int = LocalSource.select(7)
+    staticText: str = RemoteFactory.create(7)
+    print(f"static={staticNumber}:{staticText}")
+
+    decimal: float = source.value(9)
+    flag: bool = source.value(1)
+    print(f"instance={decimal}:{flag}")
+
+    print(f"parameter={requireText(localPick(8))}")
+    print(f"nested={nestedText()}")
+
+    ternaryText: str = localPick(4) if true else localPick(5)
+    print(f"ternary={ternaryText}")
+
+    labels: list[str] = [localPick(1), localPick(2)]
+    labelById: dict[int, str] = {6: localPick(6)}
+    print(f"collections={labels[0]},{labels[1]}:{labelById[6]}")
+
+    print(f"fallback={localPick(11)}")
+
+    remoteNumber: int = remotePick(seed=9)
+    remoteText: str = remotePick(prefix="bird", seed=9)
+    print(f"imported defaults={remoteNumber}:{remoteText}")
+
+    importedStatic: str = RemoteFactory.create(10)
+    print(f"imported static={importedStatic}")
+
+    child: ChildSelector = ChildSelector()
+    inheritedNumber: int = child.select(11)
+    inheritedText: str = child.select(11)
+    print(f"inheritance={inheritedNumber}:{inheritedText}")
+
+    print(f"interface={useContract(ContractSelector())}")
+
+    vault: GenericVault[str] = GenericVault[str]("vault")
+    genericText: str = vault.project(13)
+    print(f"generic={genericText}")
+
+    numberResult: Result[int] = resultPick(14)
+    textResult: Result[str] = resultPick(14)
+    resultNumber: int = numberResult.unwrap()
+    resultText: str = textResult.unwrap()
+    print(f"result={resultNumber}:{resultText}")
+
+    chainText: str = ChainNode("node").next().render(15)
+    print(f"chain={chainText}")
+
+    packet: Packet = Packet(label=localPick(16), count=2)
+    print(f"init={packet.label}:{packet.count}")
+}

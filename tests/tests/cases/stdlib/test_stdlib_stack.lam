@@ -8,8 +8,9 @@
 # expect: empty: false
 # expect: tolist_size: 1
 # expect: cleared: true
+# expect: mixed: 3
 
-from lamstack import Stack
+from lamdatastructures import Stack
 
 func main() {
     s: Stack = Stack()
@@ -19,9 +20,9 @@ func main() {
     s.push(20)
     s.push(30)
     print(f"size: {s.size()}")
-    print(f"peek: {s.peek()}")
-    print(f"pop: {s.pop()}")
-    print(f"pop: {s.pop()}")
+    print(f"peek: {s.peek().unwrap()}")
+    print(f"pop: {s.pop().unwrap()}")
+    print(f"pop: {s.pop().unwrap()}")
     print(f"size: {s.size()}")
     print(f"empty: {s.isEmpty()}")
 
@@ -30,4 +31,10 @@ func main() {
 
     s.clear()
     print(f"cleared: {s.isEmpty()}")
+
+    s.push("word")
+    s.push(7)
+    s.push(true)
+    mixed: list[any] = s.toList()
+    print(f"mixed: {len(mixed)}")
 }

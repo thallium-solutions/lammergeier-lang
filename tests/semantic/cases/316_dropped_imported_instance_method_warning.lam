@@ -1,8 +1,8 @@
-# expect-warning: dropped return value of `file.read()`
+# expect-warning: dropped `Result` from `file.read()`
 
 from lamos import File
 
 func main() {
-    file = File.open("/tmp/unused")
+    file: File = File.open("/tmp/unused").unwrap()
     file.read()
 }

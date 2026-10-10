@@ -42,6 +42,15 @@
 from lamcontext import Context
 from lamtest import Test
 from lamtime import Time
+from lamerrors import Result
+
+func resultContext(r: Result) -> Context {
+    go! { return r.Value.(*Context) }
+}
+
+func resultInt(r: Result) -> int {
+    go! { return r.Value.(int) }
+}
 
 go! {
     import "context"
@@ -50,7 +59,7 @@ go! {
 func main() {
     root: Context = Context.simple()
     Test.assertFalse(root.expired(), "1 simple context starts live")
-    Test.assertTrue(root.expiresIn(None) == -1 and root.expiresIn("milliseconds") == -1, "2 no expiration uses sentinels")
+    Test.assertTrue(resultInt(root.expiresIn(None)) == -1 and resultInt(root.expiresIn("milliseconds")) == -1, "2 no expiration uses sentinels")
 
     root.set("tenant", "alpha")
     Test.assertTrue(root.has("tenant") and root.get("tenant") == "alpha", "3 mutable set/get/has")
@@ -108,71 +117,54 @@ func main() {
     go! {
         nativeInput = context.WithValue(context.Background(), "native-key", "native-value")
     }
-    wrappedNative: Context = Context.fromNative(nativeInput)
+    wrappedNative: Context = resultContext(Context.fromNative(nativeInput))
     Test.assertEqual(wrappedNative.get("native-key"), "native-value", "19 fromNative inherits native values")
 
     roundtripSource: Context = root.valued("roundtrip", "preserved")
-    roundtrip: Context = Context.fromNative(roundtripSource.native())
+    roundtrip: Context = resultContext(Context.fromNative(roundtripSource.native()))
     Test.assertEqual(roundtrip.get("roundtrip"), "preserved", "20 native roundtrip keeps Lam values")
     roundtripSource.cancel("interop stopped")
     Test.assertTrue(roundtrip.wait(200), "21 native roundtrip propagates cancellation")
     Test.assertEqual(roundtrip.reason(), "interop stopped", "22 native roundtrip keeps cancellation reason")
 
     nowMs: int = Time.nowUnixMilli()
-    expirationMetadata: Context = Context.simple().expirable(1000, "milliseconds")
-    metadataRemaining: int = expirationMetadata.expiresIn("milliseconds")
-    Test.assertTrue(expirationMetadata.expiresIn(None) >= nowMs and metadataRemaining > 0 and metadataRemaining <= 1000, "23 relative expiration exposes absolute and remaining values")
+    expirationMetadata: Context = resultContext(Context.simple().expirable(1000, "milliseconds"))
+    metadataRemaining: int = resultInt(expirationMetadata.expiresIn("milliseconds"))
+    Test.assertTrue(resultInt(expirationMetadata.expiresIn(None)) >= nowMs and metadataRemaining > 0 and metadataRemaining <= 1000, "23 relative expiration exposes absolute and remaining values")
     expirationMetadata.cancel("cleanup")
 
-    expiringContext: Context = Context.simple().expirable(80, "milliseconds")
+    expiringContext: Context = resultContext(Context.simple().expirable(80, "milliseconds"))
     Test.assertTrue(expiringContext.wait(1000), "24 expiration wait observes expiry")
     Test.assertTrue(expiringContext.expired(), "25 expiration marks context expired")
     Test.assertEqual(expiringContext.reason(), "deadline exceeded", "26 expiration has a clear reason")
 
     expiresAt: int = Time.nowUnixMilli() + 120
-    absoluteContext: Context = Context.simple().expirable(expiresAt, None)
+    absoluteContext: Context = resultContext(Context.simple().expirable(expiresAt, None))
     absoluteChild: Context = absoluteContext.child()
-    Test.assertEqual(absoluteContext.expiresIn(None), expiresAt, "27 absolute Unix-ms expiration is retained")
+    Test.assertEqual(resultInt(absoluteContext.expiresIn(None)), expiresAt, "27 absolute Unix-ms expiration is retained")
     Test.assertTrue(absoluteContext.wait(1000) and absoluteChild.wait(100), "28 absolute expiration reaches parent and child")
     Test.assertTrue(absoluteChild.expired(), "29 absolute expiration marks child expired")
 
-    secondsContext: Context = Context.simple().expirable(2, "seconds")
-    Test.assertTrue(secondsContext.expiresIn("seconds") > 0 and secondsContext.expiresIn("seconds") <= 2, "30 seconds conversion")
+    secondsContext: Context = resultContext(Context.simple().expirable(2, "seconds"))
+    Test.assertTrue(resultInt(secondsContext.expiresIn("seconds")) > 0 and resultInt(secondsContext.expiresIn("seconds")) <= 2, "30 seconds conversion")
     secondsContext.cancel("cleanup")
-    minutesContext: Context = Context.simple().expirable(1, "minutes")
-    Test.assertEqual(minutesContext.expiresIn("minutes"), 1, "31 minutes conversion")
+    minutesContext: Context = resultContext(Context.simple().expirable(1, "minutes"))
+    Test.assertEqual(resultInt(minutesContext.expiresIn("minutes")), 1, "31 minutes conversion")
     minutesContext.cancel("cleanup")
-    hoursContext: Context = Context.simple().expirable(1, "hours")
-    Test.assertEqual(hoursContext.expiresIn("hours"), 1, "32 hours conversion")
+    hoursContext: Context = resultContext(Context.simple().expirable(1, "hours"))
+    Test.assertEqual(resultInt(hoursContext.expiresIn("hours")), 1, "32 hours conversion")
     hoursContext.cancel("cleanup")
-    daysContext: Context = Context.simple().expirable(1, "days")
-    Test.assertEqual(daysContext.expiresIn("days"), 1, "33 days conversion")
+    daysContext: Context = resultContext(Context.simple().expirable(1, "days"))
+    Test.assertEqual(resultInt(daysContext.expiresIn("days")), 1, "33 days conversion")
     daysContext.cancel("cleanup")
 
-    immediate: Context = Context.simple().expirable(0, "milliseconds")
+    immediate: Context = resultContext(Context.simple().expirable(0, "milliseconds"))
     Test.assertTrue(immediate.wait(200) and immediate.expired(), "34 zero relative expiration is immediate")
 
-    try {
-        invalidExpiration: Context = root.expirable(-1, "seconds")
-        Test.fail("35 negative expiration is rejected clearly")
-    } catch err {
-        Test.assertContains(str(err), "expiration must be >= 0", "35 negative expiration is rejected clearly")
-    }
-
-    try {
-        invalidUnit: Context = root.expirable(1, "fortnights")
-        Test.fail("36 unsupported expiration unit is rejected clearly")
-    } catch err {
-        Test.assertContains(str(err), "unsupported time unit", "36 unsupported expiration unit is rejected clearly")
-    }
-
-    try {
-        expiringUnitCheck: Context = root.expirable(1, "seconds")
-        invalidRemaining: int = expiringUnitCheck.expiresIn("fortnights")
-        Test.fail("37 unsupported expiresIn unit is rejected clearly")
-    } catch err {
-        Test.assertContains(str(err), "unsupported time unit", "37 unsupported expiresIn unit is rejected clearly")
-    }
+    Test.assertFalse(root.expirable(-1, "seconds").ok(), "35 negative expiration is rejected clearly")
+    Test.assertFalse(root.expirable(1, "fortnights").ok(), "36 unsupported expiration unit is rejected clearly")
+    expiringUnitCheck: Context = resultContext(root.expirable(1, "seconds"))
+    Test.assertFalse(expiringUnitCheck.expiresIn("fortnights").ok(), "37 unsupported expiresIn unit is rejected clearly")
 
     try {
         invalidWait: bool = root.wait(-1)

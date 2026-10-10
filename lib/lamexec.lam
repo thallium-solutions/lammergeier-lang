@@ -1,49 +1,225 @@
 # Lammergeier standard library: process execution
 # Import with: from lamexec import Exec
 
+from lamerrors import Result, Error
+
 go! {
     import (
+        "bytes"
+        "context"
+        "fmt"
+        "os"
         "os/exec"
         "strings"
+        "sync"
+        "time"
     )
+
+    type lamExecState struct {
+        mu      sync.Mutex
+        cancel  context.CancelFunc
+        running bool
+    }
+}
+
+class ExecResult {
+    #- Completed process data. A non-zero exit status is still a completed
+       process and is represented by ``Ok(ExecResult)``. -#
+
+    func init(self, stdout: str, stderr: str, exitCode: int) {
+        self.stdout: str = stdout
+        self.stderr: str = stderr
+        self.exitCode: int = exitCode
+    }
+
+    func success(self) -> bool {
+        return self.exitCode == 0
+    }
+}
+
+class ExecCommand {
+    #- Typed process description. ``execute`` may be called more than once,
+       but a single command object cannot run concurrently with itself. -#
+
+    func init(self, name: str, args: list[str] = [], env: dict[str, str] = {}, cwd: str = "", stdin: str = "", timeoutMs: int = 0) {
+        self.name: str = name
+        self.args: list[str] = args
+        self.env: dict[str, str] = env
+        self.cwd: str = cwd
+        self.stdin: str = stdin
+        self.timeoutMs: int = timeoutMs
+        self._state: any = None
+        go! {
+            s._state = &lamExecState{}
+        }
+    }
+
+    func execute(self) -> Result[ExecResult] {
+        go! {
+            if s.Name == "" {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecError", "execute: command name is empty", nil,
+                ))
+            }
+            if s.TimeoutMs < 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecError", "execute: timeoutMs must not be negative", nil,
+                ))
+            }
+
+            state := s._state.(*lamExecState)
+            state.mu.Lock()
+            if state.running {
+                state.mu.Unlock()
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecError", "execute: command is already running", nil,
+                ))
+            }
+
+            var ctx context.Context
+            var cancel context.CancelFunc
+            if s.TimeoutMs > 0 {
+                ctx, cancel = context.WithTimeout(context.Background(), time.Duration(s.TimeoutMs)*time.Millisecond)
+            } else {
+                ctx, cancel = context.WithCancel(context.Background())
+            }
+            state.running = true
+            state.cancel = cancel
+            state.mu.Unlock()
+
+            cmd := exec.CommandContext(ctx, s.Name, s.Args...)
+            if s.Cwd != "" { cmd.Dir = s.Cwd }
+            if len(s.Env) > 0 {
+                cmd.Env = os.Environ()
+                for key, value := range s.Env {
+                    cmd.Env = append(cmd.Env, key+"="+value)
+                }
+            }
+            cmd.Stdin = strings.NewReader(s.Stdin)
+            var stdout bytes.Buffer
+            var stderr bytes.Buffer
+            cmd.Stdout = &stdout
+            cmd.Stderr = &stderr
+            err := cmd.Run()
+            contextErr := ctx.Err()
+            cancel()
+
+            state.mu.Lock()
+            state.running = false
+            state.cancel = nil
+            state.mu.Unlock()
+
+            if contextErr == context.DeadlineExceeded {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecTimeoutError", fmt.Sprintf("execute %q timed out after %dms", s.Name, s.TimeoutMs), nil,
+                ))
+            }
+            if contextErr == context.Canceled {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecCancelledError", fmt.Sprintf("execute %q was cancelled", s.Name), nil,
+                ))
+            }
+            if err != nil {
+                if _, completed := err.(*exec.ExitError); !completed {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ExecError", fmt.Sprintf("execute %q: %v", s.Name, err), nil,
+                    ))
+                }
+            }
+
+            exitCode := 0
+            if cmd.ProcessState != nil { exitCode = cmd.ProcessState.ExitCode() }
+            return LAMMERGEIER.Result.Ok(NewExecResult(stdout.String(), stderr.String(), exitCode))
+        }
+    }
+
+    func cancel(self) -> Result[any] {
+        go! {
+            state := s._state.(*lamExecState)
+            state.mu.Lock()
+            defer state.mu.Unlock()
+            if !state.running || state.cancel == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecError", "cancel: command is not running", nil,
+                ))
+            }
+            state.cancel()
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
 }
 
 class Exec {
-    static func run(command: str) -> str {
+    static func command(name: str, args: list[str] = []) -> Result[ExecCommand] {
+        if name == "" {
+            return Result.Err(Error("ExecError", "command: name is empty"))
+        }
+        return Result.Ok(ExecCommand(name, args))
+    }
+
+    static func runCommand(command: ExecCommand) -> Result[ExecResult] {
+        return command.execute()
+    }
+
+    static func execute(command: ExecCommand) -> Result[ExecResult] {
+        #- Alias useful when commands are assembled separately. -#
+        return command.execute()
+    }
+
+    static func run(command: str) -> Result[str] {
+        #- Run a command and capture combined stdout/stderr. Empty output is
+           a successful empty string; startup and exit failures are errors. -#
         go! {
             parts := strings.Fields(command)
             if len(parts) == 0 {
-                return ""
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecError", "run: command is empty", nil,
+                ))
             }
             cmd := exec.Command(parts[0], parts[1:]...)
             out, err := cmd.CombinedOutput()
             if err != nil {
-                return string(out) + "\n" + err.Error()
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecError", fmt.Sprintf("run %q: %v; output: %s", command, err, string(out)), nil,
+                ))
             }
-            return string(out)
+            return LAMMERGEIER.Result.Ok(string(out))
         }
     }
 
-    static func runSilent(command: str) -> int {
+    static func runSilent(command: str) -> Result[int] {
         go! {
             parts := strings.Fields(command)
             if len(parts) == 0 {
-                return -1
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecError", "runSilent: command is empty", nil,
+                ))
             }
             cmd := exec.Command(parts[0], parts[1:]...)
-            err := cmd.Run()
-            if err != nil {
-                return 1
+            if err := cmd.Run(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecError", fmt.Sprintf("runSilent %q: %v", command, err), nil,
+                ))
             }
-            return 0
+            return LAMMERGEIER.Result.Ok(0)
         }
     }
 
-    static func output(name: str, args: list[str]) -> str {
+    static func output(name: str, args: list[str]) -> Result[str] {
         go! {
+            if name == "" {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecError", "output: command name is empty", nil,
+                ))
+            }
             cmd := exec.Command(name, args...)
-            out, _ := cmd.Output()
-            return string(out)
+            out, err := cmd.Output()
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ExecError", fmt.Sprintf("output %q: %v", name, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(out))
         }
     }
 }

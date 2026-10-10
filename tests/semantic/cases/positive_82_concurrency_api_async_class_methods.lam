@@ -1,0 +1,32 @@
+# expect-pass
+
+from lamconcurrency import Channel
+from lamerrors import Result
+
+class AsyncValue[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    async func get(self) -> T {
+        return self.value
+    }
+
+    static async func result(value: T) -> Result[T] {
+        return Result.Ok(value)
+    }
+}
+
+func main() {
+    value: AsyncValue[int] = AsyncValue[int](42)
+    handle = value.get()
+    received: int = await handle
+    result: Result[int] = await AsyncValue.result(received)
+
+    channel: Channel = Channel(1)
+    sendHandle = channel.asyncSend(result.unwrap())
+    sent: Result[bool] = await sendHandle
+    item: Result[any] = await channel.asyncReceive()
+    print(sent.ok())
+    print(item.ok())
+}

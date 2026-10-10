@@ -1,41 +1,239 @@
-# Lammergeier standard library: base64 encoding/decoding
-# Import with: from lambase64 import Base64
+# Lammergeier standard library: base-N text encodings
+# Import with: from lambase64 import Base64, Base32, Base16, Hex
+#
+# Encoders return strings directly. Every decoder uses Result so malformed
+# input is distinct from a successfully decoded empty string.
+
+from lamerrors import Result, Error
 
 go! {
-    import "encoding/base64"
+    import (
+        "encoding/base32"
+        "encoding/base64"
+        "encoding/hex"
+        "fmt"
+    )
 }
 
 class Base64 {
+    #- Standard, raw, and URL-safe RFC 4648 Base64 encodings. -#
+
     static func encode(data: str) -> str {
+        #- Encode with the standard padded alphabet. -#
         go! {
             return base64.StdEncoding.EncodeToString([]byte(data))
         }
     }
 
-    static func decode(data: str) -> str {
+    static func decode(data: str) -> Result[str] {
+        #- Decode standard padded Base64. -#
         go! {
             b, err := base64.StdEncoding.DecodeString(data)
             if err != nil {
-                return ""
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "Base64DecodeError", fmt.Sprintf("standard decode failed: %v", err), nil,
+                ))
             }
-            return string(b)
+            return LAMMERGEIER.Result.Ok(string(b))
+        }
+    }
+
+    static func encodeRaw(data: str) -> str {
+        #- Encode with the standard alphabet and no trailing padding. -#
+        go! {
+            return base64.RawStdEncoding.EncodeToString([]byte(data))
+        }
+    }
+
+    static func decodeRaw(data: str) -> Result[str] {
+        #- Decode unpadded standard Base64. -#
+        go! {
+            b, err := base64.RawStdEncoding.DecodeString(data)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "Base64DecodeError", fmt.Sprintf("raw decode failed: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(b))
         }
     }
 
     static func encodeURL(data: str) -> str {
+        #- Encode with the padded URL-safe alphabet. -#
         go! {
             return base64.URLEncoding.EncodeToString([]byte(data))
         }
     }
 
-    static func decodeURL(data: str) -> str {
+    static func decodeURL(data: str) -> Result[str] {
+        #- Decode padded URL-safe Base64. -#
         go! {
             b, err := base64.URLEncoding.DecodeString(data)
             if err != nil {
-                return ""
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "Base64DecodeError", fmt.Sprintf("URL decode failed: %v", err), nil,
+                ))
             }
-            return string(b)
+            return LAMMERGEIER.Result.Ok(string(b))
         }
+    }
+
+    static func encodeURLRaw(data: str) -> str {
+        #- Encode with the URL-safe alphabet and no trailing padding. -#
+        go! {
+            return base64.RawURLEncoding.EncodeToString([]byte(data))
+        }
+    }
+
+    static func decodeURLRaw(data: str) -> Result[str] {
+        #- Decode unpadded URL-safe Base64. -#
+        go! {
+            b, err := base64.RawURLEncoding.DecodeString(data)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "Base64DecodeError", fmt.Sprintf("raw URL decode failed: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(b))
+        }
+    }
+
+    static func encodeRawURL(data: str) -> str {
+        #- Alias for encodeURLRaw. -#
+        return Base64.encodeURLRaw(data)
+    }
+
+    static func decodeRawURL(data: str) -> Result[str] {
+        #- Alias for decodeURLRaw. -#
+        return Base64.decodeURLRaw(data)
+    }
+}
+
+class Base32 {
+    #- Standard and extended-hex RFC 4648 Base32 encodings. -#
+
+    static func encode(data: str) -> str {
+        #- Encode with the standard padded alphabet. -#
+        go! {
+            return base32.StdEncoding.EncodeToString([]byte(data))
+        }
+    }
+
+    static func decode(data: str) -> Result[str] {
+        #- Decode standard padded Base32. -#
+        go! {
+            b, err := base32.StdEncoding.DecodeString(data)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "Base32DecodeError", fmt.Sprintf("standard decode failed: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(b))
+        }
+    }
+
+    static func encodeRaw(data: str) -> str {
+        #- Encode with the standard alphabet and no trailing padding. -#
+        go! {
+            return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(data))
+        }
+    }
+
+    static func decodeRaw(data: str) -> Result[str] {
+        #- Decode unpadded standard Base32. -#
+        go! {
+            b, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(data)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "Base32DecodeError", fmt.Sprintf("raw decode failed: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(b))
+        }
+    }
+
+    static func encodeHex(data: str) -> str {
+        #- Encode with the padded extended-hex alphabet. -#
+        go! {
+            return base32.HexEncoding.EncodeToString([]byte(data))
+        }
+    }
+
+    static func decodeHex(data: str) -> Result[str] {
+        #- Decode padded extended-hex Base32. -#
+        go! {
+            b, err := base32.HexEncoding.DecodeString(data)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "Base32DecodeError", fmt.Sprintf("hex decode failed: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(b))
+        }
+    }
+
+    static func encodeHexRaw(data: str) -> str {
+        #- Encode with the extended-hex alphabet and no trailing padding. -#
+        go! {
+            return base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(data))
+        }
+    }
+
+    static func decodeHexRaw(data: str) -> Result[str] {
+        #- Decode unpadded extended-hex Base32. -#
+        go! {
+            b, err := base32.HexEncoding.WithPadding(base32.NoPadding).DecodeString(data)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "Base32DecodeError", fmt.Sprintf("raw hex decode failed: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(b))
+        }
+    }
+
+    static func encodeRawHex(data: str) -> str {
+        #- Alias for encodeHexRaw. -#
+        return Base32.encodeHexRaw(data)
+    }
+
+    static func decodeRawHex(data: str) -> Result[str] {
+        #- Alias for decodeHexRaw. -#
+        return Base32.decodeHexRaw(data)
+    }
+}
+
+class Base16 {
+    #- Lowercase RFC 4648 Base16 (hexadecimal) encoding. -#
+
+    static func encode(data: str) -> str {
+        go! {
+            return hex.EncodeToString([]byte(data))
+        }
+    }
+
+    static func decode(data: str) -> Result[str] {
+        go! {
+            b, err := hex.DecodeString(data)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "Base16DecodeError", fmt.Sprintf("decode failed: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(b))
+        }
+    }
+}
+
+class Hex {
+    #- Conventional name for Base16. -#
+
+    static func encode(data: str) -> str {
+        return Base16.encode(data)
+    }
+
+    static func decode(data: str) -> Result[str] {
+        return Base16.decode(data)
     }
 }
 

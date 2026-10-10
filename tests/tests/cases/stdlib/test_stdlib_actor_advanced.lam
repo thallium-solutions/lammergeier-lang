@@ -3,12 +3,13 @@
 #
 # expect: find-greeter-hit: hello via-find
 # expect: find-missing-alive: false
-# expect: ask-timeout-is-nil: true
+# expect: ask-timeout-is-error: true
 # expect: unbounded-mailbox-drained: 5
 # expect: pipeline-result: HELLO-WORLD
 # expect: spawn-count-after-stop: 0
 
 from lamactor import Mailbox, ActorRef, ActorSystem
+from lamerrors import Result, Error
 
 class Greeter {
     func onMessage(self, msg: any) -> any {
@@ -28,7 +29,7 @@ class Slow {
 # way through. Demonstrates actors talking to actors via captured
 # refs.
 class Upper {
-    func __init__(self, downstream: ActorRef) {
+    func init(self, downstream: ActorRef) {
         self.downstream: ActorRef = downstream
     }
 
@@ -37,7 +38,7 @@ class Upper {
         upper: str = text.toUpper()
         # Forward and wait for the next stage's reply, then bubble
         # it back up to whoever asked us.
-        return self.downstream.ask(upper, 1000)
+        return self.downstream.ask(upper, 1000).unwrap()
     }
 }
 
@@ -50,6 +51,11 @@ class Hyphenate {
 
 go! { import "time" }
 
+func resultErrorKind(result: Result) -> str {
+    err: Error = result.error
+    return err.kind
+}
+
 func main() {
     sys: ActorSystem = ActorSystem()
 
@@ -57,7 +63,7 @@ func main() {
     sys.spawnNamed("greeter", Greeter())
     found: ActorRef = sys.find("greeter")
     if found.isAlive() {
-        reply: any = found.ask("via-find", 500)
+        reply: any = found.ask("via-find", 500).unwrap()
         print("find-greeter-hit: " + str(reply))
     } else {
         print("find-greeter-hit: FAIL")
@@ -69,39 +75,39 @@ func main() {
         print("find-missing-alive: false")
     }
 
-    # ── ask() returns None when the handler outlives the deadline.
+    # ── ask() returns a typed error when the handler outlives the deadline.
     sref: ActorRef = sys.spawn(Slow())
-    timedOut: any = sref.ask("nope", 1)
-    if timedOut == None {
-        print("ask-timeout-is-nil: true")
+    timedOut: Result[any] = sref.ask("nope", 1)
+    if not timedOut.ok() and resultErrorKind(timedOut) == "ActorTimeoutError" {
+        print("ask-timeout-is-error: true")
     } else {
-        print("ask-timeout-is-nil: false")
+        print("ask-timeout-is-error: false")
     }
     sref.stop()
 
     # ── Unbounded mailbox: 5 sends without a reader, all queue up.
     mb: Mailbox = Mailbox(0)
-    mb.send("a")
-    mb.send("b")
-    mb.send("c")
-    mb.send("d")
-    mb.send("e")
+    mb.send("a").unwrap()
+    mb.send("b").unwrap()
+    mb.send("c").unwrap()
+    mb.send("d").unwrap()
+    mb.send("e").unwrap()
     drained: int = 0
     while drained < 5 {
-        v: any = mb.recv()
+        v: any = mb.receive().unwrap()
         if v == None {
             break
         }
         drained = drained + 1
     }
     print("unbounded-mailbox-drained: " + str(drained))
-    mb.close()
+    mb.close().unwrap()
 
     # ── Two-stage pipeline: Upper → Hyphenate. The Upper actor asks
     # the Hyphenate actor and bubbles the reply.
     hRef: ActorRef = sys.spawn(Hyphenate())
     uRef: ActorRef = sys.spawn(Upper(hRef))
-    out: any = uRef.ask("hello world", 1000)
+    out: any = uRef.ask("hello world", 1000).unwrap()
     print("pipeline-result: " + str(out))
 
     # ── Stop one actor, count drops, then shutdown the rest.

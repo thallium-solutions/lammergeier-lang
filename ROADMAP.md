@@ -99,8 +99,3 @@ Implementation notes:
 - Run `./install.sh --prefix "$tmpdir/prefix" --no-editor`.
 - Run the installed `lamc` against `tests/rosetta_tests/hello_world.lam`.
 - Clean up the temporary clone and install prefix on success.
-
-
-# Std lib
-
-* lamhttp --> Functional, but sucks pretty bad, it's not sugar at all in the parameter settings

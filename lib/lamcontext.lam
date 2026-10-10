@@ -19,6 +19,8 @@
 #
 # Import with: ``from lamcontext import Context``.
 
+from lamerrors import Result, Error
+
 go! {
     import (
         "context"
@@ -222,7 +224,7 @@ class Context {
        returns true when cancellation wins and false when its own timeout
        elapses. -#
 
-    func __init__(self) {
+    func init(self) {
         self._state: any = None
         go! {
             root := lamContextCreate(context.Background(), &lamContextValueLayer{})
@@ -237,17 +239,18 @@ class Context {
         }
     }
 
-    static func fromNative(nativeContext: any) -> Context {
-        #- Wrap a Go ``context.Context``. Panics when ``nativeContext`` does
-           not implement that interface. The returned wrapper is independently
-           cancellable and still observes the native parent's cancellation,
-           deadline, and values. -#
+    static func fromNative(nativeContext: any) -> Result[Context] {
+        #- Wrap a Go ``context.Context``, returning invalid interop values. -#
         go! {
             parent, ok := nativeContext.(context.Context)
             if !ok || parent == nil {
-                panic("Context.fromNative: expected context.Context")
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ContextTypeError", "Context.fromNative expected context.Context", nil,
+                ))
             }
-            return lamContextCreate(parent, lamContextLayerFor(parent))
+            return LAMMERGEIER.Result.Ok(
+                lamContextCreate(parent, lamContextLayerFor(parent)),
+            )
         }
     }
 
@@ -274,12 +277,10 @@ class Context {
         return self.child()
     }
 
-    func expirable(self, expiration: int, unit: any = None) -> Context {
-        #- Derive an expiring child. Without ``unit``, ``expiration`` is an
-           absolute Unix-millisecond timestamp. With a unit such as
-           ``"seconds"`` or ``"minutes"``, it is a relative duration. -#
+    func expirable(self, expiration: int, unit: any = None) -> Result[Context] {
+        #- Derive an expiring child, reporting invalid amounts or units. -#
         if expiration < 0 {
-            throw ValueError("Context.expirable: expiration must be >= 0")
+            return Result.Err(Error("ContextDurationError", "expiration must be >= 0"))
         }
         go! {
             state := lamContextStateFor(s)
@@ -290,11 +291,15 @@ class Context {
             } else {
                 relative, err := lamContextRelativeDeadline(expiration, unit)
                 if err != nil {
-                    panic("Context.expirable: " + err.Error())
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ContextDurationError", "invalid expiration duration", err.Error(),
+                    ))
                 }
                 deadline = relative
             }
-            return lamContextCreateDeadline(state.native, layer, deadline)
+            return LAMMERGEIER.Result.Ok(
+                lamContextCreateDeadline(state.native, layer, deadline),
+            )
         }
     }
 
@@ -378,27 +383,28 @@ class Context {
         }
     }
 
-    func expiresIn(self, unit: any = None) -> int {
-        #- Return the absolute Unix-millisecond expiry when ``unit`` is omitted.
-           With a unit, return the remaining duration rounded up. ``-1`` means
-           no expiry and ``0`` means the expiry has elapsed. -#
+    func expiresIn(self, unit: any = None) -> Result[int] {
+        #- Return expiry metadata. Missing expiry remains ``Ok(-1)`` and an
+           elapsed expiry remains ``Ok(0)``; only invalid units are errors. -#
         go! {
             deadline, ok := lamContextStateFor(s).native.Deadline()
             if !ok {
-                return -1
+                return LAMMERGEIER.Result.Ok(-1)
             }
             if unit == nil {
-                return int(deadline.UnixMilli())
+                return LAMMERGEIER.Result.Ok(int(deadline.UnixMilli()))
             }
             scale, err := lamContextUnit(unit)
             if err != nil {
-                panic("Context.expiresIn: " + err.Error())
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ContextDurationError", "invalid expiration unit", err.Error(),
+                ))
             }
             remaining := time.Until(deadline)
             if remaining <= 0 {
-                return 0
+                return LAMMERGEIER.Result.Ok(0)
             }
-            return int((remaining-1)/scale + 1)
+            return LAMMERGEIER.Result.Ok(int((remaining-1)/scale + 1))
         }
     }
 

@@ -5,50 +5,372 @@
 # code can spawn and coordinate goroutines without reaching for go! blocks
 # on every line.
 
+from lamerrors import Result, Error
+
 go! {
     import (
         "sync"
         "sync/atomic"
+        "time"
     )
+
+    type lamChannel struct {
+        data      chan interface{}
+        done      chan struct{}
+        ready     chan struct{}
+        mu        sync.Mutex
+        closed    bool
+        unbounded bool
+        queue     []interface{}
+    }
+
+    func newLamChannel(size int, unbounded bool) *lamChannel {
+        channel := &lamChannel{
+            done:      make(chan struct{}),
+            unbounded: unbounded,
+        }
+        if unbounded {
+            channel.ready = make(chan struct{}, 1)
+        } else {
+            channel.data = make(chan interface{}, size)
+        }
+        return channel
+    }
+
+    func lamChannelUnboundedOffer(channel *lamChannel, value interface{}) bool {
+        channel.mu.Lock()
+        defer channel.mu.Unlock()
+        if channel.closed {
+            return false
+        }
+        channel.queue = append(channel.queue, value)
+        select {
+        case channel.ready <- struct{}{}:
+        default:
+        }
+        return true
+    }
+
+    func lamChannelUnboundedTake(channel *lamChannel) (interface{}, bool, bool) {
+        channel.mu.Lock()
+        defer channel.mu.Unlock()
+        if len(channel.queue) == 0 {
+            return nil, false, channel.closed
+        }
+        value := channel.queue[0]
+        channel.queue[0] = nil
+        channel.queue = channel.queue[1:]
+        if len(channel.queue) == 0 {
+            channel.queue = nil
+        } else {
+            select {
+            case channel.ready <- struct{}{}:
+            default:
+            }
+        }
+        return value, true, channel.closed
+    }
 }
 
 class Channel {
-    #- Buffered channel of `any` values. -#
+    #- Buffered (`size > 0`) or rendezvous (`size == 0`) channel of `any`
+       values. Use `Channel.unbounded()` for a queue that accepts producers
+       without requiring a receiver or a free bounded-buffer slot. -#
 
-    func __init__(self, size: int) {
+    func init(self, size: int) {
         self.ch: any = None
         go! {
-            s.Ch = make(chan interface{}, size)
+            s.Ch = newLamChannel(size, false)
         }
     }
 
-    func send(self, val: any) {
+    static func unbounded() -> Channel {
+        #- Construct an unbounded FIFO channel. Sends and offers are accepted
+           until close; close preserves every already-queued value for drain. -#
+        channel: Channel = Channel(0)
         go! {
-            s.Ch.(chan interface{}) <- val
+            channel.Ch = newLamChannel(0, true)
         }
+        return channel
     }
 
-    func recv(self) -> any {
+    func send(self, val: any) -> Result[bool] {
+        #- Block until the value is sent. Unbounded channels enqueue
+           immediately. Closing concurrently is reported as an error. -#
         go! {
-            return <-s.Ch.(chan interface{})
-        }
-    }
-
-    func tryRecv(self) -> any {
-        #- Non-blocking receive. Returns None if no value is available. -#
-        go! {
+            channel := s.Ch.(*lamChannel)
+            if channel.unbounded {
+                if lamChannelUnboundedOffer(channel, val) {
+                    return LAMMERGEIER.Result.Ok(true)
+                }
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ChannelClosed", "send on closed channel", nil,
+                ))
+            }
             select {
-            case v := <-s.Ch.(chan interface{}):
-                return v
+            case <-channel.done:
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ChannelClosed", "send on closed channel", nil,
+                ))
             default:
-                return nil
+            }
+            select {
+            case channel.data <- val:
+                return LAMMERGEIER.Result.Ok(true)
+            case <-channel.done:
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ChannelClosed", "send interrupted by channel close", nil,
+                ))
             }
         }
     }
 
-    func close(self) {
+    func receive(self) -> Result[any] {
+        #- Block until a value is available. A sent None is a successful value;
+           a closed and drained channel is a ChannelClosed error. -#
         go! {
-            close(s.Ch.(chan interface{}))
+            channel := s.Ch.(*lamChannel)
+            if channel.unbounded {
+                for {
+                    value, ok, closed := lamChannelUnboundedTake(channel)
+                    if ok {
+                        return LAMMERGEIER.Result.Ok(value)
+                    }
+                    if closed {
+                        return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                            "ChannelClosed", "receive on closed and drained channel", nil,
+                        ))
+                    }
+                    select {
+                    case <-channel.ready:
+                    case <-channel.done:
+                    }
+                }
+            }
+            select {
+            case value := <-channel.data:
+                return LAMMERGEIER.Result.Ok(value)
+            case <-channel.done:
+                select {
+                case value := <-channel.data:
+                    return LAMMERGEIER.Result.Ok(value)
+                default:
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ChannelClosed", "receive on closed and drained channel", nil,
+                    ))
+                }
+            }
+        }
+    }
+
+    func receiveTimeout(self, timeoutMs: int) -> Result[any] {
+        #- Wait up to `timeoutMs` milliseconds for a value. ChannelTimeout is
+           distinct from both a successful None and a closed, drained channel. -#
+        go! {
+            channel := s.Ch.(*lamChannel)
+            if channel.unbounded {
+                value, ok, closed := lamChannelUnboundedTake(channel)
+                if ok {
+                    return LAMMERGEIER.Result.Ok(value)
+                }
+                if closed {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ChannelClosed", "receive on closed and drained channel", nil,
+                    ))
+                }
+                if timeoutMs <= 0 {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ChannelTimeout", "timed out waiting for channel value", nil,
+                    ))
+                }
+                timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
+                defer timer.Stop()
+                for {
+                    select {
+                    case <-channel.ready:
+                    case <-channel.done:
+                    case <-timer.C:
+                        return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                            "ChannelTimeout", "timed out waiting for channel value", nil,
+                        ))
+                    }
+                    value, ok, closed = lamChannelUnboundedTake(channel)
+                    if ok {
+                        return LAMMERGEIER.Result.Ok(value)
+                    }
+                    if closed {
+                        return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                            "ChannelClosed", "receive on closed and drained channel", nil,
+                        ))
+                    }
+                }
+            }
+            select {
+            case value := <-channel.data:
+                return LAMMERGEIER.Result.Ok(value)
+            default:
+            }
+            select {
+            case <-channel.done:
+                select {
+                case value := <-channel.data:
+                    return LAMMERGEIER.Result.Ok(value)
+                default:
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ChannelClosed", "receive on closed and drained channel", nil,
+                    ))
+                }
+            default:
+            }
+            if timeoutMs <= 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ChannelTimeout", "timed out waiting for channel value", nil,
+                ))
+            }
+            timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
+            defer timer.Stop()
+            select {
+            case value := <-channel.data:
+                return LAMMERGEIER.Result.Ok(value)
+            case <-channel.done:
+                select {
+                case value := <-channel.data:
+                    return LAMMERGEIER.Result.Ok(value)
+                default:
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ChannelClosed", "receive on closed and drained channel", nil,
+                    ))
+                }
+            case <-timer.C:
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ChannelTimeout", "timed out waiting for channel value", nil,
+                ))
+            }
+        }
+    }
+
+    func poll(self) -> Result[any] {
+        #- Try to receive immediately. ChannelEmpty means no value is ready;
+           ChannelClosed means the channel is closed and drained. -#
+        go! {
+            channel := s.Ch.(*lamChannel)
+            if channel.unbounded {
+                value, ok, closed := lamChannelUnboundedTake(channel)
+                if ok {
+                    return LAMMERGEIER.Result.Ok(value)
+                }
+                if closed {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ChannelClosed", "poll on closed and drained channel", nil,
+                    ))
+                }
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ChannelEmpty", "poll found no value ready", nil,
+                ))
+            }
+            select {
+            case value := <-channel.data:
+                return LAMMERGEIER.Result.Ok(value)
+            default:
+            }
+            select {
+            case <-channel.done:
+                select {
+                case value := <-channel.data:
+                    return LAMMERGEIER.Result.Ok(value)
+                default:
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "ChannelClosed", "poll on closed and drained channel", nil,
+                    ))
+                }
+            default:
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ChannelEmpty", "poll found no value ready", nil,
+                ))
+            }
+        }
+    }
+
+    func offer(self, val: any) -> Result[bool] {
+        #- Try to send immediately. Ok(false) means no receiver or bounded
+           buffer slot was ready; an open unbounded channel always accepts. -#
+        go! {
+            channel := s.Ch.(*lamChannel)
+            if channel.unbounded {
+                if lamChannelUnboundedOffer(channel, val) {
+                    return LAMMERGEIER.Result.Ok(true)
+                }
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ChannelClosed", "offer on closed channel", nil,
+                ))
+            }
+            select {
+            case <-channel.done:
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ChannelClosed", "offer on closed channel", nil,
+                ))
+            default:
+            }
+            select {
+            case channel.data <- val:
+                return LAMMERGEIER.Result.Ok(true)
+            case <-channel.done:
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ChannelClosed", "offer interrupted by channel close", nil,
+                ))
+            default:
+                return LAMMERGEIER.Result.Ok(false)
+            }
+        }
+    }
+
+    async func asyncSend(self, val: any) -> Result[bool] {
+        #- Awaitable wrapper around the blocking send operation. -#
+        return self.send(val)
+    }
+
+    async func asyncReceive(self) -> Result[any] {
+        #- Awaitable wrapper around the blocking receive operation. -#
+        return self.receive()
+    }
+
+    func close(self) -> Result[bool] {
+        #- Close the channel. Queued values remain available for drain;
+           repeated or concurrent closes return an error. -#
+        go! {
+            channel := s.Ch.(*lamChannel)
+            channel.mu.Lock()
+            defer channel.mu.Unlock()
+            if channel.closed {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ChannelClosed", "close of closed channel", nil,
+                ))
+            }
+            channel.closed = true
+            close(channel.done)
+            return LAMMERGEIER.Result.Ok(true)
+        }
+    }
+
+    func isClosed(self) -> bool {
+        go! {
+            channel := s.Ch.(*lamChannel)
+            channel.mu.Lock()
+            defer channel.mu.Unlock()
+            return channel.closed
+        }
+    }
+
+    func size(self) -> int {
+        #- Return the number of values currently queued for receive. -#
+        go! {
+            channel := s.Ch.(*lamChannel)
+            if channel.unbounded {
+                channel.mu.Lock()
+                defer channel.mu.Unlock()
+                return len(channel.queue)
+            }
+            return len(channel.data)
         }
     }
 }
@@ -56,7 +378,7 @@ class Channel {
 class WaitGroup {
     #- Wrapper around sync.WaitGroup. -#
 
-    func __init__(self) {
+    func init(self) {
         self.wg: any = None
         go! {
             s.Wg = &sync.WaitGroup{}
@@ -85,7 +407,7 @@ class WaitGroup {
 class Mutex {
     #- Wrapper around sync.Mutex. -#
 
-    func __init__(self) {
+    func init(self) {
         self.mu: any = None
         go! {
             s.Mu = &sync.Mutex{}
@@ -108,7 +430,7 @@ class Mutex {
 class RWMutex {
     #- Wrapper around sync.RWMutex. Use for read-heavy critical sections. -#
 
-    func __init__(self) {
+    func init(self) {
         self.mu: any = None
         go! {
             s.Mu = &sync.RWMutex{}
@@ -143,7 +465,7 @@ class RWMutex {
 class Atomic {
     #- Thread-safe 64-bit integer counter backed by sync/atomic. -#
 
-    func __init__(self, val: int) {
+    func init(self, val: int) {
         self.val: any = None
         go! {
             v := new(int64)

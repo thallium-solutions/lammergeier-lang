@@ -8,6 +8,8 @@
 # expect: nested-city: Paris
 # expect: encode-roundtrip: true
 # expect: bad-decode-iserr: true
+# expect: empty-doc-ok: true
+# expect: bad-stream-iserr: true
 # expect: docs-count: 3
 # expect: doc1-name: first
 # expect: doc3-name: third
@@ -15,10 +17,22 @@
 from lamyaml import Yaml
 from lamerrors import Result
 
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
+
+func resultAny(result: Result) -> any {
+    go! { return result.Value }
+}
+
+func resultList(result: Result) -> list[any] {
+    go! { return result.Value.([]interface{}) }
+}
+
 func main() {
     src: str = "name: alice\nage: 30\nenabled: true\nhobbies:\n  - reading\n  - chess\n  - hiking\nlocation:\n  city: Paris\n"
 
-    doc: any = Yaml.decode(src)
+    doc: any = resultAny(Yaml.decode(src))
     name: str = ""
     age: int = 0
     enabled: bool = false
@@ -50,8 +64,8 @@ func main() {
     print(f"nested-city: {cityFromNested}")
 
     # ── Round-trip: encode the decoded doc and re-decode it.
-    yamlStr: str = Yaml.encode(doc)
-    redoc: any = Yaml.decode(yamlStr)
+    yamlStr: str = resultString(Yaml.encode(doc))
+    redoc: any = resultAny(Yaml.decode(yamlStr))
     matches: bool = false
     go! {
         if a, ok := redoc.(map[string]interface{}); ok {
@@ -60,14 +74,18 @@ func main() {
     }
     print(f"encode-roundtrip: {matches}")
 
-    # ── Bad YAML returns Err via tryDecode.
-    bad: Result = Yaml.tryDecode("name: alice\n  oops: : :")
+    # ── Bad YAML returns Err via decode.
+    bad: Result = Yaml.decode("name: alice\n  oops: : :")
     badIsErr: bool = not bad.ok()
     print(f"bad-decode-iserr: {badIsErr}")
+    emptyDoc: Result = Yaml.decode("")
+    print(f"empty-doc-ok: {emptyDoc.ok()}")
+    badStream: Result = Yaml.decodeAll("---\nname: ok\n---\n  broken: : :")
+    print(f"bad-stream-iserr: {not badStream.ok()}")
 
     # ── Multi-document stream.
     multi: str = "---\nname: first\n---\nname: second\n---\nname: third\n"
-    docs: list[any] = Yaml.decodeAll(multi)
+    docs: list[any] = resultList(Yaml.decodeAll(multi))
     nDocs: int = len(docs)
     print(f"docs-count: {nDocs}")
     d1: str = ""

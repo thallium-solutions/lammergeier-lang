@@ -1,11 +1,166 @@
-# Lammergeier standard library: time utilities
+# Lammergeier standard library: time and elapsed-duration utilities
 # Import with: from lamtime import Time
 
+from lamerrors import Result, Error
+
 go! {
-    import "time"
+    import (
+        "fmt"
+        "time"
+    )
 }
 
 class Time {
+    #- An elapsed duration stored as an integer nanosecond count.
+
+       Unit constructors are deliberately fixed-duration operations:
+       ``Days(n)`` is 24 hours, ``Weeks(n)`` is 7 days, ``Months(n)`` is
+       30 days, and ``Years(n)`` is 365 days. Use ``DateTime.addDays``,
+       ``DateTime.addMonths``, or ``DateTime.addYears`` when civil-calendar
+       and daylight-saving semantics are required.
+
+       The older wall-clock helpers remain static methods for compatibility.
+    -#
+
+    func init(self, nanoseconds: int = 0) {
+        self.nanosecondsValue: int = nanoseconds
+    }
+
+    static func Nanoseconds(value: int) -> Time {
+        return Time(value)
+    }
+
+    static func Milliseconds(value: int) -> Time {
+        return Time.Nanoseconds(value * 1000000)
+    }
+
+    static func Seconds(value: int) -> Time {
+        return Time.Milliseconds(value * 1000)
+    }
+
+    static func Minutes(value: int) -> Time {
+        return Time.Seconds(value * 60)
+    }
+
+    static func Hours(value: int) -> Time {
+        return Time.Minutes(value * 60)
+    }
+
+    static func Days(value: int) -> Time {
+        #- Fixed 24-hour days, not civil-calendar days. -#
+        return Time.Hours(value * 24)
+    }
+
+    static func Weeks(value: int) -> Time {
+        return Time.Days(value * 7)
+    }
+
+    static func Months(value: int) -> Time {
+        #- Fixed 30-day months. DateTime.addMonths is calendar-aware. -#
+        return Time.Days(value * 30)
+    }
+
+    static func Years(value: int) -> Time {
+        #- Fixed 365-day years. DateTime.addYears is calendar-aware. -#
+        return Time.Days(value * 365)
+    }
+
+    static func parseDuration(value: str) -> Result[Time] {
+        #- Parse a Go duration such as ``"1h30m"`` or ``"250ms"``. -#
+        nanoseconds: int = 0
+        parseError: str = ""
+        go! {
+            duration, err := time.ParseDuration(value)
+            if err != nil {
+                parseError = err.Error()
+            } else {
+                nanoseconds = int(duration)
+            }
+        }
+        if parseError != "" {
+            return Result.Err(Error("ParseError", f"Time.parseDuration {value}: {parseError}"))
+        }
+        return Result.Ok(Time.Nanoseconds(nanoseconds))
+    }
+
+    func inNanoseconds(self) -> int {
+        return self.nanosecondsValue
+    }
+
+    func inMilliseconds(self) -> int {
+        return self.nanosecondsValue / 1000000
+    }
+
+    func inSeconds(self) -> int {
+        return self.nanosecondsValue / 1000000000
+    }
+
+    func inMinutes(self) -> int {
+        return self.inSeconds() / 60
+    }
+
+    func inHours(self) -> int {
+        return self.inMinutes() / 60
+    }
+
+    func inDays(self) -> int {
+        return self.inHours() / 24
+    }
+
+    func add(self, other: Time) -> Time {
+        return Time.Nanoseconds(self.nanosecondsValue + other.nanosecondsValue)
+    }
+
+    func subtract(self, other: Time) -> Time {
+        return Time.Nanoseconds(self.nanosecondsValue - other.nanosecondsValue)
+    }
+
+    func multiply(self, factor: int) -> Time {
+        return Time.Nanoseconds(self.nanosecondsValue * factor)
+    }
+
+    func negate(self) -> Time {
+        return Time.Nanoseconds(-self.nanosecondsValue)
+    }
+
+    func abs(self) -> Time {
+        if self.nanosecondsValue < 0 {
+            return self.negate()
+        }
+        return Time.Nanoseconds(self.nanosecondsValue)
+    }
+
+    func equals(self, other: Time) -> bool {
+        return self.nanosecondsValue == other.nanosecondsValue
+    }
+
+    func lessThan(self, other: Time) -> bool {
+        return self.nanosecondsValue < other.nanosecondsValue
+    }
+
+    func __add__(self, other: Time) -> Time {
+        return self.add(other)
+    }
+
+    func __sub__(self, other: Time) -> Time {
+        return self.subtract(other)
+    }
+
+    func __mul__(self, factor: int) -> Time {
+        return self.multiply(factor)
+    }
+
+    func __eq__(self, other: Time) -> bool {
+        return self.equals(other)
+    }
+
+    func __str__(self) -> str {
+        nanoseconds: int = self.nanosecondsValue
+        go! {
+            return time.Duration(nanoseconds).String()
+        }
+    }
+
     static func nowUnix() -> int {
         go! {
             return int(time.Now().Unix())
@@ -18,16 +173,25 @@ class Time {
         }
     }
 
-    static func sleepMs(ms: int) {
+    static func nowUnixNano() -> int {
         go! {
-            time.Sleep(time.Duration(ms) * time.Millisecond)
+            return int(time.Now().UnixNano())
         }
     }
 
-    static func sleepSec(sec: int) {
+    static func sleep(duration: Time) {
+        nanoseconds: int = duration.inNanoseconds()
         go! {
-            time.Sleep(time.Duration(sec) * time.Second)
+            time.Sleep(time.Duration(nanoseconds))
         }
+    }
+
+    static func sleepMs(ms: int) {
+        Time.sleep(Time.Milliseconds(ms))
+    }
+
+    static func sleepSec(sec: int) {
+        Time.sleep(Time.Seconds(sec))
     }
 
     static func nowString() -> str {
@@ -92,14 +256,16 @@ class Time {
         }
     }
 
-    static func parse(layout: str, value: str) -> int {
+    static func parse(layout: str, value: str) -> Result[int] {
         #- Parse a formatted timestamp into a Unix second count. -#
         go! {
             t, err := time.Parse(layout, value)
             if err != nil {
-                panic("Time.parse: " + err.Error())
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ParseError", fmt.Sprintf("Time.parse %q: %v", value, err), nil,
+                ))
             }
-            return int(t.Unix())
+            return LAMMERGEIER.Result.Ok(int(t.Unix()))
         }
     }
 
@@ -112,14 +278,35 @@ class Time {
         return Time.nowUnixMilli() - startUnixMilli
     }
 
-    static func measureMs(fn: any) -> int {
+    static func elapsedSinceNano(startUnixNano: int) -> Time {
+        return Time.Nanoseconds(Time.nowUnixNano() - startUnixNano)
+    }
+
+    static func betweenUnixNano(startUnixNano: int, endUnixNano: int) -> Time {
+        return Time.Nanoseconds(endUnixNano - startUnixNano)
+    }
+
+    static func measureMs(fn: any) -> Result[int] {
         #- Run `fn()` and return how many milliseconds it took. -#
         go! {
             start := time.Now()
-            if f, ok := fn.(func()); ok {
+            switch f := fn.(type) {
+            case func():
                 f()
+            case func() interface{}:
+                f()
+            case func() error:
+                if err := f(); err != nil {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "TimeError", fmt.Sprintf("measureMs callback: %v", err), nil,
+                    ))
+                }
+            default:
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "TimeError", fmt.Sprintf("measureMs: unsupported callback signature %T", fn), nil,
+                ))
             }
-            return int(time.Since(start).Milliseconds())
+            return LAMMERGEIER.Result.Ok(int(time.Since(start).Milliseconds()))
         }
     }
 }

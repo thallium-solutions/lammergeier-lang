@@ -4,12 +4,17 @@
 
 from lamsort import Sort
 from lamrandom import Random
+from lamerrors import Result
+
+func resultInt(r: Result) -> int {
+    go! { return r.Value.(int) }
+}
 
 func main() {
     Random.seed(42)
     vals: list[int] = []
     for __i in range(100000) {
-        vals = append(vals, Random.randInt(0, 1000000))
+        vals = append(vals, resultInt(Random.randInt(0, 1000000)))
     }
     out: list[int] = Sort.sort(vals)
     if out[0] > out[len(out) - 1] {

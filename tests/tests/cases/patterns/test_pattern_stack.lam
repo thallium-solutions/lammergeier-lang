@@ -3,7 +3,7 @@
 # expect: empty: false
 
 class IntStack {
-    func __init__(self) {
+    func init(self) {
         self.items: list[int] = []
         self.length: int = 0
     }

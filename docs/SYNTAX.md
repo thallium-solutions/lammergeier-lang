@@ -56,7 +56,7 @@ func parseQty(raw: str) -> Result {
     if raw == "" {
         return Result.Err(Error("ValidationError", "quantity is required"))
     }
-    # Real code would call Conv.tryInt(raw) and propagate it.
+    # Real code would assign Conv.parse(raw) to Result[int] and propagate it.
     return Result.Ok(raw)
 }
 
@@ -171,7 +171,7 @@ payload: json = [{
 
 second: int = payload[0].nested.y[1]
 payload[0].hello = 101
-encoded: str = Json.encode(payload)
+encoded: str = Json.encode(payload)?
 ```
 
 Dot access is available only when the key is a Lam identifier (`value.name`,
@@ -193,7 +193,7 @@ implement `__json__` and still be passed explicitly to `json(instance)`.
 `Json.fromDict`, `Json.fromList`, and `Json.fromValue` validate dynamic Lam
 values and convert them to `json`. `Json.toDict` / `Json.toList` convert an
 object/array back for algorithms where ordinary collections are more useful.
-`Json.decode` returns `json`; `Json.tryDecode` returns `Result[json]`. Native
+`Json.decode` and `Json.encode` use unsuffixed typed `Result` contracts. Native
 `json` automatically brings in its runtime support, so literals and annotations
 do not require an explicit import.
 
@@ -295,9 +295,10 @@ inferred type arguments (`pick(a, b)`) or explicit type arguments
 
 ### Classes and Interfaces
 
-Classes compile to Go structs with pointer receivers. Use `init` or
-`__init__` for constructors, annotate fields where they are first
-assigned, and keep public method signatures explicit.
+Classes compile to Go structs with pointer receivers. **Prefer `init` for
+constructors.** It is an alias of `__init__`, and both spellings are accepted.
+Annotate fields where they are first assigned, and keep public method
+signatures explicit.
 
 ```lammergeier
 interface Stringable {
@@ -418,7 +419,7 @@ values into Lam locals before returning to normal Lam code.
 6. [Ternary Operators](#ternary-operators)
 7. [Variadic Arguments](#variadic-arguments)
 8. [Classes](#classes)
-9. [Constructor Alias (init)](#constructor-alias-init)
+9. [Constructors](#constructors)
 10. [Inheritance](#inheritance)
 11. [Operator Overloading](#operator-overloading)
 12. [Static Members](#static-members)
@@ -633,7 +634,7 @@ Classes with typed fields and methods:
 
 ```lammergeier
 class Point {
-    func __init__(self, x: int, y: int) {
+    func init(self, x: int, y: int) {
         self.x: int = x
         self.y: int = y
     }
@@ -651,9 +652,11 @@ func main() {
 
 ---
 
-## Constructor Alias (init)
+## Constructors
 
-Use `init` instead of `__init__` for a cleaner syntax:
+**`init` is the preferred constructor spelling.** It is an alias of
+`__init__`, and the compiler accepts both spellings with identical behavior.
+New code, standard-library APIs, and examples should use `init`:
 
 ```lammergeier
 class Circle {
@@ -669,6 +672,16 @@ class Circle {
 func main() {
     c: Circle = Circle(5)
     print(c.area())
+}
+```
+
+The legacy spelling remains valid for compatibility:
+
+```lammergeier
+class LegacyCircle {
+    func __init__(self, r: int) {
+        self.r: int = r
+    }
 }
 ```
 
@@ -789,7 +802,7 @@ the transpiler rewrites `c++` to `c = c.Inc()`:
 
 ```lammergeier
 class Counter {
-    func __init__(self, n: int) { self.n: int = n }
+    func init(self, n: int) { self.n: int = n }
     func __inc__(self) -> Counter { return Counter(self.n + 1) }
     func __dec__(self) -> Counter { return Counter(self.n - 1) }
 }
@@ -875,6 +888,15 @@ class Circle {
 }
 ```
 
+Conformance is structural: a class with the required method set can be passed to
+an interface-typed parameter without an explicit declaration. Imported
+interfaces work the same way. The importing module carries the interface's
+method metadata across the package boundary, so callers may import only the
+concrete class and a function whose signature uses that interface. Interfaces
+may also declare parameter- and return-type overload sets; implementations must
+provide every signature, and contextual return dispatch works through an
+interface receiver.
+
 ---
 
 ## Private Members
@@ -897,18 +919,39 @@ class MyClass {
 
 ## Async / Await
 
-Async functions run as goroutines and return via channels:
+Async functions run as goroutines and return one-slot buffered handles. The
+same lowering applies to top-level functions, instance methods (including
+methods on generic receivers), and static or private class methods:
 
 ```lammergeier
-async func fetch_data(url: str) -> str {
-    return f"data from {url}"
+class Loader[T] {
+    func init(self, fallback: T) {
+        self.fallback: T = fallback
+    }
+
+    async func fetch(self, value: T) -> T {
+        return value
+    }
+
+    static async func doubled(value: int) -> int {
+        return value * 2
+    }
 }
 
 func main() {
-    result: str = await fetch_data("https://example.com")
-    print(result)
+    loader: Loader[str] = Loader[str]("missing")
+    pending = loader.fetch("ready")  # starts immediately
+    doubled: int = await Loader.doubled(21)
+    result: str = await pending       # awaiting later is supported
+    print(f"{result}: {doubled}")
 }
 ```
+
+Calling an async callable starts its goroutine immediately; `await` may be used
+at the call site or later on the returned handle. The declared payload type is
+preserved, including `Result[T]`. Each invocation creates an independent handle
+with capacity one, so a completed task can publish its result before its caller
+is ready to await it.
 
 ---
 
@@ -1380,7 +1423,7 @@ Single-line comments with `#`:
 x: int = 42  # inline comment
 ```
 
-Multiline comments with `#-` and `-#`:
+Multiline documentation comments use the exact delimiters `#-` and `-#`:
 
 ```lammergeier
 #-
@@ -1388,6 +1431,9 @@ This is a multiline comment.
 It can span multiple lines.
 -#
 ```
+
+Whitespace is not allowed inside the closing delimiter: forms such as `-  #`
+are syntax errors. `lamc fmt` can repair a spaced closing delimiter to `-#`.
 
 ---
 
@@ -1464,7 +1510,7 @@ it to a typed local to reach the metadata directly:
 
 ```lammergeier
 class ValidationError {
-    func __init__(self, field: str, reason: str) {
+    func init(self, field: str, reason: str) {
         self.field: str = field
         self.reason: str = reason
     }
@@ -1645,10 +1691,12 @@ class receivers remain concrete rather than leaking `interface{}`. Public
 payload-class metadata is loaded from the function's module without binding
 that class in user scope, so importing `loadDocument` does not require a
 second, otherwise-unused `Document` import.
-Direct `.value`, `.error`, `unwrap()`, and `unwrapOr(...)` reads remain
-`any`. The `?` operator has a special typed assignment path
-(`n: int = parseInt(s)?`) and emits the matching Go type assertion for
-the unwrapped value. `Result[T, E]` is rejected because errors remain
+Direct `.value` and `.error` reads remain `any`. A bare `unwrap()` or
+`unwrapOr(...)` also remains dynamic, but an annotated assignment, enclosing
+return, typed call argument, or typed collection element supplies context and
+the compiler inserts the matching Go assertion. The `?` operator likewise has
+a typed assignment path (`n: int = parseInt(s)?`) and emits the matching Go
+type assertion for the unwrapped value. `Result[T, E]` is rejected because errors remain
 open `any` values rather than a second type parameter.
 
 `Result.Err(e)` is equally broad: `.error` is also `any`. Use a
@@ -1719,7 +1767,7 @@ func double(s: str) -> Result {
 
 The compiler injects the matching type assertion when the receiving
 binding is annotated, so `n: int = parseInt(s)?` produces typed Go
-without any `Conv.toInt(...)` shim. Multiple `?` in one function are
+without any manual value-casting shim. Multiple `?` in one function are
 fine — each gets its own internal temporary.
 
 `?` only accepts a known `Result` value and only propagates normally from
@@ -2484,37 +2532,38 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamerrors`      | `Result`, `Error`                  | Structured errors and `Result` (Ok/Err/unwrap/unwrapOr) for the `?` and `do/catch` system. See [Errors & Results](#errors--results) |
 | `lammath`        | `Math`                             | Math functions (sqrt, sin, cos, pow, log, etc.) |
 | `lamstrings`     | `Strings`                          | String utilities (repeat, contains, trim, split, join, etc.) |
-| `lamtime`        | `Time`                             | Time operations (nowUnix, sleepMs, nowString, etc.) |
-| `lamconv`        | `Conv`                             | Type conversions with silent defaults plus Result-based decimal/hex/octal/binary parsing |
-| `lamos`          | `Os`, `File`                       | OS/filesystem helpers plus the `File` context-manager class (`File.open`, `read`, `write`, `readline`, `readlines`, `close`); `tryReadFile`/`tryWriteFile`/`tryReadLines`/`tryWriteLines` return `Result` |
-| `lamjson`        | `Json`                             | Native `json` runtime, encode/decode/pretty/validate, dict/list conversion, and non-panicking Result APIs |
-| `lamrandom`      | `Random`                           | Random numbers (randInt, randFloat, shuffle, choice, sample, uuid, randomString, randomHex) plus secure variants (secureBytes, secureToken, secureInt, secureUuid) |
+| `lamtime`        | `Time`                             | Duration units/arithmetic plus Unix time, sleeps, parsing, formatting, and measurement |
+| `lamconv`        | `Conv`                             | Result-based decimal/float/bool and explicitly named hex/octal/binary string parsers |
+| `lamos`          | `Os`, `File`, `FileLineGenerator`  | Result-based OS/filesystem helpers plus streaming file lines and batches |
+| `lamjson`        | `Json`                             | Native `json` runtime, Result-based encode/decode/pretty, validation, and dict/list conversion |
+| `lamrandom`      | `Random`                           | Pseudo-random values and secure bytes/tokens; UUID generation belongs to `lamuuid` |
 | `lamsort`        | `Sort`                             | Generic natural/comparator sorting, asc/desc checks, named algorithms, reverse, and lazy sorted generators |
-| `lamre`          | `Re`                               | Regex (match, find, findAll, replaceAll, split); `tryMatch`/`tryFind`/`tryFindAll`/`tryReplaceAll`/`trySplit` return `Result` |
+| `lamre`          | `Re`                               | Result-returning regex match, find, findAll, replaceAll, split, and groups |
 | `lamhttp`        | `Http`, `HttpClient`, `HttpResponse`, `HttpCookie`, `HttpServer` | Overloaded native-JSON requests, response headers/cookies, and a blocking server (`Http.serve`) |
 | `lamdb`          | `Db`                               | Database connectivity (connect, close, exec, queryRow, queryAll, queryRows) |
 | `lamhash`        | `Hash`                             | Hashing (sha256, sha1, sha512, md5, crc32) plus HMAC (hmacSha1/256/512), `constantTimeEquals`, `verifyHmacSha256` |
 | `lamcrypto`      | `Crypto`, `CryptoKeyPair`, `CryptoCertificate` | Secure random data, AES-GCM envelopes, PBKDF2 password hashes, PEM keys/signatures, and X.509 metadata |
-| `lambase64`      | `Base64`                           | Base64 encoding/decoding (encode, decode, encodeURL, decodeURL) |
-| `lampath`        | `Path`                             | Path/filepath utilities (join, base, dir, ext, abs, glob, exists, splitExt, withExt, split) |
-| `lamcsv`         | `Csv`                              | CSV parsing and formatting (parseAll, formatRow, formatAll) |
+| `lambase64`      | `Base16`, `Base32`, `Base64`, `Hex` | Standard/raw Base16/Base32/Base64 codecs and compatibility aliases |
+| `lampath`        | `Path`                             | Variadic path joining plus base/dir/ext/abs/glob/existence/splitting helpers |
+| `lamcsv`         | `Csv`, `CsvReader`                 | Result-based CSV parsing/formatting and lazy row/batch streaming |
 | `lamfmt`         | `Fmt`                              | Formatting (sprintf, printf, println, hex, binary, octal, padLeft, padRight, center, formatFloat, repr) |
 | `lamurl`         | `Url`                              | URL parsing (parse, host, path, scheme, encode, decode) |
 | `lamlog`         | `Log`                              | Logging (info/warn/error/debug/fatal plus infof/warnf/errorf/debugf/fatalf) |
 | `lambytes`       | `Bytes`                            | Byte/hex utilities (toBytes, fromBytes, hexEncode, hexDecode) |
-| `lamexec`        | `Exec`                             | Process execution (run, runSilent, output) |
+| `lamexec`        | `Exec`, `ExecCommand`, `ExecResult` | Typed execution with env/cwd/stdin, timeout, cancellation, and captured output |
 | `lamunicode`     | `Unicode`                          | Unicode/UTF-8 (runeCount, isValid, isLetter, isDigit, etc.) |
 | `lamenv`         | `Env`                              | String, typed, and Result-based environment access plus set/unset/all |
 | `lamdatetime`    | `DateTime`                         | Date/time formatting and parsing |
-| `lamstack`       | `Stack`                            | Stack data structure (push, pop, peek, size, isEmpty, clear, toList) |
+| `lamdatastructures` | `Queue`, `Deque`, `Stack`, `Set`, `Heap`, `PriorityHeap` | Canonical collection implementations; legacy modules re-export them |
+| `lamstack`       | `Stack`                            | Compatibility import for the canonical stack |
 | `lamqueue`       | `Queue`                            | Queue data structure (enqueue, dequeue, peek, size, isEmpty, clear, toList) |
 | `lamdeque`       | `Deque`                            | Double-ended queue (pushFront/pushBack, popFront/popBack, peekFront/peekBack, size, isEmpty, clear, toList) |
 | `lamheap`        | `Heap`, `PriorityHeap`             | Binary heap / priority queue (push, pop, peek, size, isEmpty, clear; min by default, `maxHeap=true` for max) |
 | `lamset`         | `Set`                              | Set data structure (add, addAll, remove, contains, size, isEmpty, clear, toList, union, intersect, difference, isSubsetOf, equals) |
 | `lamstats`       | `Stats`                            | Statistics (sum, product, mean, median, mode, variance, sampleVariance, stddev, minVal, maxVal, range_, percentile) |
 | `lamcompress`    | `Compress`                         | Compression (gzip/gunzip and zlibDeflate/zlibInflate; outputs base64 strings) |
-| `lamnet`         | `Net`, `TcpConn`, `TcpListener`    | Networking (DNS lookupHost/lookupAddr, hostname, isReachable, dialTcp, listenTcp with send/recv/close) |
-| `lamcli`         | `Cli`                              | CLI argument parsing (args, program, argCount, arg, hasFlag, getFlag, getInt, positional) |
+| `lamnet`         | `Net`, `TcpConn`, `TcpListener`, `UdpConn`, `UdpPacket` | DNS plus TCP/TLS/UDP sockets, deadlines, and addresses |
+| `lamcli`         | `Cli`                              | CLI args/positionals and overloaded string/integer `getFlag` |
 | `lamtest`        | `Test`                             | Assertion/test framework (assertTrue, assertFalse, assertEqual, assertNotEqual, assertNil, assertNotNil, assertLen, assertContains, assertAlmostEqual, describe, pass, fail, summary) |
 | `lamconcurrency` | `Channel`, `WaitGroup`, `Mutex`, `RWMutex`, `Atomic` | Concurrency primitives (channels, sync, mutexes, atomic counters via `sync/atomic`) |
 | `lamcontext`     | `Context`                          | Cancellation trees, unit-aware expiration, inherited values, bounded waits, and native Go context interop |
@@ -2535,12 +2584,16 @@ WebSocket, and tus integrations are `@lam/vulture/std-plugin`,
 ```lammergeier
 from lammath import Math
 from lamconv import Conv
+from lamerrors import Result
+from lamfmt import Fmt
 
 func main() {
     print(Math.sqrt(25.0))       # 5
     print(Math.pi())             # 3.141592653589793
-    print(Conv.toString(42))     # 42
-    print(Conv.toInt("123"))     # 123
+    print(Fmt.hex(42))           # 2a
+    result: Result[int] = Conv.parse("123")
+    parsed: int = result.unwrap()
+    print(parsed)                # 123
 }
 ```
 
@@ -2756,10 +2809,9 @@ Rules:
 
 ## Function Overloading
 
-Functions with the same name but different arities — *or* the same
-arity with different parameter types — are both supported. Lam
-records each definition's Go-type signature and picks a matching
-variant at every call site.
+Functions with the same name can differ by arity, parameter types, or return
+type. Lam records each complete signature and picks a matching variant at every
+call site.
 
 ### By arity
 
@@ -2802,16 +2854,50 @@ The compiler picks a variant by inferring the Go type of every
 positional argument: typed locals (`nums: list[int]`) participate
 through the variable-type table, literals through their
 expression shape (`42` → `int`, `"hi"` → `string`, `[1, 2, 3]` →
-`[]int`). When the inference is ambiguous (untyped local, opaque
-return value, …) the call is routed to whichever variant the
-compiler can match — see the `_infer_call_arg_sig` helper.
+`[]int`). If argument or return context cannot distinguish otherwise viable
+variants, dispatch falls back deterministically to the first matching
+source-order definition.
+
+### By return type
+
+Overloads may have identical parameters and different return types. The compiler
+uses the expected type from an annotated assignment, the enclosing function's
+return type, or the receiving function parameter:
+
+```lammergeier
+class Parser {
+    static func parse(value: str) -> int { return len(value) }
+    static func parse(value: str) -> str { return f"parsed:{value}" }
+}
+
+size: int = Parser.parse("lam")
+label: str = Parser.parse("lam")
+
+func show(value: str) { print(value) }
+show(Parser.parse("lam"))
+
+func parsedLabel() -> str {
+    return Parser.parse("lam")
+}
+```
+
+Generic payload annotations participate in this selection. Although
+`Result[T]` erases to one runtime Go `*Result`, the compiler retains payloads in
+its overload keys, so identical `(str)` parameters may distinguish
+`Result[int]`, `Result[float]`, and `Result[bool]` returns. A payload-typed local
+is the clearest context when the call is nested inside propagation, collection,
+or other erased-runtime expressions.
+
+If no expected type can distinguish otherwise viable variants, Lam chooses the
+first matching definition in source order. Do not rely on that fallback when
+variants have different behavior; add a specific annotation instead.
 
 ### Class method overloads
 
 Instance and static methods follow the same signature rules. Instance signatures
 exclude `self`; static signatures include every parameter. A class cannot mix a
-static and instance overload under one name, and return type alone never selects
-a variant.
+static and instance overload under one name. Return-type context applies equally
+to methods and top-level functions.
 
 ```lammergeier
 class Formatter {
@@ -2831,11 +2917,11 @@ declare overload sets; an implementing class must provide every signature.
 Each variant is emitted with a stable Go-name suffix:
 
 - **Different arities** → `Name_<argcount>` (the historical form).
-- **Same arity, different types** → `Name_<argcount>_<sigSuffix>`.
-  `sigSuffix` is built from each parameter's Go type — `int`,
-  `str`, `float64`, `sliceOfInt`, `mapOfStrToInt`, `ptrFoo`, … —
-  so the symbol stays unique without depending on declaration
-  order. Example:
+- **Same arity, different parameter types** → `Name_<argcount>_<sigSuffix>`.
+- **Same parameters, different return types** →
+  `Name_<argcount>_<sigSuffix>_ret_<returnSuffix>`.
+  Suffixes are built from Go types — `int`, `str`, `float64`, `sliceOfInt`,
+  `mapOfStrToInt`, `ptrFoo`, … — so symbols remain stable and unique. Example:
 
   ```text
   describe(int)          → Describe_1_int
@@ -2843,12 +2929,13 @@ Each variant is emitted with a stable Go-name suffix:
   describe(list[int])    → Describe_1_sliceOfInt
   describe(int, int)     → Describe_2_int_int
   describe(str, int)     → Describe_2_str_int
+  parse(str) -> int      → Parse_1_str_ret_int
+  parse(str) -> str      → Parse_1_str_ret_str
   ```
 
-The duplicate-definition checker keys on `(name, arity, type-sig)`
-so genuine duplicates (same name, same arity, **same** types) are
-still rejected with a clear diagnostic; only the
-arity-or-type-distinct cases are accepted.
+The duplicate-definition checker keys on
+`(name, arity, parameter-type-signature, return-type-signature)`, so only
+complete signature duplicates are rejected.
 
 > **Note:** Variadic functions (`*args`) cannot be overloaded.
 
@@ -2972,7 +3059,7 @@ func formatGreeting(name: str) -> str {
 }
 
 class Counter {
-    func __init__(self, start: int = 0) {
+    func init(self, start: int = 0) {
         self.value: int = start
     }
     static func zero() -> int { return 0 }
@@ -2994,10 +3081,10 @@ func main() {
 }
 ```
 
-The same alias table inside a stdlib `try*` helper still works:
+The same alias table inside an unsuffixed Result-returning stdlib helper still works:
 
 ```lammergeier
-static func tryDecode(xmlStr: str) -> Result {
+static func decode(xmlStr: str) -> Result {
     go! {
         v, err := decoder.DecodeOne()
         if err != nil {

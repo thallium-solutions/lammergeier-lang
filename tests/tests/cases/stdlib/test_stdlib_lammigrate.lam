@@ -21,60 +21,77 @@
 from lamdb import Db
 from lammigrate import Migrator, Schema
 from lamos import Os
+from lamerrors import Result
+
+func resultDb(r: Result) -> Db {
+    go! { return r.Value.(*Db) }
+}
+
+func resultDict(r: Result) -> dict[str, any] {
+    go! { return r.Value.(map[string]interface{}) }
+}
+
+func resultStrings(r: Result) -> list[str] {
+    go! { return r.Value.([]string) }
+}
+
+func resultInt(r: Result) -> int {
+    go! { return r.Value.(int) }
+}
 
 func main() {
     # ── Prepare a temp migrations dir ─────────────────────────
     dir_: str = "/tmp/lammigrate_test"
-    Os.removeAll(dir_)
-    Os.mkdir(dir_)
+    Os.removeAll(dir_).unwrap()
+    Os.mkdir(dir_).unwrap()
     Os.writeFile(
         dir_ + "/20260101120000_create_users.sql",
         "-- +lam up\nCREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);\nINSERT INTO users (name) VALUES ('alice');\n-- +lam down\nDROP TABLE users;\n"
-    )
+    ).unwrap()
     Os.writeFile(
         dir_ + "/20260101120001_create_posts.sql",
         "-- +lam up\nCREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT);\nINSERT INTO posts (title) VALUES ('hello');\n-- +lam down\nDROP TABLE posts;\n"
-    )
+    ).unwrap()
 
-    db: Db = Db.connect("sqlite", ":memory:")
+    db: Db = resultDb(Db.connect("sqlite", ":memory:"))
     mig: Migrator = Migrator(db, dir_)
-    mig.ensureSchema()
+    mig.ensureSchema().unwrap()
 
     # ── Baseline ──────────────────────────────────────────────
-    summary0: dict[str, any] = mig.status()
+    summary0: dict[str, any] = resultDict(mig.status())
     print("initial-total: " + str(summary0["total"]))
     print("initial-ran: " + str(summary0["ran"]))
     print("initial-pending: " + str(summary0["pending"]))
 
     # ── Apply all pending ─────────────────────────────────────
-    applied: list[str] = mig.up()
+    applied: list[str] = resultStrings(mig.up())
     print("applied-count: " + str(len(applied)))
     print("applied-last: " + str(applied[len(applied) - 1]))
 
-    summary1: dict[str, any] = mig.status()
+    summary1: dict[str, any] = resultDict(mig.status())
     print("after-up-ran: " + str(summary1["ran"]))
     print("after-up-pending: " + str(summary1["pending"]))
 
     # Verify the migration actually ran the data.
-    users: int = db.table("users").count()
+    users: int = resultInt(db.table("users").count())
     print("users-row-count: " + str(users))
-    posts: int = db.table("posts").count()
+    posts: int = resultInt(db.table("posts").count())
     print("posts-row-count: " + str(posts))
 
     # ── Roll back the full batch ─────────────────────────────
-    undone: list[str] = mig.down(1)
+    undone: list[str] = resultStrings(mig.down(1))
     print("rollback-count: " + str(len(undone)))
-    summary2: dict[str, any] = mig.status()
+    summary2: dict[str, any] = resultDict(mig.status())
     print("after-down-ran: " + str(summary2["ran"]))
     print("after-down-pending: " + str(summary2["pending"]))
 
     # ── Stepwise up / partial down ────────────────────────────
-    stepUp: list[str] = mig.up(1)
+    stepUp: list[str] = resultStrings(mig.up(1))
     print("second-up-applied: " + str(len(stepUp)))
     # Now apply the remaining, then down 1 — should leave one behind.
-    mig.up()
-    mig.down(1)            # rolls back the *last batch* (one file)
-    rem: dict[str, any] = mig.status()
+    mig.up().unwrap()
+    mig.down(1).unwrap()            # rolls back the *last batch* (one file)
+    rem: dict[str, any] = resultDict(mig.status())
     print("partial-down-remaining: " + str(rem["ran"]))
 
     # ── Schema builder smoke-test ─────────────────────────────
@@ -109,8 +126,8 @@ func main() {
     }
 
     # Cleanup.
-    db.close()
-    Os.removeAll(dir_)
+    db.close().unwrap()
+    Os.removeAll(dir_).unwrap()
 }
 
 go! { import "strings" }

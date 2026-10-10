@@ -1,59 +1,60 @@
 # Lammergeier standard library: basic statistics
 # Import with: from lamstats import Stats
 #
-# Accepts lists of `float` (use Conv.toFloat if you have ints). Every
-# function returns float; callers can round/truncate as needed.
+# Numeric APIs accept homogeneous lists of `int` or `float`. Reductions that
+# preserve the input domain return T; averages, dispersion, and interpolation
+# return float. Ordered extrema and mode preserve their ordered input type.
 
 from lammath import Math
 
 class Stats {
-    static func sum(values: list[float]) -> float {
-        total: float = 0.0
-        for value in values {
+    static func sum[T: number](values: list[T]) -> T {
+        total: T = 0
+        for value: T in values {
             total += value
         }
         return total
     }
 
-    static func product(values: list[float]) -> float {
+    static func product[T: number](values: list[T]) -> T {
         if len(values) == 0 {
-            return 0.0
+            return 0
         }
-        total: float = 1.0
-        for value in values {
+        total: T = 1
+        for value: T in values {
             total *= value
         }
         return total
     }
 
-    static func mean(values: list[float]) -> float {
+    static func mean[T: number](values: list[T]) -> float {
         if len(values) == 0 {
             throw ValueError("Stats.mean: empty list")
         }
-        return Stats.sum(values) / float(len(values))
+        return float(Stats.sum(values)) / float(len(values))
     }
 
-    static func median(values: list[float]) -> float {
+    static func median[T: number](values: list[T]) -> float {
         n: int = len(values)
         if n == 0 {
             throw ValueError("Stats.median: empty list")
         }
-        ordered: list[float] = values.sort()
+        ordered: list[T] = values.sort()
         if n % 2 == 1 {
-            return ordered[n / 2]
+            return float(ordered[n / 2])
         }
-        return (ordered[n / 2 - 1] + ordered[n / 2]) / 2.0
+        return (float(ordered[n / 2 - 1]) + float(ordered[n / 2])) / 2.0
     }
 
-    static func mode(values: list[float]) -> float {
+    static func mode[T: ordered](values: list[T]) -> T {
         #- Return the most frequent value. Ties return the smallest mode. -#
         if len(values) == 0 {
             throw ValueError("Stats.mode: empty list")
         }
-        ordered: list[float] = values.sort()
-        best: float = ordered[0]
+        ordered: list[T] = values.sort()
+        best: T = ordered[0]
         bestCount: int = 1
-        current: float = ordered[0]
+        current: T = ordered[0]
         currentCount: int = 1
         for i in range(1, len(ordered)) {
             if ordered[i] == current {
@@ -73,36 +74,36 @@ class Stats {
         return best
     }
 
-    static func variance(values: list[float]) -> float {
+    static func variance[T: number](values: list[T]) -> float {
         #- Population variance. Use `sampleVariance` for a sample estimate. -#
         n: int = len(values)
         if n == 0 {
             throw ValueError("Stats.variance: empty list")
         }
-        average: float = Stats.sum(values) / float(n)
+        average: float = Stats.mean(values)
         sumSq: float = 0.0
-        for value in values {
-            delta: float = value - average
+        for value: T in values {
+            delta: float = float(value) - average
             sumSq += delta * delta
         }
         return sumSq / float(n)
     }
 
-    static func sampleVariance(values: list[float]) -> float {
+    static func sampleVariance[T: number](values: list[T]) -> float {
         n: int = len(values)
         if n < 2 {
             throw ValueError("Stats.sampleVariance: need at least 2 values")
         }
-        average: float = Stats.sum(values) / float(n)
+        average: float = Stats.mean(values)
         sumSq: float = 0.0
-        for value in values {
-            delta: float = value - average
+        for value: T in values {
+            delta: float = float(value) - average
             sumSq += delta * delta
         }
         return sumSq / float(n - 1)
     }
 
-    static func stddev(values: list[float]) -> float {
+    static func stddev[T: number](values: list[T]) -> float {
         #- Population standard deviation. -#
         if len(values) == 0 {
             throw ValueError("Stats.stddev: empty list")
@@ -110,12 +111,12 @@ class Stats {
         return Math.sqrt(Stats.variance(values))
     }
 
-    static func minVal(values: list[float]) -> float {
+    static func minVal[T: ordered](values: list[T]) -> T {
         if len(values) == 0 {
             throw ValueError("Stats.minVal: empty list")
         }
-        best: float = values[0]
-        for value in values {
+        best: T = values[0]
+        for value: T in values {
             if value < best {
                 best = value
             }
@@ -123,12 +124,12 @@ class Stats {
         return best
     }
 
-    static func maxVal(values: list[float]) -> float {
+    static func maxVal[T: ordered](values: list[T]) -> T {
         if len(values) == 0 {
             throw ValueError("Stats.maxVal: empty list")
         }
-        best: float = values[0]
-        for value in values {
+        best: T = values[0]
+        for value: T in values {
             if value > best {
                 best = value
             }
@@ -136,14 +137,14 @@ class Stats {
         return best
     }
 
-    static func range_(values: list[float]) -> float {
+    static func range_[T: number](values: list[T]) -> T {
         #- max - min. Named `range_` because `range` is a Lam keyword. -#
         if len(values) == 0 {
             throw ValueError("Stats.range_: empty list")
         }
-        low: float = values[0]
-        high: float = values[0]
-        for value in values {
+        low: T = values[0]
+        high: T = values[0]
+        for value: T in values {
             if value < low {
                 low = value
             }
@@ -154,7 +155,7 @@ class Stats {
         return high - low
     }
 
-    static func percentile(values: list[float], p: float) -> float {
+    static func percentile[T: number](values: list[T], p: float) -> float {
         #- Linear-interpolated percentile, 0 <= p <= 100. -#
         if len(values) == 0 {
             throw ValueError("Stats.percentile: empty list")
@@ -162,15 +163,17 @@ class Stats {
         if p < 0.0 or p > 100.0 {
             throw ValueError("Stats.percentile: p must be in [0,100]")
         }
-        ordered: list[float] = values.sort()
+        ordered: list[T] = values.sort()
         rank: float = p / 100.0 * float(len(ordered) - 1)
         low: int = int(rank)
         high: int = low + 1
         if high >= len(ordered) {
-            return ordered[low]
+            return float(ordered[low])
         }
         fraction: float = rank - float(low)
-        return ordered[low] + (ordered[high] - ordered[low]) * fraction
+        lowValue: float = float(ordered[low])
+        highValue: float = float(ordered[high])
+        return lowValue + (highValue - lowValue) * fraction
     }
 }
 

@@ -8,6 +8,11 @@
 from config import AppConfig, parseConfig
 from lamtemplate import Template
 from lamos import Os
+from lamerrors import Result
+
+func resultStr(r: Result) -> str {
+    go! { return r.Value.(string) }
+}
 
 func main() {
     raw: str = """name=payments-api
@@ -16,18 +21,18 @@ retries=3"""
 
     cfg: AppConfig = parseConfig(raw)
     t: Template = Template()
-    t.parse("service {{.Name}} talks to {{.Host}} with {{.Retries}} retries")
+    t.parse("service {{.Name}} talks to {{.Host}} with {{.Retries}} retries").unwrap()
 
     data: dict[str, any] = {}
     data["Name"] = cfg.name
     data["Host"] = cfg.host()
     data["Retries"] = cfg.retries
-    rendered: str = t.render(data)
+    rendered: str = resultStr(t.render(data))
 
     path: str = Os.tempDir() + "/lam-real-world-config.txt"
-    Os.writeFile(path, rendered)
-    roundtrip: str = Os.readFile(path)
-    Os.remove(path)
+    Os.writeFile(path, rendered).unwrap()
+    roundtrip: str = resultStr(Os.readFile(path))
+    Os.remove(path).unwrap()
 
     print(f"env={cfg.envName()}")
     print(f"host={cfg.host()}")

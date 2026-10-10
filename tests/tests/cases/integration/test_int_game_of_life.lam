@@ -18,7 +18,7 @@
 # expect: gol_ok
 
 class Grid {
-    func __init__(self, rows: int, cols: int) {
+    func init(self, rows: int, cols: int) {
         self.rows: int = rows
         self.cols: int = cols
         self.cells: list[list[int]] = []

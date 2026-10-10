@@ -19,6 +19,15 @@
 
 from lamcsv import Csv
 from lamjson import Json
+from lamerrors import Result
+
+func resultRows(result: Result) -> list[list[str]] {
+    go! { return result.Value.([][]string) }
+}
+
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
 
 go! {
     import "strconv"
@@ -44,7 +53,7 @@ func sumTeam(rows: list[list[str]], team: str) -> int {
 
 func main() {
     csvText: str = "name,team,score\nalice,red,4\nbob,blue,7\ncarol,red,8\ndave,blue,8\n"
-    rows: list[list[str]] = Csv.parseAll(csvText)
+    rows: list[list[str]] = resultRows(Csv.parseAll(csvText))
 
     # First row is the header; the rest are data.
     header: list[str] = rows[0]
@@ -64,7 +73,7 @@ func main() {
     summary: dict[str, int] = {}
     summary["red"] = redTotal
     summary["blue"] = blueTotal
-    blob: str = Json.encode(summary)
+    blob: str = resultString(Json.encode(summary))
     # Don't assume key ordering — JSON encoders sort or preserve insertion
     # order depending on the implementation. Just check that all four
     # expected tokens appear somewhere in the payload.

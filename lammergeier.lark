@@ -51,7 +51,7 @@ type_param: name [":" type_constraint]
 type_constraint: dotted_name
 
 PRIVATE: "private"
-STATIC_FUNC.3: /static(?=[\t \f\r\n]+func\b)/
+STATIC_FUNC.3: /static(?=[\t \f\r\n]+(?:async[\t \f\r\n]+)?func\b)/
 STATIC: "static"
 ASYNC: "async"
 FUNC.2: "func"

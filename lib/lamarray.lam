@@ -25,15 +25,17 @@
 # * Most methods return a *new* Array/Matrix to avoid surprising
 #   aliasing. In-place variants ("_inplace") are spelled out when they
 #   buy meaningful perf.
-# * All list-taking constructors expect typed lists (``list[float]``,
-#   ``list[list[float]]``). Use an intermediate typed variable so the
-#   transpiler emits ``[]float64`` rather than ``[]interface{}``:
+# * List-taking constructors are generic over homogeneous ``int`` or
+#   ``float`` lists. Values are converted once at the gonum boundary;
+#   Array and Matrix retain float64 storage because gonum requires it:
 #
-#       xs: list[float] = [1.0, 2.0]
+#       xs: list[int] = [1, 2]
 #       a: Array = Array.fromList(xs)
 #
-# * Shape mismatches panic with a descriptive message. For recoverable
-#   error handling, wrap calls in ``do { ... } catch err { ... }``.
+# * Shape mismatches panic with a descriptive message. Operations whose
+#   numerical algorithm can fail (inverse and solve) return ``Result``.
+
+from lamerrors import Result, Error
 
 go! {
     import (
@@ -58,10 +60,34 @@ go! {
         }
     }
 
+    type lamArrayNumber interface {
+        ~int | ~float64
+    }
+
     func lamArrCopy(a []float64) []float64 {
         out := make([]float64, len(a))
         copy(out, a)
         return out
+    }
+
+    func lamArrNumbersToFloat64[T lamArrayNumber](values []T) []float64 {
+        out := make([]float64, len(values))
+        for i, value := range values { out[i] = float64(value) }
+        return out
+    }
+
+    func lamArrRowsToFloat64[T lamArrayNumber](rows [][]T) (int, int, []float64) {
+        r := len(rows)
+        if r == 0 { return 0, 0, nil }
+        c := len(rows[0])
+        out := make([]float64, r*c)
+        for i, row := range rows {
+            if len(row) != c {
+                panic(fmt.Sprintf("Matrix.fromRows: row %d has %d cols, expected %d", i, len(row), c))
+            }
+            for j, value := range row { out[i*c+j] = float64(value) }
+        }
+        return r, c, out
     }
 
     func lamMatDataCopy(m *mat.Dense) []float64 {
@@ -81,7 +107,7 @@ class Array {
        ``gonum.org/v1/gonum/floats`` so the inner loops call into the
        same BLAS-style kernels gonum uses internally. -#
 
-    func __init__(self, n: int) {
+    func init(self, n: int) {
         # Default constructor: zero-filled length-n array. Prefer the
         # static helpers (``zeros`` / ``ones`` / ``fromList`` / …) —
         # they're just thin sugar over this one.
@@ -105,26 +131,27 @@ class Array {
         return a
     }
 
-    static func full(n: int, value: float) -> Array {
+    static func full[T: number](n: int, value: T) -> Array {
         a: Array = Array(n)
         go! {
             d := a.Data.([]float64)
-            for i := range d { d[i] = value }
+            for i := range d { d[i] = float64(value) }
         }
         return a
     }
 
-    static func arange(start: float, stop: float, step: float) -> Array {
+    static func arange[T: number](start: T, stop: T, step: T) -> Array {
         #- Half-open interval ``[start, stop)`` with ``step`` stride.
            ``step`` must be non-zero; positive step walks up, negative
            step walks down. -#
         go! {
-            if step == 0 { panic("Array.arange: step must be non-zero") }
+            start64, stop64, step64 := float64(start), float64(stop), float64(step)
+            if step64 == 0 { panic("Array.arange: step must be non-zero") }
             var out []float64
-            if step > 0 {
-                for v := start; v < stop; v += step { out = append(out, v) }
+            if step64 > 0 {
+                for v := start64; v < stop64; v += step64 { out = append(out, v) }
             } else {
-                for v := start; v > stop; v += step { out = append(out, v) }
+                for v := start64; v > stop64; v += step64 { out = append(out, v) }
             }
             a := NewArray(len(out))
             a.Data = out
@@ -132,16 +159,16 @@ class Array {
         }
     }
 
-    static func linspace(start: float, stop: float, num: int) -> Array {
+    static func linspace[T: number](start: T, stop: T, num: int) -> Array {
         #- ``num`` evenly-spaced samples from ``start`` to ``stop``
            (endpoints inclusive). Matches NumPy's ``linspace``. -#
         go! {
             if num <= 0 { panic("Array.linspace: num must be > 0") }
             out := make([]float64, num)
             if num == 1 {
-                out[0] = start
+                out[0] = float64(start)
             } else {
-                floats.Span(out, start, stop)
+                floats.Span(out, float64(start), float64(stop))
             }
             a := NewArray(num)
             a.Data = out
@@ -149,10 +176,10 @@ class Array {
         }
     }
 
-    static func fromList(values: list[float]) -> Array {
+    static func fromList[T: number](values: list[T]) -> Array {
         go! {
             a := NewArray(len(values))
-            a.Data = lamArrCopy(values)
+            a.Data = lamArrNumbersToFloat64(values)
             return a
         }
     }
@@ -512,7 +539,7 @@ class Matrix {
        through gonum's LAPACK-equivalent routines — the same code
        paths used by ``gonum/mat`` directly. -#
 
-    func __init__(self, rows: int, cols: int) {
+    func init(self, rows: int, cols: int) {
         self.dense: any = None
         self.rowsN: int = rows
         self.colsN: int = cols
@@ -534,39 +561,27 @@ class Matrix {
         return m
     }
 
-    static func fromList(rows: int, cols: int, values: list[float]) -> Matrix {
+    static func fromList[T: number](rows: int, cols: int, values: list[T]) -> Matrix {
         go! {
             if len(values) != rows*cols {
                 panic(fmt.Sprintf("Matrix.fromList: expected %d values, got %d", rows*cols, len(values)))
             }
-            data := make([]float64, rows*cols)
-            copy(data, values)
+            data := lamArrNumbersToFloat64(values)
             m := NewMatrix(rows, cols)
             m.Dense = mat.NewDense(rows, cols, data)
             return m
         }
     }
 
-    static func fromRows(rows: list[list[float]]) -> Matrix {
-        #- Build from a row-of-rows literal. Every row must have the
-           same length; mismatches panic. The inner lists need to be
-           ``[]float64`` at the Go level — assign through a typed
-           variable (``rows: list[list[float]] = [...]``) before
-           calling. -#
+    static func fromRows[T: number](rows: list[list[T]]) -> Matrix {
+        #- Build from homogeneous int or float rows. Every row must have
+           the same length; values convert to float64 at the gonum boundary. -#
         go! {
-            r := len(rows)
+            r, c, data := lamArrRowsToFloat64(rows)
             if r == 0 {
                 mm := NewMatrix(0, 0)
                 mm.Dense = mat.NewDense(0, 0, nil)
                 return mm
-            }
-            c := len(rows[0])
-            data := make([]float64, r*c)
-            for i, row := range rows {
-                if len(row) != c {
-                    panic(fmt.Sprintf("Matrix.fromRows: row %d has %d cols, expected %d", i, len(row), c))
-                }
-                copy(data[i*c:(i+1)*c], row)
             }
             mm := NewMatrix(r, c)
             mm.Dense = mat.NewDense(r, c, data)
@@ -729,44 +744,59 @@ class Matrix {
         }
     }
 
-    func inverse(self) -> Matrix {
-        #- True matrix inverse via LU. Panics on singular matrices —
-           use ``solve`` if you only need ``A^-1 b``. -#
+    func inverse(self) -> Result[Matrix] {
+        #- True matrix inverse via LU. Non-square and singular matrices are
+           recoverable numerical errors. -#
         go! {
             a := s.Dense.(*mat.Dense)
             ar, ac := a.Dims()
-            if ar != ac { panic("Matrix.inverse: matrix must be square") }
+            if ar != ac {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "MatrixShapeError", "Matrix.inverse requires a square matrix", nil,
+                ))
+            }
             inv := mat.NewDense(ar, ac, nil)
             if err := inv.Inverse(a); err != nil {
-                panic(fmt.Sprintf("Matrix.inverse: %v", err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "MatrixSingularError", "Matrix.inverse failed", err.Error(),
+                ))
             }
             mm := NewMatrix(ar, ac)
             mm.Dense = inv
-            return mm
+            return LAMMERGEIER.Result.Ok(mm)
         }
     }
 
-    func solve(self, b: Array) -> Array {
-        #- Solve ``A x = b`` for ``x`` using gonum's LU solver. The
-           receiver must be square and of dimension matching ``b``. -#
+    func solve(self, b: Array) -> Result[Array] {
+        #- Solve ``A x = b`` via LU, reporting shape and singularity errors. -#
         go! {
             a := s.Dense.(*mat.Dense)
             ar, ac := a.Dims()
-            if ar != ac { panic("Matrix.solve: matrix must be square") }
+            if ar != ac {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "MatrixShapeError", "Matrix.solve requires a square matrix", nil,
+                ))
+            }
             rhs := b.Data.([]float64)
             if len(rhs) != ar {
-                panic(fmt.Sprintf("Matrix.solve: rhs length %d != matrix rows %d", len(rhs), ar))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "MatrixShapeError",
+                    fmt.Sprintf("Matrix.solve rhs length %d does not match %d rows", len(rhs), ar),
+                    nil,
+                ))
             }
             rhsVec := mat.NewVecDense(ar, rhs)
             var x mat.VecDense
             if err := x.SolveVec(a, rhsVec); err != nil {
-                panic(fmt.Sprintf("Matrix.solve: %v", err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "MatrixSingularError", "Matrix.solve failed", err.Error(),
+                ))
             }
             out := make([]float64, ar)
             for i := 0; i < ar; i++ { out[i] = x.AtVec(i) }
             arr := NewArray(ar)
             arr.Data = out
-            return arr
+            return LAMMERGEIER.Result.Ok(arr)
         }
     }
 

@@ -5,7 +5,7 @@
 from lammath import Math
 
 class Circle {
-    func __init__(self, radius: float) {
+    func init(self, radius: float) {
         self.radius: float = radius
     }
 

@@ -30,105 +30,73 @@ go! {
 }
 
 class Env {
-    static func get(key: str) -> str {
-        #- Return the value of ``key`` or an empty string when it's
-           not set. Use :meth:`has` to disambiguate "unset" from
-           "empty string". -#
+    static func get(key: str) -> Result[str] {
+        #- Return the value of ``key``. An explicitly empty value is
+           ``Ok("")``; an unset key is an ``EnvError``. -#
         go! {
-            return os.Getenv(key)
+            value, ok := os.LookupEnv(key)
+            if !ok {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "EnvError", fmt.Sprintf("environment variable %q is not set", key), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(value)
         }
     }
 
     static func getOr(key: str, fallback: str) -> str {
-        #- Return ``key``'s value, or ``fallback`` if it is unset
-           OR explicitly empty. -#
-        value: str = Env.get(key)
-        if value == "" {
-            return fallback
-        }
+        #- Return ``key``'s value, or ``fallback`` if it is unset. -#
+        value: str = Env.get(key).unwrapOr(fallback)
         return value
     }
 
-    static func getInt(key: str, fallback: int = 0) -> int {
-        #- Parse ``key`` as a decimal integer. Return ``fallback`` when
-           the variable is unset, empty, or malformed. -#
-        parsed: Result[int] = Env.tryGetInt(key)
-        if not parsed.ok() {
-            return fallback
+    static func get(key: str, fallback: int) -> Result[int] {
+        raw: Result[str] = Env.get(key)
+        if not raw.ok() {
+            return Result.Ok(fallback)
         }
-        value: int = fallback
+        value: str = raw.unwrap()
+        return Conv.parse(value)
+    }
+
+    static func get(key: str, fallback: float) -> Result[float] {
+        raw: Result[str] = Env.get(key)
+        if not raw.ok() {
+            return Result.Ok(fallback)
+        }
+        value: str = raw.unwrap()
+        return Conv.parse(value)
+    }
+
+    static func get(key: str, fallback: bool) -> Result[bool] {
+        raw: Result[str] = Env.get(key)
+        if not raw.ok() {
+            return Result.Ok(fallback)
+        }
+        value: str = raw.unwrap()
+        return Conv.parse(value)
+    }
+
+    static func set(key: str, val: str) -> Result[any] {
         go! {
-            value = parsed.Value.(int)
+            if err := os.Setenv(key, val); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("EnvError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
         }
-        return value
     }
 
-    static func tryGetInt(key: str) -> Result[int] {
-        #- Parse ``key`` as a decimal integer, returning a ``ParseError``
-           instead of falling back when the value cannot be parsed. Unset
-           and empty variables are errors because they parse as ``""``. -#
-        return Conv.tryInt(Env.get(key))
-    }
-
-    static func getFloat(key: str, fallback: float = 0.0) -> float {
-        #- Parse ``key`` as a 64-bit float. Return ``fallback`` when the
-           variable is unset, empty, or malformed. -#
-        parsed: Result[float] = Env.tryGetFloat(key)
-        if not parsed.ok() {
-            return fallback
-        }
-        value: float = fallback
+    static func unset(key: str) -> Result[any] {
         go! {
-            value = parsed.Value.(float64)
-        }
-        return value
-    }
-
-    static func tryGetFloat(key: str) -> Result[float] {
-        #- Parse ``key`` as a 64-bit float, returning a ``ParseError``
-           instead of falling back when the value cannot be parsed. Unset
-           and empty variables are errors because they parse as ``""``. -#
-        return Conv.tryFloat(Env.get(key))
-    }
-
-    static func getBool(key: str, fallback: bool = false) -> bool {
-        #- Parse ``key`` using ``Conv.tryBool``. Return ``fallback`` when
-           the variable is unset, empty, or malformed. -#
-        parsed: Result[bool] = Env.tryGetBool(key)
-        if not parsed.ok() {
-            return fallback
-        }
-        value: bool = fallback
-        go! {
-            value = parsed.Value.(bool)
-        }
-        return value
-    }
-
-    static func tryGetBool(key: str) -> Result[bool] {
-        #- Parse ``key`` as a boolean, returning a ``ParseError`` instead
-           of falling back when the value cannot be parsed. Unset and empty
-           variables are errors because they parse as ``""``. -#
-        return Conv.tryBool(Env.get(key))
-    }
-
-    static func set(key: str, val: str) {
-        go! {
-            os.Setenv(key, val)
-        }
-    }
-
-    static func unset(key: str) {
-        go! {
-            os.Unsetenv(key)
+            if err := os.Unsetenv(key); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("EnvError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
         }
     }
 
     static func has(key: str) -> bool {
-        go! {
-            _, ok := os.LookupEnv(key)
-            return ok
-        }
+        return Env.get(key).ok()
     }
 
     static func all() -> dict[str, any] {
@@ -166,38 +134,38 @@ class Dotenv {
         return out
     }
 
-    static func parseFile(path: str) -> dict[str, any] {
-        text: str = ""
-        ok: bool = false
+    static func parseFile(path: str) -> Result[dict[str, any]] {
         go! {
             data, err := os.ReadFile(path)
-            if err == nil {
-                text = string(data)
-                ok = true
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "DotenvError", fmt.Sprintf("cannot read %q: %v", path, err), nil,
+                ))
             }
+            out := map[string]interface{}{}
+            lamEnvParseDotenv(string(data), out)
+            return LAMMERGEIER.Result.Ok(out)
         }
-        if not ok {
-            return {}
-        }
-        return Dotenv.parse(text)
     }
 
-    static func load(path: str) -> int {
+    static func load(path: str) -> Result[int] {
         #- Parse ``path`` and copy each entry into ``os.Environ``.
            Existing variables are *kept* — a key already present in
            the environment is not overwritten. Returns the count of
            entries actually published. -#
-        return Dotenv.applyToEnv(Dotenv.parseFile(path), false)
+        entries: dict[str, any] = Dotenv.parseFile(path)?
+        return Dotenv.applyToEnv(entries, false)
     }
 
-    static func loadOverride(path: str) -> int {
+    static func loadOverride(path: str) -> Result[int] {
         #- Same as :meth:`load`, but file entries always win. -#
-        return Dotenv.applyToEnv(Dotenv.parseFile(path), true)
+        entries: dict[str, any] = Dotenv.parseFile(path)?
+        return Dotenv.applyToEnv(entries, true)
     }
 
-    static func applyToEnv(entries: dict[str, any], override_: bool) -> int {
-        n: int = 0
+    static func applyToEnv(entries: dict[str, any], override_: bool) -> Result[int] {
         go! {
+            n := 0
             for k, v := range entries {
                 vs, _ := v.(string)
                 if !override_ {
@@ -205,11 +173,13 @@ class Dotenv {
                         continue
                     }
                 }
-                os.Setenv(k, vs)
+                if err := os.Setenv(k, vs); err != nil {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DotenvError", err.Error(), nil))
+                }
                 n++
             }
+            return LAMMERGEIER.Result.Ok(n)
         }
-        return n
     }
 }
 
@@ -221,7 +191,7 @@ class Config {
        ``.yml``, ``.toml``. The function returns a ``Result`` so
        you can branch on failure cleanly:
 
-           cfg = Config.tryLoad("app.toml")
+           cfg = Config.load("app.toml")
            if cfg.ok() { use(cfg.value) } else { print(cfg.error) }
 
        Use :meth:`merge` to combine multiple sources (defaults +
@@ -234,12 +204,9 @@ class Config {
            ])
     -#
 
-    static func tryLoad(path: str) -> Result {
+    static func load(path: str) -> Result[dict[str, any]] {
         go! {
             ext := strings.ToLower(filepath.Ext(path))
-            if ext == ".env" {
-                return LAMMERGEIER.Result.Ok(Dotenv_parseFile(path))
-            }
             data, err := os.ReadFile(path)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
@@ -250,6 +217,8 @@ class Config {
             }
             m := map[string]interface{}{}
             switch ext {
+            case ".env":
+                lamEnvParseDotenv(string(data), m)
             case ".json":
                 if err := lamEnvJSONUnmarshal(data, &m); err != nil {
                     return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
@@ -282,31 +251,6 @@ class Config {
                 ))
             }
             return LAMMERGEIER.Result.Ok(m)
-        }
-    }
-
-    static func load(path: str) -> dict[str, any] {
-        #- Like :meth:`tryLoad` but returns an empty dict on any
-           failure. Convenient for "best effort" loads where a
-           missing optional file shouldn't crash. -#
-        go! {
-            r := Config_tryLoad(path)
-            if r == nil || !r.Ok() {
-                return map[string]interface{}{}
-            }
-            if m, ok := r.Value.(map[string]interface{}); ok {
-                return m
-            }
-            if m, ok := r.Value.(map[interface{}]interface{}); ok {
-                out := make(map[string]interface{}, len(m))
-                for k, v := range m {
-                    if ks, ok := k.(string); ok {
-                        out[ks] = v
-                    }
-                }
-                return out
-            }
-            return map[string]interface{}{}
         }
     }
 

@@ -1,86 +1,164 @@
 # Test: lamnet Net — DNS helpers, reachability, TCP loopback round-trip
 # expect: PASS 1 hostname non-empty
 # expect: PASS 2 lookupHost localhost
-# expect: PASS 3 lookupHost invalid
+# expect: PASS 3 lookupHost invalid is error
 # expect: PASS 4 lookupAddr loopback
-# expect: PASS 5 isReachable false
+# expect: PASS 5 isReachable failure is error
 # expect: PASS 6 listen port positive
 # expect: PASS 7 isReachable true
 # expect: PASS 8 tcp round-trip
 # expect: PASS 9 tcp binary payload
-# expect: PASS 10 listener closed
-# expect: 10 passed, 0 failed, 10 total
+# expect: PASS 10 tcp line reads preserve buffered data
+# expect: PASS 11 tcp operation timeout is error
+# expect: PASS 12 udp receive payload and sender
+# expect: PASS 13 udp reply round-trip
+# expect: PASS 14 udp operation timeout is error
+# expect: PASS 15 udp closed operation is error
+# expect: PASS 16 tls certificate error is surfaced
+# expect: PASS 17 listener closed is error
+# expect: PASS 18 EOF is empty success
+# expect: 18 passed, 0 failed, 18 total
 
 from lamnet import Net
 from lamnet import TcpConn
 from lamnet import TcpListener
+from lamnet import UdpConn
+from lamnet import UdpPacket
 from lamtest import Test
+from lamerrors import Result
 
 go! {
     import "net"
 }
 
+func resultStr(r: Result) -> str {
+    go! { return r.Value.(string) }
+}
+
+func resultStrings(r: Result) -> list[str] {
+    go! { return r.Value.([]string) }
+}
+
+func resultBool(r: Result) -> bool {
+    go! { return r.Value.(bool) }
+}
+
+func resultInt(r: Result) -> int {
+    go! { return r.Value.(int) }
+}
+
+func resultConn(r: Result) -> TcpConn {
+    go! { return r.Value.(*TcpConn) }
+}
+
+func resultListener(r: Result) -> TcpListener {
+    go! { return r.Value.(*TcpListener) }
+}
+
+func resultUdpConn(r: Result) -> UdpConn {
+    go! { return r.Value.(*UdpConn) }
+}
+
+func resultUdpPacket(r: Result) -> UdpPacket {
+    go! { return r.Value.(*UdpPacket) }
+}
+
 func main() {
     # 1. hostname
-    Test.assertTrue(len(Net.hostname()) > 0, "1 hostname non-empty")
+    hostname: str = resultStr(Net.hostname())
+    Test.assertTrue(len(hostname) > 0, "1 hostname non-empty")
 
     # 2. localhost always resolves — returns at least one address
-    addrs: list[str] = Net.lookupHost("localhost")
+    addrs: list[str] = resultStrings(Net.lookupHost("localhost"))
     Test.assertTrue(len(addrs) > 0, "2 lookupHost localhost")
 
-    # 3. invalid names return empty (no panic)
-    bogus: list[str] = Net.lookupHost("this-host-does-not-exist-12345.invalid")
-    Test.assertLen(bogus, 0, "3 lookupHost invalid")
+    # 3. invalid names are errors, not an empty-list sentinel
+    bogus: Result[list[str]] = Net.lookupHost("this-host-does-not-exist-12345.invalid")
+    Test.assertFalse(bogus.ok(), "3 lookupHost invalid is error")
 
     # 4. Reverse DNS on loopback resolves to at least one name
-    names: list[str] = Net.lookupAddr("127.0.0.1")
+    names: list[str] = resultStrings(Net.lookupAddr("127.0.0.1"))
     Test.assertTrue(len(names) > 0, "4 lookupAddr loopback")
 
-    # 5. Unlikely-to-be-open port on loopback
-    Test.assertFalse(Net.isReachable("127.0.0.1", 1, 100), "5 isReachable false")
+    # 5. Unlikely-to-be-open port on loopback is a transport error
+    unreachable: Result[bool] = Net.isReachable("127.0.0.1", 1, 100)
+    Test.assertFalse(unreachable.ok(), "5 isReachable failure is error")
 
     # 6. Listener on ephemeral port
-    listener: TcpListener = Net.listenTcp(0)
-    port: int = listener.port()
+    listener: TcpListener = resultListener(Net.listenTcp(0))
+    port: int = resultInt(listener.port())
     Test.assertTrue(port > 0, "6 listen port positive")
 
     # 7. Now the port IS reachable
-    Test.assertTrue(Net.isReachable("127.0.0.1", port, 500), "7 isReachable true")
+    reachable: bool = resultBool(Net.isReachable("127.0.0.1", port, 500))
+    Test.assertTrue(reachable, "7 isReachable true")
 
     # 8-9. TCP loopback round-trip — accept in goroutine, dial from main.
-    # The loop keeps accepting until the listener is closed in test 10.
     go! {
         go func() {
-            raw := listener.Raw.(net.Listener)
             for {
-                server, err := raw.Accept()
-                if err != nil { return }
+                accepted := listener.Accept(0)
+                if accepted.Error != nil { return }
+                server := accepted.Value.(*TcpConn)
+                raw := server.Raw.(net.Conn)
                 buf := make([]byte, 64)
-                n, _ := server.Read(buf)
+                n, _ := raw.Read(buf)
                 if n > 0 {
-                    server.Write([]byte("echo:" + string(buf[:n])))
+                    raw.Write([]byte("echo:" + string(buf[:n])))
                 }
                 server.Close()
             }
         }()
     }
 
-    conn: TcpConn = Net.dialTcp("127.0.0.1", port, 1000)
-    conn.send("ping")
-    reply: str = conn.recv(64)
-    conn.close()
-    Test.assertEqual(reply, "echo:ping", "8 tcp round-trip")
+    conn: TcpConn = resultConn(Net.dialTcp("127.0.0.1", port, 1000))
+    remote: str = resultStr(conn.remoteAddr())
+    conn.send("ping").unwrap()
+    reply: str = resultStr(conn.receive(64))
+    eof: Result[str] = conn.receive(64)
+    conn.close().unwrap()
+    Test.assertTrue(reply == "echo:ping" and len(remote) > 0, "8 tcp round-trip")
 
-    # 9. Binary-ish payload (utf-8 multibyte) survives the round trip
-    conn2: TcpConn = Net.dialTcp("127.0.0.1", port, 1000)
-    conn2.send("🪶")
-    reply2: str = conn2.recv(64)
-    conn2.close()
+    conn2: TcpConn = resultConn(Net.dialTcp("127.0.0.1", port, 1000))
+    conn2.send("🪶").unwrap()
+    reply2: str = resultStr(conn2.receive(64))
+    conn2.close().unwrap()
     Test.assertEqual(reply2, "echo:🪶", "9 tcp binary payload")
 
-    # 10. Once closed, the listener stops being reachable
-    listener.close()
-    Test.assertFalse(Net.isReachable("127.0.0.1", port, 100), "10 listener closed")
+    conn3: TcpConn = resultConn(Net.dialTcp("127.0.0.1", port, 1000))
+    conn3.send("one\ntwo\n", 500).unwrap()
+    line1: str = resultStr(conn3.readLine(500))
+    line2: str = resultStr(conn3.readLine(500))
+    conn3.close().unwrap()
+    Test.assertTrue(line1 == "echo:one" and line2 == "two", "10 tcp line reads preserve buffered data")
+
+    waiting: TcpConn = resultConn(Net.dialTcp("127.0.0.1", port, 1000))
+    receiveTimeout: Result[str] = waiting.receive(64, 20)
+    waiting.close().unwrap()
+    Test.assertFalse(receiveTimeout.ok(), "11 tcp operation timeout is error")
+
+    udpServer: UdpConn = resultUdpConn(Net.listenUdp(0))
+    udpPort: int = resultInt(udpServer.port())
+    udpClient: UdpConn = resultUdpConn(Net.dialUdp("127.0.0.1", udpPort, 500))
+    udpClient.send("ping", 500).unwrap()
+    packet: UdpPacket = resultUdpPacket(udpServer.receiveFrom(64, 500))
+    Test.assertTrue(packet.data == "ping" and len(packet.address) > 0, "12 udp receive payload and sender")
+    udpServer.sendTo("pong", packet.address, 500).unwrap()
+    udpReply: str = resultStr(udpClient.receive(64, 500))
+    Test.assertEqual(udpReply, "pong", "13 udp reply round-trip")
+    udpTimeout: Result[UdpPacket] = udpServer.receiveFrom(64, 20)
+    Test.assertFalse(udpTimeout.ok(), "14 udp operation timeout is error")
+    udpClient.close().unwrap()
+    udpServer.close().unwrap()
+    Test.assertFalse(udpServer.receiveFrom(64, 20).ok(), "15 udp closed operation is error")
+
+    badTls: Result[TcpListener] = Net.listenTls(0, "/missing/lam-cert.pem", "/missing/lam-key.pem")
+    Test.assertFalse(badTls.ok(), "16 tls certificate error is surfaced")
+
+    listener.close().unwrap()
+    closed: Result[bool] = Net.isReachable("127.0.0.1", port, 100)
+    Test.assertFalse(closed.ok(), "17 listener closed is error")
+    Test.assertTrue(eof.ok() and str(eof.value) == "", "18 EOF is empty success")
 
     Test.summary()
 }

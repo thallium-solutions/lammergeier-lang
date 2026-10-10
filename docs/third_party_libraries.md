@@ -223,7 +223,7 @@ class Client {
     baseUrl: str
     timeoutMs: int
 
-    func __init__(baseUrl: str, timeoutMs: int = 5000) {
+    func init(baseUrl: str, timeoutMs: int = 5000) {
         self.baseUrl = baseUrl
         self.timeoutMs = timeoutMs
     }

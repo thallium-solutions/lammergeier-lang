@@ -4,7 +4,7 @@
 # expect: done
 
 class Resource {
-    func __init__(self, name: str) {
+    func init(self, name: str) {
         self.name: str = name
         print("opened")
     }

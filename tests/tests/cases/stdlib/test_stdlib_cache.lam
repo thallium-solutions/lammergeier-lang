@@ -12,10 +12,17 @@
 # expect: ttl_get1=v
 # expect: ttl_get2=<nil>
 # expect: ttl_forever=eternal
+# expect: mixed_cache_size=3
+# expect: mixed_cache_bool=true
+# expect: concurrent_cache_ok=true
 # expect: cache_tests_ok
 
 from lamcache import LruCache, TtlCache
 from lamtime import Time
+
+go! {
+    import "sync"
+}
 
 func main() {
     # ─── LRU eviction ────────────────────────────────────────
@@ -54,6 +61,45 @@ func main() {
     Time.sleepMs(50)
     v3: any = t.get("immortal")
     print(f"ttl_forever={v3}")
+
+    mixed: LruCache = LruCache(3)
+    mixed.put("name", "Ada")
+    mixed.put(7, 42)
+    mixed.put(true, true)
+    print(f"mixed_cache_size={mixed.size()}")
+    print(f"mixed_cache_bool={mixed.get(true)}")
+
+    # Hammer both implementations from several goroutines. The ordinary core
+    # run checks post-contention invariants; focused --go-race runs additionally
+    # verify that map/list access remains synchronized.
+    concurrentLru: LruCache = LruCache(32)
+    concurrentTtl: TtlCache = TtlCache()
+    concurrentOk: bool = false
+    go! {
+        var wg sync.WaitGroup
+        for worker := 0; worker < 8; worker++ {
+            wg.Add(1)
+            go func(worker int) {
+                defer wg.Done()
+                for j := 0; j < 200; j++ {
+                    key := worker*10000 + j
+                    concurrentLru.Put(key, j)
+                    _ = concurrentLru.Get(key)
+                    if j%3 == 0 {
+                        concurrentLru.Remove(key)
+                    }
+                    concurrentTtl.PutForever(key, j)
+                    _ = concurrentTtl.Get(key)
+                    if j%2 == 0 {
+                        concurrentTtl.Remove(key)
+                    }
+                }
+            }(worker)
+        }
+        wg.Wait()
+        concurrentOk = concurrentLru.Size() <= 32 && concurrentTtl.Size() == 800
+    }
+    print(f"concurrent_cache_ok={concurrentOk}")
 
     print("cache_tests_ok")
 }

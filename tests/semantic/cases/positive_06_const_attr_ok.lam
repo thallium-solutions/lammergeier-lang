@@ -4,7 +4,7 @@
 # ``var`` of a pointer or slice).
 
 class Box {
-    func __init__(self) {
+    func init(self) {
         self.x = 0
     }
 }

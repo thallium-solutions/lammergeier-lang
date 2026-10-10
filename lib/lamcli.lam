@@ -10,13 +10,12 @@
 #   --key=value            key/value in one token
 #   --key value / -k val   key/value in two tokens
 
+from lamconv import Conv
+from lamerrors import Result
 from lamstrings import Strings
 
 go! {
-    import (
-        "os"
-        "strings"
-    )
+    import "os"
 }
 
 class Cli {
@@ -88,39 +87,11 @@ class Cli {
         return fallback
     }
 
-    static func getInt(name: str, fallback: int = 0) -> int {
-        #- Like getFlag but parses the value as an integer. -#
-        go! {
-            stripped := strings.TrimLeft(name, "-")
-            argsSlice := os.Args[1:]
-            parse := func(s string) (int, bool) {
-                n := 0
-                neg := false
-                if len(s) > 0 && s[0] == '-' { neg = true; s = s[1:] }
-                if s == "" { return 0, false }
-                for _, c := range s {
-                    if c < '0' || c > '9' { return 0, false }
-                    n = n*10 + int(c-'0')
-                }
-                if neg { n = -n }
-                return n, true
-            }
-            for i, a := range argsSlice {
-                trim := strings.TrimLeft(a, "-")
-                if idx := strings.Index(trim, "="); idx >= 0 {
-                    if trim[:idx] == stripped {
-                        if v, ok := parse(trim[idx+1:]); ok { return v }
-                        return fallback
-                    }
-                    continue
-                }
-                if trim == stripped && i+1 < len(argsSlice) {
-                    if v, ok := parse(argsSlice[i+1]); ok { return v }
-                    return fallback
-                }
-            }
-            return fallback
-        }
+    static func getFlag(name: str, fallback: int = 0) -> int {
+        #- Parse a flag value as an integer, returning ``fallback`` when absent or malformed. -#
+        parsed: Result[int] = Conv.parse(Cli.getFlag(name, ""))
+        value: int = parsed.unwrapOr(fallback)
+        return value
     }
 
     static func positional() -> list[str] {

@@ -9,8 +9,8 @@ from lamconcurrency import Channel, Mutex, Atomic
 func main() {
     # Channel: send and receive
     ch: Channel = Channel(1)
-    ch.send(42)
-    val: any = ch.recv()
+    ch.send(42).unwrap()
+    val: int = ch.receive().unwrap()
     if val == 42 {
         print("channel_ok")
     }

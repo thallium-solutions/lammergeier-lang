@@ -1,6 +1,8 @@
 class ImportedFormatter {
     static func render(value: int) -> str { return f"imported-int:{value}" }
     static func render(value: str) -> str { return f"imported-str:{value}" }
+    static func select(value: int) -> int { return value + 1 }
+    static func select(value: int) -> str { return f"selected:{value}" }
 }
 
 func main() { pass }

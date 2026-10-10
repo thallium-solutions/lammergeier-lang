@@ -7,8 +7,10 @@
 # expect: intersect size: 1
 # expect: diff size: 1
 # expect: cleared empty: true
+# expect: mixed size: 3
+# expect: mixed contains: true
 
-from lamset import Set
+from lamdatastructures import Set
 
 func main() {
     a: Set = Set()
@@ -42,4 +44,11 @@ func main() {
 
     a.clear()
     print(f"cleared empty: {a.isEmpty()}")
+
+    mixed: Set = Set()
+    mixed.add("word")
+    mixed.add(7)
+    mixed.add(true)
+    print(f"mixed size: {mixed.size()}")
+    print(f"mixed contains: {mixed.contains(7)}")
 }

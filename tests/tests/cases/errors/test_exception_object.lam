@@ -22,7 +22,7 @@
 # expect: inner field: age
 
 class ValidationError {
-    func __init__(self, field: str, reason: str) {
+    func init(self, field: str, reason: str) {
         self.field: str = field
         self.reason: str = reason
     }
@@ -32,7 +32,7 @@ class ValidationError {
 }
 
 class DomainError {
-    func __init__(self, code: str, inner: ValidationError) {
+    func init(self, code: str, inner: ValidationError) {
         self.code: str = code
         self.inner: ValidationError = inner
     }

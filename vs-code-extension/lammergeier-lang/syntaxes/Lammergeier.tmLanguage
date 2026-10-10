@@ -266,7 +266,7 @@
     <key>stdlib-modules</key>
     <dict><key>patterns</key><array><dict>
       <key>name</key><string>support.class.stdlib.module.lammergeier</string>
-      <key>match</key><string><![CDATA[\b(lamactor|lamarray|lambase64|lambytes|lamcache|lamcli|lamcompress|lamconcurrency|lamcontext|lamconv|lamcron|lamcrypto|lamcsv|lamdata|lamdatetime|lamdb|lamdeque|lamenv|lamerrors|lamexec|lamfmt|lamhash|lamheap|lamhttp|lamiter|lamjson|lamlog|lammath|lammigrate|lamnet|lamos|lampath|lamqueue|lamrandom|lamratelimit|lamre|lamretry|lamschema|lamset|lamsmtp|lamsort|lamstack|lamstats|lamstrings|lamtemplate|lamtest|lamtime|lamunicode|lamurl|lamuuid|lamxml|lamyaml)\b]]></string>
+      <key>match</key><string><![CDATA[\b(lamactor|lamarray|lambase64|lambytes|lamcache|lamcli|lamcompress|lamconcurrency|lamcontext|lamconv|lamcron|lamcrypto|lamcsv|lamdata|lamdatastructures|lamdatetime|lamdb|lamdeque|lamenv|lamerrors|lamexec|lamfmt|lamhash|lamheap|lamhttp|lamiter|lamjson|lamlog|lammath|lammigrate|lamnet|lamos|lampath|lamqueue|lamrandom|lamratelimit|lamre|lamretry|lamschema|lamset|lamsmtp|lamsort|lamstack|lamstats|lamstrings|lamtemplate|lamtest|lamtime|lamunicode|lamurl|lamuuid|lamxml|lamyaml)\b]]></string>
     </dict></array></dict>
     <key>stdlib-classes</key>
     <dict><key>patterns</key><array><dict>

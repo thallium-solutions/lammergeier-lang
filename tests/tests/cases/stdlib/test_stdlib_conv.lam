@@ -1,55 +1,96 @@
-# expect: int_ok
-# expect: float_ok
+# expect: assignments=42,3.14,true
+# expect: parameters=7,2.5,false
+# expect: propagation=9,6.25,true
+# expect: collections=11,8.5,false
 # expect: str_ok
-# expect: bool_ok
 # expect: base_parse_ok=255,15,10
 # expect: base_parse_errs=ParseError,ParseError,ParseError
-# expect: legacy_base_fallback_ok
+# expect: decimal_zero_ok=true:0
 
 from lamconv import Conv
 from lamerrors import Result, Error
 
+func resultInt(result: Result[int]) -> int {
+    go! { return result.Value.(int) }
+}
+
+func resultFloat(result: Result[float]) -> float {
+    go! { return result.Value.(float64) }
+}
+
+func resultBool(result: Result[bool]) -> bool {
+    go! { return result.Value.(bool) }
+}
+
+func propagateInt(value: str) -> Result[int] {
+    result: Result[int] = Conv.parse(value)
+    parsed: int = result?
+    return Result.Ok(parsed)
+}
+
+func propagateFloat(value: str) -> Result[float] {
+    result: Result[float] = Conv.parse(value)
+    parsed: float = result?
+    return Result.Ok(parsed)
+}
+
+func propagateBool(value: str) -> Result[bool] {
+    result: Result[bool] = Conv.parse(value)
+    parsed: bool = result?
+    return Result.Ok(parsed)
+}
+
 func main() {
-    # Int conversion
-    n: int = Conv.toInt("42")
-    if n == 42 {
-        print("int_ok")
-    }
+    # Imported return-type overloads selected by typed assignments.
+    nResult: Result[int] = Conv.parse("42")
+    fResult: Result[float] = Conv.parse("3.14")
+    bResult: Result[bool] = Conv.parse("true")
+    print(f"assignments={resultInt(nResult)},{resultFloat(fResult)},{resultBool(bResult)}")
 
-    # Float conversion
-    f: float = Conv.toFloat("3.14")
-    if f > 3.13 {
-        print("float_ok")
-    }
+    # Payload-typed Results flow through matching typed parameters.
+    parameterIntResult: Result[int] = Conv.parse("7")
+    parameterFloatResult: Result[float] = Conv.parse("2.5")
+    parameterBoolResult: Result[bool] = Conv.parse("false")
+    parameterInt: int = resultInt(parameterIntResult)
+    parameterFloat: float = resultFloat(parameterFloatResult)
+    parameterBool: bool = resultBool(parameterBoolResult)
+    print(f"parameters={parameterInt},{parameterFloat},{parameterBool}")
 
-    # String conversion
-    s: str = Conv.toString(123)
+    # Payload-typed overload selection composes with propagation.
+    propagatedInt: Result[int] = propagateInt("9")
+    propagatedFloat: Result[float] = propagateFloat("6.25")
+    propagatedBool: Result[bool] = propagateBool("true")
+    print(f"propagation={resultInt(propagatedInt)},{resultFloat(propagatedFloat)},{resultBool(propagatedBool)}")
+
+    # Each selected overload remains payload-typed inside collections.
+    intCollectionValue: Result[int] = Conv.parse("11")
+    floatCollectionValue: Result[float] = Conv.parse("8.5")
+    boolCollectionValue: Result[bool] = Conv.parse("false")
+    intResults: list[Result[int]] = [intCollectionValue]
+    floatResults: list[Result[float]] = [floatCollectionValue]
+    boolResults: list[Result[bool]] = [boolCollectionValue]
+    print(f"collections={resultInt(intResults[0])},{resultFloat(floatResults[0])},{resultBool(boolResults[0])}")
+
+    # String formatting remains separate from parsing.
+    s: str = str(123)
     if s == "123" {
         print("str_ok")
     }
 
-    # Bool conversion
-    b: bool = Conv.toBool("true")
-    if b {
-        print("bool_ok")
-    }
-
-    # Result-returning base conversions
-    hexResult: Result[int] = Conv.tryFromHex("ff")
-    octalResult: Result[int] = Conv.tryFromOctal("17")
-    binResult: Result[int] = Conv.tryFromBin("1010")
+    # Radix parsers keep explicit names because their semantics differ.
+    hexResult: Result[int] = Conv.fromHex("ff")
+    octalResult: Result[int] = Conv.fromOctal("17")
+    binResult: Result[int] = Conv.fromBin("1010")
     print(f"base_parse_ok={hexResult.value},{octalResult.value},{binResult.value}")
 
-    badHex: Result[int] = Conv.tryFromHex("xyz")
-    badOctal: Result[int] = Conv.tryFromOctal("89")
-    badBin: Result[int] = Conv.tryFromBin("102")
+    badHex: Result[int] = Conv.fromHex("xyz")
+    badOctal: Result[int] = Conv.fromOctal("89")
+    badBin: Result[int] = Conv.fromBin("102")
     hexError: Error = badHex.error
     octalError: Error = badOctal.error
     binError: Error = badBin.error
     print(f"base_parse_errs={hexError.kind},{octalError.kind},{binError.kind}")
 
-    # Existing compatibility methods remain silent on malformed input.
-    if Conv.fromHex("xyz") == 0 and Conv.fromOctal("89") == 0 and Conv.fromBin("102") == 0 {
-        print("legacy_base_fallback_ok")
-    }
+    zero: Result[int] = Conv.parse("0")
+    print(f"decimal_zero_ok={zero.ok()}:{zero.value}")
 }

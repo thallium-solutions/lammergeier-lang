@@ -1,0 +1,7 @@
+from imported_interface_contract import ImportedReader
+
+func readImported(reader: ImportedReader) -> str {
+    return reader.read()
+}
+
+func main() { pass }

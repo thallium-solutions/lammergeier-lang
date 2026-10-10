@@ -1,0 +1,297 @@
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+
+from lamstripe import Stripe, StripeClient, StripeConfig, StripeCustomerOptions, StripePaymentIntentOptions, StripeResponse
+from lamenv import Env
+from lamerrors import Result
+
+go! {
+    import (
+        "fmt"
+        "io"
+        "net"
+        "net/http"
+    )
+
+    var lamstripeComplexServer *http.Server
+    var lamstripeComplexMethod string
+    var lamstripeComplexPath string
+    var lamstripeComplexBody string
+    var lamstripeComplexAuthorization string
+    var lamstripeComplexIdempotency string
+    var lamstripeComplexVersion string
+    var lamstripeComplexContentType string
+    var lamstripeComplexRequests int
+}
+
+func startComplexMock() -> str {
+    go! {
+        listener, err := net.Listen("tcp", "127.0.0.1:0")
+        if err != nil {
+            panic(err)
+        }
+        mux := http.NewServeMux()
+        mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+            body, _ := io.ReadAll(r.Body)
+            _ = r.Body.Close()
+            lamstripeComplexMethod = r.Method
+            lamstripeComplexPath = r.URL.Path
+            lamstripeComplexBody = string(body)
+            lamstripeComplexAuthorization = r.Header.Get("Authorization")
+            lamstripeComplexIdempotency = r.Header.Get("Idempotency-Key")
+            lamstripeComplexVersion = r.Header.Get("Stripe-Version")
+            lamstripeComplexContentType = r.Header.Get("Content-Type")
+            lamstripeComplexRequests++
+            w.Header().Set("Content-Type", "application/json")
+            if r.Method == "POST" && r.URL.Path == "/customers" {
+                w.WriteHeader(http.StatusCreated)
+                _, _ = fmt.Fprint(w, `{"id":"cus_composed","object":"customer"}`)
+            } else if r.Method == "POST" && r.URL.Path == "/payment_intents" {
+                w.WriteHeader(http.StatusCreated)
+                _, _ = fmt.Fprint(w, `{"id":"pi_composed","client_secret":"pi_secret_local","status":"requires_capture"}`)
+            } else if r.Method == "GET" && r.URL.Path == "/payment_intents/pi_composed" {
+                w.WriteHeader(http.StatusOK)
+                _, _ = fmt.Fprint(w, `{"id":"pi_composed","status":"requires_capture"}`)
+            } else if r.Method == "POST" && r.URL.Path == "/refunds" {
+                w.WriteHeader(http.StatusCreated)
+                _, _ = fmt.Fprint(w, `{"id":"re_composed","object":"refund","status":"succeeded"}`)
+            } else if r.URL.Path == "/decline" {
+                w.WriteHeader(http.StatusPaymentRequired)
+                _, _ = fmt.Fprint(w, `{"error":{"message":"card declined","code":"card_declined"}}`)
+            } else {
+                w.WriteHeader(http.StatusNotFound)
+                _, _ = fmt.Fprint(w, `{"error":{"message":"not found"}}`)
+            }
+        })
+        lamstripeComplexServer = &http.Server{Handler: mux}
+        go func() { _ = lamstripeComplexServer.Serve(listener) }()
+        return fmt.Sprintf("http://127.0.0.1:%d", listener.Addr().(*net.TCPAddr).Port)
+    }
+}
+
+func stopComplexMock() {
+    go! {
+        if lamstripeComplexServer != nil {
+            _ = lamstripeComplexServer.Close()
+        }
+    }
+}
+
+func capturedMethod() -> str {
+    go! {
+        return lamstripeComplexMethod
+    }
+}
+func capturedPath() -> str {
+    go! {
+        return lamstripeComplexPath
+    }
+}
+func capturedBody() -> str {
+    go! {
+        return lamstripeComplexBody
+    }
+}
+func capturedAuthorization() -> str {
+    go! {
+        return lamstripeComplexAuthorization
+    }
+}
+func capturedIdempotency() -> str {
+    go! {
+        return lamstripeComplexIdempotency
+    }
+}
+func capturedVersion() -> str {
+    go! {
+        return lamstripeComplexVersion
+    }
+}
+func capturedContentType() -> str {
+    go! {
+        return lamstripeComplexContentType
+    }
+}
+func capturedRequests() -> int {
+    go! {
+        return lamstripeComplexRequests
+    }
+}
+
+func resultStripeResponse(result: Result) -> StripeResponse {
+    go! {
+        return result.Value.(*StripeResponse)
+    }
+}
+
+func clearStripeEnv() {
+    _ = Env.unset("STRIPE_SECRET_KEY")
+    _ = Env.unset("STRIPE_BASE_URL")
+    _ = Env.unset("STRIPE_API_VERSION")
+}
+
+func main() {
+    clearStripeEnv()
+
+    unconfigured: StripeClient = StripeClient(StripeConfig())
+    configError: Result = unconfigured.rawGet("/customers")
+    print(not configError.ok())
+    print(str(configError.error).contains("StripeConfigError"))
+
+    baseUrl: str = startComplexMock()
+    _ = Env.set("STRIPE_SECRET_KEY", "sk_test_composed")
+    _ = Env.set("STRIPE_BASE_URL", baseUrl)
+    _ = Env.set("STRIPE_API_VERSION", "2024-06-20")
+    cfg: StripeConfig = StripeConfig.fromEnv()
+    print(cfg.isReady())
+    print(cfg.baseUrl == baseUrl)
+    print(cfg.apiVersion == "2024-06-20")
+    print(cfg.timeoutMs == 30000)
+
+    edgeFields: dict[str, str] = {}
+    edgeFields["empty"] = ""
+    edgeFields["email"] = "ada+lab@example.com"
+    edgeFields["metadata[order key]"] = "A&B + C"
+    edgeFields["unicode"] = "snowman ☃/line\n2"
+    encoded: str = Stripe.encodeForm(edgeFields)
+    print(encoded.contains("empty="))
+    print(encoded.contains("email=ada%2Blab%40example.com"))
+    print(encoded.contains("metadata%5Border+key%5D=A%26B+%2B+C"))
+    print(encoded.contains("unicode=snowman+%E2%98%83%2Fline%0A2"))
+    print(Stripe.normalizeCurrency(" UsD ") == "usd")
+
+    client: StripeClient = StripeClient(cfg)
+    client.setIdempotencyKey("order-42-attempt-1")
+
+    customerOptions: StripeCustomerOptions = StripeCustomerOptions("ada+checkout@example.com", "Ada & Co")
+    customerOptions.setMetadata("tenant", "north/eu")
+    customerResult: Result = client.createCustomerWithOptions(customerOptions)
+    customer: StripeResponse = resultStripeResponse(customerResult)
+    print(customerResult.ok())
+    print(customer.status == 201)
+    print(customer.id() == "cus_composed")
+    print(capturedMethod() == "POST")
+    print(capturedPath() == "/customers")
+    print(capturedBody().contains("email=ada%2Bcheckout%40example.com"))
+    print(capturedBody().contains("name=Ada+%26+Co"))
+    print(capturedBody().contains("metadata%5Btenant%5D=north%2Feu"))
+    print(capturedAuthorization() == "Bearer sk_test_composed")
+    print(capturedIdempotency() == "order-42-attempt-1")
+    print(capturedVersion() == "2024-06-20")
+    print(capturedContentType() == "application/x-www-form-urlencoded")
+
+    intentOptions: StripePaymentIntentOptions = StripePaymentIntentOptions(2599, " EUR ")
+    intentOptions.customerId = customer.id()
+    intentOptions.description = "Order #42 / annual"
+    intentOptions.receiptEmail = "ada+receipt@example.com"
+    intentOptions.captureMethod = "manual"
+    intentOptions.automaticPaymentMethods = false
+    intentOptions.setMetadata("order_id", "ord 42")
+    intentResult: Result = client.createPaymentIntentWithOptions(intentOptions)
+    intent: StripeResponse = resultStripeResponse(intentResult)
+    print(intentResult.ok())
+    print(intent.id() == "pi_composed")
+    print(intent.clientSecret() == "pi_secret_local")
+    print(capturedPath() == "/payment_intents")
+    print(capturedBody().contains("amount=2599"))
+    print(capturedBody().contains("currency=eur"))
+    print(capturedBody().contains("customer=cus_composed"))
+    print(capturedBody().contains("description=Order+%2342+%2F+annual"))
+    print(capturedBody().contains("receipt_email=ada%2Breceipt%40example.com"))
+    print(capturedBody().contains("capture_method=manual"))
+    print(capturedBody().contains("automatic_payment_methods%5Benabled%5D=false"))
+    print(capturedBody().contains("metadata%5Border_id%5D=ord+42"))
+
+    retrieveResult: Result = client.retrievePaymentIntent(intent.id())
+    retrieve: StripeResponse = resultStripeResponse(retrieveResult)
+    print(retrieveResult.ok())
+    print(retrieve.id() == intent.id())
+    print(capturedMethod() == "GET")
+    print(capturedPath() == "/payment_intents/pi_composed")
+    print(capturedBody() == "")
+
+    refundFields: dict[str, str] = {}
+    refundFields["payment_intent"] = intent.id()
+    refundFields["amount"] = "599"
+    refundFields["reason"] = "requested_by_customer"
+    refundFields["metadata[order_id]"] = "ord 42"
+    refundResult: Result = client.rawPostForm("/refunds", refundFields)
+    refund: StripeResponse = resultStripeResponse(refundResult)
+    print(refundResult.ok())
+    print(refund.id() == "re_composed")
+    print(capturedPath() == "/refunds")
+    print(capturedBody().contains("payment_intent=pi_composed"))
+    print(capturedBody().contains("reason=requested_by_customer"))
+    print(capturedBody().contains("metadata%5Border_id%5D=ord+42"))
+
+    declined: Result = client.rawPostForm("/decline", {})
+    print(not declined.ok())
+    print(str(declined.error).contains("StripeApiError"))
+    print(str(declined.error).contains("card_declined"))
+    print(capturedRequests() == 5)
+
+    print(not Stripe.validateAmount(0).ok())
+    print(not Stripe.validateCurrency("EU").ok())
+    print(not Stripe.validateCurrency("1$!").ok())
+    print(not client.createCustomer("   ").ok())
+
+    stopComplexMock()
+    transportError: Result = client.retrievePaymentIntent(intent.id())
+    print(not transportError.ok())
+    print(str(transportError.error).contains("HttpError"))
+    clearStripeEnv()
+}

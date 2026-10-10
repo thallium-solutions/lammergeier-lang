@@ -15,7 +15,10 @@
 # expect: PASS two-token flag populated
 # expect: PASS positional populated
 # expect: PASS args snapshot populated
-# expect: 16 passed, 0 failed, 16 total
+# expect: PASS integer flag parsed through Conv
+# expect: PASS negative integer flag parsed through Conv
+# expect: PASS malformed integer uses fallback
+# expect: 19 passed, 0 failed, 19 total
 
 from lamcli import Cli
 from lamtest import Test
@@ -32,16 +35,16 @@ func main() {
     Test.assertTrue(len(prog) > 0, "program non-empty")
     Test.assertFalse(Cli.hasFlag("does-not-exist"), "flag absent")
     Test.assertEqual(Cli.getFlag("missing", "fallback"), "fallback", "flag default")
-    Test.assertEqual(Cli.getInt("missing", 42), 42, "int default")
+    Test.assertEqual(Cli.getFlag("missing", 42), 42, "int default")
     Test.assertLen(Cli.positional(), 0, "positional empty")
 
     go! {
         os.Args = []string{
-            "lam-test", "--verbose", "--port=8080", "input.txt",
+            "lam-test", "--verbose", "--port=8080", "--delta=-5", "input.txt",
             "--output", "result.txt", "tail.txt",
         }
     }
-    Test.assertEqual(Cli.argCount(), 6, "argCount populated")
+    Test.assertEqual(Cli.argCount(), 7, "argCount populated")
     Test.assertEqual(Cli.arg(0), "--verbose", "arg populated")
     Test.assertEqual(Cli.arg(-1), "", "negative arg out-of-range")
     Test.assertTrue(Cli.hasFlag("verbose"), "boolean flag populated")
@@ -49,6 +52,9 @@ func main() {
     Test.assertEqual(Cli.getFlag("output"), "result.txt", "two-token flag populated")
     expectedPositionals: list[str] = ["input.txt", "tail.txt"]
     Test.assertEqual(Cli.positional(), expectedPositionals, "positional populated")
-    Test.assertLen(Cli.args(), 6, "args snapshot populated")
+    Test.assertLen(Cli.args(), 7, "args snapshot populated")
+    Test.assertEqual(Cli.getFlag("port", 0), 8080, "integer flag parsed through Conv")
+    Test.assertEqual(Cli.getFlag("delta", 0), -5, "negative integer flag parsed through Conv")
+    Test.assertEqual(Cli.getFlag("output", 42), 42, "malformed integer uses fallback")
     Test.summary()
 }

@@ -9,11 +9,11 @@
 from lamurl import Url
 
 func main() {
-    print(Url.scheme("https://example.com/path?q=1"))
-    print(Url.host("https://example.com/path?q=1"))
-    print(Url.path("https://example.com/path?q=1"))
+    print(Url.scheme("https://example.com/path?q=1").unwrap())
+    print(Url.host("https://example.com/path?q=1").unwrap())
+    print(Url.path("https://example.com/path?q=1").unwrap())
     encoded: str = Url.encode("hello world")
     print(encoded)
-    print(Url.decode(encoded))
+    print(Url.decode(encoded).unwrap())
     print("url_ok")
 }

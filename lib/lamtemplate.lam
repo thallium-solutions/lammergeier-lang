@@ -18,8 +18,7 @@
 #
 #     parse(source: str)            -> Result
 #     parseFile(path: str)          -> Result
-#     render(data: dict[str, any])  -> str       # empty on failure
-#     tryRender(data)               -> Result    # preserves error
+#     render(data: dict[str, any])  -> Result[str]
 #
 # Multi-template files (``{{define "..."}}...{{end}}``) are supported
 # via ``parseFiles(paths)`` and rendered with ``renderNamed(name, data)``.
@@ -100,11 +99,11 @@ class Template {
        **Do not** use for rendering into HTML — use ``HtmlTemplate``
        instead so interpolations are properly autoescaped. -#
 
-    func __init__(self) {
+    func init(self) {
         self._tpl: any = None
     }
 
-    func parse(self, source: str) -> Result {
+    func parse(self, source: str) -> Result[any] {
         #- Parse ``source`` as the sole template in this object. A
            second call to ``parse`` replaces the previous template. -#
         go! {
@@ -118,7 +117,7 @@ class Template {
         }
     }
 
-    func parseFile(self, path: str) -> Result {
+    func parseFile(self, path: str) -> Result[any] {
         #- Parse a template file. The template's name is the file's
            base name (``filepath.Base``) — relevant only for
            ``renderNamed``. -#
@@ -137,7 +136,7 @@ class Template {
         }
     }
 
-    func parseFiles(self, paths: list[str]) -> Result {
+    func parseFiles(self, paths: list[str]) -> Result[any] {
         #- Parse multiple template files into one registry so
            ``{{template "name"}}`` includes can cross-reference
            them. Render a specific one via ``renderNamed``. -#
@@ -156,26 +155,8 @@ class Template {
         }
     }
 
-    func render(self, data: dict[str, any]) -> str {
-        #- Render the default template with ``data``. Returns empty
-           string on error — prefer ``tryRender`` when you need to
-           distinguish rendering failure from an intentionally empty
-           template. -#
-        out: str = ""
-        go! {
-            if s._tpl == nil { return "" }
-            t := s._tpl.(*texttemplate.Template)
-            var buf bytes.Buffer
-            if err := t.Execute(&buf, data); err == nil {
-                out = buf.String()
-            }
-        }
-        return out
-    }
-
-    func tryRender(self, data: dict[str, any]) -> Result {
-        #- Render and return a ``Result``. Surfaces the underlying
-           template error for debugging. -#
+    func render(self, data: dict[str, any]) -> Result[str] {
+        #- Render and surface template execution errors. -#
         go! {
             if s._tpl == nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", "no template parsed", nil))
@@ -189,20 +170,20 @@ class Template {
         }
     }
 
-    func renderNamed(self, name: str, data: dict[str, any]) -> str {
+    func renderNamed(self, name: str, data: dict[str, any]) -> Result[str] {
         #- Render a named template (registered via ``parseFiles`` or
-           a ``{{define "name"}}...{{end}}`` block). Empty string on
-           error. -#
-        out: str = ""
+           a ``{{define "name"}}...{{end}}`` block). -#
         go! {
-            if s._tpl == nil { return "" }
+            if s._tpl == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", "no template parsed", nil))
+            }
             t := s._tpl.(*texttemplate.Template)
             var buf bytes.Buffer
-            if err := t.ExecuteTemplate(&buf, name, data); err == nil {
-                out = buf.String()
+            if err := t.ExecuteTemplate(&buf, name, data); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
             }
+            return LAMMERGEIER.Result.Ok(buf.String())
         }
-        return out
     }
 }
 
@@ -211,11 +192,11 @@ class HtmlTemplate {
        this class when the output is destined for a browser —
        ``Template`` will happily emit ``<script>`` tags verbatim. -#
 
-    func __init__(self) {
+    func init(self) {
         self._tpl: any = None
     }
 
-    func parse(self, source: str) -> Result {
+    func parse(self, source: str) -> Result[any] {
         go! {
             t := template.New("lam").Funcs(template.FuncMap(lamTemplateFuncs()))
             parsed, err := t.Parse(source)
@@ -227,7 +208,7 @@ class HtmlTemplate {
         }
     }
 
-    func parseFile(self, path: str) -> Result {
+    func parseFile(self, path: str) -> Result[any] {
         go! {
             data, err := os.ReadFile(path)
             if err != nil {
@@ -243,7 +224,7 @@ class HtmlTemplate {
         }
     }
 
-    func parseFiles(self, paths: list[str]) -> Result {
+    func parseFiles(self, paths: list[str]) -> Result[any] {
         go! {
             if len(paths) == 0 {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", "parseFiles: empty paths", nil))
@@ -259,20 +240,7 @@ class HtmlTemplate {
         }
     }
 
-    func render(self, data: dict[str, any]) -> str {
-        out: str = ""
-        go! {
-            if s._tpl == nil { return "" }
-            t := s._tpl.(*template.Template)
-            var buf bytes.Buffer
-            if err := t.Execute(&buf, data); err == nil {
-                out = buf.String()
-            }
-        }
-        return out
-    }
-
-    func tryRender(self, data: dict[str, any]) -> Result {
+    func render(self, data: dict[str, any]) -> Result[str] {
         go! {
             if s._tpl == nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", "no template parsed", nil))
@@ -286,17 +254,18 @@ class HtmlTemplate {
         }
     }
 
-    func renderNamed(self, name: str, data: dict[str, any]) -> str {
-        out: str = ""
+    func renderNamed(self, name: str, data: dict[str, any]) -> Result[str] {
         go! {
-            if s._tpl == nil { return "" }
+            if s._tpl == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", "no template parsed", nil))
+            }
             t := s._tpl.(*template.Template)
             var buf bytes.Buffer
-            if err := t.ExecuteTemplate(&buf, name, data); err == nil {
-                out = buf.String()
+            if err := t.ExecuteTemplate(&buf, name, data); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
             }
+            return LAMMERGEIER.Result.Ok(buf.String())
         }
-        return out
     }
 }
 

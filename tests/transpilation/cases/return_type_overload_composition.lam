@@ -1,0 +1,35 @@
+# expect-go: func Choose_2_int_str_ret_int(seed int, label string) int {
+# expect-go: func Choose_2_int_str_ret_str(seed int, label string) string {
+# expect-go: Choose_2_int_str_ret_str(2, "value")
+# expect-go: Choose_2_int_str_ret_str(3, "bird")
+# expect-go: []string{Choose_2_int_str_ret_str(4, "value"), Choose_2_int_str_ret_str(5, "value")}
+# expect-go: func Payload_1_int_ret_ptrResult_int(seed int) *Result {
+# expect-go: func Payload_1_int_ret_ptrResult08ccf4(seed int) *Result {
+# expect-go: Payload_1_int_ret_ptrResult_int(6)
+# expect-go: Payload_1_int_ret_ptrResult08ccf4(6)
+# expect-go: source.Select_1_int_ret_str(7)
+
+from lamerrors import Result
+
+func choose(seed: int, label: str = "value") -> int { return seed + 1 }
+func choose(seed: int, label: str = "value") -> str { return f"{label}-{seed}" }
+
+func payload(seed: int) -> Result[int] { return Result.Ok(seed) }
+func payload(seed: int) -> Result[str] { return Result.Ok(str(seed)) }
+
+class GenericSource[T] {
+    func init(self, value: T) { self.value: T = value }
+    func select(self, seed: int) -> int { return seed }
+    func select(self, seed: int) -> str { return str(seed) }
+}
+
+func main() {
+    defaulted: str = choose(seed=2)
+    keyword: str = choose(label="bird", seed=3)
+    values: list[str] = [choose(4), choose(5)]
+    intResult: Result[int] = payload(6)
+    strResult: Result[str] = payload(6)
+    source: GenericSource[str] = GenericSource[str]("source")
+    selected: str = source.select(7)
+    print(defaulted, keyword, values, intResult, strResult, selected)
+}

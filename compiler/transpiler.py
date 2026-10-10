@@ -61,6 +61,7 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     "_generator_chan",
     "_propagate_cast_hint",
     "_expected_expr_go_type",
+    "_expected_expr_type_key",
     "_generic_names",
     "_nested_generic_functions",
     # The Go return type of the *currently-being-emitted* Lam function.
@@ -68,6 +69,7 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     # blocks of typed functions to ``return <zero-value>`` so the
     # author doesn't have to know the Go signature constraints.
     "_current_return_type",
+    "_current_return_type_key",
 )
 
 
@@ -258,7 +260,7 @@ class GoTranspiler(
         self._overloaded_functions: Dict[str, set] = {}
         # Authoritative list of variants for same-arity type-based
         # overload dispatch. Each entry is
-        # ``{"arity": int, "sig": tuple[str, ...], "suffix": str}``,
+        # ``{"arity": int, "sig": tuple[str, ...], "return": str, "suffix": str}``,
         # one per definition in source order. The ``suffix`` field
         # is filled in by ``_finalize_overload_variants`` once the
         # pre-scan has seen every definition so the def site and
@@ -301,7 +303,9 @@ class GoTranspiler(
         # means "no declared return", in which case ``return`` is a
         # complete Go statement on its own and no rewriting is needed.
         self._current_return_type: str = ""
+        self._current_return_type_key: str = ""
         self._expected_expr_go_type: str = ""
+        self._expected_expr_type_key: str = ""
         self._func_return_go_types: Dict[str, str] = {}
         self._result_payload_go_types: Dict[str, str] = {}
 
@@ -576,11 +580,12 @@ class GoTranspiler(
                 if variadic:
                     self._variadic_functions.add(name)
                 return_type = self._resolve_return_type(return_type_node)
+                return_key = self._overload_return_key(return_type_node)
                 if return_type:
-                    self._func_return_go_types[name] = return_type
+                    self._func_return_go_types.setdefault(name, return_type)
                 payload_type = self._result_payload_go_type(return_type_node)
                 if payload_type:
-                    self._result_payload_go_types[name] = payload_type
+                    self._result_payload_go_types.setdefault(name, payload_type)
                 # Count params and collect defaults.
                 arity = self._count_params(params_node)
                 self._func_param_counts[name] = arity
@@ -596,11 +601,20 @@ class GoTranspiler(
                         self._overloaded_functions[name] = set()
                     self._overloaded_functions[name].add(arity)
                     sig = self._param_types_sig(params_node) if params_node else ()
+                    meta_key = f"{name}#{self._sig_suffix(sig)}#ret_{self._sig_suffix((return_key or 'void',))}"
+                    if type_param_names:
+                        self._func_generic_params[meta_key] = set(type_param_names)
+                    if params_node:
+                        self._collect_param_defaults(meta_key, params_node)
+                    required = arity - len(self._func_defaults.get(meta_key, []))
                     self._overload_variants.setdefault(name, []).append({
                         "arity": arity,
+                        "required": required,
                         "sig": sig,
-                        # Filled in by ``_finalize_overload_variants``.
+                        "return": return_type,
+                        "return_key": return_key,
                         "suffix": "",
+                        "meta_key": meta_key,
                     })
 
         elif tree.data == "classdef":
@@ -647,9 +661,11 @@ class GoTranspiler(
                         self._func_generic_params[method_key] = declared_generic_names
                     callable_generic_names = self._generic_names | declared_generic_names
                     with self._scoped(_generic_names=callable_generic_names):
+                        return_type = self._resolve_return_type(return_type_node)
+                        return_key = self._overload_return_key(return_type_node)
                         payload_type = self._result_payload_go_type(return_type_node)
                         if payload_type:
-                            self._result_payload_go_types[method_key] = payload_type
+                            self._result_payload_go_types.setdefault(method_key, payload_type)
                         skip_self = not is_stat
                         arity = self._count_params(params_node, skip_self=skip_self)
                         self._func_param_counts[method_key] = arity
@@ -659,7 +675,7 @@ class GoTranspiler(
                         if not variadic and fn_name not in {"init", "__init__", "__str__", "__repr__", "__len__", "__json__"} and fn_name not in DUNDER_OPS:
                             self._overloaded_functions.setdefault(method_key, set()).add(arity)
                             sig = self._param_types_sig(params_node, skip_self=skip_self) if params_node else ()
-                            meta_key = f"{method_key}#{self._sig_suffix(sig)}"
+                            meta_key = f"{method_key}#{self._sig_suffix(sig)}#ret_{self._sig_suffix((return_key or 'void',))}"
                             if declared_generic_names:
                                 self._func_generic_params[meta_key] = declared_generic_names
                             if params_node:
@@ -669,6 +685,8 @@ class GoTranspiler(
                                 "arity": arity,
                                 "required": required,
                                 "sig": sig,
+                                "return": return_type,
+                                "return_key": return_key,
                                 "suffix": "",
                                 "meta_key": meta_key,
                             })
@@ -680,7 +698,7 @@ class GoTranspiler(
                         # have no class identity and are skipped.
                         raw_return = self._get_raw_type_name(return_type_node) if return_type_node else ""
                         if raw_return:
-                            self._method_return_types[method_key] = raw_return
+                            self._method_return_types.setdefault(method_key, raw_return)
         elif tree.data == "interfacedef":
             name_node = tree.children[0]
             interface_name = self._get_name(name_node)
@@ -693,6 +711,9 @@ class GoTranspiler(
                     continue
                 method_name = self._get_name(parts[0])
                 params_node = next((part for part in parts[1:] if part.data == "typed_parameters"), None)
+                return_node = next((part for part in parts[1:] if part.data in {"single_return_type", "multi_return_type"}), None)
+                return_type = self._resolve_return_type(return_node)
+                return_key = self._overload_return_key(return_node)
                 method_key = f"{interface_name}.{method_name}"
                 arity = self._count_params(params_node)
                 sig = self._param_types_sig(params_node) if params_node else ()
@@ -701,6 +722,8 @@ class GoTranspiler(
                     "arity": arity,
                     "required": arity,
                     "sig": sig,
+                    "return": return_type,
+                    "return_key": return_key,
                     "suffix": "",
                     "meta_key": method_key,
                 })
@@ -840,10 +863,10 @@ class GoTranspiler(
           facing tooling (stack traces, ``go tool pprof`` output)
           looks the same as before for arity-only overloads.
         * **Multiple variants, some sharing an arity** — suffix
-          is ``_{arity}_{sig_suffix}`` for every variant at that
-          arity so distinct Go symbols never collide. Variants at
-          *other* arities still get the shorter ``_{arity}`` form
-          so we don't churn their names unnecessarily.
+          is ``_{arity}_{sig_suffix}`` for every parameter-distinct variant.
+          Variants sharing parameters add ``_ret_{return_suffix}`` so return-
+          type-only overloads remain distinct Go symbols. Variants at *other*
+          arities still get the shorter ``_{arity}`` form.
 
         The suffix is written back into each variant dict's
         ``suffix`` field so def-site emission and call-site
@@ -860,7 +883,7 @@ class GoTranspiler(
                     int(variant.get("arity", 0)),
                     int(variant.get("required", variant.get("arity", 0))),
                     tuple(variant.get("sig") or ()),
-                    str(variant.get("meta_key") or ""),
+                    str(variant.get("return_key") or variant.get("return") or ""),
                 )
                 if identity in seen:
                     continue
@@ -881,9 +904,15 @@ class GoTranspiler(
                             continue
                         child_key = f"{class_name}.{method_name}"
                         child_variants = self._overload_variants.setdefault(child_key, [])
-                        own_signatures = {tuple(v.get("sig") or ()) for v in child_variants}
+                        own_signatures = {
+                            (tuple(v.get("sig") or ()), str(v.get("return_key") or v.get("return") or ""))
+                            for v in child_variants
+                        }
                         for variant in base_variants:
-                            signature = tuple(variant.get("sig") or ())
+                            signature = (
+                                tuple(variant.get("sig") or ()),
+                                str(variant.get("return_key") or variant.get("return") or ""),
+                            )
                             if signature in own_signatures:
                                 continue
                             child_variants.append(dict(variant, suffix=""))
@@ -912,40 +941,66 @@ class GoTranspiler(
             # which variants need the longer ``_{arity}_{sig}``
             # form and which can stick with the plain ``_{arity}``.
             arity_counts: Dict[int, int] = {}
+            signature_counts: Dict[Tuple[int, Tuple[str, ...]], int] = {}
             for v in variants:
                 a = int(v["arity"])  # type: ignore[arg-type]
+                signature = tuple(v.get("sig") or ())
                 arity_counts[a] = arity_counts.get(a, 0) + 1
+                signature_counts[(a, signature)] = signature_counts.get((a, signature), 0) + 1
             for v in variants:
                 a = int(v["arity"])  # type: ignore[arg-type]
-                if arity_counts[a] > 1:
-                    v["suffix"] = f"_{a}_{self._sig_suffix(v['sig'])}"
+                signature = tuple(v.get("sig") or ())
+                if signature_counts[(a, signature)] > 1:
+                    return_suffix = self._sig_suffix((str(v.get("return_key") or v.get("return") or "void"),))
+                    v["suffix"] = f"_{a}_{self._sig_suffix(signature)}_ret_{return_suffix}"
+                elif arity_counts[a] > 1:
+                    v["suffix"] = f"_{a}_{self._sig_suffix(signature)}"
                 else:
                     v["suffix"] = f"_{a}"
 
-    def _overload_variant_for_sig(self, name: str, sig):
+    def _overload_variant_for_sig(self, name: str, sig, expected_return: str = ""):
         variants = self._overload_variants.get(name) or []
         actual = tuple(sig)
-        for variant in variants:
-            if tuple(variant.get("sig") or ()) == actual:
-                return variant
-        candidates = []
-        for variant in variants:
-            expected = tuple(variant.get("sig") or ())
-            required = int(variant.get("required", len(expected)))
-            matches = all(
-                expected_type == actual_type
-                or expected_type == "LamJSON" and (
-                    actual_type.startswith("map[")
-                    or actual_type.startswith("[]")
-                    or actual_type in {"bool", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float32", "float64"}
+        candidates = [
+            variant for variant in variants
+            if tuple(variant.get("sig") or ()) == actual
+        ]
+        if not candidates:
+            for variant in variants:
+                expected = tuple(variant.get("sig") or ())
+                required = int(variant.get("required", len(expected)))
+                matches = all(
+                    expected_type == actual_type
+                    or expected_type == "LamJSON" and (
+                        actual_type.startswith("map[")
+                        or actual_type.startswith("[]")
+                        or actual_type in {"bool", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float32", "float64"}
+                    )
+                    for expected_type, actual_type in zip(expected, actual)
                 )
-                for expected_type, actual_type in zip(expected, actual)
-            )
-            if required <= len(actual) <= len(expected) and matches:
-                candidates.append(variant)
-        return candidates[0] if len(candidates) == 1 else None
+                if required <= len(actual) <= len(expected) and matches:
+                    candidates.append(variant)
+        if not candidates:
+            candidates = [
+                variant for variant in variants
+                if int(variant.get("required", variant.get("arity", 0)))
+                <= len(actual)
+                <= int(variant.get("arity", 0))
+            ]
+        contextual_return = (
+            expected_return
+            or self._expected_expr_type_key
+            or self._expected_expr_go_type
+            or ""
+        ).strip()
+        if contextual_return and contextual_return != "interface{}":
+            for variant in candidates:
+                return_key = str(variant.get("return_key") or variant.get("return") or "")
+                if return_key == contextual_return:
+                    return variant
+        return candidates[0] if candidates else None
 
-    def _overload_suffix_for_sig(self, name: str, sig):
+    def _overload_suffix_for_sig(self, name: str, sig, expected_return: str = ""):
         """Return the Go name suffix for the best variant of ``name``.
 
         Definition sites match the complete parameter signature. Call
@@ -953,7 +1008,7 @@ class GoTranspiler(
         parameters have defaults. The arity fallback preserves legacy
         dispatch when argument types cannot be inferred.
         """
-        variant = self._overload_variant_for_sig(name, sig)
+        variant = self._overload_variant_for_sig(name, sig, expected_return)
         if variant is not None:
             return variant.get("suffix", "") or ""
         if len(self._overloaded_functions.get(name, set())) > 1:

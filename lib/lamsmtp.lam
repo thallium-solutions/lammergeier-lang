@@ -47,6 +47,8 @@
 # go into the ``From:`` / ``To:`` headers which the builder emits
 # for you.
 
+from lamerrors import Result, Error
+
 go! {
     import (
         "bytes"
@@ -319,6 +321,12 @@ go! {
         }
         return smtp.SendMail(host, auth, sender, to, raw)
     }
+
+    func lamSmtpError(kind, message string, err error) *Result {
+        return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+            kind, message, err.Error(),
+        ))
+    }
 }
 
 class Mail {
@@ -326,7 +334,7 @@ class Mail {
        simple plain-text sends you can skip this entirely and call
        :py:meth:`Smtp.sendMail` directly. -#
 
-    func __init__(self) {
+    func init(self) {
         self._msg: any = None
         go! {
             s._msg = &lamSmtpMessage{Headers: map[string]string{}}
@@ -432,7 +440,7 @@ class Smtp {
 
     static func sendMail(host: str, sender: str, to: any,
         subject: str, text: str = "",
-        username: str = "", password: str = "") {
+        username: str = "", password: str = "") -> Result[bool] {
         #- Send a plaintext message. ``to`` may be a single address
            or a list of addresses. Pass ``username`` /
            ``password`` to opt into SMTP PLAIN auth (only use on
@@ -450,16 +458,17 @@ class Smtp {
             }
             raw, err := lamSmtpBuildMessage(msg)
             if err != nil {
-                panic(fmt.Sprintf("lamsmtp: build: %v", err))
+                return lamSmtpError("MessageBuildError", "failed to build SMTP message", err)
             }
             if err := lamSmtpDialSend(host, username, password, sender, rcpt, raw); err != nil {
-                panic(fmt.Sprintf("lamsmtp: send: %v", err))
+                return lamSmtpError("SmtpSendError", "failed to send SMTP message", err)
             }
+            return LAMMERGEIER.Result.Ok(true)
         }
     }
 
     static func send(host: str, mail: Mail,
-        username: str = "", password: str = "") {
+        username: str = "", password: str = "") -> Result[bool] {
         #- Send a pre-built :py:class:`Mail`. The envelope
            recipients are the union of ``To`` / ``Cc`` / ``Bcc``
            on the builder; ``Bcc`` entries are routed without
@@ -468,15 +477,16 @@ class Smtp {
             msg := mail._msg.(*lamSmtpMessage)
             raw, err := lamSmtpBuildMessage(msg)
             if err != nil {
-                panic(fmt.Sprintf("lamsmtp: build: %v", err))
+                return lamSmtpError("MessageBuildError", "failed to build SMTP message", err)
             }
             envelope := append([]string{}, msg.To...)
             envelope = append(envelope, msg.Cc...)
             envelope = append(envelope, msg.Bcc...)
             if err := lamSmtpDialSend(host, username, password,
                 msg.Sender, envelope, raw); err != nil {
-                panic(fmt.Sprintf("lamsmtp: send: %v", err))
+                return lamSmtpError("SmtpSendError", "failed to send SMTP message", err)
             }
+            return LAMMERGEIER.Result.Ok(true)
         }
     }
 }

@@ -7,7 +7,7 @@
 # expect: class_complex_ok
 
 class Circle {
-    func __init__(self, radius: int) {
+    func init(self, radius: int) {
         self.radius: int = radius
     }
 
@@ -17,7 +17,7 @@ class Circle {
 }
 
 class Rect {
-    func __init__(self, width: int, height: int) {
+    func init(self, width: int, height: int) {
         self.width: int = width
         self.height: int = height
     }
@@ -28,7 +28,7 @@ class Rect {
 }
 
 class BankAccount {
-    func __init__(self, balance: int) {
+    func init(self, balance: int) {
         self.balance: int = balance
     }
 
@@ -50,7 +50,7 @@ class BankAccount {
 }
 
 class Node {
-    func __init__(self, val: int, next_val: int) {
+    func init(self, val: int, next_val: int) {
         self.val: int = val
         self.next_val: int = next_val
     }

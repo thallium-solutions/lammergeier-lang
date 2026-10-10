@@ -86,7 +86,7 @@ class StatementVisitorMixin:
             self._declare_var(target_str)
 
     def _record_inferred_target_type(self, target_str: str, value_node) -> None:
-        if not target_str or "." in target_str or "[" in target_str:
+        if not target_str or target_str == "_" or "." in target_str or "[" in target_str:
             return
         class_name = self._infer_receiver_class(value_node)
         if not class_name or class_name not in self._class_names:
@@ -112,6 +112,7 @@ class StatementVisitorMixin:
 
         target_str = self._expr_to_go(target)
         go_type = self._type_expr_to_go(type_node)
+        overload_type_key = self._overload_return_key(type_node)
 
         raw_type = self._get_raw_type_name(type_node)
         if raw_type and raw_type in self._class_names and "." not in target_str:
@@ -128,9 +129,10 @@ class StatementVisitorMixin:
 
         if value is not None:
             if isinstance(value, Tree) and value.data == "test" and len(value.children) == 3:
-                true_val = self._typed_value_to_go(value.children[0], go_type)
-                cond = self._expr_to_go(value.children[1])
-                false_val = self._typed_value_to_go(value.children[2], go_type)
+                with self._scoped(_expected_expr_type_key=overload_type_key):
+                    true_val = self._typed_value_to_go(value.children[0], go_type, overload_type_key)
+                    cond = self._expr_to_go(value.children[1])
+                    false_val = self._typed_value_to_go(value.children[2], go_type, overload_type_key)
                 if not self._is_declared_or_nonlocal_target(target_str):
                     self._emit(f"var {target_str} {go_type}")
                     self._declare_var(target_str)
@@ -146,8 +148,11 @@ class StatementVisitorMixin:
                 return
             # Publish the LHS type so any ``?`` inside ``value`` knows
             # what cast to apply to its substituted ``__qN.Value``.
-            with self._scoped(_propagate_cast_hint=go_type):
-                value_str = self._typed_value_to_go(value, go_type)
+            with self._scoped(
+                _propagate_cast_hint=go_type,
+                _expected_expr_type_key=overload_type_key,
+            ):
+                value_str = self._typed_value_to_go(value, go_type, overload_type_key)
             self._emit_decl_or_assign(target_str, go_type, value_str)
         else:
             if (
@@ -401,6 +406,7 @@ class StatementVisitorMixin:
         if node.children and node.children[0] is not None:
             val_node = node.children[0]
             return_type = getattr(self, "_current_return_type", "") or ""
+            return_type_key = getattr(self, "_current_return_type_key", "") or return_type
             if isinstance(val_node, Tree) and val_node.data == "testlist_tuple":
                 expected_types = self._split_go_tuple_type(return_type)
                 vals = []
@@ -410,26 +416,38 @@ class StatementVisitorMixin:
                 val = ", ".join(vals)
             elif isinstance(val_node, Tree) and val_node.data == "test" and len(val_node.children) == 3:
                 if return_type:
-                    true_val = self._typed_value_to_go(val_node.children[0], return_type)
-                    false_val = self._typed_value_to_go(val_node.children[2], return_type)
+                    with self._scoped(_expected_expr_type_key=return_type_key):
+                        true_val = self._typed_value_to_go(val_node.children[0], return_type, return_type_key)
+                        false_val = self._typed_value_to_go(val_node.children[2], return_type, return_type_key)
                 else:
                     true_val = self._expr_to_go(val_node.children[0])
                     false_val = self._expr_to_go(val_node.children[2])
                 cond = self._expr_to_go(val_node.children[1])
                 self._emit(f"if {cond} {{")
                 self.indent += 1
-                self._emit(f"return {true_val}")
+                if self._in_async_func and self._async_chan_name:
+                    self._emit(f"{self._async_chan_name} <- {true_val}")
+                    self._emit("return")
+                else:
+                    self._emit(f"return {true_val}")
                 self.indent -= 1
                 self._emit(f"}} else {{")
                 self.indent += 1
-                self._emit(f"return {false_val}")
+                if self._in_async_func and self._async_chan_name:
+                    self._emit(f"{self._async_chan_name} <- {false_val}")
+                    self._emit("return")
+                else:
+                    self._emit(f"return {false_val}")
                 self.indent -= 1
                 self._emit(f"}}")
                 return
             else:
                 if return_type:
-                    with self._scoped(_propagate_cast_hint=return_type):
-                        val = self._typed_value_to_go(val_node, return_type)
+                    with self._scoped(
+                        _propagate_cast_hint=return_type,
+                        _expected_expr_type_key=return_type_key,
+                    ):
+                        val = self._typed_value_to_go(val_node, return_type, return_type_key)
                 else:
                     val = self._expr_to_go(val_node)
 

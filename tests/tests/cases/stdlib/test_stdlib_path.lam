@@ -8,9 +8,27 @@
 # expect: withExt: /tmp/hello.go
 # expect: exists_tmp: true
 # expect: exists_fake: false
+# expect: glob_empty_ok
+# expect: glob_error_ok
+# expect: abs_rel_ok
+# expect: join_list_ok
+# expect: join_variadic_ok
 # expect: path_ok
 
 from lampath import Path
+from lamerrors import Result
+
+func resultBool(r: Result) -> bool {
+    go! { return r.Value.(bool) }
+}
+
+func resultStr(r: Result) -> str {
+    go! { return r.Value.(string) }
+}
+
+func resultStrings(r: Result) -> list[str] {
+    go! { return r.Value.([]string) }
+}
 
 func main() {
     print(Path.base("/home/user/file.txt"))
@@ -24,9 +42,29 @@ func main() {
     print(f"splitExt_ext: {pair[1]}")
     we: str = Path.withExt("/tmp/hello.lam", "go")
     print(f"withExt: {we}")
-    et: bool = Path.exists("/tmp")
-    ef: bool = Path.exists("/definitely/not/real/12345")
+    et: bool = resultBool(Path.exists("/tmp"))
+    ef: bool = resultBool(Path.exists("/definitely/not/real/12345"))
     print(f"exists_tmp: {et}")
     print(f"exists_fake: {ef}")
+
+    emptyGlob: Result[list[str]] = Path.glob("/definitely/not/real/lam-*")
+    if emptyGlob.ok() and len(resultStrings(emptyGlob)) == 0 {
+        print("glob_empty_ok")
+    }
+    badGlob: Result[list[str]] = Path.glob("[")
+    if not badGlob.ok() {
+        print("glob_error_ok")
+    }
+    absolute: str = resultStr(Path.abs("."))
+    relative: str = resultStr(Path.rel("/tmp", "/tmp/a"))
+    if len(absolute) > 0 and relative == "a" {
+        print("abs_rel_ok")
+    }
+    if Path.join(["tmp", "lam", "file.txt"]) == "tmp/lam/file.txt" {
+        print("join_list_ok")
+    }
+    if Path.join("tmp", "lam", "file.txt") == "tmp/lam/file.txt" {
+        print("join_variadic_ok")
+    }
     print("path_ok")
 }

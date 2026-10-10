@@ -3,6 +3,6 @@
 from lamos import File
 
 func main() {
-    file = File.open("/tmp/unused")
+    file: File = File.open("/tmp/unused").unwrap()
     _ = file.read(1)
 }

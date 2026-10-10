@@ -5,8 +5,7 @@
 from lamstrings import Strings
 from lamfmt import Fmt
 from lammath import Math
-from lamstack import Stack
-from lamset import Set
+from lamdatastructures import Stack, Set
 
 func main() {
     # Strings
@@ -25,7 +24,7 @@ func main() {
     s.push(1)
     s.push(2)
     s.push(3)
-    print(f"stack peek={s.peek()} size={s.size()}")
+    print(f"stack peek={s.peek().unwrap()} size={s.size()}")
 
     # Set — add/remove/contains/union/intersect/difference
     a: Set = Set()

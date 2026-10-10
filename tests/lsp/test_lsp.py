@@ -133,7 +133,7 @@ class LspClient:
 # ────────────────────────────────────────────────────────────
 
 VALID_DOC = """class Greeter {
-    func __init__(self, name: str) {
+    func init(self, name: str) {
         self.name = name
     }
 
@@ -314,7 +314,7 @@ func main() {
 """
 
 INSTANCE_DOC = """class Account {
-    func __init__(self, owner: str, tenant: str) {
+    func init(self, owner: str, tenant: str) {
         self.owner: str = owner
         self.tenant: str = tenant
     }
@@ -325,7 +325,7 @@ INSTANCE_DOC = """class Account {
 }
 
 class UserAccount(Account) {
-    func __init__(self, owner: str) {
+    func init(self, owner: str) {
         base.init(owner, "internal")
     }
 
@@ -342,6 +342,7 @@ func main() {
 }
 """
 
+# Intentionally mixes both constructor spellings to cover LSP alias handling.
 NAMED_BASE_DOC = """class Account {
     func __init__(self, owner: str) {
         self.owner: str = owner
@@ -363,7 +364,7 @@ class Flags {
 }
 
 class ServiceAccount(account: Account, flags: Flags) {
-    func __init__(self, owner: str) {
+    func init(self, owner: str) {
         account.init(owner)
         flags.__init__(true)
     }
@@ -438,7 +439,7 @@ func discard(fields: dict[str, str]) {
 """
 
 JSON_CONVERSION_DOC = """class Profile {
-    func __init__(self, name: str) {
+    func init(self, name: str) {
         self.name: str = name
     }
 
@@ -496,6 +497,15 @@ class Folder {
             }
         return false
     }
+}
+"""
+
+MALFORMED_FOLDING_DOC = """#-
+A spaced terminator is not a documentation-comment delimiter.
+-  #
+
+func main() {
+    print("still code")
 }
 """
 
@@ -989,6 +999,27 @@ def run_tests() -> int:
             print("PASS: folding ranges cover comments and nested brace blocks")
         except AssertionError as e:
             failures.append(f"folding ranges: {e}")
+
+        malformed_folding_uri = "file:///tmp/lsp_malformed_folding.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": malformed_folding_uri, "languageId": "lammergeier",
+                "version": 1, "text": MALFORMED_FOLDING_DOC,
+            },
+        })
+        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        resp = client.request("textDocument/foldingRange", {
+            "textDocument": {"uri": malformed_folding_uri},
+        })
+        try:
+            ranges = resp.get("result") or []
+            assert_true("spaced doc terminator is not folded", not any(
+                item.get("startLine") == 0 and item.get("kind") == "comment"
+                for item in ranges
+            ))
+            print("PASS: folding ranges require exact documentation terminators")
+        except AssertionError as e:
+            failures.append(f"exact doc-comment folding: {e}")
 
         resp = client.request("textDocument/semanticTokens/full", {
             "textDocument": {"uri": folding_uri},

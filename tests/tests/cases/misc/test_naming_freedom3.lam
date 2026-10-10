@@ -3,7 +3,7 @@
 # expect: processed: 200
 
 class data_processor {
-    func __init__(self, my_data: int) {
+    func init(self, my_data: int) {
         self.my_data: int = my_data
     }
 

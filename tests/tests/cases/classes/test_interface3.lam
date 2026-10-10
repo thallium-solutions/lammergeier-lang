@@ -7,7 +7,7 @@ interface Measurable {
 }
 
 class Circle {
-    func __init__(self, radius: int) {
+    func init(self, radius: int) {
         self.radius: int = radius
     }
 
@@ -17,7 +17,7 @@ class Circle {
 }
 
 class Square {
-    func __init__(self, side: int) {
+    func init(self, side: int) {
         self.side: int = side
     }
 

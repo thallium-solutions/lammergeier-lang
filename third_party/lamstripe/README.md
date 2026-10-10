@@ -16,7 +16,9 @@ export STRIPE_API_VERSION="2024-06-20"
 ```
 
 `STRIPE_BASE_URL` is optional and mainly useful for tests or Stripe-compatible
-mock servers. `STRIPE_API_VERSION` is optional.
+mock servers. `STRIPE_API_VERSION` is optional. `StripeConfig.fromEnv()` uses
+`Env.getOr` defaults for optional and absent settings under the Result-based
+stdlib env API.
 
 ## Quick start
 
@@ -48,6 +50,7 @@ func main() {
 - `StripePaymentIntentOptions` defaults `automatic_payment_methods[enabled]` to `true`, normalizes currency to lowercase, and supports customer, receipt email, capture method, description, and metadata.
 - `StripeCheckoutSessionOptions` requires a price ID, quantity, success URL, and cancel URL, with optional customer email, client reference ID, promotion codes, and metadata.
 - `Stripe.validateAmount` and `Stripe.validateCurrency` return `Result` validation failures before making HTTP calls.
+- `StripeResponse.json()` and `field(name)` consume the stdlib's Result-returning `Json.decode` and `Json.toDict` contracts internally.
 - `StripeResponse.id()`, `StripeResponse.url()`, and `StripeResponse.clientSecret()` are convenience accessors for common response fields.
 - `StripeClient.setIdempotencyKey(key)` sets the Stripe idempotency header for subsequent writes.
 
@@ -61,8 +64,8 @@ func main() {
 ### `StripeClient`
 
 - `StripeClient.fromEnv()` creates a client from environment variables.
-- `rawGet(path)` returns `Result[StripeResponse]`.
-- `rawPostForm(path, fields)` sends `application/x-www-form-urlencoded` data and returns `Result[StripeResponse]`.
+- `rawGet(path)` consumes Result-returning `HttpClient.get` and returns `Result[StripeResponse]`; transport failures are preserved.
+- `rawPostForm(path, fields)` consumes Result-returning `HttpClient.post`, sends `application/x-www-form-urlencoded` data, and returns `Result[StripeResponse]`.
 - `createCustomer(email, name="")` wraps `POST /customers`.
 - `createCustomerWithOptions(opts)` validates and creates a customer.
 - `createPaymentIntent(amount, currency, description="")` wraps `POST /payment_intents`.

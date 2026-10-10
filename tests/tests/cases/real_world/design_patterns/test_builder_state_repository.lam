@@ -11,11 +11,15 @@
 
 from lamtemplate import Template
 from lamjson import Json
-from lamqueue import Queue
-from lamset import Set
+from lamdatastructures import Queue, Set
+from lamerrors import Result
+
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
 
 class Order {
-    func __init__(self, id: str, customer: str, lines: list[str]) {
+    func init(self, id: str, customer: str, lines: list[str]) {
         self.id: str = id
         self.customer: str = customer
         self.lines: list[str] = lines
@@ -39,7 +43,7 @@ class Order {
 }
 
 class OrderBuilder {
-    func __init__(self) {
+    func init(self) {
         self.id: str = ""
         self.customer: str = ""
         self.lines: list[str] = []
@@ -70,7 +74,7 @@ class OrderBuilder {
 }
 
 class OrderRepository {
-    func __init__(self) {
+    func init(self) {
         self.ids: Set = Set()
         self.orders: list[Order] = []
     }
@@ -92,7 +96,7 @@ class OrderRepository {
 }
 
 class OrderReport {
-    func __init__(self) {
+    func init(self) {
         self.template: Template = Template()
         _ = self.template.parse("Order {{.Id}} for {{.Customer}} has {{.LineCount}} lines.")
     }
@@ -102,7 +106,7 @@ class OrderReport {
         data["Id"] = order.id
         data["Customer"] = order.customer
         data["LineCount"] = len(order.lines)
-        return self.template.render(data)
+        return resultString(self.template.render(data))
     }
 }
 
@@ -131,6 +135,6 @@ func main() {
     print(f"repo_count={repo.count()}")
     print(f"events={order.events.toList()}")
 
-    payload: str = Json.encode(report.render(order))
+    payload: str = resultString(Json.encode(report.render(order)))
     print(f"json_valid={Json.isValid(payload)}")
 }

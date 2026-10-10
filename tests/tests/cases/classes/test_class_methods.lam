@@ -17,7 +17,7 @@
 # expect: cls_methods_ok
 
 class Counter2 {
-    func __init__(self) {
+    func init(self) {
         self.val: int = 0
     }
 
@@ -43,7 +43,7 @@ class Counter2 {
 }
 
 class Pair {
-    func __init__(self, first: int, second: int) {
+    func init(self, first: int, second: int) {
         self.first: int = first
         self.second: int = second
     }
@@ -65,7 +65,7 @@ class Pair {
 }
 
 class NamedValue {
-    func __init__(self, name: str, value: int) {
+    func init(self, name: str, value: int) {
         self.name: str = name
         self.value: int = value
     }

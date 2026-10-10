@@ -18,8 +18,8 @@ Currently covered:
 - **Duplicate top-level declarations**: two classes / interfaces with
   the same name, or two non-overloaded functions with the same name
   and arity.
-- **Duplicate class members**: a class can't declare the same field
-  or method name twice in the same body.
+- **Duplicate class members**: fields must be unique, and methods cannot repeat
+  the same parameter-and-return signature.
 - **Misplaced flow statements**: ``break`` / ``continue`` outside a
   loop, ``return`` outside a function.
 - **Shadowing builtins / imported modules**: assigning to ``print``,
@@ -616,15 +616,16 @@ class SemanticChecker:
                 scope.names.add(name)
                 sig = tuple(param.type_ref.name if param.type_ref is not None else "any"
                             for param in decl.params)
-                key = (name, len(decl.params), sig)
+                return_sig = decl.return_type.name if decl.return_type is not None else "None"
+                key = (name, len(decl.params), sig, return_sig)
                 if key in seen_func:
                     arity = len(decl.params)
                     self._error(
                         decl.span, "duplicate",
                         f"duplicate function `{name}` with {arity} "
                         f"parameter{'s' if arity != 1 else ''} of the "
-                        f"same type signature (overloading requires "
-                        f"a different arity or different parameter types)",
+                        f"same parameter and return type signature (overloading requires "
+                        f"a different arity, parameter type, or return type)",
                     )
                 else:
                     seen_func[key] = decl
@@ -776,23 +777,20 @@ class SemanticChecker:
                 scope.names.add(name)
                 params_node = self._funcdef_params(node)
                 arity = len(self._param_names(params_node))
-                # Dupe key is ``(name, arity, type-signature)`` so two
-                # definitions at the same arity whose parameter types
-                # differ (``foo(int)`` vs ``foo(string)``) are accepted
-                # as overloads. When the user didn't annotate every
-                # slot, the signature collapses to all-``any`` and the
-                # original same-name/same-arity collision rule still
-                # fires — that keeps the diagnostic stable for
-                # un-annotated code.
+                # Dupe key includes arity, parameter types, and return type, so
+                # definitions may overload on parameters or contextual return.
+                # When the user didn't annotate every parameter, that slot
+                # collapses to ``any`` and still participates in the signature.
                 sig = self._param_type_sig(params_node)
-                key = (name, arity, sig)
+                return_sig = self._funcdef_return_type_text(node) or "None"
+                key = (name, arity, sig, return_sig)
                 if key in seen_func:
                     self._error(
                         node, "duplicate",
                         f"duplicate function `{name}` with {arity} "
                         f"parameter{'s' if arity != 1 else ''} of the "
-                        f"same type signature (overloading requires "
-                        f"a different arity or different parameter types)",
+                        f"same parameter and return type signature (overloading requires "
+                        f"a different arity, parameter type, or return type)",
                     )
                 else:
                     seen_func[key] = node
@@ -1347,13 +1345,15 @@ class SemanticChecker:
                 else:
                     method_kinds[name] = kind
                 params = method.params if method.is_static else [p for p in method.params if p.name != "self"]
-                signature = tuple(p.type_ref.name if p.type_ref is not None else "any" for p in params)
+                param_signature = tuple(p.type_ref.name if p.type_ref is not None else "any" for p in params)
+                return_signature = method.return_type.name if method.return_type is not None else "None"
+                signature = (param_signature, return_signature)
                 seen = method_sigs.setdefault(name, set())
                 if signature in seen:
                     self._error(
                         method.span,
                         "duplicate",
-                        f"duplicate class member `{name}`; duplicate class method `{name}` with the same type signature",
+                        f"duplicate class member `{name}`; duplicate class method `{name}` with the same parameter and return type signature",
                     )
                 seen.add(signature)
         elif suite_node is not None:
@@ -1372,15 +1372,17 @@ class SemanticChecker:
                         self._error(stmt, "duplicate", f"class method `{name}` cannot mix static and instance overloads")
                     else:
                         method_kinds[name] = kind
-                    signature = self._param_type_sig(self._funcdef_params(stmt))
+                    param_signature = self._param_type_sig(self._funcdef_params(stmt))
                     if not kind and self._param_names(self._funcdef_params(stmt))[:1] == ["self"]:
-                        signature = signature[1:]
+                        param_signature = param_signature[1:]
+                    return_signature = self._funcdef_return_type_text(stmt) or "None"
+                    signature = (param_signature, return_signature)
                     seen = method_sigs.setdefault(name, set())
                     if signature in seen:
                         self._error(
                             stmt,
                             "duplicate",
-                            f"duplicate class member `{name}`; duplicate class method `{name}` with the same type signature",
+                            f"duplicate class member `{name}`; duplicate class method `{name}` with the same parameter and return type signature",
                         )
                     seen.add(signature)
                 elif stmt.data in ("annassign", "assign_stmt", "assign"):
@@ -2799,9 +2801,6 @@ class SemanticChecker:
                 expected = self._assignment_target_type(target_node)
                 if isinstance(expected, NamedType) and expected.name == "json":
                     self._check_json_expr(value_node, f"cannot assign to json target `{self._assignment_target_display(target_node)}`")
-            actual = self._expr_simple_type(value_node)
-            if actual is None or self._is_unknown_open_assignment_type(actual):
-                return
             for target_node in target_nodes:
                 if self._assignment_target_display(target_node) == "_":
                     continue
@@ -2809,6 +2808,9 @@ class SemanticChecker:
                 if expected is None or (isinstance(expected, NamedType) and expected.name == "json"):
                     continue
                 if self._is_unknown_open_assignment_type(expected):
+                    continue
+                actual = self._expr_type_for_expected(value_node, expected)
+                if actual is None or self._is_unknown_open_assignment_type(actual):
                     continue
                 if is_assignable(expected, actual) or self._nominal_type_assignable(expected, actual):
                     continue
@@ -2834,7 +2836,7 @@ class SemanticChecker:
             return
         if self._check_annotated_container_literal(node, expected, value_node):
             return
-        actual = self._expr_simple_type(value_node)
+        actual = self._expr_type_for_expected(value_node, expected)
         if actual is None:
             return
         if self._is_unknown_open_assignment_type(actual):
@@ -3098,8 +3100,8 @@ class SemanticChecker:
         if not target:
             return ""
         selected = self._selected_call_return_types(node)
-        if len(selected) == 1:
-            return next(iter(selected))
+        if selected:
+            return selected[0]
         if "." in target:
             receiver, method = target.split(".", 1)
             receiver_type = self._var_type(receiver)
@@ -3117,10 +3119,10 @@ class SemanticChecker:
         return_type = self._single_known_return_type(self._func_return_type_texts.get(target, set()))
         return self._specialize_call_return_type(node, return_type)
 
-    def _selected_call_return_types(self, call: Tree) -> set[str]:
+    def _selected_call_return_types(self, call: Tree) -> list[str]:
         _target, sigs = self._call_target_sigs(call)
         pos_count, keywords, has_starargs, has_kwargs = self._call_args_shape(call)
-        selected: set[str] = set()
+        selected: list[str] = []
         for sig in sigs:
             if not sig.return_type_text:
                 continue
@@ -3132,7 +3134,9 @@ class SemanticChecker:
             mapping = self._generic_type_mapping(call, sig)
             if mapping:
                 type_ = self._substitute_generic_type(type_, mapping)
-            selected.add(render_type(type_))
+            rendered = render_type(type_)
+            if rendered not in selected:
+                selected.append(rendered)
         return selected
 
     def _specialize_call_return_type(self, call: Tree, return_type: str) -> str:
@@ -3212,13 +3216,14 @@ class SemanticChecker:
         binding_kind: str = "variable",
     ) -> bool:
         if isinstance(expected, ListType) and isinstance(value_node, Tree) and value_node.data == "list":
-            return self._check_sequence_literal_items(
+            self._check_sequence_literal_items(
                 node,
                 expected.item,
                 [child for child in value_node.children if isinstance(child, Tree)],
                 "list element",
                 binding_kind=binding_kind,
             )
+            return True
         if isinstance(expected, DictType) and isinstance(value_node, Tree) and value_node.data == "dict":
             for child in value_node.children:
                 if not isinstance(child, Tree) or child.data != "key_value" or len(child.children) < 2:
@@ -3232,18 +3237,20 @@ class SemanticChecker:
                     node, expected.value, value, "dict value", binding_kind=binding_kind,
                 ):
                     return True
+            return True
         if (isinstance(expected, GenericType)
                 and expected.base == "set"
                 and expected.args
                 and isinstance(value_node, Tree)
                 and value_node.data == "set"):
-            return self._check_sequence_literal_items(
+            self._check_sequence_literal_items(
                 node,
                 expected.args[0],
                 [child for child in value_node.children if isinstance(child, Tree)],
                 "set element",
                 binding_kind=binding_kind,
             )
+            return True
         return False
 
     def _check_sequence_literal_items(
@@ -3271,7 +3278,7 @@ class SemanticChecker:
     ) -> bool:
         if isinstance(expected, NamedType) and expected.name == "json":
             return not self._check_json_expr(item, f"invalid {label} for {binding_kind}")
-        actual = self._expr_simple_type(item)
+        actual = self._expr_type_for_expected(item, expected)
         if actual is None:
             return False
         if is_assignable(expected, actual) or self._nominal_type_assignable(expected, actual):
@@ -4062,12 +4069,16 @@ class SemanticChecker:
             method_name = target[len(prefix):]
             if "." in method_name:
                 return direct
-            signatures = {sig.param_types for sig in direct}
+            signatures = {
+                (sig.param_types, sig.return_type_text)
+                for sig in direct
+            }
             for base in self._all_base_names(class_name):
                 for sig in self._method_sigs.get(f"{base}.{method_name}", []):
-                    if sig.param_types not in signatures:
+                    signature = (sig.param_types, sig.return_type_text)
+                    if signature not in signatures:
                         direct.append(sig)
-                        signatures.add(sig.param_types)
+                        signatures.add(signature)
             return direct
         return direct
 
@@ -4199,8 +4210,48 @@ class SemanticChecker:
                     f"list insert expects `{render_type(receiver_type.item)}`, got `{{actual}}`",
                 )
 
+    def _call_return_type_for_expected(self, call: Tree, expected: Type) -> Type | None:
+        _target, sigs = self._call_target_sigs(call)
+        pos_count, keywords, has_starargs, has_kwargs = self._call_args_shape(call)
+        fallback: Type | None = None
+        for sig in sigs:
+            if not sig.return_type_text:
+                continue
+            if not self._call_matches_sig(sig, pos_count, keywords, has_starargs, has_kwargs):
+                continue
+            if self._call_type_mismatches(call, sig):
+                continue
+            actual = parse_type(sig.return_type_text)
+            mapping = self._generic_type_mapping(call, sig)
+            if mapping:
+                actual = self._substitute_generic_type(actual, mapping)
+            if fallback is None:
+                fallback = actual
+            if is_assignable(expected, actual) or self._nominal_type_assignable(expected, actual):
+                return actual
+        return fallback
+
+    def _expr_type_for_expected(self, node, expected: Type) -> Type | None:
+        if isinstance(node, Tree) and node.data == "funccall":
+            selected = self._call_return_type_for_expected(node, expected)
+            if selected is not None:
+                return selected
+        if isinstance(node, Tree) and node.data == "test" and len(node.children) == 3:
+            true_expr, _condition, false_expr = node.children
+            true_type = self._expr_type_for_expected(true_expr, expected)
+            false_type = self._expr_type_for_expected(false_expr, expected)
+            if true_type is None or false_type is None:
+                return None
+            if (
+                (is_assignable(expected, true_type) or self._nominal_type_assignable(expected, true_type))
+                and (is_assignable(expected, false_type) or self._nominal_type_assignable(expected, false_type))
+            ):
+                return expected
+            return self._compatible_ternary_types(true_type, false_type)
+        return self._expr_simple_type(node)
+
     def _check_expected_expr_type(self, node: Tree, expected: Type, message_template: str) -> bool:
-        actual = self._expr_simple_type(node)
+        actual = self._expr_type_for_expected(node, expected)
         if actual is None:
             return True
         if self._is_any_type(actual) or self._is_open_type(actual):
@@ -4226,14 +4277,14 @@ class SemanticChecker:
         for param_name, expected_name, arg_node in self._call_arg_bindings(call, sig):
             if expected_name in {"", "any", "object", "json"}:
                 continue
-            actual = self._expr_simple_type(arg_node)
-            if actual is None:
-                continue
             expected = parse_type(expected_name)
             if self._type_mentions_generic(expected, sig.generic_names):
                 if not generic_mapping:
                     continue
                 expected = self._substitute_generic_type(expected, generic_mapping)
+            actual = self._expr_type_for_expected(arg_node, expected)
+            if actual is None:
+                continue
             if is_assignable(expected, actual) or self._nominal_type_assignable(expected, actual):
                 continue
             out.append((param_name, expected, actual, arg_node))
@@ -5465,7 +5516,10 @@ class SemanticChecker:
                         and isinstance(value_node, Tree)):
                     self._check_json_expr(value_node, f"invalid json return from `{name}`")
                     continue
-                actual_model = self._return_value_type(ret)
+                actual_model = (
+                    self._expr_type_for_expected(value_node, expected_model)
+                    if expected_model is not None else self._return_value_type(ret)
+                )
                 actual_type = render_type(actual_model) if actual_model is not None else ""
                 expected_name = render_type(expected_model) if expected_model is not None else expected_type
                 if (actual_model is not None

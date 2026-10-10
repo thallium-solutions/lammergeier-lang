@@ -13,6 +13,11 @@
 
 from lamstripe import Stripe, StripeClient, StripeConfig, StripePaymentIntentOptions, StripeResponse
 from lamhttp import Http, HttpServer
+from lamerrors import Result
+
+func resultServer(result: Result) -> HttpServer {
+    go! { return result.Value.(*HttpServer) }
+}
 
 class Capture {
     static path: str = ""
@@ -42,7 +47,7 @@ func main() {
     print(fields["automatic_payment_methods[enabled]"] == "true")
     print(fields["metadata[order_id]"] == "ord_123")
 
-    srv: HttpServer = Http.serve(39283, handler)
+    srv: HttpServer = resultServer(Http.serve(39283, handler))
     cfg: StripeConfig = StripeConfig("sk_test_local", "http://127.0.0.1:39283", "", 5000)
     client: StripeClient = StripeClient(cfg)
     client.setIdempotencyKey("idem_123")
@@ -51,7 +56,7 @@ func main() {
     print(Capture.path)
     print(Capture.body.contains("metadata%5Border_id%5D=ord_123"))
     print(Capture.body.contains("automatic_payment_methods%5Benabled%5D=true"))
-    srv.close()
+    srv.close().unwrap()
 
     response: StripeResponse = StripeResponse(200, "{\"id\":\"pi_123\",\"client_secret\":\"secret_123\"}", "")
     print(response.id())

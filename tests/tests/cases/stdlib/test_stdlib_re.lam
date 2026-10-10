@@ -1,15 +1,29 @@
 # Test: tpyre standard library
 # expect: true
 # expect: 123
+# expect: no_match_ok=true:0
+# expect: invalid_err=true
 # expect: re_ok
 
 from lamre import Re
+from lamerrors import Result
 
 func main() {
-    if Re.match("^[a-z]+$", "hello") {
+    matchResult: Result[bool] = Re.match("^[a-z]+$", "hello")
+    matched: bool = false
+    go! { matched = matchResult.Value.(bool) }
+    if matched {
         print("true")
     }
-    found: str = Re.find("[0-9]+", "abc123def")
+    foundResult: Result[str] = Re.find("[0-9]+", "abc123def")
+    found: str = ""
+    go! { found = foundResult.Value.(string) }
     print(found)
+    noMatch: Result[str] = Re.find("[0-9]+", "abc")
+    noMatchValue: str = ""
+    go! { noMatchValue = noMatch.Value.(string) }
+    print(f"no_match_ok={noMatch.ok()}:{len(noMatchValue)}")
+    invalid: Result[bool] = Re.match("[", "abc")
+    print(f"invalid_err={not invalid.ok()}")
     print("re_ok")
 }

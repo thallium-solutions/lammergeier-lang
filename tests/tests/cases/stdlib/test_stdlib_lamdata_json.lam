@@ -9,7 +9,7 @@ func main() {
         {"name": "Lin", "score": 12}
     ]
     frame: DataFrame = DataFrame.readJSON(rows)
-    restored: json = json(frame)
+    restored: json = frame.jsonValue()
     legacy: DataFrame = DataFrame.readJsonValue(rows)
     print(f"dataframe-json:{Json.kind(restored)}:{len(restored)}:{legacy.nrow()}")
 }

@@ -13,67 +13,85 @@
 # very useful when you need IDs that sort by creation time, e.g. as
 # database primary keys.
 
+from lamerrors import Result, Error
+
 go! {
     import (
         "crypto/rand"
         "encoding/hex"
         "fmt"
         "regexp"
-        "sync"
+        "sync/atomic"
         "time"
     )
-}
 
-go! {
     var lamUuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-    // v7 needs a monotonic millisecond clock. Two requests within the
-    // same millisecond increment a counter so the sequence stays
-    // strictly increasing within a process.
-    var lamUuidV7Mu sync.Mutex
-    var lamUuidV7LastMs int64
-    var lamUuidV7Counter uint16
+    // Pack the v7 logical millisecond and 12-bit sequence into one atomic
+    // word. This preserves process-local ordering without serialising UUID
+    // entropy generation behind a separate mutex.
+    var lamUuidV7State atomic.Uint64
+
+    func lamUuidV7Next() (int64, uint16) {
+        for {
+            previous := lamUuidV7State.Load()
+            previousMs := int64(previous >> 12)
+            previousCounter := uint16(previous & 0x0fff)
+            ms := time.Now().UnixMilli()
+            counter := uint16(0)
+            if ms <= previousMs {
+                if previousCounter == 0x0fff {
+                    // More than 4096 IDs in one millisecond: advance the
+                    // logical clock rather than wrapping the sortable bits.
+                    ms = previousMs + 1
+                } else {
+                    ms = previousMs
+                    counter = previousCounter + 1
+                }
+            }
+            next := (uint64(ms) << 12) | uint64(counter)
+            if lamUuidV7State.CompareAndSwap(previous, next) {
+                return ms, counter
+            }
+        }
+    }
+
+    func formatUuid(buf []byte) string {
+        return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+            buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
+    }
 }
 
 class Uuid {
     #- Static-only namespace; instantiate purely as ``Uuid.v4()`` etc. -#
 
-    static func v4() -> str {
-        #- Cryptographically-random RFC 4122 v4 UUID. Bits 6-7 of byte 8
-           are set to ``10`` (variant) and bits 12-15 of byte 6 are set
-           to ``0100`` (version 4). -#
+    static func v4() -> Result[str] {
+        #- Cryptographically-random RFC 4122 v4 UUID. Entropy-source
+           failures are returned instead of panicking. -#
         go! {
             buf := make([]byte, 16)
             if _, err := rand.Read(buf); err != nil {
-                panic(fmt.Sprintf("Uuid.v4: %v", err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "RandomError", "Uuid.v4 entropy read failed", err.Error(),
+                ))
             }
             buf[6] = (buf[6] & 0x0f) | 0x40 // version 4
             buf[8] = (buf[8] & 0x3f) | 0x80 // variant 10xx
-            return formatUuid(buf)
+            return LAMMERGEIER.Result.Ok(formatUuid(buf))
         }
     }
 
-    static func v7() -> str {
-        #- Time-ordered v7 UUID. The high 48 bits are the current Unix
-           timestamp in milliseconds; the remaining bits are random
-           with the standard variant + version markers. -#
+    static func v7() -> Result[str] {
+        #- Time-ordered v7 UUID. Entropy-source failures are returned. -#
         go! {
             buf := make([]byte, 16)
             if _, err := rand.Read(buf); err != nil {
-                panic(fmt.Sprintf("Uuid.v7: %v", err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "RandomError", "Uuid.v7 entropy read failed", err.Error(),
+                ))
             }
 
-            lamUuidV7Mu.Lock()
-            ms := time.Now().UnixMilli()
-            if ms <= lamUuidV7LastMs {
-                lamUuidV7Counter++
-                ms = lamUuidV7LastMs
-            } else {
-                lamUuidV7LastMs = ms
-                lamUuidV7Counter = 0
-            }
-            ctr := lamUuidV7Counter
-            lamUuidV7Mu.Unlock()
+            ms, ctr := lamUuidV7Next()
 
             // 48-bit timestamp (big-endian)
             buf[0] = byte(ms >> 40)
@@ -88,7 +106,7 @@ class Uuid {
             buf[7] = byte(ctr)
             // Variant 10xx
             buf[8] = (buf[8] & 0x3f) | 0x80
-            return formatUuid(buf)
+            return LAMMERGEIER.Result.Ok(formatUuid(buf))
         }
     }
 
@@ -104,28 +122,24 @@ class Uuid {
         }
     }
 
-    static func parse(s: str) -> bytes {
-        #- Decode a canonical-form UUID into its 16 raw bytes. Panics
-           on malformed input — guard with ``isValid`` first if the
-           caller can supply garbage. -#
+    static func parse(s: str) -> Result[bytes] {
+        #- Decode a canonical UUID into 16 raw bytes, returning malformed
+           input as a parse error. -#
         go! {
             if !lamUuidRe.MatchString(s) {
-                panic(fmt.Sprintf("Uuid.parse: %q is not a valid UUID", s))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "UuidParseError", fmt.Sprintf("%q is not a valid UUID", s), nil,
+                ))
             }
             stripped := s[:8] + s[9:13] + s[14:18] + s[19:23] + s[24:]
             decoded, err := hex.DecodeString(stripped)
             if err != nil {
-                panic(fmt.Sprintf("Uuid.parse: %v", err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "UuidParseError", "UUID hex decoding failed", err.Error(),
+                ))
             }
-            return decoded
+            return LAMMERGEIER.Result.Ok(decoded)
         }
-    }
-}
-
-go! {
-    func formatUuid(buf []byte) string {
-        return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-            buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
     }
 }
 

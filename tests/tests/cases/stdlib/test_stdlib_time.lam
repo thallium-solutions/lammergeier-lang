@@ -2,8 +2,28 @@
 # expect: year_ok
 # expect: add_ok
 # expect: elapsed_ok
+# expect: parse_ok
+# expect: parse_error_ok
+# expect: measure_ok
+# expect: measure_error_ok
+# expect: duration_units_ok
+# expect: duration_arithmetic_ok
+# expect: duration_parse_ok
+# expect: datetime_constructor_ok
+# expect: datetime_parse_format_ok
+# expect: datetime_difference_ok
+# expect: datetime_duration_ok
+# expect: timezone_conversion_ok
+# expect: spring_dst_ok
+# expect: fall_dst_ok
+# expect: fixed_calendar_semantics_ok
+# expect: calendar_month_year_ok
+# expect: common_formats_ok
+# expect: invalid_datetime_ok
 
 from lamtime import Time
+from lamdatetime import DateTime
+from lamerrors import Result
 
 func main() {
     t: str = Time.nowString()
@@ -23,5 +43,111 @@ func main() {
     started: int = Time.nowUnixMilli()
     if Time.elapsedSince(started) >= 0 {
         print("elapsed_ok")
+    }
+
+    parsed: Result[int] = Time.parse("2006-01-02", "1970-01-01")
+    if parsed.ok() and parsed.value == 0 {
+        print("parse_ok")
+    }
+    invalid: Result[int] = Time.parse("2006-01-02", "not-a-date")
+    if not invalid.ok() {
+        print("parse_error_ok")
+    }
+    measured: Result[int] = Time.measureMs(lambda: 1)
+    if measured.ok() {
+        print("measure_ok")
+    }
+    invalidMeasure: Result[int] = Time.measureMs(42)
+    if not invalidMeasure.ok() {
+        print("measure_error_ok")
+    }
+
+    # Duration constructors use fixed elapsed units: day=24h, week=7d,
+    # month=30d, and year=365d. Calendar-aware changes live on DateTime.
+    unitsOk: bool = Time.Nanoseconds(7).inNanoseconds() == 7
+    unitsOk = unitsOk and Time.Milliseconds(3).inNanoseconds() == 3000000
+    unitsOk = unitsOk and Time.Seconds(2).inMilliseconds() == 2000
+    unitsOk = unitsOk and Time.Minutes(2).inSeconds() == 120
+    unitsOk = unitsOk and Time.Hours(2).inMinutes() == 120
+    unitsOk = unitsOk and Time.Days(2).inHours() == 48
+    unitsOk = unitsOk and Time.Weeks(2).inDays() == 14
+    unitsOk = unitsOk and Time.Months(2).inDays() == 60
+    unitsOk = unitsOk and Time.Years(2).inDays() == 730
+    if unitsOk {
+        print("duration_units_ok")
+    }
+
+    combined: Time = Time.Hours(2).add(Time.Minutes(45)).subtract(Time.Minutes(15))
+    if combined.inMinutes() == 150 and combined.negate().abs().equals(combined) {
+        print("duration_arithmetic_ok")
+    }
+
+    parsedDuration: Result[Time] = Time.parseDuration("1h30m250ms")
+    invalidDuration: Result[Time] = Time.parseDuration("tomorrow-ish")
+    parsedDurationValue: Time = parsedDuration.unwrap()
+    if parsedDurationValue.inMilliseconds() == 5400250 and not invalidDuration.ok() {
+        print("duration_parse_ok")
+    }
+
+    epoch: DateTime = DateTime(0, "UTC")
+    if epoch.unix() == 0 and epoch.format("2006-01-02T15:04:05Z07:00") == "1970-01-01T00:00:00Z" {
+        print("datetime_constructor_ok")
+    }
+
+    parsedDate: DateTime = DateTime.parse("2006-01-02 15:04:05", "2024-01-31 18:45:30", "UTC").unwrap()
+    if parsedDate.format("Mon, 02 Jan 2006 15:04:05 MST") == "Wed, 31 Jan 2024 18:45:30 UTC" {
+        print("datetime_parse_format_ok")
+    }
+
+    later: DateTime = DateTime.parseRfc3339("2024-01-31T20:15:30Z").unwrap()
+    difference: Time = later - parsedDate
+    if difference.inMinutes() == 90 and later.after(parsedDate) and parsedDate.before(later) {
+        print("datetime_difference_ok")
+    }
+
+    shifted: DateTime = (parsedDate + Time.Hours(3)).subtract(Time.Minutes(30))
+    if shifted.format("2006-01-02 15:04:05") == "2024-01-31 21:15:30" {
+        print("datetime_duration_ok")
+    }
+
+    tokyo: DateTime = parsedDate.inLocation("Asia/Tokyo").unwrap()
+    if tokyo.unix() == parsedDate.unix() and tokyo.format("2006-01-02 15:04 MST") == "2024-02-01 03:45 JST" {
+        print("timezone_conversion_ok")
+    }
+
+    spring: DateTime = DateTime.parse("2006-01-02 15:04", "2024-03-09 12:00", "America/New_York").unwrap()
+    springFixed: DateTime = spring.add(Time.Days(1))
+    springCalendar: DateTime = spring.addDays(1)
+    if springFixed.format("2006-01-02 15:04 MST") == "2024-03-10 13:00 EDT" and springCalendar.format("2006-01-02 15:04 MST") == "2024-03-10 12:00 EDT" and springCalendar.since(spring).inHours() == 23 {
+        print("spring_dst_ok")
+    }
+
+    fall: DateTime = DateTime.parse("2006-01-02 15:04", "2024-11-02 12:00", "America/New_York").unwrap()
+    fallFixed: DateTime = fall.add(Time.Days(1))
+    fallCalendar: DateTime = fall.addDays(1)
+    if fallFixed.format("2006-01-02 15:04 MST") == "2024-11-03 11:00 EST" and fallCalendar.format("2006-01-02 15:04 MST") == "2024-11-03 12:00 EST" and fallCalendar.since(fall).inHours() == 25 {
+        print("fall_dst_ok")
+    }
+
+    if Time.Months(1).inDays() == 30 and Time.Years(1).inDays() == 365 and spring.add(Time.Months(1)).since(spring).inDays() == 30 {
+        print("fixed_calendar_semantics_ok")
+    }
+
+    leapDay: DateTime = DateTime.parse("2006-01-02 15:04", "2024-02-29 08:00", "UTC").unwrap()
+    if parsedDate.addMonths(1).format("2006-01-02") == "2024-02-29" and leapDay.addYears(1).format("2006-01-02") == "2025-02-28" {
+        print("calendar_month_year_ok")
+    }
+
+    common: DateTime = DateTime.parseCommon("07/04/2024 09:30", "America/Los_Angeles").unwrap()
+    converted: str = DateTime.convert("31-01-2024", "02-01-2006", "2006/01/02", "UTC").unwrap()
+    if common.format("2006-01-02 15:04 MST") == "2024-07-04 09:30 PDT" and converted == "2024/01/31" and later.rfc3339() == "2024-01-31T20:15:30Z" {
+        print("common_formats_ok")
+    }
+
+    invalidDate: Result[DateTime] = DateTime.parse("2006-01-02", "2024-02-30", "UTC")
+    invalidZone: Result[DateTime] = parsedDate.inLocation("Mars/Olympus_Mons")
+    invalidCommon: Result[DateTime] = DateTime.parseCommon("definitely not a date", "UTC")
+    if not invalidDate.ok() and not invalidZone.ok() and not invalidCommon.ok() {
+        print("invalid_datetime_ok")
     }
 }

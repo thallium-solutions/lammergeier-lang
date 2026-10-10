@@ -3,10 +3,16 @@
 # expect: 123
 
 from lamconv import Conv
+from lamerrors import Result
+
+func resultInt(result: Result[int]) -> int {
+    go! { return result.Value.(int) }
+}
 
 func main() {
-    a: str = Conv.toString(42)
-    b: int = Conv.toInt("123")
+    a: str = str(42)
+    parsed: Result[int] = Conv.parse("123")
+    b: int = resultInt(parsed)
     print(a)
     print(b)
 }

@@ -8,7 +8,7 @@
 from lamjson import Json
 
 class Profile {
-    func __init__(self, name: str) {
+    func init(self, name: str) {
         self.name: str = name
     }
 
@@ -18,7 +18,7 @@ class Profile {
 }
 
 class CollidingName {
-    func __init__(self) {
+    func init(self) {
         self.lamJSON: str = "kept"
     }
 
@@ -29,16 +29,16 @@ class CollidingName {
 
 func main() {
     profile: json = json(Profile("Ada"))
-    print(Json.encode(profile))
+    print(Json.encode(profile).unwrap())
 
     text: json = json('{"x":1}')
     print(Json.kind(text))
-    print(Json.encode(text))
+    print(Json.encode(text).unwrap())
 
     values: json = json([1, true, None])
-    print(Json.encode(values))
+    print(Json.encode(values).unwrap())
 
     same: json = json(profile)
     print(same == profile)
-    print(Json.encode(json(CollidingName())))
+    print(Json.encode(json(CollidingName())).unwrap())
 }

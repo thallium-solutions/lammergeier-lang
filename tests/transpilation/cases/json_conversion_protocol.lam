@@ -2,7 +2,7 @@
 # expect-go: var profile LamJSON = lamJSONMust(NewProfile("Ada"))
 
 class Profile {
-    func __init__(self, name: str) {
+    func init(self, name: str) {
         self.name: str = name
     }
 

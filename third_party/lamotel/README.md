@@ -44,7 +44,7 @@ func main() {
 
 ## Opinionated helpers
 
-- `OtelConfig.fromEnv()` reads service name, service version, deployment environment, resource attributes, endpoint, and exporter headers.
+- `OtelConfig.fromEnv()` reads service name, service version, deployment environment, resource attributes, endpoint, and exporter headers. Optional values use `Env.getOr(..., "")` under the Result-based stdlib env API.
 - `cfg.resource()` merges `service.name`, `service.version`, `deployment.environment`, and `OTEL_RESOURCE_ATTRIBUTES` into the exported resource.
 - `OtelSpan.setStatus(code, message="")` records span status.
 - `OtelSpan.addEvent(name)` records a timestamped event.
@@ -52,7 +52,8 @@ func main() {
 - `OtelTracer.childSpan(parent, name, kind="internal")` creates a child span sharing the parent trace ID.
 - `OtelTracer.batch()` creates an `OtelSpanBatch` for scoped export.
 - `Otel.tracesPayload(...)` and `tracesPayloadWithResource(...)` return native
-  `json`, which can be inspected directly or passed to `HttpClient.post`.
+  `json`. Export passes it to Result-returning `HttpClient.post`; transport
+  failures become `OtelExportError` with the stdlib error as their cause.
 
 ## API reference
 

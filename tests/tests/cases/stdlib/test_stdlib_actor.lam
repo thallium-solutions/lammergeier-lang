@@ -3,8 +3,8 @@
 # expect: counter-after-3-tells: 3
 # expect: counter-ask: 5
 # expect: greeter-ask: hello bob
-# expect: mailbox-recv: payload-1
-# expect: mailbox-tryrecv-empty: yes
+# expect: mailbox-receive: payload-1
+# expect: mailbox-poll-empty: yes
 # expect: error-recovered: ok
 # expect: stopped-actor-tell-isalive: false
 # expect: shutdown-num-actors: 0
@@ -12,7 +12,7 @@
 from lamactor import Mailbox, ActorRef, ActorSystem
 
 class Counter {
-    func __init__(self) {
+    func init(self) {
         self.n: int = 0
     }
 
@@ -35,7 +35,7 @@ class Greeter {
 }
 
 class Flaky {
-    func __init__(self) {
+    func init(self) {
         self.recovered: bool = false
     }
 
@@ -62,42 +62,41 @@ func main() {
     # ── Counter: tell + ask + state mutation across messages.
     counter: Counter = Counter()
     cref: ActorRef = sys.spawn(counter)
-    cref.tell("inc")
-    cref.tell("inc")
-    cref.tell("inc")
+    cref.tell("inc").unwrap()
+    cref.tell("inc").unwrap()
+    cref.tell("inc").unwrap()
     # Drain via ask so we know all three tells were processed.
-    after3: any = cref.ask("get", 1000)
+    after3: any = cref.ask("get", 1000).unwrap()
     print("counter-after-3-tells: " + str(after3))
-    cref.tell("inc")
-    cref.tell("inc")
-    asked: any = cref.ask("get", 1000)
+    cref.tell("inc").unwrap()
+    cref.tell("inc").unwrap()
+    asked: any = cref.ask("get", 1000).unwrap()
     print("counter-ask: " + str(asked))
 
     # ── Greeter: ask returns the handler's value.
     gref: ActorRef = sys.spawn(Greeter())
-    gv: any = gref.ask("bob", 1000)
+    gv: any = gref.ask("bob", 1000).unwrap()
     print("greeter-ask: " + str(gv))
 
     # ── Mailbox: standalone use, both blocking and non-blocking.
     mb: Mailbox = Mailbox(8)
-    mb.send("payload-1")
-    msg: any = mb.recv()
-    print("mailbox-recv: " + str(msg))
-    empty: any = mb.tryRecv()
-    if empty == None {
-        print("mailbox-tryrecv-empty: yes")
+    mb.send("payload-1").unwrap()
+    msg: any = mb.receive().unwrap()
+    print("mailbox-receive: " + str(msg))
+    if not mb.poll().ok() {
+        print("mailbox-poll-empty: yes")
     } else {
-        print("mailbox-tryrecv-empty: no")
+        print("mailbox-poll-empty: no")
     }
-    mb.close()
+    mb.close().unwrap()
 
     # ── Recover from a panic via onError. The actor stays alive
     # because Flaky.onError returns True.
     flaky: Flaky = Flaky()
     fref: ActorRef = sys.spawn(flaky)
-    fref.tell("boom")
+    fref.tell("boom").unwrap()
     # Give the dispatch loop a moment to process the panic.
-    pong: any = fref.ask("ping", 1000)
+    pong: any = fref.ask("ping", 1000).unwrap()
     if pong == "ok" and flaky.recovered {
         print("error-recovered: ok")
     } else {

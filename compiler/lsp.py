@@ -61,7 +61,7 @@ from compiler.modules import ModuleFacts, WorkspaceIndex  # noqa: E402
 from compiler.preprocessor import find_unknown_lammergeier_aliases  # noqa: E402
 from compiler.semantic import BUILTIN_CONSTANTS, BUILTIN_FUNCS, LAM_KEYWORDS  # noqa: E402
 from compiler.syntax_errors import make_syntax_diagnostic  # noqa: E402
-from compiler.lammergeier import preprocess_for_parse  # noqa: E402
+from compiler.lammergeier import _doc_comment_span_at, preprocess_for_parse  # noqa: E402
 from compiler.version import LAMC_VERSION  # noqa: E402
 
 # Optional: log to a file when LAMMERGEIER_LSP_LOG is set. The LSP
@@ -1614,13 +1614,14 @@ def _mask_lam_source(source: str) -> Tuple[str, List[Tuple[int, int, Optional[st
     string_start = re.compile(r"(?i:[rubf]{0,2})(\"\"\"|'''|\"|')")
     while pos < n:
         if source.startswith("#-", pos):
-            end = source.find("-#", pos + 2)
-            end = n if end < 0 else end + 2
-            start_line, end_line = line_at(pos), line_at(max(pos, end - 1))
-            if end_line > start_line:
-                folds.append((start_line, end_line, "comment"))
-            mask(pos, end)
-            pos = end
+            span = _doc_comment_span_at(source, pos)
+            if span.terminator == "exact":
+                start_line = line_at(pos)
+                end_line = line_at(max(pos, span.end - 1))
+                if end_line > start_line:
+                    folds.append((start_line, end_line, "comment"))
+            mask(pos, span.end)
+            pos = span.end
             continue
         if source[pos] == "#":
             end = source.find("\n", pos + 1)
@@ -3007,7 +3008,8 @@ class LspServer:
         if parsed is None:
             return None
         label, parameters = parsed
-        label = label.replace("func __init__(", "func init(")
+        legacy_constructor = "__init__"
+        label = label.replace(f"func {legacy_constructor}(", "func init(")
         if sym.kind == "method" and parameters and _param_name(parameters[0]) == "self":
             parameters = parameters[1:]
             label = _replace_signature_params(label, parameters)

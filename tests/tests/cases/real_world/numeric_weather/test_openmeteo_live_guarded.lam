@@ -5,13 +5,17 @@
 #   LAMMERGEIER_LIVE_OPENMETEO=1 python3 tests/tests/run_tests.py --dir tests/tests/cases/real_world/numeric_weather --filter live_guarded
 
 from lamenv import Env
-from lamhttp import Http
+from lamhttp import Http, HttpResponse
 from lamerrors import Result
 from lamjson import Json
 from lamfmt import Fmt
 
+func resultHttpResponse(result: Result) -> HttpResponse {
+    go! { return result.Value.(*HttpResponse) }
+}
+
 func main() {
-    if Env.get("LAMMERGEIER_LIVE_OPENMETEO") != "1" {
+    if Env.getOr("LAMMERGEIER_LIVE_OPENMETEO", "") != "1" {
         return
     }
 
@@ -23,12 +27,13 @@ func main() {
         "2026-04-30",
     )
 
-    response: Result = Http.tryGet(url)
+    response: Result[HttpResponse] = Http.get(url)
     if not response.ok() {
         raise "Open-Meteo request failed"
     }
 
-    body: str = str(response.value)
+    httpResponse: HttpResponse = resultHttpResponse(response)
+    body: str = httpResponse.body
     if not Json.isValid(body) {
         raise "Open-Meteo returned invalid JSON"
     }

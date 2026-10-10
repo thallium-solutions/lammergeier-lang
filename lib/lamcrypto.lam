@@ -7,9 +7,8 @@
 #
 # Binary values stay friendly to Lam programs: random bytes are ``list[int]``;
 # encrypted values, password hashes, and signatures are portable strings; key
-# material remains PEM. Recoverable input failures are available through each
-# ``try*`` method, while convenience methods either unwrap or return a safe
-# boolean sentinel as documented.
+# material remains PEM. Recoverable input and runtime failures are returned as
+# ``Result`` values from the unsuffixed operations.
 #
 # Import with: ``from lamcrypto import Crypto, CryptoKeyPair, CryptoCertificate``.
 
@@ -177,7 +176,7 @@ class CryptoKeyPair {
        strings. ``algorithm`` is ``"Ed25519"`` or ``"RSA"`` and ``bits`` is
        256 for Ed25519 or the requested RSA modulus size. -#
 
-    func __init__(self, privateKey: str, publicKey: str, algorithm: str, bits: int) {
+    func init(self, privateKey: str, publicKey: str, algorithm: str, bits: int) {
         self.privateKey: str = privateKey
         self.publicKey: str = publicKey
         self.algorithm: str = algorithm
@@ -191,7 +190,7 @@ class CryptoCertificate {
        the SHA-256 fingerprint is lowercase hexadecimal. The original PEM and
        Go certificate object are deliberately not retained. -#
 
-    func __init__(self,
+    func init(self,
                   commonName: str,
                   subject: str,
                   issuer: str,
@@ -240,7 +239,7 @@ class Crypto {
         return true
     }
 
-    static func tryRandomBytes(count: int = 32) -> Result {
+    static func randomBytes(count: int = 32) -> Result[list[int]] {
         #- Return secure random bytes. Counts from zero through 16 MiB are
            accepted; larger requests are rejected to avoid accidental memory
            exhaustion. -#
@@ -264,18 +263,9 @@ class Crypto {
         return Result.Ok(output)
     }
 
-    static func randomBytes(count: int = 32) -> list[int] {
-        #- Convenience form of ``tryRandomBytes``; panics only if secure random
-           generation fails or the count is invalid. -#
-        result: Result = Crypto.tryRandomBytes(count)
-        output: list[int] = []
-        go! { output = result.Unwrap().([]int) }
-        return output
-    }
-
-    static func tryRandomToken(count: int = 32) -> Result {
+    static func randomToken(count: int = 32) -> Result[str] {
         #- Return ``count`` secure bytes as an unpadded URL-safe base64 token. -#
-        result: Result = Crypto.tryRandomBytes(count)
+        result: Result = Crypto.randomBytes(count)
         if not result.ok() {
             return result
         }
@@ -285,16 +275,9 @@ class Crypto {
         return Result.Ok(token)
     }
 
-    static func randomToken(count: int = 32) -> str {
-        result: Result = Crypto.tryRandomToken(count)
-        token: str = ""
-        go! { token = result.Unwrap().(string) }
-        return token
-    }
-
-    static func tryRandomHex(count: int = 32) -> Result {
+    static func randomHex(count: int = 32) -> Result[str] {
         #- Return ``count`` secure bytes as lowercase hexadecimal. -#
-        result: Result = Crypto.tryRandomBytes(count)
+        result: Result = Crypto.randomBytes(count)
         if not result.ok() {
             return result
         }
@@ -303,20 +286,13 @@ class Crypto {
         return Result.Ok(Bytes.hexEncode(Bytes.fromBytes(raw)))
     }
 
-    static func randomHex(count: int = 32) -> str {
-        result: Result = Crypto.tryRandomHex(count)
-        value: str = ""
-        go! { value = result.Unwrap().(string) }
-        return value
-    }
-
-    static func tryEncrypt(plaintext: str, key: list[int], aad: str = "") -> Result {
+    static func encrypt(plaintext: str, key: list[int], aad: str = "") -> Result[str] {
         #- Encrypt UTF-8/plain string data with AES-GCM. AAD is authenticated
            but not stored, so the same value must be supplied to decrypt. -#
         if not Crypto.isAesKey(key) {
             return Result.Err(Error("CryptoValueError", "AES key must contain 16, 24, or 32 bytes in the range 0..255", None))
         }
-        nonceResult: Result = Crypto.tryRandomBytes(12)
+        nonceResult: Result = Crypto.randomBytes(12)
         if not nonceResult.ok() {
             return nonceResult
         }
@@ -337,15 +313,7 @@ class Crypto {
         return Result.Ok(envelope)
     }
 
-    static func encrypt(plaintext: str, key: list[int], aad: str = "") -> str {
-        #- Convenience form of ``tryEncrypt``; unwraps input or runtime errors. -#
-        result: Result = Crypto.tryEncrypt(plaintext, key, aad)
-        envelope: str = ""
-        go! { envelope = result.Unwrap().(string) }
-        return envelope
-    }
-
-    static func tryDecrypt(envelope: str, key: list[int], aad: str = "") -> Result {
+    static func decrypt(envelope: str, key: list[int], aad: str = "") -> Result[str] {
         #- Authenticate and decrypt a ``lamcrypto:v1`` envelope. Tampering,
            wrong keys, and wrong AAD return ``CryptoAuthenticationError``. -#
         if not Crypto.isAesKey(key) {
@@ -355,7 +323,7 @@ class Crypto {
             return Result.Err(Error("CryptoEnvelopeError", "unsupported or malformed encrypted envelope", None))
         }
         encoded: str = envelope[13:]
-        payload: str = Base64.decode(encoded)
+        payload: str = Base64.decode(encoded)?
         if len(payload) < 28 {
             return Result.Err(Error("CryptoEnvelopeError", "encrypted envelope payload is malformed", None))
         }
@@ -374,21 +342,12 @@ class Crypto {
         return Result.Ok(plaintext)
     }
 
-    static func decrypt(envelope: str, key: list[int], aad: str = "") -> str {
-        #- Convenience form of ``tryDecrypt``; unwraps malformed or unauthentic
-           envelopes instead of silently returning plaintext. -#
-        result: Result = Crypto.tryDecrypt(envelope, key, aad)
-        plaintext: str = ""
-        go! { plaintext = result.Unwrap().(string) }
-        return plaintext
-    }
-
     static func constantTimeEquals(a: str, b: str) -> bool {
         #- Constant-time secret comparison delegated to ``lamhash.Hash``. -#
         return Hash.constantTimeEquals(a, b)
     }
 
-    static func tryPasswordHash(password: str, iterations: int = 210000, saltBytes: int = 16) -> Result {
+    static func passwordHash(password: str, iterations: int = 210000, saltBytes: int = 16) -> Result[str] {
         #- Hash a password into a self-describing
            ``pbkdf2-sha256$iterations$salt$hash`` string. -#
         if iterations < 1000 or iterations > 10000000 {
@@ -397,7 +356,7 @@ class Crypto {
         if saltBytes < 8 or saltBytes > 1024 {
             return Result.Err(Error("CryptoValueError", "password salt byte count must be between 8 and 1024", None))
         }
-        saltResult: Result = Crypto.tryRandomBytes(saltBytes)
+        saltResult: Result = Crypto.randomBytes(saltBytes)
         if not saltResult.ok() {
             return saltResult
         }
@@ -412,14 +371,7 @@ class Crypto {
         return Result.Ok(encoded)
     }
 
-    static func passwordHash(password: str, iterations: int = 210000, saltBytes: int = 16) -> str {
-        result: Result = Crypto.tryPasswordHash(password, iterations, saltBytes)
-        encoded: str = ""
-        go! { encoded = result.Unwrap().(string) }
-        return encoded
-    }
-
-    static func tryVerifyPassword(password: str, encoded: str) -> Result {
+    static func verifyPassword(password: str, encoded: str) -> Result[bool] {
         #- Verify a self-describing PBKDF2 hash. A wrong password is
            ``Result.Ok(false)``; malformed or unsafe parameters are errors. -#
         parts: list[str] = encoded.split("$")
@@ -435,11 +387,11 @@ class Crypto {
         if not parseOk or iterations < 1000 or iterations > 10000000 {
             return Result.Err(Error("CryptoPasswordHashError", "PBKDF2 iterations are invalid or outside the safe range", None))
         }
-        saltRaw: str = Base64.decode(parts[2])
+        saltRaw: str = Base64.decode(parts[2])?
         if len(saltRaw) < 8 or len(saltRaw) > 1024 {
             return Result.Err(Error("CryptoPasswordHashError", "PBKDF2 salt is malformed or outside the safe range", None))
         }
-        expectedRaw: str = Bytes.hexDecode(parts[3])
+        expectedRaw: str = Bytes.hexDecode(parts[3])?
         if len(parts[3]) != 64 or len(expectedRaw) != 32 {
             return Result.Err(Error("CryptoPasswordHashError", "PBKDF2 digest must be 32 bytes of hexadecimal", None))
         }
@@ -450,19 +402,7 @@ class Crypto {
         return Result.Ok(Crypto.constantTimeEquals(Bytes.hexEncode(actualRaw), parts[3]))
     }
 
-    static func verifyPassword(password: str, encoded: str) -> bool {
-        #- Verify a password, returning false for both mismatch and malformed
-           stored hashes. Use ``tryVerifyPassword`` to distinguish them. -#
-        result: Result = Crypto.tryVerifyPassword(password, encoded)
-        if not result.ok() {
-            return false
-        }
-        verified: bool = false
-        go! { verified = result.Value.(bool) }
-        return verified
-    }
-
-    static func tryGenerateEd25519KeyPair() -> Result {
+    static func generateEd25519KeyPair() -> Result[CryptoKeyPair] {
         publicPEM: str = ""
         privatePEM: str = ""
         generateError: str = ""
@@ -491,14 +431,7 @@ class Crypto {
         return Result.Ok(CryptoKeyPair(privatePEM, publicPEM, "Ed25519", 256))
     }
 
-    static func generateEd25519KeyPair() -> CryptoKeyPair {
-        result: Result = Crypto.tryGenerateEd25519KeyPair()
-        pair: CryptoKeyPair = None
-        go! { pair = result.Unwrap().(*CryptoKeyPair) }
-        return pair
-    }
-
-    static func tryGenerateRSAKeyPair(bits: int = 2048) -> Result {
+    static func generateRSAKeyPair(bits: int = 2048) -> Result[CryptoKeyPair] {
         #- Generate an RSA key pair. Sizes below 2048 are rejected; sizes above
            8192 or not divisible by eight are treated as input errors. -#
         if bits < 2048 or bits > 8192 or bits % 8 != 0 {
@@ -534,14 +467,7 @@ class Crypto {
         return Result.Ok(CryptoKeyPair(privatePEM, publicPEM, "RSA", bits))
     }
 
-    static func generateRSAKeyPair(bits: int = 2048) -> CryptoKeyPair {
-        result: Result = Crypto.tryGenerateRSAKeyPair(bits)
-        pair: CryptoKeyPair = None
-        go! { pair = result.Unwrap().(*CryptoKeyPair) }
-        return pair
-    }
-
-    static func trySign(data: str, privateKeyPEM: str) -> Result {
+    static func sign(data: str, privateKeyPEM: str) -> Result[str] {
         #- Sign data with an Ed25519 or RSA private PEM key. RSA signatures use
            SHA-256 with PSS; returned signatures are standard base64 strings. -#
         signatureRaw: str = ""
@@ -556,17 +482,10 @@ class Crypto {
         return Result.Ok(Base64.encode(signatureRaw))
     }
 
-    static func sign(data: str, privateKeyPEM: str) -> str {
-        result: Result = Crypto.trySign(data, privateKeyPEM)
-        signature: str = ""
-        go! { signature = result.Unwrap().(string) }
-        return signature
-    }
-
-    static func tryVerify(data: str, signature: str, publicKeyPEM: str) -> Result {
+    static func verify(data: str, signature: str, publicKeyPEM: str) -> Result[bool] {
         #- Verify a base64 signature with a public-key PEM or X.509 certificate.
            A well-formed but non-matching signature returns ``Ok(false)``. -#
-        signatureRaw: str = Base64.decode(signature)
+        signatureRaw: str = Base64.decode(signature)?
         if signature == "" or signatureRaw == "" {
             return Result.Err(Error("CryptoSignatureError", "signature is not valid non-empty base64", None))
         }
@@ -582,19 +501,7 @@ class Crypto {
         return Result.Ok(verified)
     }
 
-    static func verify(data: str, signature: str, publicKeyPEM: str) -> bool {
-        #- Verify a signature, returning false for mismatch or malformed input.
-           Use ``tryVerify`` when parse errors must be distinguished. -#
-        result: Result = Crypto.tryVerify(data, signature, publicKeyPEM)
-        if not result.ok() {
-            return false
-        }
-        verified: bool = false
-        go! { verified = result.Value.(bool) }
-        return verified
-    }
-
-    static func tryParseCertificate(certificatePEM: str) -> Result {
+    static func parseCertificate(certificatePEM: str) -> Result[CryptoCertificate] {
         #- Parse the first X.509 ``CERTIFICATE`` PEM block into portable,
            inspection-only metadata. -#
         go! {
@@ -630,13 +537,6 @@ class Crypto {
             )
             return LAMMERGEIER.Result.Ok(info)
         }
-    }
-
-    static func parseCertificate(certificatePEM: str) -> CryptoCertificate {
-        result: Result = Crypto.tryParseCertificate(certificatePEM)
-        info: CryptoCertificate = None
-        go! { info = result.Unwrap().(*CryptoCertificate) }
-        return info
     }
 }
 

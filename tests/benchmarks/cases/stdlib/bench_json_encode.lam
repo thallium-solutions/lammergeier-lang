@@ -3,6 +3,11 @@
 # plus json.Marshal on the Go side.
 
 from lamjson import Json
+from lamerrors import Result
+
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
 
 func main() {
     payload: dict[str, any] = {}
@@ -19,7 +24,7 @@ func main() {
 
     last: str = ""
     for __i in range(50000) {
-        last = Json.encode(payload)
+        last = resultString(Json.encode(payload))
     }
     if len(last) == 0 {
         print("unreachable")

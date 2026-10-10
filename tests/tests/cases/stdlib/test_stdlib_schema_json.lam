@@ -6,13 +6,17 @@ from lamerrors import Result
 from lamjson import Json
 from lamschema import Schema
 
+func resultJson(result: Result) -> json {
+    go! { return result.Value.(LamJSON) }
+}
+
 func main() {
     schema: json = {"type": "string", "minLength": 2}
     valid: json = "hello"
     invalid: json = ""
 
     accepted: Result[json] = Schema.validate(schema, valid)
-    acceptedJson: json = Json.fromValue(accepted.unwrap())
+    acceptedJson: json = resultJson(Json.fromValue(accepted.value))
     acceptedValue: str = acceptedJson
     rejected: Result[json] = Schema.validate(schema, invalid)
 

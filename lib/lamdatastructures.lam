@@ -1,0 +1,524 @@
+# Lammergeier standard library: canonical data-structure collection
+# Import with:
+#   from lamdatastructures import Queue, Deque, Stack, Set, Heap, PriorityHeap
+#
+# Compatibility modules (lamqueue, lamdeque, lamstack, lamset, and lamheap)
+# re-export these classes. Implementations live here to keep every import path
+# on the same behavior without duplication or dependency cycles.
+
+from lamerrors import Result, Error
+
+class Queue {
+    func init(self) {
+        self.items: list[any] = []
+    }
+
+    func enqueue(self, val: any) {
+        self.items.append(val)
+    }
+
+    func dequeue(self) -> Result[any] {
+        #- Remove and return the front, or an error when empty. -#
+        if len(self.items) == 0 {
+            return Result.Err(Error("EmptyQueueError", "dequeue from empty queue"))
+        }
+        val: any = self.items[0]
+        self.items = self.items[1:]
+        return Result.Ok(val)
+    }
+
+    func peek(self) -> Result[any] {
+        #- Return the front without removing it, or an error when empty. -#
+        if len(self.items) == 0 {
+            return Result.Err(Error("EmptyQueueError", "peek from empty queue"))
+        }
+        return Result.Ok(self.items[0])
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func isEmpty(self) -> bool {
+        return len(self.items) == 0
+    }
+
+    func clear(self) {
+        self.items = []
+    }
+
+    func toList(self) -> list[any] {
+        #- Return a copy of the items from front to back. -#
+        result: list[any] = []
+        for item in self.items {
+            result.append(item)
+        }
+        return result
+    }
+}
+
+class Deque {
+    #- Double-ended queue backed by a slice. -#
+
+    func init(self) {
+        self.items: list[any] = []
+    }
+
+    func pushBack(self, v: any) {
+        self.items.append(v)
+    }
+
+    func pushFront(self, v: any) {
+        prefixed: list[any] = [v]
+        for item in self.items {
+            prefixed.append(item)
+        }
+        self.items = prefixed
+    }
+
+    func popBack(self) -> Result[any] {
+        #- Remove and return the last element, or an error when empty. -#
+        n: int = len(self.items)
+        if n == 0 {
+            return Result.Err(Error("EmptyDequeError", "Deque.popBack: empty deque"))
+        }
+        last: any = self.items[n-1]
+        self.items = self.items[:n-1]
+        return Result.Ok(last)
+    }
+
+    func popFront(self) -> Result[any] {
+        #- Remove and return the first element, or an error when empty. -#
+        if len(self.items) == 0 {
+            return Result.Err(Error("EmptyDequeError", "Deque.popFront: empty deque"))
+        }
+        first: any = self.items[0]
+        self.items = self.items[1:]
+        return Result.Ok(first)
+    }
+
+    func peekBack(self) -> Result[any] {
+        if len(self.items) == 0 {
+            return Result.Err(Error("EmptyDequeError", "Deque.peekBack: empty deque"))
+        }
+        return Result.Ok(self.items[len(self.items)-1])
+    }
+
+    func peekFront(self) -> Result[any] {
+        if len(self.items) == 0 {
+            return Result.Err(Error("EmptyDequeError", "Deque.peekFront: empty deque"))
+        }
+        return Result.Ok(self.items[0])
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func isEmpty(self) -> bool {
+        return len(self.items) == 0
+    }
+
+    func clear(self) {
+        self.items = []
+    }
+
+    func toList(self) -> list[any] {
+        #- Return a copy from front to back. -#
+        result: list[any] = []
+        for item in self.items {
+            result.append(item)
+        }
+        return result
+    }
+}
+
+class Stack {
+    func init(self) {
+        self.items: list[any] = []
+    }
+
+    func push(self, val: any) {
+        self.items.append(val)
+    }
+
+    func pop(self) -> Result[any] {
+        #- Remove and return the top, or an error when empty. -#
+        if len(self.items) == 0 {
+            return Result.Err(Error("EmptyStackError", "pop from empty stack"))
+        }
+        last: any = self.items[len(self.items) - 1]
+        self.items = self.items[:len(self.items) - 1]
+        return Result.Ok(last)
+    }
+
+    func peek(self) -> Result[any] {
+        #- Return the top without removing it, or an error when empty. -#
+        if len(self.items) == 0 {
+            return Result.Err(Error("EmptyStackError", "peek from empty stack"))
+        }
+        return Result.Ok(self.items[len(self.items) - 1])
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func isEmpty(self) -> bool {
+        return len(self.items) == 0
+    }
+
+    func clear(self) {
+        self.items = []
+    }
+
+    func toList(self) -> list[any] {
+        #- Return a copy of the items from bottom to top. -#
+        result: list[any] = []
+        for item in self.items {
+            result.append(item)
+        }
+        return result
+    }
+}
+
+class Set {
+    #- Insertion-ordered set for heterogeneous hashable values. -#
+
+    func init(self) {
+        self.items: list[any] = []
+        self.index: dict[any, bool] = {}
+    }
+
+    func add(self, v: any) {
+        if not self.index[v] {
+            self.items.append(v)
+            self.index[v] = true
+        }
+    }
+
+    func addAll(self, values: list[any]) {
+        #- Bulk-add every element of values. Duplicates are ignored. -#
+        for v in values {
+            self.add(v)
+        }
+    }
+
+    func remove(self, v: any) {
+        #- Remove v from the set. No-op if the element is absent. -#
+        if not self.index[v] {
+            return
+        }
+        del self.index[v]
+        kept: list[any] = []
+        for item in self.items {
+            if item != v {
+                kept.append(item)
+            }
+        }
+        self.items = kept
+    }
+
+    func contains(self, v: any) -> bool {
+        return self.index[v]
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func isEmpty(self) -> bool {
+        return len(self.items) == 0
+    }
+
+    func clear(self) {
+        self.items = []
+        self.index = {}
+    }
+
+    func toList(self) -> list[any] {
+        #- Return a copy of the elements in insertion order. -#
+        result: list[any] = []
+        for item in self.items {
+            result.append(item)
+        }
+        return result
+    }
+
+    func union(self, other: Set) -> Set {
+        #- Return a new set containing every element in either set. -#
+        out: Set = Set()
+        for item in self.items {
+            out.add(item)
+        }
+        for item in other.items {
+            out.add(item)
+        }
+        return out
+    }
+
+    func intersect(self, other: Set) -> Set {
+        #- Return a new set containing only elements in both sets. -#
+        out: Set = Set()
+        for item in self.items {
+            if other.contains(item) {
+                out.add(item)
+            }
+        }
+        return out
+    }
+
+    func difference(self, other: Set) -> Set {
+        #- Return a new set with elements of self that are not in other. -#
+        out: Set = Set()
+        for item in self.items {
+            if not other.contains(item) {
+                out.add(item)
+            }
+        }
+        return out
+    }
+
+    func isSubsetOf(self, other: Set) -> bool {
+        #- True if every element of self is also in other. -#
+        for item in self.items {
+            if not other.contains(item) {
+                return false
+            }
+        }
+        return true
+    }
+
+    func equals(self, other: Set) -> bool {
+        if self.size() != other.size() {
+            return false
+        }
+        return self.isSubsetOf(other)
+    }
+}
+
+go! {
+    import "container/heap"
+}
+
+go! {
+    func lamHeapLess(left, right any) bool {
+        switch x := left.(type) {
+        case int:
+            y, ok := right.(int)
+            if !ok { panic("Heap values must have one homogeneous numeric type") }
+            return x < y
+        case float64:
+            y, ok := right.(float64)
+            if !ok { panic("Heap values must have one homogeneous numeric type") }
+            return x < y
+        default:
+            panic("Heap accepts only int or float values")
+        }
+    }
+
+    // Backing store for Heap (numeric).
+    type lamNumHeap struct {
+        data []any
+        max  bool
+    }
+    func (h lamNumHeap) Len() int { return len(h.data) }
+    func (h lamNumHeap) Less(i, j int) bool {
+        if h.max { return lamHeapLess(h.data[j], h.data[i]) }
+        return lamHeapLess(h.data[i], h.data[j])
+    }
+    func (h lamNumHeap) Swap(i, j int) { h.data[i], h.data[j] = h.data[j], h.data[i] }
+    func (h *lamNumHeap) Push(v any) {
+        if len(h.data) == 0 {
+            _ = lamHeapLess(v, v)
+        } else {
+            _ = lamHeapLess(v, h.data[0])
+        }
+        h.data = append(h.data, v)
+    }
+    func (h *lamNumHeap) Pop() any {
+        n := len(h.data)
+        v := h.data[n-1]
+        h.data = h.data[:n-1]
+        return v
+    }
+
+    // Backing store for PriorityHeap (priority, value).
+    type lamPrioEntry struct {
+        priority any
+        value    any
+    }
+    type lamPrioHeap struct {
+        data []lamPrioEntry
+        max  bool
+    }
+    func (h lamPrioHeap) Len() int { return len(h.data) }
+    func (h lamPrioHeap) Less(i, j int) bool {
+        if h.max { return lamHeapLess(h.data[j].priority, h.data[i].priority) }
+        return lamHeapLess(h.data[i].priority, h.data[j].priority)
+    }
+    func (h lamPrioHeap) Swap(i, j int) { h.data[i], h.data[j] = h.data[j], h.data[i] }
+    func (h *lamPrioHeap) Push(v any) {
+        entry := v.(lamPrioEntry)
+        if len(h.data) == 0 {
+            _ = lamHeapLess(entry.priority, entry.priority)
+        } else {
+            _ = lamHeapLess(entry.priority, h.data[0].priority)
+        }
+        h.data = append(h.data, entry)
+    }
+    func (h *lamPrioHeap) Pop() any {
+        n := len(h.data)
+        v := h.data[n-1]
+        h.data = h.data[:n-1]
+        return v
+    }
+}
+
+class Heap {
+    #- Binary heap of homogeneous int or float values. Defaults to a min-heap. -#
+
+    func init(self, maxHeap: bool = false) {
+        self.inner: any = None
+        go! {
+            s.Inner = &lamNumHeap{data: []any{}, max: maxHeap}
+            heap.Init(s.Inner.(*lamNumHeap))
+        }
+    }
+
+    func push(self, v: int) {
+        go! { heap.Push(s.Inner.(*lamNumHeap), v) }
+    }
+
+    func push(self, v: float) {
+        go! { heap.Push(s.Inner.(*lamNumHeap), v) }
+    }
+
+    func pop(self) -> Result[any] {
+        #- Remove and return the top value, or an error when empty. -#
+        go! {
+            h := s.Inner.(*lamNumHeap)
+            if len(h.data) == 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "EmptyHeapError", "Heap.pop: empty heap", nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(heap.Pop(h))
+        }
+    }
+
+    func peek(self) -> Result[any] {
+        #- Return the top value without removing it, or an error when empty. -#
+        go! {
+            h := s.Inner.(*lamNumHeap)
+            if len(h.data) == 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "EmptyHeapError", "Heap.peek: empty heap", nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(h.data[0])
+        }
+    }
+
+    func size(self) -> int {
+        go! {
+            return s.Inner.(*lamNumHeap).Len()
+        }
+    }
+
+    func isEmpty(self) -> bool {
+        go! {
+            return s.Inner.(*lamNumHeap).Len() == 0
+        }
+    }
+
+    func clear(self) {
+        go! {
+            h := s.Inner.(*lamNumHeap)
+            h.data = h.data[:0]
+        }
+    }
+
+    func toList(self) -> list[any] {
+        #- Return concrete int/float values in heap order (not sorted). -#
+        go! {
+            src := s.Inner.(*lamNumHeap).data
+            out := make([]any, len(src))
+            copy(out, src)
+            return out
+        }
+    }
+}
+
+class PriorityHeap {
+    #- Heap with homogeneous numeric priorities and heterogeneous any values. -#
+
+    func init(self, maxHeap: bool = false) {
+        self.inner: any = None
+        go! {
+            s.Inner = &lamPrioHeap{data: []lamPrioEntry{}, max: maxHeap}
+            heap.Init(s.Inner.(*lamPrioHeap))
+        }
+    }
+
+    func push(self, priority: int, value: any) {
+        go! {
+            heap.Push(s.Inner.(*lamPrioHeap), lamPrioEntry{priority: priority, value: value})
+        }
+    }
+
+    func push(self, priority: float, value: any) {
+        go! {
+            heap.Push(s.Inner.(*lamPrioHeap), lamPrioEntry{priority: priority, value: value})
+        }
+    }
+
+    func pop(self) -> Result[any] {
+        #- Remove and return the top item's value, or an error when empty. -#
+        go! {
+            h := s.Inner.(*lamPrioHeap)
+            if len(h.data) == 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "EmptyHeapError", "PriorityHeap.pop: empty heap", nil,
+                ))
+            }
+            e := heap.Pop(h).(lamPrioEntry)
+            return LAMMERGEIER.Result.Ok(e.value)
+        }
+    }
+
+    func peek(self) -> Result[any] {
+        go! {
+            h := s.Inner.(*lamPrioHeap)
+            if len(h.data) == 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "EmptyHeapError", "PriorityHeap.peek: empty heap", nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(h.data[0].value)
+        }
+    }
+
+    func size(self) -> int {
+        go! {
+            return s.Inner.(*lamPrioHeap).Len()
+        }
+    }
+
+    func isEmpty(self) -> bool {
+        go! {
+            return s.Inner.(*lamPrioHeap).Len() == 0
+        }
+    }
+
+    func clear(self) {
+        go! {
+            h := s.Inner.(*lamPrioHeap)
+            h.data = h.data[:0]
+        }
+    }
+}
+
+func main() {
+    pass
+}

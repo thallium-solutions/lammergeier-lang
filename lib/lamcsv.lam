@@ -1,38 +1,206 @@
 # Lammergeier standard library: CSV reading/writing
-# Import with: from lamcsv import Csv
+# Import with: from lamcsv import Csv, CsvReader
+#
+# Parsing and file operations return Result values. Csv.rows and Csv.batches
+# are lazy generators: each yielded row or batch is itself a Result, allowing
+# an open/read/parse failure to be reported without loading the whole file.
+
+from lamerrors import Result, Error
 
 go! {
     import (
         "encoding/csv"
+        "fmt"
+        "io"
+        "os"
         "strings"
     )
 }
 
+func _csvRowValue(result: Result) -> list[str] {
+    #- Recover the concrete row payload from Result's erased value slot. -#
+    go! { return result.Value.([]string) }
+}
+
+class CsvReader {
+    #- Stateful streaming CSV file reader. Prefer Csv.rows/Csv.batches for
+       normal iteration; use this class when explicit read/close control is
+       required. readRow returns Ok([]) only when eof has become true. -#
+
+    func init(self, reader: any, file: any) {
+        self.reader: any = reader
+        self.file: any = file
+        self.eof: bool = false
+        self.closed: bool = false
+    }
+
+    static func open(path: str) -> Result[CsvReader] {
+        go! {
+            f, err := os.Open(path)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CsvFileError", fmt.Sprintf("open %q: %v", path, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(NewCsvReader(csv.NewReader(f), f))
+        }
+    }
+
+    func readRow(self) -> Result[list[str]] {
+        go! {
+            if self.closed {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CsvFileError", "readRow: reader is closed", nil,
+                ))
+            }
+            r, ok := self.reader.(*csv.Reader)
+            if !ok || r == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CsvFileError", "readRow: reader is invalid", nil,
+                ))
+            }
+            row, err := r.Read()
+            if err == io.EOF {
+                self.eof = true
+                return LAMMERGEIER.Result.Ok([]string{})
+            }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CsvParseError", fmt.Sprintf("read row failed: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(row)
+        }
+    }
+
+    func close(self) -> Result[bool] {
+        go! {
+            if self.closed {
+                return LAMMERGEIER.Result.Ok(true)
+            }
+            f, ok := self.file.(*os.File)
+            if !ok || f == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CsvFileError", "close: file is invalid", nil,
+                ))
+            }
+            if err := f.Close(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CsvFileError", fmt.Sprintf("close failed: %v", err), nil,
+                ))
+            }
+            self.closed = true
+            self.file = nil
+            return LAMMERGEIER.Result.Ok(true)
+        }
+    }
+}
+
 class Csv {
-    static func parseAll(content: str) -> list[list[str]] {
+    static func parseAll(content: str) -> Result[list[list[str]]] {
+        #- Parse CSV already held in memory. -#
         go! {
             r := csv.NewReader(strings.NewReader(content))
             records, err := r.ReadAll()
             if err != nil {
-                return [][]string{}
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "CsvParseError", fmt.Sprintf("parse failed: %v", err), nil,
+                ))
             }
-            // Convert to []interface{} of []interface{}
-            result := make([]interface{}, len(records))
-            for i, row := range records {
-                irow := make([]interface{}, len(row))
-                for j, v := range row {
-                    irow[j] = v
-                }
-                result[i] = irow
+            return LAMMERGEIER.Result.Ok(records)
+        }
+    }
+
+    static func parseFile(path: str) -> Result[list[list[str]]] {
+        #- Parse a complete file through the streaming row generator. Use
+           rows or batches when the complete result should not be retained. -#
+        records: list[list[str]] = []
+        for rowResult in Csv.rows(path) {
+            if not rowResult.ok() {
+                return Result.Err(rowResult.error)
             }
-            _ = result
-            return records
+            row: list[str] = _csvRowValue(rowResult)
+            records.append(row)
+        }
+        return Result.Ok(records)
+    }
+
+    static func rows(path: str) -> Result[list[str]] {
+        #- Lazily yield Result[row] values from path. A file or parse error is
+           yielded once, after which iteration ends. Empty files yield none. -#
+        opened: Result[CsvReader] = CsvReader.open(path)
+        if not opened.ok() {
+            yield Result.Err(opened.error)
+            return
+        }
+
+        reader: CsvReader = opened.unwrap()
+        while not reader.eof {
+            rowResult: Result[list[str]] = reader.readRow()
+            if not rowResult.ok() {
+                reader.close()
+                yield rowResult
+                return
+            }
+            if not reader.eof {
+                yield rowResult
+            }
+        }
+
+        closed: Result[bool] = reader.close()
+        if not closed.ok() {
+            yield Result.Err(closed.error)
+        }
+    }
+
+    static func batches(path: str, batchSize: int = 100) -> Result[list[list[str]]] {
+        #- Lazily yield Result[batch] values. batchSize must be positive; the
+           final successful batch may contain fewer rows. -#
+        if batchSize <= 0 {
+            yield Result.Err(Error("CsvBatchSizeError", "batchSize must be greater than zero", None))
+            return
+        }
+
+        batch: list[list[str]] = []
+        for rowResult in Csv.rows(path) {
+            if not rowResult.ok() {
+                yield Result.Err(rowResult.error)
+                return
+            }
+            row: list[str] = _csvRowValue(rowResult)
+            batch.append(row)
+            if len(batch) == batchSize {
+                yield Result.Ok(batch)
+                batch = []
+            }
+        }
+        if len(batch) > 0 {
+            yield Result.Ok(batch)
+        }
+    }
+
+    static func streamRows(path: str) -> Result[list[str]] {
+        #- Descriptive alias for rows. -#
+        for rowResult in Csv.rows(path) {
+            yield rowResult
+        }
+    }
+
+    static func streamBatches(path: str, batchSize: int = 100) -> Result[list[list[str]]] {
+        #- Descriptive alias for batches. -#
+        for batchResult in Csv.batches(path, batchSize) {
+            yield batchResult
         }
     }
 
     static func formatRow(fields: list[str]) -> str {
+        #- Format one RFC 4180-style record, excluding its trailing newline. -#
         go! {
-            return strings.Join(fields, ",")
+            var buf strings.Builder
+            w := csv.NewWriter(&buf)
+            _ = w.Write(fields)
+            w.Flush()
+            return strings.TrimSuffix(buf.String(), "\n")
         }
     }
 
@@ -41,7 +209,7 @@ class Csv {
             var buf strings.Builder
             w := csv.NewWriter(&buf)
             for _, row := range rows {
-                w.Write(row)
+                _ = w.Write(row)
             }
             w.Flush()
             return buf.String()

@@ -1,9 +1,15 @@
 # expect: imported-int:4
 # expect: imported-str:Ada
+# expect: imported return int: 5
+# expect: imported return str: selected:4
 
 from method_overload_provider import ImportedFormatter
 
 func main() {
     print(ImportedFormatter.render(4))
     print(ImportedFormatter.render("Ada"))
+    number: int = ImportedFormatter.select(4)
+    text: str = ImportedFormatter.select(4)
+    print(f"imported return int: {number}")
+    print(f"imported return str: {text}")
 }

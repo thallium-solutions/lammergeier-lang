@@ -1,0 +1,85 @@
+# expect: static int: 8
+# expect: static str: text-7
+# expect: instance float: 4.5
+# expect: instance bool: true
+# expect: parameter: text-5
+# expect: return: text-6
+# expect: fallback: 3
+# expect: list parameter: 3
+# expect: list assignment: b
+# expect: function int: 11
+# expect: function str: text-9
+
+class Source {
+    static func pick(seed: int) -> int {
+        return seed + 1
+    }
+
+    static func pick(seed: int) -> str {
+        return f"text-{seed}"
+    }
+
+    static func values(seed: int) -> list[int] {
+        return [seed, seed + 1, seed + 2]
+    }
+
+    static func values(seed: int) -> list[str] {
+        _ = seed
+        return ["a", "b"]
+    }
+
+    func value(self, seed: int) -> float {
+        return float(seed) + 0.5
+    }
+
+    func value(self, seed: int) -> bool {
+        return seed > 0
+    }
+}
+
+func convert(seed: int) -> int {
+    return seed + 2
+}
+
+func convert(seed: int) -> str {
+    return f"text-{seed}"
+}
+
+func showText(value: str) -> str {
+    return f"parameter: {value}"
+}
+
+func countInts(values: list[int]) -> int {
+    return len(values)
+}
+
+func selectedByReturn() -> str {
+    return Source.pick(6)
+}
+
+func main() {
+    source: Source = Source()
+
+    number: int = Source.pick(7)
+    text: str = Source.pick(7)
+    print(f"static int: {number}")
+    print(f"static str: {text}")
+
+    decimal: float = source.value(4)
+    flag: bool = source.value(1)
+    print(f"instance float: {decimal}")
+    print(f"instance bool: {flag}")
+
+    print(showText(Source.pick(5)))
+    print(f"return: {selectedByReturn()}")
+    print(f"fallback: {Source.pick(2)}")
+    print(f"list parameter: {countInts(Source.values(3))}")
+
+    labels: list[str] = Source.values(0)
+    print(f"list assignment: {labels[1]}")
+
+    convertedNumber: int = convert(9)
+    convertedText: str = convert(9)
+    print(f"function int: {convertedNumber}")
+    print(f"function str: {convertedText}")
+}

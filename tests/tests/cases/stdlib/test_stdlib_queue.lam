@@ -8,8 +8,9 @@
 # expect: empty: false
 # expect: tolist_size: 1
 # expect: cleared: true
+# expect: mixed: 3
 
-from lamqueue import Queue
+from lamdatastructures import Queue
 
 func main() {
     q: Queue = Queue()
@@ -19,9 +20,9 @@ func main() {
     q.enqueue("b")
     q.enqueue("c")
     print(f"size: {q.size()}")
-    print(f"peek: {q.peek()}")
-    print(f"dequeue: {q.dequeue()}")
-    print(f"dequeue: {q.dequeue()}")
+    print(f"peek: {q.peek().unwrap()}")
+    print(f"dequeue: {q.dequeue().unwrap()}")
+    print(f"dequeue: {q.dequeue().unwrap()}")
     print(f"size: {q.size()}")
     print(f"empty: {q.isEmpty()}")
 
@@ -30,4 +31,10 @@ func main() {
 
     q.clear()
     print(f"cleared: {q.isEmpty()}")
+
+    q.enqueue("word")
+    q.enqueue(7)
+    q.enqueue(true)
+    mixed: list[any] = q.toList()
+    print(f"mixed: {len(mixed)}")
 }

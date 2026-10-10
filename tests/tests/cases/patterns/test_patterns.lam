@@ -8,7 +8,7 @@
 # expect: pattern_ok
 
 class StringBuilder {
-    func __init__(self) {
+    func init(self) {
         self.parts: list[str] = []
         self.count: int = 0
     }
@@ -29,7 +29,7 @@ class StringBuilder {
 }
 
 class StateMachine {
-    func __init__(self) {
+    func init(self) {
         self.state: str = "idle"
     }
 

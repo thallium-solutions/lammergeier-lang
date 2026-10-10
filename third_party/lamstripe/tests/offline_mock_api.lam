@@ -6,6 +6,11 @@
 
 from lamstripe import StripeClient, StripeConfig
 from lamhttp import Http, HttpServer
+from lamerrors import Result
+
+func resultServer(result: Result) -> HttpServer {
+    go! { return result.Value.(*HttpServer) }
+}
 
 class Capture {
     static method: str = ""
@@ -21,7 +26,7 @@ func handler(method: str, path: str, body: str) -> str {
 }
 
 func main() {
-    srv: HttpServer = Http.serve(39281, handler)
+    srv: HttpServer = resultServer(Http.serve(39281, handler))
     cfg: StripeConfig = StripeConfig("sk_test_local", "http://127.0.0.1:39281", "", 5000)
     client: StripeClient = StripeClient(cfg)
 
@@ -32,5 +37,5 @@ func main() {
     print(Capture.body.contains("email=ada%40example.com"))
     print(Capture.body.contains("name=Ada+Lovelace"))
 
-    srv.close()
+    srv.close().unwrap()
 }

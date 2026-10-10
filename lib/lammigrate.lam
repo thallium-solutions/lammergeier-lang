@@ -37,6 +37,7 @@
 # often the most honest way to describe irreversible changes.
 
 from lamdb import Db
+from lamerrors import Result, Error
 
 go! {
     import (
@@ -204,7 +205,7 @@ class Migrator {
        a mid-file failure rolls everything in *that* file back
        (other already-applied files stay committed). -#
 
-    func __init__(self, db: Db, dir_: str = "migrations") {
+    func init(self, db: Db, dir_: str = "migrations") {
         self.db: Db = db
         self.dir_: str = dir_
         self.tableName: str = "lam_migrations"
@@ -217,7 +218,7 @@ class Migrator {
     }
 
     # ── Bookkeeping ────────────────────────────────────────────
-    func ensureSchema(self) {
+    func ensureSchema(self) -> Result[bool] {
         #- Create the ``lam_migrations`` table if it isn't there
            yet. Safe to call on every run — the CREATE is guarded
            by ``IF NOT EXISTS``. -#
@@ -231,32 +232,33 @@ class Migrator {
             )
         }
         empty: list[any] = []
-        self.db.exec(ddl, empty)
+        _ = self.db.exec(ddl, empty)?
+        return Result.Ok(true)
     }
 
     # ── Discovery ──────────────────────────────────────────────
-    func _diskFiles(self) -> list[str] {
-        #- Return the list of ``.sql`` files in the migrations
-           directory, sorted lexicographically (== chronologically
-           when the recommended timestamp-prefix is used). -#
-        names: list[str] = []
+    func _diskFiles(self) -> Result[list[str]] {
+        #- Return sorted migration files, preserving directory I/O errors. -#
         go! {
             listing, err := lamMigListFiles(self.Dir_)
             if err != nil {
-                panic(fmt.Sprintf("migrate: cannot read %s: %v", self.Dir_, err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "MigrationIOError",
+                    fmt.Sprintf("cannot read migration directory %s", self.Dir_),
+                    err.Error(),
+                ))
             }
-            names = listing
+            return LAMMERGEIER.Result.Ok(listing)
         }
-        return names
     }
 
-    func _appliedRows(self) -> list[dict[str, any]] {
+    func _appliedRows(self) -> Result[list[dict[str, any]]] {
         return self.db.table(self.tableName).orderBy("id", "asc").get()
     }
 
-    func _appliedNames(self) -> list[str] {
+    func _appliedNames(self) -> Result[list[str]] {
         names: list[str] = []
-        rows: list[dict[str, any]] = self._appliedRows()
+        rows: list[dict[str, any]] = self._appliedRows()?
         go! {
             for _, r := range rows {
                 if n, ok := r["name"].(string); ok {
@@ -264,11 +266,11 @@ class Migrator {
                 }
             }
         }
-        return names
+        return Result.Ok(names)
     }
 
-    func _nextBatch(self) -> int {
-        agg: any = self.db.table(self.tableName).max("batch")
+    func _nextBatch(self) -> Result[int] {
+        agg: any = self.db.table(self.tableName).max("batch")?
         next: int = 1
         go! {
             switch v := agg.(type) {
@@ -277,15 +279,14 @@ class Migrator {
             case float64: next = int(v) + 1
             }
         }
-        return next
+        return Result.Ok(next)
     }
 
     # ── Status ────────────────────────────────────────────────
-    func list(self) -> dict[str, any] {
-        #- Return ``{ran: [...], pending: [...]}`` — the files
-           already applied and the ones still sitting on disk. -#
-        disk: list[str] = self._diskFiles()
-        applied: list[str] = self._appliedNames()
+    func list(self) -> Result[dict[str, any]] {
+        #- Return ``{ran: [...], pending: [...]}``, or a directory I/O error. -#
+        disk: list[str] = self._diskFiles()?
+        applied: list[str] = self._appliedNames()?
         appliedSet: dict[str, bool] = {}
         for n in applied {
             appliedSet[n] = true
@@ -305,13 +306,12 @@ class Migrator {
         out: dict[str, any] = {}
         out["ran"] = applied
         out["pending"] = pending
-        return out
+        return Result.Ok(out)
     }
 
-    func status(self) -> dict[str, any] {
-        #- Human-friendly overview: counts plus the last batch
-           number (so ``down()`` can target it). -#
-        summary: dict[str, any] = self.list()
+    func status(self) -> Result[dict[str, any]] {
+        #- Human-friendly overview, preserving discovery failures. -#
+        summary: dict[str, any] = self.list()?
         ran: list[str] = []
         pending: list[str] = []
         go! {
@@ -323,7 +323,7 @@ class Migrator {
             }
         }
         lastBatch: int = 0
-        agg: any = self.db.table(self.tableName).max("batch")
+        agg: any = self.db.table(self.tableName).max("batch")?
         go! {
             switch v := agg.(type) {
             case int:     lastBatch = v
@@ -338,25 +338,27 @@ class Migrator {
         out["lastBatch"] = lastBatch
         out["ranNames"] = ran
         out["pendingNames"] = pending
-        return out
+        return Result.Ok(out)
     }
 
     # ── Runtime helpers ───────────────────────────────────────
-    func _readFile(self, name: str) -> str {
-        body: str = ""
+    func _readFile(self, name: str) -> Result[str] {
         go! {
             p := filepath.Join(self.Dir_, name)
             data, err := os.ReadFile(p)
             if err != nil {
-                panic(fmt.Sprintf("migrate: cannot read %s: %v", p, err))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "MigrationIOError",
+                    fmt.Sprintf("cannot read migration file %s", p),
+                    err.Error(),
+                ))
             }
-            body = string(data)
+            return LAMMERGEIER.Result.Ok(string(data))
         }
-        return body
     }
 
-    func _sectionSql(self, name: str, direction: str) -> str {
-        body: str = self._readFile(name)
+    func _sectionSql(self, name: str, direction: str) -> Result[str] {
+        body: str = self._readFile(name)?
         up: str = ""
         down: str = ""
         go! {
@@ -365,9 +367,9 @@ class Migrator {
             down = d
         }
         if direction == "up" {
-            return up
+            return Result.Ok(up)
         }
-        return down
+        return Result.Ok(down)
     }
 
     func _splitStatements(self, sql_: str) -> list[str] {
@@ -380,7 +382,7 @@ class Migrator {
         return stmts
     }
 
-    func _runStatements(self, sql_: str) {
+    func _runStatements(self, sql_: str) -> Result[bool] {
         #- Split ``sql_`` on top-level ``;`` and run each piece
            through the regular ``db.exec`` path. Driver-level
            retry/backoff (configured on the Db) still applies per
@@ -388,19 +390,20 @@ class Migrator {
         empty: list[any] = []
         stmts: list[str] = self._splitStatements(sql_)
         for stmt in stmts {
-            self.db.exec(stmt, empty)
+            _ = self.db.exec(stmt, empty)?
         }
+        return Result.Ok(true)
     }
 
     # ── Up / Down ─────────────────────────────────────────────
-    func up(self, steps: int = 0) -> list[str] {
+    func up(self, steps: int = 0) -> Result[list[str]] {
         #- Apply pending migrations in order. ``steps`` == 0 means
            "apply every pending file"; a positive value caps the
            number of files run this invocation. Every file applied
            in a single call shares the same batch number so a
            later ``down(1)`` rolls them back as a unit. -#
-        self.ensureSchema()
-        inventory: dict[str, any] = self.list()
+        _ = self.ensureSchema()?
+        inventory: dict[str, any] = self.list()?
         pending: list[str] = []
         go! {
             if v, ok := inventory["pending"].([]string); ok {
@@ -416,18 +419,18 @@ class Migrator {
         }
         applied: list[str] = []
         if len(pending) == 0 {
-            return applied
+            return Result.Ok(applied)
         }
-        batch: int = self._nextBatch()
+        batch: int = self._nextBatch()?
         for name in pending {
-            upSql: str = self._sectionSql(name, "up")
+            upSql: str = self._sectionSql(name, "up")?
             if len(upSql) == 0 {
                 # A missing ``up`` section is treated as no-op so
                 # authors can record a purely-manual change (e.g.
                 # a data backfill ran via psql) if they want.
                 pass
             } else {
-                self._runStatements(upSql)
+                _ = self._runStatements(upSql)?
             }
             now: str = ""
             go! { now = time.Now().UTC().Format(time.RFC3339) }
@@ -435,22 +438,22 @@ class Migrator {
             rec["name"] = name
             rec["batch"] = batch
             rec["migrated_at"] = now
-            self.db.table(self.tableName).insert(rec)
+            _ = self.db.table(self.tableName).insert(rec)?
             applied.append(name)
         }
-        return applied
+        return Result.Ok(applied)
     }
 
-    func down(self, steps: int = 1) -> list[str] {
+    func down(self, steps: int = 1) -> Result[list[str]] {
         #- Rewind the most recent migrations. Default is to roll
            back the last batch in full; pass ``steps`` to cap the
            number of files undone. Files are executed in reverse
            application order. -#
-        self.ensureSchema()
-        rows: list[dict[str, any]] = self.db.table(self.tableName).orderBy("id", "desc").get()
+        _ = self.ensureSchema()?
+        rows: list[dict[str, any]] = self.db.table(self.tableName).orderBy("id", "desc").get()?
         if len(rows) == 0 {
             empty: list[str] = []
-            return empty
+            return Result.Ok(empty)
         }
         # When steps==1 we actually want "last batch" not "last row".
         # When steps>1 we want exactly ``steps`` files, regardless of
@@ -498,14 +501,14 @@ class Migrator {
                     migName = n
                 }
             }
-            downSql: str = self._sectionSql(migName, "down")
+            downSql: str = self._sectionSql(migName, "down")?
             if len(downSql) > 0 {
-                self._runStatements(downSql)
+                _ = self._runStatements(downSql)?
             }
-            self.db.table(self.tableName).whereEq("name", migName).delete()
+            _ = self.db.table(self.tableName).whereEq("name", migName).delete()?
             undone.append(migName)
         }
-        return undone
+        return Result.Ok(undone)
     }
 }
 
@@ -533,7 +536,7 @@ class Schema {
          * ``references``/``on`` — foreign-key target like
            ``"users(id)"``. Emitted as ``REFERENCES`` clause. -#
 
-    func __init__(self, driver: str = "sqlite") {
+    func init(self, driver: str = "sqlite") {
         self.driver: str = driver
     }
 

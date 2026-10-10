@@ -1,0 +1,249 @@
+# Test: class async lowering and the Result-based Channel concurrency API.
+# expect: PASS 1 direct instance async await
+# expect: PASS 2 static async await
+# expect: PASS 3 private instance async method
+# expect: PASS 4 private static async method
+# expect: PASS 5 async Result payload stays typed
+# expect: PASS 6 generic receiver async return
+# expect: PASS 7 deferred instance await first handle
+# expect: PASS 8 deferred instance await second handle
+# expect: PASS 9 blocking receive returns sent value
+# expect: PASS 10 blocking receive preserves sent None
+# expect: PASS 11 empty poll is a distinct error
+# expect: PASS 12 poll preserves sent None
+# expect: PASS 13 offer succeeds with buffer space
+# expect: PASS 14 offer reports a full buffer without blocking
+# expect: PASS 15 full buffer retains original value
+# expect: PASS 16 offer on closed channel is an error
+# expect: PASS 17 closed drained poll is a distinct error
+# expect: PASS 18 close drains a buffered None before reporting closed
+# expect: PASS 19 drained channel reports closed after None
+# expect: PASS 20 direct await of asyncReceive
+# expect: PASS 21 direct await of asyncSend
+# expect: PASS 22 deferred asyncReceive handle
+# expect: PASS 23 unbuffered asyncSend rendezvous
+# expect: PASS 24 close unblocks asyncReceive with an error
+# expect: PASS 25 close races safely with blocked asyncSend
+# expect: PASS 26 concurrent producers deliver every value
+# expect: PASS 27 concurrent producer payload sum
+# expect: PASS 28 concurrent producer results stay typed
+# expect: PASS 29 async Result propagation publishes the typed error
+# expect: PASS 30 bounded size reports queued values
+# expect: PASS 31 bounded channel starts open
+# expect: PASS 32 receiveTimeout returns a ready value
+# expect: PASS 33 receiveTimeout preserves a sent None
+# expect: PASS 34 receiveTimeout reports expiry distinctly
+# expect: PASS 35 unbounded offer accepts without a reader
+# expect: PASS 36 unbounded size tracks queued values
+# expect: PASS 37 unbounded receive preserves fifo order
+# expect: PASS 38 unbounded close preserves queued None
+# expect: PASS 39 unbounded close state is observable
+# expect: PASS 40 unbounded close drains before closed error
+# expect: 40 passed, 0 failed, 40 total
+
+from lamconcurrency import Channel
+from lamerrors import Result, Error
+from lamtest import Test
+
+class AsyncCounter {
+    func init(self, base: int) {
+        self.base: int = base
+    }
+
+    async func add(self, value: int) -> int {
+        return self.base + value
+    }
+
+    static async func doubled(value: int) -> int {
+        return value * 2
+    }
+
+    private async func hidden(self, value: int) -> str {
+        return f"instance-{self.base + value}"
+    }
+
+    async func reveal(self, value: int) -> str {
+        return await self.hidden(value)
+    }
+
+    private static async func hiddenStatic(value: int) -> str {
+        return f"static-{value}"
+    }
+
+    static async func revealStatic(value: int) -> str {
+        return await AsyncCounter.hiddenStatic(value)
+    }
+
+    async func wrapped(self, value: int) -> Result[int] {
+        return Result.Ok(self.base + value)
+    }
+
+    async func propagatedFailure(self) -> Result[int] {
+        failed: Result[int] = Result.Err(Error("ExpectedFailure", "async propagation", None))
+        value: int = failed?
+        return Result.Ok(value)
+    }
+}
+
+class AsyncBox[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    async func get(self) -> T {
+        return self.value
+    }
+}
+
+async func produce(ch: Channel, base: int) -> Result[bool] {
+    for offset in range(5) {
+        ch.send(base + offset).unwrap()
+    }
+    return Result.Ok(true)
+}
+
+func errorKind(result: Result[any]) -> str {
+    err: Error = result.error
+    return err.kind
+}
+
+func main() {
+    counter: AsyncCounter = AsyncCounter(40)
+    Test.assertEqual(await counter.add(2), 42, "1 direct instance async await")
+    Test.assertEqual(await AsyncCounter.doubled(21), 42, "2 static async await")
+    Test.assertEqual(await counter.reveal(2), "instance-42", "3 private instance async method")
+    Test.assertEqual(await AsyncCounter.revealStatic(42), "static-42", "4 private static async method")
+
+    wrapped: Result[int] = await counter.wrapped(2)
+    wrappedValue: int = wrapped.unwrap()
+    Test.assertTrue(wrapped.ok() and wrappedValue == 42, "5 async Result payload stays typed")
+
+    box: AsyncBox[str] = AsyncBox[str]("lam")
+    Test.assertEqual(await box.get(), "lam", "6 generic receiver async return")
+
+    first = counter.add(1)
+    second = counter.add(3)
+    Test.assertEqual(await first, 41, "7 deferred instance await first handle")
+    Test.assertEqual(await second, 43, "8 deferred instance await second handle")
+
+    blocking: Channel = Channel(1)
+    blocking.send(42).unwrap()
+    blockingValue: int = blocking.receive().unwrap()
+    Test.assertEqual(blockingValue, 42, "9 blocking receive returns sent value")
+    blocking.send(None).unwrap()
+    blockingNone: Result[any] = blocking.receive()
+    Test.assertTrue(blockingNone.ok() and blockingNone.value == None, "10 blocking receive preserves sent None")
+
+    empty: Result[any] = blocking.poll()
+    Test.assertTrue(not empty.ok() and errorKind(empty) == "ChannelEmpty", "11 empty poll is a distinct error")
+    blocking.send(None).unwrap()
+    polledNone: Result[any] = blocking.poll()
+    Test.assertTrue(polledNone.ok() and polledNone.value == None, "12 poll preserves sent None")
+
+    full: Channel = Channel(1)
+    offered: Result[bool] = full.offer("first")
+    offeredValue: bool = offered.unwrap()
+    Test.assertTrue(offered.ok() and offeredValue, "13 offer succeeds with buffer space")
+    rejected: Result[bool] = full.offer("second")
+    rejectedValue: bool = rejected.unwrap()
+    Test.assertTrue(rejected.ok() and not rejectedValue, "14 offer reports a full buffer without blocking")
+    Test.assertEqual(full.receive().unwrap(), "first", "15 full buffer retains original value")
+    full.close().unwrap()
+    Test.assertFalse(full.offer("late").ok(), "16 offer on closed channel is an error")
+    closedPoll: Result[any] = full.poll()
+    Test.assertTrue(not closedPoll.ok() and errorKind(closedPoll) == "ChannelClosed", "17 closed drained poll is a distinct error")
+
+    drain: Channel = Channel(1)
+    drain.send(None).unwrap()
+    drain.close().unwrap()
+    drainedNone: Result[any] = drain.poll()
+    Test.assertTrue(drainedNone.ok() and drainedNone.value == None, "18 close drains a buffered None before reporting closed")
+    drainedClosed: Result[any] = drain.poll()
+    Test.assertTrue(not drainedClosed.ok() and errorKind(drainedClosed) == "ChannelClosed", "19 drained channel reports closed after None")
+
+    direct: Channel = Channel(0)
+    directSend = direct.asyncSend("direct")
+    directReceive: Result[any] = await direct.asyncReceive()
+    Test.assertTrue(directReceive.ok() and directReceive.value == "direct", "20 direct await of asyncReceive")
+    directSent: Result[bool] = await directSend
+    directSentValue: bool = directSent.unwrap()
+    Test.assertTrue(directSent.ok() and directSentValue, "21 direct await of asyncSend")
+
+    deferred: Channel = Channel(1)
+    receiveLater = deferred.asyncReceive()
+    deferred.send("later").unwrap()
+    deferredResult: Result[any] = await receiveLater
+    Test.assertTrue(deferredResult.ok() and deferredResult.value == "later", "22 deferred asyncReceive handle")
+
+    rendezvous: Channel = Channel(0)
+    rendezvousSend = rendezvous.asyncSend(7)
+    rendezvousValue: int = rendezvous.receive().unwrap()
+    rendezvousSent: Result[bool] = await rendezvousSend
+    Test.assertTrue(rendezvousValue == 7 and rendezvousSent.ok(), "23 unbuffered asyncSend rendezvous")
+
+    closeReceive: Channel = Channel(0)
+    blockedReceive = closeReceive.asyncReceive()
+    closeReceive.close().unwrap()
+    closedReceive: Result[any] = await blockedReceive
+    Test.assertTrue(not closedReceive.ok() and errorKind(closedReceive) == "ChannelClosed", "24 close unblocks asyncReceive with an error")
+
+    closeSend: Channel = Channel(0)
+    blockedSend = closeSend.asyncSend("blocked")
+    closeSend.close().unwrap()
+    closedSend: Result[bool] = await blockedSend
+    Test.assertFalse(closedSend.ok(), "25 close races safely with blocked asyncSend")
+
+    jobs: Channel = Channel(3)
+    producerA = produce(jobs, 0)
+    producerB = produce(jobs, 10)
+    producerC = produce(jobs, 20)
+    count: int = 0
+    total: int = 0
+    while count < 15 {
+        value: int = jobs.receive().unwrap()
+        total += value
+        count += 1
+    }
+    Test.assertEqual(count, 15, "26 concurrent producers deliver every value")
+    Test.assertEqual(total, 180, "27 concurrent producer payload sum")
+    resultA: Result[bool] = await producerA
+    resultB: Result[bool] = await producerB
+    resultC: Result[bool] = await producerC
+    Test.assertTrue(resultA.ok() and resultB.ok() and resultC.ok(), "28 concurrent producer results stay typed")
+
+    propagated: Result[int] = await counter.propagatedFailure()
+    propagatedError: Error = propagated.error
+    Test.assertTrue(not propagated.ok() and propagatedError.kind == "ExpectedFailure", "29 async Result propagation publishes the typed error")
+
+    sized: Channel = Channel(2)
+    sized.send("ready").unwrap()
+    Test.assertEqual(sized.size(), 1, "30 bounded size reports queued values")
+    Test.assertFalse(sized.isClosed(), "31 bounded channel starts open")
+    timedReady: Result[any] = sized.receiveTimeout(100)
+    Test.assertTrue(timedReady.ok() and timedReady.value == "ready", "32 receiveTimeout returns a ready value")
+    sized.send(None).unwrap()
+    timedNone: Result[any] = sized.receiveTimeout(100)
+    Test.assertTrue(timedNone.ok() and timedNone.value == None, "33 receiveTimeout preserves a sent None")
+    timedOut: Result[any] = sized.receiveTimeout(1)
+    Test.assertTrue(not timedOut.ok() and errorKind(timedOut) == "ChannelTimeout", "34 receiveTimeout reports expiry distinctly")
+
+    unbounded: Channel = Channel.unbounded()
+    firstUnbounded: Result[bool] = unbounded.offer("a")
+    secondUnbounded: Result[bool] = unbounded.offer(None)
+    thirdUnbounded: Result[bool] = unbounded.offer("c")
+    firstAccepted: bool = firstUnbounded.unwrap()
+    secondAccepted: bool = secondUnbounded.unwrap()
+    thirdAccepted: bool = thirdUnbounded.unwrap()
+    Test.assertTrue(firstAccepted and secondAccepted and thirdAccepted, "35 unbounded offer accepts without a reader")
+    Test.assertEqual(unbounded.size(), 3, "36 unbounded size tracks queued values")
+    Test.assertEqual(unbounded.receive().unwrap(), "a", "37 unbounded receive preserves fifo order")
+    unbounded.close().unwrap()
+    queuedNone: Result[any] = unbounded.receive()
+    Test.assertTrue(queuedNone.ok() and queuedNone.value == None, "38 unbounded close preserves queued None")
+    Test.assertTrue(unbounded.isClosed(), "39 unbounded close state is observable")
+    finalQueued: Result[any] = unbounded.receive()
+    afterDrain: Result[any] = unbounded.receive()
+    Test.assertTrue(finalQueued.ok() and finalQueued.value == "c" and not afterDrain.ok(), "40 unbounded close drains before closed error")
+
+    Test.summary()
+}

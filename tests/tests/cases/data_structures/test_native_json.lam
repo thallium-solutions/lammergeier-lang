@@ -8,6 +8,19 @@
 # expect: numeric|dash|empty|space
 
 from lamjson import Json
+from lamerrors import Result
+
+func resultJson(result: Result) -> json {
+    go! { return result.Value.(LamJSON) }
+}
+
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
+
+func resultDict(result: Result) -> dict[str, any] {
+    go! { return result.Value.(map[string]interface{}) }
+}
 
 class Image {
     func init(self, width: int, height: int) {
@@ -33,21 +46,21 @@ func main() {
     hello: int = payload[0]["hello"]
     print(hello)
 
-    obj: json = Json.decode('{"name":"Ada","flags":[true,false],"meta":null}')
+    obj: json = resultJson(Json.decode('{"name":"Ada","flags":[true,false],"meta":null}'))
     name: str = obj.name
     print(f"{Json.kind(obj)}:{len(obj)}")
     print(name)
 
     image: json = {"image": json(Image(16, 8))}
-    imageData: dict[str, any] = Json.toDict(image.image)
-    print(Json.encode(Json.fromDict(imageData)))
-    print(Json.encode(Json.fromList([1, true, None])))
+    imageData: dict[str, any] = resultDict(Json.toDict(image.image))
+    imageJson: json = resultJson(Json.fromDict(imageData))
+    print(resultString(Json.encode(imageJson)))
+    valuesJson: json = resultJson(Json.fromList([1, true, None]))
+    print(resultString(Json.encode(valuesJson)))
 
     dynamic: any = {1: "bad"}
-    try {
-        invalid: json = Json.fromValue(dynamic)
-        print(invalid)
-    } catch err {
+    invalid: Result[json] = Json.fromValue(dynamic)
+    if not invalid.ok() {
         print("runtime-reject")
     }
 

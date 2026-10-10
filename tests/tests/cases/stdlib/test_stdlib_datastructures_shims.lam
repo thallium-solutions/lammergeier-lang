@@ -1,0 +1,39 @@
+# Test: legacy data-structure modules remain functional re-export shims
+# expect: datastructure_shims_ok
+
+from lamdatastructures import Queue
+from lamdeque import Deque
+from lamstack import Stack
+from lamset import Set
+from lamheap import Heap, PriorityHeap
+
+func main() {
+    # One canonical import alongside every legacy module verifies there is no
+    # duplicate implementation or import cycle.
+    queue: Queue = Queue()
+    queue.enqueue("canonical queue")
+    assert queue.peek().unwrap() == "canonical queue"
+
+    deque: Deque = Deque()
+    deque.pushBack("legacy deque")
+    assert deque.popFront().unwrap() == "legacy deque"
+
+    stack: Stack = Stack()
+    stack.push("legacy stack")
+    assert stack.pop().unwrap() == "legacy stack"
+
+    set_: Set = Set()
+    set_.add("legacy set")
+    assert set_.contains("legacy set")
+
+    heap: Heap = Heap()
+    heap.push(4)
+    heap.push(3)
+    assert heap.peek().unwrap() == 3
+
+    priority: PriorityHeap = PriorityHeap()
+    priority.push(1, "legacy priority")
+    assert priority.pop().unwrap() == "legacy priority"
+
+    print("datastructure_shims_ok")
+}

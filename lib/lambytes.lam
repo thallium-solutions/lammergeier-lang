@@ -2,6 +2,7 @@
 # Import with: from lambytes import Bytes
 
 from lamstrings import Strings
+from lamerrors import Result, Error
 
 go! {
     import "encoding/hex"
@@ -34,13 +35,17 @@ class Bytes {
         }
     }
 
-    static func hexDecode(data: str) -> str {
+    static func hexDecode(data: str) -> Result[str] {
+        #- Decode hexadecimal text. Invalid input is reported as an error;
+           decoding valid empty text succeeds with an empty string. -#
         go! {
             b, err := hex.DecodeString(data)
             if err != nil {
-                return ""
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "DecodeError", "invalid hexadecimal input", err.Error(),
+                ))
             }
-            return string(b)
+            return LAMMERGEIER.Result.Ok(string(b))
         }
     }
 

@@ -20,7 +20,7 @@
 # expect: PASS 14 sort desc
 # expect: PASS 15 innerJoin
 # expect: PASS 16 rbind
-# expect: PASS 17 mutateInts adds column
+# expect: PASS 17 mutate adds column
 # expect: PASS 18 describe shape
 # expect: PASS 19 groupBy aggregate
 # expect: PASS 20 CSV roundtrip
@@ -30,7 +30,7 @@
 # expect: PASS 24 series mean
 # expect: PASS 25 series min/max
 # expect: PASS 26 series toFloatList
-# expect: PASS 27 Series.fromFloats + stats
+# expect: PASS 27 Series.from + stats
 # expect: PASS 28 mutate infers int series
 # expect: PASS 29 mutate infers float series
 # expect: PASS 30 mutate infers string series
@@ -40,10 +40,24 @@
 # expect: PASS 34 Series.from infers string series
 # expect: PASS 35 Series.from infers bool series
 # expect: PASS 36 dynamic mutate remains compatible
-# expect: 36 passed, 0 failed, 36 total
+# expect: PASS 37 heterogeneous maps preserve any values
+# expect: 37 passed, 0 failed, 37 total
 
 from lamdata import DataFrame, Series, DataFrameGroups
 from lamtest import Test
+from lamerrors import Result
+
+func resultStr(r: Result) -> str {
+    go! { return r.Value.(string) }
+}
+
+func resultInts(r: Result) -> list[int] {
+    go! { return r.Value.([]int) }
+}
+
+func resultBools(r: Result) -> list[bool] {
+    go! { return r.Value.([]bool) }
+}
 
 func main() {
     df: DataFrame = DataFrame.fromRecords([
@@ -144,12 +158,12 @@ func main() {
     together: DataFrame = df.rbind(extra)
     Test.assertEqual(together.nrow(), 5, "16 rbind")
 
-    # 17. mutateInts — add a new Flag column
+    # 17. mutate — add a new Flag column
     flags: list[int] = [1, 2, 3, 4]
-    flagged: DataFrame = df.mutateInts("Flag", flags)
+    flagged: DataFrame = df.mutate("Flag", flags)
     fNames: list[str] = flagged.names()
     flagOk: bool = (flagged.ncol() == 4) and (fNames[3] == "Flag")
-    Test.assertTrue(flagOk, "17 mutateInts adds column")
+    Test.assertTrue(flagOk, "17 mutate adds column")
 
     # 18. describe always produces an 8-row summary (mean / median /
     #    stddev / min / 25% / 50% / 75% / max).
@@ -167,13 +181,13 @@ func main() {
     Test.assertTrue(meansOk, "19 groupBy aggregate")
 
     # 20. CSV roundtrip: writeCSV → readCSV preserves shape + cells.
-    csvOut: str = df.writeCSV()
+    csvOut: str = resultStr(df.writeCSV())
     reloadedCsv: DataFrame = DataFrame.readCSV(csvOut)
     csvOk: bool = (reloadedCsv.nrow() == df.nrow()) and (reloadedCsv.ncol() == df.ncol())
     Test.assertTrue(csvOk, "20 CSV roundtrip")
 
     # 21. JSON roundtrip: writeJSON → readJSON preserves shape.
-    jsonOut: str = df.writeJSON()
+    jsonOut: str = resultStr(df.writeJSON())
     reloadedJson: DataFrame = DataFrame.readJSON(jsonOut)
     jsonOk: bool = (reloadedJson.nrow() == df.nrow()) and (reloadedJson.ncol() == df.ncol())
     Test.assertTrue(jsonOk, "21 JSON roundtrip")
@@ -196,16 +210,17 @@ func main() {
     floats: list[float] = pop.toFloatList()
     Test.assertEqual(len(floats), 4, "26 series toFloatList")
 
-    # 27. Series.fromFloats then mean / sum sanity
+    # 27. Series.from then mean / sum sanity
     vals: list[float] = [1.0, 2.0, 3.0, 4.0, 5.0]
-    ser: Series = Series.fromFloats(vals, "v")
+    ser: Series = Series.from(vals, "v")
     serOk: bool = (ser.length() == 5) and (ser.sum() == 15.0) and (ser.mean() == 3.0)
-    Test.assertTrue(serOk, "27 Series.fromFloats + stats")
+    Test.assertTrue(serOk, "27 Series.from + stats")
 
     # 28-31. Generic-style mutate overloads preserve each supported list type.
     intValues: list[int] = [10, 20, 30, 40]
     intFrame: DataFrame = df.mutate("Count", intValues)
-    intMutateOk: bool = (intFrame.col("Count").typeName() == "int") and (intFrame.col("Count").toIntList()[3] == 40)
+    intList: list[int] = resultInts(intFrame.col("Count").toIntList())
+    intMutateOk: bool = (intFrame.col("Count").typeName() == "int") and (intList[3] == 40)
     Test.assertTrue(intMutateOk, "28 mutate infers int series")
 
     floatValues: list[float] = [1.25, 2.5, 3.75, 5.0]
@@ -220,14 +235,16 @@ func main() {
 
     boolValues: list[bool] = [true, false, true, false]
     boolFrame: DataFrame = df.mutate("Active", boolValues)
-    boolMutateOk: bool = (boolFrame.col("Active").typeName() == "bool") and (not boolFrame.col("Active").toBoolList()[1])
+    boolList: list[bool] = resultBools(boolFrame.col("Active").toBoolList())
+    boolMutateOk: bool = (boolFrame.col("Active").typeName() == "bool") and (not boolList[1])
     Test.assertTrue(boolMutateOk, "31 mutate infers bool series")
 
     # 32-35. Series.from infers its gota type, including from an empty typed list.
     fromInts: Series = Series.from(intValues, "ints")
     emptyInts: list[int] = []
     emptyIntSeries: Series = Series.from(emptyInts, "empty")
-    fromIntsOk: bool = (fromInts.typeName() == "int") and (fromInts.toIntList()[0] == 10) and (emptyIntSeries.typeName() == "int")
+    fromIntsList: list[int] = resultInts(fromInts.toIntList())
+    fromIntsOk: bool = (fromInts.typeName() == "int") and (fromIntsList[0] == 10) and (emptyIntSeries.typeName() == "int")
     Test.assertTrue(fromIntsOk, "32 Series.from infers int series")
 
     fromFloats: Series = Series.from(floatValues, "floats")
@@ -239,14 +256,25 @@ func main() {
     Test.assertTrue(fromStringsOk, "34 Series.from infers string series")
 
     fromBools: Series = Series.from(boolValues, "bools")
-    fromBoolsOk: bool = (fromBools.typeName() == "bool") and fromBools.toBoolList()[0]
+    fromBoolsList: list[bool] = resultBools(fromBools.toBoolList())
+    fromBoolsOk: bool = (fromBools.typeName() == "bool") and fromBoolsList[0]
     Test.assertTrue(fromBoolsOk, "35 Series.from infers bool series")
 
     # 36. Preserve the original list[any] mutate entry point and inference.
     dynamicValues: list[any] = [5, 6, 7, 8]
     dynamicFrame: DataFrame = df.mutate("Dynamic", dynamicValues)
-    dynamicOk: bool = (dynamicFrame.col("Dynamic").typeName() == "int") and (dynamicFrame.col("Dynamic").toIntList()[3] == 8)
+    dynamicList: list[int] = resultInts(dynamicFrame.col("Dynamic").toIntList())
+    dynamicOk: bool = (dynamicFrame.col("Dynamic").typeName() == "int") and (dynamicList[3] == 8)
     Test.assertTrue(dynamicOk, "36 dynamic mutate remains compatible")
+
+    mixedRows: list[any] = [
+        {"Name": "Ada", "Age": 36, "Active": true},
+        {"Name": "Lin", "Age": 29, "Active": false},
+    ]
+    mixedFrame: DataFrame = DataFrame.fromMaps(mixedRows)
+    mixedMaps: list[dict[str, any]] = mixedFrame.maps()
+    mixedMapOk: bool = (mixedFrame.nrow() == 2) and (mixedMaps[0]["Name"] == "Ada") and (mixedMaps[0]["Age"] == 36) and (mixedMaps[0]["Active"] == true)
+    Test.assertTrue(mixedMapOk, "37 heterogeneous maps preserve any values")
 
     Test.summary()
 }

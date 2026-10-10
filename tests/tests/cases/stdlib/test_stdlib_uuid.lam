@@ -7,17 +7,69 @@
 # expect: bogus_valid=false
 # expect: parse_len=16
 # expect: v7_monotonic=true
+# expect: v7_concurrent_unique=true
 # expect: uuid_tests_ok
 
 from lamuuid import Uuid
+from lamerrors import Result
+
+go! {
+    import "sync"
+}
+
+func resultStr(r: Result) -> str {
+    value: str = r.unwrap()
+    return value
+}
+
+func resultBytes(r: Result) -> bytes {
+    value: bytes = r.unwrap()
+    return value
+}
+
+func nextV7String() -> str {
+    return resultStr(Uuid.v7())
+}
+
+func concurrentV7Unique() -> bool {
+    unique: bool = false
+    go! {
+        const workers = 8
+        const perWorker = 500
+        ids := make(chan string, workers*perWorker)
+        var wg sync.WaitGroup
+        for worker := 0; worker < workers; worker++ {
+            wg.Add(1)
+            go func() {
+                defer wg.Done()
+                for j := 0; j < perWorker; j++ {
+                    ids <- NextV7String()
+                }
+            }()
+        }
+        wg.Wait()
+        close(ids)
+        seen := make(map[string]struct{}, workers*perWorker)
+        unique = true
+        for id := range ids {
+            if _, exists := seen[id]; exists {
+                unique = false
+                break
+            }
+            seen[id] = struct{}{}
+        }
+        unique = unique && len(seen) == workers*perWorker
+    }
+    return unique
+}
 
 func main() {
-    a: str = Uuid.v4()
-    b: str = Uuid.v4()
+    a: str = resultStr(Uuid.v4())
+    b: str = resultStr(Uuid.v4())
     print(f"distinct={a != b}")
     print(f"v4_valid={Uuid.isValid(a)}")
 
-    seven: str = Uuid.v7()
+    seven: str = resultStr(Uuid.v7())
     print(f"v7_valid={Uuid.isValid(seven)}")
 
     nilU: str = Uuid.nil_()
@@ -26,13 +78,14 @@ func main() {
     bogus: bool = Uuid.isValid("not-a-uuid")
     print(f"bogus_valid={bogus}")
 
-    raw: bytes = Uuid.parse(a)
+    raw: bytes = resultBytes(Uuid.parse(a))
     print(f"parse_len={len(raw)}")
 
     # Two v7 UUIDs generated in order should sort lexicographically.
-    first: str = Uuid.v7()
-    second: str = Uuid.v7()
+    first: str = resultStr(Uuid.v7())
+    second: str = resultStr(Uuid.v7())
     print(f"v7_monotonic={second >= first}")
+    print(f"v7_concurrent_unique={concurrentV7Unique()}")
 
     print("uuid_tests_ok")
 }

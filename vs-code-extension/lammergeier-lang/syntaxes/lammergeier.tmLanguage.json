@@ -393,7 +393,7 @@
       "patterns": [
         {
           "name": "support.class.stdlib.module.lammergeier",
-          "match": "\\b(lamactor|lamarray|lambase64|lambytes|lamcache|lamcli|lamcompress|lamconcurrency|lamcontext|lamconv|lamcron|lamcrypto|lamcsv|lamdata|lamdatetime|lamdb|lamdeque|lamenv|lamerrors|lamexec|lamfmt|lamhash|lamheap|lamhttp|lamiter|lamjson|lamlog|lammath|lammigrate|lamnet|lamos|lampath|lamqueue|lamrandom|lamratelimit|lamre|lamretry|lamschema|lamset|lamsmtp|lamsort|lamstack|lamstats|lamstrings|lamtemplate|lamtest|lamtime|lamunicode|lamurl|lamuuid|lamxml|lamyaml)\\b"
+          "match": "\\b(lamactor|lamarray|lambase64|lambytes|lamcache|lamcli|lamcompress|lamconcurrency|lamcontext|lamconv|lamcron|lamcrypto|lamcsv|lamdata|lamdatastructures|lamdatetime|lamdb|lamdeque|lamenv|lamerrors|lamexec|lamfmt|lamhash|lamheap|lamhttp|lamiter|lamjson|lamlog|lammath|lammigrate|lamnet|lamos|lampath|lamqueue|lamrandom|lamratelimit|lamre|lamretry|lamschema|lamset|lamsmtp|lamsort|lamstack|lamstats|lamstrings|lamtemplate|lamtest|lamtime|lamunicode|lamurl|lamuuid|lamxml|lamyaml)\\b"
         }
       ]
     },

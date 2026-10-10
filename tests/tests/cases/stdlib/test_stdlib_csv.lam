@@ -1,11 +1,144 @@
-# expect: csv_ok
+# Test: CSV parsing, formatting, and streaming file generators
+# expect: parse_roundtrip=true
+# expect: empty_parse=true:0
+# expect: malformed_parse=true
+# expect: format_row=true
+# expect: parse_file=true:3
+# expect: row_generator=true:3
+# expect: batch_generator=true:2:3
+# expect: empty_generator=true:0
+# expect: missing_file_error=true:1
+# expect: malformed_stream_error=true:1:1
+# expect: invalid_batch_error=true:1
+# expect: large_batches=true:1025:9:1
+# expect: csv_streaming_ok
 
 from lamcsv import Csv
+from lamerrors import Result
+from lamos import Os
+
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
+
+func resultRows(result: Result) -> list[list[str]] {
+    go! { return result.Value.([][]string) }
+}
+
+func resultRow(result: Result) -> list[str] {
+    go! { return result.Value.([]string) }
+}
+
+func resultBatch(result: Result) -> list[list[str]] {
+    go! { return result.Value.([][]string) }
+}
 
 func main() {
-    data: str = "a,b,c\nd,e,f"
-    parsed: list[list[str]] = Csv.parseAll(data)
-    if len(parsed) == 2 {
-        print("csv_ok")
+    rows: list[list[str]] = [["name", "note"], ["alice", "hello, world"], ["bob", "line1\nline2"]]
+    formatted: str = Csv.formatAll(rows)
+    parsed: list[list[str]] = resultRows(Csv.parseAll(formatted))
+    print(f"parse_roundtrip={len(parsed) == 3 and parsed[1][1] == 'hello, world' and parsed[2][1] == 'line1\nline2'}")
+
+    empty: Result[list[list[str]]] = Csv.parseAll("")
+    emptyRows: list[list[str]] = resultRows(empty)
+    print(f"empty_parse={empty.ok()}:{len(emptyRows)}")
+
+    malformed: Result[list[list[str]]] = Csv.parseAll("a,\"unterminated")
+    print(f"malformed_parse={not malformed.ok()}")
+    print(f"format_row={Csv.formatRow(['a', 'b,c', 'd\"e']) == 'a,\"b,c\",\"d\"\"e\"'}")
+
+    path: str = resultString(Os.tempFile("lamcsv_stream_", ".csv"))
+    Os.writeFile(path, formatted).unwrap()
+
+    fileRows: list[list[str]] = resultRows(Csv.parseFile(path))
+    print(f"parse_file={len(fileRows) == 3 and fileRows[2][0] == 'bob'}:{len(fileRows)}")
+
+    streamed: int = 0
+    streamedOk: bool = true
+    for nextRow in Csv.rows(path) {
+        if not nextRow.ok() {
+            streamedOk = false
+        } else {
+            row: list[str] = resultRow(nextRow)
+            streamed += 1
+            if len(row) != 2 {
+                streamedOk = false
+            }
+        }
     }
+    print(f"row_generator={streamedOk}:{streamed}")
+
+    batches: int = 0
+    batchedRows: int = 0
+    batchesOk: bool = true
+    for nextBatch in Csv.batches(path, 2) {
+        if not nextBatch.ok() {
+            batchesOk = false
+        } else {
+            batch: list[list[str]] = resultBatch(nextBatch)
+            batches += 1
+            batchedRows += len(batch)
+        }
+    }
+    print(f"batch_generator={batchesOk}:{batches}:{batchedRows}")
+
+    Os.writeFile(path, "").unwrap()
+    emptyStreamCount: int = 0
+    for emptyRow in Csv.rows(path) {
+        emptyStreamCount += 1
+    }
+    print(f"empty_generator={emptyStreamCount == 0}:{emptyStreamCount}")
+
+    Os.remove(path).unwrap()
+    missingErrors: int = 0
+    for missingRow in Csv.rows(path) {
+        if not missingRow.ok() {
+            missingErrors += 1
+        }
+    }
+    print(f"missing_file_error={missingErrors == 1}:{missingErrors}")
+
+    Os.writeFile(path, "ok,1\nbad,\"unterminated").unwrap()
+    goodRows: int = 0
+    parseErrors: int = 0
+    for malformedRow in Csv.rows(path) {
+        if malformedRow.ok() {
+            goodRows += 1
+        } else {
+            parseErrors += 1
+        }
+    }
+    print(f"malformed_stream_error={goodRows == 1 and parseErrors == 1}:{goodRows}:{parseErrors}")
+
+    invalidBatchErrors: int = 0
+    for invalidBatch in Csv.batches(path, 0) {
+        if not invalidBatch.ok() {
+            invalidBatchErrors += 1
+        }
+    }
+    print(f"invalid_batch_error={invalidBatchErrors == 1}:{invalidBatchErrors}")
+
+    largeRows: list[list[str]] = []
+    for i in range(1025) {
+        largeRows.append([str(i), "payload"])
+    }
+    Os.writeFile(path, Csv.formatAll(largeRows)).unwrap()
+    largeCount: int = 0
+    largeBatchCount: int = 0
+    lastBatchSize: int = 0
+    largeOk: bool = true
+    for largeResult in Csv.batches(path, 128) {
+        if not largeResult.ok() {
+            largeOk = false
+        } else {
+            largeBatch: list[list[str]] = resultBatch(largeResult)
+            largeBatchCount += 1
+            largeCount += len(largeBatch)
+            lastBatchSize = len(largeBatch)
+        }
+    }
+    print(f"large_batches={largeOk}:{largeCount}:{largeBatchCount}:{lastBatchSize}")
+
+    Os.remove(path).unwrap()
+    print("csv_streaming_ok")
 }

@@ -5,7 +5,7 @@ from lamtime import Time
 from lamuuid import Uuid
 
 class OtelConfig {
-    func __init__(self, serviceName: str = "lammergeier-app", endpoint: str = "http://localhost:4318", headers: str = "", timeoutMs: int = 30000) {
+    func init(self, serviceName: str = "lammergeier-app", endpoint: str = "http://localhost:4318", headers: str = "", timeoutMs: int = 30000) {
         self.serviceName: str = serviceName
         self.endpoint: str = endpoint
         self.headers: str = headers
@@ -19,12 +19,12 @@ class OtelConfig {
         cfg: OtelConfig = OtelConfig(
             Env.getOr("OTEL_SERVICE_NAME", "lammergeier-app"),
             Env.getOr("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),
-            Env.get("OTEL_EXPORTER_OTLP_HEADERS"),
+            Env.getOr("OTEL_EXPORTER_OTLP_HEADERS", ""),
             30000,
         )
-        cfg.serviceVersion = Env.get("OTEL_SERVICE_VERSION")
-        cfg.environment = Env.get("OTEL_DEPLOYMENT_ENVIRONMENT")
-        cfg.resourceAttributes = Otel.parsePairs(Env.get("OTEL_RESOURCE_ATTRIBUTES"))
+        cfg.serviceVersion = Env.getOr("OTEL_SERVICE_VERSION", "")
+        cfg.environment = Env.getOr("OTEL_DEPLOYMENT_ENVIRONMENT", "")
+        cfg.resourceAttributes = Otel.parsePairs(Env.getOr("OTEL_RESOURCE_ATTRIBUTES", ""))
         return cfg
     }
 
@@ -57,7 +57,7 @@ class OtelConfig {
 }
 
 class OtelSpan {
-    func __init__(self, name: str, kind: str = "internal", traceId: str = "", spanId: str = "") {
+    func init(self, name: str, kind: str = "internal", traceId: str = "", spanId: str = "") {
         self.name: str = name
         self.kind: str = kind
         self.traceId: str = traceId
@@ -144,7 +144,7 @@ class OtelSpan {
 }
 
 class OtelSpanBatch {
-    func __init__(self) {
+    func init(self) {
         self.spans: list[OtelSpan] = []
     }
 
@@ -163,12 +163,13 @@ class OtelSpanBatch {
 
 class Otel {
     static func idsTrace() -> str {
-        id: str = Uuid.v4()
+        id: str = Uuid.v4().unwrap()
         return id.replace("-", "")
     }
 
     static func idsSpan() -> str {
-        id: str = Uuid.v4().replace("-", "")
+        id: str = Uuid.v4().unwrap()
+        id = id.replace("-", "")
         return id[:16]
     }
 
@@ -226,7 +227,7 @@ class Otel {
 }
 
 class OtelTracer {
-    func __init__(self, cfg: OtelConfig) {
+    func init(self, cfg: OtelConfig) {
         self.cfg: OtelConfig = cfg
         self.http: HttpClient = HttpClient("", cfg.timeoutMs)
         self.http.setHeader("User-Agent", "lamotel/0.1.0")
@@ -273,14 +274,15 @@ class OtelTracer {
             return ready
         }
         payload: json = Otel.tracesPayloadWithResource(self.cfg.resource(), spans)
-        res: HttpResponse = self.http.post(self.cfg.tracesUrl(), payload)
+        responseResult: Result[HttpResponse] = self.http.post(self.cfg.tracesUrl(), payload)
+        if not responseResult.ok() {
+            return Result.Err(Error("OtelExportError", "otel export transport failed", responseResult.error))
+        }
+        res: HttpResponse = responseResult?
         if res.ok() {
             return Result.Ok(res)
         }
-        msg: str = res.error
-        if msg == "" {
-            msg = res.body
-        }
+        msg: str = res.body
         if msg == "" {
             msg = "otel export failed with status " + str(res.status)
         }

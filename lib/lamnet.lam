@@ -1,160 +1,681 @@
 # Lammergeier standard library: networking primitives
-# Import with: from lamnet import Net, TcpConn
+# Import with: from lamnet import Net, TcpConn, TcpListener, UdpConn, UdpPacket
 #
-# A small, sugar-first wrapper around Go's net package: DNS lookups,
-# hostname, and a simple blocking TCP client/server built from the
-# same `TcpConn` value on both sides.
+# DNS and transport operations expose expected failures as Result values.
+# Successful empty reads remain Ok(""). TCP, UDP, and TLS operations accept
+# per-operation timeout values in milliseconds; zero means no deadline.
+
+from lamerrors import Result, Error
 
 go! {
     import (
+        "bufio"
+        "crypto/tls"
+        "fmt"
         "io"
         "net"
         "os"
         "strconv"
+        "strings"
         "time"
     )
+
+    func lamNetDeadline(timeoutMs int) (time.Time, error) {
+        if timeoutMs < 0 {
+            return time.Time{}, fmt.Errorf("timeoutMs must not be negative")
+        }
+        if timeoutMs == 0 { return time.Time{}, nil }
+        return time.Now().Add(time.Duration(timeoutMs) * time.Millisecond), nil
+    }
+
+    func lamNetReadDeadline(conn net.Conn, timeoutMs int) error {
+        deadline, err := lamNetDeadline(timeoutMs)
+        if err != nil { return err }
+        return conn.SetReadDeadline(deadline)
+    }
+
+    func lamNetWriteDeadline(conn net.Conn, timeoutMs int) error {
+        deadline, err := lamNetDeadline(timeoutMs)
+        if err != nil { return err }
+        return conn.SetWriteDeadline(deadline)
+    }
 }
 
 class Net {
-    static func lookupHost(host: str) -> list[str] {
+    static func lookupHost(host: str) -> Result[list[str]] {
         #- Resolve `host` to a list of IP addresses (both v4 and v6). -#
         go! {
             addrs, err := net.LookupHost(host)
-            if err != nil { return []string{} }
-            return addrs
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("lookupHost %q: %v", host, err), nil,
+                ))
+            }
+            if addrs == nil { addrs = []string{} }
+            return LAMMERGEIER.Result.Ok(addrs)
         }
     }
 
-    static func lookupAddr(ip: str) -> list[str] {
+    static func lookupAddr(ip: str) -> Result[list[str]] {
         #- Reverse-DNS an IP to its host names. -#
         go! {
             names, err := net.LookupAddr(ip)
-            if err != nil { return []string{} }
-            return names
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("lookupAddr %q: %v", ip, err), nil,
+                ))
+            }
+            if names == nil { names = []string{} }
+            return LAMMERGEIER.Result.Ok(names)
         }
     }
 
-    static func hostname() -> str {
+    static func hostname() -> Result[str] {
         go! {
             h, err := os.Hostname()
-            if err != nil { return "" }
-            return h
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("hostname: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(h)
         }
     }
 
-    static func isReachable(host: str, port: int, timeoutMs: int = 1000) -> bool {
-        #- Attempt a TCP dial with a deadline. Returns true if the
-           connection succeeded. -#
+    static func isReachable(host: str, port: int, timeoutMs: int = 1000) -> Result[bool] {
+        #- Attempt a TCP dial with a deadline. A failed transport is an error. -#
         go! {
-            address := host + ":" + strconv.Itoa(port)
+            if timeoutMs < 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "isReachable: timeoutMs must not be negative", nil,
+                ))
+            }
+            address := net.JoinHostPort(host, strconv.Itoa(port))
             conn, err := net.DialTimeout("tcp", address, time.Duration(timeoutMs)*time.Millisecond)
-            if err != nil { return false }
-            conn.Close()
-            return true
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("isReachable %q: %v", address, err), nil,
+                ))
+            }
+            if err = conn.Close(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("isReachable close %q: %v", address, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(true)
         }
     }
 
-    static func dialTcp(host: str, port: int, timeoutMs: int = 5000) -> TcpConn {
+    static func dialTcp(host: str, port: int, timeoutMs: int = 5000) -> Result[TcpConn] {
         go! {
-            address := host + ":" + strconv.Itoa(port)
+            if timeoutMs < 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "dialTcp: timeoutMs must not be negative", nil,
+                ))
+            }
+            address := net.JoinHostPort(host, strconv.Itoa(port))
             conn, err := net.DialTimeout("tcp", address, time.Duration(timeoutMs)*time.Millisecond)
-            if err != nil { panic("dialTcp: " + err.Error()) }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("dialTcp %q: %v", address, err), nil,
+                ))
+            }
             c := NewTcpConn()
             c.Raw = conn
-            return c
+            c.Reader = bufio.NewReader(conn)
+            return LAMMERGEIER.Result.Ok(c)
         }
     }
 
-    static func listenTcp(port: int) -> TcpListener {
-        #- Listen on 0.0.0.0:port. Call `accept()` on the returned
-           listener to wait for the next inbound connection. -#
+    static func listenTcp(port: int) -> Result[TcpListener] {
+        #- Listen on 0.0.0.0:port. -#
         go! {
             ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
-            if err != nil { panic("listenTcp: " + err.Error()) }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("listenTcp %d: %v", port, err), nil,
+                ))
+            }
             l := NewTcpListener()
             l.Raw = ln
-            return l
+            l.DeadlineRaw = ln
+            return LAMMERGEIER.Result.Ok(l)
+        }
+    }
+
+    static func dialTls(host: str, port: int, timeoutMs: int = 5000, insecureSkipVerify: bool = false) -> Result[TcpConn] {
+        #- Open a TLS client connection. Certificate verification is enabled
+           unless explicitly disabled for a controlled test environment. -#
+        go! {
+            if timeoutMs < 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "dialTls: timeoutMs must not be negative", nil,
+                ))
+            }
+            address := net.JoinHostPort(host, strconv.Itoa(port))
+            dialer := &net.Dialer{Timeout: time.Duration(timeoutMs) * time.Millisecond}
+            config := &tls.Config{ServerName: host, InsecureSkipVerify: insecureSkipVerify} // #nosec G402 -- explicit caller option
+            conn, err := tls.DialWithDialer(dialer, "tcp", address, config)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("dialTls %q: %v", address, err), nil,
+                ))
+            }
+            c := NewTcpConn()
+            c.Raw = net.Conn(conn)
+            c.Reader = bufio.NewReader(conn)
+            return LAMMERGEIER.Result.Ok(c)
+        }
+    }
+
+    static func listenTls(port: int, certFile: str, keyFile: str) -> Result[TcpListener] {
+        #- Listen with a PEM certificate/key pair using Go's TLS stack. -#
+        go! {
+            cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("listenTls certificate: %v", err), nil,
+                ))
+            }
+            raw, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("listenTls %d: %v", port, err), nil,
+                ))
+            }
+            tlsListener := tls.NewListener(raw, &tls.Config{Certificates: []tls.Certificate{cert}})
+            l := NewTcpListener()
+            l.Raw = net.Listener(tlsListener)
+            l.DeadlineRaw = raw
+            return LAMMERGEIER.Result.Ok(l)
+        }
+    }
+
+    static func dialUdp(host: str, port: int, timeoutMs: int = 5000) -> Result[UdpConn] {
+        go! {
+            if timeoutMs < 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "dialUdp: timeoutMs must not be negative", nil,
+                ))
+            }
+            address := net.JoinHostPort(host, strconv.Itoa(port))
+            dialer := net.Dialer{Timeout: time.Duration(timeoutMs) * time.Millisecond}
+            raw, err := dialer.Dial("udp", address)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("dialUdp %q: %v", address, err), nil,
+                ))
+            }
+            conn, ok := raw.(*net.UDPConn)
+            if !ok {
+                raw.Close()
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "dialUdp: transport did not return a UDP connection", nil,
+                ))
+            }
+            c := NewUdpConn()
+            c.Raw = conn
+            return LAMMERGEIER.Result.Ok(c)
+        }
+    }
+
+    static func listenUdp(port: int) -> Result[UdpConn] {
+        go! {
+            address, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(port))
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("listenUdp resolve %d: %v", port, err), nil,
+                ))
+            }
+            conn, err := net.ListenUDP("udp", address)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("listenUdp %d: %v", port, err), nil,
+                ))
+            }
+            c := NewUdpConn()
+            c.Raw = conn
+            return LAMMERGEIER.Result.Ok(c)
         }
     }
 }
 
 class TcpConn {
-    #- Thin convenience wrapper over net.Conn. Methods block. -#
+    #- Thin convenience wrapper over net.Conn with operation deadlines. -#
 
-    func __init__(self) {
+    func init(self) {
         self.raw: any = None
+        self.reader: any = None
     }
 
-    func send(self, data: str) {
+    func send(self, data: str, timeoutMs: int = 0) -> Result[any] {
         go! {
-            if s.Raw == nil { panic("TcpConn.send: not connected") }
-            if _, err := s.Raw.(net.Conn).Write([]byte(data)); err != nil {
-                panic("TcpConn.send: " + err.Error())
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "TcpConn.send: not connected", nil,
+                ))
             }
+            conn := s.Raw.(net.Conn)
+            if err := lamNetWriteDeadline(conn, timeoutMs); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("TcpConn.send deadline: %v", err), nil,
+                ))
+            }
+            payload := []byte(data)
+            written := 0
+            for written < len(payload) {
+                n, err := conn.Write(payload[written:])
+                if err != nil {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "NetworkError", fmt.Sprintf("TcpConn.send: %v", err), nil,
+                    ))
+                }
+                if n == 0 {
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                        "NetworkError", "TcpConn.send: write made no progress", nil,
+                    ))
+                }
+                written += n
+            }
+            return LAMMERGEIER.Result.Ok(nil)
         }
     }
 
-    func recv(self, maxBytes: int = 4096) -> str {
-        #- Blocking read up to `maxBytes`. Returns "" on EOF. -#
+    func receive(self, maxBytes: int = 4096, timeoutMs: int = 0) -> Result[str] {
+        #- Read up to `maxBytes`. EOF is the successful empty string. -#
         go! {
-            if s.Raw == nil { panic("TcpConn.recv: not connected") }
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "TcpConn.receive: not connected", nil,
+                ))
+            }
+            if maxBytes < 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "TcpConn.receive: maxBytes must not be negative", nil,
+                ))
+            }
+            if maxBytes == 0 { return LAMMERGEIER.Result.Ok("") }
+            conn := s.Raw.(net.Conn)
+            if err := lamNetReadDeadline(conn, timeoutMs); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("TcpConn.receive deadline: %v", err), nil,
+                ))
+            }
+            if s.Reader == nil { s.Reader = bufio.NewReader(conn) }
             buf := make([]byte, maxBytes)
-            n, err := s.Raw.(net.Conn).Read(buf)
-            if err != nil && err != io.EOF && n == 0 { return "" }
-            return string(buf[:n])
-        }
-    }
-
-    func close(self) {
-        go! {
-            if s.Raw != nil {
-                s.Raw.(net.Conn).Close()
-                s.Raw = nil
+            n, err := s.Reader.(*bufio.Reader).Read(buf)
+            if err != nil && err != io.EOF {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("TcpConn.receive: %v", err), nil,
+                ))
             }
+            return LAMMERGEIER.Result.Ok(string(buf[:n]))
         }
     }
 
-    func remoteAddr(self) -> str {
+    func readLine(self, timeoutMs: int = 0) -> Result[str] {
+        #- Read one persistent buffered line, without its CR/LF terminator. -#
         go! {
-            if s.Raw == nil { return "" }
-            return s.Raw.(net.Conn).RemoteAddr().String()
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "TcpConn.readLine: not connected", nil,
+                ))
+            }
+            conn := s.Raw.(net.Conn)
+            if err := lamNetReadDeadline(conn, timeoutMs); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("TcpConn.readLine deadline: %v", err), nil,
+                ))
+            }
+            if s.Reader == nil { s.Reader = bufio.NewReader(conn) }
+            line, err := s.Reader.(*bufio.Reader).ReadString('\n')
+            if err != nil && err != io.EOF {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("TcpConn.readLine: %v", err), nil,
+                ))
+            }
+            line = strings.TrimSuffix(line, "\n")
+            line = strings.TrimSuffix(line, "\r")
+            return LAMMERGEIER.Result.Ok(line)
+        }
+    }
+
+    func setDeadline(self, timeoutMs: int) -> Result[any] {
+        go! {
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "TcpConn.setDeadline: not connected", nil,
+                ))
+            }
+            deadline, err := lamNetDeadline(timeoutMs)
+            if err == nil { err = s.Raw.(net.Conn).SetDeadline(deadline) }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("TcpConn.setDeadline: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func close(self) -> Result[any] {
+        go! {
+            if s.Raw == nil { return LAMMERGEIER.Result.Ok(nil) }
+            if err := s.Raw.(net.Conn).Close(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("TcpConn.close: %v", err), nil,
+                ))
+            }
+            s.Raw = nil
+            s.Reader = nil
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func remoteAddr(self) -> Result[str] {
+        go! {
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "TcpConn.remoteAddr: not connected", nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(s.Raw.(net.Conn).RemoteAddr().String())
+        }
+    }
+
+    func localAddr(self) -> Result[str] {
+        go! {
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "TcpConn.localAddr: not connected", nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(s.Raw.(net.Conn).LocalAddr().String())
         }
     }
 }
 
 class TcpListener {
-    func __init__(self) {
+    func init(self) {
+        self.raw: any = None
+        self.deadlineRaw: any = None
+    }
+
+    func accept(self, timeoutMs: int = 0) -> Result[TcpConn] {
+        #- Block until a client connects, up to the operation timeout. -#
+        go! {
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "TcpListener.accept: not listening", nil,
+                ))
+            }
+            deadline, err := lamNetDeadline(timeoutMs)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("TcpListener.accept deadline: %v", err), nil,
+                ))
+            }
+            if s.DeadlineRaw != nil {
+                if target, ok := s.DeadlineRaw.(interface{ SetDeadline(time.Time) error }); ok {
+                    if err = target.SetDeadline(deadline); err != nil {
+                        return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                            "NetworkError", fmt.Sprintf("TcpListener.accept deadline: %v", err), nil,
+                        ))
+                    }
+                }
+            }
+            conn, err := s.Raw.(net.Listener).Accept()
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("TcpListener.accept: %v", err), nil,
+                ))
+            }
+            c := NewTcpConn()
+            c.Raw = conn
+            c.Reader = bufio.NewReader(conn)
+            return LAMMERGEIER.Result.Ok(c)
+        }
+    }
+
+    func close(self) -> Result[any] {
+        go! {
+            if s.Raw == nil { return LAMMERGEIER.Result.Ok(nil) }
+            if err := s.Raw.(net.Listener).Close(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("TcpListener.close: %v", err), nil,
+                ))
+            }
+            s.Raw = nil
+            s.DeadlineRaw = nil
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func port(self) -> Result[int] {
+        go! {
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "TcpListener.port: not listening", nil,
+                ))
+            }
+            if tcp, ok := s.Raw.(net.Listener).Addr().(*net.TCPAddr); ok {
+                return LAMMERGEIER.Result.Ok(tcp.Port)
+            }
+            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                "NetworkError", "TcpListener.port: listener has no TCP address", nil,
+            ))
+        }
+    }
+}
+
+class UdpPacket {
+    func init(self, data: str, address: str) {
+        self.data: str = data
+        self.address: str = address
+    }
+}
+
+class UdpConn {
+    func init(self) {
         self.raw: any = None
     }
 
-    func accept(self) -> TcpConn {
-        #- Block until a client connects; wrap the conn for send/recv. -#
+    func send(self, data: str, timeoutMs: int = 0) -> Result[any] {
+        #- Send on a connected UDP socket. -#
         go! {
-            if s.Raw == nil { panic("TcpListener.accept: not listening") }
-            conn, err := s.Raw.(net.Listener).Accept()
-            if err != nil { panic("TcpListener.accept: " + err.Error()) }
-            c := NewTcpConn()
-            c.Raw = conn
-            return c
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "UdpConn.send: not connected", nil,
+                ))
+            }
+            conn := s.Raw.(*net.UDPConn)
+            if err := lamNetWriteDeadline(conn, timeoutMs); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.send deadline: %v", err), nil,
+                ))
+            }
+            n, err := conn.Write([]byte(data))
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.send: %v", err), nil,
+                ))
+            }
+            if n != len([]byte(data)) {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.send: wrote %d of %d bytes", n, len([]byte(data))), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
         }
     }
 
-    func close(self) {
+    func receive(self, maxBytes: int = 65535, timeoutMs: int = 0) -> Result[str] {
+        #- Receive one datagram from a connected UDP socket. -#
         go! {
-            if s.Raw != nil {
-                s.Raw.(net.Listener).Close()
-                s.Raw = nil
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "UdpConn.receive: not connected", nil,
+                ))
             }
+            if maxBytes < 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "UdpConn.receive: maxBytes must not be negative", nil,
+                ))
+            }
+            if maxBytes == 0 { return LAMMERGEIER.Result.Ok("") }
+            conn := s.Raw.(*net.UDPConn)
+            if err := lamNetReadDeadline(conn, timeoutMs); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.receive deadline: %v", err), nil,
+                ))
+            }
+            buf := make([]byte, maxBytes)
+            n, err := conn.Read(buf)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.receive: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(buf[:n]))
         }
     }
 
-    func port(self) -> int {
+    func receiveFrom(self, maxBytes: int = 65535, timeoutMs: int = 0) -> Result[UdpPacket] {
+        #- Receive one datagram and retain the sender address for replies. -#
         go! {
-            if s.Raw == nil { return 0 }
-            if tcp, ok := s.Raw.(net.Listener).Addr().(*net.TCPAddr); ok {
-                return tcp.Port
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "UdpConn.receiveFrom: not connected", nil,
+                ))
             }
-            return 0
+            if maxBytes <= 0 {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "UdpConn.receiveFrom: maxBytes must be positive", nil,
+                ))
+            }
+            conn := s.Raw.(*net.UDPConn)
+            if err := lamNetReadDeadline(conn, timeoutMs); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.receiveFrom deadline: %v", err), nil,
+                ))
+            }
+            buf := make([]byte, maxBytes)
+            n, address, err := conn.ReadFromUDP(buf)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.receiveFrom: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(NewUdpPacket(string(buf[:n]), address.String()))
+        }
+    }
+
+    func sendTo(self, data: str, address: str, timeoutMs: int = 0) -> Result[any] {
+        go! {
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "UdpConn.sendTo: not connected", nil,
+                ))
+            }
+            target, err := net.ResolveUDPAddr("udp", address)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.sendTo address %q: %v", address, err), nil,
+                ))
+            }
+            conn := s.Raw.(*net.UDPConn)
+            if err = lamNetWriteDeadline(conn, timeoutMs); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.sendTo deadline: %v", err), nil,
+                ))
+            }
+            n, err := conn.WriteToUDP([]byte(data), target)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.sendTo: %v", err), nil,
+                ))
+            }
+            if n != len([]byte(data)) {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.sendTo: wrote %d of %d bytes", n, len([]byte(data))), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func setDeadline(self, timeoutMs: int) -> Result[any] {
+        go! {
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "UdpConn.setDeadline: not connected", nil,
+                ))
+            }
+            deadline, err := lamNetDeadline(timeoutMs)
+            if err == nil { err = s.Raw.(*net.UDPConn).SetDeadline(deadline) }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.setDeadline: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func close(self) -> Result[any] {
+        go! {
+            if s.Raw == nil { return LAMMERGEIER.Result.Ok(nil) }
+            if err := s.Raw.(*net.UDPConn).Close(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", fmt.Sprintf("UdpConn.close: %v", err), nil,
+                ))
+            }
+            s.Raw = nil
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func localAddr(self) -> Result[str] {
+        go! {
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "UdpConn.localAddr: not connected", nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(s.Raw.(*net.UDPConn).LocalAddr().String())
+        }
+    }
+
+    func remoteAddr(self) -> Result[str] {
+        go! {
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "UdpConn.remoteAddr: not connected", nil,
+                ))
+            }
+            address := s.Raw.(*net.UDPConn).RemoteAddr()
+            if address == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "UdpConn.remoteAddr: socket is not connected", nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(address.String())
+        }
+    }
+
+    func port(self) -> Result[int] {
+        go! {
+            if s.Raw == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "NetworkError", "UdpConn.port: not connected", nil,
+                ))
+            }
+            if udp, ok := s.Raw.(*net.UDPConn).LocalAddr().(*net.UDPAddr); ok {
+                return LAMMERGEIER.Result.Ok(udp.Port)
+            }
+            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                "NetworkError", "UdpConn.port: connection has no UDP address", nil,
+            ))
         }
     }
 }

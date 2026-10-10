@@ -10,14 +10,19 @@
 # expect: prototype=invoice-copy:3:true
 # expect: encoded_len=32
 
-from lamqueue import Queue
+from lamdatastructures import Queue
 from lamcache import LruCache
 from lamjson import Json
 from lamfmt import Fmt
 from lambase64 import Base64
+from lamerrors import Result
+
+func resultStr(r: Result) -> str {
+    go! { return r.Value.(string) }
+}
 
 class Participant {
-    func __init__(self, name: str) {
+    func init(self, name: str) {
         self.name: str = name
         self.inbox: Queue = Queue()
     }
@@ -28,7 +33,7 @@ class Participant {
 }
 
 class ChatRoom {
-    func __init__(self) {
+    func init(self) {
         self.members: list[Participant] = []
         self.events: Queue = Queue()
     }
@@ -53,7 +58,7 @@ interface UserDirectory {
 }
 
 class SlowDirectory {
-    func __init__(self) {
+    func init(self) {
         self.calls: int = 0
     }
 
@@ -64,7 +69,7 @@ class SlowDirectory {
 }
 
 class CachedDirectoryProxy {
-    func __init__(self, inner: UserDirectory) {
+    func init(self, inner: UserDirectory) {
         self.inner: UserDirectory = inner
         self.cache: LruCache = LruCache(8)
     }
@@ -81,7 +86,7 @@ class CachedDirectoryProxy {
 }
 
 class DocumentPrototype {
-    func __init__(self, title: str) {
+    func init(self, title: str) {
         self.title: str = title
         self.tags: list[str] = []
         self.signed: bool = false
@@ -112,12 +117,12 @@ func main() {
     room.send(ada, "hello")
 
     print(f"room_events={room.events.size()}")
-    _ = room.events.dequeue()
-    _ = room.events.dequeue()
-    _ = room.events.dequeue()
-    print(f"first_event={room.events.peek()}")
+    _ = room.events.dequeue().unwrap()
+    _ = room.events.dequeue().unwrap()
+    _ = room.events.dequeue().unwrap()
+    print(f"first_event={room.events.peek().unwrap()}")
     print(f"bob_inbox={bob.inbox.size()}")
-    print(f"bob_first={bob.inbox.peek()}")
+    print(f"bob_first={bob.inbox.peek().unwrap()}")
 
     service: SlowDirectory = SlowDirectory()
     proxy: UserDirectory = CachedDirectoryProxy(service)
@@ -136,7 +141,7 @@ func main() {
     print(f"prototype={cloned.title}:{len(cloned.tags)}:{cloned.signed}")
 
     payloadValue: str = cloned.title + ":" + cloned.tags[0]
-    payload: str = Json.encode(payloadValue)
+    payload: str = resultStr(Json.encode(payloadValue))
     encoded: str = Base64.encode(payload)
     print(f"encoded_len={len(encoded)}")
 }

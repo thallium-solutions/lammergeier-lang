@@ -8,9 +8,9 @@ from lamstripe import StripeConfig
 from lamenv import Env
 
 func clearStripeEnv() {
-    Env.unset("STRIPE_SECRET_KEY")
-    Env.unset("STRIPE_BASE_URL")
-    Env.unset("STRIPE_API_VERSION")
+    _ = Env.unset("STRIPE_SECRET_KEY")
+    _ = Env.unset("STRIPE_BASE_URL")
+    _ = Env.unset("STRIPE_API_VERSION")
 }
 
 func main() {
@@ -20,9 +20,9 @@ func main() {
     print(empty.isReady())
     print(empty.baseUrl)
 
-    Env.set("STRIPE_SECRET_KEY", "sk_test_local")
-    Env.set("STRIPE_BASE_URL", "http://127.0.0.1:12111")
-    Env.set("STRIPE_API_VERSION", "2024-06-20")
+    _ = Env.set("STRIPE_SECRET_KEY", "sk_test_local")
+    _ = Env.set("STRIPE_BASE_URL", "http://127.0.0.1:12111")
+    _ = Env.set("STRIPE_API_VERSION", "2024-06-20")
 
     ready: StripeConfig = StripeConfig.fromEnv()
     print(ready.isReady())

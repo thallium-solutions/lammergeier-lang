@@ -1,0 +1,217 @@
+# Integration test: a local CSV-to-report ETL pipeline composed entirely from
+# current unsuffixed Result APIs. All filesystem state is rooted at a unique
+# path created by Os.tempFile and is removed before the test exits.
+# expect: PASS 1 temporary workspace created
+# expect: PASS 2 path composition
+# expect: PASS 3 environment configuration
+# expect: PASS 4 missing CLI option fallback
+# expect: PASS 5 generated record UUID
+# expect: PASS 6 File write count
+# expect: PASS 7 Os file round trip
+# expect: PASS 8 CSV whole-file parse
+# expect: PASS 9 CSV row stream keeps zero value
+# expect: PASS 10 CSV batch stream
+# expect: PASS 11 conversion pipeline total
+# expect: PASS 12 regex validates report identifier
+# expect: PASS 13 JSON summary encoded
+# expect: PASS 14 Base16 artifact round trip
+# expect: PASS 15 Base32 artifact round trip
+# expect: PASS 16 Base64 artifact round trip
+# expect: PASS 17 JSON summary decoded
+# expect: PASS 18 YAML summary round trip
+# expect: PASS 19 XML summary round trip
+# expect: PASS 20 template report rendering
+# expect: PASS 21 crypto token shape
+# expect: PASS 22 crypto comparison
+# expect: PASS 23 artifact File read
+# expect: PASS 24 workspace artifact glob
+# expect: PASS 25 environment cleanup
+# expect: PASS 26 workspace cleanup
+# expect: 26 passed, 0 failed, 26 total
+
+from lambase64 import Base16, Base32, Base64
+from lamcli import Cli
+from lamconv import Conv
+from lamcrypto import Crypto
+from lamcsv import Csv
+from lamenv import Env
+from lamerrors import Result
+from lamjson import Json
+from lamos import File, Os
+from lampath import Path
+from lamre import Re
+from lamtemplate import Template
+from lamuuid import Uuid
+from lamxml import Xml
+from lamyaml import Yaml
+from lamtest import Test
+
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
+
+func resultInt(result: Result) -> int {
+    go! { return result.Value.(int) }
+}
+
+func resultBool(result: Result) -> bool {
+    go! { return result.Value.(bool) }
+}
+
+func resultFile(result: Result) -> File {
+    go! { return result.Value.(*File) }
+}
+
+func resultRows(result: Result) -> list[list[str]] {
+    go! { return result.Value.([][]string) }
+}
+
+func resultRow(result: Result) -> list[str] {
+    go! { return result.Value.([]string) }
+}
+
+func resultBatch(result: Result) -> list[list[str]] {
+    go! { return result.Value.([][]string) }
+}
+
+func resultStrings(result: Result) -> list[str] {
+    go! { return result.Value.([]string) }
+}
+
+func loadScoreTotal(path: str) -> Result[int] {
+    total: int = 0
+    first: bool = true
+    for rowResult in Csv.streamRows(path) {
+        row: list[str] = rowResult?
+        if first {
+            first = false
+        } else {
+            scoreResult: Result[int] = Conv.parse(row[2])
+            score: int = scoreResult?
+            total += score
+        }
+    }
+    return Result.Ok(total)
+}
+
+func encodeSummary(data: dict[str, any]) -> Result[str] {
+    normalized: json = Json.fromValue(data)?
+    return Json.encode(normalized)
+}
+
+func main() {
+    seed: str = resultString(Os.tempFile("lam-result-etl-", ".seed"))
+    Os.remove(seed).unwrap()
+    workspace: str = seed + "-workspace"
+    Os.mkdir(workspace).unwrap()
+    Test.assertTrue(resultBool(Path.exists(workspace)), "1 temporary workspace created")
+
+    csvPath: str = Path.join(workspace, "events.csv")
+    jsonPath: str = Path.join(workspace, "summary.json")
+    yamlPath: str = Path.join(workspace, "summary.yaml")
+    xmlPath: str = Path.join(workspace, "summary.xml")
+    Test.assertTrue(Path.base(csvPath) == "events.csv" and Path.ext(jsonPath) == ".json", "2 path composition")
+
+    envKey: str = "_LAM_RESULT_ETL_" + resultString(Crypto.randomHex(6))
+    Env.set(envKey, "qa").unwrap()
+    region: str = resultString(Env.get(envKey))
+    Test.assertEqual(region, "qa", "3 environment configuration")
+    cliFallback: str = Cli.getFlag("__lam_result_etl_option_never_supplied__", "batch")
+    Test.assertEqual(cliFallback, "batch", "4 missing CLI option fallback")
+
+    recordId: str = resultString(Uuid.v4())
+    Test.assertTrue(Uuid.isValid(recordId), "5 generated record UUID")
+    records: list[list[str]] = [
+        ["id", "name", "score"],
+        [recordId, "alpha", "0"],
+        [resultString(Uuid.v4()), "beta", "5"],
+        [resultString(Uuid.v4()), "gamma", "7"]
+    ]
+    csvText: str = Csv.formatAll(records)
+
+    writer: File = resultFile(File.open(csvPath, "w"))
+    written: int = resultInt(writer.write(csvText))
+    writer.close().unwrap()
+    Test.assertEqual(written, len(csvText), "6 File write count")
+    Test.assertEqual(resultString(Os.readFile(csvPath)), csvText, "7 Os file round trip")
+
+    parsed: list[list[str]] = resultRows(Csv.parseFile(csvPath))
+    Test.assertTrue(len(parsed) == 4 and parsed[3][1] == "gamma", "8 CSV whole-file parse")
+
+    streamedRows: int = 0
+    sawZero: bool = false
+    for rowResult in Csv.streamRows(csvPath) {
+        row: list[str] = resultRow(rowResult)
+        streamedRows += 1
+        if len(row) == 3 and row[2] == "0" {
+            sawZero = true
+        }
+    }
+    Test.assertTrue(streamedRows == 4 and sawZero, "9 CSV row stream keeps zero value")
+
+    batches: int = 0
+    batchedRows: int = 0
+    for batchResult in Csv.streamBatches(csvPath, 3) {
+        batch: list[list[str]] = resultBatch(batchResult)
+        batches += 1
+        batchedRows += len(batch)
+    }
+    Test.assertTrue(batches == 2 and batchedRows == 4, "10 CSV batch stream")
+
+    total: int = resultInt(loadScoreTotal(csvPath))
+    Test.assertEqual(total, 12, "11 conversion pipeline total")
+    Test.assertTrue(resultBool(Re.match("^[0-9a-f-]+$", recordId)), "12 regex validates report identifier")
+
+    summary: dict[str, any] = {}
+    summary["id"] = recordId
+    summary["region"] = region
+    summary["rows"] = 3
+    summary["total"] = total
+    jsonText: str = resultString(encodeSummary(summary))
+    Test.assertTrue(jsonText.contains("\"total\":12") and jsonText.contains("\"region\":\"qa\""), "13 JSON summary encoded")
+
+    encoded16: str = Base16.encode(jsonText)
+    encoded32: str = Base32.encode(jsonText)
+    encoded64: str = Base64.encodeURLRaw(jsonText)
+    Test.assertEqual(resultString(Base16.decode(encoded16)), jsonText, "14 Base16 artifact round trip")
+    Test.assertEqual(resultString(Base32.decode(encoded32)), jsonText, "15 Base32 artifact round trip")
+    decoded64: str = resultString(Base64.decodeURLRaw(encoded64))
+    Test.assertEqual(decoded64, jsonText, "16 Base64 artifact round trip")
+    Test.assertTrue(Json.decode(decoded64).ok(), "17 JSON summary decoded")
+
+    yamlText: str = resultString(Yaml.encode(summary))
+    Os.writeFile(yamlPath, yamlText).unwrap()
+    Test.assertTrue(Yaml.decode(resultString(Os.readFile(yamlPath))).ok(), "18 YAML summary round trip")
+
+    xmlText: str = Xml.encode(summary, "summary")
+    Os.writeFile(xmlPath, xmlText).unwrap()
+    Test.assertTrue(Xml.decode(resultString(Os.readFile(xmlPath))).ok(), "19 XML summary round trip")
+
+    reportTemplate: Template = Template()
+    reportTemplate.parse("region={{.Region}} rows={{.Rows}} total={{.Total}} id={{.Id}}").unwrap()
+    templateData: dict[str, any] = {}
+    templateData["Region"] = region
+    templateData["Rows"] = 3
+    templateData["Total"] = total
+    templateData["Id"] = recordId
+    report: str = resultString(reportTemplate.render(templateData))
+    Test.assertEqual(report, f"region=qa rows=3 total=12 id={recordId}", "20 template report rendering")
+
+    token: str = resultString(Crypto.randomHex(16))
+    Test.assertTrue(len(token) == 32 and resultBool(Re.match("^[0-9a-f]+$", token)), "21 crypto token shape")
+    Test.assertTrue(Crypto.constantTimeEquals(decoded64, jsonText), "22 crypto comparison")
+
+    Os.writeFile(jsonPath, jsonText).unwrap()
+    artifact: File = resultFile(File.open(jsonPath))
+    artifactText: str = resultString(artifact.read())
+    artifact.close().unwrap()
+    Test.assertEqual(artifactText, jsonText, "23 artifact File read")
+    artifacts: list[str] = resultStrings(Path.glob(Path.join(workspace, "*")))
+    Test.assertEqual(len(artifacts), 4, "24 workspace artifact glob")
+
+    Env.unset(envKey).unwrap()
+    Test.assertFalse(Env.get(envKey).ok(), "25 environment cleanup")
+    Os.removeAll(workspace).unwrap()
+    Test.assertFalse(resultBool(Path.exists(workspace)), "26 workspace cleanup")
+    Test.summary()
+}

@@ -6,7 +6,7 @@
 #     shifted form: pure-text → string, mixed → map).
 #   * ``Xml.parse`` builds an XmlNode tree with attrs / text /
 #     children / find / findAll.
-#   * tryDecode / tryParse return ``Err`` on malformed input.
+#   * decode / parse return ``Err`` on malformed input.
 #
 # expect: enc-prefix-ok: true
 # expect: enc-name-ok: true
@@ -46,7 +46,7 @@ func main() {
 
     # ── parse / DOM walk ──
     src: str = "<catalog><book id=\"bk-1\"><title>Refactoring</title><author>Martin Fowler</author><pages>432</pages></book><book><title>Domain Driven Design</title><author>Eric Evans</author></book></catalog>"
-    root: any = Xml.parse(src)
+    root: any = Xml.parse(src).unwrap()
     rootTag: str = ""
     bookCount: int = 0
     title1: str = ""
@@ -95,7 +95,7 @@ func main() {
     print(f"dom-find-author: {findAuthor}")
 
     # ── shape-shifted decode ──
-    decoded: any = Xml.decode(src)
+    decoded: any = Xml.decode(src).unwrap()
     pages: str = ""
     title3: str = ""
     go! {
@@ -114,10 +114,10 @@ func main() {
     print(f"shape-decode-title: {title3}")
 
     # ── error paths ──
-    bad: Result = Xml.tryDecode("<broken")
+    bad: Result = Xml.decode("<broken")
     badIsErr: bool = not bad.ok()
     print(f"bad-decode-iserr: {badIsErr}")
-    bad2: Result = Xml.tryParse("<broken<>>")
+    bad2: Result = Xml.parse("<broken<>>")
     bad2IsErr: bool = not bad2.ok()
     print(f"bad-parse-iserr: {bad2IsErr}")
 }

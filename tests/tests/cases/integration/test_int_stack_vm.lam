@@ -25,7 +25,7 @@
 # 6 = HALT         end of program
 
 class VM {
-    func __init__(self) {
+    func init(self) {
         self.stack: list[int] = []
         self.trace: list[str] = []
     }

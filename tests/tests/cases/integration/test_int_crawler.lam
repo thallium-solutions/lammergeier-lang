@@ -5,26 +5,22 @@
 # result to a channel, and the main loop fans the values back in
 # through a WaitGroup-coordinated drain.
 #
-# Stresses lamconcurrency's WaitGroup + Channel + Mutex, plus
-# range-over-channel iteration through a Lam class wrapping a Go
-# ``chan interface{}``.
+# Stresses lamconcurrency's WaitGroup + Channel through Lam async orchestration
+# without reaching through Channel's runtime boundary.
 #
 # expect: total=285
 # expect: count=10
 # expect: max_seen=81
 # expect: crawler_ok
 
-from lamconcurrency import Channel, WaitGroup, Mutex
+from lamconcurrency import Channel, WaitGroup
 
-go! {
-    import "sync/atomic"
-}
-
-func runWorker(id: int, results: Channel, wg: WaitGroup) {
+async func runWorker(id: int, results: Channel, wg: WaitGroup) -> bool {
     # The "fetch": compute id*id. Real crawler would call lamhttp here.
     sq: int = id * id
-    results.send(sq)
+    results.send(sq).unwrap()
     wg.done()
+    return true
 }
 
 func main() {
@@ -32,47 +28,35 @@ func main() {
     results: Channel = Channel(n)
     wg: WaitGroup = WaitGroup()
 
-    # Fan out: spawn n workers.
+    # Fan out: async calls start immediately and return buffered handles.
     i: int = 0
     while i < n {
         wg.add(1)
-        # ``go!`` block + ``go func()`` — calls the Lam-defined runner
-        # from inside a real goroutine. We pass i by value via a Go
-        # closure parameter to avoid the classic capture-loop bug.
-        go! {
-            workerId := i
-            go func() { RunWorker(workerId, results, wg) }()
-        }
+        _ = runWorker(i, results, wg)
         i = i + 1
     }
 
-    # Wait for all workers to finish, then close the channel so the
-    # range loop below terminates.
+    # Wait for all workers to finish, then close before draining the
+    # buffered results through the Result-based receive API.
     wg.wait()
-    results.close()
+    results.close().unwrap()
 
-    # Fan in: drain the channel.
+    # Fan in: drain exactly the values produced before the close.
     total: int = 0
     count: int = 0
     maxSeen: int = 0
-    go! {
-        ch := results.Ch.(chan interface{})
-        for v := range ch {
-            n := v.(int)
-            total += n
-            count++
-            if n > maxSeen { maxSeen = n }
+    while count < n {
+        value: int = results.receive().unwrap()
+        total += value
+        count += 1
+        if value > maxSeen {
+            maxSeen = value
         }
     }
 
     print(f"total={total}")        # 0+1+4+9+16+25+36+49+64+81 = 285
     print(f"count={count}")
     print(f"max_seen={maxSeen}")   # 9*9 = 81
-
-    # Use atomic so the linter doesn't complain about the import — it
-    # also doubles as a sanity check that ``sync/atomic`` is wired up
-    # for future tests.
-    go! { _ = atomic.LoadInt64(new(int64)) }
 
     print("crawler_ok")
 }

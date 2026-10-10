@@ -8,7 +8,7 @@
 # expect: Auto for 15kg: 75
 
 class StandardShipping {
-    func __init__(self) {
+    func init(self) {
         self.rate: int = 2
     }
 
@@ -18,7 +18,7 @@ class StandardShipping {
 }
 
 class ExpressShipping {
-    func __init__(self) {
+    func init(self) {
         self.rate: int = 5
     }
 

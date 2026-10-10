@@ -1,0 +1,32 @@
+# expect-pass
+
+from lamerrors import Result
+
+func choose(seed: int, label: str = "value") -> int { return seed + 1 }
+func choose(seed: int, label: str = "value") -> str { return f"{label}-{seed}" }
+
+func payload(seed: int) -> Result[int] { return Result.Ok(seed) }
+func payload(seed: int) -> Result[str] { return Result.Ok(str(seed)) }
+
+class GenericSource[T] {
+    func init(self, value: T) { self.value: T = value }
+    func select(self, seed: int) -> int { return seed }
+    func select(self, seed: int) -> str { return str(seed) }
+}
+
+func acceptText(value: str) -> str { return value }
+func nested() -> str { return choose(1) }
+
+func main() {
+    direct: str = choose(2)
+    argument: str = acceptText(choose(3))
+    conditional: str = choose(4) if true else choose(5)
+    sequence: list[str] = [choose(6), choose(7)]
+    mapping: dict[int, str] = {8: choose(8)}
+    keyword: str = choose(label="bird", seed=9)
+    intResult: Result[int] = payload(10)
+    strResult: Result[str] = payload(10)
+    source: GenericSource[str] = GenericSource[str]("generic")
+    selected: str = source.select(11)
+    print(direct, argument, conditional, sequence, mapping, keyword, intResult, strResult, selected, nested())
+}

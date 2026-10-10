@@ -3,7 +3,7 @@
 # expect: internal_42
 
 class Service {
-    func __init__(self, value: int) {
+    func init(self, value: int) {
         self.value: int = value
     }
 

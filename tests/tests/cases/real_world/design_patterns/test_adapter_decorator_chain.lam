@@ -15,6 +15,19 @@ from lamhash import Hash
 from lamre import Re
 from lamfmt import Fmt
 from lamstrings import Strings
+from lamerrors import Result
+
+func resultRows(result: Result) -> list[list[str]] {
+    go! { return result.Value.([][]string) }
+}
+
+func resultInt(result: Result[int]) -> int {
+    go! { return result.Value.(int) }
+}
+
+func resultBool(result: Result) -> bool {
+    go! { return result.Value.(bool) }
+}
 
 interface ProductSource {
     func code(row: int) -> str
@@ -22,8 +35,8 @@ interface ProductSource {
 }
 
 class LegacyCsvInventory {
-    func __init__(self, raw: str) {
-        self.rows: list[list[str]] = Csv.parseAll(raw)
+    func init(self, raw: str) {
+        self.rows: list[list[str]] = resultRows(Csv.parseAll(raw))
     }
 
     func cell(self, row: int, col: int) -> str {
@@ -32,7 +45,7 @@ class LegacyCsvInventory {
 }
 
 class CsvProductAdapter {
-    func __init__(self, legacy: LegacyCsvInventory) {
+    func init(self, legacy: LegacyCsvInventory) {
         self.legacy: LegacyCsvInventory = legacy
     }
 
@@ -41,7 +54,8 @@ class CsvProductAdapter {
     }
 
     func price(self, row: int) -> int {
-        return Conv.toInt(self.legacy.cell(row, 1))
+        parsed: Result[int] = Conv.parse(self.legacy.cell(row, 1))
+        return resultInt(parsed)
     }
 }
 
@@ -56,7 +70,7 @@ class PlainNotifier {
 }
 
 class Base64Notifier {
-    func __init__(self, inner: Notifier) {
+    func init(self, inner: Notifier) {
         self.inner: Notifier = inner
     }
 
@@ -66,7 +80,7 @@ class Base64Notifier {
 }
 
 class SignedNotifier {
-    func __init__(self, inner: Notifier) {
+    func init(self, inner: Notifier) {
         self.inner: Notifier = inner
     }
 
@@ -91,7 +105,7 @@ class RequiredRule {
 
 class EmailRule {
     func check(self, value: str) -> str {
-        if Re.match("^[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}$", value) {
+        if resultBool(Re.match("^[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}$", value)) {
             return ""
         }
         return "invalid_email"
@@ -99,7 +113,7 @@ class EmailRule {
 }
 
 class Validator {
-    func __init__(self) {
+    func init(self) {
         self.rules: list[Rule] = []
     }
 

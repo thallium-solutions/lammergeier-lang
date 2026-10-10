@@ -1,0 +1,37 @@
+# Test: canonical data-structure exports and compatibility re-exports
+# expect: datastructures_imports_ok
+
+from lamdatastructures import Stack, Set, Heap, PriorityHeap
+from lamqueue import Queue, Deque
+
+func main() {
+    # Canonical imports are functional.
+    stack: Stack = Stack()
+    stack.push("canonical stack")
+    assert stack.pop().unwrap() == "canonical stack"
+
+    set_: Set = Set()
+    set_.add("canonical set")
+    assert set_.contains("canonical set")
+
+    heap: Heap = Heap()
+    heap.push(2)
+    heap.push(1)
+    assert heap.pop().unwrap() == 1
+
+    priority: PriorityHeap = PriorityHeap()
+    priority.push(2, "later")
+    priority.push(1, "first")
+    assert priority.pop().unwrap() == "first"
+
+    # lamqueue is a compatibility module and explicitly exports both classes.
+    queue: Queue = Queue()
+    queue.enqueue("compatibility queue")
+    assert queue.dequeue().unwrap() == "compatibility queue"
+
+    deque: Deque = Deque()
+    deque.pushFront("compatibility deque")
+    assert deque.popBack().unwrap() == "compatibility deque"
+
+    print("datastructures_imports_ok")
+}

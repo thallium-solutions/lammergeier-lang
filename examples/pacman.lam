@@ -7,6 +7,11 @@
 from lamconcurrency import Channel
 from lamconv import Conv
 from lamtime import Time
+from lamerrors import Result
+
+func resultInt(result: Result[int]) -> int {
+    go! { return result.Value.(int) }
+}
 
 go! {
     import (
@@ -167,7 +172,8 @@ func normalizeKey(raw: str) -> str {
         }
         case _ {
             if len(raw) > 1 and raw[0:1] == "#" {
-                code: int = Conv.toInt(raw[1:])
+                parsedCode: Result[int] = Conv.parse(raw[1:])
+                code: int = resultInt(parsedCode)
                 return specialKey(code)
             }
             return ""
@@ -249,7 +255,7 @@ async func inputPump(keys: Channel) -> bool {
     while true {
         key: str = readKey()
         if key != "" {
-            keys.send(key)
+            keys.send(key).unwrap()
             if key == Keys.quit {
                 return true
             }
@@ -774,9 +780,9 @@ func main() {
     running: bool = true
     while running {
         key: str = ""
-        rawKey: any = keys.tryRecv()
-        if rawKey != None {
-            key = str(rawKey)
+        polledKey: Result[any] = keys.poll()
+        if polledKey.ok() and polledKey.value != None {
+            key = str(polledKey.value)
         }
         if key == Keys.quit {
             running = false

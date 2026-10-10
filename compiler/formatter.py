@@ -22,8 +22,11 @@ class FormatError(Exception):
 
 
 def format_lam_source(source: str) -> FormatResult:
-    _parse_or_raise(source)
-    formatted = _format_lines(source)
+    from compiler.lammergeier import _canonicalize_doc_comment_terminators
+
+    reparable = _canonicalize_doc_comment_terminators(source)
+    _parse_or_raise(reparable)
+    formatted = _format_lines(reparable)
     _parse_or_raise(formatted)
     return FormatResult(text=formatted, changed=formatted != source)
 
@@ -446,7 +449,7 @@ def _collect_doc_comment(lines: list[str], start: int) -> tuple[list[str], int]:
     while i < len(lines):
         block.append(lines[i])
         i += 1
-        if re.search(r"-\s*#", lines[i - 1]):
+        if "-#" in lines[i - 1]:
             break
     return block, i
 

@@ -32,7 +32,7 @@ then hands that Go off to `go build`.
 from lammath import Math
 
 class Circle {
-    func __init__(self, radius: float) {
+    func init(self, radius: float) {
         self.radius: float = radius
     }
 
@@ -61,7 +61,8 @@ area: 78.53981633974483
 - **Typed & inferred** — mandatory type annotations for fields and
   parameters, inference for locals.
 - **OOP done right** — classes, constructors, `self`, inheritance, static
-  and private members, operator overloading, interfaces.
+  and private members, interfaces, operator overloading, and overload dispatch
+  by parameter or contextual return type.
 - **Python-style niceties** — f-strings, list/dict/set comprehensions,
   tuple-target unpacking, `for … else` / `while … else`, `match`/`case`,
   generators with `yield`, nested helpers with validated `nonlocal` writes,
@@ -80,11 +81,11 @@ area: 78.53981633974483
   Go toolchain; no VM, no GC surprises.
 - **Raw Go escape hatch** — drop into plain Go with `go! { ... }` or
   `go!(expr)` when you need stdlib access the language does not wrap.
-- **OOP standard library** — static classes like `Math`, `Strings`,
-  `Json`, `Path`, `Random`, `Http`, `Db`, `Hash`, `Crypto`, `Stats`,
-  `Compress`, `Net`, `Cli`, `Test`, plus `Context`, data structures (`Stack`,
-  `Queue`, `Set`, `Deque`, `Heap`, `PriorityHeap`), and concurrency primitives
-  (`Channel`, `Mutex`, `RWMutex`, `WaitGroup`, `Atomic`).
+- **OOP standard library** — static classes like `Math`, `Strings`, `Json`,
+  `Path`, `Random`, `Http`, `Db`, `Crypto`, `Compress`, `Net`, and more. Fallible
+  primary methods use unsuffixed typed `Result[T]` contracts; overloaded
+  `Env.get`, `Cli.getFlag`, and DataFrame APIs replace type-suffixed names,
+  while `Conv` owns parsing and `Fmt` owns presentation.
 - **Official external libraries** — independently versioned scoped packages for
   JWT, Protobuf, Redis, Memcached, S3, SFTP, SSH, and the Vulture HTTP server
   with its standard, tus, and WebSocket plugins. Browse the
@@ -94,20 +95,19 @@ area: 78.53981633974483
   helpers), pandas-style `DataFrame` / `Series` / `DataFrameGroups`
   backed by **go-gota** (native JSON I/O, generic typed columns,
   `selectCols` / `filter*` / `innerJoin` / `groupBy` / `aggregate`, full
-  Series statistics), generic natural/comparator `Sort` algorithms and sorted
-  generators, a Fastify-style `Server` with route params and lifecycle hooks,
-  a lazy `Iter` combinator suite, an `LruCache` + `TtlCache` pair, and RFC 4122
-  v4/v7 `Uuid` generation.
+  Series statistics), generic `Stats` and numeric `Array` inputs, generic
+  natural/comparator `Sort` algorithms and sorted generators, a Fastify-style
+  `Server`, a lazy `Iter` suite, canonical `lamdatastructures` collections with
+  compatibility imports, and RFC 4122 v4/v7 `Uuid` generation.
 - **Editor support** — built-in **LSP server** (`bin/lammergeier-lsp`)
   with live red diagnostics for syntax, missing names, wrong types, captures,
   `nonlocal`, and `LAMMERGEIER.*`, plus hover, signature help, completion,
   references, rename, goto-definition, formatting, and document/workspace
   symbols through the VS Code / Cursor / Windsurf extension.
-- **Batteries for real scripts** — native-JSON HTTP requests, repeated response
-  headers and full cookie parsing, a blocking HTTP server, TCP sockets, DNS,
-  gzip/zlib, AES-GCM, password hashing, PEM keys and
-  signatures, cancellation/deadline propagation, a CLI flag parser, and a
-  `Test` framework with `describe` / `assert*` / `summary`.
+- **Batteries for real scripts** — Base16/Base32/Base64 codecs, streaming CSV
+  and file generators, timezone-aware `DateTime` plus unit-safe `Time`, nested
+  SQL predicate groups, cancellable process commands, TCP/TLS/UDP networking,
+  variadic paths, native-JSON HTTP, crypto, a CLI flag parser, and testing.
 
 See [`docs/SYNTAX.md`](docs/SYNTAX.md) for the complete language reference, and
 [`docs/TRANSPILATION.md`](docs/TRANSPILATION.md) for the authoritative Lam → Go

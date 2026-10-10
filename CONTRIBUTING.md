@@ -353,6 +353,18 @@ At least **ten** cases, ordered from simplest to most composed:
 9. Regression case for any bug discovered during implementation.
 10. Nested / composed stress case.
 
+Because the product under test is both the library and the language that
+expresses it, every feature set must include at least one **cross-feature**
+integration or stress fixture. Compose the new API with relevant language
+features such as overloads, generics, interfaces, lambdas, generators,
+`Result`, `do/catch`, inheritance, comprehensions, and concurrency instead of
+only repeating isolated calls. External packages follow the same rule and must
+exercise their installed-package boundary, not only their source file directly.
+
+A test discovered after implementation is still treated as a contract: if it
+exposes a defect, reproduce and fix the implementation. Never rewrite the
+expectation to preserve incorrect behavior.
+
 ### What NOT to do
 
 - **Don't delete or weaken an existing test** to make your change
@@ -481,11 +493,15 @@ class <ClassName> {
 ### API conventions
 
 - **Classes are nouns.** `Xml`, `HttpClient`, `TokenBucket`.
-- **Methods are verbs.** `encode`, `tryDecode`, `setHeader`, `wait`.
-- **`try*` variants return `Result`.** The non-`try` flavour must
-  either panic on error or swallow to a sentinel (`None`, `""`,
-  `-1` — document which). Rule of thumb: if the error is a user-
-  input validity question, expose a `try*` variant.
+- **Methods are verbs.** `encode`, `decode`, `setHeader`, `wait`.
+- **Expected failures use unsuffixed `Result` APIs.** Atomic operations such as
+  parsing, I/O, transport calls, and validation return `Result[T]` from their
+  primary verb (`decode`, `readFile`, `connect`). Do not add a `try*` twin or
+  hide failure behind `None`, `""`, `false`, `-1`, or an empty collection.
+- **Exceptions bubble unexpected failures.** Use `throw` / `try` / `catch` when
+  the error is not part of normal application flow or must cross unrelated
+  stack frames. Callers may explicitly `unwrap()` a `Result` to opt into that
+  behavior.
 - **Static-only helpers go on a class named after the capability**
   (`Json.encode(...)`, `Xml.parse(...)`). Instance classes expose
   both state and behaviour (`HttpClient`, `JwtKeySet`).
@@ -539,7 +555,7 @@ Add `tests/tests/cases/stdlib/test_stdlib_<module>.lam`. Cover:
 
 1. Happy-path encode / decode / round-trip.
 2. Every public class's primary methods.
-3. Error paths via `try*` variants.
+3. Error paths via the primary Result-returning APIs.
 4. Composition with another stdlib module (often `Result`).
 5. At least one "user-shaped" example (parse a realistic payload,
    not just `{"a": 1}`).
@@ -559,7 +575,7 @@ Add `tests/tests/cases/stdlib/test_stdlib_<module>.lam`. Cover:
 | Target | Convention | Example |
 |--------|------------|---------|
 | Stdlib classes | `PascalCase` | `HttpClient`, `XmlNode`, `TokenBucket` |
-| Stdlib methods / fields | `camelCase` | `setHeader`, `tryDecode`, `retryAfter` |
+| Stdlib methods / fields | `camelCase` | `setHeader`, `decode`, `retryAfter` |
 | User-code Lam identifiers | `camelCase` (recommended) | `userName`, `computeScore` |
 | Lam parameters | `camelCase`, no underscore prefix | `func f(pageSize: int, pageToken: str)` |
 | Go-side helper funcs inside `go!` blocks | `lowerCamelCase` with `lam` prefix for internals | `lamXmlEncodeValue`, `lamHttpDoVerb` |

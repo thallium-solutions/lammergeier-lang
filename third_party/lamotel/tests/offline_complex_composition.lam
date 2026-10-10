@@ -1,0 +1,257 @@
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+# expect: true
+
+from lamotel import Otel, OtelConfig, OtelSpan, OtelSpanBatch, OtelTracer
+from lamcontext import Context
+from lamenv import Env
+from lamerrors import Result
+
+go! {
+    import (
+        "fmt"
+        "io"
+        "net"
+        "net/http"
+    )
+
+    var lamotelComplexServer *http.Server
+    var lamotelComplexMethod string
+    var lamotelComplexPath string
+    var lamotelComplexBody string
+    var lamotelComplexAuthorization string
+    var lamotelComplexTeam string
+    var lamotelComplexContentType string
+    var lamotelComplexRequests int
+}
+
+func startComplexMock() -> str {
+    go! {
+        listener, err := net.Listen("tcp", "127.0.0.1:0")
+        if err != nil {
+            panic(err)
+        }
+        mux := http.NewServeMux()
+        mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+            body, _ := io.ReadAll(r.Body)
+            _ = r.Body.Close()
+            lamotelComplexMethod = r.Method
+            lamotelComplexPath = r.URL.Path
+            lamotelComplexBody = string(body)
+            lamotelComplexAuthorization = r.Header.Get("Authorization")
+            lamotelComplexTeam = r.Header.Get("X-Team")
+            lamotelComplexContentType = r.Header.Get("Content-Type")
+            lamotelComplexRequests++
+            w.Header().Set("Content-Type", "application/json")
+            if lamotelComplexRequests == 1 {
+                w.WriteHeader(http.StatusAccepted)
+                _, _ = fmt.Fprint(w, `{"accepted":true}`)
+            } else {
+                w.WriteHeader(http.StatusServiceUnavailable)
+                _, _ = fmt.Fprint(w, `{"error":"collector unavailable"}`)
+            }
+        })
+        lamotelComplexServer = &http.Server{Handler: mux}
+        go func() { _ = lamotelComplexServer.Serve(listener) }()
+        return fmt.Sprintf("http://127.0.0.1:%d", listener.Addr().(*net.TCPAddr).Port)
+    }
+}
+
+func stopComplexMock() {
+    go! {
+        if lamotelComplexServer != nil {
+            _ = lamotelComplexServer.Close()
+        }
+    }
+}
+
+func capturedMethod() -> str {
+    go! {
+        return lamotelComplexMethod
+    }
+}
+func capturedPath() -> str {
+    go! {
+        return lamotelComplexPath
+    }
+}
+func capturedBody() -> str {
+    go! {
+        return lamotelComplexBody
+    }
+}
+func capturedAuthorization() -> str {
+    go! {
+        return lamotelComplexAuthorization
+    }
+}
+func capturedTeam() -> str {
+    go! {
+        return lamotelComplexTeam
+    }
+}
+func capturedContentType() -> str {
+    go! {
+        return lamotelComplexContentType
+    }
+}
+func capturedRequests() -> int {
+    go! {
+        return lamotelComplexRequests
+    }
+}
+func contextString(value: any) -> str {
+    go! {
+        return value.(string)
+    }
+}
+
+func clearOtelEnv() {
+    _ = Env.unset("OTEL_SERVICE_NAME")
+    _ = Env.unset("OTEL_EXPORTER_OTLP_ENDPOINT")
+    _ = Env.unset("OTEL_EXPORTER_OTLP_HEADERS")
+    _ = Env.unset("OTEL_SERVICE_VERSION")
+    _ = Env.unset("OTEL_DEPLOYMENT_ENVIRONMENT")
+    _ = Env.unset("OTEL_RESOURCE_ATTRIBUTES")
+}
+
+func main() {
+    clearOtelEnv()
+    endpoint: str = startComplexMock()
+    _ = Env.set("OTEL_SERVICE_NAME", "checkout-composed")
+    _ = Env.set("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint + "/")
+    _ = Env.set("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer local-token,X-Team=observability,token=abc=123")
+    _ = Env.set("OTEL_SERVICE_VERSION", "2.4.0")
+    _ = Env.set("OTEL_DEPLOYMENT_ENVIRONMENT", "test")
+    _ = Env.set("OTEL_RESOURCE_ATTRIBUTES", "team=payments,region=eu-west,service.name=ignored")
+
+    cfg: OtelConfig = OtelConfig.fromEnv()
+    resource: dict[str, str] = cfg.resource()
+    parsedHeaders: dict[str, str] = Otel.parseHeaders(cfg.headers)
+    print(cfg.serviceName == "checkout-composed")
+    print(cfg.tracesUrl() == endpoint + "/v1/traces")
+    print(cfg.timeoutMs == 30000)
+    print(resource["service.name"] == "checkout-composed")
+    print(resource["service.version"] == "2.4.0")
+    print(resource["deployment.environment"] == "test")
+    print(resource["team"] == "payments")
+    print(resource["region"] == "eu-west")
+    print(parsedHeaders["token"] == "abc=123")
+
+    tracer: OtelTracer = OtelTracer(cfg)
+    root: OtelSpan = tracer.startSpan("POST /checkout", "server")
+    root.setAttribute("http.route", "/checkout")
+    child: OtelSpan = tracer.childSpan(root, "charge", "client")
+    child.setAttribute("payment.provider", "stripe")
+    child.addEvent("charge.authorized")
+    child.setStatus("OK", "authorized")
+    grandchild: OtelSpan = tracer.childSpan(child, "receipt")
+    grandchild.recordException("mailbox unavailable")
+    grandchild.end()
+    child.end()
+    root.end()
+
+    print(len(root.traceId) == 32)
+    print(len(root.spanId) == 16)
+    print(root.spanId != child.spanId)
+    print(child.traceId == root.traceId)
+    print(child.parentSpanId == root.spanId)
+    print(grandchild.traceId == root.traceId)
+    print(grandchild.parentSpanId == child.spanId)
+    print(child.statusCode == "ok")
+    print(child.statusMessage == "authorized")
+    print(str(child.events).contains("charge.authorized"))
+    print(grandchild.statusCode == "error")
+    print(grandchild.attributes["exception.message"] == "mailbox unavailable")
+    print(str(grandchild.events).contains("exception"))
+    print(root.durationMs() >= 0)
+
+    traceContext: Context = Context.simple().valued("trace.id", root.traceId)
+    spanContext: Context = traceContext.valued("span.id", child.spanId)
+    print(contextString(spanContext.get("trace.id")) == root.traceId)
+    print(contextString(spanContext.get("span.id")) == child.spanId)
+    print(not traceContext.has("span.id"))
+
+    batch: OtelSpanBatch = tracer.batch()
+    batch.add(root)
+    batch.add(child)
+    batch.add(grandchild)
+    print(batch.size() == 3)
+
+    spans: list[OtelSpan] = [root, child, grandchild]
+    payload: json = Otel.tracesPayloadWithResource(resource, spans)
+    print(payload.resourceSpans[0].resource.attributes["service.name"] == "checkout-composed")
+    print(payload.resourceSpans[0].resource.attributes["team"] == "payments")
+    print(len(payload.resourceSpans[0].scopeSpans[0].spans) == 3)
+    print(payload.resourceSpans[0].scopeSpans[0].spans[0].name == "POST /checkout")
+    print(payload.resourceSpans[0].scopeSpans[0].spans[1].attributes["payment.provider"] == "stripe")
+    print(payload.resourceSpans[0].scopeSpans[0].spans[2].status.code == "error")
+    print(str(payload).contains("mailbox unavailable"))
+
+    accepted: Result = batch.export(tracer)
+    print(accepted.ok())
+    print(capturedMethod() == "POST")
+    print(capturedPath() == "/v1/traces")
+    print(capturedAuthorization() == "Bearer local-token")
+    print(capturedTeam() == "observability")
+    print(capturedContentType() == "application/json")
+    print(capturedBody().contains("checkout-composed"))
+    print(capturedBody().contains("charge.authorized"))
+
+    rejected: Result = tracer.exportSpan(root)
+    print(not rejected.ok())
+    print(str(rejected.error).contains("collector unavailable"))
+    print(capturedRequests() == 2)
+
+    missing: OtelTracer = OtelTracer(OtelConfig("missing-endpoint", ""))
+    missingResult: Result = missing.exportSpan(root)
+    print(not missingResult.ok())
+    print(str(missingResult.error).contains("OtelConfigError"))
+
+    stopComplexMock()
+    clearOtelEnv()
+}

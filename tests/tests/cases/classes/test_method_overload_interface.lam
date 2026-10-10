@@ -1,19 +1,29 @@
 # expect: int:1
 # expect: str:x
+# expect: interface return int: 4
+# expect: interface return str: value:3
 
 interface Parser {
     func parse(value: int) -> str
     func parse(value: str) -> str
+    func select(value: int) -> int
+    func select(value: int) -> str
 }
 
 class ValueParser {
     func parse(self, value: int) -> str { return f"int:{value}" }
     func parse(self, value: str) -> str { return f"str:{value}" }
+    func select(self, value: int) -> int { return value + 1 }
+    func select(self, value: int) -> str { return f"value:{value}" }
 }
 
 func use(parser: Parser) {
     print(parser.parse(1))
     print(parser.parse("x"))
+    number: int = parser.select(3)
+    text: str = parser.select(3)
+    print(f"interface return int: {number}")
+    print(f"interface return str: {text}")
 }
 
 func main() {

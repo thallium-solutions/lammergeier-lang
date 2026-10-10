@@ -1,4 +1,5 @@
 # Test: explicit parent initialization through the default `base` alias.
+# Deliberately keeps a legacy `__init__` definition and call for alias coverage.
 #
 # expect: user:alice@internal
 # expect: alice
@@ -16,7 +17,7 @@ class Account {
 }
 
 class UserAccount(Account) {
-    func __init__(self, owner: str) {
+    func init(self, owner: str) {
         base.__init__(owner, "internal")
     }
 

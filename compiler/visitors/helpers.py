@@ -688,6 +688,16 @@ class HelpersMixin:
             return [self._type_expr_to_go(c) for c in node.children]
         return []
 
+    def _overload_return_key(self, type_node) -> str:
+        """Return a contextual overload key without erasing Result payloads."""
+        go_type = self._resolve_return_type(type_node)
+        if not go_type and isinstance(type_node, Tree):
+            go_type = self._type_expr_to_go(type_node)
+        payload_type = self._result_payload_go_type(type_node)
+        if go_type == "*Result" and payload_type:
+            return f"*Result[{payload_type}]"
+        return go_type
+
     def _result_payload_go_type(self, type_node) -> str:
         if not isinstance(type_node, Tree):
             return ""
@@ -728,7 +738,10 @@ class HelpersMixin:
             args = [child for child in type_node.children[1:] if isinstance(child, Tree)]
             if base in {"optional", "Option"} and len(args) == 1:
                 return self._get_raw_type_name(args[0])
-            return ""
+            # Generic user classes retain the same nominal receiver identity
+            # as their unspecialised class (``Vault[str]`` -> ``Vault``), while
+            # builtin containers still have no class receiver identity.
+            return base if base in self._class_names else ""
         if d == "single_return_type":
             return self._get_raw_type_name(type_node.children[0])
         if d == "multi_return_type":
@@ -987,6 +1000,8 @@ class HelpersMixin:
             return f"map[{elem_type}]bool"
         if d == "var":
             var_name = self._get_name(node.children[0])
+            if var_name in {"true", "false"}:
+                return "bool"
             if var_name in self._init_param_types:
                 return self._init_param_types[var_name]
             # Typed locals (``nums: list[int] = ...``) record their
@@ -999,6 +1014,8 @@ class HelpersMixin:
             func = node.children[0]
             if isinstance(func, Tree) and func.data == "var":
                 name = self._get_name(func.children[0])
+                if name == "json":
+                    return "LamJSON"
                 if name and name[0].isupper() and name not in PYTHON_EXCEPTIONS:
                     return "*" + self._go_class_name(name)
         return "interface{}"
@@ -1150,7 +1167,7 @@ class HelpersMixin:
     def _concretize_generic_literal_param_type(
         self, func_key: str, node, go_type: str,
     ) -> str:
-        """Resolve a generic list parameter from a non-empty list literal."""
+        """Resolve a generic nested-list parameter from a non-empty literal."""
         generic_names = self._func_generic_params.get(func_key, set())
         if not generic_names or not go_type.startswith("[]"):
             return go_type
@@ -1159,12 +1176,20 @@ class HelpersMixin:
             inner = node.children[0]
         if not isinstance(inner, Tree) or inner.data != "list":
             return go_type
-        declared_elem = self._slice_elem_go_type(go_type)
-        if declared_elem not in generic_names:
-            return go_type
+
         inferred_type = self._infer_type_from_value(inner)
-        inferred_elem = self._slice_elem_go_type(inferred_type)
-        if inferred_elem and inferred_elem != "interface{}":
+        declared_elem = go_type
+        inferred_elem = inferred_type
+        while declared_elem.startswith("[]") and inferred_elem.startswith("[]"):
+            declared_elem = self._slice_elem_go_type(declared_elem)
+            inferred_elem = self._slice_elem_go_type(inferred_elem)
+        if (
+            declared_elem in generic_names
+            and inferred_elem
+            and inferred_elem != "interface{}"
+            and not declared_elem.startswith("[]")
+            and not inferred_elem.startswith("[]")
+        ):
             return inferred_type
         return go_type
 
@@ -1414,8 +1439,10 @@ class HelpersMixin:
         dispatcher to pick the matching variant; the returned tuple
         lines up slot-for-slot with the callee's ``_param_types_sig``.
 
-        Keyword and ``*splat`` arguments don't contribute —
-        the dispatch rules only look at positional types. When a
+        Keyword values contribute to the supplied-argument count so
+        defaulted overloads can still be selected. Their source order is
+        sufficient here: exact positional matching remains preferred, while
+        keyword calls fall back to arity plus contextual return type. When a
         slot's type can't be inferred, the slot collapses to
         ``interface{}`` (the same fallback used at def sites for
         un-annotated parameters), which matches an ``interface{}``
@@ -1431,9 +1458,10 @@ class HelpersMixin:
             node = child
             if child.data == "argvalue":
                 if len(child.children) == 2:
-                    # ``name=value`` — keyword, skip.
-                    continue
-                if child.children and isinstance(child.children[0], Tree):
+                    # ``name=value`` — dispatch on the value while the call
+                    # planner handles name-based reordering later.
+                    node = child.children[1]
+                elif child.children and isinstance(child.children[0], Tree):
                     node = child.children[0]
             elif child.data in ("stararg", "kwargs", "starparams"):
                 continue

@@ -12,7 +12,7 @@ func do_nothing() {
 }
 
 class EmptyClass {
-    func __init__(self) {
+    func init(self) {
         self.x: int = 0
     }
 }

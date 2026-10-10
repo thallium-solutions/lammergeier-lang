@@ -183,7 +183,7 @@ def test_nested_scoped_reexport_keeps_leaf_context() -> None:
                           "from .impl import configure\n")
         (ext / "dependency.lam").write_text(
             "class Dependency {\n"
-            "    func __init__(self, value: int, increment: int = 5) {\n"
+            "    func init(self, value: int, increment: int = 5) {\n"
             "        self.value: int = value\n"
             "        self.increment: int = increment\n"
             "    }\n"
@@ -194,11 +194,11 @@ def test_nested_scoped_reexport_keeps_leaf_context() -> None:
             "from dependency import Dependency\n"
             "go! { import ( \"fmt\" ) }\n"
             "class _Hooks {\n"
-            "    func __init__(self, offset: int) { self.offset: int = offset }\n"
+            "    func init(self, offset: int) { self.offset: int = offset }\n"
             "}\n"
             "func configure(value: int = 7) {\n"
-            "    #- The spaced terminator must not consume this function body.\n"
-            "    -  #\n"
+            "    #- A canonical doc terminator must not consume this function body.\n"
+            "    -#\n"
             "    hooks: _Hooks = _Hooks(value)\n"
             "    dependency: Dependency = Dependency(value)\n"
             "    go! { fmt.Println(value + hooks.Offset + dependency.Increment) }\n"
@@ -251,7 +251,7 @@ def test_imported_library_calls_external_instance_overload() -> None:
         _write_lib(ext, "@alice/wrapper", (
             "from client import Client\n"
             "class Wrapper {\n"
-            "    func __init__(self) { self.client: Client = Client() }\n"
+            "    func init(self) { self.client: Client = Client() }\n"
             "    func emit(self) -> str { return self.client.send(7) }\n"
             "}\n"
         ))

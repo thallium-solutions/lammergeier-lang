@@ -1,15 +1,9 @@
 # Lammergeier standard library: os/filesystem utilities
 # Import with: from lamos import Os
 #
-# File I/O is the natural home of recoverable errors. The historical
-# ``readFile``/``writeFile``/``readLines``/``writeLines`` family
-# silently swallows os errors (an unreadable file just yields an
-# empty string). The ``try*`` siblings return a ``Result`` so the
-# caller can decide:
-#
-#     content: str = Os.tryReadFile(path)?           # propagate
-#     Os.tryWriteFile(path, body).unwrap()           # panic on failure
-#     Os.tryReadLines(path).unwrapOr([])             # silent fallback
+# Recoverable filesystem failures are explicit ``Result`` values on the
+# primary, unsuffixed APIs. Empty files and directories remain successful
+# values, distinct from missing or unreadable paths.
 
 from lamerrors import Result, Error
 
@@ -21,15 +15,26 @@ go! {
         "os"
         "path/filepath"
         "strings"
+        "sync"
     )
+
+    var lamStdinReader = bufio.NewReader(os.Stdin)
+    var lamStdinMu sync.Mutex
 }
 
 class File {
-    func __init__(self, handle: any) {
+    func init(self, handle: any) {
         self.handle: any = handle
+        self.reader: any = None
+        self.eof: bool = false
+        go! {
+            if f, ok := s.Handle.(*os.File); ok && f != nil {
+                s.Reader = bufio.NewReader(f)
+            }
+        }
     }
 
-    static func open(path: str, mode: str = "r") -> File {
+    static func open(path: str, mode: str = "r") -> Result[File] {
         go! {
             var f *os.File
             var err error
@@ -37,192 +42,396 @@ class File {
                 f, err = os.Create(path)
             } else if mode == "a" || mode == "append" {
                 f, err = os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-            } else {
+            } else if mode == "r" || mode == "read" {
                 f, err = os.Open(path)
-            }
-            if err != nil { panic(err) }
-            return NewFile(f)
-        }
-    }
-
-    func read(self) -> str {
-        go! {
-            f, ok := self.handle.(*os.File)
-            if !ok || f == nil { return "" }
-            data, err := io.ReadAll(f)
-            if err != nil { return "" }
-            return string(data)
-        }
-    }
-
-    func write(self, content: str) -> int {
-        go! {
-            f, ok := self.handle.(*os.File)
-            if !ok || f == nil { return 0 }
-            n, err := f.WriteString(content)
-            if err != nil { return n }
-            return n
-        }
-    }
-
-    func close(self) {
-        go! {
-            f, ok := self.handle.(*os.File)
-            if ok && f != nil {
-                f.Close()
-            }
-        }
-    }
-
-    func readline(self) -> str {
-        go! {
-            f, ok := self.handle.(*os.File)
-            if !ok || f == nil { return "" }
-            reader := bufio.NewReader(f)
-            line, err := reader.ReadString('\n')
-            line = strings.TrimRight(line, "\r\n")
-            if err != nil && line == "" { return "" }
-            return line
-        }
-    }
-
-    func readlines(self) -> list[str] {
-        go! {
-            f, ok := self.handle.(*os.File)
-            if !ok || f == nil { return []string{} }
-            data, err := io.ReadAll(f)
-            if err != nil { return []string{} }
-            content := strings.TrimRight(string(data), "\n")
-            if content == "" { return []string{} }
-            return strings.Split(content, "\n")
-        }
-    }
-}
-
-class Os {
-    static func getenv(key: str) -> str {
-        go! {
-            return os.Getenv(key)
-        }
-    }
-
-    static func setenv(key: str, val: str) {
-        go! {
-            os.Setenv(key, val)
-        }
-    }
-
-    static func getcwd() -> str {
-        go! {
-            dir, _ := os.Getwd()
-            return dir
-        }
-    }
-
-    static func mkdir(path: str) {
-        go! {
-            os.MkdirAll(path, 0755)
-        }
-    }
-
-    static func remove(path: str) {
-        go! {
-            os.Remove(path)
-        }
-    }
-
-    static func removeAll(path: str) {
-        go! {
-            os.RemoveAll(path)
-        }
-    }
-
-    static func fileExists(path: str) -> bool {
-        go! {
-            _, err := os.Stat(path)
-            return err == nil
-        }
-    }
-
-    static func readFile(path: str) -> str {
-        go! {
-            data, _ := os.ReadFile(path)
-            return string(data)
-        }
-    }
-
-    static func tryReadFile(path: str) -> Result {
-        #- Read the entire file at ``path``. Returns ``Result.Ok(str)``
-           on success or ``Result.Err(Error("IOError", ...))`` if the
-           file is missing or unreadable. -#
-        go! {
-            data, err := os.ReadFile(path)
-            if err != nil {
+            } else {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
-                    "IOError",
-                    fmt.Sprintf("readFile %q: %v", path, err),
-                    nil,
+                    "IOError", fmt.Sprintf("open %q: unsupported mode %q", path, mode), nil,
                 ))
             }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("open %q: %v", path, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(NewFile(f))
+        }
+    }
+
+    func read(self) -> Result[str] {
+        go! {
+            f, ok := self.handle.(*os.File)
+            if !ok || f == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", "read: file is closed or invalid", nil,
+                ))
+            }
+            if self.reader == nil { self.reader = bufio.NewReader(f) }
+            data, err := io.ReadAll(self.reader.(*bufio.Reader))
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("read: %v", err), nil,
+                ))
+            }
+            self.eof = true
             return LAMMERGEIER.Result.Ok(string(data))
         }
     }
 
-    static func writeFile(path: str, content: str) {
+    func write(self, content: str) -> Result[int] {
         go! {
-            os.WriteFile(path, []byte(content), 0644)
+            f, ok := self.handle.(*os.File)
+            if !ok || f == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", "write: file is closed or invalid", nil,
+                ))
+            }
+            n, err := f.WriteString(content)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("write: %v", err), nil,
+                ))
+            }
+            if n != len(content) {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("write: wrote %d of %d bytes", n, len(content)), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(n)
         }
     }
 
-    static func tryWriteFile(path: str, content: str) -> Result {
-        #- Write ``content`` to ``path``, replacing any existing file.
-           Returns ``Result.Ok(None)`` on success or
-           ``Result.Err(Error("IOError", ...))`` on failure. -#
+    func close(self) -> Result[any] {
         go! {
-            err := os.WriteFile(path, []byte(content), 0644)
+            f, ok := self.handle.(*os.File)
+            if !ok || f == nil {
+                return LAMMERGEIER.Result.Ok(nil)
+            }
+            if err := f.Close(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("close: %v", err), nil,
+                ))
+            }
+            self.handle = nil
+            self.reader = nil
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    func readline(self) -> Result[str] {
+        go! {
+            f, ok := self.handle.(*os.File)
+            if !ok || f == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", "readline: file is closed or invalid", nil,
+                ))
+            }
+            if self.reader == nil { self.reader = bufio.NewReader(f) }
+            line, err := self.reader.(*bufio.Reader).ReadString('\n')
+            if err != nil && err != io.EOF {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("readline: %v", err), nil,
+                ))
+            }
+            if err == io.EOF { self.eof = true }
+            line = strings.TrimSuffix(line, "\n")
+            line = strings.TrimSuffix(line, "\r")
+            return LAMMERGEIER.Result.Ok(line)
+        }
+    }
+
+    func readlines(self) -> Result[list[str]] {
+        go! {
+            f, ok := self.handle.(*os.File)
+            if !ok || f == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", "readlines: file is closed or invalid", nil,
+                ))
+            }
+            if self.reader == nil { self.reader = bufio.NewReader(f) }
+            data, err := io.ReadAll(self.reader.(*bufio.Reader))
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
-                    "IOError",
-                    fmt.Sprintf("writeFile %q: %v", path, err),
-                    nil,
+                    "IOError", fmt.Sprintf("readlines: %v", err), nil,
+                ))
+            }
+            self.eof = true
+            content := strings.TrimRight(string(data), "\n")
+            if content == "" {
+                return LAMMERGEIER.Result.Ok([]string{})
+            }
+            return LAMMERGEIER.Result.Ok(strings.Split(content, "\n"))
+        }
+    }
+
+    func lines(self) -> FileLineGenerator {
+        #- Return a persistent pull generator. ``next`` yields
+           ``Result.Ok(line)``, ``Ok(None)`` at EOF, or a surfaced read error. -#
+        return FileLineGenerator(self, false, 1)
+    }
+
+    func lineBatches(self, batchSize: int = 100) -> FileLineGenerator {
+        #- Return a pull generator whose ``next`` values are line batches. -#
+        return FileLineGenerator(self, true, batchSize)
+    }
+}
+
+class FileLineGenerator {
+    #- Persistent pull-based line/batch generator. It shares the File's single
+       buffered reader and never reopens or seeks the underlying handle. -#
+
+    func init(self, file: File, batched: bool, batchSize: int) {
+        self.file: File = file
+        self.batched: bool = batched
+        self.batchSize: int = batchSize
+        self.exhausted: bool = false
+    }
+
+    func next(self) -> Result[any] {
+        if self.exhausted {
+            return Result.Ok(None)
+        }
+        if self.batched and self.batchSize <= 0 {
+            self.exhausted = true
+            return Result.Err(Error("IOError", "lineBatches: batchSize must be positive"))
+        }
+        if not self.batched {
+            lineResult: Result[str] = self.file.readline()
+            if not lineResult.ok() {
+                self.exhausted = true
+                return Result.Err(lineResult.error)
+            }
+            line: str = str(lineResult.value)
+            if self.file.eof and line == "" {
+                self.exhausted = true
+                return Result.Ok(None)
+            }
+            if self.file.eof {
+                self.exhausted = true
+            }
+            return Result.Ok(line)
+        }
+
+        batch: list[str] = []
+        while len(batch) < self.batchSize and not self.exhausted {
+            lineResult: Result[str] = self.file.readline()
+            if not lineResult.ok() {
+                self.exhausted = true
+                return Result.Err(lineResult.error)
+            }
+            line: str = str(lineResult.value)
+            if self.file.eof and line == "" {
+                self.exhausted = true
+            } else {
+                batch.append(line)
+                if self.file.eof {
+                    self.exhausted = true
+                }
+            }
+        }
+        if len(batch) == 0 {
+            return Result.Ok(None)
+        }
+        return Result.Ok(batch)
+    }
+
+    func nextLine(self) -> Result[str] {
+        if self.batched {
+            return Result.Err(Error("IOError", "nextLine: generator is in batch mode"))
+        }
+        return self.next()
+    }
+
+    func nextBatch(self) -> Result[list[str]] {
+        if not self.batched {
+            return Result.Err(Error("IOError", "nextBatch: generator is in line mode"))
+        }
+        return self.next()
+    }
+
+    func done(self) -> bool {
+        return self.exhausted
+    }
+}
+
+class Os {
+    static func getenv(key: str) -> Result[str] {
+        #- An explicitly empty variable is ``Ok("")``; an unset key is an error. -#
+        go! {
+            value, ok := os.LookupEnv(key)
+            if !ok {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "EnvError", fmt.Sprintf("getenv %q: variable is not set", key), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(value)
+        }
+    }
+
+    static func setenv(key: str, val: str) -> Result[any] {
+        go! {
+            if err := os.Setenv(key, val); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "EnvError", fmt.Sprintf("setenv %q: %v", key, err), nil,
                 ))
             }
             return LAMMERGEIER.Result.Ok(nil)
         }
     }
 
-    static func appendFile(path: str, content: str) {
+    static func getcwd() -> Result[str] {
         go! {
-            f, _ := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-            f.WriteString(content)
-            f.Close()
+            dir, err := os.Getwd()
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("getcwd: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(dir)
         }
     }
 
-    static func listDir(path: str) -> list[str] {
+    static func mkdir(path: str) -> Result[any] {
         go! {
-            entries, _ := os.ReadDir(path)
+            if err := os.MkdirAll(path, 0755); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("mkdir %q: %v", path, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    static func remove(path: str) -> Result[any] {
+        go! {
+            if err := os.Remove(path); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("remove %q: %v", path, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    static func removeAll(path: str) -> Result[any] {
+        go! {
+            if err := os.RemoveAll(path); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("removeAll %q: %v", path, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    static func fileExists(path: str) -> Result[bool] {
+        go! {
+            _, err := os.Stat(path)
+            if err == nil {
+                return LAMMERGEIER.Result.Ok(true)
+            }
+            if os.IsNotExist(err) {
+                return LAMMERGEIER.Result.Ok(false)
+            }
+            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                "IOError", fmt.Sprintf("fileExists %q: %v", path, err), nil,
+            ))
+        }
+    }
+
+    static func readFile(path: str) -> Result[str] {
+        #- Read the entire file. An empty file is ``Ok("")``. -#
+        go! {
+            data, err := os.ReadFile(path)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("readFile %q: %v", path, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(data))
+        }
+    }
+
+    static func writeFile(path: str, content: str) -> Result[any] {
+        go! {
+            if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("writeFile %q: %v", path, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    static func appendFile(path: str, content: str) -> Result[any] {
+        go! {
+            f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("appendFile %q: %v", path, err), nil,
+                ))
+            }
+            n, err := f.WriteString(content)
+            if err != nil {
+                f.Close()
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("appendFile %q: %v", path, err), nil,
+                ))
+            }
+            if n != len(content) {
+                f.Close()
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("appendFile %q: wrote %d of %d bytes", path, n, len(content)), nil,
+                ))
+            }
+            if err = f.Close(); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("appendFile %q close: %v", path, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
+        }
+    }
+
+    static func listDir(path: str) -> Result[list[str]] {
+        go! {
+            entries, err := os.ReadDir(path)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("listDir %q: %v", path, err), nil,
+                ))
+            }
             names := make([]string, 0, len(entries))
             for _, e := range entries {
                 names = append(names, e.Name())
             }
-            return names
+            return LAMMERGEIER.Result.Ok(names)
         }
     }
 
-    static func isDir(path: str) -> bool {
+    static func isDir(path: str) -> Result[bool] {
         go! {
             info, err := os.Stat(path)
-            if err != nil {
-                return false
+            if err == nil {
+                return LAMMERGEIER.Result.Ok(info.IsDir())
             }
-            return info.IsDir()
+            if os.IsNotExist(err) {
+                return LAMMERGEIER.Result.Ok(false)
+            }
+            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                "IOError", fmt.Sprintf("isDir %q: %v", path, err), nil,
+            ))
         }
     }
 
-    static func rename(oldPath: str, newPath: str) {
+    static func rename(oldPath: str, newPath: str) -> Result[any] {
         go! {
-            os.Rename(oldPath, newPath)
+            if err := os.Rename(oldPath, newPath); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("rename %q to %q: %v", oldPath, newPath, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
         }
     }
 
@@ -244,45 +453,60 @@ class Os {
         }
     }
 
-    static func isFile(path: str) -> bool {
+    static func isFile(path: str) -> Result[bool] {
         go! {
             info, err := os.Stat(path)
-            if err != nil { return false }
-            return !info.IsDir()
+            if err == nil {
+                return LAMMERGEIER.Result.Ok(!info.IsDir())
+            }
+            if os.IsNotExist(err) {
+                return LAMMERGEIER.Result.Ok(false)
+            }
+            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                "IOError", fmt.Sprintf("isFile %q: %v", path, err), nil,
+            ))
         }
     }
 
-    static func fileSize(path: str) -> int {
+    static func fileSize(path: str) -> Result[int] {
         go! {
             info, err := os.Stat(path)
-            if err != nil { return -1 }
-            return int(info.Size())
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("fileSize %q: %v", path, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(int(info.Size()))
         }
     }
 
-    static func copyFile(src: str, dst: str) {
+    static func copyFile(src: str, dst: str) -> Result[any] {
         go! {
             data, err := os.ReadFile(src)
-            if err != nil { panic(err) }
-            os.WriteFile(dst, data, 0644)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("copyFile read %q: %v", src, err), nil,
+                ))
+            }
+            if err = os.WriteFile(dst, data, 0644); err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("copyFile write %q: %v", dst, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(nil)
         }
     }
 
-    static func tryReadLines(path: str) -> Result {
-        #- Read a file as a list of lines. Trailing newline is
-           stripped but inner blank lines are preserved. Returns
-           ``Result.Ok(list[str])`` or ``Result.Err`` on I/O failure. -#
+    static func readLines(path: str) -> Result[list[str]] {
+        #- Read a file as lines. An empty file is ``Ok([])``. -#
         go! {
             data, err := os.ReadFile(path)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
-                    "IOError",
-                    fmt.Sprintf("readLines %q: %v", path, err),
-                    nil,
+                    "IOError", fmt.Sprintf("readLines %q: %v", path, err), nil,
                 ))
             }
-            content := string(data)
-            content = strings.TrimRight(content, "\n")
+            content := strings.TrimRight(string(data), "\n")
             if content == "" {
                 return LAMMERGEIER.Result.Ok([]string{})
             }
@@ -290,128 +514,147 @@ class Os {
         }
     }
 
-    static func tryWriteLines(path: str, lines: list[str]) -> Result {
-        #- Write each line terminated by ``\n``. Returns
-           ``Result.Ok(None)`` on success. -#
+    static func writeLines(path: str, lines: list[str]) -> Result[any] {
+        #- Write each line terminated by \n. Overwrites any existing file. -#
         go! {
-            err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
-            if err != nil {
+            if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
-                    "IOError",
-                    fmt.Sprintf("writeLines %q: %v", path, err),
-                    nil,
+                    "IOError", fmt.Sprintf("writeLines %q: %v", path, err), nil,
                 ))
             }
             return LAMMERGEIER.Result.Ok(nil)
         }
     }
 
-    static func readLines(path: str) -> list[str] {
-        #- Read a file and return its lines. Trailing newline is stripped
-           but inner blank lines are preserved. -#
-        go! {
-            data, err := os.ReadFile(path)
-            if err != nil { return []string{} }
-            content := string(data)
-            content = strings.TrimRight(content, "\n")
-            if content == "" { return []string{} }
-            return strings.Split(content, "\n")
-        }
-    }
-
-    static func writeLines(path: str, lines: list[str]) {
-        #- Write each line terminated by \n. Overwrites any existing file. -#
-        go! {
-            os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
-        }
-    }
-
-    static func walk(root: str) -> list[str] {
+    static func walk(root: str) -> Result[list[str]] {
         #- Return every file path below `root`, recursively. -#
         go! {
             paths := []string{}
-            filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-                if err != nil { return nil }
-                if info == nil || info.IsDir() { return nil }
-                paths = append(paths, p)
+            err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+                if err != nil { return err }
+                if info != nil && !info.IsDir() {
+                    paths = append(paths, p)
+                }
                 return nil
             })
-            return paths
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("walk %q: %v", root, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(paths)
         }
     }
 
-    static func listFiles(path: str) -> list[str] {
+    static func listFiles(path: str) -> Result[list[str]] {
         #- Only regular files in `path` (non-recursive). -#
         go! {
-            entries, _ := os.ReadDir(path)
+            entries, err := os.ReadDir(path)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("listFiles %q: %v", path, err), nil,
+                ))
+            }
             names := make([]string, 0, len(entries))
             for _, e := range entries {
                 if !e.IsDir() { names = append(names, e.Name()) }
             }
-            return names
+            return LAMMERGEIER.Result.Ok(names)
         }
     }
 
-    static func listDirs(path: str) -> list[str] {
+    static func listDirs(path: str) -> Result[list[str]] {
         #- Only subdirectories in `path` (non-recursive). -#
         go! {
-            entries, _ := os.ReadDir(path)
+            entries, err := os.ReadDir(path)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("listDirs %q: %v", path, err), nil,
+                ))
+            }
             names := make([]string, 0, len(entries))
             for _, e := range entries {
                 if e.IsDir() { names = append(names, e.Name()) }
             }
-            return names
+            return LAMMERGEIER.Result.Ok(names)
         }
     }
 
-    static func tempFile(prefix: str = "lam-", suffix: str = "") -> str {
+    static func tempFile(prefix: str = "lam-", suffix: str = "") -> Result[str] {
         #- Create a new empty temp file and return its path. The caller owns
            the file and is responsible for cleanup. -#
         go! {
             f, err := os.CreateTemp("", prefix+"*"+suffix)
-            if err != nil { panic(err) }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("tempFile: %v", err), nil,
+                ))
+            }
             name := f.Name()
-            f.Close()
-            return name
+            if err = f.Close(); err != nil {
+                os.Remove(name)
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("tempFile close %q: %v", name, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(name)
         }
     }
 
-    static func readStdin() -> str {
+    static func readStdin() -> Result[str] {
         #- Read everything from stdin into a single string. -#
         go! {
-            data, err := io.ReadAll(os.Stdin)
-            if err != nil { return "" }
-            return string(data)
+            lamStdinMu.Lock()
+            defer lamStdinMu.Unlock()
+            data, err := io.ReadAll(lamStdinReader)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("readStdin: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(string(data))
         }
     }
 
-    static func readStdinLine() -> str {
-        #- Read a single line from stdin (trailing newline stripped).
-           Returns "" on EOF. -#
+    static func readStdinLine() -> Result[str] {
+        #- Read one line. EOF before data is the successful empty string. -#
         go! {
-            reader := bufio.NewReader(os.Stdin)
-            line, err := reader.ReadString('\n')
+            lamStdinMu.Lock()
+            defer lamStdinMu.Unlock()
+            line, err := lamStdinReader.ReadString('\n')
+            if err != nil && err != io.EOF {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("readStdinLine: %v", err), nil,
+                ))
+            }
             line = strings.TrimRight(line, "\r\n")
-            if err != nil && line == "" { return "" }
-            return line
+            return LAMMERGEIER.Result.Ok(line)
         }
     }
 
-    static func user() -> str {
+    static func user() -> Result[str] {
         #- Current user's login name. Looks at $USER/$LOGNAME/$USERNAME. -#
-        keys: list[str] = ["USER", "LOGNAME", "USERNAME"]
-        for key in keys {
-            value: str = Os.getenv(key)
-            if value != "" { return value }
+        go! {
+            for _, key := range []string{"USER", "LOGNAME", "USERNAME"} {
+                if value, ok := os.LookupEnv(key); ok && value != "" {
+                    return LAMMERGEIER.Result.Ok(value)
+                }
+            }
+            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                "EnvError", "user: USER, LOGNAME, and USERNAME are unset or empty", nil,
+            ))
         }
-        return ""
     }
 
-    static func hostname() -> str {
+    static func hostname() -> Result[str] {
         go! {
             name, err := os.Hostname()
-            if err != nil { return "" }
-            return name
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("hostname: %v", err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(name)
         }
     }
 }

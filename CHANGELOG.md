@@ -6,6 +6,84 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-09-25
+
+### Added
+
+- Added top-level, static, and instance overloads distinguished only by return
+  type, selected from annotated assignments, enclosing returns, and typed call
+  parameters, with deterministic source-order fallback when context is
+  insufficient.
+- Added stable return-aware Go symbol mangling and cross-library dispatch
+  metadata for return-type overloads.
+- Added `HttpRequestOptions`, Result-returning `Http.request` / `HttpClient.request`,
+  and fluent `HttpRequest` builders with per-request headers, query parameters,
+  timeouts, text bodies, and native JSON bodies.
+- Added typed Result failure reporting for filesystem, parsing, networking,
+  database, crypto, collection, context, actor, and scheduling edge cases.
+- Added Base16/Base32 and raw Base64 variants, lazy CSV row/batch generators,
+  timezone-aware `DateTime`, duration-unit `Time`, and nested DB predicate groups.
+- Added typed cancellable process commands, TCP/TLS/UDP networking, streaming
+  file lines/batches, variadic path joining, and canonical `lamdatastructures`
+  imports with compatibility re-exports.
+- Added a cross-feature integration and stress matrix covering return-type
+  overload composition, Result pipelines, stdlib orchestration,
+  numeric/data/time workflows, and resilient network/database services.
+- Added bound-listener tracking and `HttpServer.port() -> Result[int]` so
+  `Http.serve(0, ...)` supports discoverable ephemeral ports.
+
+### Changed
+
+- Bumped the compiler feature version to 1.18.0.
+- Applied declared return-type context while transpiling static method bodies,
+  including typed collection literals.
+- Extended contextual overload selection through ternary branches, typed
+  collection literals, keyword arguments, generic receivers, and payload-aware
+  `Result[T]` dispatch keys.
+- Extended generic call-site inference from flat to nested collection literals.
+- Extended contextual lowering for native `json(...)` overload arguments and
+  typed payloads returned by `Result.unwrap()`, without leaking inferred types
+  through blank-identifier assignments.
+- Standardized fallible stdlib entry points on unsuffixed `Result[T]` contracts,
+  including HTTP/DB, OS/path/exec/net, data formats, config, crypto, templates,
+  migrations, collections, concurrency/context/actors, and ID/mail helpers.
+- Standardized public TCP and UDP reads on `receive` and `receiveFrom` naming.
+- Extended `async func` lowering to instance, static, private, and generic class
+  methods; `Channel` and actor `Mailbox` now expose blocking `send` / `receive`,
+  awaitable `asyncSend` / `asyncReceive`, and immediate `offer` / `poll` APIs.
+- Refactored actor mailboxes, registry locking, replies, stop state, and completion
+  to compose `lamconcurrency.Channel`, `Mutex`, `Atomic`, and `WaitGroup` instead
+  of declaring a second raw Go concurrency implementation.
+- Replaced type-suffixed Env, CLI, and DataFrame/Series entry points with
+  overloads; generalized Stats and gonum Array/Matrix inputs across numeric
+  types, and overloaded Heap priorities for homogeneous `int` or `float` use.
+- Preferred `init` while preserving `__init__` as a compatibility alias, and
+  moved cache/cron synchronization to `lamconcurrency.Mutex` to minimize raw Go.
+- Consolidated decimal integer, float, and boolean parsing under three
+  return-type-overloaded `Conv.parse(str) -> Result[int|float|bool]` signatures;
+  compiler payload keys distinguish them despite runtime Result erasure. Radix
+  parsers remain explicit because their same `Result[int]` type cannot express
+  the semantic difference between hexadecimal, octal, and binary input.
+
+### Fixed
+
+- Made documentation comments require the exact `#- ... -#` delimiters during
+  compilation and LSP folding, while allowing `lamc fmt` to repair spaced
+  terminators; added workspace-wide lexical and parse coverage.
+- Fixed actor panic-stop handling so a dispatch goroutine no longer waits on
+  itself and deadlocks a pending `ask` before delivering its failure sentinel.
+- Fixed async Result propagation, async ternary returns, reserved-handle name
+  collisions, and channel send/close races detected by Go's race detector.
+
+### Removed
+
+- Removed obsolete `try*` Result aliases and failure-masking defaults, empty
+  values, dropped actor messages, and panic-only fallible variants.
+- Removed type-suffixed Data/Env/CLI compatibility methods, type-specific
+  `Conv.toInt` / `Conv.toFloat` / `Conv.toBool` parsing names, formatting methods
+  from `Conv`, and UUID generation from `Random`; use overloaded primary APIs,
+  `Conv.parse`, `Fmt`, and `lamuuid.Uuid` respectively.
+
 ## 2026-09-18
 
 ### Added

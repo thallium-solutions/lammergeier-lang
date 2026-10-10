@@ -9,7 +9,7 @@ class MathHelper {
 }
 
 class Config {
-    func __init__(self, val: int) {
+    func init(self, val: int) {
         self.val: int = val
     }
 

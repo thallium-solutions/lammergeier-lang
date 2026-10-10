@@ -1,0 +1,21 @@
+# expect-pass
+
+class Parser {
+    static func parse(value: str) -> str { return value }
+    static func parse(value: str) -> int { return len(value) }
+
+    func decode(self, value: str) -> bool { return len(value) > 0 }
+    func decode(self, value: str) -> float { return float(len(value)) }
+}
+
+func parse(value: str) -> str { return value }
+func parse(value: str) -> int { return len(value) }
+
+func main() {
+    parser: Parser = Parser()
+    text: str = Parser.parse("lam")
+    size: int = parse("lam")
+    valid: bool = parser.decode(text)
+    ratio: float = parser.decode(text)
+    print(text, size, valid, ratio)
+}

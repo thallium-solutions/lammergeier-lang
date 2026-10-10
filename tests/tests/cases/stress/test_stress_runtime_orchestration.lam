@@ -1,0 +1,323 @@
+# Stress composition: actor/mailbox, concurrency primitives, caches, cron,
+# cancellation, command objects, and streaming file lines.
+# expect: PASS 1 channel delivered every concurrent job
+# expect: PASS 2 atomic counted every producer operation
+# expect: PASS 3 mutex protected the shared aggregate
+# expect: PASS 4 channel preserved the aggregate payload
+# expect: PASS 5 lru stayed within capacity under contention
+# expect: PASS 6 ttl cache retained every forever entry
+# expect: PASS 7 send on closed channel is an error
+# expect: PASS 8 repeated channel close is an error
+# expect: PASS 9 actor serialized mailbox traffic
+# expect: PASS 10 named actor lookup stays live
+# expect: PASS 11 actor panic unblocks ask with None
+# expect: PASS 12 actor panic stops the actor
+# expect: PASS 13 mailbox preserves fifo order
+# expect: PASS 14 mailbox poll reports empty distinctly
+# expect: PASS 15 mailbox send after close is an error
+# expect: PASS 16 context cancellation reaches a waiting child
+# expect: PASS 17 context cancellation reason propagates
+# expect: PASS 18 cron executes a scheduled callback
+# expect: PASS 19 cron stop waits for callbacks
+# expect: PASS 20 cron rejects invalid callbacks
+# expect: PASS 21 command object captures stdout and success
+# expect: PASS 22 command object preserves nonzero status and stderr
+# expect: PASS 23 command timeout is an error
+# expect: PASS 24 file line generator streams all records
+# expect: PASS 25 file generator reports closed-reader failure
+# expect: PASS 26 bounded mailbox offer reports full without blocking
+# expect: PASS 27 bounded mailbox poll preserves a None payload
+# expect: PASS 28 mailbox direct async await composes with Result
+# expect: PASS 29 mailbox deferred async receive handle completes
+# expect: PASS 30 mailbox close unblocks a blocked async sender
+# expect: PASS 31 mailbox closed state and buffered drain stay observable
+# expect: PASS 32 actor tell accepts every available mailbox slot
+# expect: PASS 33 actor tell reports a full mailbox
+# expect: PASS 34 actor lifecycle hooks complete before stop returns
+# expect: PASS 35 actor ask distinguishes a successful None reply
+# expect: PASS 36 actor system shuts down cleanly
+# expect: 36 passed, 0 failed, 36 total
+
+from lamactor import ActorRef, ActorSystem, Mailbox
+from lamcache import LruCache, TtlCache
+from lamconcurrency import Atomic, Channel, Mutex
+from lamcontext import Context
+from lamcron import Cron
+from lamexec import ExecCommand, ExecResult
+from lamos import File, FileLineGenerator, Os
+from lamerrors import Result, Error
+from lamtest import Test
+from lamtime import Time
+
+go! {
+    import "time"
+}
+
+func resultExec(result: Result) -> ExecResult {
+    go! { return result.Value.(*ExecResult) }
+}
+
+func resultFile(result: Result) -> File {
+    go! { return result.Value.(*File) }
+}
+
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
+
+func resultErrorKind(result: Result) -> str {
+    err: Error = result.error
+    return err.kind
+}
+
+class CountingActor {
+    func init(self) {
+        self.count: Atomic = Atomic(0)
+    }
+
+    func onMessage(self, msg: any) -> any {
+        if msg == "inc" {
+            return self.count.increment()
+        }
+        if msg == "count" {
+            return self.count.get()
+        }
+        return None
+    }
+}
+
+class CrashingActor {
+    func onMessage(self, msg: any) -> any {
+        go! { panic("intentional actor failure") }
+    }
+}
+
+class BlockingActor {
+    func init(self, entered: Channel, release: Channel) {
+        self.entered: Channel = entered
+        self.release: Channel = release
+    }
+
+    func onMessage(self, msg: any) -> any {
+        if msg == "hold" {
+            self.entered.send(true).unwrap()
+            return self.release.receive().unwrap()
+        }
+        return None
+    }
+}
+
+class NoneActor {
+    func onMessage(self, msg: any) -> any {
+        return None
+    }
+}
+
+class LifecycleActor {
+    func init(self, starts: Atomic, stops: Atomic) {
+        self.starts: Atomic = starts
+        self.stops: Atomic = stops
+    }
+
+    func onStart(self) {
+        self.starts.increment()
+    }
+
+    func onMessage(self, msg: any) -> any {
+        return msg
+    }
+
+    func onStop(self) {
+        self.stops.increment()
+    }
+}
+
+class ConcurrentProducerState {
+    func init(self) {
+        self.operations: Atomic = Atomic(0)
+        self.aggregateLock: Mutex = Mutex()
+        self.aggregate: int = 0
+    }
+
+    async func produce(self, worker: int, jobs: Channel, lru: LruCache, ttl: TtlCache) -> Result[bool] {
+        for n in range(1, 51) {
+            jobs.send(n).unwrap()
+            self.operations.increment()
+            self.aggregateLock.lock()
+            self.aggregate += n
+            self.aggregateLock.unlock()
+            key: int = worker * 1000 + n
+            lru.put(key, n)
+            _ = lru.get(key)
+            ttl.putForever(key, n)
+            _ = ttl.get(key)
+        }
+        return Result.Ok(true)
+    }
+}
+
+func main() {
+    jobs: Channel = Channel(200)
+    producerState: ConcurrentProducerState = ConcurrentProducerState()
+    lru: LruCache = LruCache(32)
+    ttl: TtlCache = TtlCache()
+
+    producer0 = producerState.produce(0, jobs, lru, ttl)
+    producer1 = producerState.produce(1, jobs, lru, ttl)
+    producer2 = producerState.produce(2, jobs, lru, ttl)
+    producer3 = producerState.produce(3, jobs, lru, ttl)
+
+    received: int = 0
+    channelAggregate: int = 0
+    while received < 200 {
+        value: int = jobs.receive().unwrap()
+        channelAggregate += value
+        received = received + 1
+    }
+    result0: Result[bool] = await producer0
+    result1: Result[bool] = await producer1
+    result2: Result[bool] = await producer2
+    result3: Result[bool] = await producer3
+    _ = result0.unwrap()
+    _ = result1.unwrap()
+    _ = result2.unwrap()
+    _ = result3.unwrap()
+    Test.assertEqual(received, 200, "1 channel delivered every concurrent job")
+    Test.assertEqual(producerState.operations.get(), 200, "2 atomic counted every producer operation")
+    Test.assertEqual(producerState.aggregate, 5100, "3 mutex protected the shared aggregate")
+    Test.assertEqual(channelAggregate, 5100, "4 channel preserved the aggregate payload")
+    Test.assertTrue(lru.size() <= 32, "5 lru stayed within capacity under contention")
+    Test.assertEqual(ttl.size(), 200, "6 ttl cache retained every forever entry")
+    jobs.close().unwrap()
+    Test.assertFalse(jobs.send("late").ok(), "7 send on closed channel is an error")
+    Test.assertFalse(jobs.close().ok(), "8 repeated channel close is an error")
+
+    actors: ActorSystem = ActorSystem()
+    counter: ActorRef = actors.spawnNamed("counter", CountingActor())
+    for n in range(40) {
+        counter.tell("inc").unwrap()
+    }
+    Test.assertEqual(counter.ask("count", 1000).unwrap(), 40, "9 actor serialized mailbox traffic")
+    Test.assertTrue(actors.find("counter").isAlive(), "10 named actor lookup stays live")
+
+    crashing: ActorRef = actors.spawn(CrashingActor())
+    crashReply: Result[any] = crashing.ask("boom", 1000)
+    Test.assertTrue(crashReply.ok() and crashReply.value == None, "11 actor panic unblocks ask with None")
+    Test.assertFalse(crashing.isAlive(), "12 actor panic stops the actor")
+
+    mailbox: Mailbox = Mailbox(4)
+    mailbox.send("first").unwrap()
+    mailbox.send("second").unwrap()
+    Test.assertTrue(mailbox.receive().unwrap() == "first" and mailbox.receive().unwrap() == "second", "13 mailbox preserves fifo order")
+    Test.assertFalse(mailbox.poll().ok(), "14 mailbox poll reports empty distinctly")
+    mailbox.close().unwrap()
+    Test.assertFalse(mailbox.send("late").ok(), "15 mailbox send after close is an error")
+
+    cancelRoot: Context = Context.simple()
+    cancelChild: Context = cancelRoot.child()
+    go! {
+        go func() {
+            time.Sleep(20 * time.Millisecond)
+            cancelRoot.Cancel("load shed")
+        }()
+    }
+    Test.assertTrue(cancelChild.wait(500), "16 context cancellation reaches a waiting child")
+    Test.assertEqual(cancelChild.reason(), "load shed", "17 context cancellation reason propagates")
+
+    ticks: Atomic = Atomic(0)
+    cron: Cron = Cron.newWithSeconds()
+    cron.schedule("@every 1s", lambda: ticks.increment()).unwrap()
+    cron.start()
+    Time.sleepMs(1300)
+    cron.stop()
+    stoppedAt: int = ticks.get()
+    Test.assertTrue(stoppedAt > 0, "18 cron executes a scheduled callback")
+    Time.sleepMs(40)
+    Test.assertEqual(ticks.get(), stoppedAt, "19 cron stop waits for callbacks")
+    Test.assertFalse(cron.schedule("@every 1s", 42).ok(), "20 cron rejects invalid callbacks")
+
+    successful: ExecCommand = ExecCommand("sh", ["-c", "printf orchestrated"], {}, "", "", 1000)
+    successfulResult: ExecResult = resultExec(successful.execute())
+    Test.assertTrue(successfulResult.success() and successfulResult.stdout == "orchestrated", "21 command object captures stdout and success")
+    failed: ExecCommand = ExecCommand("sh", ["-c", "printf rejected >&2; exit 7"], {}, "", "", 1000)
+    failedResult: ExecResult = resultExec(failed.execute())
+    Test.assertTrue(not failedResult.success() and failedResult.exitCode == 7 and failedResult.stderr == "rejected", "22 command object preserves nonzero status and stderr")
+    timed: ExecCommand = ExecCommand("sh", ["-c", "sleep 1"], {}, "", "", 20)
+    Test.assertFalse(timed.execute().ok(), "23 command timeout is an error")
+
+    path: str = resultString(Os.tempFile("lam_runtime_stress_", ".txt"))
+    Os.writeFile(path, "alpha\nbeta\ngamma\n").unwrap()
+    reader: File = resultFile(File.open(path))
+    generator: FileLineGenerator = reader.lines()
+    lines: list[str] = []
+    while not generator.done() {
+        line: Result[str] = generator.nextLine()
+        if line.ok() and line.value != None {
+            lines.append(resultString(line))
+        }
+    }
+    Test.assertTrue(len(lines) == 3 and lines[0] == "alpha" and lines[2] == "gamma", "24 file line generator streams all records")
+    reader.close().unwrap()
+    Test.assertFalse(reader.lines().nextLine().ok(), "25 file generator reports closed-reader failure")
+    Os.remove(path).unwrap()
+
+    boundedMailbox: Mailbox = Mailbox(1)
+    firstOffer: Result[bool] = boundedMailbox.offer(None)
+    secondOffer: Result[bool] = boundedMailbox.offer("full")
+    firstOffered: bool = firstOffer.unwrap()
+    secondOffered: bool = secondOffer.unwrap()
+    Test.assertTrue(firstOffered and not secondOffered, "26 bounded mailbox offer reports full without blocking")
+    polledNone: Result[any] = boundedMailbox.poll()
+    Test.assertTrue(polledNone.ok() and polledNone.value == None, "27 bounded mailbox poll preserves a None payload")
+
+    asyncMailbox: Mailbox = Mailbox(1)
+    directSend = asyncMailbox.asyncSend(None)
+    directReceive: Result[any] = await asyncMailbox.asyncReceive()
+    directSent: Result[bool] = await directSend
+    Test.assertTrue(directSent.ok() and directReceive.ok() and directReceive.value == None, "28 mailbox direct async await composes with Result")
+    receiveLater = asyncMailbox.asyncReceive()
+    asyncMailbox.send("later").unwrap()
+    deferredReceive: Result[any] = await receiveLater
+    Test.assertTrue(deferredReceive.ok() and deferredReceive.value == "later", "29 mailbox deferred async receive handle completes")
+
+    closingMailbox: Mailbox = Mailbox(1)
+    closingMailbox.send("buffered").unwrap()
+    blockedMailboxSend = closingMailbox.asyncSend("blocked")
+    closingMailbox.close().unwrap()
+    closedMailboxSend: Result[bool] = await blockedMailboxSend
+    Test.assertFalse(closedMailboxSend.ok(), "30 mailbox close unblocks a blocked async sender")
+    drainedMailbox: Result[any] = closingMailbox.receive()
+    Test.assertTrue(closingMailbox.isClosed() and drainedMailbox.ok() and drainedMailbox.value == "buffered" and closingMailbox.size() == 0, "31 mailbox closed state and buffered drain stay observable")
+
+    entered: Channel = Channel(1)
+    release: Channel = Channel(0)
+    blockedActor: ActorRef = actors.spawn(BlockingActor(entered, release))
+    blockedActor.tell("hold").unwrap()
+    entered.receive().unwrap()
+    filled: bool = true
+    for n in range(64) {
+        if not blockedActor.tell(n).ok() {
+            filled = false
+        }
+    }
+    Test.assertTrue(filled, "32 actor tell accepts every available mailbox slot")
+    fullTell: Result[bool] = blockedActor.tell("overflow")
+    Test.assertTrue(not fullTell.ok() and resultErrorKind(fullTell) == "MailboxFullError", "33 actor tell reports a full mailbox")
+    release.send("released").unwrap()
+    blockedActor.stop()
+
+    starts: Atomic = Atomic(0)
+    stops: Atomic = Atomic(0)
+    lifecycle: ActorRef = actors.spawn(LifecycleActor(starts, stops))
+    lifecycle.ask("ready", 1000).unwrap()
+    lifecycle.stop()
+    Test.assertTrue(starts.get() == 1 and stops.get() == 1 and not lifecycle.isAlive(), "34 actor lifecycle hooks complete before stop returns")
+
+    noneActor: ActorRef = actors.spawn(NoneActor())
+    noneReply: Result[any] = noneActor.ask("none", 1000)
+    Test.assertTrue(noneReply.ok() and noneReply.value == None, "35 actor ask distinguishes a successful None reply")
+
+    actors.shutdown(2000)
+    Test.assertEqual(actors.numActors(), 0, "36 actor system shuts down cleanly")
+    Test.summary()
+}

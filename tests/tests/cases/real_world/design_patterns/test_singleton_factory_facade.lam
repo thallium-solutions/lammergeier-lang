@@ -7,8 +7,7 @@
 # expect: first_event=ord-1:book:1299
 # expect: missing=reject:missing-sku
 
-from lamqueue import Queue
-from lamset import Set
+from lamdatastructures import Queue, Set
 from lamfmt import Fmt
 from lamhash import Hash
 
@@ -50,7 +49,7 @@ class AuditLog {
     private static instance: AuditLog
     static requests: int = 0
 
-    func __init__(self) {
+    func init(self) {
         self.events: Queue = Queue()
     }
 
@@ -71,13 +70,13 @@ class AuditLog {
     }
 
     func first(self) -> str {
-        item: any = self.events.peek()
+        item: any = self.events.peek().unwrap()
         return str(item)
     }
 }
 
 class Inventory {
-    func __init__(self) {
+    func init(self) {
         self.available: Set = Set()
         self.available.add("book")
         self.available.add("pen")
@@ -89,7 +88,7 @@ class Inventory {
 }
 
 class CheckoutFacade {
-    func __init__(self, gateway: PaymentGateway) {
+    func init(self, gateway: PaymentGateway) {
         self.gateway: PaymentGateway = gateway
         self.inventory: Inventory = Inventory()
         self.audit: AuditLog = AuditLog.get()

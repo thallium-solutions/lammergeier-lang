@@ -1,0 +1,8 @@
+# expect: imported interface: lam
+
+from imported_interface_contract import ImportedValueReader
+from imported_interface_consumer import readImported
+
+func main() {
+    print(f"imported interface: {readImported(ImportedValueReader('lam'))}")
+}

@@ -7,8 +7,16 @@ go! {
     import "net/url"
 }
 
+func stripeResultJson(result: Result) -> json {
+    go! { return result.Value.(LamJSON) }
+}
+
+func stripeResultDict(result: Result) -> dict[str, any] {
+    go! { return result.Value.(map[string]interface{}) }
+}
+
 class StripeConfig {
-    func __init__(self, secretKey: str = "", baseUrl: str = "https://api.stripe.com/v1", apiVersion: str = "", timeoutMs: int = 30000) {
+    func init(self, secretKey: str = "", baseUrl: str = "https://api.stripe.com/v1", apiVersion: str = "", timeoutMs: int = 30000) {
         self.secretKey: str = secretKey
         self.baseUrl: str = baseUrl
         self.apiVersion: str = apiVersion
@@ -17,9 +25,9 @@ class StripeConfig {
 
     static func fromEnv() -> StripeConfig {
         cfg: StripeConfig = StripeConfig()
-        cfg.secretKey = Env.get("STRIPE_SECRET_KEY")
+        cfg.secretKey = Env.getOr("STRIPE_SECRET_KEY", "")
         cfg.baseUrl = Env.getOr("STRIPE_BASE_URL", "https://api.stripe.com/v1")
-        cfg.apiVersion = Env.get("STRIPE_API_VERSION")
+        cfg.apiVersion = Env.getOr("STRIPE_API_VERSION", "")
         return cfg
     }
 
@@ -29,7 +37,7 @@ class StripeConfig {
 }
 
 class StripeCustomerOptions {
-    func __init__(self, email: str, name: str = "") {
+    func init(self, email: str, name: str = "") {
         self.email: str = email
         self.name: str = name
         self.metadata: dict[str, str] = {}
@@ -52,7 +60,7 @@ class StripeCustomerOptions {
 }
 
 class StripePaymentIntentOptions {
-    func __init__(self, amount: int, currency: str) {
+    func init(self, amount: int, currency: str) {
         self.amount: int = amount
         self.currency: str = currency
         self.description: str = ""
@@ -91,7 +99,7 @@ class StripePaymentIntentOptions {
 }
 
 class StripeCheckoutSessionOptions {
-    func __init__(self, successUrl: str, cancelUrl: str, priceId: str, quantity: int = 1) {
+    func init(self, successUrl: str, cancelUrl: str, priceId: str, quantity: int = 1) {
         self.successUrl: str = successUrl
         self.cancelUrl: str = cancelUrl
         self.priceId: str = priceId
@@ -130,7 +138,7 @@ class StripeCheckoutSessionOptions {
 }
 
 class StripeResponse {
-    func __init__(self, status: int = 0, body: str = "", transportError: str = "") {
+    func init(self, status: int = 0, body: str = "", transportError: str = "") {
         self.status: int = status
         self.body: str = body
         self.transportError: str = transportError
@@ -144,11 +152,11 @@ class StripeResponse {
         if self.body == "" {
             return {}
         }
-        return Json.decode(self.body)
+        return stripeResultJson(Json.decode(self.body))
     }
 
     func field(self, name: str) -> str {
-        data: dict[str, any] = Json.toDict(self.json())
+        data: dict[str, any] = stripeResultDict(Json.toDict(self.json()))
         if name == "" and len(data) < 0 { return "" }
         out: str = ""
         go! {
@@ -213,7 +221,17 @@ class Stripe {
     }
 
     static func validateCurrency(currency: str) -> Result {
-        if len(Stripe.normalizeCurrency(currency)) != 3 {
+        normalized: str = Stripe.normalizeCurrency(currency)
+        validLetters: bool = false
+        go! {
+            validLetters = len(normalized) == 3
+            for _, char := range normalized {
+                if char < 'a' || char > 'z' {
+                    validLetters = false
+                }
+            }
+        }
+        if not validLetters {
             return Result.Err(Error("StripeValidationError", "currency must be a 3-letter ISO code", None))
         }
         return Result.Ok(true)
@@ -221,7 +239,7 @@ class Stripe {
 }
 
 class StripeClient {
-    func __init__(self, cfg: StripeConfig) {
+    func init(self, cfg: StripeConfig) {
         self.cfg: StripeConfig = cfg
         self.http: HttpClient = HttpClient(cfg.baseUrl, cfg.timeoutMs)
         self.http.setHeader("Authorization", "Bearer " + cfg.secretKey)
@@ -239,8 +257,12 @@ class StripeClient {
         self.http.setHeader("Idempotency-Key", key)
     }
 
-    func _result(self, res: HttpResponse) -> Result {
-        sr: StripeResponse = StripeResponse(res.status, res.body, res.error)
+    func _result(self, result: Result[HttpResponse]) -> Result {
+        if not result.ok() {
+            return Result.Err(result.error)
+        }
+        res: HttpResponse = result?
+        sr: StripeResponse = StripeResponse(res.status, res.body)
         if sr.ok() {
             return Result.Ok(sr)
         }

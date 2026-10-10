@@ -310,16 +310,60 @@ class DefinitionVisitorMixin:
         self._emit("}")
         self._emit("")
 
+    def _emit_async_callable(
+        self, declaration: str, return_type: str, return_type_key: str,
+        params_node, suite_node, *, skip_self: bool = False,
+        self_replacement: str | None = None,
+    ) -> None:
+        """Emit an async callable as a goroutine plus one-slot result handle.
+
+        ``declaration`` contains the complete Go declaration through the closing
+        parameter parenthesis.  Keeping the common body here ensures top-level
+        functions, static methods, and instance methods all have identical
+        buffered-handle and return-lowering semantics.
+        """
+        chan_type = return_type if return_type else "interface{}"
+        async_ch = "__lam_async_ch"
+        self._emit(f"{declaration} chan {chan_type} {{")
+        self.indent += 1
+        self._emit(f"{async_ch} := make(chan {chan_type}, 1)")
+        self._emit("go func() {")
+        self.indent += 1
+        self._push_scope()
+        self._emit_params_prologue(params_node, skip_self=skip_self)
+        if self_replacement:
+            self._declare_var(self_replacement)
+        body_start = len(self.output_lines)
+        params_at_start = set(self.declared_vars)
+        with self._scoped(
+            _in_async_func=True,
+            _async_chan_name=async_ch,
+            _self_replacement=self_replacement,
+            _current_return_type=return_type or "",
+            _current_return_type_key=return_type_key,
+            _q_propagate_ok=(return_type == "*Result"),
+        ):
+            self._visit_suite(suite_node)
+        self._emit_unused_local_silencers(body_start, params_at_start)
+        self._pop_scope()
+        self.indent -= 1
+        self._emit("}()")
+        self._emit(f"return {async_ch}")
+        self.indent -= 1
+        self._emit("}")
+        self._emit("")
+
     def _visit_funcdef_body(
         self, is_private, is_static, is_async,
         func_name, params_node, return_type_node,
         return_type, is_multi_return, suite_node,
         tp_clause: str = "",
     ):
+        return_type_key = self._overload_return_key(return_type_node)
         if self.current_class:
             method_key = f"{self.current_class}.{'init' if func_name == '__init__' else func_name}"
             method_sig = self._param_types_sig(params_node, skip_self=not is_static) if params_node else ()
-            method_suffix = self._overload_suffix_for_sig(method_key, method_sig)
+            method_suffix = self._overload_suffix_for_sig(method_key, method_sig, return_type_key)
             if is_static:
                 go_name = self._go_class_name(self.current_class) + "_" + func_name + method_suffix
                 if is_private:
@@ -341,15 +385,35 @@ class DefinitionVisitorMixin:
                         go_name, static_clause, params_str, return_type,
                         params_node, suite_node,
                     )
+                elif is_async:
+                    self._emit_async_callable(
+                        f"func {go_name}{static_clause}({params_str})",
+                        return_type, return_type_key, params_node, suite_node,
+                    )
                 else:
                     self._emit(f"func {go_name}{static_clause}({params_str}){ret_str} {{")
                     body_start, params_at_start = self._begin_scoped_body(params_node)
-                    self._visit_suite(suite_node)
+                    with self._scoped(
+                        _current_return_type=return_type or "",
+                        _current_return_type_key=return_type_key,
+                        _q_propagate_ok=(return_type == "*Result"),
+                    ):
+                        self._visit_suite(suite_node)
                     self._finish_scoped_body(body_start, params_at_start)
                     self._emit("}")
                     self._emit("")
             elif func_name == "__init__" or func_name == "init":
                 self._emit_constructor(func_name, params_node, suite_node)
+            elif is_async:
+                go_cls = self._go_class_name(self.current_class)
+                class_args = self._class_type_args(self.current_class)
+                method_name = self._go_method_name(self.current_class, func_name) + method_suffix
+                params_str = self._typed_params_to_go(params_node, skip_self=True)
+                self._emit_async_callable(
+                    f"func (s *{go_cls}{class_args}) {method_name}{tp_clause}({params_str})",
+                    return_type, return_type_key, params_node, suite_node,
+                    skip_self=True, self_replacement="s",
+                )
             elif func_name == "__str__" or func_name == "__repr__":
                 self._emit_method(self._go_method_name(self.current_class, func_name) + method_suffix, "string", params_node, suite_node, tp_clause=tp_clause)
             elif func_name == "__len__":
@@ -373,7 +437,7 @@ class DefinitionVisitorMixin:
         # names and only genuine same-arity collisions get the longer
         # mangled form.
         sig = self._param_types_sig(params_node) if params_node else ()
-        name_suffix = self._overload_suffix_for_sig(func_name, sig)
+        name_suffix = self._overload_suffix_for_sig(func_name, sig, return_type_key)
 
         go_name = self._function_go_names.get(
             func_name,
@@ -384,28 +448,12 @@ class DefinitionVisitorMixin:
 
         params_str = self._typed_params_to_go(params_node)
 
-        # ── Async function → goroutine returning channel ──
+        # ── Async function → goroutine returning one-slot channel handle ──
         if is_async:
-            chan_type = return_type if return_type else "interface{}"
-            self._emit(f"func {go_name}{tp_clause}({params_str}) chan {chan_type} {{")
-            self.indent += 1
-            self._emit(f"ch := make(chan {chan_type}, 1)")
-            self._emit(f"go func() {{")
-            self.indent += 1
-            self._push_scope()
-            self._emit_params_prologue(params_node)
-            body_start = len(self.output_lines)
-            params_at_start = set(self.declared_vars)
-            with self._scoped(_in_async_func=True, _async_chan_name="ch"):
-                self._visit_suite(suite_node)
-            self._emit_unused_local_silencers(body_start, params_at_start)
-            self._pop_scope()
-            self.indent -= 1
-            self._emit(f"}}()")
-            self._emit(f"return ch")
-            self.indent -= 1
-            self._emit("}")
-            self._emit("")
+            self._emit_async_callable(
+                f"func {go_name}{tp_clause}({params_str})",
+                return_type, return_type_key, params_node, suite_node,
+            )
             return
 
         has_try = self._suite_contains_try(suite_node)
@@ -437,6 +485,7 @@ class DefinitionVisitorMixin:
             with self._scoped(
                 _in_try_func=True,
                 _current_return_type=current_ret,
+                _current_return_type_key=return_type_key,
                 _q_propagate_ok=(current_ret == "*Result"),
             ):
                 self._visit_suite(suite_node)
@@ -461,6 +510,7 @@ class DefinitionVisitorMixin:
         body_start, params_at_start = self._begin_scoped_body(params_node)
         with self._scoped(
             _current_return_type=current_ret,
+            _current_return_type_key=return_type_key,
             _q_propagate_ok=(current_ret == "*Result"),
         ):
             self._visit_suite(suite_node)
@@ -711,14 +761,16 @@ class DefinitionVisitorMixin:
         params_node = children[1] if len(children) > 1 and isinstance(children[1], Tree) and children[1].data == "typed_parameters" else None
         method_key = f"{interface_name}.{raw_method_name}"
         signature = self._param_types_sig(params_node) if params_node else ()
-        method_name = self._go_public_name(raw_method_name) + self._overload_suffix_for_sig(method_key, signature)
         ret_node = None
         for c in children[1:]:
             if isinstance(c, Tree) and c.data in ("single_return_type", "multi_return_type"):
                 ret_node = c
                 break
+        return_type = self._resolve_return_type(ret_node) if ret_node else ""
+        return_type_key = self._overload_return_key(ret_node) if ret_node else ""
+        method_name = self._go_public_name(raw_method_name) + self._overload_suffix_for_sig(method_key, signature, return_type_key)
         params_str = self._typed_params_to_go(params_node, skip_self=True)
         ret_str = ""
-        if ret_node:
-            ret_str = " " + self._resolve_return_type(ret_node)
+        if return_type:
+            ret_str = " " + return_type
         self._emit(f"{method_name}({params_str}){ret_str}")

@@ -167,7 +167,7 @@ still sees the underlying Go diagnostic under Lammergeier's
 |---------------------------|--------------------------|-----------------------------------------|
 | `my_func` (top-level)     | `My_func`                | Title-cased first letter; rest verbatim.|
 | `_helper`                 | `_helper`                | Leading underscore kept, no rename.     |
-| `__init__`                | `Init` / `NewX`          | Constructors become `NewClass`.         |
+| `init` / `__init__`       | `Init` / `NewX`          | `init` is preferred; both constructors become `NewClass`. |
 | `__str__`, `__repr__`     | `String`                 | Satisfies `fmt.Stringer`.               |
 | Other dunder ops          | `Add`, `Sub`, `Eq`, ...  | See `DUNDER_OPS` in `constants.py`.     |
 | `self`                    | `s`                      | Fixed receiver name in all methods.     |
@@ -401,9 +401,9 @@ generic. The stdlib class still has two `any` fields (`value`, `error`), so
 store payloads as `interface{}`. The compiler carries `T` through local,
 imported, overloaded, and propagated calls for Lam-side member/type checks;
 contextual lowering inserts a Go assertion when an annotated assignment,
-return, call argument, or collection element needs one. Direct untyped
-`.value`, `.error`, `unwrap()`, and `unwrapOr(...)` reads retain the dynamic
-fallback:
+return, call argument, or collection element needs one, including values read
+through `unwrap()` or `unwrapOr(...)`. Direct untyped `.value`, `.error`,
+`unwrap()`, and `unwrapOr(...)` reads retain the dynamic fallback:
 
 ```lam
 err: Result = Result.Err({"code": 400})
@@ -614,22 +614,22 @@ func Add(a int, b int) int {
 - Variadics (`func f(xs: ...int)`) become Go variadics (`xs ...int`). The
   compiler remembers variadic functions in `_variadic_functions`.
 - `private func` or a leading underscore produces an unexported name.
-- Overloads dispatch on **arity *and* parameter type**. The
-  transpiler walks the per-name `_overload_variants` list after
-  the pre-scan and assigns each variant a stable Go-name suffix:
-  `Name_<argcount>` when arities differ, `Name_<argcount>_<sigSuffix>`
-  when two variants share an arity (`Describe_1_int` vs
-  `Describe_1_str` vs `Describe_1_sliceOfInt`). Call sites build
-  the same signature from each argument's inferred Go type
-  (`_infer_call_arg_sig`) and pick the matching suffix; typed
-  locals participate via `_var_go_types` so `nums: list[int]`
-  routes to the `list[int]` overload. Instance, static, inherited, and
-  interface methods use class-qualified variant keys and the same suffix policy;
-  defaulted variants also retain signature-specific call metadata. The complete
-  overload set is injected into every imported-library transpiler, so an
-  external package field such as `self.http: HttpClient` can call an overloaded
-  instance method and receive the same mangled dispatch as main code. Variadic
-  functions (`*args`) still can't be overloaded.
+- Overloads dispatch on **arity, parameter type, and contextual return type**.
+  The transpiler walks the per-name `_overload_variants` list after the pre-scan
+  and assigns each variant a stable Go-name suffix: `Name_<argcount>` when
+  arities differ, `Name_<argcount>_<sigSuffix>` when parameter signatures differ,
+  and `Name_<argcount>_<sigSuffix>_ret_<returnSuffix>` when only return types
+  differ. Call sites infer parameter signatures through `_infer_call_arg_sig`.
+  Annotated assignments, enclosing returns, and typed receiving parameters
+  publish `_expected_expr_go_type`, which selects a matching return variant.
+  `Result[T]` still lowers to runtime `*Result`, but `_overload_return_key`
+  retains the payload as a compiler-only key such as `*Result[int]`; identical
+  parameter lists can therefore dispatch to distinct Result payload variants.
+  Unresolved ambiguity selects the first matching source-order candidate.
+  Instance, static, inherited, interface, defaulted, and imported-library
+  overloads share the same metadata and dispatch path; interface signatures and
+  overload sets are serialized with imported module metadata. Variadic functions (`*args`) still can't
+  be overloaded.
 
 Bare references to user functions (e.g. passing `handler` as a value)
 resolve to the Go public name so they can be used as first-class values.
@@ -691,7 +691,7 @@ Go happy, the build proceeds.
 class Point {
     static originCalls: int = 0
 
-    func __init__(self, x: int, y: int) {
+    func init(self, x: int, y: int) {
         self.x = x
         self.y = y
     }
@@ -1020,12 +1020,15 @@ instead of leaking the callee's `T` into caller Go.
 
 ## Concurrency
 
-- `async func` is implemented by wrapping the body in a goroutine that
-  writes its return value to a buffered channel. `await call` unwraps the
-  channel with `<-`.
-- Raw `go!` blocks can use `go func() { ... }()` and channels directly,
-  which is what `lamnet`, `lamhttp`, and the `lamheap` backing store do
-  internally.
+- Every `async func` invocation starts a goroutine and returns a channel handle
+  buffered to exactly one result; `await call` or `await handle` receives it
+  with `<-`. The same emitter is used for top-level functions, instance methods,
+  and static methods, so receiver type arguments, private/static Go naming, and
+  `Result[T]` payloads are preserved.
+- User-facing channel operations belong in `lamconcurrency.Channel`. Its raw Go
+  channel is the runtime boundary; blocking, immediate (`poll`/`offer`), and
+  awaitable (`asyncReceive`/`asyncSend`) orchestration is exposed through Lam
+  methods rather than copied into callers' `go!` blocks.
 
 ## External Go modules
 
@@ -1171,7 +1174,7 @@ through:
 | `@lam/vulture.Server`         | `*http.Server` (+ `[]any` route table) | `RawSrv`   |
 | `lamcache.LruCache`           | `*container/list.List` + map        | `Lst`/`Idx`|
 | `lamcache.TtlCache`           | `map[any]*ttlEntry`                 | `Idx`      |
-| `lamconcurrency.Channel`      | `chan interface{}`                  | `Ch`       |
+| `lamconcurrency.Channel`      | `*lamChannel` (data + close signal) | `Ch`       |
 | `lamconcurrency.WaitGroup`    | `*sync.WaitGroup`                   | `Wg`       |
 | `lamheap.Heap`                | `*container/heap` adapter           | `Items`    |
 
@@ -1190,8 +1193,9 @@ inputs and forward to the underlying Go API.
   comma-separated arguments, with an optional trailing comma before
   `)`. Positional and keyword arguments use the same semantics as
   single-line calls.
-- **Implicit conversions:** integer ↔ float conversions are explicit.
-  `Conv.toFloat`, `int()`, `float()` exist for readability.
+- **Implicit conversions:** integer ↔ float conversions are explicit through
+  `int()` and `float()`. String parsing uses a payload-typed `Conv.parse`
+  Result overload rather than an implicit numeric conversion.
 - **Reserved words:** identifiers colliding with Go keywords (e.g.
   `range`) get an underscore suffix; prefer `range_` in API designs.
 - **Multiple try/catch in one function:** the current lowering shares a
@@ -1211,10 +1215,11 @@ inputs and forward to the underlying Go API.
   identifier inside nested method-call args. When in doubt, lift the
   expression into a `:= …` line above the `print(...)` and interpolate
   the simple variable.
-- **Lam `int(s)` is a Go type-conversion, not a parser:** to coerce a
-  whole string into an integer at runtime, call `strconv.Atoi(s)` from a
-  `go!` block (or use `Conv.toInt` for a silent default). `int(s[i])`
-  is different: string indexing yields a byte-like numeric value.
+- **Lam `int(s)` is a Go type-conversion, not a parser:** parse a whole string
+  with an explicitly typed Result, for example `parsed: Result[int] =
+  Conv.parse(s)`, or call `strconv.Atoi(s)` from a `go!` block. `Conv.parse`
+  reports malformed input rather than silently defaulting. `int(s[i])` is
+  different: string indexing yields a byte-like numeric value.
 - **Walrus (`name := expr`) binds locally:** the lowering wraps the
   binding in an IIFE, so the introduced name is *not* visible in the
   surrounding scope. Use `:=` only when the value of the expression

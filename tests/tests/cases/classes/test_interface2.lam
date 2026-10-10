@@ -8,7 +8,7 @@ interface Shape {
 }
 
 class Rectangle {
-    func __init__(self, w: int, h: int) {
+    func init(self, w: int, h: int) {
         self.w: int = w
         self.h: int = h
     }

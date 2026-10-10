@@ -5,7 +5,7 @@
 # expect: Config_B
 
 class Config {
-    func __init__(self) {
+    func init(self) {
         self.store: dict[str, str] = {}
     }
 

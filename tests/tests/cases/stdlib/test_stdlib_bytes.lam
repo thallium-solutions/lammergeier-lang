@@ -4,6 +4,11 @@
 # expect: count_ok
 
 from lambytes import Bytes
+from lamerrors import Result
+
+func resultStr(r: Result) -> str {
+    go! { return r.Value.(string) }
+}
 
 func main() {
     # Hex encode
@@ -13,7 +18,7 @@ func main() {
     }
 
     # Hex decode
-    d: str = Bytes.hexDecode(h)
+    d: str = resultStr(Bytes.hexDecode(h))
     if d == "hello" {
         print("decode_ok")
     }

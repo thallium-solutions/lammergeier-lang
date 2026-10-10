@@ -3,38 +3,131 @@
 # expect: line1
 # expect: 2
 # expect: append-ok
+# expect: empty-ok
+# expect: open-error-ok
+# expect: mode-error-ok
+# expect: readline-persistent-ok
+# expect: lines-generator-ok
+# expect: batches-generator-ok
+# expect: batch-error-ok
+# expect: closed-lines-error-ok
 # expect: file_ok
 
-from lamos import Os, File
+from lamos import Os, File, FileLineGenerator
+from lamerrors import Result
+
+func resultFile(r: Result) -> File {
+    go! { return r.Value.(*File) }
+}
+
+func resultStr(r: Result) -> str {
+    go! { return r.Value.(string) }
+}
+
+func resultInt(r: Result) -> int {
+    go! { return r.Value.(int) }
+}
+
+func resultStrings(r: Result) -> list[str] {
+    go! { return r.Value.([]string) }
+}
 
 func main() {
-    path: str = Os.tempFile("lam_file_test_", ".txt")
+    path: str = resultStr(Os.tempFile("lam_file_test_", ".txt"))
 
-    with File.open(path, "w") as f {
-        written: int = f.write("line1\nline2\n")
+    with resultFile(File.open(path, "w")) as f {
+        written: int = resultInt(f.write("line1\nline2\n"))
         print(written)
     }
 
-    with File.open(path) as f {
-        print(f.readline())
+    with resultFile(File.open(path)) as f {
+        print(resultStr(f.readline()))
     }
 
-    with File.open(path) as f {
-        lines: list[str] = f.readlines()
+    with resultFile(File.open(path)) as f {
+        lines: list[str] = resultStrings(f.readlines())
         print(lines.length())
     }
 
-    with File.open(path, "a") as f {
-        f.write("line3\n")
+    with resultFile(File.open(path, "a")) as f {
+        f.write("line3\n").unwrap()
     }
 
-    reader: File = File.open(path)
-    content: str = reader.read()
-    reader.close()
+    reader: File = resultFile(File.open(path))
+    content: str = resultStr(reader.read())
+    reader.close().unwrap()
     if content.contains("line3") {
         print("append-ok")
     }
 
-    Os.remove(path)
+    Os.writeFile(path, "").unwrap()
+    emptyReader: File = resultFile(File.open(path))
+    empty: Result[str] = emptyReader.read()
+    emptyReader.close().unwrap()
+    if empty.ok() and str(empty.value) == "" {
+        print("empty-ok")
+    }
+
+    missing: Result[File] = File.open(path + ".missing")
+    if not missing.ok() {
+        print("open-error-ok")
+    }
+    invalidMode: Result[File] = File.open(path, "invalid")
+    if not invalidMode.ok() {
+        print("mode-error-ok")
+    }
+
+    Os.writeFile(path, "alpha\nbeta\ngamma\n").unwrap()
+    sequential: File = resultFile(File.open(path))
+    first: str = resultStr(sequential.readline())
+    second: str = resultStr(sequential.readline())
+    sequential.close().unwrap()
+    if first == "alpha" and second == "beta" {
+        print("readline-persistent-ok")
+    }
+
+    generatedReader: File = resultFile(File.open(path))
+    lineGenerator: FileLineGenerator = generatedReader.lines()
+    generated: list[str] = []
+    while not lineGenerator.done() {
+        lineResult: Result[str] = lineGenerator.nextLine()
+        if lineResult.ok() and lineResult.value != None {
+            generated.append(resultStr(lineResult))
+        }
+    }
+    generatedReader.close().unwrap()
+    if len(generated) == 3 and generated[0] == "alpha" and generated[1] == "beta" and generated[2] == "gamma" {
+        print("lines-generator-ok")
+    }
+
+    batchReader: File = resultFile(File.open(path))
+    batchGenerator: FileLineGenerator = batchReader.lineBatches(2)
+    batches: list[list[str]] = []
+    while not batchGenerator.done() {
+        batchResult: Result[list[str]] = batchGenerator.nextBatch()
+        if batchResult.ok() and batchResult.value != None {
+            batches.append(resultStrings(batchResult))
+        }
+    }
+    batchReader.close().unwrap()
+    if len(batches) == 2 and len(batches[0]) == 2 and batches[0][0] == "alpha" and batches[0][1] == "beta" and len(batches[1]) == 1 and batches[1][0] == "gamma" {
+        print("batches-generator-ok")
+    }
+
+    invalidBatchReader: File = resultFile(File.open(path))
+    invalidBatch: Result[list[str]] = invalidBatchReader.lineBatches(0).nextBatch()
+    if not invalidBatch.ok() {
+        print("batch-error-ok")
+    }
+    invalidBatchReader.close().unwrap()
+
+    closedReader: File = resultFile(File.open(path))
+    closedReader.close().unwrap()
+    closedLine: Result[str] = closedReader.lines().nextLine()
+    if not closedLine.ok() {
+        print("closed-lines-error-ok")
+    }
+
+    Os.remove(path).unwrap()
     print("file_ok")
 }

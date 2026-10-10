@@ -2,7 +2,7 @@ from lamotel import OtelTracer
 from lamenv import Env
 
 func main() {
-    if Env.get("LAMOTEL_LIVE_TESTS") != "1" {
+    if Env.getOr("LAMOTEL_LIVE_TESTS", "") != "1" {
         print("skip: set LAMOTEL_LIVE_TESTS=1 to run live OTLP tests")
         return
     }

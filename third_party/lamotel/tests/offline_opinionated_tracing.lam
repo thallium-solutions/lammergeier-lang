@@ -15,6 +15,11 @@
 from lamotel import OtelConfig, OtelTracer, OtelSpanBatch
 from lamenv import Env
 from lamhttp import Http, HttpServer
+from lamerrors import Result
+
+func resultServer(result: Result) -> HttpServer {
+    go! { return result.Value.(*HttpServer) }
+}
 
 class Capture {
     static path: str = ""
@@ -29,20 +34,20 @@ func handler(method: str, path: str, body: str) -> str {
 }
 
 func clearOtelEnv() {
-    Env.unset("OTEL_SERVICE_NAME")
-    Env.unset("OTEL_EXPORTER_OTLP_ENDPOINT")
-    Env.unset("OTEL_EXPORTER_OTLP_HEADERS")
-    Env.unset("OTEL_SERVICE_VERSION")
-    Env.unset("OTEL_DEPLOYMENT_ENVIRONMENT")
-    Env.unset("OTEL_RESOURCE_ATTRIBUTES")
+    _ = Env.unset("OTEL_SERVICE_NAME")
+    _ = Env.unset("OTEL_EXPORTER_OTLP_ENDPOINT")
+    _ = Env.unset("OTEL_EXPORTER_OTLP_HEADERS")
+    _ = Env.unset("OTEL_SERVICE_VERSION")
+    _ = Env.unset("OTEL_DEPLOYMENT_ENVIRONMENT")
+    _ = Env.unset("OTEL_RESOURCE_ATTRIBUTES")
 }
 
 func main() {
     clearOtelEnv()
-    Env.set("OTEL_SERVICE_NAME", "checkout-api")
-    Env.set("OTEL_SERVICE_VERSION", "1.2.3")
-    Env.set("OTEL_DEPLOYMENT_ENVIRONMENT", "prod")
-    Env.set("OTEL_RESOURCE_ATTRIBUTES", "team=payments,region=eu")
+    _ = Env.set("OTEL_SERVICE_NAME", "checkout-api")
+    _ = Env.set("OTEL_SERVICE_VERSION", "1.2.3")
+    _ = Env.set("OTEL_DEPLOYMENT_ENVIRONMENT", "prod")
+    _ = Env.set("OTEL_RESOURCE_ATTRIBUTES", "team=payments,region=eu")
 
     cfg: OtelConfig = OtelConfig.fromEnv()
     resource: dict[str, str] = cfg.resource()
@@ -71,12 +76,12 @@ func main() {
     batch.add(child)
     print(batch.size())
 
-    srv: HttpServer = Http.serve(39284, handler)
+    srv: HttpServer = resultServer(Http.serve(39284, handler))
     cfg.endpoint = "http://127.0.0.1:39284"
     res = batch.export(tracer)
     print(res.ok())
     print(Capture.path == "/v1/traces")
     print(Capture.body.contains("deployment.environment"))
-    srv.close()
+    srv.close().unwrap()
     clearOtelEnv()
 }

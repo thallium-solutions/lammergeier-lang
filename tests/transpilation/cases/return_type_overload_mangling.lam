@@ -1,0 +1,24 @@
+# expect-go: func Source_pick_1_int_ret_int(seed int) int {
+# expect-go: func Source_pick_1_int_ret_str(seed int) string {
+# expect-go: func (s *Source) Value_1_int_ret_float(seed int) float64 {
+# expect-go: func (s *Source) Value_1_int_ret_bool(seed int) bool {
+# expect-go: Source_pick_1_int_ret_int(1)
+# expect-go: Source_pick_1_int_ret_str(1)
+# expect-go: source.Value_1_int_ret_float(2)
+# expect-go: source.Value_1_int_ret_bool(2)
+
+class Source {
+    static func pick(seed: int) -> int { return seed }
+    static func pick(seed: int) -> str { return str(seed) }
+    func value(self, seed: int) -> float { return float(seed) }
+    func value(self, seed: int) -> bool { return seed > 0 }
+}
+
+func main() {
+    source: Source = Source()
+    integer: int = Source.pick(1)
+    text: str = Source.pick(1)
+    decimal: float = source.value(2)
+    flag: bool = source.value(2)
+    print(integer, text, decimal, flag)
+}

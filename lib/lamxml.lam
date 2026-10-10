@@ -95,7 +95,7 @@ class XmlNode {
                            document order.
     -#
 
-    func __init__(self,
+    func init(self,
                   tag: str = "",
                   attrs: dict[str, str] = None,
                   text: str = "",
@@ -227,24 +227,11 @@ class Xml {
         return out
     }
 
-    static func decode(xmlStr: str) -> any {
+    static func decode(xmlStr: str) -> Result[any] {
         #- Parse an XML document into a Lam-shaped tree, mirroring
            ``Json.decode``. Element trees become ``dict[str, any]``;
            repeated tags collapse into ``list[any]``; leaf text
-           becomes a ``str``. Returns ``None`` on parse error. -#
-        out: any = None
-        go! {
-            dec := xml.NewDecoder(strings.NewReader(xmlStr))
-            v, err := lamXmlDecodeOne(dec)
-            if err == nil {
-                out = v
-            }
-        }
-        return out
-    }
-
-    static func tryDecode(xmlStr: str) -> Result {
-        #- Same as ``decode`` but surfaces parse errors as ``Err``. -#
+           becomes a ``str``. -#
         go! {
             dec := xml.NewDecoder(strings.NewReader(xmlStr))
             v, err := lamXmlDecodeOne(dec)
@@ -255,22 +242,8 @@ class Xml {
         }
     }
 
-    static func parse(xmlStr: str) -> any {
-        #- Parse to a proper DOM (``XmlNode``). Returns ``None`` on
-           parse error — use ``tryParse`` if you need the error
-           message. -#
-        out: any = None
-        go! {
-            dec := xml.NewDecoder(strings.NewReader(xmlStr))
-            n, err := lamXmlParseDom(dec)
-            if err == nil {
-                out = n
-            }
-        }
-        return out
-    }
-
-    static func tryParse(xmlStr: str) -> Result {
+    static func parse(xmlStr: str) -> Result[XmlNode] {
+        #- Parse to a proper DOM (``XmlNode``). -#
         go! {
             dec := xml.NewDecoder(strings.NewReader(xmlStr))
             n, err := lamXmlParseDom(dec)
@@ -316,7 +289,7 @@ go! {
         for {
             tok, err := dec.Token()
             if err != nil {
-                if err == io.EOF { break }
+                if err == io.EOF { return nil, io.ErrUnexpectedEOF }
                 return nil, err
             }
             switch t := tok.(type) {
@@ -377,7 +350,7 @@ go! {
         for {
             tok, err := dec.Token()
             if err != nil {
-                if err == io.EOF { break }
+                if err == io.EOF { return nil, io.ErrUnexpectedEOF }
                 return nil, err
             }
             switch t := tok.(type) {

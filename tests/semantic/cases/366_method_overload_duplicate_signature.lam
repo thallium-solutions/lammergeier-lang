@@ -1,4 +1,4 @@
-# expect-error: duplicate class method `parse` with the same type signature
+# expect-pass
 
 class Parser {
     static func parse(value: str) -> str { return value }

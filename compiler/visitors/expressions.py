@@ -48,7 +48,7 @@ class ExpressionVisitorMixin:
 
     # ─── Typed value conversion ────────────────────────────────
 
-    def _typed_value_to_go(self, node, go_type: str) -> str:
+    def _typed_value_to_go(self, node, go_type: str, type_key: str = "") -> str:
         """Convert an expression with an expected Go type.
 
         This is the single choke point for contextual lowering. Callers that
@@ -77,9 +77,9 @@ class ExpressionVisitorMixin:
             if node.data == "set_comprehension" and self._is_go_set_type(go_type):
                 return self._set_comp_to_go(node, map_type=go_type)
             if node.data == "test" and len(node.children) == 3 and go_type:
-                true_val = self._typed_value_to_go(node.children[0], go_type)
+                true_val = self._typed_value_to_go(node.children[0], go_type, type_key)
                 cond = self._expr_to_go(node.children[1])
-                false_val = self._typed_value_to_go(node.children[2], go_type)
+                false_val = self._typed_value_to_go(node.children[2], go_type, type_key)
                 return (
                     f"func() {go_type} {{ if {cond} {{ return {true_val} }}; "
                     f"return {false_val} }}()"
@@ -87,6 +87,7 @@ class ExpressionVisitorMixin:
         if go_type:
             with self._scoped(
                 _expected_expr_go_type=go_type,
+                _expected_expr_type_key=type_key or go_type,
                 _propagate_cast_hint=go_type,
             ):
                 raw = self._expr_to_go(node)
@@ -104,6 +105,13 @@ class ExpressionVisitorMixin:
             and self._tree_contains(node, "power")
         ):
             return f"{go_type}({raw})"
+        if go_type not in {"", "interface{}"} and isinstance(node, Tree) and node.data == "funccall" and node.children:
+            callee = node.children[0]
+            if isinstance(callee, Tree) and callee.data == "getattr":
+                receiver = callee.children[0]
+                method = self._get_name(callee.children[1])
+                if method in {"unwrap", "unwrapOr"} and self._expr_go_type_hint(receiver) == "*Result":
+                    return f"{raw}.({go_type})"
         # ── Class-pointer coercion ─────────────────────────────
         # When annassign targets a Lam class (``go_type`` is
         # ``*<ClassName>``) and the value is either:
@@ -258,14 +266,29 @@ class ExpressionVisitorMixin:
             return ""
         if node.data == "var" and node.children:
             name = self._get_name(node.children[0])
+            if name == "_":
+                return ""
             if name == "self" and self.current_class:
                 return f"*{self._go_class_name(self.current_class)}"
             return self._var_go_types.get(name, "")
         if node.data == "funccall" and node.children:
             callee = node.children[0]
             if isinstance(callee, Tree) and callee.data == "var" and callee.children:
-                if self._get_name(callee.children[0]) == "json":
+                name = self._get_name(callee.children[0])
+                if name == "json":
                     return "LamJSON"
+                if name in self._result_payload_go_types:
+                    return "*Result"
+            if isinstance(callee, Tree) and callee.data in {"getattr", "getattr_safe"} and len(callee.children) >= 2:
+                receiver = callee.children[0]
+                method = self._get_name(callee.children[1])
+                class_name = self._infer_receiver_class(receiver)
+                if not class_name and isinstance(receiver, Tree) and receiver.data == "var" and receiver.children:
+                    candidate = self._get_name(receiver.children[0])
+                    if candidate in self._class_names:
+                        class_name = candidate
+                if class_name and f"{class_name}.{method}" in self._result_payload_go_types:
+                    return "*Result"
         if node.data == "getitem" and len(node.children) >= 2:
             receiver_type = self._expr_go_type_hint(node.children[0])
             index = node.children[1]
@@ -290,6 +313,11 @@ class ExpressionVisitorMixin:
                 obj_name = self._get_name(obj.children[0])
                 if obj_name == "self" and self.current_class:
                     class_name = self.current_class
+                elif obj_name in self._class_names:
+                    static_name = self._static_var_go_name(obj_name, attr)
+                    static_type = self._var_go_types.get(static_name, "")
+                    if static_type:
+                        return static_type
                 else:
                     class_name = self._var_types.get(obj_name, "")
             if class_name:
@@ -472,7 +500,14 @@ class ExpressionVisitorMixin:
             tmp = f"__q{self._q_temp_counter}"
             self._emit(f"{tmp} := {inner_str}")
             if self._q_propagate_ok:
-                self._emit(f"if !{tmp}.Ok() {{ return {tmp} }}")
+                if self._in_async_func and self._async_chan_name:
+                    self._emit(
+                        f"if !{tmp}.Ok() {{ "
+                        f"{self._async_chan_name} <- {tmp}; return "
+                        f"}}"
+                    )
+                else:
+                    self._emit(f"if !{tmp}.Ok() {{ return {tmp} }}")
             else:
                 self._emit(
                     f"if !{tmp}.Ok() {{ "
@@ -754,11 +789,15 @@ class ExpressionVisitorMixin:
         type_args: Optional[List[str]] = None,
     ) -> str:
         go_name = self._go_user_function_name(func_name)
-        call_args = self._planned_call_args(func_name, args_node, args, kwargs)
+        call_key = func_name
         if (len(self._overloaded_functions.get(func_name, set())) > 1
                 or len(self._overload_variants.get(func_name, [])) > 1):
             call_sig = self._infer_call_arg_sig(args_node)
+            variant = self._overload_variant_for_sig(func_name, call_sig)
             go_name = f"{go_name}{self._overload_suffix_for_sig(func_name, call_sig)}"
+            if variant is not None:
+                call_key = str(variant.get("meta_key") or func_name)
+        call_args = self._planned_call_args(call_key, args_node, args, kwargs)
         if type_args is not None:
             return f"{go_name}[{self._args_to_go(type_args)}]({self._args_to_go(call_args)})"
         return f"{go_name}({self._args_to_go(call_args)})"
@@ -2392,7 +2431,6 @@ class ExpressionVisitorMixin:
             lines.append(f"{tabs}for _, {var_str} := range {iter_str} {{")
 
     def _list_comp_to_go(self, node: Tree, elem_type: str = None) -> str:
-        self._need_import("fmt")
         comp = node.children[0]
         slice_type = elem_type if elem_type else "[]interface{}"
         if not isinstance(comp, Tree) or comp.data != "comprehension":

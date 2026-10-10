@@ -16,7 +16,7 @@
 #     }
 #
 # Variants:
-#   * ``tryTake(n)`` — non-blocking. Returns true on success.
+#   * ``takeAvailable(n)`` — non-blocking. Returns true on success.
 #   * ``take(n)``     — blocks until ``n`` tokens are available.
 #   * ``wait(n)``     — alias for ``take``, reads more idiomatically
 #                       when the caller doesn't care about the
@@ -79,7 +79,7 @@ class TokenBucket {
        size; ``refillPerSec`` is the steady-state rate at which
        tokens replenish. The bucket starts full. -#
 
-    func __init__(self, capacity: int = 10, refillPerSec: int = 10) {
+    func init(self, capacity: int = 10, refillPerSec: int = 10) {
         self.capacity: int = capacity
         self.refillPerSec: int = refillPerSec
         self._st: any = None
@@ -93,16 +93,14 @@ class TokenBucket {
         }
     }
 
-    func tryTake(self, n: int = 1) -> bool {
+    func takeAvailable(self, n: int = 1) -> bool {
         #- Non-blocking take. Returns ``true`` if ``n`` tokens were
            available and deducted, ``false`` otherwise. -#
-        got: bool = false
         go! {
             st := s._st.(*lamBucketState)
             ok, _ := lamBucketTryTake(st, float64(n))
-            got = ok
+            return ok
         }
-        return got
     }
 
     func take(self, n: int = 1) {
@@ -136,15 +134,13 @@ class TokenBucket {
         #- Current token count (floored to int). Informational only —
            another goroutine may drain the bucket before the next
            call. -#
-        out: int = 0
         go! {
             st := s._st.(*lamBucketState)
             st.mu.Lock()
+            defer st.mu.Unlock()
             lamBucketRefillLocked(st, time.Now())
-            out = int(st.tokens)
-            st.mu.Unlock()
+            return int(st.tokens)
         }
-        return out
     }
 }
 

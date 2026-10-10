@@ -4,6 +4,11 @@
 # lands this benchmark's running time should roughly halve.
 
 from lamre import Re
+from lamerrors import Result
+
+func resultBool(result: Result) -> bool {
+    go! { return result.Value.(bool) }
+}
 
 func main() {
     lines: list[str] = []
@@ -13,7 +18,7 @@ func main() {
     hits: int = 0
     for __i in range(50) {
         for line in lines {
-            if Re.match("req_id=\\w+", line) {
+            if resultBool(Re.match("req_id=\\w+", line)) {
                 hits = hits + 1
             }
         }

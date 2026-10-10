@@ -12,7 +12,7 @@
 # expect: cls_state_ok
 
 class Account {
-    func __init__(self, owner: str, balance: int) {
+    func init(self, owner: str, balance: int) {
         self.owner: str = owner
         self.balance: int = balance
     }
@@ -44,7 +44,7 @@ class Account {
 }
 
 class Tracker {
-    func __init__(self) {
+    func init(self) {
         self.count: int = 0
         self.total: int = 0
     }
