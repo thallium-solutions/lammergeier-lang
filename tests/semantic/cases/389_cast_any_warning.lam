@@ -1,0 +1,10 @@
+# expect-warning: warning[type]
+# expect-warning: `int(...)` on an `any` value is checked at runtime: any integer kind converts, anything else throws `TypeError`
+# expect-warning: `bool(...)` on an `any` value is checked at runtime: a bool converts, anything else throws `TypeError`
+
+func main() {
+    a: any = 5
+    b: any = true
+    print(int(a))
+    print(bool(b))
+}

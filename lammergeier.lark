@@ -167,7 +167,7 @@ import_name: "import" dotted_as_names
 import_from: "from" (dots? (dotted_name | scoped_name) | dots) "import" ("*" | "(" import_as_names ")" | import_as_names)
 !dots: "."+
 import_as_name: name ["as" name]
-dotted_as_name: dotted_name ["as" name]
+dotted_as_name: (dotted_name | scoped_name) ["as" name]
 import_as_names: import_as_name ("," import_as_name)* [","]
 dotted_as_names: dotted_as_name ("," dotted_as_name)*
 dotted_name: name ("." name)*

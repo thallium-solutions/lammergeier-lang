@@ -1,0 +1,81 @@
+# Test: lammigrate and lamschema link into the same program (regression:
+# both used to declare a top-level ``Schema`` class). Migrations are
+# generated with ``SchemaBuilder``, applied by ``Migrator``, and the rows
+# read back are validated with lamschema's JSON ``Schema``.
+#
+# expect: generated: 2
+# expect: applied: 20261015000000_create_widgets.sql,20261015000001_index_widgets.sql
+# expect: valid: gear
+# expect: valid: sprocket
+# expect: rejected: label too short
+# expect: rolled-back: 2
+
+from lamconv import Conv
+from lamdb import Db
+from lamerrors import Result
+from lamjson import Json
+from lammigrate import Migrator, SchemaBuilder
+from lamos import Os
+from lamschema import Schema
+
+const WidgetSchema: str = "{\"type\": \"object\", \"required\": [\"label\", \"qty\"], \"properties\": {\"label\": {\"type\": \"string\", \"minLength\": 3}, \"qty\": {\"type\": \"integer\", \"minimum\": 0}}}"
+
+func writeMigrations(dir_: str, builder: SchemaBuilder) -> Result[int] {
+    cols: list[dict[str, any]] = [
+        {"name": "id", "type": "id"},
+        {"name": "label", "type": "string", "length": 32},
+        {"name": "qty", "type": "integer"}
+    ]
+    create: str = builder.createTable("widgets", cols)
+    index: str = builder.addIndex("widgets", ["label"])
+    drop: str = builder.dropTable("widgets")
+    dropIndex: str = builder.dropIndex("idx_widgets_label")
+    files: dict[str, str] = {
+        "20261015000000_create_widgets.sql": f"-- +lam up\n{create};\nINSERT INTO widgets (label, qty) VALUES ('gear', 4);\nINSERT INTO widgets (label, qty) VALUES ('sprocket', 9);\n-- +lam down\n{drop};\n",
+        "20261015000001_index_widgets.sql": f"-- +lam up\n{index};\n-- +lam down\n{dropIndex};\n"
+    }
+    for name, body in files {
+        _ = Os.writeFile(dir_ + "/" + name, body)?
+    }
+    return Result.Ok(len(files))
+}
+
+func check(label: str, qty: int) -> Result[str] {
+    doc: json = {"label": label, "qty": qty}
+    schema: json = Json.decode(WidgetSchema)?
+    _ = Schema.validate(schema, doc)?
+    return Result.Ok(label)
+}
+
+func main() {
+    dir_: str = "/tmp/lammigrate_lamschema_test"
+    Os.removeAll(dir_).unwrap()
+    Os.mkdir(dir_).unwrap()
+    db: Db = Db.connect("sqlite", ":memory:").unwrap()
+    builder: SchemaBuilder = SchemaBuilder(db.driverName())
+    print("generated: " + str(writeMigrations(dir_, builder).unwrap()))
+
+    mig: Migrator = Migrator(db, dir_)
+    applied: list[str] = mig.up().unwrap()
+    print("applied: " + ",".join(applied))
+
+    rows: list[dict[str, any]] = db.query("SELECT label, qty FROM widgets ORDER BY id", []).unwrap()
+    for row in rows {
+        label: str = str(row["label"])
+        parsed: Result[int] = Conv.parse(str(row["qty"]))
+        qty: int = parsed.unwrap()
+        do {
+            print("valid: " + check(label, qty)?)
+        } catch err {
+            print("invalid: " + label)
+        }
+    }
+    bad: Result[str] = check("ab", 1)
+    if not bad.ok() {
+        print("rejected: label too short")
+    }
+    rolled: list[str] = mig.down(2).unwrap()
+    print("rolled-back: " + str(len(rolled)))
+    db.close().unwrap()
+    Os.removeAll(dir_).unwrap()
+}

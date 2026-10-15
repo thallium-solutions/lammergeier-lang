@@ -1,0 +1,15 @@
+# expect-pass
+# expect-no-warning: unused import `Result`
+# `do { } catch` lowers to Result helpers too.
+
+from lamerrors import Result
+from lamos import Os
+
+func main() {
+    do {
+        text: str = Os.readFile("/etc/hostname")?
+        print(len(text))
+    } catch err {
+        print(f"failed: {err}")
+    }
+}

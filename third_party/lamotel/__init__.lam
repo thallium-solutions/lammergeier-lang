@@ -1,4 +1,5 @@
 from lamenv import Env
+from lamjson import Json
 from lamerrors import Result, Error
 from lamhttp import HttpClient, HttpResponse
 from lamtime import Time
@@ -211,13 +212,14 @@ class Otel {
             }
         }
         for span in spans {
-            encodedSpans.append(json(span.toDict(serviceName)))
+            # Span attributes are dynamic (``dict[str, any]``): convert explicitly.
+            encodedSpans.append(Json.fromValue(span.toDict(serviceName)).unwrap())
         }
         payload: json = {
             "resourceSpans": [{
                 "resource": {"attributes": resourceAttrs},
                 "scopeSpans": [{
-                    "scope": {"name": "lamotel", "version": "0.1.0"},
+                    "scope": {"name": "lamotel", "version": "0.2.1"},
                     "spans": encodedSpans,
                 }],
             }],
@@ -230,7 +232,7 @@ class OtelTracer {
     func init(self, cfg: OtelConfig) {
         self.cfg: OtelConfig = cfg
         self.http: HttpClient = HttpClient("", cfg.timeoutMs)
-        self.http.setHeader("User-Agent", "lamotel/0.1.0")
+        self.http.setHeader("User-Agent", "lamotel/0.2.1")
         self.http.setHeader("Content-Type", "application/json")
         headers: dict[str, str] = Otel.parseHeaders(cfg.headers)
         for k, v in headers {

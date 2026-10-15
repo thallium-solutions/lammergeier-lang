@@ -1,0 +1,79 @@
+# Test: ``Result.Ok(<literal>)`` is shaped by the declared ``Result[T]``
+# payload (function return type or annotated binding). Collection literals
+# used to be emitted as untyped ``[]interface{}`` / ``map[string]interface{}``
+# and ``xs: list[str] = names()?`` panicked with an interface conversion.
+#
+# expect: list: 2
+# expect: dict: 3
+# expect: nested: 4
+# expect: set-size: 2
+# expect: annotated: x,y
+# expect: comprehension: 0,1,4
+# expect: ternary: 1
+# expect: scalar: 7
+# expect: err: Nope: still an error
+
+from lamerrors import Result, Error
+
+func names() -> Result[list[str]] {
+    return Result.Ok(["a", "b"])
+}
+
+func counts() -> Result[dict[str, int]] {
+    return Result.Ok({"a": 1, "b": 2})
+}
+
+func grid() -> Result[list[list[int]]] {
+    return Result.Ok([[1, 2], [3, 4]])
+}
+
+func tags() -> Result[set[str]] {
+    return Result.Ok({"x", "y", "x"})
+}
+
+func squares(n: int) -> Result[list[int]] {
+    return Result.Ok([i * i for i in range(n)])
+}
+
+func pick(flag: bool) -> Result[list[str]] {
+    return Result.Ok(["one"] if flag else ["two", "three"])
+}
+
+func seven() -> Result[int] {
+    return Result.Ok(7)
+}
+
+func failing() -> Result[list[str]] {
+    return Result.Err(Error("Nope", "still an error"))
+}
+
+func run() -> Result[bool] {
+    xs: list[str] = names()?
+    print(f"list: {len(xs)}")
+    m: dict[str, int] = counts()?
+    print(f"dict: {m['a'] + m['b']}")
+    g: list[list[int]] = grid()?
+    print(f"nested: {g[1][1]}")
+    t: set[str] = tags()?
+    print(f"set-size: {len(t)}")
+    annotated: Result[list[str]] = Result.Ok(["x", "y"])
+    ys: list[str] = annotated?
+    print("annotated: " + ",".join(ys))
+    sq: list[int] = squares(3)?
+    parts: list[str] = [str(v) for v in sq]
+    print("comprehension: " + ",".join(parts))
+    p: list[str] = pick(true)?
+    print(f"ternary: {len(p)}")
+    n: int = seven()?
+    print(f"scalar: {n}")
+    return Result.Ok(true)
+}
+
+func main() {
+    _ = run().unwrap()
+    do {
+        _ = failing()?
+    } catch err {
+        print(f"err: {err}")
+    }
+}

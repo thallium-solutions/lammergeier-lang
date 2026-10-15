@@ -26,6 +26,7 @@ import sys
 import tempfile
 import shutil
 from dataclasses import dataclass
+from types import SimpleNamespace as _SimpleNamespace
 from pathlib import Path
 try:
     import lark as _lark
@@ -62,6 +63,8 @@ from compiler.preprocessor import (
     LAMMERGEIER_ALIASES,
 )
 from compiler import cache as _lamcache
+from compiler.link_symbols import find_symbol_clashes, render_symbol_clashes
+from compiler import namespacing as _namespacing
 from compiler.modules import WorkspaceIndex
 from compiler.source_map import SourceMap
 from compiler.version import LAMC_VERSION
@@ -1451,6 +1454,18 @@ def _library_go_filename(mod_name: str) -> str:
     return f"lib_{safe}_lam.go"
 
 
+_LINE_DIRECTIVE_RE = _re.compile(r"^([ \t]*)//line .*:(\d+)[ \t]*$", _re.MULTILINE)
+
+
+def _retarget_line_directives(go_src: str, lam_path: str) -> str:
+    """Rewrite every ``//line <file>:<n>`` directive to point at ``lam_path``.
+
+    A transpiled library only ever maps back to its own source file, so all
+    of its directives share one path.
+    """
+    return _LINE_DIRECTIVE_RE.sub(lambda m: f"{m.group(1)}//line {lam_path}:{m.group(2)}", go_src)
+
+
 def _effective_extlibs_dirs(
     source_dir: Path,
     extlibs_paths: list[str] | None,
@@ -1666,8 +1681,12 @@ def compile_lam(
                     if isinstance(child, Tree) and child.data == "dotted_as_names":
                         for das in child.children:
                             if isinstance(das, Tree) and das.data == "dotted_as_name":
-                                parts = []
                                 dn = das.children[0]
+                                if isinstance(dn, Tree) and dn.data == "scoped_name":
+                                    if dn.children:
+                                        out.append((str(dn.children[0]), n))
+                                    continue
+                                parts = []
                                 for c in dn.children:
                                     if isinstance(c, Tree):
                                         parts.append(str(c.children[0]))
@@ -1971,6 +1990,9 @@ def compile_lam(
     lib_pre_private_classes: set[str] = set()
     lib_pre_field_names: dict[str, set[str]] = {}
     lib_pre_field_types: dict[str, dict[str, str]] = {}
+    # Per-module trees/symbols and metadata for module namespacing.
+    ns_modules: dict[Path, _namespacing.ModuleInfo] = {}
+    ns_meta_sources: dict[Path, object] = {}
     seen: set[str] = set()
     seen_module_files: set[Path] = set()
     worklist: list[tuple[str, Path]] = [(mod, source_file) for mod in _pre_transpiler._lam_imports]
@@ -2031,8 +2053,54 @@ def compile_lam(
             and _lam_string_method_re.search(sub_pre)
         ):
             worklist.append(("lamstrings", mod_file))
-        # Harvest this library's class names and static members so
-        # cross-library static-member access can be lowered correctly.
+        # Record the module for namespacing; its metadata is harvested after
+        # the namespace plans are known (class renames change the names).
+        ns_modules[mod_file] = _namespacing.ModuleInfo(
+            path=mod_file,
+            name=canonical_name,
+            tree=sub_tree,
+            symbols=_namespacing.top_level_symbols(sub_tree),
+            bindings=_namespacing.import_bindings(sub_tree),
+        )
+
+    main_module_path = source_file.resolve()
+    ns_modules[main_module_path] = _namespacing.ModuleInfo(
+        path=main_module_path,
+        name="main",
+        tree=tree,
+        symbols=_namespacing.top_level_symbols(tree),
+        bindings=_namespacing.import_bindings(tree),
+    )
+
+    def _ns_resolve(module: str, from_path: Path) -> Path | None:
+        found = _resolve_lib_path(module, from_path)
+        return found.resolve() if found is not None else None
+
+    def _ns_function_go_name(name: str, private: bool) -> str:
+        base = _pre_transpiler._go_private_name(name) if private else _pre_transpiler._go_public_name(name)
+        return _pre_transpiler._go_binding_name(base)
+
+    try:
+        ns_plans = _namespacing.build_plans(
+            ns_modules, main_module_path, _ns_resolve, _ns_function_go_name,
+        )
+    except _namespacing.NamespaceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Harvest each library's class names and static members so cross-library
+    # static-member access can be lowered correctly. Runs on the namespaced
+    # trees, so renamed classes are recorded under their unique names.
+    for mod_file, ns_info in list(ns_modules.items()):
+        if mod_file == main_module_path:
+            continue
+        sub_tree = ns_info.tree
+        harvest_plan = ns_plans.get(mod_file)
+        if harvest_plan is not None:
+            _namespacing.rewrite_tree(
+                sub_tree, harvest_plan.rewrites, harvest_plan.module_access,
+                harvest_plan.declaration_renames,
+            )
         try:
             sub_collector = GoTranspiler(
                 go_blocks=[], stdlib_path=stdlib_path,
@@ -2041,6 +2109,7 @@ def compile_lam(
             sub_collector._collect_declared_type_names(sub_tree)
             sub_collector._collect_function_names(sub_tree)
             sub_collector._collect_class_fields(sub_tree)
+            ns_meta_sources[mod_file] = sub_collector
             lib_pre_class_names.update(sub_collector._class_names)
             lib_pre_interfaces.update(sub_collector._interfaces)
             for cls, meths in sub_collector._static_methods.items():
@@ -2074,6 +2143,16 @@ def compile_lam(
             # Pre-scan is best-effort; downstream transpile will
             # surface real errors with full positional diagnostics.
             pass
+
+    def _apply_namespace_plan(target_transpiler, plan, sources) -> None:
+        if plan is None or plan.is_empty():
+            return
+        target_transpiler._link_function_go_names.update(plan.function_go_names)
+        target_transpiler._link_const_go_names.update(plan.const_go_names)
+        target_transpiler._namespace_rewrites.update(plan.rewrites)
+        target_transpiler._namespace_module_access.update(plan.module_access)
+        target_transpiler._namespace_declarations.update(plan.declaration_renames)
+        _namespacing.apply_metadata_view(target_transpiler, plan, sources)
 
     interface_type_names = {
         f"*{name}": name
@@ -2201,16 +2280,24 @@ def compile_lam(
         """
         lib_source_bytes = mod_file.read_bytes()
         lib_source = lib_source_bytes.decode("utf-8")
+        ns_plan = ns_plans.get(mod_file.resolve())
+        lib_cache_extra = _cross_lib_extra
+        if ns_plan is not None and not ns_plan.is_empty():
+            lib_cache_extra = _cross_lib_extra + b"|ns:" + ns_plan.cache_key().encode("utf-8")
 
         # ── Cache lookup ─────────────────────────────────────
         cache_hit = None
         if use_cache:
-            entry = _lamcache.load(lib_source_bytes, extra=_cross_lib_extra)
+            entry = _lamcache.load(lib_source_bytes, extra=lib_cache_extra)
             if entry is not None:
                 cache_hit = _lamcache.deserialise_transpile_result(entry)
         if cache_hit is not None:
             (go_src, cls, stat, svars, defs, counts, var, ufns, pfns,
              mret, rpayloads, overloads, pnames, ptypes) = cache_hit
+            # The cache is keyed on content, so the entry may come from an
+            # identical copy of this library at another path. Re-point its
+            # ``//line`` directives at the file actually being compiled.
+            go_src = _retarget_line_directives(go_src, str(mod_file.resolve()))
             return (mod_name, go_src, cls, stat, svars, defs, counts, var,
                     ufns, pfns, mret, rpayloads, overloads, pnames, ptypes)
 
@@ -2220,6 +2307,11 @@ def compile_lam(
         lib_source = apply_lammergeier_aliases(lib_source)
         lib_preprocessed = lib_parse_input.source
         lib_go_blocks = lib_parse_input.go_blocks
+        if ns_plan is not None and ns_plan.go_renames:
+            lib_go_blocks = {
+                key: _namespacing.rename_go_identifiers(code, ns_plan.go_renames)
+                for key, code in lib_go_blocks.items()
+            }
         lib_parser = create_parser()
         try:
             lib_tree = lib_parser.parse(lib_preprocessed + "\n")
@@ -2268,6 +2360,7 @@ def compile_lam(
             lib_transpiler._external_field_names.setdefault(cls, set()).update(fields)
         for cls, fields in lib_pre_field_types.items():
             lib_transpiler._external_field_types.setdefault(cls, {}).update(fields)
+        _apply_namespace_plan(lib_transpiler, ns_plan, ns_meta_sources)
         lib_go = lib_transpiler.transpile(lib_tree)
         # Remove func main() block from library — but also drop any
         # `//line` directive immediately preceding it so the stripped
@@ -2345,7 +2438,7 @@ def compile_lam(
                     lib_transpiler._func_param_names,
                     lib_transpiler._func_param_go_types,
                 ),
-                extra=_cross_lib_extra,
+                extra=lib_cache_extra,
             )
 
         return (
@@ -2377,6 +2470,7 @@ def compile_lam(
     lib_method_return_types: dict = {}
     lib_result_payload_go_types: dict = {}
     lib_overload_variants: dict[str, list[dict]] = {}
+    ns_lib_results: dict[Path, object] = {}
     from concurrent.futures import ThreadPoolExecutor
     if lib_mod_files:
         with ThreadPoolExecutor(max_workers=min(8, len(lib_mod_files))) as pool:
@@ -2392,6 +2486,22 @@ def compile_lam(
                     print(str(e), file=sys.stderr)
                     sys.exit(1)
                 lib_sources[mod_name] = go_src
+                if mod_name in lib_mod_files:
+                    _lib_path = lib_mod_files[mod_name].resolve()
+                    _collector = ns_meta_sources.get(_lib_path)
+                    ns_lib_results[_lib_path] = _SimpleNamespace(
+                        _result_payload_go_types=result_payloads,
+                        _func_defaults=fn_defaults,
+                        _func_param_counts=fn_param_counts,
+                        _func_param_names=fn_param_names,
+                        _func_param_go_types=fn_param_go_types,
+                        _func_generic_params=getattr(_collector, "_func_generic_params", {}),
+                        _overload_variants=overload_variants,
+                        _user_functions=user_fns,
+                        _private_functions=priv_fns,
+                        _variadic_functions=variadic_set,
+                        _generator_functions=getattr(_collector, "_generator_functions", set()),
+                    )
                 lib_class_names.update(cls_names)
                 for cls_name, methods in static_meths.items():
                     if cls_name not in lib_static_methods:
@@ -2412,6 +2522,12 @@ def compile_lam(
                     lib_overload_variants.setdefault(name, []).extend(variants)
 
     # Now transpile main with lib class/static info injected
+    _main_plan = ns_plans.get(main_module_path)
+    if _main_plan is not None and _main_plan.go_renames:
+        go_blocks = {
+            key: _namespacing.rename_go_identifiers(code, _main_plan.go_renames)
+            for key, code in go_blocks.items()
+        }
     transpiler = GoTranspiler(
         go_blocks=go_blocks,
         stdlib_path=stdlib_path,
@@ -2467,6 +2583,7 @@ def compile_lam(
         transpiler._overloaded_functions.setdefault(name, set()).update(
             int(variant.get("arity", 0)) for variant in variants
         )
+    _apply_namespace_plan(transpiler, ns_plans.get(main_module_path), {**ns_meta_sources, **ns_lib_results})
     try:
         go_source = transpiler.transpile(tree)
     except RuntimeError as e:
@@ -2494,6 +2611,19 @@ def compile_lam(
         if verbose:
             print(f"[lamc] Go source written to {go_out}", file=sys.stderr)
         return
+
+    # ── Link check: top-level Go symbols must be unique across modules ──
+    # Every module is emitted into one Go package, so a clash would
+    # otherwise surface as a confusing ``redeclared in this block`` error.
+    link_units = [(source_file.stem, go_source, str(source_file))]
+    link_units.extend(
+        (mod_name, lib_src, str(lib_mod_files.get(mod_name, mod_name)))
+        for mod_name, lib_src in sorted(lib_sources.items())
+    )
+    symbol_clashes = find_symbol_clashes(link_units)
+    if symbol_clashes:
+        print(render_symbol_clashes(symbol_clashes, str(source_path)), file=sys.stderr)
+        sys.exit(1)
 
     # ── Check Go is installed ──
     if not shutil.which("go"):

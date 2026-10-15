@@ -61,6 +61,10 @@ STDLIB_GO_PINS: Dict[str, str] = {
     "github.com/moolekkari/validatexml-go": "v0.1.1",
     # ``lamschema`` — JSON Schema (draft-07).
     "github.com/xeipuuv/gojsonschema":      "v1.2.0",
+    # ``lamarray`` — vector kernels, dense linear algebra, statistics.
+    # Unpinned, every build ran ``go mod tidy`` against the module proxy to
+    # find the latest gonum, which failed intermittently under load.
+    "gonum.org/v1/gonum":                   "v0.17.0",
     # ``lamyaml``, ``lamenv`` — YAML codec.
     "gopkg.in/yaml.v3":                     "v3.0.1",
     # ``lamdb`` — SQLite driver. Pure-Go (no CGo / C toolchain),
@@ -79,6 +83,7 @@ STDLIB_GO_PIN_MODULES: Dict[str, tuple[str, ...]] = {
     "github.com/robfig/cron/v3":            ("lamcron",),
     "github.com/moolekkari/validatexml-go": ("lamschema",),
     "github.com/xeipuuv/gojsonschema":      ("lamschema",),
+    "gonum.org/v1/gonum":                   ("lamarray",),
     "gopkg.in/yaml.v3":                     ("lamyaml", "lamenv", "lamschema"),
     "modernc.org/sqlite":                   ("lamdb",),
 }

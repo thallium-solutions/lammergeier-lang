@@ -1,0 +1,128 @@
+# Test: ``unwrap()`` / ``unwrapOr()`` used inline keep the Result payload type
+# when it is statically known (annotated locals, parameters, function and
+# method calls, overload variants); unknown or ``any`` payloads keep the
+# dynamic ``any`` fallback.
+#
+# expect: bool-and: true
+# expect: arith: 42
+# expect: concat: n=41
+# expect: len: 2
+# expect: range: a,b
+# expect: call-chain: true
+# expect: method: 20
+# expect: unwrap-or: 1
+# expect: unwrap-or-err: -1
+# expect: param: 13
+# expect: overload-int: 8
+# expect: overload-str: hi!
+# expect: field: 7
+# expect: json: 3
+# expect: compare: true
+# expect: typed-assign: 41
+# expect: generic: 5
+# expect: lambda: 11
+# expect: dynamic: 9
+# expect: statements: ok
+# expect: err-panics: true
+
+from lamerrors import Result, Error
+from lamjson import Json
+
+class Box {
+    func init(self, n: int = 2) {
+        self.n: int = n
+    }
+
+    func count(self) -> Result[int] {
+        return Result.Ok(self.n)
+    }
+}
+
+class Holder[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func get(self) -> Result[T] {
+        return Result.Ok(self.value)
+    }
+}
+
+func flag() -> Result[bool] {
+    return Result.Ok(true)
+}
+
+func names() -> Result[list[str]] {
+    return Result.Ok(["a", "b"])
+}
+
+func makeBox() -> Result[Box] {
+    return Result.Ok(Box(7))
+}
+
+func parse(n: int) -> Result[int] {
+    return Result.Ok(n * 2)
+}
+
+func parse(s: str) -> Result[str] {
+    return Result.Ok(s + "!")
+}
+
+func doc() -> Result[json] {
+    return Json.decode("[1, 2, 3]")
+}
+
+func dynamic() -> Result[any] {
+    return Result.Ok(9)
+}
+
+func plusOne(r: Result[int]) -> int {
+    return r.unwrap() + 1
+}
+
+func first[T](h: Holder[T]) -> T {
+    return h.get().unwrap()
+}
+
+func main() {
+    r: Result[bool] = flag()
+    n: Result[int] = Result.Ok(41)
+    failed: Result[int] = Result.Err(Error("Nope", "no value"))
+    print(f"bool-and: {r.ok() and r.unwrap()}")
+    print(f"arith: {n.unwrap() + 1}")
+    print("concat: n=" + str(n.unwrap()))
+    print(f"len: {len(names().unwrap())}")
+    joined: list[str] = []
+    for item in names().unwrap() {
+        joined.append(item)
+    }
+    print("range: " + ",".join(joined))
+    print(f"call-chain: {flag().unwrap() and true}")
+    print(f"method: {Box(2).count().unwrap() * 10}")
+    print(f"unwrap-or: {n.unwrapOr(0) - 40}")
+    print(f"unwrap-or-err: {failed.unwrapOr(0) - 1}")
+    print(f"param: {plusOne(Result.Ok(12))}")
+    print(f"overload-int: {parse(4).unwrap()}")
+    print("overload-str: " + parse("hi").unwrap())
+    print(f"field: {makeBox().unwrap().n}")
+    print(f"json: {len(Json.toList(doc().unwrap()).unwrap())}")
+    print(f"compare: {n.unwrap() == 41}")
+    typed: int = n.unwrap()
+    print(f"typed-assign: {typed}")
+    print(f"generic: {first(Holder[int](5))}")
+    inc: func(Result[int]) -> int = lambda(x: Result[int]) -> int: x.unwrap() + 1
+    print(f"lambda: {inc(Result.Ok(10))}")
+    value: any = dynamic().unwrap()
+    print(f"dynamic: {value}")
+    n.unwrap()
+    flag().unwrap()
+    Box(1).count().unwrap()
+    print("statements: ok")
+    panicked: bool = false
+    try {
+        _ = failed.unwrap() + 1
+    } catch err {
+        panicked = true
+    }
+    print(f"err-panics: {panicked}")
+}

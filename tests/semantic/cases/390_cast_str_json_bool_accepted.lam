@@ -1,0 +1,10 @@
+# expect-pass
+# expect-no-warning: on an `any` value
+# str (parsed, may throw), json (converted at runtime) and bool are accepted.
+
+func main() {
+    s: str = "3"
+    j: json = 4
+    t: bool = true
+    print(int(s), float(s), bool("true"), int(j), float(j), bool(j), int(t), float(t))
+}

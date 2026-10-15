@@ -167,6 +167,14 @@ class GoTranspiler(
         self._user_functions: Set[str] = set()
         self._private_functions: Set[str] = set()
         self._function_go_names: Dict[str, str] = {}
+        # Module namespacing (``compiler/namespacing.py``): Go names chosen by
+        # the driver for this module's colliding/aliased functions and consts,
+        # plus the AST rewrites for ``as`` aliases and ``module.member``.
+        self._link_function_go_names: Dict[str, str] = {}
+        self._link_const_go_names: Dict[str, str] = {}
+        self._namespace_rewrites: Dict[str, str] = {}
+        self._namespace_module_access: Dict[str, Dict[str, str]] = {}
+        self._namespace_declarations: Dict[str, str] = {}
         self._private_methods: Dict[str, Set[str]] = {}
 
         # Functions imported from libraries — survive the per-transpile
@@ -270,6 +278,9 @@ class GoTranspiler(
         # Variadic functions
         self._variadic_functions: set = set()
         self._var_go_types: Dict[str, str] = {}
+        # Payload Go type of locals/parameters annotated ``Result[T]``, so
+        # inline ``r.unwrap()`` can assert ``T`` instead of yielding ``any``.
+        self._var_result_payloads: Dict[str, str] = {}
         self._tuple_iterable_element_types: Dict[str, List[str]] = {}
 
         # Generic type parameters.
@@ -370,6 +381,12 @@ class GoTranspiler(
 
     def transpile(self, tree: Tree) -> str:
         """Transpile a full file_input tree to Go source."""
+        if self._namespace_rewrites or self._namespace_module_access or self._namespace_declarations:
+            from compiler.namespacing import rewrite_tree
+            rewrite_tree(
+                tree, self._namespace_rewrites, self._namespace_module_access,
+                self._namespace_declarations,
+            )
         self.output_lines = []
         self.needed_imports = set()
         self.user_go_imports = set()
@@ -602,6 +619,8 @@ class GoTranspiler(
                     self._overloaded_functions[name].add(arity)
                     sig = self._param_types_sig(params_node) if params_node else ()
                     meta_key = f"{name}#{self._sig_suffix(sig)}#ret_{self._sig_suffix((return_key or 'void',))}"
+                    if payload_type:
+                        self._result_payload_go_types.setdefault(meta_key, payload_type)
                     if type_param_names:
                         self._func_generic_params[meta_key] = set(type_param_names)
                     if params_node:
@@ -676,6 +695,8 @@ class GoTranspiler(
                             self._overloaded_functions.setdefault(method_key, set()).add(arity)
                             sig = self._param_types_sig(params_node, skip_self=skip_self) if params_node else ()
                             meta_key = f"{method_key}#{self._sig_suffix(sig)}#ret_{self._sig_suffix((return_key or 'void',))}"
+                            if payload_type:
+                                self._result_payload_go_types.setdefault(meta_key, payload_type)
                             if declared_generic_names:
                                 self._func_generic_params[meta_key] = declared_generic_names
                             if params_node:
@@ -779,6 +800,10 @@ class GoTranspiler(
         for class_name, fields in self._static_vars.items():
             for field in fields:
                 claimed[self._static_var_go_name(class_name, field)] = f"static-field:{class_name}.{field}"
+        for name, go_name in self._link_function_go_names.items():
+            self._function_go_names[name] = go_name
+            for variant in self._overload_variants.get(name, []) or [{"suffix": ""}]:
+                claimed[go_name + str(variant.get("suffix", ""))] = f"function:{name}"
         ordered = sorted(
             self._user_functions,
             key=lambda item: (item not in self._overload_variants, item[:1].isupper(), item),

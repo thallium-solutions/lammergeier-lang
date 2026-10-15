@@ -1,0 +1,11 @@
+# expect-error: cast `int` is not defined for `Point`; implement `func __int__(self) -> int`
+
+class Point {
+    func init(self) {
+        self.x: int = 1
+    }
+}
+
+func main() {
+    print(int(Point()))
+}

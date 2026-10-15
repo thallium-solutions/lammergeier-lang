@@ -2335,15 +2335,16 @@ func main() {
 }
 """
 
-# Library scaffolding: a single function whose return value
-# carries the version string so the canonical "is this lib
-# wired up correctly?" smoke-test is just ``Lib.tag()``.
+# Library scaffolding: a documented, empty module. The package name and
+# version already live in ``lamlib.toml``; a scaffolded top-level helper
+# (formerly ``tag()``) would clash with every other scaffolded library,
+# because all modules of a program link into one Go package.
 _INIT_LIB_TEMPLATE = """\
 # {name} — {version}
-
-func tag() -> str {{
-    return "{name}@{version}";
-}}
+#
+# Public API of the library. Name and version are declared in lamlib.toml.
+# Top-level names share one Go namespace with every module of a program,
+# so give classes and functions library-specific names.
 """
 
 _INIT_MANIFEST_TEMPLATE = """\

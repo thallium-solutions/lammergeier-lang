@@ -1,0 +1,26 @@
+# Test: ``sep.join(...)`` accepts an inline list comprehension or list literal.
+# The argument used to be lowered as ``[]interface{}`` and Go rejected it for
+# ``Strings_join``'s ``[]string`` parameter.
+#
+# expect: 1,2,3
+# expect: n1|n3
+# expect: a-b
+# expect: <x><y>
+# expect: 2;4;6
+# expect: 1,2
+
+func label(v: int) -> str {
+    return f"n{v}"
+}
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    print(",".join([str(v) for v in xs]))
+    print("|".join([label(v) for v in xs if v != 2]))
+    print("-".join(["a", "b"]))
+    words: list[str] = ["x", "y"]
+    print("".join([f"<{w}>" for w in words]))
+    print(";".join([str(v * 2) for v in xs]))
+    nested: list[list[int]] = [[1, 2], [3]]
+    print(",".join([str(v) for v in nested[0]]))
+}

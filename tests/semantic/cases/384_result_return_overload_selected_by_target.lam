@@ -1,0 +1,23 @@
+# expect-pass
+# expect-no-warning: cannot assign
+# Regression: the target type selects the ``Result[T]`` return overload of
+# ``Conv.parse`` through ``?`` and ``unwrap()``; the first variant
+# (``Result[int]``) used to be assumed ("cannot assign `int` to `bool`").
+
+from lamconv import Conv
+from lamerrors import Result
+
+func load() -> Result[bool] {
+    b: bool = Conv.parse("true")?
+    f: float = Conv.parse("2.5")?
+    i: int = Conv.parse("3")?
+    print(b, f, i)
+    return Result.Ok(true)
+}
+
+func main() {
+    flag: bool = Conv.parse("false").unwrap()
+    ratio: float = Conv.parse("0.5").unwrapOr(0.0)
+    print(flag, ratio)
+    _ = load()
+}

@@ -1,0 +1,5 @@
+# expect-pass
+# expect-no-warning: unused import
+# A module made only of imports is a re-export shim (compatibility paths).
+
+from .shapes import Circle, area

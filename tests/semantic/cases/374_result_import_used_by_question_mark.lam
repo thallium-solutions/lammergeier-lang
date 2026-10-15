@@ -1,0 +1,17 @@
+# expect-pass
+# expect-no-warning: unused import `Result`
+# Regression: `?` requires `from lamerrors import Result`, so the import is
+# used even when the name never appears in the source.
+
+from lamerrors import Result
+from lamos import Os
+
+func load(path: str) -> Result[str] {
+    return Os.readFile(path)
+}
+
+func main() {
+    _ = load
+    text: str = Os.readFile("/etc/hostname")?
+    print(len(text))
+}

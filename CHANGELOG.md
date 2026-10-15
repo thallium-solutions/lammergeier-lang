@@ -6,6 +6,132 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-10-15
+
+### Added
+
+- Added a link-time check for top-level Go symbol clashes between modules.
+  Because every module links into one Go package, duplicate classes,
+  functions, constants, private helpers or raw `go!` declarations across
+  modules now fail with a Lam diagnostic that lists each module, location
+  and source snippet instead of Go's `redeclared in this block` cascade.
+
+- Inline `unwrap()` / `unwrapOr(...)` keep the `Result[T]` payload type when it
+  is statically known (annotated locals and parameters, including lambda
+  parameters, and calls to functions/methods declared `-> Result[T]`), so
+  expressions such as `r.ok() and r.unwrap()` or `len(load().unwrap())` compile;
+  unknown and `any` payloads keep the dynamic fallback.
+
+### Changed
+
+- Bumped the compiler feature version to 1.19.0. Official packages were
+  audited against it: every package source now passes the semantic check
+  without errors or warnings (`@lam/s3` returned `Result[bool]` guards from
+  differently typed functions, `lamotel` converted `dict[str, any]` to `json`
+  implicitly), and all package suites pass on both 1.18 and 1.19, so their
+  `^1.18` compatibility stays. Package releases: `@lam/jwt`, `@lam/protobuf`,
+  `@lam/sftp`, `@lam/ssh`, `@lam/vulture/tus-plugin` 3.0.0; `@lam/s3` 2.1.0;
+  `@lam/redis`, `@lam/memcached` 2.0.0; `@lam/vulture`,
+  `@lam/vulture/std-plugin` 2.0.1; `lamotel` 0.2.1.
+- Unused-import warnings are no longer reported for package entry modules
+  (`__init__.lam`) or modules made only of imports: their imports are
+  re-exports.
+- Module namespacing: same-name top-level functions (public and private) and
+  constants in different linked modules no longer clash; each module keeps its
+  own (module-qualified Go names, metadata taken from the defining module, raw
+  `go!` references renamed). `from X import A as B` now works for functions,
+  constants, classes and static methods (it was documented but not
+  implemented), `import X` / `import X as Y` give `Y.name` access to functions,
+  constants, classes, static methods and type annotations, and scoped packages
+  are imported with a required alias (`import @lam/jwt as jwt`; a missing
+  alias is a compile error). A local definition clashing with a plain import
+  suggests an `as` alias. One class imported under several names is one
+  nominal type. Module-level variables, classes and interfaces are namespaced
+  too (classes are renamed at the Lam level, so constructors, static members
+  and metadata follow), f-string placeholders see aliases and `module.member`,
+  and raw `go!` code follows the renames of its own module and of unaliased
+  imports. Definitions in the main module and the compiler-referenced classes
+  (`lamerrors.Result`/`Error`, `lamstrings.Strings`) keep their names; clashes
+  between those, raw `go!` declarations and constructor-vs-function collisions
+  are still reported by the link-time clash diagnostic.
+- `int()`, `float()` and `bool()` follow explicit conversion rules: numerics and
+  `bool` convert, `str` is parsed and throws `ParseError` on malformed text,
+  `json` converts numbers/booleans and parses strings (otherwise `TypeError`),
+  classes convert through new `__int__` / `__float__` / `__bool__` methods
+  (validated as `(self) -> <type>`), and other types are compile errors.
+  `int(any)` / `float(any)` / `bool(any)` emit a warning and are checked at
+  runtime (`int` accepts every integer kind such as `int64` database values,
+  `float` every floating kind, `bool` a bool; anything else throws
+  `TypeError`); they previously produced invalid Go (`int`, `float`) or
+  compared with `0` (`bool`). `int(str)` / `bool(str)` were compile errors before.
+- **Breaking:** renamed `lammigrate.Schema` to `SchemaBuilder`
+  (`from lammigrate import Migrator, SchemaBuilder`). The old name clashed with
+  `lamschema.Schema`, so `lammigrate` could not be linked together with
+  `lamschema` or anything that uses it, such as `@lam/vulture`.
+- `lamc init --lib` no longer scaffolds a `tag()` function. The library name
+  and version already live in `lamlib.toml`, and the generic helper made any
+  two scaffolded libraries impossible to link into one program.
+
+### Fixed
+
+- The install-time SemVer gate compared an empty API surface for installed
+  packages: its skip list (`tests`, `extlibs`, …) was matched against the
+  absolute path, and installed packages live under `extlibs/`. Reinstalling
+  any package reported bogus feature changes (requiring `--allow-breaking`)
+  and real breaking changes went undetected. `tests/tests/test_apidiff.py` is
+  now part of the unit suite.
+- `test_stdlib_ratelimit` no longer fails under heavy parallel load: it
+  required an 80 ms wait after draining the bucket, but the bucket could
+  refill between draining and starting the clock. It now checks that `take()`
+  waits for the deficit present when it starts.
+- Passing a class to an imported function or method whose parameter is an
+  interface the caller did not import (`describe(n: Named)`) is accepted; the
+  interface was unknown to the importer's semantic check ("has type `Config`,
+  expected `Named`").
+- Builds using `lamarray` no longer fail intermittently: gonum was the only
+  unpinned stdlib Go dependency, so every build ran `go mod tidy` against the
+  module proxy to find its latest version and occasionally failed under
+  parallel load. It is now pinned (`gonum.org/v1/gonum v0.17.0`, the version
+  builds already resolved), a test enforces a pin for every third-party stdlib
+  import, and the core test runner's failure summary skips warning blocks so
+  the actual error is no longer cut off.
+- A ternary without a target type takes its branches' common type (`int` with
+  `float` widens to `float`); it lowered to `interface{}`, so
+  `"x: " + (a if c else b)`, arithmetic on a ternary or `len(...)` of one
+  failed to compile in Go.
+- Functions overloaded only by their `Result[T]` return type (for example
+  `Conv.parse`) select the variant from the target type when consumed through
+  `?`, `unwrap()` or `unwrapOr()`; the first variant was always chosen, so
+  `f: float = Conv.parse("2.5")?` parsed an int and `b: bool = ...?` was
+  rejected.
+- Unused `catch` variables (`try`/`catch` and `do`/`catch`) now produce a Lam
+  warning (``unused catch variable `name` ``) and compile; the unused-local
+  silencer no longer treats a name inside a string literal, rune or comment as
+  a use, which left such variables unused in Go ("declared and not used").
+- `sep.join([...])` accepts an inline list literal or comprehension; the
+  argument was lowered as `[]interface{}` and rejected by Go.
+- `tests/benchmarks/cases/stdlib/bench_json_encode.lam` builds a native `json`
+  payload; it no longer compiled after `Json.encode` started accepting only
+  `json` values.
+- `expr?` on an overloaded function or static method whose variants return
+  different `Result` payloads now asserts the payload of the variant actually
+  called. `_ = Schema.validate(schema, doc)?` with `json` arguments
+  previously asserted the `str` variant's payload and panicked with
+  `interface {} is main.LamJSON, not string`.
+- `Result.Ok(<literal>)` is shaped by the declared `Result[T]` payload; a
+  `return Result.Ok(["a", "b"])` in a `-> Result[list[str]]` function stored
+  `[]interface{}`, so `xs: list[str] = names()?` panicked at runtime.
+- `from lamerrors import Result` is no longer reported as unused when `?` or
+  `do/catch` (which lower to `Result` helpers) are its only uses.
+- `f()?` used as a bare statement no longer emits an unused `__qN.Value`
+  expression that Go rejected with "is not used"; the error still propagates.
+- Importing several names from the same module on separate `from` lines no
+  longer duplicates the module's method signatures, which made single-variant
+  methods called with `any` arguments fail as "ambiguous call".
+- Library cache hits now rewrite `//line` directives to the library copy
+  being compiled; identical copies at different paths previously reported
+  Go errors against the path of whichever copy populated the cache.
+
 ## 2026-09-25
 
 ### Added

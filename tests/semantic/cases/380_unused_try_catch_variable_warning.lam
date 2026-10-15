@@ -1,0 +1,11 @@
+# expect-warning: unused catch variable `failure` (prefix with `_` to silence)
+
+from lamerrors import Error
+
+func main() {
+    try {
+        throw Error("E", "boom")
+    } catch failure {
+        print("handled")
+    }
+}

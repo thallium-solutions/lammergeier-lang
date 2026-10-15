@@ -1,0 +1,6 @@
+# expect-error: cast `float` is not defined for `dict[str, int]`
+
+func main() {
+    d: dict[str, int] = {"a": 1}
+    print(float(d))
+}

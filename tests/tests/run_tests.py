@@ -113,6 +113,24 @@ def extract_expected(source: str) -> str | None:
     return "\n".join(expected_lines) if expected_lines else None
 
 
+def _failure_summary(message: str, limit: int = 12) -> list[str]:
+    """First lines of a failure, skipping semantic *warning* blocks so the
+    actual error (Go build output, panic, mismatch) is not cut off."""
+    lines = message.split("\n")
+    kept: list[str] = []
+    skipping = False
+    for line in lines:
+        text = line.strip()
+        if text.startswith("warning: semantic check noticed") or "warning[" in text:
+            skipping = True
+            continue
+        if skipping and (text.startswith(">>>") or text[:1].isdigit() or not text):
+            continue
+        skipping = False
+        kept.append(line)
+    return (kept or lines)[:limit]
+
+
 def run_test(lam_file: Path, verbose: bool = False) -> tuple[bool, str]:
     """Compile and run a single .lam file, return (success, message)."""
     source = lam_file.read_text(encoding="utf-8")
@@ -240,7 +258,7 @@ def main():
         print(f"\nFailed tests:")
         for rel, msg in errors:
             print(f"  ❌ {rel}")
-            for line in msg.split("\n")[:5]:
+            for line in _failure_summary(msg):
                 print(f"     {line}")
 
     sys.exit(0 if failed == 0 else 1)

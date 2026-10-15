@@ -1,0 +1,8 @@
+# expect-warning: unused import `Strings`
+# Outside ``__init__.lam`` an unused import is still reported.
+
+from lamstrings import Strings
+
+func main() {
+    print("plain module")
+}

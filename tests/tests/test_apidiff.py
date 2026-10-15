@@ -241,6 +241,28 @@ def test_expected_bump_mapping() -> None:
 
 # ── Driver ───────────────────────────────────────────────────
 
+def test_surface_from_path_inside_extlibs() -> None:
+    """Regression: the skip list was matched against the absolute path, so a
+    package installed under ``extlibs/`` had an empty surface and every
+    reinstall reported bogus feature changes (and missed breaking ones)."""
+    import tempfile
+    from compiler.apidiff import surface_from_path
+    with tempfile.TemporaryDirectory() as td:
+        pkg = Path(td) / "app" / "extlibs" / "@acme" / "kit"
+        (pkg / "tests").mkdir(parents=True)
+        (pkg / "__init__.lam").write_text("class Kit {\n    func init(self) {\n        self.n: int = 0\n    }\n}\n\nfunc make() -> Kit {\n    return Kit()\n}\n", encoding="utf-8")
+        (pkg / "tests" / "helper.lam").write_text("func testOnly() -> int {\n    return 1\n}\n", encoding="utf-8")
+        surface = surface_from_path(pkg)
+        assert "Kit" in surface.classes, surface.classes
+        assert "make" in surface.funcs, surface.funcs
+        assert "testOnly" not in surface.funcs, "tests/ inside the package must still be skipped"
+        source = Path(td) / "src" / "kit"
+        source.mkdir(parents=True)
+        (source / "__init__.lam").write_text((pkg / "__init__.lam").read_text(encoding="utf-8"), encoding="utf-8")
+        changes = compare(surface, surface_from_path(source))
+        assert worst_severity(changes) == "patch", changes
+
+
 def main() -> int:
     tests = [
         test_extract_top_level_funcs,
@@ -256,6 +278,7 @@ def main() -> int:
         test_feature_added_function,
         test_no_change_yields_patch,
         test_expected_bump_mapping,
+        test_surface_from_path_inside_extlibs,
     ]
     failures = 0
     for t in tests:

@@ -19,7 +19,7 @@
 # expect: schema-timestamp-default: CURRENT_TIMESTAMP
 
 from lamdb import Db
-from lammigrate import Migrator, Schema
+from lammigrate import Migrator, SchemaBuilder
 from lamos import Os
 from lamerrors import Result
 
@@ -95,7 +95,7 @@ func main() {
     print("partial-down-remaining: " + str(rem["ran"]))
 
     # ── Schema builder smoke-test ─────────────────────────────
-    schema: Schema = Schema("sqlite")
+    schema: SchemaBuilder = SchemaBuilder("sqlite")
     cols: list[dict[str, any]] = []
     colId: dict[str, any] = {"name": "id", "type": "id"}
     colLabel: dict[str, any] = {"name": "label", "type": "string", "length": 64, "unique": true}

@@ -1,0 +1,12 @@
+# expect-pass
+# Re-exported by ``__init__.lam``.
+
+class Circle {
+    func init(self, r: float) {
+        self.r: float = r
+    }
+}
+
+func area(c: Circle) -> float {
+    return 3.14 * c.r * c.r
+}

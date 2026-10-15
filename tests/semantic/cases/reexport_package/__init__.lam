@@ -1,0 +1,6 @@
+# expect-pass
+# expect-no-warning: unused import
+# A package entry module's imports are its re-exports, not unused bindings.
+
+from .shapes import Circle, area
+from lamerrors import Result, Error

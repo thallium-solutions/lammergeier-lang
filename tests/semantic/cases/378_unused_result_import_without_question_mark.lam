@@ -1,0 +1,8 @@
+# expect-warning: unused import `Result`
+# Without `?`, `do/catch` or any reference, a Result import is still unused.
+
+from lamerrors import Result
+
+func main() {
+    print("no Result here")
+}

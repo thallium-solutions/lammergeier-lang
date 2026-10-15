@@ -1,0 +1,14 @@
+# expect-error: cast `float` is not defined for `Point`; implement `func __float__(self) -> float`
+# expect-error: cast `bool` is not defined for `Point`; implement `func __bool__(self) -> bool`
+
+class Point {
+    func init(self) {
+        self.x: int = 1
+    }
+}
+
+func main() {
+    p: Point = Point()
+    print(float(p))
+    print(bool(p))
+}

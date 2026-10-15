@@ -1,0 +1,21 @@
+# expect-pass
+# expect-no-warning: unused catch variable
+
+from lamerrors import Result, Error
+
+func fails() -> Result[int] {
+    return Result.Err(Error("E", "boom"))
+}
+
+func main() {
+    do {
+        _ = fails()?
+    } catch _err {
+        print("ignored")
+    }
+    try {
+        throw Error("E", "boom")
+    } catch _failure {
+        print("ignored")
+    }
+}

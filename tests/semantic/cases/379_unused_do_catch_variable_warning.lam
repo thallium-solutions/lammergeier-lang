@@ -1,0 +1,16 @@
+# expect-warning: warning[unused]
+# expect-warning: unused catch variable `err` (prefix with `_` to silence)
+
+from lamerrors import Result, Error
+
+func fails() -> Result[int] {
+    return Result.Err(Error("E", "boom"))
+}
+
+func main() {
+    do {
+        _ = fails()?
+    } catch err {
+        print("handled")
+    }
+}

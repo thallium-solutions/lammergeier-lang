@@ -1,0 +1,66 @@
+# Test: ``expr?`` used as a bare statement propagates the error and discards
+# the payload. It used to emit an unused ``__qN.Value`` expression that Go
+# rejected with "is not used".
+#
+# expect: steps: 3
+# expect: stopped: StepError: step 2 failed
+# expect: in-loop: 4
+# expect: in-branch: ok
+
+from lamerrors import Result, Error
+
+class Steps {
+    static count: int = 0
+
+    static func run(n: int, failAt: int) -> Result[int] {
+        if n == failAt {
+            return Result.Err(Error("StepError", f"step {n} failed"))
+        }
+        Steps.count += 1
+        return Result.Ok(n)
+    }
+}
+
+func touch(path: str) -> Result[bool] {
+    return Result.Ok(path != "")
+}
+
+func pipeline(failAt: int) -> Result[int] {
+    Steps.run(1, failAt)?
+    Steps.run(2, failAt)?
+    touch("/tmp/x")?
+    Steps.run(3, failAt)?
+    return Result.Ok(Steps.count)
+}
+
+func loop() -> Result[int] {
+    total: int = 0
+    for i in range(4) {
+        touch(str(i))?
+        total += 1
+    }
+    return Result.Ok(total)
+}
+
+func branch(flag: bool) -> Result[str] {
+    if flag {
+        touch("a")?
+    } else {
+        Steps.run(0, 0)?
+    }
+    return Result.Ok("ok")
+}
+
+func main() {
+    done: int = pipeline(0).unwrap()
+    print(f"steps: {done}")
+    do {
+        _ = pipeline(2)?
+    } catch err {
+        print(f"stopped: {err}")
+    }
+    looped: int = loop().unwrap()
+    print(f"in-loop: {looped}")
+    branched: str = branch(true).unwrap()
+    print("in-branch: " + branched)
+}

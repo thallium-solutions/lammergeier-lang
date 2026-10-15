@@ -495,7 +495,10 @@ The Lam stdlib itself wraps third-party Go modules
 [`compiler/stdlib_go_deps.py`](../compiler/stdlib_go_deps.py)
 under the `STDLIB_GO_PINS` table — moving in lockstep with the
 stdlib source, so a PR that adopts a new upstream API bumps the
-pin in the same commit.
+pin in the same commit. Every third-party import in `lib/` must have a pin
+(`tests/tests/test_go_pins.py` enforces it): an unpinned import makes each
+build ask the module proxy for the latest version, which is slow and fails
+intermittently when the network or proxy is flaky.
 
 `_collect_go_pins` in `compiler/lammergeier.py` starts with pins for the
 stdlib modules reached by the program's import graph, then layers project
@@ -857,7 +860,7 @@ Flags cover the common shapes:
 | `--version VER` | `0.1.0` | SemVer, validated against the same regex used by the registry. |
 | `--scope @S` | *(unscoped)* | Result becomes case-preserving `@scope/name` in the manifest. Must start with `@`. |
 | `--license SPDX` | `MIT` | Anything goes; convention is an SPDX identifier. |
-| `--bin` / `--lib` | `--bin` | `--bin` writes `main.lam`; `--lib` writes `<name>.lam` with a `tag()` helper. |
+| `--bin` / `--lib` | `--bin` | `--bin` writes `main.lam`; `--lib` writes a documented, empty `<name>.lam` (name and version live in `lamlib.toml`). |
 | `--force` | off | Overwrite existing files. The verb is otherwise refusal-by-default. |
 
 `lamc init --lib` writes `<name>.lam` with the exact requested casing. Registry

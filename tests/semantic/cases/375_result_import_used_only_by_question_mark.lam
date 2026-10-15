@@ -1,0 +1,12 @@
+# expect-warning: warning[flow]
+# expect-no-warning: unused import `Result`
+# The only use of the import is the `?` lowering (in main, which also warns
+# about panicking on Err); it must not be reported as unused.
+
+from lamerrors import Result
+from lamos import Os
+
+func main() {
+    text: str = Os.readFile("/etc/hostname")?
+    print(len(text))
+}

@@ -279,7 +279,9 @@ def surface_from_path(path: Path) -> ApiSurface:
     for p in sorted(base.rglob("*")):
         if p.is_dir():
             continue
-        if any(part in skip_dirs or part.startswith(".") for part in p.parts):
+        # Only directories *inside* the package count: an installed package
+        # itself lives under ``extlibs/``.
+        if any(part in skip_dirs or part.startswith(".") for part in p.relative_to(base).parts):
             continue
         if p.suffix != ".lam":
             continue

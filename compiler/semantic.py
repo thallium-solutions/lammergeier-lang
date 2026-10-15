@@ -63,6 +63,7 @@ from compiler.diagnostics import (
     semantic_code,
 )
 from compiler.modules import WorkspaceIndex
+from compiler import namespacing as _namespacing
 from compiler.typesys import (
     DictType,
     FuncType,
@@ -208,6 +209,8 @@ INTEGER_CAST_FUNCS: Set[str] = {
 }
 
 FLOAT_CAST_FUNCS: Set[str] = {"float", "float32", "float64"}
+# Class methods that define ``int(obj)`` / ``float(obj)`` / ``bool(obj)``.
+_CONVERSION_DUNDERS: dict[str, str] = {"__int__": "int", "__float__": "float", "__bool__": "bool"}
 
 BUILTIN_CAST_FUNCS: Set[str] = {
     "str", "string", "json", "bool", *INTEGER_CAST_FUNCS, *FLOAT_CAST_FUNCS,
@@ -330,6 +333,8 @@ class _Scope:
     # module.
     returns_result: bool = False
     binding_nodes: dict = field(default_factory=dict)
+    # ``catch name`` bindings of try/catch and do/catch handlers.
+    catch_nodes: dict = field(default_factory=dict)
     nonlocal_names: set[str] = field(default_factory=set)
 
 
@@ -385,6 +390,9 @@ class _ImportedCallMetadata:
     class_instance_methods: dict[str, set[str]] = field(default_factory=dict)
     class_method_shapes: dict[str, dict[str, _MethodShape]] = field(default_factory=dict)
     class_bases: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Local class name (``Box``, ``Crate``, ``h.Box``) -> ``<module path>::<Class>``,
+    # so one class imported under several names stays one nominal type.
+    class_identity: dict[str, str] = field(default_factory=dict)
     class_private_methods: dict[str, set[str]] = field(default_factory=dict)
 
 
@@ -411,6 +419,7 @@ class SemanticChecker:
         imported_class_instance_methods: Optional[dict[str, set[str]]] = None,
         imported_class_method_shapes: Optional[dict[str, dict[str, _MethodShape]]] = None,
         imported_class_bases: Optional[dict[str, tuple[str, ...]]] = None,
+        imported_class_identity: Optional[dict[str, str]] = None,
         imported_class_private_methods: Optional[dict[str, set[str]]] = None,
     ):
         # Names provided externally — typically from imported libraries
@@ -509,6 +518,7 @@ class SemanticChecker:
             name: tuple(bases)
             for name, bases in (imported_class_bases or {}).items()
         }
+        self._class_identity: dict[str, str] = dict(imported_class_identity or {})
         self._class_base_aliases: dict[str, dict[str, str]] = {}
         self._class_type_params: dict[str, tuple[str, ...]] = {}
         for class_name, methods in self._class_method_shapes.items():
@@ -611,7 +621,7 @@ class SemanticChecker:
                 if self._module_seen.get(name) == "import":
                     self._error(
                         decl.span, "import",
-                        f"function `{name}` conflicts with an imported binding of the same name",
+                        f"function `{name}` conflicts with an imported binding of the same name" + self._import_conflict_hint(name),
                     )
                 scope.names.add(name)
                 sig = tuple(param.type_ref.name if param.type_ref is not None else "any"
@@ -637,7 +647,7 @@ class SemanticChecker:
                 if self._module_seen.get(name) == "import":
                     self._error(
                         decl.span, "import",
-                        f"class `{name}` conflicts with an imported binding of the same name",
+                        f"class `{name}` conflicts with an imported binding of the same name" + self._import_conflict_hint(name),
                     )
                 scope.names.add(name)
                 if name in seen_class:
@@ -652,7 +662,7 @@ class SemanticChecker:
                 if self._module_seen.get(name) == "import":
                     self._error(
                         decl.span, "import",
-                        f"interface `{name}` conflicts with an imported binding of the same name",
+                        f"interface `{name}` conflicts with an imported binding of the same name" + self._import_conflict_hint(name),
                     )
                 scope.names.add(name)
                 if name in seen_class:
@@ -668,6 +678,7 @@ class SemanticChecker:
             elif isinstance(decl, ImportDecl):
                 for binding in decl.bindings:
                     name = binding.name
+                    self._record_import_origin(binding.span, decl.module, binding.imported, name, binding.alias, decl.is_from)
                     self._check_go_reserved(binding.span, name)
                     scope.names.add(name)
                     self._check_import_binding_conflict(binding.span, name)
@@ -687,7 +698,7 @@ class SemanticChecker:
                     if self._module_seen.get(name) == "import":
                         self._error(
                             decl.span, "import",
-                            f"constant `{name}` conflicts with an imported binding of the same name",
+                            f"constant `{name}` conflicts with an imported binding of the same name" + self._import_conflict_hint(name),
                         )
                     self._module_seen[name] = "const"
 
@@ -772,7 +783,7 @@ class SemanticChecker:
                 if self._module_seen.get(name) == "import":
                     self._error(
                         node, "import",
-                        f"function `{name}` conflicts with an imported binding of the same name",
+                        f"function `{name}` conflicts with an imported binding of the same name" + self._import_conflict_hint(name),
                     )
                 scope.names.add(name)
                 params_node = self._funcdef_params(node)
@@ -815,7 +826,7 @@ class SemanticChecker:
                 if self._module_seen.get(name) == "import":
                     self._error(
                         node, "import",
-                        f"class `{name}` conflicts with an imported binding of the same name",
+                        f"class `{name}` conflicts with an imported binding of the same name" + self._import_conflict_hint(name),
                     )
                 scope.names.add(name)
                 if name in seen_class:
@@ -842,7 +853,7 @@ class SemanticChecker:
                 if self._module_seen.get(n) == "import":
                     self._error(
                         node, "import",
-                        f"interface `{n}` conflicts with an imported binding of the same name",
+                        f"interface `{n}` conflicts with an imported binding of the same name" + self._import_conflict_hint(n),
                     )
                 scope.names.add(n)
                 if n in seen_class:
@@ -867,6 +878,11 @@ class SemanticChecker:
                     )
         elif d in ("import_from", "import_name"):
             self._record_support_import(node)
+            for ns_binding in _namespacing.import_bindings(Tree("file_input", [node])):
+                self._record_import_origin(
+                    node, ns_binding.module, ns_binding.imported, ns_binding.local,
+                    ns_binding.local if ns_binding.explicit_alias else None, d == "import_from",
+                )
             for n in self._import_bindings(node):
                 self._check_go_reserved(node, n)
                 scope.names.add(n)
@@ -899,7 +915,7 @@ class SemanticChecker:
                 if self._module_seen.get(n) == "import":
                     self._error(
                         node, "import",
-                        f"constant `{n}` conflicts with an imported binding of the same name",
+                        f"constant `{n}` conflicts with an imported binding of the same name" + self._import_conflict_hint(n),
                     )
                 scope.names.add(n)
                 self._module_seen[n] = "const"
@@ -1169,6 +1185,7 @@ class SemanticChecker:
             self._check_method_receiver_declaration(node, suite_node)
             self._check_operator_method_signature(node)
             self._check_json_method_signature(node)
+            self._check_conversion_method_signature(node)
             self._check_type_annotations(node)
             if suite_node is not None:
                 self._walk_suite_stmts(self._suite_stmts(suite_node))
@@ -1226,6 +1243,14 @@ class SemanticChecker:
                 node,
                 "unused",
                 f"unused local `{name}` (prefix with `_` to silence)",
+            )
+        for name, node in scope.catch_nodes.items():
+            if name in scope.used_names or not name or name.startswith("_"):
+                continue
+            self._warning(
+                node,
+                "unused",
+                f"unused catch variable `{name}` (prefix with `_` to silence)",
             )
 
     def _check_method_receiver_declaration(self, node: Tree, suite_node) -> None:
@@ -1287,6 +1312,65 @@ class SemanticChecker:
                     "operator",
                     f"operator method `{class_name}.{method}` must return `bool`, got `{return_type}`",
                 )
+
+    def _check_conversion_method_signature(self, node: Tree) -> None:
+        """``__int__`` / ``__float__`` / ``__bool__`` back ``int(obj)`` /
+        ``float(obj)`` / ``bool(obj)`` and must be ``(self) -> <type>``."""
+        method = self._funcdef_name(node)
+        expected = _CONVERSION_DUNDERS.get(method)
+        if not self._current_class_stack or expected is None:
+            return
+        class_name = self._current_class_stack[-1]
+        if self._funcdef_is_static(node):
+            self._error(node, "type", f"`{class_name}.{method}` must be an instance method")
+            return
+        params = self._param_names(self._funcdef_params(node))
+        if params != ["self"]:
+            self._error(
+                node,
+                "type",
+                f"`{class_name}.{method}` must declare only `self`, got {len(params)} parameter{'s' if len(params) != 1 else ''}",
+            )
+        return_type = self._funcdef_return_type_text(node)
+        if return_type != expected:
+            self._error(node, "type", f"`{class_name}.{method}` must return `{expected}`, got `{return_type or 'None'}`")
+
+    def _check_conversion_cast(self, name: str, arg: Tree, actual: Type) -> None:
+        """Rules for ``int(x)`` / ``float(x)`` / ``bool(x)``: numerics and
+        ``bool`` convert, ``str`` and ``json`` convert at runtime (malformed
+        input throws), classes need the matching dunder, ``any`` asserts the
+        dynamic Go type (warning), everything else is rejected."""
+        if self._is_any_type(actual):
+            accepted = {"int": "any integer kind", "float": "any floating kind", "bool": "a bool"}[name]
+            self._warning(
+                arg,
+                "type",
+                f"`{name}(...)` on an `any` value is checked at runtime: {accepted} converts, "
+                f"anything else throws `TypeError`; convert a typed value or check its type first",
+            )
+            return
+        if self._is_primitive_numeric_type(actual):
+            return
+        if isinstance(actual, NamedType) and actual.name in {"bool", "str", "json"}:
+            return
+        dunder = f"__{name}__"
+        if isinstance(actual, (NamedType, GenericType)):
+            class_name = actual.name if isinstance(actual, NamedType) else actual.base
+            if class_name in self._class_method_shapes:
+                if self._method_sigs_for_target(f"{class_name}.{dunder}"):
+                    return
+                self._error(
+                    arg,
+                    "type",
+                    f"cast `{name}` is not defined for `{render_type(actual)}`; "
+                    f"implement `func {dunder}(self) -> {_CONVERSION_DUNDERS[dunder]}`",
+                )
+                return
+        if isinstance(actual, NamedType) and self._is_open_type(actual):
+            # Type parameters, interfaces and other names whose shape is not
+            # known here stay a conservative fallback.
+            return
+        self._error(arg, "type", f"cast `{name}` is not defined for `{render_type(actual)}`")
 
     def _check_json_method_signature(self, node: Tree) -> None:
         if not self._current_class_stack or self._funcdef_name(node) != "__json__":
@@ -1717,6 +1801,7 @@ class SemanticChecker:
             if err_name:
                 scope.names.add(err_name)
                 scope.definite_names.add(err_name)
+                scope.catch_nodes[err_name] = err_name_node
             self._collect_block_defs(handler_suite, scope)
             self._scopes.append(scope)
             try:
@@ -1814,20 +1899,24 @@ class SemanticChecker:
         pre = [c for c in children if c is not body_suite and isinstance(c, Tree)]
         type_test = None
         alias = None
+        alias_node = None
         for c in pre:
             if c.data == "name":
                 alias = self._name_text(c)
+                alias_node = c
             elif type_test is None:
                 type_test = c
         if alias is None and type_test is not None and type_test.data == "var":
             test_name = self._name_text(type_test.children[0]) if type_test.children else ""
             if test_name and test_name not in PYTHON_EXCEPTIONS:
                 alias = test_name
+                alias_node = type_test
                 type_test = None
         if alias:
             self._check_go_reserved(node, alias)
             scope.names.add(alias)
             scope.definite_names.add(alias)
+            scope.catch_nodes[alias] = alias_node
         if type_test is not None:
             self._visit_expr_subtree(type_test)
         if body_suite is not None:
@@ -3594,9 +3683,14 @@ class SemanticChecker:
                 self._error(bad_node, "json", message)
             return
         actual = self._expr_simple_type(args[0])
-        if actual is None or self._is_any_type(actual) or self._is_open_type(actual):
+        if actual is None:
             return
-        if name in INTEGER_CAST_FUNCS or name in FLOAT_CAST_FUNCS or name == "bool":
+        if name in {"int", "float", "bool"}:
+            self._check_conversion_cast(name, args[0], actual)
+            return
+        if self._is_any_type(actual) or self._is_open_type(actual):
+            return
+        if name in INTEGER_CAST_FUNCS or name in FLOAT_CAST_FUNCS:
             if not self._is_primitive_numeric_type(actual):
                 self._error(
                     args[0],
@@ -3917,6 +4011,9 @@ class SemanticChecker:
             if module == requirement.module and imported == requirement.symbol
         }
         if requirement.symbol in imports:
+            # The syntax lowers to helpers of this import, so it counts as a
+            # use for the unused-import warning.
+            self._is_resolved(requirement.symbol)
             return
         expected = f"from {requirement.module} import {requirement.symbol}"
         if imports and requirement.require_unaliased:
@@ -4231,7 +4328,35 @@ class SemanticChecker:
                 return actual
         return fallback
 
+    def _result_consumer_call(self, node) -> Tree | None:
+        """The call whose ``Result`` is consumed by ``call()?``,
+        ``call().unwrap()`` or ``call().unwrapOr(d)``; else None."""
+        if not isinstance(node, Tree):
+            return None
+        if node.data == "propagate":
+            operand = next((child for child in node.children if isinstance(child, Tree)), None)
+            return operand if isinstance(operand, Tree) and operand.data == "funccall" else None
+        if node.data == "funccall" and node.children:
+            callee = node.children[0]
+            if (
+                isinstance(callee, Tree)
+                and callee.data == "getattr"
+                and len(callee.children) >= 2
+                and self._name_text(callee.children[1]) in {"unwrap", "unwrapOr"}
+                and isinstance(callee.children[0], Tree)
+                and callee.children[0].data == "funccall"
+            ):
+                return callee.children[0]
+        return None
+
     def _expr_type_for_expected(self, node, expected: Type) -> Type | None:
+        consumed = self._result_consumer_call(node)
+        if consumed is not None:
+            # Return-type overloads (``Conv.parse``) are chosen by the payload
+            # the consumer expects, i.e. ``Result[expected]``.
+            selected = self._call_return_type_for_expected(consumed, GenericType("Result", (expected,)))
+            if isinstance(selected, GenericType) and selected.base == "Result" and len(selected.args) == 1:
+                return selected.args[0]
         if isinstance(node, Tree) and node.data == "funccall":
             selected = self._call_return_type_for_expected(node, expected)
             if selected is not None:
@@ -4768,8 +4893,31 @@ class SemanticChecker:
         if kind and kind != "import":
             self._error(
                 node, "import",
-                f"import binding `{name}` conflicts with the existing {kind} `{name}`",
+                f"import binding `{name}` conflicts with the existing {kind} `{name}`"
+                f"; import it under another name with `as`",
             )
+
+    def _record_import_origin(
+        self, node, module: str, imported: str | None, local: str, alias: str | None, is_from: bool,
+    ) -> None:
+        if not hasattr(self, "_import_origins"):
+            self._import_origins = {}
+        self._import_origins[local] = (module, imported)
+        if not is_from and module.startswith("@") and not alias:
+            suggested = _namespacing.default_module_local(module)
+            self._error(
+                node, "import",
+                f"`import {module}` needs an alias: write `import {module} as {suggested}` "
+                f"(a scoped package path cannot qualify names; then use `{suggested}.name`)",
+            )
+
+    def _import_conflict_hint(self, name: str) -> str:
+        module, imported = getattr(self, "_import_origins", {}).get(name, ("", None))
+        if not module or not imported:
+            return ""
+        prefix = _namespacing.default_module_local(module).lstrip("@").replace("-", "_")
+        suggestion = prefix + imported[:1].upper() + imported[1:]
+        return f"; import it under another name, e.g. `from {module} import {imported} as {suggestion}`"
 
     def _check_go_reserved(self, node: Tree, name: str) -> None:
         """Flag an identifier that is a Go keyword (or predeclared
@@ -6524,6 +6672,9 @@ class SemanticChecker:
             return False
         if expected.name == actual.name:
             return True
+        identity = self._class_identity.get(expected.name)
+        if identity is not None and identity == self._class_identity.get(actual.name):
+            return True
         if actual.name == "None":
             if expected.name in self._class_method_shapes or expected.name in self._interface_methods:
                 return True
@@ -7556,6 +7707,8 @@ def _import_name_modules(node: Tree) -> list[tuple[str, str]]:
             for part in item.children:
                 if isinstance(part, Tree) and part.data == "dotted_name":
                     module = _dotted_name_text(part)
+                elif isinstance(part, Tree) and part.data == "scoped_name":
+                    module = str(part.children[0]) if part.children else ""
                 elif isinstance(part, Tree) and part.data == "name":
                     alias = SemanticChecker._name_text(part)
                 elif isinstance(part, Token):
@@ -7800,9 +7953,13 @@ def _imported_call_metadata(
         prefix = f"{local}."
         for name, sigs in class_helper._method_sigs.items():
             if name.startswith(prefix):
-                metadata.method_sigs.setdefault(name, []).extend(
-                    remap_sig(sig, name, aliases) for sig in sigs
-                )
+                # A class is collected once per import statement that reaches
+                # it; an identical signature must stay a single variant.
+                known = metadata.method_sigs.setdefault(name, [])
+                for sig in sigs:
+                    remapped = remap_sig(sig, name, aliases)
+                    if remapped not in known:
+                        known.append(remapped)
         for name, return_types in class_helper._method_return_type_texts.items():
             if name.startswith(prefix):
                 metadata.method_return_type_texts.setdefault(name, set()).update(
@@ -7811,6 +7968,16 @@ def _imported_call_metadata(
 
     def collect_imported_interface(interfacedef: Tree, local: str) -> None:
         metadata.interface_methods[local] = helper._collect_interface_methods(interfacedef)
+
+    def collect_signature_interfaces(facts, imported_tree: Tree) -> None:
+        """Imported signatures keep the defining module's interface names
+        (``describe(n: Named)``); make those interfaces known even when the
+        importer does not import them, so a conforming class is accepted."""
+        for export in facts.exports.values():
+            if export.kind != "interface" or export.name in metadata.interface_methods:
+                continue
+            for interfacedef in collect_interfacedefs(imported_tree, export.name):
+                collect_imported_interface(interfacedef, export.name)
 
     for node in _iter_import_from_nodes(tree):
         module = _import_module_name(node)
@@ -7839,6 +8006,7 @@ def _imported_call_metadata(
             if export.kind != "class" or _export_is_private(export):
                 continue
             local = class_aliases.get(export.name, export.name)
+            metadata.class_identity[local] = f"{mod_path}::{export.name}"
             for classdef in collect_classdefs(imported_tree, export.name):
                 collect_imported_class(classdef, local, class_aliases)
                 collected_classes.add(local)
@@ -7863,6 +8031,7 @@ def _imported_call_metadata(
             elif export.kind == "interface":
                 for interfacedef in collect_interfacedefs(imported_tree, requested):
                     collect_imported_interface(interfacedef, local)
+        collect_signature_interfaces(facts, imported_tree)
 
     for node in _iter_import_name_nodes(tree):
         for module, local in _import_name_modules(node):
@@ -7897,12 +8066,25 @@ def _imported_call_metadata(
                             )
                         record_func_return_type(funcdef, target, class_aliases)
                 elif export.kind == "class":
+                    metadata.class_identity[target] = f"{mod_path}::{export.name}"
                     for classdef in collect_classdefs(imported_tree, export.name):
                         collect_imported_class(classdef, target, class_aliases)
                 elif export.kind == "interface":
                     for interfacedef in collect_interfacedefs(imported_tree, export.name):
                         collect_imported_interface(interfacedef, target)
+            collect_signature_interfaces(facts, imported_tree)
     return metadata
+
+
+def _is_reexport_only_module(tree: Tree) -> bool:
+    statements = [child for child in tree.children if isinstance(child, Tree)]
+    if not statements:
+        return False
+    for stmt in statements:
+        inner = [c for c in stmt.children if isinstance(c, Tree)] if stmt.data == "simple_stmt" else [stmt]
+        if not inner or any(c.data != "import_stmt" for c in inner):
+            return False
+    return True
 
 
 def check_source(
@@ -7940,11 +8122,21 @@ def check_source(
         imported_class_instance_methods=imported_calls.class_instance_methods,
         imported_class_method_shapes=imported_calls.class_method_shapes,
         imported_class_bases=imported_calls.class_bases,
+        imported_class_identity=imported_calls.class_identity,
         imported_class_private_methods=imported_calls.class_private_methods,
     ).check(
         tree,
         ast_module=ast_module,
     )
+    if source_path is not None and (
+        Path(source_path).name == "__init__.lam" or _is_reexport_only_module(tree)
+    ):
+        # A package entry module (or a module made only of imports) exists to
+        # re-export: its imports are public surface, not unused bindings.
+        errors = [
+            err for err in errors
+            if not (getattr(err, "severity", "") == "warning" and err.message.startswith("unused import"))
+        ]
     if module_index is not None and source_path is not None:
         errors.extend(_check_imported_exports(
             tree,

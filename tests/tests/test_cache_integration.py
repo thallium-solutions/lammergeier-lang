@@ -150,6 +150,22 @@ def case_warm_output_matches_no_cache() -> None:
         assert warm == bypass, "cache output must match the uncached build"
 
 
+def case_cache_hit_maps_lines_to_current_copy() -> None:
+    """An identical library at another path reuses the entry but must map
+    ``//line`` directives (and therefore Go errors) to its own file."""
+    with tempfile.TemporaryDirectory() as td:
+        cache = Path(td) / "cache"
+        first_main, first_lib = _write_project(Path(td) / "first")
+        second_main, second_lib = _write_project(Path(td) / "second")
+
+        _run([str(first_main), "--emit-go"], cache)
+        warm = _run([str(second_main), "--emit-go"], cache).stdout
+        assert _count(cache) == 1, "identical library content must share one entry"
+        library = warm.split("// === Library: widget ===", 1)[1]
+        assert f"//line {second_lib.resolve()}:" in library, "directives must name the compiled copy"
+        assert str(first_lib.resolve()) not in library, "stale path from the first copy leaked"
+
+
 # ─── Driver ───────────────────────────────────────────────────
 
 
@@ -159,6 +175,7 @@ CASES = [
     case_content_invalidates,
     case_clear_cache,
     case_warm_output_matches_no_cache,
+    case_cache_hit_maps_lines_to_current_copy,
 ]
 
 

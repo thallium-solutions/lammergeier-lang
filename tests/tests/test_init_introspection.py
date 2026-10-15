@@ -171,9 +171,10 @@ def test_init_custom_name_version_scope() -> None:
 
 
 def test_init_lib_writes_named_module() -> None:
-    """``--lib`` produces ``<name>.lam`` instead of ``main.lam``,
-    and the file declares a ``tag()`` helper so consumers have a
-    cheap smoke-test entry point."""
+    """``--lib`` produces ``<name>.lam`` instead of ``main.lam``. The
+    module declares no generic helper: name and version already live in
+    ``lamlib.toml``, and a scaffolded top-level function would clash with
+    every other scaffolded library linked into the same program."""
     with tempfile.TemporaryDirectory() as tmp:
         proj = Path(tmp)
         r = _run("init", "--name", "PascalCaseLib", "--lib", "-q", cwd=proj)
@@ -181,8 +182,34 @@ def test_init_lib_writes_named_module() -> None:
         assert (proj / "PascalCaseLib.lam").exists()
         assert not (proj / "main.lam").exists()
         body = (proj / "PascalCaseLib.lam").read_text()
-        assert "func tag()" in body, body
+        assert "func " not in body, body
+        assert "PascalCaseLib" in body and "lamlib.toml" in body, body
     print("PASS: init --lib writes <name>.lam, no main.lam")
+
+
+def test_init_scaffolded_libs_link_together() -> None:
+    """Regression: two scaffolded libraries used to both declare
+    ``func tag()`` and could not be linked into one program."""
+    with tempfile.TemporaryDirectory() as tmp:
+        app = Path(tmp) / "app"
+        for name in ("alphaLib", "betaLib"):
+            lib = app / "lib" / name
+            lib.mkdir(parents=True)
+            r = _run("init", "--name", name, "--lib", "-q", cwd=lib)
+            assert r.returncode == 0, (r.returncode, r.stderr)
+            (lib / f"{name}.lam").rename(lib / "__init__.lam")
+            with open(lib / "__init__.lam", "a", encoding="utf-8") as fh:
+                fh.write(f"\nfunc {name}Greeting() -> str {{\n    return \"{name}\"\n}}\n")
+        (app / "main.lam").write_text(
+            "from alphaLib import alphaLibGreeting\nfrom betaLib import betaLibGreeting\n\n"
+            "func main() {\n    print(alphaLibGreeting() + \"+\" + betaLibGreeting())\n}\n",
+            encoding="utf-8",
+        )
+        r = subprocess.run(LAMC + [str(app / "main.lam"), "--run"], cwd=str(app),
+                           capture_output=True, text=True, timeout=180)
+        assert r.returncode == 0, r.stderr + r.stdout
+        assert r.stdout.strip().endswith("alphaLib+betaLib"), r.stdout
+    print("PASS: scaffolded libraries link into one program")
 
 
 def test_init_refuses_overwrite_without_force() -> None:
@@ -387,6 +414,7 @@ def main() -> int:
         test_init_default_preserves_directory_case,
         test_init_custom_name_version_scope,
         test_init_lib_writes_named_module,
+        test_init_scaffolded_libs_link_together,
         test_init_refuses_overwrite_without_force,
         test_init_rejects_invalid_name_and_version,
         test_registry_install_preserves_library_case,

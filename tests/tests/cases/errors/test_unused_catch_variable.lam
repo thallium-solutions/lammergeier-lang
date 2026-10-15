@@ -1,0 +1,35 @@
+# Test: unused catch variables and locals compile (Lam warns; the generated Go
+# silences them with ``_ = name``). The silencer used to treat a word inside a
+# string literal as a use, so a handler printing "err: ..." left ``err``
+# unused in Go ("declared and not used").
+#
+# expect: do: err: still an error
+# expect: try: failure handled
+# expect: local: total unused
+# expect: raw: `err` raw string
+
+from lamerrors import Result, Error
+
+func failing() -> Result[list[str]] {
+    return Result.Err(Error("Nope", "still an error"))
+}
+
+func main() {
+    do {
+        _ = failing()?
+    } catch err {
+        print("do: err: still an error")
+    }
+    try {
+        throw Error("E", "boom")
+    } catch failure {
+        print("try: failure handled")
+    }
+    total: int = 3
+    print("local: total unused")
+    do {
+        _ = failing()?
+    } catch err {
+        print("raw: `err` raw string")
+    }
+}

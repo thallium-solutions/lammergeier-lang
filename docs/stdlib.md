@@ -2694,7 +2694,7 @@ Automatic retries on transient errors (closed connection, server gone away,
 bad conn…) are bounded by `setRetries`. Exhausted transient and non-transient
 errors are returned by the same unsuffixed operation as `Result.Err`.
 
-### `lammigrate` — `Migrator`, `Schema`
+### `lammigrate` — `Migrator`, `SchemaBuilder`
 
 Knex-style schema migrations on top of `lamdb`. Each migration is
 a `.sql` file with two sections delimited by marker comments
@@ -2705,7 +2705,7 @@ so a single `down(1)` rewinds the entire batch atomically.
 
 ```lammergeier
 from lamdb import Db
-from lammigrate import Migrator, Schema
+from lammigrate import Migrator, SchemaBuilder
 
 db: Db = Db.connect("sqlite", "/var/data/app.db")?
 mig: Migrator = Migrator(db, "./migrations")
@@ -2743,12 +2743,14 @@ one-by-one through `db.exec` so transient-error retry still
 applies. The splitter respects quoted strings and `--`/`/* … */`
 comments.
 
-`Schema` is an optional helper that emits portable DDL for the
+`SchemaBuilder` is an optional helper that emits portable DDL for the
 three supported dialects so common columns don't need driver-
-specific casts:
+specific casts. It was called `Schema` before 2026-10-15; the old name
+clashed with lamschema's `Schema`, so the two modules could not be linked
+into one program (for example together with Vulture):
 
 ```lammergeier
-schema: Schema = Schema(db.driverName())
+schema: SchemaBuilder = SchemaBuilder(db.driverName())
 db.exec(schema.createTableIfNotExists("widgets", [
     {"name": "id", "type": "id"},                          # auto-incrementing PK
     {"name": "label", "type": "string", "length": 64, "unique": true},
@@ -3067,7 +3069,7 @@ index lists the public classes and top-level functions you can import.
 | `lamjson` | `from lamjson import Json` | Native `json`, wire encoding/decoding, safe Result-based collection conversion, and kind inspection. |
 | `lamlog` | `from lamlog import Log` | Leveled logging and formatted log helpers. |
 | `lammath` | `from lammath import Math` | Constants, trig, logs, rounding, combinatorics, number theory. |
-| `lammigrate` | `from lammigrate import Migrator, Schema` | SQL migrations and schema helpers. |
+| `lammigrate` | `from lammigrate import Migrator, SchemaBuilder` | SQL migrations and schema helpers. |
 | `lamnet` | `from lamnet import Net, TcpConn, TcpListener, UdpConn, UdpPacket` | DNS, reachability, TCP/TLS/UDP sockets, deadlines, and addresses. |
 | `lamos` | `from lamos import Os, File, FileLineGenerator` | Result-based filesystem/process helpers and streaming file lines/batches. |
 | `lampath` | `from lampath import Path` | Variadic path joining plus splitting/ext/base/dir/existence helpers. |

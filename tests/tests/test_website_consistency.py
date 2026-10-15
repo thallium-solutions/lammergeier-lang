@@ -62,24 +62,26 @@ class OfficialPackage:
 # official repositories.  Changing a package release intentionally requires a
 # one-line update here and corresponding catalog/documentation changes.
 OFFICIAL_PACKAGES = (
-    OfficialPackage("@lam/jwt", "lam-jwt", ("Jwt", "JwtKeySet")),
+    OfficialPackage("@lam/jwt", "lam-jwt", ("Jwt", "JwtKeySet"), "3.0.0"),
     OfficialPackage("@lam/memcached", "lam-memcached", ("Memcached",)),
-    OfficialPackage("@lam/protobuf", "lam-protobuf", ("Pb",)),
+    OfficialPackage("@lam/protobuf", "lam-protobuf", ("Pb",), "3.0.0"),
     OfficialPackage(
         "@lam/redis",
         "lam-redis",
         ("PubSub", "Redis", "RedisCommand", "RedisScanPage", "RedisZMember"),
     ),
-    OfficialPackage("@lam/s3", "lam-s3", ("S3", "S3Client", "S3Config", "S3Object")),
+    OfficialPackage("@lam/s3", "lam-s3", ("S3", "S3Client", "S3Config", "S3Object"), "2.1.0"),
     OfficialPackage(
         "@lam/sftp",
         "lam-sftp",
         ("SftpConfig", "SftpHandlers", "SftpRequest", "SftpServer"),
+        "3.0.0",
     ),
     OfficialPackage(
         "@lam/ssh",
         "lam-ssh",
         ("SshClient", "SshCommandResult", "SshConfig", "SshKeyPair", "SshSession"),
+        "3.0.0",
     ),
     OfficialPackage(
         "@lam/vulture",
@@ -94,16 +96,19 @@ OFFICIAL_PACKAGES = (
             "Server",
             "SseEmitter",
         ),
+        "2.0.1",
     ),
     OfficialPackage(
         "@lam/vulture/std-plugin",
         "lam-vulture-std-plugin",
         ("CircuitBreaker", "compress", "helmet", "metrics", "rateLimit", "requestLog"),
+        "2.0.1",
     ),
     OfficialPackage(
         "@lam/vulture/tus-plugin",
         "lam-vulture-tus-plugin",
         ("tusGc", "tusUploads"),
+        "3.0.0",
     ),
     OfficialPackage(
         "@lam/vulture/ws-plugin",
@@ -908,7 +913,7 @@ def check_official_packages(report: Report) -> None:
                 f"catalog needs a current canonical import example for {package.name}",
             )
 
-    if compiler_target is not None and compiler_target != "1.18":
+    if compiler_target is not None and compiler_target != "1.19":
         report.add(
             "official packages",
             ROOT / "compiler" / "version.py",

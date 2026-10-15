@@ -1,0 +1,76 @@
+# Test: ``expr?`` without a typed target must not assert the payload type
+# of a *different* overload. ``Codec.parse`` has variants whose Result
+# payloads differ (``str`` / ``int`` / ``json``); discarding or forwarding
+# the propagated value used to assert the first variant's ``string`` type
+# and panic with "interface {} is main.LamJSON, not string".
+#
+# expect: discard-json: ok
+# expect: discard-int: ok
+# expect: discard-str: ok
+# expect: typed-json: {"a":1,"b":2}
+# expect: forwarded: 7
+# expect: err: ParseError: bad input
+
+from lamerrors import Result, Error
+from lamjson import Json
+
+class Codec {
+    static func parse(text: str) -> Result[str] {
+        if text == "" {
+            return Result.Err(Error("ParseError", "bad input"))
+        }
+        return Result.Ok(text)
+    }
+
+    static func parse(n: int) -> Result[int] {
+        return Result.Ok(n + 1)
+    }
+
+    static func parse(doc: json) -> Result[json] {
+        return Result.Ok(doc)
+    }
+}
+
+func discardJson() -> Result[str] {
+    doc: json = {"a": 1, "b": 2}
+    _ = Codec.parse(doc)?
+    return Result.Ok("ok")
+}
+
+func discardInt() -> Result[str] {
+    _ = Codec.parse(41)?
+    return Result.Ok("ok")
+}
+
+func discardStr(text: str) -> Result[str] {
+    _ = Codec.parse(text)?
+    return Result.Ok("ok")
+}
+
+func typedJson() -> Result[str] {
+    doc: json = {"a": 1, "b": 2}
+    parsed: json = Codec.parse(doc)?
+    return Json.encode(parsed)
+}
+
+func forward(n: int) -> Result[any] {
+    return Result.Ok(Codec.parse(n)?)
+}
+
+func main() {
+    a: str = discardJson().unwrap()
+    b: str = discardInt().unwrap()
+    c: str = discardStr("x").unwrap()
+    d: str = typedJson().unwrap()
+    e: any = forward(6).unwrap()
+    print("discard-json: " + a)
+    print("discard-int: " + b)
+    print("discard-str: " + c)
+    print("typed-json: " + d)
+    print("forwarded: " + str(e))
+    do {
+        _ = discardStr("")?
+    } catch err {
+        print(f"err: {err}")
+    }
+}

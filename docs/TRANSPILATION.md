@@ -76,6 +76,12 @@ their placeholder ids are build-local, but the transpiler inlines each
 block's raw Go source at emit time — the cached `go_src` is therefore
 self-contained and safe to reuse.
 
+Because the key is content-only, two identical copies of a library at
+different paths (for example a vendored `extlibs/` copy and its source
+checkout) share one entry. On a cache hit the compiler rewrites the
+entry's `//line` directives to the file actually being compiled, so Go
+errors and diagnostics always point at the current copy.
+
 CLI flags:
 
 - `--no-cache` bypasses the cache for a single build (useful when
@@ -395,6 +401,17 @@ each parameter type and joining them as `func(P1, P2, ...) R` (or
 appear anywhere a regular type does — parameters, return clauses,
 variable annotations, generics, container element types.
 
+`int(x)` / `float(x)` / `bool(x)` lower by the static type of `x`
+(`_conversion_to_go` in `compiler/visitors/expressions.py`): numerics use Go
+conversions (`bool(n)` → `n != 0`); `bool` → an inline `1`/`0` function; `str`
+→ an inline `strconv.Atoi` / `ParseFloat` / `ParseBool` call that panics with
+`ParseError: cannot parse ...` (no stdlib import is forced); `json` →
+`lamJSONToInt` / `lamJSONToFloat` / `lamJSONToBool` from `lamjson`; a class
+defining `__int__` / `__float__` / `__bool__` → that method; a declared `any` →
+an inline type switch accepting every integer kind (`int`) / floating kind
+(`float`) / `bool`, panicking with `TypeError: int(...) expects an integer, got
+<type>` otherwise.
+
 `Result[T]` is a compile-time payload annotation rather than a runtime Go
 generic. The stdlib class still has two `any` fields (`value`, `error`), so
 `Result.Ok(v)` and `Result.Err(e)` lower to ordinary static-method calls and
@@ -402,8 +419,16 @@ store payloads as `interface{}`. The compiler carries `T` through local,
 imported, overloaded, and propagated calls for Lam-side member/type checks;
 contextual lowering inserts a Go assertion when an annotated assignment,
 return, call argument, or collection element needs one, including values read
-through `unwrap()` or `unwrapOr(...)`. Direct untyped `.value`, `.error`,
-`unwrap()`, and `unwrapOr(...)` reads retain the dynamic fallback:
+through `unwrap()` or `unwrapOr(...)`. Inline `unwrap()` / `unwrapOr(...)` on
+a receiver whose payload is statically known — a local or parameter annotated
+`Result[T]` (tracked in `_var_result_payloads`), or a call whose declared
+payload is in `_result_payload_go_types` (per overload variant) — lowers to
+`x.Unwrap().(T)`; as a bare statement the assertion is omitted. With a target
+of `Result[T]`, `Result.Ok(<collection literal | comprehension | ternary>)`
+lowers its argument through `_typed_value_to_go` with `T`, so the stored value
+has the concrete Go type later assertions expect. Direct `.value`, `.error`,
+and `unwrap()` / `unwrapOr(...)` on payload-unknown or `any` results retain
+the dynamic fallback:
 
 ```lam
 err: Result = Result.Err({"code": 400})
@@ -535,7 +560,12 @@ and static-method metadata, emits the matching assertion (for example
 `__q1.Value.(*Document)`), and records the concrete receiver for later member
 and default-argument dispatch. Public payload-class metadata is harvested from
 the resolved module without creating a user-scope binding, so callers import
-only the function they use. This metadata is part of the versioned library
+only the function they use. Overloads may declare different payloads
+(`parse(text: str) -> Result[str]` next to `parse(doc: json) -> Result[json]`),
+so payload metadata is recorded per overload variant and the `?` site resolves
+the variant from the argument types exactly like call dispatch does; an
+overloaded call whose variant cannot be resolved keeps the plain
+`__qN.Value` instead of asserting another variant's type. This metadata is part of the versioned library
 cache so warm builds behave like cold builds. Before emission, the semantic
 pass also rejects known non-`Result` operands, while unknown/`any` operands
 retain the dynamic fallback. The same expression model validates propagated,
@@ -668,7 +698,8 @@ The implementation lives in `_emit_unused_local_silencers`
 against the snapshot to find scope-local declarations. Each remaining
 name is searched for word-boundary references in the slice of
 `output_lines` emitted during that scope (with `//line` directives
-stripped so source paths can't false-positive); names that appear
+stripped and Go string, rune and comment text masked, so source paths or a
+`"err: ..."` message can't false-positive); names that appear
 exactly once — i.e. only in their own declaration line — get a trailing
 `_ = name` before the scope closes.
 
@@ -934,6 +965,52 @@ from lamos import Os
   static methods, and inferred instance methods receive the same Lam-side call
   diagnostics as ordinary methods. Raw Go values and dynamic `any` receivers
   intentionally keep the conservative fallback.
+- All modules of a program are emitted into **one Go package**
+  (`package main`). Module namespacing (`compiler/namespacing.py`) keeps
+  same-name top-level definitions apart. When a name is defined by more than
+  one linked module, every definition outside the main module (and outside the
+  compiler-referenced classes `lamerrors.Result` / `Error` and
+  `lamstrings.Strings`) is renamed:
+  - functions, constants and module-level variables get a module-qualified Go
+    name (`tag` in `alpha` → `Tag__alpha`, `Version` in `@acme/jwt.core` →
+    `Version__acme_jwt_core`), applied to definitions, references and importers;
+    imported-function metadata (signatures, defaults, overload variants, Result
+    payloads) of a colliding name is taken from the defining module, so overload
+    sets never merge;
+  - classes and interfaces are renamed at the Lam level before any metadata is
+    collected (`Config` in `one` → `Config__one`), so the Go type, the
+    `NewConfig__one` constructor, static members (`Config__one_make`) and every
+    compiler table follow.
+- Imports are resolved before transpilation: `from m import x as y` and
+  `import m as a` / `a.x` (including inside f-string placeholders) are
+  rewritten in the AST to `x` (or its renamed form) when that name is free in
+  the module; when it is taken (a local `x`, or another module's `x`) the alias
+  keeps its own Lam name and maps to the right Go symbol.
+- Raw `go!` code is rewritten for its own module's renamed definitions and for
+  names imported without an alias (identifiers outside strings and comments;
+  overload suffixes and `Class_static` prefixes included). Aliased imports and
+  modules reached only indirectly are not followed: such raw code must use the
+  generated Go name.
+- What still has to be unique is reported before `go build` as a Lam
+  diagnostic listing each module, its source location and a three-line
+  snippet, instead of Go's `redeclared in this block` cascade: a clash between
+  two definitions that cannot be renamed (the main module and a
+  compiler-referenced class, or two of those), raw `go!` declarations, and
+  cross-kind collisions such as a class `Thing` (constructor `NewThing`) next
+  to a function `newThing`.
+
+  ```text
+  error: top-level symbol clash while linking main.lam
+    Go `type Error` is declared by modules `main` and `lamerrors`
+      - `main` at /app/main.lam:3
+          >>>    3 | class Error {
+      - `lamerrors` at <lamc>/lib/lamerrors.lam:24
+          >>>   24 | class Error {
+    help: rename one of the declarations. ...
+  ```
+
+  Methods, `func init()` and `_` never clash. Prefix raw `go!` helpers with a
+  module-specific stem (`lamXml…`, `lamHttp…`).
 
 ## `go!` escape hatches
 

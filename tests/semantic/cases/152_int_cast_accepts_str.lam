@@ -1,0 +1,8 @@
+# expect-pass
+# ``int(str)`` is accepted and parsed at runtime (ParseError on malformed
+# text); use ``Conv.parse`` to get a ``Result`` instead.
+
+func main() {
+    value = int("1")
+    print(value)
+}

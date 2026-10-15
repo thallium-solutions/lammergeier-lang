@@ -2,6 +2,16 @@
 
 All notable changes to `lamotel` are documented here.
 
+## 0.2.1 - 2026-10-15
+
+### Fixed
+
+- Convert span attribute maps with `Json.fromValue(...)` when building the OTLP
+  payload; the implicit `json(dict[str, any])` conversion is rejected by the
+  semantic check.
+- The OTLP instrumentation scope and `User-Agent` report the package version
+  (`0.2.1`) instead of the stale `0.1.0`.
+
 ## 2026-09-25
 
 ### Added

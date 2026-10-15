@@ -1,0 +1,122 @@
+# Test: ``int()``, ``float()`` and ``bool()`` conversions.
+#   * numerics and bool convert directly (bool -> 0/1, numbers -> != 0);
+#   * ``str`` is parsed and a malformed value throws ``ParseError``;
+#   * ``json`` numbers/booleans convert, JSON strings are parsed, other JSON
+#     values throw ``TypeError``;
+#   * classes convert through ``__int__`` / ``__float__`` / ``__bool__``
+#     (inherited methods included);
+#   * ``any`` (compile-time warning): ``int`` accepts every integer kind,
+#     ``float`` every floating kind, ``bool`` a bool; anything else throws
+#     ``TypeError``.
+#
+# expect: numeric: 3 2 7.5 true false
+# expect: bool: 1 0 1 true
+# expect: str: 42 2.5 true false
+# expect: bad-int: ParseError
+# expect: bad-float: ParseError
+# expect: bad-bool: ParseError
+# expect: class: 1250 12.5 true false
+# expect: inherited: 300
+# expect: json: 5 7 1.5 true 1
+# expect: json-list: TypeError
+# expect: json-text: ParseError
+# expect: any: 5 2.5 false
+# expect: any-mismatch: TypeError
+# expect: any-kinds: 9 300 7 1.5 2.25
+# expect: any-float-from-int: TypeError
+# expect: any-int-from-float: TypeError
+# expect: any-bool-from-int: TypeError
+# expect: composed: 6
+
+from lamerrors import Error
+
+class Money {
+    func init(self, cents: int) {
+        self.cents: int = cents
+    }
+
+    func __int__(self) -> int {
+        return self.cents
+    }
+
+    func __float__(self) -> float {
+        return float(self.cents) / 100.0
+    }
+
+    func __bool__(self) -> bool {
+        return self.cents != 0
+    }
+}
+
+class Tip(Money) {
+    func init(self, cents: int) {
+        base.init(cents)
+    }
+}
+
+func dynamic(value: any) -> any {
+    return value
+}
+
+func kindOf(attempt: func() -> int) -> str {
+    try {
+        _ = attempt()
+    } catch err {
+        text: str = str(err)
+        if text.contains("ParseError") {
+            return "ParseError"
+        }
+        if text.contains("TypeError") {
+            return "TypeError"
+        }
+        return text
+    }
+    return "no error"
+}
+
+func main() {
+    f: float = 3.7
+    n: int = 2
+    big: int64 = 7
+    print(f"numeric: {int(f)} {int(float(n))} {float(big) + 0.5} {bool(n)} {bool(0.0)}")
+    print(f"bool: {int(true)} {int(false)} {float(true)} {bool(true)}")
+    print(f"str: {int('42')} {float('2.5')} {bool('true')} {bool('0')}")
+    print("bad-int: " + kindOf(lambda() -> int: int("4x")))
+    print("bad-float: " + kindOf(lambda() -> int: int(float("nan?"))))
+    print("bad-bool: " + kindOf(lambda() -> int: int(bool("maybe"))))
+    price: Money = Money(1250)
+    empty: Money = Money(0)
+    print(f"class: {int(price)} {float(price)} {bool(price)} {bool(empty)}")
+    print(f"inherited: {int(Tip(300))}")
+    num: json = 5
+    text: json = "7"
+    ratio: json = "1.5"
+    yes: json = true
+    print(f"json: {int(num)} {int(text)} {float(ratio)} {bool(yes)} {int(yes)}")
+    items: json = [1, 2]
+    print("json-list: " + kindOf(lambda() -> int: int(items)))
+    word: json = "abc"
+    print("json-text: " + kindOf(lambda() -> int: int(word)))
+    a: any = 5
+    b: any = 2.5
+    c: any = false
+    print(f"any: {int(a)} {float(b)} {bool(c)}")
+    wrong: any = "5"
+    print("any-mismatch: " + kindOf(lambda() -> int: int(wrong)))
+    dynInt64: any = dynamic(go!(int64(9)))
+    dynUint16: any = dynamic(go!(uint16(300)))
+    dynInt8: any = dynamic(go!(int8(7)))
+    dynFloat32: any = dynamic(go!(float32(1.5)))
+    double: any = 2.25
+    print(f"any-kinds: {int(dynInt64)} {int(dynUint16)} {int(dynInt8)} {float(dynFloat32)} {float(double)}")
+    whole: any = 3
+    print("any-float-from-int: " + kindOf(lambda() -> int: int(float(whole))))
+    print("any-int-from-float: " + kindOf(lambda() -> int: int(double)))
+    print("any-bool-from-int: " + kindOf(lambda() -> int: int(bool(whole))))
+    values: list[str] = ["1", "2", "3"]
+    total: int = 0
+    for v in values {
+        total += int(v)
+    }
+    print(f"composed: {total}")
+}

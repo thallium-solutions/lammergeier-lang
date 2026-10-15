@@ -1,0 +1,31 @@
+# expect-pass
+# Classes (and subclasses) defining the conversion methods are accepted.
+
+class Money {
+    func init(self, cents: int) {
+        self.cents: int = cents
+    }
+
+    func __int__(self) -> int {
+        return self.cents
+    }
+
+    func __float__(self) -> float {
+        return float(self.cents)
+    }
+
+    func __bool__(self) -> bool {
+        return self.cents != 0
+    }
+}
+
+class Tip(Money) {
+    func init(self, cents: int) {
+        base.init(cents)
+    }
+}
+
+func main() {
+    m: Money = Money(5)
+    print(int(m), float(m), bool(m), int(Tip(2)))
+}

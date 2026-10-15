@@ -1,0 +1,7 @@
+# expect-error: error[type]
+# expect-error: cast `int` is not defined for `list[int]`
+
+func main() {
+    xs: list[int] = [1]
+    print(int(xs))
+}

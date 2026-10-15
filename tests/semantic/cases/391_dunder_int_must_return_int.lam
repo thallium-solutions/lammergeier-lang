@@ -1,0 +1,15 @@
+# expect-error: `Money.__int__` must return `int`, got `str`
+
+class Money {
+    func init(self) {
+        self.cents: int = 1
+    }
+
+    func __int__(self) -> str {
+        return "1"
+    }
+}
+
+func main() {
+    print(Money().cents)
+}

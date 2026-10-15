@@ -1,0 +1,15 @@
+# expect-warning: unused import `Error`
+# expect-no-warning: unused import `Result`
+# Satisfying the `?` requirement marks only `Result` as used.
+
+from lamerrors import Result, Error
+from lamos import Os
+
+func size(path: str) -> Result[int] {
+    text: str = Os.readFile(path)?
+    return Result.Ok(len(text))
+}
+
+func main() {
+    print(size("/etc/hostname").ok())
+}

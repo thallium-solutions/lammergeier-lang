@@ -27,8 +27,13 @@ class StatementVisitorMixin:
             if isinstance(child, Tree) and child.data == "dotted_as_names":
                 for das in child.children:
                     if isinstance(das, Tree) and das.data == "dotted_as_name":
-                        name = self._dotted_name_to_str(das.children[0])
-                        self._lam_imports.append(name)
+                        head = das.children[0]
+                        if isinstance(head, Tree) and head.data == "scoped_name":
+                            name = str(head.children[0]) if head.children else ""
+                        else:
+                            name = self._dotted_name_to_str(head)
+                        if name:
+                            self._lam_imports.append(name)
 
     def _visit_import_from(self, node: Tree):
         module_name = None
@@ -120,12 +125,16 @@ class StatementVisitorMixin:
 
         if go_type and "." not in target_str:
             self._var_go_types[target_str] = go_type
+            self._note_result_payload(target_str, type_node)
             tuple_types = self._list_tuple_element_types(type_node)
             if tuple_types:
                 self._tuple_iterable_element_types[target_str] = tuple_types
 
         if is_private and "." not in target_str:
             target_str = self._go_private_name(target_str)
+        if self._at_top_level and target_str in self._link_const_go_names:
+            # Module-level variable namespaced by ``compiler/namespacing.py``.
+            target_str = self._link_const_go_names[target_str]
 
         if value is not None:
             if isinstance(value, Tree) and value.data == "test" and len(value.children) == 3:
@@ -176,7 +185,9 @@ class StatementVisitorMixin:
         type_node = children[1] if len(children) > 1 else None
         value_node = children[2] if len(children) > 2 else None
 
-        target_str = self._go_binding_name(self._get_name(name_node))
+        target_str = self._link_const_go_names.get(
+            self._get_name(name_node), self._go_binding_name(self._get_name(name_node))
+        )
         if type_node is not None:
             go_type = self._type_expr_to_go(type_node)
         else:
@@ -392,7 +403,19 @@ class StatementVisitorMixin:
     # ─── Expression statement ──────────────────────────────────
 
     def _visit_expr_stmt(self, node: Tree):
-        expr_str = self._expr_to_go(node.children[0])
+        expr = node.children[0]
+        # A bare call statement discards its value: lower it without the
+        # payload assertion added to inline ``unwrap()`` (Go rejects a type
+        # assertion used as a statement).
+        if isinstance(expr, Tree) and expr.data == "funccall":
+            expr_str = self._funccall_to_go(expr)
+        else:
+            expr_str = self._expr_to_go(expr)
+        # ``f()?`` as a statement: the propagate lowering already emitted
+        # ``__qN := f()`` plus the early-return guard; the remaining payload
+        # expression has no use and Go rejects it ("is not used").
+        if isinstance(expr, Tree) and expr.data == "propagate":
+            return
         if expr_str:
             self._emit(expr_str)
 

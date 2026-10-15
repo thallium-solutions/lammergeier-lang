@@ -2,9 +2,18 @@
 
 Lammergeier keeps general-purpose building blocks in the standard library and
 ships service clients, fast-moving protocols, and vendor integrations as
-independently versioned packages. Every current official package below is at
-`2.0.0`, targets `lamc` 1.18 (`^1.18` compatibility), uses a scoped `@lam/...`
-import, and carries its own tests, release notes, and pinned Go dependencies.
+independently versioned packages. The official packages below are tested with
+`lamc` 1.19 and declare `^1.18` compatibility; each uses a scoped `@lam/...`
+import and carries its own tests, release notes, and pinned Go dependencies.
+Current releases (3.0.0 removes the root `tag()` helper):
+
+| Release | Notes |
+|---|---|
+| `@lam/jwt@3.0.0`, `@lam/protobuf@3.0.0`, `@lam/ssh@3.0.0`, `@lam/vulture/tus-plugin@3.0.0` | root `tag()` removed |
+| `@lam/sftp@3.0.0` | root `tag()` removed; zero-conversion byte streaming |
+| `@lam/s3@2.1.0` | multipart uploads, ranged/streaming reads, bucket helpers |
+| `@lam/redis@2.0.0`, `@lam/memcached@2.0.0`, `@lam/vulture/ws-plugin@2.0.0` | |
+| `@lam/vulture@2.0.1`, `@lam/vulture/std-plugin@2.0.1` | semantic-check clean-ups, no API change |
 
 Use the **Filter libraries** field on the website to narrow this table by
 package name, capability, or keyword.
@@ -154,6 +163,12 @@ Use `S3Client.connect(...) -> Result[S3Client]` or `fromEnv`; v2 consolidates
 string, `list[int]`, and native stream uploads under overloaded `put`. `get`,
 `uploadFile`, `downloadFile`, `list`, `keys`, `stat`, `copy`, `move`, deletes,
 and presigning all return typed Results.
+Large objects use `createMultipartUpload` / `uploadPart` / `listParts` /
+`completeMultipartUpload` / `abortMultipartUpload`, and reads can fetch byte
+ranges (`getRange`, `getRangeBytes`) or stream in chunks through
+`open(key, offset, length) -> Result[S3ObjectReader]`. An explicit `http://`
+endpoint is kept, so local MinIO/SeaweedFS gateways work; bare hosts default
+to HTTPS.
 
 ### SFTP and SSH
 
@@ -173,7 +188,10 @@ func loadSftpConfig(path: str) -> Result[SftpConfig] {
 Configure SFTP authentication and typed storage callbacks before calling
 `listen()` or `listenBackground()`; both lifecycle methods return
 `Result[bool]`. `SftpRequest.context()`, `cancelled()`, and `deadlineUnix()` are
-also Result-returning.
+also Result-returning. High-throughput backends should register
+`onReadAtBytes`/`onWriteAtBytes` (or install a `SftpByteStreamingStorage`),
+which receive packet payloads as `bytes` without the per-byte `list[int]`
+conversion of `onReadAt`/`onWriteAt`.
 
 ```lammergeier
 from @lam/ssh import SshClient, SshCommandResult, SshConfig, SshKeyPair, SshSession
@@ -194,6 +212,16 @@ func inspectHost() -> Result[SshCommandResult] {
 SSH v2 uses Results for `connect`, `close`, command/context runs, session open,
 direct dialing, and TCP channel send/receive/close. A nonzero remote exit is a
 successful transport Result whose `SshCommandResult.success` is `false`.
+
+## Upgrading to the 3.0 releases
+
+`@lam/jwt`, `@lam/protobuf`, `@lam/sftp`, `@lam/ssh` and
+`@lam/vulture/tus-plugin` 3.0.0 remove the root `tag()` helper (the package
+name and version live in `lamlib.toml`). Nothing else breaks: replace any
+`tag()` call with a constant of your own. `@lam/sftp` 3.0.0 also adds
+zero-conversion byte streaming (`onReadAtBytes` / `onWriteAtBytes`), and
+`@lam/s3` 2.1.0 adds multipart uploads, ranged and streaming reads and bucket
+helpers.
 
 ## Migrating legacy integrations to v2
 
@@ -232,11 +260,11 @@ independent scoped packages. Replace legacy compiler-era imports with:
 | `from lamserver_ws import WebSocket, wsRoute` | `from @lam/vulture/ws-plugin import WebSocket, wsRoute` |
 
 ```bash
-lamc install @lam/vulture@2.0.0
-lamc install @lam/vulture/std-plugin@2.0.0
+lamc install @lam/vulture@2.0.1
+lamc install @lam/vulture/std-plugin@2.0.1
 # Install only when used:
 lamc install @lam/vulture/ws-plugin@2.0.0
-lamc install @lam/vulture/tus-plugin@2.0.0
+lamc install @lam/vulture/tus-plugin@3.0.0
 ```
 
 The standard plugin package's canonical direct-installer imports are:

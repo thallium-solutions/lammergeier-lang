@@ -88,8 +88,8 @@ area: 78.53981633974483
   while `Conv` owns parsing and `Fmt` owns presentation.
 - **Official external libraries** — independently versioned scoped packages for
   JWT, Protobuf, Redis, Memcached, S3, SFTP, SSH, and the Vulture HTTP server
-  with its standard, tus, and WebSocket plugins. The current v2 package line
-  targets `lamc` 1.18. Browse the [Libraries catalog](docs/libraries.md) and
+  with its standard, tus, and WebSocket plugins. They are tested with `lamc`
+  1.19 and support 1.18 and newer. Browse the [Libraries catalog](docs/libraries.md) and
   install them with `lamc install`.
 - **Numerics & web stack** — `Array` / `Matrix` backed by **gonum**
   (BLAS-accelerated matmul, LU solve, inverse, det, trace, SVD-flavoured

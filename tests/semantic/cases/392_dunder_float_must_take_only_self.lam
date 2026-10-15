@@ -1,0 +1,15 @@
+# expect-error: `Money.__float__` must declare only `self`, got 2 parameters
+
+class Money {
+    func init(self) {
+        self.cents: int = 1
+    }
+
+    func __float__(self, scale: float) -> float {
+        return scale
+    }
+}
+
+func main() {
+    print(Money().cents)
+}

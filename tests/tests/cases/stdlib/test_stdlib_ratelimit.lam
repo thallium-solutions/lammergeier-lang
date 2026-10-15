@@ -4,13 +4,14 @@
 #   * A fresh bucket of capacity=5 allows 5 immediate takeAvailables.
 #   * The 6th takeAvailable fails (bucket empty).
 #   * After sleeping long enough for a refill, takeAvailable succeeds again.
-#   * take() blocks until a token is available.
+#   * take() blocks until the missing tokens have refilled.
 #
 # expect: initial-available: 5
 # expect: burst-5: true
 # expect: sixth-fails: false
 # expect: after-refill: true
-# expect: take-waited-ms>=80: true
+# expect: take-waited-for-refill: true
+# expect: emptied-by-take: true
 
 from lamratelimit import TokenBucket
 from lamtime import Time
@@ -35,14 +36,19 @@ func main() {
     afterRefill: bool = bucket.takeAvailable(1)
     print(f"after-refill: {afterRefill}")
 
-    # Drain again, then measure how long a blocking take() takes.
-    # After a full drain the bucket should need roughly 1/50s == 20ms
-    # to refill a single token, but the poll loop caps sleep at 50ms
-    # so in practice the observed wait is one sleep interval.
-    for i in range(5) { bucket.takeAvailable(1) }
+    # Drain completely, then check that a blocking take() waits for the
+    # tokens it is missing. The deficit is measured when take() starts:
+    # under heavy load the process can be descheduled between draining and
+    # starting the clock, and the bucket legitimately refills meanwhile.
+    while bucket.takeAvailable(1) {
+        pass
+    }
     start: int = Time.nowUnixMilli()
-    bucket.take(4)   # needs 4 tokens, must wait for refill
+    deficit: int = 4 - bucket.available()
+    bucket.take(4)   # needs 4 tokens, must wait for the missing ones
     elapsed: int = Time.elapsedSince(start)
-    waited: bool = elapsed >= 80
-    print(f"take-waited-ms>=80: {waited}")
+    required: int = deficit * 20 - 5   # 50 tokens/s -> 20ms per token, 5ms clock slack
+    waited: bool = deficit <= 0 or elapsed >= required
+    print(f"take-waited-for-refill: {waited}")
+    print(f"emptied-by-take: {bucket.available() <= 1}")
 }

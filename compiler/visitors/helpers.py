@@ -6,6 +6,7 @@ import re as _re
 from lark import Tree, Token
 from typing import Dict, List, Optional, Tuple
 from compiler.constants import DUNDER_OPS, GO_BINDING_KEYWORDS, TYPE_MAP
+from compiler.link_symbols import mask_go_literals
 
 
 class HelpersMixin:
@@ -262,6 +263,9 @@ class HelpersMixin:
         scrubbed = "\n".join(
             ln for ln in body_lines if not ln.lstrip().startswith("//line")
         )
+        # A name inside a string literal, rune or comment is not a use
+        # (``print("err: ...")`` must not count as reading ``err``).
+        scrubbed = mask_go_literals(scrubbed)
         for name in sorted(new_locals):
             # Compiler-internal temporaries (``__qN``, ``__lamFoo``,
             # ``_chN``…) are bookkeeping, not user code; skip them so
@@ -697,6 +701,14 @@ class HelpersMixin:
         if go_type == "*Result" and payload_type:
             return f"*Result[{payload_type}]"
         return go_type
+
+    def _note_result_payload(self, name: str, type_node) -> None:
+        """Record (or clear) the ``Result[T]`` payload of a local binding."""
+        payload = self._result_payload_go_type(type_node)
+        if payload and payload != "interface{}":
+            self._var_result_payloads[name] = payload
+        else:
+            self._var_result_payloads.pop(name, None)
 
     def _result_payload_go_type(self, type_node) -> str:
         if not isinstance(type_node, Tree):
@@ -1528,6 +1540,7 @@ class HelpersMixin:
                             go_type = self._type_expr_to_go(param.children[1])
                             if go_type:
                                 self._var_go_types[name] = go_type
+                            self._note_result_payload(name, param.children[1])
                 elif isinstance(param, Tree) and param.data == "tuple_typed_param":
                     # The synthesised ``_tupN`` parameter is registered
                     # so downstream name lookups know it exists; the

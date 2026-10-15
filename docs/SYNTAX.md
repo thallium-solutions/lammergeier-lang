@@ -103,6 +103,42 @@ func main() {
 }
 ```
 
+### Conversions: `int()`, `float()`, `bool()`
+
+| Argument | Result |
+|---|---|
+| `int`, `float` and other numerics | converted (`int(3.7)` truncates to `3`; `bool(n)` is `n != 0`) |
+| `bool` | `1` / `0` (`1.0` / `0.0`) |
+| `str` | parsed; malformed text throws `ParseError` (`int("42")`, `float("2.5")`, `bool("true")`) |
+| `json` | JSON numbers and booleans convert, JSON strings are parsed (`ParseError`), arrays/objects/null throw `TypeError` |
+| class instance | calls `__int__` / `__float__` / `__bool__` (inherited methods included); compile error when the class does not define it |
+| `any` | compile-time **warning**; checked at runtime: `int` accepts every integer kind (`int64` database values, `uint16`, …), `float` every floating kind (`float32`, `float64`), `bool` a bool; anything else throws `TypeError` |
+| anything else (`list`, `dict`, `bytes`, …) | compile error: ``cast `int` is not defined for `list[int]` `` |
+
+Use `Conv.parse(s)` when malformed input is an expected outcome and you want a
+`Result` instead of an exception. Conversion methods take only `self` and return
+the target type:
+
+```lammergeier
+class Money {
+    func init(self, cents: int) {
+        self.cents: int = cents
+    }
+
+    func __int__(self) -> int { return self.cents }
+    func __float__(self) -> float { return float(self.cents) / 100.0 }
+    func __bool__(self) -> bool { return self.cents != 0 }
+}
+
+func main() {
+    price: Money = Money(1250)
+    print(int(price), float(price), bool(price))   # 1250 12.5 true
+    print(int("42") + int(true))                   # 43
+}
+```
+
+`str(x)` formats any value and never fails, including `any`.
+
 ### Data Flow With Collections
 
 Lists, dicts, sets, tuples, destructuring, comprehensions, and slices
@@ -1700,10 +1736,18 @@ class receivers remain concrete rather than leaking `interface{}`. Public
 payload-class metadata is loaded from the function's module without binding
 that class in user scope, so importing `loadDocument` does not require a
 second, otherwise-unused `Document` import.
-Direct `.value` and `.error` reads remain `any`. A bare `unwrap()` or
-`unwrapOr(...)` also remains dynamic, but an annotated assignment, enclosing
-return, typed call argument, or typed collection element supplies context and
-the compiler inserts the matching Go assertion. The `?` operator likewise has
+Direct `.value` and `.error` reads remain `any`. `unwrap()` and
+`unwrapOr(...)` keep the payload type wherever it is statically known — on a
+local or parameter annotated `Result[T]`, or on a call to a function or method
+declared `-> Result[T]` (overloads resolve to the called variant) — so inline
+uses such as `if r.ok() and r.unwrap()`, `n.unwrap() + 1`,
+`len(names().unwrap())` or `for x in load().unwrap()` type-check. When the
+payload is unknown or `any`, the value stays dynamic (`any`), and an annotated
+assignment, enclosing return, typed call argument, or typed collection element
+still supplies context for the Go assertion. `Result.Ok(...)` likewise shapes
+collection literals, comprehensions and ternaries from the declared payload, so
+`return Result.Ok(["a", "b"])` in a `-> Result[list[str]]` function stores a
+`list[str]`. The `?` operator likewise has
 a typed assignment path (`n: int = parseInt(s)?`) and emits the matching Go
 type assertion for the unwrapped value. `Result[T, E]` is rejected because errors remain
 open `any` values rather than a second type parameter.
@@ -2468,11 +2512,8 @@ func main() {
 
 ### Aliasing imports with `as`
 
-Both the `import X as Y` and `from X import A as B` forms rebind
-the imported symbol to a new local name. The alias map is applied
-once at the front of compilation, so every subsequent reference to
-the alias — calls, type annotations, attribute accesses — resolves
-to the library's exported symbol:
+Functions, constants, classes and interfaces are imported by name with
+`from X import A` and can be renamed locally with `from X import A as B`:
 
 ```lammergeier
 from lamerrors import Result as R, Error as E
@@ -2482,11 +2523,63 @@ func bad() -> R {
 }
 ```
 
-Aliasing is purely a local-binding convenience: the library still
-exports its canonical names, so two files can alias the same symbol
-differently without conflicting. Unused aliases trigger the same
-`unused import` warning as unused plain imports (the alias name is
-cited in the warning, not the original).
+Aliasing is a local-binding convenience: the library still exports its
+canonical names, so two files can alias the same symbol differently without
+conflicting. Unused aliases trigger the same `unused import` warning as
+unused plain imports (the alias name is cited in the warning, not the
+original).
+
+### Module imports and namespaces
+
+`import X` (or `import X as Y`) binds the module itself; its members are then
+reached with `X.name` / `Y.name` — functions, constants, classes, static
+methods and type annotations alike. Scoped packages (`@scope/pkg`) cannot be
+written as qualifiers, so they must be imported with an alias:
+
+```lammergeier
+import helpers
+import @lam/jwt as jwt
+
+func main() {
+    print(helpers.double(4))
+    token: str = jwt.Jwt.signHS256({"sub": "u1"}, "secret").unwrap()
+    print(len(token) > 0)
+}
+```
+
+`import @lam/jwt` without `as` is a compile error that suggests the alias.
+
+Every module has its own namespace for top-level **functions, constants,
+module-level variables, classes and interfaces**: two libraries may both
+define `tag()`, `Version`, `counter` or `class Config`, and each keeps using
+its own. A name only has to be unique where it is used:
+
+```lammergeier
+from alpha import tag              # alpha's tag()
+import beta as b                   # b.tag() is beta's tag()
+from gamma import tag as gammaTag  # aliased because `tag` is already bound
+
+func main() {
+    print(tag(), b.tag(), gammaTag())
+}
+```
+
+Defining a top-level `tag` and also importing another module's `tag` without
+`as` is an error that suggests an alias (`from alpha import tag as alphaTag`).
+The same works for classes (`from settings import Config as SettingsConfig`
+next to your own `class Config`).
+
+Two exceptions keep their names and are still reported by the link-time clash
+diagnostic if something else in the program defines the same name in the
+**main** file: definitions in the main file itself, and the classes that
+compiler-generated code uses (`Result` and `Error` from `lamerrors`, `Strings`
+from `lamstrings`). A *library* may still define its own `Error`.
+
+Raw `go!` code follows these renames for its own module's definitions and for
+names it imports without an alias (`from one import Config` → `NewConfig()` in
+`go!` keeps working). It cannot follow an aliased import or a module reached
+only indirectly: there, use the generated Go name (`NewConfig__one`, `Tag__alpha`;
+see [Transpilation](TRANSPILATION.md)).
 
 Library files are resolved in three layers, in this order:
 
@@ -2557,7 +2650,7 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamhttp`        | `Http`, `HttpClient`, `HttpResponse`, `HttpCookie`, `HttpServer` | Overloaded native-JSON requests, response headers/cookies, and a blocking server (`Http.serve`) |
 | `lamsmtp`        | `Smtp`, `Mail`                     | Result-based SMTP delivery and MIME mail construction for text, HTML, and attachments |
 | `lamdb`          | `Db`                               | Database connectivity (connect, close, exec, queryRow, queryAll, queryRows) |
-| `lammigrate`     | `Migrator`, `Schema`               | SQL migration batches and portable programmatic schema helpers |
+| `lammigrate`     | `Migrator`, `SchemaBuilder`        | SQL migration batches and portable programmatic schema helpers |
 | `lamhash`        | `Hash`                             | Hashing (sha256, sha1, sha512, md5, crc32) plus HMAC (hmacSha1/256/512), `constantTimeEquals`, `verifyHmacSha256` |
 | `lamcrypto`      | `Crypto`, `CryptoKeyPair`, `CryptoCertificate` | Secure random data, AES-GCM envelopes, PBKDF2 password hashes, PEM keys/signatures, and X.509 metadata |
 | `lambase64`      | `Base16`, `Base32`, `Base64`, `Hex` | Standard/raw Base16/Base32/Base64 codecs and compatibility aliases |
@@ -2597,7 +2690,8 @@ All standard library modules use OOP-style static classes with camelCase naming:
 The HTTP server is distributed separately as `@lam/vulture`; its standard,
 WebSocket, and tus integrations are `@lam/vulture/std-plugin`,
 `@lam/vulture/ws-plugin`, and `@lam/vulture/tus-plugin`. Their current releases
-are 2.0.0 and target `lamc` 1.18. See the [official package catalog](libraries.md)
+(2.0.1, 2.0.1, 2.0.0 and 3.0.0) are tested with `lamc` 1.19 and support 1.18
+and newer. See the [official package catalog](libraries.md)
 for installation and imports.
 
 **Example:**
@@ -3251,7 +3345,8 @@ The pipeline runs in three layers:
      (`from lamX import Y` where `Y` is never referenced),
      unused function parameters
      (`func f(name, age)` where `age` is never used), unused locals
-     declared in functions or block bodies, and project-level unused
+     declared in functions or block bodies, unused `catch` variables of
+     `try`/`catch` and `do`/`catch` handlers, and project-level unused
      manifest dependencies (a
      `[dependencies]` entry in `lamlib.toml` that no `.lam` in
      the project tree imports).
@@ -3284,8 +3379,8 @@ The pipeline runs in three layers:
 The Pythonic **leading-underscore** opt-out applies to every
 "unused" warning: rename a parameter `age` to `_age` (or just `_`)
 to mark it as deliberately unused, and the warning disappears. The
-same convention works for `for _ in xs`, `with file as _f`, and
-`catch SomeError as _e`.
+same convention works for `for _ in xs`, `with file as _f`,
+`catch SomeError as _e`, and `do { ... } catch _err { ... }`.
 
 Unused **locals** follow the same warn-don't-error contract. The
 semantic checker emits ``warning: unused local `name` `` for locals
@@ -3294,7 +3389,9 @@ rejects those locals with a hard `declared and not used` error
 pointing at generated code, so the transpiler also emits defensive
 `_ = name` lines inside the affected scope. That keeps Go happy
 while Lam still tells the author what to clean up. Prefix the name
-with `_` to mark the unused local as intentional.
+with `_` to mark the unused local as intentional. `catch` variables
+behave the same way (``warning: unused catch variable `err` ``);
+mentioning a name inside a string literal does not count as using it.
 
 The user-name resolver runs at go-block emit time, after the AST
 walk has populated the symbol table, so `LAMMERGEIER.<userName>`

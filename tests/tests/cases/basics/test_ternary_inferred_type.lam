@@ -1,0 +1,49 @@
+# Test: a ternary without a target type takes its branches' common type.
+# It used to lower to ``func() interface{}``, so ``"x: " + (a if c else b)``,
+# arithmetic on a ternary and ``len(...)`` of one failed to compile in Go.
+#
+# expect: x: a
+# expect: x: b
+# expect: k: a!
+# expect: az
+# expect: total: 3
+# expect: scaled: 1
+# expect: mixed: 2.5
+# expect: len: 2
+# expect: method: AB
+# expect: class: 7
+# expect: list: 3
+# expect: nested: mid
+# expect: any-branches: 5
+
+class Box {
+    func init(self, v: int) {
+        self.v: int = v
+    }
+}
+
+func ok() -> bool {
+    return true
+}
+
+func main() {
+    n: int = 3
+    print("x: " + ("a" if ok() else "b"))
+    print("x: " + ("a" if n > 5 else "b"))
+    s: str = "k: " + ("a" if ok() else "b") + "!"
+    print(s)
+    print(("a" if ok() else "b") + "z")
+    print(f"total: {1 + (2 if ok() else 3)}")
+    print(f"scaled: {0.5 * (2.0 if ok() else 4.0)}")
+    print(f"mixed: {(2 if not ok() else 2.5) + 0.0}")
+    print(f"len: {len('ab' if ok() else 'abc')}")
+    print("method: " + ("ab" if ok() else "cd").toUpper())
+    print(f"class: {(Box(7) if ok() else Box(9)).v}")
+    xs: list[int] = [1, 2, 3]
+    ys: list[int] = []
+    print(f"list: {len(xs if ok() else ys)}")
+    print("nested: " + ("low" if n < 2 else ("mid" if n < 5 else "high")))
+    a: any = 5
+    b: any = "five"
+    print(f"any-branches: {a if ok() else b}")
+}

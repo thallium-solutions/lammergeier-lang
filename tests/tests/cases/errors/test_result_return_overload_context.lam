@@ -1,0 +1,62 @@
+# Test: functions overloaded only by their ``Result[T]`` return type (such as
+# ``Conv.parse``) pick the variant from the target type when the call is
+# consumed through ``?``, ``unwrap()`` or ``unwrapOr()``. The first variant
+# (``Result[int]``) used to be chosen, so ``f: float = Conv.parse("2.5")?``
+# failed to parse and ``b: bool = ...?`` was a type error.
+#
+# expect: q-int: 3
+# expect: q-float: 2.5
+# expect: q-bool: true
+# expect: unwrap-int: 4
+# expect: unwrap-float: 1.25
+# expect: unwrap-bool: false
+# expect: unwrap-or-float: 0.5
+# expect: unwrap-or-default: 9.5
+# expect: user-overload: 7|seven
+# expect: returned: 6.5
+
+from lamconv import Conv
+from lamerrors import Result, Error
+
+class Lookup {
+    static func value(key: str) -> Result[int] {
+        return Result.Ok(7)
+    }
+
+    static func value(key: str) -> Result[str] {
+        return Result.Ok("seven")
+    }
+}
+
+func asFloat(s: str) -> Result[float] {
+    return Conv.parse(s)
+}
+
+func viaPropagate() -> Result[bool] {
+    i: int = Conv.parse("3")?
+    f: float = Conv.parse("2.5")?
+    b: bool = Conv.parse("true")?
+    print(f"q-int: {i}")
+    print(f"q-float: {f}")
+    print(f"q-bool: {b}")
+    return Result.Ok(true)
+}
+
+func main() {
+    _ = viaPropagate().unwrap()
+    i: int = Conv.parse("4").unwrap()
+    f: float = Conv.parse("1.25").unwrap()
+    b: bool = Conv.parse("false").unwrap()
+    print(f"unwrap-int: {i}")
+    print(f"unwrap-float: {f}")
+    print(f"unwrap-bool: {b}")
+    g: float = Conv.parse("0.5").unwrapOr(0.0)
+    print(f"unwrap-or-float: {g}")
+    h: float = Conv.parse("nope").unwrapOr(9.5)
+    print(f"unwrap-or-default: {h}")
+    n: int = Lookup.value("k").unwrap()
+    label: str = Lookup.value("k").unwrap()
+    print(f"user-overload: {n}|{label}")
+    r: float = asFloat("6.5").unwrap()
+    print(f"returned: {r}")
+}

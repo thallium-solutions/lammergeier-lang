@@ -372,12 +372,15 @@ def _import_decl(
                 if not isinstance(item, Tree) or item.data != "dotted_as_name":
                     continue
                 dotted = next(
-                    (c for c in item.children if isinstance(c, Tree) and c.data == "dotted_name"),
+                    (c for c in item.children if isinstance(c, Tree) and c.data in {"dotted_name", "scoped_name"}),
                     None,
                 )
                 if dotted is None:
                     continue
-                mod_name = _module_name(dotted)
+                mod_name = (
+                    str(dotted.children[0]) if dotted.data == "scoped_name" and dotted.children
+                    else _module_name(dotted)
+                )
                 alias_node = next(
                     (c for c in item.children[1:] if isinstance(c, Tree) and c.data == "name"),
                     None,

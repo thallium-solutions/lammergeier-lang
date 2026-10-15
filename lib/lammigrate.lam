@@ -13,7 +13,7 @@
 # Typical usage::
 #
 #     from lamdb import Db
-#     from lammigrate import Migrator, Schema
+#     from lammigrate import Migrator, SchemaBuilder
 #
 #     db: Db = Db.connect("sqlite", "/tmp/app.db")
 #     mig: Migrator = Migrator(db, "./migrations")
@@ -22,18 +22,18 @@
 #     rolledBack: list[str] = mig.down(1)    # undo the last batch / N files
 #     info: dict[str, any] = mig.status()    # summary for humans
 #
-# For programmatic DDL you can optionally lean on ``Schema`` which
+# For programmatic DDL you can optionally lean on ``SchemaBuilder`` which
 # emits portable ``CREATE TABLE``/``DROP TABLE`` SQL for the three
 # supported dialects::
 #
-#     schema: Schema = Schema(db.driverName())
+#     schema: SchemaBuilder = SchemaBuilder(db.driverName())
 #     db.exec(schema.createTable("users", [
 #         {"name": "id", "type": "id"},
 #         {"name": "email", "type": "string", "length": 255, "unique": true},
 #         {"name": "created_at", "type": "timestamp", "default": "CURRENT_TIMESTAMP"},
 #     ]))
 #
-# ``Schema`` is optional — migrations can also be plain SQL, which is
+# ``SchemaBuilder`` is optional — migrations can also be plain SQL, which is
 # often the most honest way to describe irreversible changes.
 
 from lamdb import Db
@@ -181,7 +181,7 @@ go! {
 
     // Auto-increment primary-key column DDL for the three
     // supported drivers. Centralised here so the Migrator's
-    // bookkeeping table + the portable Schema builder share one
+    // bookkeeping table + the portable SchemaBuilder share one
     // source of truth.
     func lamMigIDColumn(driver string) string {
         switch driver {
@@ -512,7 +512,7 @@ class Migrator {
     }
 }
 
-class Schema {
+class SchemaBuilder {
     #- Tiny cross-driver DDL emitter. The goal isn't feature parity
        with knex or Ecto; it's to cover the 80% that comes up in
        migration files (CREATE TABLE, DROP TABLE, ADD INDEX,

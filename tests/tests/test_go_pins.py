@@ -227,6 +227,47 @@ def test_lamstrings_build_go_mod_stays_light() -> None:
 
 # ── Entrypoint ───────────────────────────────────────────────
 
+def test_every_stdlib_third_party_import_is_pinned() -> None:
+    """Regression: ``lamarray`` imported gonum without a pin, so each build ran
+    ``go mod tidy`` against the module proxy and failed intermittently under
+    parallel load. Every third-party Go import in ``lib/`` must be pinned and
+    owned by the importing module."""
+    import re
+    missing: list[str] = []
+    for lib in sorted((ROOT / "lib").glob("*.lam")):
+        text = lib.read_text(encoding="utf-8")
+        for path in sorted(set(re.findall(r'"([a-z0-9.\-]+\.[a-z]{2,}/[^"\s]+)"', text))):
+            module = next(
+                (m for m in STDLIB_GO_PINS if path == m or path.startswith(m + "/")),
+                None,
+            )
+            if module is None:
+                missing.append(f"{lib.name}: {path} has no pin")
+            elif lib.stem not in STDLIB_GO_PIN_MODULES.get(module, ()):
+                missing.append(f"{lib.name}: pin {module} does not list {lib.stem}")
+    assert not missing, "\n".join(missing)
+
+
+def test_lamarray_build_resolves_offline() -> None:
+    """With the gonum pin a ``lamarray`` program builds with module lookups
+    disabled (dependencies come from the local module cache)."""
+    import os
+    import subprocess
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "main.lam"
+        src.write_text(
+            "from lamarray import Array\n\nfunc main() {\n"
+            "    a: Array = Array.fromList([1.0, 2.0, 3.0])\n    print(a.sum())\n}\n",
+            encoding="utf-8",
+        )
+        env = dict(os.environ, GOPROXY="off", LAMC_CACHE_DIR=str(Path(td) / "cache"))
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "compiler" / "lammergeier.py"), str(src), "-o", str(Path(td) / "app")],
+            capture_output=True, text=True, timeout=180, env=env,
+        )
+        assert proc.returncode == 0, proc.stderr[-1500:]
+
+
 def main() -> int:
     tests = [
         test_stdlib_pins_nonempty,
@@ -240,6 +281,8 @@ def main() -> int:
         test_stdlib_pins_filter_to_imported_modules,
         test_filtered_stdlib_pins_keep_project_pins,
         test_lamstrings_build_go_mod_stays_light,
+        test_every_stdlib_third_party_import_is_pinned,
+        test_lamarray_build_resolves_offline,
     ]
     failures = 0
     for t in tests:

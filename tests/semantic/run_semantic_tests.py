@@ -12,6 +12,9 @@ Each ``.lam`` case under ``tests/semantic/cases/`` declares one of:
   - ``# expect-pass`` — the compile must reach (or pass) the
     semantic-check stage; we run with ``--emit-go`` so we don't pay
     for the Go build but we still exercise the full pipeline.
+  - ``# expect-no-warning: <substring>`` — combinable with the above;
+    stderr/stdout must not contain the substring (guards against false
+    positive diagnostics).
 
 Usage:
     python3 tests/semantic/run_semantic_tests.py
@@ -38,6 +41,15 @@ def _find_project_root(start: Path) -> Path:
 PROJECT_ROOT = _find_project_root(Path(__file__).resolve())
 COMPILER = PROJECT_ROOT / "compiler" / "lammergeier.py"
 PYTHON = sys.executable
+
+
+def _forbidden(source: str) -> list[str]:
+    """Substrings that must not appear (``# expect-no-warning:``)."""
+    return [
+        m.group(1).strip()
+        for line in source.split("\n")
+        if (m := re.match(r'^\s*#\s*expect-no-warning:\s*(.*)$', line))
+    ]
 
 
 def _expectations(source: str) -> tuple[list[str], list[str], bool]:
@@ -70,6 +82,10 @@ def _run_case(lam_file: Path) -> tuple[bool, str]:
         capture_output=True, text=True, timeout=30,
     )
     combined = (proc.stderr or "") + "\n" + (proc.stdout or "")
+    present = [s for s in _forbidden(source) if s in combined]
+    if present:
+        details = "\n".join(f"    - {m!r}" for m in present)
+        return False, f"FORBIDDEN DIAGNOSTIC PRESENT:\n{details}\n\nGOT:\n{combined[:600]}"
 
     if expect_pass:
         if proc.returncode != 0 and "semantic check failed" in combined:
