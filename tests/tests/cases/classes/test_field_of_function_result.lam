@@ -1,0 +1,46 @@
+# Test: a field read from a function's class-typed result (``current().box``)
+# keeps its static type when passed to a typed parameter. It used to be
+# treated as ``interface{}`` and type-asserted, which does not compile.
+#
+# expect: static: static=5
+# expect: function: function=5
+# expect: method: 6
+# expect: chained: 7
+
+class Box {
+    func init(self) {
+        self.n: int = 5
+    }
+
+    func bump(self) -> int {
+        return self.n + 1
+    }
+}
+
+class Holder {
+    func init(self) {
+        self.box: Box = Box()
+        self.label: str = "chained"
+    }
+}
+
+class Util {
+    static func show(b: Box, label: str) -> str {
+        return f"{label}={b.n}"
+    }
+}
+
+func current() -> Holder {
+    return Holder()
+}
+
+func describe(b: Box, label: str) -> str {
+    return f"{label}={b.n}"
+}
+
+func main() {
+    print("static: " + Util.show(current().box, "static"))
+    print("function: " + describe(current().box, "function"))
+    print(f"method: {current().box.bump()}")
+    print(f"{current().label}: {current().box.n + 2}")
+}

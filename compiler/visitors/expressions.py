@@ -345,6 +345,10 @@ class ExpressionVisitorMixin:
                         return static_type
                 else:
                     class_name = self._var_types.get(obj_name, "")
+            elif isinstance(obj, Tree) and obj.data in {"funccall", "getattr"}:
+                # ``current().box`` / ``holder.inner.box``: the receiver's class
+                # from call return types and field types.
+                class_name = self._infer_receiver_class(obj)
             if class_name:
                 for field_name, field_type in self.class_fields.get(class_name, []):
                     if field_name == attr or self._go_field_name(class_name, field_name) == attr:
@@ -2553,6 +2557,11 @@ class ExpressionVisitorMixin:
                     receiver_name = self._get_name(inner_func.children[0])
                     if receiver_name in self._class_names:
                         return receiver_name
+                    # ``current().field`` — a function returning a class.
+                    returned = self._func_return_go_types.get(receiver_name, "")
+                    returned_class = returned.removeprefix("*").split("[", 1)[0]
+                    if returned.startswith("*") and returned_class in self._class_names:
+                        return returned_class
         return ""
 
     def _infer_receiver_elem_type(self, obj_node) -> str:
@@ -2741,6 +2750,9 @@ class ExpressionVisitorMixin:
         tabs = "\t" * (depth + 1)
         if range_info:
             start, end, step = range_info
+            if var_str == "_":
+                # Go has no ``_`` loop counter; the value is unused anyway.
+                var_str = f"_lamCompIndex{depth}"
             lines.append(f"{tabs}for {var_str} := {start}; {var_str} < {end}; {var_str} += {step} {{")
             return
         iter_str = self._expr_to_go(iter_expr)

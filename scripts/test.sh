@@ -97,6 +97,15 @@ run_suite() {
             "$PYTHON" tests/tests/test_doctor.py
             "$PYTHON" tests/tests/test_lib_run.py
             "$PYTHON" tests/tests/test_github_lams3_install.py
+            "$PYTHON" tests/tests/test_manifest.py
+            "$PYTHON" tests/tests/test_install_cli.py
+            "$PYTHON" tests/tests/test_tidy_verify.py
+            "$PYTHON" tests/tests/test_replace_workspace.py
+            "$PYTHON" tests/tests/test_init_introspection.py
+            "$PYTHON" tests/tests/test_extlibs_resolution.py
+            "$PYTHON" tests/tests/test_dependency_crash.py
+            "$PYTHON" tests/tests/test_cache_integration.py
+            "$PYTHON" tests/tests/test_scoped_imports.py
             "$PYTHON" -m pytest tests/tests/test_collection_context_fuzz.py tests/tests/test_random_program_fuzz.py -q
             ;;
         rosetta)

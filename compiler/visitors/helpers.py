@@ -971,6 +971,9 @@ class HelpersMixin:
             return "string"
         if d == "const_true" or d == "const_false":
             return "bool"
+        if d == "factor" and node.children and isinstance(node.children[-1], Tree) and node.children[-1].data == "number":
+            # ``-1`` / ``+2.5``: the sign does not change the numeric type.
+            return self._infer_type_from_value(node.children[-1])
         if d == "list":
             elem_types = [
                 self._infer_type_from_value(c)

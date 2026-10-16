@@ -1,0 +1,28 @@
+# Test: ``_`` as the variable of a ``range`` loop or comprehension. It used to
+# lower to ``for _ := 0; _ < n; _ += 1``, which Go rejects.
+#
+# expect: statement: 3
+# expect: comprehension: ?, ?, ?
+# expect: nested: 6
+# expect: stepped: 2
+
+func main() {
+    n: int = 0
+    for _ in range(3) {
+        n += 1
+    }
+    print(f"statement: {n}")
+    print("comprehension: " + ", ".join(["?" for _ in range(3)]))
+    total: int = 0
+    for _ in range(2) {
+        for _ in range(3) {
+            total += 1
+        }
+    }
+    print(f"nested: {total}")
+    steps: int = 0
+    for _ in range(0, 10, 5) {
+        steps += 1
+    }
+    print(f"stepped: {steps}")
+}

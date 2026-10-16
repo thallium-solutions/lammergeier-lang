@@ -1980,6 +1980,7 @@ def compile_lam(
     lib_pre_func_param_counts: dict = {}
     lib_pre_func_param_names: dict = {}
     lib_pre_func_param_go_types: dict = {}
+    lib_pre_func_return_go_types: dict = {}
     lib_pre_func_generic_params: dict[str, set[str]] = {}
     lib_pre_generator_functions: set[str] = set()
     lib_pre_overload_variants: dict[str, list[dict]] = {}
@@ -2125,6 +2126,7 @@ def compile_lam(
             lib_pre_func_param_counts.update(sub_collector._func_param_counts)
             lib_pre_func_param_names.update(sub_collector._func_param_names)
             lib_pre_func_param_go_types.update(sub_collector._func_param_go_types)
+            lib_pre_func_return_go_types.update(sub_collector._func_return_go_types)
             for key, names in sub_collector._func_generic_params.items():
                 lib_pre_func_generic_params.setdefault(key, set()).update(names)
             lib_pre_generator_functions.update(sub_collector._generator_functions)
@@ -2148,6 +2150,7 @@ def compile_lam(
         if plan is None or plan.is_empty():
             return
         target_transpiler._link_function_go_names.update(plan.function_go_names)
+        target_transpiler._link_function_aliases.update(plan.function_aliases)
         target_transpiler._link_const_go_names.update(plan.const_go_names)
         target_transpiler._namespace_rewrites.update(plan.rewrites)
         target_transpiler._namespace_module_access.update(plan.module_access)
@@ -2261,6 +2264,7 @@ def compile_lam(
         + [f"params:{name}:{count}" for name, count in sorted(lib_pre_func_param_counts.items())]
         + [f"param-names:{name}:{','.join(names)}" for name, names in sorted(lib_pre_func_param_names.items())]
         + [f"param-types:{name}:{','.join(types)}" for name, types in sorted(lib_pre_func_param_go_types.items())]
+        + [f"return-type:{name}:{type_}" for name, type_ in sorted(lib_pre_func_return_go_types.items())]
         + [f"generic-params:{name}:{','.join(sorted(types))}" for name, types in sorted(lib_pre_func_generic_params.items())]
         + [f"generator:{name}" for name in sorted(lib_pre_generator_functions)]
         + [f"overloads:{name}:{repr(variants)}" for name, variants in sorted(lib_pre_overload_variants.items())]
@@ -2344,6 +2348,8 @@ def compile_lam(
             lib_transpiler._func_param_names.setdefault(key, names)
         for key, types in lib_pre_func_param_go_types.items():
             lib_transpiler._func_param_go_types.setdefault(key, types)
+        for key, type_ in lib_pre_func_return_go_types.items():
+            lib_transpiler._func_return_go_types.setdefault(key, type_)
         for key, names in lib_pre_func_generic_params.items():
             lib_transpiler._func_generic_params.setdefault(key, set()).update(names)
         lib_transpiler._generator_functions.update(lib_pre_generator_functions)
@@ -2559,6 +2565,8 @@ def compile_lam(
         transpiler._func_param_names.setdefault(key, names)
     for key, types in lib_func_param_go_types.items():
         transpiler._func_param_go_types.setdefault(key, types)
+    for key, type_ in lib_pre_func_return_go_types.items():
+        transpiler._func_return_go_types.setdefault(key, type_)
     for key, names in lib_pre_func_generic_params.items():
         transpiler._func_generic_params.setdefault(key, set()).update(names)
     transpiler._generator_functions.update(lib_pre_generator_functions)

@@ -1,0 +1,34 @@
+# Test: ``for x in [-1, 0, 1]`` binds ``x`` as an int. The literal used to be
+# lowered as ``[]interface{}`` while the loop variable was typed from the
+# elements, so arithmetic on ``x`` did not compile; negative literals were not
+# inferred as numbers at all.
+#
+# expect: ints: 0 -30
+# expect: floats: -0.5
+# expect: negatives-only: -3
+# expect: strings: a-b
+
+func main() {
+    total: int = 0
+    weighted: int = 0
+    for delta in [-1, 0, 1] {
+        total = total + delta
+        weighted = weighted + delta * 10 - 10
+    }
+    print(f"ints: {total} {weighted + 30 - 30}")
+    half: float = 0.0
+    for f in [-1.5, 1.0] {
+        half = half + f
+    }
+    print(f"floats: {half}")
+    sum: int = 0
+    for n in [-1, -2] {
+        sum = sum + n
+    }
+    print(f"negatives-only: {sum}")
+    parts: list[str] = []
+    for s in ["a", "b"] {
+        parts.append(s.toLower())
+    }
+    print("strings: " + "-".join(parts))
+}

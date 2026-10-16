@@ -171,6 +171,7 @@ class GoTranspiler(
         # the driver for this module's colliding/aliased functions and consts,
         # plus the AST rewrites for ``as`` aliases and ``module.member``.
         self._link_function_go_names: Dict[str, str] = {}
+        self._link_function_aliases: Dict[str, str] = {}
         self._link_const_go_names: Dict[str, str] = {}
         self._namespace_rewrites: Dict[str, str] = {}
         self._namespace_module_access: Dict[str, Dict[str, str]] = {}
@@ -834,6 +835,11 @@ class GoTranspiler(
             self._function_go_names[name] = candidate
             for suffix in suffixes:
                 claimed[candidate + suffix] = owner
+        # ``from m import f`` and ``from m import f as g`` in one module: ``g``
+        # follows ``f``'s final Go name (``F__lam2`` when ``F`` is taken).
+        for alias, canonical in self._link_function_aliases.items():
+            if canonical in self._function_go_names and alias in self._function_go_names:
+                self._function_go_names[alias] = self._function_go_names[canonical]
 
     def _finalize_member_go_names(self) -> None:
         for class_name in self._class_names:

@@ -6,7 +6,41 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-10-17
+
+### Changed
+
+- Bumped the compiler to 1.19.2 (the fixes below, listed under 2026-10-16:
+  `for` over list literals, fields of call results, cross-module return
+  types, plain + aliased imports of one function, `_` range variables) and
+  the unit gate now runs the package-manager and import suites.
+
 ## 2026-10-16
+
+### Changed
+
+- The unit gate (`scripts/test.sh unit`) now runs the package-manager and
+  import suites that existed but were never executed: manifest, install CLI,
+  tidy/verify, replace workspaces, init introspection, extlibs resolution,
+  dependency crash, cache integration and scoped imports (all passing).
+
+### Fixed
+
+- `_` as the variable of a `range` loop or comprehension
+  (`["?" for _ in range(n)]`, `for _ in range(3)`) compiles; it lowered to an
+  invalid Go `for _ := 0; ...` counter.
+- `for x in [-1, 0, 1]` binds `x` as an `int`: the loop ranges over the typed
+  slice the variable was typed from (the literal was lowered as
+  `[]interface{}`), and signed number literals are inferred as numbers.
+- A field of a function's class-typed result (`current().box`,
+  `apiState().db`, also for imported functions) keeps its static type when
+  passed to a typed parameter instead of being type-asserted as
+  `interface{}` (a Go compile error). Function return types are now part of
+  the cross-module metadata.
+- Importing a function both plainly and under an alias
+  (`from m import f` and `from m import f as g`) makes `g` call the same Go
+  symbol as `f`; when `f`'s Go name was de-duplicated (e.g. it clashes with a
+  class `F`), `g` used to lower to the class name.
 
 ### Changed
 
@@ -14,7 +48,8 @@ documentation.
   landed after the 1.19.0 tag (nested `?` evaluation, comparison grouping,
   scalar method-return dispatch, runtime conversion fallback, `len()` in json
   literals, git branch refresh in `lamc install`).
-- Official package catalog: `@lam/sftp` 3.0.1, `@lam/vulture/std-plugin`
+- Official package catalog: `@lam/sftp` 3.1.0 (`activeSessions`,
+  `disconnectWhere`), and 3.0.1, `@lam/vulture/std-plugin`
   2.0.2, `@lam/vulture/tus-plugin` 3.0.1 and `@lam/vulture/ws-plugin` 2.0.1
   pin their dependencies to published tags (`@lam/ssh` 3.0.0,
   `@lam/vulture` 2.0.1); release tags are plain versions without a `v`.

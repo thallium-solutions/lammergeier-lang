@@ -79,6 +79,10 @@ class NamespacePlan:
     go_renames: dict[str, str] = field(default_factory=dict)
     # This module's own class/interface declarations renamed at the Lam level.
     declaration_renames: dict[str, str] = field(default_factory=dict)
+    # Function aliases kept under their own Lam name (the canonical name is
+    # also bound here) -> canonical name: the alias uses the canonical
+    # function's final Go name, including any de-duplication suffix.
+    function_aliases: dict[str, str] = field(default_factory=dict)
 
     def cache_key(self) -> str:
         parts = [
@@ -94,6 +98,7 @@ class NamespacePlan:
             "hd:" + ",".join(sorted(self.hidden)),
             "go:" + ",".join(f"{k}>{v}" for k, v in sorted(self.go_renames.items())),
             "dc:" + ",".join(f"{k}>{v}" for k, v in sorted(self.declaration_renames.items())),
+            "fa:" + ",".join(f"{k}>{v}" for k, v in sorted(self.function_aliases.items())),
         ]
         return "|".join(parts)
 
@@ -101,7 +106,7 @@ class NamespacePlan:
         return not (
             self.rewrites or self.module_access or self.function_go_names
             or self.const_go_names or self.metadata_from or self.hidden or self.go_renames
-            or self.declaration_renames
+            or self.declaration_renames or self.function_aliases
         )
 
 
@@ -579,6 +584,8 @@ def build_plans(
             if lam_name != def_name or new is not None:
                 target_map = plan.function_go_names if kind in FUNCTION_KINDS else plan.const_go_names
                 target_map[lam_name] = go
+                if kind in FUNCTION_KINDS and new is None and lam_name != def_name:
+                    plan.function_aliases[lam_name] = def_name
             if def_name in colliding or lam_name != def_name:
                 plan.metadata_from[lam_name] = (def_path, def_name)
 
@@ -648,6 +655,7 @@ _FUNCTION_META_DICTS = (
     "_func_param_counts",
     "_func_param_names",
     "_func_param_go_types",
+    "_func_return_go_types",
     "_func_generic_params",
 )
 _FUNCTION_META_SETS = (

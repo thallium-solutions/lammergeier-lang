@@ -26,6 +26,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -129,6 +130,64 @@ def _compile(main: Path, extlibs: Path, *, run: bool = True) -> subprocess.Compl
         args.append("--run")
     args.append(str(main))
     return subprocess.run(args, capture_output=True, text=True)
+
+
+def test_imported_function_result_field_keeps_type() -> None:
+    """Regression: a field of an imported function's class-typed result
+    (``apiState().db``, also through an alias and when the function name
+    clashes with a class name) passed to a typed parameter was type-asserted
+    as ``interface{}``, which does not compile."""
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        ext = d / "extlibs"
+        pkg = ext / "@alice" / "lamstate"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.lam").write_text("from .users import run\n", encoding="utf-8")
+        (pkg / "core.lam").write_text(textwrap.dedent("""
+            class Db {
+                func init(self) {
+                    self.n: int = 7
+                }
+            }
+
+            class ApiState {
+                func init(self) {
+                    self.db: Db = Db()
+                }
+            }
+
+            current: ApiState = ApiState()
+
+            func apiState() -> ApiState {
+                return current
+            }
+        """).lstrip(), encoding="utf-8")
+        (pkg / "users.lam").write_text(textwrap.dedent("""
+            from .core import Db, ApiState, apiState
+            from .core import apiState as st
+
+            class Repo {
+                static func count(db: Db, label: str) -> str {
+                    return f"{label}={db.n}"
+                }
+            }
+
+            func describe(db: Db) -> int {
+                return db.n * 2
+            }
+
+            func run() -> str {
+                return Repo.count(apiState().db, "static") + " " + str(describe(st().db))
+            }
+        """).lstrip(), encoding="utf-8")
+        main = _write_main(d, (
+            "from @alice/lamstate import run\n"
+            "func main() { print(run()) }\n"
+        ))
+        proc = _compile(main, ext)
+        assert proc.returncode == 0, f"compile failed: {proc.stdout}\n{proc.stderr}"
+        assert proc.stdout.strip() == "static=7 14", f"got: {proc.stdout!r}"
+    print("PASS: imported function result field keeps its type")
 
 
 def test_scoped_lib_resolves_and_runs() -> None:
@@ -375,6 +434,7 @@ def test_missing_scoped_lib_fails_when_used() -> None:
 
 def main() -> int:
     tests = [
+        test_imported_function_result_field_keeps_type,
         test_parser_accepts_scoped_import,
         test_parser_accepts_case_preserving_scope,
         test_parser_accepts_nested_scoped_import,

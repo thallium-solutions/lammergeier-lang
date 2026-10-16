@@ -842,9 +842,23 @@ class StatementVisitorMixin:
             is_negative_step = step.lstrip().startswith("-") or step.lstrip().startswith("(−") or step.lstrip().startswith("(-")
             cmp_op = ">" if is_negative_step else "<"
             assign_op = "=" if already_declared else ":="
+            if var_name == "_":
+                # Go has no ``_`` loop counter; the value is unused anyway.
+                self._q_temp_counter += 1
+                var_name = f"_lamRangeIndex{self._q_temp_counter}"
+                assign_op = ":="
             self._emit(f"for {var_name} {assign_op} {start}; {var_name} {cmp_op} {end}; {var_name} += {step} {{")
         else:
-            iter_str = self._expr_to_go(iterable_node)
+            if (
+                isinstance(iterable_node, Tree)
+                and iterable_node.data == "list"
+                and iterable_type.startswith("[]")
+                and iterable_type != "[]interface{}"
+            ):
+                # Range over the typed slice the loop variable was typed from.
+                iter_str = self._typed_value_to_go(iterable_node, iterable_type)
+            else:
+                iter_str = self._expr_to_go(iterable_node)
             is_chan = self._is_generator_call(iterable_node)
             # ``for k, v in mapping`` — when the for-target is a
             # 2-tuple, range over the map directly so both names bind
