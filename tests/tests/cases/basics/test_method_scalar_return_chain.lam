@@ -1,0 +1,46 @@
+# Test: builtin methods on the scalar result of a static or instance method
+# call. A ``-> str`` method used to be treated as returning a class named
+# ``str``, so ``Rows.str(r, k).contains(...)`` emitted ``.Contains`` on a Go
+# string.
+#
+# expect: static: true VALUE-B true 7
+# expect: instance: true greeting
+# expect: chained-class: 42
+
+class Rows {
+    static func str(row: dict[str, any], key: str) -> str {
+        return "value-" + key
+    }
+}
+
+class Greeter {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func greet(self) -> str {
+        return "Hello " + self.name
+    }
+
+    func next(self) -> Counter {
+        return Counter(41)
+    }
+}
+
+class Counter {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func bump(self) -> int {
+        return self.n + 1
+    }
+}
+
+func main() {
+    row: dict[str, any] = {}
+    print(f"static: {Rows.str(row, 'a').contains('val')} {Rows.str(row, 'b').toUpper()} {Rows.str(row, 'x').startsWith('va')} {len(Rows.str(row, 'c'))}")
+    g: Greeter = Greeter("Ada")
+    print(f"instance: {g.greet().endsWith('Ada')} {g.greet().replace('Hello Ada', 'greeting')}")
+    print(f"chained-class: {g.next().bump()}")
+}

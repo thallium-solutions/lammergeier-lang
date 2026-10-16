@@ -548,6 +548,47 @@ def test_bare_install_reads_git_dependency() -> None:
     print("PASS: bare install reads git dependencies")
 
 
+def test_git_branch_ref_follows_new_commits() -> None:
+    """Regression: the bare git cache had no fetch refspec, so refreshing it
+    never updated branches. A branch that appeared after the first clone
+    (an empty repository at first) was "not found", and an existing branch
+    silently installed the commit cached on first use."""
+    import os
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_p = Path(tmp)
+        env = dict(os.environ, LAMC_CACHE=str(tmp_p / "cache"))
+        repo = _make_git_lib(tmp_p, "lambranch", "1.0.0", body='func version() -> str { return "one" }')
+        subprocess.run(["git", "branch", "-M", "main"], cwd=str(repo), check=True)
+        proj = tmp_p / "proj"; proj.mkdir()
+        url = repo.as_uri()
+        (proj / "lamlib.toml").write_text(textwrap.dedent(f"""
+            [library]
+            name    = "myapp"
+            version = "0.1.0"
+
+            [dependencies]
+            lambranch = {{ git = "{url}", ref = "main" }}
+        """).lstrip(), encoding="utf-8")
+        first = subprocess.run(LAMC + ["install"], cwd=str(proj), capture_output=True, text=True, env=env)
+        assert first.returncode == 0, first.stderr
+        assert '"one"' in (proj / "extlibs" / "lambranch" / "__init__.lam").read_text()
+
+        (repo / "__init__.lam").write_text('func version() -> str { return "two" }\n', encoding="utf-8")
+        (repo / "lamlib.toml").write_text((repo / "lamlib.toml").read_text().replace('"1.0.0"', '"1.1.0"'), encoding="utf-8")
+        subprocess.run(["git", "commit", "--quiet", "-am", "two"], cwd=str(repo), check=True)
+        subprocess.run(["git", "branch", "release"], cwd=str(repo), check=True)
+
+        second = subprocess.run(LAMC + ["install", "--force"], cwd=str(proj), capture_output=True, text=True, env=env)
+        assert second.returncode == 0, second.stderr
+        assert '"two"' in (proj / "extlibs" / "lambranch" / "__init__.lam").read_text(), "branch ref must follow new commits"
+
+        (proj / "lamlib.toml").write_text((proj / "lamlib.toml").read_text().replace('ref = "main"', 'ref = "release"'), encoding="utf-8")
+        third = subprocess.run(LAMC + ["install", "--force"], cwd=str(proj), capture_output=True, text=True, env=env)
+        assert third.returncode == 0, third.stderr
+        assert '"two"' in (proj / "extlibs" / "lambranch" / "__init__.lam").read_text(), "branch created after the first clone"
+    print("PASS: git branch refs follow new commits")
+
+
 def test_frozen_succeeds_when_manifest_and_lockfile_agree() -> None:
     """``--frozen`` validates the manifest \u2194 lockfile pair and then
     materialises every pin from the lockfile (skipping the resolver).
@@ -787,6 +828,7 @@ def test_lockfile_v0_loads_and_upgrades_on_write() -> None:
 
 def main() -> int:
     tests = [
+        test_git_branch_ref_follows_new_commits,
         test_publish_then_install_roundtrip,
         test_scoped_publish_and_install,
         test_install_pinned_version,

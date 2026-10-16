@@ -306,6 +306,14 @@ class ExpressionVisitorMixin:
                         class_name = candidate
                 if class_name and f"{class_name}.{method}" in self._result_payload_go_types:
                     return "*Result"
+                if class_name:
+                    # Scalar return types (static and instance methods, local
+                    # or imported), so ``Rows.str(r, k).contains(...)`` and
+                    # similar chains dispatch on the value's type.
+                    raw_return = self._method_return_types.get(f"{class_name}.{method}", "")
+                    scalar = {"str": "string", "int": "int", "float": "float64", "bool": "bool", "bytes": "[]byte", "json": "LamJSON"}
+                    if raw_return in scalar:
+                        return scalar[raw_return]
         if node.data == "getitem" and len(node.children) >= 2:
             receiver_type = self._expr_go_type_hint(node.children[0])
             index = node.children[1]
@@ -518,7 +526,10 @@ class ExpressionVisitorMixin:
             # via a ``try { } catch { }`` upstream and surfaces the
             # underlying error message instead of Go's opaque
             # "too many return values" build failure.
-            inner_str = self._expr_to_go(node.children[0])
+            # The enclosing statement's cast applies to this ``?`` only, not
+            # to ``?`` nested in its operand (``outer(inner()?)?``).
+            with self._scoped(_propagate_cast_hint=""):
+                inner_str = self._expr_to_go(node.children[0])
             self._q_temp_counter += 1
             tmp = f"__q{self._q_temp_counter}"
             self._emit(f"{tmp} := {inner_str}")
@@ -812,6 +823,14 @@ class ExpressionVisitorMixin:
             for name in self._user_functions
         )
 
+    @staticmethod
+    def _contains_propagate(node) -> bool:
+        if not isinstance(node, Tree):
+            return False
+        if node.data == "propagate":
+            return True
+        return any(ExpressionVisitorMixin._contains_propagate(child) for child in node.children)
+
     def _user_function_call_to_go(
         self, func_name: str, args: List[str], kwargs, args_node,
         type_args: Optional[List[str]] = None,
@@ -1041,6 +1060,16 @@ class ExpressionVisitorMixin:
             )
             if instance_call is not None:
                 return instance_call
+
+        # User functions lower their arguments once, with parameter types
+        # (``_planned_call_args``). Lowering them here as well would emit the
+        # statements of a ``?`` inside an argument twice.
+        if (
+            func_str in self._user_functions
+            and func_str not in self._nested_generic_functions
+            and self._contains_propagate(args_node)
+        ):
+            return self._user_function_call_to_go(func_str, [], {}, args_node)
 
         # ── Built-in mappings ──
         args, kwargs = plain_call_args()
@@ -2268,9 +2297,49 @@ class ExpressionVisitorMixin:
             return f"func(v bool) {go_target} {{ if v {{ return 1 }}; return 0 }}({value})"
         if source == "interface{}":
             return self._dynamic_conversion_to_go(name, value)
+        if not source:
+            # The semantic checker accepted the call, but the transpiler cannot
+            # see the argument's type (e.g. an index into a method call result).
+            return self._unknown_conversion_to_go(name, value)
         if name == "bool":
             return f"({value} != 0)"
         return f"{go_target}({value})"
+
+    def _unknown_conversion_to_go(self, name: str, value: str) -> str:
+        """Same rules as the static lowering, decided at run time: strings
+        are parsed, numbers converted, booleans become 0/1."""
+        self._need_import("strconv")
+        self._need_import("fmt")
+        go_target = {"int": "int", "float": "float64", "bool": "bool"}[name]
+        if name == "int":
+            cases = (
+                f"case int: return n; case int8: return int(n); case int16: return int(n); case int32: return int(n); "
+                f"case int64: return int(n); case uint: return int(n); case uint8: return int(n); case uint16: return int(n); "
+                f"case uint32: return int(n); case uint64: return int(n); case uintptr: return int(n); "
+                f"case float64: return int(n); case float32: return int(n); "
+                f"case bool: if n {{ return 1 }}; return 0; "
+                f"case string: out, err := strconv.Atoi(n); if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as int: %v\", n, err)) }}; return out; "
+            )
+        elif name == "float":
+            cases = (
+                f"case float64: return n; case float32: return float64(n); "
+                f"case int: return float64(n); case int8: return float64(n); case int16: return float64(n); case int32: return float64(n); "
+                f"case int64: return float64(n); case uint: return float64(n); case uint8: return float64(n); case uint16: return float64(n); "
+                f"case uint32: return float64(n); case uint64: return float64(n); "
+                f"case bool: if n {{ return 1 }}; return 0; "
+                f"case string: out, err := strconv.ParseFloat(n, 64); if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as float: %v\", n, err)) }}; return out; "
+            )
+        else:
+            cases = (
+                f"case bool: return n; "
+                f"case int: return n != 0; case int64: return n != 0; case int32: return n != 0; case uint: return n != 0; "
+                f"case uint64: return n != 0; case uint8: return n != 0; case float64: return n != 0; case float32: return n != 0; "
+                f"case string: out, err := strconv.ParseBool(n); if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as bool: %v\", n, err)) }}; return out; "
+            )
+        return (
+            f"func(v interface{{}}) {go_target} {{ switch n := v.(type) {{ {cases}}}; "
+            f"panic(fmt.Sprintf(\"TypeError: {name}(...) cannot convert %T\", v)) }}({value})"
+        )
 
     _INTEGER_GO_KINDS = (
         "int", "int8", "int16", "int32", "int64",
@@ -2461,19 +2530,24 @@ class ExpressionVisitorMixin:
                     inner_obj = inner_func.children[0]
                     inner_method = self._get_name(inner_func.children[1])
                     # Static call ``Class.method(...)``?
+                    # Only class-typed returns identify a receiver class; a
+                    # scalar return (``-> str``) must keep its builtin
+                    # methods (``Rows.str(r, k).contains(...)``).
                     if isinstance(inner_obj, Tree) and inner_obj.data == "var":
                         receiver_name = self._get_name(inner_obj.children[0])
                         if receiver_name in self._class_names:
-                            return self._method_return_types.get(
+                            returned = self._method_return_types.get(
                                 f"{receiver_name}.{inner_method}", ""
                             )
+                            return returned if returned in self._class_names or returned in self._interfaces else ""
                     # Instance call — recurse for the inner receiver's
                     # class, then look up the method's return type on it.
                     inner_class = self._infer_receiver_class(inner_obj)
                     if inner_class:
-                        return self._method_return_types.get(
+                        returned = self._method_return_types.get(
                             f"{inner_class}.{inner_method}", ""
                         )
+                        return returned if returned in self._class_names or returned in self._interfaces else ""
                 elif inner_func.data == "var":
                     # Bare ``Class()`` constructor.
                     receiver_name = self._get_name(inner_func.children[0])
@@ -2956,8 +3030,8 @@ class ExpressionVisitorMixin:
             return self._membership_to_go(left, right)
         if op == "not in":
             return f"!({self._membership_to_go(left, right)})"
-        left_go = self._expr_to_go(left)
-        right_go = self._expr_to_go(right)
+        left_go = self._comparison_operand_to_go(left)
+        right_go = self._comparison_operand_to_go(right)
         left_json = self._expr_go_type_hint(left) == "LamJSON"
         right_json = self._expr_go_type_hint(right) == "LamJSON"
         if (left_json or right_json) and op in {"==", "!=", "is", "is not"}:
@@ -2970,6 +3044,14 @@ class ExpressionVisitorMixin:
         if op == "is":
             return f"{left_go} == {right_go}"
         return f"{left_go} {op} {right_go}"
+
+    def _comparison_operand_to_go(self, node) -> str:
+        """An operand that is itself a comparison or boolean expression was
+        parenthesized in Lam; Go needs the parentheses too."""
+        go = self._expr_to_go(node)
+        if isinstance(node, Tree) and node.data in {"comparison", "and_test", "or_test"}:
+            return f"({go})"
+        return go
 
     def _membership_to_go(self, item_node, container_node) -> str:
         container_go = self._expr_to_go(container_node)

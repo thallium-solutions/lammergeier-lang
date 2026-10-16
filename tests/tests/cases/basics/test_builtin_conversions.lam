@@ -26,6 +26,7 @@
 # expect: any-float-from-int: TypeError
 # expect: any-int-from-float: TypeError
 # expect: any-bool-from-int: TypeError
+# expect: inferred-sources: 2022 2.5 true 7 3
 # expect: composed: 6
 
 from lamerrors import Error
@@ -113,6 +114,11 @@ func main() {
     print("any-float-from-int: " + kindOf(lambda() -> int: int(float(whole))))
     print("any-int-from-float: " + kindOf(lambda() -> int: int(double)))
     print("any-bool-from-int: " + kindOf(lambda() -> int: int(bool(whole))))
+    # Arguments whose static type the transpiler cannot infer (an index into a
+    # method call's result) use the same conversion rules.
+    addr: str = "127.0.0.1:2022"
+    nums: list[float] = [7.9, 1.0]
+    print(f"inferred-sources: {int(addr.split(':')[1])} {float('2.5,3'.split(',')[0])} {bool('x=true'.split('=')[1])} {int(nums[0])} {int(len(addr.split('.')) - 1)}")
     values: list[str] = ["1", "2", "3"]
     total: int = 0
     for v in values {

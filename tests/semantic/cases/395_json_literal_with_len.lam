@@ -1,0 +1,12 @@
+# expect-pass
+# ``len(...)`` is an int inside a json literal.
+
+func send(payload: json) -> str {
+    return str(payload)
+}
+
+func main() {
+    word: str = "abc"
+    items: list[int] = [1, 2]
+    print(send({"chars": len(word), "items": len(items), "nested": [len(word)]}))
+}

@@ -1,0 +1,24 @@
+# Test: a parenthesized comparison or boolean expression used as a comparison
+# operand keeps its grouping. ``(a == "") == (b == "")`` used to lower to the
+# invalid Go ``a == "" == b == ""``.
+#
+# expect: exactly-one: false true false
+# expect: chained-groups: true true
+# expect: bool-groups: true false
+# expect: arithmetic: 20 14
+# expect: in-group: true
+
+func exactlyOne(a: str, b: str) -> bool {
+    return (a == "") != (b == "")
+}
+
+func main() {
+    print(f"exactly-one: {exactlyOne('', '')} {exactlyOne('x', '')} {exactlyOne('x', 'y')}")
+    n: int = 3
+    print(f"chained-groups: {(n > 2) == (n < 5)} {(n > 2) != (n > 5)}")
+    ok: bool = true
+    print(f"bool-groups: {(ok and n > 1) == (n < 4 or false)} {(ok or false) == (n > 9)}")
+    print(f"arithmetic: {(n + 2) * 4} {n + 2 * 4 + 3}")
+    xs: list[int] = [1, 2, 3]
+    print(f"in-group: {(2 in xs) == (n == 3)}")
+}

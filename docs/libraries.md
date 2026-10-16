@@ -34,10 +34,11 @@ package name, capability, or keyword.
 
 ## Installation
 
-Install a tagged release directly from Git:
+Install a tagged release directly from Git (release tags are plain versions,
+without a `v` prefix):
 
 ```bash
-lamc install https://github.com/thallium-solutions/lam-redis.git@v2.0.0
+lamc install https://github.com/thallium-solutions/lam-redis.git@2.0.0
 ```
 
 From a configured registry, use the scoped package and a SemVer constraint:

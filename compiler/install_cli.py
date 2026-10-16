@@ -363,9 +363,13 @@ def _clone_git(spec: str, dst: Path,
                 # downgraded to a warning and we proceed against
                 # the existing object store.
                 try:
+                    # Explicit refspecs: a ``--bare`` clone has no fetch
+                    # refspec, so a plain fetch would never update branches.
                     subprocess.run(
                         ["git", "-C", str(cache_dir), "fetch",
-                         "--quiet", "--tags", "--force", "origin"],
+                         "--quiet", "--force", "--prune", "origin",
+                         "+refs/heads/*:refs/heads/*",
+                         "+refs/tags/*:refs/tags/*"],
                         check=True, capture_output=True, text=True)
                 except subprocess.CalledProcessError as e:
                     print(

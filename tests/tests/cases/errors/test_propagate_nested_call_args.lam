@@ -1,0 +1,58 @@
+# Test: ``outer(inner()?)?`` evaluates ``inner()`` once and casts each ``?``
+# to its own payload type. The inner call used to run twice and to inherit
+# the outer statement's cast (a json payload asserted as a map at run time).
+#
+# expect: source: h 1
+# expect: label: 6
+# expect: parse-calls: 1
+# expect: length-calls: 1
+# expect: nested-error: Err
+# expect: parse-calls-after-error: 2
+
+from lamerrors import Result, Error
+from lamjson import Json
+
+class Calls {
+    static parse: int = 0
+    static length: int = 0
+}
+
+func parse(text: str) -> Result[json] {
+    Calls.parse += 1
+    if text == "bad" {
+        return Result.Err(Error("ParseError", "parse failed"))
+    }
+    return Json.decode(text)
+}
+
+func keys(body: json) -> Result[dict[str, any]] {
+    out: dict[str, any] = {"host": "h", "n": 1}
+    return Result.Ok(out)
+}
+
+func length(text: str) -> Result[int] {
+    Calls.length += 1
+    return Result.Ok(len(text))
+}
+
+func double(n: int) -> Result[str] {
+    return Result.Ok(str(n * 2))
+}
+
+func run(text: str) -> Result[str] {
+    source: dict[str, any] = keys(parse(text)?)?
+    label: str = double(length("abc")?)?
+    return Result.Ok(f"{source['host']} {source['n']}|{label}")
+}
+
+func main() {
+    out: str = run("{}").unwrap()
+    parts: list[str] = out.split("|")
+    print("source: " + parts[0])
+    print("label: " + parts[1])
+    print(f"parse-calls: {Calls.parse}")
+    print(f"length-calls: {Calls.length}")
+    bad: Result[str] = run("bad")
+    print("nested-error: " + ("Ok" if bad.ok() else "Err"))
+    print(f"parse-calls-after-error: {Calls.parse}")
+}

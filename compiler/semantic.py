@@ -5942,6 +5942,8 @@ class SemanticChecker:
             if name == "sorted":
                 args = [arg for arg in self._call_positional_args(call) if isinstance(arg, Tree)]
                 return self._expr_simple_type(args[0]) if args else None
+            if name == "len" and name not in self._func_return_types:
+                return NamedType("int")
             return None
         if not isinstance(callee, Tree) or callee.data not in {"getattr", "getattr_safe"}:
             return None

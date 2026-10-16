@@ -74,6 +74,29 @@ documentation.
 
 ### Fixed
 
+- `len(...)` is typed `int` by the semantic checker, so `{"n": len(items)}`
+  is accepted where a `json` value is expected.
+- `outer(inner()?)?` evaluates `inner()` once and casts each `?` to its own
+  payload type. The arguments of a user function call containing `?` were
+  lowered twice (running the inner call twice), and the inner `?` inherited
+  the enclosing statement's cast (e.g. a `json` payload asserted as a map at
+  run time).
+- Builtin methods on the result of a method returning a scalar
+  (`Rows.str(row, key).contains(...)`, `g.greet().endsWith(...)`) dispatch on
+  the scalar type; the return type was taken for a class name, emitting
+  `.Contains` on a Go string.
+- `int(x)` / `float(x)` / `bool(x)` whose argument type the transpiler cannot
+  see (e.g. `int(addr.split(":")[1])`) apply the conversion rules at run time
+  (parse strings, convert numbers, booleans to 0/1) instead of emitting a Go
+  conversion that does not compile for strings.
+- A parenthesized comparison or boolean expression used as a comparison
+  operand keeps its parentheses in Go: `(a == "") != (b == "")` lowered to the
+  invalid `a == "" != b == ""`.
+- `lamc install` refreshes cached git repositories with explicit branch and
+  tag refspecs. The cache is a bare clone without a fetch refspec, so branch
+  refs were never updated: `ref = "main"` installed the commit cached on first
+  use, and a branch pushed after the first clone (e.g. to an initially empty
+  repository) failed with "pathspec did not match".
 - The install-time SemVer gate compared an empty API surface for installed
   packages: its skip list (`tests`, `extlibs`, …) was matched against the
   absolute path, and installed packages live under `extlibs/`. Reinstalling
