@@ -73,3 +73,10 @@ Thumbs.db
 *.mov
 *.wmv
 
+# Python virtual environments and tool caches
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

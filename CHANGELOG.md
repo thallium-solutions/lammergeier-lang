@@ -6,6 +6,19 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-10-16
+
+### Changed
+
+- Bumped the compiler to 1.19.1: the fixes listed under 2026-10-15 that
+  landed after the 1.19.0 tag (nested `?` evaluation, comparison grouping,
+  scalar method-return dispatch, runtime conversion fallback, `len()` in json
+  literals, git branch refresh in `lamc install`).
+- Official package catalog: `@lam/sftp` 3.0.1, `@lam/vulture/std-plugin`
+  2.0.2, `@lam/vulture/tus-plugin` 3.0.1 and `@lam/vulture/ws-plugin` 2.0.1
+  pin their dependencies to published tags (`@lam/ssh` 3.0.0,
+  `@lam/vulture` 2.0.1); release tags are plain versions without a `v`.
+
 ## 2026-10-15
 
 ### Added

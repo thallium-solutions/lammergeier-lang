@@ -2690,7 +2690,7 @@ All standard library modules use OOP-style static classes with camelCase naming:
 The HTTP server is distributed separately as `@lam/vulture`; its standard,
 WebSocket, and tus integrations are `@lam/vulture/std-plugin`,
 `@lam/vulture/ws-plugin`, and `@lam/vulture/tus-plugin`. Their current releases
-(2.0.1, 2.0.1, 2.0.0 and 3.0.0) are tested with `lamc` 1.19 and support 1.18
+(2.0.1, 2.0.2, 2.0.1 and 3.0.1) are tested with `lamc` 1.19 and support 1.18
 and newer. See the [official package catalog](#/docs/libraries)
 for installation and imports.
 

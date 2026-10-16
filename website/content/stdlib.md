@@ -145,8 +145,8 @@ timeouts, and plugins. It is an independently versioned official package, not
 part of the standard library. Install the v2 packages first:
 
 ```bash
-lamc install @lam/vulture@2.0.0
-lamc install @lam/vulture/std-plugin@2.0.0
+lamc install @lam/vulture@2.0.1
+lamc install @lam/vulture/std-plugin@2.0.2
 ```
 
 ```lammergeier
@@ -1521,7 +1521,7 @@ overloaded `post` / `put` / `patch`, `statusCode`, `getHeader`, and
 ### `@lam/vulture` — `Server`, `Request`, `Response`, `SseEmitter`, `HttpError`
 
 Vulture is an independently versioned official package, not a compiler-bundled
-standard-library module. Install it with `lamc install @lam/vulture@2.0.0`; its
+standard-library module. Install it with `lamc install @lam/vulture@2.0.1`; its
 [repository README](https://github.com/thallium-solutions/lam-vulture) is the
 authoritative API and security reference.
 
@@ -2224,7 +2224,7 @@ authoring guide.
 
 ### `@lam/vulture/std-plugin`
 
-Install with `lamc install @lam/vulture/std-plugin@2.0.0`; see the
+Install with `lamc install @lam/vulture/std-plugin@2.0.2`; see the
 [package README](https://github.com/thallium-solutions/lam-vulture-std-plugin).
 This official package is independent of the standard library.
 
@@ -2287,7 +2287,7 @@ authoring guide and recipes.
 ### `@lam/vulture/ws-plugin` — `WebSocket`
 
 Install the independent package with
-`lamc install @lam/vulture/ws-plugin@2.0.0`; see the
+`lamc install @lam/vulture/ws-plugin@2.0.1`; see the
 [package README](https://github.com/thallium-solutions/lam-vulture-ws-plugin).
 
 The plugin uses `github.com/gorilla/websocket` and supports subprotocols plus
@@ -2333,7 +2333,7 @@ Result[any]` distinguish valid empty frames from close and transport errors.
 ### `@lam/vulture/tus-plugin` — tus.io resumable uploads
 
 Install the independent package with
-`lamc install @lam/vulture/tus-plugin@2.0.0`; see the
+`lamc install @lam/vulture/tus-plugin@3.0.1`; see the
 [package README](https://github.com/thallium-solutions/lam-vulture-tus-plugin).
 
 It implements [tus 1.0.0](https://tus.io) Creation, Creation With Upload,

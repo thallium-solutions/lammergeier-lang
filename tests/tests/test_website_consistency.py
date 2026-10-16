@@ -75,7 +75,7 @@ OFFICIAL_PACKAGES = (
         "@lam/sftp",
         "lam-sftp",
         ("SftpConfig", "SftpHandlers", "SftpRequest", "SftpServer"),
-        "3.0.0",
+        "3.0.1",
     ),
     OfficialPackage(
         "@lam/ssh",
@@ -102,18 +102,19 @@ OFFICIAL_PACKAGES = (
         "@lam/vulture/std-plugin",
         "lam-vulture-std-plugin",
         ("CircuitBreaker", "compress", "helmet", "metrics", "rateLimit", "requestLog"),
-        "2.0.1",
+        "2.0.2",
     ),
     OfficialPackage(
         "@lam/vulture/tus-plugin",
         "lam-vulture-tus-plugin",
         ("tusGc", "tusUploads"),
-        "3.0.0",
+        "3.0.1",
     ),
     OfficialPackage(
         "@lam/vulture/ws-plugin",
         "lam-vulture-ws-plugin",
         ("WebSocket", "wsRoute", "wsUpgrade"),
+        "2.0.1",
     ),
 )
 

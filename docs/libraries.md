@@ -9,11 +9,16 @@ Current releases (3.0.0 removes the root `tag()` helper):
 
 | Release | Notes |
 |---|---|
-| `@lam/jwt@3.0.0`, `@lam/protobuf@3.0.0`, `@lam/ssh@3.0.0`, `@lam/vulture/tus-plugin@3.0.0` | root `tag()` removed |
-| `@lam/sftp@3.0.0` | root `tag()` removed; zero-conversion byte streaming |
+| `@lam/jwt@3.0.0`, `@lam/protobuf@3.0.0`, `@lam/ssh@3.0.0` | root `tag()` removed |
+| `@lam/vulture/tus-plugin@3.0.1` | root `tag()` removed (3.0.0); pins `@lam/vulture` 2.0.1 |
+| `@lam/sftp@3.0.1` | root `tag()` removed, zero-conversion byte streaming (3.0.0); pins `@lam/ssh` 3.0.0 |
 | `@lam/s3@2.1.0` | multipart uploads, ranged/streaming reads, bucket helpers |
-| `@lam/redis@2.0.0`, `@lam/memcached@2.0.0`, `@lam/vulture/ws-plugin@2.0.0` | |
-| `@lam/vulture@2.0.1`, `@lam/vulture/std-plugin@2.0.1` | semantic-check clean-ups, no API change |
+| `@lam/redis@2.0.0`, `@lam/memcached@2.0.0` | |
+| `@lam/vulture/ws-plugin@2.0.1` | pins `@lam/vulture` 2.0.1 |
+| `@lam/vulture@2.0.1` | semantic-check clean-ups, no API change |
+| `@lam/vulture/std-plugin@2.0.2` | semantic-check clean-ups (2.0.1); pins `@lam/vulture` 2.0.1 |
+
+Git release tags are the plain version (`3.0.1`, not `v3.0.1`).
 
 Use the **Filter libraries** field on the website to narrow this table by
 package name, capability, or keyword.
@@ -262,10 +267,10 @@ independent scoped packages. Replace legacy compiler-era imports with:
 
 ```bash
 lamc install @lam/vulture@2.0.1
-lamc install @lam/vulture/std-plugin@2.0.1
+lamc install @lam/vulture/std-plugin@2.0.2
 # Install only when used:
-lamc install @lam/vulture/ws-plugin@2.0.0
-lamc install @lam/vulture/tus-plugin@3.0.0
+lamc install @lam/vulture/ws-plugin@2.0.1
+lamc install @lam/vulture/tus-plugin@3.0.1
 ```
 
 The standard plugin package's canonical direct-installer imports are:

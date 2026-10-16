@@ -23,10 +23,10 @@ and `*Plugin(...)` factories.
 Install only the packages an application uses:
 
 ```bash
-lamc install @lam/vulture@2.0.0
-lamc install @lam/vulture/std-plugin@2.0.0
-lamc install @lam/vulture/ws-plugin@2.0.0
-lamc install @lam/vulture/tus-plugin@2.0.0
+lamc install @lam/vulture@2.0.1
+lamc install @lam/vulture/std-plugin@2.0.2
+lamc install @lam/vulture/ws-plugin@2.0.1
+lamc install @lam/vulture/tus-plugin@3.0.1
 ```
 
 Each plugin declares `@lam/vulture` as a dependency. These are independently
