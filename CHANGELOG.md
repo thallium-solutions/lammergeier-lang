@@ -6,6 +6,31 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-10-21
+
+### Changed
+
+- Bumped the compiler to 1.19.5 (the fixes below).
+- Catalog: `@lam/jwt` 3.1.0 (ECDSA ES256/384/512, EC JWKS keys).
+
+### Fixed
+
+- `if f()? {`, `if not f()? {`, `elif f()? {` and `while f()? {` parse: a
+  single `?` before a brace is error propagation, so the brace opens the
+  block (`x ?? {...}` still coalesces to a dict literal).
+- `while f()? {` evaluates the condition (and its `?`) on every iteration;
+  it was evaluated once before the loop. `elif f()? {` runs its `?` inside
+  its own branch instead of referencing an undefined temporary.
+- A conditional expression can end with a dict literal:
+  `x: json = {"a": 1} if c else {"b": 2}` (the brace after an expression
+  `else` was read as a block).
+- A variable declared `json` keeps its type when reassigned in a branch
+  (`payload = {...}` inside an `if` made it "unknown").
+- `value ?? {"fallback": true}` is accepted where JSON is expected.
+- A static method can be used as a function value (`apply(K.twice)`, stored
+  in variables, lists and dicts), and a function stored in a list or dict
+  can be called directly (`handlers[0](x)`, `table["inc"](x)`).
+
 ## 2026-10-20
 
 ### Changed

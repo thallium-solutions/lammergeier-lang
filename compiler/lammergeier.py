@@ -316,6 +316,10 @@ def _classify_brace_open(prev_meaningful: str, prefix: str) -> str:
     itself is part of an expression so the matching ``}`` ends the
     enclosing statement and needs an auto-semicolon.
     """
+    if prev_meaningful == "?" and not prefix.rstrip().endswith("??"):
+        # ``if f()? {``: a single ``?`` is error propagation (postfix), so
+        # the brace opens the statement's block; ``x ?? {}`` stays literal.
+        return "block"
     if prev_meaningful in _BRACE_LITERAL_PRECEDERS:
         return "literal"
     # Walk backwards over the prefix to extract the preceding word.
@@ -328,9 +332,25 @@ def _classify_brace_open(prev_meaningful: str, prefix: str) -> str:
     last_word = prefix[j + 1:end]
     if last_word in _BRACE_LITERAL_KEYWORDS:
         return "literal"
+    if last_word == "else" and _else_in_conditional_expression(prefix):
+        return "literal"
     if _prefix_opens_lambda_block(prefix):
         return "lambda_block"
     return "block"
+
+
+_STATEMENT_ELSE_RE = _re.compile(r"^\s*(?:\}|else\b|elif\b|if\b)")
+_INLINE_IF_RE = _re.compile(r"\bif\b")
+
+
+def _else_in_conditional_expression(prefix: str) -> bool:
+    """``x = a if c else {...}``: the ``else`` of a conditional expression
+    (an ``if`` earlier on a line that does not start an if/else statement)
+    is followed by a value, so its brace is a dict/set literal."""
+    line = prefix.rsplit("\n", 1)[-1]
+    if _STATEMENT_ELSE_RE.match(line):
+        return False
+    return bool(_INLINE_IF_RE.search(line[: line.rfind("else")]))
 
 
 _LAMBDA_BLOCK_HEAD_RE = _re.compile(

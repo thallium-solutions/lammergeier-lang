@@ -684,11 +684,21 @@ class StatementVisitorMixin:
         self.indent -= 1
 
         elifs = node.children[2]
+        nested = 0
         if isinstance(elifs, Tree) and elifs.data == "elifs":
             for elif_node in elifs.children:
                 if isinstance(elif_node, Tree) and elif_node.data == "elif_":
-                    econd = self._expr_to_go(elif_node.children[0])
-                    self._emit(f"}} else if {econd} {{")
+                    if self._contains_propagate(elif_node.children[0]):
+                        # ``elif f()? {``: the ``?`` statements belong to this
+                        # branch, so it becomes ``else { ...; if cond {``.
+                        self._emit("} else {")
+                        self.indent += 1
+                        nested += 1
+                        econd = self._expr_to_go(elif_node.children[0])
+                        self._emit(f"if {econd} {{")
+                    else:
+                        econd = self._expr_to_go(elif_node.children[0])
+                        self._emit(f"}} else if {econd} {{")
                     self.indent += 1
                     self._push_scope()
                     body_start, vars_at_start = self._scope_unused_tracking_start()
@@ -706,16 +716,37 @@ class StatementVisitorMixin:
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
         self._emit("}")
+        for _ in range(nested):
+            self.indent -= 1
+            self._emit("}")
 
     # ─── While ─────────────────────────────────────────────────
 
+    @staticmethod
+    def _contains_propagate(node) -> bool:
+        if not isinstance(node, Tree):
+            return False
+        if node.data == "propagate":
+            return True
+        if node.data in {"lambdef", "funcdef"}:
+            return False
+        return any(StatementVisitorMixin._contains_propagate(child) for child in node.children)
+
     def _visit_while_stmt(self, node: Tree):
-        cond = self._expr_to_go(node.children[0])
         has_else = len(node.children) > 2 and node.children[2] is not None
         if has_else:
             self._emit(f"_whileBreak := false")
-        self._emit(f"for {cond} {{")
-        self.indent += 1
+        if self._contains_propagate(node.children[0]):
+            # ``while f()? {``: the ``?`` statements must run before every
+            # test, so the condition moves inside the loop.
+            self._emit("for {")
+            self.indent += 1
+            cond = self._expr_to_go(node.children[0])
+            self._emit(f"if !({cond}) {{ break }}")
+        else:
+            cond = self._expr_to_go(node.children[0])
+            self._emit(f"for {cond} {{")
+            self.indent += 1
         self._push_scope()
         body_start, vars_at_start = self._scope_unused_tracking_start()
         with self._scoped(_while_else_break=has_else):

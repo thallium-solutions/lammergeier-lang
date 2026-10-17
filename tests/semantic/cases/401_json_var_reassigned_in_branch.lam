@@ -1,0 +1,19 @@
+# expect-pass
+# A variable declared ``json`` keeps that type when reassigned in a branch,
+# so it can still be passed to a ``json`` parameter.
+func send(payload: json) -> str {
+    return str(payload)
+}
+
+func main() {
+    hint: str = "a@b.c"
+    payload: json = {"organization": hint}
+    if hint.contains("@") {
+        payload = {"email": hint}
+    }
+    count: int = 1
+    if hint != "" {
+        count = len(hint)
+    }
+    print(send(payload) + str(count))
+}

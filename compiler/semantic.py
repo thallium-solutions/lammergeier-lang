@@ -3096,6 +3096,14 @@ class SemanticChecker:
                     if issue is not None:
                         return issue
             return None
+        if node.data == "null_coalesce":
+            # ``value ?? {"fallback": true}``: every alternative must be JSON.
+            for child in node.children:
+                if isinstance(child, Tree):
+                    issue = self._json_expr_issue(child)
+                    if issue is not None:
+                        return issue
+            return None
         actual = self._expr_simple_type(node)
         if actual is None and node.data in {"getattr", "getattr_safe"}:
             actual = self._member_target_type(node)
@@ -3494,6 +3502,9 @@ class SemanticChecker:
             type_node = self._annassign_type_node(node)
             type_name = self._type_name_for_storage(type_node)
         else:
+            # A plain assignment keeps the declared type of an existing
+            # variable (``payload: json`` reassigned inside an ``if``).
+            names = [name for name in names if not self._var_type(name)]
             value_type = self._expr_simple_type(self._assign_value(node))
             type_name = render_type(value_type) if value_type is not None else ""
         if not names or not type_name or not self._scopes:

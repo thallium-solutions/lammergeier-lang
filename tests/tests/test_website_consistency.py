@@ -62,7 +62,7 @@ class OfficialPackage:
 # official repositories.  Changing a package release intentionally requires a
 # one-line update here and corresponding catalog/documentation changes.
 OFFICIAL_PACKAGES = (
-    OfficialPackage("@lam/jwt", "lam-jwt", ("Jwt", "JwtKeySet"), "3.0.0"),
+    OfficialPackage("@lam/jwt", "lam-jwt", ("Jwt", "JwtKeySet"), "3.1.0"),
     OfficialPackage("@lam/memcached", "lam-memcached", ("Memcached",)),
     OfficialPackage("@lam/protobuf", "lam-protobuf", ("Pb",), "3.0.0"),
     OfficialPackage(

@@ -1,0 +1,95 @@
+# Test: ``?`` right before a block brace (``if f()? {``) propagates the
+# error and opens the block; ``x ?? {...}`` still coalesces to a dict; a
+# conditional expression can end with a dict literal after ``else``; a
+# statement ``else {`` stays a block. ``while f()? {`` re-evaluates the
+# condition on every iteration (it was evaluated once) and ``elif f()? {``
+# runs its ``?`` in its own branch (it referenced an undefined temporary). The preprocessor used to read the brace
+# after ``?`` (and after an expression ``else``) the wrong way round.
+#
+# expect: if: yes
+# expect: if-not: skipped
+# expect: elif: second
+# expect: while: 3
+# expect: propagated: Err
+# expect: coalesce: {"fallback":true}
+# expect: ternary: {"b":2} {"a":1}
+# expect: return-ternary: {"kind":"file"}
+# expect: elif-chain: third else-reached
+# expect: statement-else: block
+
+from lamerrors import Result, Error
+
+func flag(value: bool) -> Result[bool] {
+    return Result.Ok(value)
+}
+
+func failing() -> Result[bool] {
+    return Result.Err(Error("ValueError", "nope"))
+}
+
+func checks() -> Result[str] {
+    out: list[str] = []
+    if flag(true)? {
+        out.append("if: yes")
+    }
+    if not flag(true)? {
+        out.append("if-not: ran")
+    } else {
+        out.append("if-not: skipped")
+    }
+    if flag(false)? {
+        out.append("elif: first")
+    } elif flag(true)? {
+        out.append("elif: second")
+    }
+    count: int = 0
+    while flag(count < 3)? {
+        count += 1
+    }
+    out.append(f"while: {count}")
+    return Result.Ok("\n".join(out))
+}
+
+func chain(n: int) -> Result[str] {
+    out: str = ""
+    if n == 1 {
+        out = "first"
+    } elif flag(n == 2)? {
+        out = "second"
+    } elif flag(n == 3)? {
+        out = "third"
+    } else {
+        out = "else-reached"
+    }
+    return Result.Ok(out)
+}
+
+func usesFailing() -> Result[bool] {
+    if failing()? {
+        return Result.Ok(true)
+    }
+    return Result.Ok(false)
+}
+
+func kind(isDir: bool) -> json {
+    return {"kind": "dir"} if isDir else {"kind": "file"}
+}
+
+func main() {
+    print(checks().unwrap())
+    print("propagated: " + ("Ok" if usesFailing().ok() else "Err"))
+    missing: json = None
+    chosen: json = missing ?? {"fallback": true}
+    print("coalesce: " + str(chosen))
+    x: bool = false
+    d: json = {"a": 1} if x else {"b": 2}
+    e: json = {"a": 1} if not x else {"b": 2}
+    print("ternary: " + str(d) + " " + str(e))
+    print("return-ternary: " + str(kind(false)))
+    print("elif-chain: " + chain(3).unwrap() + " " + chain(9).unwrap())
+    if x {
+        print("statement-else: wrong")
+    } else {
+        print("statement-else: block")
+    }
+}

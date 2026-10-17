@@ -1,0 +1,40 @@
+# Test: a static method can be passed and stored as a function value
+# (``apply(K.twice)``), in a list or dict and called from there; it used to
+# lower to a Go method expression that does not exist, and calling a list or
+# dict element produced an undefined capitalised name.
+#
+# expect: apply: 8
+# expect: stored: 15
+# expect: list: 4 9
+# expect: call-still-works: 6
+# expect: dict: 10
+
+class K {
+    static func twice(n: int) -> int {
+        return n * 2
+    }
+
+    static func square(n: int) -> int {
+        return n * n
+    }
+
+    static func add(a: int, b: int) -> int {
+        return a + b
+    }
+}
+
+func apply(f: func(int) -> int, value: int) -> int {
+    return f(value)
+}
+
+func main() {
+    print(f"apply: {apply(K.twice, 4)}")
+    combine: func(int, int) -> int = K.add
+    print(f"stored: {combine(7, 8)}")
+    fns: list[func(int) -> int] = [K.twice, K.square]
+    print(f"list: {fns[0](2)} {fns[1](3)}")
+    print(f"call-still-works: {K.twice(3)}")
+    table: dict[str, func(int) -> int] = {"twice": K.twice}
+    name: str = "twice"
+    print(f"dict: {table[name](5)}")
+}

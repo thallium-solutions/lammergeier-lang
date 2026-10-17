@@ -9,7 +9,8 @@ Current releases (3.0.0 removes the root `tag()` helper):
 
 | Release | Notes |
 |---|---|
-| `@lam/jwt@3.0.0`, `@lam/protobuf@3.0.0`, `@lam/ssh@3.0.0` | root `tag()` removed |
+| `@lam/jwt@3.1.0` | ES256/ES384/ES512, EC keys in `JwtKeySet` and JWKS, `JwtKeySet.decode` for any RS*/PS*/ES* token (root `tag()` removed in 3.0.0) |
+| `@lam/protobuf@3.0.0`, `@lam/ssh@3.0.0` | root `tag()` removed |
 | `@lam/vulture/tus-plugin@3.0.1` | root `tag()` removed (3.0.0); pins `@lam/vulture` 2.0.1 |
 | `@lam/sftp@3.3.0` | adaptive ciphers (AES-GCM for clients that support it, `withAdaptiveCiphers`), `onOpenWrite` (errors at OPEN), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`); pins `@lam/ssh` 3.0.0 |
 | `@lam/s3@2.1.0` | multipart uploads, ranged/streaming reads, bucket helpers |
@@ -25,7 +26,7 @@ package name, capability, or keyword.
 
 | Library | Purpose | Main exports | Repository |
 |---|---|---|---|
-| `@lam/jwt` | Sign and verify JWTs with HS256, HS512, and RS256; manage `kid` and JWKS key rotation. | `Jwt`, `JwtKeySet` | [thallium-solutions/lam-jwt](https://github.com/thallium-solutions/lam-jwt) |
+| `@lam/jwt` | Sign and verify JWTs with HS256, HS512, RS256 and ES256/384/512; manage `kid` and JWKS (RSA and EC) key rotation. | `Jwt`, `JwtKeySet` | [thallium-solutions/lam-jwt](https://github.com/thallium-solutions/lam-jwt) |
 | `@lam/memcached` | Binary-protocol Memcached client with SASL authentication, TTLs, counters, mutation helpers, and statistics. | `Memcached` | [thallium-solutions/lam-memcached](https://github.com/thallium-solutions/lam-memcached) |
 | `@lam/protobuf` | Protocol Buffers binary, canonical JSON, text, equality, size, and clone helpers for generated Go messages. | `Pb` | [thallium-solutions/lam-protobuf](https://github.com/thallium-solutions/lam-protobuf) |
 | `@lam/redis` | Redis strings, native JSON, keys, lists, hashes, sets, sorted sets, pub/sub, scans, and pipelines. | `PubSub`, `Redis`, `RedisCommand`, `RedisScanPage`, `RedisZMember` | [thallium-solutions/lam-redis](https://github.com/thallium-solutions/lam-redis) |

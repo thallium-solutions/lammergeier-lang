@@ -449,6 +449,14 @@ class ExpressionVisitorMixin:
                 raw_obj = self._get_name(obj_node.children[0])
                 if attr in self._static_vars.get(raw_obj, {}):
                     return self._static_var_go_name(raw_obj, attr)
+                if (
+                    raw_obj in self._class_names
+                    and attr in self._static_methods.get(raw_obj, set())
+                    and raw_obj not in self.declared_vars
+                ):
+                    # ``apply(K.twice)``: a static method used as a value is
+                    # the generated package-level function.
+                    return f"{self._go_class_name(raw_obj)}_{attr}"
             if isinstance(obj_node, Tree) and obj_node.data == "getattr" and len(obj_node.children) >= 2:
                 namespace = obj_node.children[0]
                 class_name = self._get_name(obj_node.children[1])
@@ -1019,6 +1027,12 @@ class ExpressionVisitorMixin:
                 f"func() interface{{}} {{ if {obj} != nil {{ "
                 f"return {obj}.{method}({args_str}) }}; return nil }}()"
             )
+
+        if isinstance(func, Tree) and func.data == "getitem":
+            # ``handlers[0](x)`` / ``table["inc"](x)``: call the function
+            # value stored in a collection element.
+            args, kwargs = plain_call_args()
+            return f"{self._expr_to_go(func)}({', '.join(args)})"
 
         raw_method = None
         raw_obj = None
