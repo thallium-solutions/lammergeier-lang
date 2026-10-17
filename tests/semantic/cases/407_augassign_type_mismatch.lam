@@ -1,0 +1,6 @@
+# expect-error: cannot add `int` and `str`
+func main() {
+    n: int = 1
+    n += "x"
+    print(n)
+}

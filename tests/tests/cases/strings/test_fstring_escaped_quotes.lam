@@ -1,0 +1,19 @@
+# Test: an f-string interpolation can contain the escaped delimiter quote
+# (``f"{table[\"key\"]}"``); the backslashes used to reach the Go source and
+# break the build.
+#
+# expect: double: 1 two
+# expect: single: 1
+# expect: call: 3
+
+func size(s: str) -> int {
+    return len(s)
+}
+
+func main() {
+    table: dict[str, int] = {"a": 1}
+    names: dict[str, str] = {"b": "two"}
+    print(f"double: {table[\"a\"]} {names[\"b\"]}")
+    print(f'single: {table[\'a\']}')
+    print(f"call: {size(\"abc\")}")
+}

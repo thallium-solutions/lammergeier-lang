@@ -1,0 +1,6 @@
+# expect-error: `+=` would make `int` a `float`
+func main() {
+    i: int = 2
+    i += 0.5
+    print(i)
+}

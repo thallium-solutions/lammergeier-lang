@@ -357,6 +357,10 @@ class StatementVisitorMixin:
             self._emit(f"{target_str} = math.Pow({target_str}, {value_str})")
         elif op == "//=":
             self._emit(f"{target_str} = int({target_str} / {value_str})")
+        elif op == "*=" and target_type == "string":
+            # ``s *= 3``: string repetition.
+            self._need_import("strings")
+            self._emit(f"{target_str} = strings.Repeat({target_str}, max({value_str}, 0))")
         else:
             self._emit(f"{target_str} {op} {value_str}")
 

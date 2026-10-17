@@ -1036,6 +1036,8 @@ class SemanticChecker:
             self._check_assignment_interface_conformance(node)
             self._check_type_annotations(node)
             self._check_assignment_value_types(node)
+            for aug in [node] if d == "augassign" else [c for c in node.children if isinstance(c, Tree) and c.data == "augassign"]:
+                self._check_augassign_types(aug)
             self._check_destructuring_shape(node)
             for n in self._assign_targets(node):
                 if self._is_const(n):
@@ -4141,7 +4143,27 @@ class SemanticChecker:
             return type_.name == "Result"
         return isinstance(type_, GenericType) and type_.base == "Result" and len(type_.args) <= 1
 
+    def _check_dict_method_call(self, call: Tree) -> None:
+        """``d.keys()`` on a ``dict``: dicts have no methods in Lam, and the
+        call used to fail only in the Go build."""
+        callee = call.children[0] if call.children else None
+        if not (isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2):
+            return
+        receiver = callee.children[0]
+        if not (isinstance(receiver, Tree) and receiver.data == "var" and receiver.children):
+            return
+        if not self._var_type(self._name_text(receiver.children[0])).startswith("dict["):
+            return
+        method = self._name_text(callee.children[1])
+        self._error(
+            callee,
+            "type",
+            f"dicts have no `{method}()` method: use `for key, value in d`, `key in d`, "
+            "`d[key]`, `del d[key]` and `len(d)`",
+        )
+
     def _check_call_shape(self, call: Tree) -> None:
+        self._check_dict_method_call(call)
         target, sigs = self._call_target_sigs(call)
         if not target or not sigs:
             return
@@ -4501,7 +4523,14 @@ class SemanticChecker:
         return out
 
     def _function_reference_type(self, node) -> Optional[FuncType]:
-        """The type of a module-level function used as a value (``register(f)``)."""
+        """The type of a module-level function used as a value (``register(f)``)
+        or of a static method (``register(K.twice)``)."""
+        static = self._static_method_reference(node)
+        if static is not None:
+            shape = static
+            if any(not t for t in shape.param_types):
+                return None
+            return FuncType(tuple(parse_type(t) for t in shape.param_types), parse_type(shape.return_type_text or shape.return_type or "None"))
         if not (isinstance(node, Tree) and node.data == "var" and node.children):
             return None
         name = self._name_text(node.children[0])
@@ -4515,12 +4544,30 @@ class SemanticChecker:
             return None
         return FuncType(tuple(parse_type(t) for t in sig.param_types), parse_type(sig.return_type_text or "None"))
 
+    def _static_method_reference(self, node) -> Optional["_MethodShape"]:
+        """``K.method`` (not a call) naming a static method of class ``K``."""
+        if not (isinstance(node, Tree) and node.data == "getattr" and len(node.children) >= 2):
+            return None
+        receiver = node.children[0]
+        if not (isinstance(receiver, Tree) and receiver.data == "var" and receiver.children):
+            return None
+        class_name = self._name_text(receiver.children[0])
+        method = self._name_text(node.children[1])
+        if self._var_type(class_name) or method not in self._class_static_methods.get(class_name, set()):
+            return None
+        return self._class_method_shapes.get(class_name, {}).get(method)
+
     def _callback_compatible(self, expected: FuncType, reference: FuncType, node) -> bool:
-        name = self._name_text(node.children[0])
-        sig = self._func_sigs[name][0]
         count = len(expected.params)
-        if sig.required_pos > count or (sig.max_pos is not None and sig.max_pos < count):
-            return False
+        if self._static_method_reference(node) is not None:
+            # A method value has exactly its declared parameters (no defaults).
+            if len(reference.params) != count:
+                return False
+        else:
+            name = self._name_text(node.children[0])
+            sig = self._func_sigs[name][0]
+            if sig.required_pos > count or (sig.max_pos is not None and sig.max_pos < count):
+                return False
         lenient = {"any", "object", ""}
         for wanted, accepted in zip(expected.params, reference.params):
             if render_type(wanted) in lenient or render_type(accepted) in lenient:
@@ -6314,6 +6361,49 @@ class SemanticChecker:
             else:
                 left_type = None
 
+    def _check_augassign_types(self, node: Tree) -> None:
+        """``n += "x"`` / ``s *= "x"``: the operator must accept the operand
+        types and the result must fit the target (these used to fail only
+        in the Go build)."""
+        if len(node.children) < 3 or not isinstance(node.children[0], Tree):
+            return
+        op_node = node.children[1]
+        op_text = str(op_node.children[0]) if isinstance(op_node, Tree) and op_node.children else str(op_node)
+        op = op_text[:-1] if op_text.endswith("=") else op_text
+        if op not in {"+", "-", "*", "/", "%"}:
+            return
+        target_type = self._expr_simple_type(node.children[0])
+        value = node.children[2]
+        if isinstance(value, Token):
+            if value.type in {"STRING", "LONG_STRING"}:
+                value_type = NamedType("str")
+            elif value.type in {"DEC_NUMBER", "HEX_NUMBER", "OCT_NUMBER", "BIN_NUMBER"}:
+                value_type = NamedType("int")
+            elif value.type in {"FLOAT_NUMBER", "DECIMAL"}:
+                value_type = NamedType("float")
+            else:
+                value_type = None
+        else:
+            value_type = self._expr_simple_type(value)
+        if target_type is None or value_type is None:
+            return
+        if self._is_any_type(target_type) or self._is_any_type(value_type):
+            return
+        if self._is_open_type(target_type) or self._is_open_type(value_type):
+            return
+        if self._class_binary_operator_result_type(op, target_type, value_type) is not None:
+            return
+        if not self._binary_operator_allowed(op, target_type, value_type) or (
+            op == "*" and self._is_named_type(value_type, "str")
+        ):
+            self._report_binary_type_error(node, op, target_type, value_type)
+            return
+        result = self._binary_operator_result_type(op, target_type, value_type)
+        if op == "/" and self._is_named_type(target_type, "int"):
+            return
+        if result is not None and not is_assignable(target_type, result):
+            self._error(node, "type", f"`{op_text}` would make `{render_type(target_type)}` a `{render_type(result)}`")
+
     def _report_binary_type_error(self, node: Tree, op: str, left: Type, right: Type) -> None:
         left_text = render_type(left)
         right_text = render_type(right)
@@ -6680,9 +6770,17 @@ class SemanticChecker:
             if isinstance(left, ListType) and isinstance(right, ListType):
                 return True
             return False
+        if op == "*" and self._is_string_repeat(left, right):
+            return True
         if op in {"-", "*", "/", "%"}:
             return self._is_numeric_type(left) and self._is_numeric_type(right)
         return True
+
+    def _is_string_repeat(self, left: Type, right: Type) -> bool:
+        """``str * int`` or ``int * str`` (string repetition)."""
+        return (self._is_named_type(left, "str") and self._is_named_type(right, "int")) or (
+            self._is_named_type(left, "int") and self._is_named_type(right, "str")
+        )
 
     def _binary_operator_result_type(self, op: str, left: Type, right: Type) -> Type | None:
         if self._is_any_type(left):
@@ -6693,6 +6791,8 @@ class SemanticChecker:
         if class_result is not None:
             return class_result
         if op == "+" and self._is_named_type(left, "str") and self._is_named_type(right, "str"):
+            return NamedType("str")
+        if op == "*" and self._is_string_repeat(left, right):
             return NamedType("str")
         if op == "+" and isinstance(left, ListType) and isinstance(right, ListType):
             if render_type(left.item) == render_type(right.item):

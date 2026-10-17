@@ -6,6 +6,35 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-10-23
+
+### Added
+
+- String repetition: `"ab" * 3`, `3 * "ab"` and `s *= 3` (a negative count
+  gives `""`); other operand types are a semantic error.
+- `Smtp.setTimeout(seconds)` (default 30): one delivery may not take longer.
+
+### Changed
+
+- Bumped the compiler to 1.19.7 (the fixes below).
+- `lamsmtp` delivers through its own client: implicit TLS on port 465,
+  STARTTLS when offered, PLAIN auth only when the server supports AUTH.
+
+### Fixed
+
+- `lamsmtp` had no timeouts (`smtp.SendMail`): a server that accepted the
+  connection and never answered blocked the caller forever. Addresses with
+  line breaks are refused (command injection).
+- An escaped delimiter quote inside an f-string interpolation
+  (`f"{table[\"key\"]}"`) reached the Go source and broke the build.
+- A static method passed as a callback (`apply(K.add)`) is checked against
+  the expected function type by the semantic pass (it failed in Go).
+- Calling a method on a `dict` (`d.keys()`, `d.get()`, `d.pop()`) is a
+  semantic error pointing to `for k, v in d`, `k in d`, `d[k]`, `del d[k]`
+  and `len(d)` instead of a Go build error.
+- Augmented assignments are type-checked: `n += "x"` and `i += 0.5` (int
+  target) are semantic errors instead of Go build errors.
+
 ## 2026-10-22
 
 ### Changed

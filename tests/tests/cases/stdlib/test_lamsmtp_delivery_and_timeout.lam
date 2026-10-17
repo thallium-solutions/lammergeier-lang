@@ -1,0 +1,149 @@
+# Test: lamsmtp delivers through its own SMTP client (EHLO, MAIL, RCPT,
+# DATA, QUIT) to a minimal in-process server, refuses addresses with line
+# breaks (header/command injection), and gives up on a server that accepts
+# the connection but never answers instead of hanging forever.
+#
+# expect: delivered: true
+# expect: envelope: MAIL FROM:<app@example.test> BODY=8BITMIME RCPT TO:<ops@example.test>
+# expect: subject: true
+# expect: injection refused: true
+# expect: stalled server: SmtpSendError fast=true
+
+from lamsmtp import Smtp, Mail
+from lamerrors import Result
+
+go! {
+    import (
+        "bufio"
+        "net"
+        "strings"
+        "sync"
+        "time"
+    )
+
+    var (
+        fakeSmtpMu       sync.Mutex
+        fakeSmtpCommands []string
+        fakeSmtpData     string
+    )
+
+    // fakeSmtpServer speaks just enough SMTP for one delivery.
+    func fakeSmtpServer() string {
+        ln, _ := net.Listen("tcp", "127.0.0.1:0")
+        go func() {
+            for {
+                conn, err := ln.Accept()
+                if err != nil {
+                    return
+                }
+                go func(c net.Conn) {
+                    defer c.Close()
+                    r := bufio.NewReader(c)
+                    c.Write([]byte("220 fake ESMTP\r\n"))
+                    inData := false
+                    var data strings.Builder
+                    for {
+                        line, err := r.ReadString('\n')
+                        if err != nil {
+                            return
+                        }
+                        if inData {
+                            if line == ".\r\n" {
+                                inData = false
+                                fakeSmtpMu.Lock()
+                                fakeSmtpData = data.String()
+                                fakeSmtpMu.Unlock()
+                                c.Write([]byte("250 queued\r\n"))
+                                continue
+                            }
+                            data.WriteString(line)
+                            continue
+                        }
+                        cmd := strings.TrimRight(line, "\r\n")
+                        upper := strings.ToUpper(cmd)
+                        switch {
+                        case strings.HasPrefix(upper, "EHLO"), strings.HasPrefix(upper, "HELO"):
+                            c.Write([]byte("250-fake\r\n250 8BITMIME\r\n"))
+                        case strings.HasPrefix(upper, "MAIL"), strings.HasPrefix(upper, "RCPT"):
+                            fakeSmtpMu.Lock()
+                            fakeSmtpCommands = append(fakeSmtpCommands, cmd)
+                            fakeSmtpMu.Unlock()
+                            c.Write([]byte("250 ok\r\n"))
+                        case upper == "DATA":
+                            inData = true
+                            c.Write([]byte("354 go ahead\r\n"))
+                        case upper == "QUIT":
+                            c.Write([]byte("221 bye\r\n"))
+                            return
+                        default:
+                            c.Write([]byte("250 ok\r\n"))
+                        }
+                    }
+                }(conn)
+            }
+        }()
+        return ln.Addr().String()
+    }
+
+    // stalledSmtpServer accepts connections and never says anything.
+    func stalledSmtpServer() string {
+        ln, _ := net.Listen("tcp", "127.0.0.1:0")
+        go func() {
+            for {
+                conn, err := ln.Accept()
+                if err != nil {
+                    return
+                }
+                go func(c net.Conn) {
+                    time.Sleep(30 * time.Second)
+                    c.Close()
+                }(conn)
+            }
+        }()
+        return ln.Addr().String()
+    }
+}
+
+func errKind(r: Result[bool]) -> str {
+    if r.ok() {
+        return "ok"
+    }
+    kind: str = ""
+    err: any = r.error
+    go! {
+        if e, ok := err.(*Error); ok {
+            kind = e.Kind
+        }
+    }
+    return kind
+}
+
+func main() {
+    host: str = go!(fakeSmtpServer())
+    m: Mail = Mail()
+    m.setSender("app@example.test")
+    m.addTo("ops@example.test")
+    m.setSubject("Nightly export finished")
+    m.setText("3 files, 12 GiB.")
+    sent: Result[bool] = Smtp.send(host, m)
+    print(f"delivered: {sent.ok()}")
+    commands: list[str] = []
+    data: str = ""
+    go! {
+        fakeSmtpMu.Lock()
+        commands = append([]string{}, fakeSmtpCommands...)
+        data = fakeSmtpData
+        fakeSmtpMu.Unlock()
+    }
+    print("envelope: " + " ".join(commands))
+    print(f"subject: {data.contains(\"Subject: Nightly export finished\")}")
+
+    injected: Result[bool] = Smtp.sendMail(host, "app@example.test", "ops@example.test\r\nRCPT TO:<evil@example.test>", "x", "y")
+    print(f"injection refused: {not injected.ok()}")
+
+    Smtp.setTimeout(1)
+    started: int = go!(int(time.Now().Unix()))
+    stalled: Result[bool] = Smtp.sendMail(go!(stalledSmtpServer()), "app@example.test", "ops@example.test", "x", "y")
+    elapsed: int = go!(int(time.Now().Unix())) - started
+    print(f"stalled server: {errKind(stalled)} fast={elapsed <= 3}")
+}

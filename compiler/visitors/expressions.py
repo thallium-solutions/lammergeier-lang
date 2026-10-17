@@ -48,6 +48,43 @@ class ExpressionVisitorMixin:
 
     # ─── Typed value conversion ────────────────────────────────
 
+    def _repeat_operand_kind(self, node) -> str:
+        """``string``/``int`` for literals (tokens or trees) and typed
+        expressions, ``""`` otherwise."""
+        if isinstance(node, Token):
+            if node.type in {"STRING", "LONG_STRING"}:
+                return "string"
+            if node.type in {"DEC_NUMBER", "HEX_NUMBER", "OCT_NUMBER", "BIN_NUMBER", "NUMBER"} and "." not in str(node):
+                return "int"
+            return ""
+        if isinstance(node, Tree):
+            if node.data in {"string", "string_concat", "fstring"}:
+                return "string"
+            if node.data == "number":
+                text = str(node.children[0]) if node.children else ""
+                return "int" if text and "." not in text and "e" not in text.lower() else ""
+            if node.data == "factor" and len(node.children) == 2 and str(node.children[0]) == "-":
+                return "int" if self._repeat_operand_kind(node.children[1]) == "int" else ""
+        hint = self._expr_go_type_hint(node) or ""
+        return hint if hint in {"string", "int"} else ""
+
+    def _string_repeat_to_go(self, node: Tree) -> str:
+        """``"ab" * 3`` / ``3 * "ab"``: string repetition (``""`` for a
+        negative count, like Python)."""
+        if node.data != "term" or len(node.children) != 3 or str(node.children[1]) != "*":
+            return ""
+        left, right = node.children[0], node.children[2]
+        left_type = self._repeat_operand_kind(left)
+        right_type = self._repeat_operand_kind(right)
+        if left_type == "string" and right_type == "int":
+            text, count = left, right
+        elif left_type == "int" and right_type == "string":
+            text, count = right, left
+        else:
+            return ""
+        self._need_import("strings")
+        return f"strings.Repeat({self._expr_to_go(text)}, max({self._expr_to_go(count)}, 0))"
+
     def _typed_value_to_go(self, node, go_type: str, type_key: str = "") -> str:
         """Convert an expression with an expected Go type.
 
@@ -656,6 +693,9 @@ class ExpressionVisitorMixin:
             overloaded = self._try_operator_overload(node)
             if overloaded:
                 return overloaded
+            repeated = self._string_repeat_to_go(node)
+            if repeated:
+                return repeated
             return self._binop_to_go(node)
 
         if d == "and_expr":
@@ -1967,6 +2007,9 @@ class ExpressionVisitorMixin:
                             break
                     j += 1
                 expr_str = raw[i+1:j]
+                # ``f"{table[\"key\"]}"``: inside an interpolation the
+                # escaped delimiter is just a quote of the expression.
+                expr_str = expr_str.replace('\\"', '"').replace("\\'", "'")
                 if ':' in expr_str:
                     last_colon = expr_str.rfind(':')
                     spec_part = expr_str[last_colon+1:]

@@ -1,0 +1,29 @@
+# Test: string repetition with ``*`` (``str * int`` and ``int * str``), the
+# augmented form ``s *= n``, a negative count giving "" (like Python), and use
+# inside f-strings and typed contexts.
+#
+# expect: literal: ababab
+# expect: reversed: xyxy
+# expect: rule: ----------
+# expect: negative: []
+# expect: augmented: hahaha
+# expect: fstring: ====
+# expect: computed: 6
+
+func banner(width: int) -> str {
+    return "=" * width
+}
+
+func main() {
+    print("literal: " + "ab" * 3)
+    n: int = 2
+    print("reversed: " + n * "xy")
+    line: str = "-" * 10
+    print("rule: " + line)
+    print("negative: [" + "z" * -1 + "]")
+    s: str = "ha"
+    s *= 3
+    print("augmented: " + s)
+    print(f"fstring: {banner(4)}")
+    print(f"computed: {len(\"abc\" * n)}")
+}

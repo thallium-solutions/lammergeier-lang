@@ -1,0 +1,5 @@
+# expect-error: operator `*` is not defined for `str` and `float`
+func main() {
+    t: float = 1.5
+    print("a" * t)
+}

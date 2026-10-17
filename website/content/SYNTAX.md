@@ -1369,6 +1369,21 @@ print(isinstance(None, None))          # true
 
 ---
 
+## String Repetition
+
+`*` repeats a string (`str * int` or `int * str`); a negative count gives
+`""`. `s *= n` repeats in place. Other operand types are a semantic error.
+
+```lammergeier
+rule: str = "-" * 40
+title: str = 3 * "ab"        # "ababab"
+s: str = "ha"
+s *= 2                       # "haha"
+```
+
+F-string interpolations may contain the escaped delimiter quote:
+`f"{table[\"key\"]}"`.
+
 ## Multiline Strings
 
 Triple-quoted strings (compiled to Go backtick strings):
