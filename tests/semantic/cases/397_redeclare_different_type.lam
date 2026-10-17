@@ -1,0 +1,7 @@
+# expect-error: `again` is already declared as `str` in this scope; use another name
+func main() {
+    again: str = "x"
+    print(again)
+    again: int = 3
+    print(again)
+}

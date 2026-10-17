@@ -1,0 +1,35 @@
+# Test: iterating a string yields one-character strings. The loop variable
+# used to be a Go rune: comparing it with "a" did not compile and printing
+# it showed the character code.
+#
+# expect: chars: a b - 9 Z é
+# expect: slug-chars: 4
+# expect: upper: AB-9ZÉ
+# expect: comprehension: a|b|-
+# expect: declared-before: Z
+
+func main() {
+    seen: list[str] = []
+    for ch in "ab-9Zé" {
+        seen.append(ch)
+    }
+    print("chars: " + " ".join(seen))
+    count: int = 0
+    for ch in "ab-9Z" {
+        if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9") or ch == "-" {
+            count += 1
+        }
+    }
+    print(f"slug-chars: {count}")
+    upper: str = ""
+    for ch in "ab-9zé" {
+        upper += ch.toUpper()
+    }
+    print("upper: " + upper)
+    print("comprehension: " + "|".join([c for c in "ab-"]))
+    last: str = ""
+    for last in "xyZ" {
+        pass
+    }
+    print("declared-before: " + last)
+}

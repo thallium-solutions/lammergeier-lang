@@ -1,0 +1,23 @@
+# expect-pass
+# Same type again, or another type in a different function or block, is fine.
+func first() -> int {
+    value: int = 1
+    value: int = 2
+    return value
+}
+
+func second() -> str {
+    value: str = "x"
+    return value
+}
+
+func main() {
+    if first() > 0 {
+        label: str = "positive"
+        print(label)
+    } else {
+        label: int = 0
+        print(label)
+    }
+    print(second())
+}

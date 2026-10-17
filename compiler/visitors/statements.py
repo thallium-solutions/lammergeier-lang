@@ -344,7 +344,13 @@ class StatementVisitorMixin:
     def _visit_augassign(self, node: Tree):
         target_str = self._expr_to_go(node.children[0])
         op = self._get_augassign_op(node.children[1])
-        value_str = self._expr_to_go(node.children[2])
+        # ``total += f()?``: the ``?`` payload has the target's type.
+        target_type = self._expr_go_type_hint(node.children[0]) if isinstance(node.children[0], Tree) else ""
+        if target_type and target_type != "interface{}":
+            with self._scoped(_propagate_cast_hint=target_type):
+                value_str = self._expr_to_go(node.children[2])
+        else:
+            value_str = self._expr_to_go(node.children[2])
 
         if op == "**=":
             self._need_import("math")
@@ -837,6 +843,7 @@ class StatementVisitorMixin:
                 self._emit("}")
             return
         key_name, val_name = (None, None)
+        string_char_bind = ""
         if range_info:
             start, end, step = range_info
             is_negative_step = step.lstrip().startswith("-") or step.lstrip().startswith("(−") or step.lstrip().startswith("(-")
@@ -879,12 +886,19 @@ class StatementVisitorMixin:
             elif self._range_single_target_uses_key(iterable_node):
                 assign_op = "=" if already_declared else ":="
                 self._emit(f"for {var_name} {assign_op} range {iter_str} {{")
+            elif self._iterates_string(iterable_node):
+                # Lam yields one-character strings, Go ranges over runes.
+                self._emit(f"for _, {var_name}Rune := range {iter_str} {{")
+                string_char_bind = f"{var_name} {'=' if already_declared else ':='} string({var_name}Rune)"
+                self._var_go_types[var_name] = "string"
             elif already_declared:
                 self._emit(f"for _, {var_name} = range {iter_str} {{")
             else:
                 self._emit(f"for _, {var_name} := range {iter_str} {{")
 
         self.indent += 1
+        if string_char_bind:
+            self._emit(string_char_bind)
         self._push_scope()
         body_start, vars_at_start = self._scope_unused_tracking_start()
         if key_name and val_name:

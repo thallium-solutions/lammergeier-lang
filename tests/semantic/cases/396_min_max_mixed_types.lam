@@ -1,0 +1,5 @@
+# expect-error: min() arguments must all be numbers or all be strings
+func main() {
+    x: int = 1
+    print(min(x, "a"))
+}

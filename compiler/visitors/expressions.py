@@ -1113,19 +1113,10 @@ class ExpressionVisitorMixin:
                          "float32", "float64"):
             return f"{func_str}({', '.join(args)})" if args else f"{func_str}(0)"
 
-        if func_str == "abs":
-            self._need_import("math")
-            return f"math.Abs(float64({args[0]}))" if args else "0"
-
-        if func_str == "max":
-            self._need_import("math")
-            if len(args) == 2:
-                return f"math.Max(float64({args[0]}), float64({args[1]}))"
-
-        if func_str == "min":
-            self._need_import("math")
-            if len(args) == 2:
-                return f"math.Min(float64({args[0]}), float64({args[1]}))"
+        if func_str in {"abs", "min", "max"} and args:
+            lowered = self._numeric_builtin_to_go(func_str, args, self._get_raw_call_args(args_node))
+            if lowered:
+                return lowered
 
         if func_str == "sorted":
             self._need_import("sort")
@@ -2771,8 +2762,44 @@ class ExpressionVisitorMixin:
             return
         if self._range_single_target_uses_key(iter_expr):
             lines.append(f"{tabs}for {var_str} := range {iter_str} {{")
+        elif self._iterates_string(iter_expr):
+            # Lam yields one-character strings, Go ranges over runes.
+            lines.append(f"{tabs}for _, {var_str}Rune := range {iter_str} {{")
+            lines.append(f"{chr(9) * (depth + 2)}{var_str} := string({var_str}Rune)")
+            self._var_go_types[var_str] = "string"
         else:
             lines.append(f"{tabs}for _, {var_str} := range {iter_str} {{")
+
+    def _numeric_builtin_to_go(self, name: str, args: List[str], raw: list) -> str:
+        """``min``/``max``/``abs`` by argument type: ints stay int (Go's
+        builtin ``min``/``max``), any float widens to float64, strings compare
+        lexicographically, one slice argument uses ``slices.Min``/``Max``."""
+        types = [
+            (self._expr_go_type_hint(node) or self._infer_type_from_value(node) or "") if isinstance(node, Tree) else ""
+            for node in raw
+        ]
+        ints = {"int", "int64", "int32"}
+        if name == "abs":
+            if types and types[0] in ints:
+                return f"func(v {types[0]}) {types[0]} {{ if v < 0 {{ return -v }}; return v }}({args[0]})"
+            self._need_import("math")
+            return f"math.Abs(float64({args[0]}))"
+        if len(args) == 1 and types and types[0].startswith("[]"):
+            self._need_import("slices")
+            return f"slices.{name.capitalize()}({args[0]})"
+        if types and all(t in ints for t in types) and len(set(types)) == 1:
+            return f"{name}({', '.join(args)})"
+        if types and all(t in ints | {"float64", "float32"} for t in types):
+            return f"{name}({', '.join(f'float64({a})' for a in args)})"
+        if types and all(t == "string" for t in types):
+            return f"{name}({', '.join(args)})"
+        if len(args) >= 2:
+            # Unknown operand types: compare as floats (previous behaviour).
+            return f"{name}({', '.join(self._unknown_conversion_to_go('float', a) if t in {'', 'interface{}'} else f'float64({a})' for a, t in zip(args, types))})"
+        return ""
+
+    def _iterates_string(self, iter_expr) -> bool:
+        return (self._expr_go_type_hint(iter_expr) or self._infer_type_from_value(iter_expr)) == "string"
 
     def _list_comp_to_go(self, node: Tree, elem_type: str = None) -> str:
         comp = node.children[0]

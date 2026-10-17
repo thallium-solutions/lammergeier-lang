@@ -1,0 +1,56 @@
+# Test: ``x += f()?`` uses the target's type for the ``?`` payload, also
+# for method calls and fields. ``sent += self.one(i)?`` used to add an
+# ``interface{}`` to an int.
+#
+# expect: method-loop: 33
+# expect: field: 17
+# expect: string: ab
+# expect: error: Err
+
+from lamerrors import Result, Error
+
+class Reporter {
+    func init(self) {
+        self.base: int = 10
+        self.total: int = 0
+    }
+
+    func one(self, n: int) -> Result[int] {
+        if n < 0 {
+            return Result.Err(Error("ValueError", "negative"))
+        }
+        return Result.Ok(self.base + n)
+    }
+
+    func all(self, start: int) -> Result[int] {
+        sent: int = 0
+        for i in range(start, start + 3) {
+            sent += self.one(i)?
+        }
+        return Result.Ok(sent)
+    }
+
+    func accumulate(self) -> Result[bool] {
+        self.total += self.one(7)?
+        return Result.Ok(true)
+    }
+}
+
+func suffix() -> Result[str] {
+    return Result.Ok("b")
+}
+
+func joined() -> Result[str] {
+    text: str = "a"
+    text += suffix()?
+    return Result.Ok(text)
+}
+
+func main() {
+    r: Reporter = Reporter()
+    print(f"method-loop: {r.all(0).unwrap()}")
+    _ = r.accumulate().unwrap()
+    print(f"field: {r.total}")
+    print("string: " + joined().unwrap())
+    print("error: " + ("Ok" if r.all(-1).ok() else "Err"))
+}

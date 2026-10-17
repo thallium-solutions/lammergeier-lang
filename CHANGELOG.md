@@ -6,6 +6,30 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-10-19
+
+### Changed
+
+- Bumped the compiler to 1.19.3 (the fixes below).
+- Catalog: `@lam/sftp` 3.2.0 (`onOpenWrite`).
+
+### Fixed
+
+- `min`, `max` and `abs` have typed overloads: whole numbers give `int`
+  (Go's builtin `min`/`max`), any `float` gives `float`, strings compare
+  lexicographically, any number of arguments or one list
+  (`slices.Min`/`Max`); mixing numbers and strings is a semantic error.
+  They used to return `float` always (`math.Min`), so `lo: int = min(a, b)`
+  did not compile, and three arguments failed.
+- Iterating a string yields one-character strings (`for ch in text`, `[c for
+  c in text]`): the loop variable was a Go rune, so `ch >= "a"` did not
+  compile and `print(ch)` showed the character code.
+- `x += f()?` gives the `?` payload the target's type, also for method calls
+  and fields (`sent += self.one(i)?` added an `interface{}` to an int).
+- Re-declaring a name with a different type in the same block
+  (`again: str = ...` then `again: int = ...`) is a semantic error; it used to
+  reuse the first Go variable and fail in Go.
+
 ## 2026-10-17
 
 ### Changed

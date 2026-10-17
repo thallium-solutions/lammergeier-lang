@@ -1,0 +1,36 @@
+# Test: min/max/abs keep the type of their arguments. Whole numbers give
+# int, any float gives float, strings compare lexicographically; any number
+# of arguments or one list. They used to always return float (math.Min),
+# so `lo: int = min(a, b)` did not compile, and three arguments failed.
+#
+# expect: ints: 3 7 -2 12
+# expect: floats: 2.5 1.5 0.25
+# expect: mixed: 1.5 3
+# expect: strings: apple pear
+# expect: lists: 1 9 0.5 b
+# expect: abs: 4 2.5 0
+
+func main() {
+    a: int = 3
+    b: int = 7
+    lo: int = min(a, b)
+    hi: int = max(a, b, 5)
+    neg: int = min(-2, a, b)
+    sum: int = min(a, b) + max(a, b) + 2
+    print(f"ints: {lo} {hi} {neg} {sum}")
+    f: float = max(1.5, 2.5)
+    g: float = min(2.5, 1.5, 3.0)
+    h: float = min(0.25, 1.0)
+    print(f"floats: {f} {g} {h}")
+    m: float = min(2, 1.5)
+    n: float = max(3, 1.5)
+    print(f"mixed: {m} {n}")
+    print("strings: " + min("pear", "apple") + " " + max("apple", "pear"))
+    nums: list[int] = [4, 1, 9]
+    ratios: list[float] = [0.5, 2.0]
+    names: list[str] = ["b", "a"]
+    smallest: int = min(nums)
+    print(f"lists: {smallest} {max(nums)} {min(ratios)} {max(names)}")
+    d: int = abs(-4)
+    print(f"abs: {d} {abs(-2.5)} {abs(0)}")
+}

@@ -534,6 +534,15 @@ class SemanticChecker:
 
     def check(self, tree: Tree, *, ast_module: Module | None = None) -> List[SemanticError]:
         """Run all checks against the parse tree and return any errors."""
+        # Parent links, to find the block a declaration belongs to.
+        self._parents: dict[int, Tree] = {}
+        pending = [tree]
+        while pending:
+            current = pending.pop()
+            for child in current.children:
+                if isinstance(child, Tree):
+                    self._parents[id(child)] = current
+                    pending.append(child)
         # Module scope holds top-level function names, class names,
         # and import bindings. We collect these up front so forward
         # references across the file don't false-positive.
@@ -2097,6 +2106,7 @@ class SemanticChecker:
             self._check_call_shape(node)
             self._check_generic_type_args(node)
             self._check_builtin_cast_call(node)
+            self._check_min_max_call(node)
             self._check_json_literal_call(node)
             self._check_call_interface_args(node)
             self._check_list_method_arg_types(node)
@@ -3491,7 +3501,25 @@ class SemanticChecker:
         for name in names:
             if name == "_":
                 continue
-            self._type_storage_scope(node, name).var_types[name] = type_name
+            storage = self._type_storage_scope(node, name)
+            if node.data == "annassign" and storage is self._scopes[-1]:
+                # Re-declaring a name with another type in the same block
+                # would silently reuse the first Go variable.
+                block = self._enclosing_block(node)
+                annotated = storage.__dict__.setdefault("annotated_types", {})
+                previous = annotated.get((name, block))
+                if previous is not None and previous != type_name:
+                    self._error(node, "type", f"`{name}` is already declared as `{previous}` in this scope; use another name")
+                    continue
+                annotated[(name, block)] = type_name
+            storage.var_types[name] = type_name
+
+    def _enclosing_block(self, node: Tree) -> int:
+        parents = getattr(self, "_parents", {})
+        current = parents.get(id(node))
+        while current is not None and current.data not in ("suite", "funcdef", "file_input", "start"):
+            current = parents.get(id(current))
+        return id(current) if current is not None else 0
 
     def _record_destructuring_assignment_types(self, node: Tree) -> bool:
         target = self._destructuring_target(node)
@@ -3650,6 +3678,26 @@ class SemanticChecker:
                 continue
             out.append(child)
         return out
+
+    def _check_min_max_call(self, call: Tree) -> None:
+        callee = call.children[0] if call.children else None
+        if not (isinstance(callee, Tree) and callee.data == "var" and callee.children):
+            return
+        name = self._name_text(callee.children[0])
+        if name not in {"min", "max"} or name in self._func_return_types:
+            return
+        args = [arg for arg in self._call_positional_args(call) if isinstance(arg, Tree)]
+        if len(args) == 0:
+            self._error(call, "call", f"{name}() expects at least one argument")
+            return
+        names = []
+        for arg in args:
+            t = self._expr_simple_type(arg)
+            names.append(t.name if isinstance(t, NamedType) else "")
+        numeric = [n in {"int", "float"} for n in names]
+        text = [n in {"str", "string"} for n in names]
+        if len(args) > 1 and any(numeric) and any(text):
+            self._error(call, "call", f"{name}() arguments must all be numbers or all be strings")
 
     def _check_builtin_cast_call(self, call: Tree) -> None:
         name = self._builtin_cast_name(call)
@@ -5933,6 +5981,27 @@ class SemanticChecker:
             return NamedType(value_type)
         return None
 
+    def _numeric_builtin_result_type(self, name: str, call: Tree) -> Type | None:
+        """``min``/``max``/``abs`` overloads: ints give int, any float gives
+        float, strings give str (``min``/``max``); one list argument gives
+        its element type."""
+        args = [arg for arg in self._call_positional_args(call) if isinstance(arg, Tree)]
+        if not args:
+            return None
+        types = [self._expr_simple_type(arg) for arg in args]
+        if name != "abs" and len(types) == 1 and isinstance(types[0], ListType):
+            return types[0].item
+        names = [t.name if isinstance(t, NamedType) else "" for t in types]
+        if any(n == "" or n in {"any", "object"} for n in names):
+            return None
+        if all(n == "int" for n in names):
+            return NamedType("int")
+        if all(n in {"int", "float"} for n in names):
+            return NamedType("float")
+        if name != "abs" and all(n in {"str", "string"} for n in names):
+            return NamedType("str")
+        return None
+
     def _collection_call_result_type(self, call: Tree) -> Type | None:
         if not isinstance(call, Tree) or call.data != "funccall" or not call.children:
             return None
@@ -5944,6 +6013,8 @@ class SemanticChecker:
                 return self._expr_simple_type(args[0]) if args else None
             if name == "len" and name not in self._func_return_types:
                 return NamedType("int")
+            if name in {"min", "max", "abs"} and name not in self._func_return_types:
+                return self._numeric_builtin_result_type(name, call)
             return None
         if not isinstance(callee, Tree) or callee.data not in {"getattr", "getattr_safe"}:
             return None
