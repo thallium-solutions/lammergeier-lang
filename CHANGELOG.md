@@ -6,6 +6,26 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-10-24
+
+### Changed
+
+- Bumped the compiler to 1.19.8 (the fixes below).
+
+### Fixed
+
+- A string literal ending in an escaped backslash (`"\\"`, as in
+  `path.replace("\\", "/")`) no longer swallows the rest of the line: the
+  preprocessor counted `\"` as an escaped quote. The f-string scanner of the
+  namespacing pass had the same problem and ignored escaped closing quotes.
+- Slices with out-of-range bounds clamp like Python (`s[i:i + 2]` on the last
+  character, `xs[5:]` on a short list) instead of panicking: the fast
+  `[a:b]` path used Go's native slicing.
+- `for x in self.items()?` inside a method ranges over the typed payload
+  (it ranged over `interface{}`), and `return Result.Ok([...])` in a method
+  shapes the literal as the declared payload (methods did not receive the
+  declared return type, so the payload assertion panicked).
+
 ## 2026-10-23
 
 ### Added

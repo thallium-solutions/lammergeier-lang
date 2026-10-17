@@ -79,6 +79,17 @@ except ImportError as _err:
 import re as _re
 
 
+def _is_escaped(text: str, index: int) -> bool:
+    """True when the character at ``index`` is escaped by an odd number of
+    backslashes (``"\\"`` ends the string, ``"\""`` does not)."""
+    count = 0
+    j = index - 1
+    while j >= 0 and text[j] == "\\":
+        count += 1
+        j -= 1
+    return count % 2 == 1
+
+
 def auto_semicolons(source: str) -> str:
     """Insert semicolons at end of lines that need them (Go-style).
 
@@ -450,7 +461,7 @@ def _collapse_runaway_semicolons(source: str) -> str:
             continue
         else:
             out.append(ch)
-            if ch == in_str and (i == 0 or source[i - 1] != '\\'):
+            if ch == in_str and not _is_escaped(source, i):
                 in_str = None
             i += 1
             continue
@@ -518,7 +529,7 @@ def _fill_empty_blocks(source: str) -> str:
                 out.append(source[i:i + 3])
                 i += 3
                 continue
-            if len(in_str) == 1 and ch == in_str and (i == 0 or source[i - 1] != '\\'):
+            if len(in_str) == 1 and ch == in_str and not _is_escaped(source, i):
                 in_str = None
             out.append(ch)
             i += 1
@@ -611,7 +622,7 @@ def _inline_block_semicolons(code: str) -> str:
                 out.append(code[i:i + 3])
                 i += 3
                 continue
-            if len(in_str) == 1 and ch == in_str and (i == 0 or code[i - 1] != '\\'):
+            if len(in_str) == 1 and ch == in_str and not _is_escaped(code, i):
                 in_str = None
             out.append(ch)
             i += 1
@@ -712,7 +723,7 @@ def _walk_line(
                 in_str = None
                 i += 3
                 continue
-            if len(in_str) == 1 and ch == in_str and (i == 0 or code[i - 1] != '\\'):
+            if len(in_str) == 1 and ch == in_str and not _is_escaped(code, i):
                 in_str = None
             i += 1
             continue
@@ -780,7 +791,7 @@ def _strip_inline_comment(line: str) -> str:
                 in_str = None
                 i += 3
                 continue
-            elif len(in_str) == 1 and c == in_str and (i == 0 or line[i-1] != '\\'):
+            elif len(in_str) == 1 and c == in_str and not _is_escaped(line, i):
                 in_str = None
         i += 1
     return line
@@ -1224,7 +1235,7 @@ def _find_statement_start(text: str) -> int | None:
         
         # Track string literals
         if in_str:
-            if c == in_str and (i == 0 or text[i-1] != '\\'):
+            if c == in_str and not _is_escaped(text, i):
                 in_str = None
             i += 1
             continue

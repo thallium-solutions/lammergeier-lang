@@ -423,10 +423,10 @@ class DefinitionVisitorMixin:
                 if self.current_class not in self._class_dunder_methods:
                     self._class_dunder_methods[self.current_class] = {}
                 self._class_dunder_methods[self.current_class][func_name] = go_method
-                self._emit_method(go_method, return_type, params_node, suite_node, tp_clause=tp_clause)
+                self._emit_method(go_method, return_type, params_node, suite_node, tp_clause=tp_clause, return_type_key=return_type_key)
             else:
                 method_name = self._go_method_name(self.current_class, func_name) + method_suffix
-                self._emit_method(method_name, return_type, params_node, suite_node, tp_clause=tp_clause)
+                self._emit_method(method_name, return_type, params_node, suite_node, tp_clause=tp_clause, return_type_key=return_type_key)
             return
 
         # ── Name resolution ──
@@ -588,7 +588,7 @@ class DefinitionVisitorMixin:
         self._emit("")
 
     def _emit_method(self, go_method, return_type, params_node, suite_node,
-                     tp_clause: str = ""):
+                     tp_clause: str = "", return_type_key: str = ""):
         cls = self.current_class
         go_cls = self._go_class_name(cls)
         params_str = self._typed_params_to_go(params_node, skip_self=True)
@@ -609,6 +609,7 @@ class DefinitionVisitorMixin:
         params_at_start = set(self.declared_vars)
         with self._scoped(_self_replacement="s",
                           _current_return_type=return_type or "",
+                          _current_return_type_key=return_type_key or return_type or "",
                           _q_propagate_ok=(return_type == "*Result")):
             self._visit_suite(suite_node)
         self._emit_unused_local_silencers(body_start, params_at_start)

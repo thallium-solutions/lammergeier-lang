@@ -1,0 +1,67 @@
+# Test: ``for x in self.items()?`` inside a method ranges over the typed
+# payload (it ranged over ``interface{}``), and ``return Result.Ok([...])``
+# in a method shapes the list as the declared payload (it built a
+# ``[]interface{}``, so the payload assertion panicked).
+#
+# expect: method loop: 3
+# expect: function loop: 3
+# expect: dict payload: a=1
+# expect: propagated: Err
+
+from lamerrors import Result, Error
+
+class Item {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+}
+
+class Repo {
+    func init(self, fail: bool) {
+        self.fail: bool = fail
+    }
+
+    func items(self) -> Result[list[Item]] {
+        if self.fail {
+            return Result.Err(Error("IOError", "unavailable"))
+        }
+        return Result.Ok([Item(1), Item(2)])
+    }
+
+    func counts(self) -> Result[dict[str, int]] {
+        return Result.Ok({"a": 1})
+    }
+
+    func total(self) -> Result[int] {
+        n: int = 0
+        for it in self.items()? {
+            n += it.n
+        }
+        return Result.Ok(n)
+    }
+
+    func describe(self) -> Result[str] {
+        out: list[str] = []
+        for k, v in self.counts()? {
+            out.append(f"{k}={v}")
+        }
+        return Result.Ok(",".join(out))
+    }
+}
+
+func outside(r: Repo) -> Result[int] {
+    n: int = 0
+    for it in r.items()? {
+        n += it.n
+    }
+    return Result.Ok(n)
+}
+
+func main() {
+    r: Repo = Repo(false)
+    print(f"method loop: {r.total().unwrap()}")
+    print(f"function loop: {outside(r).unwrap()}")
+    print("dict payload: " + r.describe().unwrap())
+    broken: Repo = Repo(true)
+    print("propagated: " + ("Ok" if broken.total().ok() else "Err"))
+}

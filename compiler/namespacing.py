@@ -422,10 +422,11 @@ def rewrite_fstring(text: str, rewrites: dict[str, str], modules: dict[str, dict
         quote = ""
         while end < len(text) and depth:
             c = text[end]
+            escaped = (len(text[:end]) - len(text[:end].rstrip("\\"))) % 2 == 1
             if quote:
-                if c == quote:
+                if c == quote and not escaped:
                     quote = ""
-            elif c in "\"'" and text[end - 1] != "\\":
+            elif c in "\"'" and not escaped:
                 quote = c
             elif c == "{":
                 depth += 1

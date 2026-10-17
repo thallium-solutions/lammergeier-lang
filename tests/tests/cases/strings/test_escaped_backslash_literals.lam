@@ -1,0 +1,17 @@
+# Test: string literals ending in an escaped backslash (``"\\"``) close
+# correctly. The preprocessor treated the quote after ``\\`` as escaped, so
+# the string ran on and the next statements failed to parse.
+#
+# expect: replaced: C:/Users/me
+# expect: trailing: dir\|
+# expect: both: \"
+# expect: next statement: ok
+
+func main() {
+    path: str = "C:\\Users\\me".replace("\\", "/")
+    print("replaced: " + path)
+    trailing: str = "dir\\"
+    print("trailing: " + trailing + "|")
+    print("both: " + "\\" + "\"")
+    print("next statement: ok")
+}

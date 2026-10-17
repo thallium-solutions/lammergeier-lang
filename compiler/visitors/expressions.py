@@ -2543,6 +2543,9 @@ class ExpressionVisitorMixin:
             return self._payload_go_type_for_call(f"{class_name}.{method}", operand) if class_name else ""
         receiver_name = self._get_name(receiver.children[0])
         class_name = receiver_name if receiver_name in self._class_names else self._var_types.get(receiver_name, "")
+        if not class_name and receiver_name == "self" and self.current_class:
+            # ``self.items()?`` inside a method of the class.
+            class_name = self.current_class
         key = f"{class_name}.{method}" if class_name else f"{receiver_name}.{method}"
         return self._payload_go_type_for_call(key, operand)
 
@@ -2735,6 +2738,16 @@ class ExpressionVisitorMixin:
         if cheap:
             start_go = self._expr_to_go(start_node) if start_node is not None else ""
             end_go = self._expr_to_go(end_node) if end_node is not None else ""
+            obj_type = (self._expr_go_type_hint(obj_node) or "") if obj_node is not None else ""
+            if (start_go or end_go) and (obj_type == "string" or (obj_type.startswith("[]") and "func(" not in obj_type)):
+                # Python semantics: out-of-range bounds clamp instead of
+                # panicking (``s[i:i + 2]`` near the end, ``xs[5:]`` on a
+                # short list). Go inlines the immediately-called literal.
+                lo = start_go or "0"
+                clamp = "if _a < 0 { _a = 0 }; if _b > len(_s) { _b = len(_s) }; if _a > _b { _a = _b }; return _s[_a:_b] }"
+                if end_go:
+                    return f"func(_s {obj_type}, _a int, _b int) {obj_type} {{ {clamp}({obj_go}, {lo}, {end_go})"
+                return f"func(_s {obj_type}, _a int) {obj_type} {{ _b := len(_s); {clamp}({obj_go}, {lo})"
             return f"{obj_go}[{start_go}:{end_go}]"
 
         self._need_import("reflect")

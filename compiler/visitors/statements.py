@@ -922,6 +922,15 @@ class StatementVisitorMixin:
             elif dict_literal_type:
                 # ``for k, v in {"a": "x"}``: a typed map, so ``v`` is a string.
                 iter_str = self._typed_dict_literal_to_go(iterable_node, dict_literal_type)
+            elif (
+                isinstance(iterable_node, Tree)
+                and iterable_node.data == "propagate"
+                and (iterable_type.startswith("[]") or iterable_type.startswith("map["))
+                and iterable_type not in ("[]interface{}", "map[string]interface{}")
+            ):
+                # ``for x in self.items()?``: the payload has the iterable's type.
+                with self._scoped(_propagate_cast_hint=iterable_type):
+                    iter_str = self._expr_to_go(iterable_node)
             else:
                 iter_str = self._expr_to_go(iterable_node)
             is_chan = self._is_generator_call(iterable_node)

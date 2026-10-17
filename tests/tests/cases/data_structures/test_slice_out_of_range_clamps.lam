@@ -1,0 +1,28 @@
+# Test: slices with out-of-range bounds clamp like Python instead of
+# panicking (the fast ``[a:b]`` path used Go's native slice, which panics
+# past the end, e.g. ``pattern[i:i + 2]`` on the last character).
+#
+# expect: strings: c||abc||b
+# expect: lists: 1 0 2 3
+# expect: lookahead: ** *|
+# expect: in range: bc [2 3]
+
+func lookahead(pattern: str) -> str {
+    out: list[str] = []
+    for i in range(len(pattern)) {
+        out.append(pattern[i:i + 2])
+    }
+    return out[len(out) - 2] + " " + out[len(out) - 1] + "|"
+}
+
+func main() {
+    s: str = "abc"
+    print("strings: " + s[2:4] + "|" + s[5:] + "|" + s[:10] + "|" + s[2:1] + "|" + s[1:2])
+    xs: list[int] = [1, 2, 3]
+    ys: list[int] = xs[2:9]
+    zs: list[int] = xs[4:]
+    print(f"lists: {len(ys)} {len(zs)} {len(xs[:2])} {len(xs[0:100])}")
+    print("lookahead: " + lookahead("a**"))
+    i: int = 1
+    print(f"in range: {s[i:i + 2]} {xs[1:3]}")
+}
