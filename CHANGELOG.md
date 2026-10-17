@@ -6,6 +6,35 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-10-22
+
+### Changed
+
+- Bumped the compiler to 1.19.6 (the fixes below).
+- Catalog: `@lam/ssh` 3.0.1 and `@lam/sftp` 3.3.1 (`golang.org/x/crypto`
+  v0.58.0: SSH channel denial-of-service fixes; Go 1.26).
+
+### Fixed
+
+- **Boolean precedence:** `a and (b or c)` was emitted as `a && b || c`,
+  which Go reads as `(a && b) || c`: the parentheses around an `or` (or a
+  conditional/coalescing expression) inside an `and` were dropped. A nil
+  check such as `x != None and (... x.f ...)` no longer guarded its
+  right-hand side, and `enabled and (force or due)` ran while disabled.
+  Recompile code built with earlier versions.
+- A list comprehension over a list literal (`[i for i in [1, 2, 3] if i > 1]`)
+  types its variable from the literal (comparisons on it did not compile).
+- A value declared `any` can be assigned to a `str`, `bool`, list or dict
+  variable (`items: list[any] = raw` after `isinstance(raw, list)`): a
+  checked conversion instead of a Go compile error.
+- `xs.sort()` used as a statement warns: it returns a sorted copy and leaves
+  `xs` unchanged (use `xs = xs.sort()` or `xs.sort(inplace=true)`).
+- `for` loop variables get the element type of the iterable (list literals,
+  typed lists; key and value types of dicts), so `{"url": target}` and
+  typed calls on them are checked instead of "unknown".
+- `Json.fromValue(x).unwrap()` / `.unwrapOr(...)` are JSON-typed where JSON
+  is required (the payload of the consumed `Result`).
+
 ## 2026-10-21
 
 ### Changed

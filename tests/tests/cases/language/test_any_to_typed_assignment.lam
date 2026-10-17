@@ -1,0 +1,43 @@
+# Test: a value declared ``any`` can be assigned to a typed variable
+# (``str``, ``bool``, lists, dicts); the assignment is a checked conversion
+# instead of a Go compile error. Typical after an ``isinstance`` check, e.g.
+# the ``aud`` claim of a JWT that is a string or a list.
+#
+# expect: str: x
+# expect: bool: true
+# expect: list: 2 b
+# expect: dict: 1
+# expect: audiences: app | app,other
+
+func audiences(raw: any) -> list[str] {
+    out: list[str] = []
+    if isinstance(raw, str) {
+        single: str = raw
+        out.append(single)
+    } elif isinstance(raw, list) {
+        items: list[any] = raw
+        for item in items {
+            if isinstance(item, str) {
+                out.append(str(item))
+            }
+        }
+    }
+    return out
+}
+
+func main() {
+    s: any = "x"
+    t: str = s
+    print("str: " + t)
+    flag: any = true
+    b: bool = flag
+    print(f"bool: {b}")
+    raw: any = ["a", "b"]
+    items: list[any] = raw
+    print(f"list: {len(items)} {items[1]}")
+    m: any = {"k": 1}
+    d: dict[str, any] = m
+    print(f"dict: {len(d)}")
+    many: list[any] = ["app", "other"]
+    print("audiences: " + ",".join(audiences("app")) + " | " + ",".join(audiences(many)))
+}

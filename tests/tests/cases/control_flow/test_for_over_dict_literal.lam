@@ -22,7 +22,7 @@ func main() {
     for label, value in {"x": "1", "y": "22"} {
         parts.append(value + ":" + label.toUpper())
     }
-    parts.sort()
+    parts = parts.sort()
     print("upper: " + " ".join(parts))
     sum: int = 0
     for _, n in {"a": 3, "b": 4} {

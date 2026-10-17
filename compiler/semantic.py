@@ -1595,6 +1595,17 @@ class SemanticChecker:
             self._check_go_reserved(target_node if isinstance(target_node, Tree) else node, n)
             scope.names.add(n)
             scope.definite_names.add(n)
+        # ``for x in xs`` / ``for k, v in d``: the loop variables get the
+        # element (key/value) types, so they are not "unknown" later.
+        ordered_names = self._for_target_names(target_node)
+        iterable_type = self._expr_simple_type(iterable) if isinstance(iterable, Tree) else None
+        if isinstance(iterable_type, ListType) and len(ordered_names) == 1 and ordered_names[0] != "_":
+            scope.var_types[ordered_names[0]] = render_type(iterable_type.item)
+        elif isinstance(iterable_type, DictType) and len(ordered_names) == 2:
+            if ordered_names[0] != "_":
+                scope.var_types[ordered_names[0]] = render_type(iterable_type.key)
+            if ordered_names[1] != "_":
+                scope.var_types[ordered_names[1]] = render_type(iterable_type.value)
         if bodies:
             self._collect_block_defs(bodies[0], scope)
         self._scopes.append(scope)
@@ -3107,6 +3118,14 @@ class SemanticChecker:
         actual = self._expr_simple_type(node)
         if actual is None and node.data in {"getattr", "getattr_safe"}:
             actual = self._member_target_type(node)
+        if actual is None:
+            # ``Json.fromValue(d).unwrap()`` / ``.unwrapOr(x)``: the payload
+            # of the consumed ``Result``.
+            consumed = self._result_consumer_call(node)
+            if consumed is not None and node.data != "propagate":
+                result_type = self._expr_simple_type(consumed)
+                if isinstance(result_type, GenericType) and result_type.base == "Result" and len(result_type.args) == 1:
+                    actual = result_type.args[0]
         if actual is not None and is_assignable(NamedType("json"), actual):
             return None
         if isinstance(actual, NamedType) and actual.name in self._class_method_shapes:
@@ -4708,12 +4727,52 @@ class SemanticChecker:
         if callee.data in {"getattr", "getattr_safe"}:
             display = self._expr_dotted_name(callee)
             key = self._receiver_method_target(callee) or display
+            method = self._name_text(callee.children[1]) if len(callee.children) > 1 else ""
+            receiver = callee.children[0] if callee.children else None
+            if method == "sort" and isinstance(receiver, Tree) and receiver.data == "var":
+                receiver_type = self._var_type(self._name_text(receiver.children[0]) if receiver.children else "")
+                if receiver_type.startswith("list["):
+                    if not self._call_has_true_keyword(expr, "inplace"):
+                        self._warning(
+                            expr_stmt,
+                            "unused",
+                            "`sort()` returns a sorted copy and leaves the list unchanged; "
+                            "use `xs = xs.sort()` or `xs.sort(inplace=true)`",
+                        )
+                    return
             if key in self._nonvoid_methods:
                 self._warning(
                     expr_stmt,
                     "unused",
                     self._dropped_return_warning_message(display or key, self._method_return_type(key)),
                 )
+
+    def _call_has_true_keyword(self, call: Tree, keyword: str) -> bool:
+        """``f(..., keyword=true)`` or a single trailing ``true`` positional."""
+        args_node = call.children[1] if len(call.children) > 1 else None
+        pending = [args_node]
+        positional: list = []
+        while pending:
+            node = pending.pop(0)
+            if not isinstance(node, Tree):
+                continue
+            if node.data == "argvalue" and len(node.children) == 2:
+                if self._call_keyword_name(node.children[0]) == keyword:
+                    return self._is_true_literal(node.children[1])
+                continue
+            if node.data in {"arguments", "starargs"}:
+                pending.extend(node.children)
+                continue
+            positional.append(node.children[0] if node.data == "argvalue" and node.children else node)
+        return bool(positional) and self._is_true_literal(positional[-1])
+
+    def _is_true_literal(self, node) -> bool:
+        """``True`` or Lam's ``true`` (parsed as a name)."""
+        if not isinstance(node, Tree):
+            return False
+        if node.data == "const_true":
+            return True
+        return node.data == "var" and bool(node.children) and self._name_text(node.children[0]) == "true"
 
     @staticmethod
     def _dropped_return_warning_message(target: str, return_type: str) -> str:

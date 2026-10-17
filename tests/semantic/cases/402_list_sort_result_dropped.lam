@@ -1,0 +1,8 @@
+# expect-warning: `sort()` returns a sorted copy and leaves the list unchanged
+func main() {
+    parts: list[str] = ["b", "a"]
+    parts.sort()
+    parts.sort(inplace=true)
+    ordered: list[str] = parts.sort()
+    print(", ".join(ordered))
+}

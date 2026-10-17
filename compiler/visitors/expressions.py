@@ -63,6 +63,20 @@ class ExpressionVisitorMixin:
         if go_type == "LamJSON":
             raw = self._json_value_to_go(node)
             return raw if self._expr_go_type_hint(node) == "LamJSON" else f"lamJSONMust({raw})"
+        if (
+            isinstance(node, Tree)
+            and node.data == "var"
+            and node.children
+            and go_type
+            and go_type != "interface{}"
+            and (go_type in {"string", "bool"} or go_type.startswith("[]") or go_type.startswith("map["))
+            and self._var_go_types.get(self._get_name(node.children[0])) == "interface{}"
+        ):
+            # ``items: list[any] = raw`` where ``raw: any``: a checked
+            # type assertion (it panics with the dynamic type if wrong).
+            # ``interface{}(...)`` keeps it valid when the name tracking is
+            # stale and the variable is already concrete.
+            return f"interface{{}}({self._expr_to_go(node)}).({go_type})"
         if isinstance(node, Tree):
             if node.data == "list" and go_type.startswith("[]"):
                 return self._typed_list_literal_to_go(node, go_type)
@@ -720,7 +734,17 @@ class ExpressionVisitorMixin:
 
         if d in ("or_test", "and_test"):
             op = "&&" if d == "and_test" else "||"
-            parts = [self._expr_to_go(c) for c in node.children if isinstance(c, Tree)]
+            parts = []
+            for c in node.children:
+                if not isinstance(c, Tree):
+                    continue
+                part = self._expr_to_go(c)
+                # ``a and (b or c)``: Go's ``||`` binds looser than ``&&``, so
+                # an ``or`` (or a conditional/coalescing expression) inside
+                # an ``and`` keeps its parentheses.
+                if d == "and_test" and c.data in ("or_test", "test", "null_coalesce"):
+                    part = f"({part})"
+                parts.append(part)
             return f" {op} ".join(parts)
 
         if d == "tuple":
@@ -2761,6 +2785,13 @@ class ExpressionVisitorMixin:
             lines.append(f"{tabs}for {var_str} := {start}; {var_str} < {end}; {var_str} += {step} {{")
             return
         iter_str = self._expr_to_go(iter_expr)
+        if isinstance(iter_expr, Tree) and iter_expr.data == "list" and not targets:
+            # ``[i for i in [1, 2, 3] if i > 1]``: range over the typed slice
+            # so the variable has the elements' type.
+            literal_type = self._infer_type_from_value(iter_expr)
+            if literal_type.startswith("[]") and literal_type != "[]interface{}":
+                iter_str = self._typed_value_to_go(iter_expr, literal_type)
+                self._var_go_types[var_str] = literal_type[2:]
         if len(targets) == 2 and self._range_single_target_uses_key(iter_expr):
             lines.append(f"{tabs}for {targets[0]}, {targets[1]} := range {iter_str} {{")
             return

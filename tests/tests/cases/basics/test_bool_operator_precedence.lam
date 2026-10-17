@@ -1,0 +1,51 @@
+# Test: ``and`` binds tighter than ``or``, and parentheses around an ``or``
+# inside an ``and`` are kept in Go. ``a and (b or c)`` used to be emitted as
+# ``a && b || c``, so a nil check (``x != None and (... x.f ...)``) did not
+# guard the right-hand side, and ``enabled and (force or due)`` ran when
+# disabled.
+#
+# expect: grouped: false false false true
+# expect: nested: false true
+# expect: guard: safe
+# expect: precedence: true true false
+# expect: contexts: false no 0 false 3
+# expect: leap: true false true
+
+class Box {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+}
+
+func grouped(a: bool, b: bool, c: bool) -> bool {
+    return a and (b or c)
+}
+
+func leap(y: int) -> bool {
+    return y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)
+}
+
+func main() {
+    print(f"grouped: {grouped(false, true, true)} {grouped(false, false, true)} {grouped(true, false, false)} {grouped(true, false, true)}")
+    a: bool = false
+    print(f"nested: {a and ((true and true) or true)} {not a and ((false and true) or true)}")
+    box: Box = None
+    refresh: bool = true
+    if box != None and ((not refresh and box.n < 1) or (refresh and box.n < 2)) {
+        print("guard: dereferenced nil")
+    } else {
+        print("guard: safe")
+    }
+    print(f"precedence: {false or true and true} {(false or true) and true} {(true or false) and false}")
+    b: bool = true
+    c: bool = true
+    v: str = "yes" if a and (b or c) else "no"
+    picked: list[int] = [i for i in [1, 2, 3] if a and (i > 1 or i < 0)]
+    f: func(bool) -> bool = lambda(x: bool) -> bool: x and (b or c)
+    n: int = 0
+    while n < 3 and (b or c) {
+        n += 1
+    }
+    print(f"contexts: {a and (b or c)} {v} {len(picked)} {f(false)} {n}")
+    print(f"leap: {leap(2000)} {leap(1900)} {leap(2024)}")
+}

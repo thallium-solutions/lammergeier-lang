@@ -75,13 +75,13 @@ OFFICIAL_PACKAGES = (
         "@lam/sftp",
         "lam-sftp",
         ("SftpConfig", "SftpHandlers", "SftpRequest", "SftpServer"),
-        "3.3.0",
+        "3.3.1",
     ),
     OfficialPackage(
         "@lam/ssh",
         "lam-ssh",
         ("SshClient", "SshCommandResult", "SshConfig", "SshKeyPair", "SshSession"),
-        "3.0.0",
+        "3.0.1",
     ),
     OfficialPackage(
         "@lam/vulture",

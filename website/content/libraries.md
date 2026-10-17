@@ -10,9 +10,10 @@ Current releases (3.0.0 removes the root `tag()` helper):
 | Release | Notes |
 |---|---|
 | `@lam/jwt@3.1.0` | ES256/ES384/ES512, EC keys in `JwtKeySet` and JWKS, `JwtKeySet.decode` for any RS*/PS*/ES* token (root `tag()` removed in 3.0.0) |
-| `@lam/protobuf@3.0.0`, `@lam/ssh@3.0.0` | root `tag()` removed |
+| `@lam/ssh@3.0.1` | `golang.org/x/crypto` v0.58.0 (SSH channel denial-of-service fixes; Go 1.26) |
+| `@lam/protobuf@3.0.0` | root `tag()` removed |
 | `@lam/vulture/tus-plugin@3.0.1` | root `tag()` removed (3.0.0); pins `@lam/vulture` 2.0.1 |
-| `@lam/sftp@3.3.0` | adaptive ciphers (AES-GCM for clients that support it, `withAdaptiveCiphers`), `onOpenWrite` (errors at OPEN), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`); pins `@lam/ssh` 3.0.0 |
+| `@lam/sftp@3.3.1` | pins `@lam/ssh` 3.0.1; adaptive ciphers (AES-GCM for clients that support it, `withAdaptiveCiphers`), `onOpenWrite` (errors at OPEN), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`) |
 | `@lam/s3@2.1.0` | multipart uploads, ranged/streaming reads, bucket helpers |
 | `@lam/redis@2.0.0`, `@lam/memcached@2.0.0` | |
 | `@lam/vulture/ws-plugin@2.0.1` | pins `@lam/vulture` 2.0.1 |

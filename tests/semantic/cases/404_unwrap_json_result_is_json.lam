@@ -1,0 +1,11 @@
+# expect-pass
+# ``Json.fromValue(x).unwrap()`` and ``.unwrapOr(...)`` have the Result's
+# payload type (json), so they are accepted where JSON is required.
+from lamjson import Json
+
+func main() {
+    claims: dict[str, any] = {"sub": "alice"}
+    print(Json.encode(Json.fromValue(claims).unwrap()).unwrap())
+    empty: json = {}
+    print(Json.encode(Json.fromValue(claims).unwrapOr(empty)).unwrap())
+}

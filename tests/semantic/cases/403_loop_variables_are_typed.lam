@@ -1,0 +1,24 @@
+# expect-pass
+# Loop variables get the element type of the iterable (list literals, typed
+# lists, dicts), so they can be used in JSON literals and typed calls.
+func send(payload: json) -> str {
+    return str(payload)
+}
+
+func twice(n: int) -> int {
+    return n * 2
+}
+
+func main() {
+    for target in ["http://a", "http://b"] {
+        print(send({"url": target}))
+    }
+    urls: list[str] = ["c"]
+    for u in urls {
+        print(send({"u": u}) + u.toUpper())
+    }
+    counts: dict[str, int] = {"k": 1}
+    for name, n in counts {
+        print(send({"name": name, "n": n}) + str(twice(n)))
+    }
+}
