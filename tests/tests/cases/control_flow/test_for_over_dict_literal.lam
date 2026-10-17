@@ -1,0 +1,43 @@
+# Test: iterating a dict literal with string keys and values of one type
+# binds typed loop variables (``len(value)``, string methods), and a list of
+# lists literal binds typed rows. The dict used to be a
+# ``map[string]interface{}``, so ``len(value)`` did not compile.
+#
+# expect: lengths: 5
+# expect: upper: 1:X 22:Y
+# expect: ints: 7
+# expect: rows: 2 11
+
+func takes(items: list[str]) -> int {
+    return len(items)
+}
+
+func main() {
+    total: int = 0
+    for label, value in {"x": "1", "y": "22"} {
+        total += len(value) + len(label)
+    }
+    print(f"lengths: {total}")
+    parts: list[str] = []
+    for label, value in {"x": "1", "y": "22"} {
+        parts.append(value + ":" + label.toUpper())
+    }
+    parts.sort()
+    print("upper: " + " ".join(parts))
+    sum: int = 0
+    for _, n in {"a": 3, "b": 4} {
+        sum += n
+    }
+    print(f"ints: {sum}")
+    rows: int = 0
+    product: int = 0
+    for step in [["a", "b"], ["c"]] {
+        copy: list[str] = []
+        copy.extend(step)
+        rows += takes(copy) - 1
+    }
+    for pair in [[1, 2], [3, 3]] {
+        product += pair[0] * pair[1]
+    }
+    print(f"rows: {rows + 1} {product}")
+}

@@ -11,7 +11,7 @@ Current releases (3.0.0 removes the root `tag()` helper):
 |---|---|
 | `@lam/jwt@3.0.0`, `@lam/protobuf@3.0.0`, `@lam/ssh@3.0.0` | root `tag()` removed |
 | `@lam/vulture/tus-plugin@3.0.1` | root `tag()` removed (3.0.0); pins `@lam/vulture` 2.0.1 |
-| `@lam/sftp@3.2.0` | `onOpenWrite` (errors at OPEN: missing parent, permission, quota), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`); pins `@lam/ssh` 3.0.0 |
+| `@lam/sftp@3.3.0` | adaptive ciphers (AES-GCM for clients that support it, `withAdaptiveCiphers`), `onOpenWrite` (errors at OPEN), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`); pins `@lam/ssh` 3.0.0 |
 | `@lam/s3@2.1.0` | multipart uploads, ranged/streaming reads, bucket helpers |
 | `@lam/redis@2.0.0`, `@lam/memcached@2.0.0` | |
 | `@lam/vulture/ws-plugin@2.0.1` | pins `@lam/vulture` 2.0.1 |

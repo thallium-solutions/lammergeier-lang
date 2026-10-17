@@ -778,6 +778,25 @@ class StatementVisitorMixin:
             return False
         return any(StatementVisitorMixin._flow_contains_loop_exit(child) for child in node.children)
 
+    def _uniform_dict_literal_type(self, node) -> str:
+        """``map[string]T`` for a dict literal with string keys whose values
+        all have the same concrete Go type, else ``""``."""
+        if not (isinstance(node, Tree) and node.data == "dict"):
+            return ""
+        value_types = set()
+        for child in node.children:
+            if not (isinstance(child, Tree) and child.data == "key_value" and len(child.children) >= 2):
+                return ""
+            if self._infer_type_from_value(child.children[0]) != "string":
+                return ""
+            value_types.add(self._expr_go_type_hint(child.children[1]) or self._infer_type_from_value(child.children[1]) or "")
+        if len(value_types) != 1:
+            return ""
+        value_type = value_types.pop()
+        if not value_type or value_type == "interface{}":
+            return ""
+        return f"map[string]{value_type}"
+
     def _visit_for_stmt(self, node: Tree):
         target_node = node.children[0]
         iterable_node = node.children[1]
@@ -856,6 +875,7 @@ class StatementVisitorMixin:
                 assign_op = ":="
             self._emit(f"for {var_name} {assign_op} {start}; {var_name} {cmp_op} {end}; {var_name} += {step} {{")
         else:
+            dict_literal_type = self._uniform_dict_literal_type(iterable_node)
             if (
                 isinstance(iterable_node, Tree)
                 and iterable_node.data == "list"
@@ -864,6 +884,9 @@ class StatementVisitorMixin:
             ):
                 # Range over the typed slice the loop variable was typed from.
                 iter_str = self._typed_value_to_go(iterable_node, iterable_type)
+            elif dict_literal_type:
+                # ``for k, v in {"a": "x"}``: a typed map, so ``v`` is a string.
+                iter_str = self._typed_dict_literal_to_go(iterable_node, dict_literal_type)
             else:
                 iter_str = self._expr_to_go(iterable_node)
             is_chan = self._is_generator_call(iterable_node)
@@ -879,6 +902,9 @@ class StatementVisitorMixin:
                 assign_op = "=" if already_declared else ":="
                 self._emit(f"for {var_name} {assign_op} range {iter_str} {{")
             elif key_name and val_name:
+                if dict_literal_type:
+                    self._var_go_types[key_name] = "string"
+                    self._var_go_types[val_name] = dict_literal_type[len("map[string]"):]
                 k_decl = key_name in self.declared_vars
                 v_decl = val_name in self.declared_vars
                 assign_op = "=" if (k_decl and v_decl) else ":="

@@ -75,7 +75,7 @@ OFFICIAL_PACKAGES = (
         "@lam/sftp",
         "lam-sftp",
         ("SftpConfig", "SftpHandlers", "SftpRequest", "SftpServer"),
-        "3.2.0",
+        "3.3.0",
     ),
     OfficialPackage(
         "@lam/ssh",

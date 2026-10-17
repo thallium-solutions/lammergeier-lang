@@ -6,6 +6,23 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-10-20
+
+### Changed
+
+- Bumped the compiler to 1.19.4 (the fixes below). Catalog: `@lam/sftp`
+  3.3.0 (adaptive ciphers).
+
+### Fixed
+
+- `for k, v in {"a": "x", ...}` over a dict literal whose values share one
+  type binds typed variables (`len(v)`, string methods); the literal was a
+  `map[string]interface{}`.
+- A function passed by name to a function-typed parameter is checked
+  against the callback's shape (arity, parameter and return types):
+  `onPasswordAuth(accept)` with `accept(user: str, password: str)` where
+  `func(SftpAuth) -> bool` is expected used to fail only in Go.
+
 ## 2026-10-19
 
 ### Changed

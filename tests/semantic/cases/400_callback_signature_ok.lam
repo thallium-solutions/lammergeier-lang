@@ -1,0 +1,37 @@
+# expect-pass
+# Functions passed by name that fit the callback shape (same parameter
+# types, extra parameters with defaults, `_` parameters, any return when
+# the callback returns nothing) and lambdas are accepted.
+class Auth {
+    func init(self) {
+        self.user: str = ""
+    }
+}
+
+func register(callback: func(Auth) -> bool) -> bool {
+    return callback(Auth())
+}
+
+func onEach(callback: func(str, int)) {
+    callback("a", 1)
+}
+
+func accept(_auth: Auth) -> bool {
+    return true
+}
+
+func acceptWithDefault(auth: Auth, strict: bool = false) -> bool {
+    return auth.user == "" or strict
+}
+
+func show(name: str, count: int) -> int {
+    print(f"{name}{count}")
+    return count
+}
+
+func main() {
+    print(register(accept))
+    print(register(acceptWithDefault))
+    print(register(lambda(a: Auth) -> bool: a.user == ""))
+    onEach(show)
+}

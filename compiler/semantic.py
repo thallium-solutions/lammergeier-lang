@@ -4455,6 +4455,13 @@ class SemanticChecker:
                 if not generic_mapping:
                     continue
                 expected = self._substitute_generic_type(expected, generic_mapping)
+            if isinstance(expected, FuncType):
+                # A function passed by name must fit the callback's shape.
+                reference = self._function_reference_type(arg_node)
+                if reference is not None:
+                    if not self._callback_compatible(expected, reference, arg_node):
+                        out.append((param_name, expected, reference, arg_node))
+                    continue
             actual = self._expr_type_for_expected(arg_node, expected)
             if actual is None:
                 continue
@@ -4462,6 +4469,40 @@ class SemanticChecker:
                 continue
             out.append((param_name, expected, actual, arg_node))
         return out
+
+    def _function_reference_type(self, node) -> Optional[FuncType]:
+        """The type of a module-level function used as a value (``register(f)``)."""
+        if not (isinstance(node, Tree) and node.data == "var" and node.children):
+            return None
+        name = self._name_text(node.children[0])
+        if not name or self._var_type(name):
+            return None
+        sigs = self._func_sigs.get(name) or []
+        if len(sigs) != 1:
+            return None
+        sig = sigs[0]
+        if len(sig.param_types) != len(sig.params) or any(not t for t in sig.param_types) or sig.generic_names:
+            return None
+        return FuncType(tuple(parse_type(t) for t in sig.param_types), parse_type(sig.return_type_text or "None"))
+
+    def _callback_compatible(self, expected: FuncType, reference: FuncType, node) -> bool:
+        name = self._name_text(node.children[0])
+        sig = self._func_sigs[name][0]
+        count = len(expected.params)
+        if sig.required_pos > count or (sig.max_pos is not None and sig.max_pos < count):
+            return False
+        lenient = {"any", "object", ""}
+        for wanted, accepted in zip(expected.params, reference.params):
+            if render_type(wanted) in lenient or render_type(accepted) in lenient:
+                continue
+            # The callback receives ``wanted`` values: it must accept them.
+            if not (is_assignable(accepted, wanted) or self._nominal_type_assignable(accepted, wanted)):
+                return False
+        wanted_ret = render_type(expected.ret)
+        got_ret = render_type(reference.ret)
+        if wanted_ret in lenient or got_ret in lenient or wanted_ret == "None":
+            return True
+        return is_assignable(expected.ret, reference.ret) or self._nominal_type_assignable(expected.ret, reference.ret)
 
     def _type_mentions_generic(self, type_: Type, names: tuple[str, ...]) -> bool:
         if not names:

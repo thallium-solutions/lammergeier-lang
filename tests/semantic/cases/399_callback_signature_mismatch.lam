@@ -1,0 +1,18 @@
+# expect-error: argument `callback` to `register` has type
+class Auth {
+    func init(self) {
+        self.user: str = ""
+    }
+}
+
+func register(callback: func(Auth) -> bool) -> bool {
+    return callback(Auth())
+}
+
+func wrong(user: str, password: str) -> bool {
+    return user == password
+}
+
+func main() {
+    print(register(wrong))
+}
