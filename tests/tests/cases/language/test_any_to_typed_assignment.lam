@@ -1,4 +1,5 @@
-# Test: a value declared ``any`` can be assigned to a typed variable
+# Test: a value declared ``any`` (or an element of a ``list[any]`` /
+# ``dict[str, any]``) can be assigned to a typed variable
 # (``str``, ``bool``, lists, dicts); the assignment is a checked conversion
 # instead of a Go compile error. Typical after an ``isinstance`` check, e.g.
 # the ``aud`` claim of a JWT that is a string or a list.
@@ -8,6 +9,7 @@
 # expect: list: 2 b
 # expect: dict: 1
 # expect: audiences: app | app,other
+# expect: elements: id-1 3 true v
 
 func audiences(raw: any) -> list[str] {
     out: list[str] = []
@@ -40,4 +42,11 @@ func main() {
     print(f"dict: {len(d)}")
     many: list[any] = ["app", "other"]
     print("audiences: " + ",".join(audiences("app")) + " | " + ",".join(audiences(many)))
+    row: list[any] = ["id-1", 3, true]
+    first: str = row[0]
+    count: int = row[1]
+    flag2: bool = row[2]
+    props: dict[str, any] = {"k": "v"}
+    value: str = props["k"]
+    print(f"elements: {first} {count} {flag2} {value}")
 }

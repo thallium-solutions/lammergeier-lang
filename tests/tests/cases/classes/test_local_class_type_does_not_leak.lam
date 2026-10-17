@@ -1,0 +1,40 @@
+# Test: a local or parameter named like a class-typed local of another
+# function keeps its own type. ``out: Box`` in one method made ``out: str``
+# (or a parameter ``out: str``) in another method dispatch string methods as
+# ``out.ToUpper()``, which does not compile.
+#
+# expect: local: HI
+# expect: param: YO
+# expect: function param: OK
+# expect: clone: 7
+
+class Box {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func clone(self) -> Box {
+        out: Box = Box(self.n)
+        return out
+    }
+
+    static func shout(text: str) -> str {
+        out: str = text.trim()
+        return out.toUpper()
+    }
+
+    static func loud(out: str) -> str {
+        return out.toUpper()
+    }
+}
+
+func upper(out: str) -> str {
+    return out.trim().toUpper()
+}
+
+func main() {
+    print("local: " + Box.shout(" hi "))
+    print("param: " + Box.loud("yo"))
+    print("function param: " + upper(" ok "))
+    print(f"clone: {Box(7).clone().n}")
+}

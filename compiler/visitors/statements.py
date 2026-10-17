@@ -122,6 +122,10 @@ class StatementVisitorMixin:
         raw_type = self._get_raw_type_name(type_node)
         if raw_type and raw_type in self._class_names and "." not in target_str:
             self._var_types[target_str] = raw_type
+        elif "." not in target_str:
+            # ``out: str`` in one method must not inherit ``out: Box`` from
+            # another (the registry is keyed by name).
+            self._var_types.pop(target_str, None)
 
         if go_type and "." not in target_str:
             self._var_go_types[target_str] = go_type
@@ -199,6 +203,8 @@ class StatementVisitorMixin:
         raw_type = self._get_raw_type_name(type_node) if type_node is not None else ""
         if raw_type and raw_type in self._class_names:
             self._var_types[target_str] = raw_type
+        elif type_node is not None:
+            self._var_types.pop(target_str, None)
         if go_type:
             self._var_go_types[target_str] = go_type
 

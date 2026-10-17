@@ -92,6 +92,49 @@ def test_extract_class_with_methods_and_fields() -> None:
     print("PASS: extract class shape")
 
 
+def test_go_blocks_and_locals_are_not_fields() -> None:
+    """Struct literals in ``go!`` blocks (``CopySource: x,``) and method
+    locals (``out: Box = ...``) are not class fields; ``self.x: T`` in
+    ``init`` is. Changing them is not an API change (it used to make
+    ``lamc install`` refuse a minor release as mis-labelled)."""
+    old, new = _surfaces("""
+        class Client {
+            func init(self) {
+                self.cfg: str = ""
+            }
+            func copy(self, key: str) -> bool {
+                out: int = 1
+                go! {
+                    input := &Input{
+                        CopySource: aws.String(key),
+                    }
+                }
+                return true
+            }
+        }
+    """, """
+        class Client {
+            func init(self) {
+                self.cfg: str = ""
+                self.sseKey: str = ""
+            }
+            func copy(self, key: str) -> bool {
+                out: str = "renamed local"
+                go! {
+                    input := &Input{
+                        CopySource: copySource,
+                    }
+                }
+                return true
+            }
+        }
+    """)
+    assert old.classes["Client"].fields == {"cfg": "str"}, old.classes["Client"].fields
+    assert new.classes["Client"].fields == {"cfg": "str", "sseKey": "str"}, new.classes["Client"].fields
+    assert worst_severity(compare(old, new)) == "feature", compare(old, new)
+    print("PASS: go! blocks and method locals are not fields")
+
+
 def test_extract_skips_underscore_funcs() -> None:
     """``_helper`` is private by convention and must never appear in
     the public surface."""
@@ -279,6 +322,7 @@ def main() -> int:
         test_no_change_yields_patch,
         test_expected_bump_mapping,
         test_surface_from_path_inside_extlibs,
+        test_go_blocks_and_locals_are_not_fields,
     ]
     failures = 0
     for t in tests:

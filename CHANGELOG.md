@@ -6,6 +6,29 @@ This repository does not currently use version tags, so entries are grouped by
 commit date from the Git history and summarized against the current README and
 documentation.
 
+## 2026-10-25
+
+### Changed
+
+- Bumped the compiler to 1.19.9 (the fixes below).
+- Catalog: `@lam/s3` 2.2.0 (SSE-C customer keys, cross-key and large
+  server-side copies).
+
+### Fixed
+
+- A local or parameter no longer inherits the class type of a same-named
+  local in another function: `out: Box` in one method made `out: str` in
+  another dispatch `out.toUpper()` as a method of `Box` (Go build error).
+- Arithmetic expressions have a type: `put(key, chunk + "end")` picks the
+  `str` overload instead of `any`, and `min(partSize, size - offset)` stays
+  an `int` instead of widening to float.
+- An element of a `list[any]` / `dict[str, any]` can be assigned to a typed
+  variable (`name: str = row[0]`): a checked conversion.
+- `lamc install` no longer refuses a correctly labelled minor release as
+  "mis-labelled": the API differ counted struct-literal lines in `go!`
+  blocks (`CopySource: x,`) and method locals as class fields. Fields are now
+  class-level declarations and `self.x: T` assignments.
+
 ## 2026-10-24
 
 ### Changed

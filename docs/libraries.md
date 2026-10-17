@@ -14,7 +14,7 @@ Current releases (3.0.0 removes the root `tag()` helper):
 | `@lam/protobuf@3.0.0` | root `tag()` removed |
 | `@lam/vulture/tus-plugin@3.0.1` | root `tag()` removed (3.0.0); pins `@lam/vulture` 2.0.1 |
 | `@lam/sftp@3.3.1` | pins `@lam/ssh` 3.0.1; adaptive ciphers (AES-GCM for clients that support it, `withAdaptiveCiphers`), `onOpenWrite` (errors at OPEN), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`) |
-| `@lam/s3@2.1.0` | multipart uploads, ranged/streaming reads, bucket helpers |
+| `@lam/s3@2.2.0` | SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
 | `@lam/redis@2.0.0`, `@lam/memcached@2.0.0` | |
 | `@lam/vulture/ws-plugin@2.0.1` | pins `@lam/vulture` 2.0.1 |
 | `@lam/vulture@2.0.1` | semantic-check clean-ups, no API change |

@@ -114,6 +114,18 @@ class ExpressionVisitorMixin:
             # ``interface{}(...)`` keeps it valid when the name tracking is
             # stale and the variable is already concrete.
             return f"interface{{}}({self._expr_to_go(node)}).({go_type})"
+        if (
+            isinstance(node, Tree)
+            and node.data == "getitem"
+            and go_type
+            and go_type != "interface{}"
+            and (go_type in {"string", "bool", "int", "float64"} or go_type.startswith("[]") or go_type.startswith("map[") or go_type.startswith("*"))
+            and (self._expr_go_type_hint(node.children[0]) or "") in {"[]interface{}", "map[string]interface{}"}
+            and not (isinstance(node.children[1], Tree) and node.children[1].data == "slice")
+        ):
+            # ``name: str = row[1]`` from a ``list[any]`` / ``dict[str, any]``:
+            # a checked conversion of the element.
+            return f"interface{{}}({self._expr_to_go(node)}).({go_type})"
         if isinstance(node, Tree):
             if node.data == "list" and go_type.startswith("[]"):
                 return self._typed_list_literal_to_go(node, go_type)
@@ -330,6 +342,28 @@ class ExpressionVisitorMixin:
             return ""
         if node.data == "test" and len(node.children) == 3:
             return self._ternary_common_go_type(node)
+        if node.data in ("arith_expr", "term") and len(node.children) >= 3:
+            # ``size - offset``: ints stay int, a float operand widens; int
+            # ``/`` and other mixes stay unknown (previous behaviour).
+            kinds = []
+            for child in node.children[0::2]:
+                if isinstance(child, Token):
+                    text = str(child)
+                    if child.type in {"STRING", "LONG_STRING"}:
+                        kinds.append("string")
+                    else:
+                        kinds.append("float64" if child.type in {"FLOAT_NUMBER", "DECIMAL"} or "." in text else ("int" if child.type.endswith("NUMBER") else ""))
+                else:
+                    kind = self._expr_go_type_hint(child) or self._infer_type_from_value(child)
+                    kinds.append(kind if kind != "interface{}" else "")
+            ops = {str(c) for c in node.children[1::2]}
+            if kinds and all(k == "int" for k in kinds) and ops <= {"+", "-", "*", "//", "%"}:
+                return "int"
+            if kinds and all(k in {"int", "float64"} for k in kinds) and "float64" in kinds and ops <= {"+", "-", "*", "/"}:
+                return "float64"
+            if kinds and all(k == "string" for k in kinds) and ops == {"+"}:
+                return "string"
+            return ""
         if node.data == "var" and node.children:
             name = self._get_name(node.children[0])
             if name == "_":

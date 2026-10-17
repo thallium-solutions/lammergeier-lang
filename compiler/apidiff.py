@@ -220,12 +220,28 @@ def extract_surface(src: str) -> ApiSurface:
                     b.strip() for b in (m.group("bases") or "").split(",")
                     if b.strip()
                 ])
+                # Depth 1 = the class body; deeper = method bodies. Fields are
+                # class-level declarations and ``self.x: T`` assignments;
+                # method locals and Go code in ``go!`` blocks are not API.
+                depth = 1
+                go_depth = 0
                 for j in range(i + 1, body_end):
                     body_line = lines[j]
+                    code = body_line.split("#", 1)[0] if "#" in body_line and not body_line.lstrip().startswith("#-") else body_line
+                    opens = code.count("{") - code.count("}")
+                    if go_depth > 0:
+                        go_depth += opens
+                        depth += opens
+                        continue
+                    if re.match(r"^\s*go!\s*\{", body_line):
+                        go_depth = max(opens, 0)
+                        depth += opens
+                        continue
                     if not body_line.strip() or body_line.lstrip().startswith("#"):
+                        depth += opens
                         continue
                     fm = _RE_FUNC.match(body_line)
-                    if fm and len(fm.group("indent")) > 0:
+                    if fm and len(fm.group("indent")) > 0 and depth == 1:
                         m_name = fm.group("name")
                         if _is_public(m_name, bool(fm.group("private"))):
                             p, d, r, kw = _parse_params(fm.group("params"))
@@ -233,12 +249,20 @@ def extract_surface(src: str) -> ApiSurface:
                                 params=p, defaults=d, rest=r, kwargs=kw,
                                 return_type=(fm.group("ret") or "").strip(),
                             )
+                        depth += opens
+                        continue
+                    self_field = re.match(r"^\s*self\.([A-Za-z_]\w*)\s*:\s*([^=#]+?)\s*(?:=.*)?$", body_line)
+                    if self_field:
+                        if _is_public(self_field.group(1)):
+                            shape.fields[self_field.group(1)] = self_field.group(2).strip()
+                        depth += opens
                         continue
                     fld = _RE_FIELD.match(body_line)
-                    if fld and len(fld.group("indent")) > 0:
+                    if fld and len(fld.group("indent")) > 0 and depth == 1:
                         fld_name = fld.group("name")
                         if _is_public(fld_name, bool(fld.group("private"))):
                             shape.fields[fld_name] = fld.group("ty").strip()
+                    depth += opens
                 surface.classes[cls_name] = shape
             i = body_end; continue
 

@@ -1,0 +1,40 @@
+# Test: arithmetic expressions have a type for dispatch and builtins:
+# ``put(key, chunk + "end")`` picks the ``str`` overload (it fell to the
+# ``any`` overload), ``min(partSize, size - offset)`` stays an int (it widened
+# to float and failed to assign to an ``int``).
+#
+# expect: overloads: str str str str
+# expect: int min: 2 7
+# expect: float mix: 2.5
+
+class Store {
+    func init(self) {
+        self.n: int = 0
+    }
+
+    func put(self, key: str, data: str) -> str {
+        return "str"
+    }
+
+    func put(self, key: str, data: list[int]) -> str {
+        return "list"
+    }
+
+    func put(self, key: str, stream: any) -> str {
+        return "any"
+    }
+}
+
+func part(partSize: int, size: int, offset: int) -> int {
+    length: int = min(partSize, size - offset)
+    return length
+}
+
+func main() {
+    s: Store = Store()
+    chunk: str = "x" * 3
+    print("overloads: " + s.put("k", chunk) + " " + s.put("k", chunk + "end") + " " + s.put("k", "lit" + "eral") + " " + s.put("k", f"{chunk}!"))
+    print(f"int min: {part(10, 5, 3)} {part(7, 100, 1) * 1}")
+    half: float = 1.5
+    print(f"float mix: {max(half, 1 + 1.5)}")
+}

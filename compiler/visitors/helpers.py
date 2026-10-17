@@ -1480,7 +1480,12 @@ class HelpersMixin:
                     node = child.children[0]
             elif child.data in ("stararg", "kwargs", "starparams"):
                 continue
-            sig.append(self._infer_type_from_value(node))
+            inferred = self._infer_type_from_value(node)
+            if inferred in ("", "interface{}") and hasattr(self, "_expr_go_type_hint"):
+                # ``put(key, chunk + "end")``: typed variables and arithmetic
+                # on them, so the ``str`` overload wins over ``any``.
+                inferred = self._expr_go_type_hint(node) or inferred
+            sig.append(inferred)
         return tuple(sig)
 
     def _fill_default_args(self, func_key: str, args: list) -> list:
@@ -1540,6 +1545,10 @@ class HelpersMixin:
                                 getattr(self, "_class_names", set()) | getattr(self, "_interfaces", set())
                             ):
                                 self._var_types[name] = raw_type
+                            else:
+                                # A ``str`` parameter must not inherit another
+                                # function's ``name: SomeClass`` local.
+                                self._var_types.pop(name, None)
                             go_type = self._type_expr_to_go(param.children[1])
                             if go_type:
                                 self._var_go_types[name] = go_type
