@@ -1,0 +1,6 @@
+# expect-error: `str` has no method `upper` — did you mean `toUpper`?
+
+func main() {
+    word = "lam"
+    print(word.upper())
+}

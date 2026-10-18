@@ -1,0 +1,105 @@
+# Stress: module initialization through top-level statements composed with
+# imports (a registry module initialized first), classes with static state,
+# generics, lambdas, Result / do-catch, json, match patterns, try/catch and
+# loops — all running before main(), in file order.
+#
+# expect: init registry
+# expect: register core
+# expect: init plugin_a
+# expect: register a
+# expect: init plugin_b sees count=2
+# expect: register b
+# expect: routes: 3
+# expect: parsed port 8080
+# expect: config debug=true name=svc
+# expect: fallback used: ConfigError: bad port
+# expect: squares 1,4,9
+# expect: main: GET /users -> list users
+# expect: main: POST /users -> create user
+# expect: main: GET /health -> 404
+# expect: main: registered 3 plugins, boots 1, port 8080, sum 14
+
+from lamerrors import Result, Error
+from lamjson import Json
+from toplevel_plugin_b import register
+from toplevel_registry import names
+
+class Router {
+    static boots: int = 0
+    func init(self) {
+        self.routes: dict[str, str] = {}
+    }
+    func add(self, method: str, path: str, label: str) {
+        self.routes[f"{method} {path}"] = label
+    }
+    func handle(self, method: str, path: str) -> str {
+        key: str = f"{method} {path}"
+        if key in self.routes {
+            return self.routes[key]
+        }
+        return "404"
+    }
+}
+
+func parsePort(text: str) -> Result[int] {
+    if text == "" {
+        return Result.Err(Error("ConfigError", "bad port"))
+    }
+    return Result.Ok(len(text) * 2020)
+}
+
+func mapAll[T, U](xs: list[T], f: func(T) -> U) -> list[U] {
+    out: list[U] = []
+    for x in xs {
+        out.append(f(x))
+    }
+    return out
+}
+
+router: Router = Router()
+router.add("GET", "/users", "list users")
+router.add("POST", "/users", "create user")
+router.add("DELETE", "/users", "delete user")
+Router.boots += 1
+print(f"routes: {len(router.routes)}")
+
+port: int = 0
+do {
+    port = parsePort("abcd")?
+    print(f"parsed port {port}")
+} catch err {
+    print("unreachable")
+}
+
+settings: json = Json.decode("""{"debug": true, "name": "svc"}""").unwrap()
+match settings {
+    case {"debug": bool(debug), "name": str(name)} { print(f"config debug={debug} name={name}") }
+    case _ { print("config invalid") }
+}
+
+backup: int = 0
+do {
+    backup = parsePort("")?
+} catch err {
+    print(f"fallback used: {err}")
+    backup = 1
+}
+
+squares: list[int] = mapAll([1, 2, 3], lambda (n: int) -> int: n * n)
+print("squares " + ",".join(mapAll(squares, lambda (n: int) -> str: f"{n}")))
+
+checked = 0
+try {
+    for n in squares {
+        checked += n
+    }
+} catch e {
+    checked = -1
+}
+
+func main() {
+    for req in [["GET", "/users"], ["POST", "/users"], ["GET", "/health"]] {
+        print(f"main: {req[0]} {req[1]} -> {router.handle(req[0], req[1])}")
+    }
+    print(f"main: registered {len(names)} plugins, boots {Router.boots}, port {port}, sum {checked}")
+}

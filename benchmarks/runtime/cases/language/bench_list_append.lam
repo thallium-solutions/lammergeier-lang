@@ -1,0 +1,30 @@
+# List growth + iteration — exercises the ``append`` builtin and the
+# generated ``[]int``/``[]interface{}`` slice semantics. Any future
+# change to how lists lower (e.g. pre-reserving capacity when the
+# final length is statically known) should move the needle here.
+#
+# ops: 1000000
+
+from lamtime import Time
+
+func work() {
+    items: list[int] = []
+    for i in range(1000000) {
+        items = append(items, i)
+    }
+    total: int = 0
+    for v in items {
+        total = total + v
+    }
+    if total < 0 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH list_append 1000000 {elapsed}")
+}

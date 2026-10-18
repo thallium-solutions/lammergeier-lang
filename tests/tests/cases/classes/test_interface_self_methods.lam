@@ -1,0 +1,64 @@
+# Regression (report 4.2): interface methods written with `self` (the
+# documented form) are satisfied by class methods; `self` is the receiver.
+#
+# expect: Circle(2) x6
+# expect: Square(3) x9
+# expect: total area 22
+
+interface Drawable {
+    func draw(self) -> str
+    func scale(self, k: int) -> int
+}
+
+interface Area {
+    func area() -> int
+}
+
+class Circle {
+    func init(self, r: int) {
+        self.r: int = r
+    }
+    func draw(self) -> str {
+        return f"Circle({self.r})"
+    }
+    func scale(self, k: int) -> int {
+        return self.r * k
+    }
+    func area(self) -> int {
+        return 3 * self.r * self.r
+    }
+}
+
+class Square {
+    func init(self, side: int) {
+        self.side: int = side
+    }
+    func draw(self) -> str {
+        return f"Square({self.side})"
+    }
+    func scale(self, k: int) -> int {
+        return self.side * k
+    }
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+func render(d: Drawable) -> str {
+    return f"{d.draw()} x{d.scale(3)}"
+}
+
+func totalArea(items: list[Area]) -> int {
+    total: int = 0
+    for a in items {
+        total += a.area()
+    }
+    return total
+}
+
+func main() {
+    print(render(Circle(2)))
+    shapes: list[Drawable] = [Square(3)]
+    print(render(shapes[0]))
+    print(f"total area {totalArea([Circle(2), Square(3), Square(0)]) + 1}")
+}

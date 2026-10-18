@@ -1,0 +1,9 @@
+# expect-error: argument `predicate` to `Iter.filter` has type `func(int) -> int`, expected `func(int) -> bool`
+# The lambda's parameter comes from the elements (`int`); its body must
+# produce what the callback returns.
+
+from lamiter import Iter
+
+func main() {
+    print(Iter.range_(0, 3).filter(lambda x: x + 1).toList())
+}

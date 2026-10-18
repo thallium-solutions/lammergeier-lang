@@ -1,0 +1,45 @@
+# Regression (report 4.7): an untyped numeric constant initialises or is
+# returned as a type parameter constrained to numbers (`t: T = 0` inside
+# `class Stats[T: number]`), as Go allows.
+#
+# expect: 6
+# expect: 4
+# expect: 0 7
+# expect: 10
+
+class Stats[T: number] {
+    func init(self, values: list[T]) {
+        self.values: list[T] = values
+    }
+    func total(self) -> T {
+        t: T = 0
+        for v in self.values {
+            t += v
+        }
+        return t
+    }
+}
+
+func clampHigh[T: number](x: T) -> T {
+    if x > 100 {
+        return 0
+    }
+    return x
+}
+
+func sumAll[T: number](xs: list[T]) -> T {
+    total: T = 0
+    for x in xs {
+        total = total + x
+    }
+    return total
+}
+
+func main() {
+    s: Stats[int] = Stats[int]([1, 2, 3])
+    print(s.total())
+    f: Stats[float] = Stats[float]([1.5, 2.5])
+    print(f.total())
+    print(clampHigh(500), clampHigh(7))
+    print(sumAll([1, 2, 3, 4]))
+}

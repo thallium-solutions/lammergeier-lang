@@ -1,0 +1,28 @@
+# expect-pass
+# A typed function whose every path raises needs no `return`.
+
+func boom() -> int {
+    raise ValueError("bad")
+}
+
+func pick(n: int) -> str {
+    if n > 0 {
+        raise ValueError("positive")
+    } else {
+        raise KeyError("other")
+    }
+}
+
+class Base {
+    func area(self) -> int {
+        raise NotImplementedError("abstract")
+    }
+}
+
+func main() {
+    try {
+        print(boom(), pick(1), Base().area())
+    } catch e {
+        print(e)
+    }
+}

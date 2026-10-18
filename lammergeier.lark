@@ -264,6 +264,7 @@ literal_pattern: inner_literal_pattern
                       | "False" -> const_false
                       | STRING -> string
                       | number
+                      | "-" number -> negative_number
 
 attr_pattern: NAME ("." NAME)+ -> value
 name_or_attr_pattern: NAME ("." NAME)* -> value
@@ -273,11 +274,12 @@ _sequence_pattern: (sequence_item_pattern ("," sequence_item_pattern)* ","?)?
 ?sequence_item_pattern: as_pattern
                       | "*" NAME -> star_pattern
 
-class_pattern: name_or_attr_pattern "(" [arguments_pattern ","?] ")"
-arguments_pattern: pos_arg_pattern ["," keyws_arg_pattern]
-                 | keyws_arg_pattern -> no_pos_arguments
-pos_arg_pattern: as_pattern ("," as_pattern)*
-keyws_arg_pattern: keyw_arg_pattern ("," keyw_arg_pattern)*
+// Positional and keyword sub-patterns share one flat list (``Point(x, y=0)``)
+// so LALR(1) decides on the token after NAME (``=`` or not); the semantic
+// checker rejects a positional sub-pattern that follows a keyword one.
+class_pattern: name_or_attr_pattern "(" [class_pattern_args] ")"
+class_pattern_args: _class_pattern_arg ("," _class_pattern_arg)* ","?
+_class_pattern_arg: as_pattern | keyw_arg_pattern
 keyw_arg_pattern: NAME "=" as_pattern
 
 // ========================= CLASS DEFINITION =========================
@@ -287,7 +289,7 @@ class_bases: class_base ("," class_base)* ","?
 ?class_base: name ":" type_expr -> named_class_base
            | type_expr          -> unnamed_class_base
 
-interfacedef: "interface" name "{" interface_method+ "}"
+interfacedef: "interface" name "{" interface_method* "}"
 interface_method: FUNC name "(" [typed_parameters] ")" ["->" return_type] ";"
 
 // ========================= SUITE (BLOCK) =========================

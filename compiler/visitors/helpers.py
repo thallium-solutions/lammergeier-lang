@@ -119,9 +119,41 @@ class HelpersMixin:
         """
         if node is None:
             return []
+        def as_type_text(item) -> str:
+            # ``Iter[tuple[int, T]]()``: a nested generic type argument is
+            # parsed as a subscript expression.
+            if isinstance(item, Tree) and item.data == "var" and item.children:
+                return self._get_name(item.children[0])
+            if isinstance(item, Tree) and item.data == "getitem" and len(item.children) == 2:
+                base = as_type_text(item.children[0])
+                sub = item.children[1]
+                parts = sub.children if isinstance(sub, Tree) and sub.data == "subscript_tuple" else [sub]
+                texts = [as_type_text(p) for p in parts if p is not None]
+                if base and all(texts):
+                    return f"{base}[{', '.join(texts)}]"
+            return ""
+
+        def lower(item) -> str:
+            if isinstance(item, Tree) and item.data == "getitem":
+                text = as_type_text(item)
+                type_node = self._lam_type_text_node(text) if text else None
+                if type_node is not None:
+                    go = self._type_expr_to_go(type_node)
+                    if go:
+                        return go
+            go = self._type_expr_to_go(item)
+            if (
+                go in self._class_names
+                and go not in self._interfaces
+                and go not in self._generic_names
+            ):
+                # ``Registry[Shape]()``: a class argument is a pointer.
+                return "*" + self._go_class_name(go)
+            return go
+
         if isinstance(node, Tree) and node.data == "subscript_tuple":
-            return [self._type_expr_to_go(c) for c in node.children if c is not None]
-        return [self._type_expr_to_go(node)]
+            return [lower(c) for c in node.children if c is not None]
+        return [lower(node)]
 
     @staticmethod
     def _merge_generic_clauses(outer: str, inner: str) -> str:
@@ -217,6 +249,14 @@ class HelpersMixin:
         self._pop_scope()
         self.indent -= 1
 
+    def _record_lam_type(self, name: str, type_node) -> None:
+        """Remember the Lam type of an annotated name (see ``_var_lam_types``)."""
+        from compiler.typesys import parse_type
+        try:
+            self._var_lam_types[name] = parse_type(type_node)
+        except Exception:
+            self._var_lam_types.pop(name, None)
+
     def _declare_var(self, name: str):
         self.declared_vars.add(name)
 
@@ -266,15 +306,49 @@ class HelpersMixin:
         # A name inside a string literal, rune or comment is not a use
         # (``print("err: ...")`` must not count as reading ``err``).
         scrubbed = mask_go_literals(scrubbed)
+        silencers = []
         for name in sorted(new_locals):
             # Compiler-internal temporaries (``__qN``, ``__lamFoo``,
             # ``_chN``…) are bookkeeping, not user code; skip them so
             # we don't churn the output for things the user can't see.
             if not name or name == "_" or name.startswith("__") or _re.fullmatch(r"_ch\d*", name):
                 continue
-            pat = _re.compile(rf"\b{_re.escape(name)}\b")
-            if len(pat.findall(scrubbed)) <= 1:
-                self._emit(f"_ = {name}")
+            # Occurrences that only assign (``out = "hi"`` in a ``go!``
+            # block, ``x += 1``) are not uses for Go.
+            pat = _re.compile(
+                rf"(?<![.\w])(?<!var ){_re.escape(name)}\b"
+                rf"(?!(?:\s*,\s*[\w.]+)*\s*(?::|[-+*/%&|^]|<<|>>|&\^)?=(?!=))(?!\s*(?:\+\+|--))"
+            )
+            if not pat.findall(scrubbed):
+                silencers.append(f"{self._indent_str()}_ = {name}")
+        if not silencers:
+            return
+        # A block ending in ``return`` / ``panic`` must keep it last: Go's
+        # terminating-statement rule (``missing return``) looks at the final
+        # statement, so the silencers go in front of it.
+        insert_at = self._trailing_terminator_line(body_start_line)
+        if insert_at is None:
+            self.output_lines.extend(silencers)
+        else:
+            self.output_lines[insert_at:insert_at] = silencers
+
+    def _trailing_terminator_line(self, body_start_line: int):
+        """Index of a trailing ``return`` / ``panic`` statement of the block
+        being closed (at the current indent), else ``None``."""
+        indent = self._indent_str()
+        for index in range(len(self.output_lines) - 1, body_start_line - 1, -1):
+            line = self.output_lines[index]
+            if line.startswith("//line"):
+                continue
+            if not line.startswith(indent) or (len(line) > len(indent) and line[len(indent)] in " \t"):
+                continue
+            text = line[len(indent):]
+            if text.startswith(("}", ")")):
+                continue
+            if _re.match(r"(return\b|panic\()", text):
+                return index
+            return None
+        return None
 
     # ─── Source-line mapping ───────────────────────────────────
 
@@ -901,15 +975,16 @@ class HelpersMixin:
     # ─── Tree inspection ───────────────────────────────────────
 
     def _suite_contains_try(self, node) -> bool:
+        """A ``try`` anywhere in this function body (not in nested functions,
+        lambdas or classes): ``return`` inside its IIFE needs the named
+        ``retval`` result, also when the ``try`` sits in a loop or branch."""
         if not isinstance(node, Tree):
             return False
         if node.data in ("try_stmt", "try_finally"):
             return True
-        if node.data == "suite":
-            for child in node.children:
-                if isinstance(child, Tree) and child.data in ("try_stmt", "try_finally"):
-                    return True
-        return False
+        if node.data in ("funcdef", "lambdef", "classdef"):
+            return False
+        return any(self._suite_contains_try(child) for child in node.children)
 
     def _tree_contains(self, node, data_name: str) -> bool:
         """Recursively check if any node in the tree has the given data name."""
@@ -1031,6 +1106,8 @@ class HelpersMixin:
                 name = self._get_name(func.children[0])
                 if name == "json":
                     return "LamJSON"
+                if name in self._async_functions and name not in self._var_go_types:
+                    return self._async_handle_go_type(self._func_return_go_types.get(name, ""))
                 if name and name[0].isupper() and name not in PYTHON_EXCEPTIONS:
                     return "*" + self._go_class_name(name)
         return "interface{}"
@@ -1222,6 +1299,9 @@ class HelpersMixin:
         param_names = self._func_param_names.get(func_key, [])
         if not param_types and not param_names:
             return self._collect_call_args(args_node)
+        if self._call_type_subst and param_types:
+            pattern = _re.compile(r"\b(" + "|".join(_re.escape(k) for k in self._call_type_subst) + r")\b")
+            param_types = [pattern.sub(lambda m: self._call_type_subst[m.group(1)], t) for t in param_types]
         positional: List[str] = []
         kwargs: Dict[str, str] = {}
         if not isinstance(args_node, Tree) or args_node.data != "arguments":
@@ -1552,7 +1632,13 @@ class HelpersMixin:
                             go_type = self._type_expr_to_go(param.children[1])
                             if go_type:
                                 self._var_go_types[name] = go_type
+                            self._record_lam_type(name, param.children[1])
                             self._note_result_payload(name, param.children[1])
+                            tuple_types = self._list_tuple_element_types(param.children[1])
+                            if tuple_types:
+                                self._tuple_iterable_element_types[name] = tuple_types
+                            else:
+                                self._tuple_iterable_element_types.pop(name, None)
                 elif isinstance(param, Tree) and param.data == "tuple_typed_param":
                     # The synthesised ``_tupN`` parameter is registered
                     # so downstream name lookups know it exists; the

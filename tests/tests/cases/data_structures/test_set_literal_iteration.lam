@@ -1,0 +1,44 @@
+# Test: iterating an unannotated set literal yields its elements.
+#
+# `flags = {"new", "active"}` infers `set[str]`; `for f in flags` must
+# bind each element, not the map's `true` values.
+#
+# expect: new
+# expect: count=2 hasActive=true
+# expect: sum=6
+# expect: twice=newnew
+# expect: lit
+
+func main() {
+    flags = {"new"}
+    for f in flags {
+        print(f)
+    }
+
+    both = {"new", "active"}
+    count: int = 0
+    hasActive: bool = false
+    for f in both {
+        count += 1
+        if f == "active" {
+            hasActive = true
+        }
+    }
+    print(f"count={count} hasActive={hasActive}")
+
+    nums = {1, 2, 3, 2}
+    total: int = 0
+    for n in nums {
+        total += n
+    }
+    print(f"sum={total}")
+
+    for name in flags {
+        label: str = name + name
+        print(f"twice={label}")
+    }
+
+    for g in {"lit"} {
+        print(g)
+    }
+}

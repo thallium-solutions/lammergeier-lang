@@ -1,0 +1,17 @@
+# expect-error: line 16: error[type]: cannot assign `str` to `int` variable `y`
+# Brace-less blocks, a multi-line triple-quoted string and dictionary
+# destructuring before the error must not shift its line number.
+
+func main() {
+    x = 1
+    if x > 0 print("a")
+    else print("b")
+    for i in range(2) print(i)
+    s = """first
+second"""
+    print(s)
+    user = {"name": "alice", "age": 30}
+    {name, age} = user
+    print(name, age)
+    y: int = "bad"
+}

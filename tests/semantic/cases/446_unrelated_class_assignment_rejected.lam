@@ -1,0 +1,15 @@
+# expect-error: cannot assign `Square` to `Circle` variable `c`
+
+class Shape {
+}
+
+class Square(Shape) {
+}
+
+class Circle(Shape) {
+}
+
+func main() {
+    c: Circle = Square()
+    print(c)
+}

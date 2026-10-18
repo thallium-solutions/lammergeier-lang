@@ -1,0 +1,27 @@
+# lamstrings.split — tokenise a log-style line. Primarily exercises
+# strings.Split + the list[str] materialisation path.
+#
+# ops: 200000
+
+from lamtime import Time
+from lamstrings import Strings
+
+func work() {
+    line: str = "2026-04-30 INFO req_id=abc123 path=/api/v1/items status=200 duration=45ms client=mobile tag=alpha"
+    total: int = 0
+    for __i in range(200000) {
+        parts: list[str] = Strings.split(line, " ")
+        total = total + len(parts)
+    }
+    if total == 0 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH strings_split 200000 {elapsed}")
+}

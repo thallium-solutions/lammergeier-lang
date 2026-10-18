@@ -1,0 +1,30 @@
+# Regression (report 4.6): `.map(lambda p: p.field)` over a list of class
+# instances types the lambda parameter as the element and the result as the
+# field type (annotated or not).
+#
+# expect: [ann bo]
+# expect: [ann bo]
+# expect: [31 42]
+# expect: [3 2]
+# expect: first ann
+
+class Person {
+    func init(self, name: str, age: int) {
+        self.name: str = name
+        self.age: int = age
+    }
+}
+
+func main() {
+    people: list[Person] = [Person("ann", 30), Person("bo", 41)]
+    names: list[str] = people.map(lambda p: p.name)
+    print(names)
+    loose = people.map(lambda p: p.name)
+    print(loose)
+    ages: list[int] = people.map(lambda p: p.age + 1)
+    print(ages)
+    lens: list[int] = names.map(lambda n: len(n))
+    print(lens)
+    first: str = loose[0]
+    print(f"first {first}")
+}

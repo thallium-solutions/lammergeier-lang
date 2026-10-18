@@ -1,0 +1,104 @@
+# Test: `optional[T]` / `Option[T]` accept None and T values, compare with
+# None, flow back into T for classes, assign optional class fields and
+# unwrap with `??` (also for value payloads such as `optional[int]`).
+#
+# expect: empty list
+# expect: head 1 next 2
+# expect: found 3
+# expect: missing true
+# expect: chain 1 -> 2 -> 3
+# expect: guest
+# expect: ada
+# expect: opt int none true
+# expect: opt int 5 false
+# expect: parsed 3 fallback 0
+# expect: option alias 7
+
+class Node {
+    func init(self, v: int) {
+        self.v: int = v
+        self.next: optional[Node] = None
+    }
+}
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func find(v: int) -> optional[Node] {
+    if v > 0 {
+        return Node(v)
+    }
+    return None
+}
+
+func lookup(name: str) -> optional[User] {
+    if name == "ada" {
+        return User("ada")
+    }
+    return None
+}
+
+func parse(s: str) -> optional[int] {
+    if s == "" {
+        return None
+    }
+    return len(s)
+}
+
+func render(head: optional[Node]) -> str {
+    out: str = "chain"
+    cur: optional[Node] = head
+    first: bool = true
+    while cur != None {
+        node: Node = cur
+        if first {
+            out = f"{out} {node.v}"
+            first = false
+        } else {
+            out = f"{out} -> {node.v}"
+        }
+        cur = node.next
+    }
+    return out
+}
+
+func main() {
+    head: optional[Node] = None
+    if head == None {
+        print("empty list")
+    }
+    a: Node = Node(1)
+    b: Node = Node(2)
+    a.next = b
+    head = a
+    if head != None {
+        print(f"head {head.v} next {b.v}")
+    }
+
+    m: Option[Node] = find(3)
+    print(f"found {m?.v}")
+    print(f"missing {find(0) == None}")
+
+    c: Node = Node(3)
+    b.next = c
+    print(render(a))
+
+    u: User = lookup("bob") ?? User("guest")
+    print(u.name)
+    known: optional[User] = lookup("ada")
+    print((known ?? User("x")).name)
+
+    o: optional[int] = None
+    print(f"opt int none {o == None}")
+    o = 5
+    print(f"opt int {o ?? 0} {o == None}")
+    parsed: int = parse("abc") ?? -1
+    fallback: int = parse("") ?? 0
+    print(f"parsed {parsed} fallback {fallback}")
+
+    alias: Option[int] = 7
+    print(f"option alias {alias ?? 0}")
+}

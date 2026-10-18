@@ -1,0 +1,24 @@
+# Test: top-level statements of imported modules run when the module is
+# initialized, in dependency (import) order, each module once, before the
+# main file's own top-level statements and main().
+#
+# expect: init registry
+# expect: register core
+# expect: init plugin_a
+# expect: register a
+# expect: init plugin_b sees count=2
+# expect: register b
+# expect: init app with 3 names
+# expect: main names=3 count=2
+# expect: core,a,b
+
+from toplevel_plugin_b import register
+from toplevel_plugin_a import count
+from toplevel_registry import names
+
+print(f"init app with {len(names)} names")
+
+func main() {
+    print(f"main names={len(names)} count={count}")
+    print(",".join(names))
+}

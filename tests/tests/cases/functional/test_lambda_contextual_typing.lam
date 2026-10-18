@@ -1,0 +1,83 @@
+# Test: a lambda used where a `func(...)` value is expected takes its
+# parameter and return types from that type: arguments of user functions,
+# annotated locals, `func()` callbacks with a void body, `foreach`,
+# returned lambdas (`func() -> Shape` returning a subclass), lambdas
+# called through a call result, `.map` with a builtin body and a void
+# lambda passed to an `any` callback.
+#
+# expect: apply: true false
+# expect: annotated: true false
+# expect: run: side effect
+# expect: each: 1
+# expect: each: 2
+# expect: shape: 9 16
+# expect: printer: 5
+# expect: lens: [2 3]
+# expect: block: 7
+# expect: adder: 12
+# expect: pick: b
+# expect: void any: ok
+
+class Shape {
+    func area(self) -> int { return 0 }
+}
+
+class Square(Shape) {
+    s: int
+    func init(self, s: int) { self.s = s }
+    func area(self) -> int { return self.s * self.s }
+}
+
+func apply(f: func(int) -> bool, x: int) -> bool {
+    return f(x)
+}
+
+func run(f: func()) {
+    f()
+}
+
+func maker(n: int) -> func() -> Shape {
+    return lambda: Square(n)
+}
+
+func printer() -> func(int) {
+    return lambda (n: int) { print(f"printer: {n}") }
+}
+
+func adder(k: int) -> func(int) -> int {
+    return lambda x: x + k
+}
+
+func pick(xs: list[str], choose: func(list[str]) -> str) -> str {
+    return choose(xs)
+}
+
+func callLater(_cb: any) -> str {
+    return "ok"
+}
+
+func main() {
+    print(f"apply: {apply(lambda x: x > 0, 3)} {apply(lambda x: x > 5, 3)}")
+    g: func(int) -> bool = lambda (a: int): a > 0
+    h: func(int) -> bool = lambda a: a > 1
+    print(f"annotated: {g(2)} {h(1)}")
+    run(lambda: print("run: side effect"))
+    nums: list[int] = [1, 2]
+    nums.foreach(lambda n: print(f"each: {n}"))
+    first: func() -> Shape = maker(3)
+    print(f"shape: {first().area()} {maker(4)().area()}")
+    printer()(5)
+    words: list[str] = ["ab", "cde"]
+    lens = words.map(lambda w: len(w))
+    print(f"lens: {lens}")
+    block: func(int) -> int = lambda (n: int) -> int {
+        doubled: int = n * 2
+        return doubled + 1
+    }
+    print(f"block: {block(3)}")
+    print(f"adder: {adder(2)(10)}")
+    chosen: str = pick(["a", "b"], lambda xs: xs[1])
+    print(f"pick: {chosen}")
+    status: str = callLater(lambda: print("never"))
+    print(f"void any: {status}")
+}

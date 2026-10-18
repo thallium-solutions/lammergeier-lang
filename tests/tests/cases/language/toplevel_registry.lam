@@ -1,0 +1,16 @@
+# Helper module for test_top_level_statements_imported.lam: its top-level
+# statements run once, before any module importing it.
+
+names: list[str] = []
+
+func register(name: str) {
+    names.append(name)
+    print(f"register {name}")
+}
+
+print("init registry")
+register("core")
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

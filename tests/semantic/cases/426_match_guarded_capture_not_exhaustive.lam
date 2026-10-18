@@ -1,0 +1,12 @@
+# expect-error: not all paths in `sign` return a value
+
+func sign(n: int) -> str {
+    match n {
+        case 0 { return "zero" }
+        case k if k > 0 { return "positive" }
+    }
+}
+
+func main() {
+    print(sign(1))
+}

@@ -1,0 +1,186 @@
+# Test: void async functions and exceptions raised inside async code.
+#
+# Awaiting a void async function completes instead of deadlocking, and
+# an exception raised inside an async function propagates to the
+# `await` that collects it, where `try`/`catch` can handle it.
+#
+# expect: side effect
+# expect: void awaited
+# expect: side effect
+# expect: later done
+# expect: caught: ValueError: bad input
+# expect: typed: KeyError: nope
+# expect: fields: amount=-5
+# expect: deep: RuntimeError: deep failure
+# expect: method: TypeError: wrong kind
+# expect: try-return: 7
+# expect: recovered inside: -1
+# expect: ok value: 42
+# expect: unawaited failure ignored
+# expect: rethrown: ValueError: again
+# expect: nested returns: 23
+# expect: closure in try: 6
+# expect: after try
+
+class PaymentError {
+    func init(self, amount: int) {
+        self.amount: int = amount
+    }
+}
+
+async func sideEffect() {
+    print("side effect")
+}
+
+async func failing(msg: str) -> int {
+    if msg != "" {
+        raise ValueError(msg)
+    }
+    return 0
+}
+
+async func missingKey() -> str {
+    if true {
+        raise KeyError("nope")
+    }
+    return ""
+}
+
+async func pay(amount: int) -> int {
+    if amount < 0 {
+        throw PaymentError(amount)
+    }
+    return amount
+}
+
+func explode() {
+    raise RuntimeError("deep failure")
+}
+
+async func deep() {
+    explode()
+}
+
+class Worker {
+    async func run(self, kind: str) -> str {
+        if kind != "ok" {
+            raise TypeError("wrong kind")
+        }
+        return "done"
+    }
+}
+
+async func tryReturn() -> int {
+    try {
+        return 7
+    } catch e {
+        print("WRONG")
+    }
+    print("WRONG: after try")
+    return 0
+}
+
+async func recoverInside(n: int) -> int {
+    try {
+        if n < 0 {
+            raise ValueError("negative")
+        }
+    } catch ValueError as e {
+        return -1
+    }
+    return n
+}
+
+async func double(n: int) -> int {
+    return n * 2
+}
+
+async func nestedReturns(n: int) -> int {
+    func helper(x: int) -> int {
+        return x + 1
+    }
+    times: func(int) -> int = lambda (x: int) -> int {
+        return x * 10
+    }
+    return helper(n) + times(n)
+}
+
+func closureInTry(n: int) {
+    try {
+        func inner(x: int) -> int {
+            return x * 3
+        }
+        print(f"closure in try: {inner(n)}")
+    } catch e {
+        print("WRONG")
+    }
+    print("after try")
+}
+
+func main() {
+    await sideEffect()
+    print("void awaited")
+
+    pending = sideEffect()
+    await pending
+    print("later done")
+
+    try {
+        n: int = await failing("bad input")
+        print(f"WRONG {n}")
+    } catch e {
+        print(f"caught: {e}")
+    }
+
+    try {
+        s: str = await missingKey()
+        print(f"WRONG {s}")
+    } catch ValueError as e {
+        print("WRONG: value")
+    } catch KeyError as e {
+        print(f"typed: {e}")
+    }
+
+    try {
+        paid: int = await pay(-5)
+        print(f"WRONG {paid}")
+    } catch PaymentError as e {
+        pe: PaymentError = e
+        print(f"fields: amount={pe.amount}")
+    }
+
+    try {
+        await deep()
+    } catch e {
+        print(f"deep: {e}")
+    }
+
+    w: Worker = Worker()
+    try {
+        r: str = await w.run("bad")
+        print(f"WRONG {r}")
+    } catch e {
+        print(f"method: {e}")
+    }
+
+    print(f"try-return: {await tryReturn()}")
+    print(f"recovered inside: {await recoverInside(-3)}")
+    print(f"ok value: {await double(21)}")
+
+    ignored = failing("never awaited")
+    print("unawaited failure ignored")
+
+    try {
+        try {
+            v: int = await failing("again")
+            print(f"WRONG {v}")
+        } catch e {
+            raise
+        }
+    } catch e {
+        print(f"rethrown: {e}")
+    }
+
+    print(f"nested returns: {await nestedReturns(2)}")
+    closureInTry(2)
+}

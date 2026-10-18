@@ -1,0 +1,15 @@
+# expect-error: unknown class `Pointt` in class pattern
+
+class Point {
+    func init(self, x: int) {
+        self.x: int = x
+    }
+}
+
+func main() {
+    v: any = Point(1)
+    match v {
+        case Pointt(x=x) { print(x) }
+        case _ { print("other") }
+    }
+}

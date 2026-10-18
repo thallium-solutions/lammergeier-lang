@@ -1,0 +1,96 @@
+# Test: the `catch err` binding of `do { } catch err { }` is an `Error`:
+# `err.kind` / `err.message` / `err.cause` work directly. An `Error`
+# subclass keeps its overrides; a non-`Error` value passed to `Result.Err`
+# (a string, a number) is wrapped with an empty kind and its text as the
+# message, so printing it shows the same text as before.
+#
+# expect: kind=ParseError message=bad input
+# expect: printed: ParseError: bad input
+# expect: subclass: NotFound: user 7 / hint=check the id
+# expect: string: plain failure / kind=[] cause=plain failure
+# expect: number: 42
+# expect: wrapped: IOError: read failed (cause: disk)
+# expect: ok path: 3
+
+from lamerrors import Result, Error
+
+class NotFound(Error) {
+    func init(self, what: str) {
+        base.init("NotFound", what)
+    }
+
+    func hint(self) -> str {
+        return "check the id"
+    }
+}
+
+func parse(s: str) -> Result[int] {
+    if s == "1" {
+        return Result.Ok(1)
+    }
+    return Result.Err(Error("ParseError", "bad input"))
+}
+
+func find(id: int) -> Result[str] {
+    return Result.Err(NotFound(f"user {id}"))
+}
+
+func plain() -> Result[int] {
+    return Result.Err("plain failure")
+}
+
+func number() -> Result[int] {
+    return Result.Err(42)
+}
+
+func wrapped() -> Result[int] {
+    return Result.Err(Error("IOError", "read failed", "disk"))
+}
+
+func main() {
+    do {
+        n: int = parse("x")?
+        print(n)
+    } catch err {
+        print(f"kind={err.kind} message={err.message}")
+        print(f"printed: {err}")
+    }
+    do {
+        name: str = find(7)?
+        print(name)
+    } catch err {
+        match err {
+            case NotFound() as nf {
+                print(f"subclass: {err} / hint={nf.hint()}")
+            }
+            case _ {
+                print("wrong")
+            }
+        }
+    }
+    do {
+        n: int = plain()?
+        print(n)
+    } catch err {
+        print(f"string: {err} / kind=[{err.kind}] cause={err.cause}")
+    }
+    do {
+        n: int = number()?
+        print(n)
+    } catch err {
+        print(f"number: {err.message}")
+    }
+    do {
+        n: int = wrapped()?
+        print(n)
+    } catch err {
+        print(f"wrapped: {err}")
+    }
+    do {
+        a: int = parse("1")?
+        b: int = parse("1")?
+        print(f"ok path: {a + b + 1}")
+    } catch err {
+        print(f"unexpected {err}")
+    }
+}

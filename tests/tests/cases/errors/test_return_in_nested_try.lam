@@ -1,0 +1,131 @@
+# Regression: `return` inside a `try` that is nested below the top level of
+# a function with a return type (in a loop, a branch, a match case, a
+# method) and inside a `try` within a `do` body returns from the function.
+#
+# expect: find 1 -1 -2
+# expect: do 8 -1 -3
+# expect: label pos nonpos
+# expect: match one other
+# expect: method 6 0
+# expect: while 3
+# expect: finally ran
+# expect: finally 5
+
+from lamerrors import Result, Error
+
+func find(xs: list[int], target: int) -> int {
+    for i in range(len(xs)) {
+        if xs[i] == target {
+            try {
+                if target > 100 {
+                    raise ValueError("big")
+                }
+                return i
+            } catch _e {
+                return -2
+            }
+        }
+    }
+    return -1
+}
+
+func failing() -> Result[int] {
+    return Result.Err(Error("ZeroError", "zero"))
+}
+
+func viaDo(n: int) -> Result[int] {
+    do {
+        if n == 0 {
+            bad: int = failing()?
+            print(bad)
+        }
+        try {
+            if n < 0 {
+                raise ValueError("neg")
+            }
+            return Result.Ok(n * 2)
+        } catch _e {
+            return Result.Ok(-1)
+        }
+    } catch _err {
+        return Result.Ok(-3)
+    }
+    return Result.Ok(0)
+}
+
+func label(n: int) -> str {
+    if n > 0 {
+        try {
+            return "pos"
+        } catch _e {
+            return "err"
+        }
+    }
+    return "nonpos"
+}
+
+func named(n: int) -> str {
+    match n {
+        case 1 {
+            try {
+                return "one"
+            } catch _e {
+                return "error"
+            }
+        }
+        case _ { }
+    }
+    return "other"
+}
+
+class Calc {
+    func half(self, n: int) -> int {
+        if n % 2 == 0 {
+            try {
+                return n / 2
+            } catch _e {
+                return -1
+            }
+        }
+        return 0
+    }
+}
+
+func countdown(n: int) -> int {
+    i: int = 0
+    while true {
+        i += 1
+        try {
+            if i == n {
+                return i
+            }
+        } catch _e {
+            return -1
+        }
+    }
+    return -2
+}
+
+func withFinally(n: int) -> int {
+    if n > 0 {
+        try {
+            return n
+        } catch _e {
+            return -1
+        } finally {
+            print("finally ran")
+        }
+    }
+    return 0
+}
+
+func main() {
+    print(f"find {find([4, 5, 6], 5)} {find([1], 9)} {find([200], 200)}")
+    print(f"do {viaDo(4).unwrap()} {viaDo(-1).unwrap()} {viaDo(0).unwrap()}")
+    print(f"label {label(1)} {label(0)}")
+    print(f"match {named(1)} {named(2)}")
+    c: Calc = Calc()
+    print(f"method {c.half(12)} {c.half(3)}")
+    print(f"while {countdown(3)}")
+    print(f"finally {withFinally(5)}")
+}

@@ -9,6 +9,8 @@ from compiler.constants import (
     PYTHON_EXCEPTIONS, LOWER_PKGS, GO_BUILTINS,
     OP_TO_DUNDER, CMP_TO_DUNDER,
 )
+from compiler.typesys import DictType
+from compiler.visitors.generics import mentions_names, substitute_go_type
 
 
 class ExpressionVisitorMixin:
@@ -94,9 +96,27 @@ class ExpressionVisitorMixin:
         Go sees them.
         """
         go_type = (go_type or "").strip()
+        if (
+            isinstance(node, Tree)
+            and node.data == "lambdef"
+            and go_type.startswith("func(")
+        ):
+            # Contextual typing: a lambda where a ``func(...)`` value is
+            # expected takes its parameter and return types from it.
+            split = self._split_go_func_type(go_type)
+            if split is not None:
+                params, ret = split
+                return self._lambda_to_go(node, params, ret, contextual=True)
+        if go_type.startswith("func("):
+            builtin_ref = self._builtin_func_ref_to_go(node, go_type)
+            if builtin_ref:
+                return builtin_ref
         shaped_ok = self._typed_result_ok_to_go(node, go_type, type_key)
         if shaped_ok:
             return shaped_ok
+        boxed = self._optional_value_to_go(node, go_type)
+        if boxed:
+            return boxed
         if go_type == "LamJSON":
             raw = self._json_value_to_go(node)
             return raw if self._expr_go_type_hint(node) == "LamJSON" else f"lamJSONMust({raw})"
@@ -106,7 +126,7 @@ class ExpressionVisitorMixin:
             and node.children
             and go_type
             and go_type != "interface{}"
-            and (go_type in {"string", "bool"} or go_type.startswith("[]") or go_type.startswith("map["))
+            and (go_type in {"string", "bool", "int", "float64"} or go_type.startswith(("[]", "map[", "func(")))
             and self._var_go_types.get(self._get_name(node.children[0])) == "interface{}"
         ):
             # ``items: list[any] = raw`` where ``raw: any``: a checked
@@ -165,11 +185,38 @@ class ExpressionVisitorMixin:
                 raw = self._expr_to_go(node)
         else:
             raw = self._expr_to_go(node)
+        if go_type.startswith("*") and isinstance(node, Tree):
+            # A subclass instance where its base class is expected: view it
+            # as the embedded parent (``sq._lamUp_Shape()``).
+            upcast = self._hier_upcast_to_go(raw, self._hier_expr_go_type(node), go_type)
+            if upcast:
+                return upcast
+        elif go_type and isinstance(node, Tree):
+            # A base-typed value stored as an interface (or ``any``) keeps
+            # the most-derived object, so interface calls reach overrides.
+            dynamic = self._hier_dynamic_to_go(raw, self._hier_expr_go_type(node), go_type)
+            if dynamic:
+                return dynamic
         if (
             go_type not in {"", "LamJSON", "interface{}"}
             and self._expr_go_type_hint(node) == "LamJSON"
         ):
             return f"lamJSONRaw({raw}).({go_type})"
+        if (
+            go_type.startswith("[]")
+            and go_type != "[]interface{}"
+            and isinstance(node, Tree)
+            and node.data in {"funccall", "var", "getattr", "propagate"}
+            and self._expr_go_type_hint(node) == "[]interface{}"
+            and not raw.startswith(go_type + "{")
+        ):
+            # ``evens: list[int] = Iter...toList()`` (a ``list[any]``): a
+            # checked conversion of every element.
+            elem = self._slice_elem_go_type(go_type)
+            return (
+                f"func(src []interface{{}}) {go_type} {{ out := make({go_type}, len(src)); "
+                f"for i, v := range src {{ out[i] = v.({elem}) }}; return out }}({raw})"
+            )
         if (
             go_type in self._NUMERIC_GO_TYPES
             and go_type != "float64"
@@ -232,6 +279,130 @@ class ExpressionVisitorMixin:
             if self._method_return_types.get(f"{class_name}.__getitem__") in {"any", "object"}:
                 return f"{raw}.({go_type})"
         return raw
+
+    _OPTIONAL_VALUE_GO_TYPES = frozenset({
+        "int", "int8", "int16", "int32", "int64", "uint", "float64", "float32",
+        "string", "bool", "byte", "rune",
+    })
+
+    # ─── Native sets (``map[T]bool``) ──────────────────────────
+
+    _SET_METHODS = frozenset({"add", "remove", "discard", "contains"})
+
+    def _is_lam_set_value(self, raw_obj: str, go_type: str) -> bool:
+        """``go_type`` is a set's ``map[T]bool`` and the value is not known
+        to be a ``dict[K, bool]`` (same Go shape)."""
+        if not self._is_go_set_type(go_type):
+            return False
+        lam_type = getattr(self, "_var_lam_types", {}).get(raw_obj)
+        return not isinstance(lam_type, DictType)
+
+    def _set_method_call_to_go(self, raw_obj: str, method: str, inferred_go: str, args_node) -> Optional[str]:
+        """``s.add(x)`` / ``remove`` / ``discard`` / ``contains`` on a set."""
+        if method not in self._SET_METHODS:
+            return None
+        obj_cls = self._var_types.get(raw_obj, "")
+        if obj_cls and obj_cls in self._class_names:
+            return None
+        set_go = self._var_go_types.get(raw_obj, "") or inferred_go
+        if not self._is_lam_set_value(raw_obj, set_go):
+            return None
+        raw_args = self._get_raw_call_args(args_node)
+        if len(raw_args) != 1:
+            return None
+        key_go, _ = self._split_go_map_type(set_go)
+        item = self._typed_value_to_go(raw_args[0], key_go)
+        if method == "add":
+            return f"{raw_obj}[{item}] = true"
+        if method == "discard":
+            return f"delete({raw_obj}, {item})"
+        if method == "contains":
+            return f"{raw_obj}[{item}]"
+        self._need_import("fmt")
+        return (
+            f"func(k {key_go}) {{ if _, ok := {raw_obj}[k]; !ok {{ panic(fmt.Sprintf(\"KeyError: %v\", k)) }}; "
+            f"delete({raw_obj}, k) }}({item})"
+        )
+
+    def _set_operand_go_type(self, node) -> str:
+        hint = self._expr_go_type_hint(node) or ""
+        if not hint and isinstance(node, Tree) and node.data in {"set", "set_comprehension"}:
+            hint = self._infer_type_from_value(node) or ""
+        if not hint and isinstance(node, Tree) and node.data in {"or_expr", "and_expr", "arith_expr"}:
+            first = next((c for c in node.children if isinstance(c, Tree)), None)
+            hint = self._set_operand_go_type(first) if first is not None else ""
+        if isinstance(node, Tree) and node.data == "var" and node.children:
+            if not self._is_lam_set_value(self._get_name(node.children[0]), hint):
+                return ""
+        return hint if self._is_go_set_type(hint) else ""
+
+    def _set_binop_to_go(self, op: str, left_go: str, right_go: str, set_type: str) -> str:
+        """Union (``|``), intersection (``&``) or difference (``-``) of two
+        sets as a fresh set; the operands are evaluated once."""
+        if op == "|":
+            body = "for k := range l { out[k] = true }; for k := range r { out[k] = true }"
+            alloc = f"make({set_type}, len(l)+len(r))"
+        elif op == "&":
+            body = "for k := range l { if r[k] { out[k] = true } }"
+            alloc = f"{set_type}{{}}"
+        else:
+            body = "for k := range l { if !r[k] { out[k] = true } }"
+            alloc = f"{set_type}{{}}"
+        return f"func(l, r {set_type}) {set_type} {{ out := {alloc}; {body}; return out }}({left_go}, {right_go})"
+
+    def _set_chain_to_go(self, node: Tree, op: str) -> str:
+        """``a | b | c`` (one operator) over sets, or ``""``."""
+        operands = [c for c in node.children if isinstance(c, Tree)]
+        if len(operands) < 2:
+            return ""
+        ops = {str(c) for c in node.children if isinstance(c, Token)}
+        if ops and ops != {op}:
+            return ""
+        set_type = self._set_operand_go_type(operands[0])
+        if not set_type:
+            return ""
+        result = self._typed_value_to_go(operands[0], set_type)
+        for operand in operands[1:]:
+            result = self._set_binop_to_go(op, result, self._typed_value_to_go(operand, set_type), set_type)
+        return result
+
+    def _q_propagate_stmt(self, value: str) -> str:
+        """The statement ``?`` uses to return the error ``value``."""
+        if self._in_async_func and self._async_chan_name:
+            return f"{self._async_chan_name} <- func() *Result {{ return {value} }}; return"
+        return f"return {value}"
+
+    def _optional_value_to_go(self, node, go_type: str) -> str:
+        """Box a plain value into an ``optional[int]``-style ``*int`` target.
+
+        ``optional[T]`` of a value type lowers to ``*T``; a ``T`` value
+        (literal, arithmetic, call returning ``T``) assigned or returned
+        there becomes a pointer to a fresh copy. ``None`` stays ``nil``.
+        """
+        if not go_type.startswith("*") or go_type[1:] not in self._OPTIONAL_VALUE_GO_TYPES:
+            return ""
+        if not isinstance(node, Tree) or node.data == "const_none":
+            return ""
+        if node.data == "var" and node.children and self._get_name(node.children[0]) in {"None", "nil"}:
+            return ""
+        inner = go_type[1:]
+        hint = self._expr_go_type_hint(node) or ""
+        if hint == go_type:
+            return ""
+        if not hint and node.data == "funccall" and isinstance(node.children[0], Tree) and node.children[0].data == "var":
+            callee = self._get_name(node.children[0].children[0])
+            if callee == "len" and callee not in self._user_functions:
+                hint = "int"
+            else:
+                hint = self._func_return_go_types.get(callee, "")
+        if not hint:
+            inferred = self._infer_type_from_value(node)
+            hint = inferred if inferred != "interface{}" else ""
+        literal = node.data in {"number", "string", "const_true", "const_false", "factor", "arith_expr", "term"}
+        if hint != inner and not (literal and hint in {"", "int", "float64"}):
+            return ""
+        value = self._typed_value_to_go(node, inner)
+        return f"func() {go_type} {{ __lamV := {inner}({value}); return &__lamV }}()"
 
     def _json_value_to_go(self, node) -> str:
         if isinstance(node, Tree) and node.data == "dict":
@@ -336,10 +507,96 @@ class ExpressionVisitorMixin:
             parts.append(current.strip())
         return parts
 
+    _STRING_METHOD_RESULT_GO_TYPES = {
+        "split": "[]string", "fields": "[]string", "splitLines": "[]string", "splitN": "[]string",
+        "length": "int", "index": "int", "lastIndex": "int", "count": "int",
+        "contains": "bool", "hasPrefix": "bool", "hasSuffix": "bool", "startsWith": "bool",
+        "endsWith": "bool", "equalFold": "bool", "isAlpha": "bool", "isDigit": "bool",
+        "isAlnum": "bool", "isSpace": "bool", "containsAny": "bool", "isEmpty": "bool",
+        "isBlank": "bool",
+        "repeat": "string", "toUpper": "string", "toLower": "string", "trim": "string",
+        "trimLeft": "string", "trimRight": "string", "replace": "string", "title": "string",
+        "capitalize": "string", "reverse": "string", "center": "string", "zfill": "string",
+        "padLeft": "string", "padRight": "string", "replaceFirst": "string", "indent": "string",
+        "dedent": "string", "format": "string",
+    }
+
+    def _expr_go_type_hint_plain_field(self, node) -> str:
+        """Go type of the field read by ``obj?.field`` (as if ``obj.field``)."""
+        if not (isinstance(node, Tree) and node.data == "getattr_safe" and len(node.children) >= 2):
+            return ""
+        return self._expr_go_type_hint(Tree("getattr", list(node.children))) or ""
+
+    def _safe_getattr_result_go_type(self, node) -> str:
+        """Go type of ``obj?.field`` on a pointer (``optional``/class)
+        receiver: the field type when it is nilable, else a pointer to it
+        (``optional[str]`` -> ``*string``). ``""`` when unknown."""
+        obj_type = self._expr_go_type_hint(node.children[0]) or ""
+        if not obj_type.startswith("*"):
+            return ""
+        field_type = self._expr_go_type_hint_plain_field(node)
+        if not field_type or field_type == "interface{}":
+            return ""
+        if field_type in self._OPTIONAL_VALUE_GO_TYPES:
+            return "*" + field_type
+        if field_type.startswith(("*", "[]", "map[", "func(")):
+            return field_type
+        return ""
+
+    def _hint_free_names(self, node) -> tuple:
+        """Names read below ``node`` (cached per node), the state a call's
+        type hint depends on besides the program-wide metadata."""
+        cache = self.__dict__.setdefault("_hint_free_names_cache", {})
+        entry = cache.get(id(node))
+        if entry is not None and entry[0] is node:
+            return entry[1]
+        names = set()
+        stack = [node]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, Tree):
+                if cur.data == "var" and cur.children:
+                    names.add(self._get_name(cur.children[0]))
+                stack.extend(cur.children)
+        result = tuple(sorted(n for n in names if n))
+        cache[id(node)] = (node, result)
+        return result
+
     def _expr_go_type_hint(self, node) -> str:
+        """Best-effort Go type for an expression that can be assigned to."""
+        if isinstance(node, Tree) and node.data == "funccall":
+            # Chained generic calls type their receiver several times per
+            # link; memoize on the state the hint reads.
+            names = self._hint_free_names(node)
+            state = (
+                tuple((n, self._var_go_types.get(n), self._var_types.get(n), n in self.declared_vars) for n in names),
+                self.current_class, self._self_replacement,
+                tuple(sorted(self._generic_names)), tuple(sorted(self._call_type_subst.items())),
+                getattr(self, "_expected_expr_go_type", ""),
+            )
+            memo = self.__dict__.setdefault("_hint_memo", {})
+            entry = memo.get(id(node))
+            if entry is not None and entry[0] is node and entry[1] == state:
+                return entry[2]
+            result = self._expr_go_type_hint_uncached(node)
+            memo[id(node)] = (node, state, result)
+            return result
+        return self._expr_go_type_hint_uncached(node)
+
+    def _expr_go_type_hint_uncached(self, node) -> str:
         """Best-effort Go type for an expression that can be assigned to."""
         if not isinstance(node, Tree):
             return ""
+        if node.data == "lambdef":
+            return self._lambda_go_func_type(node)
+        if node.data == "null_coalesce":
+            operands = [c for c in node.children if isinstance(c, Tree)]
+            if len(operands) == 2 and self._is_none_literal(operands[1]):
+                return self._expr_go_type_hint(operands[0])
+        if node.data == "getattr_safe" and len(node.children) >= 2:
+            if self._expr_go_type_hint(node.children[0]) == "LamJSON":
+                return "LamJSON"
+            return self._safe_getattr_result_go_type(node)
         if node.data == "test" and len(node.children) == 3:
             return self._ternary_common_go_type(node)
         if node.data in ("arith_expr", "term") and len(node.children) >= 3:
@@ -379,11 +636,76 @@ class ExpressionVisitorMixin:
                     return "LamJSON"
                 if name in {"int", "float", "bool", "str"} and name not in self._function_go_names:
                     return {"int": "int", "float": "float64", "bool": "bool", "str": "string"}[name]
+                if name == "len" and name not in self._user_functions:
+                    return "int"
+                if name in self._async_functions and name not in self._var_go_types:
+                    return self._async_handle_go_type(self._func_return_go_types.get(name, ""))
                 if name in self._result_payload_go_types:
                     return "*Result"
+                ret = self._func_return_go_types.get(name, "")
+                if (
+                    ret.startswith("*")
+                    and len(self._overload_variants.get(name, ())) <= 1
+                    and name not in self._class_names
+                    and not ret.startswith("*Result")
+                ):
+                    # ``lookup(id) ?? fallback`` where ``lookup`` returns
+                    # ``optional[User]`` / a class pointer.
+                    return ret
+                if ret.startswith("func(") and name not in self._class_names:
+                    return ret
+                if (
+                    (ret in {"string", "int", "float64", "bool"} or ret.startswith(("[]", "map[")))
+                    and name in self._user_functions
+                    and len(self._overload_variants.get(name, ())) <= 1
+                    and name not in self._var_go_types
+                    and name not in self._async_functions
+                ):
+                    # ``word() * 2`` with ``word() -> str``.
+                    return ret
+                var_type = self._var_go_types.get(name, "")
+                if var_type.startswith("func(") and name not in self._user_functions:
+                    split = self._split_go_func_type(var_type)
+                    if split is not None and split[1]:
+                        return split[1]
+            if isinstance(callee, Tree) and callee.data == "funccall":
+                split = self._split_go_func_type(self._expr_go_type_hint(callee) or "")
+                if split is not None:
+                    return split[1]
+            if (
+                isinstance(callee, Tree) and callee.data == "getitem" and len(callee.children) >= 2
+                and isinstance(callee.children[0], Tree) and callee.children[0].data == "var"
+            ):
+                # ``Box[str]("hi")``: an explicitly instantiated generic class.
+                base_name = self._get_name(callee.children[0].children[0])
+                if base_name in self._class_names and base_name in self._generic_classes:
+                    type_args = self._type_arg_list(callee.children[1])
+                    if type_args and all(type_args):
+                        return f"*{self._go_class_name(base_name)}[{', '.join(type_args)}]"
             if isinstance(callee, Tree) and callee.data in {"getattr", "getattr_safe"} and len(callee.children) >= 2:
                 receiver = callee.children[0]
                 method = self._get_name(callee.children[1])
+                string_result = self._STRING_METHOD_RESULT_GO_TYPES.get(method)
+                if string_result and (
+                    (isinstance(receiver, Tree) and receiver.data in {"string", "fstring", "string_concat"})
+                    or self._expr_go_type_hint(receiver) == "string"
+                ):
+                    # ``"a,b".split(",").length()``: builtin str methods.
+                    return string_result
+                if method in {"map", "filter", "sort", "reduce", "any", "all"}:
+                    receiver_hint = self._expr_go_type_hint(receiver) or ""
+                    if receiver_hint.startswith("[]"):
+                        # ``words.map(len).filter(...)``: builtin list methods.
+                        list_result = self._list_method_result_go_type(
+                            receiver_hint, method, node.children[1] if len(node.children) > 1 else None,
+                        )
+                        if list_result:
+                            return list_result
+                if method in {"unwrap", "unwrapOr"}:
+                    # ``r.unwrap().name`` with ``r: Result[json]``.
+                    payload = self._unwrap_payload_go_type(node)
+                    if payload:
+                        return payload
                 class_name = self._infer_receiver_class(receiver)
                 if not class_name and isinstance(receiver, Tree) and receiver.data == "var" and receiver.children:
                     candidate = self._get_name(receiver.children[0])
@@ -392,6 +714,21 @@ class ExpressionVisitorMixin:
                 if class_name and f"{class_name}.{method}" in self._result_payload_go_types:
                     return "*Result"
                 if class_name:
+                    # Methods of generic classes and generic methods: the
+                    # declared result with the call's type arguments
+                    # (``Iter.range_(0, 9).map(...)`` -> ``*Iter[int]``).
+                    static = (
+                        isinstance(receiver, Tree) and receiver.data == "var" and receiver.children
+                        and self._get_name(receiver.children[0]) == class_name
+                        and class_name not in self.declared_vars
+                    )
+                    generic_result = self._generic_method_result_go_type(
+                        class_name, method, receiver,
+                        node.children[1] if len(node.children) > 1 else None,
+                        static=bool(static),
+                    )
+                    if generic_result:
+                        return generic_result
                     # Scalar return types (static and instance methods, local
                     # or imported), so ``Rows.str(r, k).contains(...)`` and
                     # similar chains dispatch on the value's type.
@@ -399,6 +736,9 @@ class ExpressionVisitorMixin:
                     scalar = {"str": "string", "int": "int", "float": "float64", "bool": "bool", "bytes": "[]byte", "json": "LamJSON"}
                     if raw_return in scalar:
                         return scalar[raw_return]
+                    container = self._method_return_types.get(f"go:{class_name}.{method}", "")
+                    if container:
+                        return container
         if node.data == "getitem" and len(node.children) >= 2:
             receiver_type = self._expr_go_type_hint(node.children[0])
             index = node.children[1]
@@ -430,7 +770,7 @@ class ExpressionVisitorMixin:
                         return static_type
                 else:
                     class_name = self._var_types.get(obj_name, "")
-            elif isinstance(obj, Tree) and obj.data in {"funccall", "getattr"}:
+            elif isinstance(obj, Tree) and obj.data in {"funccall", "getattr", "getattr_safe"}:
                 # ``current().box`` / ``holder.inner.box``: the receiver's class
                 # from call return types and field types.
                 class_name = self._infer_receiver_class(obj)
@@ -476,6 +816,15 @@ class ExpressionVisitorMixin:
                 and name != "main"
             ):
                 return self._go_user_function_name(name)
+            if (
+                self._in_funccall_head
+                and name in self._user_functions
+                and name not in self.declared_vars
+            ):
+                # The call path maps the raw Lam name to the function's Go
+                # name; binding-mangling a Go keyword first (``fallthrough``
+                # -> ``fallthrough__lam``) would miss that lookup.
+                return name
             if name in self._link_const_go_names and name not in self.declared_vars:
                 return self._link_const_go_names[name]
             return self._go_binding_name(name)
@@ -519,6 +868,9 @@ class ExpressionVisitorMixin:
             return "nil"
 
         if d == "funccall":
+            reused = self.__dict__.get("_reuse_lowering", {}).get(id(node))
+            if reused is not None and reused[0] is node:
+                return reused[1]
             call = self._funccall_to_go(node)
             payload = self._unwrap_payload_go_type(node)
             if payload and call.endswith(")"):
@@ -594,6 +946,20 @@ class ExpressionVisitorMixin:
                 field = self._go_private_name(attr)
             else:
                 field = self._go_public_name(attr)
+            obj_type = self._expr_go_type_hint(obj_node) or ""
+            result_type = self._safe_getattr_result_go_type(node)
+            if obj_type.startswith("*") and result_type:
+                # Typed ``optional`` chain: a nil receiver yields ``None``;
+                # a value-typed field is boxed (``optional[str]`` is
+                # ``*string``) so ``??`` and further ``?.`` stay typed.
+                if result_type == "*" + (self._expr_go_type_hint_plain_field(node) or ""):
+                    value = f"__lamV := __lamO.{field}; return &__lamV"
+                else:
+                    value = f"return __lamO.{field}"
+                return (
+                    f"func() {result_type} {{ if __lamO := {obj}; __lamO != nil {{ "
+                    f"{value} }}; return nil }}()"
+                )
             return (
                 f"func() interface{{}} {{ if {obj} != nil {{ "
                 f"return {obj}.{field} }}; return nil }}()"
@@ -630,11 +996,15 @@ class ExpressionVisitorMixin:
             self._q_temp_counter += 1
             tmp = f"__q{self._q_temp_counter}"
             self._emit(f"{tmp} := {inner_str}")
-            if self._q_propagate_ok:
+            if self._q_propagate_ok and self._guard_q_var:
+                # Inside a match guard's condition closure: record the error
+                # and select the case, whose body propagates it.
+                self._emit(f"if !{tmp}.Ok() {{ {self._guard_q_var} = {tmp}; return true }}")
+            elif self._q_propagate_ok:
                 if self._in_async_func and self._async_chan_name:
                     self._emit(
                         f"if !{tmp}.Ok() {{ "
-                        f"{self._async_chan_name} <- {tmp}; return "
+                        f"{self._async_chan_name} <- func() *Result {{ return {tmp} }}; return "
                         f"}}"
                     )
                 else:
@@ -671,13 +1041,69 @@ class ExpressionVisitorMixin:
                     return f"func() {expected} {{ if !lamJSONIsNull({left}) {{ return {left_value} }}; return {fallback} }}()"
                 fallback = self._expr_to_go(nodes[1])
                 return f"func() interface{{}} {{ if !lamJSONIsNull({left}) {{ return {left} }}; return {fallback} }}()"
-            parts = [self._expr_to_go(c) for c in node.children if c is not None]
+            if len(nodes) == 2 and self._is_none_literal(nodes[1]):
+                # ``x ?? None`` is ``x``.
+                return self._expr_to_go(nodes[0])
+            if (
+                len(nodes) == 2
+                and nodes[0].data == "getitem"
+                and not (isinstance(nodes[0].children[1], Tree) and nodes[0].children[1].data == "slice")
+            ):
+                map_type = self._expr_go_type_hint(nodes[0].children[0]) or ""
+                key_type, value_type = self._split_go_map_type(map_type)
+                if key_type and value_type and not self._is_go_set_type(map_type):
+                    # ``d[key] ?? fallback`` on a map: a missing key (or a
+                    # ``None`` value) selects the fallback.
+                    fallback_type = self._expr_go_type_hint(nodes[1]) or self._infer_type_from_value(nodes[1]) or ""
+                    result_type = value_type
+                    if value_type != "interface{}" and fallback_type not in {"", "interface{}", value_type}:
+                        result_type = "interface{}"
+                    receiver = self._expr_to_go(nodes[0].children[0])
+                    key = self._typed_value_to_go(nodes[0].children[1], key_type)
+                    fallback = self._typed_value_to_go(nodes[1], result_type)
+                    present = "ok" if value_type != "interface{}" and not value_type.startswith(("*", "[]", "map[")) else "ok && __lamV != nil"
+                    return (
+                        f"func() {result_type} {{ if __lamV, ok := {receiver}[{key}]; {present} {{ return __lamV }}; "
+                        f"return {fallback} }}()"
+                    )
+            left_hint = self._expr_go_type_hint(nodes[0]) if len(nodes) == 2 else ""
+            if left_hint.startswith("*") and "[" not in left_hint:
+                # ``opt ?? fallback`` on an ``optional[T]`` (a Go pointer):
+                # a nil pointer selects the fallback (boxing it in
+                # ``interface{}`` first would make a typed nil non-nil);
+                # an ``optional[int]`` yields the pointed-to ``int``.
+                left = self._expr_to_go(nodes[0])
+                inner = left_hint[1:]
+                fallback_type = self._expr_go_type_hint(nodes[1]) or self._infer_type_from_value(nodes[1]) or ""
+                mixed = (
+                    inner in self._OPTIONAL_VALUE_GO_TYPES
+                    and fallback_type not in {"", "interface{}", inner}
+                    and not (inner == "float64" and fallback_type == "int")
+                )
+                if inner in self._OPTIONAL_VALUE_GO_TYPES and not mixed:
+                    fallback = self._typed_value_to_go(nodes[1], inner)
+                    return f"func() {inner} {{ if __lamL := {left}; __lamL != nil {{ return *__lamL }}; return {fallback} }}()"
+                if inner.split("[", 1)[0] in {self._go_class_name(c) for c in self._class_names}:
+                    fallback = self._typed_value_to_go(nodes[1], left_hint)
+                    return f"func() {left_hint} {{ if __lamL := {left}; __lamL != nil {{ return __lamL }}; return {fallback} }}()"
+            operands = [c for c in node.children if c is not None]
+            parts = [self._expr_to_go(c) for c in operands]
             if not parts:
                 return "nil"
             if len(parts) == 1:
                 return parts[0]
             expr = parts[-1]
-            for left in reversed(parts[:-1]):
+            for operand, left in reversed(list(zip(operands[:-1], parts[:-1]))):
+                hint = self._expr_go_type_hint(operand) or ""
+                if hint.startswith("*"):
+                    # A typed nil pointer boxed in ``interface{}`` is not
+                    # ``nil``: test the pointer itself.
+                    value = "*__lamP" if hint[1:] in self._OPTIONAL_VALUE_GO_TYPES else "__lamP"
+                    expr = (
+                        f"func() interface{{}} {{ if __lamP := {left}; __lamP != nil {{ return {value} }}; "
+                        f"return {expr} }}()"
+                    )
+                    continue
                 expr = (
                     f"func() interface{{}} {{ _v := interface{{}}({left}); "
                     f"if _v != nil {{ return _v }}; return {expr} }}()"
@@ -700,6 +1126,16 @@ class ExpressionVisitorMixin:
                 obj_go = self._expr_to_go(node.children[0])
                 return self._slice_to_go(obj_go, inner, node.children[0])
             obj = self._expr_to_go(node.children[0])
+            negative = self._negative_int_constant(inner)
+            receiver_type = self._expr_go_type_hint(node.children[0]) or ""
+            if negative is not None and not receiver_type.startswith("map[") and receiver_type not in {"interface{}"}:
+                # ``xs[-1]``: Python semantics, counted from the end (an
+                # index still out of range raises ``IndexError``).
+                if re.fullmatch(r"[A-Za-z_][\w.]*", obj):
+                    return f"{obj}[len({obj})-{negative}]"
+                if receiver_type == "string" or receiver_type.startswith("[]"):
+                    elem = "byte" if receiver_type == "string" else self._slice_elem_go_type(receiver_type)
+                    return f"func(_s {receiver_type}) {elem} {{ return _s[len(_s)-{negative}] }}({obj})"
             idx = self._expr_to_go(inner)
             return f"{obj}[{idx}]"
 
@@ -727,18 +1163,28 @@ class ExpressionVisitorMixin:
             overloaded = self._try_operator_overload(node)
             if overloaded:
                 return overloaded
+            if d == "arith_expr":
+                difference = self._set_chain_to_go(node, "-")
+                if difference:
+                    return difference
             repeated = self._string_repeat_to_go(node)
             if repeated:
                 return repeated
             return self._binop_to_go(node)
 
         if d == "and_expr":
+            intersection = self._set_chain_to_go(node, "&")
+            if intersection:
+                return intersection
             parts = [self._expr_to_go(c) for c in node.children if c is not None]
             wrapped = [f"({p})" if any(op in p for op in "+-*/%") else p for p in parts]
             inner = " & ".join(wrapped)
             return f"({inner})" if len(parts) > 1 else inner
 
         if d == "or_expr":
+            union = self._set_chain_to_go(node, "|")
+            if union:
+                return union
             parts = [self._expr_to_go(c) for c in node.children if c is not None]
             wrapped = [f"({p})" if any(op in p for op in "+-*/%") else p for p in parts]
             inner = " | ".join(wrapped)
@@ -892,13 +1338,23 @@ class ExpressionVisitorMixin:
         if d == "yield_expr" or d == "yield_from":
             if self._in_generator and self._generator_chan:
                 if node.children and node.children[0] is not None:
-                    val = self._expr_to_go(node.children[0])
+                    value_node = node.children[0]
+                    if isinstance(value_node, Tree) and value_node.data == "tuple":
+                        # ``yield ("a", 1)``: one tuple value per receive.
+                        val = self._typed_value_to_go(value_node, "[]interface{}")
+                    elif self._generator_elem_type:
+                        # ``yield [1, 2]`` in a ``-> generator[list[int]]``.
+                        val = self._typed_value_to_go(value_node, self._generator_elem_type)
+                    else:
+                        val = self._expr_to_go(value_node)
                     return f"{self._generator_chan} <- {val}"
                 return f"{self._generator_chan} <- nil"
             return "/* yield not supported */"
 
         if d == "await_call":
-            return f"<-{self._expr_to_go(node.children[0])}"
+            # The handle yields a thunk returning the result or re-raising
+            # the async body's exception (``_emit_async_callable``).
+            return f"(<-{self._expr_to_go(node.children[0])})()"
 
         if d == "type_expr":
             return self._type_expr_to_go(node)
@@ -954,7 +1410,10 @@ class ExpressionVisitorMixin:
             go_name = f"{go_name}{self._overload_suffix_for_sig(func_name, call_sig)}"
             if variant is not None:
                 call_key = str(variant.get("meta_key") or func_name)
-        call_args = self._planned_call_args(call_key, args_node, args, kwargs)
+        if type_args is None and args_node is not None and self._func_generic_params.get(call_key):
+            call_args = self._planned_call_args_inferred(call_key, args_node)
+        else:
+            call_args = self._planned_call_args(call_key, args_node, args, kwargs)
         if type_args is not None:
             return f"{go_name}[{self._args_to_go(type_args)}]({self._args_to_go(call_args)})"
         return f"{go_name}({self._args_to_go(call_args)})"
@@ -1002,8 +1461,40 @@ class ExpressionVisitorMixin:
         go_name = f"{go_cls}_{method_name}{suffix}"
         if method_name in self._private_methods.get(class_name, set()):
             go_name = self._go_private_name(go_name)
-        call_args = self._planned_call_args(call_key, args_node)
-        return f"{go_name}({', '.join(call_args)})"
+        call_args = self._planned_call_args_inferred(call_key, args_node)
+        explicit = self._static_generic_fallback_type_args(class_name, call_key, args_node)
+        return f"{go_name}{explicit}({', '.join(call_args)})"
+
+    def _static_generic_fallback_type_args(self, class_name: str, call_key: str, args_node) -> str:
+        """``[interface{}]`` for ``Iter.repeat(None, 2)``: a static method of
+        a generic class whose type parameter no argument determines (Go
+        cannot infer it from ``nil``) gets explicit type arguments."""
+        names = self._func_generic_params.get(call_key, set())
+        class_params = self._class_type_param_names_of(class_name)
+        if not names or not class_params or not names <= set(class_params):
+            return ""
+        signature = " ".join(self._func_param_go_types.get(call_key, []) + [self._generic_method_returns.get(call_key, "")])
+        used = [p for p in class_params if mentions_names(signature, [p])]
+        if not used:
+            return ""
+        subst = self._generic_call_subst(call_key, args_node, used)
+        if all(p in subst for p in used):
+            return ""
+        return "[" + ", ".join(subst.get(p, "interface{}") for p in used) + "]"
+
+    def _planned_call_args_inferred(self, call_key: str, args_node) -> List[str]:
+        """``_planned_call_args`` for a generic callable: lambdas and other
+        arguments are lowered with the type parameters inferred at this
+        call (``Sort.sortWith(users, lambda a, b: ...)`` types ``a``/``b``)."""
+        generic_names = sorted(self._func_generic_params.get(call_key, set()))
+        if not generic_names or args_node is None:
+            return self._planned_call_args(call_key, args_node)
+        subst = self._generic_call_subst(call_key, args_node, generic_names)
+        subst = {k: v for k, v in subst.items() if k not in self._generic_names or v != k}
+        if not subst:
+            return self._planned_call_args(call_key, args_node)
+        with self._scoped(_call_type_subst=subst):
+            return self._planned_call_args(call_key, args_node)
 
     def _receiver_class_for_call(self, raw_obj: str, func) -> str:
         obj_class = self._var_types.get(raw_obj, "")
@@ -1031,6 +1522,12 @@ class ExpressionVisitorMixin:
         obj_class = self._receiver_class_for_call(raw_obj, func)
         if not obj_class:
             return None
+        generic_call = self._generic_method_call_to_go(
+            obj_class, method_name, raw_obj,
+            func.children[0] if isinstance(func, Tree) and func.children else None, args_node,
+        )
+        if generic_call is not None:
+            return generic_call
         method_key = f"{obj_class}.{method_name}"
         suffix = ""
         call_key = method_key
@@ -1040,7 +1537,24 @@ class ExpressionVisitorMixin:
             suffix = self._overload_suffix_for_sig(method_key, call_sig)
             if variant is not None:
                 call_key = str(variant.get("meta_key") or method_key)
-        call_args = self._planned_call_args(call_key, args_node)
+        subst = self._generic_receiver_subst(obj_class, func)
+        generic_names = sorted(self._func_generic_params.get(call_key, set()) or self._func_generic_params.get(method_key, set()))
+        if generic_names:
+            subst = self._complete_generic_subst(
+                self._generic_call_subst(call_key, args_node, generic_names, subst), [],
+            )
+        if subst:
+            with self._scoped(_call_type_subst=subst):
+                call_args = self._planned_call_args(call_key, args_node)
+        else:
+            call_args = self._planned_call_args(call_key, args_node)
+        if not suffix and self._hier_needs_virtual(obj_class, method_name):
+            # A descendant of the receiver's static class overrides the
+            # method: dispatch to the most-derived object (see
+            # ``_virtual_method_plan``), for ``self`` and any receiver.
+            head, dot, go_method = func_str.rpartition(".")
+            if dot and head:
+                return f"{head}._lamVirt_{go_method}({', '.join(call_args)})"
         return f"{func_str}{suffix}({', '.join(call_args)})"
 
     def _nested_generic_call_to_go(
@@ -1087,6 +1601,15 @@ class ExpressionVisitorMixin:
         return None
 
     def _funccall_to_go(self, node: Tree) -> str:
+        # A call nested in another call's callee (``make(inc).get()``) must
+        # lower its own arguments outside the outer callee context, so bare
+        # function references are mangled.
+        if self._in_funccall_head:
+            with self._scoped(_in_funccall_head=False):
+                return self._funccall_to_go_inner(node)
+        return self._funccall_to_go_inner(node)
+
+    def _funccall_to_go_inner(self, node: Tree) -> str:
         func = node.children[0]
         args_node = node.children[1] if len(node.children) > 1 else None
         args: Optional[List[str]] = None
@@ -1132,6 +1655,18 @@ class ExpressionVisitorMixin:
             args, kwargs = plain_call_args()
             return f"{self._expr_to_go(func)}({', '.join(args)})"
 
+        if isinstance(func, Tree) and func.data == "funccall":
+            # ``maker()(x)``: call the function value a call returned,
+            # shaping the arguments with its parameter types.
+            callee_go = self._expr_to_go(func)
+            split = self._split_go_func_type(self._expr_go_type_hint(func) or "")
+            raw_args = self._get_raw_call_args(args_node)
+            if split is not None and len(split[0]) == len(raw_args):
+                lowered = [self._transpile_argvalue_with_type(a, t) for a, t in zip(raw_args, split[0])]
+            else:
+                lowered, _kw = plain_call_args()
+            return f"{callee_go}({', '.join(lowered)})"
+
         raw_method = None
         raw_obj = None
         if isinstance(func, Tree) and func.data == "getattr":
@@ -1143,7 +1678,18 @@ class ExpressionVisitorMixin:
                 call_args = self._planned_call_args(method_key, args_node)
                 if raw_method in {"init", "__init__"}:
                     go_base = self._go_class_name(parent_base)
-                    return f"{parent_receiver} = New{go_base}({', '.join(call_args)})"
+                    # The fresh parent (and its ancestors) must dispatch
+                    # ``self.m()`` back to this object, not to itself.
+                    binds = self._virtual_bind_stmts(
+                        parent_base, parent_receiver, self._self_replacement or "s",
+                    ) if self._self_replacement else []
+                    type_args = self._base_type_args(self.current_class, parent_base) if self.current_class else ""
+                    defaults = self._hier_parent_field_default_stmts(
+                        self.current_class, parent_base, self._self_replacement,
+                    ) if self.current_class and self._self_replacement else []
+                    return "; ".join(
+                        [f"{parent_receiver} = New{go_base}{type_args}({', '.join(call_args)})"] + binds + defaults
+                    )
             if raw_obj == "LAMMERGEIER" and raw_method:
                 if raw_method in self._user_functions:
                     return self._user_function_call_to_go(raw_method, [], {}, args_node)
@@ -1158,8 +1704,21 @@ class ExpressionVisitorMixin:
 
         # Resolve the callee expression without letting bare identifiers
         # be rewritten to their Go public name (that's handled here).
-        with self._scoped(_in_funccall_head=True):
-            func_str = self._expr_to_go(func)
+        reuse = self.__dict__.setdefault("_reuse_lowering", {})
+        receiver_node = func.children[0] if isinstance(func, Tree) and func.data == "getattr" else None
+        reused = (
+            raw_obj is not None and isinstance(receiver_node, Tree) and receiver_node.data == "funccall"
+        )
+        if reused:
+            # ``a.f().g()``: the receiver call was lowered for ``raw_obj``;
+            # lowering it again for the callee doubled the work per link.
+            reuse[id(receiver_node)] = (receiver_node, raw_obj)
+        try:
+            with self._scoped(_in_funccall_head=True):
+                func_str = self._expr_to_go(func)
+        finally:
+            if reused:
+                reuse.pop(id(receiver_node), None)
 
         if raw_obj and raw_method:
             # Static user-method calls know their parameter types; lower
@@ -1191,6 +1750,9 @@ class ExpressionVisitorMixin:
         args, kwargs = plain_call_args()
         if func_str == "print":
             self._need_import("fmt")
+            raw_args = self._get_raw_call_args(args_node)
+            if len(raw_args) == len(args):
+                args = [self._optional_display_go(a, r) for a, r in zip(args, raw_args)]
             return f'fmt.Println({", ".join(args)})'
 
         if func_str == "len":
@@ -1217,7 +1779,7 @@ class ExpressionVisitorMixin:
             raw_args = self._get_raw_call_args(args_node)
             return self._conversion_to_go(func_str, raw_args[0] if raw_args else None, args[0])
 
-        if func_str in ("panic", "recover", "make", "new", "cap", "copy", "delete", "close"):
+        if func_str in ("panic", "recover", "make", "new", "cap", "copy", "delete", "close") and func_str not in self._user_functions:
             return f"{func_str}({', '.join(args)})"
 
         if func_str in ("string", "byte", "rune", "int8", "int16", "int32", "int64",
@@ -1230,31 +1792,90 @@ class ExpressionVisitorMixin:
             if lowered:
                 return lowered
 
-        if func_str == "sorted":
+        if func_str == "set" and "set" not in self._user_functions:
+            # ``set()`` (empty, typed by the context) / ``set(iterable)``.
+            expected = (getattr(self, "_expected_expr_go_type", "") or "").strip()
+            raw_args = self._get_raw_call_args(args_node)
+            set_type = expected if self._is_go_set_type(expected) else ""
+            if not raw_args:
+                return f"{set_type or 'map[interface{}]bool'}{{}}"
+            source_type = self._expr_go_type_hint(raw_args[0]) or self._infer_type_from_value(raw_args[0]) or ""
+            elem = self._slice_elem_go_type(source_type) if source_type.startswith("[]") else ""
+            if self._is_go_set_type(source_type):
+                elem = self._split_go_map_type(source_type)[0]
+            if not set_type:
+                set_type = f"map[{elem or 'interface{}'}]bool"
+            source = self._expr_to_go(raw_args[0])
+            loop = "for k := range src" if self._is_go_set_type(source_type) else "for _, k := range src"
+            return (
+                f"func(src {source_type or 'interface{}'}) {set_type} {{ out := {set_type}{{}}; "
+                f"{loop} {{ out[k] = true }}; return out }}({source})"
+            )
+
+        if func_str == "sorted" and "sorted" not in self._user_functions:
             self._need_import("sort")
-            if args:
+            raw_args = self._get_raw_call_args(args_node)
+            if raw_args:
+                raw_kwargs = self._raw_call_kwargs(args_node)
                 expected_type = getattr(self, "_expected_expr_go_type", "") or ""
-                arg_type = ""
-                raw_args = self._get_raw_call_args(args_node)
-                if raw_args:
-                    arg_type = self._expr_go_type_hint(raw_args[0])
+                arg_type = self._expr_go_type_hint(raw_args[0]) or self._infer_type_from_value(raw_args[0]) or ""
                 slice_type = expected_type if expected_type.startswith("[]") else arg_type
                 if not slice_type.startswith("[]"):
                     slice_type = "[]interface{}"
                 elem_type = self._slice_elem_go_type(slice_type) or "interface{}"
-                target_expr = f"append({slice_type}{{}}, {args[0]}...)"
-                if elem_type in (
+                source = (
+                    self._typed_value_to_go(raw_args[0], slice_type)
+                    if slice_type != "[]interface{}" or isinstance(raw_args[0], Tree) and raw_args[0].data in {"list", "list_comprehension"}
+                    else args[0]
+                )
+                if arg_type and arg_type != slice_type and arg_type.startswith("[]") and not (
+                    isinstance(raw_args[0], Tree) and raw_args[0].data in {"list", "list_comprehension"}
+                ):
+                    source = args[0]
+                    slice_type = arg_type
+                    elem_type = self._slice_elem_go_type(slice_type) or "interface{}"
+                ordered = {
                     "int", "int8", "int16", "int32", "int64",
                     "uint", "uint8", "uint16", "uint32", "uint64",
                     "float32", "float64", "string",
-                ):
-                    less_expr = "tmp[i] < tmp[j]"
-                elif elem_type == "bool":
-                    less_expr = "!tmp[i] && tmp[j]"
+                }
+                key_node = raw_kwargs.get("key")
+                reverse_node = raw_kwargs.get("reverse")
+                left, right = "tmp[i]", "tmp[j]"
+                prologue = ""
+                key_type = elem_type
+                if key_node is not None:
+                    # ``sorted(xs, key=lambda s: len(s))``: compare the keys.
+                    if self._is_lambda_node(key_node):
+                        key_type = self._lambda_result_go_type(key_node, [elem_type]) or "interface{}"
+                    else:
+                        key_type = self._split_go_func_type(self._expr_go_type_hint(key_node) or "")
+                        key_type = key_type[1] if key_type else ""
+                        if not key_type and isinstance(key_node, Tree) and key_node.data == "var":
+                            key_type = self._func_return_go_types.get(self._get_name(key_node.children[0]), "")
+                        key_type = key_type or "interface{}"
+                    key_fn = self._typed_value_to_go(key_node, f"func({elem_type}) {key_type}")
+                    prologue = f"key := {key_fn}; "
+                    left, right = "key(tmp[i])", "key(tmp[j])"
+                if key_type in ordered:
+                    less_expr = f"{left} < {right}"
+                elif key_type == "bool":
+                    less_expr = f"!{left} && {right}"
                 else:
                     self._need_import("fmt")
-                    less_expr = 'fmt.Sprintf("%v", tmp[i]) < fmt.Sprintf("%v", tmp[j])'
-                return f"func() {slice_type} {{ tmp := {target_expr}; sort.Slice(tmp, func(i, j int) bool {{ return {less_expr} }}); return tmp }}()"
+                    less_expr = f'fmt.Sprintf("%v", {left}) < fmt.Sprintf("%v", {right})'
+                if reverse_node is not None:
+                    reverse_go = self._typed_value_to_go(reverse_node, "bool")
+                    if reverse_go == "true":
+                        less_expr = less_expr.replace(left, "\x00L").replace(right, left).replace("\x00L", right)
+                    elif reverse_go != "false":
+                        swapped = less_expr.replace(left, "\x00L").replace(right, left).replace("\x00L", right)
+                        less_expr = f"(({reverse_go}) && {swapped}) || (!({reverse_go}) && {less_expr})"
+                target_expr = f"append({slice_type}{{}}, {source}...)"
+                return (
+                    f"func() {slice_type} {{ tmp := {target_expr}; {prologue}"
+                    f"sort.SliceStable(tmp, func(i, j int) bool {{ return {less_expr} }}); return tmp }}()"
+                )
 
         if func_str == "enumerate":
             # In a for-head ``for i, v in enumerate(xs)`` the for-stmt
@@ -1280,7 +1901,13 @@ class ExpressionVisitorMixin:
             raw = self._get_raw_call_args(args_node)
             if len(raw) >= 2:
                 obj_go = self._expr_to_go(raw[0])
-                return self._isinstance_test_go(obj_go, raw[1])
+                if self._isinstance_name(raw[1]) == "None":
+                    static = self._expr_go_type_hint(raw[0]) or self._infer_type_from_value(raw[0]) or ""
+                    if static in self._OPTIONAL_VALUE_GO_TYPES:
+                        # A value-typed operand is never ``None``.
+                        return "false"
+                static_class = self._hier_class_from_go_type(self._hier_expr_go_type(raw[0]))
+                return self._isinstance_test_go(obj_go, raw[1], static_class)
             return "false"
 
         if func_str == "type":
@@ -1424,6 +2051,10 @@ class ExpressionVisitorMixin:
                 }:
                     raw_obj = self._typed_value_to_go(raw_obj_node, inferred_obj_go)
 
+            set_call = self._set_method_call_to_go(raw_obj, raw_method, inferred_obj_go, args_node)
+            if set_call is not None:
+                return set_call
+
             # ``str``-builtins like ``replace``/``count``/``split``/``find``
             # take at least one mandatory argument. If a Lam method-call
             # uses one of those names with zero args (e.g.
@@ -1515,6 +2146,13 @@ class ExpressionVisitorMixin:
                     return f"{raw_obj} = append({raw_obj}, {', '.join(typed_args)})"
                 if raw_method == "pop":
                     result_type = _elem_go or "interface{}"
+                    if args:
+                        # ``xs.pop(i)``: remove and return the item at ``i``
+                        # (negative counts from the end, like Python).
+                        return (
+                            f"func(i int) {result_type} {{ if i < 0 {{ i += len({raw_obj}) }}; item := {raw_obj}[i]; "
+                            f"{raw_obj} = append({raw_obj}[:i], {raw_obj}[i+1:]...); return item }}({args[0]})"
+                        )
                     return f"func() {result_type} {{ last := {raw_obj}[len({raw_obj})-1]; {raw_obj} = {raw_obj}[:len({raw_obj})-1]; return last }}()"
                 if raw_method == "extend" and args:
                     typed_arg = (
@@ -1606,6 +2244,31 @@ class ExpressionVisitorMixin:
                             inplace_expr = sort_args[1]
                 inplace = inplace_expr == "true"
                 target_expr = raw_obj if inplace else f"append({_slice_type}{{}}, {raw_obj}...)"
+                key_raw = raw_kwargs_nodes.get("key")
+                if key_raw is None and compare_raw is not None and self._sort_callback_arity(compare_raw) == 1:
+                    # ``xs.sort(lambda w: len(w))``: a one-parameter
+                    # callback is a key function, like Python's ``key=``.
+                    key_raw, compare_expr = compare_raw, ""
+                if key_raw is not None:
+                    key_type = self._list_callback_result_go_type(key_raw, [_elem_type]) or "interface{}"
+                    if self._is_lambda_node(key_raw):
+                        key_fn = self._lambda_to_go(key_raw, param_types=[_elem_type], return_type=key_type)
+                    else:
+                        key_fn = (
+                            self._builtin_func_ref_to_go(key_raw, f"func({_elem_type}) {key_type}")
+                            or _resolve_func_ref(self._expr_to_go(key_raw))
+                        )
+                    if key_type in self._ORDERED_GO_TYPES:
+                        key_less = "_k(_r[i]) < _k(_r[j])"
+                    elif key_type == "bool":
+                        key_less = "!_k(_r[i]) && _k(_r[j])"
+                    else:
+                        self._need_import("fmt")
+                        key_less = 'fmt.Sprintf("%v", _k(_r[i])) < fmt.Sprintf("%v", _k(_r[j]))'
+                    return (
+                        f"func() {_slice_type} {{ _r := {target_expr}; _k := {key_fn}; "
+                        f"sort.SliceStable(_r, func(i, j int) bool {{ return {key_less} }}); return _r }}()"
+                    )
                 if compare_expr:
                     if compare_raw is not None and self._is_lambda_node(compare_raw):
                         fn = self._lambda_to_go(
@@ -1644,16 +2307,28 @@ class ExpressionVisitorMixin:
                     if expected_type.startswith("[]") else ""
                 )
                 if not result_elem_type and inline_lambda:
-                    result_elem_type = self._infer_lambda_return_type(
-                        raw_args_nodes[0], [f"_v {_elem_type}"],
-                    )
+                    # ``ps.map(lambda p: p.name)``: type the body with the
+                    # parameter bound to the receiver's element type.
+                    result_elem_type = self._lambda_result_go_type(raw_args_nodes[0], [_elem_type])
                     if result_elem_type == "interface{}":
                         result_elem_type = _elem_type
                 if not result_elem_type and raw_args_nodes:
-                    result_elem_type = self._callable_return_elem_go_type(raw_args_nodes[0])
+                    result_elem_type = (
+                        self._callable_return_elem_go_type(raw_args_nodes[0])
+                        or self._list_callback_result_go_type(raw_args_nodes[0], [_elem_type])
+                    )
                 if not result_elem_type:
                     result_elem_type = _elem_type
                 result_slice_type = f"[]{result_elem_type}"
+                builtin_fn = self._builtin_func_ref_to_go(
+                    raw_args_nodes[0], f"func({_elem_type}) {result_elem_type}",
+                ) if raw_args_nodes else ""
+                if builtin_fn:
+                    # ``words.map(len)``: builtins are not Go values.
+                    return (
+                        f"func() {result_slice_type} {{ _r := make({result_slice_type}, len({raw_obj})); "
+                        f"for _i, _v := range {raw_obj} {{ _r[_i] = ({builtin_fn})(_v) }}; return _r }}()"
+                    )
                 if inline_lambda:
                     fn = self._lambda_to_go(
                         raw_args_nodes[0],
@@ -1686,16 +2361,19 @@ class ExpressionVisitorMixin:
                 else:
                     return f"func() {_slice_type} {{ _r := {_slice_type}{{}}; for _, _v := range {raw_obj} {{ if {fn}(_v).(bool) {{ _r = append(_r, _v) }} }}; return _r }}()"
             if _apply_list_combinators and raw_method == "reduce" and len(args) >= 1:
+                # ``words.reduce(lambda acc, w: acc + len(w), 0)``: the
+                # accumulator takes the initial value's type.
+                _acc_type = self._list_reduce_acc_go_type(_elem_type, raw_args_nodes) if len(args) >= 2 else _elem_type
                 if inline_lambda:
                     fn = self._lambda_to_go(
                         raw_args_nodes[0],
-                        param_types=[_elem_type, _elem_type],
-                        return_type=_elem_type,
+                        param_types=[_acc_type, _elem_type],
+                        return_type=_acc_type,
                     )
                     if len(args) >= 2:
-                        init = args[1]
+                        init = self._typed_value_to_go(raw_args_nodes[1], _acc_type) if len(raw_args_nodes) >= 2 else args[1]
                         return (
-                            f"func() {_elem_type} {{ _acc := {_elem_type}({init}); "
+                            f"func() {_acc_type} {{ _acc := {_acc_type}({init}); "
                             f"for _, _v := range {raw_obj} {{ _acc = ({fn})(_acc, _v) }}; return _acc }}()"
                         )
                     return (
@@ -1705,7 +2383,7 @@ class ExpressionVisitorMixin:
                 fn = _resolve_func_ref(args[0])
                 if len(args) >= 2:
                     init = args[1]
-                    return f"func() {_elem_type} {{ _acc := {_elem_type}({init}); for _, _v := range {raw_obj} {{ _acc = {fn}(_acc, _v) }}; return _acc }}()"
+                    return f"func() {_acc_type} {{ _acc := {_acc_type}({init}); for _, _v := range {raw_obj} {{ _acc = {fn}(_acc, _v) }}; return _acc }}()"
                 else:
                     return f"func() {_elem_type} {{ _acc := {raw_obj}[0]; for _, _v := range {raw_obj}[1:] {{ _acc = {fn}(_acc, _v) }}; return _acc }}()"
             if _apply_list_combinators and raw_method == "any" and args:
@@ -1739,7 +2417,8 @@ class ExpressionVisitorMixin:
             if _apply_list_combinators and raw_method == "foreach" and args:
                 if inline_lambda:
                     fn = self._lambda_to_go(
-                        raw_args_nodes[0], param_types=[_elem_type]
+                        raw_args_nodes[0], param_types=[_elem_type],
+                        return_type="", contextual=True,
                     )
                     return (
                         f"func() {{ for _, _v := range {raw_obj} {{ ({fn})(_v) }} }}()"
@@ -1890,7 +2569,7 @@ class ExpressionVisitorMixin:
             cached = cache[expr]
             if cached is None:
                 return None
-            return self._expr_to_go(cached)
+            return self._optional_display_go(self._expr_to_go(cached), cached)
         try:
             from compiler.lammergeier import create_parser as _cp
         except Exception:
@@ -1924,7 +2603,7 @@ class ExpressionVisitorMixin:
             rhs = rhs.children[0]
         cache[expr] = rhs
         try:
-            return self._expr_to_go(rhs)
+            return self._optional_display_go(self._expr_to_go(rhs), rhs)
         except Exception:
             cache[expr] = None
             return None
@@ -2081,7 +2760,64 @@ class ExpressionVisitorMixin:
 
     # ─── Lambda ────────────────────────────────────────────────
 
-    def _lambda_to_go(self, node: Tree, param_types=None, return_type=None) -> str:
+    _ORDERED_GO_TYPES = frozenset({
+        "int", "int8", "int16", "int32", "int64",
+        "uint", "uint8", "uint16", "uint32", "uint64",
+        "float32", "float64", "string",
+    })
+
+    def _sort_callback_arity(self, node) -> int:
+        """Parameter count of a ``sort`` callback (lambda or function name);
+        ``0`` when unknown."""
+        if isinstance(node, Tree) and node.data == "lambdef":
+            params_node = next(
+                (c for c in node.children if isinstance(c, Tree) and c.data in ("paren_lambda_params", "inline_lambda_params")),
+                None,
+            )
+            return len(self._collect_lambda_params(params_node))
+        if isinstance(node, Tree) and node.data == "var" and node.children:
+            name = self._get_name(node.children[0])
+            if name in self._user_functions:
+                return self._func_param_counts.get(name, 0)
+        return 0
+
+    @staticmethod
+    def _split_go_func_type(go_type: str):
+        """``func(int, string) bool`` -> ``(["int", "string"], "bool")``;
+        ``func()`` -> ``([], "")``. ``None`` for shapes we do not model
+        (multiple results)."""
+        go_type = go_type.strip()
+        if not go_type.startswith("func("):
+            return None
+        depth = 0
+        params: list = []
+        cur = ""
+        end = -1
+        for i in range(5, len(go_type)):
+            ch = go_type[i]
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                if depth == 0 and ch == ")":
+                    end = i
+                    break
+                depth -= 1
+            if ch == "," and depth == 0:
+                params.append(cur.strip())
+                cur = ""
+                continue
+            cur += ch
+        if end < 0:
+            return None
+        if cur.strip():
+            params.append(cur.strip())
+        ret = go_type[end + 1:].strip()
+        if ret.startswith("("):
+            return None
+        return params, ret
+
+    def _lambda_to_go(self, node: Tree, param_types=None, return_type=None,
+                      contextual: bool = False) -> str:
         """Transpile a lambda literal to a Go function value.
 
         ``param_types`` — optional list of Go types used to fill in any
@@ -2142,10 +2878,17 @@ class ExpressionVisitorMixin:
         saved_vars = dict(self._var_go_types)
         saved_payloads = dict(self._var_result_payloads)
         saved_declared = set(self.declared_vars)
+        saved_classes = dict(self._var_types)
         for (name, _), p in zip(raw_params, params):
             go_ty = p.split(" ", 1)[1]
             self._var_go_types[name] = go_ty
             self.declared_vars.add(name)
+            class_name = go_ty[1:].split("[", 1)[0] if go_ty.startswith("*") else ""
+            matches = [c for c in self._class_names if class_name and self._go_class_name(c) == class_name]
+            if matches:
+                self._var_types[name] = matches[0]
+            else:
+                self._var_types.pop(name, None)
         for child in (params_node.children if isinstance(params_node, Tree) else []):
             if isinstance(child, Tree) and child.data == "typed_lambda_param" and len(child.children) > 1:
                 self._note_result_payload(self._get_name(child.children[0]), child.children[1])
@@ -2161,8 +2904,12 @@ class ExpressionVisitorMixin:
         # friendly context like ``.map``/``.filter``.
         if explicit_return is not None:
             resolved_return = explicit_return
-        elif return_type is not None:
+        elif return_type is not None and (return_type or contextual):
             resolved_return = return_type
+        elif not is_block_body and self._is_void_call_expr(body_node):
+            # ``lambda: print("tick")``: the body has no value, so the
+            # lambda is a ``func(...)`` without a result.
+            resolved_return = ""
         elif is_block_body:
             # Block bodies always need an explicit return type from the
             # caller or the user. We default to interface{} so callers
@@ -2173,21 +2920,163 @@ class ExpressionVisitorMixin:
         else:
             resolved_return = "interface{}"
 
+        void_body = resolved_return == ""
         try:
             if is_block_body:
-                with self._scoped(_current_return_type=resolved_return):
+                with self._scoped(_current_return_type=resolved_return,
+                                  **self._callable_boundary_context()):
                     body_src = self._lambda_block_body_to_go(body_node)
+            elif void_body:
+                # ``func()`` context: the body is evaluated for its effect.
+                body_src = self._expr_to_go(body_node)
             else:
                 body_src = self._typed_value_to_go(body_node, resolved_return)
         finally:
             self._var_go_types = saved_vars
             self._var_result_payloads = saved_payloads
             self.declared_vars = saved_declared
+            self._var_types = saved_classes
 
         params_str = ", ".join(params)
+        ret_part = f" {resolved_return}" if resolved_return else ""
         if is_block_body:
-            return f"func({params_str}) {resolved_return} {{\n{body_src}\n}}"
-        return f"func({params_str}) {resolved_return} {{ return {body_src} }}"
+            return f"func({params_str}){ret_part} {{\n{body_src}\n}}"
+        if void_body:
+            if isinstance(body_node, Tree) and body_node.data in {"funccall", "await_expr"}:
+                return f"func({params_str}) {{ {body_src} }}"
+            return f"func({params_str}) {{ _ = {body_src} }}"
+        return f"func({params_str}){ret_part} {{ return {body_src} }}"
+
+    def _raw_call_kwargs(self, args_node) -> dict:
+        """``{name: value_node}`` for the keyword arguments of a call."""
+        out: dict = {}
+        if not isinstance(args_node, Tree):
+            return out
+        stack = [args_node]
+        while stack:
+            cur = stack.pop()
+            for child in cur.children:
+                if not isinstance(child, Tree):
+                    continue
+                if child.data == "argvalue" and len(child.children) == 2:
+                    name_node = child.children[0]
+                    if isinstance(name_node, Tree) and name_node.data == "var" and name_node.children:
+                        out[self._get_name(name_node.children[0])] = child.children[1]
+                elif child.data in {"arguments", "starargs", "kwargs"}:
+                    stack.append(child)
+        return out
+
+    @staticmethod
+    def _is_none_literal(node) -> bool:
+        if isinstance(node, Tree) and node.data == "const_none":
+            return True
+        return (
+            isinstance(node, Tree) and node.data == "var" and bool(node.children)
+            and str(node.children[0].children[0] if isinstance(node.children[0], Tree) else node.children[0]) in {"None", "nil"}
+        )
+
+    def _optional_display_go(self, value_go: str, node) -> str:
+        """An ``optional[str]``-style value (a Go ``*string``) shown by
+        ``print`` / f-strings: the pointed-to value, or ``<nil>``."""
+        hint = self._expr_go_type_hint(node) if isinstance(node, Tree) else ""
+        if hint and hint.startswith("*") and hint[1:] in self._OPTIONAL_VALUE_GO_TYPES:
+            return f"func() interface{{}} {{ if __lamP := {value_go}; __lamP != nil {{ return *__lamP }}; return nil }}()"
+        return value_go
+
+    def _is_void_call_expr(self, node) -> bool:
+        """``print(...)`` or a call to a user function declared without a
+        return type: an expression that produces no value."""
+        if not (isinstance(node, Tree) and node.data == "funccall" and node.children):
+            return False
+        callee = node.children[0]
+        if not (isinstance(callee, Tree) and callee.data == "var" and callee.children):
+            return False
+        name = self._get_name(callee.children[0])
+        if name in self._var_go_types:
+            return False
+        if name == "print":
+            return name not in self._user_functions
+        return (
+            name in self._user_functions
+            and name not in self._class_names
+            and not self._func_return_go_types.get(name)
+            and len(self._overload_variants.get(name, ())) <= 1
+            and name not in getattr(self, "_nested_generic_functions", set())
+        )
+
+    def _lambda_go_func_type(self, node: Tree) -> str:
+        """``func(int) string`` for a lambda whose parameters are all typed
+        (``lambda (n: int) -> str { ... }``); ``""`` otherwise."""
+        params_node = next(
+            (c for c in node.children if isinstance(c, Tree) and c.data in ("paren_lambda_params", "inline_lambda_params")),
+            None,
+        )
+        raw_params = self._collect_lambda_params(params_node)
+        if any(not declared for _name, declared in raw_params):
+            return ""
+        param_types = [declared for _name, declared in raw_params]
+        anno = next((c for c in node.children if isinstance(c, Tree) and c.data == "lambda_return_anno"), None)
+        body = next(
+            (c for c in node.children
+             if isinstance(c, Tree) and c.data not in ("paren_lambda_params", "inline_lambda_params", "lambda_return_anno")),
+            None,
+        )
+        if anno is not None and anno.children:
+            ret = self._type_expr_to_go(anno.children[0]) or ""
+        elif isinstance(body, Tree) and body.data == "suite":
+            return ""
+        elif self._is_void_call_expr(body):
+            ret = ""
+        else:
+            ret = self._lambda_result_go_type(node, param_types)
+            if not ret or ret == "interface{}":
+                return ""
+        joined = ", ".join(param_types)
+        return f"func({joined}) {ret}" if ret else f"func({joined})"
+
+    def _lambda_result_go_type(self, node: Tree, param_go_types) -> str:
+        """Go type of an expression-bodied lambda's result when its untyped
+        parameters take ``param_go_types``; ``interface{}`` if unknown."""
+        params_node = None
+        body_node = None
+        for child in node.children:
+            if isinstance(child, Tree) and child.data in ("paren_lambda_params", "inline_lambda_params"):
+                params_node = child
+            elif isinstance(child, Tree) and child.data == "lambda_return_anno":
+                if child.children:
+                    return self._type_expr_to_go(child.children[0]) or "interface{}"
+            elif child is not None:
+                body_node = child
+        if not isinstance(body_node, Tree) or body_node.data == "suite":
+            return "interface{}"
+        raw_params = self._collect_lambda_params(params_node)
+        saved_go = dict(self._var_go_types)
+        saved_cls = dict(self._var_types)
+        typed = []
+        try:
+            for i, (name, declared) in enumerate(raw_params):
+                go_type = declared or (param_go_types[i] if i < len(param_go_types) else "") or "interface{}"
+                typed.append(f"{name} {go_type}")
+                self._var_go_types[name] = go_type
+                class_name = go_type[1:].split("[", 1)[0] if go_type.startswith("*") else ""
+                matches = [c for c in self._class_names if self._go_class_name(c) == class_name]
+                if matches:
+                    self._var_types[name] = matches[0]
+                else:
+                    self._var_types.pop(name, None)
+            hint = self._expr_go_type_hint(body_node)
+            if hint and hint != "interface{}":
+                return hint
+            inferred = self._infer_lambda_return_type(body_node, typed)
+            if inferred == "interface{}" and body_node.data in {"list", "dict", "set", "tuple"}:
+                # ``lambda n: [n, n * 2]`` is a ``[]int``.
+                literal = self._infer_type_from_value(body_node)
+                if literal:
+                    return literal
+            return inferred
+        finally:
+            self._var_go_types = saved_go
+            self._var_types = saved_cls
 
     def _collect_lambda_params(self, params_node):
         """Extract ``(name, go_type_or_None)`` pairs from a lambda's
@@ -2413,6 +3302,10 @@ class ExpressionVisitorMixin:
             return self._unknown_conversion_to_go(name, value)
         if name == "bool":
             return f"({value} != 0)"
+        if name == "int" and source in {"float64", "float32"} and re.fullmatch(r"[-+0-9.eE()\s*/]+", value):
+            # ``int(3.7)`` truncates (3); Go rejects converting a float
+            # constant with a fractional part, so convert at run time.
+            return f"func(v float64) int {{ return int(v) }}({value})"
         return f"{go_target}({value})"
 
     def _unknown_conversion_to_go(self, name: str, value: str) -> str:
@@ -2593,7 +3486,29 @@ class ExpressionVisitorMixin:
         """
         variants = self._overload_variants.get(key) or []
         if len(variants) <= 1:
-            return self._result_payload_go_types.get(key, "")
+            payload = self._result_payload_go_types.get(key, "")
+            generic_names = self._func_generic_params.get(key, set())
+            if payload and mentions_names(payload, generic_names):
+                # ``it.first()`` on an ``Iter[int]``: ``Result[T]`` is a
+                # ``Result[int]`` here.
+                class_name, _dot, method = key.rpartition(".")
+                callee = call_node.children[0] if call_node.children else None
+                receiver = callee.children[0] if isinstance(callee, Tree) and callee.data in {"getattr", "getattr_safe"} else None
+                static = (
+                    isinstance(receiver, Tree) and receiver.data == "var" and receiver.children
+                    and self._get_name(receiver.children[0]) == class_name
+                )
+                subst = self._method_call_subst(
+                    class_name, method, receiver,
+                    call_node.children[1] if len(call_node.children) > 1 else None,
+                    static=bool(static),
+                ) if class_name else self._generic_call_subst(
+                    key, call_node.children[1] if len(call_node.children) > 1 else None, sorted(generic_names),
+                )
+                payload = substitute_go_type(payload, subst)
+                if mentions_names(payload, [n for n in generic_names if n not in self._generic_names]):
+                    return ""
+            return payload
         args_node = next(
             (child for child in call_node.children[1:] if isinstance(child, Tree)),
             None,
@@ -2626,7 +3541,15 @@ class ExpressionVisitorMixin:
             return ""
         if obj_node.data == "var":
             name = self._get_name(obj_node.children[0])
-            return self._var_types.get(name, "")
+            known = self._var_types.get(name, "")
+            if known:
+                return known
+            # Loop variables over ``list[Shape]`` and similar only record
+            # their Go type.
+            return self._hier_class_from_go_type(self._var_go_types.get(name, ""))
+        if obj_node.data == "getitem":
+            # ``shapes[0].area()`` over a ``list[Shape]`` / ``dict[str, Shape]``.
+            return self._hier_class_from_go_type(self._expr_go_type_hint(obj_node))
         if obj_node.data in {"getattr", "getattr_safe"}:
             go_type = self._expr_go_type_hint(obj_node)
             class_name = go_type.removeprefix("*").split("[", 1)[0]
@@ -2671,6 +3594,17 @@ class ExpressionVisitorMixin:
                     returned_class = returned.removeprefix("*").split("[", 1)[0]
                     if returned.startswith("*") and returned_class in self._class_names:
                         return returned_class
+            if (
+                isinstance(inner_func, Tree) and inner_func.data == "getitem"
+                and isinstance(inner_func.children[0], Tree) and inner_func.children[0].data == "var"
+            ):
+                # ``Box[str]("hi").map(...)``: a generic class constructor.
+                receiver_name = self._get_name(inner_func.children[0].children[0])
+                if receiver_name in self._class_names:
+                    return receiver_name
+            if isinstance(inner_func, Tree) and inner_func.data in {"funccall", "var"}:
+                # ``maker()()`` / ``f()`` with ``f: func() -> Shape``.
+                return self._hier_class_from_go_type(self._expr_go_type_hint(obj_node))
         return ""
 
     def _infer_receiver_elem_type(self, obj_node) -> str:
@@ -2692,6 +3626,9 @@ class ExpressionVisitorMixin:
             # Bare list literal — no type info, caller will default.
             return ""
         if obj_node.data == "funccall":
+            hint = self._expr_go_type_hint(obj_node) or ""
+            if hint.startswith("[]"):
+                return hint[2:]
             inner_func = obj_node.children[0]
             if isinstance(inner_func, Tree) and inner_func.data == "getattr":
                 inner_obj = inner_func.children[0]
@@ -2778,14 +3715,16 @@ class ExpressionVisitorMixin:
                 # panicking (``s[i:i + 2]`` near the end, ``xs[5:]`` on a
                 # short list). Go inlines the immediately-called literal.
                 lo = start_go or "0"
-                clamp = "if _a < 0 { _a = 0 }; if _b > len(_s) { _b = len(_s) }; if _a > _b { _a = _b }; return _s[_a:_b] }"
+                clamp = (
+                    "if _a < 0 { _a += len(_s); if _a < 0 { _a = 0 } }; "
+                    "if _b < 0 { _b += len(_s); if _b < 0 { _b = 0 } }; "
+                    "if _b > len(_s) { _b = len(_s) }; if _a > _b { _a = _b }; return _s[_a:_b] }"
+                )
                 if end_go:
                     return f"func(_s {obj_type}, _a int, _b int) {obj_type} {{ {clamp}({obj_go}, {lo}, {end_go})"
                 return f"func(_s {obj_type}, _a int) {obj_type} {{ _b := len(_s); {clamp}({obj_go}, {lo})"
             return f"{obj_go}[{start_go}:{end_go}]"
 
-        self._need_import("reflect")
-        self._need_import("strings")
         # The IIFE keeps Python's slice semantics: negative indices
         # resolve against the length, a missing ``end`` defaults to
         # ``len(obj)`` for a forward step or ``-1`` for a reverse step,
@@ -2798,6 +3737,32 @@ class ExpressionVisitorMixin:
         start_provided = "true" if start_node is not None else "false"
         end_provided = "true" if end_node is not None else "false"
 
+        obj_type = (self._expr_go_type_hint(obj_node) or "") if obj_node is not None else ""
+        if obj_type == "string" or (obj_type.startswith("[]") and "func(" not in obj_type):
+            # Statically typed receiver: the same Python semantics without
+            # reflection, keeping the receiver's type (``a[-2:]`` of a
+            # ``list[int]`` is a ``list[int]``).
+            if obj_type == "string":
+                self._need_import("strings")
+                init, add, done = "var _sb strings.Builder", "_sb.WriteByte(_s[_i])", "return _sb.String()"
+            else:
+                init, add, done = f"_r := {obj_type}{{}}", "_r = append(_r, _s[_i])", "return _r"
+            body = (
+                f"func(_s {obj_type}, _start int, _end int, _step int, _sp bool, _ep bool) {obj_type} {{ "
+                "_n := len(_s); if _step == 0 { _step = 1 }; "
+                "if _sp && _start < 0 { _start += _n }; if _ep && _end < 0 { _end += _n }; "
+                "if _step > 0 { if !_sp || _start < 0 { _start = 0 }; if _start > _n { _start = _n }; "
+                "if !_ep || _end > _n { _end = _n }; if _end < 0 { _end = 0 } } else { "
+                "if !_sp || _start >= _n { _start = _n - 1 }; if _start < -1 { _start = -1 }; "
+                "if !_ep || _end < -1 { _end = -1 }; if _end >= _n { _end = _n - 1 } }; "
+                f"{init}; if _step > 0 {{ for _i := _start; _i < _end; _i += _step {{ {add} }} }} else {{ "
+                f"for _i := _start; _i > _end; _i += _step {{ {add} }} }}; {done} }}"
+                f"({obj_go}, int({start_go}), int({end_go}), int({step_go}), {start_provided}, {end_provided})"
+            )
+            return body
+
+        self._need_import("reflect")
+        self._need_import("strings")
         lines = [
             "func() interface{} {",
             f"\t_o := interface{{}}({obj_go})",
@@ -2860,6 +3825,22 @@ class ExpressionVisitorMixin:
             return [self._expr_to_go(child) for child in target.children if child is not None]
         return []
 
+    def _generator_call_elem_go_type(self, node) -> str:
+        if isinstance(node, Tree) and node.data == "funccall" and node.children:
+            callee = node.children[0]
+            if isinstance(callee, Tree) and callee.data == "var" and callee.children:
+                return self._generator_elem_go_types.get(self._get_name(callee.children[0]), "")
+        return ""
+
+    def _comprehension_tuple_raw_targets(self, target) -> list:
+        if not isinstance(target, Tree):
+            return []
+        if target.data in {"typed_for_target", "untyped_for_target"} and target.children:
+            return self._comprehension_tuple_raw_targets(target.children[0])
+        if target.data in {"tuple", "exprlist"}:
+            return [child for child in target.children if child is not None]
+        return []
+
     def _append_comprehension_loop(self, lines: List[str], clause: Tree, depth: int) -> None:
         var_expr = clause.children[0]
         iter_expr = clause.children[1]
@@ -2874,7 +3855,76 @@ class ExpressionVisitorMixin:
                 var_str = f"_lamCompIndex{depth}"
             lines.append(f"{tabs}for {var_str} := {start}; {var_str} < {end}; {var_str} += {step} {{")
             return
+        bind_tabs = "\t" * (depth + 2)
+
+        def silence(names) -> None:
+            # Comprehension targets may be unused (``[k for k, v in d]``).
+            for name in names:
+                if name and name != "_":
+                    lines.append(f"{bind_tabs}_ = {name}")
+
+        enumerate_src = self._check_enumerate_call(iter_expr)
+        if enumerate_src is not None and len(targets) == 2:
+            # ``[f"{i}:{w}" for i, w in enumerate(words)]``.
+            raw_src = self._get_raw_call_args(iter_expr.children[1] if len(iter_expr.children) > 1 else None)
+            src_node = raw_src[0] if raw_src else None
+            src_type = (self._expr_go_type_hint(src_node) or self._infer_type_from_value(src_node) or "") if src_node is not None else ""
+            if isinstance(src_node, Tree) and src_node.data == "list" and src_type.startswith("[]") and src_type != "[]interface{}":
+                enumerate_src = self._typed_value_to_go(src_node, src_type)
+            idx, val = targets
+            raw_targets = self._comprehension_tuple_raw_targets(var_expr)
+            nested = raw_targets[1] if len(raw_targets) == 2 else None
+            if isinstance(nested, Tree) and nested.data in {"tuple", "exprlist"}:
+                # ``for i, (name, n) in enumerate(pairs)``: unpack the item.
+                inner = [self._expr_to_go(c) for c in nested.children if c is not None]
+                item = f"_lamCompItem{depth}"
+                lines.append(f"{tabs}for {idx}, {item} := range {enumerate_src} {{")
+                if idx != "_":
+                    self._var_go_types[idx] = "int"
+                src_name = self._get_name(src_node.children[0]) if isinstance(src_node, Tree) and src_node.data == "var" else ""
+                tuple_types = self._tuple_iterable_element_types.get(src_name, [])
+                for index, name in enumerate(inner):
+                    if name == "_":
+                        continue
+                    cast = tuple_types[index] if index < len(tuple_types) and tuple_types[index] != "interface{}" else ""
+                    lines.append(f"{bind_tabs}{name} := {item}[{index}]" + (f".({cast})" if cast else ""))
+                    if cast:
+                        self._var_go_types[name] = cast
+                silence([idx] + inner)
+                return
+            lines.append(f"{tabs}for {idx}, {val} := range {enumerate_src} {{")
+            if idx != "_":
+                self._var_go_types[idx] = "int"
+            if val != "_" and src_type.startswith("[]"):
+                self._var_go_types[val] = src_type[2:]
+            elif val != "_" and src_type == "string":
+                lines[-1] = f"{tabs}for {idx}, {val}Rune := range []rune({enumerate_src}) {{"
+                lines.append(f"{bind_tabs}{val} := string({val}Rune)")
+                self._var_go_types[val] = "string"
+            silence(targets)
+            return
         iter_str = self._expr_to_go(iter_expr)
+        if self._is_generator_call(iter_expr):
+            # A generator is a channel: one value per receive.
+            if targets:
+                pair_name = f"_lamCompPair{depth}"
+                lines.append(f"{tabs}for {pair_name} := range {iter_str} {{")
+                for index, target in enumerate(targets):
+                    if target != "_":
+                        lines.append(f"{bind_tabs}{target} := {pair_name}.([]interface{{}})[{index}]")
+                silence(targets)
+            else:
+                name = var_str if var_str != "_" else f"_lamCompItem{depth}"
+                elem = self._generator_call_elem_go_type(iter_expr)
+                if elem and name == var_str:
+                    # ``for b in batches()`` with ``-> generator[list[int]]``.
+                    lines.append(f"{tabs}for {name}Raw := range {iter_str} {{")
+                    lines.append(f"{bind_tabs}{name} := {name}Raw.({elem})")
+                    self._var_go_types[name] = elem
+                else:
+                    lines.append(f"{tabs}for {name} := range {iter_str} {{")
+                silence([name])
+            return
         if isinstance(iter_expr, Tree) and iter_expr.data == "list" and not targets:
             # ``[i for i in [1, 2, 3] if i > 1]``: range over the typed slice
             # so the variable has the elements' type.
@@ -2884,17 +3934,37 @@ class ExpressionVisitorMixin:
                 self._var_go_types[var_str] = literal_type[2:]
         if len(targets) == 2 and self._range_single_target_uses_key(iter_expr):
             lines.append(f"{tabs}for {targets[0]}, {targets[1]} := range {iter_str} {{")
+            key_type, value_type = self._split_go_map_type(self._expr_go_type_hint(iter_expr) or self._infer_type_from_value(iter_expr) or "")
+            if key_type and targets[0] != "_":
+                self._var_go_types[targets[0]] = key_type
+            if value_type and targets[1] != "_":
+                self._var_go_types[targets[1]] = value_type
+            silence(targets)
             return
         if targets:
             pair_name = f"_lamCompPair{depth}"
             lines.append(f"{tabs}for _, {pair_name} := range {iter_str} {{")
             iter_name = self._get_name(iter_expr.children[0]) if isinstance(iter_expr, Tree) and iter_expr.data == "var" else ""
             tuple_types = self._tuple_iterable_element_types.get(iter_name, [])
-            bind_tabs = "\t" * (depth + 2)
             for index, target in enumerate(targets):
+                if target == "_":
+                    continue
                 cast = f".({tuple_types[index]})" if index < len(tuple_types) and tuple_types[index] != "interface{}" else ""
                 lines.append(f"{bind_tabs}{target} := {pair_name}[{index}]{cast}")
+                if cast:
+                    self._var_go_types[target] = tuple_types[index]
+            silence(targets)
             return
+        if not targets and var_str != "_":
+            # ``[o.name for o in orders]``: the variable has the element type.
+            iter_type = self._expr_go_type_hint(iter_expr) or ""
+            if iter_type.startswith("[]") and iter_type != "[]interface{}":
+                self._var_go_types[var_str] = iter_type[2:]
+                elem_class = self._hier_class_from_go_type(iter_type[2:])
+                if elem_class:
+                    self._var_types[var_str] = elem_class
+                else:
+                    self._var_types.pop(var_str, None)
         if self._range_single_target_uses_key(iter_expr):
             lines.append(f"{tabs}for {var_str} := range {iter_str} {{")
         elif self._iterates_string(iter_expr):
@@ -2955,12 +4025,6 @@ class ExpressionVisitorMixin:
         if not for_clauses:
             return f"{slice_type}{{}}"
 
-        result_type = self._slice_elem_go_type(slice_type)
-        result_str = (
-            self._typed_value_to_go(result_expr, result_type)
-            if result_type else self._expr_to_go(result_expr)
-        )
-
         lines = [f"func() {slice_type} {{"]
         lines.append(f"\t_result := {slice_type}{{}}")
 
@@ -2968,6 +4032,13 @@ class ExpressionVisitorMixin:
         for fc in for_clauses:
             self._append_comprehension_loop(lines, fc, depth)
             depth += 1
+
+        # The loop variables are typed now (``_append_comprehension_loop``).
+        result_type = self._slice_elem_go_type(slice_type)
+        result_str = (
+            self._typed_value_to_go(result_expr, result_type)
+            if result_type else self._expr_to_go(result_expr)
+        )
 
         inner_tabs = "\t" * (depth + 1)
         if comp_if and isinstance(comp_if, Tree):
@@ -3010,12 +4081,6 @@ class ExpressionVisitorMixin:
         if not for_clauses:
             return f"{set_type}{{}}"
 
-        key_type, _value_type = self._split_go_map_type(set_type)
-        result_str = (
-            self._typed_value_to_go(result_expr, key_type)
-            if key_type else self._expr_to_go(result_expr)
-        )
-
         lines = [f"func() {set_type} {{"]
         lines.append(f"\t_result := {set_type}{{}}")
 
@@ -3023,6 +4088,12 @@ class ExpressionVisitorMixin:
         for fc in for_clauses:
             self._append_comprehension_loop(lines, fc, depth)
             depth += 1
+
+        key_type, _value_type = self._split_go_map_type(set_type)
+        result_str = (
+            self._typed_value_to_go(result_expr, key_type)
+            if key_type else self._expr_to_go(result_expr)
+        )
 
         inner_tabs = "\t" * (depth + 1)
         if comp_if and isinstance(comp_if, Tree):
@@ -3054,17 +4125,7 @@ class ExpressionVisitorMixin:
         comp_fors = comp.children[1]
         comp_if = comp.children[2] if len(comp.children) > 2 else None
 
-        if isinstance(kv, Tree) and kv.data == "key_value":
-            key_type, value_type = self._split_go_map_type(mtype)
-            key_expr = (
-                self._typed_value_to_go(kv.children[0], key_type)
-                if key_type else self._expr_to_go(kv.children[0])
-            )
-            val_expr = (
-                self._typed_value_to_go(kv.children[1], value_type)
-                if value_type else self._expr_to_go(kv.children[1])
-            )
-        else:
+        if not (isinstance(kv, Tree) and kv.data == "key_value"):
             return f"{mtype}{{}}"
 
         for_clauses = [
@@ -3080,6 +4141,16 @@ class ExpressionVisitorMixin:
         for clause in for_clauses:
             self._append_comprehension_loop(lines, clause, depth)
             depth += 1
+
+        key_type, value_type = self._split_go_map_type(mtype)
+        key_expr = (
+            self._typed_value_to_go(kv.children[0], key_type)
+            if key_type else self._expr_to_go(kv.children[0])
+        )
+        val_expr = (
+            self._typed_value_to_go(kv.children[1], value_type)
+            if value_type else self._expr_to_go(kv.children[1])
+        )
 
         inner_tabs = "\t" * (depth + 1)
         if comp_if and isinstance(comp_if, Tree):
@@ -3157,6 +4228,14 @@ class ExpressionVisitorMixin:
         return ""
 
     def _binop_to_go(self, node: Tree) -> str:
+        operands = [c for c in node.children if isinstance(c, Tree)]
+        ops = {str(c) for c in node.children if isinstance(c, Token)}
+        promote: set = set()
+        if ops <= {"+", "-", "*", "/"} and len(operands) >= 2:
+            # ``1.5 * a`` with ``a: int``: Go needs the int converted.
+            kinds = [self._numeric_operand_kind(c) for c in operands]
+            if "float64" in kinds and "int" in kinds:
+                promote = {id(c) for c, k in zip(operands, kinds) if k == "int"}
         parts = []
         for child in node.children:
             if isinstance(child, Token):
@@ -3164,10 +4243,37 @@ class ExpressionVisitorMixin:
                 parts.append("/" if op == "//" else op)
             elif isinstance(child, Tree):
                 s = self._expr_to_go(child)
-                if child.data in ("arith_expr", "term") and node.data != child.data:
+                if id(child) in promote:
+                    s = f"float64({s})"
+                elif child.data in ("arith_expr", "term") and node.data != child.data:
                     s = f"({s})"
                 parts.append(s)
         return " ".join(parts)
+
+    @staticmethod
+    def _negative_int_constant(node) -> Optional[int]:
+        """``n`` for an index written ``-n`` (an integer literal), else ``None``."""
+        if (
+            isinstance(node, Tree) and node.data == "factor" and len(node.children) == 2
+            and str(node.children[0]) == "-" and isinstance(node.children[1], Tree)
+            and node.children[1].data == "number" and node.children[1].children
+        ):
+            text = str(node.children[1].children[0]).replace("_", "")
+            if text.isdigit() and int(text) > 0:
+                return int(text)
+        return None
+
+    def _numeric_operand_kind(self, node) -> str:
+        """``float64`` / ``int`` for a typed (non-constant) arithmetic
+        operand, ``float64`` for a float literal, ``""`` otherwise
+        (integer literals adapt to the other operand in Go)."""
+        if isinstance(node, Tree) and node.data == "number":
+            text = str(node.children[0]) if node.children else ""
+            return "float64" if "." in text or "e" in text.lower() else ""
+        if isinstance(node, Tree) and node.data == "factor" and len(node.children) == 2:
+            return self._numeric_operand_kind(node.children[1])
+        hint = self._expr_go_type_hint(node) or ""
+        return hint if hint in {"int", "float64"} else ""
 
     def _comparison_to_go(self, node: Tree) -> str:
         operands = [
@@ -3213,6 +4319,13 @@ class ExpressionVisitorMixin:
             right_value = right_go if right_json else f"lamJSONMust({right_go})"
             equal = f"lamJSONEqual({left_value}, {right_value})"
             return f"!({equal})" if op in {"!=", "is not"} else equal
+        if op in {"==", "!=", "is", "is not"}:
+            # Identity of a subclass instance and a base-typed value:
+            # compare both as the base (the subclass's embedded parent).
+            left_type = self._hier_expr_go_type(left)
+            right_type = self._hier_expr_go_type(right)
+            left_go = self._hier_upcast_to_go(left_go, left_type, right_type) or left_go
+            right_go = self._hier_upcast_to_go(right_go, right_type, left_type) or right_go
         if op == "is not":
             return f"{left_go} != {right_go}"
         if op == "is":
@@ -3317,7 +4430,7 @@ class ExpressionVisitorMixin:
         "bytes": "[]byte",
     }
 
-    def _isinstance_test_go(self, obj_go: str, type_node) -> str:
+    def _isinstance_test_go(self, obj_go: str, type_node, static_class: str = "") -> str:
         """Build the Go boolean expression for `isinstance(obj, type_node)`."""
         # Tuple of types: (int, str, SomeClass)
         if isinstance(type_node, Tree) and type_node.data == "tuple":
@@ -3325,7 +4438,7 @@ class ExpressionVisitorMixin:
             for c in type_node.children:
                 if c is None:
                     continue
-                parts.append(self._isinstance_test_go(obj_go, c))
+                parts.append(self._isinstance_test_go(obj_go, c, static_class))
             if not parts:
                 return "false"
             return "(" + " || ".join(parts) + ")"
@@ -3334,13 +4447,13 @@ class ExpressionVisitorMixin:
         if isinstance(type_node, Tree) and type_node.data == "argvalue":
             inner = type_node.children[0] if type_node.children else None
             if inner is not None:
-                return self._isinstance_test_go(obj_go, inner)
+                return self._isinstance_test_go(obj_go, inner, static_class)
 
         # Parametric type: list[int], dict[str, int] — treat as the
         # outer container kind (Go does not carry parametric runtime
         # type info for generic collections).
         if isinstance(type_node, Tree) and type_node.data == "getitem":
-            return self._isinstance_test_go(obj_go, type_node.children[0])
+            return self._isinstance_test_go(obj_go, type_node.children[0], static_class)
 
         name = self._isinstance_name(type_node)
 
@@ -3352,6 +4465,8 @@ class ExpressionVisitorMixin:
             )
 
         if name == "None":
+            if obj_go.strip() == "nil":
+                return "true"
             return f"({obj_go} == nil)"
         if name in ("any", "object"):
             return "true"
@@ -3399,6 +4514,13 @@ class ExpressionVisitorMixin:
             return (
                 f"func() bool {{ _, ok := interface{{}}({obj_go}).({go_name}); return ok }}()"
             )
+
+        # A class in an inheritance hierarchy: test the dynamic class (a
+        # base-typed value may hold a subclass; a subclass is an instance
+        # of its bases).
+        hier_test = self._hier_isinstance_go(obj_go, static_class, name)
+        if hier_test:
+            return hier_test
 
         # User class — represented as a pointer to a struct in Go.
         go_name = self._go_class_name(name)

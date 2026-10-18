@@ -1,0 +1,47 @@
+# Built-in list methods give their callbacks the element type: builtin
+# and user function references (`map(len)`), chains whose element type
+# changes (`map` then `filter`), a `reduce` accumulator of another type
+# than the elements, and `sort` with a one-parameter key (positional or
+# `key=`) next to the two-parameter `compare`.
+#
+# expect: lens=[2 1 3]
+# expect: strs=[1 2]
+# expect: long=[2 3]
+# expect: chars=6
+# expect: any=true all=true
+# expect: each=AB
+# expect: each=C
+# expect: byLen=[c ab abc]
+# expect: byKey=[c ab abc]
+# expect: byAge=[bob alice]
+# expect: desc=[3 2 1]
+# expect: typed_list_callbacks_ok
+
+class Person {
+    func init(self, name: str, age: int) {
+        self.name: str = name
+        self.age: int = age
+    }
+}
+
+func main() {
+    words: list[str] = ["ab", "c", "abc"]
+    lens: list[int] = words.map(len)
+    print(f"lens={lens}")
+    nums: list[int] = [1, 2]
+    strs: list[str] = nums.map(str)
+    print(f"strs={strs}")
+    long: list[int] = words.map(lambda w: len(w)).filter(lambda n: n > 1)
+    print(f"long={long}")
+    chars: int = words.reduce(lambda acc, w: acc + len(w), 0)
+    print(f"chars={chars}")
+    print(f"any={words.any(lambda w: w.startsWith('a'))} all={words.all(lambda w: len(w) > 0)}")
+    words.filter(lambda w: len(w) < 3).foreach(lambda w: print(f"each={w.toUpper()}"))
+    print(f"byLen={words.sort(lambda w: len(w))}")
+    print(f"byKey={words.sort(key=lambda w: len(w))}")
+    people: list[Person] = [Person("alice", 30), Person("bob", 20)]
+    names: list[str] = people.sort(key=lambda p: p.age).map(lambda p: p.name)
+    print(f"byAge={names}")
+    print(f"desc={[1, 3, 2].sort(lambda a, b: a > b)}")
+    print("typed_list_callbacks_ok")
+}

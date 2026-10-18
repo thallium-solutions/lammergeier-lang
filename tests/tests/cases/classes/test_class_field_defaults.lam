@@ -1,0 +1,84 @@
+# Test: class-body field initializers run for every new instance.
+#
+# `secret: int = 42` in a class body declares an instance field with a
+# default value. The default is applied before the constructor body (so
+# `init` can read or override it), for classes without `init`, for
+# inherited fields, and for generic classes (`items: list[T] = []`).
+#
+# expect: 42
+# expect: name=anon count=0
+# expect: name=bob count=5
+# expect: stack=2 top=b
+# expect: child secret=42 extra=7
+# expect: fresh lists: 1 0
+# expect: label=default-label
+
+class A {
+    secret: int = 42
+}
+
+class Counter {
+    name: str = "anon"
+    count: int = 0
+
+    func init(self, n: int) {
+        if n > 0 {
+            self.name = "bob"
+            self.count = n
+        }
+    }
+
+    func describe(self) -> str {
+        return f"name={self.name} count={self.count}"
+    }
+}
+
+class Stack[T] {
+    items: list[T] = []
+
+    func push(self, item: T) {
+        self.items.append(item)
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func top(self) -> T {
+        return self.items[len(self.items) - 1]
+    }
+}
+
+class B(A) {
+    extra: int = 7
+}
+
+class Labelled {
+    label: str = "default"
+
+    func init(self) {
+        self.label = self.label + "-label"
+    }
+}
+
+func main() {
+    print(A().secret)
+    print(Counter(0).describe())
+    print(Counter(5).describe())
+
+    s: Stack[str] = Stack[str]()
+    s.push("a")
+    s.push("b")
+    print(f"stack={s.size()} top={s.top()}")
+
+    b: B = B()
+    print(f"child secret={b.secret} extra={b.extra}")
+
+    first: Stack[int] = Stack[int]()
+    second: Stack[int] = Stack[int]()
+    first.push(1)
+    print(f"fresh lists: {first.size()} {second.size()}")
+
+    l: Labelled = Labelled()
+    print(f"label={l.label}")
+}

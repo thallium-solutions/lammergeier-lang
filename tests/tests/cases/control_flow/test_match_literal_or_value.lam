@@ -1,0 +1,158 @@
+# Test: literal, or-, value and single-quoted string patterns, plus
+# break/continue inside case bodies of a loop.
+#
+# expect: a-quote
+# expect: b-double
+# expect: other-char
+# expect: small
+# expect: small
+# expect: medium
+# expect: big
+# expect: minus two
+# expect: one or minus one
+# expect: one or minus one
+# expect: float half
+# expect: bool yes
+# expect: bool no
+# expect: red
+# expect: green-or-blue
+# expect: green-or-blue
+# expect: no color
+# expect: limit hit
+# expect: any one
+# expect: any str x
+# expect: any float 2.0
+# expect: any none
+# expect: any other
+# expect: loop 0
+# expect: loop 1
+# expect: skipped 2
+# expect: loop 3
+# expect: stopped at 4
+# expect: after loop
+# expect: weekday:mon
+# expect: weekend:sat
+# expect: weekend:sun
+
+class Color {
+    static RED: int = 0
+    static GREEN: int = 1
+    static BLUE: int = 2
+}
+
+class Limits {
+    static MAX: int = 100
+}
+
+func quote(c: str) -> str {
+    match c {
+        case 'a' { return "a-quote" }
+        case "b" { return "b-double" }
+        case _ { return "other-char" }
+    }
+}
+
+func size(n: int) -> str {
+    match n {
+        case 1 | 2 | 3 { return "small" }
+        case 4 | 5 { return "medium" }
+        case _ { return "big" }
+    }
+}
+
+func signed(n: int) -> str {
+    match n {
+        case -2 { return "minus two" }
+        case 1 | -1 { return "one or minus one" }
+        case _ { return "else" }
+    }
+}
+
+func colorName(c: int) -> str {
+    match c {
+        case Color.RED { return "red" }
+        case Color.GREEN | Color.BLUE { return "green-or-blue" }
+        case _ { return "no color" }
+    }
+}
+
+func describeAny(v: any) -> str {
+    match v {
+        case 1 { return "any one" }
+        case "x" { return "any str x" }
+        case 2.0 { return "any float 2.0" }
+        case None { return "any none" }
+        case json(j) { return "any json" }
+        case _ { return "any other" }
+    }
+}
+
+func dayKind(d: str) -> str {
+    match d {
+        case 'sat' | 'sun' { return f"weekend:{d}" }
+        case _ { return f"weekday:{d}" }
+    }
+}
+
+func main() {
+    print(quote("a"))
+    print(quote("b"))
+    print(quote("z"))
+
+    print(size(1))
+    print(size(3))
+    print(size(5))
+    print(size(9))
+
+    print(signed(-2))
+    print(signed(1))
+    print(signed(-1))
+
+    f: float = 0.5
+    match f {
+        case 0.5 { print("float half") }
+        case _ { print("float other") }
+    }
+
+    for b in [true, false] {
+        match b {
+            case True { print("bool yes") }
+            case False { print("bool no") }
+        }
+    }
+
+    print(colorName(0))
+    print(colorName(1))
+    print(colorName(2))
+    print(colorName(7))
+
+    match 100 {
+        case Limits.MAX { print("limit hit") }
+        case _ { print("below") }
+    }
+
+    print(describeAny(1))
+    print(describeAny("x"))
+    print(describeAny(2))
+    print(describeAny(None))
+    print(describeAny([1]))
+
+    for i in range(10) {
+        match i {
+            case 2 {
+                print("skipped 2")
+                continue
+            }
+            case 4 {
+                print(f"stopped at {i}")
+                break
+            }
+            case _ { print(f"loop {i}") }
+        }
+    }
+    print("after loop")
+
+    for d in ["mon", "sat", "sun"] {
+        print(dayKind(d))
+    }
+}

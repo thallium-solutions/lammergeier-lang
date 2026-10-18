@@ -1,0 +1,135 @@
+# Test: valid source forms the preprocessor/parser used to reject.
+#
+#  * inline-brace `if`/`for`/`while` blocks followed by a trailing comment
+#  * comment-only bodies (functions, classes, `if`, loops, `else`)
+#  * compact one-line `if c a = 1 elif d a = 2 else a = 3`
+#  * typed / untyped lambdas inside an `if` / `while` condition
+#  * negative literal `case -2`
+#  * multi-line parenthesised conditional expressions
+#  * `and` / `or` at the end (or start) of a continued line
+#  * empty interfaces
+#
+# expect: inline 1
+# expect: after inline
+# expect: item 1
+# expect: item 2
+# expect: while 0
+# expect: comment-only ok
+# expect: compact 1 2 0
+# expect: ternary body 9
+# expect: all positive
+# expect: some odd
+# expect: lambda while 2
+# expect: minus two
+# expect: big small
+# expect: and=false or=true lead=true
+# expect: marker ok
+# expect: last loop 3
+
+interface Nothing { }
+
+interface Marker {
+    # reserved for later
+}
+
+class Placeholder {
+    # nothing yet
+}
+
+class Tagged {
+    func tag(self) -> str {
+        return "marker ok"
+    }
+}
+
+func todo() {
+    # TODO: implement
+}
+
+func check(xs: list[int], f: func(int) -> bool) -> bool {
+    for x in xs {
+        if not f(x) {
+            return false
+        }
+    }
+    return true
+}
+
+func compact(x: int) -> int {
+    a: int = 0
+    if x > 0 a = 1 elif x < 0 a = 2 else a = 0
+    return a
+}
+
+func sign(n: int) -> str {
+    match n {
+        case -2 { return "minus two" }
+        case _ { return "other" }
+    }
+}
+
+func label(x: int) -> str {
+    return (
+        "big" if x > 3
+        else "small"
+    )
+}
+
+func main() {
+    xs: list[int] = [1, 2]
+    if true { print("inline 1") }  # trailing comment
+    print("after inline")
+    for x in xs { print(f"item {x}") }  # loop comment
+    n: int = 0
+    while n < 1 { print(f"while {n}"); n += 1 }  # while comment
+
+    todo()
+    p: Placeholder = Placeholder()
+    if xs.length() > 5 {
+        # nothing to do
+    } else {
+        # also nothing
+    }
+    for y in xs {
+        # skip
+    }
+    print("comment-only ok")
+
+    print(f"compact {compact(5)} {compact(-5)} {compact(0)}")
+    b: int = 0
+    if n > 0 b = 9 if n == 1 else 8 else b = 7
+    print(f"ternary body {b}")
+
+    if check(xs, lambda (a: int) -> bool: a > 0) {
+        print("all positive")
+    }
+    if not check(xs, lambda (a: int) -> bool: a % 2 == 0) {
+        print("some odd")
+    }
+    count: int = 0
+    while check([count], lambda (c: int) -> bool: c < 2) {
+        count += 1
+    }
+    print(f"lambda while {count}")
+
+    print(sign(-2))
+
+    small: str = (
+        "big" if n > 3
+        else "small"
+    )
+    print(f"{label(5)} {small}")
+
+    both: bool = true and
+        false
+    either: bool = false or
+        true
+    lead: bool = false
+        or true
+    print(f"and={both} or={either} lead={lead}")
+
+    t: Tagged = Tagged()
+    print(t.tag())
+
+    for z in [3] { print(f"last loop {z}") }  # last statement with comment
+}

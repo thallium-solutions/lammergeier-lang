@@ -1,0 +1,9 @@
+# expect-warning: case is unreachable because the earlier capture pattern `other` matches everything
+
+func main() {
+    match 3 {
+        case 1 { print("one") }
+        case other { print(other) }
+        case 2 { print("two") }
+    }
+}

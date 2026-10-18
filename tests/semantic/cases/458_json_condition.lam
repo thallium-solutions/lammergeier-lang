@@ -1,0 +1,8 @@
+# expect-error: `if` condition is `json`; extract a `bool` first: `if bool(value)` or `flag: bool = value`
+
+func main() {
+    payload: json = {"ok": true}
+    if payload.ok {
+        print("ok")
+    }
+}

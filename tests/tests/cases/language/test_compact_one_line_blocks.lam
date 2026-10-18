@@ -1,0 +1,19 @@
+# Test: whole classes and nested blocks written on one line, and a
+# one-line `if { } else { }` after another statement on the same line.
+#
+# expect: 9
+# expect: big
+# expect: 0
+
+class Shape { func area(self) -> int { return 0 } }
+class Sq(Shape) { func area(self) -> int { return 9 } }
+
+func label(n: int) -> str { if n > 5 { return "big" } else { return "small" } }
+
+func countdown() { x = 1; while x > 0 { x -= 1 } }
+
+func main() {
+    s: Shape = Sq(); if s.area() > 0 { print(s.area()) } else { print(0) }
+    print(label(9)); x = 1; while x > 0 { x -= 1 }
+    countdown(); print(x)
+}

@@ -1,43 +1,51 @@
 # Lammergeier standard library: lazy iterator combinators.
 # Import with: from lamiter import Iter
 #
-# ``Iter`` lets you chain ``map`` / ``filter`` / ``take`` / … without
+# ``Iter[T]`` lets you chain ``map`` / ``filter`` / ``take`` / … without
 # materialising intermediate slices. Each combinator wraps the
 # previous one in a thunk; the values only flow through when you call
-# a terminal operation (``toList``, ``forEach``, ``reduce``, ``count``,
-# ``first``, ``sum``, ``max``, ``min``).
+# a terminal operation (``toList``, ``forEach``, ``reduce``, ``count_``,
+# ``first``, ``anyMatch``, ``allMatch``).
 #
 #   from lamiter import Iter
 #
-#   nums: list[int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-#   total: int = Iter.fromList(nums)
-#       .filter(lambda (x: any): (x.(int)) % 2 == 0)
-#       .map(lambda (x: any): (x.(int)) * (x.(int)))
-#       .take(3)
-#       .reduce(0, lambda (acc: any, x: any): (acc.(int)) + (x.(int)))
+#   evens: list[int] = Iter.range_(0, 100).filter(lambda x: x % 2 == 0).map(lambda x: x * x).toList()
+#   names: list[str] = Iter.fromList(users).map(lambda u: u.name).filter(lambda n: n.startsWith("a")).toList()
+#   total: int = Iter.fromList([1, 2, 3]).reduce(0, lambda acc, x: acc + x)
+#   lens: list[int] = Iter.fromList(words).map(len).toList()
 #
-# Element type is ``any`` so the combinators compose with anything;
-# numeric users pay a single ``.(int)`` / ``.(float64)`` assertion at
-# the leaf, the same way Go's ``interface{}`` pipelines work.
+# The iterator is generic over its element type: ``fromList`` /
+# ``repeat`` take it from their argument, ``range_`` / ``count`` are
+# ``Iter[int]``, and ``map`` gives an ``Iter[U]`` of its callback's result
+# type. Callbacks are typed from the elements (``filter`` takes a
+# ``func(T) -> bool``), so a lambda's parameters need no annotation or
+# conversion and a callback of the wrong type is a compile error. An
+# ``Iter[any]`` (from a ``list[any]``) still takes ``func(any) -> ...``
+# callbacks. ``enumerate`` yields ``tuple[int, T]`` pairs; ``first``
+# returns a ``Result[T]`` (an ``EmptyIteratorError`` when there is no
+# value).
 
-class Iter {
-    #- A pull-based iterator. ``self.next_`` is a ``func() (any, bool)``
-       that returns the next value, or ``(_, false)`` at end of stream.
-       Combinators build new ``Iter`` instances that wrap ``next_``. -#
+from lamerrors import Result, Error
+
+class Iter[T] {
+    #- A pull-based iterator. ``self.next_`` holds a Go
+       ``func() (T, bool)`` that returns the next value, or ``(_, false)``
+       at end of stream. Combinators build new ``Iter`` instances that wrap
+       ``next_``. -#
 
     func init(self) {
         self.next_: any = None
-        self.done_: bool = false
     }
 
-    static func fromList(values: list[any]) -> Iter {
+    static func fromList(values: list[T]) -> Iter[T] {
         #- Wrap a slice as an iterator. The slice is captured by
            reference; mutating it mid-iteration is undefined. -#
-        it: Iter = Iter()
+        it: Iter[T] = Iter[T]()
         go! {
             i := 0
-            it.Next_ = func() (interface{}, bool) {
-                if i >= len(values) { return nil, false }
+            it.Next_ = func() (T, bool) {
+                var zero T
+                if i >= len(values) { return zero, false }
                 v := values[i]
                 i++
                 return v, true
@@ -46,12 +54,12 @@ class Iter {
         return it
     }
 
-    static func count(start: int, step: int) -> Iter {
+    static func count(start: int, step: int) -> Iter[int] {
         #- Infinite arithmetic progression. Useful with ``take``. -#
-        it: Iter = Iter()
+        it: Iter[int] = Iter[int]()
         go! {
             n := start
-            it.Next_ = func() (interface{}, bool) {
+            it.Next_ = func() (int, bool) {
                 v := n
                 n += step
                 return v, true
@@ -60,13 +68,13 @@ class Iter {
         return it
     }
 
-    static func range_(start: int, stop: int) -> Iter {
+    static func range_(start: int, stop: int) -> Iter[int] {
         #- Half-open ``[start, stop)`` integer range. -#
-        it: Iter = Iter()
+        it: Iter[int] = Iter[int]()
         go! {
             n := start
-            it.Next_ = func() (interface{}, bool) {
-                if n >= stop { return nil, false }
+            it.Next_ = func() (int, bool) {
+                if n >= stop { return 0, false }
                 v := n
                 n++
                 return v, true
@@ -75,13 +83,16 @@ class Iter {
         return it
     }
 
-    static func repeat(value: any, times: int) -> Iter {
+    static func repeat(value: T, times: int) -> Iter[T] {
         #- Yield ``value`` ``times`` times. -#
-        it: Iter = Iter()
+        it: Iter[T] = Iter[T]()
         go! {
             n := 0
-            it.Next_ = func() (interface{}, bool) {
-                if n >= times { return nil, false }
+            it.Next_ = func() (T, bool) {
+                if n >= times {
+                    var zero T
+                    return zero, false
+                }
                 n++
                 return value, true
             }
@@ -90,48 +101,53 @@ class Iter {
     }
 
     # ─── Lazy combinators ───────────────────────────────────
-    func map(self, fn: any) -> Iter {
-        out: Iter = Iter()
+    func map[U](self, fn: func(T) -> U) -> Iter[U] {
+        #- Apply ``fn`` to each element: an ``Iter[U]`` of its results. -#
+        out: Iter[U] = Iter[U]()
         go! {
-            src := s.Next_.(func() (interface{}, bool))
-            mapper, ok := fn.(func(interface{}) interface{})
-            if !ok { panic("Iter.map: fn must be func(any) -> any") }
-            out.Next_ = func() (interface{}, bool) {
+            src := s.Next_.(func() (T, bool))
+            out.Next_ = func() (U, bool) {
                 v, hasNext := src()
-                if !hasNext { return nil, false }
-                return mapper(v), true
+                if !hasNext {
+                    var zero U
+                    return zero, false
+                }
+                return fn(v), true
             }
         }
         return out
     }
 
-    func filter(self, predicate: any) -> Iter {
-        out: Iter = Iter()
+    func filter(self, predicate: func(T) -> bool) -> Iter[T] {
+        #- Keep the elements ``predicate`` accepts. -#
+        out: Iter[T] = Iter[T]()
         go! {
-            src := s.Next_.(func() (interface{}, bool))
-            pred, ok := predicate.(func(interface{}) bool)
-            if !ok { panic("Iter.filter: predicate must be func(any) -> bool") }
-            out.Next_ = func() (interface{}, bool) {
+            src := s.Next_.(func() (T, bool))
+            out.Next_ = func() (T, bool) {
                 for {
                     v, hasNext := src()
-                    if !hasNext { return nil, false }
-                    if pred(v) { return v, true }
+                    if !hasNext { return v, false }
+                    if predicate(v) { return v, true }
                 }
             }
         }
         return out
     }
 
-    func take(self, n: int) -> Iter {
-        out: Iter = Iter()
+    func take(self, n: int) -> Iter[T] {
+        #- At most the first ``n`` elements (pulls no further). -#
+        out: Iter[T] = Iter[T]()
         go! {
-            src := s.Next_.(func() (interface{}, bool))
+            src := s.Next_.(func() (T, bool))
             taken := 0
             limit := int(n)
-            out.Next_ = func() (interface{}, bool) {
-                if taken >= limit { return nil, false }
+            out.Next_ = func() (T, bool) {
+                if taken >= limit {
+                    var zero T
+                    return zero, false
+                }
                 v, hasNext := src()
-                if !hasNext { return nil, false }
+                if !hasNext { return v, false }
                 taken++
                 return v, true
             }
@@ -139,16 +155,17 @@ class Iter {
         return out
     }
 
-    func drop(self, n: int) -> Iter {
-        out: Iter = Iter()
+    func drop(self, n: int) -> Iter[T] {
+        #- Skip the first ``n`` elements. -#
+        out: Iter[T] = Iter[T]()
         go! {
-            src := s.Next_.(func() (interface{}, bool))
+            src := s.Next_.(func() (T, bool))
             dropped := 0
             limit := int(n)
-            out.Next_ = func() (interface{}, bool) {
+            out.Next_ = func() (T, bool) {
                 for dropped < limit {
-                    _, hasNext := src()
-                    if !hasNext { return nil, false }
+                    v, hasNext := src()
+                    if !hasNext { return v, false }
                     dropped++
                 }
                 return src()
@@ -157,37 +174,36 @@ class Iter {
         return out
     }
 
-    func takeWhile(self, predicate: any) -> Iter {
-        out: Iter = Iter()
+    func takeWhile(self, predicate: func(T) -> bool) -> Iter[T] {
+        #- Elements up to (not including) the first one ``predicate`` rejects. -#
+        out: Iter[T] = Iter[T]()
         go! {
-            src := s.Next_.(func() (interface{}, bool))
-            pred, ok := predicate.(func(interface{}) bool)
-            if !ok { panic("Iter.takeWhile: predicate must be func(any) -> bool") }
+            src := s.Next_.(func() (T, bool))
             done := false
-            out.Next_ = func() (interface{}, bool) {
-                if done { return nil, false }
+            out.Next_ = func() (T, bool) {
+                var zero T
+                if done { return zero, false }
                 v, hasNext := src()
-                if !hasNext { done = true; return nil, false }
-                if !pred(v) { done = true; return nil, false }
+                if !hasNext { done = true; return zero, false }
+                if !predicate(v) { done = true; return zero, false }
                 return v, true
             }
         }
         return out
     }
 
-    func dropWhile(self, predicate: any) -> Iter {
-        out: Iter = Iter()
+    func dropWhile(self, predicate: func(T) -> bool) -> Iter[T] {
+        #- Skip elements while ``predicate`` accepts them, then yield the rest. -#
+        out: Iter[T] = Iter[T]()
         go! {
-            src := s.Next_.(func() (interface{}, bool))
-            pred, ok := predicate.(func(interface{}) bool)
-            if !ok { panic("Iter.dropWhile: predicate must be func(any) -> bool") }
+            src := s.Next_.(func() (T, bool))
             stopped := false
-            out.Next_ = func() (interface{}, bool) {
+            out.Next_ = func() (T, bool) {
                 if !stopped {
                     for {
                         v, hasNext := src()
-                        if !hasNext { return nil, false }
-                        if !pred(v) {
+                        if !hasNext { return v, false }
+                        if !predicate(v) {
                             stopped = true
                             return v, true
                         }
@@ -199,13 +215,15 @@ class Iter {
         return out
     }
 
-    func enumerate(self) -> Iter {
-        #- Yield ``[index, value]`` pairs (as a 2-element list). -#
-        out: Iter = Iter()
+    func enumerate(self) -> Iter[tuple[int, T]] {
+        #- Yield ``(index, value)`` pairs (a ``tuple[int, T]``, printed
+           ``[0 a]``; destructure it with ``i, v = pair`` or ``for i, v in``
+           over ``toList()``). -#
+        out: Iter[tuple[int, T]] = Iter[tuple[int, T]]()
         go! {
-            src := s.Next_.(func() (interface{}, bool))
+            src := s.Next_.(func() (T, bool))
             i := 0
-            out.Next_ = func() (interface{}, bool) {
+            out.Next_ = func() ([]interface{}, bool) {
                 v, hasNext := src()
                 if !hasNext { return nil, false }
                 pair := []interface{}{i, v}
@@ -216,14 +234,14 @@ class Iter {
         return out
     }
 
-    func chain(self, other: Iter) -> Iter {
+    func chain(self, other: Iter[T]) -> Iter[T] {
         #- Concatenate two iterators end-to-end. -#
-        out: Iter = Iter()
+        out: Iter[T] = Iter[T]()
         go! {
-            a := s.Next_.(func() (interface{}, bool))
-            b := other.Next_.(func() (interface{}, bool))
+            a := s.Next_.(func() (T, bool))
+            b := other.Next_.(func() (T, bool))
             useA := true
-            out.Next_ = func() (interface{}, bool) {
+            out.Next_ = func() (T, bool) {
                 if useA {
                     if v, hasNext := a(); hasNext { return v, true }
                     useA = false
@@ -235,97 +253,114 @@ class Iter {
     }
 
     # ─── Terminal operations ────────────────────────────────
-    func toList(self) -> list[any] {
+    func toList(self) -> list[T] {
+        #- Drain the iterator into a ``list[T]``. -#
+        out: list[T] = []
         go! {
-            src := s.Next_.(func() (interface{}, bool))
-            out := []interface{}{}
+            src := s.Next_.(func() (T, bool))
             for {
                 v, hasNext := src()
                 if !hasNext { break }
                 out = append(out, v)
             }
-            return out
         }
+        return out
     }
 
-    func forEach(self, fn: any) {
+    func forEach(self, fn: func(T)) {
+        #- Call ``fn`` on every element. -#
         go! {
-            src := s.Next_.(func() (interface{}, bool))
-            cb, ok := fn.(func(interface{}))
-            if !ok { panic("Iter.forEach: fn must be func(any)") }
+            src := s.Next_.(func() (T, bool))
             for {
                 v, hasNext := src()
                 if !hasNext { break }
-                cb(v)
+                fn(v)
             }
         }
     }
 
-    func reduce(self, initial: any, fn: any) -> any {
+    func reduce[A](self, initial: A, fn: func(A, T) -> A) -> A {
+        #- Fold the elements into an accumulator of type ``A`` (the type of
+           ``initial``): ``reduce(0, lambda acc, x: acc + x)``. -#
+        acc: A = initial
         go! {
-            src := s.Next_.(func() (interface{}, bool))
-            reducer, ok := fn.(func(interface{}, interface{}) interface{})
-            if !ok { panic("Iter.reduce: fn must be func(any, any) -> any") }
-            acc := initial
+            src := s.Next_.(func() (T, bool))
             for {
                 v, hasNext := src()
                 if !hasNext { break }
-                acc = reducer(acc, v)
+                acc = fn(acc, v)
             }
-            return acc
         }
+        return acc
     }
 
     func count_(self) -> int {
         #- Drain the iterator and count how many values it yielded.
            Named with a trailing underscore because ``count`` is a
            static constructor on this same class. -#
+        n: int = 0
         go! {
-            src := s.Next_.(func() (interface{}, bool))
-            n := 0
+            src := s.Next_.(func() (T, bool))
             for {
                 _, hasNext := src()
                 if !hasNext { break }
                 n++
             }
-            return n
         }
+        return n
     }
 
-    func first(self) -> any {
-        #- Return the first value, or ``nil`` if the iterator is empty. -#
+    func first(self) -> Result[T] {
+        #- The first value, or an ``EmptyIteratorError`` when the iterator
+           yields nothing. -#
+        found: bool = false
+        value: any = None
         go! {
-            src := s.Next_.(func() (interface{}, bool))
-            v, hasNext := src()
-            if !hasNext { return nil }
-            return v
-        }
-    }
-
-    func anyMatch(self, predicate: any) -> bool {
-        go! {
-            src := s.Next_.(func() (interface{}, bool))
-            pred, ok := predicate.(func(interface{}) bool)
-            if !ok { panic("Iter.anyMatch: predicate must be func(any) -> bool") }
-            for {
-                v, hasNext := src()
-                if !hasNext { return false }
-                if pred(v) { return true }
+            src := s.Next_.(func() (T, bool))
+            if v, hasNext := src(); hasNext {
+                found = true
+                value = v
             }
         }
+        if not found {
+            return Result.Err(Error("EmptyIteratorError", "Iter.first: empty iterator"))
+        }
+        return Result.Ok(value)
     }
 
-    func allMatch(self, predicate: any) -> bool {
+    func anyMatch(self, predicate: func(T) -> bool) -> bool {
+        #- Whether some element satisfies ``predicate`` (stops at the first). -#
+        matched: bool = false
         go! {
-            src := s.Next_.(func() (interface{}, bool))
-            pred, ok := predicate.(func(interface{}) bool)
-            if !ok { panic("Iter.allMatch: predicate must be func(any) -> bool") }
+            src := s.Next_.(func() (T, bool))
             for {
                 v, hasNext := src()
-                if !hasNext { return true }
-                if !pred(v) { return false }
+                if !hasNext { break }
+                if predicate(v) {
+                    matched = true
+                    break
+                }
             }
         }
+        return matched
+    }
+
+    func allMatch(self, predicate: func(T) -> bool) -> bool {
+        #- Whether every element satisfies ``predicate`` (stops at the first
+           that does not). -#
+        matched: bool = true
+        go! {
+            src := s.Next_.(func() (T, bool))
+            for {
+                v, hasNext := src()
+                if !hasNext { break }
+                if !predicate(v) {
+                    matched = false
+                    break
+                }
+            }
+        }
+        return matched
     }
 }
 

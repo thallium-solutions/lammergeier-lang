@@ -1,0 +1,17 @@
+# expect-pass
+# Every dispatched `str` / `list` method is accepted; a class with its own
+# `index` method is not confused with a list.
+
+class Shelf {
+    func index(self, n: int) -> int { return n }
+}
+
+func main() {
+    s: str = "a,b"
+    print(s.split(",").length(), s.index(","), s.lastIndex(","), s.toUpper(), s.contains("a"))
+    xs: list[int] = [3, 1]
+    xs.append(2)
+    print(xs.sort(), xs.map(lambda x: x * 2), xs.pop(), xs.length())
+    shelf: Shelf = Shelf()
+    print(shelf.index(2))
+}

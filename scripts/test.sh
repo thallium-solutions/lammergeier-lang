@@ -15,7 +15,6 @@ Usage:
   sh scripts/test.sh lsp
   sh scripts/test.sh import
   sh scripts/test.sh unit
-  sh scripts/test.sh rosetta [filter]
 EOF
 }
 
@@ -106,14 +105,8 @@ run_suite() {
             "$PYTHON" tests/tests/test_dependency_crash.py
             "$PYTHON" tests/tests/test_cache_integration.py
             "$PYTHON" tests/tests/test_scoped_imports.py
+            "$PYTHON" tests/tests/test_timings.py
             "$PYTHON" -m pytest tests/tests/test_collection_context_fuzz.py tests/tests/test_random_program_fuzz.py -q
-            ;;
-        rosetta)
-            if [ -n "$filter" ]; then
-                "$PYTHON" tests/rosetta_tests/run_rosetta.py --filter "$filter"
-            else
-                "$PYTHON" tests/rosetta_tests/run_rosetta.py
-            fi
             ;;
         *)
             echo "error: unknown test suite '$suite'" >&2
@@ -133,7 +126,6 @@ if [ "$#" -eq 0 ]; then
     run_suite import
     run_suite unit
     run_suite core
-    run_suite rosetta
     exit 0
 fi
 

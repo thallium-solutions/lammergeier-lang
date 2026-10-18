@@ -2,6 +2,7 @@
 """Definition visitor methods (funcdef, classdef, interfacedef) for the transpiler."""
 
 from __future__ import annotations
+import re
 from lark import Tree, Token
 from typing import List
 from compiler.constants import DUNDER_OPS
@@ -73,6 +74,21 @@ class DefinitionVisitorMixin:
             self._generic_names = prev_generic_names
             self._generic_constraints = prev_generic_constraints
 
+    @staticmethod
+    def _callable_boundary_context() -> dict:
+        """Scoped overrides for a nested Go function body (closure, lambda,
+        IIFE of a ``do`` block): ``return`` / ``break`` there target that
+        function, not an enclosing async goroutine, try IIFE or loop."""
+        return {
+            "_in_async_func": False,
+            "_async_chan_name": None,
+            "_do_return_target": None,
+            "_in_try_iife": False,
+            "_in_try_func": False,
+            "_in_except_handler": False,
+            "_loop_break_flag": "",
+        }
+
     def _emit_nested_funcdef(
         self, func_name, params_node, return_type_node, suite_node,
         tp_clause: str = "",
@@ -100,6 +116,7 @@ class DefinitionVisitorMixin:
         with self._scoped(
             _current_return_type=return_type,
             _q_propagate_ok=(return_type == "*Result"),
+            **self._callable_boundary_context(),
         ):
             self._visit_suite(suite_node)
         self._finish_scoped_body(body_start, params_at_start)
@@ -164,6 +181,7 @@ class DefinitionVisitorMixin:
             with self._scoped(
                 _current_return_type=return_type,
                 _q_propagate_ok=(return_type == "*Result"),
+                **self._callable_boundary_context(),
             ):
                 self._visit_suite(suite_node)
             self._finish_scoped_body(body_start, params_at_start)
@@ -285,7 +303,7 @@ class DefinitionVisitorMixin:
 
     def _emit_generator_func(
         self, go_name, type_clause, params_str, return_type,
-        params_node, suite_node,
+        params_node, suite_node, elem_type: str = "",
     ):
         """Emit a top-level or static generator as an unbuffered channel."""
         chan_type = return_type if return_type else "interface{}"
@@ -299,7 +317,7 @@ class DefinitionVisitorMixin:
         self._emit_params_prologue(params_node)
         body_start = len(self.output_lines)
         params_at_start = set(self.declared_vars)
-        with self._scoped(_in_generator=True, _generator_chan="_ch"):
+        with self._scoped(_in_generator=True, _generator_chan="_ch", _generator_elem_type=elem_type):
             self._visit_suite(suite_node)
         self._emit_unused_local_silencers(body_start, params_at_start)
         self._pop_scope()
@@ -322,13 +340,21 @@ class DefinitionVisitorMixin:
         functions, static methods, and instance methods all have identical
         buffered-handle and return-lowering semantics.
         """
-        chan_type = return_type if return_type else "interface{}"
+        thunk_type = self._async_thunk_go_type(return_type)
         async_ch = "__lam_async_ch"
-        self._emit(f"{declaration} chan {chan_type} {{")
+        self._emit(f"{declaration} {self._async_handle_go_type(return_type)} {{")
         self.indent += 1
-        self._emit(f"{async_ch} := make(chan {chan_type}, 1)")
+        self._emit(f"{async_ch} := make(chan {thunk_type}, 1)")
         self._emit("go func() {")
         self.indent += 1
+        # An exception escaping the body is handed to ``await`` as a
+        # thunk that re-raises it. ``select`` guards against a second
+        # publish (a deferred panic after the result was already sent).
+        self._emit("defer func() {")
+        self._emit("\tif r := recover(); r != nil {")
+        self._emit(f"\t\tselect {{ case {async_ch} <- {thunk_type} {{ panic(r) }}: default: }}")
+        self._emit("\t}")
+        self._emit("}()")
         self._push_scope()
         self._emit_params_prologue(params_node, skip_self=skip_self)
         if self_replacement:
@@ -344,6 +370,9 @@ class DefinitionVisitorMixin:
             _q_propagate_ok=(return_type == "*Result"),
         ):
             self._visit_suite(suite_node)
+            if not return_type:
+                # Falling off the end of a void async body completes it.
+                self._emit_async_result(None)
         self._emit_unused_local_silencers(body_start, params_at_start)
         self._pop_scope()
         self.indent -= 1
@@ -352,6 +381,32 @@ class DefinitionVisitorMixin:
         self.indent -= 1
         self._emit("}")
         self._emit("")
+
+    @staticmethod
+    def _async_thunk_go_type(return_type: str) -> str:
+        """Element of an async handle: a thunk yielding the result (or
+        re-raising the exception the async body raised)."""
+        return f"func() {return_type}" if return_type else "func()"
+
+    @classmethod
+    def _async_handle_go_type(cls, return_type: str) -> str:
+        """Go type of the handle an async callable returns."""
+        return f"chan {cls._async_thunk_go_type(return_type)}"
+
+    @staticmethod
+    def _mentions_names(nodes, names: set) -> bool:
+        """Whether any token below ``nodes`` spells one of ``names``."""
+        if not names:
+            return False
+        stack = [n for n in nodes if n is not None]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, Token):
+                if str(cur) in names:
+                    return True
+            elif isinstance(cur, Tree):
+                stack.extend(c for c in cur.children if c is not None)
+        return False
 
     def _visit_funcdef_body(
         self, is_private, is_static, is_async,
@@ -376,14 +431,20 @@ class DefinitionVisitorMixin:
                 # have to carry the class's type parameters themselves.
                 # Merge the class clause with any method-level one
                 # (method-level generics are rare but legal).
-                static_clause = self._merge_generic_clauses(
-                    self._generic_classes.get(self.current_class, ""),
-                    tp_clause,
-                )
+                class_clause = self._generic_classes.get(self.current_class, "")
+                if class_clause and not self._mentions_names(
+                    (params_node, return_type_node, suite_node),
+                    set(self._class_type_param_names.get(self.current_class, [])),
+                ):
+                    # ``Box.two()`` on ``class Box[T]``: a static method that
+                    # never uses ``T`` is not generic (Go could not infer T).
+                    class_clause = ""
+                static_clause = self._merge_generic_clauses(class_clause, tp_clause)
                 if self._tree_contains(suite_node, "yield_expr"):
                     self._emit_generator_func(
                         go_name, static_clause, params_str, return_type,
                         params_node, suite_node,
+                        elem_type=self._generator_elem_go_type(return_type_node),
                     )
                 elif is_async:
                     self._emit_async_callable(
@@ -409,10 +470,11 @@ class DefinitionVisitorMixin:
                 class_args = self._class_type_args(self.current_class)
                 method_name = self._go_method_name(self.current_class, func_name) + method_suffix
                 params_str = self._typed_params_to_go(params_node, skip_self=True)
+                recv = self._receiver_name_for(params_node, suite_node)
                 self._emit_async_callable(
-                    f"func (s *{go_cls}{class_args}) {method_name}{tp_clause}({params_str})",
+                    f"func ({recv} *{go_cls}{class_args}) {method_name}{tp_clause}({params_str})",
                     return_type, return_type_key, params_node, suite_node,
-                    skip_self=True, self_replacement="s",
+                    skip_self=True, self_replacement=recv,
                 )
             elif func_name == "__str__" or func_name == "__repr__":
                 self._emit_method(self._go_method_name(self.current_class, func_name) + method_suffix, "string", params_node, suite_node, tp_clause=tp_clause)
@@ -424,6 +486,13 @@ class DefinitionVisitorMixin:
                     self._class_dunder_methods[self.current_class] = {}
                 self._class_dunder_methods[self.current_class][func_name] = go_method
                 self._emit_method(go_method, return_type, params_node, suite_node, tp_clause=tp_clause, return_type_key=return_type_key)
+            elif tp_clause and f"{self.current_class}.{func_name}" in self._generic_instance_methods:
+                # ``func map[U](self, ...)``: Go methods cannot declare type
+                # parameters, so the method is a package-level generic
+                # function taking the receiver first.
+                go_name = self._generic_method_go_name(self.current_class, func_name) + method_suffix
+                self._emit_method(go_name, return_type, params_node, suite_node, tp_clause=tp_clause,
+                                  return_type_key=return_type_key, as_function=True)
             else:
                 method_name = self._go_method_name(self.current_class, func_name) + method_suffix
                 self._emit_method(method_name, return_type, params_node, suite_node, tp_clause=tp_clause, return_type_key=return_type_key)
@@ -464,6 +533,7 @@ class DefinitionVisitorMixin:
             self._emit_generator_func(
                 go_name, tp_clause, params_str, return_type,
                 params_node, suite_node,
+                elem_type=self._generator_elem_go_type(return_type_node),
             )
             return
 
@@ -531,17 +601,196 @@ class DefinitionVisitorMixin:
         """
         if visited is None:
             visited = set()
-        for base in self.class_bases.get(class_name, []):
+        bases = self.class_bases.get(class_name) or self._hier_bases(class_name)
+        for base in bases:
             if base in visited:
                 continue
             visited.add(base)
             go_base = self._go_class_name(base)
             path = f"{receiver}.{go_base}"
-            self._emit(f"{path} = &{go_base}{{}}")
+            if class_name not in self.class_bases and self._base_type_args(class_name, base) == "" and self._class_type_param_names_of(base):
+                # An imported generic grand-ancestor: its type arguments
+                # are not known here; the parent constructor builds it.
+                continue
+            self._emit(f"{path} = &{go_base}{self._base_type_args(class_name, base)}{{}}")
             # Recurse to cover grandparents (``Puppy -> Dog ->
             # Animal``). The receiver for the next level is the
             # freshly-allocated parent pointer we just wrote.
             self._emit_ancestor_init(base, receiver=path, visited=visited)
+            self._emit_field_defaults(base, receiver=path)
+
+    # ─── Virtual dispatch ──────────────────────────────────────
+    #
+    # Go embedding has no virtual dispatch: inside ``(*Base).Describe``
+    # the receiver is the embedded ``*Base`` and ``s.Area()`` always runs
+    # ``(*Base).Area`` even when the object is a ``*Square``; a base-typed
+    # value (``*Shape`` holding the parent part of a ``*Square``) has the
+    # same problem from outside. A class that has a subclass anywhere in
+    # the program (see ``compiler/visitors/subtyping.py``) therefore gets:
+    #
+    #   * an interface ``lamVirtual<Class>`` listing the methods it defines
+    #     that a descendant overrides,
+    #   * a ``_lamSelf`` field holding the most-derived object (``nil``
+    #     when the object *is* a ``<Class>``),
+    #   * ``_lamBindSelf(v)``, called by subclass constructors on the
+    #     embedded parent pointers,
+    #   * one small wrapper ``_lamVirt_<M>`` per such method that forwards
+    #     to ``_lamSelf.M(...)`` when bound and to the static ``s.M(...)``
+    #     otherwise (Go inlines it, so plain objects pay one nil check).
+    #
+    # A call ``x.m(...)`` (``self`` included) lowers to ``x._lamVirt_M(...)``
+    # only when a strict descendant of the static class of ``x`` overrides
+    # ``m``; every other call stays a direct Go method call.
+
+    def _virtual_method_plan(self, class_name: str) -> list:
+        """``[(name, class_name, funcdefs)]`` getting a dispatch wrapper.
+
+        The methods ``class_name`` defines (in this module) that a
+        descendant anywhere in the program overrides with the same
+        signature. Dunders, generators, methods with their own type
+        parameters and overloaded names keep static dispatch.
+        """
+        if class_name in self._virtual_plans:
+            return self._virtual_plans[class_name]
+        plan = []
+        local = self._local_class_methods.get(class_name, {})
+        for name in sorted(self._hier_virtual_methods(class_name)):
+            funcdefs = local.get(name)
+            if funcdefs:
+                plan.append((name, class_name, funcdefs))
+        self._virtual_plans[class_name] = plan
+        return plan
+
+    def _has_virtual_dispatch(self, class_name: str) -> bool:
+        return bool(self._virtual_method_plan(class_name))
+
+    def _param_forward_names(self, params_node) -> List[str]:
+        """Argument list forwarding every (non-self) parameter unchanged."""
+        names: List[str] = []
+        if not isinstance(params_node, Tree):
+            return names
+        tuple_idx = 0
+        for child in params_node.children:
+            if isinstance(child, Tree) and child.data == "typed_paramvalue":
+                param = child.children[0]
+                if isinstance(param, Tree) and param.data == "typed_param":
+                    name = self._get_name(param.children[0])
+                    if name != "self":
+                        names.append(self._go_binding_name(name))
+                elif isinstance(param, Tree) and param.data == "tuple_typed_param":
+                    names.append(f"{self._TUPLE_PARAM_PREFIX}{tuple_idx}")
+                    tuple_idx += 1
+            elif isinstance(child, Tree) and child.data == "typed_starparams":
+                star = child.children[0]
+                if isinstance(star, Tree) and star.data == "typed_param":
+                    names.append(self._go_binding_name(self._get_name(star.children[0])) + "...")
+        return names
+
+    def _virtual_wrapper_specs(self, class_name: str) -> list:
+        """Render the plan: ``[(go_method, params, args, return_type)]``."""
+        specs = []
+        seen = set()
+        for name, def_class, funcdefs in self._virtual_method_plan(class_name):
+            for fd in funcdefs:
+                (_p, _s, is_async, _n, params_node, return_type_node,
+                 _suite, _tp) = self._parse_funcdef(fd)
+                return_type = self._resolve_return_type(return_type_node)
+                return_key = self._overload_return_key(return_type_node)
+                sig = self._param_types_sig(params_node, skip_self=True) if params_node else ()
+                suffix = self._overload_suffix_for_sig(f"{def_class}.{name}", sig, return_key)
+                go_method = self._go_method_name(def_class, name) + suffix
+                if go_method in seen:
+                    continue
+                seen.add(go_method)
+                if is_async:
+                    return_type = self._async_handle_go_type(return_type)
+                specs.append((
+                    go_method,
+                    self._typed_params_to_go(params_node, skip_self=True),
+                    ", ".join(self._param_forward_names(params_node)),
+                    return_type,
+                ))
+        return specs
+
+    def _emit_virtual_dispatch(self, class_name: str, tp_clause: str, specs: list) -> None:
+        go_cls = self._go_class_name(class_name)
+        class_args = self._class_type_args(class_name)
+        iface = f"lamVirtual{go_cls}"
+        self._emit(f"type {iface}{tp_clause} interface {{")
+        self.indent += 1
+        for go_method, params, _args, ret in specs:
+            self._emit(f"{go_method}({params}){' ' + ret if ret else ''}")
+        self.indent -= 1
+        self._emit("}")
+        self._emit("")
+        self._emit(f"func (s *{go_cls}{class_args}) _lamBindSelf(v interface{{}}) {{")
+        self._emit(f"\tif iv, ok := v.({iface}{class_args}); ok {{ s._lamSelf = iv }}")
+        self._emit("}")
+        self._emit("")
+        for go_method, params, args, ret in specs:
+            self._emit(f"func (_lamRecv *{go_cls}{class_args}) _lamVirt_{go_method}({params}){' ' + ret if ret else ''} {{")
+            self.indent += 1
+            if ret:
+                self._emit(f"if _lamRecv._lamSelf != nil {{ return _lamRecv._lamSelf.{go_method}({args}) }}")
+                self._emit(f"return _lamRecv.{go_method}({args})")
+            else:
+                self._emit(f"if _lamRecv._lamSelf != nil {{ _lamRecv._lamSelf.{go_method}({args}); return }}")
+                self._emit(f"_lamRecv.{go_method}({args})")
+            self.indent -= 1
+            self._emit("}")
+            self._emit("")
+        self._class_virtual_wrappers[class_name] = {spec[0] for spec in specs}
+
+    def _virtual_bind_stmts(self, class_name: str, path: str, self_expr: str = "s",
+                            visited: "set | None" = None) -> List[str]:
+        """Bind ``self_expr`` as the dynamic object of the parent at ``path``
+        (an embedded ``class_name`` pointer) and of all its ancestors."""
+        if visited is None:
+            visited = set()
+        if class_name in visited:
+            return []
+        visited.add(class_name)
+        stmts: List[str] = []
+        if class_name in self._local_class_methods:
+            if self._hier_subclassed(class_name):
+                stmts.append(f"{path}._lamBindSelf({self_expr})")
+            for base in self.class_bases.get(class_name, []):
+                stmts.extend(self._virtual_bind_stmts(
+                    base, f"{path}.{self._go_class_name(base)}", self_expr, visited,
+                ))
+        else:
+            # Imported parent: bind dynamically when it supports dispatch,
+            # then its own (imported) ancestors.
+            stmts.append(
+                f"if _lamB, ok := interface{{}}({path}).(interface{{ _lamBindSelf(interface{{}}) }}); ok "
+                f"{{ _lamB._lamBindSelf({self_expr}) }}"
+            )
+            for base in self._hier_bases(class_name):
+                stmts.extend(self._virtual_bind_stmts(
+                    base, f"{path}.{self._go_class_name(base)}", self_expr, visited,
+                ))
+        return stmts
+
+    def _emit_virtual_binds(self, class_name: str, receiver: str = "s") -> None:
+        """Constructor prologue: bind ``receiver`` into every embedded ancestor."""
+        visited: set = set()
+        for base in self.class_bases.get(class_name, []):
+            for stmt in self._virtual_bind_stmts(
+                base, f"{receiver}.{self._go_class_name(base)}", receiver, visited,
+            ):
+                self._emit(stmt)
+
+    def _emit_field_defaults(self, class_name: str, *, receiver: str) -> None:
+        """Assign class-body field initializers (``count: int = 0``).
+
+        Runs in every constructor right after the embedded parents are
+        allocated and before the ``init`` body, ancestors first, so the
+        body (and a subclass default for the same field) can override them.
+        """
+        for field_name, go_type, value_node in self.class_field_defaults.get(class_name, []):
+            with self._scoped(_self_replacement=receiver.split(".", 1)[0], _propagate_cast_hint=go_type):
+                value_str = self._typed_value_to_go(value_node, go_type)
+            self._emit(f"{receiver}.{self._go_field_name(class_name, field_name)} = {value_str}")
 
     def _emit_constructor(self, func_name, params_node, suite_node):
         cls = self.current_class
@@ -553,10 +802,11 @@ class DefinitionVisitorMixin:
         class_clause = self._generic_classes.get(cls, "")
         class_args = self._class_type_args(cls)
 
+        recv = self._receiver_name_for(params_node, suite_node)
         self._emit(f"func New{go_cls}{class_clause}({params_str}) *{go_cls}{class_args} {{")
         self.indent += 1
         self._push_scope()
-        self._emit(f"s := &{go_cls}{class_args}{{}}")
+        self._emit(f"{recv} := &{go_cls}{class_args}{{}}")
         # Initialise every embedded ancestor pointer to a zero-value
         # instance so inherited methods can read the shared fields
         # without segfaulting on a nil receiver. Without this, a
@@ -573,22 +823,30 @@ class DefinitionVisitorMixin:
         # ``name`` without panicking. Cycles are guarded with a
         # ``visited`` set — they're nonsense in a class hierarchy
         # but defensive against malformed input.
-        self._emit_ancestor_init(cls, receiver="s")
+        self._emit_ancestor_init(cls, receiver=recv)
+        self._emit_field_defaults(cls, receiver=recv)
+        self._emit_virtual_binds(cls, receiver=recv)
         self._emit_params_prologue(params_node, skip_self=True)
-        self._declare_var("s")
+        self._declare_var(recv)
         body_start = len(self.output_lines)
         params_at_start = set(self.declared_vars)
-        with self._scoped(_self_replacement="s"):
+        with self._scoped(_self_replacement=recv):
             self._visit_suite(suite_node)
         self._emit_unused_local_silencers(body_start, params_at_start)
-        self._emit("return s")
+        self._emit(f"return {recv}")
         self._pop_scope()
         self.indent -= 1
         self._emit("}")
         self._emit("")
 
+    def _generic_method_go_name(self, class_name: str, method_name: str) -> str:
+        """Go name of the package-level function a method with its own type
+        parameters lowers to: ``Iter.map`` -> ``Iter_Map``."""
+        return f"{self._go_class_name(class_name)}_{self._go_method_name(class_name, method_name)}"
+
     def _emit_method(self, go_method, return_type, params_node, suite_node,
-                     tp_clause: str = "", return_type_key: str = ""):
+                     tp_clause: str = "", return_type_key: str = "",
+                     as_function: bool = False):
         cls = self.current_class
         go_cls = self._go_class_name(cls)
         params_str = self._typed_params_to_go(params_node, skip_self=True)
@@ -600,23 +858,57 @@ class DefinitionVisitorMixin:
         # receiver and ``tp_clause`` only for method-level generics
         # (rare — most methods inherit from the class).
         class_args = self._class_type_args(cls)
-        self._emit(f"func (s *{go_cls}{class_args}) {go_method}{tp_clause}({params_str}){ret_str} {{")
+        # Like functions: a ``try`` with ``catch`` lowers to an IIFE, so a
+        # ``return X`` inside it stores ``X`` in the named ``retval`` result.
+        has_try = bool(return_type) and not return_type.startswith("(") and self._suite_contains_try(suite_node)
+        if has_try:
+            ret_str = f" (retval {return_type})"
+        recv = self._receiver_name_for(params_node, suite_node)
+        if as_function:
+            clause = self._merge_generic_clauses(self._generic_classes.get(cls, ""), tp_clause)
+            recv_param = f"{recv} *{go_cls}{class_args}"
+            all_params = f"{recv_param}, {params_str}" if params_str else recv_param
+            self._emit(f"func {go_method}{clause}({all_params}){ret_str} {{")
+        else:
+            self._emit(f"func ({recv} *{go_cls}{class_args}) {go_method}{tp_clause}({params_str}){ret_str} {{")
         self.indent += 1
         self._push_scope()
+        if has_try:
+            self._declare_var("retval")
         self._emit_params_prologue(params_node, skip_self=True)
-        self._declare_var("s")
+        self._declare_var(recv)
         body_start = len(self.output_lines)
         params_at_start = set(self.declared_vars)
-        with self._scoped(_self_replacement="s",
+        with self._scoped(_self_replacement=recv,
+                          _in_try_func=has_try,
                           _current_return_type=return_type or "",
                           _current_return_type_key=return_type_key or return_type or "",
                           _q_propagate_ok=(return_type == "*Result")):
             self._visit_suite(suite_node)
         self._emit_unused_local_silencers(body_start, params_at_start)
+        if has_try:
+            self._emit("return")
         self._pop_scope()
         self.indent -= 1
         self._emit("}")
         self._emit("")
+
+    def _receiver_name_for(self, params_node, suite_node) -> str:
+        """Go receiver name of a method / constructor: ``s``, unless the Lam
+        code uses ``s`` itself (a parameter, a local or a global read), which
+        would collide with it; then ``_lamS``."""
+        def uses_s(node) -> bool:
+            if not isinstance(node, Tree):
+                return False
+            if node.data in {"typed_param", "var"} and node.children:
+                if self._get_name(node.children[0]) == "s":
+                    return True
+            if node.data == "fstring" and node.children:
+                if re.search(r"(?<![\w.])s\b", str(node.children[0])):
+                    return True
+            return any(uses_s(child) for child in node.children)
+
+        return "_lamS" if uses_s(params_node) or uses_s(suite_node) else "s"
 
     def _class_type_args(self, class_name: str) -> str:
         """Return the ``[T, U]`` args string for a generic class's name use.
@@ -673,23 +965,27 @@ class DefinitionVisitorMixin:
             # value. This preserves Python's "fields defined on the
             # parent are visible through ``self`` in the child"
             # semantics on top of Go's embedded-struct promotion.
-            parent_fields: set = set()
-            for base in self.class_bases.get(class_name, []):
-                for f_name, _ in self.class_fields.get(base, []):
-                    parent_fields.add(f_name)
+            parent_fields: set = self._hier_inherited_field_names(class_name)
+            virtual_specs = self._virtual_wrapper_specs(class_name)
+            subclassed = self._hier_subclassed(class_name)
             self._emit(f"type {go_cls}{tp_clause} struct {{")
             self.indent += 1
             for base in self.class_bases.get(class_name, []):
                 go_base = self._go_class_name(base)
-                self._emit(f"*{go_base}")
+                self._emit(f"*{go_base}{self._base_type_args(class_name, base)}")
             for field_name, go_type in fields:
                 if field_name in parent_fields:
                     continue
                 json_tag = field_name
                 self._emit(f'{self._go_field_name(class_name, field_name)} {go_type} `json:"{json_tag}"`')
+            if subclassed:
+                self._emit(f"_lamSelf lamVirtual{go_cls}{self._class_type_args(class_name)}")
             self.indent -= 1
             self._emit("}")
             self._emit("")
+            if subclassed:
+                self._emit_virtual_dispatch(class_name, tp_clause, virtual_specs)
+            self._emit_hierarchy_support(class_name)
 
             self._emit_static_fields(class_name)
 
@@ -704,12 +1000,16 @@ class DefinitionVisitorMixin:
                                 has_init = True
                             self._visit(child)
 
-                if not has_init:
+                if not has_init and self._emit_inherited_constructor(class_name, tp_clause):
+                    pass
+                elif not has_init:
                     class_args = self._class_type_args(class_name)
                     self._emit(f"func New{go_cls}{tp_clause}() *{go_cls}{class_args} {{")
                     self.indent += 1
                     self._emit(f"s := &{go_cls}{class_args}{{}}")
                     self._emit_ancestor_init(class_name, receiver="s")
+                    self._emit_field_defaults(class_name, receiver="s")
+                    self._emit_virtual_binds(class_name)
                     self._emit("return s")
                     self.indent -= 1
                     self._emit("}")

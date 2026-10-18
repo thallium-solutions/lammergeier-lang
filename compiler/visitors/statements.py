@@ -2,9 +2,11 @@
 """Statement visitor methods for the transpiler."""
 
 from __future__ import annotations
+import re
 from lark import Tree, Token
 from typing import Optional, Tuple, List
 from compiler.constants import PYTHON_EXCEPTIONS
+from compiler.typesys import render_type as render_type_text
 
 
 class StatementVisitorMixin:
@@ -96,8 +98,73 @@ class StatementVisitorMixin:
         class_name = self._infer_receiver_class(value_node)
         if not class_name or class_name not in self._class_names:
             return
+        declared = self._var_types.get(target_str, "")
+        if declared and target_str in self.declared_vars and self._hier_is_subclass(class_name, declared):
+            # ``shape = Circle(2)`` keeps the declared base type.
+            return
         self._var_types[target_str] = class_name
         self._var_go_types[target_str] = f"*{self._go_class_name(class_name)}"
+
+    _LAM_TYPE_NODE_CACHE: dict = {}
+
+    def _lam_type_text_node(self, type_text: str):
+        """Parse a Lam type spelled as text (``dict[str, int]``) into the
+        grammar's type node, or ``None``."""
+        cache = StatementVisitorMixin._LAM_TYPE_NODE_CACHE
+        if type_text in cache:
+            return cache[type_text]
+        result = None
+        try:
+            from compiler.lammergeier import create_parser as _cp
+            tree = _cp().parse(f"lamInferredT: {type_text} = 0;\n")
+            for sub in tree.iter_subtrees():
+                if sub.data == "annassign":
+                    result = next(
+                        (c for c in sub.children if isinstance(c, Tree) and c.data in {"type_expr", "type_union", "type_name", "type_generic", "type_func"}),
+                        None,
+                    )
+                    break
+        except Exception:
+            result = None
+        cache[type_text] = result
+        return result
+
+    def _semantic_inferred_go_type(self, node: Tree):
+        """``(type_node, go_type)`` the semantic checker inferred for the
+        first plain assignment ``node`` (``name = value``), or ``None``
+        when unknown or not concrete enough to declare."""
+        type_text = getattr(node, "_lam_inferred_type", "")
+        if not type_text or re.search(r"\b(any|unknown|object|None|T\d*)\b", type_text):
+            return None
+        type_node = self._lam_type_text_node(type_text)
+        if type_node is None:
+            return None
+        go_type = self._type_expr_to_go(type_node)
+        if not go_type or "interface{}" in go_type:
+            return None
+        return type_node, go_type
+
+    def _bare_generic_local_go_type(self, node: Tree, go_type: str, value):
+        """``(go_type, type_node)`` of a local annotated with a bare generic
+        class (``it: Iter``), from the semantic checker's inferred type or
+        the initializer's Go type; ``None`` otherwise."""
+        bare = go_type[1:] if go_type.startswith("*") else ""
+        cls = next(
+            (name for name in self._class_names
+             if self._go_class_name(name) == bare and self._generic_classes.get(name)),
+            "",
+        )
+        if not cls:
+            return None
+        type_text = getattr(node, "_lam_inferred_type", "")
+        type_node = self._lam_type_text_node(type_text) if type_text else None
+        candidate = self._type_expr_to_go(type_node) if type_node is not None else ""
+        if not candidate.startswith(go_type + "["):
+            candidate = self._expr_go_type_hint(value) or ""
+            type_node = None
+        if not candidate.startswith(go_type + "["):
+            return None
+        return candidate, type_node if type_node is not None else node.children[1]
 
     def _visit_annassign(self, node: Tree):
         is_private = False
@@ -117,6 +184,12 @@ class StatementVisitorMixin:
 
         target_str = self._expr_to_go(target)
         go_type = self._type_expr_to_go(type_node)
+        if value is not None:
+            # ``it: Iter = Iter.range_(0, 3)``: a bare generic class takes
+            # the initializer's type arguments (``*Iter[int]``).
+            inferred_generic = self._bare_generic_local_go_type(node, go_type, value)
+            if inferred_generic:
+                go_type, type_node = inferred_generic
         overload_type_key = self._overload_return_key(type_node)
 
         raw_type = self._get_raw_type_name(type_node)
@@ -129,6 +202,7 @@ class StatementVisitorMixin:
 
         if go_type and "." not in target_str:
             self._var_go_types[target_str] = go_type
+            self._record_lam_type(target_str, type_node)
             self._note_result_payload(target_str, type_node)
             tuple_types = self._list_tuple_element_types(type_node)
             if tuple_types:
@@ -249,6 +323,8 @@ class StatementVisitorMixin:
                     return
             target_str = self._expr_to_go(target_node)
             self._record_inferred_target_type(target_str, value_node)
+            if self._emit_semantic_typed_assign(node, target_node, target_str, value_node):
+                return
             target_go_type = self._expr_go_type_hint(parts[0])
             # Ternary in plain assign
             if isinstance(value_node, Tree) and value_node.data == "test" and len(value_node.children) == 3:
@@ -319,8 +395,26 @@ class StatementVisitorMixin:
             # Tuple unpacking
             if isinstance(parts[0], Tree) and parts[0].data == "tuple":
                 names = [self._expr_to_go(c) for c in parts[0].children if c is not None]
+                value_hint = self._expr_go_type_hint(value_node) or ""
                 if isinstance(value_node, Tree) and value_node.data in {"tuple", "list"}:
                     values = [self._expr_to_go(child) for child in value_node.children if child is not None]
+                    unpacked_value = ", ".join(values)
+                elif value_hint.startswith("[]"):
+                    # ``a, b = t`` with ``t`` a tuple (or list) value: index it.
+                    self._q_temp_counter += 1
+                    tmp = f"__lamTup{self._q_temp_counter}"
+                    self._emit(f"{tmp} := {value_str}")
+                    elem_types = self._tuple_value_element_go_types(value_node, len(names))
+                    values = []
+                    for index, _name in enumerate(names):
+                        cast = elem_types[index] if index < len(elem_types) else ""
+                        item = f"{tmp}[{index}]"
+                        if cast and value_hint == "[]interface{}":
+                            item = f"{item}.({cast})"
+                        values.append(item)
+                    for name, cast in zip(names, elem_types):
+                        if cast and name != "_":
+                            self._var_go_types[name] = cast
                     unpacked_value = ", ".join(values)
                 else:
                     unpacked_value = value_str
@@ -344,14 +438,129 @@ class StatementVisitorMixin:
                 # ``_ = someCall()`` works as a discard.
                 self._emit(f"_ = {value_str}")
             else:
+                if isinstance(value_node, Tree) and value_node.data == "set" and not target_go_type:
+                    # ``flags = {"new", "active"}``: keep the inferred
+                    # ``map[T]bool`` so ``for f in flags`` ranges over keys.
+                    set_type = self._infer_type_from_value(value_node)
+                    if self._is_go_set_type(set_type):
+                        value_str = self._typed_set_literal_to_go(value_node, set_type)
+                        self._var_go_types[target_str] = set_type
+                elif (
+                    isinstance(value_node, Tree) and value_node.data == "tuple"
+                    and not target_go_type and not self._contains_propagate(value_node)
+                ):
+                    # ``t = (1, "a")``: one tuple value (``[]interface{}``).
+                    value_str = self._typed_value_to_go(value_node, "[]interface{}")
+                    self._var_go_types[target_str] = "[]interface{}"
+                    inferred_text = getattr(node, "_lam_inferred_type", "")
+                    inferred_node = self._lam_type_text_node(inferred_text) if inferred_text else None
+                    if inferred_node is not None:
+                        self._record_lam_type(target_str, inferred_node)
+                elif (
+                    isinstance(value_node, Tree) and value_node.data == "list"
+                    and not target_go_type and not self._contains_propagate(value_node)
+                ):
+                    # ``handles = [slow(1), slow(2)]``: a list of same-typed
+                    # elements keeps that element type.
+                    list_type = self._infer_type_from_value(value_node)
+                    if list_type.startswith("[]") and "interface{}" not in list_type:
+                        value_str = self._typed_list_literal_to_go(value_node, list_type)
+                        self._var_go_types[target_str] = list_type
+                if not target_go_type and target_str not in self._var_go_types:
+                    # ``n = user?.name`` (``*string``), ``h = slow(1)``
+                    # (an async handle), ``f = maker()``: keep the shape.
+                    value_hint = self._expr_go_type_hint(value_node) or ""
+                    if not value_hint and isinstance(value_node, Tree) and value_node.data in {"dict", "list"}:
+                        value_hint = self._infer_type_from_value(value_node) or ""
+                    if value_hint:
+                        self._var_go_types[target_str] = value_hint
                 self._emit(f"{target_str} := {value_str}")
                 self._declare_var(target_str)
+
+    def _emit_semantic_typed_assign(self, node: Tree, target_node, target_str: str, value_node) -> bool:
+        """``name = value`` declaring ``name``: when the semantic checker
+        inferred a concrete type, record it (so later uses dispatch on it)
+        and, if the value's Go shape is not already that type, lower it
+        like ``name: T = value``."""
+        if not (isinstance(target_node, Tree) and target_node.data == "var"):
+            return False
+        if (
+            target_str == "_"
+            or target_str in self.declared_vars
+            or "." in target_str
+            or self._is_static_var_go_name(target_str)
+        ):
+            return False
+        inferred = self._semantic_inferred_go_type(node)
+        if inferred is None or self._contains_async_handle_call(value_node):
+            return False
+        type_node, go_type = inferred
+        own = self._expr_go_type_hint(value_node) or self._infer_type_from_value(value_node) or ""
+        raw_type = self._get_raw_type_name(type_node)
+        if raw_type and raw_type in self._class_names:
+            self._var_types[target_str] = raw_type
+        else:
+            self._var_types.pop(target_str, None)
+        literal = isinstance(value_node, Tree) and value_node.data in {
+            "list", "dict", "set", "list_comprehension", "dict_comprehension", "set_comprehension",
+        }
+        if own == go_type:
+            value_str = self._typed_value_to_go(value_node, go_type) if literal else self._expr_to_go(value_node)
+            decl = f"{target_str} := {value_str}"
+        else:
+            with self._scoped(_propagate_cast_hint=go_type):
+                value_str = self._typed_value_to_go(value_node, go_type)
+            decl = f"var {target_str} {go_type} = {value_str}"
+        self._var_go_types[target_str] = go_type
+        self._record_lam_type(target_str, type_node)
+        self._note_result_payload(target_str, type_node)
+        tuple_types = self._list_tuple_element_types(type_node)
+        if tuple_types:
+            self._tuple_iterable_element_types[target_str] = tuple_types
+        self._emit(decl)
+        self._declare_var(target_str)
+        return True
+
+    def _tuple_value_element_go_types(self, value_node, count: int) -> list:
+        """Go types of the positions of a tuple-typed value (``""`` when
+        unknown)."""
+        from compiler.typesys import GenericType as _Generic
+        lam = None
+        if isinstance(value_node, Tree) and value_node.data == "var" and value_node.children:
+            lam = self._var_lam_types.get(self._get_name(value_node.children[0]))
+        if isinstance(lam, _Generic) and lam.base == "tuple":
+            out = []
+            for arg in lam.args:
+                type_node = self._lam_type_text_node(render_type_text(arg))
+                go = self._type_expr_to_go(type_node) if type_node is not None else ""
+                out.append(go if go and "interface{}" not in go else "")
+            return out
+        return [""] * count
+
+    def _contains_async_handle_call(self, node) -> bool:
+        """Whether ``node`` calls an ``async func`` without awaiting it
+        (the value is a handle, which the semantic types do not model)."""
+        if not isinstance(node, Tree) or node.data in {"await_call", "lambdef"}:
+            return False
+        if node.data == "funccall" and node.children:
+            callee = node.children[0]
+            if isinstance(callee, Tree) and callee.data == "var" and callee.children:
+                if self._get_name(callee.children[0]) in self._async_functions:
+                    return True
+        return any(self._contains_async_handle_call(c) for c in node.children)
 
     def _visit_augassign(self, node: Tree):
         target_str = self._expr_to_go(node.children[0])
         op = self._get_augassign_op(node.children[1])
         # ``total += f()?``: the ``?`` payload has the target's type.
         target_type = self._expr_go_type_hint(node.children[0]) if isinstance(node.children[0], Tree) else ""
+        set_op = {"|=": "|", "&=": "&", "-=": "-"}.get(op)
+        target_set = target_type if set_op and self._is_go_set_type(target_type) else ""
+        if target_set and self._is_lam_set_value(target_str, target_set):
+            # ``tags |= other`` / ``&=`` / ``-=`` on a set.
+            value = self._typed_value_to_go(node.children[2], target_set)
+            self._emit(f"{target_str} = {self._set_binop_to_go(set_op, target_str, value, target_set)}")
+            return
         if target_type and target_type != "interface{}":
             with self._scoped(_propagate_cast_hint=target_type):
                 value_str = self._expr_to_go(node.children[2])
@@ -360,7 +569,11 @@ class StatementVisitorMixin:
 
         if op == "**=":
             self._need_import("math")
-            self._emit(f"{target_str} = math.Pow({target_str}, {value_str})")
+            if target_type in self._NUMERIC_GO_TYPES and target_type != "float64":
+                # ``x **= 2`` on an int stays an int.
+                self._emit(f"{target_str} = {target_type}(math.Pow(float64({target_str}), float64({value_str})))")
+            else:
+                self._emit(f"{target_str} = math.Pow({target_str}, float64({value_str}))")
         elif op == "//=":
             self._emit(f"{target_str} = int({target_str} / {value_str})")
         elif op == "*=" and target_type == "string":
@@ -438,10 +651,6 @@ class StatementVisitorMixin:
     # ─── Return ────────────────────────────────────────────────
 
     def _visit_return_stmt(self, node: Tree):
-        in_except = self._in_except_handler
-        in_try = self._in_try_func
-        in_try_iife = self._in_try_iife
-
         if node.children and node.children[0] is not None:
             val_node = node.children[0]
             return_type = getattr(self, "_current_return_type", "") or ""
@@ -464,19 +673,11 @@ class StatementVisitorMixin:
                 cond = self._expr_to_go(val_node.children[1])
                 self._emit(f"if {cond} {{")
                 self.indent += 1
-                if self._in_async_func and self._async_chan_name:
-                    self._emit(f"{self._async_chan_name} <- {true_val}")
-                    self._emit("return")
-                else:
-                    self._emit(f"return {true_val}")
+                self._emit_return_value(true_val)
                 self.indent -= 1
                 self._emit(f"}} else {{")
                 self.indent += 1
-                if self._in_async_func and self._async_chan_name:
-                    self._emit(f"{self._async_chan_name} <- {false_val}")
-                    self._emit("return")
-                else:
-                    self._emit(f"return {false_val}")
+                self._emit_return_value(false_val)
                 self.indent -= 1
                 self._emit(f"}}")
                 return
@@ -489,29 +690,78 @@ class StatementVisitorMixin:
                         val = self._typed_value_to_go(val_node, return_type, return_type_key)
                 else:
                     val = self._expr_to_go(val_node)
+            self._emit_return_value(val)
+        else:
+            self._emit_return_value(None)
 
-            if self._in_async_func and self._async_chan_name:
-                self._emit(f"{self._async_chan_name} <- {val}")
-                self._emit("return")
-            elif in_try_iife:
-                # Inside the IIFE wrapping a try-with-catch: rewrite
-                # ``return X`` to (set retval if typed) +
-                # __lamShouldReturn = true + bare-return-from-IIFE.
-                # The post-IIFE check forwards the signal to the
-                # outer function.
-                if in_try:
-                    self._emit(f"retval = {val}")
+    def _emit_return_value(self, val: Optional[str]) -> None:
+        """Emit the Go for ``return [val]`` in the current lowering context.
+
+        * inside a ``do { }`` body (a ``*Result`` IIFE): record the value
+          and a flag, then leave the IIFE; the code after the IIFE performs
+          the real return (see ``_visit_do_stmt``);
+        * inside an async goroutine: publish the result on the handle;
+        * inside a try-with-catch IIFE: set ``retval`` (typed functions)
+          and ``__lamShouldReturn``, then leave the IIFE.
+        """
+        if self._do_return_target:
+            flag, var = self._do_return_target
+            if val is not None and var:
+                self._emit(f"{var} = {val}")
+            self._emit(f"{flag} = true")
+            if self._in_try_iife:
+                # A try IIFE inside the ``do`` body: leave it; the code after
+                # the IIFE leaves the ``do`` closure (``return nil``).
                 self._emit("__lamShouldReturn = true")
                 self._emit("return")
-            elif in_except and in_try:
-                self._emit(f"retval = {val}")
-                self._emit("return")
-            else:
-                self._emit(f"return {val}")
-        else:
-            if in_try_iife:
+                return
+            self._emit("return nil")
+            return
+        if self._in_async_func and self._async_chan_name:
+            self._emit_async_result(val)
+            if self._in_try_iife:
                 self._emit("__lamShouldReturn = true")
             self._emit("return")
+            return
+        if val is None:
+            if self._in_try_iife:
+                self._emit("__lamShouldReturn = true")
+            self._emit("return")
+            return
+        if self._in_try_iife:
+            # Inside the IIFE wrapping a try-with-catch: rewrite
+            # ``return X`` to (set retval if typed) +
+            # __lamShouldReturn = true + bare-return-from-IIFE.
+            # The post-IIFE check forwards the signal to the
+            # outer function.
+            if self._in_try_func:
+                self._emit(f"retval = {val}")
+            self._emit("__lamShouldReturn = true")
+            self._emit("return")
+        elif self._in_except_handler and self._in_try_func:
+            self._emit(f"retval = {val}")
+            self._emit("return")
+        else:
+            self._emit(f"return {val}")
+
+    def _emit_async_result(self, val: Optional[str]) -> None:
+        """Publish an async callable's outcome on its one-slot handle.
+
+        The handle carries ``func() T`` thunks: ``await`` calls the thunk,
+        which returns the value, or re-raises an exception the goroutine
+        recovered (see ``_emit_async_callable``).
+        """
+        ch = self._async_chan_name
+        return_type = self._current_return_type or ""
+        if val is None or not return_type:
+            self._emit(f"{ch} <- func() {{}}")
+            return
+        self._emit("{")
+        self.indent += 1
+        self._emit(f"var __lamAsyncV {return_type} = {val}")
+        self._emit(f"{ch} <- func() {return_type} {{ return __lamAsyncV }}")
+        self.indent -= 1
+        self._emit("}")
 
     # ─── Simple flow statements ────────────────────────────────
 
@@ -519,9 +769,18 @@ class StatementVisitorMixin:
         self._emit("// pass")
 
     def _visit_break_stmt(self, _):
-        if self._while_else_break or self._for_else_break:
-            self._emit("_whileBreak = true")
+        if self._loop_break_flag:
+            self._emit(f"{self._loop_break_flag} = true")
         self._emit("break")
+
+    def _new_loop_break_flag(self) -> str:
+        """Fresh per-loop flag recording a ``break`` for ``for``/``while``-``else``.
+
+        Each loop gets its own name so nested or sequential loop-else
+        statements in one function neither shadow nor redeclare each other.
+        """
+        self._loop_break_counter = getattr(self, "_loop_break_counter", 0) + 1
+        return f"_lamLoopBreak{self._loop_break_counter}"
 
     def _visit_continue_stmt(self, _):
         self._emit("continue")
@@ -744,8 +1003,9 @@ class StatementVisitorMixin:
 
     def _visit_while_stmt(self, node: Tree):
         has_else = len(node.children) > 2 and node.children[2] is not None
+        break_flag = self._new_loop_break_flag() if has_else else ""
         if has_else:
-            self._emit(f"_whileBreak := false")
+            self._declare_loop_break_flag(break_flag, node.children[1])
         if self._contains_propagate(node.children[0]):
             # ``while f()? {``: the ``?`` statements must run before every
             # test, so the condition moves inside the loop.
@@ -759,13 +1019,13 @@ class StatementVisitorMixin:
             self.indent += 1
         self._push_scope()
         body_start, vars_at_start = self._scope_unused_tracking_start()
-        with self._scoped(_while_else_break=has_else):
+        with self._scoped(_loop_break_flag=break_flag):
             self._visit_suite(node.children[1])
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
         self._emit("}")
         if has_else:
-            self._emit("if !_whileBreak {")
+            self._emit(self._loop_else_header(break_flag))
             self.indent += 1
             self._push_scope()
             body_start, vars_at_start = self._scope_unused_tracking_start()
@@ -868,8 +1128,9 @@ class StatementVisitorMixin:
         if self._flow_iterable_statically_nonempty(iterable_node) and not self._flow_contains_loop_exit(suite_node):
             self._hoist_flow_locals([suite_node])
 
+        break_flag = self._new_loop_break_flag() if else_suite else ""
         if else_suite:
-            self._emit("_whileBreak := false")
+            self._declare_loop_break_flag(break_flag, suite_node)
 
         enumerate_info = self._check_enumerate_call(iterable_node)
         range_info = self._check_range_call(iterable_node)
@@ -877,23 +1138,50 @@ class StatementVisitorMixin:
         if enumerate_info:
             idx_name, val_name = self._split_tuple_target(target_node)
             iter_str = enumerate_info
-            if idx_name and val_name:
+            raw_src = self._get_raw_call_args(iterable_node.children[1] if len(iterable_node.children) > 1 else None)
+            src_node = raw_src[0] if raw_src else None
+            src_type = (self._expr_go_type_hint(src_node) or self._infer_type_from_value(src_node) or "") if src_node is not None else ""
+            if (
+                isinstance(src_node, Tree) and src_node.data == "list"
+                and src_type.startswith("[]") and src_type != "[]interface{}"
+            ):
+                # ``enumerate(["p", "q"])``: range over the typed slice.
+                iter_str = self._typed_value_to_go(src_node, src_type)
+            loop_names: list = []
+            if idx_name and val_name and src_type == "string" and val_name != "_":
+                # ``enumerate(text)``: character positions and one-character strs.
+                self._emit(f"for {idx_name}, {val_name}Rune := range []rune({iter_str}) {{")
+                self._emit(f"\t{val_name} := string({val_name}Rune)")
+                loop_names.append(idx_name)
+                loop_names.append(val_name)
+                if idx_name != "_":
+                    self._var_go_types[idx_name] = "int"
+                self._var_go_types[val_name] = "string"
+            elif idx_name and val_name:
                 self._emit(f"for {idx_name}, {val_name} := range {iter_str} {{")
-                self._declare_var(idx_name)
-                self._declare_var(val_name)
+                loop_names.append(idx_name)
+                loop_names.append(val_name)
+                if idx_name != "_":
+                    self._var_go_types[idx_name] = "int"
+                if val_name != "_" and src_type.startswith("[]"):
+                    self._var_go_types[val_name] = src_type[2:]
             else:
                 self._emit(f"for {var_name} := range {iter_str} {{")
-                self._declare_var(var_name)
+                loop_names.append(var_name)
             self.indent += 1
             self._push_scope()
             body_start, vars_at_start = self._scope_unused_tracking_start()
-            with self._scoped(_for_else_break=bool(else_suite)):
+            # Declared inside the loop scope, so an unused index is
+            # silenced in the loop body (``for i, x in enumerate(xs)``).
+            for loop_name in loop_names:
+                self._declare_var(loop_name)
+            with self._scoped(_loop_break_flag=break_flag):
                 self._visit_suite(suite_node)
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
             self._emit("}")
             if else_suite:
-                self._emit("if !_whileBreak {")
+                self._emit(self._loop_else_header(break_flag))
                 self.indent += 1
                 self._push_scope()
                 body_start, vars_at_start = self._scope_unused_tracking_start()
@@ -948,6 +1236,37 @@ class StatementVisitorMixin:
             # comma-joined expression.
             if not is_chan:
                 key_name, val_name = self._split_tuple_target(target_node)
+            destructure = self._for_tuple_destructure_types(target_node, iterable_node, is_chan, dict_literal_type)
+            if destructure is not None:
+                targets, tuple_types = destructure
+                self._q_temp_counter += 1
+                pair_name = f"_lamForTuple{self._q_temp_counter}"
+                if isinstance(iterable_node, Tree) and iterable_node.data == "list" and not iterable_type.startswith("[][]"):
+                    iter_str = self._typed_value_to_go(iterable_node, "[][]interface{}")
+                if is_chan:
+                    self._emit(f"for {pair_name} := range {iter_str} {{")
+                else:
+                    self._emit(f"for _, {pair_name} := range {iter_str} {{")
+                self.indent += 1
+                self._push_scope()
+                body_start, vars_at_start = self._scope_unused_tracking_start()
+                for index, target in enumerate(targets):
+                    if target == "_":
+                        continue
+                    elem_type = tuple_types[index] if index < len(tuple_types) else ""
+                    cast = f".({elem_type})" if elem_type else ""
+                    op = "=" if target in self.declared_vars else ":="
+                    self._emit(f"{target} {op} {pair_name}[{index}]{cast}")
+                    self._declare_var(target)
+                    if elem_type:
+                        self._var_go_types[target] = elem_type
+                with self._scoped(_loop_break_flag=break_flag):
+                    self._visit_suite(suite_node)
+                self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
+                self.indent -= 1
+                self._emit("}")
+                self._emit_loop_else(else_suite, break_flag)
+                return
             if is_chan:
                 assign_op = "=" if already_declared else ":="
                 self._emit(f"for {var_name} {assign_op} range {iter_str} {{")
@@ -960,8 +1279,17 @@ class StatementVisitorMixin:
                 assign_op = "=" if (k_decl and v_decl) else ":="
                 self._emit(f"for {key_name}, {val_name} {assign_op} range {iter_str} {{")
             elif self._range_single_target_uses_key(iterable_node):
+                map_type = (self._expr_go_type_hint(iterable_node) or iterable_type or "").strip()
+                key_type, _value_type = self._split_go_map_type(map_type)
+                if key_type and key_type != "interface{}":
+                    self._var_go_types[var_name] = key_type
                 assign_op = "=" if already_declared else ":="
                 self._emit(f"for {var_name} {assign_op} range {iter_str} {{")
+            elif self._expr_go_type_hint(iterable_node) == "LamJSON":
+                # ``for v in payload.tags``: a JSON array yields ``json`` items.
+                self._emit(f"for _, {var_name}Raw := range lamJSONToList({iter_str}) {{")
+                string_char_bind = f"{var_name} {'=' if already_declared else ':='} lamJSONWrapRaw({var_name}Raw)"
+                self._var_go_types[var_name] = "LamJSON"
             elif self._iterates_string(iterable_node):
                 # Lam yields one-character strings, Go ranges over runes.
                 self._emit(f"for _, {var_name}Rune := range {iter_str} {{")
@@ -982,13 +1310,13 @@ class StatementVisitorMixin:
             self._declare_var(val_name)
         else:
             self._declare_var(var_name)
-        with self._scoped(_for_else_break=bool(else_suite)):
+        with self._scoped(_loop_break_flag=break_flag):
             self._visit_suite(suite_node)
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
         self._emit("}")
         if else_suite:
-            self._emit("if !_whileBreak {")
+            self._emit(self._loop_else_header(break_flag))
             self.indent += 1
             self._push_scope()
             body_start, vars_at_start = self._scope_unused_tracking_start()
@@ -996,6 +1324,83 @@ class StatementVisitorMixin:
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
             self._emit("}")
+
+    def _declare_loop_break_flag(self, break_flag: str, body) -> None:
+        """Declare the loop-else flag, unless the body never breaks out of
+        this loop: then the ``else`` block always runs and is emitted as a
+        plain block, so a ``return`` in it terminates the function for Go."""
+        from compiler.semantic import SemanticChecker
+        if SemanticChecker._suite_contains_own_break(body):
+            self._emit(f"{break_flag} := false")
+        else:
+            self.__dict__.setdefault("_unbroken_loop_flags", set()).add(break_flag)
+
+    def _loop_else_header(self, break_flag: str) -> str:
+        if break_flag in self.__dict__.get("_unbroken_loop_flags", set()):
+            return "{"
+        return f"if !{break_flag} {{"
+
+    def _emit_loop_else(self, else_suite, break_flag: str) -> None:
+        if not else_suite:
+            return
+        self._emit(self._loop_else_header(break_flag))
+        self.indent += 1
+        self._push_scope()
+        body_start, vars_at_start = self._scope_unused_tracking_start()
+        self._visit_suite(else_suite)
+        self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
+        self.indent -= 1
+        self._emit("}")
+
+    def _literal_tuple_element_types(self, node) -> List[str]:
+        """Shared per-position Go types of a list literal of tuple literals."""
+        if not (isinstance(node, Tree) and node.data == "list" and node.children):
+            return []
+        shapes = []
+        for item in node.children:
+            if not (isinstance(item, Tree) and item.data == "tuple"):
+                return []
+            shapes.append(tuple(
+                self._infer_type_from_value(c) for c in item.children if c is not None
+            ))
+        if any(shape != shapes[0] for shape in shapes):
+            return []
+        return [t if t != "interface{}" else "" for t in shapes[0]]
+
+    def _for_tuple_destructure_types(self, target_node, iterable_node, is_chan: bool,
+                                     dict_literal_type: str):
+        """``(targets, element_types)`` when ``for a, b in xs`` must unpack.
+
+        Applies to tuple targets over slices whose elements are tuples or
+        nested slices (``list[tuple[str, int]]``, ``list[list[int]]``, a
+        list literal of tuples) and over generators. Maps keep binding
+        key/value. ``element_types`` holds the Go assertion per position
+        (``""`` = none needed or unknown).
+        """
+        targets = self._comprehension_tuple_targets(target_node)
+        if len(targets) < 2 or dict_literal_type:
+            return None
+        if self._range_single_target_uses_key(iterable_node):
+            return None
+        iter_name = (
+            self._get_name(iterable_node.children[0])
+            if isinstance(iterable_node, Tree) and iterable_node.data == "var" else ""
+        )
+        registered = self._tuple_iterable_element_types.get(iter_name, []) if iter_name else []
+        literal_types = self._literal_tuple_element_types(iterable_node)
+        go_type = (self._expr_go_type_hint(iterable_node)
+                   or self._infer_type_from_value(iterable_node) or "").strip()
+        if is_chan:
+            return targets, []
+        if registered:
+            return targets, [t if t != "interface{}" else "" for t in registered]
+        if literal_types:
+            return targets, literal_types
+        if go_type.startswith("[][]"):
+            # Nested typed slices already yield typed elements; tuples
+            # without a known shape yield ``interface{}`` positions.
+            return targets, []
+        return None
 
     def _check_range_call(self, node) -> Optional[Tuple[str, str, str]]:
         if not isinstance(node, Tree) or node.data != "funccall":
@@ -1093,6 +1498,18 @@ class StatementVisitorMixin:
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             return
 
+        # A local assigned on every continuing path (the try body and
+        # each catch body) is declared before the IIFE so it survives it
+        # (``try { v: int = f() } catch e { v: int = -1 }; return v``).
+        catch_suites = [
+            sub
+            for clause in catch_clauses_node.children
+            if isinstance(clause, Tree) and clause.data == "catch_clause"
+            for sub in clause.children
+            if isinstance(sub, Tree) and sub.data == "suite"
+        ]
+        self._hoist_flow_locals([try_suite] + catch_suites)
+
         # Try-with-catch: wrap the try body + catch dispatch in an
         # IIFE so a successful recover unwinds *into the IIFE*, the
         # IIFE returns normally, and the surrounding function keeps
@@ -1153,9 +1570,10 @@ class StatementVisitorMixin:
         # inside the catch re-panics the live ``r`` value instead of
         # emitting a placeholder string.
         with self._scoped(_in_try_iife=True, _in_recover_block=True):
-            for i, clause in enumerate(catch_clauses_node.children):
-                if isinstance(clause, Tree) and clause.data == "catch_clause":
-                    self._emit_catch_clause(clause, i == 0)
+            self._emit_catch_dispatch([
+                clause for clause in catch_clauses_node.children
+                if isinstance(clause, Tree) and clause.data == "catch_clause"
+            ])
         self._pop_scope_with_unused_local_silencers(recover_body_start, recover_vars_at_start)
         self.indent -= 1
         self._emit("}")
@@ -1191,7 +1609,12 @@ class StatementVisitorMixin:
         # When the function has a typed return value the named
         # ``retval`` already holds the value; a bare ``return``
         # surfaces it.
-        self._emit("if __lamShouldReturn { return }")
+        if self._do_return_target and not self._in_try_iife:
+            # Directly inside a ``do`` body (a ``*Result`` closure): the
+            # recorded return happens after the ``do`` IIFE.
+            self._emit("if __lamShouldReturn { return nil }")
+        else:
+            self._emit("if __lamShouldReturn { return }")
 
     def _visit_try_finally(self, node: Tree):
         try_suite = node.children[0]
@@ -1214,8 +1637,28 @@ class StatementVisitorMixin:
         self._visit_suite(try_suite)
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
 
-    def _emit_catch_clause(self, clause: Tree, is_first: bool):
+    # Builtin exception families: ``catch Parent`` also catches every
+    # name listed for it (Python's hierarchy, restricted to the names Lam
+    # knows). ``Exception`` / ``BaseException`` catch everything.
+    _BUILTIN_EXCEPTION_FAMILIES = {
+        "ArithmeticError": ("ArithmeticError", "ZeroDivisionError", "OverflowError"),
+        "LookupError": ("LookupError", "KeyError", "IndexError"),
+        "OSError": ("OSError", "IOError", "FileNotFoundError"),
+        "IOError": ("OSError", "IOError", "FileNotFoundError"),
+        "RuntimeError": ("RuntimeError", "NotImplementedError"),
+        "ValueError": ("ValueError", "ParseError"),
+    }
+    _CATCH_ALL_EXCEPTIONS = ("Exception", "BaseException")
+
+    def _parse_catch_clause(self, clause: Tree):
+        """Return ``(type_name, type_is_go_expr, as_name, suite)``.
+
+        ``type_name`` is the raw Lam name of the caught type (``None`` for
+        a bare ``catch``); ``catch e`` (a lowercase, non-builtin name with
+        no ``as``) is a catch-all binding ``e``.
+        """
         exception_type = None
+        type_is_go_expr = False
         as_name = None
         suite = None
 
@@ -1226,7 +1669,7 @@ class StatementVisitorMixin:
                 if child.data == "suite":
                     suite = child
                 elif child.data == "var":
-                    exception_type = self._expr_to_go(child)
+                    exception_type = self._get_name(child.children[0])
                 elif child.data == "name":
                     if exception_type is not None:
                         as_name = self._get_name(child)
@@ -1235,12 +1678,153 @@ class StatementVisitorMixin:
                 else:
                     if exception_type is None:
                         exception_type = self._expr_to_go(child)
+                        type_is_go_expr = True
             elif isinstance(child, Token):
                 if child.type == "NAME":
                     if exception_type is not None and as_name is None:
                         as_name = str(child)
                     elif exception_type is None:
                         exception_type = str(child)
+
+        # ``catch e`` / ``catch _e`` (a lowercase or ``_``-prefixed name that
+        # is not a known exception, class or interface) binds the value.
+        if (as_name is None and exception_type and not type_is_go_expr
+                and (exception_type[0].islower() or exception_type[0] == "_")
+                and exception_type not in PYTHON_EXCEPTIONS
+                and exception_type not in self._class_names
+                and exception_type not in self._interfaces):
+            as_name = exception_type
+            exception_type = None
+        return exception_type, type_is_go_expr, as_name, suite
+
+    def _class_and_local_descendants(self, class_name: str) -> List[str]:
+        """``class_name`` plus every class of this module deriving from it."""
+        out = [class_name]
+        changed = True
+        while changed:
+            changed = False
+            for child, bases in self.class_bases.items():
+                if child not in out and any(b in out for b in bases):
+                    out.append(child)
+                    changed = True
+        return out
+
+    def _catch_condition(self, exception_type: Optional[str], type_is_go_expr: bool) -> Optional[str]:
+        """Go condition selecting a catch clause, or ``None`` for catch-all.
+
+        Builtin exceptions are raised as ``"Name: message"`` strings and Go
+        runtime faults surface as ``runtime.Error``; both are classified
+        once per recover into ``__lamExcKind``. Class exceptions match on
+        the dynamic pointer type (including subclasses declared in the same
+        module); interfaces match on method sets.
+        """
+        if exception_type is None or exception_type in self._CATCH_ALL_EXCEPTIONS:
+            return None
+        if not type_is_go_expr and exception_type in PYTHON_EXCEPTIONS | {"ParseError"}:
+            names = self._BUILTIN_EXCEPTION_FAMILIES.get(exception_type, (exception_type,))
+            return " || ".join(f'__lamExcKind == "{n}"' for n in names)
+        if type_is_go_expr:
+            return f"func() bool {{ _, ok := r.(*{exception_type}); return ok }}()"
+        if exception_type in self._interfaces:
+            go_iface = self._go_class_name(exception_type)
+            return f"func() bool {{ _, ok := r.({go_iface}); return ok }}()"
+        if self._hier_dynamic_target(exception_type):
+            # The raised object (or the most-derived object behind a
+            # base-typed one) is an ``exception_type`` or a subclass of it,
+            # wherever the subclass is declared.
+            return (
+                f"func() bool {{ _, ok := {self._hier_dyn_value_go('r')}"
+                f".({self._hier_is_iface(exception_type)}); return ok }}()"
+            )
+        types = ", ".join(
+            "*" + self._go_class_name(name)
+            for name in self._class_and_local_descendants(exception_type)
+            if not self._generic_classes.get(name)
+        )
+        if not types:
+            return None
+        return f"func() bool {{ switch r.(type) {{ case {types}: return true }}; return false }}()"
+
+    def _emit_exception_kind(self) -> None:
+        self._need_import("strings")
+        self._need_import("runtime")
+        self._emit("__lamExcKind := func(v interface{}) string {")
+        self.indent += 1
+        self._emit("switch x := v.(type) {")
+        self._emit("case string:")
+        self._emit("\tif i := strings.IndexByte(x, ':'); i >= 0 { return x[:i] }")
+        self._emit("\treturn x")
+        self._emit("case runtime.Error:")
+        self._emit("\tm := x.Error()")
+        self._emit('\tif strings.Contains(m, "divide by zero") { return "ZeroDivisionError" }')
+        self._emit('\tif strings.Contains(m, "out of range") { return "IndexError" }')
+        self._emit('\tif strings.Contains(m, "nil pointer") || strings.Contains(m, "nil map") { return "AttributeError" }')
+        self._emit('\tif strings.Contains(m, "interface conversion") { return "TypeError" }')
+        self._emit('\treturn "RuntimeError"')
+        self._emit("}")
+        self._emit('return ""')
+        self.indent -= 1
+        self._emit("}(r)")
+
+    def _emit_catch_dispatch(self, clauses: List[Tree]) -> None:
+        """Emit the clause chain inside ``if r := recover(); r != nil``.
+
+        Only the first clause whose type matches runs. Without a
+        catch-all clause, an unmatched exception is re-raised so outer
+        ``try`` blocks (and the ``finally`` defer) still see it.
+        """
+        parsed = []
+        for clause in clauses:
+            exception_type, is_go_expr, as_name, suite = self._parse_catch_clause(clause)
+            cond = self._catch_condition(exception_type, is_go_expr)
+            class_type = exception_type if (cond is not None and not is_go_expr) else None
+            parsed.append((cond, as_name, suite, class_type))
+            if cond is None:
+                break  # later clauses are unreachable
+        if any(cond and "__lamExcKind" in cond for cond, _, _, _ in parsed):
+            self._emit_exception_kind()
+        if parsed and parsed[0][0] is None:
+            _, as_name, suite, _ = parsed[0]
+            self._emit_catch_clause(as_name, suite)
+            return
+        for i, (cond, as_name, suite, class_type) in enumerate(parsed):
+            if cond is None:
+                self._emit("} else {")
+            else:
+                self._emit(f"{'if' if i == 0 else '} else if'} {cond} {{")
+            self.indent += 1
+            self._emit_catch_clause(as_name, suite, class_type)
+            self.indent -= 1
+        if parsed[-1][0] is not None:
+            self._emit("} else {")
+            self._emit("\tpanic(r)")
+        self._emit("}")
+
+    def _do_catch_error_class(self) -> str:
+        """``Error`` when the program links lamerrors' ``Error`` (the
+        ``do/catch`` binding type) and this module declares no class of
+        that name; ``""`` keeps the raw value."""
+        if "Error" not in self._class_names or "Error" in self.class_bases:
+            return ""
+        if self._func_param_counts.get("Error.init") != 3:
+            return ""
+        return "Error"
+
+    def _catch_binding_class(self, exception_type: Optional[str]) -> str:
+        """The user class a ``catch Cls as e`` binding is typed as."""
+        if (
+            not exception_type
+            or exception_type not in self._class_names
+            or exception_type in self._interfaces
+            or exception_type in PYTHON_EXCEPTIONS
+            or self._generic_classes.get(exception_type)
+            or self._class_type_param_names_of(exception_type)
+        ):
+            return ""
+        return exception_type
+
+    def _emit_catch_clause(self, as_name: Optional[str], suite: Optional[Tree],
+                           exception_type: Optional[str] = None):
 
         # Bind the caught panic value as-is (``interface{}``) rather
         # than stringifying it eagerly. This preserves the original
@@ -1259,7 +1843,22 @@ class StatementVisitorMixin:
         # The previous ``fmt.Sprintf("%v", r)`` bind flattened the
         # exception to a ``string`` at the catch site, which made
         # field access impossible without a manual type assertion.
-        if as_name:
+        binding_class = self._catch_binding_class(exception_type) if as_name else ""
+        if as_name and binding_class:
+            # ``catch AppError as e``: the clause matched, so bind the
+            # caught object typed as the class (a subclass instance, also
+            # from another module, binds its ``AppError`` view) and
+            # ``e.message`` / ``e.method()`` work directly.
+            as_name = self._go_binding_name(as_name)
+            go_cls = self._go_class_name(binding_class)
+            if self._hier_dynamic_target(binding_class):
+                self._emit(f"{as_name}, _ := {self._hier_downcast_go('r', '', binding_class)}")
+            else:
+                self._emit(f"{as_name}, _ := r.(*{go_cls})")
+            self._emit(f'_ = {as_name}')
+            self._var_go_types[as_name] = f"*{go_cls}"
+            self._var_types[as_name] = binding_class
+        elif as_name:
             as_name = self._go_binding_name(as_name)
             self._emit(f'{as_name} := r')
             self._emit(f'_ = {as_name}')
@@ -1267,11 +1866,7 @@ class StatementVisitorMixin:
             # ``local: ClassName = {as_name}`` annassigns trigger the
             # class-pointer coercion path.
             self._var_go_types[as_name] = "interface{}"
-        elif exception_type and exception_type[0].islower() and exception_type not in PYTHON_EXCEPTIONS:
-            as_name = exception_type
-            self._emit(f'{as_name} := r')
-            self._emit(f'_ = {as_name}')
-            self._var_go_types[as_name] = "interface{}"
+            self._var_types.pop(as_name, None)
 
         if suite:
             self._push_scope()
@@ -1283,66 +1878,6 @@ class StatementVisitorMixin:
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
 
     # ─── Match / Switch ────────────────────────────────────────
-
-    def _visit_match_stmt(self, node: Tree):
-        cases = [child for child in node.children[1:] if isinstance(child, Tree) and child.data == "case"]
-        if any(
-            len(case.children) > 2
-            and isinstance(case.children[0], Tree)
-            and case.children[0].data == "any_pattern"
-            and case.children[1] is None
-            for case in cases
-        ):
-            self._hoist_flow_locals([
-                case.children[2]
-                for case in cases
-                if len(case.children) > 2 and isinstance(case.children[2], Tree)
-            ])
-        subject = self._expr_to_go(node.children[0])
-        self._emit(f"switch {subject} {{")
-        for child in node.children[1:]:
-            if isinstance(child, Tree) and child.data == "case":
-                self._visit_case(child)
-        self._emit("}")
-
-    def _visit_case(self, node: Tree):
-        pattern = node.children[0]
-        guard = node.children[1]
-        suite = node.children[2]
-
-        if isinstance(pattern, Tree) and pattern.data == "any_pattern":
-            self._emit("default:")
-        else:
-            pat_str = self._pattern_to_go(pattern)
-            self._emit(f"case {pat_str}:")
-        self.indent += 1
-        self._push_scope()
-        body_start, vars_at_start = self._scope_unused_tracking_start()
-        self._visit_suite(suite)
-        self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
-        self.indent -= 1
-
-    def _pattern_to_go(self, node) -> str:
-        if not isinstance(node, Tree):
-            return str(node) if isinstance(node, Token) else "/* unknown */"
-        d = node.data
-        if d == "literal_pattern":
-            return self._pattern_to_go(node.children[0])
-        if d == "number":
-            return self._number_to_go(node)
-        if d == "string":
-            return str(node.children[0])
-        if d == "const_none":
-            return "nil"
-        if d == "const_true":
-            return "true"
-        if d == "const_false":
-            return "false"
-        if d == "capture_pattern":
-            return str(node.children[0])
-        if d == "any_pattern":
-            return "default"
-        return "/* unknown pattern */"
 
     # ─── do { } catch err { } ─────────────────────────────────
 
@@ -1376,6 +1911,19 @@ class StatementVisitorMixin:
         self._do_counter += 1
         rdo = f"__rdo{self._do_counter}"
 
+        # ``return`` inside the body must leave the *enclosing* function,
+        # but the body is a ``*Result`` closure: record the value and a
+        # flag, leave the closure, then return for real afterwards.
+        return_type = self._current_return_type or ""
+        do_return_target = None
+        if self._tree_contains(body_suite, "return_stmt") and not return_type.startswith("("):
+            ret_flag = f"__lamDoRet{self._do_counter}"
+            ret_var = f"__lamDoRetV{self._do_counter}" if return_type else ""
+            self._emit(f"{ret_flag} := false")
+            if ret_var:
+                self._emit(f"var {ret_var} {return_type}")
+            do_return_target = (ret_flag, ret_var)
+
         self._emit(f"{rdo} := func() *Result {{")
         self.indent += 1
         # Push a fresh declared-vars scope so locals introduced inside
@@ -1390,7 +1938,9 @@ class StatementVisitorMixin:
             # itself (which returns ``*Result``), not the enclosing
             # function — so ``_q_propagate_ok`` is True here even if
             # the outer function returns something non-Result.
-            with self._scoped(_q_propagate_ok=True):
+            boundary = self._callable_boundary_context()
+            boundary["_do_return_target"] = do_return_target
+            with self._scoped(_q_propagate_ok=True, **boundary):
                 if isinstance(body_suite, Tree) and body_suite.data == "suite":
                     for stmt in body_suite.children:
                         if isinstance(stmt, Tree):
@@ -1403,6 +1953,13 @@ class StatementVisitorMixin:
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
         self._emit("}()")
+        if do_return_target is not None:
+            ret_flag, ret_var = do_return_target
+            self._emit(f"if {ret_flag} {{")
+            self.indent += 1
+            self._emit_return_value(ret_var or None)
+            self.indent -= 1
+            self._emit("}")
 
         self._emit(f"if {rdo}.Error != nil {{")
         self.indent += 1
@@ -1411,7 +1968,23 @@ class StatementVisitorMixin:
         self._push_scope()
         body_start, vars_at_start = self._scope_unused_tracking_start()
         try:
-            self._emit(f"{err_name} := {rdo}.Error")
+            error_class = self._do_catch_error_class()
+            if error_class:
+                # ``err`` is an ``Error`` (lamerrors): an ``Error`` (or a
+                # subclass, viewed as its ``Error``) as is, any other value
+                # wrapped with an empty kind and its text as the message.
+                self._need_import("fmt")
+                go_err = self._go_class_name(error_class)
+                self._emit(
+                    f"{err_name} := func(v interface{{}}) *{go_err} {{ "
+                    f"if e, ok := v.(*{go_err}); ok {{ return e }}; "
+                    f"if e, ok := v.(interface{{ _lamIs_{go_err}() *{go_err} }}); ok {{ return e._lamIs_{go_err}() }}; "
+                    f'return New{go_err}("", fmt.Sprint(v), v) }}({rdo}.Error)'
+                )
+                self._var_go_types[err_name] = f"*{go_err}"
+                self._var_types[err_name] = error_class
+            else:
+                self._emit(f"{err_name} := {rdo}.Error")
             self._declare_var(err_name)
             if isinstance(handler_suite, Tree) and handler_suite.data == "suite":
                 for stmt in handler_suite.children:
@@ -1441,6 +2014,18 @@ class StatementVisitorMixin:
                     expr_str = self._expr_to_go(expr)
                     if as_name:
                         name_str = self._go_binding_name(self._get_name(as_name))
+                        # ``with file as f``: ``f`` has the resource's type.
+                        resource_class = self._infer_receiver_class(expr)
+                        if resource_class:
+                            self._var_types[name_str] = resource_class
+                        else:
+                            self._var_types.pop(name_str, None)
+                        resource_type = self._expr_go_type_hint(expr)
+                        if resource_type:
+                            self._var_go_types[name_str] = resource_type
+                        else:
+                            self._var_go_types.pop(name_str, None)
+                        self._declare_var(name_str)
                         self._emit(f"{name_str} := {expr_str}")
                         self._emit(f"defer {name_str}.Close()")
                     else:

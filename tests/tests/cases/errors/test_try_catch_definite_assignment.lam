@@ -1,0 +1,49 @@
+# Regression (report 4.8): a local assigned in the try body and in every
+# catch body is definitely assigned after the statement (also when declared
+# with an annotation inside each branch).
+#
+# expect: 5
+# expect: -1
+# expect: <x> none
+# expect: parsed 12 fallback 0
+
+func safeDiv(n: int) -> int {
+    try {
+        v: int = 10 / n
+    } catch e {
+        v: int = -1
+    }
+    return v
+}
+
+func label(s: str) -> str {
+    try {
+        if s == "" {
+            raise ValueError("empty")
+        }
+        out = f"<{s}>"
+    } catch ValueError as e {
+        out = "none"
+    }
+    return out
+}
+
+func parse(s: str) -> int {
+    try {
+        n: int = int(s)
+    } catch ValueError as e {
+        n: int = 0
+    } catch e {
+        raise e
+    }
+    return n
+}
+
+func main() {
+    print(safeDiv(2))
+    print(safeDiv(0))
+    print(label("x"), label(""))
+    good: int = parse("12")
+    bad: int = parse("zz")
+    print(f"parsed {good} fallback {bad}")
+}

@@ -27,7 +27,9 @@ class Error {
        ``kind`` is a short identifier (``"IOError"``, ``"ParseError"``,
        …) — useful for matching in callers. ``message`` is a
        human-readable description. ``cause``, if set, chains the
-       underlying error so wrap/unwrap stays cheap.
+       underlying error so wrap/unwrap stays cheap. An empty ``kind``
+       prints just the message (``do { } catch err`` wraps a non-``Error``
+       value that way, keeping it as the ``cause``).
     -#
 
     func init(self, kind: str, message: str, cause: any = None) {
@@ -37,6 +39,11 @@ class Error {
     }
 
     func __str__(self) -> str {
+        if self.kind == "" {
+            # A non-``Error`` value caught by ``do/catch`` (``Result.Err("x")``):
+            # it prints as before, just its text.
+            return self.message
+        }
         if self.cause != None {
             return f"{self.kind}: {self.message} (cause: {self.cause})"
         }

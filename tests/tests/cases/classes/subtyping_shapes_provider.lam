@@ -1,0 +1,63 @@
+# Provider module for test_subtyping_imported.lam: a base class, one
+# subclass and functions that only know the base type. Subclasses declared
+# by the importing module must still reach their overrides from here.
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func area(self) -> int {
+        return 0
+    }
+
+    func label(self) -> str {
+        return f"{self.name}({self.area()})"
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+func totalArea(shapes: list[Shape]) -> int {
+    total: int = 0
+    for s in shapes {
+        total += s.area()
+    }
+    return total
+}
+
+func labels(shapes: list[Shape]) -> str {
+    out: list[str] = []
+    for s in shapes {
+        out.append(s.label())
+    }
+    return ", ".join(out)
+}
+
+func biggest(a: Shape, b: Shape) -> Shape {
+    if a.area() >= b.area() {
+        return a
+    }
+    return b
+}
+
+func countSquares(shapes: list[Shape]) -> int {
+    n: int = 0
+    for s in shapes {
+        if isinstance(s, Square) {
+            n += 1
+        }
+    }
+    return n
+}
+
+func main() { pass }

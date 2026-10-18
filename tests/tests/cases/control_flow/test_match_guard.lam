@@ -1,0 +1,86 @@
+# Test: `case <pattern> if <guard>` only matches when the guard holds.
+#
+# expect: ok
+# expect: big five
+# expect: small: 3
+# expect: large: 50
+# expect: zero
+# expect: word hello
+# expect: other word
+# expect: guard calls: 1
+
+func classify(n: int) -> str {
+    match n {
+        case 0 {
+            return "zero"
+        }
+        case x if x < 10 {
+            return f"small: {x}"
+        }
+        case _ {
+            return f"large: {n}"
+        }
+    }
+}
+
+func describe(s: str) -> str {
+    match s {
+        case "hello" if len(s) == 5 {
+            return "word hello"
+        }
+        case _ {
+            return "other word"
+        }
+    }
+}
+
+calls: int = 0
+
+func bump() -> bool {
+    calls = calls + 1
+    return true
+}
+
+func main() {
+    n: int = 5
+    match n {
+        case 5 if n > 100 {
+            print("WRONG")
+        }
+        case _ {
+            print("ok")
+        }
+    }
+
+    big: int = 500
+    match big % 100 {
+        case 0 if big > 1000 {
+            print("WRONG")
+        }
+        case 0 if big > 100 {
+            print("big five")
+        }
+        case _ {
+            print("WRONG fallthrough")
+        }
+    }
+
+    print(classify(3))
+    print(classify(50))
+    print(classify(0))
+    print(describe("hello"))
+    print(describe("world"))
+
+    match 7 {
+        case 7 if bump() {
+            print_calls()
+        }
+        case _ if bump() {
+            print("WRONG")
+        }
+    }
+}
+
+func print_calls() {
+    print(f"guard calls: {calls}")
+}

@@ -2,9 +2,488 @@
 
 All notable changes to Lammergeier Lang are documented here.
 
-This repository does not currently use version tags, so entries are grouped by
-commit date from the Git history and summarized against the current README and
-documentation.
+Releases are tagged with plain versions (`2.0.0`); older entries are grouped
+by commit date.
+
+## 2.0.0 — 2026-10-18
+
+### Breaking changes
+
+- **`catch` clauses are typed.** `catch ValueError as e` only catches
+  `ValueError` (and its family); the clauses form an `if / else if` chain and
+  only the first match runs. Before, every clause ran in sequence and caught
+  everything. An exception no clause matches is re-raised.
+- **Subclasses without `init` inherit their parent's constructor**
+  (`AutoReport("auto")` instead of `AutoReport()` when the parent declares
+  `init(self, title)`).
+- **`self.method()` and calls on base-typed values dispatch to subclass
+  overrides** (virtual dispatch), and subclass instances are accepted where
+  the base class is expected.
+- **Top-level statements run before `main()`** (they used to be a Go build
+  error); the first plain `x = v` of a new name at top level declares a
+  global.
+- **Printing instances of classes in a hierarchy** shows only their own
+  fields with the parent part nested (`&{{sq} 3}`).
+- **Typed stdlib callbacks:** `lamiter.Iter` is generic (`Iter[T]`, `first()`
+  returns `Result[T]`), `QueryBuilder.whereGroup`/`orWhereGroup` take
+  `func(QueryBuilder) -> QueryBuilder`, `Http.serve` takes
+  `func(str, str, str) -> str`; a bare `Iter` in a parameter, field or
+  return annotation is an error.
+- **New compile-time errors** for code that only failed in the Go build
+  before (unknown `str`/`list` methods, undefined names in f-strings, unknown
+  types and base classes, non-`bool` conditions, constant division by zero,
+  untyped stand-alone lambdas, callbacks of the wrong type, ...).
+- **Constant negative indexes follow Python** (`xs[-1]` is the last element).
+- Libraries declaring `compatibility.lamc = "^1.18"` print a compatibility
+  warning; their new patch releases declare `">=1.18, <3"`.
+
+### Added
+
+- `lamc build --timings` (or `LAMC_TIMINGS=1`): one `LAMC_TIMINGS {...}`
+  JSON line on stderr with milliseconds per compile phase (preprocess,
+  parse, semantic, transpile, go mod, go build, total).
+- Benchmark suites in `benchmarks/`: `compiler/` (lamc speed per phase on
+  generated programs of three sizes, a corpus and optional projects) and
+  `runtime/` (each program times its own workload; hand-written Go
+  baselines give a `lam/go` ratio). `sh scripts/bench.sh compiler|runtime`.
+- ROADMAP: "Possible new libraries" (moving `lamstripe`/`lamotel` out of
+  the repo, libraries that could be extracted from a large application).
+
+- Typed iterator pipelines: `lamiter.Iter` is generic (`Iter[T]`) and its
+  callbacks are typed from the elements, so lambdas need no annotations or
+  conversions and keep static types through the chain:
+  `evens: list[int] = Iter.range_(0, 100).filter(lambda x: x % 2 == 0).map(lambda x: x * x).toList()`,
+  `Iter.fromList(users).map(lambda u: u.name)` (an `Iter[str]`),
+  `reduce(0, lambda acc, x: acc + x)` (the initial value's type),
+  `map(len)`. A callback of the wrong type is a compile error. See
+  `docs/stdlib.md` → "`lamiter`".
+- Methods with their own type parameters (`func map[U](self, fn: func(T) ->
+  U) -> Box[U]`, on generic classes or not) lower to package-level generic
+  functions (`Box_Map[T, U](s, fn)`) with rewritten call sites, also for
+  imported and inherited methods (they emitted Go methods with type
+  parameters, which Go rejects). See `docs/TRANSPILATION.md` → "Methods with
+  their own type parameters".
+- Call-site type-argument inference for lambdas: a lambda passed to a
+  generic function or method takes its parameter types from the type
+  arguments bound by the receiver, the other arguments and literals, and its
+  body's type binds the rest (`mapList([1, 2], lambda n: f"{n}!")` is a
+  `list[str]`, `Sort.sortWith(jobs, lambda a, b: a.priority - b.priority)`
+  types `a`/`b` as `Job`). The semantic checker checks such lambdas against
+  the callback type (annotated parameters, result, parameter count) and
+  checks their bodies with the inferred parameter types; builtin list
+  method lambdas get the same checks.
+- Builtins as function values where a callback is expected (`xs.map(len)`,
+  `nums.map(str)`, `it.map(len)`), `xs.sort(key=f)` / `xs.sort(f)` with a
+  one-parameter key (stable), `reduce(fn, initial)` accumulating in the
+  initial value's type, and `map` results keeping their element type in a
+  chain (`words.map(lambda w: len(w)).filter(lambda n: n > 1)`).
+- A local annotated with a bare generic class takes its initializer's type
+  arguments (`it: Iter = Iter.range_(0, 3)` is an `Iter[int]`).
+
+- Every documented `match` pattern works end to end: sequence patterns
+  (`[x, y]`, `(a, b)`, `[first, *rest]`, `[*init, last]`), mapping patterns
+  (`{"kind": k}`, `{"op": "add", **rest}`), class patterns
+  (`Point(x=0, y=y)`, positional `Point(x, y)` in field declaration order,
+  subclasses, interfaces), builtin type patterns (`int(n)`, `str(s)`,
+  `float(f)`, `bool(b)`, `list(xs)`, `dict(d)`, `json(j)`), or-patterns
+  (`1 | 2`, also binding the same names), captures (`case other`, exhaustive
+  like `_`), value patterns (`Color.RED`, module constants) and `as`
+  bindings, nested freely and combined with guards, over typed values,
+  `any` and `json` subjects. Bindings are typed from the subject and scoped
+  to their case. The semantic checker reports patterns that can never match
+  the subject type, duplicate bindings, or-alternatives binding different
+  names, several `*rest`, unknown classes/fields and too many positional
+  sub-patterns. See `docs/SYNTAX.md` → "Match / Case".
+
+- Top-level statements: statements at file top level (`print(x)`,
+  `items.append(3)`, assignments to existing globals, `+=`, loops, `if`,
+  `match`, `try`, ...) run once at program start, before `main()`, in file
+  order; imported modules run theirs when initialized, in dependency
+  (import) order, each module once. Globals declared before a file's first
+  top-level statement keep their Go initializers; globals declared after
+  one are initialized in file order with the statements; names first
+  assigned inside top-level blocks are module globals; a first plain
+  `count = 0` at top level declares an inferred global (it emitted invalid
+  Go before). Reading a global in a top-level statement before its
+  declaration is a compile error. See `docs/SYNTAX.md` → "Top-Level
+  Statements".
+
+- Subtyping: a subclass instance is usable wherever its base class is
+  expected — parameters, assignments and re-assignments, returns, fields,
+  `optional[Base]`, `list[Base]` / `dict[str, Base]` elements (literals,
+  `append`, `insert`, `extend([...])`, `d[k] = v`), `??`, ternaries and
+  `==` / `!=` (with `None` or another value), also across modules. Calls on a
+  base-typed value run the override of the object's class (from outside the
+  class too, and from library code that only knows the base), field access
+  reads the shared base fields, `isinstance(x, Square)` tests the actual
+  class, and class patterns downcast a base-typed subject (`case Square() as
+  sq`, binding the subclass view and its fields). Collections stay invariant
+  (`list[Square]` is not a `list[Shape]`) and a downcast without a pattern
+  (`sq: Square = shape`) is rejected. A base-typed value stored as an
+  interface or `any` keeps its most-derived object. See `docs/SYNTAX.md` →
+  "Subtyping" and `docs/TRANSPILATION.md` → "Virtual dispatch and
+  subtyping".
+- Inherited constructors: a class without its own `init` inherits the
+  nearest ancestor's `init` (parameters, defaults, named arguments, generic
+  type arguments substituted; with several bases the first one whose chain
+  declares an `init`), like Python. The subclass's class-body field defaults
+  still apply, and arguments are checked against the inherited signature.
+  See `docs/SYNTAX.md` → "Inherited constructors".
+- `catch Cls as e` binds `e` typed as `Cls` (fields and methods reachable
+  directly; a subclass instance binds its `Cls` view and keeps its
+  overrides); class clauses catch subclasses declared in any module.
+- Native sets support `add`, `remove` (raises `KeyError` when missing),
+  `discard`, `contains`, `set()` / `set(iterable)` and the `|` (union), `&`
+  (intersection) and `-` (difference) operators with their augmented forms
+  (`|=`, `&=`, `-=`); the operators return new sets. Mismatched element
+  types are Lam errors (`a | b` on `set[int]` and `set[str]`, `ids.add("x")`
+  on a `set[int]`); `a | b` / `a & b` / `a.add(1)` / `set()` used to fail in
+  the Go build and `a - b` was rejected.
+
+### Changed
+
+- Catalog: every official package has a release declaring
+  `compatibility.lamc = ">=1.18, <3"`, tested with lamc 2.0.0:
+  `@lam/jwt` 3.1.1, `@lam/memcached` 2.0.1, `@lam/protobuf` 3.0.1,
+  `@lam/redis` 2.0.1, `@lam/s3` 2.2.1, `@lam/sftp` 3.3.2 (pins `@lam/ssh`
+  3.0.2), `@lam/ssh` 3.0.2, `@lam/vulture` 2.0.2, `@lam/vulture/std-plugin`
+  2.0.3, `@lam/vulture/tus-plugin` 3.0.2 and `@lam/vulture/ws-plugin` 2.0.2
+  (pinning `@lam/vulture` 2.0.2). `third_party/lamstripe` and
+  `third_party/lamotel` declare the same range.
+
+- `lamiter.Iter` is `Iter[T]`: `toList()` returns `list[T]` (was
+  `list[any]`), callbacks are `func(T) -> ...` (an `Iter[any]` keeps
+  `func(any) -> ...`), `reduce[A](initial: A, fn: func(A, T) -> A)` returns
+  `A`, `enumerate()` yields `tuple[int, T]` pairs (a 2-element list before;
+  they print the same, `[0 a]`), and `first()` returns a `Result[T]` with an
+  `EmptyIteratorError` for an empty iterator (it returned `None`).
+- `Http.serve(port, handler)` types `handler` as `func(str, str, str) ->
+  str`; an `any` value holding a handler is still accepted (checked
+  conversion).
+- A method with its own type parameters cannot be overridden (compile
+  error), and a generic class written without type arguments in a
+  parameter, field or return type is a compile error (it failed in the Go
+  build).
+
+- The Rosetta Code programs moved into the core cases
+  (`tests/tests/cases/rosetta/`); the separate `rosetta` suite is gone
+  (`sh scripts/test.sh core rosetta`). Core filters match the path below
+  `cases/`.
+- `tests/benchmarks/` was replaced by the two suites above.
+- Methods are now virtual: `self.method()` inside a parent-class method calls
+  the override of the object's actual class (previously the parent's own
+  method always ran, silently ignoring the override), and so does any call on
+  a base-typed value. The compiler knows the whole program's class hierarchy:
+  only classes that have a subclass somewhere get a small dispatch interface,
+  a `_lamSelf` field and inlinable forwarding wrappers, and only for the
+  methods a descendant overrides; a call goes through a wrapper only when a
+  descendant of the receiver's static class overrides the method, so classes
+  that are never subclassed (even when they call methods through `self`) are
+  emitted exactly as before. Constructors bind the object into every embedded
+  ancestor (also after `base.init(...)` and across modules). Explicit
+  `base.method()` / parent-alias calls stay static. See
+  `docs/TRANSPILATION.md` → "Virtual dispatch and subtyping".
+- A class without `init` now inherits its parent's constructor instead of
+  getting a no-argument one: `AutoReport()` for `class AutoReport(Report)`
+  with `Report.init(self, title)` must pass the title (`AutoReport("auto")`).
+- Empty interfaces (`interface Marker { }`) are valid, so the syntax
+  diagnostic rejecting them is gone; a field or statement inside an
+  interface body now reports ``expected: `func` or `}` `` with an "Interface
+  bodies only declare method signatures" hint.
+
+### Fixed
+
+- A lambda passed to a generic function lowered with the type parameters
+  in its Go signature (`func(x T) U`), which did not compile.
+- `Retry.runFn(fn)` / `Retry.until(predicate)` accept any function without
+  parameters: a `func() -> Result` (the documented example), `-> str` or
+  `-> bool` function failed with "fn must be func() -> any" or counted as
+  `false`.
+- An untyped lambda handler for `Http.serve` was lowered with `any`
+  parameters and answered every request with an empty body.
+- `xs.map(len)` failed in the Go build, a `map` result chained into
+  `filter` kept the receiver's element type, and `reduce` with an initial
+  value of another type than the elements did not compile.
+- Nested generic type arguments in a constructor call
+  (`Iter[tuple[int, T]]()`) and `Box[str](...)` used as a receiver of a
+  method call lowered to invalid Go.
+
+- `str` method results (`split`, `startsWith`, `index`, ...) keep their types
+  in the semantic checker, also on call receivers (`link().split("=")[1]`
+  inside a `json` literal was `unknown`).
+
+- The `catch err` binding of `do { } catch err { }` is an `Error`:
+  `err.message` / `err.kind` / `err.cause` work (they failed in the Go build
+  on the dynamic value), an `Error` subclass keeps its class, and a
+  non-`Error` value (`Result.Err("x")`) is wrapped with an empty kind and
+  prints as before (`Error.__str__` prints only the message when `kind` is
+  empty).
+- A `?` inside a `match` guard (`case 4 if half(n)? == 2`) is evaluated only
+  when its case is tried; its prologue used to run before the whole `match`
+  (propagating an error even when another case would have matched).
+- A constructor or method parameter, local or global named `s` (`func
+  init(self, s: int)`) no longer collides with the generated receiver
+  (`s := &Sq{}` redeclared the parameter): such methods use the receiver
+  name `_lamS`.
+- Printing an instance (`print`, `str()`, f-strings) of a class in an
+  inheritance hierarchy no longer shows the internal virtual-dispatch field
+  (`&{3 <nil>}`) or a parent pointer address (`&{0xc000010030 3}`): it shows
+  the user fields, the parent part as a nested `{...}` (`&{{sq} 3}`), a
+  base-typed value prints its actual object, and `__str__` still wins.
+  Classes outside any hierarchy print as before.
+- A subclass's class-body default for a field its parent declares
+  (`sides: int = 4` over the parent's `sides: int = 0`) is no longer lost when
+  `base.init(...)` rebuilds the parent part (unless the parent's `init`
+  assigns that field itself).
+- A subclass declared in another module than its parent no longer gets a
+  duplicate copy of the parent's fields (which hid the parent's values from
+  inherited methods), and its constructor allocates the imported
+  grandparents and binds the object into them.
+- A method overridden by an intermediate class (`Puppy(Dog(Animal))` with
+  `Dog` overriding `sound`) is no longer reported as an ambiguous inherited
+  member on the grandchild.
+- `isinstance(sq, Shape)` with `sq` a subclass instance is `true` (it was
+  `false`).
+- A method call on a list element or a loop variable of a class type
+  (`shapes[0].area()`, `for s in shapes { s.area() }`) knows the receiver's
+  class (default arguments, overloads and dispatch); explicit type arguments
+  naming a class (`Registry[Shape]()`) lower to the class pointer, and the
+  arguments of a method called on a generic instance (`reg.add(x)` with
+  `reg: Registry[Shape]`) are typed with the instance's type arguments.
+  Generic classes are known before any signature is collected, so a
+  parameter typed `Box[int]` has the `*Box[int]` type in the call metadata
+  (it was `interface{}` when the function came before the class or was
+  collected first, losing the argument's contextual typing).
+- Typed `catch` clauses dispatch on the raised type: only the first matching
+  clause runs (`catch ValueError` no longer catches everything, and the
+  following clauses no longer all run in sequence). Builtin families are
+  honoured (`LookupError` catches `KeyError`/`IndexError`, `ArithmeticError`
+  catches `ZeroDivisionError` and Go divide-by-zero faults), class clauses
+  also catch subclasses declared in the same module, and an exception no
+  clause matches propagates to the enclosing `try` after `finally` runs.
+  Repeating the same binding name across clauses now compiles.
+- `match` guards (`case 5 if n > 100`) are honoured: a case only matches
+  when its guard holds, otherwise the next case is tried. The subject is
+  evaluated once, and a capture pattern is bound before its guard runs.
+- Nested `for`/`while` loops with `else` clauses use one break flag per
+  loop: an inner loop no longer shadows the outer flag (which made the
+  outer `else` run after a `break`), a `break` out of an inner loop without
+  `else` no longer cancels the outer `else`, and several loop-`else`
+  statements in one function no longer fail with `no new variables on left
+  side of :=`.
+- `for k, v in pairs` over a list of tuples (or of nested lists, a list
+  literal of tuples, or a generator) unpacks each element instead of binding
+  the index and the whole tuple; three or more targets and `_` placeholders
+  work too. Dicts keep binding key/value.
+- Iterating an unannotated set literal (`flags = {"new", "active"}`, then
+  `for f in flags`) yields the elements instead of `true`; uniform set
+  literals keep their element type (`set[str]`).
+- Class-body field initializers (`class A { secret: int = 42 }`,
+  `items: list[T] = []`) are no longer dropped: every constructor assigns
+  them (ancestors first) before the `init` body, including classes without
+  `init` and inherited fields.
+- Awaiting an async function without a return type no longer dies with
+  `all goroutines are asleep - deadlock!`.
+- An exception raised inside an async function no longer kills the process:
+  it is re-raised at the `await` that collects the handle, where
+  `try`/`catch` (typed clauses included) can handle it. Async handles now
+  carry result thunks (`chan func() T`; `await h` lowers to `(<-h)()`). A
+  `return` inside a `try` block of an async function no longer continues
+  past the `try`, and `return` in nested functions/lambdas inside async,
+  `try` or `do` bodies targets the nested function.
+- A `return` (bare or with a value) inside a `do { } catch` body returns
+  from the enclosing function instead of failing with Go's `not enough
+  return values` / `cannot use ... as *Result`.
+- The preprocessor/parser accept valid forms they used to reject: inline-brace
+  `if`/`for`/`while` blocks followed by a trailing `# comment`; comment-only
+  bodies (`func f() {\n    # todo\n}`, classes, `if`, loops); compact one-line
+  `if c a = 1 elif d a = 2 else a = 3` / `if c a = 1 else a = 2`; typed
+  lambdas inside an `if`/`while` condition
+  (`if check(xs, lambda (a: int) -> bool: a > 0) {`); mapping patterns
+  (`case {"kind": k}` / `case {"kind": k, **rest}`, parse only for now) and
+  negative literal patterns (`case -2`); multi-line parenthesised conditional
+  expressions with `else` on its own line; `and` / `or` at the end (or start)
+  of a continued line; empty interfaces (`interface Marker { }`).
+- `case 'a'` (a single-quoted string pattern) matches the string instead of
+  emitting a Go rune literal, and `break` inside a `match` case in a loop
+  leaves the loop (it only left the generated Go `switch`). Non-literal
+  matches lower to an if/else chain; literal matches over scalars keep the
+  Go `switch`.
+- An unused local in a block ending with `return` (an `if`/`else` branch,
+  a `match` case, a function body) no longer breaks Go's terminating
+  statement analysis (`missing return`): the `_ = name` silencer is placed
+  before the `return`.
+- Class patterns accept positional and keyword sub-patterns together
+  (`Point(x, y=0)` failed to parse).
+- Valid code the semantic checker rejected: interface methods written with
+  `self` (`func draw(self) -> str`, the documented form) no longer count it
+  as a parameter; a typed function whose every path raises needs no
+  `return`; the payload of a typed `Result` local or field is known in JSON
+  contexts (`body: json = r.unwrap()`, `{"bytes": c.unwrap()}`) and
+  `r.ok()` is a `bool`; a function passed by name binds the type
+  parameters of a `func(T) -> U` parameter (`mapList(xs, len2)`), and so
+  does a lambda with annotated parameters (`lambda (n: int): n * n`);
+  `.map(lambda p: p.name)` over a list of class instances is typed from
+  the element (also in the generated Go, which used `interface{}`); an
+  untyped numeric constant initialises or is returned as a number-constrained
+  type parameter (`t: T = 0` in `class Stats[T: number]`) and such values
+  support arithmetic; a local assigned in the `try` body and in every
+  `catch` body (also with an annotation in each) is definitely assigned
+  after the statement and is hoisted in Go; `{}` where a `set[T]` is
+  expected (annotation, reassignment, return, parameter, field) is an empty
+  set (the docs said `{}` was always a dict).
+- A top-level function named like a Go keyword (`fallthrough`, `select`,
+  `goto`, `struct`, `chan`) is called by its emitted Go name (calls used
+  `Fallthrough__lam`, undefined, directly and inside f-strings).
+- A class can inherit from a generic instantiation (`class IntBox(Box[int])`,
+  `class Entry(Pair[str, int])`, `class Named[T](Box[T])`): the struct embeds
+  `*Box[int]`, constructors use `NewBox[int]`, and inherited methods return
+  the bound type in the semantic checker.
+- `return` inside a `try` nested below the top level of a typed function or
+  method (in a loop, branch or `match` case) and inside a `try` within a
+  `do { }` body returns from the function (Go reported `not enough return
+  values` / `too many return values`); methods containing a `try` now get the
+  named `retval` result like functions.
+- The functions a library module defines after its `func main()` are no
+  longer dropped when the module is imported (the stripping of the
+  library's `main` removed everything after it).
+- `catch _e` (an underscore-prefixed binding, as the unused-variable warning
+  suggests) binds the exception instead of being treated as a class name.
+- `optional[T]` / `Option[T]` are usable as documented: they accept `None`
+  and `T` values (variables, fields such as `a.next = b`, parameters and
+  returns), compare with `None`, and an optional class reference flows back
+  into the class type. `optional[int]`-style value payloads are boxed when an
+  `int` is assigned or returned, and `opt ?? fallback` yields the payload (a
+  nil class pointer now selects the fallback instead of being returned as a
+  non-nil `interface{}`).
+- Lambdas are contextually typed: a lambda assigned, passed or returned
+  where a `func(...)` value is expected takes its parameter and return types
+  from it (`apply(lambda x: x > 0, 3)`, `g: func(int) -> bool = lambda a:
+  a > 1`, `run(lambda: print("x"))` into `func()`, `nums.foreach(lambda n:
+  print(n))`, returning `lambda: Square(1)` from `-> func() -> Shape`,
+  `adder(2)(10)`); a lambda whose body is a call without a value (`print`, a
+  function without a return type) is a void `func`, so `Cron.schedule(expr,
+  lambda: print("tick"))` compiles. `words.map(lambda w: len(w))` yields
+  `list[int]`. All of these emitted invalid Go before. `whereGroup` /
+  `orWhereGroup` take a `func(QueryBuilder) -> QueryBuilder`, so
+  `.whereGroup(lambda q: q.whereEq(...))` types `q`.
+- Calling the function value a call returns (`maker()()`, `f()` with `f:
+  func() -> Shape`) dispatches methods on the result's class.
+- `?.` chains on `optional[...]` values are typed: `user?.profile?.email`
+  chains, `e: str = user?.email ?? "x"` compiles, a value-typed field read
+  through `?.` is an `optional` of that type, and `print` / f-strings show
+  an `optional[str]` / `optional[int]` value (or `<nil>`) instead of a
+  pointer address. `d[key] ?? fallback` on a typed map selects the fallback
+  for a missing key (dictionary destructuring defaults use it).
+- Unannotated locals keep the type the semantic checker infers (`s = "ab"`,
+  `r = g()` with `g() -> Result[int]`, `handles = [slow(1), slow(2)]`), so
+  `for ch in s` yields one-character strs, `r.unwrap() > 1`,
+  `r.unwrap() * 3`, `z += r.unwrapOr(5)` and `await h` over a list of async
+  handles compile (they failed in the Go build).
+- Comprehensions with tuple targets whose names are unused (`[k for k, v in
+  table]`, `[label for number, label in pairs]`), over `enumerate(...)`
+  (lists, list literals and strings) and over generators (also yielding
+  tuples, `yield ("a", 1)`), and `for i, k in enumerate(["p", "q"])` with a
+  typed `k` emitted invalid Go; an unused `enumerate` index in a `for` loop
+  is silenced inside the loop.
+- `sorted(xs, key=fn, reverse=true)` honours `key` (a lambda or function
+  reference) and `reverse` (both were ignored) and sorts stably; a
+  comprehension argument takes the expected element type.
+- A function reference passed to a call whose result is a receiver
+  (`build(inc).get()`, `route("/a", echo).unwrap()`) is mangled like any
+  other function reference, and a user function named like a Go builtin
+  (`make`) is called instead of the builtin.
+- A static method of a generic class that does not use the class's type
+  parameters (`Box.two()` on `class Box[T]`) is no longer generic in Go
+  (`cannot infer T`).
+- `int(3.7)` truncates to 3 (Go rejected the constant conversion), `x **= 2`
+  on an `int` stays an `int`, slices with negative or stepped bounds of a
+  `list[T]` / `str` keep their type (`b: list[int] = a[-2:]`), and a dynamic
+  negative slice bound (`a[k:]` with `k = -2`) counts from the end instead
+  of clamping to 0.
+- String repetition of a call result (`word() * 2`, `f(path) * n` with a
+  `func`-typed `f`), `"a,b".split(",").length()` (dispatched the string
+  `length`), `with file as f` then `f.read().unwrap()` into a `str`,
+  dictionary destructuring from an inferred dict into annotated targets,
+  `isinstance(None, None)` / `isinstance(3, None)`, and a local only
+  assigned inside a `go!` block (`declared and not used`) all emitted
+  invalid Go.
+- The semantic checker reports, with a Lam diagnostic instead of a Go build
+  error: undefined names inside f-string slots (at the slot's line and
+  column, with a did-you-mean), unknown types in annotations
+  (`list[Order]`) even without a close match, unknown base classes
+  (`class Child(Parent)`), non-`bool` `if` / `elif` / `while` conditions
+  (`if xs`, `while n`, `if payload.ok` on `json`), constant division by
+  zero (`10 / 0`, `n % 0`), re-annotating an outer local with another type
+  in an inner block, and untyped lambda parameters that nothing types when
+  the body needs a concrete type (`sq = lambda x: x * x`; `lambda v: v > 0`
+  passed to a `func(any) -> bool` parameter). Chained calls
+  (`Iter.range_(0, 9).filter(...)`) now get the same call checks as calls on
+  typed variables.
+- Constant negative indexes follow Python (`xs[-1]` is the last element,
+  also as an assignment target; out of range raises `IndexError`). Inferred
+  int/float arithmetic (`f = 1.5 * a` with `a = 1`) converts the int
+  operand, an unannotated tuple (`t = (1, "a")`) is one value and `n, s = t`
+  destructures a tuple variable (also annotated ones), `for v in
+  payload.tags` iterates a `json` array (each item is `json`), and a
+  `list[any]` value (`Iter...toList()`) assigned to a `list[int]` target is
+  converted element by element. `lamiter` callbacks are typed
+  (`func(any) -> bool`, `func(any) -> any`, ...), so lambdas passed to them
+  get the right Go signature.
+- Calling a method a `str` or `list[T]` does not have (`name.rfind(".")`,
+  `text.find("x")`, `xs.index(2)`, `names.add(x)`) is a semantic error with a
+  hint (`lastIndex` / `index`, `toUpper`, `x in xs`, `append`, ...) instead
+  of a Go build error. `xs.pop(i)` removes and returns the item at `i`
+  (negative from the end); it ignored the index and popped the last item.
+- `lamtest`'s `assertEqual` / `assertNotEqual` / `assertContains` compare
+  values: numbers by value across Go types and lists / dicts element-wise,
+  so `Test.assertEqual(f(), [80, 90, 100])` with `f() -> list[int]` passes
+  (it failed with "expected [80 90 100] got [80 90 100]").
+- A generic class imported from another module accepts type arguments
+  (`Bag[int]()`, `b: Bag[str]`, `-> Bag[int]`, `Pair[str, int](...)`); it was
+  rejected as "not generic" and emitted invalid Go.
+- Diagnostics point at the right line after preprocessor rewrites:
+  brace-less blocks (`if x print(...)`, `else ...`, `for`/`while`),
+  multi-line triple-quoted strings and dictionary destructuring are now
+  rewritten without adding or removing lines (they shifted later errors by
+  several lines and syntax-error carets landed on blank lines).
+- `lamc fmt` keeps `i++` / `xs[0]--` (it produced `i + +`, which no longer
+  compiled), formats files with dictionary destructuring (`{name} = user`)
+  and the `__inc__` example, keeps the text of multi-line triple-quoted
+  strings (it re-indented their lines, changing the value), keeps
+  `match [a, b]` / `case [x, *rest]` / `case {"k": v}` patterns valid, and
+  spaces unary signs after operators and keywords (`i - -1`, `return -1`).
+  Every `.lam` test case and stdlib module now formats to a file that parses
+  and behaves the same.
+- A function ending in a loop whose `else` block returns is accepted when the
+  loop body never `break`s out of it (every exit runs the `else`); the
+  `else` block is emitted as a plain Go block so Go sees the function
+  terminate (`missing return` before). A typed lambda stored in a global
+  (`classify = lambda (n: int) -> str { ... }`) keeps its `func` type (it
+  was `interface{}` and could not be called).
+- Documentation: the examples using `?` or `do/catch` import
+  `from lamerrors import Result` (stdlib.md, SYNTAX.md, TRANSPILATION.md,
+  third_party_libraries.md); `Log` documents its real API (`setPrefix`,
+  `*f` variants, single-argument `error`); `Stats.percentile` examples pass
+  `95.0` (p is 0-100); the `groups.aggregate` example passes one strategy
+  per column; the decorator example converts `any` values before building
+  `json`; the streaming plugin snippet uses Lam (`or`, `None`, Lam field
+  names); the function-type example no longer recurses into `main`; the
+  `Point.distance` example imports `Math` and prints `5`; nested functions
+  may be generic; escaped quotes in f-string slots are documented as
+  working; the generic `Stack` example declares `self`; the `?` desugaring
+  sketch compiles; `10 / 0` examples use a runtime divisor.
+- Whole classes and nested blocks on one line (`class Shape { func
+  area(self) -> int { return 0 } }`) and a one-line `} else { ... }` after
+  another statement on the same line parse (a `;` was inserted after the
+  inner block / the `else` block was taken for a literal).
+- Comprehensions type their loop variable from a typed list (`[o.customer.
+  profile?.email ?? "none" for o in orders]` into `list[str]`), unpack
+  nested targets over `enumerate` (`for i, (name, n) in enumerate(pairs)`),
+  and iterate `-> generator[T]` functions with typed items (`yield [1, 2]`
+  in a `generator[list[int]]` sends a `list[int]`). A list comprehension
+  whose element parts the checker cannot type is no longer rejected as
+  `list[tuple[any, any]]` against an annotated target.
 
 ## 2026-10-25
 

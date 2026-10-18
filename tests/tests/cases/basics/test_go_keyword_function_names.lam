@@ -1,0 +1,41 @@
+# Regression: top-level functions named like Go keywords (`fallthrough`,
+# `select`, `goto`, `struct`, `chan`) are called with their emitted Go name
+# directly, inside f-strings, as values and through private helpers.
+#
+# expect: 2
+# expect: value 3 and a!
+# expect: 4
+# expect: goto 5 struct 6 chan 7
+# expect: callback 11
+# expect: private 9
+
+func fallthrough(x: int) -> int {
+    return x + 1
+}
+
+func select(s: str) -> str {
+    return s + "!"
+}
+
+func goto(x: int) -> int { return x }
+func struct(x: int) -> int { return x }
+func chan(x: int) -> int { return x }
+
+private func package(x: int) -> int {
+    return x * 3
+}
+
+func apply(f: func(int) -> int, x: int) -> int {
+    return f(x)
+}
+
+func main() {
+    word: str = "a"
+    print(fallthrough(1))
+    print(f"value {fallthrough(2)} and {select(word)}")
+    v: int = fallthrough(3)
+    print(f"{v}")
+    print(f"goto {goto(5)} struct {struct(6)} chan {chan(7)}")
+    print(f"callback {apply(fallthrough, 10)}")
+    print(f"private {package(3)}")
+}

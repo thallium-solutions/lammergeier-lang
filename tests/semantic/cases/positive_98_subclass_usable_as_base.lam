@@ -1,0 +1,87 @@
+# expect-pass
+# A subclass instance is usable wherever its base class is expected:
+# parameters, returns, re-assignments, fields, optional[Base], list and
+# dict elements, `??`, ternaries and None comparisons. Classes without
+# `init` inherit the nearest ancestor's constructor (named arguments and
+# defaults included), and class patterns may downcast a base-typed value.
+
+class Shape {
+    func init(self, name: str, scale: int = 1) {
+        self.name: str = name
+        self.scale: int = scale
+    }
+    func area(self) -> int {
+        return 0
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+class Blob(Shape) {
+}
+
+class BigBlob(Blob) {
+    big: bool = true
+}
+
+class Holder {
+    func init(self, shape: Shape) {
+        self.shape: Shape = shape
+        self.maybe: optional[Shape] = None
+    }
+}
+
+func show(s: Shape) -> str {
+    return s.name
+}
+
+func pick(flag: bool) -> Shape {
+    if flag {
+        return Square(2)
+    }
+    return Blob("blob")
+}
+
+func find(flag: bool) -> optional[Shape] {
+    if flag {
+        return Square(1)
+    }
+    return None
+}
+
+func main() {
+    sq: Square = Square(3)
+    s: Shape = sq
+    s = Blob("b", scale=2)
+    s = BigBlob(name="big")
+    h: Holder = Holder(Square(1))
+    h.shape = Blob("x")
+    h.maybe = sq
+    shapes: list[Shape] = [Square(1), Blob("a"), BigBlob("c", 3)]
+    shapes.append(Square(4))
+    named: dict[str, Shape] = {"a": Square(1)}
+    named["b"] = BigBlob("b")
+    t: Shape = sq if len(shapes) > 2 else Blob("t")
+    u: Shape = find(true) ?? Blob("fallback")
+    print(show(sq), show(pick(true)), t.area(), u.area(), s == None, h.maybe != None)
+    match s {
+        case Square(side=n) as q {
+            print(n, q.area())
+        }
+        case BigBlob() as b {
+            print(b.big, b.name)
+        }
+        case _ {
+            print("other")
+        }
+    }
+    print(isinstance(s, Square))
+}

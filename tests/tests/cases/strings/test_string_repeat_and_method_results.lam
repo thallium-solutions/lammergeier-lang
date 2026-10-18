@@ -1,0 +1,36 @@
+# Test: string repetition works on call results (top-level functions and
+# `func`-typed parameters), and builtin str methods returning lists or
+# numbers dispatch the right method on their result.
+#
+# expect: abab
+# expect: x/x/x/
+# expect: --
+# expect: parts: 2 2
+# expect: upper: AB 2
+
+func word() -> str {
+    return "ab"
+}
+
+func path(p: str) -> str {
+    return p + "/"
+}
+
+func repeat(f: func(str) -> str, n: int) -> str {
+    return f("-") * n
+}
+
+func ident(s: str) -> str {
+    return s
+}
+
+func main() {
+    print(word() * 2)
+    n = 3
+    print(path("x") * n)
+    print(repeat(ident, 2))
+    count: int = "a,b".split(",").length()
+    print("parts:", count, len("a,b".split(",")))
+    shout: str = "ab".toUpper()
+    print("upper:", shout, "ab".toUpper().length())
+}

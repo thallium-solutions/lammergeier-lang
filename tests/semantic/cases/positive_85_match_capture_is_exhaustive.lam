@@ -1,0 +1,23 @@
+# expect-pass
+# A capture pattern (like `_`) matches everything, so a match whose
+# last case is an unguarded capture returns on every path.
+
+func describe(n: int) -> str {
+    match n {
+        case 0 { return "zero" }
+        case other { return f"other {other}" }
+    }
+}
+
+func pick(xs: list[int]) -> int {
+    match xs {
+        case [] { return -1 }
+        case [x] | [x, _] { return x }
+        case (_ as everything) { return len(everything) }
+    }
+}
+
+func main() {
+    print(describe(1))
+    print(pick([4]))
+}

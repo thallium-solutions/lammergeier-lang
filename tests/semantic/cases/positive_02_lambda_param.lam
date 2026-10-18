@@ -1,6 +1,11 @@
 # expect-pass
+# Lambda parameters are in scope inside the body. (The parameters are
+# typed: an untyped `lambda x, y: x + y` stored in an unannotated
+# variable has no `func` type to take them from and is rejected.)
 
 func main() {
-    f = lambda x, y: x + y
+    f = lambda (x: int, y: int): x + y
     print(f(2, 3))
+    g = lambda x, y: print(x, y)
+    g(2, 3)
 }

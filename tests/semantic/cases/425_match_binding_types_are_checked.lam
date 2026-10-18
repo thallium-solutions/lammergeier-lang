@@ -1,0 +1,12 @@
+# expect-error: cannot assign `str` to `int` variable `n`
+
+func main() {
+    words: list[str] = ["a", "b"]
+    match words {
+        case [first, *rest] {
+            n: int = first
+            print(n)
+        }
+        case _ { print("empty") }
+    }
+}

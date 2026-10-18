@@ -1,0 +1,61 @@
+# Test: unannotated locals keep the type the checker infers for them, so
+# later uses compile like annotated ones: iterating an inferred string
+# yields one-character strs, an inferred `Result[int]` unwraps to an int
+# in boolean / arithmetic contexts, `+= f()?` and `unwrapOr`, and async
+# handles collected in a list are awaited in a loop.
+#
+# expect: safe: ab_c
+# expect: big
+# expect: math: 7 3 3
+# expect: total: 7
+# expect: handles: 6
+# expect: handle: 10
+
+from lamerrors import Result
+
+func g() -> Result[int] {
+    return Result.Ok(2)
+}
+
+func h() -> Result[int] {
+    x = 1
+    x += g()?
+    return Result.Ok(x)
+}
+
+async func slow(n: int) -> int {
+    return n * 2
+}
+
+func main() {
+    s = "aZb-c"
+    safe = ""
+    for ch in s {
+        if ch >= "a" and ch <= "z" {
+            safe += ch
+        } elif ch == "-" {
+            safe += "_"
+        }
+    }
+    print(f"safe: {safe}")
+
+    r = g()
+    if r.unwrap() > 1 {
+        print("big")
+    }
+    y = r.unwrap() * 3 + 1
+    print(f"math: {y} {h().unwrap()} {g().unwrapOr(0) + 1}")
+    z: int = 0
+    z += r.unwrapOr(5)
+    z += h().unwrap()
+    print(f"total: {z + 2}")
+
+    handles = [slow(1), slow(2)]
+    total = 0
+    for handle in handles {
+        total += await handle
+    }
+    print(f"handles: {total}")
+    one = slow(5)
+    print(f"handle: {await one}")
+}

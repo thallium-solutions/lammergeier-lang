@@ -1,0 +1,42 @@
+# lamjson encode — representative native ``json`` payload (nested objects +
+# arrays) encoded repeatedly. Shows the cost of walking the interface{} tree
+# plus json.Marshal on the Go side.
+#
+# ops: 50000
+
+from lamtime import Time
+from lamjson import Json
+from lamerrors import Result
+
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
+
+func work() {
+    tags: list[str] = []
+    for i in range(20) {
+        tags = append(tags, f"tag{i}")
+    }
+    # Native ``json`` payload (``Json.encode`` accepts only ``json`` values);
+    # built once so the loop measures encoding, not construction.
+    payload: json = {
+        "user": "alice",
+        "meta": {"active": true, "score": 42, "tags": tags}
+    }
+
+    last: str = ""
+    for __i in range(50000) {
+        last = resultString(Json.encode(payload))
+    }
+    if len(last) == 0 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH json_encode 50000 {elapsed}")
+}

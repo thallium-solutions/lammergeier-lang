@@ -1,0 +1,54 @@
+# Test: comprehensions with tuple targets whose names are unused, over
+# `enumerate` (lists and strings), over generators (single and tuple
+# targets), over dicts, and `for i, k in enumerate([...])` over a list
+# literal binding typed elements; an unused enumerate index in a loop.
+#
+# expect: labels: [one two]
+# expect: keys: [a b]
+# expect: values: [1 2]
+# expect: enumerated: [0:a 1:b]
+# expect: chars: [0=h 1=i]
+# expect: generated: [1 2 3]
+# expect: pairs: [a1 b2]
+# expect: literal: 0 p
+# expect: literal: 1 q
+# expect: unused index: x
+# expect: unused index: y
+# expect: set: 2
+
+
+func gen() -> generator[int] {
+    yield 1
+    yield 2
+    yield 3
+}
+
+func pairGen() -> generator[tuple[str, int]] {
+    yield ("a", 1)
+    yield ("b", 2)
+}
+
+func main() {
+    pairs: list[tuple[int, str]] = [(1, "one"), (2, "two")]
+    labels = [label for number, label in pairs]
+    print(f"labels: {labels}")
+    table: dict[str, int] = {"a": 1, "b": 2}
+    keys: list[str] = sorted([k for k, v in table])
+    print(f"keys: {keys}")
+    values: list[int] = sorted([v for k, v in table])
+    print(f"values: {values}")
+    words: list[str] = ["a", "b"]
+    print(f"enumerated: {[f'{i}:{w}' for i, w in enumerate(words)]}")
+    print(f"chars: {[f'{i}={c}' for i, c in enumerate('hi')]}")
+    print(f"generated: {[x for x in gen()]}")
+    print(f"pairs: {[f'{name}{n}' for name, n in pairGen()]}")
+    for i, k in enumerate(["p", "q"]) {
+        s: str = k
+        print(f"literal: {i} {s}")
+    }
+    for i, item in enumerate(["x", "y"]) {
+        print(f"unused index: {item}")
+    }
+    distinct = {w for i, w in enumerate(words)}
+    print(f"set: {len(distinct)}")
+}

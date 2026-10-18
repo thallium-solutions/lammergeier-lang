@@ -1,0 +1,26 @@
+# F-string interpolation — stresses the fmt.Sprintf lowering. The
+# fan-out (four interpolations per iteration) makes this sensitive
+# to any future change that would unify f-strings with a
+# strings.Builder-based emitter.
+#
+# ops: 200000
+
+from lamtime import Time
+
+func work() {
+    last: str = ""
+    for i in range(200000) {
+        last = f"iter={i} half={i / 2} name=user_{i} tag=bench"
+    }
+    if len(last) == 0 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH fstring 200000 {elapsed}")
+}

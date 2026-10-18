@@ -1,0 +1,9 @@
+# expect-error: case pattern `"one"` can never match a value of type `int`
+
+func main() {
+    n: int = 1
+    match n {
+        case "one" { print("one") }
+        case _ { print("other") }
+    }
+}

@@ -1,0 +1,56 @@
+# Test: static methods of a generic class that do not use its type
+# parameter are callable without type arguments; methods with default
+# arguments called on indexed receivers; function references passed to a
+# call whose result is a receiver; a user function named like a Go
+# builtin (`make`).
+#
+# expect: two: 2 3
+# expect: counters: 1 4
+# expect: get: 2
+# expect: route: /a
+# expect: make: m
+
+from lamerrors import Result
+
+class Box[T] {
+    v: T
+    func init(self, v: T) { self.v = v }
+    static func two() -> int { return 2 }
+    static func wrap(v: T) -> Box[T] { return Box[T](v) }
+}
+
+class Counter {
+    n: int
+    func init(self) { self.n = 0 }
+    func inc(self, by: int = 1) { self.n += by }
+}
+
+class Holder {
+    f: func(int) -> int
+    func init(self, f: func(int) -> int) { self.f = f }
+    func get(self) -> int { return self.f(1) }
+}
+
+func inc(x: int) -> int { return x + 1 }
+
+func build(f: func(int) -> int) -> Holder { return Holder(f) }
+
+func echo(s: str) -> str { return s }
+
+func route(path: str, h: func(str) -> str) -> Result[str] { return Result.Ok(h(path)) }
+
+func make(f: func(str) -> str) -> str { return f("m") }
+
+func main() {
+    b: Box[int] = Box.wrap(3)
+    print(f"two: {Box.two()} {b.v}")
+    m: dict[str, Counter] = {"a": Counter()}
+    m["a"].inc()
+    xs: list[Counter] = [Counter()]
+    xs[0].inc()
+    xs[0].inc(3)
+    print(f"counters: {m['a'].n} {xs[0].n}")
+    print(f"get: {build(inc).get()}")
+    print(f"route: {route('/a', echo).unwrap()}")
+    print(f"make: {make(echo)}")
+}

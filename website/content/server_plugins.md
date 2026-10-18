@@ -23,10 +23,10 @@ and `*Plugin(...)` factories.
 Install only the packages an application uses:
 
 ```bash
-lamc install @lam/vulture@2.0.1
-lamc install @lam/vulture/std-plugin@2.0.2
-lamc install @lam/vulture/ws-plugin@2.0.1
-lamc install @lam/vulture/tus-plugin@3.0.1
+lamc install @lam/vulture@2.0.2
+lamc install @lam/vulture/std-plugin@2.0.3
+lamc install @lam/vulture/ws-plugin@2.0.2
+lamc install @lam/vulture/tus-plugin@3.0.2
 ```
 
 Each plugin declares `@lam/vulture` as a dependency. These are independently
@@ -597,7 +597,7 @@ hooks, so plugins can still inspect streaming responses to (for example) skip
 compression — the maintained `compress` plugin does exactly that:
 
 ```lammergeier
-if res.StreamHandler != nil || res.SseHandler != nil || res.Hijacked {
+if res.streamHandler != None or res.sseHandler != None or res.hijacked {
     return  # Don't try to gzip a stream.
 }
 ```

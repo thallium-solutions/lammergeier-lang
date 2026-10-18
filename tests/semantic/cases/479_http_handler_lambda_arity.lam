@@ -1,0 +1,8 @@
+# expect-error: lambda passed as `handler` to `Http.serve` takes 2 parameters, expected 3
+# `Http.serve` takes a `func(str, str, str) -> str` handler.
+
+from lamhttp import Http
+
+func main() {
+    print(Http.serve(0, lambda method, path: method + path).ok())
+}

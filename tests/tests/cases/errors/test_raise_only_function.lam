@@ -1,0 +1,51 @@
+# Regression (report 4.3): a function with a return type whose every path
+# raises is valid (no "does not return a value" error).
+#
+# expect: caught ValueError: bad
+# expect: caught KeyError: other
+# expect: caught NotImplementedError: abstract
+# expect: ok 4
+
+func boom() -> int {
+    raise ValueError("bad")
+}
+
+func pick(n: int) -> str {
+    if n > 0 {
+        raise ValueError("positive")
+    } else {
+        raise KeyError("other")
+    }
+}
+
+class Service {
+    func fetch(self) -> str {
+        raise NotImplementedError("abstract")
+    }
+}
+
+func checked(n: int) -> int {
+    if n < 0 {
+        raise ValueError("negative")
+    }
+    return n * 2
+}
+
+func main() {
+    try {
+        print(boom())
+    } catch ValueError as e {
+        print(f"caught {e}")
+    }
+    try {
+        print(pick(-1))
+    } catch e {
+        print(f"caught {e}")
+    }
+    try {
+        print(Service().fetch())
+    } catch e {
+        print(f"caught {e}")
+    }
+    print(f"ok {checked(2)}")
+}

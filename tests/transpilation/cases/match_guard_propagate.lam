@@ -1,0 +1,30 @@
+# Transpilation: the prologue of a `?` inside a match guard runs inside the
+# case condition (only when the case is tried); an error selects the case,
+# whose body returns it.
+# expect-go: var __lamGuardQ1_0 *Result
+# expect-go: if func() bool { if !(__lamMatch1 == 4) { return false }; __q1 := Half(n); if !__q1.Ok() { __lamGuardQ1_0 = __q1; return true }; return __q1.Value.(int) == 2 }() {
+# expect-go: if __lamGuardQ1_0 != nil { return __lamGuardQ1_0 }
+
+from lamerrors import Result
+
+func half(n: int) -> Result[int] {
+    if n % 2 == 0 {
+        return Result.Ok(n / 2)
+    }
+    return Result.Err("odd")
+}
+
+func check(n: int) -> Result[str] {
+    match n {
+        case 4 if half(n)? == 2 {
+            return Result.Ok("four")
+        }
+        case _ {
+            return Result.Ok("other")
+        }
+    }
+}
+
+func main() {
+    print(check(4).unwrap())
+}

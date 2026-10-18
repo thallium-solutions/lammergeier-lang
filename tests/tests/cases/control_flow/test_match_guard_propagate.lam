@@ -1,0 +1,59 @@
+# Test: a `?` inside a match guard is evaluated only when its case is
+# tried (after the pattern matched and the earlier cases failed), never
+# before the match; an error it propagates still leaves the function.
+#
+# expect: 4 -> four
+# expect: 6 -> other
+# expect: 5 -> big odd
+# expect: 8 -> eight
+# expect: 3 -> big odd
+# expect: 10 -> err: odd
+# expect: calls: 4
+
+from lamerrors import Result
+
+calls: int = 0
+
+func half(n: int) -> Result[int] {
+    calls += 1
+    if n % 2 == 0 {
+        return Result.Ok(n / 2)
+    }
+    return Result.Err("odd")
+}
+
+func check(n: int) -> Result[str] {
+    match n {
+        case 4 if half(n)? == 2 {
+            return Result.Ok("four")
+        }
+        case 8 if half(n)? == 3 {
+            return Result.Ok("never")
+        }
+        case 8 {
+            return Result.Ok("eight")
+        }
+        case x if x > 2 and x % 2 == 1 {
+            return Result.Ok("big odd")
+        }
+        case 10 if half(half(n)?)? > 0 {
+            return Result.Ok("ten")
+        }
+        case _ {
+            return Result.Ok("other")
+        }
+    }
+}
+
+func main() {
+    for n in [4, 6, 5, 8, 3] {
+        print(f"{n} -> {check(n).unwrap()}")
+    }
+    r: Result[str] = check(10)
+    if r.ok() {
+        print("10 -> ok")
+    } else {
+        print(f"10 -> err: {r.error}")
+    }
+    print(f"calls: {calls}")
+}

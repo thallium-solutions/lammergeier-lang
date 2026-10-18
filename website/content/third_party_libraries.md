@@ -337,6 +337,7 @@ Example:
 
 ```lammergeier
 from lamwebp import Encoder
+from lamerrors import Result
 
 func main() {
     enc: Encoder = Encoder(quality = 82)

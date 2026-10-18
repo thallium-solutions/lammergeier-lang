@@ -1,0 +1,21 @@
+# expect-pass
+# `{}` where a `set[T]` is expected is an empty set.
+
+class Tags {
+    names: set[str] = {}
+}
+
+func fresh() -> set[int] {
+    return {}
+}
+
+func count(s: set[str]) -> int {
+    return len(s)
+}
+
+func main() {
+    flags: set[str] = {}
+    flags = {}
+    t: Tags = Tags()
+    print(len(flags), len(fresh()), count({}), len(t.names))
+}

@@ -1,0 +1,7 @@
+# expect-error: operator `-` is not defined for `set[int]` and `set[str]`
+
+func main() {
+    ids: set[int] = {1, 2}
+    names: set[str] = {"a"}
+    print(len(ids - names))
+}

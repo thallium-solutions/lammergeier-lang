@@ -907,13 +907,13 @@ class QueryBuilder {
         return self
     }
 
-    func whereGroup(self, callback: any) -> QueryBuilder {
+    func whereGroup(self, callback: func(QueryBuilder) -> QueryBuilder) -> QueryBuilder {
         #- AND-join a parenthesized predicate group. Groups may contain any
            ``where*`` / ``orWhere*`` predicates, including nested groups. -#
         return self._addWhereGroup("AND", callback)
     }
 
-    func orWhereGroup(self, callback: any) -> QueryBuilder {
+    func orWhereGroup(self, callback: func(QueryBuilder) -> QueryBuilder) -> QueryBuilder {
         #- OR-join a parenthesized predicate group. If this is the first
            predicate, the leading OR is omitted just like ``orWhere``. -#
         return self._addWhereGroup("OR", callback)

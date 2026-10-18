@@ -42,7 +42,8 @@ def find_test_files(directory: Path, filt: str | None = None) -> list[Path]:
     """Find all .lam files in the given directory tree."""
     files = sorted(directory.rglob("*.lam"))
     if filt:
-        files = [f for f in files if filt.lower() in f.name.lower()]
+        # Matches the path below cases/ too (``core rosetta`` = one folder).
+        files = [f for f in files if filt.lower() in str(f.relative_to(directory)).lower()]
     return files
 
 

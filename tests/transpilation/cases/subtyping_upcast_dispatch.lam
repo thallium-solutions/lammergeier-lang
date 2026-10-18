@@ -1,0 +1,70 @@
+# Transpilation: a subclass used where its base is expected is upcast to
+# the embedded parent; calls on a base-typed value go through the dispatch
+# wrapper only for methods a descendant overrides; isinstance and class
+# patterns test the most-derived object; classes outside any hierarchy
+# (and methods nobody overrides) keep direct calls.
+# expect-go: func (s *Square) _lamUp_Shape() *Shape { if s == nil { return nil }; return s.Shape }
+# expect-go: func (s *Square) _lamIs_Square() *Square { return s }
+# expect-go: var s *Shape = sq._lamUp_Shape()
+# expect-go: return s._lamVirt_Area() + s.Base()
+# expect-go: Total([]*Shape{NewSquare(2)._lamUp_Shape(), NewShape()})
+# expect-go: _, ok := s._lamDyn().(interface{ _lamIs_Square() *Square }); return ok
+# expect-go: c.Add(1)
+# expect-go: return s.Value + s.Step()
+
+class Shape {
+    func area(self) -> int {
+        return 0
+    }
+
+    func base(self) -> int {
+        return 1
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+class Counter {
+    value: int = 0
+
+    func add(self, n: int) {
+        self.value = self.value + n
+    }
+
+    func step(self) -> int {
+        return 1
+    }
+
+    func next(self) -> int {
+        return self.value + self.step()
+    }
+}
+
+func measure(s: Shape) -> int {
+    return s.area() + s.base()
+}
+
+func total(shapes: list[Shape]) -> int {
+    n: int = 0
+    for s in shapes {
+        n += s.area()
+    }
+    return n
+}
+
+func main() {
+    sq: Square = Square(3)
+    s: Shape = sq
+    print(measure(s), total([Square(2), Shape()]), isinstance(s, Square))
+    c: Counter = Counter()
+    c.add(1)
+    print(c.next())
+}

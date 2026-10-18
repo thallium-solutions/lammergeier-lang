@@ -1,0 +1,27 @@
+# lamhash — SHA-256 many small payloads. Go's crypto/sha256 allocates
+# per call; any future work on reusing the hasher (e.g. a pool) should
+# show a clear drop here.
+#
+# ops: 100000
+
+from lamtime import Time
+from lamhash import Hash
+
+func work() {
+    total: int = 0
+    for i in range(100000) {
+        digest: str = Hash.sha256(f"payload-{i}-{i * 2}")
+        total = total + len(digest)
+    }
+    if total == 0 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH hash_sha256 100000 {elapsed}")
+}

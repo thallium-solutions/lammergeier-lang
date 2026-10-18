@@ -1,0 +1,8 @@
+# expect-error: `while` condition must be `bool`, got `int`; compare explicitly, e.g. `x != 0`
+
+func main() {
+    n: int = 3
+    while n {
+        n -= 1
+    }
+}

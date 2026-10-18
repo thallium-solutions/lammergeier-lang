@@ -1,0 +1,9 @@
+# expect-error: alternatives of an or-pattern must bind the same names
+
+func main() {
+    pair: list[int] = [1, 2]
+    match pair {
+        case [a, 0] | [0, b] { print("zero") }
+        case _ { print("other") }
+    }
+}

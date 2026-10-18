@@ -1,0 +1,85 @@
+# Test: statements at file top level run at program start, before main(),
+# in file order. Globals declared before the first statement keep their
+# initializers; globals declared after one see the effects of earlier
+# statements; names first assigned inside top-level blocks are globals.
+#
+# expect: start counter=0
+# expect: bumped to 3
+# expect: words a=2 b=1
+# expect: label three, mode high, status ok
+# expect: main counter=3 items=3 total=30 limit=3
+# expect: debug true pair 3 x 1 y 2
+# expect: loop i=3 visits=2
+# expect: doubled [2 4 6]
+
+const LIMIT: int = 3
+counter: int = 0
+seen: dict[str, int] = {}
+items: list[int] = []
+
+func bump(by: int) -> int {
+    counter += by
+    return counter
+}
+
+class Config {
+    static debug: bool = false
+}
+
+"""A bare string at top level (a docstring) does nothing."""
+
+print(f"start counter={counter}")
+counter += 2
+bump(1)
+print(f"bumped to {counter}")
+for word in ["a", "b", "a"] {
+    if word in seen {
+        seen[word] = seen[word] + 1
+    } else {
+        seen[word] = 1
+    }
+}
+countA: int = seen["a"]
+countB: int = seen["b"]
+print(f"words a={countA} b={countB}")
+if counter > 2 {
+    mode = "high"
+} else {
+    mode = "low"
+}
+match counter {
+    case 3 { label = "three" }
+    case _ { label = "other" }
+}
+try {
+    if counter > LIMIT {
+        raise ValueError("too big")
+    }
+    status = "ok"
+} catch ValueError as e {
+    status = "error"
+}
+print(f"label {label}, mode {mode}, status {status}")
+Config.debug = true
+items.append(1)
+items.append(2)
+items.append(3)
+total: int = counter * 10
+x, y = 1, 2
+i: int = 0
+visits = 0
+while i < 3 {
+    i += 1
+    if i == 2 {
+        continue
+    }
+    visits += 1
+}
+doubled: list[int] = [n * 2 for n in items]
+
+func main() {
+    print(f"main counter={counter} items={len(items)} total={total} limit={LIMIT}")
+    print(f"debug {Config.debug} pair {x + y} x {x} y {y}")
+    print(f"loop i={i} visits={visits}")
+    print(f"doubled {doubled}")
+}

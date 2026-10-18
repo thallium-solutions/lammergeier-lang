@@ -1,0 +1,23 @@
+# expect-pass
+# A method overridden by an intermediate class is not ambiguous on a
+# grandchild: the override hides the grandparent's definition.
+
+class Animal {
+    func sound(self) -> str {
+        return "..."
+    }
+}
+
+class Dog(Animal) {
+    func sound(self) -> str {
+        return "woof"
+    }
+}
+
+class Puppy(Dog) {
+}
+
+func main() {
+    p: Puppy = Puppy()
+    print(p.sound())
+}

@@ -106,3 +106,46 @@ GO_BUILTINS = frozenset({
     "int", "float64", "string", "bool", "byte", "rune",
     "fmt", "math", "os", "strconv", "errors", "strings",
 })
+
+
+# Methods callable on a ``str`` value (lowered to ``lamstrings``) and on a
+# ``list[T]`` value (lowered inline). Anything else is a semantic error.
+STR_METHODS: Set[str] = {
+    "repeat", "contains", "hasPrefix", "hasSuffix", "toUpper", "toLower", "trim",
+    "length", "trimLeft", "trimRight", "replace", "split", "join", "startsWith",
+    "endsWith", "index", "lastIndex", "count", "title", "equalFold", "fields",
+    "capitalize", "isAlpha", "isDigit", "isAlnum", "isSpace", "reverse", "center",
+    "zfill", "padLeft", "padRight", "splitLines", "splitN", "replaceFirst",
+    "containsAny", "isEmpty", "isBlank", "indent", "dedent", "format",
+}
+# Result types of the ``str`` methods (everything else returns ``str``).
+STR_METHOD_RESULT_TYPES: Dict[str, str] = {
+    "split": "list[str]", "fields": "list[str]", "splitLines": "list[str]", "splitN": "list[str]",
+    "contains": "bool", "hasPrefix": "bool", "hasSuffix": "bool", "startsWith": "bool",
+    "endsWith": "bool", "equalFold": "bool", "isAlpha": "bool", "isDigit": "bool",
+    "isAlnum": "bool", "isSpace": "bool", "containsAny": "bool", "isEmpty": "bool",
+    "isBlank": "bool", "length": "int", "index": "int", "lastIndex": "int", "count": "int",
+}
+LIST_METHODS: Set[str] = {
+    "length", "append", "pop", "extend", "insert", "sort", "map", "filter",
+    "reduce", "any", "all", "foreach",
+}
+# Python spellings with the Lam method (or idiom) they correspond to.
+STR_METHOD_HINTS: Dict[str, str] = {
+    "find": "index", "rfind": "lastIndex", "rindex": "lastIndex", "upper": "toUpper",
+    "lower": "toLower", "strip": "trim", "lstrip": "trimLeft", "rstrip": "trimRight",
+    "startswith": "startsWith", "endswith": "endsWith", "splitlines": "splitLines",
+    "isalpha": "isAlpha", "isdigit": "isDigit", "isalnum": "isAlnum", "isspace": "isSpace",
+    "casefold": "toLower", "len": "length", "size": "length",
+}
+LIST_METHOD_HINTS: Dict[str, str] = {
+    "add": "append", "push": "append", "size": "length", "len": "length",
+    "forEach": "foreach", "each": "foreach", "some": "any", "every": "all",
+    "sorted": "sort",
+}
+LIST_METHOD_IDIOMS: Dict[str, str] = {
+    "contains": "`x in xs`", "index": "a loop (or `x in xs`)", "count": "a loop or `len(xs.filter(...))`",
+    "remove": "`xs = xs.filter(lambda v: v != x)`", "reverse": "`xs[::-1]`", "copy": "`xs[:]`",
+    "clear": "`xs = []`", "join": "`\", \".join(xs)` on a `list[str]`",
+    "first": "`xs[0]`", "last": "`xs[-1]`", "isEmpty": "`len(xs) == 0`",
+}

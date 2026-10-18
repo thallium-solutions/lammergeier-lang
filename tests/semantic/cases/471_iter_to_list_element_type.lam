@@ -1,0 +1,9 @@
+# expect-error: cannot assign `list[int]` to `list[str]` variable `names`
+# `toList()` is a `list[T]` of the iterator's element type.
+
+from lamiter import Iter
+
+func main() {
+    names: list[str] = Iter.range_(0, 3).map(lambda x: x * 2).toList()
+    print(names)
+}

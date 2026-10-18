@@ -1,0 +1,9 @@
+# expect-error: case pattern `1.5` can never match a value of type `int`
+
+func main() {
+    n: int = 1
+    match n {
+        case 1.5 { print("half") }
+        case _ { print("other") }
+    }
+}

@@ -1,0 +1,36 @@
+# Regression (report 4.5): a named function passed to a generic
+# `func(T) -> U` parameter binds U from its return type.
+#
+# expect: [1 2]
+# expect: [a! bb!]
+# expect: [10 20]
+# expect: 3
+
+func mapList[T, U](xs: list[T], f: func(T) -> U) -> list[U] {
+    out: list[U] = []
+    for x in xs {
+        out.append(f(x))
+    }
+    return out
+}
+
+func fold[T, A](xs: list[T], start: A, f: func(A, T) -> A) -> A {
+    acc: A = start
+    for x in xs {
+        acc = f(acc, x)
+    }
+    return acc
+}
+
+func len2(s: str) -> int { return len(s) }
+func shout(s: str) -> str { return s + "!" }
+func addLen(total: int, s: str) -> int { return total + len(s) }
+
+func main() {
+    lens: list[int] = mapList(["a", "bb"], len2)
+    print(lens)
+    loud: list[str] = mapList(["a", "bb"], shout)
+    print(loud)
+    print(mapList([1, 2], lambda (n: int) -> int: n * 10))
+    print(fold(["a", "bb"], 0, addLen))
+}

@@ -48,6 +48,13 @@ Multi-line parenthesised expressions currently pin to the *first* line
 of the expression (where Lark records the statement position). A future
 pass may tighten this to the exact argument line.
 
+The parse preprocessor keeps every statement on its source line: brace-less
+blocks (`if x print(...)`) are braced on the same line, dictionary
+destructuring expands to `;`-separated assignments on its line, and a
+multi-line triple-quoted string collapsed to one line is followed by the
+newlines it swallowed. Parser, semantic and Go positions therefore all use
+the user's line numbers.
+
 ## Library cache
 
 Transpiling each `.lam` library (parse, AST walk, emit Go, strip `main`,
@@ -101,6 +108,8 @@ Lam type parameters lower straight to Go 1.18 generics:
 | auto-constructor for `Box[T]`                               | `func NewBox[T any]() *Box[T] { return &Box[T]{} }`                  |
 | `Box[int](x)` at call site                                  | `NewBox[int](x)`                                                     |
 | static method of `Box[T]`                                   | `func Box_method[T any](...)` — class's T is threaded through        |
+| `func map[U](self, fn: func(T) -> U) -> Box[U]` on `Box[T]` | `func Box_Map[T any, U any](s *Box[T], fn func(T) U) *Box[U]`        |
+| `b.map(lambda x: x * 2)` with `b: Box[int]`                 | `Box_Map(b, func(x int) int { return x * 2 })`                       |
 | nested `func id[T](x: T) -> T`                              | hoisted helper `func __lam_nested_N_id[T any](x T) T`                |
 
 The transpiler tracks generic classes in `_generic_classes` (class → Go
@@ -143,6 +152,49 @@ func __lam_nested_1_addOffset[T int](offset int, x T) int {
 
 Calls with explicit type arguments (`addOffset[int](7)`) and calls where
 Go can infer type arguments (`id(7)`) are both supported.
+
+### Methods with their own type parameters
+
+Go methods cannot declare type parameters, so a Lam method that does
+(`func map[U](self, ...)`, on a generic class or not) lowers to a
+package-level generic function named `<Class>_<Method>` whose clause is
+the class's parameters followed by the method's, with the receiver as
+the first parameter (named `s`, like a method receiver, so `go!` blocks
+and `self` rewrites are unchanged). `_generic_instance_methods` records
+these methods (also for imported classes, through the library metadata),
+and a call `recv.map(f)` becomes `Box_Map(recv, f)`; a receiver whose
+class inherits the method passes its embedded parent
+(`Box_Map(ib.Box, f)` for `class IntBox(Box[int])`). Such methods are not
+part of the virtual-dispatch interfaces; the semantic checker rejects an
+override.
+
+### Call-site type-argument inference
+
+A lambda argument lowers to a Go function literal, which must spell its
+parameter and result types; Go infers type arguments *from* such a
+literal but never types the literal itself. `GenericCallMixin`
+(`compiler/visitors/generics.py`) therefore binds a generic callee's type
+parameters at each call, on the Go spelling of the declared parameter
+types and in Go's order: the receiver's type arguments (`*Iter[int]` gives
+`T = int`; the in-scope `T` for `self`; the bound arguments of a generic
+base for a subclass), typed arguments, untyped literals, then lambdas and
+function references, typed with what is already bound — the lambda body's
+type binds the rest (`func(T) U` with `T = int` and `x * x` gives
+`U = int`). The bindings substitute the parameter types the arguments are
+lowered with (`_call_type_subst`), so lambdas come out concrete
+(`func(x int) int`); an unresolved parameter falls back to `interface{}`
+(what Go would then infer). The same bindings give the call's result type
+(`_generic_method_returns` keeps each generic method's Go result spelled
+with its parameters), so chains such as
+`Iter.range_(0, 9).filter(f).map(g).toList()` keep their types for the next
+link, `Result[T]` payloads (`it.first().unwrap()`) and inferred locals.
+The Go call itself still relies on Go's inference, except for a static
+method whose parameter no argument determines (`Iter.repeat(None, 2)`
+emits `Iter_repeat[interface{}](nil, 2)`).
+
+Builtins passed as function values (`it.map(len)`, `xs.map(str)`) are
+not Go values; where a `func(P) R` is expected they become
+`func(_lamArg P) R { return len(_lamArg) }`.
 
 ## Go dependency pins
 
@@ -257,7 +309,13 @@ rows[0:1] = [[6, 8]]      # replacement is lowered as [][]int
 
 Set values remain Lam sets even though they lower to Go maps. User code should
 test `value in ids`; `ids[value]` is rejected by semantic analysis instead of
-leaking a Go map-indexing detail.
+leaking a Go map-indexing detail. Set methods are map operations
+(`ids.add(x)` → `ids[x] = true`, `discard` → `delete(ids, x)`, `contains` →
+`ids[x]`, `remove` panics with a `KeyError` when the key is missing), `set()`
+is the expected map type's empty literal, and `a | b`, `a & b`, `a - b` call
+a small closure building a fresh map (`func(l, r map[int]bool) map[int]bool
+{ out := ...; for k := range l { ... }; return out }(a, b)`); `a |= b` assigns
+its result back.
 
 The semantic checker reports incompatible element/key/value types in those
 contexts before Go is invoked; the transpiler still applies the contextual
@@ -321,7 +379,15 @@ var items []int = []int{1, 2, 3}
 ```
 
 Without a type annotation the compiler falls back to `:=` inference.
-Re-assignment (`x = 5`) always emits a plain `=`.
+Re-assignment (`x = 5`) always emits a plain `=`. The semantic checker hands
+the type it inferred for a first plain assignment to the transpiler (the
+`_lam_inferred_type` attribute on the `assign` node): a concrete type is
+recorded for the name (so `for ch in s`, `r.unwrap() > 1`, method dispatch
+and `?.` chains see it) and, when the value's own Go shape differs, the
+declaration is lowered like `name: T = value` (`var name T = ...`). Types
+mentioning `any`, unknown names or type parameters keep plain `:=`; values
+holding un-awaited async handles stay untyped (their element type is the
+handle, `chan func() T`).
 
 ### Discard target (`_`)
 
@@ -392,6 +458,15 @@ var op func(int, int) int = Add
 var ops []func(int, int) int = []func(int, int) int{Add, Mul}
 var cb func() = Noop
 ```
+
+A lambda lowered where a `func(...)` Go type is expected (`_typed_value_to_go`:
+arguments, annotated targets, returns, `func`-typed fields, `foreach`) takes
+that type's parameters and result (`_split_go_func_type`); a `func(...)` with
+no result emits a void Go closure whose expression body is a statement
+(`func(n int) { fmt.Println(n) }`). Without a context, a lambda whose body
+is a call producing no value (`print`, a user function without a return
+type) is void too, and a lambda with all parameters typed has the Go type
+`func(P...) R` (its `-> R` annotation or the inferred body type).
 
 The grammar rule is `type_func: "func" "(" [type_func_params] ")" ["->" type_expr]`,
 so the parameter list is wrapped in its own AST node and the return is
@@ -477,8 +552,9 @@ are needed.
 `for i in range(n)` becomes `for i := 0; i < n; i += 1`.
 `while cond` becomes `for cond`.
 Both loop kinds support an `else` suite, which is emitted using a small
-`broke` boolean guard — see `_for_else_break` / `_while_else_break` in the
-transpiler. A statically non-empty literal or integer `range` can promote
+per-loop boolean guard (`_lamLoopBreakN := false`, set by `break` in that
+loop's own body and tested after it), so nested and sequential loop-`else`
+statements keep independent flags. A statically non-empty literal or integer `range` can promote
 body assignments to the continuing outer flow when the loop contains no
 `break`/`continue`; the emitter hoists matching typed storage. Empty, unknown,
 or early-exit loops keep conservative assignment state.
@@ -514,10 +590,28 @@ func() {
 }()
 ```
 
+Because the body runs inside that closure, a `return X` in the `try` body
+or in a handler stores `X` in the enclosing function's named result
+`retval` (functions and methods whose body contains a `try` anywhere —
+also inside a loop, a branch or a `match` case — get `(retval T)`), sets
+`__lamShouldReturn` and leaves the closure; `if __lamShouldReturn { return }`
+after it leaves the function. Inside a `do { }` body the value goes to the
+`do` block's return slot instead and the check becomes
+`if __lamShouldReturn { return nil }` (leaving the `do` closure, after which
+the function returns the recorded value).
+
 `raise` and `throw` (its alias) both become `panic(...)`; Python
 exception types (`ValueError`, `TypeError`, …) are formatted as
 `fmt.Sprintf("Name: %v", arg)`. The two keywords share a single
 `raise_stmt` AST node, so downstream passes don't distinguish them.
+
+A clause naming a user class (`catch AppError as e`) tests the most-derived
+object behind the recovered value (`_lamIs_AppError()`, see "Virtual dispatch
+and subtyping"), so it also catches subclasses declared in other modules and
+base-typed values that hold one; the binding is typed as the class
+(`e, _ := ...` of type `*AppError`, the subclass's `AppError` view), so
+`e.message` and `e.code()` (dispatching to overrides) work directly. A
+catch-all binding (`catch e`) stays the raw `interface{}` value.
 
 ### `?` (Result propagation)
 
@@ -526,6 +620,8 @@ enclosing function. Each `?` allocates a fresh `__qN` from the
 transpiler-global counter:
 
 ```lam
+from lamerrors import Result
+
 func double(s: str) -> Result {
     n: int = parseInt(s)?
     return Result.Ok(n * 2)
@@ -584,6 +680,8 @@ A `do`/`catch` block lowers to a Go IIFE with return type `*Result`,
 followed by a check on the IIFE's `.Error` field:
 
 ```lam
+from lamerrors import Result
+
 do {
     n: int = parseInt(s)?
     print(n)
@@ -603,14 +701,27 @@ __rdo1 := func() *Result {
     return Result_Ok(nil)            // implicit success-tail
 }()
 if __rdo1.Error != nil {
-    err := __rdo1.Error
+    err := func(v interface{}) *Error {
+        if e, ok := v.(*Error); ok { return e }
+        if e, ok := v.(interface{ _lamIs_Error() *Error }); ok { return e._lamIs_Error() }
+        return NewError("", fmt.Sprint(v), v)
+    }(__rdo1.Error)
     fmt.Println(fmt.Sprintf("failed: %v", err))
 }
 ```
 
+The handler's `err` is typed `*Error`: an `Error` (or the `Error` view of a
+subclass instance) is used as is, any other propagated value is wrapped with
+an empty kind (`Error.__str__` prints just the message then, so the output is
+unchanged). A module declaring its own `Error` class keeps the raw value.
+
 Inside the IIFE, the same `?` lowering applies — but the `return __qN`
 exits the closure, not the surrounding function, so the error pops
-out as the IIFE's value. `_visit_do_stmt` pushes a fresh
+out as the IIFE's value. A Lam `return` inside the body still leaves the
+enclosing function: it stores the value in `__lamDoRetVN`, sets the flag
+`__lamDoRetN` and returns `nil` from the closure; right after the closure
+`if __lamDoRetN { return __lamDoRetVN }` performs the real return (routed
+through the enclosing `try` or async lowering when there is one). `_visit_do_stmt` pushes a fresh
 `declared_vars` scope around both the body and the handler so locals
 don't leak between consecutive `do` blocks. The source must directly
 `from lamerrors import Result` for the emitted `*Result` /
@@ -619,8 +730,93 @@ transitive import is deliberately insufficient.
 
 ### `match`
 
-`match x { case 1 { ... } case _ { ... } }` compiles to a Go `switch`
-with each case body inlined.
+A match of literal / value / or-patterns over a scalar subject (`int`,
+`float`, `str`, `bool`) without guards, bindings or a `break` in a case
+body compiles to a Go `switch` with each case body inlined
+(`case 1 | 2` → `case 1, 2:`, `case _` → `default:`).
+
+Every other match lowers to an if/else chain over the subject, evaluated
+once into `__lamMatchN`:
+
+```go
+{
+	__lamMatch1 := subject
+	if <case 1 condition> {
+		<case 1 bindings>
+		<case 1 body>
+	} else if <case 2 condition> {
+		...
+	} else {            // `case _` / an unguarded capture
+		...
+	}
+}
+```
+
+An if/else chain ending in `else` is a Go terminating statement when every
+branch returns (a function may end with such a match), and a `break` /
+`continue` inside a case body targets the enclosing loop — inside a Go
+`switch`, `break` would only leave the switch.
+
+Each pattern is compiled twice from the same description: as the
+condition (plain checks become an `&&` chain; anything that binds names
+or needs intermediate values becomes `func() bool { ...; return guard }()`,
+returning `false` at the first failed check, with the names bound so the
+guard can read them) and as the binding prologue of the case body (the
+same extraction without the checks). A `?` in the guard keeps its
+`__qN := ...` prologue inside that condition closure, so it runs only when
+the case is tried; an error is stored in a per-case `__lamGuardQN_M`
+variable and makes the condition true, and the case body starts with
+`if __lamGuardQN_M != nil { return __lamGuardQN_M }`. Patterns are typed by
+the subject:
+
+- typed lists index the slice (`len(s) == 2`, `s[0]`); `*rest` copies
+  `s[i:len(s)-k]` into a new slice of the same element type; tuples assert
+  each element to its declared type;
+- typed dicts look keys up with `v, ok := m[k]`; `**rest` copies the
+  remaining entries into a map of the same type;
+- class patterns on a class-typed subject read the (promoted) fields; a
+  subclass pattern on a base-typed subject, and any class pattern on an
+  `any` / interface subject, tests the most-derived object
+  (`_lamIs_<C>()`, see "Virtual dispatch and subtyping") and binds the
+  narrowed view, for subclasses declared in any module; classes outside any
+  hierarchy use a direct type assertion;
+- `any` subjects use small helper closures declared at the top of the
+  match block, only when needed: `__lamMatchEq` (numeric-aware equality),
+  `__lamMatchSeq` / `__lamMatchMap` (a `[]interface{}` / `map[string]interface{}`
+  view, through `reflect` for typed slices and string-keyed maps),
+  `__lamMatchInt` / `__lamMatchFloat` (builtin type patterns) and
+  `__lamMatchRaw` (sees through a `json` value stored in `any`);
+- `json` subjects match on `lamJSONRaw(value)` and re-wrap bound
+  sub-values with `lamJSONWrapRaw` so they stay `json`.
+
+### Top-level statements
+
+Top-level declarations stay Go package-level declarations. The module's
+top-level statements are emitted, in file order, into one function per
+module, and a single `func init()` in the main file calls those functions
+in dependency order (a depth-first walk of the import graph from the main
+file, imports in source order, each module once, the main file last):
+
+```go
+var items []int = []int{}   // declared before the first statement
+var total int               // declared after one: zero value here
+
+func lamModuleInit_main() {
+	items = append(items, 3)
+	total = len(items)      // assigned in file order
+}
+
+// Top-level statements of every module, in import order.
+func init() {
+	lamModuleInit_registry_1a2b3c4d()
+	lamModuleInit_main()
+}
+```
+
+Library modules name their function `lamModuleInit_<module>_<hash>`; a
+module without top-level statements emits none and gets no call. Names
+first assigned inside top-level blocks are declared as package-level
+`var`s before the init function assigns them.
 
 ## Functions
 
@@ -767,7 +963,11 @@ func Point_origin() *Point {
 ```
 
 - Fields are inferred from the constructor body (`self.foo = ...`) and
-  from top-level annotations inside the class.
+  from top-level annotations inside the class. A class-body initializer
+  (`count: int = 0`) becomes an assignment `s.Count = 0` in every
+  constructor (including the generated no-`init` one), emitted after the
+  embedded parents are allocated and before the `init` body; inherited
+  defaults are assigned through the parent path (`s.Base.Count = 0`).
 - `self` in method bodies is rewritten to `s`.
 - Static methods are emitted as plain functions named
   `<Class>_<method>`. Callers who write `Class.method(...)` or
@@ -808,22 +1008,171 @@ s.Parent = NewParent(name, "internal")
 `base.__init__(...)` lowers the same way as `base.init(...)`.
 
 There is no special `super()` support today. `super` is treated like an ordinary
-name and is reported as undefined unless user code defines it. If a child
-overrides a parent method, `self.method()` calls the child override. To call the
+name and is reported as undefined unless user code defines it. To call the
 parent implementation explicitly, use the parent alias, such as
-`base.method(...)` or a named alias.
+`base.method(...)` or a named alias; those calls are always static.
 
-Constructors are independent. `Child(...)` is checked against `Child.init` /
-`Child.__init__`, not against the parent initializer, and the child constructor
-signature does not need to match the parent signature. Parent parameters do not
-need defaults merely because the child constructor has different parameters.
+#### Virtual dispatch and subtyping
+
+Methods are virtual, like Python and Java, and a subclass instance is usable
+wherever its base class is expected. Go embedding alone gives neither: the
+receiver of an inherited method is the embedded `*Parent` (so `self.area()`
+inside it runs the parent's own method), and a `*Square` is not a `*Shape`.
+The compiler knows the whole program's class hierarchy (the driver collects
+every module's classes, so a library knows which of its classes the program
+subclasses) and adds a little machinery to the classes that need it:
+
+```lam
+class Shape {
+    func area(self) -> int { return 0 }
+    func describe(self) -> str { return f"area {self.area()}" }
+}
+
+class Square(Shape) {
+    func area(self) -> int { return 9 }
+}
+
+func total(shapes: list[Shape]) -> int { ... s.area() ... }
+
+s: Shape = Square()
+```
+
+→
+
+```go
+type Shape struct {
+    _lamSelf lamVirtualShape // most-derived object; nil for a plain Shape
+}
+
+type lamVirtualShape interface {
+    Area() int
+}
+
+func (s *Shape) _lamBindSelf(v interface{}) {
+    if iv, ok := v.(lamVirtualShape); ok { s._lamSelf = iv }
+}
+
+func (_lamRecv *Shape) _lamVirt_Area() int {
+    if _lamRecv._lamSelf != nil { return _lamRecv._lamSelf.Area() }
+    return _lamRecv.Area()
+}
+
+func (s *Shape) _lamDyn() interface{} {   // the most-derived object
+    if s == nil { return nil }
+    if s._lamSelf != nil { return s._lamSelf }
+    return s
+}
+func (s *Shape) _lamIs_Shape() *Shape { return s }
+func (s *Shape) Format(f fmt.State, verb rune) { ... }  // see below
+
+func (s *Shape) Describe() string {
+    return fmt.Sprintf("area %v", s._lamVirt_Area())
+}
+
+func (s *Square) _lamUp_Shape() *Shape { if s == nil { return nil }; return s.Shape }
+
+func NewSquare() *Square {
+    s := &Square{}
+    s.Shape = &Shape{}
+    s.Shape._lamBindSelf(s)
+    return s
+}
+
+var s *Shape = NewSquare()._lamUp_Shape()
+... n += s._lamVirt_Area() ...
+```
+
+- **Representation.** A base-typed value stays a plain `*Shape`: field access
+  is a direct (promoted) field read and needs no accessor. Where a `Square`
+  flows into a `Shape` (argument, assignment, re-assignment, return, field,
+  `optional[Shape]`, list/dict literal element, `append` / `insert` /
+  `extend([...])`, `d[k] = v`, `??`, ternary, `==` with a base-typed value)
+  it is converted to its embedded parent with the nil-safe, inlinable
+  `_lamUp_Shape()` (one method per ancestor; grandparents included). Lists
+  stay invariant: an existing `list[Square]` is not a `list[Shape]` (the
+  semantic checker reports it), only element-wise uses convert.
+- **Dynamic dispatch.** Every class that has a subclass anywhere in the
+  program gets `_lamSelf` (bound by each subclass constructor in every
+  embedded ancestor, after the parents are allocated and again after an
+  explicit `base.init(...)` / alias `init` call or an inherited
+  constructor, which replace the parent pointer), `_lamBindSelf` and an
+  interface listing the methods it defines that a descendant overrides.
+  Each such method gets a wrapper `_lamVirt_<M>` that Go inlines. A call
+  `x.m(...)` — `self.m()` inside the class or any receiver from outside —
+  lowers to `x._lamVirt_M(...)` only when a strict descendant of the static
+  class of `x` overrides `m`; every other call (classes never subclassed,
+  methods nobody overrides, a subclass receiver whose own method is final)
+  is a direct Go call exactly as before, so hot loops over plain classes
+  are unaffected. A plain `Shape` pays one nil check per virtual call, a
+  subclass instance an interface call.
+- **Dynamic class.** `_lamDyn()` returns the most-derived object and
+  `_lamIs_C()` (defined on every class in a hierarchy and promoted to all
+  its descendants) recovers its `*C` view, so `isinstance(x, Square)` on a
+  `Shape` is `_, ok := x._lamDyn().(interface{ _lamIs_Square() *Square })`,
+  a class pattern `case Square(side=n) as sq` on a `Shape` subject binds
+  the narrowed `*Square`, and the same test powers class patterns on `any`
+  / interface subjects and typed `catch` clauses, for subclasses declared in
+  any module. `isinstance(x, Shape)` with `x` statically a `Shape` or a
+  subclass is `x != nil`. A base-typed value converted to an interface type
+  or `any` is stored as its most-derived object (`x._lamDyn()`), so interface
+  calls reach the overrides too.
+- **Printing.** Classes in a hierarchy implement `fmt.Formatter`: the
+  object prints as `&{...}` with its own fields, the parent part as a
+  nested `{...}` (`&{{sq} 3}` for a `Square` with `side = 3` whose `Shape`
+  part has `name = "sq"`), the internal `_lamSelf` never shows, a base-typed
+  value prints its most-derived object, and `__str__` (own or inherited)
+  still wins. Classes outside any hierarchy keep Go's default formatting.
+  The unexported field is also skipped by `encoding/json`.
+- `self.m()` called from inside a parent's *constructor* while that parent is
+  being built by `base.init(...)` still runs the parent's own method: the
+  binding happens when the parent constructor returns.
+- Dispatch stays static for dunder methods (printing dispatches through
+  `Format`), generator methods, methods with their own type parameters,
+  overloaded method names, method values (`self.m` without a call) and
+  overrides whose signature spells a generic base's type parameter
+  differently (`get(self) -> int` overriding `Box[T].get(self) -> T`).
+- Downcasts are explicit: `sq: Square = shape` is a compile error; narrow
+  with a class pattern (`match shape { case Square() as sq { ... } }`) or
+  test with `isinstance`.
+- In a diamond (`D(B, C)` with `B(A)` and `C(A)`) each path embeds its own
+  `A`; the upcast to `A` uses the first base's path.
+
+#### Constructors
+
+A class without its own `init` inherits the constructor of its nearest
+ancestor that has one (bases searched depth-first, left to right, like
+Python's MRO for non-diamond hierarchies): same parameters, defaults and
+named arguments, with generic base type arguments substituted
+(`class IntBox(Box[int])` gets `NewIntBox(value int)`). The constructor
+allocates the parents, applies the class-body field defaults, builds the
+parent the `init` comes from with its constructor and binds the object into
+it:
+
+```go
+func NewDog(name string, age int) *Dog {
+    s := &Dog{}
+    s.Animal = &Animal{}
+    s.Animal._lamBindSelf(s)
+    s.Animal = NewAnimal(name, age)
+    s.Animal._lamBindSelf(s)
+    return s
+}
+```
+
+A class that declares `init` is checked against its own `init` only; the
+child constructor signature does not need to match the parent signature, and
+parent parameters do not need defaults merely because the child constructor
+has different parameters. A class with no `init` anywhere in its ancestry gets
+a no-argument constructor.
 
 When a child constructor is emitted, the compiler first allocates zero-value
-embedded parent structs, for example `s.Parent = &Parent{}`, before running the
-child constructor body. Explicit parent initializer calls replace that
-zero-value parent with the result of `NewParent(...)`. A child class without its
-own initializer now emits a fallback constructor that also initializes embedded
-parent pointers.
+embedded parent structs, for example `s.Parent = &Parent{}` (grandparents and
+imported parents included), before running the child constructor body.
+Explicit parent initializer calls replace that zero-value parent with the
+result of `NewParent(...)`; the child's class-body defaults for fields the
+parent declares (`sides: int = 4` in `Square` over `Shape`'s `sides: int = 0`)
+are applied again afterwards unless the parent's `init` assigns the field
+itself.
 
 Multiple inheritance embeds each parent pointer:
 
@@ -875,6 +1224,11 @@ Interfaces are never wrapped in pointers.
 | `name := expr`                     | IIFE binding `name` locally and returning it (binding does *not* escape)  |
 | f-strings `f"x={x}"`               | `fmt.Sprintf("x=%v", x)` with method-call translation                     |
 | `s[i]` / `s[a:b]`                  | Go string byte indexing / string slicing                                 |
+| `xs[-1]` (constant negative index) | `xs[len(xs)-1]` (an IIFE for a non-trivial receiver); still an `IndexError` when out of range |
+| `xs[a:b:c]` with negative / stepped bounds | typed IIFE keeping the receiver's Go type (`[]T` / `string`), reflection only for unknown receivers |
+| `obj?.field` on a pointer receiver | `func() *T { if o := obj; o != nil { v := o.F; return &v }; return nil }()` for a value field (`T` itself when nilable) |
+| `d[k] ?? fallback` on a map        | comma-ok lookup: the fallback for a missing key                            |
+| `1.5 * n` with `n: int`            | `1.5 * float64(n)` (int operands of a mixed int/float expression)          |
 | `[expr for x in xs if c]`          | IIFE building a `[]T` slice                                                |
 | `{k: v for x in xs}`               | IIFE building a `map[K]V`                                                  |
 | `{expr for x in xs}`               | IIFE building a `map[K]bool` in a typed set context, otherwise `map[interface{}]bool` |
@@ -889,14 +1243,15 @@ Interfaces are never wrapped in pointers.
 | `File.open(path, "w")`             | `File_open(path, "w")`, returning `*Result` with `File` payload metadata   |
 | `xs.length()`                      | `len(xs)`                                                                  |
 | `xs.append(v)`                     | `xs = append(xs, v)`                                                      |
-| `xs.pop()`                         | IIFE that returns the removed element and shrinks `xs`                    |
+| `xs.pop()` / `xs.pop(i)`           | IIFE that returns the removed (last / `i`-th) element and shrinks `xs`    |
 | `xs.map(fn)`                       | IIFE that builds a typed result slice from callback/context information   |
 | `xs.filter(fn)`                    | IIFE that keeps elements where `fn(_v)` is true                           |
-| `xs.reduce(fn[, init])`            | IIFE that accumulates                                                     |
+| `xs.reduce(fn[, init])`            | IIFE that accumulates (in `init`'s type when given, else the element's)   |
 | `xs.any(fn)` / `xs.all(fn)`        | IIFE with early return                                                    |
 | `xs.foreach(fn)`                   | IIFE with no result                                                       |
 | `xs.sort([compare][, inplace])`    | `sort.Slice` copy by default; when `inplace=true`, sorts and returns `xs` |
-| `sorted(xs)`                       | `sort.Slice` copy preserving the receiver/context element type            |
+| `xs.sort(key=f)` / `xs.sort(f)` with a one-parameter `f` | `sort.SliceStable` comparing `f(x)` (ordered keys natively, others by `%v`) |
+| `sorted(xs, key=f, reverse=b)`     | `sort.SliceStable` copy preserving the receiver/context element type; `key` compares `f(x)` |
 | `enumerate(xs)`                    | IIFE materializing index/value pairs as `[]interface{}` tuples            |
 | `isinstance(x, T)`                 | Type-specific runtime check: assertion, nil test, or `reflect.Kind`        |
 
@@ -913,7 +1268,11 @@ argument refers to a user function (in any of its renamed forms: raw,
 `_go_public_name`, `_go_private_name`) and skip unnecessary interface
 assertions when the callback already has a concrete return type. For lambdas,
 an explicit `lambda (...) -> T` return annotation or an enclosing assignment
-such as `names: list[str] = nums.map(...)` shapes the emitted result slice.
+such as `names: list[str] = nums.map(...)` shapes the emitted result slice;
+otherwise the body's type does (`words.map(lambda w: len(w))` is a `[]int`),
+and the expression type of a `map` / `filter` / `sort` / `reduce` call feeds
+the next link of a chain. A builtin passed by name (`words.map(len)`) is
+wrapped in a function literal.
 
 Membership lowering follows the container shape: strings use
 `strings.Contains`, maps and sets emit a key-presence lookup, and lists emit a
@@ -1098,10 +1457,46 @@ instead of leaking the callee's `T` into caller Go.
 ## Concurrency
 
 - Every `async func` invocation starts a goroutine and returns a channel handle
-  buffered to exactly one result; `await call` or `await handle` receives it
-  with `<-`. The same emitter is used for top-level functions, instance methods,
-  and static methods, so receiver type arguments, private/static Go naming, and
-  `Result[T]` payloads are preserved.
+  buffered to exactly one result. The handle carries a *thunk*: an
+  `async func f() -> T` returns `chan func() T` (`chan func()` when it returns
+  nothing), and `await call` / `await handle` lowers to `(<-handle)()`. A
+  `return v` publishes `func() T { return v }` (a void body publishes
+  `func() {}` when it finishes, so awaiting it never deadlocks). A deferred
+  `recover()` in the goroutine publishes `func() T { panic(r) }` instead, so an
+  exception raised in the async body is re-raised by the `await` and can be
+  caught there. The same emitter is used for top-level functions, instance
+  methods, and static methods, so receiver type arguments, private/static Go
+  naming, and `Result[T]` payloads are preserved.
+
+```lam
+async func double(n: int) -> int {
+    return n * 2
+}
+x: int = await double(21)
+```
+
+→
+
+```go
+func Double(n int) chan func() int {
+    __lam_async_ch := make(chan func() int, 1)
+    go func() {
+        defer func() {
+            if r := recover(); r != nil {
+                select { case __lam_async_ch <- func() int { panic(r) }: default: }
+            }
+        }()
+        {
+            var __lamAsyncV int = n * 2
+            __lam_async_ch <- func() int { return __lamAsyncV }
+        }
+        return
+    }()
+    return __lam_async_ch
+}
+
+var x int = (<-Double(21))()
+```
 - User-facing channel operations belong in `lamconcurrency.Channel`; actor queues
   compose it through `lamactor.Mailbox`. Both expose blocking `send` / `receive`,
   immediate `offer` / `poll`, and awaitable `asyncSend` / `asyncReceive` methods

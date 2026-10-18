@@ -1,0 +1,119 @@
+# Test: lamiter is generic (`Iter[T]`): lambdas passed to the combinators
+# take their parameter types from the elements, with no conversions, and
+# every step keeps its static type (`map` changes it, `reduce` has its own
+# accumulator type, `toList()` is a `list[T]`).
+#
+# expect: evens=[0 4 16 36 64]
+# expect: names=[alice anna]
+# expect: total=6
+# expect: pair=[0 a]
+# expect: pair=[1 b]
+# expect: lens=[5 1 3]
+# expect: shout=[HI! YO!]
+# expect: count=4
+# expect: first=10
+# expect: empty=false -1 EmptyIteratorError: Iter.first: empty iterator
+# expect: any=true all=false
+# expect: takeWhile=[1 2] dropWhile=[3 1]
+# expect: chain=[1 2 3 4]
+# expect: repeat=[ab ab ab]
+# expect: counted=[5 8 11]
+# expect: drop=[3 4]
+# expect: ages=36
+# expect: csv=alice:30,bob:6
+# expect: lazy=[0 2] pulled=2
+# expect: enum=[[0 x] [1 y]]
+# expect: indexes=1 values=xy
+# expect: floatsum=4.5
+# expect: iter_typed_ok
+
+from lamiter import Iter
+from lamerrors import Result
+
+class User {
+    func init(self, name: str, age: int) {
+        self.name: str = name
+        self.age: int = age
+    }
+}
+
+func shout(s: str) -> str {
+    return s.toUpper() + "!"
+}
+
+func isSmall(n: int) -> bool {
+    return n < 3
+}
+
+pulled: int = 0
+
+func track(n: int) -> int {
+    pulled += 1
+    return n * 2
+}
+
+func main() {
+    evens: list[int] = Iter.range_(0, 10).filter(lambda x: x % 2 == 0).map(lambda x: x * x).toList()
+    print(f"evens={evens}")
+
+    users: list[User] = [User("alice", 30), User("bob", 6), User("anna", 0)]
+    names: list[str] = Iter.fromList(users).map(lambda u: u.name).filter(lambda n: n.startsWith("a")).toList()
+    print(f"names={names}")
+
+    total: int = Iter.fromList([1, 2, 3]).reduce(0, lambda acc, x: acc + x)
+    print(f"total={total}")
+
+    Iter.fromList(["a", "b"]).enumerate().forEach(lambda pair: print(f"pair={pair}"))
+
+    words: list[str] = ["hello", "a", "abc"]
+    lens: list[int] = Iter.fromList(words).map(len).toList()
+    print(f"lens={lens}")
+    loud: list[str] = Iter.fromList(["hi", "yo"]).map(shout).toList()
+    print(f"shout={loud}")
+
+    print(f"count={Iter.range_(0, 8).filter(lambda n: n % 2 == 1).count_()}")
+
+    head: Result[int] = Iter.fromList([10, 20]).first()
+    print(f"first={head.unwrap()}")
+    missing: Result[int] = Iter.range_(0, 0).first()
+    print(f"empty={missing.ok()} {missing.unwrapOr(-1)} {missing.error}")
+
+    hasBig: bool = Iter.fromList([1, 5, 9]).anyMatch(lambda n: n > 8)
+    allBig: bool = Iter.fromList([1, 5, 9]).allMatch(lambda n: n > 8)
+    print(f"any={hasBig} all={allBig}")
+
+    tw: list[int] = Iter.fromList([1, 2, 3, 1]).takeWhile(isSmall).toList()
+    dw: list[int] = Iter.fromList([1, 2, 3, 1]).dropWhile(isSmall).toList()
+    print(f"takeWhile={tw} dropWhile={dw}")
+
+    joined: list[int] = Iter.fromList([1, 2]).chain(Iter.range_(3, 5)).toList()
+    print(f"chain={joined}")
+    print(f"repeat={Iter.repeat('ab', 3).toList()}")
+    print(f"counted={Iter.count(5, 3).take(3).toList()}")
+    print(f"drop={Iter.range_(1, 5).drop(2).toList()}")
+
+    ages: int = Iter.fromList(users).map(lambda u: u.age).reduce(0, lambda acc, a: acc + a)
+    print(f"ages={ages}")
+    csv: str = Iter.fromList(users).filter(lambda u: u.age > 0).map(lambda u: f"{u.name}:{u.age}").reduce("", lambda acc, s: s if acc == "" else acc + "," + s)
+    print(f"csv={csv}")
+
+    # Lazy: only the two values `take` needs are pulled through `track`.
+    lazy: list[int] = Iter.count(0, 1).map(track).take(2).toList()
+    print(f"lazy={lazy} pulled={pulled}")
+
+    # Inferred locals keep the element type through the chain.
+    pairs = Iter.fromList(["x", "y"]).enumerate()
+    print(f"enum={pairs.toList()}")
+    indexed: list[tuple[int, str]] = Iter.fromList(["x", "y"]).enumerate().toList()
+    indexSum: int = 0
+    text: str = ""
+    for i, v in indexed {
+        indexSum += i
+        text += v
+    }
+    print(f"indexes={indexSum} values={text}")
+
+    floats: float = Iter.fromList([1, 2]).map(lambda n: n * 1.5).reduce(0.0, lambda acc, f: acc + f)
+    print(f"floatsum={floats}")
+    print("iter_typed_ok")
+}

@@ -1,0 +1,59 @@
+# Test: a `with ... as f` binding has the resource's type, dictionary
+# destructuring from an inferred dict feeds annotated targets,
+# `isinstance(None, None)` is true, a local only assigned inside a `go!`
+# block compiles, and a typed catch followed by a catch-all both work in
+# one function with two loop-else statements.
+#
+# expect: with: hello
+# expect: destructured: alice 30
+# expect: none: true false
+# expect: go local: done
+# expect: caught value: ValueError: bad
+# expect: caught other: t
+# expect: else: a
+# expect: else: b
+
+from lamos import File
+
+func main() {
+    out: File = File.open("/tmp/lam_test_with_destructure.txt", "w").unwrap()
+    out.write("hello").unwrap()
+    out.close().unwrap()
+    file: File = File.open("/tmp/lam_test_with_destructure.txt").unwrap()
+    with file as f {
+        data: str = f.read().unwrap()
+        print(f"with: {data}")
+    }
+
+    user = {"name": "alice", "age": 30}
+    {name, age} = user
+    n: str = name
+    a: int = age
+    print(f"destructured: {n} {a}")
+
+    print(f"none: {isinstance(None, None)} {isinstance(3, None)}")
+
+    result = ""
+    go! {
+        result = "hi"
+    }
+    print("go local: done")
+
+    try {
+        raise ValueError("bad")
+    } catch ValueError as e {
+        print(f"caught value: {e}")
+    } catch e {
+        print("caught other")
+    }
+    try {
+        raise TypeError("t")
+    } catch ValueError as e {
+        print("wrong")
+    } catch err {
+        print("caught other: t")
+    }
+
+    for i in range(1) { pass } else { print("else: a") }
+    for j in range(1) { pass } else { print("else: b") }
+}

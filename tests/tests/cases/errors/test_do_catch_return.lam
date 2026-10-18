@@ -1,0 +1,143 @@
+# Test: `return` inside a `do { } catch` body returns from the enclosing
+# function (the body is lowered to a `*Result` closure, so the return is
+# forwarded after the closure finishes).
+#
+# expect: void: before
+# expect: void: returned early
+# expect: typed: 10
+# expect: typed handler: -1
+# expect: loop: found 3
+# expect: nested: 99
+# expect: ternary: small
+# expect: in try: early
+# expect: async: 5
+# expect: lambda inside: 4
+# expect: fallthrough: 7
+
+from lamerrors import Result, Error
+
+func parse(n: int) -> Result[int] {
+    if n < 0 {
+        return Result.Err(Error("ParseError", "negative"))
+    }
+    return Result.Ok(n)
+}
+
+func voidEarly() {
+    do {
+        print("void: before")
+        return
+    } catch err {
+        print("WRONG: handler")
+    }
+    print("WRONG: after do")
+}
+
+func typed(n: int) -> int {
+    do {
+        v: int = parse(n)?
+        return v * 2
+    } catch err {
+        return -1
+    }
+    return 0
+}
+
+func search(xs: list[int]) -> str {
+    for x in xs {
+        do {
+            v: int = parse(x)?
+            if v == 3 {
+                return f"found {v}"
+            }
+        } catch err {
+            print("WRONG: loop handler")
+        }
+    }
+    return "none"
+}
+
+func nested() -> int {
+    do {
+        do {
+            return 99
+        } catch inner {
+            return -2
+        }
+    } catch outer {
+        return -3
+    }
+    return 0
+}
+
+func ternary(n: int) -> str {
+    do {
+        return "small" if n < 10 else "big"
+    } catch err {
+        return "error"
+    }
+    return "none"
+}
+
+func inTry() {
+    try {
+        do {
+            print("in try: early")
+            return
+        } catch err {
+            print("WRONG: do handler")
+        }
+        print("WRONG: after do in try")
+    } catch e {
+        print("WRONG: try handler")
+    }
+    print("WRONG: after try")
+}
+
+async func asyncDo(n: int) -> int {
+    do {
+        v: int = parse(n)?
+        return v
+    } catch err {
+        return -1
+    }
+    return 0
+}
+
+func lambdaInside() -> int {
+    do {
+        f: func(int) -> int = lambda (x: int) -> int {
+            return x * 2
+        }
+        return f(2)
+    } catch err {
+        return -1
+    }
+    return 0
+}
+
+func afterDo(n: int) -> int {
+    do {
+        v: int = parse(n)?
+        if v > 100 {
+            return 0
+        }
+    } catch err {
+        return -1
+    }
+    return 7
+}
+
+func main() {
+    voidEarly()
+    print("void: returned early")
+    print(f"typed: {typed(5)}")
+    print(f"typed handler: {typed(-5)}")
+    print(f"loop: {search([1, 2, 3, 4])}")
+    print(f"nested: {nested()}")
+    print(f"ternary: {ternary(3)}")
+    inTry()
+    print(f"async: {await asyncDo(5)}")
+    print(f"lambda inside: {lambdaInside()}")
+    print(f"fallthrough: {afterDo(1)}")
+}

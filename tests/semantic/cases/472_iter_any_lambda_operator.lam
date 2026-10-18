@@ -1,0 +1,9 @@
+# expect-error: lambda parameter `x` is `any` here: argument `predicate` of `Iter.filter` (`func(any) -> bool`) gives it no concrete type, and `x` is compared with an ordering operator
+# An `Iter[any]` gives its callbacks `any` parameters.
+
+from lamiter import Iter
+
+func main() {
+    xs: list[any] = [1, "a"]
+    print(Iter.fromList(xs).filter(lambda x: x > 0).toList())
+}

@@ -1,0 +1,17 @@
+# expect-error: not all paths in `firstBig` return a value
+# A `break` skips the loop's `else` block, so the function can fall off
+# the end.
+
+func firstBig(nums: list[int]) -> int {
+    for n in nums {
+        if n > 10 {
+            break
+        }
+    } else {
+        return -1
+    }
+}
+
+func main() {
+    print(firstBig([1]))
+}

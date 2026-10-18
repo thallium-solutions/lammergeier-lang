@@ -1,0 +1,81 @@
+# Test: subtyping across a module boundary. The base class and the
+# functions taking it live in another module; subclasses declared here
+# are passed in, stored in base-typed lists and must dispatch to their
+# overrides from the imported code (virtual calls from outside the class).
+#
+# expect: total 9 + 6 + 25 + 0 = 40
+# expect: labels square(9), triangle(6), big square(25), shape(0)
+# expect: biggest big square 25
+# expect: squares 2
+# expect: matched square side 3
+# expect: matched triangle base 4 height 3
+# expect: matched big square side 5
+# expect: matched other shape
+# expect: isinstance true true false
+# expect: inherited init tile 2 4 4
+# expect: inherited base init hexagon(0)
+
+from subtyping_shapes_provider import Shape, Square, totalArea, labels, biggest, countSquares
+
+class Triangle(Shape) {
+    func init(self, b: int, h: int) {
+        base.init("triangle")
+        self.b: int = b
+        self.h: int = h
+    }
+
+    func area(self) -> int {
+        return self.b * self.h // 2
+    }
+}
+
+class BigSquare(Square) {
+    func init(self, side: int) {
+        base.init(side)
+        self.name = "big square"
+    }
+}
+
+class Tile(Square) {
+    func label(self) -> str {
+        return f"tile {self.side}"
+    }
+}
+
+class Hexagon(Shape) {
+}
+
+func kind(s: Shape) -> str {
+    match s {
+        case Triangle(b=b, h=h) {
+            return f"triangle base {b} height {h}"
+        }
+        case BigSquare() as big {
+            return f"big square side {big.side}"
+        }
+        case Square(side=n) {
+            return f"square side {n}"
+        }
+        case _ {
+            return f"other {s.name}"
+        }
+    }
+}
+
+func main() {
+    shapes: list[Shape] = [Square(3), Triangle(4, 3), BigSquare(5), Shape("shape")]
+    print(f"total 9 + 6 + 25 + 0 = {totalArea(shapes)}")
+    print(f"labels {labels(shapes)}")
+    big: Shape = biggest(Triangle(4, 3), BigSquare(5))
+    print(f"biggest {big.name} {big.area()}")
+    print(f"squares {countSquares(shapes)}")
+    for s in shapes {
+        print(f"matched {kind(s)}")
+    }
+    t: Shape = shapes[1]
+    print(f"isinstance {isinstance(t, Triangle)} {isinstance(shapes[2], Square)} {isinstance(t, Square)}")
+    tile: Tile = Tile(2)
+    print(f"inherited init {tile.label()} {tile.area()} {totalArea([tile])}")
+    hex: Hexagon = Hexagon("hexagon")
+    print(f"inherited base init {labels([hex])}")
+}

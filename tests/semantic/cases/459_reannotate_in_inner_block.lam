@@ -1,0 +1,12 @@
+# expect-error: `x` is already declared as `int` in an enclosing block; use another name
+# Re-annotating an outer local with another type in an inner block would
+# assign the same Go variable.
+
+func main() {
+    x: int = 1
+    if x > 0 {
+        x: str = "s"
+        print(x)
+    }
+    print(x)
+}

@@ -1,0 +1,195 @@
+# Test: class patterns (keyword and positional sub-patterns), subclasses,
+# interfaces, builtin type patterns (`int(n)`, `str(s)`, ...) and `as`.
+#
+# expect: origin
+# expect: on x axis at 5
+# expect: point 1,2
+# expect: positional y=9
+# expect: any point 3 4
+# expect: any circle r=2 named disc
+# expect: any square side 3
+# expect: any shape base named blob
+# expect: any int 41 next 42
+# expect: any str HELLO
+# expect: any float 1.5
+# expect: any bool true
+# expect: any list of 3
+# expect: any dict of 1
+# expect: any other
+# expect: typed subclass side 4
+# expect: line from 0,0 to 2,3
+# expect: interface area 12
+# expect: interface none
+# expect: optional point 7
+# expect: optional none
+# expect: as narrowed 3 4 dist2 25
+# expect: method on bound 25
+# expect: generic box 5
+# expect: json int 8
+# expect: json str hi
+
+interface Area {
+    func area(self) -> int
+}
+
+class Point {
+    func init(self, x: int, y: int) {
+        self.x: int = x
+        self.y: int = y
+    }
+    func dist2(self) -> int {
+        return self.x * self.x + self.y * self.y
+    }
+}
+
+class Line {
+    func init(self, start: Point, end: Point) {
+        self.start: Point = start
+        self.end: Point = end
+    }
+}
+
+class Shape {
+    name: str = "blob"
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        self.r: int = r
+        self.name = "disc"
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        self.side: int = side
+    }
+}
+
+class Rect {
+    func init(self, w: int, h: int) {
+        self.w: int = w
+        self.h: int = h
+    }
+    func area(self) -> int {
+        return self.w * self.h
+    }
+}
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+}
+
+func where(p: Point) -> str {
+    match p {
+        case Point(x=0, y=0) { return "origin" }
+        case Point(x=x, y=0) { return f"on x axis at {x}" }
+        case Point(x=x, y=y) { return f"point {x},{y}" }
+    }
+    return "not a point"
+}
+
+func anyValue(v: any) -> str {
+    match v {
+        case Point(x, y) { return f"any point {x} {y}" }
+        case Circle(r=r, name=n) { return f"any circle r={r} named {n}" }
+        case Square(side=s) { return f"any square side {s}" }
+        case Shape(name=n) { return f"any shape base named {n}" }
+        case int(n) {
+            next: int = n + 1
+            return f"any int {n} next {next}"
+        }
+        case str(s) { return f"any str {s.toUpper()}" }
+        case float(f) { return f"any float {f}" }
+        case bool(b) { return f"any bool {b}" }
+        case list(items) { return f"any list of {len(items)}" }
+        case dict(entries) { return f"any dict of {len(entries)}" }
+        case _ { return "any other" }
+    }
+}
+
+func areaOf(v: any) -> str {
+    match v {
+        case Area() as a { return f"interface area {a.area()}" }
+        case _ { return "interface none" }
+    }
+}
+
+func maybe(p: optional[Point]) -> str {
+    match p {
+        case Point(x=x) { return f"optional point {x}" }
+        case None { return "optional none" }
+    }
+    return "unreachable"
+}
+
+func jsonKind(j: json) -> str {
+    match j {
+        case int(n) { return f"json int {n}" }
+        case str(s) { return f"json str {s}" }
+        case _ { return "json other" }
+    }
+}
+
+func main() {
+    print(where(Point(0, 0)))
+    print(where(Point(5, 0)))
+    print(where(Point(1, 2)))
+
+    match Point(8, 9) {
+        case Point(_, y) { print(f"positional y={y}") }
+    }
+
+    print(anyValue(Point(3, 4)))
+    print(anyValue(Circle(2)))
+    print(anyValue(Square(3)))
+    print(anyValue(Shape()))
+    print(anyValue(41))
+    print(anyValue("hello"))
+    print(anyValue(1.5))
+    print(anyValue(true))
+    print(anyValue([1, 2, 3]))
+    print(anyValue({"k": 1}))
+    print(anyValue(None))
+
+    sq: Square = Square(4)
+    match sq {
+        case Shape(name="nothing") { print("typed subclass wrong") }
+        case Square(side=side) { print(f"typed subclass side {side}") }
+    }
+
+    ln: Line = Line(Point(0, 0), Point(2, 3))
+    match ln {
+        case Line(start=Point(x=x0, y=y0), end=Point(x=x1, y=y1)) {
+            print(f"line from {x0},{y0} to {x1},{y1}")
+        }
+    }
+
+    print(areaOf(Rect(3, 4)))
+    print(areaOf(Point(1, 1)))
+
+    print(maybe(Point(7, 0)))
+    print(maybe(None))
+
+    match Point(3, 4) {
+        case Point(x=a, y=b) as pt { print(f"as narrowed {a} {b} dist2 {pt.dist2()}") }
+    }
+    holder: any = Point(3, 4)
+    match holder {
+        case Point() as p { print(f"method on bound {p.dist2()}") }
+        case _ { print("not a point") }
+    }
+
+    box: Box[int] = Box[int](5)
+    match box {
+        case Box(value=v) {
+            doubled: int = v
+            print(f"generic box {doubled}")
+        }
+    }
+
+    print(jsonKind(8))
+    print(jsonKind("hi"))
+}

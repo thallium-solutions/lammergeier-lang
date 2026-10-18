@@ -1,0 +1,18 @@
+# expect-error: method `scale` has 0 parameters, expected 1
+# The receiver is not counted: `scale(self, k: int)` needs one argument.
+
+interface Drawable {
+    func scale(self, k: int) -> int
+}
+
+class Circle {
+    func scale(self) -> int { return 1 }
+}
+
+func use(d: Drawable) -> int {
+    return d.scale(2)
+}
+
+func main() {
+    print(use(Circle()))
+}

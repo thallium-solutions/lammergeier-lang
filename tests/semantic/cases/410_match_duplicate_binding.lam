@@ -1,0 +1,9 @@
+# expect-error: name `x` is bound more than once in the same pattern
+
+func main() {
+    pair: list[int] = [1, 2]
+    match pair {
+        case [x, x] { print(x) }
+        case _ { print("other") }
+    }
+}

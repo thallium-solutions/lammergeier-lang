@@ -1,0 +1,36 @@
+# expect-pass
+# Valid typed-iterator forms: element-typed lambdas, an `Iter[any]` with
+# `func(any)` callbacks and explicit conversions, function references,
+# a bare `Iter` local inferred from its initializer, reduce with its own
+# accumulator type, generic methods of user classes and Sort.sortWith.
+
+from lamiter import Iter
+from lamsort import Sort
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func map[U](self, fn: func(T) -> U) -> Box[U] {
+        return Box[U](fn(self.value))
+    }
+}
+
+func isSet(x: any) -> bool {
+    return x != None
+}
+
+func main() {
+    evens: list[int] = Iter.range_(0, 10).filter(lambda x: x % 2 == 0).map(lambda x: x * x).toList()
+    words: list[str] = ["a", "bb"]
+    lens: list[int] = Iter.fromList(words).map(len).toList()
+    loose: list[any] = [1, 2, 3]
+    anyEvens: list[any] = Iter.fromList(loose).filter(isSet).map(lambda x: f"<{x}>").toList()
+    src: Iter = Iter.fromList(words)
+    upper: list[str] = src.map(lambda w: w.toUpper()).toList()
+    total: float = Iter.fromList([1, 2]).reduce(0.5, lambda acc, x: acc + x)
+    named: Box[str] = Box[int](3).map(lambda n: f"{n}")
+    ordered: list[str] = Sort.sortWith(words, lambda a, b: len(b) - len(a))
+    print(evens, lens, anyEvens, upper, total, named.value, ordered)
+}

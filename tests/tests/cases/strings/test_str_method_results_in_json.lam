@@ -1,0 +1,18 @@
+# str method results keep their types in json contexts (call receivers too).
+# expect: {"after":"abc","flag":true,"n":9,"parts":["x?","abc"],"upper":"X?TOKEN=ABC"}
+# expect: abc
+from lamjson import Json
+
+func link() -> str {
+    return "x?token=abc"
+}
+
+func encode(payload: json) -> str {
+    return Json.encode(payload).unwrap()
+}
+
+func main() {
+    print(encode({"after": link().split("token=")[1], "parts": link().split("token="), "upper": link().toUpper(), "flag": link().startsWith("x"), "n": link().index("=") + 2}))
+    s: str = link()
+    print(s.split("=")[1])
+}

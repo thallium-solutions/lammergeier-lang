@@ -1,0 +1,15 @@
+# expect-error: argument `name` to `Dog` has type `int`, expected `str`
+
+class Animal {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Dog(Animal) {
+}
+
+func main() {
+    d: Dog = Dog(3)
+    print(d.name)
+}

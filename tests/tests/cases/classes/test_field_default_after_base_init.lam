@@ -1,0 +1,58 @@
+# Test: a subclass's class-body default for a field its parent declares
+# survives `base.init(...)` (which rebuilds the parent part), unless the
+# parent's `init` assigns that field itself; inherited constructors behave
+# the same way.
+#
+# expect: shape sides=0 kind=shape
+# expect: square sides=4 kind=square
+# expect: tri sides=3 kind=from-init
+# expect: inherited sides=6 kind=shape
+
+class Shape {
+    sides: int = 0
+    kind: str = "shape"
+
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    sides: int = 4
+    kind: str = "square"
+
+    func init(self) {
+        base.init("square")
+    }
+}
+
+class Labeled(Shape) {
+    func init(self, name: str, kind: str) {
+        base.init(name)
+        self.kind = kind
+    }
+}
+
+class Tri(Labeled) {
+    sides: int = 3
+    kind: str = "ignored"
+
+    func init(self) {
+        base.init("tri", "from-init")
+    }
+}
+
+class Hexagon(Shape) {
+    sides: int = 6
+}
+
+func main() {
+    s: Shape = Shape("shape")
+    print(f"{s.name} sides={s.sides} kind={s.kind}")
+    q: Square = Square()
+    print(f"{q.name} sides={q.sides} kind={q.kind}")
+    t: Tri = Tri()
+    print(f"{t.name} sides={t.sides} kind={t.kind}")
+    h: Hexagon = Hexagon("inherited")
+    print(f"{h.name} sides={h.sides} kind={h.kind}")
+}

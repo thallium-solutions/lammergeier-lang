@@ -1,0 +1,18 @@
+# Provider module for test_virtual_dispatch_imported.lam: a base class
+# whose method calls an overridable hook through `self`.
+
+class Report {
+    func init(self, title: str) {
+        self.title: str = title
+    }
+
+    func body(self) -> str {
+        return "empty"
+    }
+
+    func render(self) -> str {
+        return f"{self.title}: {self.body()}"
+    }
+}
+
+func main() { pass }

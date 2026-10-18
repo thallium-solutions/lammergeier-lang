@@ -1,0 +1,25 @@
+# expect-pass
+# The payload of a typed `Result` local or field is known where JSON is
+# required, and `r.ok()` is a bool.
+
+from lamerrors import Result
+
+func load() -> Result[json] {
+    return Result.Ok({"name": "ada"})
+}
+
+class Holder {
+    func init(self, r: Result[int]) {
+        self.r: Result[int] = r
+    }
+}
+
+func main() {
+    r: Result[json] = load()
+    body: json = r.unwrap()
+    c: Result[int] = Result.Ok(3)
+    payload: json = {"bytes": c.unwrap(), "ok": c.ok(), "name": r.unwrap().name}
+    h: Holder = Holder(c)
+    more: json = {"size": h.r.unwrap()}
+    print(body, payload, more)
+}

@@ -1,6 +1,8 @@
 # Transpilation: the ``?.`` and ``??`` operators lower to small IIFEs
 # that nil-guard the left operand and fall through to the alternative.
-# expect-go: func() interface{} { if u != nil { return u.Name }; return nil }()
+# ``?.`` on a class receiver is typed: a value-typed field becomes an
+# optional (``*string``) holding a copy of the field.
+# expect-go: func() *string { if __lamO := u; __lamO != nil { __lamV := __lamO.Name; return &__lamV }; return nil }()
 # expect-go: _v := interface{}(nil); if _v != nil { return _v }; return 42
 
 class User {

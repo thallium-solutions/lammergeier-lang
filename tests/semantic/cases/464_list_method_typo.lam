@@ -1,0 +1,7 @@
+# expect-error: `list[str]` has no method `add` — did you mean `append`?
+
+func main() {
+    names: list[str] = []
+    names.add("x")
+    print(len(names))
+}

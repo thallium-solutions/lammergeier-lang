@@ -1,0 +1,17 @@
+# expect-error: lambda passed as `fn` to `Box.map` takes 2 parameters, expected 1
+# A lambda must take as many parameters as the callback type.
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func map[U](self, fn: func(T) -> U) -> Box[U] {
+        return Box[U](fn(self.value))
+    }
+}
+
+func main() {
+    b: Box[int] = Box[int](1)
+    print(b.map(lambda x, y: x + y).value)
+}

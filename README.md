@@ -130,7 +130,7 @@ cd lammergeier-lang
 ./install.sh                            # auto: system-wide if writable, else ~/.local/bin
 ./install.sh --with-editor all          # also wire up VS Code / Cursor / Windsurf / Devin
 
-lamc tests/rosetta_tests/hello_world.lam --run
+lamc tests/tests/cases/rosetta/test_hello_world.lam --run
 
 # Check local toolchain health:
 lamc doctor
@@ -139,10 +139,10 @@ lamc doctor
 lamc version
 
 # Emit the generated Go for inspection:
-lamc tests/rosetta_tests/hello_world.lam --emit-go
+lamc tests/tests/cases/rosetta/test_hello_world.lam --emit-go
 
 # Produce a binary at a custom path:
-lamc tests/rosetta_tests/hello_world.lam -o hello
+lamc tests/tests/cases/rosetta/test_hello_world.lam -o hello
 ./hello
 ```
 
@@ -226,11 +226,11 @@ lammergeier-lang/
 │   ├── preprocessor.py
 │   └── visitors/                 # expressions, statements, definitions, helpers
 ├── lib/                          # Lammergeier standard library (.lam files)
-├── tests/                        # language, rosetta and transpilation suites;
+├── tests/                        # language and transpilation suites;
 │                                 #   the canonical examples live here too
-│   ├── tests/                    # focused language tests
-│   ├── rosetta_tests/            # larger end-to-end programs
+│   ├── tests/                    # language tests (cases/rosetta: larger programs)
 │   └── transpilation/            # Lam → Go output regression tests
+├── benchmarks/                   # compiler speed and generated-code speed
 ├── examples/                     # legacy tiny smoke examples
 ├── vs-code-extension/            # VS Code / Windsurf / Cursor extension
 ├── website/                      # static documentation site (SPA with
@@ -300,15 +300,16 @@ sh scripts/test.sh lsp
 sh scripts/test.sh import
 sh scripts/test.sh unit
 sh scripts/test.sh core
-sh scripts/test.sh rosetta
 
 # Filter suites that support filename filters
 sh scripts/test.sh core fstring
+sh scripts/test.sh core rosetta        # filters match the path below cases/
 sh scripts/test.sh semantic undef
 sh scripts/test.sh transpile generics
 
-# Benchmarks
-sh scripts/bench.sh --runs 5
+# Benchmarks (benchmarks/README.md)
+sh scripts/bench.sh compiler --front-end
+sh scripts/bench.sh runtime
 ```
 
 The full core suite includes stdlib integration tests that expect local
@@ -323,11 +324,11 @@ stdlib integration tests. Redis and Memcached fixtures moved to the
 `@lam/redis` and `@lam/memcached` package repositories with their tests.
 
 The full gate runs semantic, syntax, transpilation, LSP, import
-resolution, Python unit/fuzz checks, core compile-and-run, and rosetta tests
-in that order. Hand-written stress fixtures combine nested control flow,
+resolution, Python unit/fuzz checks and core compile-and-run tests (the
+Rosetta Code programs are part of the core cases) in that order. Hand-written stress fixtures combine nested control flow,
 `Result`, `nonlocal`, destructuring, comprehensions, generics, overloads,
 name mangling, and raw-Go boundaries in deliberately adversarial programs.
-The core and rosetta runners compile each `.lam` file
+The core runner compiles each `.lam` file
 with the in-tree `lamc`, execute the resulting binary, and compare
 stdout against `# expect:` lines embedded in the test source. The
 transpilation runner compares `lamc --emit-go` output against

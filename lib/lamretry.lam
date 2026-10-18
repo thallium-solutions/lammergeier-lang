@@ -41,6 +41,7 @@ go! {
     import (
         "fmt"
         "math/rand"
+        "reflect"
         "sync"
         "time"
     )
@@ -57,6 +58,31 @@ go! {
             lamRetryRand = rand.New(rand.NewSource(time.Now().UnixNano()))
         })
         return lamRetryRand
+    }
+
+    // lamRetryCall0 calls a zero-argument callback of any result type:
+    // a lambda (``func() interface{}``), a Lam function returning a
+    // ``Result``, a ``str``, a ``bool`` (``func() *Result`` / ``func()
+    // string`` / ``func() bool``), ... ``ok`` is false when ``fn`` is not
+    // such a function.
+    func lamRetryCall0(fn interface{}) (interface{}, bool) {
+        switch f := fn.(type) {
+        case func() interface{}:
+            return f(), true
+        case func() bool:
+            return f(), true
+        case func() *Result:
+            return f(), true
+        }
+        rv := reflect.ValueOf(fn)
+        if !rv.IsValid() || rv.Kind() != reflect.Func || rv.Type().NumIn() != 0 {
+            return nil, false
+        }
+        out := rv.Call(nil)
+        if len(out) == 0 {
+            return nil, true
+        }
+        return out[0].Interface(), true
     }
 
     // lamRetryDelay returns the delay for ``attempt`` (0-indexed),
@@ -86,9 +112,10 @@ class Retry {
         #- Retry ``fn`` up to ``maxAttempts`` times with exponential
            backoff, returning the first ``Ok`` Result it produces.
 
-           ``fn`` signature: ``func() -> any``. The return value may
-           be either a ``Result`` (``Err`` triggers retry) or any
-           other value (treated as ``Ok(value)``). Panics are also
+           ``fn`` is any function without parameters (a lambda, or a
+           function returning a ``Result``, a ``str``, ...). The return
+           value may be either a ``Result`` (``Err`` triggers retry) or
+           any other value (treated as ``Ok(value)``). Panics are also
            caught and treated as transient failures.
 
            ``baseMs=0`` disables the delay entirely (tight loop —
@@ -110,11 +137,11 @@ class Retry {
                             panicMsg = fmt.Sprintf("%v", rec)
                         }
                     }()
-                    if f, ok := fn.(func() interface{}); ok {
-                        out = f()
+                    if v, ok := lamRetryCall0(fn); ok {
+                        out = v
                     } else {
                         panicked = true
-                        panicMsg = "Retry.runFn: fn must be func() -> any"
+                        panicMsg = "Retry.runFn: fn must be a function without parameters"
                     }
                 }()
 
@@ -145,8 +172,9 @@ class Retry {
     }
 
     static func until(predicate: any, maxAttempts: int = 10, baseMs: int = 50, maxMs: int = 500, jitter: bool = false) -> bool {
-        #- Call ``predicate()`` with exponential backoff until it
-           returns ``true`` or attempts are exhausted. Useful for
+        #- Call ``predicate()`` (a function without parameters returning
+           ``bool``: ``lambda: ready()``, ``isUp``) with exponential backoff
+           until it returns ``true`` or attempts are exhausted. Useful for
            polling loops — "wait for the lease to become available",
            "wait for the listener to bind", etc.
 
@@ -160,8 +188,10 @@ class Retry {
                 var got bool
                 func() {
                     defer func() { _ = recover() }()
-                    if p, ok := predicate.(func() bool); ok {
-                        got = p()
+                    if v, ok := lamRetryCall0(predicate); ok {
+                        if b, isBool := v.(bool); isBool {
+                            got = b
+                        }
                     }
                 }()
                 if got { return true }

@@ -1,0 +1,100 @@
+# Test: subtyping with multiple inheritance and generic bases. An instance
+# of a class with two bases is usable as either base (each view dispatches
+# to its overrides and reads its own fields), isinstance and class patterns
+# see the actual class from either view, and a subclass of a generic
+# instantiation is usable as that instantiation.
+#
+# expect: as named: named(alpha)
+# expect: as sized: size 3 / doubled 6
+# expect: isinstance: true true
+# expect: match from sized: both alpha 3
+# expect: generic: 7 / via base 7
+# expect: generic list: 7 2
+
+class Named {
+    func init(self, title: str) {
+        self.title: str = title
+    }
+
+    func label(self) -> str {
+        return f"named({self.title})"
+    }
+}
+
+class Sized {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func size(self) -> int {
+        return self.n
+    }
+
+    func doubled(self) -> int {
+        return self.size() * 2
+    }
+}
+
+class Both(named: Named, sized: Sized) {
+    func init(self, title: str, n: int) {
+        named.init(title)
+        sized.init(n)
+    }
+
+    func size(self) -> int {
+        return self.n
+    }
+}
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+class IntBox(Box[int]) {
+    func twice(self) -> int {
+        return self.value * 2
+    }
+}
+
+func showNamed(x: Named) -> str {
+    return x.label()
+}
+
+func showSized(x: Sized) -> str {
+    return f"size {x.size()} / doubled {x.doubled()}"
+}
+
+func describe(x: Sized) -> str {
+    match x {
+        case Both() as b {
+            return f"both {b.title} {b.n}"
+        }
+        case _ {
+            return "plain sized"
+        }
+    }
+}
+
+func unbox(b: Box[int]) -> int {
+    return b.get()
+}
+
+func main() {
+    both: Both = Both("alpha", 3)
+    print(f"as named: {showNamed(both)}")
+    print(f"as sized: {showSized(both)}")
+    s: Sized = both
+    n: Named = both
+    print(f"isinstance: {isinstance(s, Both)} {isinstance(n, Both)}")
+    print(f"match from sized: {describe(s)}")
+    ib: IntBox = IntBox(7)
+    print(f"generic: {ib.get()} / via base {unbox(ib)}")
+    boxes: list[Box[int]] = [ib, Box[int](2)]
+    print(f"generic list: {boxes[0].get()} {boxes[1].get()}")
+}

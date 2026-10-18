@@ -1,0 +1,34 @@
+# lamsort — sort a large int slice. Gives a baseline against the
+# Go builtin ``sort.Ints`` in case lamsort grows its own heuristic
+# (e.g. insertion-sort fast path for small inputs).
+#
+# ops: 100000
+
+from lamtime import Time
+from lamsort import Sort
+from lamrandom import Random
+from lamerrors import Result
+
+func resultInt(r: Result) -> int {
+    go! { return r.Value.(int) }
+}
+
+func work() {
+    Random.seed(42)
+    vals: list[int] = []
+    for __i in range(100000) {
+        vals = append(vals, resultInt(Random.randInt(0, 1000000)))
+    }
+    out: list[int] = Sort.sort(vals)
+    if out[0] > out[len(out) - 1] {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH sort_ints 100000 {elapsed}")
+}

@@ -1,0 +1,141 @@
+# Stress: an order report built from contextually typed lambdas,
+# comprehensions (tuple targets, enumerate, generators, dicts) and typed
+# `?.` / `??` chains over optional profiles, with inferred locals,
+# negative indexes, sorted keys, string iteration and Result payloads.
+#
+# expect: customers: ada(it) bob(?) cy(fr)
+# expect: emails: ada@x.io none none
+# expect: totals: [30 5 12]
+# expect: ranked: ada 30 | cy 12 | bob 5
+# expect: big: [ada cy]
+# expect: lines: [1:ada=30 2:bob=5 3:cy=12]
+# expect: codes: [AD BO CY]
+# expect: batches: [6 15]
+# expect: last: cy 12
+# expect: discount: 27 4.5 10.8
+# expect: initials: ABC
+# expect: parsed: 53 2
+# expect: hooks: 4
+# expect: tags: vip,new
+
+from lamerrors import Result
+
+class Profile {
+    email: str
+    country: optional[str]
+    func init(self, email: str, country: optional[str]) {
+        self.email = email
+        self.country = country
+    }
+}
+
+class Customer {
+    name: str
+    profile: optional[Profile]
+    func init(self, name: str, profile: optional[Profile]) {
+        self.name = name
+        self.profile = profile
+    }
+}
+
+class Order {
+    customer: Customer
+    amounts: list[int]
+    func init(self, customer: Customer, amounts: list[int]) {
+        self.customer = customer
+        self.amounts = amounts
+    }
+    func total(self) -> int {
+        return self.amounts.reduce(lambda a, b: a + b, 0)
+    }
+}
+
+func batches() -> generator[list[int]] {
+    yield [1, 2, 3]
+    yield [4, 5, 6]
+}
+
+func applyAll(xs: list[int], f: func(int) -> int) -> list[int] {
+    return [f(x) for x in xs]
+}
+
+func discounter(rate: float) -> func(int) -> float {
+    return lambda amount: amount * (1.0 - rate)
+}
+
+func parse(raw: str) -> Result[int] {
+    if raw == "" {
+        return Result.Err("empty")
+    }
+    return Result.Ok(len(raw) * 2)
+}
+
+func sumParsed(items: list[str]) -> Result[int] {
+    total = 0
+    for item in items {
+        total += parse(item)?
+    }
+    return Result.Ok(total)
+}
+
+func main() {
+    ada = Customer("ada", Profile("ada@x.io", "it"))
+    bob = Customer("bob", None)
+    cy = Customer("cy", Profile("cy@x.io", "fr"))
+    orders: list[Order] = [Order(ada, [10, 20]), Order(bob, [5]), Order(cy, [4, 8])]
+
+    labels = [f"{o.customer.name}({o.customer.profile?.country ?? '?'})" for o in orders]
+    print("customers:", " ".join(labels))
+    emails: list[str] = [o.customer.profile?.email ?? "none" for o in orders]
+    emails[-1] = "none"
+    print("emails:", " ".join(emails))
+
+    totals = orders.map(lambda o: o.total())
+    print(f"totals: {totals}")
+    ranked: list[Order] = sorted(orders, key=lambda o: o.total(), reverse=true)
+    print("ranked:", " | ".join([f"{o.customer.name} {o.total()}" for o in ranked]))
+    big = [o.customer.name for o in orders if o.total() > 10]
+    print(f"big: {big}")
+
+    pairs: list[tuple[str, int]] = [(o.customer.name, o.total()) for o in orders]
+    lines = [f"{i + 1}:{name}={amount}" for i, (name, amount) in enumerate(pairs)]
+    print(f"lines: {lines}")
+    codes = [name.toUpper()[0:2] for name, amount in pairs]
+    print(f"codes: {codes}")
+    sums = [b.reduce(lambda a, c: a + c, 0) for b in batches()]
+    print(f"batches: {sums}")
+    last = pairs[-1]
+    who, much = last
+    print(f"last: {who} {much}")
+
+    off = discounter(0.1)
+    rates = applyAll([30, 5, 12], lambda t: t - t // 10)
+    print(f"discount: {rates[0]} {off(5)} {off(12)}")
+
+    initials = ""
+    for ch in "a.b.c" {
+        if ch != "." {
+            initials += ch.toUpper()
+        }
+    }
+    print(f"initials: {initials}")
+
+    r = sumParsed(["abc", "defgh", "ijklmnopqrstuvwxyz"])
+    words: dict[str, int] = {w: len(w) for w in ["ab", "cd"]}
+    print(f"parsed: {r.unwrap() + 1} {words['ab']}")
+
+    hooks: list[func(int) -> int] = [lambda x: x + 1, lambda x: x * 2]
+    count = 0
+    for hook in hooks {
+        count += hook(1)
+    }
+    print(f"hooks: {count}")
+
+    meta: json = {"tags": ["vip", "new"]}
+    tags: list[str] = []
+    for tag in meta.tags {
+        t: str = tag
+        tags.append(t)
+    }
+    print("tags:", ",".join(tags))
+}

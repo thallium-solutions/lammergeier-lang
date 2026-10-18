@@ -1,0 +1,9 @@
+# expect-error: unknown base class `Parent` of `Child`: declare or import it
+
+class Child(Parent) {
+    x: int = 0
+}
+
+func main() {
+    print(Child().x)
+}

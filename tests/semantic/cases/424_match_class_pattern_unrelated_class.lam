@@ -1,0 +1,21 @@
+# expect-error: class pattern `Square()` can never match a value of type `Circle`
+
+class Circle {
+    func init(self, r: int) {
+        self.r: int = r
+    }
+}
+
+class Square {
+    func init(self, side: int) {
+        self.side: int = side
+    }
+}
+
+func main() {
+    c: Circle = Circle(1)
+    match c {
+        case Square(side=s) { print(s) }
+        case _ { print("other") }
+    }
+}

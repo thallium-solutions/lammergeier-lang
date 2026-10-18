@@ -1,0 +1,14 @@
+# expect-error: cannot assign `list[int]` to `list[str]` variable `labels`
+
+class Person {
+    func init(self, name: str, age: int) {
+        self.name: str = name
+        self.age: int = age
+    }
+}
+
+func main() {
+    people: list[Person] = [Person("ann", 30)]
+    labels: list[str] = people.map(lambda p: p.age)
+    print(labels)
+}

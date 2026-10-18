@@ -1,0 +1,23 @@
+# lamiter — a lazy typed pipeline: filter, map and reduce over a million
+# ints pulled one at a time through `Iter[int]` (no per-element boxing,
+# no `int(x)` conversions in the callbacks).
+#
+# ops: 1000000
+
+from lamtime import Time
+from lamiter import Iter
+
+func work() {
+    total: int = Iter.range_(0, 1000000).filter(lambda x: x % 3 == 0).map(lambda x: x * 2).reduce(0, lambda acc, x: acc + x)
+    if total != 333333666666 {
+        print(f"unexpected {total}")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH iter_pipeline 1000000 {elapsed}")
+}

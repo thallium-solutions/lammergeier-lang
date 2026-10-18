@@ -1,0 +1,11 @@
+# Helper module for test_top_level_statements_imported.lam.
+
+from toplevel_registry import register, names
+
+print("init plugin_a")
+register("a")
+count: int = len(names)
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

@@ -189,6 +189,7 @@ explicitly with `json(instance)`. Numeric object keys, sets/tuples, arbitrary
 
 ```lammergeier
 from lamjson import Json
+from lamerrors import Result
 
 class Image {
     func init(self, width: int, height: int) {
@@ -583,6 +584,7 @@ return values, and collection elements may be typed as
 ```lammergeier
 func add(a: int, b: int) -> int { return a + b }
 func mul(a: int, b: int) -> int { return a * b }
+func greet() { print("hello") }
 
 func apply(op: func(int, int) -> int, x: int, y: int) -> int {
     return op(x, y)
@@ -595,8 +597,8 @@ func main() {
     ops: list[func(int, int) -> int] = [add, mul]
     print(apply(ops[1], 4, 5))             # 20
 
-    cb: func() = main                      # void function type
-    cb()
+    cb: func() = greet                     # void function type
+    cb()                                   # hello
 }
 ```
 
@@ -670,6 +672,8 @@ func main() {
 Classes with typed fields and methods:
 
 ```lammergeier
+from lammath import Math
+
 class Point {
     func init(self, x: int, y: int) {
         self.x: int = x
@@ -677,14 +681,32 @@ class Point {
     }
 
     func distance(self) -> float {
-        return math.sqrt(float(self.x * self.x + self.y * self.y))
+        return Math.sqrt(float(self.x * self.x + self.y * self.y))
     }
 }
 
 func main() {
     p: Point = Point(3, 4)
-    print(p.distance())  # 5.0
+    print(p.distance())  # 5
 }
+```
+
+Fields can also be declared in the class body. An initializer there is a
+per-instance default: every constructor assigns it before running the
+`init` body (ancestors' defaults first), and each instance gets its own
+fresh value, so `items: list[T] = []` is not shared between instances:
+
+```lammergeier
+class Counter {
+    name: str = "anon"
+    count: int = 0
+
+    func init(self, n: int) {
+        self.count = n       # overrides the default
+    }
+}
+
+print(Counter(3).name)       # anon
 ```
 
 ---
@@ -757,6 +779,23 @@ class Dog(Animal) {
 `base.init(...)` or `base.__init__(...)` initializes the embedded parent part
 of the current child instance.
 
+Methods are virtual: when a parent method calls `self.method()`, the override
+of the object's actual class runs, as in Python or Java. Explicit parent calls
+such as `base.speak()` always run the parent implementation:
+
+```lammergeier
+class Shape {
+    func area(self) -> int { return 0 }
+    func describe(self) -> str { return f"area {self.area()}" }
+}
+
+class Square(Shape) {
+    func area(self) -> int { return 9 }
+}
+
+print(Square().describe())   # area 9
+```
+
 When a method or field is not declared on the child, ordinary access through
 `self` or an instance can use the inherited member:
 
@@ -765,6 +804,101 @@ dog: Dog = Dog("Rex", "labrador")
 print(dog.name)
 print(dog.speak())
 ```
+
+### Subtyping
+
+A subclass instance is usable wherever its base class is expected: function
+and method parameters, variables and re-assignments, returns, fields,
+`optional[Base]`, elements of `list[Base]` / `dict[str, Base]` (literals,
+`append`, `insert`, `extend([...])`, `d[k] = v`), `??`, ternaries and `==` /
+`!=` comparisons (with `None` or another value). Calls on a base-typed value
+run the override of the object's actual class, field access reads the
+shared base fields, and `isinstance` tests the actual class:
+
+```lammergeier
+class Circle(Shape) {
+    func init(self, r: int) { self.r: int = r }
+    func area(self) -> int { return 3 * self.r * self.r }
+}
+
+func total(shapes: list[Shape]) -> int {
+    n: int = 0
+    for s in shapes {
+        n += s.area()              # Square.area / Circle.area / Shape.area
+    }
+    return n
+}
+
+shapes: list[Shape] = [Square(), Circle(2), Shape()]
+print(total(shapes))               # 21
+s: Shape = shapes[0]
+print(isinstance(s, Square))       # true
+```
+
+This also holds across modules: a library function taking a `Shape`
+dispatches to the overrides of subclasses declared by the program that
+imports it.
+
+The other direction is explicit. `sq: Square = shape` is a compile error;
+narrow a base-typed value with a class pattern, which binds the subclass
+view (`as`) and its fields:
+
+```lammergeier
+func describe(s: Shape) -> str {
+    match s {
+        case Square() as sq { return f"square {sq.area()}" }
+        case Circle(r=r) { return f"circle of radius {r}" }
+        case _ { return "some shape" }
+    }
+}
+```
+
+Collections are invariant: an existing `list[Square]` cannot be assigned to
+a `list[Shape]` (the alias could then receive a `Circle`); build the
+`list[Shape]` from the elements instead.
+
+### Inherited constructors
+
+A class without its own `init` inherits the `init` of its nearest ancestor
+that has one, like Python: the same parameters, defaults and named
+arguments. With several levels the nearest one wins; with several bases the
+first base (depth-first, left to right) whose chain declares an `init`. The
+subclass's class-body field defaults still apply:
+
+```lammergeier
+class Animal {
+    legs: int = 4
+    func init(self, name: str, age: int = 1) {
+        self.name: str = name
+        self.age: int = age
+    }
+}
+
+class Dog(Animal) {
+    func sound(self) -> str { return "woof" }
+}
+
+class Puppy(Dog) {
+    tricks: int = 0
+}
+
+d: Dog = Dog("rex", 3)
+p: Puppy = Puppy(name="bolt")      # age defaults to 1, tricks to 0
+```
+
+Arguments are checked against the inherited signature
+(``too many positional arguments in call to `Dog`: expected at most 2, got
+3``, ``missing required argument `name` in call to `Dog` ``, unknown
+keywords, argument types). A class that declares its own `init` only uses
+that one. A class-body default for a field the parent declares
+(`sides: int = 4` in a subclass of a class with `sides: int = 0`) also
+survives an explicit `base.init(...)`, unless the parent's `init` assigns
+the field itself.
+
+Printing an instance of a class without `__str__` shows its fields, the
+parent part as a nested `{...}`: `print(Square(3))` with a `Shape` parent
+holding `name = "sq"` prints `&{{sq} 3}`. A base-typed value prints its actual
+object, and `__str__` (own or inherited) still wins.
 
 For multiple inheritance, name the parent aliases when you need explicit parent
 dispatch:
@@ -926,7 +1060,10 @@ class Circle {
 ```
 
 Conformance is structural: a class with the required method set can be passed to
-an interface-typed parameter without an explicit declaration. Imported
+an interface-typed parameter without an explicit declaration. Interface methods
+may spell the receiver (`func draw(self) -> str`) or omit it (`func draw() ->
+str`); either way `self` is not counted as a parameter. An interface may
+be empty (`interface Marker { }`); every value conforms to it. Imported
 interfaces work the same way. The importing module carries the interface's
 method metadata across the package boundary, so callers may import only the
 concrete class and a function whose signature uses that interface. Interfaces
@@ -988,7 +1125,33 @@ Calling an async callable starts its goroutine immediately; `await` may be used
 at the call site or later on the returned handle. The declared payload type is
 preserved, including `Result[T]`. Each invocation creates an independent handle
 with capacity one, so a completed task can publish its result before its caller
-is ready to await it.
+is ready to await it. Async functions without a return type can be awaited too;
+`await` then simply waits for the body to finish.
+
+An exception raised inside an async function (directly or by anything it
+calls) does not crash the program: it is captured and **re-raised at the
+`await`** that collects the handle, so an ordinary `try`/`catch` around the
+`await` handles it, typed clauses included:
+
+```lammergeier
+async func load(id: int) -> str {
+    if id < 0 {
+        raise ValueError(f"bad id {id}")
+    }
+    return f"item {id}"
+}
+
+func main() {
+    pending = load(-1)
+    try {
+        print(await pending)
+    } catch ValueError as e {
+        print(f"failed: {e}")    # failed: ValueError: bad id -1
+    }
+}
+```
+
+An exception in a task that is never awaited is discarded with the task.
 
 `lamconcurrency.Channel` and `lamactor.Mailbox` use the same operation names:
 `send` / `receive` block, `asyncSend` / `asyncReceive` return awaitable handles,
@@ -1010,6 +1173,11 @@ if x > 0 {
     print("negative")
 }
 ```
+
+Conditions of `if`, `elif` and `while` must be `bool`: Lam has no
+truthiness, so `if xs { }` on a list is a compile error (write
+`if len(xs) > 0`), as are numbers (`n != 0`), optionals (`opt != None`)
+and `json` values (`if bool(payload.ok)`).
 
 ### Single-Statement Blocks
 
@@ -1064,6 +1232,16 @@ for key, value in counts {
 }
 ```
 
+Over a list of tuples (or of nested lists), a tuple target unpacks each
+element, like Python; `_` skips a position:
+
+```lammergeier
+pairs: list[tuple[str, int]] = [("a", 1), ("b", 2)]
+for name, score in pairs {
+    print(f"{name}: {score}")
+}
+```
+
 ### While Loop
 
 ```lammergeier
@@ -1105,7 +1283,7 @@ while i < 10 {
 
 ## Match / Case
 
-Pattern matching (compiles to Go `switch`):
+Pattern matching on values, sequences, mappings and class instances:
 
 ```lammergeier
 match command {
@@ -1120,6 +1298,85 @@ match command {
     }
 }
 ```
+
+A case may carry a guard: `case <pattern> if <condition>` matches only when
+the pattern matches **and** the condition is true; otherwise the next case is
+tried. A capture pattern is bound before its guard is evaluated:
+
+```lammergeier
+match n {
+    case 0 { print("zero") }
+    case x if x < 10 { print(f"small {x}") }
+    case _ { print("large") }
+}
+```
+
+Cases are tried top to bottom and the first match runs; the subject is
+evaluated once. Supported patterns:
+
+| Pattern | Example | Matches |
+|---------|---------|---------|
+| literal | `case 0`, `case -2`, `case 1.5`, `case "a"`, `case 'a'`, `case True`, `case None` | an equal value (single-quoted strings are strings; numbers compare numerically on `any`/`json`, so `case 2` matches `2.0`) |
+| wildcard | `case _` | anything, binds nothing |
+| capture | `case other` | anything, binds it to `other` |
+| value | `case Color.RED`, `case config.LIMIT` | equality with a dotted name (a static field, module constant, …); a bare name is always a capture |
+| or | `case 1 \| 2 \| 3`, `case [x, 0] \| [0, x]` | any alternative; every alternative must bind the same names |
+| `as` | `case "b" as v`, `case [x, y] as pair`, `case (1 \| 2) as small` | the inner pattern, binding the matched value too |
+| sequence | `case []`, `case [x, y]`, `case (a, b)`, `case [first, *rest]`, `case [*init, last]` | a list or tuple (also inside `any` / `json`) of that length; `*name` (at most one) collects the remaining elements into a list, `*_` ignores them. Strings are not sequences |
+| mapping | `case {"kind": k}`, `case {"op": "add", **rest}` | a dict (or `json` object / string-keyed dict in `any`) containing the keys; extra keys are allowed and `**rest` collects them |
+| class | `case Point(x=0, y=y)`, `case Point(px, py)`, `case Circle()` | an instance of the class or of a subclass (declared in any module); on a base-typed subject a subclass pattern downcasts, binding the subclass view; keyword sub-patterns match fields, positional ones match fields in declaration order (class-body fields, then the `self.x` assignments of `init`) |
+| interface | `case Drawable() as d` | a value implementing the interface |
+| builtin type | `case int(n)`, `case str(s)`, `case float(f)`, `case bool(b)`, `case list(xs)`, `case dict(d)`, `case json(j)` | a value of that type; the optional sub-pattern sees the narrowed value (`int(n)` binds an `int` even when the subject is `any` or `json`) |
+
+Patterns nest freely and every kind combines with a guard. Names bound by a
+pattern are visible in its guard and its body only (not in other cases, not
+after the `match`) and take the type of what they matched: elements of a
+`list[int]` are `int`, a `*rest` of a `list[str]` is a `list[str]`, fields
+take their declared types, sub-values of `json` stay `json`, and parts of an
+`any` value are `any` (narrow them with `int(n)`, `str(s)`, … or a class
+pattern). A class pattern narrows an `as` name to the class
+(`case Point() as p` gives a `Point`).
+
+```lammergeier
+class Point {
+    func init(self, x: int, y: int) {
+        self.x: int = x
+        self.y: int = y
+    }
+}
+
+func describe(value: any) -> str {
+    match value {
+        case 0 | None { return "nothing" }
+        case Point(x=0, y=0) { return "origin" }
+        case Point(x, y) if x == y { return f"diagonal {x}" }
+        case [int(a), int(b)] { return f"pair sum {a + b}" }
+        case [first, *rest] { return f"list starting {first}, {len(rest)} more" }
+        case {"kind": str(kind), **rest} { return f"kind={kind} with {len(rest)} fields" }
+        case str(s) as text { return f"text of {len(s)}: {text}" }
+        case other { return "other" }
+    }
+}
+
+func command(payload: json) -> str {
+    match payload {
+        case {"op": "add", "items": [first, *more]} { return f"add {first} and {len(more)} more" }
+        case {"op": "delete", "id": int(id)} if id > 0 { return f"delete {id}" }
+        case _ { return "unknown" }
+    }
+}
+```
+
+`case _` and an unguarded capture (`case other`) match everything: a
+`match` ending with one returns on every path when all its cases do, and
+later cases are reported as unreachable. `break` and `continue` inside a
+case body act on the enclosing loop. The semantic checker rejects patterns
+that can never match the subject's static type (`case "a"` on an `int`, a
+sequence pattern on a `str`, a class pattern on an unrelated class), a name
+bound twice in one pattern, or-pattern alternatives binding different
+names, more than one `*name`, unknown classes or fields, non-string mapping
+keys on `any` / `json` subjects, and class patterns on generic classes
+unless the subject is typed `Box[...]`.
 
 ---
 
@@ -1186,9 +1443,10 @@ unique_squares = {x * x for x in range(-2, 3)}   # {0, 1, 4}
 print(len(unique_squares))      # 3
 ```
 
-The empty literal `{}` is reserved for the empty dict; for an empty
-set, build it with a comprehension or annotate with `set[T]` and
-populate it explicitly.
+An unannotated `{}` is an empty dict. Where a `set[T]` is expected — an
+annotated variable or field (`flags: set[str] = {}`), a reassignment of a
+`set[T]` variable, a `-> set[T]` return or a `set[T]` parameter — `{}` is
+an empty set. A `{key: value}` literal with entries is always a dict.
 
 Set literals and comprehensions also use surrounding type context. A direct
 call such as `takeIds({1, 2})`, where `takeIds` expects `set[int]`, lowers to
@@ -1200,6 +1458,30 @@ Membership uses the set key type, so `x in someset` and `x not in someset`
 compile to a Go map-key presence check. Sets are not indexable from Lam code;
 the `map[K]bool` representation is a transpilation detail. The same `in`
 syntax also works for lists, dict keys, and strings.
+
+Sets have the usual operations. `set()` is an empty set (typed by the
+annotation or parameter it initialises; `set(xs)` builds one from a list or
+another set); the operators return a new set and leave their operands
+unchanged, their augmented forms update the variable:
+
+```lammergeier
+tags: set[str] = set()
+tags.add("go")              # insert (no-op when present)
+tags.add("lam")
+tags.discard("rust")        # remove when present
+tags.remove("go")           # remove; raises KeyError when missing
+print(tags.contains("lam"), len(tags))   # true 1
+
+a: set[int] = {1, 2, 3}
+b: set[int] = {3, 4}
+print(len(a | b), len(a & b), len(a - b))  # union 4, intersection 1, difference 2
+a |= b                      # also &=, -=
+```
+
+Both operands of `|`, `&` and `-` must be sets of the same element type
+(``operator `|` is not defined for `set[int]` and `set[str]` ``), and the
+argument of `add` / `remove` / `discard` / `contains` must have the element
+type.
 
 ---
 
@@ -1226,7 +1508,7 @@ once.
 > as `[...]`. A `(x for x in range(10_000_000))` will allocate
 > 10 million entries before the loop body runs. For truly lazy
 > iteration (stream one element at a time, short-circuit via
-> `take` / `takeWhile`) reach for the [`lamiter`](stdlib.md#lamiter--iter)
+> `take` / `takeWhile`) reach for the [`lamiter`](stdlib.md#lamiter--itert)
 > stdlib module or a hand-rolled `yield`-generator function
 > ([see Generators](#generators--yield)).
 
@@ -1252,6 +1534,23 @@ fruits: list[str] = ["apple", "banana", "cherry"]
 for i, fruit in enumerate(fruits) {
     print(f"{i}: {fruit}")
 }
+labels: list[str] = [f"{i}:{f}" for i, f in enumerate(fruits)]
+```
+
+`enumerate` works in `for` loops and comprehensions over lists (also list
+literals, whose elements keep their type) and strings (one-character `str`
+values with their character position). Iterating a `str` directly
+(`for ch in text`) also yields one-character strs. Comprehensions iterate
+generators too (`[x for x in gen()]`).
+
+`sorted(xs)` returns a sorted copy (stable); `sorted(xs, key=fn)` orders by
+`fn(x)` (a lambda or function reference) and `reverse=true` sorts in
+descending order:
+
+```lammergeier
+words: list[str] = ["ccc", "a", "bb"]
+byLength: list[str] = sorted(words, key=lambda w: len(w))   # [a bb ccc]
+desc: list[str] = sorted(words, reverse=true)               # [ccc bb a]
 ```
 
 ---
@@ -1284,10 +1583,12 @@ The `:fmt` suffix maps directly to a Go `fmt` verb — `{x:.2f}`
 becomes `%.2f`, `{n:5d}` becomes `%5d`, etc. Without a suffix the
 slot uses `%v` so any value type works.
 
-> **Quoting.** When a slot needs an inner string literal, prefer
-> single quotes inside double-quoted f-strings (or vice versa) —
-> ``f"x={a ?? 'fallback'}"`` parses cleanly. Escaped quotes
-> (`\"`) inside f-strings are not supported by the lexer.
+> **Quoting.** When a slot needs an inner string literal, use single
+> quotes inside double-quoted f-strings (or vice versa) —
+> ``f"x={a ?? 'fallback'}"`` — or escape the delimiter
+> (``f"v={d[\"k\"]}"``). An unescaped delimiter quote inside a slot
+> (``f"{d["k"]}"``) ends the string. Names read in a slot are checked like
+> any other name (an undefined one is reported at its line and column).
 
 ---
 
@@ -1457,13 +1758,27 @@ print(xs.any(lambda x: x > 2))     # IIFE with early return -> bool
 sorted: list[int] = xs.sort()      # sorted copy; xs is unchanged
 xs = xs.sort(inplace=true)         # sort in-place and return xs
 desc: list[int] = xs.sort(compare=lambda a, b: a > b)
+byLen: list[str] = words.sort(key=lambda w: len(w))
+                                   # stable sort by a key (also positional:
+                                   # a one-parameter callback is a key)
 ```
 
 The full set of dispatched string methods is `toUpper`,
 `toLower`, `trim`, `length`, `trimLeft`, `trimRight`, `replace`, `split`,
-`join`, `startsWith`, `endsWith`, `index`, `count`, `contains`,
-`title`, `format` — the same identifiers `lamstrings.Strings`
-exposes as static methods. See [TRANSPILATION.md](TRANSPILATION.md)
+`join`, `startsWith`, `endsWith`, `index`, `lastIndex`, `count`, `contains`,
+`hasPrefix`, `hasSuffix`, `repeat`, `title`, `equalFold`, `fields`,
+`capitalize`, `isAlpha`, `isDigit`, `isAlnum`, `isSpace`, `reverse`,
+`center`, `zfill`, `padLeft`, `padRight`, `splitLines`, `splitN`,
+`replaceFirst`, `containsAny`, `isEmpty`, `isBlank`, `indent`, `dedent`,
+`format` — the same identifiers `lamstrings.Strings` exposes as static
+methods. The list methods are `length`, `append`, `pop` (`pop()` removes the
+last item, `pop(i)` the item at `i`, negative from the end), `extend`,
+`insert`, `sort`, `map`, `filter`, `reduce`, `any`, `all` and `foreach`.
+Calling any other method on a `str` or `list[T]` is a compile error with a
+hint for the usual Python spelling (`s.find(x)` → `s.index(x)`,
+`s.rfind(x)` → `s.lastIndex(x)`, both returning -1 when absent;
+`s.upper()` → `s.toUpper()`; `xs.index(x)` / `xs.contains(x)` → `x in xs`
+or a loop). See [TRANSPILATION.md](TRANSPILATION.md)
 for the emission details, including which method names require
 at least one argument (`replace` / `split` / `index` / `count` /
 `contains` / `format` — a zero-arg call like `qb.count()` falls
@@ -1537,14 +1852,17 @@ with lineFile as f {
 Exception handling (compiled to Go panic/recover). Uses `catch` (not `except`):
 
 ```lammergeier
+divisor: int = 0
 try {
-    result: int = 10 / 0
+    result: int = 10 / divisor
 } catch e {
-    print(f"Error: {e}")
+    print(f"Error: {e}")      # Error: ZeroDivisionError: ...
 } finally {
     print("cleanup")
 }
 ```
+
+Dividing by the constant `0` (`10 / 0`, `n % 0`) is a compile-time error.
 
 Inside the `try` block (or anywhere else in your code) you can raise
 an exception explicitly. Both `raise` and `throw` are accepted —
@@ -1560,6 +1878,43 @@ func validate(n: int) {
 
 A bare `raise` (or bare `throw`) inside a `catch` re-raises the
 currently-active exception, identical to Python.
+
+### Typed catch clauses
+
+A clause can name the exception type it handles. Clauses are tried in
+order and **only the first matching clause runs**; `catch e` (or a bare
+`catch`) matches anything. An exception that no clause matches keeps
+propagating to the enclosing `try` (the `finally` block still runs first):
+
+```lammergeier
+try {
+    lookup(key)
+} catch KeyError as e {
+    print(f"missing: {e}")
+} catch ValueError as e {
+    print(f"bad value: {e}")
+} catch e {
+    print(f"something else: {e}")
+}
+```
+
+Matching rules:
+
+- Builtin names follow Python's hierarchy: `Exception` catches everything,
+  `LookupError` catches `KeyError` and `IndexError`, `ArithmeticError`
+  catches `ZeroDivisionError` and `OverflowError`, `OSError` / `IOError`
+  catch `FileNotFoundError`, `RuntimeError` catches `NotImplementedError`,
+  and `ValueError` also catches the `ParseError` raised by failed
+  `int(...)` / `float(...)` conversions.
+- Go runtime faults are classified too: integer division by zero is a
+  `ZeroDivisionError`, an out-of-range index or slice is an `IndexError`,
+  a nil dereference is an `AttributeError` and a failed type assertion is
+  a `TypeError`.
+- A class name matches instances of that class and of its subclasses
+  (declared in any module); an interface name matches any value
+  implementing it.
+
+The binding (`as e`) is the raised value itself, as described below.
 
 ### Rich exception objects — throw any class instance
 
@@ -1598,12 +1953,18 @@ func main() {
 }
 ```
 
-Under the hood the `catch` binding is the live panic value
-(Go `interface{}`). Field access requires naming the class — Lam
+Under the hood a catch-all binding (`catch err`) is the live panic
+value (Go `interface{}`). Field access requires naming the class — Lam
 inserts the type assertion for you when you write
 `ve: ValidationError = err`. The old eager-stringification bind
 would have left `err` as a plain `str`, hiding the fields; the
 current binding preserves them.
+
+A typed clause binds the class directly: in `catch ValidationError as ve`
+the name `ve` is a `ValidationError`, so `ve.field` works without the
+rebinding. A clause naming a base class also catches its subclasses, and
+`ve` is then the base-typed view of the subclass instance (methods run the
+subclass overrides).
 
 ### Exceptions vs. `Result` errors — two complementary models
 
@@ -1815,6 +2176,8 @@ A postfix `?` after a `Result`-typed expression returns early from the
 to the value. The two snippets below are equivalent:
 
 ```lammergeier
+from lamerrors import Result
+
 # With ?
 func double(s: str) -> Result[int] {
     n: int = parseInt(s)?
@@ -1822,12 +2185,12 @@ func double(s: str) -> Result[int] {
 }
 
 # What the compiler desugars it to (sketch)
-func double(s: str) -> Result[int] {
-    __r: Result[int] = parseInt(s)
-    if not __r.ok() {
-        return __r
+func doubleDesugared(s: str) -> Result[int] {
+    r: Result[int] = parseInt(s)
+    if not r.ok() {
+        return r
     }
-    n: int = __r.value
+    n: int = r.unwrap()
     return Result.Ok(n * 2)
 }
 ```
@@ -1881,6 +2244,31 @@ body does not contain `?`, so it also requires a direct
 Two consecutive `do` blocks are independent; locals declared inside
 one block don't leak into the next. The catch variable is mandatory
 and lives only inside the handler.
+
+The catch variable is an `Error` (from `lamerrors`): `err.kind`,
+`err.message` and `err.cause` work directly, and an `Error` subclass keeps
+its class (`match err { case NotFound() as nf { ... } }`). A value that is
+not an `Error` (`Result.Err("timeout")`, a number) is wrapped as an `Error`
+with an empty `kind`, its text as `message` and the original value as
+`cause`; it prints exactly as the value did.
+
+A `return` inside the `do` body (or inside the handler) returns from the
+enclosing function, exactly as it would outside the block:
+
+```lammergeier
+from lamerrors import Result
+
+func firstValid(inputs: list[str]) -> int {
+    for s in inputs {
+        do {
+            return parseInt(s)?    # leaves firstValid on success
+        } catch err {
+            print(f"skipping {s}")
+        }
+    }
+    return -1
+}
+```
 
 ### When to choose what
 
@@ -2001,6 +2389,62 @@ need no runtime wrapper.
 
 ---
 
+## Top-Level Statements
+
+Statements may appear at file top level, next to declarations. They run
+once, at program start, **before `main()`**, in file order:
+
+```lammergeier
+names: list[str] = []
+
+func register(name: str) {
+    names.append(name)
+}
+
+register("core")              # runs before main()
+print(f"{len(names)} plugin")
+for extra in ["a", "b"] {
+    register(extra)
+}
+total: int = len(names)       # declared after a statement: sees 3
+
+func main() {
+    print(total)              # 3
+}
+```
+
+Rules:
+
+- **Declarations** — `func`, `class`, `interface`, imports, `const`,
+  `go!` blocks, annotated globals (`x: T = v`) and the first plain
+  assignment of a new name (`count = 0`, an inferred global) — are
+  module-level declarations as before. **Everything else** at top level
+  (calls, `items.append(3)`, assignments to existing globals, `+=`, field
+  and index assignment, `if` / `for` / `while` / `match` / `try` / `do`,
+  `raise`, ...) is a top-level statement. A bare string literal (a module
+  docstring) is ignored.
+- A global declared **before** the file's first top-level statement keeps
+  its initializer exactly as today: Go evaluates it during package
+  initialization (in dependency order, so `a: int = b + 1` may use a `b`
+  declared later), before any top-level statement runs. A global declared
+  **after** a top-level statement is zero-valued until its declaration is
+  reached: its initializer runs in file order with the statements, so it
+  sees their effects. Reading a global in a top-level statement *before*
+  its declaration is a compile error.
+- Names first assigned inside a top-level block (`if c { mode = "a" }`,
+  match cases, loop and `try` bodies, `x, y = 1, 2`) are module globals,
+  visible to every function. Loop targets (`for i in ...`) stay local to
+  the loop.
+- **Imported modules** run their top-level statements when the module is
+  initialized: modules initialize in dependency order — a module's imports
+  (transitively, following imports in source order) before the module —
+  each module exactly once, the main file last, all before `main()`.
+- An exception raised by a top-level statement (and not caught there)
+  aborts the program before `main()` starts. `return`, `break` and
+  `continue` are not valid at top level.
+
+---
+
 ## Nested Functions
 
 A `func` may be declared inside another `func` body. Lam compiles
@@ -2073,9 +2517,9 @@ func tracePlugin(srv: Server) {
 
 A nested `func` is only visible inside the enclosing body; it is
 not callable from anywhere else. To expose a helper widely, lift
-it to module scope. Nested funcs cannot themselves carry generic
-type parameters — their outer function's generics already cover
-the typical use case.
+it to module scope. Nested funcs may carry their own generic type
+parameters (see "Functions, Defaults, Lambdas, and Nested Helpers")
+and can be declared inside `if` / `else` blocks too.
 
 ---
 
@@ -2110,6 +2554,12 @@ print(s[6:])       # world
 print(s[-5:])      # world
 print(s[::-1])     # dlrow olleh
 ```
+
+A single negative index written as a constant (`xs[-1]`, `s[-2]`) counts
+from the end like Python (`xs[len(xs) - 1]`) and also works as an assignment
+target (`xs[-1] = 0`); an index still out of range raises `IndexError`. A
+negative index held in a variable is not adjusted: `xs[i]` with `i = -1`
+raises `IndexError` (use `xs[len(xs) + i]`).
 
 Indexing a string with a single integer follows Go's native behavior and
 returns the byte at that position. Use `string(s[i])` when you want a
@@ -2198,7 +2648,7 @@ the first definitive result.
 If you want pipeline-style laziness — one element flowing through
 the chain at a time, `take` / `takeWhile` bailing out before the
 rest of the input is touched — reach for the
-[`lamiter` stdlib module](stdlib.md#lamiter--iter) (`Iter.fromList(xs)
+[`lamiter` stdlib module](stdlib.md#lamiter--itert) (`Iter.fromList(xs)
 .map(f).filter(g).take(10).toList()`). That's the only place in
 the language where the combinator chain is deferred to the
 terminal call.
@@ -2251,6 +2701,15 @@ adder   = lambda (a: int, b: int): a + b
 result: list[int] = nums.map(doubler)
 ```
 
+Function references work the same way, builtins included:
+`words.map(len)` is a `list[int]`, `nums.map(str)` a `list[str]`. A
+`map` changes the element type for the rest of a chain
+(`words.map(lambda w: len(w)).filter(lambda n: n > 1)` filters ints),
+`reduce(fn, initial)` accumulates in the initial value's type
+(`words.reduce(lambda acc, w: acc + len(w), 0)` is an `int`), and a
+predicate (`filter` / `any` / `all`) whose body is not a `bool`, or a
+lambda with the wrong number of parameters, is a compile error.
+
 **Explicit return type** — append `-> Type` between the params and
 the body when inference can't reach it (typically multi-line bodies
 or generic combinators):
@@ -2279,6 +2738,25 @@ print(classify(-3))   # "negative"
 
 The inline (untyped) form does not accept the brace syntax — use
 the paren-typed form when you want a multi-line body.
+
+**Contextual typing** — a lambda written where a `func(...)` value is
+expected (a parameter, an annotated variable, a `return` from a function
+returning a `func` type, a `func`-typed field) takes its parameter and
+return types from that type, so bare parameter names are enough:
+
+```lammergeier
+func apply(f: func(int) -> bool, x: int) -> bool { return f(x) }
+func run(f: func()) { f() }
+func maker() -> func() -> Shape { return lambda: Square(1) }
+
+ok: bool = apply(lambda x: x > 0, 3)   # x: int, returns bool
+check: func(int) -> bool = lambda a: a > 1
+run(lambda: print("tick"))             # void body for func()
+```
+
+A lambda whose body is a call that produces no value (`print(...)`, a
+function without a return type) is a void `func` even where the expected
+type is `any` (`Cron.schedule(expr, lambda: print("tick"))`).
 
 ---
 
@@ -2329,11 +2807,62 @@ func main() {
 }
 ```
 
-Both operators return `interface{}`; assign to an annotated variable
-when a concrete type is required downstream. `optional[User]` and
+On a class or `optional[...]` receiver `obj?.field` is typed: it is an
+`optional` of the field's type (`optional[str]` for a `str` field, the
+field's own type when it already holds `None`), so `?.` chains
+(`user?.profile?.email`), and `??` with a fallback of the payload type
+yields that type (`e: str = user?.email ?? "x"`). `print` and f-strings
+show an optional value's payload, or `<nil>`. `d[key] ?? fallback` on a
+dict selects the fallback when the key is missing. In other contexts
+(`None ?? 42`, receivers of unknown type, `?.method()` calls) both
+operators return `interface{}`; assign to an annotated variable when a
+concrete type is required downstream. `optional[User]` and
 `Option[User]` annotations retain `User` as the safe-navigation receiver
 for member suggestions and call-shape checks, and lower to one `*User`
 pointer rather than a pointer-to-pointer. `optional[any]` stays dynamic.
+
+An `optional[T]` (or `Option[T]`) variable, field, parameter or return
+accepts `None` and any `T`, compares with `None` (`n == None`,
+`n != None`), and an optional class reference can be assigned back to the
+class type (class-typed variables already hold `None`). A value payload
+(`optional[int]` is a Go `*int`) is boxed automatically when an `int` is
+assigned or returned, and `opt ?? fallback` unwraps it to an `int`; it does
+not convert to a plain `int` implicitly.
+
+```lammergeier
+class Node {
+    func init(self, v: int) {
+        self.v: int = v
+        self.next: optional[Node] = None
+    }
+}
+
+func find(v: int) -> optional[Node] {
+    if v > 0 {
+        return Node(v)
+    }
+    return None
+}
+
+func count(s: str) -> optional[int] {
+    if s == "" {
+        return None
+    }
+    return len(s)
+}
+
+func main() {
+    head: optional[Node] = None
+    print(head == None)                 # true
+    a: Node = Node(1)
+    a.next = Node(2)
+    head = a
+    m: Option[Node] = find(3)
+    print(m?.v)                         # 3
+    n: int = count("abc") ?? 0          # 3
+    print(n)
+}
+```
 
 ---
 
@@ -2445,8 +2974,30 @@ arguments (`identity(1)`). Inference unifies repeated parameters recursively,
 so `same[T](left: T, right: T)` rejects `same(1, "two")`, and
 `sameList[T](list[T], list[T])` rejects mixed element types. The inferred
 mapping also specializes return types, constructors, imported generic
-functions/classes, and member inference. If an argument is `any` or otherwise
-unknown, the checker keeps the conservative fallback instead of guessing.
+functions/classes, and member inference. A function passed by name binds
+the type parameters of a callback parameter (`mapList(names, len2)` with
+`f: func(T) -> U` and `len2: func(str) -> int` gives `list[int]`), and a
+`.map(lambda p: p.name)` over a `list[Person]` types `p` as `Person`. If an
+argument is `any` or otherwise unknown, the checker keeps the conservative
+fallback instead of guessing.
+
+Lambdas passed to a generic function or method take their parameter types
+from the type arguments known at the call, and their result binds the
+rest, like Go's own inference: the receiver's type arguments first
+(`it: Iter[int]` gives `T = int`), then typed arguments, then untyped
+literals, and last lambdas and function references (builtins included:
+`mapList(words, len)`). No annotation or conversion is needed, and a
+callback of the wrong type (an annotated parameter, the body's result or
+the parameter count) is a Lam error:
+
+```lammergeier
+func mapList[T, U](xs: list[T], fn: func(T) -> U) -> list[U] { ... }
+func fold[T, A](xs: list[T], initial: A, fn: func(A, T) -> A) -> A { ... }
+
+strs: list[str] = mapList([1, 2], lambda n: f"{n}!")       # n: int, U = str
+total: int = fold([1, 2, 3], 0, lambda acc, x: acc + x)    # A = int
+lens: list[int] = mapList(["a", "bb"], len)
+```
 
 Built-in constraints:
 
@@ -2457,6 +3008,12 @@ Built-in constraints:
 | `ordered`    | `~int \| ~int64 \| ~float64 \| ~string`      |
 | `number`     | `float64 \| int`                             |
 | `int`, `str` | `int`, `string` — exact-type fast paths      |
+
+Inside a generic body, values of a type parameter support the operators its
+Go constraint allows (`total + x` with `T: number`), and an untyped numeric
+constant initialises or is returned as a type parameter whose constraint
+only holds numbers (`number`, `int`, `float`): `t: T = 0` in
+`class Stats[T: number]`. An unconstrained `T` (`any`) does not accept `0`.
 
 Any unrecognised name passes through verbatim, so you can use an
 imported interface directly:
@@ -2473,8 +3030,8 @@ receives the class's type parameters on its receiver:
 ```lammergeier
 class Stack[T] {
     items: list[T] = []
-    func push(v: T) { self.items.append(v) }
-    func pop() -> T { ... }
+    func push(self, v: T) { self.items.append(v) }
+    func pop(self) -> T { return self.items.pop() }
 }
 
 func main() {
@@ -2495,6 +3052,65 @@ class Box[T] {
     static func wrap(x: T) -> T { return x }
 }
 # -> func Box_wrap[T any](x T) T
+```
+
+A method may declare its own type parameters next to the class's
+(`map[U]` changing the element type of a container). Go methods cannot
+have type parameters, so such a method lowers to a package-level generic
+function taking the receiver first, and its calls are rewritten
+(`b.map(f)` -> `Box_Map(b, f)`); the call is written like any method
+call and chains (`b.map(f).map(g)`). These methods are not virtual: a
+subclass cannot override one (it is a compile error; give the subclass
+method another name).
+
+```lammergeier
+class Box[T] {
+    func init(self, value: T) { self.value: T = value }
+    func map[U](self, fn: func(T) -> U) -> Box[U] {
+        return Box[U](fn(self.value))
+    }
+}
+# -> func Box_Map[T any, U any](s *Box[T], fn func(T) U) *Box[U]
+
+b: Box[int] = Box[int](3)
+label: Box[str] = b.map(lambda x: f"n={x * 2}")   # x: int, U = str
+```
+
+A local annotated with a generic class but no type arguments takes them
+from its initializer (`it: Iter = Iter.range_(0, 3)` is an `Iter[int]`);
+everywhere else (parameters, fields, returns, locals without a value) a
+generic class needs its type arguments (`it: Iter[int]`).
+
+A class may inherit from a generic instantiation. The Go struct embeds
+`*Box[int]`, the parent is built with `NewBox[int](...)`, and inherited
+fields and methods use the bound types (`b.get()` is an `int` below);
+virtual dispatch and field defaults work as for any parent. A generic
+class can pass its own parameter on (`class Named[T](Box[T])`).
+
+```lammergeier
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+class IntBox(Box[int]) {
+    func init(self, value: int) {
+        base.init(value)
+    }
+    func doubled(self) -> int {
+        return self.value * 2
+    }
+}
+
+func main() {
+    b: IntBox = IntBox(21)
+    n: int = b.get()
+    print(n, b.doubled())             # 21 42
+}
 ```
 
 ---
@@ -2698,7 +3314,7 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamarray`       | `Array`, `Matrix`                  | NumPy-style numerics backed by **gonum** — `fromList`, `zeros`, `ones`, `linspace`, `arange`, element-wise add/sub/mul/div, BLAS `matmul`, `mulVec`, `transpose`, `inverse`, `det`, `trace`, `solve`, `dot`, `norm`, reductions (sum/mean/std/min/max/argMin/argMax) |
 | `lamdata`        | `DataFrame`, `Series`, `DataFrameGroups` | Pandas-style dataframes backed by **go-gota** — overloaded text/native-JSON `readJSON`, generic typed `mutate`/`Series.from`, native `json(frame)`, selection/filtering/sorting/joins/grouping, CSV/JSON output, and Series statistics |
 | `lamschema`      | `Schema`                           | JSON Schema validation (draft-07) via `xeipuuv/gojsonschema` with compile-once caching; declarative validation reusable as OpenAPI specs |
-| `lamiter`        | `Iter`                             | Lazy iterator combinators: `fromList`, `range_`, `count`, `repeat`; `map`, `filter`, `take`, `drop`, `takeWhile`, `dropWhile`, `enumerate`, `chain`; terminals `toList`, `forEach`, `reduce`, `count_`, `first`, `anyMatch`, `allMatch` |
+| `lamiter`        | `Iter[T]`                          | Typed lazy iterator combinators: `fromList`, `range_`, `count`, `repeat`; `map`, `filter`, `take`, `drop`, `takeWhile`, `dropWhile`, `enumerate`, `chain`; terminals `toList`, `forEach`, `reduce`, `count_`, `first`, `anyMatch`, `allMatch` |
 | `lamcache`       | `LruCache`, `TtlCache`             | In-memory caches — fixed-capacity LRU (eviction on overflow) and per-entry TTL (lazy expiry on read), both goroutine-safe |
 | `lamuuid`        | `Uuid`                             | RFC 4122 UUID generation: `v4` (cryptographically-random), `v7` (time-ordered, k-sortable), plus `nil_`, `isValid`, `parse` |
 
@@ -2795,7 +3411,10 @@ class Counter {
 
 Both `self.value` and `s.Value` mean the same thing here. The receiver
 name (`s`) is the same one the struct emitter uses; field names are
-title-cased to match Go's exported convention.
+title-cased to match Go's exported convention. When the method (or
+constructor) itself uses the name `s` — a parameter `func init(self, s:
+int)`, a local, a global it reads — the receiver is named `_lamS` instead so
+the two don't collide; write `self.<field>` in its `go!` blocks.
 
 #### Inside top-level functions — neither `s` nor `srv` is implicitly bound
 
@@ -2820,7 +3439,7 @@ func myPlugin(srv: Server) {
 
 ```lammergeier
 # BAD — `s` is not a parameter and there's no class method context.
-# This is a Go compile error: "undefined: s".
+# The compiler rejects it: `s` is only the receiver alias inside class methods.
 func brokenPlugin() {
     go! {
         s.OnRequestHooks = append(s.OnRequestHooks, ...)   # error
@@ -3285,17 +3904,22 @@ arrangement:
 | Allman *and* compact  | `func f()\n{ return 42 }`                 |
 | Statement before close| `print(value)}` inside an open block      |
 | Backslash continuation| `a + \\\n  b`                               |
+| Operator continuation | `ok = a and\n  b` / `x = a +\n  b`         |
+| Parenthesised lines   | `v = (\n  "big" if x > 3\n  else "small"\n)` |
 | Inline trailing comma | `f(\n    x,\n    y,\n)`                   |
 | Empty body            | `class Empty { }` / `func nop() { }`      |
+| Comment-only body     | `func todo() {\n    # later\n}`            |
+| Trailing comment      | `if ok { f() }  # note`                   |
 
 Internally these are normalised by:
 
 - `_inline_block_semicolons` — inserts `;` before `}` when a compact
   block has a statement immediately before its close (for example,
   `func f() { return 1 }`, or `print(value)}` inside a block).
-- `_fill_empty_blocks` — replaces `{ }` with `{ pass }` so a class
-  or function with no body still parses against the grammar's
-  `suite: "{" stmt+ "}"` rule.
+- `_fill_empty_blocks` — replaces `{ }` (or a body holding only
+  comments) with `{ pass }` so a class or function with no body still
+  parses against the grammar's `suite: "{" stmt+ "}"` rule. Interface
+  bodies are left empty: `interface Marker { }` declares no methods.
 - `_collapse_runaway_semicolons` — collapses `;;;` to `;`.
 - The auto-semicolon pass treats a leading `{` on the next line as
   a continuation of the current header (Allman braces) and skips
@@ -3355,7 +3979,13 @@ The pipeline runs in three layers:
      missing/extra/unknown call arguments, typed collection element/key/value
      mismatches in declarations, reassignments, returns, call arguments,
      container writes and list helpers, and `LAMMERGEIER.<name>` typo
-     detection across the user-defined namespace.
+     detection across the user-defined namespace. Also: undefined names
+     inside f-string slots (at the slot's line and column), unknown types in
+     annotations and unknown base classes, non-`bool` conditions, constant
+     division by zero, re-annotating an outer local with another type in an
+     inner block, and untyped lambda parameters that nothing types (a
+     stand-alone `sq = lambda x: x * x`, or `any` parameters of a
+     `func(any) -> ...` callback) when the body needs a concrete type.
    - **Warnings:** unused top-level imports
      (`from lamX import Y` where `Y` is never referenced),
      unused function parameters
@@ -3366,8 +3996,11 @@ The pipeline runs in three layers:
      `[dependencies]` entry in `lamlib.toml` that no `.lam` in
      the project tree imports).
 
+   A function with a return type whose every path raises needs no `return`.
    Definite-assignment tracking joins continuing `if`/`match`/`try`
-   branches, ignores paths that return or raise, keeps `with ... as`
+   branches (a local assigned in the `try` body and in every continuing
+   `catch` body, even with an annotation in each, is assigned afterwards),
+   ignores paths that return or raise, keeps `with ... as`
    resources block-local, and checks nested-function/lambda captures at
    their definition point. Statically non-empty literal/range loops preserve
    body assignments only when no `break` or `continue` can skip them; empty,

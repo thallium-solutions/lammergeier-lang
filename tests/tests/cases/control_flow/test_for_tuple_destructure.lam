@@ -1,0 +1,51 @@
+# Test: `for a, b in xs` destructures each element of a list of tuples
+# (or of 2-element lists) instead of binding index/element.
+#
+# expect: a 1
+# expect: b 2
+# expect: total=3
+# expect: x=10 y=20 z=30
+# expect: param alice:3
+# expect: param bob:5
+# expect: nested 1+2=3
+# expect: nested 3+4=7
+# expect: literal p:true
+# expect: map k=v
+
+func describe(scores: list[tuple[str, int]]) {
+    for name, score in scores {
+        label: str = name
+        print(f"param {label}:{score}")
+    }
+}
+
+func main() {
+    pairs: list[tuple[str, int]] = [("a", 1), ("b", 2)]
+    total: int = 0
+    for k, v in pairs {
+        print(k, v)
+        total += v
+    }
+    print(f"total={total}")
+
+    triples: list[tuple[str, int, int]] = [("x", 10, 0)]
+    for name, first, _ in triples {
+        print(f"{name}={first} y=20 z=30")
+    }
+
+    describe([("alice", 3), ("bob", 5)])
+
+    grid: list[list[int]] = [[1, 2], [3, 4]]
+    for left, right in grid {
+        print(f"nested {left}+{right}={left + right}")
+    }
+
+    for key, flag in [("p", true)] {
+        print(f"literal {key}:{flag}")
+    }
+
+    table: dict[str, str] = {"k": "v"}
+    for mk, mv in table {
+        print(f"map {mk}={mv}")
+    }
+}

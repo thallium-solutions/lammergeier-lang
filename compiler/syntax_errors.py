@@ -342,8 +342,8 @@ def _refine_expected(
         return ("an expression",)
     if _looks_like_empty_match(stripped, token_type, token_value):
         return ("`case`",)
-    if _looks_like_empty_interface(stripped, token_type, token_value):
-        return ("`func`",)
+    if _looks_like_interface_member(previous, token_type):
+        return ("`func`", "`}`")
     if _looks_like_try_missing_handler(source, line, token_type):
         return ("`catch`", "`finally`")
     if token_value == "except":
@@ -394,8 +394,11 @@ def _hint_for(
         return f"Add a {noun} after `{keyword}` before opening the block."
     if _looks_like_empty_match(stripped, token_type, token_value):
         return "A `match` block must contain at least one `case pattern { ... }` arm."
-    if _looks_like_empty_interface(stripped, token_type, token_value):
-        return "Interfaces must declare at least one method, for example `func area() -> float;`."
+    if _looks_like_interface_member(previous, token_type):
+        return (
+            "Interface bodies only declare method signatures, for example "
+            "`func area() -> float`; fields and statements belong in a class."
+        )
     if _looks_like_try_missing_handler(source, line, token_type):
         return "A `try` block must be followed by at least one `catch` or `finally` block."
     if _looks_like_dict_missing_colon(src_line, column, token_type):
@@ -521,8 +524,8 @@ def _looks_like_empty_match(stripped: str, token_type: str, token_value: str) ->
     return token_type == "PASS" and token_value == "pass" and bool(re.match(r"^match\b.*\{\s*$", stripped))
 
 
-def _looks_like_empty_interface(stripped: str, token_type: str, token_value: str) -> bool:
-    return token_type == "PASS" and token_value == "pass" and bool(re.match(r"^interface\b.*\{\s*$", stripped))
+def _looks_like_interface_member(previous: str, token_type: str) -> bool:
+    return token_type not in {"FUNC", "RBRACE"} and bool(re.match(r"^interface\b.*\{\s*$", previous))
 
 
 def _looks_like_try_missing_handler(source: str, line: int, token_type: str) -> bool:

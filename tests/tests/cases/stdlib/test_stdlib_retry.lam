@@ -7,6 +7,9 @@
 #   * Panicking fn is treated as transient.
 #   * ``until`` polls until predicate returns true.
 #   * ``until`` exhausts attempts if predicate never returns true.
+#   * Typed Lam functions (``-> Result``, ``-> str``, ``-> bool``) and
+#     lambdas are accepted as callbacks (they used to fail with
+#     "fn must be func() -> any" / be treated as false).
 #
 # expect: first-try-ok: 1
 # expect: first-try-value: 42
@@ -18,9 +21,29 @@
 # expect: until-success: true
 # expect: until-calls: 3
 # expect: until-exhausted: false
+# expect: typed-result: true fresh
+# expect: typed-str: true bob
+# expect: lambda: true bob!
+# expect: typed-until: true 2
+# expect: lambda-until: true 3
 
 from lamretry import Retry
 from lamerrors import Result
+
+func expensiveFetch() -> Result {
+    return Result.Ok("fresh")
+}
+
+func userName() -> str {
+    return "bob"
+}
+
+readyPolls: int = 0
+
+func ready() -> bool {
+    readyPolls += 1
+    return readyPolls >= 2
+}
 
 func main() {
     # ── Scenario 1: succeed on first attempt.
@@ -110,4 +133,14 @@ func main() {
     }
     exhausted: bool = Retry.until(neverP, 4, 1, 10, false)
     print(f"until-exhausted: {exhausted}")
+
+    # ── Scenario 7: typed functions and lambdas as callbacks.
+    typed: Result = Retry.runFn(expensiveFetch, 3, 1, 5, false)
+    print(f"typed-result: {typed.ok()} {typed.value}")
+    named: Result = Retry.runFn(userName, 3, 1, 5, false)
+    print(f"typed-str: {named.ok()} {named.value}")
+    viaLambda: Result = Retry.runFn(lambda: userName() + "!", 3, 1, 5, false)
+    print(f"lambda: {viaLambda.ok()} {viaLambda.value}")
+    print(f"typed-until: {Retry.until(ready, 5, 1, 5, false)} {readyPolls}")
+    print(f"lambda-until: {Retry.until(lambda: ready(), 5, 1, 5, false)} {readyPolls}")
 }

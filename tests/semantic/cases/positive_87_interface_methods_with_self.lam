@@ -1,0 +1,32 @@
+# expect-pass
+# Interface methods may spell the receiver (`func draw(self) -> str`, the
+# documented form) or omit it; both are satisfied by the class method.
+
+interface Drawable {
+    func draw(self) -> str
+    func scale(self, k: int) -> int
+}
+
+interface Named {
+    func name() -> str
+}
+
+class Circle {
+    func draw(self) -> str { return "c" }
+    func scale(self, k: int) -> int { return k }
+    func name(self) -> str { return "circle" }
+}
+
+func render(d: Drawable) -> str {
+    return d.draw() + f"{d.scale(2)}"
+}
+
+func label(n: Named) -> str {
+    return n.name()
+}
+
+func main() {
+    print(render(Circle()), label(Circle()))
+    items: list[Drawable] = [Circle()]
+    print(items[0].draw())
+}

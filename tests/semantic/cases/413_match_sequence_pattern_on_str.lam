@@ -1,0 +1,9 @@
+# expect-error: a sequence pattern can never match a value of type `str`
+
+func main() {
+    s: str = "ab"
+    match s {
+        case [a, b] { print(a) }
+        case _ { print("other") }
+    }
+}

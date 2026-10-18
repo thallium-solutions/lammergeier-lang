@@ -1,0 +1,12 @@
+# expect-error: undefined name `Colour`
+
+class Color {
+    static RED: int = 0
+}
+
+func main() {
+    match 0 {
+        case Colour.RED { print("red") }
+        case _ { print("other") }
+    }
+}

@@ -229,6 +229,61 @@ def test_formatter_preserves_nested_scoped_import() -> None:
     print("PASS: formatter preserves nested scoped imports")
 
 
+def test_formatter_keeps_postfix_increment_and_destructuring() -> None:
+    source = """class Counter {
+    func init(self, n: int) { self.n: int = n }
+    func __inc__(self) -> Counter { return Counter(self.n + 1) }
+}
+
+func main() {
+    i = 0
+    i++
+    xs: list[int] = [1]
+    xs[0]--
+    c: Counter = Counter(0)
+    c++
+    user: dict[str, str] = {"name": "alice", "role": "admin"}
+    {name, role: r} = user
+    print(i, name, r, xs, c.n, i - -1)
+}
+"""
+    result = format_lam_source(source)
+    assert "    i++\n" in result.text, result.text
+    assert "    xs[0]--\n" in result.text, result.text
+    assert "    c++\n" in result.text, result.text
+    assert "    {name, role: r} = user\n" in result.text, result.text
+    assert "i - -1" in result.text, result.text
+    assert "i + +" not in result.text and "c + +" not in result.text
+    assert format_lam_source(result.text).text == result.text
+    print("PASS: formatter keeps postfix ++/-- and dictionary destructuring")
+
+
+def test_formatter_keeps_multiline_strings_and_patterns() -> None:
+    source = """func main() {
+  text = \"\"\"first
+    indented { not a block }
+last\"\"\"
+  match [4, 5] {
+    case [a, b] if a + b == 9 { print(a) }
+    case _ { print("no") }
+  }
+  d: dict[str, any] = {"kind": "c"}
+  match d {
+    case {"kind": k} { print(k) }
+    case _ { pass }
+  }
+  print(text)
+}
+"""
+    result = format_lam_source(source)
+    assert '    text = """first\n    indented { not a block }\nlast"""\n' in result.text, result.text
+    assert "    match [4, 5] {" in result.text, result.text
+    assert "case [a, b] if a + b == 9 {" in result.text, result.text
+    assert '        case {"kind": k} {' in result.text, result.text
+    assert format_lam_source(result.text).text == result.text
+    print("PASS: formatter keeps multi-line string text, sequence and mapping patterns")
+
+
 def main() -> int:
     tests = [
         test_formatter_snapshot,
@@ -239,6 +294,8 @@ def main() -> int:
         test_lamc_fmt_directory_recurses_lam_files,
         test_formatter_repairs_doc_terminator_and_preserves_text,
         test_formatter_preserves_nested_scoped_import,
+        test_formatter_keeps_postfix_increment_and_destructuring,
+        test_formatter_keeps_multiline_strings_and_patterns,
     ]
     for test in tests:
         test()

@@ -1,0 +1,23 @@
+# expect-error: method `map` of `Box` has its own type parameters and cannot be overridden in `LoudBox`
+# Methods with their own type parameters lower to package-level generic
+# functions, which do not dispatch virtually.
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func map[U](self, fn: func(T) -> U) -> Box[U] {
+        return Box[U](fn(self.value))
+    }
+}
+
+class LoudBox(Box[int]) {
+    func map[U](self, fn: func(int) -> U) -> Box[U] {
+        return Box[U](fn(self.value * 10))
+    }
+}
+
+func main() {
+    print(LoudBox(1).value)
+}

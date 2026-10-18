@@ -1,0 +1,52 @@
+# Test: a constructor or method parameter (or local) named `s` — the name
+# the generated Go code uses for the receiver — no longer collides with it.
+#
+# expect: side 3
+# expect: grown 5
+# expect: local 7
+# expect: default 2 s=x
+# expect: inherited 9 sub
+# expect: async 4
+
+class Sq {
+    func init(self, s: int) {
+        self.side: int = s
+    }
+
+    func grow(self, s: int) -> int {
+        return self.side + s
+    }
+
+    func local(self) -> int {
+        s: int = 4
+        return self.side + s
+    }
+
+    async func twice(self, s: int) -> int {
+        return s * 2
+    }
+}
+
+class Labeled {
+    label: str = "x"
+
+    func init(self, n: int, s: str = "x") {
+        self.n: int = n
+        self.label = s
+    }
+}
+
+class Sub(Labeled) {
+}
+
+func main() {
+    q: Sq = Sq(3)
+    print(f"side {q.side}")
+    print(f"grown {q.grow(2)}")
+    print(f"local {q.local()}")
+    l: Labeled = Labeled(2)
+    print(f"default {l.n} s={l.label}")
+    sub: Sub = Sub(9, s="sub")
+    print(f"inherited {sub.n} {sub.label}")
+    print(f"async {await q.twice(2)}")
+}

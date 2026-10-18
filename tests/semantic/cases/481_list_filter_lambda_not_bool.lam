@@ -1,0 +1,7 @@
+# expect-error: list `filter` expects a `func(int) -> bool` callback, got `func(int) -> int`
+# A list predicate must produce a `bool` (this used to fail in the Go build).
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    print(xs.filter(lambda x: x * 2))
+}

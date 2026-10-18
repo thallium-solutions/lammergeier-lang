@@ -1,0 +1,27 @@
+# expect-pass
+# A local declared (with an annotation) in the try body and in every catch
+# body is definitely assigned after the try statement.
+
+func safeDiv(n: int) -> int {
+    try {
+        v: int = 10 / n
+    } catch e {
+        v: int = -1
+    }
+    return v
+}
+
+func label(s: str) -> str {
+    try {
+        out = f"<{s}>"
+    } catch ValueError as e {
+        out = "value"
+    } catch e {
+        raise e
+    }
+    return out
+}
+
+func main() {
+    print(safeDiv(0), label("x"))
+}

@@ -1,0 +1,104 @@
+# Test: printing an instance without `__str__` shows only the user fields;
+# the internal virtual-dispatch field stays invisible in print, str() and
+# f-strings, for base classes, subclasses (whose parent part prints as a
+# nested `{...}`) and base-typed values (which print the dynamic object).
+# Classes outside any hierarchy keep the plain Go shape, and `__str__`
+# still wins, also when inherited or overridden.
+#
+# expect: &{3}
+# expect: plain &{3}
+# expect: &{2}
+# expect: str &{2}
+# expect: &{{sq} 5}
+# expect: f-string &{{sq} 5}
+# expect: base view &{{sq} 5}
+# expect: <nil>
+# expect: [&{x} &{{sq} 2}]
+# expect: Labeled(a)
+# expect: Labeled(b)
+# expect: Fancy b!
+# expect: Fancy c!
+
+class Plain {
+    func init(self, x: int) {
+        self.x: int = x
+    }
+}
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func area(self) -> int {
+        return 0
+    }
+}
+
+class Counter {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func bump(self) {
+        self.n = self.n + self.step()
+    }
+
+    func step(self) -> int {
+        return 1
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("sq")
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+class Labeled {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func __str__(self) -> str {
+        return f"Labeled({self.name})"
+    }
+}
+
+class Tagged(Labeled) {
+}
+
+class Fancy(Labeled) {
+    func __str__(self) -> str {
+        return f"Fancy {self.name}!"
+    }
+}
+
+func main() {
+    p: Plain = Plain(3)
+    print(p)
+    print(f"plain {p}")
+    c: Counter = Counter(1)
+    c.bump()
+    print(c)
+    print("str " + str(c))
+    sq: Square = Square(5)
+    print(sq)
+    print(f"f-string {sq}")
+    view: Shape = sq
+    print(f"base view {view}")
+    nothing: optional[Shape] = None
+    print(nothing)
+    shapes: list[Shape] = [Shape("x"), Square(2)]
+    print(shapes)
+    print(Labeled("a"))
+    print(Tagged("b"))
+    lv: Labeled = Fancy("b")
+    print(lv)
+    print(Fancy("c"))
+}

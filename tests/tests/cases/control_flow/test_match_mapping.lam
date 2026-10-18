@@ -1,0 +1,118 @@
+# Test: mapping patterns over dicts, any and json values, with `**rest`,
+# nested patterns, guards and `as` bindings.
+#
+# expect: kind=circle r=2
+# expect: kind=square rest=1
+# expect: no kind
+# expect: typed count 3
+# expect: typed missing
+# expect: typed rest 2 others
+# expect: int keys one
+# expect: any user ada
+# expect: any not a mapping
+# expect: json create id=7
+# expect: json delete id=9 extra=1
+# expect: json other
+# expect: nested city Turin
+# expect: guarded admin root
+# expect: guarded user bob
+# expect: event as dict 2 keys
+# expect: value-key 10
+# expect: json ints 3 4
+# expect: json typed name ada age 36
+
+class Keys {
+    static ID: str = "id"
+}
+
+func shape(d: dict[str, any]) -> str {
+    match d {
+        case {"kind": "circle", "radius": r} { return f"kind=circle r={r}" }
+        case {"kind": k, **rest} { return f"kind={k} rest={len(rest)}" }
+        case _ { return "no kind" }
+    }
+}
+
+func counts(d: dict[str, int]) -> str {
+    match d {
+        case {"count": n} if n > 2 { return f"typed count {n}" }
+        case {"a": _, **others} if len(others) > 0 { return f"typed rest {len(others)} others" }
+        case _ { return "typed missing" }
+    }
+}
+
+func anyMap(v: any) -> str {
+    match v {
+        case {"user": name} { return f"any user {name}" }
+        case _ { return "any not a mapping" }
+    }
+}
+
+func command(j: json) -> str {
+    match j {
+        case {"op": "create", "id": id} { return f"json create id={id}" }
+        case {"op": "delete", "id": id, **extra} { return f"json delete id={id} extra={len(extra)}" }
+        case _ { return "json other" }
+    }
+}
+
+func main() {
+    print(shape({"kind": "circle", "radius": 2}))
+    print(shape({"kind": "square", "side": 3}))
+    print(shape({"name": "x"}))
+
+    print(counts({"count": 3}))
+    print(counts({"count": 1}))
+    print(counts({"a": 1, "b": 2, "c": 3}))
+
+    names: dict[int, str] = {1: "one", 2: "two"}
+    match names {
+        case {1: word} { print(f"int keys {word}") }
+        case _ { print("int keys none") }
+    }
+
+    print(anyMap({"user": "ada"}))
+    print(anyMap([1, 2]))
+
+    print(command({"op": "create", "id": 7}))
+    print(command({"op": "delete", "id": 9, "force": true}))
+    print(command([1]))
+
+    profile: dict[str, dict[str, str]] = {"address": {"city": "Turin"}}
+    match profile {
+        case {"address": {"city": city}} { print(f"nested city {city}") }
+        case _ { print("nested none") }
+    }
+
+    for user in [{"role": "admin", "name": "root"}, {"role": "user", "name": "bob"}] {
+        match user {
+            case {"role": role, "name": name} if role == "admin" { print(f"guarded admin {name}") }
+            case {"name": name} { print(f"guarded user {name}") }
+        }
+    }
+
+    event: dict[str, int] = {"x": 1, "y": 2}
+    match event {
+        case {"x": _} as whole { print(f"event as dict {len(whole)} keys") }
+    }
+
+    ids: dict[str, int] = {"id": 10}
+    match ids {
+        case {Keys.ID: value} { print(f"value-key {value}") }
+    }
+
+    point: json = {"x": 3, "y": 4}
+    match point {
+        case {"x": int(x), "y": int(y)} { print(f"json ints {x} {y}") }
+        case _ { print("json not ints") }
+    }
+
+    person: json = {"name": "ada", "age": 36}
+    match person {
+        case {"name": str(name), "age": int(age)} {
+            older: int = age
+            print(f"json typed name {name} age {older}")
+        }
+        case _ { print("json shape mismatch") }
+    }
+}

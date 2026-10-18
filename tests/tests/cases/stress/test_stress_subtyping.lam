@@ -1,0 +1,207 @@
+# Stress: subclass-to-base subtyping across two modules. The base classes,
+# optional results, async measurement and typed catch live in the
+# library; this module adds subclasses (with inherited constructors,
+# overrides, an overriding async method and its own error subclass) and
+# mixes them through lists, dicts, generics (a local registry and
+# `Sort.sortWith`), optional, `??`, ternaries, lambdas, comprehensions,
+# match downcasts, isinstance and try/catch.
+#
+# expect: describe: square[4]=9 | circle[0]=12 | tri[3]=6 | weird[0]=-1 | big[4]=25
+# expect: largest: square 25
+# expect: largest empty: none
+# expect: registry: 5 shapes, third tri
+# expect: generic first: square
+# expect: problems: invalid:weird
+# expect: own error: broken tri: no base
+# expect: async total: 511
+# expect: async override: 121
+# expect: by kind: circle=1 square=2 triangle=1 other=1
+# expect: dict: big 25 / tri 6
+# expect: sorted: weird tri square circle big
+# expect: names: square,circle,tri,weird,big
+# expect: isinstance: 2 squares, 1 circle
+# expect: printed: &{{4 square} 3}
+# expect: coalesce: big
+# expect: ternary: circle
+
+from lamsort import Sort
+from subtyping_stress_shapes import Shape, Square, ShapeError, largest, validate, totalMeasure
+
+class Registry[T] {
+    items: list[T] = []
+
+    func add(self, item: T) {
+        self.items.append(item)
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func at(self, i: int) -> T {
+        return self.items[i]
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+
+    func area(self) -> int {
+        return 3 * self.r * self.r
+    }
+
+    async func measure(self) -> int {
+        return self.area() * 10 + 1
+    }
+}
+
+class Triangle(Shape) {
+    sides: int = 3
+
+    func init(self, b: int, h: int) {
+        base.init("tri")
+        self.b: int = b
+        self.h: int = h
+    }
+
+    func area(self) -> int {
+        return self.b * self.h // 2
+    }
+}
+
+class Weird(Shape) {
+    func area(self) -> int {
+        return -1
+    }
+}
+
+class BigSquare(Square) {
+    func describe(self) -> str {
+        return f"big[{self.sides}]={self.area()}"
+    }
+}
+
+class Broken(ShapeError) {
+    func init(self, shape: Shape, why: str) {
+        base.init(f"broken {shape.name}: {why}")
+    }
+}
+
+func first[T](xs: list[T]) -> T {
+    return xs[0]
+}
+
+func kind(s: Shape) -> str {
+    match s {
+        case Circle() {
+            return "circle"
+        }
+        case Square() as sq if sq.side > 0 {
+            return "square"
+        }
+        case Triangle(b=b) if b > 0 {
+            return "triangle"
+        }
+        case _ {
+            return "other"
+        }
+    }
+}
+
+func inspect(s: Shape) {
+    if isinstance(s, Triangle) {
+        raise Broken(s, "no base")
+    }
+}
+
+func main() {
+    shapes: list[Shape] = [Square(3), Circle(2), Triangle(4, 3), Weird("weird"), BigSquare(5)]
+    parts: list[str] = [s.describe() for s in shapes]
+    joined: str = " | ".join(parts)
+    print(f"describe: {joined}")
+
+    best: optional[Shape] = largest(shapes)
+    if best != None {
+        print(f"largest: {best.name} {best.area()}")
+    }
+    empty: list[Shape] = []
+    nothing: optional[Shape] = largest(empty)
+    emptyLabel: str = "none" if nothing == None else "some"
+    print(f"largest empty: {emptyLabel}")
+
+    reg: Registry[Shape] = Registry[Shape]()
+    for s in shapes {
+        reg.add(s)
+    }
+    reg.add(Circle(1))
+    third: Shape = reg.at(2)
+    print(f"registry: {reg.size() - 1} shapes, third {third.name}")
+    print(f"generic first: {first(shapes).name}")
+
+    problems: list[str] = validate(shapes)
+    problemText: str = ", ".join(problems)
+    print(f"problems: {problemText}")
+
+    try {
+        inspect(Triangle(0, 1))
+    } catch Broken as e {
+        print(f"own error: {e.message}")
+    } catch ShapeError as _e {
+        print("wrong handler")
+    }
+
+    total: int = await totalMeasure(shapes)
+    print(f"async total: {total}")
+    c: Shape = Circle(2)
+    print(f"async override: {await c.measure()}")
+
+    counts: dict[str, int] = {"circle": 0, "square": 0, "triangle": 0, "other": 0}
+    for s in shapes {
+        counts[kind(s)] += 1
+    }
+    nc: int = counts["circle"]
+    ns: int = counts["square"]
+    nt: int = counts["triangle"]
+    no: int = counts["other"]
+    print(f"by kind: circle={nc} square={ns} triangle={nt} other={no}")
+
+    named: dict[str, Shape] = {}
+    for s in shapes {
+        named[s.name] = s
+    }
+    big: Shape = named["square"]
+    bigLabel: str = big.describe().split("[")[0]
+    tri: Shape = named["tri"]
+    print(f"dict: {bigLabel} {big.area()} / {tri.name} {tri.area()}")
+
+    ordered: list[Shape] = Sort.sortWith(shapes, lambda (a: Shape, b: Shape) -> int: a.area() - b.area())
+    sortedNames: list[str] = [s.name if s.area() != 25 else "big" for s in ordered]
+    allNames: list[str] = [s.name if s.area() != 25 else "big" for s in shapes]
+    sortedText: str = " ".join(sortedNames)
+    namesText: str = ",".join(allNames)
+    print(f"sorted: {sortedText}")
+    print(f"names: {namesText}")
+
+    squares: int = 0
+    circles: int = 0
+    for s in shapes {
+        if isinstance(s, Square) {
+            squares += 1
+        }
+        if isinstance(s, Circle) {
+            circles += 1
+        }
+    }
+    print(f"isinstance: {squares} squares, {circles} circle")
+
+    print(f"printed: {Square(3)}")
+
+    fallback: Shape = largest(empty) ?? BigSquare(2)
+    fallbackLabel: str = fallback.describe().split("[")[0]
+    print(f"coalesce: {fallbackLabel}")
+    pick: Shape = Circle(1) if total > 0 else Square(1)
+    print(f"ternary: {pick.name}")
+}

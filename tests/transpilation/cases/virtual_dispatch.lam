@@ -1,0 +1,34 @@
+# Transpilation: `self.m()` in a class lowers to a virtual-dispatch
+# wrapper; subclass constructors bind themselves into the embedded parent.
+# expect-go: _lamSelf lamVirtualShape
+# expect-go: type lamVirtualShape interface {
+# expect-go: func (s *Shape) _lamBindSelf(v interface{}) {
+# expect-go: func (_lamRecv *Shape) _lamVirt_Area() int {
+# expect-go: if _lamRecv._lamSelf != nil { return _lamRecv._lamSelf.Area() }
+# expect-go: return fmt.Sprintf("area %v", s._lamVirt_Area())
+# expect-go: s.Shape._lamBindSelf(s)
+# expect-go: return s.Shape.Describe()
+
+class Shape {
+    func area(self) -> int {
+        return 0
+    }
+
+    func describe(self) -> str {
+        return f"area {self.area()}"
+    }
+}
+
+class Square(Shape) {
+    func area(self) -> int {
+        return 9
+    }
+
+    func describe(self) -> str {
+        return base.describe()
+    }
+}
+
+func main() {
+    print(Square().describe())
+}

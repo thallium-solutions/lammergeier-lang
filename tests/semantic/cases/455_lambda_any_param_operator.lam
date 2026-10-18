@@ -1,0 +1,10 @@
+# expect-error: lambda parameter `v` is `any` here: argument `f` of `keep` (`func(any) -> bool`) gives it no concrete type, and `v` is compared with an ordering operator
+# A lambda passed where `func(any) -> ...` is expected gets `any` parameters.
+
+func keep(f: func(any) -> bool) -> bool {
+    return f(1)
+}
+
+func main() {
+    print(keep(lambda v: v > 0))
+}

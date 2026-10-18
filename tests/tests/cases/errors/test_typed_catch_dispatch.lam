@@ -1,0 +1,136 @@
+# Test: typed catch clauses dispatch on the raised exception type.
+#
+# Only the first clause whose type matches runs; an exception no clause
+# matches propagates to the enclosing try (after the finally block).
+#
+# expect: value
+# expect: type
+# expect: fallback: KeyError: k
+# expect: finally-unmatched
+# expect: outer: IndexError: idx
+# expect: lookup: KeyError: missing
+# expect: arith
+# expect: validation: email
+# expect: base-of-sub: deep
+# expect: same-name-second
+# expect: else-ran
+# expect: rethrown: ValueError: again
+
+class ValidationError {
+    func init(self, field: str) {
+        self.field: str = field
+    }
+}
+
+class AppError {
+    func init(self, msg: str) {
+        self.msg: str = msg
+    }
+}
+
+class DeepError(AppError) {
+    func init(self, msg: str) {
+        self.msg: str = msg
+    }
+}
+
+func classify(kind: int) {
+    try {
+        if kind == 0 {
+            raise ValueError("bad")
+        } elif kind == 1 {
+            raise TypeError("t")
+        } else {
+            raise KeyError("k")
+        }
+    } catch ValueError as e {
+        print("value")
+    } catch TypeError as e2 {
+        print("type")
+    } catch other {
+        print(f"fallback: {other}")
+    }
+}
+
+func unmatched() {
+    try {
+        try {
+            raise IndexError("idx")
+        } catch ValueError as e {
+            print("WRONG: value caught index")
+        } finally {
+            print("finally-unmatched")
+        }
+    } catch e {
+        print(f"outer: {e}")
+    }
+}
+
+func divide(a: int, b: int) -> int {
+    return a / b
+}
+
+func main() {
+    classify(0)
+    classify(1)
+    classify(2)
+    unmatched()
+
+    try {
+        raise KeyError("missing")
+    } catch ArithmeticError as e {
+        print("WRONG: arithmetic")
+    } catch LookupError as e {
+        print(f"lookup: {e}")
+    }
+
+    try {
+        print(divide(1, 0))
+    } catch ZeroDivisionError as e {
+        print("arith")
+    }
+
+    try {
+        raise ValidationError("email")
+    } catch AppError as e {
+        print("WRONG: app")
+    } catch ValidationError as e {
+        ve: ValidationError = e
+        print(f"validation: {ve.field}")
+    }
+
+    try {
+        raise DeepError("deep")
+    } catch AppError as e {
+        print("base-of-sub: deep")
+    }
+
+    try {
+        raise TypeError("x")
+    } catch ValueError as e {
+        print("WRONG: value")
+    } catch TypeError as e {
+        print("same-name-second")
+    }
+
+    try {
+        x: int = 1
+        x = x
+    } catch e {
+        print("WRONG: nothing raised")
+    } else {
+        print("else-ran")
+    }
+
+    try {
+        try {
+            raise ValueError("again")
+        } catch ValueError as e {
+            raise
+        } catch e {
+            print("WRONG: second clause after re-raise")
+        }
+    } catch e {
+        print(f"rethrown: {e}")
+    }
+}

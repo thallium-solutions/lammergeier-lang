@@ -1,0 +1,36 @@
+# Test: virtual dispatch across a module boundary. The base class lives
+# in another module; the subclass override must still be reached from
+# the base method's `self.body()` call, both with the inherited
+# constructor and after an explicit `base.init(...)`.
+#
+# expect: plain: empty
+# expect: sales: 42 units
+# expect: auto: auto body
+
+from virtual_dispatch_provider import Report
+
+class SalesReport(Report) {
+    func init(self, units: int) {
+        base.init("sales")
+        self.units: int = units
+    }
+
+    func body(self) -> str {
+        return f"{self.units} units"
+    }
+}
+
+class AutoReport(Report) {
+    func body(self) -> str {
+        return "auto body"
+    }
+}
+
+func main() {
+    plain: Report = Report("plain")
+    print(plain.render())
+    sales: SalesReport = SalesReport(42)
+    print(sales.render())
+    auto: AutoReport = AutoReport("auto")
+    print(auto.render())
+}

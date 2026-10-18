@@ -1,0 +1,196 @@
+# Cross-feature: typed `Iter[T]` pipelines over a class hierarchy. An
+# `Iter[Shape]` built from subclass instances dispatches to the
+# overrides inside its lambdas; the chains mix comprehensions, a local
+# generic class with a generic method, `Result` (Ok/Err, `?` inside a
+# lambda-fed helper), `do/catch`, `match` downcasts, optional values,
+# `Sort.sortWith` and builtin list methods.
+#
+# expect: areas=[9 12 6 4]
+# expect: big=square,circle
+# expect: kinds=square:9 circle:12 tri:6 square:4
+# expect: total=31
+# expect: firstBig=circle
+# expect: none=ShapeError: no shape above 100
+# expect: parsed=[3 4 10]
+# expect: parse error=ParseError: bad size `x`
+# expect: caught=ParseError: bad size `x`
+# expect: squares=2 sides=8
+# expect: labels=[#0 square #1 circle #2 tri #3 square]
+# expect: bucket=small:2 large:2
+# expect: sorted=circle square tri square
+# expect: comprehension=[10 13 7 5]
+# expect: optional=circle missing=none
+# expect: iter_pipeline_ok
+
+from lamiter import Iter
+from lamerrors import Result, Error
+from lamsort import Sort
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func area(self) -> int {
+        return 0
+    }
+
+    func sides(self) -> int {
+        return 0
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+
+    func sides(self) -> int {
+        return 4
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+
+    func area(self) -> int {
+        return 3 * self.r * self.r
+    }
+}
+
+class Triangle(Shape) {
+    func init(self, b: int, h: int) {
+        base.init("tri")
+        self.b: int = b
+        self.h: int = h
+    }
+
+    func area(self) -> int {
+        return self.b * self.h // 2
+    }
+
+    func sides(self) -> int {
+        return 3
+    }
+}
+
+class Tally[T] {
+    func init(self) {
+        self.items: list[T] = []
+    }
+
+    func add(self, item: T) {
+        self.items.append(item)
+    }
+
+    func summarize[K: comparable](self, key: func(T) -> K) -> dict[K, int] {
+        out: dict[K, int] = {}
+        for item in self.items {
+            k: K = key(item)
+            if k in out {
+                out[k] += 1
+            } else {
+                out[k] = 1
+            }
+        }
+        return out
+    }
+}
+
+func parseSize(text: str) -> Result[int] {
+    if text == "x" {
+        return Result.Err(Error("ParseError", f"bad size `{text}`"))
+    }
+    return Result.Ok(int(text))
+}
+
+func parseAll(texts: list[str]) -> Result[list[int]] {
+    sizes: list[int] = []
+    for t in texts {
+        sizes.append(parseSize(t)?)
+    }
+    return Result.Ok(sizes)
+}
+
+func firstLarger(shapes: list[Shape], limit: int) -> Result[Shape] {
+    found: Result[Shape] = Iter.fromList(shapes).filter(lambda s: s.area() > limit).first()
+    if not found.ok() {
+        return Result.Err(Error("ShapeError", f"no shape above {limit}"))
+    }
+    return found
+}
+
+func describe(shape: Shape) -> str {
+    match shape {
+        case Square() as sq {
+            return f"square:{sq.side * sq.side}"
+        }
+        case Triangle() as t {
+            return f"tri:{t.area()}"
+        }
+        case _ {
+            return f"{shape.name}:{shape.area()}"
+        }
+    }
+}
+
+func main() {
+    shapes: list[Shape] = [Square(3), Circle(2), Triangle(4, 3), Square(2)]
+
+    areas: list[int] = Iter.fromList(shapes).map(lambda s: s.area()).toList()
+    print(f"areas={areas}")
+    big: list[str] = Iter.fromList(shapes).filter(lambda s: s.area() > 8).map(lambda s: s.name).toList()
+    print(f"big={','.join(big)}")
+    print(f"kinds={' '.join(Iter.fromList(shapes).map(describe).toList())}")
+    total: int = Iter.fromList(shapes).reduce(0, lambda acc, s: acc + s.area())
+    print(f"total={total}")
+
+    print(f"firstBig={firstLarger(shapes, 9).unwrap().name}")
+    missing: Result[Shape] = firstLarger(shapes, 100)
+    print(f"none={missing.error}")
+
+    good: Result[list[int]] = parseAll(Iter.fromList(["3", "4", "10"]).toList())
+    print(f"parsed={good.unwrap()}")
+    bad: Result[list[int]] = parseAll(["1", "x"])
+    print(f"parse error={bad.error}")
+    do {
+        sizes: list[int] = parseAll(["2", "x"])?
+        print(f"unreachable {sizes}")
+    } catch err {
+        print(f"caught={err}")
+    }
+
+    squareCount: int = Iter.fromList(shapes).filter(lambda s: isinstance(s, Square)).count_()
+    sideTotal: int = Iter.fromList(shapes).filter(lambda s: s.sides() == 4).map(lambda s: s.sides()).reduce(0, lambda a, b: a + b)
+    print(f"squares={squareCount} sides={sideTotal}")
+
+    labels: list[str] = Iter.fromList(shapes).map(lambda s: s.name).enumerate().map(lambda pair: f"#{pair}").toList()
+    print(f"labels={[l.replace('[', '').replace(']', '') for l in labels]}")
+
+    tally: Tally[Shape] = Tally[Shape]()
+    Iter.fromList(shapes).forEach(lambda s: tally.add(s))
+    buckets: dict[str, int] = tally.summarize(lambda s: "large" if s.area() > 8 else "small")
+    print(f"bucket=small:{buckets['small']} large:{buckets['large']}")
+
+    ordered: list[Shape] = Sort.sortWith(
+        Iter.fromList(shapes).toList(),
+        lambda a, b: b.area() - a.area(),
+    )
+    print(f"sorted={' '.join(ordered.map(lambda s: s.name))}")
+
+    print(f"comprehension={[a + 1 for a in Iter.fromList(shapes).map(lambda s: s.area()).toList()]}")
+
+    lookup: dict[str, Shape] = {s.name: s for s in Iter.fromList(shapes).filter(lambda s: s.sides() == 0).toList()}
+    maybe: optional[Shape] = lookup["circle"] if "circle" in lookup else None
+    nothing: optional[Shape] = lookup["hexagon"] if "hexagon" in lookup else None
+    print(f"optional={maybe?.name ?? 'none'} missing={nothing?.name ?? 'none'}")
+    print("iter_pipeline_ok")
+}

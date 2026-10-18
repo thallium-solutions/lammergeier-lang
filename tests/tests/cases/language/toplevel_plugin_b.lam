@@ -1,0 +1,12 @@
+# Helper module for test_top_level_statements_imported.lam: imports the
+# registry and plugin_a; both initialize before it, each once.
+
+from toplevel_registry import register
+from toplevel_plugin_a import count
+
+print(f"init plugin_b sees count={count}")
+register("b")
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

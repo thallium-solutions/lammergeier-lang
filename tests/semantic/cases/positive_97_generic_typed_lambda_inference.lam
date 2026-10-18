@@ -1,0 +1,17 @@
+# expect-pass
+# A lambda with annotated parameters binds the type parameters of a
+# `func(T) -> U` parameter (its result type comes from the body).
+
+func mapAll[T, U](xs: list[T], f: func(T) -> U) -> list[U] {
+    out: list[U] = []
+    for x in xs {
+        out.append(f(x))
+    }
+    return out
+}
+
+func main() {
+    squares: list[int] = mapAll([1, 2, 3], lambda (n: int) -> int: n * n)
+    labels: list[str] = mapAll(squares, lambda (n: int): f"{n}")
+    print(squares, labels)
+}

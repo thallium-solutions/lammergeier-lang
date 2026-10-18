@@ -1,0 +1,17 @@
+# expect-error: too many positional arguments in call to `Dog`: expected at most 2, got 3
+# `Dog` has no `init` of its own: it inherits `Animal.init(name, age=1)`.
+
+class Animal {
+    func init(self, name: str, age: int = 1) {
+        self.name: str = name
+        self.age: int = age
+    }
+}
+
+class Dog(Animal) {
+}
+
+func main() {
+    d: Dog = Dog("rex", 2, 3)
+    print(d.name)
+}

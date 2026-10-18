@@ -145,8 +145,8 @@ timeouts, and plugins. It is an independently versioned official package, not
 part of the standard library. Install the v2 packages first:
 
 ```bash
-lamc install @lam/vulture@2.0.1
-lamc install @lam/vulture/std-plugin@2.0.2
+lamc install @lam/vulture@2.0.2
+lamc install @lam/vulture/std-plugin@2.0.3
 ```
 
 ```lammergeier
@@ -240,14 +240,14 @@ func main() {
     print(temps.mean())
 
     groupCols: list[str] = ["city"]
-    aggTypes: list[str] = ["mean"]
+    aggTypes: list[str] = ["mean", "mean"]   # one strategy per column
     aggCols: list[str] = ["temp", "wind"]
     groups: DataFrameGroups = df.groupBy(groupCols)
     summary: DataFrame = groups.aggregate(aggTypes, aggCols)
     print(summary.toString())
 
     values: list[float] = temps.toFloatList()
-    print(Stats.percentile(values, 0.95))
+    print(Stats.percentile(values, 95.0))   # p is 0-100
 }
 ```
 
@@ -567,6 +567,7 @@ URL parsing and percent-encoding.
 
 ```lammergeier
 from lamurl import Url
+from lamerrors import Result
 
 host: str = Url.host("https://example.com:8080/path?q=1")?
 encoded: str = Url.encode("hello world")
@@ -585,6 +586,7 @@ decoded: str = Url.decode(encoded)?
 
 ```lammergeier
 from lambase64 import Base16, Base32, Base64
+from lamerrors import Result
 
 hexText: str = Base16.encode("data")
 plain: str = Base16.decode(hexText)?
@@ -604,6 +606,7 @@ remains a compatibility alias for it.
 
 ```lammergeier
 from lambytes import Bytes
+from lamerrors import Result
 
 b: list[int] = Bytes.toBytes("hello")
 s: str = Bytes.fromBytes(b)
@@ -641,7 +644,7 @@ from lamstats import Stats
 values: list[float] = [1.0, 2.0, 3.0, 4.0]
 mean: float = Stats.mean(values)
 sd:   float = Stats.stddev(values)
-p95:  float = Stats.percentile(values, 0.95)
+p95:  float = Stats.percentile(values, 95.0)   # p is in [0, 100]
 ```
 
 All 12 helpers are generic. `sum`, `product`, and `range_` accept
@@ -657,6 +660,7 @@ PRNG + cryptographic randomness.
 ```lammergeier
 from lamrandom import Random
 from lamuuid import Uuid
+from lamerrors import Result
 
 n: int = Random.randInt(1, 100)?
 hex_: str = Random.secureToken(16)?  # crypto-rand
@@ -675,6 +679,7 @@ NumPy-style numerics backed by **gonum**.
 
 ```lammergeier
 from lamarray import Array, Matrix
+from lamerrors import Result
 
 x: Array = Array.linspace(0.0, 1.0, 100)
 y: Array = x.mulScalar(2.0).addScalar(1.0)
@@ -877,6 +882,7 @@ Binary heaps backed by `container/heap`.
 
 ```lammergeier
 from lamdatastructures import Heap, PriorityHeap
+from lamerrors import Result
 
 h: Heap = Heap()                   # min-heap by default
 h.push(3); h.push(1); h.push(2)
@@ -917,24 +923,43 @@ ttl.putForever("config", cfg)
 `TtlCache`: `put`, `putForever`, `get`, `contains`, `remove`, `size`,
 `purgeExpired`.
 
-### `lamiter` — `Iter`
+### `lamiter` — `Iter[T]`
 
-Lazy iterator combinators.
+Typed lazy iterator combinators: values flow through the chain one at a
+time when a terminal operation runs (`take` / `takeWhile` stop pulling).
 
 ```lammergeier
 from lamiter import Iter
 
-evens: list[int] = (Iter.range_(0, 100)
-    .filter(lambda x: x % 2 == 0)
-    .take(5)
-    .toList())
+evens: list[int] = Iter.range_(0, 100).filter(lambda x: x % 2 == 0).map(lambda x: x * x).toList()
+names: list[str] = Iter.fromList(users).map(lambda u: u.name).filter(lambda n: n.startsWith("a")).toList()
+total: int = Iter.fromList([1, 2, 3]).reduce(0, lambda acc, x: acc + x)
+lens: list[int] = Iter.fromList(words).map(len).toList()
+Iter.fromList(["a", "b"]).enumerate().forEach(lambda pair: print(pair))   # [0 a], [1 b]
 ```
 
-Constructors: `fromList`, `range_`, `count`, `repeat`.
-Combinators: `map`, `filter`, `take`, `drop`, `takeWhile`, `dropWhile`,
-`enumerate`, `chain`.
-Terminals: `toList`, `forEach`, `reduce`, `count_`, `first`,
-`anyMatch`, `allMatch`.
+`Iter` is generic over its element type, and every callback is typed from
+it, so lambda parameters need no annotation or conversion and a callback
+of the wrong type is a compile error:
+
+| API | Type |
+|---|---|
+| `Iter.fromList(values: list[T])`, `Iter.repeat(value: T, times)` | `Iter[T]` |
+| `Iter.range_(start, stop)` (half-open), `Iter.count(start, step)` (infinite) | `Iter[int]` |
+| `map[U](fn: func(T) -> U)` | `Iter[U]` |
+| `filter` / `takeWhile` / `dropWhile` (`func(T) -> bool`), `take(n)`, `drop(n)`, `chain(other: Iter[T])` | `Iter[T]` |
+| `enumerate()` | `Iter[tuple[int, T]]` (prints `[0 a]`; destructure with `i, v = pair` or `for i, v in it.enumerate().toList()`) |
+| `toList()` | `list[T]` |
+| `forEach(fn: func(T))` | — |
+| `reduce[A](initial: A, fn: func(A, T) -> A)` | `A` (the initial value's type: `reduce(0.0, ...)` is a `float`) |
+| `count_()` | `int` |
+| `first()` | `Result[T]` (`EmptyIteratorError` when the iterator is empty) |
+| `anyMatch` / `allMatch(predicate: func(T) -> bool)` | `bool` (short-circuit) |
+
+An `Iter[any]` (from a `list[any]`) takes `func(any) -> ...` callbacks;
+convert inside them (`int(x)`) as before. A local annotated with the bare
+class takes its initializer's type (`it: Iter = Iter.range_(0, 5)` is an
+`Iter[int]`); parameters and fields spell it (`it: Iter[int]`).
 
 ### `lamsort` — `Sort`
 
@@ -953,13 +978,11 @@ class Job {
 }
 
 jobs: list[Job] = [Job(3), Job(1), Job(2)]
-byPriority: list[Job] = Sort.sortWith(
-    jobs,
-    lambda (left: Job, right: Job) -> int: left.priority - right.priority,
-)
+# The comparator's parameters are typed from the list (`Job`).
+byPriority: list[Job] = Sort.sortWith(jobs, lambda left, right: left.priority - right.priority)
 
 if Sort.isSorted(asc, "asc") { print("ordered") }
-if Sort.isSortedWith(byPriority, lambda (a: Job, b: Job) -> int: a.priority - b.priority) {
+if Sort.isSortedWith(byPriority, lambda a, b: a.priority - b.priority) {
     print("custom order")
 }
 
@@ -1012,7 +1035,8 @@ value: any = divide(10, 2).unwrap()       # 5
 
 `Error(kind, message, cause=None)` stores `.kind`, `.message`, and
 `.cause`; `str(error)` renders `Kind: message` and appends the cause
-when present.
+when present (an empty `kind` renders just the message: that is how the
+`err` of `do { } catch err` wraps a non-`Error` value).
 
 `Result` is non-generic at runtime. Both `.value` and `.error` are typed
 `any`, and every `Result[T]` lowers to the same Go `*Result`. The compiler does
@@ -1075,6 +1099,11 @@ func main() {
 `assertAlmostEqual`, `pass`, `fail`, `describe`, `passed()`,
 `failed()`, `reset()`, `summary()`.
 
+`assertEqual`, `assertNotEqual` and `assertContains` compare values:
+numbers by value whatever their type (`2.0` equals `2`), lists and dicts
+element by element, so `Test.assertEqual(scores(), [80, 90, 100])` passes
+for a `scores() -> list[int]` even though the literal argument is untyped.
+
 ### `lamlog` — `Log`
 
 Levelled logging on top of `log`.
@@ -1082,13 +1111,15 @@ Levelled logging on top of `log`.
 ```lammergeier
 from lamlog import Log
 
-Log.setLevel("info")
+Log.setPrefix("[api] ")
 Log.info("server starting")
-Log.error("could not connect", "db unreachable")
+Log.errorf("could not connect: %s", "db unreachable")
 ```
 
-11 helpers: `setLevel`, `getLevel`, `debug`, `info`, `warn`, `error`,
-`fatal`, `withField`, `withFields`, `setOutput`, `setPrefix`.
+11 helpers, all static: `debug`, `info`, `warn`, `error`, `fatal` (one
+message each), their `printf`-style variants `debugf`, `infof`, `warnf`,
+`errorf`, `fatalf` (format string plus arguments), and `setPrefix`. `fatal`
+/ `fatalf` exit the process after logging.
 
 ---
 
@@ -1149,6 +1180,7 @@ expirable child, attach request data, and ask direct questions such as
 
 ```lammergeier
 from lamcontext import Context
+from lamerrors import Result
 
 root: Context = Context.simple().valued("requestId", "req-42")
 work: Context = root.expirable(2, "seconds")?
@@ -1203,6 +1235,7 @@ an Erlang/Akka-style `onMessage` convention.
 
 ```lammergeier
 from lamactor import ActorRef, ActorSystem
+from lamerrors import Result
 
 class Counter {
     func init(self) {
@@ -1286,6 +1319,7 @@ Timezone-aware calendar instants that compose with `Time` durations.
 ```lammergeier
 from lamdatetime import DateTime
 from lamtime import Time
+from lamerrors import Result
 
 utc: DateTime = DateTime.parseRfc3339("2026-09-25T12:00:00Z")?
 rome: DateTime = utc.inLocation("Europe/Rome")?
@@ -1315,6 +1349,7 @@ when you need sub-minute resolution.
 
 ```lammergeier
 from lamcron import Cron
+from lamerrors import Result
 
 c: Cron = Cron.new()
 id: int = c.schedule("*/5 * * * *", lambda: print("tick"))?
@@ -1352,6 +1387,7 @@ fail.
 
 ```lammergeier
 from lamos import File, Os
+from lamerrors import Result
 
 content: str = Os.readFile("/etc/hostname")?
 _ = Os.writeFile("/tmp/log", "hello\n")?
@@ -1378,6 +1414,7 @@ Filepath helpers.
 
 ```lammergeier
 from lampath import Path
+from lamerrors import Result
 
 p: str = Path.join("a", "b", "c.txt")            # a/b/c.txt
 legacy: str = Path.join(["a", "b", "c.txt"])      # list form remains accepted
@@ -1461,6 +1498,7 @@ Run external processes.
 
 ```lammergeier
 from lamexec import Exec, ExecCommand, ExecResult
+from lamerrors import Result
 
 cmd: ExecCommand = Exec.command("git", ["status", "--short"])?
 cmd.cwd = "/repo"
@@ -1515,13 +1553,17 @@ URL, default-header, and default-timeout behavior.
 
 The convenience methods are also Result-based: `get`, `head`, `delete`,
 overloaded `post` / `put` / `patch`, `statusCode`, `getHeader`, and
-`getWithHeaders` return their documented `Result[T]` payloads. `serve` returns
-`Result[HttpServer]`, and `HttpServer.close()` returns `Result[bool]`.
+`getWithHeaders` return their documented `Result[T]` payloads.
+`serve(port, handler)` takes a `func(method: str, path: str, body: str) -> str`
+handler (a function, or a lambda typed from it:
+`Http.serve(0, lambda method, path, body: f"{method} {path}")`) and returns
+`Result[HttpServer]`; `HttpServer.port()` gives the bound port and
+`HttpServer.close()` returns `Result[bool]`.
 
 ### `@lam/vulture` — `Server`, `Request`, `Response`, `SseEmitter`, `HttpError`
 
 Vulture is an independently versioned official package, not a compiler-bundled
-standard-library module. Install it with `lamc install @lam/vulture@2.0.1`; its
+standard-library module. Install it with `lamc install @lam/vulture@2.0.2`; its
 [repository README](https://github.com/thallium-solutions/lam-vulture) is the
 authoritative API and security reference.
 
@@ -1928,10 +1970,11 @@ srv.decorateRequest("user", None)
 srv.decorateResponse("view", "public")
 
 func whoami(req: Request, res: Response) {
-    service: any = srv.dec("serviceName")
+    # Decorator values are `any`: convert them before building `json`.
+    service: str = str(srv.dec("serviceName"))
     user: any = req.dec("user")
-    view: any = res.dec("view")
-    res.json({"service": service, "user": user, "view": view})
+    view: str = str(res.dec("view"))
+    res.json({"service": service, "authenticated": user != None, "view": view})
 }
 ```
 
@@ -2224,7 +2267,7 @@ authoring guide.
 
 ### `@lam/vulture/std-plugin`
 
-Install with `lamc install @lam/vulture/std-plugin@2.0.2`; see the
+Install with `lamc install @lam/vulture/std-plugin@2.0.3`; see the
 [package README](https://github.com/thallium-solutions/lam-vulture-std-plugin).
 This official package is independent of the standard library.
 
@@ -2287,7 +2330,7 @@ authoring guide and recipes.
 ### `@lam/vulture/ws-plugin` — `WebSocket`
 
 Install the independent package with
-`lamc install @lam/vulture/ws-plugin@2.0.1`; see the
+`lamc install @lam/vulture/ws-plugin@2.0.2`; see the
 [package README](https://github.com/thallium-solutions/lam-vulture-ws-plugin).
 
 The plugin uses `github.com/gorilla/websocket` and supports subprotocols plus
@@ -2333,7 +2376,7 @@ Result[any]` distinguish valid empty frames from close and transport errors.
 ### `@lam/vulture/tus-plugin` — tus.io resumable uploads
 
 Install the independent package with
-`lamc install @lam/vulture/tus-plugin@3.0.1`; see the
+`lamc install @lam/vulture/tus-plugin@3.0.2`; see the
 [package README](https://github.com/thallium-solutions/lam-vulture-tus-plugin).
 
 It implements [tus 1.0.0](https://tus.io) Creation, Creation With Upload,
@@ -2364,6 +2407,7 @@ a flat directory: each upload gets `<id>` (the bytes) plus `<id>.json`
 
 ```lammergeier
 from lamnet import Net, TcpConn, TcpListener, UdpConn, UdpPacket
+from lamerrors import Result
 
 listener: TcpListener = Net.listenTcp(9000)?
 conn: TcpConn = listener.accept(5000)?
@@ -2394,6 +2438,7 @@ trips through string-typed channels.
 
 ```lammergeier
 from lamcompress import Compress
+from lamerrors import Result
 
 enc: str = Compress.gzip("hello hello hello")
 dec: str = Compress.gunzip(enc)?
@@ -2411,6 +2456,7 @@ relay for prod).
 
 ```lammergeier
 from lamsmtp import Smtp, Mail
+from lamerrors import Result
 
 # One-shot plaintext.
 sent: bool = Smtp.sendMail(
@@ -2522,6 +2568,7 @@ objects.
 
 ```lammergeier
 from lamcrypto import Crypto
+from lamerrors import Result
 
 key: list[int] = Crypto.randomBytes(32)?
 sealed: str = Crypto.encrypt("private message", key, "tenant:42")?
@@ -2575,6 +2622,7 @@ RFC 4122 UUIDs.
 
 ```lammergeier
 from lamuuid import Uuid
+from lamerrors import Result
 
 id: str = Uuid.v4()?               # cryptographic random
 sortable: str = Uuid.v7()?         # time-ordered, k-sortable
@@ -2706,6 +2754,7 @@ so a single `down(1)` rewinds the entire batch atomically.
 ```lammergeier
 from lamdb import Db
 from lammigrate import Migrator, SchemaBuilder
+from lamerrors import Result
 
 db: Db = Db.connect("sqlite", "/var/data/app.db")?
 mig: Migrator = Migrator(db, "./migrations")
@@ -2852,6 +2901,7 @@ the runtime path is exactly the same as production code.
 
 ```lammergeier
 from lamxml import Xml, XmlNode
+from lamerrors import Result
 
 # Shape-shifted decode (mirrors Json.decode):
 doc: any = Xml.decode("<book id='42'><title>Refactoring</title></book>")?
@@ -2884,6 +2934,7 @@ collapse into `list[any]`, and attributes are folded into the dict under
 
 ```lammergeier
 from lamyaml import Yaml
+from lamerrors import Result
 
 doc: any = Yaml.decode("name: alice\nage: 30")?
 yamlStr: str = Yaml.encode(doc)?
@@ -2958,6 +3009,7 @@ Wraps Go's `text/template` + `html/template`:
 
 ```lammergeier
 from lamtemplate import Template, HtmlTemplate
+from lamerrors import Result
 
 t: Template = Template()
 _ = t.parse("Hello, {{.Name}}! {{len .Hobbies}} hobbies.")?
@@ -2985,6 +3037,10 @@ r: Result = Retry.runFn(myFn, 5, 100, 5000, true)
 # Predicate polling:
 ok: bool = Retry.until(predicate, 10, 50, 1000, true)
 ```
+
+`fn` / `predicate` are functions without parameters of any result type
+(`myFn() -> Result`, `-> str`, a lambda `lambda: fetch(url)`); a non-`Result`
+value counts as `Ok(value)`, and `until` stops at the first `true`.
 
 ### `lamratelimit.TokenBucket` — client-side throttling
 
@@ -3163,8 +3219,8 @@ db.table(name: str) -> QueryBuilder
 qb.select(cols: list[any]) -> QueryBuilder
 qb.where(col: str, op: str, val: any) -> QueryBuilder
 qb.whereEq(col: str, val: any) -> QueryBuilder
-qb.whereGroup(callback: any) -> QueryBuilder
-qb.orWhereGroup(callback: any) -> QueryBuilder
+qb.whereGroup(callback: func(QueryBuilder) -> QueryBuilder) -> QueryBuilder
+qb.orWhereGroup(callback: func(QueryBuilder) -> QueryBuilder) -> QueryBuilder
 qb.orderBy(col: str, dir_: str = "asc") -> QueryBuilder
 qb.get() -> Result[list[dict[str, any]]]
 qb.first() -> Result[dict[str, any]]

@@ -1,0 +1,63 @@
+# Test: forms that used to fail only in the Go build now compile: constant
+# negative indexes count from the end (out of range raises IndexError),
+# int/float mixes in inferred arithmetic, unannotated tuple values and
+# their destructuring, `for v in payload.tags` over a json array,
+# `Iter...toList()` into `list[int]`, and json arrays of numbers.
+#
+# expect: last: 3 1 8
+# expect: assigned: [1 2 30]
+# expect: index error
+# expect: mixed: 1.5 3.25 3
+# expect: tuple: [1 a] 1 a
+# expect: tag: a
+# expect: tag: b
+# expect: sum: 3
+# expect: evens: [0 2 4 6 8]
+# expect: none: true
+
+from lamiter import Iter
+
+func nums() -> list[int] {
+    return [7, 8, 9]
+}
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    print(f"last: {xs[-1]} {xs[-3]} {nums()[-2]}")
+    xs[-1] = 30
+    print(f"assigned: {xs}")
+    try {
+        print(xs[-4])
+    } catch IndexError as e {
+        print("index error")
+    }
+
+    a = 1
+    f = 1.5 * a
+    b: int = 3
+    g: float = b + 0.25
+    print(f"mixed: {f} {g} {2 * a + 1.0}")
+
+    t = (1, "a")
+    n, s = t
+    print(f"tuple: {t} {n} {s}")
+
+    payload: json = {"tags": ["a", "b"], "n": [1, 2]}
+    for tag in payload.tags {
+        label: str = tag
+        print(f"tag: {label}")
+    }
+    total = 0
+    for v in payload.n {
+        k: int = v
+        total += k
+    }
+    print(f"sum: {total}")
+
+    evens: list[int] = (Iter.range_(0, 100)
+        .filter(lambda x: int(x) % 2 == 0)
+        .take(5)
+        .toList())
+    print(f"evens: {evens}")
+    print(f"none: {isinstance(None, None)}")
+}

@@ -1,0 +1,39 @@
+# Regression: an unused local in a block that ends with `return` keeps the
+# block terminating (the `_ = name` silencer goes before the return, so Go
+# no longer reports `missing return`).
+#
+# expect: 2 1 0
+# expect: case 7
+
+func f() -> int {
+    y: int = 1
+    return 2
+}
+
+func g(b: bool) -> int {
+    if b {
+        z: int = 3
+        return 1
+    } else {
+        w: str = "unused"
+        return 0
+    }
+}
+
+func h(n: int) -> str {
+    match n {
+        case 7 {
+            note: str = "unused"
+            return f"case {n}"
+        }
+        case _ {
+            other: int = n
+            return "other"
+        }
+    }
+}
+
+func main() {
+    print(f(), g(true), g(false))
+    print(h(7))
+}

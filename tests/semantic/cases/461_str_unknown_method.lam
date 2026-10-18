@@ -1,0 +1,7 @@
+# expect-error: `str` has no method `rfind` — did you mean `lastIndex` (returns -1 when absent)?
+# Unknown methods on a `str` failed only in the Go build.
+
+func main() {
+    name: str = "archive.tar.gz"
+    print(name.rfind("."))
+}

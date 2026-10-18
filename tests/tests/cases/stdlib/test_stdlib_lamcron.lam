@@ -12,6 +12,7 @@
 # expect: restart-ok: true
 # expect: invalid-expr: error
 # expect: invalid-callback: error
+# expect: void-lambda: true
 # expect: concurrent-cron: true
 
 from lamconcurrency import Atomic
@@ -140,6 +141,11 @@ func main() {
     if not invalidCallback.ok() {
         print("invalid-callback: error")
     }
+    # A void lambda (the documented ``lambda: print("tick")`` shape) is a
+    # supported ``func()`` callback; it emitted invalid Go before.
+    printer: Cron = Cron.new()
+    tick: Result[int] = printer.schedule("0 0 1 1 *", lambda: print("tick"))
+    print(f"void-lambda: {tick.ok()}")
 
     print(f"concurrent-cron: {exerciseConcurrentCron()}")
 }

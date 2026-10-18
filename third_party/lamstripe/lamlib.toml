@@ -6,4 +6,4 @@ license = "MIT"
 authors = ["Lammergeier contributors"]
 
 [compatibility]
-lamc = "^1.18"
+lamc = ">=1.18, <3"

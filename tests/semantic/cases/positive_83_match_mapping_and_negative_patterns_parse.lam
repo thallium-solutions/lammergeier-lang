@@ -1,0 +1,33 @@
+# expect-pass
+# expect-no-warning: syntax check failed
+# Mapping patterns (with and without `**rest`) and negative literal
+# patterns are accepted by the preprocessor and the parser. The runtime
+# lowering of mapping patterns is covered separately once implemented.
+
+func describe(value: any) -> str {
+    match value {
+        case {"kind": k} {
+            return "kind"
+        }
+        case {"kind": k, **rest} { return "kind rest" }
+        case {} { return "empty" }
+        case _ {
+            return "other"
+        }
+    }
+}
+
+func sign(n: int) -> str {
+    match n {
+        case -2 { return "minus two" }
+        case -1 {
+            return "minus one"
+        }
+        case _ { return "other" }
+    }
+}
+
+func main() {
+    print(describe(1))
+    print(sign(-2))
+}

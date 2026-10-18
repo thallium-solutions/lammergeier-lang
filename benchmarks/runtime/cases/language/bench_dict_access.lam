@@ -1,0 +1,32 @@
+# Dict insert + lookup — covers the generic ``map[string]interface{}``
+# we default to for ``dict[str, any]``. Keys are pre-materialised so
+# we don't benchmark fmt.Sprintf on top of the dict work.
+#
+# ops: 100000
+
+from lamtime import Time
+
+func work() {
+    d: dict[str, int] = {}
+    keys: list[str] = []
+    for i in range(100000) {
+        k: str = f"k{i}"
+        keys = append(keys, k)
+        d[k] = i
+    }
+    total: int = 0
+    for k in keys {
+        total = total + d[k]
+    }
+    if total < 0 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH dict_access 100000 {elapsed}")
+}

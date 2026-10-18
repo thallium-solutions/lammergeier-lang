@@ -1,0 +1,103 @@
+# Test: nested loops with `else` clauses keep independent break flags.
+#
+# A `break` only suppresses the `else` of the loop it exits: an inner
+# loop's flag must not shadow the outer one, a `break` out of an inner
+# loop without `else` must not cancel the outer `else`, and several
+# loop-else statements can live in the same function.
+#
+# expect: inner-else 0
+# expect: outer broke
+# expect: inner-else-w 0
+# expect: outer-while broke
+# expect: plain inner break
+# expect: outer-else after inner break
+# expect: second loop else
+# expect: third loop broke
+
+func nestedFor() {
+    for i in range(3) {
+        for j in range(2) {
+            j = j
+        } else {
+            print(f"inner-else {i}")
+        }
+        if i == 0 {
+            break
+        }
+    } else {
+        print("SHOULD NOT PRINT")
+    }
+    print("outer broke")
+}
+
+func nestedWhile() {
+    i: int = 0
+    while i < 3 {
+        j: int = 0
+        while j < 2 {
+            j += 1
+        } else {
+            print(f"inner-else-w {i}")
+        }
+        if i == 0 {
+            break
+        }
+        i += 1
+    } else {
+        print("SHOULD NOT PRINT")
+    }
+    print("outer-while broke")
+}
+
+func innerBreakOnly() {
+    for i in range(2) {
+        for j in range(5) {
+            if j == 1 {
+                print("plain inner break")
+                break
+            }
+        }
+        break
+    } else {
+        print("WRONG")
+    }
+    for k in range(2) {
+        for m in range(3) {
+            break
+        }
+    } else {
+        print("outer-else after inner break")
+    }
+}
+
+func severalInOneFunction() {
+    for a in range(2) {
+        a = a
+    } else {
+        print("second loop else")
+    }
+    n: int = 0
+    while n < 5 {
+        n += 1
+        if n == 2 {
+            break
+        }
+    } else {
+        print("WRONG while else")
+    }
+    for b in range(3) {
+        if b == 1 {
+            break
+        }
+    } else {
+        print("WRONG for else")
+    }
+    print("third loop broke")
+}
+
+func main() {
+    nestedFor()
+    nestedWhile()
+    innerBreakOnly()
+    severalInOneFunction()
+}

@@ -1,0 +1,18 @@
+# expect-pass
+# A function passed by name binds the type parameters of a `func(T) -> U`
+# parameter.
+
+func mapList[T, U](xs: list[T], f: func(T) -> U) -> list[U] {
+    out: list[U] = []
+    for x in xs {
+        out.append(f(x))
+    }
+    return out
+}
+
+func len2(s: str) -> int { return len(s) }
+
+func main() {
+    lens: list[int] = mapList(["a", "bb"], len2)
+    print(lens)
+}

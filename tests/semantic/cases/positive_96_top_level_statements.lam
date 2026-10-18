@@ -1,0 +1,23 @@
+# expect-pass
+# Statements at file top level are valid: they run before main() in file
+# order. Names first assigned inside top-level blocks are module globals.
+
+items: list[int] = []
+items.append(3)
+if len(items) > 0 {
+    mode = "some"
+} else {
+    mode = "none"
+}
+match len(items) {
+    case 1 { label = "one" }
+    case _ { label = "many" }
+}
+for i in range(2) {
+    items.append(i)
+}
+total: int = len(items)
+
+func main() {
+    print(mode, label, total)
+}

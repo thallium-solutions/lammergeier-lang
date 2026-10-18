@@ -1,0 +1,67 @@
+# Transpilation: a method with its own type parameters lowers to a
+# package-level generic function (Go methods cannot declare type
+# parameters) and its call sites pass the receiver first. Lambdas passed
+# to generic callables get concrete parameter and result types from the
+# inferred type arguments; builtins passed as function values are wrapped.
+#
+# Check:
+#   - ``func map[U](self, ...)`` on ``class Box[T]`` -> ``func Box_Map[T any, U any](s *Box[T], ...)``
+#   - non-generic class: ``func Picker_Pick[T any](s *Picker, ...)``
+#   - call sites: ``Box_Map(b, func(x int) string { ... })``, chained
+#   - inherited generic method on a subclass: the embedded parent is passed
+#   - generic function with a lambda: ``MapList(xs, func(x int) int { ... })``
+#   - ``map(len)``: ``func(_lamArg string) int { return len(_lamArg) }``
+
+# expect-go: func Box_Map[T any, U any](s *Box[T], fn func(T) U) *Box[U] {
+# expect-go: func Picker_Pick[T any](s *Picker, items []T) T {
+# expect-go: Box_Map(b, func(x int) string { return fmt.Sprintf("n=%v", x) })
+# expect-go: Box_Map(Box_Map(b, func(x int) int { return x + 1 }), func(y int) int { return y * 10 })
+# expect-go: Picker_Pick(p, []float64{1.5, 2.5})
+# expect-go: Box_Map(ib.Box, func(v int) int { return v * 3 })
+# expect-go: MapList([]int{1, 2}, func(x int) int { return x * 2 })
+# expect-go: MapList(words, func(_lamArg string) int { return len(_lamArg) })
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func map[U](self, fn: func(T) -> U) -> Box[U] {
+        return Box[U](fn(self.value))
+    }
+}
+
+class IntBox(Box[int]) {
+}
+
+class Picker {
+    func init(self, index: int) {
+        self.index: int = index
+    }
+
+    func pick[T](self, items: list[T]) -> T {
+        return items[self.index]
+    }
+}
+
+func mapList[T, U](xs: list[T], fn: func(T) -> U) -> list[U] {
+    out: list[U] = []
+    for x in xs {
+        out.append(fn(x))
+    }
+    return out
+}
+
+func main() {
+    b: Box[int] = Box[int](3)
+    named: Box[str] = b.map(lambda x: f"n={x}")
+    chained = b.map(lambda x: x + 1).map(lambda y: y * 10)
+    p: Picker = Picker(1)
+    picked: float = p.pick([1.5, 2.5])
+    ib: IntBox = IntBox(2)
+    tripled: Box[int] = ib.map(lambda v: v * 3)
+    doubled: list[int] = mapList([1, 2], lambda x: x * 2)
+    words: list[str] = ["a", "bb"]
+    lens: list[int] = mapList(words, len)
+    print(named.value, chained.value, picked, tripled.value, doubled, lens)
+}

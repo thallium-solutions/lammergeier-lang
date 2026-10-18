@@ -1,0 +1,38 @@
+# Test: lamsort comparators take their parameter types from the list
+# (`Sort.sortWith(jobs, lambda a, b: a.priority - b.priority)`), for the
+# eager algorithms, the checks and the lazy generator.
+#
+# expect: sorted=[1 2 3]
+# expect: desc=[3 2 1]
+# expect: byLen=[c bb aaa]
+# expect: isSorted=true false
+# expect: lazy=1 2 3
+# expect: quick=[a bb ccc]
+
+from lamsort import Sort
+
+class Job {
+    func init(self, name: str, priority: int) {
+        self.name: str = name
+        self.priority: int = priority
+    }
+}
+
+func main() {
+    jobs: list[Job] = [Job("b", 2), Job("c", 3), Job("a", 1)]
+    ordered: list[Job] = Sort.sortWith(jobs, lambda a, b: a.priority - b.priority)
+    print(f"sorted={ordered.map(lambda j: j.priority)}")
+    desc: list[Job] = Sort.sortWith(jobs, lambda a, b: a.priority - b.priority, "desc")
+    print(f"desc={desc.map(lambda j: j.priority)}")
+    words: list[str] = ["aaa", "c", "bb"]
+    print(f"byLen={Sort.mergeWith(words, lambda a, b: len(a) - len(b))}")
+    ascending: bool = Sort.isSortedWith(ordered, lambda a, b: a.priority - b.priority)
+    descending: bool = Sort.isSortedWith(jobs, lambda a, b: a.priority - b.priority)
+    print(f"isSorted={ascending} {descending}")
+    out: str = ""
+    for job in Sort.iterSortedWith(jobs, lambda a, b: a.priority - b.priority) {
+        out += f"{job.priority} "
+    }
+    print(f"lazy={out.trim()}")
+    print(f"quick={Sort.quickWith(['ccc', 'a', 'bb'], lambda a, b: len(a) - len(b))}")
+}

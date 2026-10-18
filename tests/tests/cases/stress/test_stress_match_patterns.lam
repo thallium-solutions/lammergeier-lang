@@ -1,0 +1,287 @@
+# Stress: pattern matching composed with classes and inheritance,
+# interfaces, generics, recursion, lambdas, Result / do-catch, json
+# decoding, loops with break/continue, comprehensions and try/catch.
+#
+# expect: eval 7
+# expect: eval -6
+# expect: eval 20
+# expect: show (1 + (2 * x))
+# expect: simplify x
+# expect: simplify 0
+# expect: simplify (y * 3)
+# expect: cmd add alice -> 1
+# expect: cmd add bob -> 2
+# expect: cmd rename bob -> robert
+# expect: cmd delete #0
+# expect: cmd unknown op=fly
+# expect: cmd malformed
+# expect: users robert
+# expect: tokens: num(12) op(+) num(3) ident(rate) op(*) end
+# expect: totals 12 skipped 1
+# expect: route GET /users/42 -> show user 42
+# expect: route POST /users -> create user from 2 fields
+# expect: route GET /health -> ok
+# expect: route DELETE /users/7 -> 405
+# expect: result ok 21
+# expect: result err bad input
+# expect: generic pair 3/4
+# expect: area sum 31
+# expect: first negative at index 2
+# expect: raised ValueError: odd shape
+
+from lamerrors import Result, Error
+from lamjson import Json
+
+interface Area {
+    func area(self) -> int
+}
+
+class Expr {
+    kind: str = "expr"
+}
+
+class Num(Expr) {
+    func init(self, value: int) {
+        self.value: int = value
+    }
+}
+
+class Var(Expr) {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class BinOp(Expr) {
+    func init(self, op: str, left: any, right: any) {
+        self.op: str = op
+        self.left: any = left
+        self.right: any = right
+    }
+}
+
+class Pair[T] {
+    func init(self, first: T, second: T) {
+        self.first: T = first
+        self.second: T = second
+    }
+}
+
+class Sq {
+    func init(self, side: int) {
+        self.side: int = side
+    }
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+class Rect {
+    func init(self, w: int, h: int) {
+        self.w: int = w
+        self.h: int = h
+    }
+    func area(self) -> int {
+        return self.w * self.h
+    }
+}
+
+func evaluate(e: any, env: dict[str, int]) -> int {
+    match e {
+        case Num(value=v) { return v }
+        case Var(name=n) { return env[n] }
+        case BinOp(op="+", left=l, right=r) { return evaluate(l, env) + evaluate(r, env) }
+        case BinOp(op="*", left=l, right=r) { return evaluate(l, env) * evaluate(r, env) }
+        case BinOp(op="-", left=l, right=r) { return evaluate(l, env) - evaluate(r, env) }
+        case _ { raise ValueError("unknown node") }
+    }
+}
+
+func show(e: any) -> str {
+    match e {
+        case Num(value=v) { return f"{v}" }
+        case Var(name=n) { return n }
+        case BinOp(op=op, left=l, right=r) { return f"({show(l)} {op} {show(r)})" }
+        case _ { return "?" }
+    }
+}
+
+func simplify(e: any) -> any {
+    match e {
+        case BinOp(op="+", left=Num(value=0), right=r) { return simplify(r) }
+        case BinOp(op="*", left=Num(value=0)) | BinOp(op="*", right=Num(value=0)) { return Num(0) }
+        case BinOp(op=op, left=l, right=r) { return BinOp(op, simplify(l), simplify(r)) }
+        case other { return other }
+    }
+}
+
+class Users {
+    names: list[str] = []
+}
+
+func apply(cmd: json, store: Users) -> str {
+    match cmd {
+        case {"op": "add", "name": str(name)} {
+            store.names.append(name)
+            return f"cmd add {name} -> {len(store.names)}"
+        }
+        case {"op": "rename", "from": str(old), "to": str(new)} {
+            for i in range(len(store.names)) {
+                if store.names[i] == old {
+                    store.names[i] = new
+                    return f"cmd rename {old} -> {new}"
+                }
+            }
+            return f"cmd rename missing {old}"
+        }
+        case {"op": "delete", "index": int(idx)} if idx < len(store.names) {
+            for i in range(idx, len(store.names) - 1) {
+                store.names[i] = store.names[i + 1]
+            }
+            store.names.pop()
+            return f"cmd delete #{idx}"
+        }
+        case {"op": str(op), **rest} { return f"cmd unknown op={op}" }
+        case _ { return "cmd malformed" }
+    }
+}
+
+func tokenize(text: str) -> list[str] {
+    out: list[str] = []
+    words: list[str] = text.split(" ")
+    for word in words {
+        match word {
+            case "+" | "-" | "*" { out.append(f"op({word})") }
+            case w if w.isDigit() { out.append(f"num({w})") }
+            case w { out.append(f"ident({w})") }
+        }
+    }
+    out.append("end")
+    return out
+}
+
+func route(method: str, path: list[str], fields: int) -> str {
+    match (method, path) {
+        case ("GET", ["users", uid]) { return f"show user {uid}" }
+        case ("POST", ["users"]) { return f"create user from {fields} fields" }
+        case ("GET", ["health"]) { return "ok" }
+        case (_, ["users", *_]) { return "405" }
+        case _ { return "404" }
+    }
+}
+
+func half(n: int) -> Result[int] {
+    if n % 2 == 0 {
+        return Result.Ok(n / 2)
+    }
+    return Result.Err(Error("InputError", "bad input"))
+}
+
+func describeResult(n: int) -> str {
+    r: Result[int] = half(n)
+    match r.ok() {
+        case True { return f"result ok {r.unwrap()}" }
+        case False {
+            err: Error = r.error
+            return f"result err {err.message}"
+        }
+    }
+    return "unreachable"
+}
+
+func classifyShape(v: any) -> int {
+    match v {
+        case Area() as a { return a.area() }
+        case _ { raise ValueError("odd shape") }
+    }
+}
+
+func main() {
+    env: dict[str, int] = {"x": 3, "y": 4}
+    e1: BinOp = BinOp("+", Num(1), BinOp("*", Num(2), Var("x")))
+    e2: BinOp = BinOp("-", Num(-2), Var("y"))
+    e3: BinOp = BinOp("*", Var("y"), BinOp("+", Num(2), Var("x")))
+    for e in [e1, e2, e3] {
+        print(f"eval {evaluate(e, env)}")
+    }
+    print(f"show {show(e1)}")
+    s1: any = simplify(BinOp("+", Num(0), Var("x")))
+    s2: any = simplify(BinOp("*", Var("x"), Num(0)))
+    s3: any = simplify(BinOp("*", BinOp("+", Num(0), Var("y")), Num(3)))
+    print(f"simplify {show(s1)}")
+    print(f"simplify {show(s2)}")
+    print(f"simplify {show(s3)}")
+
+    users: Users = Users()
+    payload: str = """[
+        {"op": "add", "name": "alice"},
+        {"op": "add", "name": "bob"},
+        {"op": "rename", "from": "bob", "to": "robert"},
+        {"op": "delete", "index": 0},
+        {"op": "fly"},
+        42
+    ]"""
+    commands: json = Json.decode(payload).unwrap()
+    for i in range(len(commands)) {
+        print(apply(commands[i], users))
+    }
+    names: list[str] = [u for u in users.names]
+    print(f"users {names[0]}")
+
+    tokens: list[str] = tokenize("12 + 3 rate *")
+    print("tokens: " + " ".join(tokens))
+
+    total: int = 0
+    skipped: int = 0
+    for item in [[1, 2], [3], [4, 5, 0], [9, 9]] {
+        match item {
+            case [single] {
+                skipped += 1
+                continue
+            }
+            case [a, b, 0] {
+                total += a + b
+            }
+            case [9, *_] { break }
+            case [a, b] { total += a + b }
+        }
+    }
+    print(f"totals {total} skipped {skipped}")
+
+    requests: list[tuple[str, str]] = [("GET", "/users/42"), ("POST", "/users"), ("GET", "/health"), ("DELETE", "/users/7")]
+    for method, path in requests {
+        parts: list[str] = path.split("/")
+        segments: list[str] = parts[1:]
+        print(f"route {method} {path} -> {route(method, segments, 2)}")
+    }
+
+    print(describeResult(42))
+    print(describeResult(3))
+
+    p: Pair[int] = Pair[int](3, 4)
+    match p {
+        case Pair(first=a, second=b) if a < b { print(f"generic pair {a}/{b}") }
+        case _ { print("generic pair other") }
+    }
+
+    shapes: list[any] = [Sq(3), Rect(2, 11)]
+    areas: list[int] = [classifyShape(s) for s in shapes]
+    print(f"area sum {areas[0] + areas[1]}")
+
+    readings: list[int] = [4, 2, -1, -5]
+    for idx in range(len(readings)) {
+        match readings[idx] {
+            case v if v < 0 {
+                print(f"first negative at index {idx}")
+                break
+            }
+            case _ { }
+        }
+    }
+
+    try {
+        classifyShape("circle")
+    } catch ValueError as e {
+        print(f"raised {e}")
+    }
+}

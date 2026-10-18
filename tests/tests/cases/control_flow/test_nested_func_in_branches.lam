@@ -1,0 +1,78 @@
+# Test: nested functions declared inside `if` / `else` blocks (also
+# capturing and mutating an outer local with `nonlocal`), `x += f()?`,
+# `unwrapOr` and inline `unwrap()` in arithmetic, a bare `return` inside
+# a `do { } catch` body, and `pop(i)` on a list.
+#
+# expect: labels: [small big] [none]
+# expect: totals: 5 0
+# expect: result: 7 3
+# expect: early: done
+# expect: pop: 1 [2 3] 3 [2]
+
+from lamerrors import Result
+
+func classify(xs: list[int]) -> list[str] {
+    out: list[str] = []
+    if len(xs) > 0 {
+        func label(n: int) -> str {
+            if n > 5 {
+                return "big"
+            }
+            return "small"
+        }
+        for x in xs {
+            out.append(label(x))
+        }
+    } else {
+        func empty() -> str {
+            return "none"
+        }
+        out.append(empty())
+    }
+    return out
+}
+
+func run(flag: bool) -> Result[int] {
+    total = 0
+    if flag {
+        func add(n: int) {
+            nonlocal total
+            total += n
+        }
+        add(2)
+        add(3)
+    }
+    return Result.Ok(total)
+}
+
+func two() -> Result[int] {
+    return Result.Ok(2)
+}
+
+func sum() -> Result[int] {
+    x = 1
+    x += two()?
+    x += two().unwrapOr(0) * 2
+    return Result.Ok(x)
+}
+
+func early() {
+    do {
+        return
+    } catch err {
+        print(err)
+    }
+}
+
+func main() {
+    print(f"labels: {classify([1, 9])} {classify([])}")
+    print(f"totals: {run(true).unwrap()} {run(false).unwrap()}")
+    print(f"result: {sum().unwrap()} {two().unwrap() + 1}")
+    early()
+    print("early: done")
+    xs: list[int] = [1, 2, 3]
+    first = xs.pop(0)
+    rest: str = f"{xs}"
+    last = xs.pop(-1)
+    print(f"pop: {first} {rest} {last} {xs}")
+}

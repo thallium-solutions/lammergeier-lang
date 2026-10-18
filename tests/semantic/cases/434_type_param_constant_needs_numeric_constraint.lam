@@ -1,0 +1,11 @@
+# expect-error: cannot assign `int` to `T` variable `y`
+# `T` is unconstrained (`any`), so Go cannot convert the constant 0 to it.
+
+func bad[T](x: T) -> T {
+    y: T = 0
+    return y
+}
+
+func main() {
+    print(bad(1))
+}

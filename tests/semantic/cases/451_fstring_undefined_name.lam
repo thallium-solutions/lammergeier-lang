@@ -1,0 +1,7 @@
+# expect-error: undefined name `valeu` in f-string — did you mean `value`?
+# Names read inside f-string slots are checked like any other name.
+
+func main() {
+    value: int = 3
+    print(f"ok {value:.2f} {len([1])} {valeu}")
+}

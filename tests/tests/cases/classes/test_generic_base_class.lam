@@ -1,0 +1,68 @@
+# Regression: a class can inherit from a generic instantiation
+# (`class IntBox(Box[int])`, `class Entry(Pair[str, int])`,
+# `class Named[T](Box[T])`): the Go struct embeds `*Box[int]`, constructors
+# allocate / call `NewBox[int]`, inherited methods return the bound type and
+# virtual dispatch and field defaults keep working.
+#
+# expect: 42 1 intbox=21
+# expect: k:3:true
+# expect: nm=v v
+# expect: typed 21 sum 23
+
+class Box[T] {
+    count: int = 1
+    func init(self, value: T) {
+        self.value: T = value
+    }
+    func get(self) -> T {
+        return self.value
+    }
+    func describe(self) -> str {
+        return f"{self.label()}={self.value}"
+    }
+    func label(self) -> str {
+        return "box"
+    }
+}
+class Pair[K, V] {
+    func init(self, key: K, val: V) {
+        self.key: K = key
+        self.val: V = val
+    }
+}
+class IntBox(Box[int]) {
+    func init(self, value: int) {
+        base.init(value)
+    }
+    func label(self) -> str {
+        return "intbox"
+    }
+}
+class Entry(Pair[str, int]) {
+    func init(self, key: str, val: int) {
+        base.init(key, val)
+        self.seen: bool = true
+    }
+    func show(self) -> str {
+        return f"{self.key}:{self.val}:{self.seen}"
+    }
+}
+class Named[T](Box[T]) {
+    func init(self, name: str, value: T) {
+        base.init(value)
+        self.name: str = name
+    }
+    func label(self) -> str {
+        return self.name
+    }
+}
+func main() {
+    b: IntBox = IntBox(21)
+    print(b.get() * 2, b.count, b.describe())
+    e: Entry = Entry("k", 3)
+    print(e.show())
+    n: Named[str] = Named[str]("nm", "v")
+    print(n.describe(), n.get())
+    got: int = b.get()
+    print(f"typed {got} sum {got + e.val - 1}")
+}

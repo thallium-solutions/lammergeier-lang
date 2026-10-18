@@ -1,0 +1,164 @@
+# Test: class patterns downcast a base-typed subject to the subclass
+# (binding the narrowed value, its fields and `as` names), `as` names on a
+# base-class pattern dispatch to the overrides, and `any` subjects holding
+# a base-typed view still match the dynamic class.
+#
+# expect: square side 3 area 9
+# expect: circle r=2 area 12
+# expect: plain shape
+# expect: colored red side 4
+# expect: square side 4 area 16
+# expect: as base: circle 12
+# expect: as base: square 9
+# expect: any square 5
+# expect: any shape view: circle 3
+# expect: guard big square 36
+# expect: guard small square 1
+# expect: deep square
+# expect: optional circle 3
+# expect: optional none
+# expect: any as base: square 4
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func area(self) -> int {
+        return 0
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+
+    func area(self) -> int {
+        return 3 * self.r * self.r
+    }
+}
+
+class ColoredSquare(Square) {
+    func init(self, side: int, color: str) {
+        base.init(side)
+        self.color: str = color
+    }
+}
+
+func classify(s: Shape) -> str {
+    match s {
+        case ColoredSquare(color=c) as cs {
+            return f"colored {c} side {cs.side}"
+        }
+        case Square(side=n) as sq {
+            return f"square side {n} area {sq.area()}"
+        }
+        case Circle(r=r) {
+            return f"circle r={r} area {s.area()}"
+        }
+        case _ {
+            return f"plain {s.name}"
+        }
+    }
+}
+
+func asBase(s: Shape) -> str {
+    match s {
+        case Shape() as b {
+            return f"as base: {b.name} {b.area()}"
+        }
+    }
+    return "unreachable"
+}
+
+func anyKind(v: any) -> str {
+    match v {
+        case Square(side=n) {
+            return f"any square {n}"
+        }
+        case Circle(r=r) as c {
+            return f"any shape view: {c.name} {c.area() // r}"
+        }
+        case _ {
+            return "any other"
+        }
+    }
+}
+
+func sized(s: Shape) -> str {
+    match s {
+        case Square() as sq if sq.side > 3 {
+            return f"guard big square {sq.area()}"
+        }
+        case Square() as sq {
+            return f"guard small square {sq.area()}"
+        }
+        case _ {
+            return "guard other"
+        }
+    }
+}
+
+func anyBase(v: any) -> str {
+    match v {
+        case Shape() as b {
+            return f"any as base: {b.name} {b.area()}"
+        }
+        case _ {
+            return "not a shape"
+        }
+    }
+}
+
+func optKind(m: optional[Shape]) -> str {
+    match m {
+        case Circle() as c {
+            return f"optional {c.name} {c.area()}"
+        }
+        case _ {
+            return "optional none"
+        }
+    }
+}
+
+func main() {
+    print(classify(Square(3)))
+    print(classify(Circle(2)))
+    print(classify(Shape("shape")))
+    print(classify(ColoredSquare(4, "red")))
+    viaSquare: Square = ColoredSquare(4, "blue")
+    sq: Square = Square(4)
+    print(classify(sq))
+    print(asBase(Circle(2)))
+    print(asBase(Square(3)))
+    print(anyKind(Square(5)))
+    view: Shape = Circle(1)
+    print(anyKind(view))
+    print(sized(Square(6)))
+    print(sized(Square(1)))
+    match viaSquare {
+        case ColoredSquare() {
+            print("deep square")
+        }
+        case _ {
+            print("deep other")
+        }
+    }
+    maybe: optional[Shape] = Circle(1)
+    print(optKind(maybe))
+    print(optKind(None))
+    print(anyBase(Square(2)))
+}

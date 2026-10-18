@@ -1,0 +1,11 @@
+# expect-error: unknown type `Order`: declare a class or interface `Order` or import it
+# An undefined type inside a container annotation is reported (it failed in
+# the Go build).
+
+func total(orders: list[Order]) -> int {
+    return len(orders)
+}
+
+func main() {
+    print(total([]))
+}

@@ -1,0 +1,26 @@
+# Test: lamtest compares values, not Go representations: a `list[int]`
+# result equals an untyped list literal argument, numbers compare by
+# value (`2.0 == 2`), dicts and nested lists element-wise; different
+# lengths or values still fail.
+#
+# expect: PASS list eq
+# expect: PASS dict eq
+# expect: PASS num eq
+# expect: PASS len differs
+# expect: PASS contains
+# expect: FAIL value differs - expected [80 90 101] got [80 90 100]
+
+from lamtest import Test
+
+func scores() -> list[int] {
+    return [80, 90, 100]
+}
+
+func main() {
+    _ = Test.assertEqual(scores(), [80, 90, 100], "list eq")
+    _ = Test.assertEqual({"a": [1, 2]}, {"a": [1, 2]}, "dict eq")
+    _ = Test.assertEqual(2.0, 2, "num eq")
+    _ = Test.assertNotEqual(scores(), [80, 90], "len differs")
+    _ = Test.assertContains([1, 2, 3], 2, "contains")
+    _ = Test.assertEqual(scores(), [80, 90, 101], "value differs")
+}

@@ -1,0 +1,90 @@
+# Library module for test_stress_subtyping.lam: a shape hierarchy, an
+# error hierarchy and code that only knows the base types (optional
+# results, async measurement, typed catch). The importing
+# module adds more subclasses that must be reached from here.
+
+class ShapeError {
+    func init(self, message: str) {
+        self.message: str = message
+    }
+}
+
+class InvalidShape(ShapeError) {
+}
+
+class Shape {
+    sides: int = 0
+
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func area(self) -> int {
+        return 0
+    }
+
+    func check(self) {
+        if self.area() < 0 {
+            raise InvalidShape(f"{self.name} has a negative area")
+        }
+    }
+
+    async func measure(self) -> int {
+        return self.area() * 10
+    }
+
+    func describe(self) -> str {
+        return f"{self.name}[{self.sides}]={self.area()}"
+    }
+}
+
+class Square(Shape) {
+    sides: int = 4
+
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+func largest(shapes: list[Shape]) -> optional[Shape] {
+    best: optional[Shape] = None
+    for s in shapes {
+        if best == None {
+            best = s
+        } else {
+            if s.area() > best.area() {
+                best = s
+            }
+        }
+    }
+    return best
+}
+
+func validate(shapes: list[Shape]) -> list[str] {
+    problems: list[str] = []
+    for s in shapes {
+        try {
+            s.check()
+        } catch InvalidShape as e {
+            problems.append(f"invalid:{s.name}")
+        } catch ShapeError as e {
+            problems.append(f"error:{s.name}")
+        }
+    }
+    return problems
+}
+
+async func totalMeasure(shapes: list[Shape]) -> int {
+    total: int = 0
+    for s in shapes {
+        total += await s.measure()
+    }
+    return total
+}
+
+func main() { pass }

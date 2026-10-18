@@ -1,0 +1,20 @@
+# expect-error: class pattern `Circle()` can never match a value of type `Square`
+# Downcasting is allowed from a base type; a sibling class is still an
+# impossible pattern.
+
+class Shape {
+}
+
+class Square(Shape) {
+}
+
+class Circle(Shape) {
+}
+
+func main() {
+    s: Square = Square()
+    match s {
+        case Circle() { print("circle") }
+        case _ { print("other") }
+    }
+}

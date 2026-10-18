@@ -1,0 +1,36 @@
+# lamjson decode — parses the same payload N times. A regression
+# here is usually decoder re-allocation per call; an optimisation
+# that pools a strings.NewReader across calls would show up as
+# a measurable drop.
+#
+# ops: 50000
+
+from lamtime import Time
+from lamjson import Json
+from lamerrors import Result
+
+func resultJson(result: Result) -> json {
+    go! { return result.Value.(LamJSON) }
+}
+
+func work() {
+    src: str = "{\"user\":\"alice\",\"meta\":{\"active\":true,\"score\":42,\"tags\":[\"t0\",\"t1\",\"t2\",\"t3\",\"t4\",\"t5\"]}}"
+    total: int = 0
+    for __i in range(50000) {
+        v: json = resultJson(Json.decode(src))
+        if Json.kind(v) != "null" {
+            total = total + 1
+        }
+    }
+    if total != 50000 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH json_decode 50000 {elapsed}")
+}

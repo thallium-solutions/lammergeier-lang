@@ -1,0 +1,11 @@
+# expect-error: `limit` is used at top level before its declaration on line 7
+# Top-level statements run in file order, so a global read by a top-level
+# statement must be declared earlier in the file.
+
+print("start")
+print(limit)
+limit: int = 3
+
+func main() {
+    print(limit)
+}

@@ -1,0 +1,9 @@
+# expect-error: cannot assign `int` to `str` variable `total`
+# `reduce(initial, fn)` returns the accumulator type (`int` here).
+
+from lamiter import Iter
+
+func main() {
+    total: str = Iter.fromList([1, 2]).reduce(0, lambda acc, x: acc + x)
+    print(total)
+}

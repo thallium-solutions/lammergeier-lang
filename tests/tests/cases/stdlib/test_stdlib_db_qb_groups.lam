@@ -3,6 +3,7 @@
 # expect: basic-and-group: true
 # expect: leading-group: true
 # expect: or-group: true
+# expect: untyped-lambda-group: true
 # expect: nested-group: true
 # expect: empty-and-group: true
 # expect: empty-or-group: true
@@ -78,6 +79,13 @@ func main() {
         db.table("items").whereEq("a", 1).orWhereGroup(lambda (group: QueryBuilder): group.whereEq("b", 2).orWhereEq("b", 3)).toSql(),
         "SELECT * FROM items WHERE a = ? OR (b = ? OR b = ?)",
         [1, 2, 3],
+    )
+
+    assertPlan(
+        "untyped-lambda-group",
+        db.table("items").whereGroup(lambda q: q.whereEq("country", "IT").orWhereEq("country", "FR")).toSql(),
+        "SELECT * FROM items WHERE (country = ? OR country = ?)",
+        ["IT", "FR"],
     )
 
     assertPlan(

@@ -1,0 +1,279 @@
+# Real-world composition: an ephemeral TCP/TLS/UDP edge, typed HTTP server
+# requests, and a SQLite QueryBuilder/transaction-backed work queue.
+# expect: PASS 1 tcp listener uses an ephemeral port
+# expect: PASS 2 tcp request round trip succeeds
+# expect: PASS 3 tcp receive timeout is an error
+# expect: PASS 4 tcp rejects a negative dial timeout
+# expect: PASS 5 udp listener uses an ephemeral port
+# expect: PASS 6 udp server receives payload and sender
+# expect: PASS 7 udp response round trip succeeds
+# expect: PASS 8 udp receive timeout is an error
+# expect: PASS 9 closed udp socket rejects receive and send
+# expect: PASS 10 self signed tls fixture is generated
+# expect: PASS 11 tls listener uses an ephemeral port
+# expect: PASS 12 tls verification failure is surfaced
+# expect: PASS 13 tls request round trip succeeds
+# expect: PASS 14 tls rejects a negative dial timeout
+# expect: PASS 15 http server exposes its ephemeral port
+# expect: PASS 16 typed http options reach the server
+# expect: PASS 17 fluent http builder sends its body
+# expect: PASS 18 closed http server rejects requests
+# expect: PASS 19 repeated http close is an error
+# expect: PASS 20 grouped query selects the intended work
+# expect: PASS 21 grouped transaction update commits atomically
+# expect: PASS 22 explicit transaction rollback discards work
+# expect: PASS 23 failed transaction rolls back prior writes
+# expect: PASS 24 query builder surfaces sql failures
+# expect: PASS 25 closed database rejects new transactions
+# expect: 25 passed, 0 failed, 25 total
+
+from lamdb import Db, QueryBuilder, Tx
+from lamerrors import Result
+from lamhttp import Http, HttpClient, HttpRequestOptions, HttpResponse, HttpServer
+from lamnet import Net, TcpConn, TcpListener, UdpConn, UdpPacket
+from lamos import Os
+from lamtest import Test
+from lamtime import Time
+
+go! {
+    import (
+        "crypto/rand"
+        "crypto/rsa"
+        "crypto/x509"
+        "crypto/x509/pkix"
+        "encoding/pem"
+        "math/big"
+        "net"
+        "os"
+        "time"
+    )
+}
+
+func resultDb(result: Result) -> Db {
+    go! { return result.Value.(*Db) }
+}
+
+func resultRows(result: Result) -> list[dict[str, any]] {
+    go! { return result.Value.([]map[string]interface{}) }
+}
+
+func rowInt(row: dict[str, any], key: str) -> int {
+    go! {
+        switch value := row[key].(type) {
+        case int:
+            return value
+        case int64:
+            return int(value)
+        default:
+            return 0
+        }
+    }
+}
+
+func resultInt(result: Result) -> int {
+    go! { return result.Value.(int) }
+}
+
+func resultBool(result: Result) -> bool {
+    go! { return result.Value.(bool) }
+}
+
+func resultString(result: Result) -> str {
+    go! { return result.Value.(string) }
+}
+
+func resultTcpListener(result: Result) -> TcpListener {
+    go! { return result.Value.(*TcpListener) }
+}
+
+func resultTcpConn(result: Result) -> TcpConn {
+    go! { return result.Value.(*TcpConn) }
+}
+
+func resultUdpConn(result: Result) -> UdpConn {
+    go! { return result.Value.(*UdpConn) }
+}
+
+func resultUdpPacket(result: Result) -> UdpPacket {
+    go! { return result.Value.(*UdpPacket) }
+}
+
+func resultHttpServer(result: Result) -> HttpServer {
+    go! { return result.Value.(*HttpServer) }
+}
+
+func resultHttpResponse(result: Result) -> HttpResponse {
+    go! { return result.Value.(*HttpResponse) }
+}
+
+func writeTlsFixture(certPath: str, keyPath: str) -> bool {
+    go! {
+        key, err := rsa.GenerateKey(rand.Reader, 2048)
+        if err != nil { return false }
+        template := &x509.Certificate{
+            SerialNumber: big.NewInt(1),
+            Subject: pkix.Name{CommonName: "localhost"},
+            NotBefore: time.Now().Add(-time.Minute),
+            NotAfter: time.Now().Add(time.Hour),
+            KeyUsage: x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+            ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+            DNSNames: []string{"localhost"},
+            IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+            BasicConstraintsValid: true,
+        }
+        der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+        if err != nil { return false }
+        certBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+        keyBytes := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+        if err = os.WriteFile(certPath, certBytes, 0600); err != nil { return false }
+        if err = os.WriteFile(keyPath, keyBytes, 0600); err != nil { return false }
+        return true
+    }
+}
+
+func httpHandler(method: str, path: str, body: str) -> str {
+    if path == "/health" {
+        return method + ":healthy"
+    }
+    if path == "/work" {
+        return method + ":" + body
+    }
+    return "missing"
+}
+
+func main() {
+    tcpListener: TcpListener = resultTcpListener(Net.listenTcp(0))
+    tcpPort: int = resultInt(tcpListener.port())
+    Test.assertTrue(tcpPort > 0, "1 tcp listener uses an ephemeral port")
+    go! {
+        go func() {
+            first := tcpListener.Accept(1000)
+            if first.Error == nil {
+                server := first.Value.(*TcpConn)
+                request := server.ReadLine(500)
+                if request.Error == nil {
+                    server.Send("tcp:" + request.Value.(string), 500)
+                }
+                server.Close()
+            }
+            second := tcpListener.Accept(1000)
+            if second.Error == nil {
+                server := second.Value.(*TcpConn)
+                time.Sleep(80 * time.Millisecond)
+                server.Close()
+            }
+        }()
+    }
+    tcpClient: TcpConn = resultTcpConn(Net.dialTcp("127.0.0.1", tcpPort, 1000))
+    tcpClient.send("ping\n", 500).unwrap()
+    Test.assertEqual(resultString(tcpClient.receive(64, 500)), "tcp:ping", "2 tcp request round trip succeeds")
+    tcpClient.close().unwrap()
+    waitingClient: TcpConn = resultTcpConn(Net.dialTcp("127.0.0.1", tcpPort, 1000))
+    Test.assertFalse(waitingClient.receive(64, 20).ok(), "3 tcp receive timeout is an error")
+    waitingClient.close().unwrap()
+    Test.assertFalse(Net.dialTcp("127.0.0.1", tcpPort, -1).ok(), "4 tcp rejects a negative dial timeout")
+    Time.sleepMs(100)
+    tcpListener.close().unwrap()
+
+    udpServer: UdpConn = resultUdpConn(Net.listenUdp(0))
+    udpPort: int = resultInt(udpServer.port())
+    Test.assertTrue(udpPort > 0, "5 udp listener uses an ephemeral port")
+    udpClient: UdpConn = resultUdpConn(Net.dialUdp("127.0.0.1", udpPort, 500))
+    udpClient.send("event", 500).unwrap()
+    packet: UdpPacket = resultUdpPacket(udpServer.receiveFrom(64, 500))
+    Test.assertTrue(packet.data == "event" and len(packet.address) > 0, "6 udp server receives payload and sender")
+    udpServer.sendTo("accepted", packet.address, 500).unwrap()
+    Test.assertEqual(resultString(udpClient.receive(64, 500)), "accepted", "7 udp response round trip succeeds")
+    Test.assertFalse(udpServer.receiveFrom(64, 20).ok(), "8 udp receive timeout is an error")
+    udpClient.close().unwrap()
+    udpServer.close().unwrap()
+    Test.assertTrue(
+        not udpServer.receiveFrom(64, 20).ok() and
+        not udpServer.sendTo("closed", packet.address, 20).ok(),
+        "9 closed udp socket rejects receive and send",
+    )
+
+    certPath: str = resultString(Os.tempFile("lam_service_cert_", ".pem"))
+    keyPath: str = resultString(Os.tempFile("lam_service_key_", ".pem"))
+    Test.assertTrue(writeTlsFixture(certPath, keyPath), "10 self signed tls fixture is generated")
+    tlsListener: TcpListener = resultTcpListener(Net.listenTls(0, certPath, keyPath))
+    tlsPort: int = resultInt(tlsListener.port())
+    Test.assertTrue(tlsPort > 0, "11 tls listener uses an ephemeral port")
+    go! {
+        go func() {
+            for attempt := 0; attempt < 2; attempt++ {
+                accepted := tlsListener.Accept(1500)
+                if accepted.Error != nil { continue }
+                server := accepted.Value.(*TcpConn)
+                request := server.ReadLine(500)
+                if request.Error == nil {
+                    server.Send("tls:" + request.Value.(string), 500)
+                }
+                server.Close()
+            }
+        }()
+    }
+    Test.assertFalse(Net.dialTls("127.0.0.1", tlsPort, 1000, false).ok(), "12 tls verification failure is surfaced")
+    tlsClient: TcpConn = resultTcpConn(Net.dialTls("127.0.0.1", tlsPort, 1000, true))
+    tlsClient.send("secure\n", 500).unwrap()
+    Test.assertEqual(resultString(tlsClient.receive(64, 500)), "tls:secure", "13 tls request round trip succeeds")
+    tlsClient.close().unwrap()
+    Test.assertFalse(Net.dialTls("127.0.0.1", tlsPort, -1, true).ok(), "14 tls rejects a negative dial timeout")
+    tlsListener.close().unwrap()
+    Os.remove(certPath).unwrap()
+    Os.remove(keyPath).unwrap()
+
+    httpServer: HttpServer = resultHttpServer(Http.serve(0, httpHandler))
+    httpPort: int = resultInt(httpServer.port())
+    Test.assertTrue(httpPort > 0, "15 http server exposes its ephemeral port")
+    baseUrl: str = f"http://127.0.0.1:{httpPort}"
+    httpClient: HttpClient = HttpClient(baseUrl, 1000)
+    options: HttpRequestOptions = HttpRequestOptions()
+    options.header("X-Request-Id", "job-7").query("source", "edge").timeout(500)
+    optionResponse: HttpResponse = resultHttpResponse(httpClient.request("GET", "/health", options))
+    Test.assertTrue(optionResponse.status == 200 and optionResponse.body == "GET:healthy", "16 typed http options reach the server")
+    builtResponse: HttpResponse = resultHttpResponse(httpClient.build("POST", "/work").header("X-Request-Id", "job-8").query("attempt", "1").timeout(500).text("payload", "text/plain").send())
+    Test.assertEqual(builtResponse.body, "POST:payload", "17 fluent http builder sends its body")
+    httpServer.close().unwrap()
+    Test.assertFalse(Http.get(baseUrl + "/health").ok(), "18 closed http server rejects requests")
+    Test.assertFalse(httpServer.close().ok(), "19 repeated http close is an error")
+
+    db: Db = resultDb(Db.connect("sqlite", ":memory:"))
+    db.exec("CREATE TABLE work_items (id INTEGER PRIMARY KEY, state TEXT NOT NULL, priority INTEGER NOT NULL)").unwrap()
+    db.exec("INSERT INTO work_items (id, state, priority) VALUES (?, ?, ?)", [1, "queued", 9]).unwrap()
+    db.exec("INSERT INTO work_items (id, state, priority) VALUES (?, ?, ?)", [2, "queued", 2]).unwrap()
+    db.exec("INSERT INTO work_items (id, state, priority) VALUES (?, ?, ?)", [3, "held", 10]).unwrap()
+    db.exec("INSERT INTO work_items (id, state, priority) VALUES (?, ?, ?)", [4, "queued", 1]).unwrap()
+
+    selected: list[dict[str, any]] = resultRows(db.table("work_items").whereEq("state", "queued").whereGroup(lambda (group: QueryBuilder): group.whereRaw("priority >= ?", [5]).orWhereEq("id", 2)).orderBy("id").get())
+    Test.assertTrue(len(selected) == 2 and rowInt(selected[0], "id") == 1 and rowInt(selected[1], "id") == 2, "20 grouped query selects the intended work")
+
+    func claimWork(tx: Tx) -> Result[bool] {
+        _ = tx.table("work_items").whereEq("state", "queued").whereGroup(lambda (group: QueryBuilder): group.whereRaw("priority >= ?", [5]).orWhereEq("id", 2)).update({"state": "running"})?
+        return Result.Ok(true)
+    }
+    db.transaction(claimWork).unwrap()
+    running: int = resultInt(db.table("work_items").whereEq("state", "running").count())
+    Test.assertEqual(running, 2, "21 grouped transaction update commits atomically")
+
+    func discardWork(tx: Tx) -> Result[bool] {
+        _ = tx.exec("INSERT INTO work_items (id, state, priority) VALUES (?, ?, ?)", [5, "queued", 99])?
+        _ = tx.rollback()?
+        return Result.Ok(true)
+    }
+    rolledBack: Result[bool] = db.transaction(discardWork)
+    Test.assertTrue(rolledBack.ok() and not resultBool(rolledBack) and resultInt(db.table("work_items").count()) == 4, "22 explicit transaction rollback discards work")
+
+    func brokenWork(tx: Tx) -> Result[bool] {
+        _ = tx.exec("INSERT INTO work_items (id, state, priority) VALUES (?, ?, ?)", [6, "queued", 99])?
+        _ = tx.exec("INSERT INTO missing_work_table VALUES (1)")?
+        return Result.Ok(true)
+    }
+    broken: Result[bool] = db.transaction(brokenWork)
+    Test.assertTrue(not broken.ok() and resultInt(db.table("work_items").whereEq("id", 6).count()) == 0, "23 failed transaction rolls back prior writes")
+    Test.assertFalse(db.table("missing_work_table").whereGroup(lambda (group: QueryBuilder): group.whereEq("id", 1).orWhereEq("id", 2)).get().ok(), "24 query builder surfaces sql failures")
+    db.close().unwrap()
+    Test.assertFalse(db.begin().ok(), "25 closed database rejects new transactions")
+
+    Test.summary()
+}

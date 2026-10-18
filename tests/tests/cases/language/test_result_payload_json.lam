@@ -1,0 +1,41 @@
+# Regression (report 4.4): the payload of a typed Result local is known in
+# JSON contexts (`body: json = r.unwrap()`, `{"bytes": c.unwrap()}`) and a
+# method result such as `r.ok()` is a bool.
+#
+# expect: ada
+# expect: {"bytes":3}
+# expect: {"ok":true}
+# expect: {"name":"ada","size":3}
+
+from lamerrors import Result
+from lamjson import Json
+
+func load() -> Result[json] {
+    return Result.Ok({"name": "ada"})
+}
+
+func count() -> Result[int] {
+    return Result.Ok(3)
+}
+
+class Holder {
+    func init(self, r: Result[int]) {
+        self.r: Result[int] = r
+    }
+}
+
+func main() {
+    r: Result[json] = load()
+    body: json = r.unwrap()
+    name: str = body.name
+    print(name)
+    c: Result[int] = count()
+    payload: json = {"bytes": c.unwrap()}
+    print(Json.encode(payload).unwrap())
+    sid: Result[str] = Result.Ok("s1")
+    status: json = {"ok": sid.ok()}
+    print(Json.encode(status).unwrap())
+    h: Holder = Holder(count())
+    combined: json = {"name": r.unwrap().name, "size": h.r.unwrap()}
+    print(Json.encode(combined).unwrap())
+}

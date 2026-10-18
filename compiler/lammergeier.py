@@ -63,6 +63,7 @@ from compiler.preprocessor import (
     LAMMERGEIER_ALIASES,
 )
 from compiler import cache as _lamcache
+from compiler.visitors.subtyping import resolve_inherited_init_metadata as _resolve_inherited_init_metadata
 from compiler.link_symbols import find_symbol_clashes, render_symbol_clashes
 from compiler import namespacing as _namespacing
 from compiler.modules import WorkspaceIndex
@@ -226,6 +227,12 @@ def auto_semicolons(source: str) -> str:
             result.append(rewritten)
             continue
 
+        # ``ok = a and\n    b`` — a trailing boolean operator keyword
+        # continues the expression on the next line, like a trailing ``+``.
+        if _TRAILING_BOOL_OP_RE.search(code):
+            result.append(rewritten)
+            continue
+
         # ``a ??\n    b`` — null-coalesce split across lines. We need
         # to keep the trailing ``?`` from being treated as the
         # propagate-operator (which IS a complete expression suffix).
@@ -264,7 +271,8 @@ def auto_semicolons(source: str) -> str:
                                    '+=', '-=', '*=', '/=', '%=', '**', '//',
                                    '<<', '>>')
                         or one in ('.', '+', '-', '*', '/', '%', '<',
-                                   '>', '&', '|', '^', '?', ':')):
+                                   '>', '&', '|', '^', '?', ':')
+                        or _LEADING_BOOL_OP_RE.match(nxt_code)):
                     # Don't override block-closer logic below — a lone
                     # `}` line still needs to handle its literal/block
                     # distinction. For everything else, skip the
@@ -299,6 +307,9 @@ def auto_semicolons(source: str) -> str:
     return '\n'.join(result)
 
 
+_TRAILING_BOOL_OP_RE = _re.compile(r"(?:^|[^\w.])(?:and|or|not)$")
+_LEADING_BOOL_OP_RE = _re.compile(r"(?:and|or)\b")
+
 _BRACE_LITERAL_PRECEDERS = set("=,([:+-*/%<>!&|^~?")
 
 # Lam keywords that introduce an expression context — a ``{`` that
@@ -309,6 +320,8 @@ _BRACE_LITERAL_PRECEDERS = set("=,([:+-*/%<>!&|^~?")
 _BRACE_LITERAL_KEYWORDS = frozenset({
     "return", "yield", "raise", "throw", "await", "in", "and", "or",
     "not", "is",
+    # ``case {"kind": k} { ... }``: the first brace is a mapping pattern.
+    "case",
 })
 
 
@@ -343,7 +356,12 @@ def _classify_brace_open(prev_meaningful: str, prefix: str) -> str:
     last_word = prefix[j + 1:end]
     if last_word in _BRACE_LITERAL_KEYWORDS:
         return "literal"
-    if last_word == "else" and _else_in_conditional_expression(prefix):
+    if (
+        last_word == "else"
+        and not prefix[:j + 1].rstrip().endswith("}")
+        and _else_in_conditional_expression(prefix)
+    ):
+        # (``} else {`` always continues an if statement.)
         return "literal"
     if _prefix_opens_lambda_block(prefix):
         return "lambda_block"
@@ -376,8 +394,10 @@ _LAMBDA_BLOCK_HEAD_RE = _re.compile(
     # Optional return-type annotation: ``-> Type`` where ``Type`` is
     # any non-whitespace, non-brace text (handles ``int``, ``list[int]``,
     # ``dict[str, any]`` even though they contain commas — we keep
-    # eating until whitespace or ``{``).
-    r"(?:\s*->\s*[^\s{][^{]*?)?"
+    # eating until whitespace or ``{``). A ``:`` never appears in a type,
+    # so ``lambda (a: int) -> bool: a > 0) {`` (an expression lambda
+    # inside an ``if`` condition) is not mistaken for a block lambda.
+    r"(?:\s*->\s*[^\s{:][^{:]*?)?"
     r"\s*$"
 )
 
@@ -468,6 +488,9 @@ def _collapse_runaway_semicolons(source: str) -> str:
     return "".join(out)
 
 
+_INTERFACE_HEAD_RE = _re.compile(r"(?:^|[\s;])interface\s+\w+\s*$")
+
+
 def _fill_empty_blocks(source: str) -> str:
     """Insert ``pass;`` into block bodies that contain only whitespace.
 
@@ -536,24 +559,24 @@ def _fill_empty_blocks(source: str) -> str:
             continue
 
         if ch == '{':
-            kind = _classify_brace_open(prev_meaningful, "".join(out))
+            prefix = "".join(out)
+            kind = _classify_brace_open(prev_meaningful, prefix)
+            if kind == "block" and _INTERFACE_HEAD_RE.search(prefix):
+                # ``interface Marker { }`` declares no methods; its body is
+                # not a statement suite, so it must stay empty.
+                kind = "interface"
             out.append(ch)
-            # Record offset of the position right after this `{`.
-            stack.append([len("".join(out)), kind, False])
+            # Record the buffer index right after this `{`.
+            stack.append([len(out), kind, False])
         elif ch == '}':
             if stack:
-                _, kind, has_content = stack.pop()
+                open_index, kind, has_content = stack.pop()
                 if kind == "block" and not has_content:
-                    # Strip trailing whitespace from the buffer so the
-                    # injected ``pass;`` lands on the same line as the
-                    # opening ``{`` (the auto-semicolon pass has
-                    # already run, so we don't need to add another).
-                    trail = ""
-                    while out and out[-1] in " \t\r\n":
-                        trail = out.pop() + trail
-                    out.append(" pass;")
-                    if trail:
-                        out.append(trail)
+                    # Inject ``pass;`` right after the opening ``{`` so it
+                    # stays on that line and can't land inside a trailing
+                    # comment of a comment-only body (the auto-semicolon
+                    # pass has already run, so no extra ``;`` is needed).
+                    out.insert(open_index, " pass;")
             out.append(ch)
         else:
             out.append(ch)
@@ -667,6 +690,10 @@ def _inline_block_semicolons(code: str) -> str:
             out.append(ch)
             if kind == "literal" and stack:
                 stack[-1] = (stack[-1][0], "x")
+            elif stack:
+                # A nested block just closed (``class A { func f() { ... } }``):
+                # the enclosing block needs no ``;`` before its own ``}``.
+                stack[-1] = (stack[-1][0], "}")
         else:
             out.append(ch)
 
@@ -1083,10 +1110,18 @@ def create_parser() -> Lark:
 
 
 def _collapse_multiline_strings(source: str) -> str:
-    """Replace multiline triple-quoted strings with single-line equivalents."""
+    """Replace multiline triple-quoted strings with single-line equivalents.
+
+    The newlines a collapsed string swallowed are re-emitted after the end
+    of the physical line holding it, so every later line keeps its number.
+    """
     result = []
+    pending_newlines = 0
     i = 0
     while i < len(source):
+        if source[i] == "\n" and pending_newlines:
+            result.append("\n" * pending_newlines)
+            pending_newlines = 0
         # Check for triple-quote delimiters
         matched = False
         for delim in ('f"""', "f'''", '"""', "'''"):
@@ -1109,12 +1144,15 @@ def _collapse_multiline_strings(source: str) -> str:
                     content = content.replace('\n', '\\n')
                     content = content.replace(sq, '\\' + sq)
                     result.append(f'{prefix}{sq}{content}{sq}')
+                    pending_newlines += source[i:end].count('\n')
                 i = end + 3
                 matched = True
                 break
         if not matched:
             result.append(source[i])
             i += 1
+    if pending_newlines:
+        result.append("\n" * pending_newlines)
     return ''.join(result)
 
 
@@ -1137,6 +1175,11 @@ def _expand_single_statement_blocks(source: str) -> str:
     """
     lines = source.split('\n')
     result = []
+    # Brackets still open from previous lines: when the innermost one is
+    # ``(`` / ``[`` the line continues a multi-line expression, so a line
+    # starting with ``else`` / ``if`` belongs to a conditional expression
+    # and is not a statement (a ``{`` block, e.g. a lambda body, resets).
+    open_brackets: list[str] = []
     
     for line in lines:
         stripped = line.rstrip()
@@ -1146,18 +1189,34 @@ def _expand_single_statement_blocks(source: str) -> str:
         
         code = stripped.lstrip()
         indent = stripped[:len(stripped) - len(code)]
+        in_expression = bool(open_brackets) and open_brackets[-1] in '(['
+        _track_open_brackets(_strip_inline_comment(code), open_brackets)
         
         # Check if this is a block keyword line that doesn't use braces
         first_word = code.split()[0] if code.split() else ""
         
-        if first_word not in _BLOCK_KEYWORDS:
+        if first_word not in _BLOCK_KEYWORDS or in_expression:
             result.append(stripped)
             continue
         
+        # A trailing ``# comment`` must not hide the closing brace of an
+        # inline block (``if ok { f() }  # note``).
+        code = _strip_inline_comment(code).rstrip()
+
         # Skip if line already ends with { or } or : (legacy go!) 
         if code.endswith('{') or code.endswith('}') or code.endswith(':'):
             result.append(stripped)
             continue
+
+        if first_word == 'if':
+            chain = _split_compact_if_chain(code)
+            if chain is not None:
+                # ``if c a = 1 elif d a = 2 else a = 3`` on one line: keep
+                # it on one line so later line numbers do not shift.
+                result.append(indent + ' '.join(
+                    f'{head} {{ {body} }}' for head, body in chain
+                ))
+                continue
         
         # Now determine where the condition ends and the statement begins
         # For 'else': everything after 'else' is the statement
@@ -1168,9 +1227,8 @@ def _expand_single_statement_blocks(source: str) -> str:
         if first_word == 'else':
             rest = code[4:].strip()
             if rest and rest != '{':
-                result.append(f'{indent}else {{')
-                result.append(f'{indent}    {rest}')
-                result.append(f'{indent}}}')
+                # One line, so later line numbers do not shift.
+                result.append(f'{indent}else {{ {rest} }}')
                 continue
         
         elif first_word == 'if' or first_word == 'elif':
@@ -1182,9 +1240,7 @@ def _expand_single_statement_blocks(source: str) -> str:
             if stmt_start is not None:
                 cond = cond_and_body[:stmt_start].strip()
                 body = cond_and_body[stmt_start:].strip()
-                result.append(f'{indent}{first_word} {cond} {{')
-                result.append(f'{indent}    {body}')
-                result.append(f'{indent}}}')
+                result.append(f'{indent}{first_word} {cond} {{ {body} }}')
                 continue
         
         elif first_word == 'while':
@@ -1193,9 +1249,7 @@ def _expand_single_statement_blocks(source: str) -> str:
             if stmt_start is not None:
                 cond = cond_and_body[:stmt_start].strip()
                 body = cond_and_body[stmt_start:].strip()
-                result.append(f'{indent}while {cond} {{')
-                result.append(f'{indent}    {body}')
-                result.append(f'{indent}}}')
+                result.append(f'{indent}while {cond} {{ {body} }}')
                 continue
         
         elif first_word == 'for':
@@ -1208,9 +1262,7 @@ def _expand_single_statement_blocks(source: str) -> str:
                     expr = after_in[:stmt_start].strip()
                     body = after_in[stmt_start:].strip()
                     var_part = code[3:in_idx].strip()
-                    result.append(f'{indent}for {var_part} in {expr} {{')
-                    result.append(f'{indent}    {body}')
-                    result.append(f'{indent}}}')
+                    result.append(f'{indent}for {var_part} in {expr} {{ {body} }}')
                     continue
         
         result.append(stripped)
@@ -1218,7 +1270,98 @@ def _expand_single_statement_blocks(source: str) -> str:
     return '\n'.join(result)
 
 
+def _track_open_brackets(code: str, stack: list[str]) -> None:
+    """Push/pop the brackets of ``code`` (outside strings) onto ``stack``."""
+    in_str = None
+    for i, c in enumerate(code):
+        if in_str:
+            if c == in_str and not _is_escaped(code, i):
+                in_str = None
+            continue
+        if c in ('"', "'"):
+            in_str = c
+        elif c in '([{':
+            stack.append(c)
+        elif c in ')]}' and stack:
+            stack.pop()
+
+
 _STMT_STARTERS = {'print', 'return', 'break', 'continue', 'pass', 'yield', 'del', 'assert', 'raise'}
+
+
+def _split_top_level_words(text: str) -> list[tuple[int, str]]:
+    """``(offset, word)`` for every identifier outside strings/brackets."""
+    words = []
+    i = 0
+    depth = 0
+    in_str = None
+    while i < len(text):
+        c = text[i]
+        if in_str:
+            if c == in_str and not _is_escaped(text, i):
+                in_str = None
+            i += 1
+            continue
+        if c in ('"', "'"):
+            in_str = c
+        elif c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+        elif depth == 0 and (c.isalpha() or c == '_') and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == '_')):
+            j = i
+            while j < len(text) and (text[j].isalnum() or text[j] == '_'):
+                j += 1
+            words.append((i, text[i:j]))
+            i = j
+            continue
+        i += 1
+    return words
+
+
+def _split_compact_if_chain(code: str) -> list[tuple[str, str]] | None:
+    """Split ``if c s1 elif d s2 else s3`` (all on one line) into
+    ``[("if c", "s1"), ("elif d", "s2"), ("else", "s3")]``.
+
+    Returns ``None`` unless the line holds at least one top-level ``elif``
+    / ``else`` clause after the first statement. An ``else`` that closes
+    a conditional expression (``a = x if ok else y``) stays in its body.
+    """
+    words = _split_top_level_words(code)
+    cuts = []
+    ternary_ifs = 0
+    for offset, word in words[1:]:
+        if word == 'if':
+            ternary_ifs += 1
+        elif word == 'else' and ternary_ifs:
+            ternary_ifs -= 1
+        elif word in ('elif', 'else'):
+            cuts.append(offset)
+            ternary_ifs = 0
+    if not cuts:
+        return None
+    segments = []
+    bounds = [0] + cuts + [len(code)]
+    for start, end in zip(bounds, bounds[1:]):
+        segment = code[start:end].strip()
+        keyword = segment.split()[0]
+        rest = segment[len(keyword):].strip()
+        if keyword == 'else':
+            if not rest:
+                return None
+            segments.append(('else', rest))
+            continue
+        stmt_start = _find_statement_start(rest)
+        if stmt_start is None:
+            return None
+        cond = rest[:stmt_start].strip()
+        body = rest[stmt_start:].strip()
+        if not cond or not body:
+            return None
+        segments.append((f'{keyword} {cond}', body))
+    if any(head == 'else' for head, _ in segments[:-1]):
+        return None
+    return segments
 
 def _find_statement_start(text: str) -> int | None:
     """Find where a statement begins in text (after a condition).
@@ -1470,6 +1613,60 @@ def _collect_go_pins(
             if isinstance(path, str) and isinstance(ver, str):
                 pins[path] = ver  # lockfile wins
     return pins
+
+
+def _module_init_name(mod_name: str) -> str:
+    """Go name of the function running a library module's top-level
+    statements: readable and unique per canonical module name."""
+    import hashlib
+    safe = _re.sub(r"[^0-9A-Za-z_]", "_", mod_name).strip("_") or "mod"
+    digest = hashlib.sha256(mod_name.encode("utf-8")).hexdigest()[:8]
+    return f"lamModuleInit_{safe}_{digest}"
+
+
+def _module_init_calls(
+    transpiler,
+    main_path: Path,
+    main_imports: list,
+    module_import_files: dict,
+    lib_names_by_path: dict,
+    lib_sources: dict,
+) -> str:
+    """``func init()`` running every module's top-level statements.
+
+    Modules initialize in dependency order — a depth-first walk of the
+    import graph from the main file, following imports in source order, so
+    a module's imports (transitively) run before it — each module once,
+    the main file last. Only modules that have top-level statements
+    contribute a call. Returns ``""`` when none has.
+    """
+    order: list[str] = []
+    visited: set = set()
+
+    def visit(path, imports) -> None:
+        if path in visited:
+            return
+        visited.add(path)
+        for dep in imports:
+            visit(dep, module_import_files.get(dep, []))
+        if path == main_path:
+            if getattr(transpiler, "_has_module_init", False):
+                order.append(transpiler._module_init_name)
+            return
+        name = lib_names_by_path.get(path)
+        if name is None:
+            return
+        init_name = _module_init_name(name)
+        if f"func {init_name}() {{" in lib_sources.get(name, ""):
+            order.append(init_name)
+
+    visit(main_path, main_imports)
+    if not order:
+        return ""
+    lines = ["", "// Top-level statements of every module, in import order.", "func init() {"]
+    lines.extend(f"\t{name}()" for name in order)
+    lines.append("}")
+    return "\n".join(lines) + "\n"
 
 
 def _library_go_filename(mod_name: str) -> str:
@@ -1749,6 +1946,11 @@ def compile_lam(
                     str(token) == "json"
                     for token in callee.scan_values(lambda value: isinstance(value, Token))
                 )
+        if node.data == "class_pattern" and node.children:
+            # ``case json(j)`` asserts the LamJSON runtime type.
+            callee = node.children[0]
+            if isinstance(callee, Tree) and [str(c) for c in callee.children] == ["json"]:
+                return True
         return any(_uses_native_json(child) for child in node.children if isinstance(child, Tree))
 
     _direct_import_sites = _extract_import_sites(tree)
@@ -2013,6 +2215,8 @@ def compile_lam(
     lib_pre_func_param_go_types: dict = {}
     lib_pre_func_return_go_types: dict = {}
     lib_pre_func_generic_params: dict[str, set[str]] = {}
+    lib_pre_generic_instance_methods: dict[str, list[str]] = {}
+    lib_pre_generic_method_returns: dict[str, str] = {}
     lib_pre_generator_functions: set[str] = set()
     lib_pre_overload_variants: dict[str, list[dict]] = {}
     lib_pre_user_functions: set[str] = set()
@@ -2022,12 +2226,23 @@ def compile_lam(
     lib_pre_private_classes: set[str] = set()
     lib_pre_field_names: dict[str, set[str]] = {}
     lib_pre_field_types: dict[str, dict[str, str]] = {}
+    # Program-wide class hierarchy (see compiler/visitors/subtyping.py).
+    lib_pre_class_bases: dict[str, list[str]] = {}
+    lib_pre_method_sigkeys: dict[str, dict] = {}
+    lib_pre_own_init: set[str] = set()
+    lib_pre_class_type_params: dict[str, list[str]] = {}
+    # Imported generic classes (``class Bag[T]``) -> Go type-parameter clause.
+    lib_pre_generic_classes: dict[str, str] = {}
+    lib_module_classes: dict[Path, set[str]] = {}
     # Per-module trees/symbols and metadata for module namespacing.
     ns_modules: dict[Path, _namespacing.ModuleInfo] = {}
     ns_meta_sources: dict[Path, object] = {}
     seen: set[str] = set()
     seen_module_files: set[Path] = set()
     worklist: list[tuple[str, Path]] = [(mod, source_file) for mod in _pre_transpiler._lam_imports]
+    # Import graph (module file -> imported module files, in source order)
+    # for the top-level statement initialization order.
+    module_import_files: dict[Path, list[Path]] = {}
     while worklist:
         mod_name, from_file = worklist.pop()
         mod_file = _resolve_lib_path(mod_name, from_file)
@@ -2059,12 +2274,16 @@ def compile_lam(
             sub_tree = sub_parser.parse(sub_pre + "\n")
         except Exception:
             continue
+        module_import_files[mod_file] = []
         for imp in _extract_imports(sub_tree):
             # Relative names are meaningful only together with ``mod_file``;
             # two packages may both have a ``.impl`` without referring to the
             # same source. Physical-path de-duplication happens at the top of
             # the worklist loop after resolution.
             worklist.append((imp, mod_file))
+            resolved_import = _resolve_lib_path(imp, mod_file)
+            if resolved_import is not None:
+                module_import_files[mod_file].append(resolved_import.resolve())
         if (
             mod_name != "lamjson"
             and _uses_native_json(sub_tree)
@@ -2160,6 +2379,10 @@ def compile_lam(
             lib_pre_func_return_go_types.update(sub_collector._func_return_go_types)
             for key, names in sub_collector._func_generic_params.items():
                 lib_pre_func_generic_params.setdefault(key, set()).update(names)
+            for key, names in sub_collector._generic_instance_methods.items():
+                lib_pre_generic_instance_methods.setdefault(key, list(names))
+            for key, ret in sub_collector._generic_method_returns.items():
+                lib_pre_generic_method_returns.setdefault(key, ret)
             lib_pre_generator_functions.update(sub_collector._generator_functions)
             for key, variants in sub_collector._overload_variants.items():
                 lib_pre_overload_variants.setdefault(key, []).extend(variants)
@@ -2172,10 +2395,93 @@ def compile_lam(
             for cls, fields in sub_collector.class_fields.items():
                 lib_pre_field_names.setdefault(cls, set()).update(name for name, _go_type in fields)
                 lib_pre_field_types.setdefault(cls, {}).update(dict(fields))
+            for cls, bases in sub_collector.class_bases.items():
+                lib_pre_class_bases[cls] = [base for base in bases if base]
+            for cls, sigkeys in sub_collector._class_method_sigkeys.items():
+                lib_pre_method_sigkeys[cls] = dict(sigkeys)
+            lib_pre_own_init.update(sub_collector._class_own_init)
+            lib_pre_class_type_params.update(sub_collector._class_type_param_names)
+            for cls, clause in sub_collector._generic_classes.items():
+                if clause:
+                    lib_pre_generic_classes.setdefault(cls, clause)
+            lib_module_classes[mod_file] = set(sub_collector.class_bases)
         except Exception:
             # Pre-scan is best-effort; downstream transpile will
             # surface real errors with full positional diagnostics.
             pass
+
+    # The whole program's class hierarchy: library classes plus the main
+    # file's. Classes without ``init`` inherit the nearest ancestor's
+    # constructor metadata (generic type arguments are substituted by the
+    # module declaring the subclass).
+    program_class_bases: dict[str, list[str]] = dict(lib_pre_class_bases)
+    program_method_sigkeys: dict[str, dict] = dict(lib_pre_method_sigkeys)
+    program_own_init: set[str] = set(lib_pre_own_init)
+    # The main file's classes, with its bases spelled like the libraries'
+    # (namespaced) classes: ``class Sub(t.Config)`` names ``Config__two``.
+    _main_hier_source = _pre_transpiler
+    _main_hier_plan = ns_plans.get(main_module_path)
+    if _main_hier_plan is not None and not _main_hier_plan.is_empty():
+        try:
+            import copy as _copy
+            _main_hier_tree = _copy.deepcopy(tree)
+            _namespacing.rewrite_tree(
+                _main_hier_tree, _main_hier_plan.rewrites, _main_hier_plan.module_access,
+                _main_hier_plan.declaration_renames,
+            )
+            _main_hier_source = GoTranspiler(
+                go_blocks=[], stdlib_path=stdlib_path, go_module_name=go_module,
+            )
+            _main_hier_source._collect_declared_type_names(_main_hier_tree)
+            _main_hier_source._collect_function_names(_main_hier_tree)
+        except Exception:
+            _main_hier_source = _pre_transpiler
+    for cls, bases in _main_hier_source.class_bases.items():
+        program_class_bases.setdefault(cls, [base for base in bases if base])
+    for cls, sigkeys in _main_hier_source._class_method_sigkeys.items():
+        program_method_sigkeys.setdefault(cls, dict(sigkeys))
+    program_own_init.update(
+        cls for cls in _main_hier_source._class_own_init if cls not in lib_pre_class_bases
+    )
+    program_class_type_params: dict[str, list[str]] = dict(lib_pre_class_type_params)
+    for cls, names in _main_hier_source._class_type_param_names.items():
+        program_class_type_params.setdefault(cls, list(names))
+    _resolve_inherited_init_metadata(
+        program_class_bases, program_own_init, set(program_class_bases) | set(lib_pre_class_names),
+        [cls for cls, bases in lib_pre_class_bases.items() if bases and cls not in program_own_init],
+        lib_pre_func_param_counts, lib_pre_func_defaults, lib_pre_func_param_names,
+        lib_pre_func_param_go_types, set(),
+    )
+
+    def _inject_program_hierarchy(target_transpiler) -> None:
+        target_transpiler._program_class_bases = program_class_bases
+        target_transpiler._program_method_sigkeys = program_method_sigkeys
+        target_transpiler._program_own_init = program_own_init
+        target_transpiler._program_class_type_params = program_class_type_params
+
+    def _hierarchy_cache_key(mod_file: Path) -> bytes:
+        """The parts of the hierarchy a library's output depends on beyond
+        its own source: which of its classes other modules (the main file
+        included) subclass, and with which methods."""
+        own = lib_module_classes.get(mod_file, set())
+        if not own:
+            return b""
+        parents: dict[str, list[str]] = program_class_bases
+        entries = []
+        for cls in sorted(parents):
+            if cls in own:
+                continue
+            todo, seen = list(parents.get(cls, [])), set()
+            while todo:
+                base = todo.pop()
+                if base in seen:
+                    continue
+                seen.add(base)
+                todo.extend(parents.get(base, []))
+            if seen & own:
+                sig = ",".join(f"{m}={k}" for m, k in sorted(program_method_sigkeys.get(cls, {}).items(), key=lambda kv: kv[0]))
+                entries.append(f"{cls}<{','.join(parents.get(cls, []))}#{sig}#{int(cls in program_own_init)}")
+        return ("|hier:" + ";".join(entries)).encode("utf-8") if entries else b""
 
     def _apply_namespace_plan(target_transpiler, plan, sources) -> None:
         if plan is None or plan.is_empty():
@@ -2297,12 +2603,18 @@ def compile_lam(
         + [f"param-types:{name}:{','.join(types)}" for name, types in sorted(lib_pre_func_param_go_types.items())]
         + [f"return-type:{name}:{type_}" for name, type_ in sorted(lib_pre_func_return_go_types.items())]
         + [f"generic-params:{name}:{','.join(sorted(types))}" for name, types in sorted(lib_pre_func_generic_params.items())]
+        + [f"generic-method:{name}:{','.join(names)}" for name, names in sorted(lib_pre_generic_instance_methods.items())]
+        + [f"generic-return:{name}:{ret}" for name, ret in sorted(lib_pre_generic_method_returns.items())]
         + [f"generator:{name}" for name in sorted(lib_pre_generator_functions)]
         + [f"overloads:{name}:{repr(variants)}" for name, variants in sorted(lib_pre_overload_variants.items())]
         + [f"fn:{name}:{int(name in lib_pre_private_functions)}" for name in sorted(lib_pre_user_functions)]
         + [f"methods:{cls}:{','.join(sorted(names))}" for cls, names in sorted(lib_pre_instance_methods.items())]
         + [f"fields:{cls}:{','.join(sorted(names))}" for cls, names in sorted(lib_pre_field_names.items())]
         + [f"field-types:{cls}:{','.join(f'{name}={go_type}' for name, go_type in sorted(fields.items()))}" for cls, fields in sorted(lib_pre_field_types.items())]
+        + [f"bases:{cls}:{','.join(bases)}" for cls, bases in sorted(lib_pre_class_bases.items()) if bases]
+        + [f"generic-class:{cls}:{clause}" for cls, clause in sorted(lib_pre_generic_classes.items())]
+        + [f"sigkeys:{cls}:{','.join(f'{m}={k}' for m, k in sorted(keys.items(), key=lambda kv: kv[0]))}" for cls, keys in sorted(lib_pre_method_sigkeys.items())]
+        + [f"own-init:{cls}" for cls in sorted(lib_pre_own_init)]
     )).encode("utf-8")
 
     def _transpile_lib(mod_name, mod_file):
@@ -2319,6 +2631,9 @@ def compile_lam(
         lib_cache_extra = _cross_lib_extra
         if ns_plan is not None and not ns_plan.is_empty():
             lib_cache_extra = _cross_lib_extra + b"|ns:" + ns_plan.cache_key().encode("utf-8")
+        lib_init_name = _module_init_name(mod_name)
+        lib_cache_extra += b"|init:" + lib_init_name.encode("utf-8")
+        lib_cache_extra += _hierarchy_cache_key(mod_file.resolve())
 
         # ── Cache lookup ─────────────────────────────────────
         cache_hit = None
@@ -2383,7 +2698,13 @@ def compile_lam(
             lib_transpiler._func_return_go_types.setdefault(key, type_)
         for key, names in lib_pre_func_generic_params.items():
             lib_transpiler._func_generic_params.setdefault(key, set()).update(names)
+        for key, names in lib_pre_generic_instance_methods.items():
+            lib_transpiler._generic_instance_methods.setdefault(key, list(names))
+        for key, ret in lib_pre_generic_method_returns.items():
+            lib_transpiler._generic_method_returns.setdefault(key, ret)
         lib_transpiler._generator_functions.update(lib_pre_generator_functions)
+        for cls, clause in lib_pre_generic_classes.items():
+            lib_transpiler._generic_classes.setdefault(cls, clause)
         for key, variants in lib_pre_overload_variants.items():
             lib_transpiler._overload_variants.setdefault(key, []).extend(variants)
             lib_transpiler._overloaded_functions.setdefault(key, set()).update(
@@ -2398,6 +2719,8 @@ def compile_lam(
         for cls, fields in lib_pre_field_types.items():
             lib_transpiler._external_field_types.setdefault(cls, {}).update(fields)
         _apply_namespace_plan(lib_transpiler, ns_plan, ns_meta_sources)
+        _inject_program_hierarchy(lib_transpiler)
+        lib_transpiler._module_init_name = lib_init_name
         lib_go = lib_transpiler.transpile(lib_tree)
         # Remove func main() block from library — but also drop any
         # `//line` directive immediately preceding it so the stripped
@@ -2415,6 +2738,10 @@ def compile_lam(
                 skip_main = True
                 continue
             if skip_main:
+                # ``main``'s body ends at the first column-0 ``}``; keep
+                # what follows (the module's top-level statement function).
+                if line == "}":
+                    skip_main = False
                 continue
             filtered.append(line)
         go_src = "\n".join(filtered)
@@ -2600,6 +2927,14 @@ def compile_lam(
         transpiler._func_return_go_types.setdefault(key, type_)
     for key, names in lib_pre_func_generic_params.items():
         transpiler._func_generic_params.setdefault(key, set()).update(names)
+    for key, names in lib_pre_generic_instance_methods.items():
+        transpiler._generic_instance_methods.setdefault(key, list(names))
+    for key, ret in lib_pre_generic_method_returns.items():
+        transpiler._generic_method_returns.setdefault(key, ret)
+    for cls, clause in lib_pre_generic_classes.items():
+        transpiler._generic_classes.setdefault(cls, clause)
+    for cls, names in lib_pre_class_type_params.items():
+        transpiler._class_type_param_names.setdefault(cls, list(names))
     transpiler._generator_functions.update(lib_pre_generator_functions)
     transpiler._variadic_functions.update(lib_variadic_functions)
     # Imported library functions need to be visible to the main
@@ -2623,6 +2958,7 @@ def compile_lam(
             int(variant.get("arity", 0)) for variant in variants
         )
     _apply_namespace_plan(transpiler, ns_plans.get(main_module_path), {**ns_meta_sources, **ns_lib_results})
+    _inject_program_hierarchy(transpiler)
     try:
         go_source = transpiler.transpile(tree)
     except RuntimeError as e:
@@ -2632,6 +2968,18 @@ def compile_lam(
         # rather than dumping a Python traceback.
         print(f"error: {e}", file=sys.stderr)
         sys.exit(1)
+    go_source += _module_init_calls(
+        transpiler,
+        main_module_path,
+        [
+            resolved.resolve()
+            for resolved in (_resolve_lib_path(mod, source_file) for mod in _pre_transpiler._lam_imports)
+            if resolved is not None
+        ],
+        module_import_files,
+        {path.resolve(): name for name, path in lib_mod_files.items()},
+        lib_sources,
+    )
 
     if emit_go:
         print(go_source)
@@ -2922,6 +3270,8 @@ def _build_build_parser() -> "argparse.ArgumentParser":
                     help="Delete all cached library entries, then exit")
     ap.add_argument("--no-semantic-check", action="store_true",
                     help="Skip the pre-emission semantic checker")
+    ap.add_argument("--timings", action="store_true",
+                    help="Print per-phase compile times as a JSON line (LAMC_TIMINGS ...) on stderr")
     return ap
 
 
@@ -2944,6 +3294,13 @@ def _cmd_build(argv: list) -> int:
         if default_stdlib.is_dir() and any(default_stdlib.glob("*.go")):
             stdlib = str(default_stdlib)
 
+    from compiler.timings import phase_timings
+    with phase_timings(args.timings or os.environ.get("LAMC_TIMINGS") == "1", sys.modules[__name__]):
+        _run_compile(args, stdlib)
+    return 0
+
+
+def _run_compile(args, stdlib) -> None:
     compile_lam(
         source_path=args.source,
         output_path=args.output,
@@ -2965,7 +3322,6 @@ def _cmd_build(argv: list) -> int:
         use_cache=not args.no_cache,
         no_semantic_check=args.no_semantic_check,
     )
-    return 0
 
 
 def _build_fmt_parser() -> "argparse.ArgumentParser":

@@ -1,0 +1,16 @@
+# expect-error: cannot assign `list[Square]` to `list[Shape]` variable `shapes`
+# Collections stay invariant: a `list[Shape]` alias of a `list[Square]`
+# could receive a `Circle`. Element-wise uses (`[Square(1)]` where a
+# `list[Shape]` is expected, `shapes.append(Square(2))`) are fine.
+
+class Shape {
+}
+
+class Square(Shape) {
+}
+
+func main() {
+    squares: list[Square] = [Square()]
+    shapes: list[Shape] = squares
+    print(len(shapes))
+}

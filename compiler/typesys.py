@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 import re
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Optional, Sequence
 
 from lark import Token, Tree
 
@@ -116,9 +117,89 @@ def _is_json_assignable_type(type_: Type) -> bool:
     return False
 
 
+_VALUE_TYPE_NAMES = frozenset({
+    "bool", "str", "string", "int", "int8", "int16", "int32", "int64",
+    "uint", "uint8", "uint16", "uint32", "uint64", "float", "float32", "float64",
+    "byte", "rune", "json", "bytes",
+})
+
+
+def _optional_inner(type_: Type) -> Type | None:
+    """Payload of ``optional[T]`` / ``Option[T]`` (``None`` otherwise)."""
+    if isinstance(type_, GenericType) and type_.base in {"optional", "Option"} and len(type_.args) == 1:
+        return type_.args[0]
+    return None
+
+
+# Nominal subtyping hook: ``hook(expected, actual)`` is True when the class
+# ``actual`` derives from ``expected`` (a subclass instance is usable where
+# its base class is expected). The semantic checker installs it while it
+# runs; collection elements stay invariant (``list[Square]`` is not a
+# ``list[Shape]``: the list could then receive a ``Circle``), so the hook
+# only applies at the top level, through ``optional[...]`` and unions.
+_SUBCLASS_HOOK: ContextVar[Optional[Callable[[Type, Type], bool]]] = ContextVar(
+    "lam_subclass_hook", default=None,
+)
+
+
+def set_subclass_hook(hook: Optional[Callable[[Type, Type], bool]]):
+    """Install ``hook`` (see ``_SUBCLASS_HOOK``); returns a reset token."""
+    return _SUBCLASS_HOOK.set(hook)
+
+
+def reset_subclass_hook(token) -> None:
+    _SUBCLASS_HOOK.reset(token)
+
+
 def is_assignable(expected: Type, actual: Type) -> bool:
     """Return True when a value of ``actual`` can be assigned to ``expected``."""
 
+    if _is_assignable(expected, actual):
+        return True
+    hook = _SUBCLASS_HOOK.get()
+    if hook is None:
+        return False
+    expected_inner = _optional_inner(expected)
+    if expected_inner is not None:
+        actual_inner = _optional_inner(actual)
+        return _subclass_assignable(hook, expected_inner, actual_inner if actual_inner is not None else actual)
+    return _subclass_assignable(hook, expected, actual)
+
+
+def _subclass_assignable(hook, expected: Type, actual: Type) -> bool:
+    if isinstance(expected, UnionType):
+        return any(_subclass_assignable(hook, option, actual) for option in expected.options)
+    if isinstance(actual, UnionType):
+        return all(
+            _is_assignable(expected, option) or _subclass_assignable(hook, expected, option)
+            for option in actual.options
+        )
+    actual_inner = _optional_inner(actual)
+    if actual_inner is not None:
+        return _subclass_assignable(hook, expected, actual_inner)
+    if isinstance(expected, (NamedType, GenericType)) and isinstance(actual, (NamedType, GenericType)):
+        return bool(hook(expected, actual))
+    return False
+
+
+def _is_assignable(expected: Type, actual: Type) -> bool:
+    expected_inner = _optional_inner(expected)
+    actual_inner = _optional_inner(actual)
+    if expected_inner is not None:
+        # ``optional[T]`` / ``Option[T]`` accepts ``None``, a ``T`` and any
+        # other optional of an assignable payload.
+        if isinstance(actual, NamedType) and actual.name in {"None", "any", "object"}:
+            return True
+        return _is_assignable(expected_inner, actual_inner if actual_inner is not None else actual)
+    if actual_inner is not None:
+        # An optional class reference may flow into the class type itself
+        # (class-typed variables already hold ``None``); value payloads
+        # (``optional[int]`` is ``*int``) may not.
+        if isinstance(expected, NamedType) and expected.name in {"any", "object"}:
+            return True
+        if isinstance(actual_inner, NamedType) and actual_inner.name in _VALUE_TYPE_NAMES:
+            return False
+        return _is_assignable(expected, actual_inner)
     if isinstance(expected, NamedType) and expected.name == "json":
         return _is_json_assignable_type(actual)
     if isinstance(actual, NamedType) and actual.name == "json" and isinstance(expected, NamedType):
@@ -136,12 +217,12 @@ def is_assignable(expected: Type, actual: Type) -> bool:
         if isinstance(expected, NamedType):
             return expected.name in {"None", "any", "object"}
         if isinstance(expected, UnionType):
-            return any(is_assignable(option, actual) for option in expected.options)
+            return any(_is_assignable(option, actual) for option in expected.options)
         return False
     if isinstance(expected, UnionType):
-        return any(is_assignable(option, actual) for option in expected.options)
+        return any(_is_assignable(option, actual) for option in expected.options)
     if isinstance(actual, UnionType):
-        return all(is_assignable(expected, option) for option in actual.options)
+        return all(_is_assignable(expected, option) for option in actual.options)
     if isinstance(expected, ListType) and isinstance(actual, NamedType) and actual.name == "list":
         return True
     if isinstance(expected, DictType) and isinstance(actual, NamedType) and actual.name == "dict":
@@ -151,11 +232,11 @@ def is_assignable(expected: Type, actual: Type) -> bool:
     if isinstance(expected, NamedType) and expected.name == "Result" and isinstance(actual, GenericType):
         return actual.base == "Result" and len(actual.args) <= 1
     if isinstance(expected, ListType) and isinstance(actual, ListType):
-        return is_assignable(expected.item, actual.item)
+        return _is_assignable(expected.item, actual.item)
     if isinstance(expected, DictType) and isinstance(actual, DictType):
         return (
-            is_assignable(expected.key, actual.key)
-            and is_assignable(expected.value, actual.value)
+            _is_assignable(expected.key, actual.key)
+            and _is_assignable(expected.value, actual.value)
         )
     if isinstance(expected, FuncType) and isinstance(actual, FuncType):
         return expected == actual

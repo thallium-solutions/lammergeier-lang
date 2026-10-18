@@ -1,0 +1,23 @@
+# expect-pass
+# Methods inherited from a generic base instantiation return the bound type.
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+class IntBox(Box[int]) {
+    func init(self, value: int) {
+        base.init(value)
+    }
+}
+
+func main() {
+    b: IntBox = IntBox(2)
+    n: int = b.get() * 3
+    print(n)
+}

@@ -1,0 +1,22 @@
+# Transpilation: set methods and operators lower to map operations and
+# small closures returning fresh sets.
+# expect-go: ids[4] = true
+# expect-go: delete(ids, 9)
+# expect-go: var has bool = ids[2]
+# expect-go: func(l, r map[int]bool) map[int]bool { out := make(map[int]bool, len(l)+len(r)); for k := range l { out[k] = true }; for k := range r { out[k] = true }; return out }(ids, other)
+# expect-go: for k := range l { if r[k] { out[k] = true } }
+# expect-go: for k := range l { if !r[k] { out[k] = true } }
+# expect-go: var empty map[string]bool = map[string]bool{}
+
+func main() {
+    ids: set[int] = {1, 2}
+    other: set[int] = {2, 3}
+    ids.add(4)
+    ids.discard(9)
+    has: bool = ids.contains(2)
+    u: set[int] = ids | other
+    i: set[int] = ids & other
+    d: set[int] = ids - other
+    empty: set[str] = set()
+    print(has, len(u), len(i), len(d), len(empty))
+}

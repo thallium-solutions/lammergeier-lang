@@ -1,0 +1,39 @@
+# Test: generic classes imported from another module accept type
+# arguments in constructors, annotations, parameters and returns; a
+# static method that does not use the type parameter needs none.
+#
+# expect: sizes: 2 1
+# expect: first: 1 x
+# expect: pair: a 1
+# expect: total: 3
+# expect: describe: bag
+
+from generic_bag_provider import Bag, Pair
+
+func fill(n: int) -> Bag[int] {
+    b: Bag[int] = Bag[int]()
+    for i in range(n) {
+        b.add(i + 1)
+    }
+    return b
+}
+
+func total(b: Bag[int]) -> int {
+    sum = 0
+    for v in b.items {
+        sum += v
+    }
+    return sum
+}
+
+func main() {
+    ints = fill(2)
+    words: Bag[str] = Bag[str]()
+    words.add("x")
+    print(f"sizes: {ints.size()} {words.size()}")
+    print(f"first: {ints.first()} {words.first()}")
+    p: Pair[str, int] = Pair[str, int]("a", 1)
+    print(f"pair: {p.key} {p.value}")
+    print(f"total: {total(ints)}")
+    print(f"describe: {Bag.describe()}")
+}

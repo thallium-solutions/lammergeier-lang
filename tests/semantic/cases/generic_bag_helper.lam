@@ -1,0 +1,10 @@
+# expect-pass
+# Helper module for 465_imported_generic_type_arg_count.lam.
+
+class Bag[T] {
+    items: list[T]
+
+    func init(self) {
+        self.items = []
+    }
+}

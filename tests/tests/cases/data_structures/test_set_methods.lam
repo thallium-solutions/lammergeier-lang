@@ -1,0 +1,90 @@
+# Test: native sets support `add`, `remove` (KeyError when missing),
+# `discard`, `contains`, `len`, `set()` and the `|` (union), `&`
+# (intersection) and `-` (difference) operators, also augmented (`|=`,
+# `&=`, `-=`), on locals, inferred sets, fields and parameters. The
+# operators return new sets and leave their operands unchanged.
+#
+# expect: after add: 4
+# expect: after remove/discard: 2 true false true
+# expect: ops: 3 1 1
+# expect: members: true true false
+# expect: operands unchanged: 2 2
+# expect: empty: 0 then 1
+# expect: inferred: 2
+# expect: missing: KeyError
+# expect: literal union: 3
+# expect: augmented: 4 2 1
+# expect: field tags: 2 true
+# expect: param: 3
+# expect: str set: true false
+
+class Post {
+    tags: set[str] = {}
+
+    func tag(self, t: str) {
+        self.tags.add(t)
+    }
+}
+
+func overlap(a: set[int], b: set[int]) -> int {
+    return len(a & b) + len(a | b) - len(a - b)
+}
+
+func main() {
+    a: set[int] = {1, 2, 3}
+    a.add(4)
+    a.add(2)
+    print(f"after add: {len(a)}")
+    a.remove(1)
+    a.discard(10)
+    a.discard(2)
+    print(f"after remove/discard: {len(a)} {a.contains(3)} {a.contains(1)} {4 in a}")
+
+    b: set[int] = {3, 5}
+    u: set[int] = a | b
+    i: set[int] = a & b
+    d: set[int] = a - b
+    print(f"ops: {len(u)} {len(i)} {len(d)}")
+    print(f"members: {u.contains(5)} {i.contains(3)} {d.contains(3)}")
+    print(f"operands unchanged: {len(a)} {len(b)}")
+
+    e: set[str] = set()
+    before: int = len(e)
+    e.add("x")
+    print(f"empty: {before} then {len(e)}")
+
+    names = {"a"}
+    names.add("b")
+    names.add("a")
+    print(f"inferred: {len(names)}")
+
+    try {
+        a.remove(99)
+    } catch KeyError {
+        print("missing: KeyError")
+    }
+
+    print(f"literal union: {len({1, 2} | {2, 3})}")
+
+    acc: set[int] = {1}
+    acc |= {2, 3, 4}
+    n1: int = len(acc)
+    acc &= {2, 3, 9}
+    n2: int = len(acc)
+    acc -= {2}
+    print(f"augmented: {n1} {n2} {len(acc)}")
+
+    p: Post = Post()
+    p.tag("go")
+    p.tag("lam")
+    p.tag("go")
+    hasLam: bool = p.tags.contains("lam")
+    print(f"field tags: {len(p.tags)} {hasLam}")
+
+    print(f"param: {overlap({1, 2}, {2, 3})}")
+
+    words: set[str] = {"x", "y"}
+    hasX: bool = words.contains("x")
+    hasZ: bool = "z" in words
+    print(f"str set: {hasX} {hasZ}")
+}

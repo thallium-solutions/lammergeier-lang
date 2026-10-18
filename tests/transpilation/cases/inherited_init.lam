@@ -1,0 +1,36 @@
+# Transpilation: a class without `init` inherits the nearest ancestor's
+# constructor: same parameters, the parent is built with `NewParent(...)`
+# and the object is bound into it; class-body defaults still apply.
+# expect-go: func NewDog(name string, age int) *Dog {
+# expect-go: s.Animal = NewAnimal(name, age)
+# expect-go: s.Animal._lamBindSelf(s)
+# expect-go: func NewPuppy(name string, age int) *Puppy {
+# expect-go: s.Dog = NewDog(name, age)
+# expect-go: s.Tricks = 0
+# expect-go: NewPuppy("bolt", 1)
+
+class Animal {
+    func init(self, name: str, age: int = 1) {
+        self.name: str = name
+        self.age: int = age
+    }
+
+    func sound(self) -> str {
+        return "..."
+    }
+}
+
+class Dog(Animal) {
+    func sound(self) -> str {
+        return "woof"
+    }
+}
+
+class Puppy(Dog) {
+    tricks: int = 0
+}
+
+func main() {
+    p: Puppy = Puppy("bolt")
+    print(p.sound(), p.age, p.tricks)
+}

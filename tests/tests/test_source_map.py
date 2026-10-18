@@ -33,11 +33,40 @@ def test_eof_maps_to_last_original_line() -> None:
     print("PASS: out-of-range generated positions map to original EOF")
 
 
+def test_preprocessor_rewrites_keep_line_numbers() -> None:
+    """Brace-less blocks, multi-line triple-quoted strings and dictionary
+    destructuring are rewritten without changing the line of any later
+    statement, so parser and semantic positions are the user's lines."""
+    from compiler.lammergeier import preprocess_for_parse
+
+    source = (
+        "func main() {\n"
+        "    x = 1\n"
+        "    if x > 0 print(\"a\")\n"
+        "    else print(\"b\")\n"
+        "    for i in range(2) print(i)\n"
+        "    while x < 0 x += 1\n"
+        "    s = \"\"\"line1\n"
+        "line2\n"
+        "line3\"\"\" + \"!\"\n"
+        "    user = {\"name\": \"a\", \"age\": 3}\n"
+        "    {name, age} = user\n"
+        "    MARKER = 1\n"
+        "}\n"
+    )
+    out = preprocess_for_parse(source).source.split("\n")
+    marker_line = next(i for i, line in enumerate(out, 1) if "MARKER" in line)
+    assert marker_line == 12, (marker_line, out)
+    assert len(out) == len(source.split("\n")), out
+    print("PASS: preprocessor rewrites keep later line numbers")
+
+
 def main() -> int:
     tests = [
         test_identity_map,
         test_deleted_lines_map,
         test_eof_maps_to_last_original_line,
+        test_preprocessor_rewrites_keep_line_numbers,
     ]
     for test in tests:
         test()

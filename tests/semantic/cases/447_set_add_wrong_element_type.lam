@@ -1,0 +1,7 @@
+# expect-error: set add expects `int`, got `str`
+
+func main() {
+    ids: set[int] = {1, 2}
+    ids.add("three")
+    print(len(ids))
+}

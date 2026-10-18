@@ -147,10 +147,12 @@ class Http {
         return Http.request("GET", url, options)
     }
 
-    static func serve(port: int, handler: any) -> Result[HttpServer] {
-        #- Start an HTTP server on `:port`. `handler` must be a
+    static func serve(port: int, handler: func(str, str, str) -> str) -> Result[HttpServer] {
+        #- Start an HTTP server on `:port`. `handler` is a
         `func(method str, path str, body str) -> str` that returns the
-        response body. Bind failures are returned as ``HttpServerError``. -#
+        response body (a function, or a lambda whose parameters are typed
+        from it: ``lambda method, path, body: f"{method} {path}"``). Bind
+        failures are returned as ``HttpServerError``. -#
         go! {
             listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
             if err != nil {
@@ -161,10 +163,8 @@ class Http {
                 body, _ := io.ReadAll(r.Body)
                 r.Body.Close()
                 var resp string
-                if fn, ok := handler.(func(string, string, string) string); ok {
-                    resp = fn(r.Method, r.URL.Path, string(body))
-                } else {
-                    resp = ""
+                if handler != nil {
+                    resp = handler(r.Method, r.URL.Path, string(body))
                 }
                 fmt.Fprint(w, resp)
             })

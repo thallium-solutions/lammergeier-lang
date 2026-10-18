@@ -1,0 +1,9 @@
+# expect-error: a mapping pattern can never match a value of type `list[int]`
+
+func main() {
+    xs: list[int] = [1]
+    match xs {
+        case {"k": v} { print(v) }
+        case _ { print("other") }
+    }
+}

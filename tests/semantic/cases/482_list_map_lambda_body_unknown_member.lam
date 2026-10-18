@@ -1,0 +1,14 @@
+# expect-error: unknown member `p.nmae` on class `Person`
+# expect-error: did you mean `p.name`
+# A list method's lambda parameter is an element, so its body is checked.
+
+class Person {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func main() {
+    people: list[Person] = [Person("ada")]
+    print(people.map(lambda p: p.nmae))
+}

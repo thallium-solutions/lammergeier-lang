@@ -1,0 +1,225 @@
+# Test: a subclass instance is usable wherever its base class type is
+# expected (parameters, assignments, re-assignments, returns, fields,
+# optional[Base], collection elements, `??`, ternaries, None comparisons),
+# calls on a base-typed value dispatch to the override of the object's
+# class, field access reads the shared base fields and isinstance sees the
+# dynamic class.
+#
+# expect: param: square 9
+# expect: param base: shape 0
+# expect: assign: square 9
+# expect: reassign: circle 12
+# expect: return: square 4
+# expect: field: square 16
+# expect: field reassign: circle 3
+# expect: optional: square 1
+# expect: optional none: true
+# expect: list: square=9 circle=12 shape=0 total=21
+# expect: append: 4 shapes, last square 25
+# expect: dict: a=square 1 b=circle 3
+# expect: coalesce: square 4
+# expect: coalesce none: circle 3
+# expect: ternary: square 9
+# expect: none compare: false true
+# expect: shared field: renamed
+# expect: method on base field: renamed:9
+# expect: isinstance: true true false true
+# expect: isinstance none: false
+# expect: deep: colored red 49 / square 49
+# expect: deep dispatch: [colored red] area 49
+# expect: grand param: colored red 49
+# expect: inherited self call: area=9 label=square
+# expect: tuple items: square 9 circle 12
+# expect: default arg: shape 0
+# expect: interface view: 9
+# expect: equality: true false
+# expect: identity: true true false
+# expect: insert/extend: 3 first square 4 last circle 3
+# expect: nested literal: square 1
+# expect: str: &{{square} 3}
+
+interface HasArea {
+    func area(self) -> int
+}
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func area(self) -> int {
+        return 0
+    }
+
+    func label(self) -> str {
+        return self.name
+    }
+
+    func describe(self) -> str {
+        return f"{self.label()}:{self.area()}"
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+
+    func area(self) -> int {
+        return 3 * self.r * self.r
+    }
+}
+
+class ColoredSquare(Square) {
+    func init(self, side: int, color: str) {
+        base.init(side)
+        self.color: str = color
+    }
+
+    func label(self) -> str {
+        return f"colored {self.color}"
+    }
+}
+
+class Holder {
+    func init(self, shape: Shape) {
+        self.shape: Shape = shape
+        self.maybe: optional[Shape] = None
+    }
+}
+
+func show(s: Shape) -> str {
+    return f"{s.label()} {s.area()}"
+}
+
+func pick(big: bool) -> Shape {
+    if big {
+        return Square(2)
+    }
+    return Circle(1)
+}
+
+func find(name: str) -> optional[Shape] {
+    if name == "sq" {
+        return Square(2)
+    }
+    return None
+}
+
+func withDefault(s: Shape = Shape("shape")) -> str {
+    return show(s)
+}
+
+func areaOf(h: HasArea) -> int {
+    return h.area()
+}
+
+func main() {
+    sq: Square = Square(3)
+    print(f"param: {show(sq)}")
+    plain: Shape = Shape("shape")
+    print(f"param base: {show(plain)}")
+
+    s: Shape = sq
+    print(f"assign: {s.label()} {s.area()}")
+    s = Circle(2)
+    print(f"reassign: {s.label()} {s.area()}")
+
+    r: Shape = pick(true)
+    print(f"return: {r.label()} {r.area()}")
+
+    h: Holder = Holder(Square(4))
+    print(f"field: {h.shape.label()} {h.shape.area()}")
+    h.shape = Circle(1)
+    print(f"field reassign: {h.shape.label()} {h.shape.area()}")
+
+    o: optional[Shape] = Square(1)
+    if o != None {
+        print(f"optional: {o.label()} {o.area()}")
+    }
+    h.maybe = find("nothing")
+    print(f"optional none: {h.maybe == None}")
+
+    shapes: list[Shape] = [Square(3), Circle(2), Shape("shape")]
+    total: int = 0
+    parts: list[str] = []
+    for item in shapes {
+        parts.append(f"{item.label()}={item.area()}")
+        total += item.area()
+    }
+    joined: str = " ".join(parts)
+    print(f"list: {joined} total={total}")
+    shapes.append(Square(5))
+    print(f"append: {len(shapes)} shapes, last {shapes[3].label()} {shapes[3].area()}")
+
+    byName: dict[str, Shape] = {"a": Square(1)}
+    byName["b"] = Circle(1)
+    da: Shape = byName["a"]
+    db: Shape = byName["b"]
+    print(f"dict: a={da.label()} {da.area()} b={db.label()} {db.area()}")
+
+    picked: Shape = find("sq") ?? Circle(1)
+    print(f"coalesce: {picked.label()} {picked.area()}")
+    fallback: Shape = find("x") ?? Circle(1)
+    print(f"coalesce none: {fallback.label()} {fallback.area()}")
+
+    t: Shape = sq if total > 0 else Circle(1)
+    print(f"ternary: {t.label()} {t.area()}")
+
+    print(f"none compare: {t == None} {t != None}")
+
+    s = sq
+    s.name = "renamed"
+    print(f"shared field: {sq.name}")
+    print(f"method on base field: {s.describe()}")
+
+    print(f"isinstance: {isinstance(s, Square)} {isinstance(s, Shape)} {isinstance(s, Circle)} {isinstance(sq, Shape)}")
+    nothing: optional[Shape] = None
+    print(f"isinstance none: {isinstance(nothing, Square)}")
+
+    cs: ColoredSquare = ColoredSquare(7, "red")
+    viaSquare: Square = cs
+    print(f"deep: {viaSquare.label()} {viaSquare.area()} / {viaSquare.name} {cs.area()}")
+    viaShape: Shape = viaSquare
+    print(f"deep dispatch: [{viaShape.label()}] area {viaShape.area()}")
+    print(f"grand param: {show(cs)}")
+
+    described: str = Square(3).describe()
+    head: str = described.split(":")[0]
+    print(f"inherited self call: area={Square(3).area()} label={head}")
+
+    pairs: list[Shape] = [Square(3), Circle(2)]
+    print(f"tuple items: {pairs[0].label()} {pairs[0].area()} {pairs[1].label()} {pairs[1].area()}")
+
+    print(f"default arg: {withDefault()}")
+
+    print(f"interface view: {areaOf(s)}")
+
+    same: Shape = sq
+    print(f"equality: {same == s} {same == viaShape}")
+    print(f"identity: {sq == same} {same == sq} {cs == same}")
+
+    more: list[Shape] = [Circle(1)]
+    more.insert(0, Square(2))
+    more.extend([Circle(1)])
+    print(f"insert/extend: {len(more)} first {more[0].label()} {more[0].area()} last {more[2].label()} {more[2].area()}")
+
+    nested: dict[str, list[Shape]] = {"a": [Square(1)]}
+    inner: list[Shape] = nested["a"]
+    print(f"nested literal: {inner[0].label()} {inner[0].area()}")
+
+    view: Shape = Square(3)
+    print("str: " + str(view))
+}

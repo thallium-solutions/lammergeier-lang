@@ -1,0 +1,135 @@
+# Methods with their own type parameters (`func map[U](self, ...)`) on
+# generic and non-generic classes: Go methods cannot have type
+# parameters, so they lower to package-level generic functions and the
+# call sites pass the receiver. Lambdas get their parameter types from
+# the receiver's type arguments and the method's type parameters are
+# inferred from the arguments (lambda bodies, function references,
+# literals), also for plain generic functions.
+#
+# expect: box=6 str=n=6
+# expect: chained=40
+# expect: inferred=hi!
+# expect: ref=3
+# expect: zip=(7, x)
+# expect: pick=2.5
+# expect: mapped=[2 4 6]
+# expect: strs=[1! 2!]
+# expect: folded=6 joined=a-b
+# expect: lens=[1 2]
+# expect: sub=12
+# expect: self=[1 4 9]
+# expect: generic_methods_ok
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func get(self) -> T {
+        return self.value
+    }
+
+    func map[U](self, fn: func(T) -> U) -> Box[U] {
+        return Box[U](fn(self.value))
+    }
+
+    func zipWith[U](self, other: U) -> str {
+        return f"({self.value}, {other})"
+    }
+
+    func fold[A](self, initial: A, fn: func(A, T) -> A) -> A {
+        return fn(initial, self.value)
+    }
+}
+
+class Picker {
+    func init(self, index: int) {
+        self.index: int = index
+    }
+
+    func pick[T](self, items: list[T]) -> T {
+        return items[self.index]
+    }
+}
+
+class Seq[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+
+    func each[U](self, fn: func(T) -> U) -> list[U] {
+        out: list[U] = []
+        for item in self.items {
+            out.append(fn(item))
+        }
+        return out
+    }
+
+    func squares(self, fn: func(T) -> int) -> list[int] {
+        # A generic method called through `self` from another method.
+        return self.each(lambda x: fn(x) * fn(x))
+    }
+}
+
+class IntSeq(Seq[int]) {
+    func total(self) -> int {
+        acc: int = 0
+        for v in self.items {
+            acc += v
+        }
+        return acc
+    }
+}
+
+func strLen(s: str) -> int {
+    return len(s)
+}
+
+func mapList[T, U](xs: list[T], fn: func(T) -> U) -> list[U] {
+    out: list[U] = []
+    for x in xs {
+        out.append(fn(x))
+    }
+    return out
+}
+
+func foldList[T, A](xs: list[T], initial: A, fn: func(A, T) -> A) -> A {
+    acc: A = initial
+    for x in xs {
+        acc = fn(acc, x)
+    }
+    return acc
+}
+
+func main() {
+    b: Box[int] = Box[int](3)
+    doubled: Box[int] = b.map(lambda x: x * 2)
+    named: Box[str] = doubled.map(lambda x: f"n={x}")
+    print(f"box={doubled.get()} str={named.get()}")
+
+    print(f"chained={b.map(lambda x: x + 1).map(lambda y: y * 10).get()}")
+
+    greeting = Box[str]("hi").map(lambda s: s + "!")
+    print(f"inferred={greeting.get()}")
+
+    lengths: Box[int] = Box[str]("abc").map(strLen)
+    print(f"ref={lengths.get()}")
+    print(f"zip={Box[int](7).zipWith('x')}")
+
+    picker: Picker = Picker(1)
+    print(f"pick={picker.pick([1.0, 2.5])}")
+
+    print(f"mapped={mapList([1, 2, 3], lambda x: x * 2)}")
+    strs: list[str] = mapList([1, 2], lambda n: f"{n}!")
+    print(f"strs={strs}")
+    folded: int = foldList([1, 2, 3], 0, lambda acc, x: acc + x)
+    joined: str = foldList(["a", "b"], "", lambda acc, s: s if acc == "" else acc + "-" + s)
+    print(f"folded={folded} joined={joined}")
+    print(f"lens={mapList(['a', 'bb'], len)}")
+
+    ints: IntSeq = IntSeq([1, 2, 3])
+    plusOne: list[int] = ints.each(lambda v: v + 1)
+    print(f"sub={ints.total() + foldList(plusOne, 0, lambda acc, v: acc + v) - 3}")
+    print(f"self={Seq[int]([1, 2, 3]).squares(lambda x: x)}")
+    print("generic_methods_ok")
+}

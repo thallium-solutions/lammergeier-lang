@@ -26,6 +26,53 @@ go! {
     var lamTestPassed int
     var lamTestFailed int
     var lamTestDescribe string
+
+    // lamTestEqual is value equality across representations: numbers
+    // compare by value whatever their Go type (an untyped ``[80, 90]``
+    // literal argument is a ``[]interface{}`` of ints while a
+    // ``list[int]`` is a ``[]int``), sequences and maps element-wise,
+    // everything else with reflect.DeepEqual.
+    func lamTestEqual(a, b interface{}) bool {
+        if reflect.DeepEqual(a, b) { return true }
+        va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+        if !va.IsValid() || !vb.IsValid() { return false }
+        if fa, ok := lamTestNumber(va); ok {
+            fb, ok2 := lamTestNumber(vb)
+            return ok2 && fa == fb
+        }
+        isSeq := func(v reflect.Value) bool { return v.Kind() == reflect.Slice || v.Kind() == reflect.Array }
+        if isSeq(va) && isSeq(vb) {
+            if va.Len() != vb.Len() { return false }
+            for i := 0; i < va.Len(); i++ {
+                if !lamTestEqual(va.Index(i).Interface(), vb.Index(i).Interface()) { return false }
+            }
+            return true
+        }
+        if va.Kind() == reflect.Map && vb.Kind() == reflect.Map {
+            if va.Len() != vb.Len() { return false }
+            for _, k := range va.MapKeys() {
+                var match reflect.Value
+                for _, k2 := range vb.MapKeys() {
+                    if lamTestEqual(k.Interface(), k2.Interface()) { match = k2; break }
+                }
+                if !match.IsValid() || !lamTestEqual(va.MapIndex(k).Interface(), vb.MapIndex(match).Interface()) { return false }
+            }
+            return true
+        }
+        return false
+    }
+
+    func lamTestNumber(v reflect.Value) (float64, bool) {
+        switch v.Kind() {
+        case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+            return float64(v.Int()), true
+        case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+            return float64(v.Uint()), true
+        case reflect.Float32, reflect.Float64:
+            return v.Float(), true
+        }
+        return 0, false
+    }
 }
 
 class Test {
@@ -57,9 +104,10 @@ class Test {
     }
 
     static func assertEqual(actual: any, expected: any, msg: str = "") -> bool {
-        #- Deep equality using reflect.DeepEqual. -#
+        #- Value equality: numbers by value (``1 == 1.0``), lists and
+           dicts element-wise, anything else with reflect.DeepEqual. -#
         go! {
-            if reflect.DeepEqual(actual, expected) {
+            if lamTestEqual(actual, expected) {
                 lamTestPassed++
                 if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
                 return true
@@ -77,7 +125,7 @@ class Test {
 
     static func assertNotEqual(actual: any, expected: any, msg: str = "") -> bool {
         go! {
-            if !reflect.DeepEqual(actual, expected) {
+            if !lamTestEqual(actual, expected) {
                 lamTestPassed++
                 if msg != "" { fmt.Println("PASS", msg) } else { fmt.Println("PASS") }
                 return true
@@ -173,11 +221,11 @@ class Test {
                 }
             case reflect.Slice, reflect.Array:
                 for i := 0; i < v.Len(); i++ {
-                    if reflect.DeepEqual(v.Index(i).Interface(), needle) { found = true; break }
+                    if lamTestEqual(v.Index(i).Interface(), needle) { found = true; break }
                 }
             case reflect.Map:
                 for _, k := range v.MapKeys() {
-                    if reflect.DeepEqual(k.Interface(), needle) { found = true; break }
+                    if lamTestEqual(k.Interface(), needle) { found = true; break }
                 }
             }
             if found {

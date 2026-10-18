@@ -1,0 +1,20 @@
+# expect-pass
+# Native sets: add / remove / discard / contains, set() and the union,
+# intersection and difference operators (plain and augmented).
+
+func main() {
+    a: set[int] = {1, 2, 3}
+    b: set[int] = {3, 4}
+    a.add(5)
+    a.discard(1)
+    a.remove(2)
+    u: set[int] = a | b
+    i: set[int] = a & b
+    d: set[int] = a - b
+    e: set[str] = set()
+    e.add("x")
+    a |= b
+    a &= u
+    a -= i
+    print(len(u), len(i), len(d), len(e), a.contains(5), e.contains("x"))
+}

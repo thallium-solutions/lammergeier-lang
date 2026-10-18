@@ -1,12 +1,13 @@
 # Transpilation: ``do { body } catch err { handler }`` lowers to a
 # Go IIFE returning ``*Result``. ``?`` inside the body short-circuits
 # the IIFE (not the enclosing function), and the caller dispatches on
-# the IIFE's ``.Error`` field.
+# the IIFE's ``.Error`` field; the handler's ``err`` is typed ``*Error``.
 
 # expect-go: __rdo1 := func() *Result {
 # expect-go: return Result_Ok(nil)
 # expect-go: if __rdo1.Error != nil {
-# expect-go: err := __rdo1.Error
+# expect-go: err := func(v interface{}) *Error { if e, ok := v.(*Error); ok { return e };
+# expect-go: return NewError("", fmt.Sprint(v), v) }(__rdo1.Error)
 
 from lamerrors import Result, Error
 

@@ -99,8 +99,9 @@ lammergeier-lang/
 │   ├── transpilation/        ← Go-output snapshot comparisons
 │   ├── lsp/                  ← language-server protocol checks
 │   ├── import_resolution/    ← module layout and resolver checks
-│   ├── rosetta_tests/        ← larger realistic programs
-│   └── benchmarks/           ← compile + run + size measurements
+│   └── (tests/tests/cases/rosetta: Rosetta Code programs)
+│
+├── benchmarks/               ← compiler/ (lamc speed per phase), runtime/ (generated code vs Go)
 │
 ├── docs/                     ← language + stdlib docs
 │   ├── SYNTAX.md             ←   language surface reference
@@ -187,7 +188,7 @@ PYTHON=/usr/bin/python3 sh scripts/test.sh core <keyword>
 PYTHON=/usr/bin/python3 sh scripts/test.sh
 
 # 4. If the change might affect performance:
-sh scripts/bench.sh --runs 5
+sh scripts/bench.sh runtime --runs 5
 
 # 5. Update docs touched by the change:
 #    - docs/SYNTAX.md (language surface)
@@ -290,8 +291,8 @@ benchmark harness. Know them; use the right one.
 | LSP | `tests/lsp/` | Language-server protocol behavior and editor-facing diagnostics. |
 | Import resolution | `tests/import_resolution/` | Module layouts, precedence, and import diagnostics. |
 | Python unit / fuzz | `tests/tests/test_*.py` | Compiler helpers, tooling, generated-Go contracts, and fuzz checks. |
-| Rosetta | `tests/rosetta_tests/` | Realistic end-to-end programs proving day-to-day composition. |
-| Benchmarks | `tests/benchmarks/` | Compile + run + binary-size stats. Not part of the pass/fail gate. |
+| Rosetta | `tests/tests/cases/rosetta/` | Rosetta Code programs, run by the core runner (`core rosetta`). |
+| Benchmarks | `benchmarks/` | Compiler speed per phase and generated-code speed against Go baselines. Not part of the pass/fail gate. |
 
 ### End-to-end tests
 
@@ -392,10 +393,11 @@ PYTHON=/usr/bin/python3 sh scripts/test.sh transpile generics
 PYTHON=/usr/bin/python3 sh scripts/test.sh lsp
 PYTHON=/usr/bin/python3 sh scripts/test.sh import
 PYTHON=/usr/bin/python3 sh scripts/test.sh unit
-PYTHON=/usr/bin/python3 sh scripts/test.sh rosetta
+PYTHON=/usr/bin/python3 sh scripts/test.sh core rosetta
 
-# Benchmarks
-sh scripts/bench.sh --runs 5
+# Benchmarks (benchmarks/README.md)
+sh scripts/bench.sh compiler --front-end
+sh scripts/bench.sh runtime
 ```
 
 The test scripts run from the repository root and invoke the in-tree compiler.
@@ -406,47 +408,28 @@ local setup uses `/usr/bin/python3` for syntax diagnostics.
 
 ## Benchmarking
 
-Benchmarks live in `tests/benchmarks/` and are split by **what they
-stress**:
+Benchmarks live in `benchmarks/` (details in `benchmarks/README.md`):
 
-- `cases/language/` — core language primitives (loops, lists,
-  dicts, strings, method dispatch, f-strings).
-- `cases/stdlib/` — stdlib hot paths (JSON, regex, sort, hash,
-  string split).
+- `benchmarks/compiler/` — how fast `lamc` compiles, per phase
+  (`lamc build --timings`), on generated programs of three sizes, a small
+  corpus and optionally a real project. `sh scripts/bench.sh compiler`.
+- `benchmarks/runtime/` — how fast the generated code runs: each program
+  times its own workload (`BENCH <name> <ops> <ns>`), with hand-written Go
+  baselines (`lam/go` ratio). `sh scripts/bench.sh runtime`.
 
 ### When to run benchmarks
 
-- Before + after any change to `compiler/transpiler.py`,
-  `compiler/visitors/*.py`, or a hot-path stdlib module
-  (`lamjson`, `lamre`, `lamhttp`, `lamstrings`, …).
-- When optimising an f-string lowering, string-builder fast path,
-  map-iteration change — anything that would measurably move a
-  microbenchmark.
+- Compiler suite: before and after changes to the preprocessor, parser,
+  semantic checker or transpiler internals.
+- Runtime suite: before and after lowering changes
+  (`compiler/transpiler.py`, `compiler/visitors/*.py`) or a hot-path
+  stdlib module (`lamjson`, `lamre`, `lamstrings`, …).
 
 ### Reading the numbers
 
-Three columns matter:
-
-- `compile(ms)` — `lamc --no-cache` wall time. Moves when the
-  compiler pipeline changes.
-- `run-best(ms)` — fastest of N runs. Moves when lowering or the
-  stdlib changes.
-- `size(KiB)` — binary size. Moves when imports or lowering
-  change, usually in small increments.
-
-`σ(ms)` above ~10% of the mean is a signal that the workload is
-too noisy and probably needs a bigger N (the innermost loop
-counter inside the benchmark).
-
-### Adding a benchmark
-
-See `tests/benchmarks/README.md` for the full checklist. The short
-version:
-
-1. Drop `bench_<feature>.lam` under the right group directory.
-2. Size the workload so one run takes 10 – 200 ms.
-3. Assert the result so Go can't dead-code-eliminate the loop.
-4. Comment **what it stresses** and **which change would move it**.
+Compare medians on an idle machine. A runtime `spread` above ~10% means
+the workload is too short or the machine is busy; a `lam/go` ratio above
+1.0 is overhead of the generated code.
 
 ---
 
@@ -670,7 +653,7 @@ will bounce PRs that don't match.
 | Compiler pipeline layer | `docs/TRANSPILATION.md` (when lowering changed) |
 | Stdlib module | Top-of-file docstring + `docs/stdlib.md` |
 | User-facing feature | `README.md` (only for headline changes) |
-| Benchmark harness | `tests/benchmarks/README.md` |
+| Benchmark suites | `benchmarks/README.md` |
 | Test format | The README of the suite you touched |
 | VS Code grammar | `vs-code-extension/.../package.json` bump + README note |
 

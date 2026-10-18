@@ -1,0 +1,21 @@
+# Transpilation: top-level statements run from the module init function,
+# called by `func init()`; a global declared after a statement is zero
+# valued at package level and assigned in file order.
+# expect-go: var items []int = []int{}
+# expect-go: var total int
+# expect-go: func lamModuleInit_main() {
+# expect-go:
+#   	items = append(items, 3)
+#   	total = len(items)
+# expect-go:
+#   func init() {
+#   	lamModuleInit_main()
+#   }
+
+items: list[int] = []
+items.append(3)
+total: int = len(items)
+
+func main() {
+    print(total)
+}

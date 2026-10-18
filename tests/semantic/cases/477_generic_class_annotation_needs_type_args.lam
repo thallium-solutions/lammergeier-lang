@@ -1,0 +1,13 @@
+# expect-error: generic class `Iter` needs type arguments here (`Iter[int]`, `Iter[any]`, ...)
+# A bare generic class name only works on a local initialized from a
+# value of that class (`it: Iter = Iter.range_(0, 3)` infers `Iter[int]`).
+
+from lamiter import Iter
+
+func total(it: Iter) -> int {
+    return it.count_()
+}
+
+func main() {
+    print(total(Iter.range_(0, 3)))
+}

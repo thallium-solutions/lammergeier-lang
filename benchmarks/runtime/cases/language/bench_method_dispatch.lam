@@ -1,0 +1,38 @@
+# Method-call overhead on a small class — the Go compiler may or may
+# not devirtualise these. Any change to how methods lower (e.g.
+# switching from pointer-receiver to value-receiver) will affect
+# the running time here.
+#
+# ops: 2000000
+
+from lamtime import Time
+
+class Counter {
+    value: int = 0
+
+    func add(self, n: int) {
+        self.value = self.value + n
+    }
+
+    func get(self) -> int {
+        return self.value
+    }
+}
+
+func work() {
+    c: Counter = Counter()
+    for i in range(2000000) {
+        c.add(1)
+    }
+    if c.get() != 2000000 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH method_dispatch 2000000 {elapsed}")
+}

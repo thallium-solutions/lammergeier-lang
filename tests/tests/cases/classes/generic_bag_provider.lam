@@ -1,0 +1,40 @@
+# Provider module for test_generic_class_imported.lam: generic classes
+# used from another module with explicit type arguments.
+
+class Bag[T] {
+    items: list[T]
+
+    func init(self) {
+        self.items = []
+    }
+
+    func add(self, v: T) {
+        self.items.append(v)
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func first(self) -> T {
+        return self.items[0]
+    }
+
+    static func describe() -> str {
+        return "bag"
+    }
+}
+
+class Pair[K, V] {
+    key: K
+    value: V
+
+    func init(self, key: K, value: V) {
+        self.key = key
+        self.value = value
+    }
+}
+
+func main() {
+    pass
+}

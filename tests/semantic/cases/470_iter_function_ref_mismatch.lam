@@ -1,0 +1,12 @@
+# expect-error: argument `fn` to `Iter.map` has type `func(str) -> str`, expected `func(int) -> str`
+# A function passed by name must accept the elements.
+
+from lamiter import Iter
+
+func shout(s: str) -> str {
+    return s + "!"
+}
+
+func main() {
+    print(Iter.range_(0, 3).map(shout).toList())
+}

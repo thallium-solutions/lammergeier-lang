@@ -1,0 +1,21 @@
+# expect-error: cannot assign `Shape` to `Square` variable `sq`
+# A base-typed value is not a subclass instance: narrowing it needs a
+# class pattern (`match s { case Square() as sq { ... } }`).
+
+class Shape {
+    func area(self) -> int {
+        return 0
+    }
+}
+
+class Square(Shape) {
+    func area(self) -> int {
+        return 4
+    }
+}
+
+func main() {
+    s: Shape = Square()
+    sq: Square = s
+    print(sq.area())
+}

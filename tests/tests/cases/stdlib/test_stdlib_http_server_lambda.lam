@@ -1,0 +1,31 @@
+# Test: `Http.serve` takes a typed `func(str, str, str) -> str` handler, so
+# a lambda's parameters are `str` without annotations (an untyped lambda
+# used to be lowered with `any` parameters and silently answer ""), and an
+# `any` value holding a handler still works through a checked conversion.
+#
+# expect: lambda: GET /hi (0 bytes)
+# expect: lambda post: POST /echo (4 bytes) PING
+# expect: any handler: any:/x
+
+from lamhttp import Http, HttpResponse, HttpServer
+
+func plainHandler(_method: str, path: str, _body: str) -> str {
+    return "any:" + path
+}
+
+func main() {
+    srv: HttpServer = Http.serve(0, lambda method, path, body: f"{method} {path} ({len(body)} bytes) {body.toUpper()}".trim()).unwrap()
+    port: int = srv.port().unwrap()
+    got: HttpResponse = Http.get(f"http://127.0.0.1:{port}/hi").unwrap()
+    print(f"lambda: {got.body}")
+    posted: HttpResponse = Http.post(f"http://127.0.0.1:{port}/echo", "text/plain", "ping").unwrap()
+    print(f"lambda post: {posted.body}")
+    srv.close().unwrap()
+
+    loose: any = plainHandler
+    other: HttpServer = Http.serve(0, loose).unwrap()
+    otherPort: int = other.port().unwrap()
+    viaAny: HttpResponse = Http.get(f"http://127.0.0.1:{otherPort}/x").unwrap()
+    print(f"any handler: {viaAny.body}")
+    other.close().unwrap()
+}

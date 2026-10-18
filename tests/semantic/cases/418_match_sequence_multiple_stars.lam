@@ -1,0 +1,9 @@
+# expect-error: a sequence pattern may contain at most one `*name`
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    match xs {
+        case [*a, 2, *b] { print("two") }
+        case _ { print("other") }
+    }
+}

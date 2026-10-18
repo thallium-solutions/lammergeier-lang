@@ -1,0 +1,9 @@
+# expect-error: mapping pattern keys must be strings when the subject is `any` or `json`
+
+func main() {
+    v: any = {"a": 1}
+    match v {
+        case {1: x} { print(x) }
+        case _ { print("other") }
+    }
+}

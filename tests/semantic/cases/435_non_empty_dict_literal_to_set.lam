@@ -1,0 +1,8 @@
+# expect-error: set[str]
+# Only the empty `{}` becomes an empty set; a dict literal with entries is
+# still a dict.
+
+func main() {
+    flags: set[str] = {"a": 1}
+    print(len(flags))
+}

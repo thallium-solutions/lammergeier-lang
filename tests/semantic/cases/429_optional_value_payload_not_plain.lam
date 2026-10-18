@@ -1,0 +1,15 @@
+# expect-error: cannot assign `optional[int]` to `int` variable `n`
+# An `optional[int]` (a `*int`) does not silently become an `int`; unwrap it
+# with `??` first.
+
+func count(s: str) -> optional[int] {
+    if s == "" {
+        return None
+    }
+    return len(s)
+}
+
+func main() {
+    n: int = count("ab")
+    print(n)
+}

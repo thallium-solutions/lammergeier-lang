@@ -125,6 +125,18 @@ go! {
         return value.value
     }
 
+    // lamJSONWrapRaw re-wraps a raw value taken out of a ``json`` value
+    // (``match`` bindings of json sub-values); it is already normalised.
+    func lamJSONWrapRaw(raw interface{}) LamJSON {
+        return LamJSON{value: raw}
+    }
+
+    // LamMatchRaw lets ``match`` see through a ``json`` value stored in
+    // ``any`` without the generated helpers naming the LamJSON type.
+    func (value LamJSON) LamMatchRaw() interface{} {
+        return value.value
+    }
+
     func lamJSONIsNull(value LamJSON) bool {
         return value.value == nil
     }

@@ -1,0 +1,16 @@
+# expect-error: unknown member `u.nme` on class `User`
+# expect-error: did you mean `u.name`
+# The lambda parameter is a `User`, so its body is checked like any code.
+
+from lamiter import Iter
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func main() {
+    users: list[User] = [User("a")]
+    print(Iter.fromList(users).map(lambda u: u.nme).toList())
+}

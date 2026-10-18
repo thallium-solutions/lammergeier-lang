@@ -1,0 +1,17 @@
+# expect-error: cannot assign `list[int]` to `list[str]` variable `names`
+# U is bound from `len2`'s return type, so the result is `list[int]`.
+
+func mapList[T, U](xs: list[T], f: func(T) -> U) -> list[U] {
+    out: list[U] = []
+    for x in xs {
+        out.append(f(x))
+    }
+    return out
+}
+
+func len2(s: str) -> int { return len(s) }
+
+func main() {
+    names: list[str] = mapList(["a", "bb"], len2)
+    print(names)
+}

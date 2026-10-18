@@ -1,0 +1,6 @@
+# expect-error: `list[int]` has no method `index`; use a loop (or `x in xs`)
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    print(xs.index(2))
+}

@@ -1,0 +1,37 @@
+# expect-pass
+# `optional[T]` / `Option[T]` accept None and T, compare with None, and an
+# optional class reference flows back into the class type.
+
+class Node {
+    func init(self, v: int) {
+        self.v: int = v
+        self.next: optional[Node] = None
+    }
+}
+
+func find(v: int) -> optional[Node] {
+    if v > 0 {
+        return Node(v)
+    }
+    return None
+}
+
+func count(s: str) -> Option[int] {
+    if s == "" {
+        return None
+    }
+    return len(s)
+}
+
+func main() {
+    n: optional[Node] = None
+    print(n == None)
+    a: Node = Node(1)
+    a.next = Node(2)
+    n = a.next
+    m: Option[Node] = find(1)
+    plain: Node = find(2)
+    print(m != None, plain.v)
+    c: optional[int] = count("ab")
+    print(c ?? 0)
+}

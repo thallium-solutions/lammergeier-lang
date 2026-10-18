@@ -1,0 +1,18 @@
+# expect-error: missing required argument `name` in call to `Dog`
+
+class Animal {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Dog(Animal) {
+    func bark(self) -> str {
+        return "woof"
+    }
+}
+
+func main() {
+    d: Dog = Dog()
+    print(d.bark())
+}

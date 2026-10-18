@@ -1,0 +1,252 @@
+# Test: virtual dispatch of inherited methods.
+#
+# `self.method()` inside a base-class method calls the most-derived
+# override of the *dynamic* object, like Python and Java — even though
+# the Go lowering uses struct embedding. Explicit parent calls
+# (`base.method()`, named parent aliases) stay static.
+#
+# expect: base area=0 describe=area 0
+# expect: square describe=area 9
+# expect: grand: hello from puppy
+# expect: dog: hello from dog
+# expect: animal: hello from animal
+# expect: wrapped: [child body]
+# expect: init-base: total=15
+# expect: args: 2*3=6 twice=12
+# expect: private hook: secret-child
+# expect: named: left sees right-override
+# expect: interface: area 4
+# expect: generic box: box(5)
+# expect: async: async 9
+# expect: list: area 0, area 9
+
+interface HasDescribe {
+    func describe(self) -> str
+}
+
+class Shape {
+    func area(self) -> int {
+        return 0
+    }
+
+    func describe(self) -> str {
+        return f"area {self.area()}"
+    }
+}
+
+class Square(Shape) {
+    func area(self) -> int {
+        return 9
+    }
+}
+
+class Tile(Shape) {
+    func area(self) -> int {
+        return 4
+    }
+}
+
+class Animal {
+    func name(self) -> str {
+        return "animal"
+    }
+
+    func greet(self) -> str {
+        return f"hello from {self.name()}"
+    }
+}
+
+class Dog(Animal) {
+    func name(self) -> str {
+        return "dog"
+    }
+}
+
+class Puppy(Dog) {
+    func name(self) -> str {
+        return "puppy"
+    }
+}
+
+class Template {
+    func body(self) -> str {
+        return "base body"
+    }
+
+    func render(self) -> str {
+        return f"[{self.body()}]"
+    }
+}
+
+class Page(Template) {
+    func body(self) -> str {
+        return "child body"
+    }
+
+    func render(self) -> str {
+        return f"wrapped: {base.render()}"
+    }
+}
+
+class Account {
+    func init(self, start: int) {
+        self.balance: int = start
+    }
+
+    func bonus(self) -> int {
+        return 0
+    }
+
+    func total(self) -> int {
+        return self.balance + self.bonus()
+    }
+}
+
+class Premium(Account) {
+    func init(self, start: int) {
+        base.init(start)
+    }
+
+    func bonus(self) -> int {
+        return 5
+    }
+}
+
+class Calc {
+    func combine(self, a: int, b: int) -> int {
+        return a + b
+    }
+
+    func run(self, a: int, b: int, times: int = 1) -> str {
+        return f"{a}*{b}={self.combine(a, b)} twice={self.combine(a, b) * times}"
+    }
+}
+
+class Multiplier(Calc) {
+    func combine(self, a: int, b: int) -> int {
+        return a * b
+    }
+}
+
+class Vault {
+    private func hook(self) -> str {
+        return "secret-base"
+    }
+
+    func reveal(self) -> str {
+        return self.hook()
+    }
+}
+
+class ChildVault(Vault) {
+    private func hook(self) -> str {
+        return "secret-child"
+    }
+}
+
+class Left {
+    func init(self) {
+        self.tag: str = "left"
+    }
+
+    func peer(self) -> str {
+        return "right-base"
+    }
+
+    func show(self) -> str {
+        return f"{self.tag} sees {self.peer()}"
+    }
+}
+
+class Right {
+    func init(self) {
+        self.other: str = "right"
+    }
+}
+
+class Both(l: Left, r: Right) {
+    func init(self) {
+        l.init()
+        r.init()
+    }
+
+    func peer(self) -> str {
+        return "right-override"
+    }
+}
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func label(self) -> str {
+        return f"box({self.value})"
+    }
+
+    func show(self) -> str {
+        return self.label()
+    }
+}
+
+class Job {
+    func compute(self) -> int {
+        return 1
+    }
+
+    async func run(self) -> str {
+        return f"async {self.compute()}"
+    }
+}
+
+class BigJob(Job) {
+    func compute(self) -> int {
+        return 9
+    }
+}
+
+func show(d: HasDescribe) -> str {
+    return d.describe()
+}
+
+func main() {
+    s: Shape = Shape()
+    print(f"base area={s.area()} describe={s.describe()}")
+    sq: Square = Square()
+    print(f"square describe={sq.describe()}")
+
+    p: Puppy = Puppy()
+    print(f"grand: {p.greet()}")
+    d: Dog = Dog()
+    print(f"dog: {d.greet()}")
+    a: Animal = Animal()
+    print(f"animal: {a.greet()}")
+
+    page: Page = Page()
+    print(page.render())
+
+    acct: Premium = Premium(10)
+    print(f"init-base: total={acct.total()}")
+
+    m: Multiplier = Multiplier()
+    print(f"args: {m.run(2, 3, 2)}")
+
+    v: ChildVault = ChildVault()
+    print(f"private hook: {v.reveal()}")
+
+    both: Both = Both()
+    print(f"named: {both.show()}")
+
+    t: Tile = Tile()
+    print(f"interface: {show(t)}")
+
+    b: Box[int] = Box[int](5)
+    print(f"generic box: {b.show()}")
+
+    job: BigJob = BigJob()
+    msg: str = await job.run()
+    print(f"async: {msg}")
+
+    texts: list[str] = [Shape().describe(), Square().describe()]
+    print(f"list: {texts[0]}, {texts[1]}")
+}

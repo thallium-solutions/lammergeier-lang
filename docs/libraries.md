@@ -3,22 +3,22 @@
 Lammergeier keeps general-purpose building blocks in the standard library and
 ships service clients, fast-moving protocols, and vendor integrations as
 independently versioned packages. The official packages below are tested with
-`lamc` 1.19 and declare `^1.18` compatibility; each uses a scoped `@lam/...`
+`lamc` 2.0 and declare `>=1.18, <3` compatibility; each uses a scoped `@lam/...`
 import and carries its own tests, release notes, and pinned Go dependencies.
-Current releases (3.0.0 removes the root `tag()` helper):
+Current releases (all declare `lamc >=1.18, <3`; 3.0.0 removed the root `tag()` helper):
 
 | Release | Notes |
 |---|---|
-| `@lam/jwt@3.1.0` | ES256/ES384/ES512, EC keys in `JwtKeySet` and JWKS, `JwtKeySet.decode` for any RS*/PS*/ES* token (root `tag()` removed in 3.0.0) |
-| `@lam/ssh@3.0.1` | `golang.org/x/crypto` v0.58.0 (SSH channel denial-of-service fixes; Go 1.26) |
-| `@lam/protobuf@3.0.0` | root `tag()` removed |
-| `@lam/vulture/tus-plugin@3.0.1` | root `tag()` removed (3.0.0); pins `@lam/vulture` 2.0.1 |
-| `@lam/sftp@3.3.1` | pins `@lam/ssh` 3.0.1; adaptive ciphers (AES-GCM for clients that support it, `withAdaptiveCiphers`), `onOpenWrite` (errors at OPEN), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`) |
-| `@lam/s3@2.2.0` | SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
-| `@lam/redis@2.0.0`, `@lam/memcached@2.0.0` | |
-| `@lam/vulture/ws-plugin@2.0.1` | pins `@lam/vulture` 2.0.1 |
-| `@lam/vulture@2.0.1` | semantic-check clean-ups, no API change |
-| `@lam/vulture/std-plugin@2.0.2` | semantic-check clean-ups (2.0.1); pins `@lam/vulture` 2.0.1 |
+| `@lam/jwt@3.1.1` | lamc 2.x compatible; ES256/ES384/ES512, EC keys in `JwtKeySet` and JWKS, `JwtKeySet.decode` for any RS*/PS*/ES* token (root `tag()` removed in 3.0.0) |
+| `@lam/ssh@3.0.2` | lamc 2.x compatible; `golang.org/x/crypto` v0.58.0 (SSH channel denial-of-service fixes; Go 1.26) |
+| `@lam/protobuf@3.0.1` | lamc 2.x compatible; root `tag()` removed |
+| `@lam/vulture/tus-plugin@3.0.2` | lamc 2.x compatible; pins `@lam/vulture` 2.0.2; root `tag()` removed (3.0.0) |
+| `@lam/sftp@3.3.2` | lamc 2.x compatible; pins `@lam/ssh` 3.0.2; adaptive ciphers (AES-GCM for clients that support it, `withAdaptiveCiphers`), `onOpenWrite` (errors at OPEN), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`) |
+| `@lam/s3@2.2.1` | lamc 2.x compatible; SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
+| `@lam/redis@2.0.1`, `@lam/memcached@2.0.1` | lamc 2.x compatible |
+| `@lam/vulture/ws-plugin@2.0.2` | lamc 2.x compatible; pins `@lam/vulture` 2.0.2 |
+| `@lam/vulture@2.0.2` | lamc 2.x compatible, no API change |
+| `@lam/vulture/std-plugin@2.0.3` | lamc 2.x compatible; pins `@lam/vulture` 2.0.2 |
 
 Git release tags are the plain version (`3.0.1`, not `v3.0.1`).
 
@@ -268,11 +268,11 @@ independent scoped packages. Replace legacy compiler-era imports with:
 | `from lamserver_ws import WebSocket, wsRoute` | `from @lam/vulture/ws-plugin import WebSocket, wsRoute` |
 
 ```bash
-lamc install @lam/vulture@2.0.1
-lamc install @lam/vulture/std-plugin@2.0.2
+lamc install @lam/vulture@2.0.2
+lamc install @lam/vulture/std-plugin@2.0.3
 # Install only when used:
-lamc install @lam/vulture/ws-plugin@2.0.1
-lamc install @lam/vulture/tus-plugin@3.0.1
+lamc install @lam/vulture/ws-plugin@2.0.2
+lamc install @lam/vulture/tus-plugin@3.0.2
 ```
 
 The standard plugin package's canonical direct-installer imports are:

@@ -1,0 +1,77 @@
+# Test: `catch Cls as e` binds the caught object typed as `Cls`: fields
+# and methods are reachable directly, a subclass instance is caught by a
+# clause naming its base (and its overrides run), and the binding can be
+# re-raised or passed on as the base type.
+#
+# expect: not found: user 7 (code 404)
+# expect: generic: boom (code 500)
+# expect: rethrown: user 9 (code 404)
+# expect: handled by base: user 3
+# expect: describe: NotFound(user 3)
+
+class AppError {
+    func init(self, message: str) {
+        self.message: str = message
+    }
+
+    func code(self) -> int {
+        return 500
+    }
+
+    func describe(self) -> str {
+        return f"AppError({self.message})"
+    }
+}
+
+class NotFound(AppError) {
+    func code(self) -> int {
+        return 404
+    }
+
+    func describe(self) -> str {
+        return f"NotFound({self.message})"
+    }
+}
+
+func lookup(id: int) {
+    if id > 0 {
+        raise NotFound(f"user {id}")
+    }
+    raise AppError("boom")
+}
+
+func report(e: AppError) -> str {
+    return e.describe()
+}
+
+func main() {
+    try {
+        lookup(7)
+    } catch NotFound as e {
+        print(f"not found: {e.message} (code {e.code()})")
+    }
+    try {
+        lookup(0)
+    } catch AppError as e {
+        print(f"generic: {e.message} (code {e.code()})")
+    }
+    try {
+        try {
+            lookup(9)
+        } catch AppError as e {
+            raise e
+        }
+    } catch AppError as outer {
+        print(f"rethrown: {outer.message} (code {outer.code()})")
+    }
+    saved: optional[AppError] = None
+    try {
+        lookup(3)
+    } catch AppError as e {
+        print(f"handled by base: {e.message}")
+        saved = e
+    }
+    if saved != None {
+        print(f"describe: {report(saved)}")
+    }
+}

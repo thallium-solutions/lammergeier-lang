@@ -1,0 +1,8 @@
+# expect-error: argument `compare` to `Sort.sortWith` has type `func(str, str) -> int`, expected `func(int, int) -> int`
+# The comparator receives the list's elements.
+
+from lamsort import Sort
+
+func main() {
+    print(Sort.sortWith([3, 1, 2], lambda (a: str, b: str) -> int: len(a) - len(b)))
+}

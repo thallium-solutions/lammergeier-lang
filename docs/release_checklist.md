@@ -43,7 +43,7 @@ Use a temporary prefix so the smoke test does not replace the user's active inst
 ```bash
 tmpdir=$(mktemp -d)
 ./install.sh --prefix "$tmpdir/lammergeier" --no-editor
-"$tmpdir/lammergeier/bin/lamc" tests/rosetta_tests/hello_world.lam --run
+"$tmpdir/lammergeier/bin/lamc" tests/tests/cases/rosetta/test_hello_world.lam --run
 "$tmpdir/lammergeier/bin/lammergeier-lsp" --help >/dev/null || true
 rm -rf "$tmpdir"
 ```
@@ -96,5 +96,5 @@ Replace `vX.Y.Z` with the release version.
 
 - **Fresh checkout:** clone or update a separate checkout at the pushed tag.
 - **Install from tag:** run `./install.sh --user --no-editor` or the intended installation mode.
-- **Compile hello world:** `lamc tests/rosetta_tests/hello_world.lam --run`.
+- **Compile hello world:** `lamc tests/tests/cases/rosetta/test_hello_world.lam --run`.
 - **Confirm editor extension:** open a `.lam` file in the target editor and confirm the extension activates.

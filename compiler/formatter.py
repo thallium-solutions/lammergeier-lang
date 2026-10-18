@@ -71,6 +71,18 @@ def _format_lines(source: str) -> str:
             i = next_i
             continue
 
+        if "\n" in stripped:
+            # Multi-line string statement (``_expand_compact_layout``): only
+            # the first line is re-indented, the string text is kept.
+            masked = _mask_triple_strings(stripped)
+            leading_closers = _leading_closing_braces(masked)
+            line_depth = max(0, depth - leading_closers)
+            first, rest = stripped.split("\n", 1)
+            out.append("    " * line_depth + first.strip() + "\n" + rest.rstrip())
+            depth = max(0, depth + _brace_delta(masked))
+            i += 1
+            continue
+
         leading_closers = _leading_closing_braces(stripped)
         line_depth = max(0, depth - leading_closers)
         formatted = _format_code_line(stripped)
@@ -91,7 +103,7 @@ def _format_lines(source: str) -> str:
 _LAYOUT_LITERAL_PRECEDERS = set("=,([:+-*/%<>!&|^~?")
 _LAYOUT_LITERAL_KEYWORDS = frozenset({
     "return", "yield", "raise", "throw", "await", "in", "and", "or",
-    "not", "is",
+    "not", "is", "case",
 })
 _LAYOUT_LAMBDA_HEAD_RE = re.compile(
     r"\blambda\b(?:\s*\((?:[^()]|\([^)]*\))*\)|\s+\w+(?:\s*,\s*\w+)*)?"
@@ -99,11 +111,56 @@ _LAYOUT_LAMBDA_HEAD_RE = re.compile(
 )
 
 
+def _open_triple_quote(line: str, state: str = "") -> str:
+    """The triple quote (``\"\"\"`` / ``'''``) still open after ``line``,
+    starting inside one when ``state`` is set; ``""`` otherwise."""
+    i = 0
+    quote = state
+    while i < len(line):
+        if quote:
+            if len(quote) == 1 and line[i] == "\\":
+                i += 2
+                continue
+            if line.startswith(quote, i):
+                i += len(quote)
+                quote = ""
+                continue
+            i += 1
+            continue
+        if line[i] == "#":
+            break
+        if line.startswith('"""', i) or line.startswith("'''", i):
+            quote = line[i:i + 3]
+            i += 3
+            continue
+        if line[i] in "\"'":
+            quote = line[i]
+        i += 1
+    return quote if len(quote) == 3 else ""
+
+
+def _mask_triple_strings(text: str) -> str:
+    """``text`` with the content of triple-quoted strings removed."""
+    return re.sub(r'("""|\'\'\')(.*?)\1', r"\1\1", text, flags=re.S)
+
+
 def _expand_compact_layout(lines: list[str]) -> list[str]:
     expanded: list[str] = []
     layout_stack: list[str] = []
     i = 0
     while i < len(lines):
+        if _open_triple_quote(lines[i]):
+            # A statement holding a multi-line string stays verbatim (one
+            # element with embedded newlines): its text is part of a value.
+            group = [lines[i]]
+            state = _open_triple_quote(lines[i])
+            i += 1
+            while i < len(lines) and state:
+                group.append(lines[i])
+                state = _open_triple_quote(lines[i], state)
+                i += 1
+            expanded.append("\n".join(group))
+            continue
         stripped = lines[i].strip()
         if stripped.startswith("#-"):
             block, next_i = _collect_doc_comment(lines, i)
@@ -120,9 +177,15 @@ def _expand_compact_layout(lines: list[str]) -> list[str]:
     return expanded
 
 
+_DESTRUCTURE_LINE_RE = re.compile(r"^\s*\{[ \t]*[A-Za-z_][^{}\n]*\}\s*=(?!=)")
+
+
 def _split_compact_line(line: str, layout_stack: list[str]) -> list[str]:
     code, comment = _split_inline_comment(line)
     if not code.strip():
+        return [line]
+    if _DESTRUCTURE_LINE_RE.match(code):
+        # ``{name, age} = user``: dictionary destructuring, not a block.
         return [line]
     out: list[str] = []
     buf: list[str] = []
@@ -276,6 +339,17 @@ def _format_code_fragment(code: str) -> str:
             out.append(code[i])
             i += 1
             continue
+        postfix = code[i:i + 2]
+        if (
+            postfix in {"++", "--"}
+            and (i + 2 == len(code) or code[i + 2] in " \t;)]}")
+            and out and (str(out[-1])[-1:].isalnum() or str(out[-1])[-1:] in "_)]")
+        ):
+            # ``i++`` / ``xs[0]--``: postfix increment, not two operators.
+            _rstrip_spaces(out)
+            out.append(postfix)
+            i += 2
+            continue
         op = _operator_at(code, i)
         if op:
             _append_space(out)
@@ -338,6 +412,8 @@ def _operator_at(code: str, index: int) -> str:
                 continue
             if op in {"+", "-"} and index > 0 and code[index - 1] in "([{=,:+-*/%<>!&|^":
                 return ""
+            if op in {"+", "-"} and _is_unary_sign(code, index):
+                return ""
             return op
     return ""
 
@@ -349,6 +425,30 @@ def _is_unary_or_variadic_star(code: str, index: int) -> bool:
         return True
     if prev == "" or prev in "([{=,:":
         return bool(nxt and (nxt.isalpha() or nxt == "_"))
+    return False
+
+
+_UNARY_AFTER_WORDS = {"return", "if", "elif", "while", "in", "and", "or", "not", "yield", "else", "case"}
+
+
+def _is_unary_sign(code: str, index: int) -> bool:
+    """``i - -1`` / ``return -1``: a sign after an operator or keyword
+    (separated by spaces) is unary."""
+    if index + 1 >= len(code) or code[index + 1].isspace():
+        return False
+    prev = _previous_nonspace(code, index)
+    if not prev:
+        return True
+    if prev in "([{=,:+-*/%<>!&|^":
+        return True
+    if prev.isalnum() or prev == "_":
+        j = index - 1
+        while j >= 0 and code[j].isspace():
+            j -= 1
+        end = j + 1
+        while j >= 0 and (code[j].isalnum() or code[j] == "_"):
+            j -= 1
+        return code[j + 1:end] in _UNARY_AFTER_WORDS
     return False
 
 
@@ -652,4 +752,17 @@ def _space_before_opener_is_meaningful(out: list[str]) -> bool:
         i -= 1
     if i < 0:
         return False
+    if text[i].isalnum() or text[i] == "_":
+        # ``match [a, b]`` / ``case [x, *rest]`` / ``return (x)``: a keyword
+        # before the opener is not a call or subscript.
+        end = i + 1
+        while i >= 0 and (text[i].isalnum() or text[i] == "_"):
+            i -= 1
+        return text[i + 1:end] in _OPENER_KEYWORDS and (i < 0 or text[i] != ".")
     return text[i] in "=,:+-*/%<>!&|^"
+
+
+_OPENER_KEYWORDS = frozenset({
+    "match", "case", "in", "return", "yield", "if", "elif", "while", "and", "or",
+    "not", "else", "assert", "raise", "throw", "await", "is",
+})

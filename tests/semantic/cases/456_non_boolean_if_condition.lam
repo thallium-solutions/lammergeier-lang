@@ -1,0 +1,9 @@
+# expect-error: `if` condition must be `bool`, got `list[int]`; test `len(x) > 0`
+# Lam has no truthiness: conditions are `bool`.
+
+func main() {
+    xs: list[int] = [1]
+    if xs {
+        print("non-empty")
+    }
+}

@@ -1,0 +1,17 @@
+# expect-error: unknown member `err.reason` on class `Error`
+# The `do/catch` binding is an `Error`: its members are checked.
+
+from lamerrors import Result
+
+func parse(s: str) -> Result[int] {
+    return Result.Err("bad")
+}
+
+func main() {
+    do {
+        n: int = parse("x")?
+        print(n)
+    } catch err {
+        print(err.reason)
+    }
+}

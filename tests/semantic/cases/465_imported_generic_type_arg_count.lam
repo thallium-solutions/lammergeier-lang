@@ -1,0 +1,9 @@
+# expect-error: `Bag` expects 1 type argument
+# An imported generic class checks its type-argument count.
+
+from generic_bag_helper import Bag
+
+func main() {
+    b = Bag[int, str]()
+    print(len(b.items))
+}

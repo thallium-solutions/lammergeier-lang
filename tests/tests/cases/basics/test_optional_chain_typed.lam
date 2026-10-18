@@ -1,0 +1,55 @@
+# Test: `?.` chains over `optional[...]` values stay typed: a field read
+# through `?.` is an optional of the field type, so it chains further,
+# combines with `??` into annotated targets, prints its value (or
+# `<nil>`), and `d[key] ?? fallback` selects the fallback for a missing
+# map key.
+#
+# expect: chain: a@b
+# expect: coalesce: x
+# expect: missing chain: <nil>
+# expect: missing coalesce: none
+# expect: f-string: a@b
+# expect: nested: 42
+# expect: count: 3 0
+# expect: map default: 1 7
+# expect: optional local: 5 <nil>
+
+class Profile {
+    email: str
+    func init(self, email: str) { self.email = email }
+}
+
+class User {
+    profile: optional[Profile]
+    email: optional[str]
+    visits: int
+    func init(self, p: optional[Profile]) {
+        self.profile = p
+        self.email = None
+        self.visits = 3
+    }
+}
+
+func visits(u: optional[User]) -> int {
+    return u?.visits ?? 0
+}
+
+func main() {
+    user: optional[User] = User(Profile("a@b"))
+    print("chain:", user?.profile?.email)
+    e: str = user?.email ?? "x"
+    print(f"coalesce: {e}")
+    nobody: optional[User] = None
+    print("missing chain:", nobody?.profile?.email)
+    f: str = nobody?.profile?.email ?? "none"
+    print(f"missing coalesce: {f}")
+    print(f"f-string: {user?.profile?.email}")
+    value = (nobody?.email ?? None) ?? 42
+    print(f"nested: {value}")
+    print(f"count: {visits(user)} {visits(nobody)}")
+    counts: dict[str, int] = {"a": 1}
+    print(f"map default: {counts['a'] ?? 9} {counts['b'] ?? 7}")
+    n: optional[int] = 5
+    m: optional[int] = None
+    print("optional local:", n, m)
+}

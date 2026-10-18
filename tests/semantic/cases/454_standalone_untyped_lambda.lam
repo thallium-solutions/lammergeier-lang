@@ -1,0 +1,8 @@
+# expect-error: lambda parameter `x` has no type: `sq` gives the lambda no `func(...)` type, and `x` is used with an operator
+# A stand-alone lambda has no expected `func` type to take parameter types
+# from.
+
+func main() {
+    sq = lambda x: x * x
+    print(sq(3))
+}

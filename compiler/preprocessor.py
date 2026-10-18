@@ -232,13 +232,14 @@ def expand_dict_destructure(source: str) -> str:
             tmp = f"{_DESTRUCTURE_TEMP_PREFIX}{counter}"
         reserved_names.add(tmp)
         counter += 1
-        lines = [f"{indent}{tmp} = {rhs}"]
+        statements = [f"{tmp} = {rhs}"]
         for key, alias, default in entries:
             value = f'{tmp}["{key}"]'
             if default is not None:
                 value = f"{value} ?? {default}"
-            lines.append(f"{indent}{alias} = {value}")
-        return "\n".join(lines)
+            statements.append(f"{alias} = {value}")
+        # One line, so the following lines keep their numbers.
+        return indent + "; ".join(statements)
 
     return _DESTRUCTURE_LHS_RE.sub(_replace, source)
 

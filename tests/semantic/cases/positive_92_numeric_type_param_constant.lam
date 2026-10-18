@@ -1,0 +1,28 @@
+# expect-pass
+# Untyped numeric constants initialise / are returned as a type parameter
+# constrained to numbers, and its values support arithmetic.
+
+class Stats[T: number] {
+    func init(self, values: list[T]) {
+        self.values: list[T] = values
+    }
+    func total(self) -> T {
+        t: T = 0
+        for v in self.values {
+            t = t + v
+        }
+        return t
+    }
+}
+
+func clampHigh[T: number](x: T) -> T {
+    if x > 100 {
+        return 0
+    }
+    return x
+}
+
+func main() {
+    s: Stats[int] = Stats[int]([1, 2])
+    print(s.total(), clampHigh(500))
+}

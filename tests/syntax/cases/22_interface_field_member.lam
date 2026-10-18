@@ -1,0 +1,10 @@
+# Empty interfaces are valid (see tests/tests/cases/language/test_parser_valid_forms.lam);
+# a field declaration inside an interface body is not.
+# expect-error: syntax check failed
+# expect-error: Unexpected identifier `area`.
+# expect-error: expected: `func` or `}`
+# expect-error: help: Interface bodies only declare method signatures
+
+interface Shape {
+    area: float
+}

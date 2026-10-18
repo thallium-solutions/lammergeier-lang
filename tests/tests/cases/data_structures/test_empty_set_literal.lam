@@ -1,0 +1,41 @@
+# Regression (report 4.9): `{}` where a `set[T]` is expected (annotation,
+# reassignment, return, parameter, class field) is an empty set.
+#
+# expect: 0 false
+# expect: 0
+# expect: 0 false
+# expect: 2 true
+# expect: 0
+# expect: 0
+# expect: 0
+
+class Tags {
+    names: set[str] = {}
+}
+
+func fresh() -> set[int] {
+    return {}
+}
+
+func count(s: set[str]) -> int {
+    return len(s)
+}
+
+func main() {
+    flags: set[str] = {}
+    print(len(flags), "x" in flags)
+    for f in flags {
+        print("never", f)
+    }
+    counts: dict[str, int] = {}
+    print(len(counts))
+    s: set[int] = fresh()
+    print(len(s), 3 in s)
+    flags = {"a", "b"}
+    print(len(flags), "a" in flags)
+    flags = {}
+    print(len(flags))
+    t: Tags = Tags()
+    print(len(t.names))
+    print(count({}))
+}

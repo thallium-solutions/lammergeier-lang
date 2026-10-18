@@ -1,0 +1,27 @@
+# expect-pass
+# Valid neighbours of the section-6 diagnostics: typed / contextual
+# lambdas, sibling blocks re-using a name with another type, a json
+# array loop, `bool(json)` conditions and non-constant divisors.
+
+func apply(f: func(int) -> int, x: int) -> int {
+    return f(x)
+}
+
+func main() {
+    sq = lambda (x: int): x * x
+    show = lambda x: print(x)
+    show(sq(3))
+    print(apply(lambda x: x * 2, 4))
+    flag: bool = true
+    if flag { a: int = 1; print(a) } else { a: str = "s"; print(a) }
+    payload: json = {"ok": true, "tags": ["a"]}
+    for tag in payload.tags {
+        t: str = tag
+        print(t)
+    }
+    if bool(payload.ok) {
+        print("ok")
+    }
+    d: int = 2
+    print(10 / d, f"{d}")
+}

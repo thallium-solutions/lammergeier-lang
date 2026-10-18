@@ -1,0 +1,5 @@
+# expect-error: division by zero: the right operand of `/` is the constant 0
+
+func main() {
+    print(10 / 0)
+}

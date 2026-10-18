@@ -1,0 +1,134 @@
+# Test: sequence patterns over lists, tuples, any and json values,
+# with star captures, nested patterns, guards and `as` bindings.
+#
+# expect: empty
+# expect: one 7
+# expect: pair 3+4=7
+# expect: head 1 rest 3
+# expect: empty
+# expect: first=a last=d middle=2
+# expect: starts with zero, 2 more
+# expect: tuple alice 30 next 31
+# expect: tuple other
+# expect: nested 1 2 3
+# expect: any pair 1/b
+# expect: any triple starting 9
+# expect: any not a sequence
+# expect: any not a sequence
+# expect: json point 3,4
+# expect: json head "x" tail 2
+# expect: json other
+# expect: guard big pair 50 60
+# expect: guard small pair
+# expect: pair as [5 6] sum 11
+# expect: tuple-ish 1 2
+# expect: rest is typed 9
+# expect: words: go fast
+
+func describe(xs: list[int]) -> str {
+    match xs {
+        case [] { return "empty" }
+        case [x] { return f"one {x}" }
+        case [a, b] { return f"pair {a}+{b}={a + b}" }
+        case [head, *rest] { return f"head {head} rest {len(rest)}" }
+    }
+    return "unreachable"
+}
+
+func ends(words: list[str]) -> str {
+    match words {
+        case [first, *middle, last] {
+            return f"first={first} last={last} middle={len(middle)}"
+        }
+        case _ { return "empty" }
+    }
+}
+
+func person(p: tuple[str, int]) -> str {
+    match p {
+        case ("bob", _) { return "tuple other" }
+        case (name, age) {
+            next: int = age + 1
+            return f"tuple {name} {age} next {next}"
+        }
+    }
+    return "not a person"
+}
+
+func anySeq(v: any) -> str {
+    match v {
+        case [a, b] { return f"any pair {a}/{b}" }
+        case [9, *_] { return "any triple starting 9" }
+        case _ { return "any not a sequence" }
+    }
+}
+
+func jsonSeq(j: json) -> str {
+    match j {
+        case [int(x), int(y)] { return f"json point {x},{y}" }
+        case [head, *tail] if len(tail) == 2 { return f"json head {head} tail {len(tail)}" }
+        case _ { return "json other" }
+    }
+}
+
+func main() {
+    print(describe([]))
+    print(describe([7]))
+    print(describe([3, 4]))
+    print(describe([1, 2, 3, 4]))
+
+    print(ends([]))
+    print(ends(["a", "b", "c", "d"]))
+
+    nums: list[int] = [0, 5, 6]
+    match nums {
+        case [0, *more] { print(f"starts with zero, {len(more)} more") }
+        case _ { print("no zero") }
+    }
+
+    print(person(("alice", 30)))
+    print(person(("bob", 41)))
+
+    grid: list[list[int]] = [[1, 2], [3]]
+    match grid {
+        case [[a, b], [c]] { print(f"nested {a} {b} {c}") }
+        case _ { print("nested other") }
+    }
+
+    print(anySeq([1, "b"]))
+    print(anySeq([9, 8, 7]))
+    print(anySeq("ab"))
+    print(anySeq(5))
+
+    print(jsonSeq([3, 4]))
+    print(jsonSeq(["x", 1, 2]))
+    print(jsonSeq({"a": 1}))
+
+    for pair in [[50, 60], [1, 2]] {
+        match pair {
+            case [a, b] if a + b > 100 { print(f"guard big pair {a} {b}") }
+            case [_, _] { print("guard small pair") }
+        }
+    }
+
+    match [5, 6] {
+        case [x, y] as both { print(f"pair as {both} sum {x + y}") }
+    }
+
+    match (1, 2) {
+        case (a, b) { print(f"tuple-ish {a} {b}") }
+    }
+
+    match [1, 9] {
+        case [_, *rest] {
+            last: int = rest[0]
+            print(f"rest is typed {last}")
+        }
+    }
+
+    words: list[str] = ["go", "fast"]
+    match words {
+        case [w1, w2] { print(f"words: {w1} {w2}") }
+        case _ { print("words other") }
+    }
+}

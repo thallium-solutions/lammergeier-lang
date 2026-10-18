@@ -1,0 +1,12 @@
+# expect-error: cannot assign `list[int]` to `list[str]` variable `names`
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    match xs {
+        case [head, *tail] {
+            names: list[str] = tail
+            print(head, names)
+        }
+        case _ { print("empty") }
+    }
+}

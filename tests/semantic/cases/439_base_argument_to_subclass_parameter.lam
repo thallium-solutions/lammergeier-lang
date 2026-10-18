@@ -1,0 +1,23 @@
+# expect-error: argument `sq` to `side` has type `Shape`, expected `Square`
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, n: int) {
+        base.init("square")
+        self.n: int = n
+    }
+}
+
+func side(sq: Square) -> int {
+    return sq.n
+}
+
+func main() {
+    s: Shape = Shape("plain")
+    print(side(s))
+}

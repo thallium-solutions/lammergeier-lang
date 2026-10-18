@@ -1,0 +1,22 @@
+# Transpilation: typed catch clauses become an if/else-if chain on the
+# recovered value; unmatched exceptions are re-raised.
+# expect-go: __lamExcKind := func(v interface{}) string {
+# expect-go: if __lamExcKind == "ValueError" || __lamExcKind == "ParseError" {
+# expect-go: } else if func() bool { switch r.(type) { case *AppError: return true }; return false }() {
+# expect-go: panic(r)
+
+class AppError {
+    func init(self, msg: str) {
+        self.msg: str = msg
+    }
+}
+
+func main() {
+    try {
+        raise ValueError("boom")
+    } catch ValueError as e {
+        print("value", e)
+    } catch AppError as e {
+        print("app", e)
+    }
+}
