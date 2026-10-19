@@ -248,7 +248,7 @@ class ExpressionVisitorMixin:
                     and self._expr_go_type_hint(receiver) == "*Result"
                     and not self._unwrap_payload_go_type(node)
                 ):
-                    return f"{raw}.({go_type})"
+                    return self._result_payload_assert_go(raw, go_type)
         # ── Class-pointer coercion ─────────────────────────────
         # When annassign targets a Lam class (``go_type`` is
         # ``*<ClassName>``) and the value is either:
@@ -888,7 +888,7 @@ class ExpressionVisitorMixin:
             call = self._funccall_to_go(node)
             payload = self._unwrap_payload_go_type(node)
             if payload and call.endswith(")"):
-                return f"{call}.({payload})"
+                return self._result_payload_assert_go(call, payload)
             return call
 
         if d == "getattr":
@@ -1039,7 +1039,7 @@ class ExpressionVisitorMixin:
             self._declare_var(tmp)
             cast = self._propagate_cast_hint or self._propagated_payload_go_type(node.children[0])
             if cast and cast != "interface{}":
-                return f"{tmp}.Value.({cast})"
+                return self._result_payload_assert_go(f"{tmp}.Value", cast)
             return f"{tmp}.Value"
 
         if d == "null_coalesce":
@@ -1639,6 +1639,28 @@ class ExpressionVisitorMixin:
             )
         return None
 
+    def _check_str_receiver_method(self, func: Tree, args_node) -> None:
+        """``label.substring(0, 2)`` on a Go ``string`` would lower to
+        ``label.Substring(...)``, which Go rejects. The semantic checker
+        reports it for the compiled file; this reports it for imported
+        modules (and receivers the checker cannot type) with the same
+        message."""
+        from compiler.constants import STR_METHODS, lam_simple_expr_text, unknown_str_method_message
+
+        method = self._get_name(func.children[1])
+        if not method or method in STR_METHODS:
+            return
+        receiver = func.children[0]
+        if not isinstance(receiver, Tree):
+            return
+        if receiver.data not in {"string", "fstring", "string_concat"} and self._expr_go_type_hint(receiver) != "string":
+            return
+        arg_texts = [lam_simple_expr_text(arg) for arg in self._get_raw_call_args(args_node)]
+        self._report_lam_error(
+            func, "member",
+            unknown_str_method_message(method, lam_simple_expr_text(receiver), arg_texts),
+        )
+
     def _funccall_to_go(self, node: Tree) -> str:
         # A call nested in another call's callee (``make(inc).get()``) must
         # lower its own arguments outside the outer callee context, so bare
@@ -1711,6 +1733,7 @@ class ExpressionVisitorMixin:
         if isinstance(func, Tree) and func.data == "getattr":
             raw_obj = self._expr_to_go(func.children[0])
             raw_method = self._get_name(func.children[1])
+            self._check_str_receiver_method(func, args_node)
             _alias, parent_base, parent_receiver = self._parent_alias_call_info(func)
             if parent_base and raw_method:
                 method_key = f"{parent_base}.init" if raw_method in {"init", "__init__"} else f"{parent_base}.{raw_method}"
@@ -2505,6 +2528,9 @@ class ExpressionVisitorMixin:
                 # to resolve. Done before the return-rewrite so the
                 # zero-value rewriter sees the final shape.
                 raw = self._resolve_user_lammergeier(raw)
+                # ``options("a")`` -> ``Options("a")`` for module functions
+                # named with their Lam spelling (same as ``go!(...)``).
+                raw = self._resolve_raw_lam_function_names(raw, block_id)
                 # Rewrite bare ``return`` statements inside this block
                 # to include the zero-value of the surrounding Lam
                 # function's declared return type. This lets Lam
@@ -2576,8 +2602,11 @@ class ExpressionVisitorMixin:
                 inline_raw = self.go_blocks[block_id].strip()
                 # Same user-name resolution as the statement form so
                 # ``go! { LAMMERGEIER.foo() }`` and inline
-                # ``go! LAMMERGEIER.foo()`` both work.
-                return self._resolve_user_lammergeier(inline_raw)
+                # ``go! LAMMERGEIER.foo()`` both work, and so do Lam
+                # spellings of module functions (``go!(options("a"))``).
+                return self._resolve_raw_lam_function_names(
+                    self._resolve_user_lammergeier(inline_raw), block_id,
+                )
             return f"/* go inline {block_id} not found */"
 
         # ── User-defined function ──
@@ -2625,7 +2654,8 @@ class ExpressionVisitorMixin:
             cached = cache[expr]
             if cached is None:
                 return None
-            return self._optional_display_go(self._expr_to_go(cached), cached)
+            with self._scoped(_synthetic_positions=True):
+                return self._optional_display_go(self._expr_to_go(cached), cached)
         try:
             from compiler.lammergeier import create_parser as _cp
         except Exception:
@@ -2659,7 +2689,8 @@ class ExpressionVisitorMixin:
             rhs = rhs.children[0]
         cache[expr] = rhs
         try:
-            return self._optional_display_go(self._expr_to_go(rhs), rhs)
+            with self._scoped(_synthetic_positions=True):
+                return self._optional_display_go(self._expr_to_go(rhs), rhs)
         except Exception:
             cache[expr] = None
             return None
@@ -3329,12 +3360,60 @@ class ExpressionVisitorMixin:
             if len(value.children) != 1 or not isinstance(value.children[0], Tree):
                 return ""
             value = value.children[0]
+        ok_func = f"{self._go_class_name('Result')}_Ok"
         if value.data not in {
             "list", "dict", "set", "list_comprehension", "dict_comprehension",
             "set_comprehension", "test",
         }:
-            return ""
-        return f"{self._go_class_name('Result')}_Ok({self._typed_value_to_go(value, payload)})"
+            converted = self._result_ok_payload_conversion(value, payload)
+            return f"{ok_func}({converted})" if converted else ""
+        return f"{ok_func}({self._typed_value_to_go(value, payload)})"
+
+    def _result_payload_assert_go(self, value: str, payload: str) -> str:
+        """``value`` (a ``Result`` payload read as ``interface{}`` by
+        ``unwrap()`` / ``unwrapOr`` / ``?``) asserted to ``payload``. A
+        ``float`` payload also accepts an int and a base-class payload a
+        subclass instance (viewed as the base class), so a ``Result`` built
+        outside a typed context (``f(Result.Ok(1))`` with a ``Result[float]``
+        parameter) unwraps instead of panicking."""
+        if payload == "float64":
+            return (
+                "func(v interface{}) float64 { if n, ok := v.(int); ok { return float64(n) }; "
+                f"return v.(float64) }}({value})"
+            )
+        payload_class = self._hier_class_from_go_type(payload) if payload.startswith("*") else ""
+        if (
+            payload_class
+            and payload == f"*{self._go_class_name(payload_class)}"
+            and self._hier_subclassed(payload_class)
+            and not self._generic_classes.get(payload_class)
+        ):
+            up = f"_lamUp_{self._go_class_name(payload_class)}"
+            return (
+                f"func(v interface{{}}) {payload} {{ if x, ok := v.({payload}); ok || v == nil {{ return x }}; "
+                f"return v.(interface{{ {up}() {payload} }}).{up}() }}({value})"
+            )
+        return f"{value}.({payload})"
+
+    def _result_ok_payload_conversion(self, value: Tree, payload: str) -> str:
+        """The Go for ``value`` stored as a ``payload`` when it fits it only
+        through a conversion, else ``""``: ``unwrap()`` asserts the declared
+        payload type, so ``Result.Ok(1)`` in a ``Result[float]`` (an ``int``)
+        and ``Result.Ok(Circle())`` in a ``Result[Shape]`` (a ``*Circle``)
+        panicked. Ints widen to the float type; a subclass instance is viewed
+        as its base class, like any other upcast."""
+        actual = self._hier_expr_go_type(value) or self._infer_type_from_value(value) or ""
+        if payload in {"float64", "float32"} and actual in _GO_INT_TYPES:
+            return f"{payload}({self._expr_to_go(value)})"
+        if payload.startswith("*") and actual.startswith("*"):
+            if actual != payload:
+                return self._hier_upcast_to_go(self._expr_to_go(value), actual, payload)
+            if self._hier_subclassed(self._hier_class_from_go_type(payload)):
+                # ``s: Shape = Circle(); Result.Ok(s)``: store the ``*Shape``
+                # view, not the most-derived object ``Result_Ok``'s
+                # ``interface{}`` parameter would otherwise get.
+                return self._expr_to_go(value)
+        return ""
 
     def _conversion_to_go(self, name: str, node, value: str) -> str:
         """Lower ``int(x)`` / ``float(x)`` / ``bool(x)`` by the static type of ``x``.
@@ -3690,6 +3769,12 @@ class ExpressionVisitorMixin:
                 if inner_func.data == "getattr":
                     inner_obj = inner_func.children[0]
                     inner_method = self._get_name(inner_func.children[1])
+                    if inner_method in {"unwrap", "unwrapOr"}:
+                        # ``r.unwrap().area()`` with ``r: Result[Shape]``:
+                        # the payload class (so overrides dispatch).
+                        payload_class = self._hier_class_from_go_type(self._unwrap_payload_go_type(obj_node))
+                        if payload_class:
+                            return payload_class
                     # Static call ``Class.method(...)``?
                     # Only class-typed returns identify a receiver class; a
                     # scalar return (``-> str``) must keep its builtin
@@ -4067,6 +4152,7 @@ class ExpressionVisitorMixin:
                     lines.append(f"{tabs}for {name} := range {iter_str} {{")
                 silence([name])
             return
+        literal_typed = False
         if isinstance(iter_expr, Tree) and iter_expr.data == "list" and not targets:
             # ``[i for i in [1, 2, 3] if i > 1]``: range over the typed slice
             # so the variable has the elements' type.
@@ -4074,6 +4160,7 @@ class ExpressionVisitorMixin:
             if literal_type.startswith("[]") and literal_type != "[]interface{}":
                 iter_str = self._typed_value_to_go(iter_expr, literal_type)
                 self._var_go_types[var_str] = literal_type[2:]
+                literal_typed = True
         if len(targets) == 2 and self._range_single_target_uses_key(iter_expr):
             lines.append(f"{tabs}for {targets[0]}, {targets[1]} := range {iter_str} {{")
             key_type, value_type = self._split_go_map_type(self._expr_go_type_hint(iter_expr) or self._infer_type_from_value(iter_expr) or "")
@@ -4107,7 +4194,15 @@ class ExpressionVisitorMixin:
                     self._var_types[var_str] = elem_class
                 else:
                     self._var_types.pop(var_str, None)
-        if self._range_single_target_uses_key(iter_expr):
+            elif not literal_typed:
+                # Unknown element type: not the type of a same-named local
+                # outside the comprehension.
+                self._var_go_types.pop(var_str, None)
+                self._var_types.pop(var_str, None)
+        if var_str == "_" and not targets:
+            # ``[0 for _ in xs]``: Go has no ``_ :=`` binding.
+            lines.append(f"{tabs}for range {iter_str} {{")
+        elif self._range_single_target_uses_key(iter_expr):
             lines.append(f"{tabs}for {var_str} := range {iter_str} {{")
         elif self._iterates_string(iter_expr):
             # Lam yields one-character strings, Go ranges over runes.
@@ -4151,10 +4246,12 @@ class ExpressionVisitorMixin:
     def _list_comp_to_go(self, node: Tree, elem_type: str = None) -> str:
         # Comprehension variables are declared only inside the closure.
         saved = set(self.declared_vars)
+        saved_types = self._save_local_types()
         try:
             return self._list_comp_to_go_body(node, elem_type)
         finally:
             self.declared_vars = saved
+            self._restore_local_types(saved_types)
 
     def _list_comp_to_go_body(self, node: Tree, elem_type: str = None) -> str:
         comp = node.children[0]
@@ -4216,10 +4313,12 @@ class ExpressionVisitorMixin:
     def _set_comp_to_go(self, node: Tree, map_type: str = None) -> str:
         # Comprehension variables are declared only inside the closure.
         saved = set(self.declared_vars)
+        saved_types = self._save_local_types()
         try:
             return self._set_comp_to_go_body(node, map_type)
         finally:
             self.declared_vars = saved
+            self._restore_local_types(saved_types)
 
     def _set_comp_to_go_body(self, node: Tree, map_type: str = None) -> str:
         # ``{f(x) for x in xs if cond}`` lowers to a `map[interface{}]bool`
@@ -4282,10 +4381,12 @@ class ExpressionVisitorMixin:
     def _dict_comp_to_go(self, node: Tree, map_type: str = None) -> str:
         # Comprehension variables are declared only inside the closure.
         saved = set(self.declared_vars)
+        saved_types = self._save_local_types()
         try:
             return self._dict_comp_to_go_body(node, map_type)
         finally:
             self.declared_vars = saved
+            self._restore_local_types(saved_types)
 
     def _dict_comp_to_go_body(self, node: Tree, map_type: str = None) -> str:
         comp = node.children[0]

@@ -1,0 +1,13 @@
+# expect-error: `str` has no method `indexOf` — did you mean `index`?
+# expect-error: `str` has no method `toUpperCase` — did you mean `toUpper`?
+# expect-error: `str` has no method `includes` — did you mean `contains`?
+# expect-error: `str` has no method `concat`; use `a + b`
+# expect-error: `str` has no method `equals`; use `a == "x"`
+# JavaScript / Java string methods get the Lam method or operator to use.
+
+func main() {
+    a: str = "lam"
+    b: str = "geier"
+    print(a.indexOf("a"), a.toUpperCase(), a.includes("l"))
+    print(a.concat(b), a.equals("x"))
+}

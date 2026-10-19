@@ -1874,7 +1874,14 @@ Calling any other method on a `str` or `list[T]` is a compile error with a
 hint for the usual Python spelling (`s.find(x)` → `s.index(x)`,
 `s.rfind(x)` → `s.lastIndex(x)`, both returning -1 when absent;
 `s.upper()` → `s.toUpper()`; `xs.index(x)` / `xs.contains(x)` → `x in xs`
-or a loop). See [TRANSPILATION.md](#/docs/transpilation)
+or a loop) and for other languages' string methods, spelled with the call's
+own receiver and arguments: `label.substring(0, 2)` → slicing `label[0:2]`
+(also `substr`, `slice`), `label.charAt(i)` → indexing `label[i]`,
+`a.concat(b)` → `a + b`, `a.equals(b)` → `a == b`, `indexOf` → `index`,
+`toUpperCase` → `toUpper`, `includes` → `contains`. The error is reported for
+imported modules too (the transpiler reports it there with the same message,
+since `lamc build` runs the semantic checker on the compiled file only).
+See [TRANSPILATION.md](#/docs/transpilation)
 for the emission details, including which method names require
 at least one argument (`replace` / `split` / `index` / `count` /
 `contains` / `format` — a zero-arg call like `qb.count()` falls
@@ -2220,7 +2227,20 @@ assignment, enclosing return, typed call argument, or typed collection element
 still supplies context for the Go assertion. `Result.Ok(...)` likewise shapes
 collection literals, comprehensions and ternaries from the declared payload, so
 `return Result.Ok(["a", "b"])` in a `-> Result[list[str]]` function stores a
-`list[str]`. The `?` operator likewise has
+`list[str]`. The value wrapped by `Result.Ok(x)` must fit the declared payload
+when it is returned from a function or lambda declaring `Result[T]` or
+assigned to a variable annotated `Result[T]`: `return Result.Ok(Json.encode(v))`
+in a `-> Result[str]` is a compile error, because `Json.encode` already
+returns `Result[str]` and the caller's `unwrap()` would find a `Result` where
+it expects a `str`; write `Result.Ok(Json.encode(v)?)` or `return
+Json.encode(v)`. `Result[any]`, a bare `Result`, `Result[Result[T]]` and
+generic payloads accept any value that fits them. A value that fits only
+through a conversion is converted: `Result.Ok(1)` in a `Result[float]` holds
+`1.0`, and `Result.Ok(Circle())` in a `Result[Shape]` holds the `Shape` view
+of the circle (overridden methods still dispatch to `Circle`); `unwrap()`,
+`unwrapOr(...)` and `?` also accept such values when the `Result` was built
+where no payload type was known (a call argument, a lambda, a list element).
+The `?` operator likewise has
 a typed assignment path (`n: int = parseInt(s)?`) and emits the matching Go
 type assertion for the unwrapped value. `Result[T, E]` is rejected because errors remain
 open `any` values rather than a second type parameter.
@@ -3513,10 +3533,42 @@ func main() {
 }
 ```
 
+### Calling Lam functions from raw Go
+
+Raw Go in a `go! { }` block or a `go!(...)` expression may call a top-level
+function of its own module, or one imported without `as`, by its Lam
+spelling: the call is lowered to the function's Go name (`options("a")` →
+`Options("a")`, or the module-qualified name when two modules define the
+same function). Constants and module variables keep their names, so they
+need no rewriting:
+
+```lammergeier
+const Origin: str = "https://x.test"
+
+func options(r: str) -> str { return r + "!" }
+
+go! {
+    func helper(a string, b string) string { return a + b }
+}
+
+func main() {
+    s: str = go!(helper(options("a"), Origin))   # helper(Options("a"), Origin)
+    print(s)
+}
+```
+
+Only calls (`name(`) outside strings and comments and not after a `.` are
+rewritten. A name keeps its Go meaning when a Lam local in scope, the raw Go
+of the same Lam function (`options := func(...)`, a parameter, `var`) or a
+package-level `go!` block of the module declares it; overloaded functions and aliased
+imports are not followed. `LAMMERGEIER.<name>` (below) and the Go name itself
+always work.
+
 ### Scoping inside `go!` blocks
 
-A `go!` block is a verbatim paste into the generated Go source — Lam
-does **not** rewrite identifiers inside it, with one exception: in a
+A `go!` block is a verbatim paste into the generated Go source — apart from
+the Lam function calls above, module renames and `LAMMERGEIER.*` references,
+Lam does **not** rewrite identifiers inside it, with one exception: in a
 **class method** the bare receiver is renamed and `self.<Field>` is
 rewritten to use it. Knowing exactly what each shape gives you prevents
 the most common stdlib-extension pitfall: relying on a name that simply

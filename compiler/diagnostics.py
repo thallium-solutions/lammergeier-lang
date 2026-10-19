@@ -40,6 +40,25 @@ class Diagnostic:
     hint: str | None = None
 
 
+class TranspileDiagnosticError(RuntimeError):
+    """Lam errors found while lowering a module to Go.
+
+    The semantic checker only runs on the file passed to ``lamc``; imported
+    modules are transpiled without it. Lowering steps that would otherwise
+    emit Go that cannot build (or panics) record a Lam diagnostic instead and
+    the transpiler raises this once the module is walked, so the driver can
+    print them with the module's own source snippets.
+
+    ``errors`` holds ``(line, col, message, kind)`` tuples.
+    """
+
+    def __init__(self, errors: list[tuple[int, int, str, str]], source_file: str | None = None):
+        self.errors = list(errors)
+        self.source_file = source_file
+        first = self.errors[0] if self.errors else (0, 0, "", "")
+        super().__init__(f"line {first[0]}: {first[2]}")
+
+
 def severity_to_lsp(severity: DiagnosticSeverity) -> int:
     """Return LSP's numeric diagnostic severity."""
     if severity is DiagnosticSeverity.ERROR:

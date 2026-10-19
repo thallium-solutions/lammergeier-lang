@@ -1,0 +1,24 @@
+# Transpilation: raw Go in `go!(...)` and `go! { }` naming a module function
+# by its Lam spelling is lowered to the function's Go name; constants keep
+# their name.
+# expect-go: var s string = helper(Options("a"), Origin)
+# expect-go: t = Options("b") + Origin
+
+go! {
+    func helper(a string, b string) string { return a + b }
+}
+
+const Origin: str = "https://x.test"
+
+func options(r: str) -> str {
+    return r + "!"
+}
+
+func main() {
+    s: str = go!(helper(options("a"), Origin))
+    t: str = ""
+    go! {
+        t = options("b") + Origin
+    }
+    print(s, t)
+}

@@ -1,0 +1,9 @@
+# expect-error: `Result.Ok(...)` wraps a value of type `Result[str]`, but `encodeBody` returns `Result[str]` (payload `str`)
+# Imported by 502_result_ok_wraps_result_in_imported_module.lam.
+
+from lamerrors import Result
+from lamjson import Json
+
+func encodeBody(v: json) -> Result[str] {
+    return Result.Ok(Json.encode(v))
+}

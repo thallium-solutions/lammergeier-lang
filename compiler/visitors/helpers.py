@@ -211,6 +211,18 @@ class HelpersMixin:
     def _emit_raw(self, line: str):
         self.output_lines.append(line)
 
+    def _save_local_types(self) -> tuple:
+        """Snapshot of the per-name type tables, for a construct whose
+        bindings end with it (a function body, a comprehension)."""
+        return (
+            dict(self._var_go_types),
+            dict(self._var_types),
+            dict(self._var_result_payloads),
+        )
+
+    def _restore_local_types(self, saved: tuple) -> None:
+        self._var_go_types, self._var_types, self._var_result_payloads = saved
+
     def _push_scope(self):
         self.scope_stack.append((
             set(self.declared_vars),
@@ -368,6 +380,21 @@ class HelpersMixin:
         if getattr(meta, "line", None):
             return meta.line
         return None
+
+    def _report_lam_error(self, node, kind: str, message: str) -> None:
+        """Record a Lam diagnostic for code that would otherwise lower to Go
+        that cannot build or panics. Reported for every module, including
+        imported ones the semantic checker does not see."""
+        line = col = 0
+        meta = getattr(node, "meta", None)
+        if not self._synthetic_positions and meta is not None and not getattr(meta, "empty", True):
+            line = int(getattr(meta, "line", 0) or 0)
+            col = int(getattr(meta, "column", 0) or 0)
+        if not line:
+            line, col = self._last_line_directive or 1, 1
+        entry = (line, col, message, kind)
+        if entry not in self._lam_errors:
+            self._lam_errors.append(entry)
 
     def _pin_multiline_to(self, node, body: str) -> str:
         """Prepend a ``//line`` pragma to each line of a multi-line Go
@@ -637,6 +664,172 @@ class HelpersMixin:
             return m.group(0)
 
         return self._LAM_USER_RE.sub(_sub, raw)
+
+    # Go's predeclared identifiers: a Lam function spelled like one is never
+    # resolved from raw Go (``len(x)`` stays Go's ``len``).
+    _GO_PREDECLARED = frozenset({
+        "append", "cap", "clear", "close", "complex", "copy", "delete", "imag", "len",
+        "make", "max", "min", "new", "panic", "print", "println", "real", "recover",
+        "any", "bool", "byte", "comparable", "complex64", "complex128", "error",
+        "float32", "float64", "int", "int8", "int16", "int32", "int64", "rune",
+        "string", "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+        "true", "false", "iota", "nil",
+    })
+    _GO_DECL_PATTERNS = (
+        # ``var a, b T`` / ``const x = 1`` / ``type T ...``
+        _re.compile(r"\b(?:var|const|type)\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)"),
+        # ``func name(`` and methods ``func (r *T) name(``
+        _re.compile(r"\bfunc\s+([A-Za-z_]\w*)"),
+        _re.compile(r"\bfunc\s*\([^)]*\)\s*([A-Za-z_]\w*)"),
+        # ``a, b := ...`` (also ``for _, v := range``)
+        _re.compile(r"([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*:="),
+        # Parameters and results in a signature: ``(a, b string, c int)``
+        _re.compile(r"[(,]\s*([A-Za-z_]\w*)(?=\s+[\w*\[\]().]|\s*,)"),
+    )
+    _GO_GROUPED_DECL_RE = _re.compile(r"\b(?:var|const|type)\s*\(([^()]*)\)")
+
+    def _raw_go_block_declared_names(self, block_id: str) -> set:
+        """Identifiers one raw Go block declares (over-approximated)."""
+        cache = self.__dict__.setdefault("_raw_go_declared_cache", {})
+        if block_id in cache:
+            return cache[block_id]
+        names: set = set()
+        masked = mask_go_literals(self.go_blocks.get(block_id, ""))
+        for pattern in self._GO_DECL_PATTERNS:
+            for match in pattern.finditer(masked):
+                names.update(part.strip() for part in match.group(1).split(","))
+        for group in self._GO_GROUPED_DECL_RE.finditer(masked):
+            for line in group.group(1).split("\n"):
+                head = _re.match(r"\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)", line)
+                if head:
+                    names.update(part.strip() for part in head.group(1).split(","))
+        cache[block_id] = names
+        return names
+
+    def _raw_go_block_groups(self):
+        """``({block_id: ids of the blocks in the same Lam function}, ids of
+        blocks outside functions)``. Raw Go blocks of one function share its
+        Go scope; blocks outside functions declare package-level names."""
+        cached = self.__dict__.get("_raw_go_groups_cache")
+        if cached is not None:
+            return cached
+        markers = {"__go_block__", "__go_inline__"}
+
+        def ids_in(node) -> set:
+            found: set = set()
+            if not isinstance(node, Tree):
+                return found
+            for sub in node.iter_subtrees():
+                if sub.data != "funccall" or not sub.children:
+                    continue
+                callee = sub.children[0]
+                if not (isinstance(callee, Tree) and callee.data == "var" and callee.children
+                        and self._get_name(callee.children[0]) in markers):
+                    continue
+                for token in sub.scan_values(lambda v: isinstance(v, Token)):
+                    text = str(token)
+                    if len(text) >= 2 and text[0] in "\"'" and text[-1] == text[0]:
+                        found.add(text[1:-1])
+                        break
+            return found
+
+        def functions_in(node):
+            for child in node.children:
+                if not isinstance(child, Tree):
+                    continue
+                if child.data in {"funcdef", "decorated"}:
+                    yield child
+                elif child.data not in {"classdef"}:
+                    yield from functions_in(child)
+
+        groups: dict = {}
+        outside: set = set()
+        tree = getattr(self, "_raw_go_tree", None)
+        for stmt in (tree.children if isinstance(tree, Tree) else []):
+            if not isinstance(stmt, Tree):
+                continue
+            if stmt.data in {"funcdef", "decorated"}:
+                fns = [stmt]
+            elif stmt.data == "classdef":
+                fns = list(functions_in(stmt))
+            else:
+                fns = []
+            in_functions: set = set()
+            for fn in fns:
+                group = frozenset(ids_in(fn))
+                in_functions |= group
+                for block_id in group:
+                    groups[block_id] = group
+            outside |= ids_in(stmt) - in_functions
+        result = (groups, frozenset(outside))
+        self.__dict__["_raw_go_groups_cache"] = result
+        return result
+
+    def _raw_go_declared_names(self, block_id: str = "") -> set:
+        """Names raw Go declares where block ``block_id`` is spliced: the
+        blocks of its Lam function and the package-level blocks."""
+        groups, outside = self._raw_go_block_groups()
+        names: set = set()
+        for other in set(groups.get(block_id, {block_id})) | set(outside):
+            names |= self._raw_go_block_declared_names(other)
+        return names
+
+    def _raw_go_lam_function_names(self) -> Dict[str, str]:
+        """``{lam_name: go_name}`` for the functions raw Go of this module may
+        call by their Lam spelling: its own top-level functions and the
+        functions it imports without an alias, whose Go name differs."""
+        cached = self.__dict__.get("_raw_go_lam_functions_cache")
+        if cached is not None:
+            return cached
+        candidates = set(getattr(self, "_module_function_names", set()))
+        candidates.update(
+            name for name in getattr(self, "_unaliased_imported_names", set())
+            if name in self._user_functions
+        )
+        out: Dict[str, str] = {}
+        for name in candidates:
+            if name in self._GO_PREDECLARED or name == "main":
+                continue
+            if len(self._overload_variants.get(name, ())) > 1:
+                continue
+            go_name = self._go_user_function_name(name)
+            if go_name and go_name != name:
+                out[name] = go_name
+        self.__dict__["_raw_go_lam_functions_cache"] = out
+        return out
+
+    def _resolve_raw_lam_function_names(self, raw: str, block_id: str = "") -> str:
+        """``go!(helper(options("a")))``: a call in raw Go to a function of
+        this module (or one imported without an alias) written with its Lam
+        spelling is rewritten to the function's Go name (``Options``), the
+        same for ``go! { }`` blocks and ``go!(...)`` expressions. Calls only,
+        outside strings and comments, not after a ``.``; a name declared by
+        a Lam local in scope, by the raw Go of the same Lam function or by a
+        package-level ``go!`` block of the module keeps its Go meaning."""
+        names = self._raw_go_lam_function_names()
+        if not names or not raw:
+            return raw
+        declared = self._raw_go_declared_names(block_id)
+        active = {
+            name: go for name, go in names.items()
+            if name not in self.declared_vars and name not in declared
+        }
+        if not active:
+            return raw
+        pattern = _re.compile(
+            r"(?<![\w.])(" + "|".join(_re.escape(n) for n in sorted(active, key=len, reverse=True)) + r")(?=\s*\()"
+        )
+        masked = mask_go_literals(raw)
+        out: List[str] = []
+        last = 0
+        for match in pattern.finditer(masked):
+            out.append(raw[last:match.start()])
+            out.append(active[match.group(1)])
+            last = match.end()
+        if not out:
+            return raw
+        out.append(raw[last:])
+        return "".join(out)
 
     def _number_to_go(self, node: Tree) -> str:
         return str(node.children[0]).replace("_", "")

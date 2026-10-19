@@ -32,4 +32,5 @@ This document captures project conventions for AI assistants working on `lammerg
 - Follow the test-first workflow in `CONTRIBUTING.md` and never weaken a valid test to hide an implementation defect.
 - Every feature set requires representative unit/semantic cases plus a cross-feature integration or stress fixture that exercises both the software and the Lam language constructs composing it; external packages must test through the installed-package boundary.
 - Run syntax diagnostics tests with `/usr/bin/python3 tests/syntax/run_syntax_tests.py --verbose` because the project-local `.venv` Python currently lacks `lark`, while `/usr/bin/python3` has `lark 1.3.1`.
+- Benchmarks: run them through `sh scripts/bench.sh compiler|runtime`, which also writes the output to `benchmarks/results/`; commit that file (never run a benchmark without keeping its output).
 - Common verification commands: `git diff --check` and `PYTHON=/usr/bin/python3 sh scripts/test.sh <suites>`.

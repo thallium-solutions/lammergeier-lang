@@ -1,0 +1,17 @@
+# expect-error: `str` has no method `substring`; use slicing `self.name[0:2]`
+# expect-error: `str` has no method `substring`; use slicing `c.name[1:]`
+# A `str` field read through `self` or a typed local is a `str` receiver too.
+
+class Card {
+    name: str = ""
+
+    func short(self) -> str {
+        return self.name.substring(0, 2)
+    }
+}
+
+func main() {
+    c: Card = Card()
+    c.name = "ace"
+    print(c.short(), c.name.substring(1))
+}

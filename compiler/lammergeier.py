@@ -63,6 +63,7 @@ from compiler.preprocessor import (
     LAMMERGEIER_ALIASES,
 )
 from compiler import cache as _lamcache
+from compiler.diagnostics import TranspileDiagnosticError
 from compiler.visitors.subtyping import resolve_inherited_init_metadata as _resolve_inherited_init_metadata
 from compiler.link_symbols import find_symbol_clashes, render_symbol_clashes
 from compiler import namespacing as _namespacing
@@ -1698,6 +1699,20 @@ def _retarget_line_directives(go_src: str, lam_path: str) -> str:
     return _LINE_DIRECTIVE_RE.sub(lambda m: f"{m.group(1)}//line {lam_path}:{m.group(2)}", go_src)
 
 
+def _render_transpile_diagnostics(err, display_path: str, source: str | None = None) -> str:
+    """Render a ``TranspileDiagnosticError`` like semantic-check errors, with
+    snippets from the module that raised it."""
+    from compiler import semantic as _semantic
+
+    if source is None:
+        try:
+            source = Path(err.source_file or display_path).read_text(encoding="utf-8")
+        except OSError:
+            source = ""
+    diags = [_semantic.SemanticError(line, col, message, kind) for line, col, message, kind in err.errors]
+    return _semantic.render_errors(diags, source, display_path)
+
+
 def _effective_extlibs_dirs(
     source_dir: Path,
     extlibs_paths: list[str] | None,
@@ -2853,6 +2868,7 @@ def compile_lam(
         with ThreadPoolExecutor(max_workers=min(8, len(lib_mod_files))) as pool:
             futures = {pool.submit(_transpile_lib, name, path): name
                        for name, path in lib_mod_files.items()}
+            lib_lam_errors: list[str] = []
             for fut in futures:
                 try:
                     (mod_name, go_src, cls_names, static_meths, static_vars,
@@ -2862,6 +2878,13 @@ def compile_lam(
                 except SyntaxDiagnosticError as e:
                     print(str(e), file=sys.stderr)
                     sys.exit(1)
+                except TranspileDiagnosticError as e:
+                    # Lam errors in an imported module (which the semantic
+                    # checker does not run on): report every module's.
+                    lib_lam_errors.append(_render_transpile_diagnostics(
+                        e, str(lib_mod_files[futures[fut]]),
+                    ))
+                    continue
                 lib_sources[mod_name] = go_src
                 if mod_name in lib_mod_files:
                     _lib_path = lib_mod_files[mod_name].resolve()
@@ -2897,6 +2920,9 @@ def compile_lam(
                 lib_result_payload_go_types.update(result_payloads)
                 for name, variants in overload_variants.items():
                     lib_overload_variants.setdefault(name, []).extend(variants)
+            if lib_lam_errors:
+                print("\n".join(lib_lam_errors), file=sys.stderr)
+                sys.exit(1)
 
     # Now transpile main with lib class/static info injected
     _main_plan = ns_plans.get(main_module_path)
@@ -2974,6 +3000,9 @@ def compile_lam(
     _inject_program_hierarchy(transpiler)
     try:
         go_source = transpiler.transpile(tree)
+    except TranspileDiagnosticError as e:
+        print(_render_transpile_diagnostics(e, str(source_path), source), file=sys.stderr)
+        sys.exit(1)
     except RuntimeError as e:
         # User-facing transpile errors (e.g. unknown keyword argument,
         # name collision) bubble up here. Print them in the same

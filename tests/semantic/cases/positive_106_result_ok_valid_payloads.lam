@@ -1,0 +1,76 @@
+# expect-pass
+# expect-no-warning: wraps a value of type
+# `Result.Ok(x)` stays valid whenever `x` fits the declared payload: `?`
+# unwrapping, `Result[any]`, a bare `Result`, `Result[Result[T]]`, generic
+# payloads, json, optional, subclass, list and dict payloads, and functions
+# that return the inner `Result` directly.
+
+from lamerrors import Result, Error
+from lamjson import Json
+
+class Shape {
+    func area() -> float { return 0.0 }
+}
+
+class Circle(Shape) {
+    func area() -> float { return 3.0 }
+}
+
+func unwrapped(v: json) -> Result[str] {
+    return Result.Ok(Json.encode(v)?)
+}
+
+func direct(v: json) -> Result[str] {
+    return Json.encode(v)
+}
+
+func nested(v: json) -> Result[Result[str]] {
+    return Result.Ok(Json.encode(v))
+}
+
+func anyPayload(v: json) -> Result[any] {
+    return Result.Ok(Json.encode(v))
+}
+
+func barePayload(v: json) -> Result {
+    return Result.Ok(Json.encode(v))
+}
+
+func wrap[T](x: T) -> Result[T] {
+    return Result.Ok(x)
+}
+
+func doc() -> Result[json] {
+    return Result.Ok({"a": 1})
+}
+
+func maybe(flag: bool) -> Result[optional[str]] {
+    if flag {
+        return Result.Ok("yes")
+    }
+    return Result.Ok(None)
+}
+
+func shape() -> Result[Shape] {
+    return Result.Ok(Circle())
+}
+
+func numbers() -> Result[list[int]] {
+    return Result.Ok([1, 2])
+}
+
+func table() -> Result[dict[str, int]] {
+    return Result.Ok({"a": 1})
+}
+
+func failing() -> Result[str] {
+    return Result.Err(Error("Bad", "no", None))
+}
+
+func main() {
+    held: Result[str] = Result.Ok("x")
+    raw: Result = Result.Ok(Json.encode({"k": 2}))
+    print(unwrapped({"a": 1}).unwrap(), direct({"b": 2}).unwrap(), nested({"c": 3}).unwrap().unwrap())
+    print(anyPayload({}).ok(), barePayload({}).ok(), wrap(3).unwrap(), doc().ok(), maybe(true).ok())
+    print(shape().ok(), numbers().unwrap(), table().unwrap(), failing().ok(), held.unwrap(), raw.ok())
+}

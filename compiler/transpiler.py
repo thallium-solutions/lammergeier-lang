@@ -39,6 +39,12 @@ from compiler.visitors.narrowing import NarrowingLowerMixin
 # flags have block-scope semantics vs global lifetime.
 SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     "_in_funccall_head",
+    # Lowering an f-string slot parsed on its own (positions are not
+    # module positions; ``_report_lam_error`` uses the statement line).
+    "_synthetic_positions",
+    # Lowering a nested Go function body (lambda, closure): its
+    # ``_current_return_type_key`` may be the enclosing function's.
+    "_in_nested_callable",
     # Go type a ``yield`` value is shaped as (``-> generator[list[int]]``).
     "_generator_elem_type",
     "_self_replacement",
@@ -306,6 +312,13 @@ class GoTranspiler(
         # Source-line mapping
         self._source_file = source_file
         self._last_line_directive = 0
+        # Lam errors found while lowering (``_report_lam_error``), raised as
+        # one ``TranspileDiagnosticError`` once the module is walked.
+        self._lam_errors: List[Tuple[int, int, str, str]] = []
+        # Set while lowering an f-string slot re-parsed on its own, whose
+        # node positions are not positions in the module.
+        self._synthetic_positions = False
+        self._in_nested_callable = False
 
         # Default parameter values
         self._func_defaults: Dict[str, List[Tuple[int, Any]]] = {}
@@ -533,6 +546,11 @@ class GoTranspiler(
         # mangling for a later definition (source order doesn't
         # constrain call order in Go).
         self._finalize_overload_variants()
+        # Functions raw ``go!`` code of this module may call by their Lam
+        # spelling (``_resolve_raw_lam_function_names``).
+        self._module_function_names = set(self._user_functions)
+        self._unaliased_imported_names = self._collect_unaliased_import_names(tree)
+        self._raw_go_tree = tree
         # Library-imported functions are also "user functions" from the
         # call-site dispatcher's POV — without this, calls to library
         # functions would bypass default-arg filling.
@@ -565,6 +583,9 @@ class GoTranspiler(
         self._emit_top_level(tree)
 
         self.output_lines = old_lines
+        if self._lam_errors:
+            from compiler.diagnostics import TranspileDiagnosticError
+            raise TranspileDiagnosticError(sorted(self._lam_errors), self._source_file)
 
         # Build the final file
         header_lines = ["package main", ""]
@@ -975,6 +996,18 @@ class GoTranspiler(
             return ""
         elem = self._type_expr_to_go(args[0])
         return "" if not elem or elem == "interface{}" else elem
+
+    def _collect_unaliased_import_names(self, tree: Tree) -> Set[str]:
+        """Names bound by ``from m import name`` (without ``as``)."""
+        names: Set[str] = set()
+        for node in tree.iter_subtrees():
+            if node.data != "import_as_name":
+                continue
+            parts = [self._get_name(child) for child in node.children if isinstance(child, Tree)]
+            parts = [part for part in parts if part]
+            if len(parts) == 1:
+                names.add(parts[0])
+        return names
 
     def _collect_function_names(self, tree: Tree):
         if not isinstance(tree, Tree):

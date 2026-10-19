@@ -1,0 +1,17 @@
+# expect-error: `Result.Ok(...)` wraps a value of type `Result[str]`, but `f` returns `Result[str]` (payload `str`)
+# expect-error: propagate the inner result with `Json.encode(v)?` or return it directly
+# `Json.encode` already returns `Result[str]`; wrapping it in `Result.Ok`
+# passed the checker and panicked when the caller unwrapped the payload
+# (`interface {} is *main.Result, not string`).
+
+from lamerrors import Result
+from lamjson import Json
+
+func f(v: json) -> Result[str] {
+    return Result.Ok(Json.encode(v))
+}
+
+func main() {
+    r: Result[str] = f({"a": 1})
+    print(r.unwrap())
+}

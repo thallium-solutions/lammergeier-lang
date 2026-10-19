@@ -696,11 +696,75 @@ class StatementVisitorMixin:
 
     # ─── Return ────────────────────────────────────────────────
 
+    _GO_TO_LAM_SCALARS = {
+        "string": "str", "int": "int", "float64": "float", "bool": "bool",
+        "LamJSON": "json", "interface{}": "any", "[]byte": "bytes", "*Result": "Result",
+    }
+
+    def _go_type_lam_spelling(self, go_type: str) -> str:
+        """``map[string][]int`` -> ``dict[str, list[int]]`` (for diagnostics)."""
+        if go_type in self._GO_TO_LAM_SCALARS:
+            return self._GO_TO_LAM_SCALARS[go_type]
+        if go_type.startswith("[]"):
+            return f"list[{self._go_type_lam_spelling(go_type[2:])}]"
+        if go_type.startswith("map[") and "]" in go_type:
+            key, _, value = go_type[4:].partition("]")
+            return f"dict[{self._go_type_lam_spelling(key)}, {self._go_type_lam_spelling(value)}]"
+        if go_type.startswith("*"):
+            return go_type[1:]
+        return go_type
+
+    def _check_result_ok_return(self, val_node, return_type_key: str) -> None:
+        """``return Result.Ok(Json.encode(v))`` in a ``-> Result[str]``
+        wraps a ``Result`` where the caller expects a ``str`` and panics on
+        unwrap. The semantic checker reports it for the compiled file; this
+        reports it for imported modules with the same wording."""
+        if self._in_nested_callable or not (return_type_key.startswith("*Result[") and return_type_key.endswith("]")):
+            return
+        payload = return_type_key[len("*Result["):-1]
+        concrete = (
+            payload in self._GO_TO_LAM_SCALARS or payload.startswith(("[]", "map[", "*"))
+        )
+        if not concrete or payload in {"interface{}", "*Result"}:
+            return
+        if not (isinstance(val_node, Tree) and val_node.data == "funccall" and len(val_node.children) >= 2):
+            return
+        callee = val_node.children[0]
+        if not (
+            isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2
+            and isinstance(callee.children[0], Tree) and callee.children[0].data == "var"
+            and self._get_name(callee.children[0].children[0]) == "Result"
+            and self._get_name(callee.children[1]) == "Ok"
+            and "Result" not in self.declared_vars
+        ):
+            return
+        args = self._get_raw_call_args(val_node.children[1])
+        if len(args) != 1 or not isinstance(args[0], Tree) or args[0].data == "argvalue":
+            return
+        arg = args[0]
+        if self._expr_go_type_hint(arg) != "*Result":
+            return
+        from compiler.constants import lam_simple_expr_text
+
+        inner = self._result_payload_of(arg)
+        actual = f"Result[{self._go_type_lam_spelling(inner)}]" if inner and inner != "interface{}" else "Result"
+        lam_payload = self._go_type_lam_spelling(payload)
+        message = (
+            f"`Result.Ok(...)` wraps a value of type `{actual}`, but the enclosing function returns "
+            f"`Result[{lam_payload}]` (payload `{lam_payload}`)"
+        )
+        if not inner or inner in {payload, "interface{}"}:
+            arg_text = lam_simple_expr_text(arg)
+            propagate = f"`{arg_text}?`" if arg_text else "`?`"
+            message += f"; propagate the inner result with {propagate} or return it directly"
+        self._report_lam_error(val_node, "return", message)
+
     def _visit_return_stmt(self, node: Tree):
         if node.children and node.children[0] is not None:
             val_node = node.children[0]
             return_type = getattr(self, "_current_return_type", "") or ""
             return_type_key = getattr(self, "_current_return_type_key", "") or return_type
+            self._check_result_ok_return(val_node, return_type_key)
             if isinstance(val_node, Tree) and val_node.data == "testlist_tuple":
                 expected_types = self._split_go_tuple_type(return_type)
                 vals = []
@@ -1215,7 +1279,34 @@ class StatementVisitorMixin:
             return ""
         return f"map[string]{value_type}"
 
+    _NO_TYPE = object()
+
     def _visit_for_stmt(self, node: Tree):
+        # A loop variable the loop declares (``for _, c := range``) lives
+        # in the loop: it starts without the type of an earlier same-named
+        # binding (``for c in rows`` before ``for c in text.split(",")``)
+        # and its type does not outlive the loop.
+        fresh = [
+            go_name for go_name in (
+                self._go_binding_name(name) for name in _narrowing.target_names(node.children[0])
+            )
+            if go_name != "_" and go_name not in self.declared_vars
+        ]
+        saved = {
+            name: (self._var_go_types.pop(name, self._NO_TYPE), self._var_types.pop(name, self._NO_TYPE))
+            for name in fresh
+        }
+        try:
+            self._visit_for_stmt_inner(node)
+        finally:
+            for name, (go_type, class_name) in saved.items():
+                for table, value in ((self._var_go_types, go_type), (self._var_types, class_name)):
+                    if value is self._NO_TYPE:
+                        table.pop(name, None)
+                    else:
+                        table[name] = value
+
+    def _visit_for_stmt_inner(self, node: Tree):
         target_node = node.children[0]
         iterable_node = node.children[1]
         suite_node = node.children[2]
@@ -2071,6 +2162,8 @@ class StatementVisitorMixin:
             # the outer function returns something non-Result.
             boundary = self._callable_boundary_context()
             boundary["_do_return_target"] = do_return_target
+            # A ``return`` in the body returns from the enclosing function.
+            boundary["_in_nested_callable"] = self._in_nested_callable
             with self._scoped(_q_propagate_ok=True, **boundary):
                 if isinstance(body_suite, Tree) and body_suite.data == "suite":
                     for stmt in body_suite.children:

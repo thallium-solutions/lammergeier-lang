@@ -501,7 +501,13 @@ payload is in `_result_payload_go_types` (per overload variant) — lowers to
 `x.Unwrap().(T)`; as a bare statement the assertion is omitted. With a target
 of `Result[T]`, `Result.Ok(<collection literal | comprehension | ternary>)`
 lowers its argument through `_typed_value_to_go` with `T`, so the stored value
-has the concrete Go type later assertions expect. Direct `.value`, `.error`,
+has the concrete Go type later assertions expect; an int argument for a
+`float` payload is stored as `float64(x)` and a subclass instance for a
+base-class payload as its upcast (`NewCircle()._lamUp_Shape()`)
+(`_result_ok_payload_conversion`). The payload assertions themselves
+(`_result_payload_assert_go`) accept an `int` for `float64` and, for a class
+with subclasses, any descendant through its `_lamUp_<Base>()` view, so a
+`Result` built outside a typed context unwraps too. Direct `.value`, `.error`,
 and `unwrap()` / `unwrapOr(...)` on payload-unknown or `any` results retain
 the dynamic fallback:
 
@@ -1468,7 +1474,9 @@ from lamos import Os
   names imported without an alias (identifiers outside strings and comments;
   overload suffixes and `Class_static` prefixes included). Aliased imports and
   modules reached only indirectly are not followed: such raw code must use the
-  generated Go name.
+  generated Go name. Blocks and `go!(...)` expressions are rewritten the same
+  way, and both also accept the Lam spelling of a call to such a function
+  (`tag()` → `Tag()` / `Tag__alpha()`, see "`go!` escape hatches").
 - What still has to be unique is reported before `go build` as a Lam
   diagnostic listing each module, its source location and a three-line
   snippet, instead of Go's `redeclared in this block` cascade: a clash between
@@ -1517,13 +1525,26 @@ inline: int = go!(42) # inside an expression
 - **Inline `go!(expr)`** substitutes the raw expression in place — useful
   for anonymous structs, type assertions, and other constructs the Lam
   grammar does not yet model directly.
+- **Lam function names.** In both forms, a call written with the Lam
+  spelling of a top-level function of the module (or of one imported without
+  `as`) is lowered to its Go name: `go!(helper(options("a"), Origin))` emits
+  `helper(Options("a"), Origin)`. The rewrite (`_resolve_raw_lam_function_names`
+  in `compiler/visitors/helpers.py`) only touches `name(` outside strings and
+  comments and not after a `.`, skips Go predeclared names, overloaded
+  functions and functions whose Go name is their Lam name (private
+  functions), and leaves a name alone when a Lam local in scope, the raw Go
+  of the same Lam function or a package-level `go!` block of the module
+  declares it
+  (`options := ...`, a parameter, `var`, `func`). Constants and module
+  variables keep their Lam name in Go and need no rewrite.
 
 ### `self` / `s` rewrite — class methods only
 
 Within a method body, inside a `go!` block, `self` is available as the
 plain Go receiver `s` and `self.<Field>` is rewritten to `s.<TitleCased
-Field>` (for example `s.Inner`, `s.Raw`). This is the **only**
-identifier-rewrite the transpiler performs inside `go!` blocks.
+Field>` (for example `s.Inner`, `s.Raw`). Apart from module renames,
+`LAMMERGEIER.*` references and Lam-spelled function calls (above), this is
+the **only** identifier-rewrite the transpiler performs inside `go!` blocks.
 
 Outside class methods (top-level functions, plugin functions like
 `func plugin(srv: Server)`, `lambda` handlers) **no `s` is bound** and
@@ -1757,6 +1778,19 @@ The "needs at least one argument" guard still applies: a bare
 `qb.count()` on an unknown receiver shape skips the
 `Strings_count(o, " ")` lowering and falls through to user-method
 dispatch so the build doesn't silently emit nonsense.
+
+Any other method on a receiver whose Go type is `string` would lower to
+`s.Method(...)`, which Go rejects. The semantic checker reports it for the
+compiled file; because `lamc build` does not run the checker on imported
+modules, the transpiler reports the same `error[member]` diagnostic
+(`_check_str_receiver_method`) for every module, with the Lam idiom
+(`label.substring(0, 2)` → slicing `label[0:2]`). Such lowering-time
+diagnostics are collected per module and raised as one
+`TranspileDiagnosticError` (`compiler/diagnostics.py`), which the driver
+prints like semantic errors, with the module's own source snippet. The same
+mechanism reports `return Result.Ok(x)` where `x` is a `Result` and the
+function's payload is a concrete non-`Result` type
+(`_check_result_ok_return`), which would otherwise panic on `unwrap()`.
 
 ## Lam-side abstractions over Go primitives
 

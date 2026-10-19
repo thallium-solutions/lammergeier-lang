@@ -630,6 +630,26 @@ def test_raw_go_reference_to_renamed_function() -> None:
     )
 
 
+def test_raw_go_lam_spelled_function_names() -> None:
+    """Raw ``go!`` code (blocks and ``go!(...)`` expressions) may call a
+    module function, or a function imported without an alias, by its Lam
+    spelling (``tag()``); it lowers to the Go name, renamed module function
+    included (``Tag__one``). It used to fail with ``undefined: tag``."""
+    raw = (
+        "go! {\n    import \"strings\"\n}\n\n"
+        "func tag() -> str {\n    return \"{kind}\"\n}\n\n"
+        "func shout() -> str {\n    out: str = \"\"\n    go! {\n        out = strings.ToUpper(tag())\n    }\n    return out\n}\n\n"
+        "func whisper() -> str {\n    return go!(strings.ToLower(tag()) + \"~\")\n}\n"
+    )
+    _expect_output(
+        {"one.lam": raw.replace("{kind}", "one"), "two.lam": raw.replace("{kind}", "two")},
+        "from one import tag, whisper\nimport two\n\n"
+        "func main() {\n    mine: str = go!(tag() + \"+\")\n    print(mine, whisper(), two.shout(), two.whisper())\n}\n",
+        "one+ one~ TWO two~",
+        "raw go! naming module and imported functions by their Lam spelling",
+    )
+
+
 def test_scoped_package_import_requires_alias() -> None:
     files = {
         "extlibs/@acme/one/__init__.lam": _tagger("one"),
@@ -812,6 +832,7 @@ def main() -> None:
         test_local_definition_with_aliased_import,
         test_transitive_same_name_functions,
         test_raw_go_reference_to_renamed_function,
+        test_raw_go_lam_spelled_function_names,
         test_scoped_package_import_requires_alias,
         test_local_definition_conflict_suggests_alias,
         test_namespaced_module_variables,

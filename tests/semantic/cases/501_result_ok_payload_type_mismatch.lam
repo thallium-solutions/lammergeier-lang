@@ -1,0 +1,21 @@
+# expect-error: `Result.Ok(...)` wraps a value of type `int`, but `count` returns `Result[str]` (payload `str`)
+# expect-error: `Result.Ok(...)` wraps a value of type `Result[str]`, but `r` is declared `Result[str]` (payload `str`)
+# expect-error: `Result.Ok(...)` wraps a value of type `list[int]`, but `<lambda>` returns `Result[int]` (payload `int`)
+# The value given to `Result.Ok` must be assignable to the payload of the
+# declared `Result[T]`: in a `return` of the enclosing function, in an
+# annotated variable, and in a typed lambda.
+
+from lamerrors import Result
+from lamjson import Json
+
+func count(items: list[str]) -> Result[str] {
+    n: int = len(items)
+    return Result.Ok(n)
+}
+
+func main() {
+    v: json = {"k": 1}
+    r: Result[str] = Result.Ok(Json.encode(v))
+    first = lambda (xs: list[int]) -> Result[int]: Result.Ok(xs)
+    print(count(["a"]).ok(), r.ok(), first([1]).ok())
+}

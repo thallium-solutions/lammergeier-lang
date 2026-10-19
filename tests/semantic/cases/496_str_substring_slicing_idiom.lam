@@ -1,0 +1,19 @@
+# expect-error: `str` has no method `substring`; use slicing `label[0:2]`
+# expect-error: `str` has no method `substr`; use slicing `label[1:1 + n]` (`substr` takes a length)
+# expect-error: `str` has no method `slice`; use slicing `label[-3:]`
+# expect-error: `str` has no method `charAt`; use indexing `label[i]`
+# Methods other languages have on strings (`substring`, `substr`, `slice`,
+# `charAt`) passed the checker and failed in `go build`
+# (`label.Substring undefined`). They are Lam errors that name the slicing
+# or indexing expression to write instead.
+
+func main() {
+    label: str = "abcdef"
+    n: int = 2
+    i: int = 1
+    x: str = label.substring(0, 2)
+    y: str = label.substr(1, n)
+    z: str = label.slice(-3)
+    c: str = label.charAt(i)
+    print(x, y, z, c)
+}

@@ -5,6 +5,60 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 2.1.1 — 2026-10-19
+
+### Changed
+
+- Catalog: `@lam/s3` 2.3.0 (multipart parts streamed from files and readers).
+
+### Fixed
+
+- A method a `str` does not have (`label.substring(0, 2)`) passed `lamc`
+  and failed in `go build` (`label.Substring undefined`) when it was written
+  in an imported module, on a `str` field (`self.name.substring(...)`) or on
+  a typed lambda parameter: `lamc build` runs the semantic checker on the
+  compiled file only. The transpiler now reports the same Lam diagnostic for
+  every module, and the message names the Lam spelling with the call's own
+  operands: slicing for `substring` / `substr` / `slice`
+  (``use slicing `label[0:2]` ``), indexing for `charAt` / `at`, `+` / `==`
+  for `concat` / `equals`, and `index` / `toUpper` / `contains` / ... for
+  JavaScript / Java names such as `indexOf`, `toUpperCase`, `includes`.
+- `Result.Ok(x)` returned from a function (or lambda) declaring `Result[T]`,
+  or assigned to a variable annotated `Result[T]`, accepted any `x`:
+  `return Result.Ok(Json.encode(v))` in a `-> Result[str]` panicked when the
+  caller unwrapped it (`interface {} is *main.Result, not string`). An `x`
+  that does not fit `T` is a semantic error; for a fitting inner `Result` it
+  suggests ``Json.encode(v)?`` or returning it directly (also reported in
+  imported modules). `Result[any]`, a bare `Result`, `Result[Result[T]]` and
+  generic payloads are unchanged. Typed lambda parameters now give the lambda
+  body their declared type.
+- Raw Go in `go!(...)` expressions and `go! { }` blocks calling a module
+  function by its Lam spelling (`go!(helper(options("a"), Origin))`) failed
+  with `undefined: options`: the call now lowers to the function's Go name
+  (`Options`, or its module-qualified name), also for functions imported
+  without `as`. A Lam local or a Go declaration of the same name in the same
+  function or in a package-level `go!` block of the module keeps its Go
+  meaning.
+- The type of a loop, comprehension or local variable leaked into a
+  same-named variable of another function or method of the module (and
+  past a comprehension or loop in its own function): `c` in
+  `for c in "x, y".split(",")` kept the `list[str]` type of `c` in
+  `[c for c in Pairs]` in another method, and `c.trim()` failed in
+  `go build` (`c.Trim undefined`). Those types now end with their function,
+  comprehension or loop.
+- `[[c for c in row] for row in rows]` was rejected with "undefined name
+  `row`", and `[x for _ in xs]` failed in `go build` (`no new variables on
+  left side of :=`).
+- `unwrap()` on `Result.Ok(1)` returned from a `-> Result[float]` function
+  panicked (`interface {} is int, not float64`), and on `Result.Ok(Circle())`
+  in a `Result[Shape]` (`*main.Circle, not *main.Shape`). The payload is
+  converted where the Ok is built for a declared `Result[T]` (int to float,
+  subclass to the base-class view, with overrides still dispatching), and
+  `unwrap()`, `unwrapOr(...)` and `?` accept such payloads from a `Result`
+  built elsewhere (a call argument, a lambda, a list element). A method
+  called on an inline `r.unwrap()` of a `Result[Base]` now dispatches to
+  the override.
+
 ## 2.1.0 — 2026-10-19
 
 ### Added

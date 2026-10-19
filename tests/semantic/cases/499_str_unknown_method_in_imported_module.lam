@@ -1,0 +1,12 @@
+# expect-error: str_method_module_helper.lam
+# expect-error: `str` has no method `substring`; use slicing `label[0:2]`
+# An imported module is not run through the semantic checker by `lamc
+# build`, so `label.substring(0, 2)` in a library module failed in `go build`
+# (`label.Substring undefined`). The transpiler reports it as the same Lam
+# diagnostic, located in the library file.
+
+from str_method_module_helper import cut
+
+func main() {
+    print(cut("abcdef"))
+}

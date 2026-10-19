@@ -1,0 +1,14 @@
+# expect-pass
+# expect-no-warning: undefined name
+# A comprehension nested in another comprehension's result reads the outer
+# target (`row`); it was reported as an undefined name because the outer
+# comprehension visited the inner one's iterable before binding `row`.
+
+const Pairs: list[list[str]] = [["a", "A"], ["b", "B"]]
+
+func main() {
+    grid: list[list[str]] = [[ch for ch in row] for row in Pairs]
+    sizes: dict[str, int] = {row[0]: len([ch for ch in row if ch != ""]) for row in Pairs}
+    widths: list[int] = [len([1 for _ in row]) for row in grid]
+    print(grid, sizes, widths)
+}

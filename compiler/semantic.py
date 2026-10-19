@@ -2722,6 +2722,13 @@ class SemanticChecker(NarrowingCheckMixin):
                                     self._check_go_reserved(sub, name)
                                     scope.names.add(name)
                                     scope.definite_names.add(name)
+                                    if (
+                                        sub.data == "typed_lambda_param" and len(sub.children) > 1
+                                        and isinstance(sub.children[1], Tree)
+                                    ):
+                                        # ``lambda (xs: list[int]) -> ...``: the
+                                        # body sees the declared parameter type.
+                                        scope.var_types[name] = render_type(parse_type(sub.children[1]))
                             elif sub.data == "name":
                                 name = self._name_text(sub)
                                 self._check_go_reserved(sub, name)
@@ -2894,6 +2901,8 @@ class SemanticChecker(NarrowingCheckMixin):
         if not isinstance(body, Tree):
             return
         expected = parse_type(return_anno.children[0])
+        if self._check_result_ok_payload(body, expected, "`<lambda>` returns"):
+            return
         actual = self._expr_simple_type(body)
         if actual is None or self._is_unknown_open_assignment_type(actual):
             return
@@ -2987,12 +2996,21 @@ class SemanticChecker(NarrowingCheckMixin):
 
     @staticmethod
     def _iter_comp_fors(node: Tree):
-        """Yield every ``comp_for`` tree found under a comprehension."""
+        """Yield every ``comp_for`` tree of a comprehension, not those of a
+        comprehension or lambda nested in it (``[[c for c in row] for row in
+        rows]``: ``row`` is bound before the inner comprehension reads it)."""
+        nested = {
+            "list_comprehension", "dict_comprehension", "set_comprehension",
+            "tuple_comprehension", "generator_expr", "lambdef",
+        }
+
         def _walk(n):
             if not isinstance(n, Tree):
                 return
             if n.data == "comp_for":
                 yield n
+                return
+            if n is not node and n.data in nested:
                 return
             for c in n.children:
                 yield from _walk(c)
@@ -3767,6 +3785,9 @@ class SemanticChecker(NarrowingCheckMixin):
         if isinstance(expected, NamedType) and expected.name == "json":
             name = next((target for target in self._assign_targets(node) if target), "<target>")
             self._check_json_expr(value_node, f"invalid json value for variable `{name}`")
+            return
+        name = next((target for target in self._assign_targets(node) if target), "<target>")
+        if self._check_result_ok_payload(value_node, expected, f"`{name}` is declared"):
             return
         if self._check_annotated_container_literal(node, expected, value_node):
             return
@@ -5326,6 +5347,70 @@ class SemanticChecker(NarrowingCheckMixin):
             return type_.name == "Result"
         return isinstance(type_, GenericType) and type_.base == "Result" and len(type_.args) <= 1
 
+    def _result_ok_argument(self, node) -> Tree | None:
+        """The value of a ``Result.Ok(value)`` call, else ``None``."""
+        if not (isinstance(node, Tree) and node.data == "funccall" and len(node.children) >= 2):
+            return None
+        callee = node.children[0]
+        if not (
+            isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2
+            and isinstance(callee.children[0], Tree) and callee.children[0].data == "var"
+            and self._name_text(callee.children[0].children[0]) == "Result"
+            and self._name_text(callee.children[1]) == "Ok"
+        ):
+            return None
+        if self._var_type("Result"):
+            # A local named ``Result`` is not the lamerrors class.
+            return None
+        args = self._call_positional_args(node)
+        if len(args) != 1 or not isinstance(args[0], Tree):
+            return None
+        arg = args[0]
+        if arg.data == "argvalue":
+            if len(arg.children) != 1 or not isinstance(arg.children[0], Tree):
+                return None
+            arg = arg.children[0]
+        return arg
+
+    def _check_result_ok_payload(self, value_node, expected: Type | None, context: str, at=None) -> bool:
+        """``return Result.Ok(Json.encode(v))`` in a ``-> Result[str]``: the
+        wrapped value must fit the declared payload. ``Result.Ok`` returns
+        a bare ``Result``, so the mismatch otherwise reached the runtime
+        (``interface {} is *main.Result, not string`` on unwrap).
+
+        ``context`` completes the message (``"`f` returns"``). Returns
+        ``True`` when an error was reported."""
+        if not (isinstance(expected, GenericType) and expected.base == "Result" and len(expected.args) == 1):
+            return False
+        arg = self._result_ok_argument(value_node)
+        if arg is None:
+            return False
+        payload = expected.args[0]
+        if self._is_any_type(payload) or self._is_unknown_open_assignment_type(payload):
+            return False
+        actual = self._expr_type_for_expected(arg, payload)
+        if actual is None or self._is_any_type(actual) or self._is_unknown_open_assignment_type(actual):
+            return False
+        if (
+            is_assignable(payload, actual)
+            or self._nominal_type_assignable(payload, actual)
+            or self._numeric_constant_fits_type_param(payload, arg)
+        ):
+            return False
+        message = (
+            f"`Result.Ok(...)` wraps a value of type `{render_type(actual)}`, but {context} "
+            f"`{render_type(expected)}` (payload `{render_type(payload)}`)"
+        )
+        if self._is_result_type(actual):
+            inner = actual.args[0] if isinstance(actual, GenericType) and actual.args else None
+            if inner is None or is_assignable(payload, inner) or self._nominal_type_assignable(payload, inner):
+                from compiler.constants import lam_simple_expr_text
+                arg_text = lam_simple_expr_text(arg)
+                propagate = f"`{arg_text}?`" if arg_text else "`?`"
+                message += f"; propagate the inner result with {propagate} or return it directly"
+        self._error(at if at is not None else value_node, "return" if at is not None else "type", message)
+        return True
+
     def _check_dict_method_call(self, call: Tree) -> None:
         """``d.keys()`` on a ``dict``: dicts have no methods in Lam, and the
         call used to fail only in the Go build."""
@@ -5349,7 +5434,8 @@ class SemanticChecker(NarrowingCheckMixin):
         """``text.rfind(".")`` / ``xs.index(2)``: methods a ``str`` or
         ``list[T]`` does not have failed only in the Go build."""
         from compiler.constants import (
-            LIST_METHOD_HINTS, LIST_METHOD_IDIOMS, LIST_METHODS, STR_METHOD_HINTS, STR_METHODS,
+            LIST_METHOD_HINTS, LIST_METHOD_IDIOMS, LIST_METHODS, STR_METHODS,
+            lam_simple_expr_text, unknown_str_method_message,
         )
         callee = call.children[0] if call.children else None
         if not (isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2):
@@ -5358,15 +5444,21 @@ class SemanticChecker(NarrowingCheckMixin):
         if not isinstance(receiver, Tree):
             return
         receiver_type = self._expr_simple_type(receiver)
+        if receiver_type is None and receiver.data == "getattr":
+            # ``self.name.substring(0, 2)`` / ``card.name.charAt(0)``: a
+            # declared ``str`` field is a ``str`` receiver too.
+            field_type = self._member_target_type(receiver)
+            if self._is_named_type(field_type, "str") if field_type is not None else False:
+                receiver_type = field_type
         method = self._name_text(callee.children[1])
         if self._is_named_type(receiver_type, "str") if receiver_type is not None else False:
             if method in STR_METHODS:
                 return
-            hint = STR_METHOD_HINTS.get(method) or self._closest(method, STR_METHODS)
-            suffix = f" — did you mean `{hint}`?" if hint else ""
-            if method in {"find", "rfind"}:
-                suffix = f" — did you mean `{hint}` (returns -1 when absent)?"
-            self._error(callee, "member", f"`str` has no method `{method}`{suffix}")
+            arg_texts = [lam_simple_expr_text(arg) for arg in self._call_positional_args(call)]
+            self._error(
+                callee, "member",
+                unknown_str_method_message(method, lam_simple_expr_text(receiver), arg_texts),
+            )
             return
         if isinstance(receiver_type, ListType):
             if method in LIST_METHODS:
@@ -7552,6 +7644,8 @@ class SemanticChecker(NarrowingCheckMixin):
                     )
                     continue
                 value_node = self._return_value(ret)
+                if self._check_result_ok_payload(value_node, expected_model, f"`{name}` returns", ret):
+                    continue
                 if (isinstance(expected_model, NamedType)
                         and expected_model.name == "json"
                         and isinstance(value_node, Tree)):

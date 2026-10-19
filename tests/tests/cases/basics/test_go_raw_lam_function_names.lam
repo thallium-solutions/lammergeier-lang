@@ -1,0 +1,62 @@
+# expect: https://x.test/a!
+# expect: b! https://x.test
+# expect: 6
+# expect: LOCAL lambda:7
+# expect: [1 2]
+# Raw Go in `go!(...)` expressions and `go! { }` blocks may name the
+# module's Lam functions by their Lam spelling (`options`, lowered to the Go
+# `Options`), like constants (`Origin`); `go!(helper(options("a"), Origin))`
+# used to fail with `undefined: options`. A Go local declared in the same
+# function and a Lam local named like a function keep their own meaning.
+
+go! {
+    import "strings"
+
+    func helper(a string, b string) string { return a + b }
+}
+
+const Origin: str = "https://x.test"
+const suffix: str = "!"
+
+func options(r: str) -> str {
+    return r + suffix
+}
+
+private func twice(n: int) -> int {
+    return n * 2
+}
+
+func triple(n: int) -> int {
+    return n * 3
+}
+
+func pair(a: int, b: int) -> list[int] {
+    return [a, b]
+}
+
+func shout(x: str) -> str {
+    # The Go local `options` shadows the Lam function in this function.
+    out: str = ""
+    go! {
+        options := func(v string) string { return strings.ToUpper(v) }
+        out = options(x)
+    }
+    return out
+}
+
+func main() {
+    s: str = go!(helper(Origin + "/", options("a")))
+    print(s)
+    t: str = ""
+    go! {
+        t = options("b") + " " + Origin
+    }
+    print(t)
+    n: int = go!(twice(1) + triple(1) + 1)
+    print(n)
+    u: str = shout("local")
+    triple = lambda (k: int) -> str: f"lambda:{k}"
+    v: str = go!(triple(7))
+    print(u, v)
+    print(go!(pair(1, 2)))
+}

@@ -14,11 +14,18 @@ class DefinitionVisitorMixin:
     # ─── Functions ─────────────────────────────────────────────
 
     def _visit_funcdef(self, node: Tree):
-        with self._scoped(
-            _nr_module_code=False,
-            _index_bounds=getattr(node, "_lam_index_bounds", self._index_bounds),
-        ):
-            self._visit_funcdef_inner(node)
+        # The types of a function's locals (parameters, loop and
+        # comprehension variables) end with it: a same-named variable of
+        # another function or method must not inherit them.
+        saved_types = self._save_local_types()
+        try:
+            with self._scoped(
+                _nr_module_code=False,
+                _index_bounds=getattr(node, "_lam_index_bounds", self._index_bounds),
+            ):
+                self._visit_funcdef_inner(node)
+        finally:
+            self._restore_local_types(saved_types)
 
     def _visit_funcdef_inner(self, node: Tree):
         (is_private, is_static, is_async, name_node, params_node,
@@ -94,6 +101,9 @@ class DefinitionVisitorMixin:
             "_in_try_func": False,
             "_in_except_handler": False,
             "_loop_break_flag": "",
+            # ``_current_return_type_key`` may still name the enclosing
+            # function's result inside the nested body.
+            "_in_nested_callable": True,
         }
 
     def _emit_nested_funcdef(

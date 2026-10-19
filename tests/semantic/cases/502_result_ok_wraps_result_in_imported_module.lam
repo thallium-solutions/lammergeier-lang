@@ -1,0 +1,13 @@
+# expect-error: result_ok_module_helper.lam
+# expect-error: `Result.Ok(...)` wraps a value of type `Result[str]`
+# expect-error: propagate the inner result with `Json.encode(v)?` or return it directly
+# The same mistake in an imported module (not run through the semantic
+# checker) is reported by the transpiler instead of panicking at runtime.
+
+from lamerrors import Result
+from result_ok_module_helper import encodeBody
+
+func main() {
+    r: Result[str] = encodeBody({"a": 1})
+    print(r.unwrap())
+}

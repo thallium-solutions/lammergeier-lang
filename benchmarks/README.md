@@ -54,6 +54,14 @@ sh scripts/bench.sh runtime -f json --runs 9 --json out/runtime.json
 Groups: `language/` (calls, loops, lists, list indexing with a runtime
 index, dicts, strings, dispatch, f-strings) and `stdlib/` (JSON, regex, hashing, sorting, splitting).
 
+## Results
+
+`scripts/bench.sh` prints the report and writes it, with a header (version,
+commit, date, command, CPU, load average, Go version), to
+`benchmarks/results/<suite>-<UTC time>-<version>-<commit>.txt`. Commit the
+file with the change it measures, so numbers can be compared across
+releases; `BENCH_SAVE=0` only prints.
+
 ## Adding a benchmark
 
 - Runtime: copy an existing `bench_*.lam`, keep `# ops:` accurate, size the

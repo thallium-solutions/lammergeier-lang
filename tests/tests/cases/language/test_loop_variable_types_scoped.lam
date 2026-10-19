@@ -1,0 +1,168 @@
+# expect: 2 [x y] [y z]
+# expect: 2 [p q] 4 [m n]
+# expect: 4 [r1 r2] 1 [z] 1 [u v]
+# expect: [[a A] [b B]] [A B]
+# expect: 4 [s t]
+# expect: [w v] [2 2] [1 1]
+# Regression: the type of a comprehension / loop variable or local leaked
+# into a same-named variable of another function or method (and past a
+# comprehension or loop in the same function). `c` in `build()` was believed to be
+# the `list[str]` of the comprehension in `all()`, so `c.trim()` was not
+# lowered to the string helper (`c.Trim undefined` in `go build`).
+
+const Pairs: list[list[str]] = [["a", "A"], ["b", "B"]]
+
+class Page {
+    func init(self) {
+        self.n: int = 0
+    }
+
+    func all(self) -> list[list[str]] {
+        out: list[list[str]] = [c for c in Pairs]
+        return out
+    }
+
+    func build(self) -> list[str] {
+        names: list[str] = []
+        for c in "x, y".split(",") {
+            names.append(c.trim())
+        }
+        return names
+    }
+}
+
+func comp() -> int {
+    out: list[list[str]] = [c for c in Pairs]
+    return len(out)
+}
+
+func loopTrim() -> list[str] {
+    names: list[str] = []
+    for c in "y, z".split(",") {
+        names.append(c.trim())
+    }
+    return names
+}
+
+func sameFunction() -> list[str] {
+    firsts: list[str] = [w[0] for w in Pairs]
+    out: list[str] = []
+    for w in " p , q ".split(",") {
+        out.append(w.trim())
+    }
+    if len(firsts) != 2 {
+        return []
+    }
+    return out
+}
+
+func loopList() -> int {
+    n: int = 0
+    for v in Pairs {
+        n += len(v)
+    }
+    return n
+}
+
+func loopStr() -> list[str] {
+    out: list[str] = []
+    for v in "m ,n".split(",") {
+        out.append(v.trim())
+    }
+    return out
+}
+
+func nested() -> int {
+    flat: list[str] = [ch for row in Pairs for ch in row]
+    return len(flat)
+}
+
+func rows() -> list[str] {
+    out: list[str] = []
+    for row in "r1 ; r2".split(";") {
+        out.append(row.trim())
+    }
+    return out
+}
+
+func lam() -> int {
+    names: list[str] = ["a"]
+    size = lambda (k: list[str]) -> int: len(k)
+    return size(names)
+}
+
+func lamStr() -> list[str] {
+    out: list[str] = []
+    for k in " z ".split(",") {
+        out.append(k.trim())
+    }
+    return out
+}
+
+func local() -> int {
+    t: list[str] = ["a"]
+    return len(t)
+}
+
+func localStr() -> list[str] {
+    out: list[str] = []
+    for t in " u ,v".split(",") {
+        out.append(t.trim())
+    }
+    return out
+}
+
+func nestedComprehension() -> list[list[str]] {
+    return [[ch for ch in row] for row in Pairs]
+}
+
+func seconds() -> list[str] {
+    return [row[1].trim() for row in Pairs]
+}
+
+func twoLoops() -> int {
+    n: int = 0
+    for c in Pairs {
+        n += len(c)
+    }
+    return n
+}
+
+func twoLoopsSameFunction() -> list[str] {
+    n: int = 0
+    for c in Pairs {
+        n += len(c)
+    }
+    out: list[str] = []
+    for c in " s , t".split(",") {
+        out.append(c.trim())
+    }
+    if n != 4 {
+        return []
+    }
+    return out
+}
+
+func shadowedByComprehension() -> list[str] {
+    c: list[str] = ["unused"]
+    trimmed: list[str] = [c.trim() for c in " w , v ".split(",")]
+    if len(c) != 1 {
+        return []
+    }
+    return trimmed
+}
+
+func underscoreTargets() -> list[int] {
+    return [len([1 for _ in row]) for row in Pairs]
+}
+
+func main() {
+    p: Page = Page()
+    print(len(p.all()), p.build(), loopTrim())
+    print(comp(), sameFunction(), loopList(), loopStr())
+    print(nested(), rows(), lam(), lamStr(), local(), localStr())
+    print(nestedComprehension(), seconds())
+    print(twoLoops(), twoLoopsSameFunction())
+    ones: list[int] = [1 for _ in "a,b".split(",")]
+    print(shadowedByComprehension(), underscoreTargets(), ones)
+}

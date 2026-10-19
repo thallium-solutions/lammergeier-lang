@@ -71,7 +71,7 @@ OFFICIAL_PACKAGES = (
         ("PubSub", "Redis", "RedisCommand", "RedisScanPage", "RedisZMember"),
         "2.0.1",
     ),
-    OfficialPackage("@lam/s3", "lam-s3", ("S3", "S3Client", "S3Config", "S3Object"), "2.2.1"),
+    OfficialPackage("@lam/s3", "lam-s3", ("S3", "S3Client", "S3Config", "S3Object"), "2.3.0"),
     OfficialPackage(
         "@lam/sftp",
         "lam-sftp",

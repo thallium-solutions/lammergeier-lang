@@ -1,0 +1,138 @@
+# expect: 1 2.5 6
+# expect: 3 4 3
+# expect: 2.5 7
+# expect: circle 3 circle 3
+# expect: 3 0 3
+# expect: square 4 circle 3
+# expect: err fallback 14 base
+# expect: 11
+# expect: 3 4 1 2 5 2.5
+# Regression: `Result.Ok(x)` stored `x` with its own Go type, so a payload
+# that fits the declared `Result[T]` only through a conversion panicked on
+# `unwrap()`: an `int` in a `Result[float]` (`interface {} is int, not
+# float64`) and a subclass instance in a `Result[Base]` (`*main.Circle, not
+# *main.Shape`). The payload is now converted where the Ok is built in a
+# typed context (function / method return, annotated variable), and
+# `unwrap()`, `unwrapOr(...)` and `?` accept an int for a `float` payload and
+# a subclass instance for a base-class payload when the Ok was built
+# elsewhere (a call argument, a lambda, a list element).
+
+from lamerrors import Result, Error
+
+class Shape {
+    func name() -> str { return "base" }
+    func area() -> float { return 0.0 }
+}
+
+class Circle(Shape) {
+    func name() -> str { return "circle" }
+    func area() -> float { return 3.0 }
+}
+
+class Square(Shape) {
+    func init(self, side: float) {
+        self.side: float = side
+    }
+    func name() -> str { return "square" }
+    func area() -> float { return self.side * self.side }
+}
+
+func one() -> Result[float] {
+    return Result.Ok(1)
+}
+
+func fromInt(n: int) -> Result[float] {
+    return Result.Ok(n)
+}
+
+func double(n: int) -> Result[float] {
+    return Result.Ok(n * 2)
+}
+
+func shape() -> Result[Shape] {
+    return Result.Ok(Circle())
+}
+
+func pick(big: bool) -> Result[Shape] {
+    if big {
+        return Result.Ok(Square(2.0))
+    }
+    return Result.Ok(Shape())
+}
+
+func viewed() -> Result[Shape] {
+    s: Shape = Circle()
+    return Result.Ok(s)
+}
+
+func failing() -> Result[float] {
+    return Result.Err(Error("Bad", "no", None))
+}
+
+func total() -> Result[float] {
+    a: float = one()?
+    b: float = fromInt(3)?
+    c: float = double(5)?
+    return Result.Ok(a + b + c)
+}
+
+func area(r: Result[Shape]) -> Result[float] {
+    s: Shape = r?
+    return Result.Ok(s.area())
+}
+
+class Meter {
+    func read(self, raw: int) -> Result[float] {
+        return Result.Ok(raw)
+    }
+
+    func shape(self) -> Result[Shape] {
+        return Result.Ok(Circle())
+    }
+}
+
+func main() {
+    held: Result[float] = Result.Ok(2)
+    print(one().unwrap(), Result.Ok(2.5).unwrap(), double(3).unwrap())
+    print(fromInt(3).unwrap(), held.unwrap() * 2, Meter().read(3).unwrap())
+    print(failing().unwrapOr(2.5), fromInt(7).unwrapOr(0.5))
+    s: Shape = shape().unwrap()
+    m: Shape = Meter().shape().unwrap()
+    print(s.name(), s.area(), m.name(), m.area())
+    print(area(shape()).unwrap(), area(pick(false)).unwrap(), area(Meter().shape()).unwrap())
+    sq: Shape = pick(true).unwrap()
+    v: Shape = viewed().unwrap()
+    print(sq.name(), sq.area(), v.name(), v.area())
+    boxed: Result[Shape] = Result.Ok(Circle())
+    fallback: Shape = failingShape().unwrapOr(Shape())
+    print("err", "fallback", total().unwrap(), fallback.name())
+    print(boxed.unwrap().area() + total().unwrap() - 6.0)
+    elsewhere()
+}
+
+func areaOf(r: Result[Shape]) -> float {
+    return r.unwrap().area()
+}
+
+func tern(flag: bool) -> Result[float] {
+    return Result.Ok(1) if flag else Result.Ok(2)
+}
+
+func sumAll(items: list[Result[float]]) -> Result[float] {
+    total: float = 0.5
+    for item in items {
+        total += item?
+    }
+    return Result.Ok(total)
+}
+
+func elsewhere() {
+    f = lambda (n: int) -> Result[float]: Result.Ok(n)
+    items: list[Result[float]] = [Result.Ok(5)]
+    print(areaOf(Result.Ok(Circle())), f(4).unwrap(), tern(true).unwrap(), tern(false).unwrap(),
+        items[0].unwrapOr(0.5), sumAll([Result.Ok(1), Result.Ok(1)]).unwrap())
+}
+
+func failingShape() -> Result[Shape] {
+    return Result.Err(Error("Bad", "no", None))
+}

@@ -1,0 +1,26 @@
+# expect-pass
+# expect-no-warning: has no method
+# Every builtin `str` method, slicing and indexing stay valid, and a user
+# class may define its own `substring` / `charAt` methods.
+
+class Text {
+    raw: str = ""
+
+    func substring(self, start: int, end: int) -> str {
+        return self.raw[start:end]
+    }
+
+    func charAt(self, i: int) -> str {
+        return self.raw[i]
+    }
+}
+
+func main() {
+    label: str = "  Lammergeier  "
+    t: Text = Text()
+    t.raw = label.trim()
+    print(label.length(), label.trim().toUpper(), label.contains("mm"), label.index("m"))
+    print(label[2:5], label[-3:], label[2], t.substring(0, 3), t.charAt(1))
+    parts: list[str] = "a,b".split(",")
+    print(parts.length(), ",".join(parts), label.isBlank(), label.padLeft(20, "."))
+}

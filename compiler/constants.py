@@ -137,7 +137,109 @@ STR_METHOD_HINTS: Dict[str, str] = {
     "startswith": "startsWith", "endswith": "endsWith", "splitlines": "splitLines",
     "isalpha": "isAlpha", "isdigit": "isDigit", "isalnum": "isAlnum", "isspace": "isSpace",
     "casefold": "toLower", "len": "length", "size": "length",
+    # JavaScript / Java spellings.
+    "indexOf": "index", "lastIndexOf": "lastIndex", "toUpperCase": "toUpper",
+    "toLowerCase": "toLower", "includes": "contains", "trimStart": "trimLeft",
+    "trimEnd": "trimRight", "replaceAll": "replace", "padStart": "padLeft",
+    "padEnd": "padRight",
 }
+# Methods other languages have on strings that Lam spells as an operator,
+# slicing or indexing. ``{s}`` is the receiver, ``{a}``/``{b}`` the first
+# two arguments (rendered by ``str_method_idiom``).
+STR_METHOD_IDIOMS: Dict[str, str] = {
+    "substring": "slicing `{s}[{a}:{b}]`",
+    "substr": "slicing `{s}[{a}:{a} + {b}]` (`substr` takes a length)",
+    "slice": "slicing `{s}[{a}:{b}]`",
+    "charAt": "indexing `{s}[{a}]`",
+    "at": "indexing `{s}[{a}]`",
+    "concat": "`{s} + {a}`",
+    "equals": "`{s} == {a}`",
+    "toString": "the value directly (it is already a `str`)",
+    "chars": "`for c in {s}`",
+}
+_STR_IDIOM_PLACEHOLDERS: Dict[str, tuple] = {
+    "substring": ("start", "end"), "slice": ("start", "end"), "substr": ("start", "length"),
+    "charAt": ("i", ""), "at": ("i", ""), "concat": ("other", ""), "equals": ("other", ""),
+}
+
+
+def lam_simple_expr_text(node) -> str:
+    """Lam source text of a short argument/receiver node (a name, a dotted
+    name, a number or a short string literal), or ``""`` when the node is
+    not that simple. Works on Lark trees without importing Lark."""
+    data = getattr(node, "data", None)
+    children = list(getattr(node, "children", []) or [])
+    if data is None:
+        return str(node) if node is not None else ""
+    if data in {"var", "name", "number"} and children:
+        return lam_simple_expr_text(children[0])
+    if data == "argvalue" and len(children) == 1:
+        return lam_simple_expr_text(children[0])
+    if data in {"getattr", "getattr_safe"} and len(children) >= 2:
+        prefix = lam_simple_expr_text(children[0])
+        attr = lam_simple_expr_text(children[1])
+        return f"{prefix}.{attr}" if prefix and attr else ""
+    if data == "string" and children:
+        text = str(children[0])
+        return text if len(text) <= 24 and "\n" not in text else ""
+    if data == "factor" and len(children) == 2 and getattr(children[0], "data", None) is None:
+        inner = lam_simple_expr_text(children[1])
+        return f"{children[0]}{inner}" if inner else ""
+    if data == "funccall" and children:
+        # ``Json.encode(v)``: a call whose callee and arguments are simple.
+        callee = lam_simple_expr_text(children[0])
+        args_node = children[1] if len(children) > 1 else None
+        if args_node is None:
+            arg_nodes = []
+        elif getattr(args_node, "data", None) == "arguments":
+            arg_nodes = [arg for arg in args_node.children if arg is not None]
+        else:
+            arg_nodes = [args_node]
+        arg_texts = [lam_simple_expr_text(arg) for arg in arg_nodes]
+        if not callee or not all(arg_texts):
+            return ""
+        return f"{callee}({', '.join(arg_texts)})"
+    return ""
+
+
+def str_method_idiom(method: str, receiver: str = "", args=None) -> str:
+    """The Lam spelling of a string method other languages have
+    (``label.substring(0, 2)`` -> slicing ``label[0:2]``), or ``""``."""
+    template = STR_METHOD_IDIOMS.get(method)
+    if not template:
+        return ""
+    args = list(args or [])
+    first, second = _STR_IDIOM_PLACEHOLDERS.get(method, ("x", "y"))
+    a = args[0] if args and args[0] else first
+    b = args[1] if len(args) > 1 and args[1] else second
+    s = receiver or "s"
+    if method in {"substring", "slice", "substr"} and len(args) == 1 and args[0]:
+        return f"slicing `{s}[{a}:]`"
+    if method == "substr" and a == "0":
+        return f"slicing `{s}[0:{b}]`"
+    return template.format(s=s, a=a, b=b)
+
+
+def unknown_str_method_message(method: str, receiver: str = "", args=None) -> str:
+    """Diagnostic for a method a ``str`` does not have, with the Lam idiom
+    or the closest Lam method as a suggestion. Shared by the semantic
+    checker and the transpiler (which reports it for imported modules)."""
+    from difflib import get_close_matches
+
+    idiom = str_method_idiom(method, receiver, args)
+    if idiom:
+        suffix = f"; use {idiom}"
+    else:
+        hint = STR_METHOD_HINTS.get(method)
+        if not hint:
+            matches = get_close_matches(method, sorted(STR_METHODS), n=1, cutoff=0.75)
+            hint = matches[0] if matches else ""
+        suffix = f" — did you mean `{hint}`?" if hint else ""
+        if method in {"find", "rfind"}:
+            suffix = f" — did you mean `{hint}` (returns -1 when absent)?"
+    return f"`str` has no method `{method}`{suffix}"
+
+
 LIST_METHOD_HINTS: Dict[str, str] = {
     "add": "append", "push": "append", "size": "length", "len": "length",
     "forEach": "foreach", "each": "foreach", "some": "any", "every": "all",

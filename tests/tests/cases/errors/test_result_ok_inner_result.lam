@@ -1,0 +1,69 @@
+# expect: {"a":1}
+# expect: {"b":2}
+# expect: {"c":3}
+# expect: true true
+# expect: inner err: JsonError
+# expect: 2 encoded
+# Regression for wrapping a `Result` in `Result.Ok`: `Result.Ok(Json.encode(v))`
+# in a `-> Result[str]` passed the checker and panicked on unwrap
+# (`interface {} is *main.Result, not string`); it is now a semantic error.
+# The valid spellings run: `?` before wrapping, returning the inner result
+# directly, `Result[Result[str]]`, `Result[any]`, and a `do`/`catch` body.
+
+from lamerrors import Result, Error
+from lamjson import Json
+
+func unwrapped(v: json) -> Result[str] {
+    return Result.Ok(Json.encode(v)?)
+}
+
+func direct(v: json) -> Result[str] {
+    return Json.encode(v)
+}
+
+func nested(v: json) -> Result[Result[str]] {
+    return Result.Ok(Json.encode(v))
+}
+
+func anyPayload(v: json) -> Result[any] {
+    return Result.Ok(Json.encode(v))
+}
+
+func failing() -> Result[str] {
+    return Result.Err(Error("JsonError", "bad payload", None))
+}
+
+func wrapped() -> Result[Result[str]] {
+    return Result.Ok(failing())
+}
+
+class Encoder {
+    count: int = 0
+
+    func encode(self, v: json) -> Result[str] {
+        self.count += 1
+        return Result.Ok(Json.encode(v)?)
+    }
+}
+
+func main() {
+    first: Result[str] = unwrapped({"a": 1})
+    print(first.unwrap())
+    second: Result[str] = direct({"b": 2})
+    print(second.unwrap())
+    third: Result[Result[str]] = nested({"c": 3})
+    print(third.unwrap().unwrap())
+    loose: Result[any] = anyPayload({"d": 4})
+    print(loose.ok(), wrapped().ok())
+    inner: Result[str] = wrapped().unwrap()
+    do {
+        text: str = inner?
+        print(text)
+    } catch err {
+        print(f"inner err: {err.kind}")
+    }
+    enc: Encoder = Encoder()
+    _ = enc.encode({"x": 1})
+    out: Result[str] = enc.encode({"y": 2})
+    print(enc.count, "encoded" if out.ok() else "failed")
+}

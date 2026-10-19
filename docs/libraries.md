@@ -14,7 +14,7 @@ Current releases (all declare `lamc >=1.18, <3`; 3.0.0 removed the root `tag()` 
 | `@lam/protobuf@3.0.1` | lamc 2.x compatible; root `tag()` removed |
 | `@lam/vulture/tus-plugin@3.0.2` | lamc 2.x compatible; pins `@lam/vulture` 2.0.2; root `tag()` removed (3.0.0) |
 | `@lam/sftp@3.4.0` | per-address authentication limits (`withAddressAuthRateLimit`, `withAddressLockout`, `SftpAddressLimiter`); lamc 2.x compatible; pins `@lam/ssh` 3.0.2; adaptive ciphers (AES-GCM for clients that support it, `withAdaptiveCiphers`), `onOpenWrite` (errors at OPEN), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`) |
-| `@lam/s3@2.2.1` | lamc 2.x compatible; SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
+| `@lam/s3@2.3.0` | multipart parts streamed from files and readers (`uploadPartFile`, `uploadPartReader`); lamc 2.x compatible; SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
 | `@lam/redis@2.0.1`, `@lam/memcached@2.0.1` | lamc 2.x compatible |
 | `@lam/vulture/ws-plugin@2.0.2` | lamc 2.x compatible; pins `@lam/vulture` 2.0.2 |
 | `@lam/vulture@2.0.2` | lamc 2.x compatible, no API change |
