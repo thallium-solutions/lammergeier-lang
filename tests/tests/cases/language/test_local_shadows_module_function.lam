@@ -1,0 +1,47 @@
+# Test: a local named like a top-level function of another module is a
+# plain local, whether the file does not import that function
+# (`one: Server = ...` next to `shadow_funcs_provider.one`) or imports it
+# and shadows it in one function: the declaration, method calls, field
+# reads, arguments, closures and comprehension variables all name the same
+# Go variable.
+#
+# expect: started 21
+# expect: started 21
+# expect: port 21
+# expect: started 22 2
+# expect: 2 21
+# expect: shadowed: 5 4
+# expect: comprehension: [started 4]
+# expect: param: started 9
+
+from shadow_server_provider import Server, useOne
+from shadow_funcs_provider import two
+
+func show(s: Server) -> str {
+    return s.start()
+}
+
+func param(server: Server) -> str {
+    return server.start()
+}
+
+func shadowTwo() -> int {
+    two: int = 5
+    return two
+}
+
+func main() {
+    one: Server = Server(21)
+    print(one.start())
+    print(show(one))
+    print(f"port {one.port}")
+    primary: Server = Server(22)
+    print(primary.start(), useOne())
+    items: list[Server] = [one, primary]
+    port = lambda: one.port
+    print(len(items), port())
+    print(f"shadowed: {shadowTwo()} {two() + 2}")
+    srvs: list[Server] = [Server(4)]
+    print(f"comprehension: {[one.start() for one in srvs]}")
+    print(f"param: {param(Server(9))}")
+}

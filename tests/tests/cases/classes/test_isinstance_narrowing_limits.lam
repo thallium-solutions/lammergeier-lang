@@ -1,0 +1,99 @@
+# Test: where isinstance does not narrow, the code keeps its declared
+# types and still runs: a variable reassigned in the branch, a field
+# (`self.shape`, `holder.shape`) or a module global is not narrowed (only
+# the base members are used), the narrowing ends with its branch, a
+# guard without an exit does not narrow the rest of the block, and
+# binding the field to a local first does narrow.
+#
+# expect: reassigned: circle 3
+# expect: field: square 9
+# expect: field via local: 3
+# expect: global: square 4
+# expect: in branch
+# expect: after branch: square
+# expect: guard without exit: square
+# expect: method on self field: 25
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func area(self) -> int {
+        return 0
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+
+    func area(self) -> int {
+        return 3 * self.r * self.r
+    }
+}
+
+class Holder {
+    func init(self, shape: Shape) {
+        self.shape: Shape = shape
+    }
+
+    func sideTimesFive(self) -> int {
+        if isinstance(self.shape, Square) {
+            s: Shape = self.shape
+            if isinstance(s, Square) {
+                return s.side * 5
+            }
+        }
+        return 0
+    }
+}
+
+current: Shape = Square(2)
+
+func main() {
+    x: Shape = Square(1)
+    if isinstance(x, Square) {
+        x = Circle(1)
+        print(f"reassigned: {x.name} {x.area()}")
+    }
+
+    holder: Holder = Holder(Square(3))
+    if isinstance(holder.shape, Square) {
+        print(f"field: {holder.shape.name} {holder.shape.area()}")
+        local: Shape = holder.shape
+        if isinstance(local, Square) {
+            print(f"field via local: {local.side}")
+        }
+    }
+
+    if isinstance(current, Square) {
+        print(f"global: {current.name} {current.area()}")
+    }
+
+    y: Shape = Square(5)
+    if isinstance(y, Square) {
+        print("in branch")
+    }
+    print(f"after branch: {y.name}")
+
+    if not isinstance(y, Square) {
+        print("not a square")
+    }
+    print(f"guard without exit: {y.name}")
+
+    print(f"method on self field: {Holder(Square(5)).sideTimesFive()}")
+}

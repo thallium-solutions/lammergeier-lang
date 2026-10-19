@@ -1,0 +1,205 @@
+# Test: isinstance narrowing of dynamic subjects. An `any` value narrows
+# to the builtin type it is tested against (`int`, `float`, `str`, `bool`,
+# `list` as `list[any]`, `dict` as `dict[str, any]`), to a class (also a
+# class of a hierarchy, through the most-derived object) or to an
+# interface; an interface value narrows to a class implementing it; an
+# `optional[T]` narrows to `T` once `isinstance(x, None)` is ruled out
+# (or after `isinstance(x, T)`); a `json` value narrows to the scalar kind
+# it holds (`isinstance` tests the JSON value).
+#
+# expect: int: 42 43
+# expect: float: 2.5 5
+# expect: str: hello HELLO 5
+# expect: bool: false
+# expect: list: 3 first=1
+# expect: dict: 2 a=1
+# expect: class: ann 36
+# expect: hier: square 9 3
+# expect: iface: 7
+# expect: iface from any: 7
+# expect: optional guard: 6 9
+# expect: optional none: none
+# expect: optional value: 15
+# expect: optional value none: 0
+# expect: optional isinstance: 4
+# expect: json: 7 8 true
+# expect: json str: hi!
+# expect: json kinds: true true true true false
+# expect: classify: int 2|float 1.5|str ab|bool true|other
+
+interface HasArea {
+    func area(self) -> int
+}
+
+class Person {
+    func init(self, name: str, age: int) {
+        self.name: str = name
+        self.age: int = age
+    }
+}
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func area(self) -> int {
+        return 0
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+class Tile {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func area(self) -> int {
+        return self.n
+    }
+
+    func double(self) -> int {
+        return self.n * 2
+    }
+}
+
+class Box {
+    func init(self, size: int) {
+        self.size: int = size
+    }
+}
+
+func area2(a: HasArea) -> int {
+    return a.area()
+}
+
+func boxSize(b: optional[Box]) -> int {
+    if isinstance(b, None) {
+        return -1
+    }
+    return b.size
+}
+
+func maybeBox(make: bool) -> optional[Box] {
+    if make {
+        return Box(6)
+    }
+    return None
+}
+
+func classify(v: any) -> str {
+    if isinstance(v, int) {
+        return f"int {v + 1}"
+    } elif isinstance(v, float) {
+        return f"float {v * 1.5}"
+    } elif isinstance(v, str) {
+        return f"str {v + 'b'}"
+    } elif isinstance(v, bool) {
+        return f"bool {not v}"
+    }
+    return "other"
+}
+
+func main() {
+    v: any = 42
+    if isinstance(v, int) {
+        n: int = v + 1
+        print(f"int: {v} {n}")
+    }
+
+    f: any = 2.5
+    if isinstance(f, float) {
+        print(f"float: {f} {f * 2.0}")
+    }
+
+    s: any = "hello"
+    if isinstance(s, str) {
+        print(f"str: {s} {s.toUpper()} {len(s)}")
+    }
+
+    b: any = true
+    if isinstance(b, bool) {
+        print(f"bool: {not b}")
+    }
+
+    xs: any = [1, 2, 3]
+    if isinstance(xs, list) {
+        print(f"list: {len(xs)} first={xs[0]}")
+    }
+
+    d: any = {"a": 1, "b": 2}
+    if isinstance(d, dict) {
+        print(f"dict: {len(d)} a={d['a']}")
+    }
+
+    p: any = Person("ann", 36)
+    if isinstance(p, Person) {
+        print(f"class: {p.name} {p.age}")
+    }
+
+    h: any = Square(3)
+    if isinstance(h, Square) {
+        print(f"hier: {h.name} {h.area()} {h.side}")
+    }
+
+    a: HasArea = Tile(7)
+    if isinstance(a, Tile) {
+        print(f"iface: {a.n}")
+    }
+
+    q: any = Tile(7)
+    if isinstance(q, HasArea) {
+        print(f"iface from any: {area2(q)}")
+    }
+
+    box: optional[Box] = maybeBox(true)
+    if isinstance(box, None) {
+        print("unreachable")
+        return
+    }
+    print(f"optional guard: {box.size} {boxSize(Box(9))}")
+    none: optional[Box] = maybeBox(false)
+    if not isinstance(none, None) {
+        print("unreachable")
+    } else {
+        print("optional none: none")
+    }
+
+    count: optional[int] = 5
+    if not isinstance(count, None) {
+        total: int = count * 3
+        print(f"optional value: {total}")
+    }
+    missing: optional[int] = None
+    got: int = missing * 2 if not isinstance(missing, None) else 0
+    print(f"optional value none: {got}")
+    four: optional[int] = 4
+    if isinstance(four, int) {
+        print(f"optional isinstance: {four}")
+    }
+
+    j: json = {"n": 7, "m": 8, "ok": true, "s": "hi", "items": [1], "obj": {}}
+    n7: json = j.n
+    m8: json = j.m
+    ok: json = j.ok
+    if isinstance(n7, int) and isinstance(m8, int) and isinstance(ok, bool) {
+        print(f"json: {n7} {m8 + 0} {ok}")
+    }
+    js: json = j.s
+    if isinstance(js, str) {
+        print(f"json str: {js + '!'}")
+    }
+    print(f"json kinds: {isinstance(j.items, list)} {isinstance(j.obj, dict)} {isinstance(j.s, str)} {isinstance(j, dict)} {isinstance(j.n, str)}")
+
+    print(f"classify: {classify(1)}|{classify(1.0)}|{classify('a')}|{classify(false)}|{classify(None)}")
+}

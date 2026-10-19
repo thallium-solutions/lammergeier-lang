@@ -1,0 +1,36 @@
+# expect-error: unknown member `h.shape.side` on class `Shape`
+# expect-error: attributes are not narrowed by `isinstance`; bind `h.shape` to a local first
+# isinstance on a field does not narrow the field.
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+}
+
+class Holder {
+    func init(self, shape: Shape) {
+        self.shape: Shape = shape
+    }
+}
+
+func main() {
+    h: Holder = Holder(Square(1))
+    if isinstance(h.shape, Square) {
+        print(h.shape.side)
+    }
+}

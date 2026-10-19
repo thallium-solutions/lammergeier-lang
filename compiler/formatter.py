@@ -23,10 +23,13 @@ class FormatError(Exception):
 
 def format_lam_source(source: str) -> FormatResult:
     from compiler.lammergeier import _canonicalize_doc_comment_terminators
+    from compiler.fstrings import protect_fstring_quotes, restore_fstring_quotes
 
     reparable = _canonicalize_doc_comment_terminators(source)
     _parse_or_raise(reparable)
-    formatted = _format_lines(reparable)
+    # f-string slots may hold the delimiter quote (``f"{d["k"]}"``): hide it
+    # so the line scanners below see one string literal.
+    formatted = restore_fstring_quotes(_format_lines(protect_fstring_quotes(reparable)))
     _parse_or_raise(formatted)
     return FormatResult(text=formatted, changed=formatted != source)
 

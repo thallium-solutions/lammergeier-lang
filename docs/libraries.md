@@ -3,7 +3,7 @@
 Lammergeier keeps general-purpose building blocks in the standard library and
 ships service clients, fast-moving protocols, and vendor integrations as
 independently versioned packages. The official packages below are tested with
-`lamc` 2.0 and declare `>=1.18, <3` compatibility; each uses a scoped `@lam/...`
+`lamc` 2.1 and declare `>=1.18, <3` compatibility; each uses a scoped `@lam/...`
 import and carries its own tests, release notes, and pinned Go dependencies.
 Current releases (all declare `lamc >=1.18, <3`; 3.0.0 removed the root `tag()` helper):
 
@@ -13,7 +13,7 @@ Current releases (all declare `lamc >=1.18, <3`; 3.0.0 removed the root `tag()` 
 | `@lam/ssh@3.0.2` | lamc 2.x compatible; `golang.org/x/crypto` v0.58.0 (SSH channel denial-of-service fixes; Go 1.26) |
 | `@lam/protobuf@3.0.1` | lamc 2.x compatible; root `tag()` removed |
 | `@lam/vulture/tus-plugin@3.0.2` | lamc 2.x compatible; pins `@lam/vulture` 2.0.2; root `tag()` removed (3.0.0) |
-| `@lam/sftp@3.3.2` | lamc 2.x compatible; pins `@lam/ssh` 3.0.2; adaptive ciphers (AES-GCM for clients that support it, `withAdaptiveCiphers`), `onOpenWrite` (errors at OPEN), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`) |
+| `@lam/sftp@3.4.0` | per-address authentication limits (`withAddressAuthRateLimit`, `withAddressLockout`, `SftpAddressLimiter`); lamc 2.x compatible; pins `@lam/ssh` 3.0.2; adaptive ciphers (AES-GCM for clients that support it, `withAdaptiveCiphers`), `onOpenWrite` (errors at OPEN), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`) |
 | `@lam/s3@2.2.1` | lamc 2.x compatible; SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
 | `@lam/redis@2.0.1`, `@lam/memcached@2.0.1` | lamc 2.x compatible |
 | `@lam/vulture/ws-plugin@2.0.2` | lamc 2.x compatible; pins `@lam/vulture` 2.0.2 |

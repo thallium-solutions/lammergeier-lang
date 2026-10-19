@@ -1,0 +1,64 @@
+# Transpilation: isinstance narrowing binds a shadow of the tested local at
+# the start of the region where the test holds (a Go block scope, so the
+# outer variable keeps its type): a hierarchy downcast through the
+# most-derived object for a base-typed value, a type assertion for `any`
+# and interfaces, a dereference for `optional[int]`. The right operand of
+# `and` and the branches of a ternary bind it in a closure; an early-exit
+# guard wraps the rest of the block in `{ ... }`. Calls on the narrowed
+# value keep dispatching through the virtual wrapper.
+# expect-go: x, _ := func(v interface{}) (*Square, bool) { if t, ok := v.(interface{ _lamIs_Square() *Square }); ok { return t._lamIs_Square(), true }; return nil, false }(x._lamDyn())
+# expect-go: _ = x
+# expect-go: fmt.Println(x.Side, x._lamVirt_Area())
+# expect-go: v, _ := interface{}(v).(int)
+# expect-go: o := *o
+# expect-go: && func() bool { s, _ := func(v interface{}) (*Square, bool)
+# expect-go: return s.Side > 2 }()
+
+class Shape {
+    func area(self) -> int {
+        return 0
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+class BigSquare(Square) {
+    func area(self) -> int {
+        return 100
+    }
+}
+
+func big(s: Shape) -> bool {
+    return isinstance(s, Square) and s.side > 2
+}
+
+func side(s: Shape) -> int {
+    if not isinstance(s, Square) {
+        return 0
+    }
+    return s.side
+}
+
+func main() {
+    x: Shape = Square(3)
+    if isinstance(x, Square) {
+        print(x.side, x.area())
+    }
+    v: any = 3
+    if isinstance(v, int) {
+        print(v + 1)
+    }
+    o: optional[int] = 4
+    if not isinstance(o, None) {
+        print(o + 1)
+    }
+    print(big(BigSquare(1)), side(Square(2)))
+}

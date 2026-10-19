@@ -20,6 +20,8 @@ from contextlib import contextmanager
 
 from compiler.constants import DUNDER_OPS, STMT_NODES, PYTHON_EXCEPTIONS
 from compiler.preprocessor import preprocess_go_blocks  # re-export
+from compiler import narrowing as _narrowing
+from compiler.index_bounds import mark_nonnegative_locals
 from compiler.visitors.helpers import HelpersMixin
 from compiler.visitors.statements import StatementVisitorMixin
 from compiler.visitors.expressions import ExpressionVisitorMixin
@@ -27,6 +29,7 @@ from compiler.visitors.definitions import DefinitionVisitorMixin
 from compiler.visitors.patterns import PatternMatchMixin
 from compiler.visitors.subtyping import SubtypingMixin
 from compiler.visitors.generics import GenericCallMixin
+from compiler.visitors.narrowing import NarrowingLowerMixin
 
 
 # Names of scoped context attributes kept on GoTranspiler. The `_scoped`
@@ -46,6 +49,16 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     # propagated error in (see ``PatternMatchMixin._pm_condition``).
     "_guard_q_var",
     "_at_top_level",
+    # Set while lowering module-level statements (the module init
+    # function): their names are globals, which isinstance never narrows.
+    "_nr_module_code",
+    # Set while lowering an assignment target: a list element with a
+    # non-trivial receiver and a runtime index is written through a pointer.
+    "_index_target",
+    # Lower bounds of the locals of the function being lowered
+    # (``compiler/index_bounds.py``): an index provably non-negative skips
+    # the negative-index adjustment.
+    "_index_bounds",
     "current_class",
     "_in_try_func",
     "_in_try_iife",
@@ -93,6 +106,7 @@ class GoTranspiler(
     PatternMatchMixin,
     SubtypingMixin,
     GenericCallMixin,
+    NarrowingLowerMixin,
     StatementVisitorMixin,
     ExpressionVisitorMixin,
     DefinitionVisitorMixin,
@@ -212,6 +226,11 @@ class GoTranspiler(
 
         # Global-level variable declarations
         self._at_top_level: bool = True
+        self._nr_module_code: bool = False
+        self._index_target: bool = False
+        self._index_bounds: Dict[str, float] = {}
+        self._nonneg_shadowed: Set[str] = set()
+        self._nr_module_vars: Set[str] = set()
 
         # Track all user-defined functions
         self._user_functions: Set[str] = set()
@@ -533,6 +552,10 @@ class GoTranspiler(
         self._collect_class_fields(tree)
         self._finalize_member_go_names()
 
+        # Locals that never need the negative-index adjustment.
+        self._nonneg_shadowed = self._user_functions & {"len", "range", "enumerate", "abs", "min", "max"}
+        self._nr_nonlocal_names = mark_nonnegative_locals(tree, self._nonneg_shadowed)
+
         # Pass 2: generate code
         body_lines: List[str] = []
         old_lines = self.output_lines
@@ -652,6 +675,7 @@ class GoTranspiler(
 
     def _emit_top_level(self, tree: Tree) -> None:
         self._top_level_globals: Set[str] = set()
+        self._nr_module_vars = _narrowing.module_variable_names(tree) | getattr(self, "_nr_nonlocal_names", set())
         init_lines: List[str] = []
         init_declared: Set[str] = set()
         seen_statement = False
@@ -787,7 +811,8 @@ class GoTranspiler(
         self.indent = 1
         self.declared_vars = saved_declared | init_declared
         try:
-            with self._scoped(_at_top_level=False, _current_return_type="", _current_return_type_key=""):
+            with self._scoped(_at_top_level=False, _current_return_type="", _current_return_type_key="",
+                              _nr_module_code=True):
                 self._visit(stmt)
             init_declared.update(self.declared_vars - saved_declared)
         finally:

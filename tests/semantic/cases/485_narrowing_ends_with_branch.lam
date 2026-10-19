@@ -1,0 +1,34 @@
+# expect-error: unknown member `x.side` on class `Shape`
+# The narrowing ends with the branch, and a guard whose body does not exit
+# (return / raise / continue / break) does not narrow what follows.
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+}
+
+func main() {
+    x: Shape = Square(1)
+    if isinstance(x, Square) {
+        print(x.side)
+    }
+    if not isinstance(x, Square) {
+        print("not a square")
+    }
+    print(x.side)
+}

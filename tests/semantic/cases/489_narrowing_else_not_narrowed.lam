@@ -1,0 +1,34 @@
+# expect-error: unknown member `s.side` on class `Shape`
+# The else branch of `isinstance(s, Square)` is not narrowed.
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+}
+
+func f(s: Shape) -> int {
+    if isinstance(s, Square) {
+        return 1
+    } else {
+        return s.side
+    }
+}
+
+func main() {
+    print(f(Square(1)))
+}

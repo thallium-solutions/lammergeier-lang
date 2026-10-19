@@ -1,0 +1,239 @@
+# Integration test: isinstance narrowing inside a class hierarchy that
+# spans two modules, composed with loops (guards with `continue`),
+# `match` (narrowing inside a case and a case body), `Result` and `?`
+# (an error for the wrong subclass, propagation from a narrowed branch),
+# try/catch (a guard that raises, narrowing a typed catch binding),
+# lambdas over narrowed values, generic containers, overridden methods
+# (dispatch through the narrowed view) and a while loop narrowed by its
+# condition. A subclass declared here (`Scroll`) and one declared in the
+# provider (`Shortcut`) go through the provider's narrowing code.
+#
+# expect: summary: click@3,4 | key:ENTER | shortcut:S | scroll#6 | event#5
+# expect: distances: 7 -1 -1 -1 -1
+# expect: far clicks: 1
+# expect: weights: clicks=7 keys=4 scrolls=2
+# expect: keys: ENTER S
+# expect: match: click 7 | key ENTER | shortcut ctrl+S | scroll 2 | other 5
+# expect: result ok: 7
+# expect: result err: NotAClick: event 2 is a key
+# expect: propagated: 14 5
+# expect: propagated err: NotAClick: event 6 is a scroll
+# expect: caught: ValueError: bad event 6: scroll
+# expect: catch narrowed: 404 /missing
+# expect: lambda: 12
+# expect: registry: 2 clicks, first at 1
+# expect: drain: 3 2 1
+
+from lamerrors import Result, Error
+from narrowing_events_provider import Event, Click, KeyPress, Shortcut, summarize, clickDistance, isFarClick, keyName
+
+class Scroll(Event) {
+    func init(self, id: int, delta: int) {
+        base.init(id)
+        self.delta: int = delta
+    }
+
+    func kind(self) -> str {
+        return "scroll"
+    }
+
+    func weight(self) -> int {
+        return self.delta
+    }
+}
+
+class AppError {
+    func init(self, message: str) {
+        self.message: str = message
+    }
+
+    func code(self) -> int {
+        return 500
+    }
+}
+
+class NotFoundError(AppError) {
+    func init(self, path: str) {
+        base.init("not found")
+        self.path: str = path
+    }
+
+    func code(self) -> int {
+        return 404
+    }
+}
+
+class Registry[T] {
+    func init(self) {
+        self.items: list[T] = []
+    }
+
+    func add(self, item: T) {
+        self.items.append(item)
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+}
+
+func onlyClick(e: Event) -> Result[int] {
+    if isinstance(e, Click) {
+        return Result.Ok(e.distance())
+    }
+    return Result.Err(Error("NotAClick", f"event {e.id} is a {e.kind()}"))
+}
+
+func doubled(e: Event) -> Result[int] {
+    if not isinstance(e, KeyPress) {
+        d: int = onlyClick(e)?
+        return Result.Ok(d * 2)
+    }
+    # Both paths of the branch above return: `e` is a `KeyPress` here.
+    return Result.Ok(len(keyName(e)))
+}
+
+func requireScrollable(e: Event) -> int {
+    if isinstance(e, Scroll) {
+        raise ValueError(f"bad event {e.id}: {e.kind()}")
+    }
+    return e.id
+}
+
+func describe(e: Event) -> str {
+    match e {
+        case Click() as c {
+            return f"click {c.distance()}"
+        }
+        case KeyPress() as k {
+            if isinstance(k, Shortcut) {
+                return f"shortcut {k.modifier}+{keyName(k)}"
+            }
+            return f"key {keyName(k)}"
+        }
+        case _ {
+            if isinstance(e, Scroll) {
+                return f"scroll {e.delta}"
+            }
+            return f"other {e.id}"
+        }
+    }
+}
+
+func lookup(path: str) {
+    raise NotFoundError(path)
+}
+
+func main() {
+    events: list[Event] = [
+        Click(1, 3, 4),
+        KeyPress(2, "enter"),
+        Shortcut(3, "s", "ctrl"),
+        Scroll(6, 2),
+        Event(5),
+    ]
+
+    parts: list[str] = []
+    distances: list[str] = []
+    for e in events {
+        parts.append(summarize(e))
+        distances.append(f"{clickDistance(e)}")
+    }
+    print(f"summary: {' | '.join(parts)}")
+    print(f"distances: {' '.join(distances)}")
+
+    far: int = 0
+    for e in events {
+        if isFarClick(e, 5) {
+            far += 1
+        }
+    }
+    print(f"far clicks: {far}")
+
+    clicks: int = 0
+    keys: int = 0
+    scrolls: int = 0
+    names: list[str] = []
+    for e in events {
+        if isinstance(e, Click) {
+            clicks += e.distance()
+            continue
+        }
+        if isinstance(e, Scroll) {
+            scrolls += e.weight()
+            continue
+        }
+        if not isinstance(e, KeyPress) {
+            continue
+        }
+        # `e` is a `KeyPress` for the rest of the loop body.
+        keys += e.weight()
+        names.append(keyName(e))
+    }
+    print(f"weights: clicks={clicks} keys={keys} scrolls={scrolls}")
+    print(f"keys: {' '.join(names)}")
+
+    described: list[str] = []
+    for e in events {
+        described.append(describe(e))
+    }
+    print(f"match: {' | '.join(described)}")
+
+    first: Result[int] = onlyClick(events[0])
+    print(f"result ok: {first.unwrap()}")
+    do {
+        second: int = onlyClick(events[1])?
+        print(f"unreachable {second}")
+    } catch err {
+        print(f"result err: {err}")
+    }
+
+    print(f"propagated: {doubled(events[0]).unwrap()} {doubled(events[1]).unwrap()}")
+    do {
+        bad: int = doubled(events[3])?
+        print(f"unreachable {bad}")
+    } catch err {
+        print(f"propagated err: {err}")
+    }
+
+    try {
+        for e in events {
+            requireScrollable(e)
+        }
+    } catch ValueError as err {
+        print(f"caught: {err}")
+    }
+
+    try {
+        lookup("/missing")
+    } catch AppError as err {
+        if isinstance(err, NotFoundError) {
+            print(f"catch narrowed: {err.code()} {err.path}")
+        }
+    }
+
+    target: Event = events[0]
+    if isinstance(target, Click) {
+        scale = lambda (n: int): n * target.x
+        print(f"lambda: {scale(4)}")
+    }
+
+    registry: Registry[Click] = Registry[Click]()
+    pool: list[Event] = [Click(9, 1, 1)]
+    pool.extend(events)
+    for e in pool {
+        if isinstance(e, Click) {
+            registry.add(e)
+        }
+    }
+    print(f"registry: {registry.size()} clicks, first at {registry.items[0].x}")
+
+    queue: list[Event] = [Scroll(10, 3)]
+    head: Event = queue[0]
+    seen: list[str] = []
+    while isinstance(head, Scroll) and head.delta > 0 {
+        seen.append(f"{head.delta}")
+        head.delta -= 1
+    }
+    print(f"drain: {' '.join(seen)}")
+}

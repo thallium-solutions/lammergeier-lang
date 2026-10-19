@@ -1,0 +1,41 @@
+# Test: an f-string slot may contain strings in the f-string's own quote and
+# the characters they hold (commas, `#`, braces, colons), nested brackets,
+# slices, dict literals, nested f-strings and a format spec after a
+# nested string; the escaped-delimiter form keeps working.
+#
+# expect: join: a,b,c
+# expect: dict: 3 3 7
+# expect: hash: #x
+# expect: braces: {x}
+# expect: colon key: 9
+# expect: spec: 3.50
+# expect: slice: [b c]
+# expect: literal: 2
+# expect: nested: x!
+# expect: ternary: yes no
+# expect: call: 2 a-b
+# expect: escaped: 3
+# expect: single: 3 a|b
+# expect: two slots: a,b,c / 3
+
+func main() {
+    xs: list[str] = ["a", "b", "c"]
+    d: dict[str, int] = {"k": 3, "a": 3, "b": 4, "a:b": 9}
+    f: dict[str, float] = {"n": 3.5}
+    x: str = "x"
+    ok: bool = true
+    print(f"join: {",".join(xs)}")
+    print(f"dict: {d["k"]} {d['k']} {d["a"] + d["b"]}")
+    print(f"hash: {"#" + x}")
+    print(f"braces: {"{" + x + "}"}")
+    print(f"colon key: {d["a:b"]}")
+    print(f"spec: {f["n"]:.2f}")
+    print(f"slice: {xs[1:3]}")
+    print(f"literal: {len({"p": 1, "q": 2})}")
+    print(f"nested: {f"{x}!"}")
+    print(f"ternary: {"yes" if ok else "no"} {"yes" if not ok else "no"}")
+    print(f"call: {max(1, 2)} {"-".join(["a", "b"])}")
+    print(f"escaped: {d[\"k\"]}")
+    print(f'single: {d['k']} {'|'.join(['a', 'b'])}')
+    print(f"two slots: {",".join(xs)} / {d["k"]}")
+}

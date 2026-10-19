@@ -106,6 +106,7 @@ run_suite() {
             "$PYTHON" tests/tests/test_cache_integration.py
             "$PYTHON" tests/tests/test_scoped_imports.py
             "$PYTHON" tests/tests/test_timings.py
+            "$PYTHON" tests/tests/test_narrowing_and_index_bounds.py
             "$PYTHON" -m pytest tests/tests/test_collection_context_fuzz.py tests/tests/test_random_program_fuzz.py -q
             ;;
         *)

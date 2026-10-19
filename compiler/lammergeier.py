@@ -68,6 +68,7 @@ from compiler.link_symbols import find_symbol_clashes, render_symbol_clashes
 from compiler import namespacing as _namespacing
 from compiler.modules import WorkspaceIndex
 from compiler.source_map import SourceMap
+from compiler.fstrings import protect_fstring_quotes
 from compiler.version import LAMC_VERSION
 try:
     from compiler.syntax_errors import SyntaxDiagnosticError, render_syntax_error
@@ -988,6 +989,9 @@ def preprocess_for_parse(source: str) -> ParsePreprocessResult:
     rewritten = apply_lammergeier_aliases(source)
     rewritten = _strip_doc_comments_preserve_lines(rewritten)
     preprocessed, go_blocks = preprocess_go_blocks(rewritten)
+    # Delimiter quotes inside f-string slots (``f"{d["k"]}"``) would end
+    # the string for the lexer and the passes below.
+    preprocessed = protect_fstring_quotes(preprocessed)
     preprocessed = _collapse_multiline_strings(preprocessed)
     preprocessed = expand_dict_destructure(preprocessed)
     preprocessed = _expand_single_statement_blocks(preprocessed)
@@ -2214,6 +2218,10 @@ def compile_lam(
     lib_pre_func_param_names: dict = {}
     lib_pre_func_param_go_types: dict = {}
     lib_pre_func_return_go_types: dict = {}
+    # ``Class.method`` -> declared return type (raw Lam name or ``go:`` key):
+    # a call on another library's class types its result (``Paths.base(p)``
+    # is a ``str`` in a ternary or a ``+``).
+    lib_pre_method_return_types: dict[str, str] = {}
     lib_pre_func_generic_params: dict[str, set[str]] = {}
     lib_pre_generic_instance_methods: dict[str, list[str]] = {}
     lib_pre_generic_method_returns: dict[str, str] = {}
@@ -2377,6 +2385,8 @@ def compile_lam(
             lib_pre_func_param_names.update(sub_collector._func_param_names)
             lib_pre_func_param_go_types.update(sub_collector._func_param_go_types)
             lib_pre_func_return_go_types.update(sub_collector._func_return_go_types)
+            for key, ret in sub_collector._method_return_types.items():
+                lib_pre_method_return_types.setdefault(key, ret)
             for key, names in sub_collector._func_generic_params.items():
                 lib_pre_func_generic_params.setdefault(key, set()).update(names)
             for key, names in sub_collector._generic_instance_methods.items():
@@ -2602,6 +2612,7 @@ def compile_lam(
         + [f"param-names:{name}:{','.join(names)}" for name, names in sorted(lib_pre_func_param_names.items())]
         + [f"param-types:{name}:{','.join(types)}" for name, types in sorted(lib_pre_func_param_go_types.items())]
         + [f"return-type:{name}:{type_}" for name, type_ in sorted(lib_pre_func_return_go_types.items())]
+        + [f"method-return:{name}:{type_}" for name, type_ in sorted(lib_pre_method_return_types.items())]
         + [f"generic-params:{name}:{','.join(sorted(types))}" for name, types in sorted(lib_pre_func_generic_params.items())]
         + [f"generic-method:{name}:{','.join(names)}" for name, names in sorted(lib_pre_generic_instance_methods.items())]
         + [f"generic-return:{name}:{ret}" for name, ret in sorted(lib_pre_generic_method_returns.items())]
@@ -2696,6 +2707,8 @@ def compile_lam(
             lib_transpiler._func_param_go_types.setdefault(key, types)
         for key, type_ in lib_pre_func_return_go_types.items():
             lib_transpiler._func_return_go_types.setdefault(key, type_)
+        for key, ret in lib_pre_method_return_types.items():
+            lib_transpiler._method_return_types.setdefault(key, ret)
         for key, names in lib_pre_func_generic_params.items():
             lib_transpiler._func_generic_params.setdefault(key, set()).update(names)
         for key, names in lib_pre_generic_instance_methods.items():

@@ -1,0 +1,19 @@
+# Provider for test_ternary_str_concat_imported.lam: a library calling
+# another library's class in parenthesized str ternaries joined with `+`
+# (the result type of `Paths.base` comes from the other library).
+
+from ternary_paths_provider import Paths
+
+func downloadName(path: str, isDir: bool) -> str {
+    return (Paths.base(path) if path != "/" else "files") + (".zip" if isDir else "")
+}
+
+func linkInfo(path: str, isDir: bool) -> dict[str, any] {
+    return {"name": (Paths.base(path) if path != "/" else "files") + (".zip" if isDir else ""), "archive": isDir}
+}
+
+func label(path: str) -> str {
+    return f"{(Paths.base(path) if path != '/' else 'root') + '/'}"
+}
+
+func main() { pass }

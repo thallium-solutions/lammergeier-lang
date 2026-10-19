@@ -1,0 +1,28 @@
+# expect-error: unknown member `x.side` on class `Shape`
+# expect-error: `x` is not narrowed to `Square` here: a nested function rebinds it (`nonlocal`)
+# A local some nested function rebinds could change behind the test.
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+}
+
+func main() {
+    x: Shape = Square(1)
+    func reset() {
+        nonlocal x
+        x = Shape("plain")
+    }
+    if isinstance(x, Square) {
+        reset()
+        print(x.side)
+    }
+}

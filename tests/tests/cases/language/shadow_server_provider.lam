@@ -1,0 +1,20 @@
+# Provider for test_local_shadows_module_function.lam: imports `one` from
+# shadow_funcs_provider; the program only imports `Server` and `useOne`.
+
+from shadow_funcs_provider import one
+
+class Server {
+    func init(self, port: int) {
+        self.port: int = port
+    }
+
+    func start(self) -> str {
+        return f"started {self.port}"
+    }
+}
+
+func useOne() -> int {
+    return one(1)
+}
+
+func main() { pass }

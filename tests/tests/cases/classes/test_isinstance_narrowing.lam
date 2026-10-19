@@ -1,0 +1,231 @@
+# Test: `isinstance(x, C)` narrows a base-typed local or parameter to `C`
+# where the test is known to hold: the true branch of `if` / `elif`, the
+# `else` of `if not isinstance(...)`, the rest of a block after an
+# early-exit guard (`return` / `raise` / `continue` / `break`), the right
+# operand of `and` (and of `or` after `not isinstance`), the branches of a
+# ternary, the body of a `while` and the result of a filtered
+# comprehension. The narrowed value reaches subclass fields and methods,
+# is accepted where `C` is expected and keeps dispatching to the
+# overrides of the object's actual class.
+#
+# expect: if: side 3 diag 4 area 9 only 3
+# expect: if dispatch: colored red 16
+# expect: elif: circle r=2
+# expect: elif: square side=5
+# expect: elif: plain shape
+# expect: else of not: side 6
+# expect: guard return: 7
+# expect: guard return: none
+# expect: guard raise: 8
+# expect: guard raise: ValueError: not a square
+# expect: guard continue: 1 4
+# expect: guard break: 2
+# expect: comprehension: [1 4] map[1:1 4:5]
+# expect: and: true false false
+# expect: or: false true
+# expect: ternary: 3 0 9
+# expect: while: 3 2 1
+# expect: tuple: 2 2 -1
+# expect: nested: colored blue 2
+# expect: closure: 10
+# expect: shadow kept: square
+# expect: param: 11
+# expect: twice: 12 12
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func area(self) -> int {
+        return 0
+    }
+
+    func label(self) -> str {
+        return self.name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+
+    func diag(self) -> int {
+        return self.side * 141 // 100
+    }
+}
+
+class ColoredSquare(Square) {
+    func init(self, side: int, color: str) {
+        base.init(side)
+        self.color: str = color
+    }
+
+    func label(self) -> str {
+        return f"colored {self.color}"
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+
+    func area(self) -> int {
+        return 3 * self.r * self.r
+    }
+}
+
+func onlySquare(s: Square) -> int {
+    return s.side
+}
+
+func describe(s: Shape) -> str {
+    if isinstance(s, Circle) {
+        return f"circle r={s.r}"
+    } elif isinstance(s, Square) {
+        return f"square side={s.side}"
+    } else {
+        return "plain shape"
+    }
+}
+
+func sideOrNone(s: Shape) -> str {
+    if not isinstance(s, Square) {
+        return "none"
+    }
+    return f"{s.side}"
+}
+
+func sideOrRaise(s: Shape) -> int {
+    if not isinstance(s, Square) {
+        raise ValueError("not a square")
+    }
+    return s.side
+}
+
+func bigSquare(s: Shape) -> bool {
+    return isinstance(s, Square) and s.side > 2
+}
+
+func notSmallSquare(s: Shape) -> bool {
+    return not isinstance(s, Square) or s.side > 2
+}
+
+func sideOf(s: Shape) -> int {
+    return s.side if isinstance(s, Square) else 0
+}
+
+func commonBase(s: Shape) -> int {
+    if isinstance(s, (Square, ColoredSquare)) {
+        return s.side
+    }
+    return -1
+}
+
+func paramNarrow(s: Shape) -> int {
+    if isinstance(s, Square) {
+        return onlySquare(s) + 8
+    }
+    return 0
+}
+
+func main() {
+    x: Shape = Square(3)
+    if isinstance(x, Square) {
+        print(f"if: side {x.side} diag {x.diag()} area {x.area()} only {onlySquare(x)}")
+    }
+
+    y: Shape = ColoredSquare(4, "red")
+    if isinstance(y, Square) {
+        # Narrowed to `Square`, but `label` still runs the override of the
+        # object's class.
+        print(f"if dispatch: {y.label()} {y.area()}")
+    }
+
+    print(f"elif: {describe(Circle(2))}")
+    print(f"elif: {describe(Square(5))}")
+    print(f"elif: {describe(Shape('blob'))}")
+
+    z: Shape = Square(6)
+    if not isinstance(z, Square) {
+        print("unreachable")
+    } else {
+        print(f"else of not: side {z.side}")
+    }
+
+    print(f"guard return: {sideOrNone(Square(7))}")
+    print(f"guard return: {sideOrNone(Circle(1))}")
+    print(f"guard raise: {sideOrRaise(Square(8))}")
+    try {
+        sideOrRaise(Circle(1))
+    } catch ValueError as e {
+        print(f"guard raise: {e}")
+    }
+
+    shapes: list[Shape] = [Circle(1), Square(1), Shape("p"), Square(4)]
+    sides: list[int] = []
+    for s in shapes {
+        if not isinstance(s, Square) {
+            continue
+        }
+        sides.append(s.side)
+    }
+    print(f"guard continue: {sides[0]} {sides[1]}")
+    squareSides: list[int] = [s.side for s in shapes if isinstance(s, Square)]
+    diags: dict[int, int] = {s.side: s.diag() for s in shapes if isinstance(s, Square)}
+
+    found: int = 0
+    for s in [Square(2), Circle(3)] {
+        if not isinstance(s, Square) {
+            break
+        }
+        found = s.side
+    }
+    print(f"guard break: {found}")
+    print(f"comprehension: {squareSides} {diags}")
+
+    print(f"and: {bigSquare(Square(3))} {bigSquare(Square(1))} {bigSquare(Circle(5))}")
+    print(f"or: {notSmallSquare(Square(1))} {notSmallSquare(Circle(1))}")
+    print(f"ternary: {sideOf(Square(3))} {sideOf(Circle(3))} {x.side * 3 if isinstance(x, Square) else 0}")
+
+    seen: list[str] = []
+    cur: Shape = Square(3)
+    while isinstance(cur, Square) and cur.side > 0 {
+        seen.append(f"{cur.side}")
+        cur.side -= 1
+    }
+    print(f"while: {' '.join(seen)}")
+
+    print(f"tuple: {commonBase(Square(2))} {commonBase(ColoredSquare(2, 'x'))} {commonBase(Circle(2))}")
+
+    w: Shape = ColoredSquare(2, "blue")
+    if isinstance(w, Square) {
+        if isinstance(w, ColoredSquare) {
+            print(f"nested: {w.label()} {w.side}")
+        }
+    }
+
+    c: Shape = Square(10)
+    if isinstance(c, Square) {
+        getSide = lambda: c.side
+        print(f"closure: {getSide()}")
+    }
+
+    # Outside the narrowed region the variable keeps its declared type.
+    print(f"shadow kept: {x.label()}")
+
+    print(f"param: {paramNarrow(Square(3))}")
+
+    t: Shape = Square(12)
+    if isinstance(t, Square) and t.side > 10 {
+        print(f"twice: {t.side} {onlySquare(t)}")
+    }
+}

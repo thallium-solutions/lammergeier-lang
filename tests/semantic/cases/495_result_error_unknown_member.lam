@@ -1,0 +1,10 @@
+# expect-error: unknown member `r.error.knd` on class `Error`
+# expect-error: did you mean `r.error.kind`
+# `r.error` on a `Result` has the members of `Error`.
+
+from lamerrors import Result, Error
+
+func main() {
+    r: Result[bool] = Result.Err(Error("A", "b"))
+    print(r.error.knd)
+}

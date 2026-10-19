@@ -1,0 +1,117 @@
+# expect-pass
+# isinstance narrowing: if / elif / else-of-not, early-exit guards
+# (return, raise, continue, break), `and`, `or` after `not isinstance`,
+# ternaries, while conditions, tuples of classes (common base), any,
+# interfaces, optional[T] with `isinstance(x, None)`, json scalars.
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+}
+
+class BigSquare(Square) {
+    func init(self, side: int) {
+        base.init(side)
+        self.big: bool = true
+    }
+}
+
+interface Named {
+    func label(self) -> str
+}
+
+class Tag {
+    func init(self, text: str) {
+        self.text: str = text
+    }
+
+    func label(self) -> str {
+        return self.text
+    }
+}
+
+func onlySquare(s: Square) -> int {
+    return s.side
+}
+
+func guards(shapes: list[Shape]) -> int {
+    total: int = 0
+    for s in shapes {
+        if not isinstance(s, Square) {
+            continue
+        }
+        total += onlySquare(s) + s.side
+    }
+    for s in shapes {
+        if isinstance(s, Circle) {
+            break
+        } elif not isinstance(s, Square) {
+            continue
+        }
+        total += s.side
+    }
+    return total
+}
+
+func first(s: Shape) -> int {
+    if not isinstance(s, Square) {
+        raise ValueError("no")
+    }
+    return s.side
+}
+
+func kinds(s: Shape, v: any, n: Named, o: optional[Square], j: json) -> str {
+    a: int = s.side if isinstance(s, Square) else 0
+    b: bool = isinstance(s, Circle) and s.r > 0
+    c: bool = not isinstance(s, Circle) or s.r > 0
+    if isinstance(s, (Square, BigSquare)) {
+        a += s.side
+    }
+    if isinstance(v, int) {
+        a += v
+    } elif isinstance(v, str) {
+        a += len(v.toUpper())
+    } elif isinstance(v, list) {
+        a += len(v)
+    } elif isinstance(v, Square) {
+        a += v.side
+    }
+    if isinstance(n, Tag) {
+        a += len(n.text)
+    }
+    if isinstance(v, Named) {
+        a += len(v.label())
+    }
+    while isinstance(s, Square) and s.side > 0 {
+        s.side -= 1
+    }
+    if isinstance(o, None) {
+        return "none"
+    }
+    a += o.side
+    if isinstance(j, int) {
+        a += j
+    }
+    return f"{a} {b} {c}"
+}
+
+func main() {
+    print(guards([Square(1), Circle(2)]))
+    print(first(Square(1)))
+    print(kinds(Square(1), 3, Tag("t"), Square(2), 4))
+}

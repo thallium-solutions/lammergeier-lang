@@ -1,0 +1,8 @@
+# expect-error: `list[str]` has no method `join`; use `" ".join(seen)` on a `list[str]`
+# An f-string slot is checked like any expression: `xs.join(sep)` on a list
+# is reported (with the `sep.join(xs)` spelling) instead of failing in Go.
+
+func main() {
+    seen: list[str] = ["a", "b"]
+    print(f"seen: {seen.join(' ')}")
+}

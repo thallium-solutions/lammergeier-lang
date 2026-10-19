@@ -5,6 +5,103 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 2.1.0 — 2026-10-19
+
+### Added
+
+- isinstance narrowing: where `isinstance(x, T)` is known to hold, a local
+  or parameter `x` is a `T` for the semantic checker and the generated Go
+  (fields, subclass-only methods, `T` parameters), with overridden methods
+  still dispatching to the object's class. The test holds in `if` / `elif`
+  branches, the `else` of `if not isinstance(...)`, the rest of a block
+  after an early-exit guard (`if not isinstance(x, T) { return }`, also
+  `raise` / `continue` / `break`), the right operand of `and` (and of `or`
+  after `not isinstance`), ternary branches, `while` bodies and filtered
+  comprehension results. A base class narrows to a subclass; `any` to
+  `int` / `float` / `str` / `bool`, `list[any]`, `dict[str, any]`, a class or
+  an interface; an interface to a class; `optional[T]` to `T` (after
+  `not isinstance(x, None)` or `isinstance(x, T)`); `json` to a scalar; a
+  tuple of classes to their nearest common class. Variables assigned in the
+  narrowed region, fields, module globals, `nonlocal` targets, collections
+  changed in place, names read by `go!` blocks, operands using `?` and
+  generic classes are not narrowed, and the unknown-member error says why.
+  The Go code binds a shadow of the variable at the start of the region.
+  See `docs/SYNTAX.md` → "isinstance" → "Narrowing" and
+  `docs/TRANSPILATION.md` → "isinstance narrowing".
+- f-string slots may contain strings in the f-string's own quote and
+  anything inside them — commas, `#`, braces, colons — plus nested
+  brackets, dict literals and nested f-strings (`f"{",".join(xs)}"`,
+  `f"{d["k"]}"`, `f"{d["n"]:.2f}"`); an unescaped delimiter quote used to end
+  the string. Slots are now checked like any other expression: unknown
+  members and methods, type errors and undefined names inside them are Lam
+  diagnostics instead of Go build errors (`f"{seen.join(" ")}"` on a list
+  reports `use " ".join(seen)`). `lamc fmt` keeps such f-strings intact.
+- `enumerate(xs, start)` and `enumerate(xs, start=k)` number from `start`
+  (in `for` loops, comprehensions, over strings and as a value); the start
+  was ignored. A non-constant start is evaluated once.
+- `del xs[i]` on a list removes the item (a negative index counts from the
+  end, out of range raises `IndexError`), and `del xs[a:b]` / `del xs[a:b:k]`
+  remove a slice with Python's bounds; they emitted a map `delete` (a Go
+  build error).
+- `r.error.kind`, `r.error.message` and `r.error.cause` on a `Result` read
+  the error as an `Error`, like the `do/catch` binding (another error value
+  is viewed as `Error("", str(v), v)`); member access on `r.error` used to
+  pass the checker and fail in the Go build, and an unknown member is now a
+  Lam error.
+- Runtime benchmark `language/bench_list_index` (list reads and writes in a
+  hot loop with an index the compiler cannot prove non-negative), with a Go
+  baseline.
+
+### Changed
+
+- Catalog: `@lam/sftp` 3.4.0 (per-address authentication limits).
+
+- **Runtime negative indexes follow Python**: `xs[i]` with `i < 0` counts
+  from the end on lists, strings and tuples (`xs[len(xs) + i]`), for reads
+  and assignment targets (`xs[i] = v`, `xs[i] += v`, `grid[r][c] = v`); out
+  of range either way still raises `IndexError`. It used to raise
+  `IndexError` for any negative runtime index (only constants such as
+  `xs[-1]` counted from the end). Dictionaries are unaffected. The
+  adjustment is a branch-free `i + len(xs)&(i>>63)`, skipped when the index
+  is provably non-negative (constants, `len(...)`, `xs[len(xs) - 1]`,
+  `range` / `enumerate` loop variables, locals only ever assigned
+  non-negative values, sums, products, `//`, `%`, `min` / `max` / `abs` of
+  those, `i - 1` with `i` from `range(1, ...)`). See
+  `docs/SYNTAX.md` → "Slicing" and `docs/TRANSPILATION.md` → "Runtime
+  negative indexes".
+
+### Fixed
+
+- `isinstance` on a `json` value tests the JSON value it holds
+  (`isinstance(payload.n, int)`, `dict` for an object, `None` for `null`);
+  it was always `false`. `isinstance(x, int)` on an `optional[int]` is true
+  when the value is set (it was always `false`).
+- The variable of `for row in rows` takes the element type of the local
+  `rows`; it took the type of a same-named constructor parameter of another
+  class (`init(self, rows: list[list[int]])`), mistyping `row` (a
+  dictionary looked like a list).
+- `xs.join(sep)` on a `list[str]` suggests the call spelled with its own
+  operands (``use `" ".join(seen)` ``).
+- A local named like a top-level function of another module — not imported
+  by the file (`one: Server = ...` while `db` defines `func one()`), or
+  imported and shadowed in one function — was declared and used under
+  different Go names (`undefined: one`): its declaration, method calls,
+  arguments, closures and comprehension variables now all use the local.
+- A parenthesized str ternary joined with `+` (`(Paths.base(p) if p != "/"
+  else "files") + ".zip"`) lowered to an `interface{}` closure when a branch
+  type was not tracked — notably a call to another library's class from a
+  library — and failed in Go (`mismatched types interface{} and string`): it
+  is a `string`, a branch typed `any` is asserted to `str`, and libraries now
+  see the method return types of the other libraries.
+- Checking f-string slots surfaced two checker false positives, now fixed
+  everywhere: a class satisfies an interface through an inherited method,
+  and a tuple may be indexed with a runtime `int` (the item type when it is
+  a constant, else the common or `any` type).
+- A member that only the tested class has, read on a field tested with
+  `isinstance` (`if isinstance(h.shape, Square) { h.shape.side }`), is a
+  semantic error explaining that fields are not narrowed, instead of a Go
+  build error.
+
 ## 2.0.0 — 2026-10-18
 
 ### Breaking changes

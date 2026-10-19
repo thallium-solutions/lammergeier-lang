@@ -1,0 +1,57 @@
+# Test: `enumerate(xs, start)` and `enumerate(xs, start=k)` number from
+# `start` in for loops, comprehensions, over strings and as a value; a
+# non-constant start is evaluated once; a negative start indexes from the
+# end (Python's negative indexes).
+#
+# expect: 1 apple
+# expect: 2 banana
+# expect: 10 a
+# expect: 11 b
+# expect: comprehension: [5:a 6:b] [0:a 1:b]
+# expect: string: 3h 4i
+# expect: once: 7 8
+# expect: negative: [30 50 40]
+# expect: value: [[3 a] [4 b]]
+# expect: nested: [1-x 2-y]
+
+func main() {
+    fruits: list[str] = ["apple", "banana"]
+    for n, fruit in enumerate(fruits, 1) {
+        print(n, fruit)
+    }
+    letters: list[str] = ["a", "b"]
+    for i, ch in enumerate(letters, start=10) {
+        print(i, ch)
+    }
+    labels: list[str] = [f"{i}:{x}" for i, x in enumerate(letters, 5)]
+    plain: list[str] = [f"{i}:{x}" for i, x in enumerate(letters)]
+    print(f"comprehension: {labels} {plain}")
+
+    parts: list[str] = []
+    for i, c in enumerate("hi", 3) {
+        parts.append(f"{i}{c}")
+    }
+    print(f"string: {' '.join(parts)}")
+
+    k: int = 7
+    seen: list[str] = []
+    for i, _ in enumerate(letters, start=k) {
+        k = 100
+        seen.append(f"{i}")
+    }
+    print(f"once: {' '.join(seen)}")
+
+    xs: list[int] = [10, 20, 30]
+    out: list[int] = []
+    for i, x in enumerate(xs, -2) {
+        out.append(xs[i] + x)
+    }
+    print(f"negative: {out}")
+
+    pairs = enumerate(letters, 3)
+    print(f"value: {pairs}")
+
+    pairs2: list[tuple[str, int]] = [("x", 0), ("y", 0)]
+    named: list[str] = [f"{i}-{name}" for i, (name, _) in enumerate(pairs2, 1)]
+    print(f"nested: {named}")
+}

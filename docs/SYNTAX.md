@@ -853,6 +853,10 @@ func describe(s: Shape) -> str {
 }
 ```
 
+or test it with `isinstance`, which narrows the variable where the test
+holds (`if isinstance(s, Square) { print(s.side) }`, see "isinstance" →
+"Narrowing").
+
 Collections are invariant: an existing `list[Square]` cannot be assigned to
 a `list[Shape]` (the alias could then receive a `Circle`); build the
 `list[Shape]` from the elements instead.
@@ -1537,6 +1541,15 @@ for i, fruit in enumerate(fruits) {
 labels: list[str] = [f"{i}:{f}" for i, f in enumerate(fruits)]
 ```
 
+`enumerate(xs, start)` (or `enumerate(xs, start=1)`) numbers from `start`
+instead of 0; `start` is evaluated once, before the loop:
+
+```lammergeier
+for n, fruit in enumerate(fruits, 1) {
+    print(f"{n}. {fruit}")             # 1. apple, 2. banana, ...
+}
+```
+
 `enumerate` works in `for` loops and comprehensions over lists (also list
 literals, whose elements keep their type) and strings (one-character `str`
 values with their character position). Iterating a `str` directly
@@ -1583,12 +1596,17 @@ The `:fmt` suffix maps directly to a Go `fmt` verb — `{x:.2f}`
 becomes `%.2f`, `{n:5d}` becomes `%5d`, etc. Without a suffix the
 slot uses `%v` so any value type works.
 
-> **Quoting.** When a slot needs an inner string literal, use single
-> quotes inside double-quoted f-strings (or vice versa) —
-> ``f"x={a ?? 'fallback'}"`` — or escape the delimiter
-> (``f"v={d[\"k\"]}"``). An unescaped delimiter quote inside a slot
-> (``f"{d["k"]}"``) ends the string. Names read in a slot are checked like
-> any other name (an undefined one is reported at its line and column).
+> **Quoting.** A slot may contain string literals in either quote,
+> including the f-string's own (``f"{d["k"]}"``, ``f"{",".join(xs)}"``,
+> ``f"x={a ?? 'fallback'}"``), with any characters inside them (commas,
+> `#`, braces, colons), nested brackets, dict literals and nested
+> f-strings; the escaped form (``f"v={d[\"k\"]}"``) still works. A slot
+> ends at the `}` closing it outside strings and brackets, and its format
+> spec starts at the first `:` outside strings and brackets
+> (``f"{d["n"]:.2f}"``). A slot is checked like any other expression:
+> undefined names (at their line and column), unknown members and methods
+> (``f"{seen.join(" ")}"`` on a list suggests ``" ".join(seen)``) and type
+> errors are reported.
 
 ---
 
@@ -1667,6 +1685,84 @@ print(isinstance(v, (int, str)))       # true
 print(isinstance([1, 2, 3], list))     # true
 print(isinstance(None, None))          # true
 ```
+
+On a `json` value, `isinstance` tests the JSON value it holds (`int` /
+`float` / `str` / `bool`, `list` for an array, `dict` for an object, `None`
+for `null`); on an `optional[int]` (or another optional value type),
+`isinstance(x, int)` is true when it is set.
+
+### Narrowing
+
+Where `isinstance(x, T)` is known to hold, a local or parameter `x` *is* a
+`T`: its fields and methods are reachable and it is accepted where a `T`
+is expected, with no cast or `match`:
+
+```lammergeier
+func describe(s: Shape) -> str {
+    if isinstance(s, Circle) {
+        return f"circle r={s.r}"          # `s` is a Circle here
+    } elif isinstance(s, Square) {
+        return f"square {onlySquare(s)}"  # `func onlySquare(sq: Square)`
+    }
+    return s.name                         # a Shape again
+}
+
+func side(s: Shape) -> int {
+    if not isinstance(s, Square) {
+        return 0                          # early-exit guard...
+    }
+    return s.side                         # ...narrows the rest of the block
+}
+```
+
+The test holds in:
+
+- the branch of `if isinstance(x, T)` / `elif isinstance(x, T)`, and the
+  `else` of `if not isinstance(x, T)`;
+- the rest of the block after an `if` whose branches all exit (`return`,
+  `raise`, `continue` or `break`): `if not isinstance(x, T) { continue }`;
+- the right operand of `and` (`isinstance(x, T) and x.side > 0`) and of
+  `or` after a negated test (`not isinstance(x, T) or x.side > 0`);
+- the branches of a ternary (`x.side if isinstance(x, T) else 0`);
+- the body of `while isinstance(x, T) ...`;
+- the result of a filtered comprehension
+  (`[s.side for s in shapes if isinstance(s, Square)]`).
+
+Conditions combine with `not`, `and` (every test of a true `and` holds) and
+`or` (every negated test of a false `or` holds).
+
+What a value narrows to:
+
+| Declared type of `x` | Test | `x` becomes |
+|---|---|---|
+| a class `Shape` | a subclass `isinstance(x, Square)` | `Square` (calls still run the overrides of the object's class) |
+| `any`, a type parameter | `int` / `float` / `str` / `bool` | that type |
+| `any` | `list` / `dict` | `list[any]` / `dict[str, any]` |
+| `any`, an interface | a class or an interface | that class / interface |
+| `optional[T]` | `not isinstance(x, None)`, `isinstance(x, T)` | `T` |
+| `json` | `int` / `float` / `str` / `bool` | that type (a JSON array or object stays `json`) |
+| any | a tuple of classes `(Square, BigSquare)` | their nearest common class, when narrower than the declared type; a tuple mixing builtins narrows nothing |
+
+Narrowing never applies to:
+
+- a variable assigned anywhere in the narrowed region (the branch, the loop
+  body, the rest of the block after a guard, the operand): it keeps its
+  declared type there; bind the narrowed value to a new name instead;
+- fields (`self.shape`, `holder.shape`): another call could change them
+  between the test and the use; copy the field to a local first
+  (`s: Shape = self.shape` then `if isinstance(s, Square)`);
+- module globals, and locals a nested function rebinds (`nonlocal x`), for
+  the same reason;
+- a `list` / `dict` narrowed from `any` that the region changes in place
+  (`xs.append(v)`, `d[k] = v`): the narrowed view may be a converted copy;
+- a variable read by a `go!` block in the region (raw Go sees the declared
+  Go type);
+- an `and` / `or` operand, ternary branch or comprehension result that uses
+  `?` (test the value in an enclosing `if` instead);
+- generic classes (`isinstance(x, Box)` gives no type arguments).
+
+The unknown-member error on such a variable or field says why it is not
+narrowed. Outside the region the variable keeps its declared type.
 
 ---
 
@@ -2099,6 +2195,7 @@ Inspection is by methods or fields, whichever reads better:
 | `r.ok()`          | `True` iff this is a success result                     |
 | `r.value`         | the contained value (`any`)                             |
 | `r.error`         | the error or `None` (`any`)                             |
+| `r.error.kind` / `.message` / `.cause` | the error viewed as an `Error` (another value as `Error("", str(v), v)`) |
 | `r.unwrap()`      | the value, or panic with the error                      |
 | `r.unwrapOr(x)`   | the value, or `x` if this is an error                   |
 
@@ -2132,6 +2229,13 @@ open `any` values rather than a second type parameter.
 structured `Error` when callers need a kind/message/cause contract,
 but a string, dict, sentinel object, or raw value is valid when that
 fits the domain better.
+
+Reading a member of `Error` on `r.error` (`"failed: " + r.error.kind`,
+`f"{r.error.message}"`) views the error as an `Error`, like the `do {}
+catch err` binding: an `Error` (or a subclass) as is, any other value as
+`Error("", str(v), v)` (empty `kind`, the value's text as `message`, the
+value as `cause`). Other members are an unknown-member error; on a
+success result `r.error` is `None`, so test `r.ok()` first.
 
 ```lammergeier
 from lamerrors import Result, Error
@@ -2301,12 +2405,23 @@ with file as f {
 
 ## Del Statement
 
-Delete map entries:
+Delete map entries, list items and list slices:
 
 ```lammergeier
 scores: dict[str, int] = {"alice": 100, "bob": 95}
 del scores["bob"]
+
+xs: list[int] = [0, 1, 2, 3, 4, 5, 6]
+del xs[0]          # [1 2 3 4 5 6]
+del xs[-1]         # [1 2 3 4 5]
+del xs[1:3]        # [1 4 5]
+del xs[::2]        # [4]
 ```
+
+On a list, `del xs[i]` removes the item at `i` (negative counts from the
+end) and raises `IndexError` when `i` is out of range; `del xs[a:b]` and
+`del xs[a:b:k]` remove a slice with Python's bounds (clamped, negative
+from the end; a zero step is a `ValueError`).
 
 ---
 
@@ -2555,11 +2670,33 @@ print(s[-5:])      # world
 print(s[::-1])     # dlrow olleh
 ```
 
-A single negative index written as a constant (`xs[-1]`, `s[-2]`) counts
-from the end like Python (`xs[len(xs) - 1]`) and also works as an assignment
-target (`xs[-1] = 0`); an index still out of range raises `IndexError`. A
-negative index held in a variable is not adjusted: `xs[i]` with `i = -1`
-raises `IndexError` (use `xs[len(xs) + i]`).
+A negative index counts from the end like Python, whether it is a constant
+(`xs[-1]`, `s[-2]`) or computed at runtime (`xs[i]` with `i = -1` is the
+last element), on lists, strings and tuples, for reads and for assignment
+targets (`xs[i] = 0`, `xs[i] += 1`, `grid[r][c] = v`). An index still out
+of range, from either end, raises `IndexError` (catchable with
+`catch IndexError` or `catch LookupError`). Dictionaries use the key as
+given (`d[-1]` is the entry with key `-1`).
+
+```lammergeier
+func at(xs: list[int], i: int) -> int {
+    return xs[i]
+}
+
+print(at([10, 20, 30], -1))   # 30
+print(at([10, 20, 30], -3))   # 10
+at([10, 20, 30], -4)          # IndexError
+```
+
+The adjustment is a couple of integer instructions; it is skipped when the
+index is provably non-negative: non-negative constants, `len(...)`,
+`xs[len(xs) - 1]`, the variable of `for i in range(n)` / `range(a, b)` with
+`a` non-negative / `range(a, b, -1)` down to `-1` or a non-negative bound,
+the index of `for i, x in enumerate(xs)`, a local whose every assignment
+in the function keeps it non-negative (`i = 0` ... `i += 1`,
+`mid = len(xs) // 2`), `+`, `*`, `//`, `%`, `min` / `max` / `abs` of such
+values, and `i - k` when `i` is known to be at least `k`
+(`for i in range(1, len(xs)) { xs[i - 1] }`).
 
 Indexing a string with a single integer follows Go's native behavior and
 returns the byte at that position. Use `string(s[i])` when you want a

@@ -1,0 +1,38 @@
+# Random-access list reads and writes in a hot loop with an index the
+# compiler cannot prove non-negative (it comes from another list), so the
+# Python-style negative-index adjustment (``xs[i]`` with ``i < 0`` counts
+# from the end) runs on every access. The ``idx[k]`` reads use a ``range``
+# loop variable and skip the adjustment.
+#
+# ops: 50000000
+
+from lamtime import Time
+
+func work() {
+    n: int = 1000
+    xs: list[int] = []
+    idx: list[int] = []
+    for i in range(n) {
+        xs.append(i)
+        idx.append((i * 7919) % n)
+    }
+    total: int = 0
+    for r in range(50000) {
+        for k in range(n) {
+            j: int = idx[k]
+            total += xs[j]
+            xs[j] = total % 1024
+        }
+    }
+    if total < 0 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH list_index 50000000 {elapsed}")
+}

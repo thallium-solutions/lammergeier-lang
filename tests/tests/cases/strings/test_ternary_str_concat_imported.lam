@@ -1,0 +1,42 @@
+# Test: parenthesized str ternaries joined with `+` lower to Go `string`
+# (not `interface{}`) in binary expressions, dict literals and f-strings,
+# also in a library calling another library's static method, and when one
+# branch's type is not tracked (a loop variable's field) or is `any`
+# (asserted to be a string).
+#
+# expect: report.csv files.zip
+# expect: map[archive:true name:dir.zip]
+# expect: y/
+# expect: a! none!
+# expect: x-y-z
+# expect: map[k:ac]
+# expect: dyn?
+
+from ternary_links_provider import downloadName, linkInfo, label
+
+func anyName() -> any {
+    return "dyn"
+}
+
+class Box {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func main() {
+    print(downloadName("/a/report.csv", false), downloadName("/", true))
+    print(linkInfo("/a/dir", true))
+    print(label("/x/y"))
+    boxes = [Box("a"), Box("")]
+    out: list[str] = []
+    for b in boxes {
+        out.append((b.name if b.name != "" else "none") + "!")
+    }
+    print(" ".join(out))
+    flag: bool = true
+    print(("x" if flag else "y") + "-" + ("y" if flag else "n") + "-z")
+    d: dict[str, any] = {"k": ("a" if flag else "b") + "c"}
+    print(d)
+    print((anyName() if flag else "none") + "?")
+}

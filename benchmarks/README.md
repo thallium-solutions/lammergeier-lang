@@ -51,8 +51,8 @@ sh scripts/bench.sh runtime
 sh scripts/bench.sh runtime -f json --runs 9 --json out/runtime.json
 ```
 
-Groups: `language/` (calls, loops, lists, dicts, strings, dispatch,
-f-strings) and `stdlib/` (JSON, regex, hashing, sorting, splitting).
+Groups: `language/` (calls, loops, lists, list indexing with a runtime
+index, dicts, strings, dispatch, f-strings) and `stdlib/` (JSON, regex, hashing, sorting, splitting).
 
 ## Adding a benchmark
 

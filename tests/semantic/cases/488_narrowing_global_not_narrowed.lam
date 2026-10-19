@@ -1,0 +1,31 @@
+# expect-error: unknown member `current.side` on class `Shape`
+# expect-error: `current` is not narrowed to `Square` here: module globals are not narrowed
+# Module globals are not narrowed (a call could change them).
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+}
+
+current: Shape = Square(1)
+
+func main() {
+    if isinstance(current, Square) {
+        print(current.side)
+    }
+}

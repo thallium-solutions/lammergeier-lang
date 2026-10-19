@@ -1,0 +1,30 @@
+# expect-error: unknown member `s.side` on class `Shape`
+# `or` does not narrow its right operand after a positive isinstance.
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+}
+
+func check(s: Shape) -> bool {
+    return isinstance(s, Square) or s.side > 1
+}
+
+func main() {
+    print(check(Square(1)))
+}

@@ -1,0 +1,16 @@
+# Provider for test_local_shadows_module_function.lam: top-level functions
+# named like locals of the importing program (which does not import them).
+
+func one(x: int) -> int {
+    return x + 1
+}
+
+func primary() -> int {
+    return 7
+}
+
+func two() -> int {
+    return 2
+}
+
+func main() { pass }

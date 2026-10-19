@@ -1,0 +1,104 @@
+# Test: isinstance narrowing inside other constructs: a lambda passed to a
+# list method, a generator, an async function, a `-> Result` function using
+# `?` inside the narrowed branch, an `elif` whose test needs `?`, a nested
+# function capturing the narrowed value, and upcasting the narrowed value
+# back to its base.
+#
+# expect: lambda: [2 0 3]
+# expect: generator: 2 3
+# expect: async: 12
+# expect: result: 5 -1 0
+# expect: result err: Neg: negative
+# expect: nested: 16
+# expect: upcast: 16 square false
+
+from lamerrors import Result, Error
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func area(self) -> int {
+        return 0
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+func total(s: Shape) -> int {
+    return s.area()
+}
+
+func squareSides(shapes: list[Shape]) -> generator[int] {
+    for s in shapes {
+        if isinstance(s, Square) {
+            yield s.side
+        }
+    }
+}
+
+func checked(n: int) -> Result[int] {
+    if n < 0 {
+        return Result.Err(Error("Neg", "negative"))
+    }
+    return Result.Ok(n)
+}
+
+func pick(s: Shape, n: int) -> Result[int] {
+    if n == 0 {
+        return Result.Ok(0)
+    } elif isinstance(s, Square) {
+        side: int = checked(s.side)?
+        return Result.Ok(side)
+    }
+    return Result.Ok(-1)
+}
+
+async func doubled(s: Shape) -> int {
+    if not isinstance(s, Square) {
+        return 0
+    }
+    return s.side * 2
+}
+
+func main() {
+    shapes: list[Shape] = [Square(2), Shape("x"), Square(3)]
+    sides: list[int] = shapes.map(lambda s: s.side if isinstance(s, Square) else 0)
+    print(f"lambda: {sides}")
+
+    seen: list[str] = []
+    for v in squareSides(shapes) {
+        seen.append(f"{v}")
+    }
+    print(f"generator: {' '.join(seen)}")
+
+    print(f"async: {await doubled(Square(6))}")
+
+    print(f"result: {pick(Square(5), 1).unwrap()} {pick(Shape('q'), 1).unwrap()} {pick(Square(5), 0).unwrap()}")
+    do {
+        bad: int = pick(Square(-1), 1)?
+        print(f"unreachable {bad}")
+    } catch err {
+        print(f"result err: {err}")
+    }
+
+    x: Shape = Square(4)
+    if isinstance(x, Square) {
+        func area() -> int {
+            return x.side * x.side
+        }
+        print(f"nested: {area()}")
+        base: Shape = x
+        print(f"upcast: {total(x)} {base.name} {x == None}")
+    }
+}

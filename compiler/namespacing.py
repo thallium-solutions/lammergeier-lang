@@ -498,6 +498,9 @@ def build_plans(
         for name, kind in info.symbols.items():
             owners.setdefault(name, []).append(path)
     colliding = {name for name, paths in owners.items() if len(paths) > 1}
+    function_names = {
+        name for info in modules.values() for name, kind in info.symbols.items() if kind in FUNCTION_KINDS
+    }
 
     def default_go(name: str, kind: str) -> str:
         if kind in FUNCTION_KINDS:
@@ -644,8 +647,23 @@ def build_plans(
         for name in colliding:
             if name not in claimed:
                 plan.hidden.add(name)
+        # A local of this module named like a function of another module it
+        # does not import (``one: Server = ...`` next to ``db.one(...)``) is
+        # just a local: hide that function's metadata here, or the local's
+        # declaration and its uses would be lowered with different names.
+        local_names = _locally_bound_names(info.tree)
+        for name in local_names & function_names:
+            if name not in claimed:
+                plan.hidden.add(name)
         plans[path] = plan
     return plans
+
+
+def _locally_bound_names(tree: Tree) -> set[str]:
+    """Names bound by assignments, parameters, loops and other binders."""
+    from compiler.narrowing import assigned_names
+
+    return assigned_names([tree])
 
 
 # ── Transpiler metadata view ─────────────────────────────────────────

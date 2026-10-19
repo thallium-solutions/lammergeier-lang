@@ -1,0 +1,33 @@
+# expect-error: argument `c` to `onlyCircle` has type `Square`, expected `Circle`
+# A narrowed value has the narrowed type: an unrelated subclass is still rejected.
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+}
+
+func onlyCircle(c: Circle) -> int {
+    return c.r
+}
+
+func main() {
+    x: Shape = Square(1)
+    if isinstance(x, Square) {
+        print(onlyCircle(x))
+    }
+}

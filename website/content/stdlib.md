@@ -1072,7 +1072,9 @@ if not bad3.ok() {
 ```
 
 Direct `.value`, `.error`, `unwrap()`, and `unwrapOr(...)` reads are
-`any`. Keep them as `any` when forwarding/logging, use `?` into an
+`any`; `r.error.kind`, `.message` and `.cause` read the error as an `Error`
+(another value is viewed as `Error("", str(v), v)`, like the `do/catch`
+binding). Keep them as `any` when forwarding/logging, use `?` into an
 annotated local when composing `Result`-returning functions, or use a
 small `go!` type assertion when you intentionally need a concrete
 Go type from a direct unwrap. The postfix `?` operator and

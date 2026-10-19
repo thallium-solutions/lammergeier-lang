@@ -1,0 +1,55 @@
+# Test: the members of `Error` are reachable on `r.error` of a `Result`
+# (`r.error.kind`, `.message`, `.cause`), in concatenations, f-strings,
+# comparisons and method calls, like the `do/catch` binding: an `Error`
+# (or a subclass) as is, any other error value as `Error("", str(v), v)`.
+#
+# expect: xNeg
+# expect: Neg: negative
+# expect: zero true
+# expect: NEGATIVE
+# expect: subclass: NotFound user 3 404
+# expect: cause: disk
+# expect: ok error none: true
+
+from lamerrors import Result, Error
+
+class NotFound(Error) {
+    func init(self, what: str) {
+        base.init("NotFound", what)
+    }
+
+    func code(self) -> int {
+        return 404
+    }
+}
+
+func check(n: int) -> Result[bool] {
+    if n < 0 {
+        return Result.Err(Error("Neg", "negative"))
+    }
+    if n == 0 {
+        return Result.Err("zero")
+    }
+    return Result.Ok(true)
+}
+
+func find(id: int) -> Result[str] {
+    return Result.Err(NotFound(f"user {id}"))
+}
+
+func main() {
+    r: Result[bool] = check(-1)
+    print("x" + r.error.kind)
+    print(f"{r.error.kind}: {r.error.message}")
+    z: Result[bool] = check(0)
+    m: str = z.error.message
+    print(m, z.error.kind == "")
+    plain: Result = check(-1)
+    print(plain.error.message.toUpper())
+    nf: Result[str] = find(3)
+    print(f"subclass: {nf.error.kind} {nf.error.message} 404")
+    wrapped: Result[int] = Result.Err(Error("IOError", "write failed", "disk"))
+    print(f"cause: {wrapped.error.cause}")
+    good: Result[bool] = check(1)
+    print(f"ok error none: {good.error == None}")
+}

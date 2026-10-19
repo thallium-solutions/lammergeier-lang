@@ -1,0 +1,35 @@
+# Transpilation: `del xs[i]` / `del xs[a:b]` copy the kept items into a new
+# slice (a bounds check raises IndexError); `enumerate(xs, start)` binds the
+# index from the raw range position; `r.error.kind` reads the error through
+# the `Error` view the do/catch binding uses; an f-string slot holding the
+# delimiter quote lowers like any expression; a str ternary joined with `+`
+# is a `string` closure (a dynamic branch asserted to `string`).
+# expect-go: xs = func(s []int, i int) []int { if i < 0 { i += len(s) }; _ = s[i]; return append(append(make([]int, 0, len(s)-1), s[:i]...), s[i+1:]...) }(xs, (-1))
+# expect-go: return append(append(make([]int, 0, n-(hi-lo)), s[:lo]...), s[hi:]...) }(xs)
+# expect-go: for n__lamRaw, name := range names {
+# expect-go: n := n__lamRaw + 1
+# expect-go: if e, ok := v.(*Error); ok { return e }
+# expect-go: }(r.Error).Kind
+# expect-go: fmt.Sprintf("%v", d["k"])
+# expect-go: func() string { if len(xs) > 0 { return interface{}(Label(names)).(string) }; return "none" }() + "!"
+
+from lamerrors import Result, Error
+
+func label(names: list[str]) -> any {
+    return names[0]
+}
+
+func main() {
+    xs: list[int] = [1, 2, 3, 4]
+    del xs[-1]
+    del xs[1:2]
+    names: list[str] = ["a", "b"]
+    for n, name in enumerate(names, 1) {
+        print(n, name)
+    }
+    r: Result[int] = Result.Err(Error("E", "m"))
+    print("kind " + r.error.kind)
+    d: dict[str, int] = {"k": 1}
+    print(f"{d["k"]}")
+    print((label(names) if len(xs) > 0 else "none") + "!")
+}

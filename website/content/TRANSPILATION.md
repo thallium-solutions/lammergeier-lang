@@ -542,13 +542,83 @@ declarations, so the emitter hoists one typed `var` before an `if` or exhaustive
 unguarded-wildcard `match` and lowers branch writes to assignments. Branches
 that return or raise do not participate in the join.
 
+### isinstance narrowing
+
+Where `isinstance(x, T)` holds (see `docs/SYNTAX.md` → "isinstance" →
+"Narrowing"), the region starts by binding a *shadow* of the local in its
+own Go block scope, so the outer variable keeps its Go type and the region
+is lowered with `x` typed as `T` (`compiler/visitors/narrowing.py`; the
+analysis of where a test holds, `compiler/narrowing.py`, is shared with the
+semantic checker so both narrow the same names):
+
+```lam
+func side(s: Shape) -> int {
+    if not isinstance(s, Square) {
+        return 0
+    }
+    return s.side
+}
+
+if isinstance(x, Square) {
+    print(x.side, x.area())
+}
+```
+
+→
+
+```go
+func Side(s *Shape) int {
+	if !(func() bool { _, ok := s._lamDyn().(interface{ _lamIs_Square() *Square }); return ok }()) {
+		return 0
+	}
+	{
+		s, _ := func(v interface{}) (*Square, bool) { if t, ok := v.(interface{ _lamIs_Square() *Square }); ok { return t._lamIs_Square(), true }; return nil, false }(s._lamDyn())
+		_ = s
+		return s.Side
+	}
+}
+
+if func() bool { _, ok := x._lamDyn().(interface{ _lamIs_Square() *Square }); return ok }() {
+	x, _ := func(v interface{}) (*Square, bool) { ... }(x._lamDyn())
+	_ = x
+	fmt.Println(x.Side, x._lamVirt_Area())
+}
+```
+
+| Narrowing | Shadow |
+|---|---|
+| hierarchy class to a subclass (also from `any` / an interface) | the `*T` view of the most-derived object (`_lamDyn()` / `_lamIs_T()`), so virtual calls keep reaching the overrides |
+| `any` / interface to a class outside any hierarchy | `x, _ := interface{}(x).(*T)` |
+| to an interface | `x, _ := interface{}(x).(I)` |
+| `any` to `int` / `float` / `str` / `bool` | `x, _ := interface{}(x).(int)` (`float64`, `string`, `bool`) |
+| `json` to a scalar | `x, _ := lamJSONRaw(x).(int)` |
+| `any` to `list` / `dict` | a `[]interface{}` / `map[string]interface{}` view (the value itself when it already has that Go type, else a reflection copy) |
+| `optional[int]` (a `*int`) to `int` | `x := *x` |
+| `optional[C]` to `C` | nothing (same Go pointer); only the Lam type changes |
+
+- `if` / `elif` / `else` branches and `while` bodies bind the shadow at the
+  top of their Go block; the statements after an early-exit guard are
+  wrapped in `{ ... }` holding it.
+- The right operand of `and` / `or`, the branches of a ternary and a
+  comprehension result bind it inside a closure:
+  `cond && func() bool { x, _ := ...; _ = x; return x.Side > 2 }()`,
+  `func() int { if cond { x, _ := ...; return x.Side }; return 0 }()`. An
+  operand using `?` is not narrowed: its propagation is a statement of the
+  enclosing function, emitted before the condition.
+- Because the shadow is a separate Go variable, a local assigned in the
+  region is never narrowed there (the assignment would only reach the
+  shadow), nor is a global, a field, or a name a `go!` block reads.
+
 ### `for` / `while`
 
 `for x in iterable` becomes `for _, x := range iterable` for slices/channels
 and `for x := range iterable` for dict/set-shaped maps, so a single loop
 target receives keys. Use `for k, v in mapping` when both map keys and values
 are needed.
-`for i, x in enumerate(xs)` becomes `for i, x := range xs`.
+`for i, x in enumerate(xs)` becomes `for i, x := range xs`; with a start
+(`enumerate(xs, 1)`, `start=k`) the Go index is `i__lamRaw` and the loop
+binds `i := i__lamRaw + 1` (a non-constant start is evaluated once into
+`__lamEnumStartN` before the loop).
 `for i in range(n)` becomes `for i := 0; i < n; i += 1`.
 `while cond` becomes `for cond`.
 Both loop kinds support an `else` suite, which is emitted using a small
@@ -714,6 +784,9 @@ The handler's `err` is typed `*Error`: an `Error` (or the `Error` view of a
 subclass instance) is used as is, any other propagated value is wrapped with
 an empty kind (`Error.__str__` prints just the message then, so the output is
 unchanged). A module declaring its own `Error` class keeps the raw value.
+A member of `Error` read on a `Result`'s `error` field (`r.error.kind`) goes
+through the same view (with `nil` kept for a success result):
+`func(v interface{}) *Error { if v == nil { return nil }; ... }(r.Error).Kind`.
 
 Inside the IIFE, the same `?` lowering applies — but the `return __qN`
 exits the closure, not the surrounding function, so the error pops
@@ -1133,7 +1206,8 @@ var s *Shape = NewSquare()._lamUp_Shape()
   differently (`get(self) -> int` overriding `Box[T].get(self) -> T`).
 - Downcasts are explicit: `sq: Square = shape` is a compile error; narrow
   with a class pattern (`match shape { case Square() as sq { ... } }`) or
-  test with `isinstance`.
+  test with `isinstance`, which binds the downcast view where the test
+  holds (see "isinstance narrowing").
 - In a diamond (`D(B, C)` with `B(A)` and `C(A)`) each path embeds its own
   `A`; the upcast to `A` uses the first base's path.
 
@@ -1220,11 +1294,12 @@ Interfaces are never wrapped in pointers.
 | `a in xs`, `a not in xs`           | Container-aware membership test for strings, lists, dicts, and sets          |
 | `not x`                            | `!x`                                                                      |
 | `x and y`, `x or y`                | `x && y`, `x \|\| y`                                                      |
-| `a if c else b`                    | Go ternary via IIFE                                                       |
+| `a if c else b`                    | Go ternary via IIFE typed by its branches (`func() string { ... }()`); joined with `+` to a `str`, it is a `string` closure even when one branch's type is not tracked |
 | `name := expr`                     | IIFE binding `name` locally and returning it (binding does *not* escape)  |
 | f-strings `f"x={x}"`               | `fmt.Sprintf("x=%v", x)` with method-call translation                     |
 | `s[i]` / `s[a:b]`                  | Go string byte indexing / string slicing                                 |
 | `xs[-1]` (constant negative index) | `xs[len(xs)-1]` (an IIFE for a non-trivial receiver); still an `IndexError` when out of range |
+| `xs[i]` on a list / string / tuple, `i` not provably non-negative | `xs[i+len(xs)&(i>>63)]` (see "Runtime negative indexes") |
 | `xs[a:b:c]` with negative / stepped bounds | typed IIFE keeping the receiver's Go type (`[]T` / `string`), reflection only for unknown receivers |
 | `obj?.field` on a pointer receiver | `func() *T { if o := obj; o != nil { v := o.F; return &v }; return nil }()` for a value field (`T` itself when nilable) |
 | `d[k] ?? fallback` on a map        | comma-ok lookup: the fallback for a missing key                            |
@@ -1253,7 +1328,7 @@ Interfaces are never wrapped in pointers.
 | `xs.sort(key=f)` / `xs.sort(f)` with a one-parameter `f` | `sort.SliceStable` comparing `f(x)` (ordered keys natively, others by `%v`) |
 | `sorted(xs, key=f, reverse=b)`     | `sort.SliceStable` copy preserving the receiver/context element type; `key` compares `f(x)` |
 | `enumerate(xs)`                    | IIFE materializing index/value pairs as `[]interface{}` tuples            |
-| `isinstance(x, T)`                 | Type-specific runtime check: assertion, nil test, or `reflect.Kind`        |
+| `isinstance(x, T)`                 | Type-specific runtime check: assertion, nil test, or `reflect.Kind` (`lamJSONRaw(x)` first on `json`, `x != nil` on an optional value type) |
 
 For class operands, arithmetic/unary/comparison expressions dispatch through
 the corresponding dunder method. Before emission, semantic analysis validates
@@ -1279,6 +1354,44 @@ Membership lowering follows the container shape: strings use
 small loop using `reflect.DeepEqual` so nested collection elements can be
 tested without triggering Go's non-comparable-slice errors. Chained comparisons
 such as `1 < x < 10` are lowered pairwise with `&&`.
+
+### Runtime negative indexes
+
+`xs[i]` on a list, string or tuple counts from the end when `i < 0`
+(Python semantics). Unless the index is provably non-negative, the index
+gets a branch-free adjustment: `i>>63` is `-1` (all bits set) for a
+negative `int` and `0` otherwise, so `i + len(xs)&(i>>63)` adds the length
+only to a negative index. It stays inlined, costs no branch misprediction
+on mixed signs, and an index still out of range panics with Go's runtime
+index error, which `catch IndexError` (and `LookupError`) recognises.
+
+| Lam | Go |
+|---|---|
+| `xs[i]`, `xs[i] = v`, `xs[i] += v` | `xs[i+len(xs)&(i>>63)]` |
+| `xs[f(k)]` (index evaluated once) | `xs[func(i, n int) int { return i + n&(i>>63) }(f(k), len(xs))]` |
+| `make()[i]` (receiver evaluated once) | `func(s []int, i int) int { return s[i+len(s)&(i>>63)] }(Make(), i)` |
+| `rows(k)[i] = v` (target with such a receiver) | `(*func(s []int, i int) *int { return &s[i+len(s)&(i>>63)] }(Rows(k), i)) = v` |
+| `xs[k]` with `for k in range(len(xs))` | `xs[k]` |
+
+A receiver is reused as written when evaluating it twice has no effect
+(names, fields, `grid[r]` with a name or constant index); an index of
+another integer type is converted with `int(...)`. Maps (`d[k]`), `json`
+values and classes with `__getitem__` are unaffected.
+
+`compiler/index_bounds.py` decides which indexes skip the adjustment: per
+top-level function or method it computes a lower bound for each local
+whose every assignment is bounded (the greatest fixpoint of
+`bound(x) = min(bounds of the values assigned to x)` over `x = e`,
+`x += e`, `x -= <constant>`, `x++`, `for x in range(...)`,
+`for x, _ in enumerate(...)`, widened to unknown when a bound keeps
+decreasing; parameters, destructuring and other bindings are unknown;
+module globals are never trusted), stores them on the `funcdef`, and the
+getitem lowering asks whether the index expression has a non-negative
+lower bound given them (constants, `len(...)`, `abs`, `min` / `max`,
+`a + b`, `a - <constant>`, `* // %` of non-negative values, ternaries),
+including in f-string slots. `xs[len(xs) - 1]` on a side-effect-free
+receiver is also left as is: its index is `-1` only for an empty `xs`,
+out of range either way.
 
 ### Destructuring assignments
 
@@ -1345,6 +1458,12 @@ from lamos import Os
   rewritten in the AST to `x` (or its renamed form) when that name is free in
   the module; when it is taken (a local `x`, or another module's `x`) the alias
   keeps its own Lam name and maps to the right Go symbol.
+- A local (variable, parameter, loop or comprehension variable) named like a
+  function of the program is a plain Go local: its declaration uses its own
+  name, and a function the module does not import has its metadata hidden in
+  that module, so the declaration and every use (`one.start()`, `f(one)`,
+  closures) agree; a local named like an imported function shadows it in its
+  function, like Python.
 - Raw `go!` code is rewritten for its own module's renamed definitions and for
   names imported without an alias (identifiers outside strings and comments;
   overload suffixes and `Class_static` prefixes included). Aliased imports and
@@ -1429,6 +1548,9 @@ User-facing examples and a good/bad cheatsheet live in
 |-----------------------|----------------------------------------------------------------------------|
 | `assert cond, "msg"`  | `if !(cond) { panic("msg") }`                                              |
 | `del x`               | `_ = x` (no-op; freed by GC)                                               |
+| `del d[k]`            | `delete(d, k)`                                                             |
+| `del xs[i]` (list)    | `xs = func(s []T, i int) []T { if i < 0 { i += len(s) }; _ = s[i]; return append(append(make([]T, 0, len(s)-1), s[:i]...), s[i+1:]...) }(xs, i)` (the bounds check raises `IndexError`; the kept items go to a new slice, so a view such as `ys = xs[:]` is not shifted) |
+| `del xs[a:b]` / `del xs[a:b:k]` | a closure clamping the bounds like Python and copying the kept items to a new slice (a step marks the removed positions) |
 | `pass`                | emits nothing; the empty block is legal Go                                 |
 | `with f as x: body`   | Go defer pattern (`defer x.Close()`) + inline body                         |
 | `yield expr`          | `chan <- expr`; generators compile to a goroutine + channel pair           |
@@ -1673,12 +1795,14 @@ inputs and forward to the underlying Go API.
   single `defer recover()` per function, so two consecutive try/catch
   blocks won't both fire. Wrap each `try` in its own helper if you
   need independent recovery sites.
-- **F-string interpolations are textual:** the f-string lowerer runs
-  string-level regex transforms on each `{expr}`. It doesn't accept
-  escaped quotes (`f"x={d[\"key\"]}"`) and may not rewrite every
-  identifier inside nested method-call args. When in doubt, lift the
-  expression into a `:= …` line above the `print(...)` and interpolate
-  the simple variable.
+- **F-string slots are parsed on their own:** the lexer sees an f-string
+  as one token. Before parsing, `compiler/fstrings.py` replaces each
+  delimiter quote *inside a slot* (`f"{d["k"]}"`) with a private-use
+  character (same length, so lines and columns do not move) so the lexer
+  and the line-based passes see one literal; the slot splitter restores
+  it, finds each slot's end and format spec outside nested strings and
+  brackets, and every slot expression is parsed and lowered (and checked)
+  like ordinary code. The formatter applies the same protection.
 - **Lam `int(s)` is a Go type-conversion, not a parser:** parse a whole string
   with an explicitly typed Result, for example `parsed: Result[int] =
   Conv.parse(s)`, or call `strconv.Atoi(s)` from a `go!` block. `Conv.parse`

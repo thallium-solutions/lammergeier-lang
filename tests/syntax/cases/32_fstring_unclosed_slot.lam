@@ -1,0 +1,8 @@
+# expect-error: syntax check failed
+# expect-error: 7:17
+# A slot that never closes (`{d["k"]` before the closing quote) is not
+# protected as an f-string slot and stays a Lam syntax error at the slot.
+func main() {
+    d: dict[str, int] = {"k": 1}
+    print(f"{d["k"]")
+}

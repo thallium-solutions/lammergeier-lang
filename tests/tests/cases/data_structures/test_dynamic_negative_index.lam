@@ -1,0 +1,198 @@
+# Test: an index held in a variable (or computed at runtime) follows
+# Python: `xs[i]` with `i < 0` counts from the end of lists, strings and
+# tuples, for reads and for assignment targets (`xs[i] = v`, `xs[i] += v`,
+# nested `grid[r][c] = v`, `self.items[i] = v`); out of range either way
+# raises a catchable `IndexError`. The receiver and the index are
+# evaluated once. Provably non-negative indexes (`range` loop variables,
+# `enumerate`, counters only ever incremented, `len(...)`) still read the
+# right elements, and dictionaries keep using the key as given.
+#
+# expect: read: 30 10 20 30
+# expect: str: 111 104 101
+# expect: tuple: c a 2
+# expect: write: [10 20 99]
+# expect: aug: [11 20 99]
+# expect: grid: [[1 2 0] [0 5 7]]
+# expect: field: [1 2 42] peek 2
+# expect: reverse: [30 20 10]
+# expect: low: IndexError
+# expect: high: IndexError
+# expect: write low: IndexError
+# expect: str low: IndexError
+# expect: lookup error: true
+# expect: once: 3 calls=1
+# expect: index once: 99 picks=1
+# expect: aug once: [1 2 13] picks=2
+# expect: provable: 10/20/30 0:a 1:b 2:c w=60 mid=20
+# expect: dict: neg two
+# expect: nested call: 2
+# expect: names: carol alice
+# expect: not provable: 20 [30 20 10 40 30] [40 10 20] 30 40
+# expect: downward: [40 30 20 10]
+
+class Stack {
+    func init(self) {
+        self.items: list[int] = [1, 2, 3]
+    }
+
+    func setFromEnd(self, depth: int, value: int) {
+        self.items[-1 - depth] = value
+    }
+
+    func peek(self, depth: int) -> int {
+        return self.items[-1 - depth]
+    }
+}
+
+class Counter {
+    func init(self) {
+        self.n: int = 0
+    }
+}
+
+func at(xs: list[int], i: int) -> int {
+    return xs[i]
+}
+
+func code(s: str, i: int) -> int {
+    return int(s[i])
+}
+
+func fresh(c: Counter) -> list[int] {
+    c.n += 1
+    return [1, 2, 3]
+}
+
+func pick(c: Counter) -> int {
+    c.n += 1
+    return -1
+}
+
+func main() {
+    xs: list[int] = [10, 20, 30]
+    i: int = -1
+    print(f"read: {xs[i]} {at(xs, -3)} {at(xs, -2)} {at(xs, 2)}")
+
+    s: str = "hello"
+    print(f"str: {code(s, -1)} {code(s, 0)} {code(s, -4)}")
+
+    t: tuple[str, str, int] = ("a", "c", 2)
+    k: int = -2
+    print(f"tuple: {t[k]} {t[k - 1]} {t[k + 4]}")
+
+    xs[i] = 99
+    j: int = -3
+    xs[j] = 10
+    print(f"write: {xs}")
+    xs[j] += 1
+    print(f"aug: {xs}")
+
+    grid: list[list[int]] = [[1, 0, 0], [0, 5, 0]]
+    r: int = -1
+    c: int = -1
+    grid[r][c] = 7
+    grid[r + 1][c - 1] = 2
+    print(f"grid: {grid}")
+
+    st: Stack = Stack()
+    st.setFromEnd(0, 42)
+    print(f"field: {st.items} peek {st.peek(1)}")
+
+    out: list[int] = []
+    for n in range(1, len(xs) + 1) {
+        out.append(at([10, 20, 30], -n))
+    }
+    print(f"reverse: {out}")
+
+    try {
+        at(xs, -4)
+    } catch IndexError {
+        print("low: IndexError")
+    }
+    try {
+        at(xs, 3)
+    } catch IndexError {
+        print("high: IndexError")
+    }
+    try {
+        bad: int = -10
+        xs[bad] = 1
+    } catch IndexError {
+        print("write low: IndexError")
+    }
+    try {
+        code(s, -6)
+    } catch IndexError {
+        print("str low: IndexError")
+    }
+    failed: bool = false
+    try {
+        at([], -1)
+    } catch LookupError {
+        failed = true
+    }
+    print(f"lookup error: {failed}")
+
+    calls: Counter = Counter()
+    last: int = fresh(calls)[i]
+    print(f"once: {last} calls={calls.n}")
+
+    picks: Counter = Counter()
+    print(f"index once: {xs[pick(picks)]} picks={picks.n}")
+    ys: list[int] = [1, 2, 3]
+    ys[pick(picks)] += 10
+    print(f"aug once: {ys} picks={picks.n}")
+
+    seen: list[str] = []
+    for p in range(len(xs)) {
+        seen.append(f"{[10, 20, 30][p]}")
+    }
+    labels: list[str] = ["a", "b", "c"]
+    pairs: list[str] = []
+    for q, _ in enumerate(labels) {
+        pairs.append(f"{q}:{labels[q]}")
+    }
+    w: int = 0
+    total: int = 0
+    vals: list[int] = [10, 20, 30]
+    while w < len(vals) {
+        total += vals[w]
+        w += 1
+    }
+    mid: int = vals[len(vals) // 2]
+    print(f"provable: {'/'.join(seen)} {' '.join(pairs)} w={total} mid={mid}")
+
+    d: dict[int, str] = {2: "two"}
+    d[-1] = "neg"
+    key: int = -1
+    print(f"dict: {d[key]} {d[key + 3]}")
+
+    print(f"nested call: {at(fresh(calls), -2)}")
+
+    names: list[str] = ["alice", "bob", "carol"]
+    first: int = -3
+    print(f"names: {names[first + 2]} {names[first]}")
+
+    # Locals that may go negative keep the adjustment.
+    four: list[int] = [10, 20, 30, 40]
+    m: int = 0
+    m = m - 3
+    stepped: list[int] = []
+    for down in range(2, -3, -1) {
+        stepped.append(four[down])
+    }
+    shifted: list[int] = []
+    for pos in [-1, 0, 1] {
+        shifted.append(four[pos])
+    }
+    last: int = len(four) - 5
+    counter: int = 3
+    counter--
+    counter -= 4
+    print(f"not provable: {four[m]} {stepped} {shifted} {four[counter]} {four[last]}")
+    backwards: list[int] = []
+    for back in range(len(four) - 1, -1, -1) {
+        backwards.append(four[back])
+    }
+    print(f"downward: {backwards}")
+}

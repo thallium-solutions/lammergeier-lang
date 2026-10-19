@@ -42,7 +42,9 @@ transpiler, so it's cheap to run on every build.
 from __future__ import annotations
 
 import ast
+import copy
 import json as _json
+from contextlib import contextmanager
 import os
 import re
 import sys
@@ -64,6 +66,9 @@ from compiler.diagnostics import (
 )
 from compiler.modules import WorkspaceIndex
 from compiler import namespacing as _namespacing
+from compiler import narrowing as _narrowing
+from compiler.fstrings import decode_placeholders, fstring_body, split_fstring
+from compiler.semantic_narrowing import NarrowingCheckMixin
 from compiler.typesys import (
     DictType,
     FuncType,
@@ -402,7 +407,7 @@ class _ImportedCallMetadata:
     class_type_params: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
-class SemanticChecker:
+class SemanticChecker(NarrowingCheckMixin):
     """Walks a parsed Lam tree and accumulates :class:`SemanticError`."""
 
     def __init__(
@@ -548,6 +553,8 @@ class SemanticChecker:
     def check(self, tree: Tree, *, ast_module: Module | None = None) -> List[SemanticError]:
         """Run all checks against the parse tree and return any errors."""
         token = set_subclass_hook(self._subclass_hook)
+        self._narrow_module_vars = _narrowing.module_variable_names(tree)
+        self._narrow_nonlocal_names = _narrowing.nonlocal_names(tree)
         try:
             return self._check_tree(tree, ast_module=ast_module)
         finally:
@@ -1646,10 +1653,13 @@ class SemanticChecker:
 
         exits: list[list[set[str]]] = []
         type_exits: list[list[dict[str, str]]] = []
-        for _cond, suite in branches:
+        branch_facts, else_facts = _narrowing.if_branch_facts(node)
+        for index, (cond, suite) in enumerate(branches):
             self._restore_definite(incoming)
             self._restore_types(incoming_types)
-            self._walk_suite_stmts(self._suite_stmts(suite))
+            # ``if isinstance(x, T)``: ``x`` is a ``T`` in the branch.
+            with self._narrowed(branch_facts[index] if index < len(branch_facts) else [], [suite], cond, True):
+                self._walk_suite_stmts(self._suite_stmts(suite))
             if not self._suite_definitely_terminates(suite):
                 exits.append(self._definite_snapshot())
                 type_exits.append(self._type_snapshot())
@@ -1657,7 +1667,8 @@ class SemanticChecker:
         if else_suite is not None:
             self._restore_definite(incoming)
             self._restore_types(incoming_types)
-            self._walk_suite_stmts(self._suite_stmts(else_suite))
+            with self._narrowed(else_facts, [else_suite]):
+                self._walk_suite_stmts(self._suite_stmts(else_suite))
             if not self._suite_definitely_terminates(else_suite):
                 exits.append(self._definite_snapshot())
                 type_exits.append(self._type_snapshot())
@@ -1808,7 +1819,11 @@ class SemanticChecker:
         self._scopes.append(scope)
         try:
             if bodies:
-                self._walk_suite_stmts(self._suite_stmts(bodies[0]))
+                # ``while isinstance(x, T)``: ``x`` is a ``T`` in the body
+                # (unless the body or the condition assigns it).
+                facts = _narrowing.condition_facts(cond, True) if cond is not None else []
+                with self._narrowed(facts, [bodies[0], cond], cond, True):
+                    self._walk_suite_stmts(self._suite_stmts(bodies[0]))
             self._emit_unused_local_warnings(scope)
         finally:
             self._scopes.pop()
@@ -2564,6 +2579,8 @@ class SemanticChecker:
             elif name:
                 suggestion = self._suggest_name(name)
                 msg = f"undefined name `{name}`"
+                if self.__dict__.get("_in_fstring_slot"):
+                    msg += " in f-string"
                 if suggestion:
                     msg += f" — did you mean `{suggestion}`?"
                 self._error(node, "undefined", msg)
@@ -2642,6 +2659,15 @@ class SemanticChecker:
         if d in ("list_comprehension", "dict_comprehension",
                  "set_comprehension", "tuple_comprehension"):
             self._visit_comprehension(node)
+            return
+
+        if d in ("and_test", "or_test"):
+            self._check_expression_type_errors(node)
+            self._narrow_visit_binary(node)
+            return
+        if d == "test" and len(node.children) == 3:
+            self._check_expression_type_errors(node)
+            self._narrow_visit_ternary(node)
             return
 
         # Keyword-argument call site: ``f(name=value)`` parses to an
@@ -2895,8 +2921,20 @@ class SemanticChecker:
                 self._visit_expr_subtree(iterable)
                 self._bind_comprehension_target(target, self._expr_simple_type(iterable), scope)
             self._check_comprehension_filter_types(node)
-            for c in node.children:
-                self._visit_expr_subtree(c)
+            comp = node.children[0] if node.children else None
+            if isinstance(comp, Tree) and comp.data == "comprehension" and len(comp.children) > 2 \
+                    and isinstance(comp.children[2], Tree):
+                # ``[s.side for s in shapes if isinstance(s, Square)]``: the
+                # result sees the facts of the filter.
+                for c in comp.children[1:]:
+                    self._visit_expr_subtree(c)
+                facts = [] if _narrowing.contains_propagate(comp.children[0]) \
+                    else _narrowing.condition_facts(comp.children[2], True)
+                with self._narrowed(facts, [comp.children[0], comp.children[2]], comp.children[2], True):
+                    self._visit_expr_subtree(comp.children[0])
+            else:
+                for c in node.children:
+                    self._visit_expr_subtree(c)
         finally:
             self._scopes.pop()
 
@@ -3002,11 +3040,37 @@ class SemanticChecker:
         inferred = self._expr_simple_type(obj)
         receiver_type = self._receiver_class_from_type(inferred)
         if not receiver_type:
+            receiver_type = self._narrow_tested_field_class(obj)
+        if not receiver_type:
+            receiver_type = self._result_error_member_class(obj)
+        if not receiver_type:
             return
         if self._check_external_private_member(node, receiver_type, attr):
             return
         display = self._expr_dotted_name(obj) or receiver_type
         self._check_class_member_access(node, display, receiver_type, attr)
+
+    def _result_error_member_class(self, obj) -> str:
+        """``Error`` for ``r.error`` on a ``Result`` (``r.error.kind``): its
+        members are those of lamerrors' ``Error`` (the generated code views
+        another error value as ``Error("", str(v), v)``, like the
+        ``do/catch`` binding)."""
+        if not (
+            isinstance(obj, Tree) and obj.data == "getattr" and len(obj.children) >= 2
+            and self._name_text(obj.children[1]) == "error"
+        ):
+            return ""
+        receiver_type = self._expr_simple_type(obj.children[0])
+        if receiver_type is None and isinstance(obj.children[0], Tree) and obj.children[0].data == "var":
+            text = self._var_type(self._name_text(obj.children[0].children[0]))
+            receiver_type = parse_type(text) if text else None
+        is_result = (
+            (isinstance(receiver_type, NamedType) and receiver_type.name == "Result")
+            or (isinstance(receiver_type, GenericType) and receiver_type.base == "Result")
+        )
+        if not is_result or "Error" not in self._class_members:
+            return ""
+        return "Error"
 
     def _receiver_class_from_type_text(self, type_text: str) -> str:
         if not type_text:
@@ -3059,6 +3123,9 @@ class SemanticChecker:
         msg = f"unknown member `{receiver_display}.{attr}` on class `{class_name}`"
         if suggestion:
             msg += f" — did you mean `{receiver_display}.{suggestion}`?"
+        note = self._narrow_note_for(receiver_display)
+        if note:
+            msg += f" ({note})"
         self._error(node, "member", msg)
 
     def _class_has_direct_member(self, class_name: str, attr: str) -> bool:
@@ -4335,7 +4402,9 @@ class SemanticChecker:
         for method_name, iface_shape in required.items():
             if len(overloads.get(method_name, [])) > 1:
                 continue
-            class_shape = available.get(method_name)
+            # An inherited method satisfies the interface too (Go promotes
+            # the embedded parent's methods).
+            class_shape = available.get(method_name) or self._class_method_shape(class_name, method_name)
             if class_shape is None:
                 self._error(
                     node, "interface",
@@ -5303,6 +5372,8 @@ class SemanticChecker:
             if method in LIST_METHODS:
                 return
             idiom = LIST_METHOD_IDIOMS.get(method)
+            if method == "join":
+                idiom = self._list_join_idiom(call, receiver) or idiom
             hint = LIST_METHOD_HINTS.get(method) or self._closest(method, LIST_METHODS)
             if idiom:
                 suffix = f"; use {idiom}"
@@ -5314,6 +5385,24 @@ class SemanticChecker:
                 callee, "member",
                 f"`{render_type(receiver_type)}` has no method `{method}`{suffix}",
             )
+
+    def _list_join_idiom(self, call: Tree, receiver: Tree) -> str:
+        """``seen.join(" ")`` -> ``" ".join(seen)`` (the separator owns
+        ``join``), spelled with the call's own receiver and separator."""
+        args = self._call_positional_args(call)
+        receiver_text = self._expr_dotted_name(receiver)
+        if len(args) != 1 or not receiver_text:
+            return ""
+        sep = args[0]
+        literal = self._literal_string_text(sep) if isinstance(sep, Tree) and sep.data == "string" else None
+        if literal is not None:
+            raw = str(sep.children[0]) if sep.children else ""
+            sep_text = raw if ('"' in literal or "\\" in literal) else f'"{literal}"'
+        else:
+            sep_text = self._expr_dotted_name(sep)
+        if not sep_text:
+            return ""
+        return f"`{sep_text}.join({receiver_text})` on a `list[str]`"
 
     @staticmethod
     def _closest(name: str, pool) -> str:
@@ -6233,65 +6322,114 @@ class SemanticChecker:
         return f"dropped return value of `{target}()` (assign to `_` to silence)"
 
     def _mark_fstring_uses(self, node: Tree) -> None:
-        """Scan an ``fstring`` AST node's literal text and mark
-        every identifier inside ``{...}`` interpolation slots as
-        used (via :meth:`_is_resolved`).
+        """Check the ``{...}`` slots of an ``fstring`` token.
 
-        Without this hook, a parameter referenced only as
-        ``f"… {name} …"`` would be invisible to the AST walker
-        (the grammar models the entire f-string as one opaque
-        token), and the unused-parameter check would raise a
-        false positive on it. Format-spec digits and conversion
-        flags get scanned too; they almost never collide with
-        real binding names, and even if they do the only effect
-        is silencing a warning we'd otherwise emit.
+        The grammar models an f-string as one opaque token, so each slot
+        expression is parsed on its own (``compiler/fstrings.py`` splits the
+        body, honouring nested strings and brackets), its positions are
+        moved to the slot's place in the file, and it is checked like any
+        other expression: names are marked used, undefined names reported
+        at their line and column, member / method / type errors caught
+        (``seen.join(" ")`` on a list). A slot that does not parse falls
+        back to marking the identifiers it mentions.
         """
         if not node.children:
             return
         raw = str(node.children[0])
-        # Strip the ``f"`` / ``f'`` / ``f"""`` / ``f'''`` prefix +
-        # matching suffix. The triple-quoted forms are checked
-        # first so the single-char prefix branch doesn't shadow
-        # them (``f"""`` legitimately starts with ``f"``).
-        if raw.startswith('f"""') or raw.startswith("f'''"):
-            body = raw[4:-3]
-        elif raw.startswith('f"') or raw.startswith("f'"):
-            body = raw[2:-1]
-        else:
+        split = fstring_body(raw)
+        if split is None:
             return
-
-        i, n = 0, len(body)
-        while i < n:
-            ch = body[i]
-            if ch == '{':
-                # ``{{`` is an escaped literal brace — skip it
-                # whole so we don't treat the second ``{`` as the
-                # start of a slot.
-                if i + 1 < n and body[i + 1] == '{':
-                    i += 2
-                    continue
-                depth = 1
-                j = i + 1
-                while j < n and depth > 0:
-                    if body[j] == '{':
-                        depth += 1
-                    elif body[j] == '}':
-                        depth -= 1
-                        if depth == 0:
-                            break
-                    j += 1
-                if depth != 0:
-                    return
-                slot = body[i + 1:j]
+        body, quote, prefix = split
+        parts = split_fstring(body, quote)
+        if parts is None:
+            return
+        decoded = decode_placeholders(body, quote)
+        for part in parts:
+            if isinstance(part, str):
+                continue
+            text = part.expr
+            tree = self._fstring_slot_tree(text) if text.strip() else None
+            if tree is None and part.has_spec:
+                text = f"{part.expr}:{part.spec}"
+                tree = self._fstring_slot_tree(text)
+            if tree is None:
+                slot = text
                 for m in _FSTRING_IDENT_RE.finditer(slot):
                     self._is_resolved(m.group(0))
-                self._check_fstring_slot_names(node, raw, body, i + 1, slot)
-                i = j + 1
-            elif ch == '}':
-                # Escaped ``}}`` is a literal brace too.
-                i += 2 if (i + 1 < n and body[i + 1] == '}') else 1
-            else:
-                i += 1
+                self._check_fstring_slot_names(node, raw, decoded, part.start, slot)
+                continue
+            self._place_fstring_slot_tree(tree, node.children[0], decoded, part.start, prefix)
+            with self._fstring_slot_scope():
+                self._visit_expr_subtree(tree)
+
+    _FSTRING_SLOT_PREFIX = "lamFstrSlot = ("
+
+    def _fstring_slot_tree(self, expr: str):
+        """A fresh parse tree of the slot expression ``expr`` (``None`` when
+        it does not parse or binds names of its own)."""
+        text = expr.strip()
+        if not text or re.search(r"\blambda\b|\bfor\b", text) or text.endswith("="):
+            return None
+        cache = SemanticChecker.__dict__.get("_FSTRING_TREE_CACHE")
+        if cache is None:
+            cache = {}
+            SemanticChecker._FSTRING_TREE_CACHE = cache
+        if text not in cache:
+            try:
+                from compiler.lammergeier import create_parser as _cp
+                tree = _cp().parse(f"{self._FSTRING_SLOT_PREFIX}{expr});\n")
+            except Exception:
+                tree = None
+            rhs = None
+            if tree is not None:
+                for sub in tree.iter_subtrees_topdown():
+                    if sub.data == "assign" and len(sub.children) >= 2:
+                        rhs = sub.children[-1]
+                        break
+            cache[text] = rhs
+        rhs = cache[text]
+        return copy.deepcopy(rhs) if rhs is not None else None
+
+    def _place_fstring_slot_tree(self, tree, token, body: str, start: int, prefix: int) -> None:
+        """Move the positions of a parsed slot to the slot in the file."""
+        base_line = getattr(token, "line", 0) or 0
+        base_col = getattr(token, "column", 0) or 0
+        before = body[:start]
+        line = base_line + before.count("\n")
+        col = (start - before.rfind("\n")) if "\n" in before else base_col + prefix + start
+        shift = col - (len(self._FSTRING_SLOT_PREFIX) + 1)
+
+        def move(meta_holder, is_token: bool) -> None:
+            if is_token:
+                if getattr(meta_holder, "line", None):
+                    meta_holder.line = line
+                    meta_holder.column = (meta_holder.column or 0) + shift
+                    if getattr(meta_holder, "end_line", None):
+                        meta_holder.end_line = line
+                        meta_holder.end_column = (meta_holder.end_column or 0) + shift
+                return
+            meta = getattr(meta_holder, "meta", None)
+            if meta is None or getattr(meta, "empty", True):
+                return
+            meta.line = line
+            meta.column = meta.column + shift
+            meta.end_line = line
+            meta.end_column = meta.end_column + shift
+
+        for sub in tree.iter_subtrees():
+            move(sub, False)
+            for child in sub.children:
+                if isinstance(child, Token):
+                    move(child, True)
+
+    @contextmanager
+    def _fstring_slot_scope(self):
+        previous = self.__dict__.get("_in_fstring_slot", False)
+        self._in_fstring_slot = True
+        try:
+            yield
+        finally:
+            self._in_fstring_slot = previous
 
     _FSTRING_SLOT_CACHE: dict = {}
 
@@ -6710,8 +6848,17 @@ class SemanticChecker:
         — listing every dead statement produces pages of noise in
         the common "commented-out block" case.
         """
+        stmts = list(stmts)
+        guard_undo: list = []
+        try:
+            self._walk_suite_stmts_guarded(stmts, guard_undo)
+        finally:
+            for undo in reversed(guard_undo):
+                self._narrow_restore(undo)
+
+    def _walk_suite_stmts_guarded(self, stmts: list, guard_undo: list) -> None:
         seen_terminator = False
-        for stmt in stmts:
+        for index, stmt in enumerate(stmts):
             if seen_terminator:
                 # Skip ``simple_stmt`` wrappers to point the cursor
                 # at the real statement underneath.
@@ -6737,6 +6884,9 @@ class SemanticChecker:
                 seen_terminator = False  # only report once per suite
                 continue
             self._visit_stmt(stmt)
+            # ``if not isinstance(x, T) { return }``: ``x`` is a ``T`` in
+            # the rest of the block.
+            self._narrow_walk_guarded(stmts, index, guard_undo)
             if isinstance(stmt, Tree):
                 if stmt.data in self._FLOW_TERMINATORS:
                     seen_terminator = True
@@ -7993,7 +8143,8 @@ class SemanticChecker:
     def _check_boolean_chain_types(self, node: Tree) -> None:
         op = "and" if node.data == "and_test" else "or"
         for index, child in enumerate(c for c in node.children if isinstance(c, Tree)):
-            child_type = self._expr_simple_type(child)
+            with self._narrowed(_narrowing.operand_facts(node, index), [child]):
+                child_type = self._expr_simple_type(child)
             if child_type is None or self._is_any_type(child_type) or self._is_open_type(child_type):
                 continue
             if self._is_named_type(child_type, "bool"):
@@ -8024,8 +8175,11 @@ class SemanticChecker:
                 return
         if not isinstance(true_expr, Tree) or not isinstance(false_expr, Tree):
             return
-        true_type = self._expr_simple_type(true_expr)
-        false_type = self._expr_simple_type(false_expr)
+        true_facts, false_facts = _narrowing.ternary_facts(node)
+        with self._narrowed(true_facts, [true_expr]):
+            true_type = self._expr_simple_type(true_expr)
+        with self._narrowed(false_facts, [false_expr]):
+            false_type = self._expr_simple_type(false_expr)
         if true_type is None or false_type is None:
             return
         if self._is_any_type(true_type) or self._is_any_type(false_type):
@@ -8449,8 +8603,11 @@ class SemanticChecker:
         true_expr, _cond_expr, false_expr = node.children
         if not isinstance(true_expr, Tree) or not isinstance(false_expr, Tree):
             return None
-        true_type = self._expr_simple_type(true_expr)
-        false_type = self._expr_simple_type(false_expr)
+        true_facts, false_facts = _narrowing.ternary_facts(node)
+        with self._narrowed(true_facts, [true_expr]):
+            true_type = self._expr_simple_type(true_expr)
+        with self._narrowed(false_facts, [false_expr]):
+            false_type = self._expr_simple_type(false_expr)
         if true_type is None or false_type is None:
             return None
         return self._compatible_ternary_types(true_type, false_type)
@@ -8644,6 +8801,15 @@ class SemanticChecker:
             return receiver_type.value
         if self._is_named_type(receiver_type, "str"):
             return NamedType("byte")
+        if isinstance(receiver_type, GenericType) and receiver_type.base == "tuple" and receiver_type.args:
+            # ``t[1]``: that element; ``t[k]``: the common element type.
+            args = list(receiver_type.args)
+            constant = self._integer_literal_value(index)
+            if constant is not None and -len(args) <= constant < len(args):
+                return args[constant]
+            if len({render_type(a) for a in args}) == 1:
+                return args[0]
+            return NamedType("any")
         return None
 
     def _getitem_index_type(self, receiver_type: Type) -> Type | None:
@@ -8656,6 +8822,8 @@ class SemanticChecker:
         if isinstance(receiver_type, DictType):
             return receiver_type.key
         if isinstance(receiver_type, NamedType) and receiver_type.name == "str":
+            return NamedType("int")
+        if isinstance(receiver_type, GenericType) and receiver_type.base == "tuple":
             return NamedType("int")
         return None
 

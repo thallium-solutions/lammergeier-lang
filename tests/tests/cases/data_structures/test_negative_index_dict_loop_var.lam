@@ -1,0 +1,48 @@
+# Regression: a loop variable over a list of dictionaries keeps the
+# dictionary type even when a constructor elsewhere has a same-named
+# parameter of another type (`rows: list[list[int]]`), so `row["left"]`
+# and `m[k]` with a negative int key look the key up instead of being
+# counted from the end like a list index.
+#
+# expect: 3 neg 6
+
+class Bucket {
+    func init(self, rows: list[list[int]], maps: list[list[str]]) {
+        self.rows: list[list[int]] = rows
+        self.maps: list[list[str]] = maps
+    }
+
+    func last(self) -> int {
+        total: int = 0
+        for row in self.rows {
+            total += row[len(row) - 1]
+        }
+        return total
+    }
+}
+
+func nested(rows: list[dict[str, list[int]]]) -> int {
+    total: int = 0
+    for row in rows {
+        for v in row["left"] {
+            total += v
+        }
+    }
+    return total
+}
+
+func keyed(maps: list[dict[int, str]], k: int) -> str {
+    out: str = ""
+    for m in maps {
+        out = m[k]
+    }
+    return out
+}
+
+func main() {
+    b: Bucket = Bucket([[1, 2], [3, 4]], [["x"]])
+    neg: dict[int, str] = {}
+    neg[-1] = "neg"
+    neg[1] = "pos"
+    print(nested([{"left": [1, 2]}]), keyed([neg], -1), b.last())
+}

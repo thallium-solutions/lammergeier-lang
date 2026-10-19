@@ -1,0 +1,11 @@
+# Provider for test_ternary_str_concat_imported.lam: a class whose static
+# method another library calls in str ternaries.
+
+class Paths {
+    static func base(path: str) -> str {
+        parts: list[str] = path.split("/")
+        return parts[len(parts) - 1]
+    }
+}
+
+func main() { pass }

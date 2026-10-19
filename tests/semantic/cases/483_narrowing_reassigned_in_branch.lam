@@ -1,0 +1,31 @@
+# expect-error: unknown member `x.side` on class `Shape`
+# expect-error: `x` is not narrowed to `Square` here: it is assigned in the narrowed region
+# A variable reassigned inside the branch keeps its declared type there.
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+}
+
+func main() {
+    x: Shape = Square(1)
+    if isinstance(x, Square) {
+        x = Circle(2)
+        print(x.side)
+    }
+}

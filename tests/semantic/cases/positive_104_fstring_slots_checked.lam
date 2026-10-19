@@ -1,0 +1,39 @@
+# expect-pass
+# Valid f-string slots stay valid now that slots are type-checked: nested
+# strings in the delimiter quote, format specs, tuple items read with a
+# runtime index, a class satisfying an interface through an inherited
+# method, Result error members, slices and comprehensions.
+
+from lamerrors import Result, Error
+
+interface HasDescribe {
+    func describe(self) -> str
+}
+
+class Shape {
+    func describe(self) -> str {
+        return "shape"
+    }
+}
+
+class Tile(Shape) {
+    func area(self) -> int {
+        return 4
+    }
+}
+
+func show(d: HasDescribe) -> str {
+    return d.describe()
+}
+
+func main() {
+    d: dict[str, int] = {"k": 1}
+    t: tuple[str, str, int] = ("a", "b", 3)
+    k: int = 1
+    xs: list[int] = [1, 2, 3]
+    r: Result[int] = Result.Err(Error("E", "m"))
+    tile: Tile = Tile()
+    print(f"{d["k"]:3d} {t[k]} {t[0]} {show(tile)} {r.error.kind} {xs[1:]} {[x * 2 for x in xs]}")
+    item = t[k]
+    print(item, show(tile))
+}

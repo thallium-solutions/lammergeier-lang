@@ -1,0 +1,87 @@
+# Provider module for test_int_narrowing_hierarchy.lam: an event hierarchy
+# and library functions that narrow base-typed events with isinstance
+# (guards, elif chains, `and`). Subclasses declared by the importing
+# module go through the same code.
+
+class Event {
+    func init(self, id: int) {
+        self.id: int = id
+    }
+
+    func kind(self) -> str {
+        return "event"
+    }
+
+    func weight(self) -> int {
+        return 1
+    }
+}
+
+class Click(Event) {
+    func init(self, id: int, x: int, y: int) {
+        base.init(id)
+        self.x: int = x
+        self.y: int = y
+    }
+
+    func kind(self) -> str {
+        return "click"
+    }
+
+    func distance(self) -> int {
+        return self.x + self.y
+    }
+}
+
+class KeyPress(Event) {
+    func init(self, id: int, key: str) {
+        base.init(id)
+        self.key: str = key
+    }
+
+    func kind(self) -> str {
+        return "key"
+    }
+
+    func weight(self) -> int {
+        return 2
+    }
+}
+
+class Shortcut(KeyPress) {
+    func init(self, id: int, key: str, modifier: str) {
+        base.init(id, key)
+        self.modifier: str = modifier
+    }
+
+    func kind(self) -> str {
+        return "shortcut"
+    }
+}
+
+func keyName(k: KeyPress) -> str {
+    return k.key.toUpper()
+}
+
+func summarize(e: Event) -> str {
+    if isinstance(e, Click) {
+        return f"{e.kind()}@{e.x},{e.y}"
+    } elif isinstance(e, KeyPress) {
+        # A `Shortcut` arrives here as a `KeyPress` and keeps its `kind`.
+        return f"{e.kind()}:{keyName(e)}"
+    }
+    return f"{e.kind()}#{e.id}"
+}
+
+func clickDistance(e: Event) -> int {
+    if not isinstance(e, Click) {
+        return -1
+    }
+    return e.distance()
+}
+
+func isFarClick(e: Event, limit: int) -> bool {
+    return isinstance(e, Click) and e.distance() > limit
+}
+
+func main() { pass }

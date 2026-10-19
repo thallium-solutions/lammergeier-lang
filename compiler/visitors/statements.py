@@ -4,6 +4,8 @@
 from __future__ import annotations
 import re
 from lark import Tree, Token
+
+from compiler import narrowing as _narrowing
 from typing import Optional, Tuple, List
 from compiler.constants import PYTHON_EXCEPTIONS
 from compiler.typesys import render_type as render_type_text
@@ -64,9 +66,30 @@ class StatementVisitorMixin:
         if node.data != "suite":
             self._visit(node)
             return
-        for child in node.children:
-            if isinstance(child, Tree):
-                self._visit(child)
+        self._visit_stmt_list([c for c in node.children if isinstance(c, Tree)])
+
+    def _visit_stmt_list(self, stmts: List[Tree]) -> None:
+        for index, child in enumerate(stmts):
+            self._visit(child)
+            if child.data != "if_stmt" or index + 1 >= len(stmts):
+                continue
+            # ``if not isinstance(x, T) { return }``: the rest of the block
+            # sees ``x`` as a ``T``, in a Go block holding the shadow.
+            rest = stmts[index + 1:]
+            plan = self._nr_plan(_narrowing.guard_facts(child), rest)
+            if not plan:
+                continue
+            self._emit("{")
+            self.indent += 1
+            self._push_scope()
+            body_start, vars_at_start = self._scope_unused_tracking_start()
+            self._nr_emit_binds(plan)
+            with self._nr_registered(plan):
+                self._visit_stmt_list(rest)
+            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
+            self.indent -= 1
+            self._emit("}")
+            return
 
     def _visit_simple_stmt(self, node: Tree):
         for child in node.children:
@@ -182,7 +205,7 @@ class StatementVisitorMixin:
         type_node = children[1]
         value = children[2] if len(children) > 2 else None
 
-        target_str = self._expr_to_go(target)
+        target_str = self._assign_target_to_go(target)
         go_type = self._type_expr_to_go(type_node)
         if value is not None:
             # ``it: Iter = Iter.range_(0, 3)``: a bare generic class takes
@@ -215,7 +238,10 @@ class StatementVisitorMixin:
             target_str = self._link_const_go_names[target_str]
 
         if value is not None:
-            if isinstance(value, Tree) and value.data == "test" and len(value.children) == 3:
+            if (
+                isinstance(value, Tree) and value.data == "test" and len(value.children) == 3
+                and not self._nr_ternary_narrows(value)
+            ):
                 with self._scoped(_expected_expr_type_key=overload_type_key):
                     true_val = self._typed_value_to_go(value.children[0], go_type, overload_type_key)
                     cond = self._expr_to_go(value.children[1])
@@ -292,6 +318,20 @@ class StatementVisitorMixin:
             self._emit(f"{target_str} := {value_str}")
         self._declare_var(target_str)
 
+    def _assign_target_to_go(self, target) -> str:
+        """Go name of an assignment target. A plain name is a variable even
+        when a function of the program has that name (``one: Server = ...``
+        next to ``func one()``): its declaration and its uses must agree."""
+        if isinstance(target, Tree) and target.data == "var" and target.children:
+            name = self._get_name(target.children[0])
+            go_name = self._go_binding_name(name)
+            if (
+                name in self._user_functions and go_name not in self.declared_vars
+                and name not in self._link_const_go_names and not self._parent_alias_expr(name)
+            ):
+                return go_name
+        return self._expr_to_go(target)
+
     def _visit_assign(self, node: Tree):
         parts = [c for c in node.children if c is not None]
         if len(parts) >= 2:
@@ -321,13 +361,17 @@ class StatementVisitorMixin:
                     value_str = self._typed_value_to_go(value_node, "LamJSON")
                     self._emit(f'lamJSONSet({self._expr_to_go(obj_node)}, "{attr}", {value_str})')
                     return
-            target_str = self._expr_to_go(target_node)
+            with self._scoped(_index_target=True):
+                target_str = self._assign_target_to_go(target_node)
             self._record_inferred_target_type(target_str, value_node)
             if self._emit_semantic_typed_assign(node, target_node, target_str, value_node):
                 return
             target_go_type = self._expr_go_type_hint(parts[0])
             # Ternary in plain assign
-            if isinstance(value_node, Tree) and value_node.data == "test" and len(value_node.children) == 3:
+            if (
+                isinstance(value_node, Tree) and value_node.data == "test" and len(value_node.children) == 3
+                and not self._nr_ternary_narrows(value_node)
+            ):
                 if target_go_type:
                     true_val = self._typed_value_to_go(value_node.children[0], target_go_type)
                     false_val = self._typed_value_to_go(value_node.children[2], target_go_type)
@@ -550,7 +594,8 @@ class StatementVisitorMixin:
         return any(self._contains_async_handle_call(c) for c in node.children)
 
     def _visit_augassign(self, node: Tree):
-        target_str = self._expr_to_go(node.children[0])
+        with self._scoped(_index_target=True):
+            target_str = self._expr_to_go(node.children[0])
         op = self._get_augassign_op(node.children[1])
         # ``total += f()?``: the ``?`` payload has the target's type.
         target_type = self._expr_go_type_hint(node.children[0]) if isinstance(node.children[0], Tree) else ""
@@ -607,7 +652,8 @@ class StatementVisitorMixin:
         so downstream Go errors surface a clear message.
         """
         target_node = node.children[0]
-        target_str = self._expr_to_go(target_node)
+        with self._scoped(_index_target=True):
+            target_str = self._expr_to_go(target_node)
 
         # Class dunder hook — only fires when the target is a plain
         # variable whose tracked class exposes the override. Field
@@ -662,7 +708,10 @@ class StatementVisitorMixin:
                     expected = expected_types[i] if i < len(expected_types) else ""
                     vals.append(self._typed_value_to_go(c, expected) if expected else self._expr_to_go(c))
                 val = ", ".join(vals)
-            elif isinstance(val_node, Tree) and val_node.data == "test" and len(val_node.children) == 3:
+            elif (
+                isinstance(val_node, Tree) and val_node.data == "test" and len(val_node.children) == 3
+                and not self._nr_ternary_narrows(val_node)
+            ):
                 if return_type:
                     with self._scoped(_expected_expr_type_key=return_type_key):
                         true_val = self._typed_value_to_go(val_node.children[0], return_type, return_type_key)
@@ -796,15 +845,70 @@ class StatementVisitorMixin:
             target = node.children[0]
             if isinstance(target, Tree) and target.data == "getitem":
                 obj_node = target.children[0]
+                obj_type = self._expr_go_type_hint(obj_node) or ""
+                if obj_type.startswith("[]"):
+                    self._emit_del_list_items(obj_node, target.children[1], obj_type)
+                    return
                 obj = self._expr_to_go(obj_node)
                 idx = self._expr_to_go(target.children[1])
-                if self._expr_go_type_hint(obj_node) == "LamJSON":
+                if obj_type == "LamJSON":
                     self._emit(f"lamJSONDelete({obj}, {idx})")
                     return
                 self._emit(f"delete({obj}, {idx})")
                 return
             target_str = self._expr_to_go(target)
             self._emit(f"{target_str} = nil")
+
+    def _emit_del_list_items(self, obj_node, index_node, list_type: str) -> None:
+        """``del xs[i]`` / ``del xs[a:b]`` / ``del xs[a:b:k]`` on a list,
+        like Python: a negative index counts from the end (out of range is
+        an ``IndexError``), slice bounds are clamped. The kept items go to a
+        new slice, so a view taken before (``ys = xs[:]`` shares the Go
+        backing array) is left intact."""
+        with self._scoped(_index_target=True):
+            obj = self._expr_to_go(obj_node)
+        if not (isinstance(index_node, Tree) and index_node.data == "slice"):
+            idx = self._typed_value_to_go(index_node, "int")
+            self._emit(
+                f"{obj} = func(s {list_type}, i int) {list_type} {{ if i < 0 {{ i += len(s) }}; _ = s[i]; "
+                f"return append(append(make({list_type}, 0, len(s)-1), s[:i]...), s[i+1:]...) }}({obj}, {idx})"
+            )
+            return
+        parts = [c for c in index_node.children if not (isinstance(c, Tree) and c.data == "sliceop")]
+        lo_node = parts[0] if parts else None
+        hi_node = parts[1] if len(parts) > 1 else None
+        step_node = None
+        for c in index_node.children:
+            if isinstance(c, Tree) and c.data == "sliceop":
+                step_node = next((sc for sc in c.children if sc is not None), None)
+        lo = self._typed_value_to_go(lo_node, "int") if lo_node is not None else ""
+        hi = self._typed_value_to_go(hi_node, "int") if hi_node is not None else ""
+        if step_node is None:
+            # Contiguous: shift the tail down in place.
+            clamp = "if {v} < 0 {{ {v} += n; if {v} < 0 {{ {v} = 0 }} }} else if {v} > n {{ {v} = n }}; "
+            body = "n := len(s); "
+            body += f"lo := {lo}; " + clamp.format(v="lo") if lo else "lo := 0; "
+            body += f"hi := {hi}; " + clamp.format(v="hi") if hi else "hi := n; "
+            body += f"if hi < lo {{ hi = lo }}; return append(append(make({list_type}, 0, n-(hi-lo)), s[:lo]...), s[hi:]...)"
+            self._emit(f"{obj} = func(s {list_type}) {list_type} {{ {body} }}({obj})")
+            return
+        step = self._typed_value_to_go(step_node, "int")
+        # Stepped: Python's ``slice.indices``, then keep the unmarked items.
+        self._need_import("fmt")
+        body = (
+            f"n := len(s); step := {step}; "
+            'if step == 0 { panic(fmt.Sprintf("ValueError: slice step cannot be zero")) }; '
+            "lower, upper := 0, n; if step < 0 { lower, upper = -1, n-1 }; "
+            "norm := func(v int) int { if v < 0 { v += n; if v < lower { v = lower } } else if v > upper { v = upper }; return v }; _ = norm; "
+        )
+        body += f"lo := norm({lo}); " if lo else "lo := lower; if step > 0 { lo = 0 } else { lo = upper }; "
+        body += f"hi := norm({hi}); " if hi else "hi := upper; if step < 0 { hi = lower }; "
+        body += (
+            "drop := make([]bool, n); "
+            "for i := lo; (step > 0 && i < hi) || (step < 0 && i > hi); i += step { drop[i] = true }; "
+            f"out := make({list_type}, 0, n); for i, v := range s {{ if !drop[i] {{ out = append(out, v) }} }}; return out"
+        )
+        self._emit(f"{obj} = func(s {list_type}) {list_type} {{ {body} }}({obj})")
 
     def _visit_global_stmt(self, node: Tree):
         for child in node.children:
@@ -943,20 +1047,26 @@ class StatementVisitorMixin:
         if isinstance(else_suite, Tree):
             branch_suites.append(else_suite)
             self._hoist_flow_locals(branch_suites)
+        # isinstance narrowing (``compiler/visitors/narrowing.py``): each
+        # branch binds the shadows of the facts its condition establishes.
+        branch_facts, else_facts = _narrowing.if_branch_facts(node)
         cond = self._expr_to_go(node.children[0])
         self._emit(f"if {cond} {{")
         self.indent += 1
         self._push_scope()
         body_start, vars_at_start = self._scope_unused_tracking_start()
-        self._visit_suite(node.children[1])
+        self._nr_emit_region(branch_facts[0] if branch_facts else [], [node.children[1]],
+                             lambda: self._visit_suite(node.children[1]))
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
 
         elifs = node.children[2]
         nested = 0
+        branch_index = 0
         if isinstance(elifs, Tree) and elifs.data == "elifs":
             for elif_node in elifs.children:
                 if isinstance(elif_node, Tree) and elif_node.data == "elif_":
+                    branch_index += 1
                     if self._contains_propagate(elif_node.children[0]):
                         # ``elif f()? {``: the ``?`` statements belong to this
                         # branch, so it becomes ``else { ...; if cond {``.
@@ -971,7 +1081,9 @@ class StatementVisitorMixin:
                     self.indent += 1
                     self._push_scope()
                     body_start, vars_at_start = self._scope_unused_tracking_start()
-                    self._visit_suite(elif_node.children[1])
+                    facts = branch_facts[branch_index] if branch_index < len(branch_facts) else []
+                    self._nr_emit_region(facts, [elif_node.children[1]],
+                                         lambda: self._visit_suite(elif_node.children[1]))
                     self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
                     self.indent -= 1
 
@@ -981,7 +1093,7 @@ class StatementVisitorMixin:
             self.indent += 1
             self._push_scope()
             body_start, vars_at_start = self._scope_unused_tracking_start()
-            self._visit_suite(else_suite)
+            self._nr_emit_region(else_facts, [else_suite], lambda: self._visit_suite(else_suite))
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
         self._emit("}")
@@ -1020,7 +1132,12 @@ class StatementVisitorMixin:
         self._push_scope()
         body_start, vars_at_start = self._scope_unused_tracking_start()
         with self._scoped(_loop_break_flag=break_flag):
-            self._visit_suite(node.children[1])
+            # ``while isinstance(x, T)``: the body sees ``x`` as a ``T``.
+            self._nr_emit_region(
+                _narrowing.condition_facts(node.children[0], True),
+                [node.children[1], node.children[0]],
+                lambda: self._visit_suite(node.children[1]),
+            )
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
         self._emit("}")
@@ -1112,7 +1229,11 @@ class StatementVisitorMixin:
         else:
             var_name = str(target_node)
 
-        iterable_type = self._infer_type_from_value(iterable_node)
+        # The tracked type of a name first: ``_infer_type_from_value`` also
+        # consults constructor parameter types, which another class's
+        # ``init(self, rows: ...)`` can make stale for a local ``rows``.
+        hint = self._expr_go_type_hint(iterable_node) if isinstance(iterable_node, Tree) and iterable_node.data == "var" else ""
+        iterable_type = hint if hint and hint != "interface{}" else self._infer_type_from_value(iterable_node)
         is_range = (
             isinstance(iterable_node, Tree)
             and iterable_node.data == "funccall"
@@ -1138,6 +1259,11 @@ class StatementVisitorMixin:
         if enumerate_info:
             idx_name, val_name = self._split_tuple_target(target_node)
             iter_str = enumerate_info
+            # ``enumerate(xs, start)``: the index counts from ``start``.
+            start_go = self._enumerate_start_go(
+                iterable_node, lambda name, value: self._emit(f"{name} := {value}"),
+            ) if idx_name and idx_name != "_" else ""
+            range_idx = f"{idx_name}__lamRaw" if start_go else idx_name
             raw_src = self._get_raw_call_args(iterable_node.children[1] if len(iterable_node.children) > 1 else None)
             src_node = raw_src[0] if raw_src else None
             src_type = (self._expr_go_type_hint(src_node) or self._infer_type_from_value(src_node) or "") if src_node is not None else ""
@@ -1148,9 +1274,12 @@ class StatementVisitorMixin:
                 # ``enumerate(["p", "q"])``: range over the typed slice.
                 iter_str = self._typed_value_to_go(src_node, src_type)
             loop_names: list = []
+            start_bind = f"\t{idx_name} := {range_idx} + {start_go}" if start_go else ""
             if idx_name and val_name and src_type == "string" and val_name != "_":
                 # ``enumerate(text)``: character positions and one-character strs.
-                self._emit(f"for {idx_name}, {val_name}Rune := range []rune({iter_str}) {{")
+                self._emit(f"for {range_idx}, {val_name}Rune := range []rune({iter_str}) {{")
+                if start_bind:
+                    self._emit(start_bind)
                 self._emit(f"\t{val_name} := string({val_name}Rune)")
                 loop_names.append(idx_name)
                 loop_names.append(val_name)
@@ -1158,7 +1287,9 @@ class StatementVisitorMixin:
                     self._var_go_types[idx_name] = "int"
                 self._var_go_types[val_name] = "string"
             elif idx_name and val_name:
-                self._emit(f"for {idx_name}, {val_name} := range {iter_str} {{")
+                self._emit(f"for {range_idx}, {val_name} := range {iter_str} {{")
+                if start_bind:
+                    self._emit(start_bind)
                 loop_names.append(idx_name)
                 loop_names.append(val_name)
                 if idx_name != "_":

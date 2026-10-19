@@ -1,0 +1,8 @@
+# expect-error: `list[str]` has no method `join`; use `sep.join(parts)` on a `list[str]`
+# The hint spells the call with its own separator and receiver.
+
+func main() {
+    parts: list[str] = ["a", "b"]
+    sep: str = ", "
+    print(parts.join(sep))
+}

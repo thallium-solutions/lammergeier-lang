@@ -1504,6 +1504,37 @@ class HelpersMixin:
             return self._typed_value_to_go(inner, go_type)
         return self._expr_to_go(node)
 
+    def _enumerate_start_node(self, call):
+        """The ``start`` of ``enumerate(xs, 1)`` / ``enumerate(xs, start=1)``
+        (``None`` when absent)."""
+        args = call.children[1] if isinstance(call, Tree) and len(call.children) > 1 else None
+        if not isinstance(args, Tree) or args.data != "arguments":
+            return None
+        positional = []
+        for child in args.children:
+            if isinstance(child, Tree) and child.data == "argvalue" and len(child.children) == 2:
+                if self._get_name(child.children[0]) == "start":
+                    return child.children[1]
+                continue
+            if child is not None:
+                positional.append(child)
+        return positional[1] if len(positional) > 1 else None
+
+    def _enumerate_start_go(self, call, hoist) -> str:
+        """Go expression of the ``enumerate`` start (``""`` for none / 0).
+        A non-literal start is evaluated once: ``hoist(name, value)``
+        declares it before the loop."""
+        node = self._enumerate_start_node(call)
+        if node is None:
+            return ""
+        value = self._typed_value_to_go(node, "int")
+        if _re.fullmatch(r"\(?-?\d+\)?", value.strip()):
+            return "" if value.strip("() ") in {"0", "-0"} else value
+        self._enum_start_counter = getattr(self, "_enum_start_counter", 0) + 1
+        name = f"__lamEnumStart{self._enum_start_counter}"
+        hoist(name, value)
+        return name
+
     def _get_raw_call_args(self, args_node) -> List[Tree]:
         """Return raw AST nodes for each positional argument of a call.
 

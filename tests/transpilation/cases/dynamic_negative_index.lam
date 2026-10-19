@@ -1,0 +1,77 @@
+# Transpilation: an index the compiler cannot prove non-negative counts
+# from the end when negative, with a branch-free adjustment
+# (`i + len(xs)&(i>>63)`); a complex index or receiver is evaluated once
+# through a small closure; assignment targets with a complex receiver go
+# through a pointer. `range` loop variables, `enumerate` indexes,
+# counters that only grow, `len(...)`, non-negative constants, `i - 1`
+# with `i` from `range(1, ...)` and `xs[len(xs) - 1]` index directly;
+# dictionaries are unaffected.
+# expect-go: return xs[i+len(xs)&(i>>63)]
+# expect-go: xs[i+len(xs)&(i>>63)] = 5
+# expect-go: xs[i+len(xs)&(i>>63)] += 1
+# expect-go: s[i+len(s)&(i>>63)]
+# expect-go: xs[func(i, n int) int { return i + n&(i>>63) }(Pick(), len(xs))]
+# expect-go: func(s []int, i int) int { return s[i+len(s)&(i>>63)] }(Make(), i)
+# expect-go: total += xs[k]
+# expect-go: total += xs[q]
+# expect-go: total += xs[w]
+# expect-go: total += xs[len(xs) / 2]
+# expect-go: d[i]
+# expect-go: sum += s.Items[i]
+# expect-go: total += xs[r - 1]
+# expect-go: total += xs[len(xs) - 1]
+
+func at(xs: list[int], i: int) -> int {
+    return xs[i]
+}
+
+func pick() -> int {
+    return -1
+}
+
+func make() -> list[int] {
+    return [1, 2, 3]
+}
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    i: int = -1
+    xs[i] = 5
+    xs[i] += 1
+    s: str = "abc"
+    print(at(xs, i), s[i], xs[pick()], make()[i])
+    total: int = 0
+    for k in range(len(xs)) {
+        total += xs[k]
+    }
+    for q, _ in enumerate(xs) {
+        total += xs[q]
+    }
+    w: int = 0
+    while w < len(xs) {
+        total += xs[w]
+        w += 1
+    }
+    total += xs[len(xs) // 2]
+    for r in range(1, len(xs)) {
+        total += xs[r - 1]
+    }
+    total += xs[len(xs) - 1]
+    d: dict[int, int] = {}
+    d[-1] = 3
+    print(total, d[i])
+}
+
+class Bag {
+    func init(self) {
+        self.items: list[int] = [1, 2]
+    }
+
+    func total(self) -> int {
+        sum: int = 0
+        for i in range(len(self.items)) {
+            sum += self.items[i]
+        }
+        return sum + len(f"{self.items[0]}")
+    }
+}

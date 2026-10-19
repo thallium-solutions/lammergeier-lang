@@ -1,0 +1,17 @@
+# expect-error: unknown member `p.nmae` on class `Person`
+# expect-error: did you mean `p.name`
+# expect-error: undefined name `mising` in f-string
+# Members, methods and names read in f-string slots are checked, also next
+# to strings in the f-string's own quote.
+
+class Person {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func main() {
+    p: Person = Person("ada")
+    d: dict[str, str] = {"k": "v"}
+    print(f"{d["k"]} {p.nmae} {mising}")
+}

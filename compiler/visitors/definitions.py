@@ -14,6 +14,13 @@ class DefinitionVisitorMixin:
     # ─── Functions ─────────────────────────────────────────────
 
     def _visit_funcdef(self, node: Tree):
+        with self._scoped(
+            _nr_module_code=False,
+            _index_bounds=getattr(node, "_lam_index_bounds", self._index_bounds),
+        ):
+            self._visit_funcdef_inner(node)
+
+    def _visit_funcdef_inner(self, node: Tree):
         (is_private, is_static, is_async, name_node, params_node,
          return_type_node, suite_node, type_params_node) = self._parse_funcdef(node)
 

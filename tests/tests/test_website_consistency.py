@@ -76,7 +76,7 @@ OFFICIAL_PACKAGES = (
         "@lam/sftp",
         "lam-sftp",
         ("SftpConfig", "SftpHandlers", "SftpRequest", "SftpServer"),
-        "3.3.2",
+        "3.4.0",
     ),
     OfficialPackage(
         "@lam/ssh",
@@ -915,7 +915,7 @@ def check_official_packages(report: Report) -> None:
                 f"catalog needs a current canonical import example for {package.name}",
             )
 
-    if compiler_target is not None and compiler_target != "2.0":
+    if compiler_target is not None and compiler_target != "2.1":
         report.add(
             "official packages",
             ROOT / "compiler" / "version.py",
