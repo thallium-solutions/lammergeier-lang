@@ -1,0 +1,29 @@
+# Test: chained member reads (`env.cfg.endpoint`) keep their field type in
+# json literals and typed declarations.
+#
+# expect: {"endpoint":"http://x","port":9,"tags":["a","b"]}
+# expect: http://x 9
+
+from lamjson import Json
+
+class Cfg {
+    func init(self) {
+        self.endpoint: str = "http://x"
+        self.port: int = 9
+        self.tags: list[str] = ["a", "b"]
+    }
+}
+
+class Env {
+    func init(self) {
+        self.cfg: Cfg = Cfg()
+    }
+}
+
+func main() {
+    env: Env = Env()
+    doc: json = {"endpoint": env.cfg.endpoint, "port": env.cfg.port, "tags": env.cfg.tags}
+    print(Json.encode(doc).unwrap())
+    endpoint: str = env.cfg.endpoint
+    print(endpoint, env.cfg.port)
+}

@@ -60,7 +60,7 @@ this specification focuses on authoring and resolution details.
 | `@lam/memcached` | `2.0.2` | [thallium-solutions/lam-memcached](https://github.com/thallium-solutions/lam-memcached) | Binary-protocol Memcached client with SASL authentication, counters, and cluster statistics. |
 | `@lam/protobuf` | `3.0.2` | [thallium-solutions/lam-protobuf](https://github.com/thallium-solutions/lam-protobuf) | Protocol Buffers binary, JSON, text, equality, size, and clone helpers. |
 | `@lam/redis` | `2.0.2` | [thallium-solutions/lam-redis](https://github.com/thallium-solutions/lam-redis) | Redis strings, native JSON, collections, sorted sets, pub/sub, and pipelines. |
-| `@lam/s3` | `2.3.1` | [thallium-solutions/lam-s3](https://github.com/thallium-solutions/lam-s3) | S3-compatible object storage with unsuffixed Result APIs, files, buffers, streams, metadata, and presigned URLs. |
+| `@lam/s3` | `2.5.0` | [thallium-solutions/lam-s3](https://github.com/thallium-solutions/lam-s3) | S3-compatible object storage with unsuffixed Result APIs, files, buffers, streams, metadata, and presigned URLs. |
 | `@lam/sftp` | `3.5.0` | [thallium-solutions/lam-sftp](https://github.com/thallium-solutions/lam-sftp) | Callback-driven, storage-agnostic SFTP server built on `@lam/ssh`. |
 | `@lam/ssh` | `3.0.3` | [thallium-solutions/lam-ssh](https://github.com/thallium-solutions/lam-ssh) | Strictly verified SSH clients, commands, sessions, keys, cancellation, and direct TCP channels. |
 | `@lam/vulture` | `2.0.3` | [thallium-solutions/lam-vulture](https://github.com/thallium-solutions/lam-vulture) | Fastify-style HTTP server with routing, hooks, native JSON, schemas, streaming, OpenAPI, and in-process injection. |

@@ -1,0 +1,30 @@
+# Test: module constants keep their type inside json literals, list
+# literals and json arguments, also when the constant is declared below the
+# function that uses it, and when its type is inferred from the value.
+#
+# expect: {"n":1,"schemas":["urn:x"]}
+# expect: {"limit":200,"s":"urn:x"}
+# expect: {"later":"declared below","ratio":0.5}
+
+from lamjson import Json
+
+const Schema: str = "urn:x"
+const Limit = 200
+
+func show(doc: json) {
+    print(Json.encode(doc).unwrap())
+}
+
+func later() -> json {
+    return {"later": Below, "ratio": Ratio}
+}
+
+const Below: str = "declared below"
+const Ratio: float = 0.5
+
+func main() {
+    show({"schemas": [Schema], "n": 1})
+    doc: json = {"s": Schema, "limit": Limit}
+    show(doc)
+    show(later())
+}

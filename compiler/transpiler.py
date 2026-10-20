@@ -1294,15 +1294,16 @@ func lamAsyncReportUnretrieved() {
                         if raw_return:
                             self._method_return_types.setdefault(method_key, raw_return)
                         if (
-                            return_type.startswith(("[]", "map["))
+                            return_type.startswith(("[]", "map[", "*"))
                             and not declared_generic_names
                             and len({
                                 (tuple(v.get("sig", ())), v.get("return_key"))
                                 for v in self._overload_variants.get(method_key, ())
                             }) <= 1
                         ):
-                            # Container results (``Iter.toList() -> list[any]``)
-                            # under a ``go:`` key, for expression type hints.
+                            # Container and class results (``Iter.toList() ->
+                            # list[any]``, ``Ring.make() -> Ring``) under a
+                            # ``go:`` key, for expression type hints.
                             self._method_return_types.setdefault(f"go:{method_key}", return_type)
         elif tree.data == "interfacedef":
             name_node = tree.children[0]

@@ -1,0 +1,69 @@
+# Test: a for loop over a list literal of call results types the loop
+# variable by the calls' shared result type: static and instance methods
+# returning a class, unwrapped Results, and methods reached through the
+# loop variable. Mixed element types stay untyped.
+#
+# expect: q:a 1
+# expect: q:b 2
+# expect: r:k1 3
+# expect: r:k2 4
+# expect: m:x 5
+# expect: m:y 6
+# expect: total 21
+# expect: mixed 2
+
+from lamerrors import Result
+
+class Queue {
+    static seq: int = 0
+
+    func init(self, name: str) {
+        Queue.seq += 1
+        self.name: str = name
+        self.n: int = Queue.seq
+    }
+
+    static func make(name: str) -> Queue {
+        return Queue(name)
+    }
+
+    static func parse(spec: str) -> Result[Queue] {
+        return Result.Ok(Queue(spec))
+    }
+
+    func label(self, prefix: str) -> str {
+        return f"{prefix}:{self.name} {self.n}"
+    }
+
+    func twin(self, name: str) -> Queue {
+        return Queue(name)
+    }
+}
+
+func main() {
+    total: int = 0
+    for q in [Queue.make("a"), Queue.make("b")] {
+        print(q.label("q"))
+        total += q.n
+    }
+    for r in [Queue.parse("k1").unwrap(), Queue.parse("k2").unwrap()] {
+        print(r.label("r"))
+        total += r.n
+    }
+    base: Queue = Queue("base")
+    Queue.seq = 4
+    for m in [base.twin("x"), base.twin("y")] {
+        print(m.label("m"))
+        total += m.n
+    }
+    print(f"total {total}")
+    mixed: int = 0
+    for item in [Queue.make("z"), "text"] {
+        if isinstance(item, Queue) {
+            mixed += 1
+        } elif isinstance(item, str) {
+            mixed += 1
+        }
+    }
+    print(f"mixed {mixed}")
+}

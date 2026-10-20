@@ -15,7 +15,7 @@ Current releases:
 | `@lam/protobuf@3.0.2` | lamc 3.x compatible; root `tag()` removed |
 | `@lam/vulture/tus-plugin@3.0.3` | lamc 3.x compatible; pins `@lam/vulture` 2.0.3; root `tag()` removed (3.0.0) |
 | `@lam/sftp@3.5.0` | PROXY protocol v1/v2 from trusted load balancers (`withProxyProtocol`); lamc 3.x compatible; pins `@lam/ssh` 3.0.3; per-address authentication limits (`withAddressAuthRateLimit`, `withAddressLockout`, `SftpAddressLimiter`); adaptive ciphers (`withAdaptiveCiphers`), `onOpenWrite`, live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`) |
-| `@lam/s3@2.3.1` | lamc 3.x compatible; multipart parts streamed from files and readers (`uploadPartFile`, `uploadPartReader`); SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
+| `@lam/s3@2.5.0` | `blockPrivateNetworks` (SSRF-safe clients for user-supplied endpoints, checked after DNS resolution); S3 Object Lock (`setRetention`, `setLegalHold`, `objectLockConfig`, `createBucketWithObjectLock`) and versioned buckets (`versions`, `deleteVersion`); lamc 3.x compatible; multipart parts streamed from files and readers (`uploadPartFile`, `uploadPartReader`); SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
 | `@lam/redis@2.0.2`, `@lam/memcached@2.0.2` | lamc 3.x compatible |
 | `@lam/vulture/ws-plugin@2.0.3` | lamc 3.x compatible; pins `@lam/vulture` 2.0.3 |
 | `@lam/vulture@2.0.3` | lamc 3.x compatible (integer divisions use `//`), no API change |

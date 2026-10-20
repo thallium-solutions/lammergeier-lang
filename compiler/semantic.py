@@ -815,6 +815,9 @@ class SemanticChecker(NarrowingCheckMixin):
                             f"constant `{name}` conflicts with an imported binding of the same name" + self._import_conflict_hint(name),
                         )
                     self._module_seen[name] = "const"
+                    # Typed for code above the declaration too.
+                    if decl.type_ref is not None and decl.type_ref.name:
+                        scope.var_types.setdefault(name, decl.type_ref.name)
 
     @staticmethod
     def _go_public_name(name: str) -> str:
@@ -1035,6 +1038,9 @@ class SemanticChecker(NarrowingCheckMixin):
                     )
                 scope.names.add(n)
                 self._module_seen[n] = "const"
+                annotated = self._const_declared_type(node)
+                if annotated:
+                    scope.var_types.setdefault(n, annotated)
         elif d == "simple_stmt":
             for sub in node.children:
                 if isinstance(sub, Tree):
@@ -1078,6 +1084,11 @@ class SemanticChecker(NarrowingCheckMixin):
             n = self._const_target_name(node)
             if n:
                 scope.names.add(n)
+                # Annotated constants are typed for code above the
+                # declaration too (functions using a later constant).
+                annotated = self._const_declared_type(node)
+                if annotated:
+                    scope.var_types.setdefault(n, annotated)
         elif d == "simple_stmt":
             for sub in node.children:
                 if isinstance(sub, Tree):
@@ -3944,6 +3955,11 @@ class SemanticChecker(NarrowingCheckMixin):
                 class_name = self._current_class_stack[-1]
             else:
                 class_name = self._receiver_class_from_type_text(self._var_type(receiver))
+        elif isinstance(obj, Tree) and obj.data in {"getattr", "getattr_safe"}:
+            # ``env.cfg.endpoint``: the receiver is itself a typed field.
+            inner = self._member_target_type(obj)
+            if inner is not None:
+                class_name = self._receiver_class_from_type_text(render_type(inner))
         if not class_name:
             return None
         field_types = self._class_field_types.get(class_name, {})
@@ -7060,8 +7076,27 @@ class SemanticChecker(NarrowingCheckMixin):
         if self._scopes:
             self._scopes[-1].names.add(name)
             self._scopes[-1].const_names.add(name)
+            # The constant's type (declared, else inferred from its value),
+            # so uses are typed like annotated variables (JSON literals,
+            # arguments, operators).
+            declared = self._const_declared_type(node)
+            if not declared:
+                value_node = self._const_value_node(node)
+                inferred = self._expr_simple_type(value_node) if value_node is not None else None
+                declared = render_type(inferred) if inferred is not None else ""
+            if declared:
+                self._scopes[-1].var_types[name] = declared
             self._record_binding_node(name, node)
             self._mark_definite(name)
+
+    def _const_declared_type(self, node: Tree) -> str:
+        type_node = self._const_type_node(node)
+        if type_node is None:
+            return ""
+        try:
+            return render_type(parse_type(type_node))
+        except Exception:
+            return ""
 
     def _visit_assignment_values(self, node: Tree) -> None:
         if not isinstance(node, Tree):

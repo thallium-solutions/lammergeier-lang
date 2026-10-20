@@ -5,6 +5,32 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 3.0.1 — 2026-10-20
+
+### Changed
+
+- Catalog: `@lam/s3` 2.4.0 (S3 Object Lock: retention, legal holds, Object
+  Lock buckets; version listing and version deletes) and 2.5.0
+  (`blockPrivateNetworks` for endpoints supplied by users).
+
+### Fixed
+
+- A `for` loop over a list literal of call results (`for q in
+  [Queue.make("a"), base.twin("b")]`, also unwrapped Results) typed the loop
+  variable `interface{}`, so method calls on it failed in `go build`. Static
+  and instance methods returning a class now give their type to expression
+  hints, and the loop ranges over a typed slice when every element shares
+  one type. A literal mixing known types (`[Queue.make("z"), "text"]`) is
+  iterated as `interface{}`; it used to be built as `[]string` and failed in
+  `go build`.
+- Module constants had no type inside json literals and json arguments
+  (`{"schemas": [Schema]}` was "value of type `unknown` is not
+  JSON-compatible"), also when declared below the function using them; a
+  constant now has its declared type, or the type of its value.
+- Chained member reads (`env.cfg.endpoint`) had no type in json literals;
+  the checker now follows the chain through typed fields (also across
+  modules).
+
 ## 3.0.0 — 2026-10-20
 
 ### Breaking changes

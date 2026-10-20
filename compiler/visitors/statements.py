@@ -1392,6 +1392,11 @@ class StatementVisitorMixin:
         if iterable_type in {"", "interface{}"} and isinstance(iterable_node, Tree) and iterable_node.data in {"funccall", "getattr"}:
             # ``for it in Bag().all()`` / ``for it in self.items``.
             iterable_type = self._expr_go_type_hint(iterable_node) or iterable_type
+        if isinstance(iterable_node, Tree) and iterable_node.data == "list":
+            # ``for q in [Queue.make(), other.queue()]``: elements whose
+            # expression type is known (calls, members, unwraps) and shared;
+            # elements of different known types iterate as ``interface{}``.
+            iterable_type = self._list_literal_elem_hint_type(iterable_node, iterable_type)
         is_range = (
             isinstance(iterable_node, Tree)
             and iterable_node.data == "funccall"
@@ -1640,6 +1645,21 @@ class StatementVisitorMixin:
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
         self._emit("}")
+
+    def _list_literal_elem_hint_type(self, node, inferred: str) -> str:
+        """The ``[]T`` to iterate the list literal ``node`` as: ``inferred``
+        unless the elements' expression types say otherwise (one shared
+        concrete ``T``, or ``[]interface{}`` when two known types differ)."""
+        types = {
+            (self._expr_go_type_hint(c) or self._infer_type_from_value(c) or "").strip()
+            for c in node.children if c is not None
+        }
+        known = {t for t in types if t not in {"", "interface{}", "any"}}
+        if len(known) > 1:
+            return "[]interface{}"
+        if len(known) == 1 and len(types) == 1:
+            return "[]" + known.pop()
+        return inferred
 
     def _literal_tuple_element_types(self, node) -> List[str]:
         """Shared per-position Go types of a list literal of tuple literals."""
