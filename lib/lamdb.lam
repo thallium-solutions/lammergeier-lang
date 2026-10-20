@@ -1540,7 +1540,7 @@ class QueryBuilder {
         rows: list[dict[str, any]] = self.get()?
         lastPage: int = 1
         if total > 0 {
-            lastPage = (total + perPage - 1) / perPage
+            lastPage = (total + perPage - 1) // perPage
         }
         out: dict[str, any] = {}
         out["data"] = rows

@@ -8,7 +8,7 @@ func count_prime_factors(n: int) -> int {
     while d * d <= n {
         while n % d == 0 {
             count += 1
-            n = n / d
+            n = n // d
         }
         d += 1
     }

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass
 
 
@@ -49,8 +48,25 @@ def _parse_or_raise(source: str) -> None:
 def _format_lines(source: str) -> str:
     lines = _expand_compact_layout(source.splitlines())
     out: list[str] = []
-    depth = 0
+    # One entry per open bracket (``(``, ``[``, ``{``): the index of the line
+    # that opened it. A line is indented once per *line* holding open
+    # brackets, so ``take(\n    {...},\n)`` and ``print(f(\n    1\n))``
+    # indent their continuation lines one level.
+    open_lines: list[int] = []
     i = 0
+
+    def indent_level(text: str) -> int:
+        closers = _leading_closing_brackets(text)
+        still_open = open_lines[:len(open_lines) - closers] if closers else open_lines
+        return len(set(still_open))
+
+    def track(text: str, line_id: int) -> None:
+        for ch in _bracket_chars(text):
+            if ch in "([{":
+                open_lines.append(line_id)
+            elif open_lines:
+                open_lines.pop()
+
     while i < len(lines):
         raw = lines[i]
         stripped = raw.strip()
@@ -68,9 +84,7 @@ def _format_lines(source: str) -> str:
 
         if _starts_go_block(stripped):
             block, next_i = _collect_go_block(lines, i)
-            leading_closers = _leading_closing_braces(stripped)
-            line_depth = max(0, depth - leading_closers)
-            out.extend(_format_go_block(block, line_depth))
+            out.extend(_format_go_block(block, indent_level(stripped)))
             i = next_i
             continue
 
@@ -78,29 +92,69 @@ def _format_lines(source: str) -> str:
             # Multi-line string statement (``_expand_compact_layout``): only
             # the first line is re-indented, the string text is kept.
             masked = _mask_triple_strings(stripped)
-            leading_closers = _leading_closing_braces(masked)
-            line_depth = max(0, depth - leading_closers)
             first, rest = stripped.split("\n", 1)
-            out.append("    " * line_depth + first.strip() + "\n" + rest.rstrip())
-            depth = max(0, depth + _brace_delta(masked))
+            out.append("    " * indent_level(masked) + first.strip() + "\n" + rest.rstrip())
+            track(masked, i)
             i += 1
             continue
 
-        leading_closers = _leading_closing_braces(stripped)
-        line_depth = max(0, depth - leading_closers)
+        line_depth = indent_level(stripped)
         formatted = _format_code_line(stripped)
         if formatted == "}" and out and out[-1] == "":
             out.pop()
         if formatted in {"else {", "elif {", "finally {", "catch {"} and out and out[-1].strip() == "}":
             out[-1] = out[-1] + " " + formatted[:-2].strip()
             out[-1] = out[-1] + " {"
-            depth = max(0, depth + _brace_delta(stripped))
+            track(stripped, i)
             i += 1
             continue
         out.append("    " * line_depth + formatted)
-        depth = max(0, depth + _brace_delta(stripped))
+        track(stripped, i)
         i += 1
     return "\n".join(out).rstrip() + "\n"
+
+
+def _bracket_chars(line: str) -> str:
+    """The brackets of ``line`` outside strings and comments, in order."""
+    code, _comment = _split_inline_comment(line)
+    quote = ""
+    found: list[str] = []
+    i = 0
+    while i < len(code):
+        if quote:
+            if code[i] == "\\" and len(quote) == 1:
+                i += 2
+                continue
+            if code.startswith(quote, i):
+                i += len(quote)
+                quote = ""
+                continue
+            i += 1
+            continue
+        if code.startswith("'''", i) or code.startswith('"""', i):
+            quote = code[i:i + 3]
+            i += 3
+            continue
+        if code[i] in {'"', "'"}:
+            quote = code[i]
+            i += 1
+            continue
+        if code[i] in "()[]{}":
+            found.append(code[i])
+        i += 1
+    return "".join(found)
+
+
+def _leading_closing_brackets(line: str) -> int:
+    count = 0
+    for ch in line:
+        if ch in ")]}":
+            count += 1
+        elif ch.isspace():
+            continue
+        else:
+            break
+    return count
 
 
 _LAYOUT_LITERAL_PRECEDERS = set("=,([:+-*/%<>!&|^~?")
@@ -319,6 +373,9 @@ def _format_code_fragment(code: str) -> str:
     out: list[str] = []
     i = 0
     quote = ""
+    # Open brackets of this line: ``(index in out, char)``; a ``:`` directly
+    # inside ``[...]`` is a slice (``s[:3]``, ``x[0:7]``), not an annotation.
+    brackets: list[tuple[int, str]] = []
     while i < len(code):
         if quote:
             out.append(code[i])
@@ -362,6 +419,15 @@ def _format_code_fragment(code: str) -> str:
             continue
         ch = code[i]
         if ch == ":":
+            if brackets and brackets[-1][1] == "[" and not re.search(
+                r"\blambda\b", "".join(out[brackets[-1][0]:]),
+            ):
+                _rstrip_spaces(out)
+                out.append(":")
+                i += 1
+                while i < len(code) and code[i].isspace():
+                    i += 1
+                continue
             _rstrip_spaces(out)
             out.append(": ")
             i += 1
@@ -376,14 +442,23 @@ def _format_code_fragment(code: str) -> str:
                 i += 1
             continue
         if ch in "([{":
-            if not _space_before_opener_is_meaningful(out):
+            prefix = "".join(out).rstrip()
+            words = prefix.rsplit(None, 2)
+            # ``func match(...)`` / ``obj.match(...)``: a name, not a keyword.
+            declared_name = len(words) >= 2 and words[-2] in {"func", "class", "interface"}
+            if declared_name or not _space_before_opener_is_meaningful(out):
                 _rstrip_spaces(out)
             prefix = "".join(out).rstrip()
-            if ch == "(" and prefix.rsplit(" ", 1)[-1] in {"if", "elif", "while", "for", "catch", "with", "match"}:
+            if (
+                ch == "(" and not declared_name
+                and prefix.rsplit(" ", 1)[-1] in {"if", "elif", "while", "for", "catch", "with", "match"}
+            ):
                 out.append(" ")
-            if ch == "{" and out and not str(out[-1]).endswith(" "):
+            if ch == "{" and out and not str(out[-1]).endswith(" ") and "".join(out).rstrip()[-1:] not in "([{":
+                # ``if x {`` / ``= {``, but ``take({...})`` / ``[{...}]``.
                 out.append(" ")
             out.append(ch)
+            brackets.append((len(out), ch))
             i += 1
             while i < len(code) and code[i].isspace():
                 i += 1
@@ -391,6 +466,8 @@ def _format_code_fragment(code: str) -> str:
         if ch in ")]}":
             _rstrip_spaces(out)
             out.append(ch)
+            if brackets:
+                brackets.pop()
             i += 1
             continue
         if ch.isspace():
@@ -534,18 +611,6 @@ def _brace_delta(line: str) -> int:
     return delta
 
 
-def _leading_closing_braces(line: str) -> int:
-    count = 0
-    for ch in line:
-        if ch == "}":
-            count += 1
-        elif ch.isspace():
-            continue
-        else:
-            break
-    return count
-
-
 def _collect_doc_comment(lines: list[str], start: int) -> tuple[list[str], int]:
     block: list[str] = []
     i = start
@@ -576,84 +641,19 @@ def _collect_go_block(lines: list[str], start: int) -> tuple[list[str], int]:
 
 
 def _format_go_block(block: list[str], line_depth: int) -> list[str]:
+    """A ``go! { ... }`` block: raw Go is left byte for byte as written
+    (comments, spacing and indentation included); only the ``go! {`` line
+    (and a closing ``}`` alone on its line) follow the Lam indentation."""
     indent = "    " * line_depth
-    text = "\n".join(line.strip() for line in block)
-    open_idx = text.find("{")
-    close_idx = text.rfind("}")
-    if open_idx < 0 or close_idx < open_idx:
-        return [indent + line.strip() for line in block]
-
-    inner = text[open_idx + 1:close_idx].strip("\n")
-    formatted_inner = _format_go_inner(inner)
-    if not formatted_inner:
-        return [indent + "go! {", indent + "}"]
-
-    out = [indent + "go! {"]
-    out.extend(indent + "    " + line if line else "" for line in formatted_inner)
-    out.append(indent + "}")
-    return out
-
-
-def _format_go_inner(inner: str) -> list[str]:
-    stripped = inner.strip()
-    if not stripped:
+    if not block:
         return []
-    decl = _gofmt_declarations(stripped)
-    if decl is not None:
-        return decl
-    stmt = _gofmt_statements(stripped)
-    if stmt is not None:
-        return stmt
-    return [line.rstrip().expandtabs(4) for line in stripped.splitlines()]
-
-
-def _gofmt_declarations(src: str) -> list[str] | None:
-    formatted = _run_gofmt("package p\n\n" + src.rstrip() + "\n")
-    if formatted is None:
-        return None
-    lines = formatted.splitlines()
-    if not lines or lines[0] != "package p":
-        return None
-    body = lines[1:]
-    while body and body[0] == "":
-        body.pop(0)
-    return [line.rstrip().expandtabs(4) for line in body]
-
-
-def _gofmt_statements(src: str) -> list[str] | None:
-    formatted = _run_gofmt("package p\n\nfunc _() {\n" + src.rstrip() + "\n}\n")
-    if formatted is None:
-        return None
-    lines = formatted.splitlines()
-    try:
-        start = next(i for i, line in enumerate(lines) if line == "func _() {")
-    except StopIteration:
-        return None
-    body = lines[start + 1:]
-    if body and body[-1] == "}":
-        body = body[:-1]
-    out: list[str] = []
-    for line in body:
-        if line.startswith("\t"):
-            line = line[1:]
-        out.append(line.rstrip().expandtabs(4))
+    out = [indent + block[0].strip()]
+    if len(block) == 1:
+        return out
+    out.extend(block[1:-1])
+    last = block[-1]
+    out.append(indent + "}" if last.strip() == "}" else last)
     return out
-
-
-def _run_gofmt(src: str) -> str | None:
-    try:
-        proc = subprocess.run(
-            ["gofmt"],
-            input=src,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout
 
 
 def _protect_inline_go(code: str) -> tuple[str, list[str]]:

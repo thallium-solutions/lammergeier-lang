@@ -23,7 +23,7 @@ This document captures project conventions for AI assistants working on `lammerg
 
 ## Third-party packages
 
-- `third_party/` contains vendored-style packages (`lams3`, `lamstripe`, `lamotel`).
+- Official packages live in sibling `lam-*` repositories (`@lam/<name>`, private Bitbucket source mirrored to GitHub with `mirror-to-github.py`, which lists them in `REPOSITORIES`); the compiler repository vendors none (`third_party/` was removed in 3.0.0).
 - Keep stdlib boundaries clear: use Lam stdlib APIs (`lamenv`, `lamhttp`, etc.) where possible; limit raw `go!` blocks to SDK/client construction and unavoidable operations.
 - Never commit real S3 credentials or echo them into command logs/files. Live tests are guarded and should not run without explicit credentials.
 
@@ -34,3 +34,7 @@ This document captures project conventions for AI assistants working on `lammerg
 - Run syntax diagnostics tests with `/usr/bin/python3 tests/syntax/run_syntax_tests.py --verbose` because the project-local `.venv` Python currently lacks `lark`, while `/usr/bin/python3` has `lark 1.3.1`.
 - Benchmarks: run them through `sh scripts/bench.sh compiler|runtime`, which also writes the output to `benchmarks/results/`; commit that file (never run a benchmark without keeping its output).
 - Common verification commands: `git diff --check` and `PYTHON=/usr/bin/python3 sh scripts/test.sh <suites>`.
+
+## Agent files
+
+- When a compiler release fixes a pitfall or a workaround documented in this file, in the rules files (`.devin/rules`, `.windsurf/rules`) or in the AGENTS.md of a project or library using Lam, verify it with a small program against the released compiler and remove the note and the workaround in the same change.

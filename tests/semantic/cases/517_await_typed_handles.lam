@@ -1,0 +1,15 @@
+# expect-pass
+# Handles kept in an unannotated list (or local) keep their type.
+
+async func load(id: int) -> str {
+    return f"item {id}"
+}
+
+func main() {
+    tasks = [load(1), load(2)]
+    for t in tasks {
+        print(await t)
+    }
+    pending = load(3)
+    print(await pending)
+}

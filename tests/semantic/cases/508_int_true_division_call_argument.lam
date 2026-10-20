@@ -1,0 +1,10 @@
+# expect-error: use `//` for integer division
+
+func repeat(times: int) -> str {
+    return "ab" * times
+}
+
+func main() {
+    n: int = 6
+    print(repeat(n / 2))
+}

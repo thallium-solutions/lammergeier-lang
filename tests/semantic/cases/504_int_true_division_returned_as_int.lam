@@ -1,0 +1,10 @@
+# expect-error: function `middle` returns `float`, expected `int`
+# expect-error: use `//` for integer division
+
+func middle(lo: int, hi: int) -> int {
+    return (lo + hi) / 2
+}
+
+func main() {
+    print(middle(1, 4))
+}

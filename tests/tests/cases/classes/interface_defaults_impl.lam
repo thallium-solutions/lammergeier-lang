@@ -1,0 +1,20 @@
+# Classes implementing interface_defaults_contract.Named in another module,
+# with the interface's defaults. Used by test_interface_default_args.lam.
+
+class Dog {
+    func name(self, suffix: str = "", times: int = 1) -> str {
+        return "dog" * times + suffix
+    }
+}
+
+class Cat {
+    func init(self, label: str) {
+        self.label: str = label
+    }
+
+    func name(self, suffix: str = "", times: int = 1) -> str {
+        return self.label * times + suffix
+    }
+}
+
+func main() { pass }

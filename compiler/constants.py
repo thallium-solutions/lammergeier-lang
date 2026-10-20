@@ -92,6 +92,15 @@ LOWER_PKGS = frozenset({
     "encoding", "bytes", "reflect", "runtime",
 })
 
+# Go package identifiers the compiler's own lowerings may import into a
+# generated file (``_need_import``). A Lam local, parameter or module
+# variable spelled like one of them gets a ``__lam`` suffix in Go so it
+# cannot hide the package the lowering relies on.
+COMPILER_GO_PACKAGES = frozenset({
+    "fmt", "reflect", "strings", "math", "slices", "os", "strconv", "sort",
+    "runtime", "maps", "bufio",
+})
+
 # Go builtins that should not be CamelCased
 GO_BINDING_KEYWORDS = frozenset({
     "break", "default", "func", "interface", "select", "case", "defer",
@@ -182,6 +191,9 @@ def lam_simple_expr_text(node) -> str:
     if data == "string" and children:
         text = str(children[0])
         return text if len(text) <= 24 and "\n" not in text else ""
+    if data == "getitem" and len(children) == 2:
+        receiver, index = lam_simple_expr_text(children[0]), lam_simple_expr_text(children[1])
+        return f"{receiver}[{index}]" if receiver and index else ""
     if data == "factor" and len(children) == 2 and getattr(children[0], "data", None) is None:
         inner = lam_simple_expr_text(children[1])
         return f"{children[0]}{inner}" if inner else ""
@@ -238,6 +250,61 @@ def unknown_str_method_message(method: str, receiver: str = "", args=None) -> st
         if method in {"find", "rfind"}:
             suffix = f" — did you mean `{hint}` (returns -1 when absent)?"
     return f"`str` has no method `{method}`{suffix}"
+
+
+# ``(min, max)`` arguments of each ``str`` method at the call site (the
+# receiver excluded; ``None`` = variadic), matching ``lib/lamstrings.lam``
+# and the lowering defaults (``trimLeft()`` trims ASCII whitespace,
+# ``center`` / ``padLeft`` / ``padRight`` fill with a space).
+STR_METHOD_ARITY: Dict[str, tuple] = {
+    "repeat": (1, 1), "contains": (1, 1), "hasPrefix": (1, 1), "hasSuffix": (1, 1),
+    "toUpper": (0, 0), "toLower": (0, 0), "trim": (0, 0), "length": (0, 0),
+    "trimLeft": (0, 1), "trimRight": (0, 1), "replace": (2, 2), "split": (1, 1),
+    "join": (1, 1), "startsWith": (1, 1), "endsWith": (1, 1), "index": (1, 1),
+    "lastIndex": (1, 1), "count": (1, 1), "title": (0, 0), "equalFold": (1, 1),
+    "fields": (0, 0), "capitalize": (0, 0), "isAlpha": (0, 0), "isDigit": (0, 0),
+    "isAlnum": (0, 0), "isSpace": (0, 0), "reverse": (0, 0), "center": (1, 2),
+    "zfill": (1, 1), "padLeft": (1, 2), "padRight": (1, 2), "splitLines": (0, 0),
+    "splitN": (2, 2), "replaceFirst": (2, 2), "containsAny": (1, 1), "isEmpty": (0, 0),
+    "isBlank": (0, 0), "indent": (1, 1), "dedent": (0, 0), "format": (0, None),
+}
+
+
+def await_any_message(operand: str) -> str:
+    """Diagnostic for ``await`` on a value typed ``any`` (the handle's
+    payload type is lost, so the generated Go cannot receive from it)."""
+    subject = f"`{operand}`" if operand else "the operand"
+    return (
+        f"`await` needs the handle returned by an async call, but {subject} is `any`; "
+        "keep the handles in an unannotated local or list (`tasks = [load(1), load(2)]`) "
+        "so their type is known, or await the call directly"
+    )
+
+
+def str_method_arity_message(method: str, given: int) -> str:
+    """Diagnostic for a ``str`` method called with the wrong number of
+    arguments (``""`` when the count fits)."""
+    bounds = STR_METHOD_ARITY.get(method)
+    if bounds is None:
+        return ""
+    low, high = bounds
+    if given >= low and (high is None or given <= high):
+        return ""
+    if high is None:
+        expected = f"at least {low}"
+    elif low == high:
+        expected = str(low)
+    else:
+        expected = f"{low} to {high}"
+    noun = "argument" if expected == "1" else "arguments"
+    message = f"`str.{method}()` takes {expected} {noun}, got {given}"
+    if method == "replace" and given == 3:
+        message += " (it replaces every occurrence; use `replaceFirst(old, new)` for the first one only)"
+    elif method == "split" and given == 2:
+        message += " (use `splitN(sep, n)` for a bounded split)"
+    elif method == "split" and given == 0:
+        message += " (use `fields()` to split on whitespace)"
+    return message
 
 
 LIST_METHOD_HINTS: Dict[str, str] = {

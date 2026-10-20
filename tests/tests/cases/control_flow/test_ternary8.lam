@@ -7,6 +7,6 @@ func main() {
     b: int = 20
     result: int = a + b if a < b else a - b
     print(result)
-    result2: int = a - b if a > b else a / 2
+    result2: int = a - b if a > b else a // 2
     print(result2)
 }

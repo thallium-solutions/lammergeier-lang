@@ -121,6 +121,10 @@ class StatementVisitorMixin:
         class_name = self._infer_receiver_class(value_node)
         if not class_name or class_name not in self._class_names:
             return
+        if target_str in self.declared_vars and self._var_go_types.get(target_str) == "interface{}":
+            # ``last: any``; ``last = b``: the variable stays an ``any`` (a
+            # later ``last = r.error`` must not be asserted to ``*Box``).
+            return
         declared = self._var_types.get(target_str, "")
         if declared and target_str in self.declared_vars and self._hier_is_subclass(class_name, declared):
             # ``shape = Circle(2)`` keeps the declared base type.
@@ -214,9 +218,12 @@ class StatementVisitorMixin:
             if inferred_generic:
                 go_type, type_node = inferred_generic
         overload_type_key = self._overload_return_key(type_node)
+        self._check_int_true_division(value, go_type)
 
         raw_type = self._get_raw_type_name(type_node)
-        if raw_type and raw_type in self._class_names and "." not in target_str:
+        if raw_type and raw_type in (self._class_names | self._interfaces) and "." not in target_str:
+            # A class or an interface (``n: Named``): method calls on it
+            # use the declared signature (defaults, keyword arguments).
             self._var_types[target_str] = raw_type
         elif "." not in target_str:
             # ``out: str`` in one method must not inherit ``out: Box`` from
@@ -606,7 +613,38 @@ class StatementVisitorMixin:
             value = self._typed_value_to_go(node.children[2], target_set)
             self._emit(f"{target_str} = {self._set_binop_to_go(set_op, target_str, value, target_set)}")
             return
-        if target_type and target_type != "interface{}":
+        if op == "+=" and target_type.startswith("[]") and isinstance(node.children[2], Tree):
+            # ``xs += ys``: extend with the items of the other list (Python's
+            # in-place ``+=``; the right operand is not modified).
+            value_node = node.children[2]
+            value = self._slice_to_go_type(
+                self._expr_to_go(value_node), self._list_operand_go_type(value_node), target_type, value_node,
+            ) if (
+                value_node.data in self._LIST_LITERAL_NODES or self._list_operand_go_type(value_node)
+            ) else ""
+            if value:
+                self._emit(f"{target_str} = append({target_str}, {value}...)")
+                return
+        if op in {"/=", "//=", "%="} and isinstance(node.children[0], Tree) and isinstance(node.children[2], Tree) \
+                and not self._infer_expr_class(node.children[0]):
+            # Python division: ``x = x <op> v`` through the same lowering as
+            # the binary operator (Go's own ``x /= v`` when it agrees).
+            target_node = node.children[0]
+            left = self._expr_to_go(target_node)
+            left_kind = self._division_operand_kind(target_node)
+            expr, _kind, native = self._division_step_to_go(left, left_kind, target_node, op[:-1], node.children[2])
+            if native:
+                value = self._expr_to_go(node.children[2])
+                if isinstance(node.children[2], Tree) and node.children[2].data in {"arith_expr", "term"}:
+                    value = f"({value})"
+                self._emit(f"{target_str} {'%' if op == '%=' else '/'}= {value}")
+            else:
+                self._emit(f"{target_str} = {expr}")
+            return
+        if target_type in {"float64", "float32"} and op in {"+=", "-=", "*="}:
+            # ``total += n`` with ``n: int``: the int widens.
+            value_str = self._typed_value_to_go(node.children[2], target_type)
+        elif target_type and target_type != "interface{}":
             with self._scoped(_propagate_cast_hint=target_type):
                 value_str = self._expr_to_go(node.children[2])
         else:
@@ -742,6 +780,8 @@ class StatementVisitorMixin:
         if len(args) != 1 or not isinstance(args[0], Tree) or args[0].data == "argvalue":
             return
         arg = args[0]
+        # ``Result.Ok(n / 2)`` in a ``-> Result[int]``: a float payload.
+        self._check_int_true_division(arg, payload)
         if self._expr_go_type_hint(arg) != "*Result":
             return
         from compiler.constants import lam_simple_expr_text
@@ -759,12 +799,36 @@ class StatementVisitorMixin:
             message += f"; propagate the inner result with {propagate} or return it directly"
         self._report_lam_error(val_node, "return", message)
 
+    _INT_GO_TYPES = frozenset({
+        "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64",
+        "uintptr", "byte", "rune",
+    })
+
+    def _check_int_true_division(self, value, go_type: str) -> None:
+        """``n: int = a / b`` / ``return a / b`` in an ``-> int`` function
+        with int operands: ``/`` is a float division, so this would fail in
+        ``go build``. Reported as a Lam diagnostic in every module (the
+        semantic checker only sees the compiled file)."""
+        if go_type not in self._INT_GO_TYPES or not isinstance(value, Tree) or value.data != "term":
+            return
+        if "/" not in {str(op) for op in value.children[1::2]}:
+            return
+        kinds = [self._division_operand_kind(child) for child in value.children[0::2]]
+        if any(self._is_float_kind(kind) or kind in {"", "param"} for kind in kinds):
+            return
+        self._report_lam_error(
+            value, "type",
+            "`/` always gives a `float`; use `//` for integer division "
+            f"(the target is `{go_type}`)",
+        )
+
     def _visit_return_stmt(self, node: Tree):
         if node.children and node.children[0] is not None:
             val_node = node.children[0]
             return_type = getattr(self, "_current_return_type", "") or ""
             return_type_key = getattr(self, "_current_return_type_key", "") or return_type
             self._check_result_ok_return(val_node, return_type_key)
+            self._check_int_true_division(val_node, return_type)
             if isinstance(val_node, Tree) and val_node.data == "testlist_tuple":
                 expected_types = self._split_go_tuple_type(return_type)
                 vals = []
@@ -1325,6 +1389,9 @@ class StatementVisitorMixin:
         # ``init(self, rows: ...)`` can make stale for a local ``rows``.
         hint = self._expr_go_type_hint(iterable_node) if isinstance(iterable_node, Tree) and iterable_node.data == "var" else ""
         iterable_type = hint if hint and hint != "interface{}" else self._infer_type_from_value(iterable_node)
+        if iterable_type in {"", "interface{}"} and isinstance(iterable_node, Tree) and iterable_node.data in {"funccall", "getattr"}:
+            # ``for it in Bag().all()`` / ``for it in self.items``.
+            iterable_type = self._expr_go_type_hint(iterable_node) or iterable_type
         is_range = (
             isinstance(iterable_node, Tree)
             and iterable_node.data == "funccall"
@@ -1831,10 +1898,11 @@ class StatementVisitorMixin:
         # When the function has a typed return value the named
         # ``retval`` already holds the value; a bare ``return``
         # surfaces it.
-        if self._do_return_target and not self._in_try_iife:
+        if (self._do_return_target or self._in_do_body) and not self._in_try_iife:
             # Directly inside a ``do`` body (a ``*Result`` closure): the
-            # recorded return happens after the ``do`` IIFE.
-            self._emit("if __lamShouldReturn { return nil }")
+            # recorded return happens after the ``do`` IIFE; a ``?`` error
+            # is the closure's result.
+            self._emit(f"if __lamShouldReturn {{ return {self._do_q_target or 'nil'} }}")
         else:
             self._emit("if __lamShouldReturn { return }")
 
@@ -2146,7 +2214,18 @@ class StatementVisitorMixin:
                 self._emit(f"var {ret_var} {return_type}")
             do_return_target = (ret_flag, ret_var)
 
-        self._emit(f"{rdo} := func() *Result {{")
+        # A ``?`` inside a ``try`` of the body leaves the try IIFE first: it
+        # stores its error in the closure's named result.
+        do_q_target = ""
+        if any(
+            self._tree_contains(t, "propagate")
+            for t in (body_suite.iter_subtrees() if isinstance(body_suite, Tree) else [])
+            if t.data == "try_stmt"
+        ):
+            do_q_target = f"__lamDoErr{self._do_counter}"
+            self._emit(f"{rdo} := func() ({do_q_target} *Result) {{")
+        else:
+            self._emit(f"{rdo} := func() *Result {{")
         self.indent += 1
         # Push a fresh declared-vars scope so locals introduced inside
         # the IIFE (including ``__qN`` temps) don't leak back into the
@@ -2162,6 +2241,8 @@ class StatementVisitorMixin:
             # the outer function returns something non-Result.
             boundary = self._callable_boundary_context()
             boundary["_do_return_target"] = do_return_target
+            boundary["_in_do_body"] = True
+            boundary["_do_q_target"] = do_q_target
             # A ``return`` in the body returns from the enclosing function.
             boundary["_in_nested_callable"] = self._in_nested_callable
             with self._scoped(_q_propagate_ok=True, **boundary):

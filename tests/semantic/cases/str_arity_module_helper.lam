@@ -1,0 +1,6 @@
+# expect-error: `str.replace()` takes 2 arguments, got 3
+# Imported by 514_str_method_arity_in_imported_module.lam.
+
+func strip(path: str) -> str {
+    return path.replace("/v1", "", 1)
+}

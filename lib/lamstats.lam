@@ -41,9 +41,9 @@ class Stats {
         }
         ordered: list[T] = values.sort()
         if n % 2 == 1 {
-            return float(ordered[n / 2])
+            return float(ordered[n // 2])
         }
-        return (float(ordered[n / 2 - 1]) + float(ordered[n / 2])) / 2.0
+        return (float(ordered[n // 2 - 1]) + float(ordered[n // 2])) / 2.0
     }
 
     static func mode[T: ordered](values: list[T]) -> T {

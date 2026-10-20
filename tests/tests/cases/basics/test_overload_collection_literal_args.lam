@@ -1,0 +1,55 @@
+# Overload resolution with a `dict[str, any]` / `list[any]` literal argument
+# (or an int passed to a float parameter) picks the variant every argument
+# fits, not the first one.
+# expect: float 2.5 1
+# expect: str x 2
+# expect: float 1.5 0
+# expect: float 3 1
+# expect: list 3
+# expect: text hi
+# expect: num 7.0
+
+class T {
+    func init(self) {
+        self.log: list[str] = []
+    }
+
+    func fail(self, message: str, attrs: dict[str, any]) {
+        self.log.append(f"str {message} {len(attrs)}")
+    }
+
+    func fail(self, code: float, attrs: dict[str, any]) {
+        self.log.append(f"float {code} {len(attrs)}")
+    }
+}
+
+func show(label: str) -> str {
+    return f"text {label}"
+}
+
+func show(n: float) -> str {
+    return f"num {n:.1f}"
+}
+
+func size(_name: str, items: list[any]) -> str {
+    return f"str {len(items)}"
+}
+
+func size(_n: int, items: list[any]) -> str {
+    return f"list {len(items)}"
+}
+
+func main() {
+    t: T = T()
+    t.fail(2.5, {"a": 1})
+    t.fail("x", {"a": 1, "b": "c"})
+    empty: dict[str, any] = {}
+    t.fail(1.5, empty)
+    t.fail(3, {"k": [1, 2]})
+    for line in t.log {
+        print(line)
+    }
+    print(size(1, [1, 2, 3]))
+    print(show("hi"))
+    print(show(7))
+}

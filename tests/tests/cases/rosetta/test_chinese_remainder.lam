@@ -34,7 +34,7 @@ func chinese_remainder(remainders: list[int], moduli: list[int]) -> int {
     }
     total: int = 0
     for i in range(len(remainders)) {
-        pp: int = prod / moduli[i]
+        pp: int = prod // moduli[i]
         inv: int = mod_inverse(pp, moduli[i])
         total += remainders[i] * pp * inv
     }

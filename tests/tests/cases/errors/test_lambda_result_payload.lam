@@ -1,0 +1,62 @@
+# A lambda declared `-> Result[list[Item]]` builds its `Result.Ok` payload
+# with the declared type, like a top-level function.
+# expect: b
+# expect: a
+# expect: c
+# expect: d 2
+# expect: e
+# expect: 3.0
+# expect: z
+# expect: 4.5
+# expect: 2
+
+from lamerrors import Result
+
+class Item {
+    func init(self, id: str) {
+        self.id: str = id
+    }
+}
+
+func first(fetch: func() -> Result[list[Item]]) -> Result[str] {
+    page: list[Item] = fetch()?
+    return Result.Ok(page[0].id)
+}
+
+func count(fetch: func() -> Result[dict[str, int]]) -> Result[int] {
+    m: dict[str, int] = fetch()?
+    return Result.Ok(len(m))
+}
+
+func direct() -> Result[list[Item]] {
+    return Result.Ok([Item("b")])
+}
+
+func total(fetch: func() -> Result[list[float]]) -> float {
+    xs: list[float] = fetch().unwrap()
+    return xs[0] + xs[1]
+}
+
+func main() {
+    print(first(direct).unwrap())
+    f: func() -> Result[list[Item]] = lambda() -> Result[list[Item]]: Result.Ok([Item("a")])
+    print(first(f).unwrap())
+    g: func() -> Result[list[Item]] = lambda() -> Result[list[Item]] {
+        items: list[Item] = []
+        items.append(Item("c"))
+        return Result.Ok(items)
+    }
+    print(first(g).unwrap())
+    n: int = count(lambda() -> Result[dict[str, int]]: Result.Ok({"x": 1, "y": 2})).unwrap()
+    print(f"d {n}")
+    print(first(lambda() -> Result[list[Item]] { return Result.Ok([Item("e")]) }).unwrap())
+    h: func(int) -> Result[float] = lambda (x: int) -> Result[float]: Result.Ok(x)
+    v: float = h(3).unwrap()
+    print(f"{v:.1f}")
+    # Without an annotation the lambda's Ok payload is untyped; the caller's
+    # `?` / `unwrap()` still converts it.
+    u: func() -> Result[list[Item]] = lambda: Result.Ok([Item("z")])
+    print(first(u).unwrap())
+    print(total(lambda: Result.Ok([2, 2.5])))
+    print(count(lambda: Result.Ok({"a": 1, "b": 2})).unwrap())
+}

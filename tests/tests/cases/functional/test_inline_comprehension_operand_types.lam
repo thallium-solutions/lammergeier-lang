@@ -1,0 +1,38 @@
+# An inline list comprehension used as an operand (sliced, joined, chained
+# into a method) keeps its element type.
+# expect: B,C
+# expect: B|C
+# expect: 3
+# expect: 3
+# expect: 0:a 1:b
+# expect: 6
+# expect: [2 4]
+# expect: true
+
+class Rec {
+    func init(self, q: str) {
+        self.q: str = q
+    }
+}
+
+class Store {
+    static usage: dict[str, int] = {"a": 1, "b": 2}
+}
+
+func recs() -> list[Rec] {
+    return [Rec("a"), Rec("b"), Rec("c")]
+}
+
+func main() {
+    words: list[str] = ["a", "b", "c"]
+    print(",".join([w.toUpper() for w in words][1:]))
+    print("|".join([r.q.toUpper() for r in recs()][1:]))
+    usage: dict[str, int] = {"a": 1, "b": 2}
+    total: int = [v for k, v in usage].reduce(lambda (acc: int, v: int) -> int: acc + v, 0)
+    print(total)
+    print([v for k, v in Store.usage].reduce(lambda (acc: int, v: int) -> int: acc + v, 0))
+    print(" ".join([f"{i}:{w}" for i, w in enumerate(words[:2])]))
+    print([n * 2 for n in range(4)].reduce(lambda (acc: int, n: int) -> int: acc + n, 0) // 2)
+    print([n * 2 for n in [1, 2, 3]][:2])
+    print([len(w) for w in words][0] == 1)
+}

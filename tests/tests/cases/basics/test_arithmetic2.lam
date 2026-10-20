@@ -20,7 +20,7 @@ func safe_div(a: int, b: int) -> int {
     if b == 0 {
         return 0
     }
-    return a / b
+    return a // b
 }
 
 func main() {
@@ -34,7 +34,7 @@ func main() {
     print(x * 0)
 
     # Divide large by larger
-    print(1 / 2)
+    print(1 // 2)
 
     # Identity operations
     y: int = 1
@@ -54,9 +54,9 @@ func main() {
     print(100 % 50)
 
     # Division patterns
-    print(100 / 3)
-    print(100 / 4)
-    print(100 / 5)
+    print(100 // 3)
+    print(100 // 4)
+    print(100 // 5)
 
     print("arith2_ok")
 }

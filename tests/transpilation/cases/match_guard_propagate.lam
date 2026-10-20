@@ -9,7 +9,7 @@ from lamerrors import Result
 
 func half(n: int) -> Result[int] {
     if n % 2 == 0 {
-        return Result.Ok(n / 2)
+        return Result.Ok(n // 2)
     }
     return Result.Err("odd")
 }

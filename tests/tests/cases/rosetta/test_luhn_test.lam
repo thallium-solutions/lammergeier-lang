@@ -18,7 +18,7 @@ func luhn(num: int) -> bool {
         }
         total += d
         even = not even
-        num = num / 10
+        num = num // 10
     }
     return total % 10 == 0
 }

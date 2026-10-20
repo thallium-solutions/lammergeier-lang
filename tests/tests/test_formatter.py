@@ -51,21 +51,22 @@ return ",".join(items)
 }
 """
 
-FORMATTED_GO_SOURCE = """go! {
-    import (
-        "fmt"
-        "strings"
-    )
-}
+# Raw Go in ``go!`` blocks is left byte for byte as written (gofmt used to
+# reformat it, and its doc-comment rewriting turned ````x```` into
+# typographic quotes); only the Lam code and the ``go! {`` line move.
+FORMATTED_GO_SOURCE = """go! { import (
+"strings"
+"fmt"
+) }
 
 func call(*items: str) -> str {
     raw: any = go!(strings.NewReader("x"))
     _ = raw
     go! {
-        fmt.Println(fmt.Sprintf("value:%d", 42))
-        if true {
-            fmt.Println("ok")
-        }
+fmt.Println(fmt.Sprintf("value:%d",42))
+if true {
+fmt.Println("ok")
+}
     }
     return ",".join(items)
 }
@@ -107,14 +108,14 @@ def test_formatter_is_idempotent() -> None:
     print("PASS: formatter is idempotent")
 
 
-def test_formatter_gofmt_and_inline_go() -> None:
+def test_formatter_keeps_raw_go_and_inline_go() -> None:
     result = format_lam_source(MESSY_GO_SOURCE)
     assert result.changed
     assert result.text == FORMATTED_GO_SOURCE, result.text
     second = format_lam_source(result.text)
     assert second.text == result.text
     assert not second.changed
-    print("PASS: formatter runs gofmt and preserves inline go")
+    print("PASS: formatter keeps raw go! code and inline go verbatim")
 
 
 def test_formatter_expands_compact_blocks_and_collapses_blank_lines() -> None:
@@ -284,11 +285,98 @@ last\"\"\"
     print("PASS: formatter keeps multi-line string text, sequence and mapping patterns")
 
 
+def test_formatter_keeps_go_comments_byte_for_byte() -> None:
+    source = (
+        "go! {\n"
+        "    // maps become ``key[sub]`` and 'quoted' -- see `x`\n"
+        "    func demoHelper() string {   return \"x\" }\n"
+        "\t// tab-indented comment\n"
+        "}\n\n"
+        "func main() {\n"
+        "    if true {\n"
+        "        go! {\n"
+        "            //   ``deep``  spacing kept\n"
+        "            x := 1;  _ = x\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    )
+    result = format_lam_source(source)
+    assert result.text == source, result.text
+    assert not result.changed
+    print("PASS: formatter leaves go! comments and spacing byte for byte")
+
+
+def test_formatter_indents_multiline_literals_and_calls() -> None:
+    source = (
+        "func take(d: dict[str, int]) -> int {\n    return len(d)\n}\n\n"
+        "func main() {\n"
+        "    items: list[int] = [\n"
+        "take( {\"a\": 1}),\n"
+        "2\n"
+        "]\n"
+        "    print(take(\n"
+        "1,\n"
+        "2\n"
+        "))\n"
+        "    cfg: dict[str, list[int]] = {\n"
+        "\"a\": [\n"
+        "1,\n"
+        "2\n"
+        "],\n"
+        "\"b\": []\n"
+        "}\n"
+        "}\n"
+    )
+    expected = (
+        "func take(d: dict[str, int]) -> int {\n    return len(d)\n}\n\n"
+        "func main() {\n"
+        "    items: list[int] = [\n"
+        "        take({\"a\": 1}),\n"
+        "        2\n"
+        "    ]\n"
+        "    print(take(\n"
+        "        1,\n"
+        "        2\n"
+        "    ))\n"
+        "    cfg: dict[str, list[int]] = {\n"
+        "        \"a\": [\n"
+        "            1,\n"
+        "            2\n"
+        "        ],\n"
+        "        \"b\": []\n"
+        "    }\n"
+        "}\n"
+    )
+    result = format_lam_source(source)
+    assert result.text == expected, result.text
+    assert format_lam_source(expected).text == expected
+    print("PASS: formatter indents multi-line list / dict literals and call arguments")
+
+
+def test_formatter_keeps_slices_compact() -> None:
+    source = (
+        "func main() {\n"
+        "    s: str = \"abcdef\"\n"
+        "    print(s[: 3], s[0: 7], s[1 :], s[:: 2], s[a+1:b], xs[i][1:])\n"
+        "    fs: list[func(int) -> int] = [lambda x: x + 1]\n"
+        "    d: dict[str, int] = {\"a\": 1}\n"
+        "    print([{\"k\": v} for v in s[1:3]], d[\"a\"])\n"
+        "}\n"
+    )
+    result = format_lam_source(source)
+    assert "print(s[:3], s[0:7], s[1:], s[::2], s[a + 1:b], xs[i][1:])" in result.text, result.text
+    assert "[lambda x: x + 1]" in result.text, result.text
+    assert 'print([{"k": v} for v in s[1:3]], d["a"])' in result.text, result.text
+    assert format_lam_source(result.text).text == result.text
+    print("PASS: formatter writes slices without spaces around `:`")
+
+
 def main() -> int:
     tests = [
         test_formatter_snapshot,
         test_formatter_is_idempotent,
-        test_formatter_gofmt_and_inline_go,
+        test_formatter_keeps_raw_go_and_inline_go,
         test_formatter_expands_compact_blocks_and_collapses_blank_lines,
         test_lamc_fmt_stdout_and_check,
         test_lamc_fmt_directory_recurses_lam_files,
@@ -296,6 +384,9 @@ def main() -> int:
         test_formatter_preserves_nested_scoped_import,
         test_formatter_keeps_postfix_increment_and_destructuring,
         test_formatter_keeps_multiline_strings_and_patterns,
+        test_formatter_keeps_go_comments_byte_for_byte,
+        test_formatter_indents_multiline_literals_and_calls,
+        test_formatter_keeps_slices_compact,
     ]
     for test in tests:
         test()

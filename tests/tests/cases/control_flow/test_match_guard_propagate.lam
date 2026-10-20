@@ -17,7 +17,7 @@ calls: int = 0
 func half(n: int) -> Result[int] {
     calls += 1
     if n % 2 == 0 {
-        return Result.Ok(n / 2)
+        return Result.Ok(n // 2)
     }
     return Result.Err("odd")
 }

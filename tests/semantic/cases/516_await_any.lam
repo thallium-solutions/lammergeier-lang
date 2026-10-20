@@ -1,0 +1,16 @@
+# expect-error: `await` needs the handle returned by an async call, but `t` is `any`
+# expect-error: `await` needs the handle returned by an async call, but `tasks[0]` is `any`
+# `await` on an element of a `list[any]` failed in `go build` (`cannot
+# receive from non-channel interface{}`).
+
+async func load(id: int) -> str {
+    return f"item {id}"
+}
+
+func main() {
+    tasks: list[any] = [load(1), load(2)]
+    for t in tasks {
+        print(await t)
+    }
+    print(await tasks[0])
+}

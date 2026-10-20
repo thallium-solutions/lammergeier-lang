@@ -4,7 +4,7 @@
 
 func safeDiv(n: int) -> int {
     try {
-        v: int = 10 / n
+        v: int = 10 // n
     } catch e {
         v: int = -1
     }

@@ -1,0 +1,10 @@
+# expect-error: str_arity_module_helper.lam
+# expect-error: `str.replace()` takes 2 arguments, got 3
+# An imported module is not run through the semantic checker; the
+# transpiler reports the wrong argument count as the same Lam diagnostic.
+
+from str_arity_module_helper import strip
+
+func main() {
+    print(strip("a/v1/b"))
+}

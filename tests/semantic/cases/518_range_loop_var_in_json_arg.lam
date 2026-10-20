@@ -1,0 +1,31 @@
+# expect-pass
+# A `range` / `enumerate` loop variable is an `int`: it fits a `json`
+# parameter inside a dict literal (it used to be `unknown`, "not
+# JSON-compatible"), also for a method of a class re-exported by a package.
+
+class Queue {
+    func init(self) {
+        self.n: int = 0
+    }
+
+    func enqueue(self, payload: json) -> int {
+        _ = payload
+        self.n += 1
+        return self.n
+    }
+}
+
+func run() {
+    q: Queue = Queue()
+    for i in range(3) {
+        _ = q.enqueue({"kind": "ok", "i": i})
+    }
+    for j, name in enumerate(["a", "b"]) {
+        _ = q.enqueue({"j": j, "name": name})
+    }
+    print(q.n)
+}
+
+func main() {
+    run()
+}

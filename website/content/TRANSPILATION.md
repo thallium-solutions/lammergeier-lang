@@ -257,6 +257,15 @@ suffix (`chan` → `chan__lam`, private `select` → `select__lam`). Parameters,
 locals, destructuring/loop/comprehension targets, catch/with bindings, and
 compiler-prefix-looking names all route through this binding map.
 
+A local named like a Go package is the local (`http.header(...)` on
+`http: HttpRequestOptions` calls its method, `log.info(...)` on a
+`log: Logger`). The packages the compiler's lowerings import themselves
+(`COMPILER_GO_PACKAGES`: `fmt`, `strings`, `strconv`, `math`, `sort`,
+`reflect`, `slices`, `maps`, `os`, `runtime`, `bufio`) would be hidden by such
+a local in the generated function, so those bindings also get the `__lam`
+suffix (`strings` → `strings__lam`), inside `go!` code of the same scope too.
+The per-name type tables store both spellings of a renamed binding.
+
 ## Types
 
 | Lam              | Go                          |
@@ -468,6 +477,12 @@ is a call producing no value (`print`, a user function without a return
 type) is void too, and a lambda with all parameters typed has the Go type
 `func(P...) R` (its `-> R` annotation or the inferred body type).
 
+A call to a function value held by a local or parameter
+(`_func_value_call_args`) lowers an inline list / dict / set literal or
+comprehension argument with the matching parameter type of the value's
+`func(...)` Go type: `size(["a"])` with `size: func(list[str]) -> int` emits
+`size([]string{"a"})`.
+
 The grammar rule is `type_func: "func" "(" [type_func_params] ")" ["->" type_expr]`,
 so the parameter list is wrapped in its own AST node and the return is
 optional. `_type_expr_to_go` walks the children explicitly, mapping
@@ -506,8 +521,12 @@ has the concrete Go type later assertions expect; an int argument for a
 base-class payload as its upcast (`NewCircle()._lamUp_Shape()`)
 (`_result_ok_payload_conversion`). The payload assertions themselves
 (`_result_payload_assert_go`) accept an `int` for `float64` and, for a class
-with subclasses, any descendant through its `_lamUp_<Base>()` view, so a
-`Result` built outside a typed context unwraps too. Direct `.value`, `.error`,
+with subclasses, any descendant through its `_lamUp_<Base>()` view, and, for
+a `[]T` / `map[string]T` payload, a `[]interface{}` / `map[string]interface{}`
+converted element by element (each element through the same assertion), so a
+`Result` built outside a typed context unwraps too. A lambda's `-> Result[T]`
+annotation is its return key like a function's, so its `Result.Ok(...)`
+argument is typed by `T`. Direct `.value`, `.error`,
 and `unwrap()` / `unwrapOr(...)` on payload-unknown or `any` results retain
 the dynamic fallback:
 
@@ -750,6 +769,35 @@ Multiple `?` in one statement just allocate consecutive temps
 (`__q2`, `__q3`, …); the prelude lines are emitted in source order so
 each guard runs before later operands evaluate.
 
+The cast published by the statement applies to its own `?` value only: it
+stops at a member access, call, index, collection or comparison around the
+`?` (`a: str = (m.make()?).key` asserts the `Result`'s payload class, then
+reads `.Key`). The lexer reads `f()?.y` as safe navigation on `f()`; before
+each statement is checked and emitted, `compiler/safe_nav.py` rewrites a
+`getattr_safe` whose receiver is a `Result` (the semantic checker's type, or
+the transpiler's `*Result` hint for modules the checker does not see) into
+`getattr(propagate(receiver), y)`, receivers first, so chains
+`load()?.next()?.next()?` work link by link. Lambda bodies keep `?.` as
+written.
+
+A comprehension whose element or filter holds a `?` keeps the `?` inside
+its loop: the closure returns `([]T, *Result)`, each `?` guard returns
+`nil, __qN`, and the statement prelude binds the value and propagates the
+error with the same guard as a plain `?`:
+
+```go
+__lamComp2, __lamCompErr2 := func() ([]int, *Result) {
+    _result := []int{}
+    for _, n := range xs {
+        __q1 := Half(n)
+        if !__q1.Ok() { return nil, __q1 }
+        _result = append(_result, __q1.Value.(int))
+    }
+    return _result, Result_Ok(nil)
+}()
+if !__lamCompErr2.Ok() { return __lamCompErr2 }
+```
+
 ### `do { } catch err { }`
 
 A `do`/`catch` block lowers to a Go IIFE with return type `*Result`,
@@ -800,7 +848,13 @@ out as the IIFE's value. A Lam `return` inside the body still leaves the
 enclosing function: it stores the value in `__lamDoRetVN`, sets the flag
 `__lamDoRetN` and returns `nil` from the closure; right after the closure
 `if __lamDoRetN { return __lamDoRetVN }` performs the real return (routed
-through the enclosing `try` or async lowering when there is one). `_visit_do_stmt` pushes a fresh
+through the enclosing `try` or async lowering when there is one). A
+`try`-with-`catch` inside the body is its own IIFE: after it,
+`if __lamShouldReturn { return nil }` leaves the `do` closure, and a `?`
+inside that `try` (body or catch) stores its error in the closure's named
+result (`func() (__lamDoErrN *Result)`), sets `__lamShouldReturn` and
+leaves the try IIFE, so the closure returns the error. The same `?` in a
+`try` of a `-> Result` function stores it in `retval`. `_visit_do_stmt` pushes a fresh
 `declared_vars` scope around both the body and the handler so locals
 don't leak between consecutive `do` blocks. The source must directly
 `from lamerrors import Result` for the emitted `*Result` /
@@ -1290,14 +1344,28 @@ type Greeter interface {
 
 Interfaces are never wrapped in pointers.
 
+Interface methods register their parameter names and declared defaults under
+`Interface.method` (like class methods), and that metadata crosses module
+boundaries. A call whose receiver is typed by the interface (a parameter, an
+annotated local, a field, a loop / comprehension variable or a lambda
+parameter, recognised by its Go type) lowers its arguments with it: omitted
+trailing arguments get the interface's defaults and keyword arguments are
+reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
+`n.Name("")`.
+
 ## Expressions
 
 | Lam                                | Go                                                                        |
 |------------------------------------|---------------------------------------------------------------------------|
 | `a + b`                            | `a + b`                                                                   |
-| `a // b`                           | integer `a / b`                                                           |
-| `a ** b`                           | `math.Pow(float64(a), float64(b))`; typed non-`float64` numeric contexts cast the result |
+| `a / b`                            | `float64(a) / b` (operands converted) for a non-zero constant `b`, else a closure raising `ZeroDivisionError` on a zero divisor (see "Python division") |
+| `a // b`, `a % b` (ints)           | a closure typed by the operands flooring the quotient / giving the remainder the divisor's sign; Go's `a / b` / `a % b` when `a` is provably non-negative and `b` provably positive; `a >> k` / `a & (2^k - 1)` for a power-of-two constant `b`; integer constants fold |
+| `a // b`, `a % b` (a float operand) | a closure over `math.Mod` / `math.Floor` (CPython's algorithm)            |
+| `xs + ys` (lists)                  | `append(append([]T{}, xs...), ys...)`: a fresh slice (operands untouched), list literals typed `[]T`; mixed element types build a `[]interface{}` (other slices converted element by element) |
+| `xs += ys` (list)                  | `xs = append(xs, ys...)`                                                  |
+| `a ** b`                           | `math.Pow(float64(a), float64(b))` (a `float64` operand: `a + b ** c` converts `a`); typed non-`float64` numeric contexts cast the result |
 | `a in xs`, `a not in xs`           | Container-aware membership test for strings, lists, dicts, and sets          |
+| `xs == ys`, `d == {...}` (lists, dicts, sets) | `slices.Equal` / `maps.Equal` for comparable element types (a literal side typed by the other side), `slices.EqualFunc` through an element class's `__eq__`, `reflect.DeepEqual` otherwise (nested collections, `any` elements, different element types); `!=` negates |
 | `not x`                            | `!x`                                                                      |
 | `x and y`, `x or y`                | `x && y`, `x \|\| y`                                                      |
 | `a if c else b`                    | Go ternary via IIFE typed by its branches (`func() string { ... }()`); joined with `+` to a `str`, it is a `string` closure even when one branch's type is not tracked |
@@ -1310,7 +1378,8 @@ Interfaces are never wrapped in pointers.
 | `obj?.field` on a pointer receiver | `func() *T { if o := obj; o != nil { v := o.F; return &v }; return nil }()` for a value field (`T` itself when nilable) |
 | `d[k] ?? fallback` on a map        | comma-ok lookup: the fallback for a missing key                            |
 | `1.5 * n` with `n: int`            | `1.5 * float64(n)` (int operands of a mixed int/float expression)          |
-| `[expr for x in xs if c]`          | IIFE building a `[]T` slice                                                |
+| an `int` where a `float` is expected | `float64(n)`: `_typed_value_to_go` widens an int-typed value for a `float` target (arguments, returns, collection elements, declarations, fields, `+=` / `-=` / `*=`), and calls of `func(float)` values convert their int arguments |
+| `[expr for x in xs if c]`          | IIFE building a `[]T` slice: `T` from the typed context, else from `expr` with the loop variables typed by their iterables (lists, strings, dicts, `range`, `enumerate`), else `interface{}` |
 | `{k: v for x in xs}`               | IIFE building a `map[K]V`                                                  |
 | `{expr for x in xs}`               | IIFE building a `map[K]bool` in a typed set context, otherwise `map[interface{}]bool` |
 | `(expr for x in xs)`               | Same eager slice lowering as the list comprehension form                   |
@@ -1336,6 +1405,21 @@ Interfaces are never wrapped in pointers.
 | `enumerate(xs)`                    | IIFE materializing index/value pairs as `[]interface{}` tuples            |
 | `isinstance(x, T)`                 | Type-specific runtime check: assertion, nil test, or `reflect.Kind` (`lamJSONRaw(x)` first on `json`, `x != nil` on an optional value type) |
 
+**Grouping.** The parser drops parentheses (`(b + c)` is just the
+`arith_expr` node), and Go's precedence differs from Python's (`<<`, `>>`
+and `&` bind like `*` in Go but looser than `+` in Python), so every
+emitter joining operands with an operator (`go_operand` in
+`compiler/visitors/expressions.py`) measures the loosest operator at the top
+level of each emitted operand and parenthesizes it when Go would group it
+differently: a lower precedence, or an equal one on the right of a
+non-associative operator (`a - (b + c)`, `a * (b << c)`, `-(b + c)`).
+`tests/tests/test_operator_precedence.py` compares thousands of generated
+groupings of every operator pair (ints, floats, strings, bools, unary
+operators, ternaries, comparisons) with Python's own evaluation. A
+comparison of an `int` and a `float` (`n < x / 2`, `c < a ** b`) converts
+the `int` operand, and `2 << n` with a constant left operand is an `int`
+(`int(2) << n`) so it also builds in a `float` context.
+
 For class operands, arithmetic/unary/comparison expressions dispatch through
 the corresponding dunder method. Before emission, semantic analysis validates
 operator-method arity, required boolean comparison returns, right-operand
@@ -1360,6 +1444,41 @@ Membership lowering follows the container shape: strings use
 small loop using `reflect.DeepEqual` so nested collection elements can be
 tested without triggering Go's non-comparable-slice errors. Chained comparisons
 such as `1 < x < 10` are lowered pairwise with `&&`.
+
+### Python division
+
+`/`, `//` and `%` follow Python: `/` is always a float division, `//`
+floors toward negative infinity and `%` takes the sign of the divisor, for
+ints and floats, and every zero divisor raises `ZeroDivisionError` (a
+string panic `"ZeroDivisionError: <message>"`, so `catch ZeroDivisionError`
+/ `ArithmeticError` match it). Go's `/` and `%` truncate toward zero and a
+float division by zero is an infinity, so the transpiler emits a small
+closure called in place (Go inlines it), typed by the operands' Go types,
+and uses Go's operator only where it already agrees:
+
+| Lam | Go |
+|---|---|
+| `n / 2` (`n: int`) | `float64(n) / 2` |
+| `x / 2.5` (`x: float`) | `x / 2.5` |
+| `n / d` | `func(a, b float64) float64 { if b == 0 { panic("ZeroDivisionError: division by zero") }; return a / b }(float64(n), float64(d))` |
+| `n // d` | `func(a, b int) int { if b == 0 { panic(...) }; q := a / b; if a%b != 0 && (a < 0) != (b < 0) { q-- }; return q }(n, d)` |
+| `n % d` | `func(a, b int) int { if b == 0 { panic(...) }; r := a % b; if r != 0 && (r < 0) != (b < 0) { r += b }; return r }(n, d)` |
+| `len(xs) // 2`, `i % 2` (`i` from `range(n)`) | `len(xs) / 2`, `i % 2` |
+| `-7 // 2`, `-7 % 2` | `(-4)`, `1` (folded) |
+| `n // 4`, `n % 8` | `n >> 2`, `n & 7` (a power-of-two constant: two's complement floors) |
+| `x // y`, `x % y` (a float operand) | a closure over `math.Mod` / `math.Floor` (CPython's `_float_div_mod`) |
+| `k //= d`, `g /= n` | `k = <closure>(k, d)`, `g = <closure>(g, float64(n))`; `g /= 2` stays |
+
+Go's operator is used for `//` and `%` when the dividend is provably
+non-negative (the `compiler/index_bounds.py` analysis below) and the
+divisor provably positive (a positive constant, or a local the same
+analysis bounds at 1 or more, such as `n: int = 1000`). A chain such as
+`a * b // c % d` is folded left to right, each step typed by the previous
+one. Operands of a
+type parameter keep Go's operator for `//` and `%` (the constraint
+decides); `/` converts them with `float64(...)`. The semantic checker
+types `int / int` as `float`, so assigning it where an `int` is expected
+is reported with a hint to use `//`.
 
 ### Runtime negative indexes
 
@@ -1394,7 +1513,8 @@ decreasing; parameters, destructuring and other bindings are unknown;
 module globals are never trusted), stores them on the `funcdef`, and the
 getitem lowering asks whether the index expression has a non-negative
 lower bound given them (constants, `len(...)`, `abs`, `min` / `max`,
-`a + b`, `a - <constant>`, `* // %` of non-negative values, ternaries),
+`a + b`, `a - <constant>`, `*` and `//` of non-negative values, `a % b`
+with a non-negative `b`, ternaries; `/` is a float, never an index),
 including in f-string slots. `xs[len(xs) - 1]` on a side-effect-free
 receiver is also left as is: its index is `-1` only for an empty `xs`,
 out of range either way.
@@ -1626,7 +1746,8 @@ func Double(n int) chan func() int {
     go func() {
         defer func() {
             if r := recover(); r != nil {
-                select { case __lam_async_ch <- func() int { panic(r) }: default: }
+                __lamTask := lamAsyncTaskFailed(r)
+                select { case __lam_async_ch <- func() int { lamAsyncTaskRetrieved(__lamTask); panic(r) }: default: }
             }
         }()
         {
@@ -1640,6 +1761,14 @@ func Double(n int) chan func() int {
 
 var x int = (<-Double(21))()
 ```
+- A recovered exception is registered (`lamAsyncTaskFailed`, a `sync.Map`
+  keyed by a fresh token) until the thunk runs at an `await`
+  (`lamAsyncTaskRetrieved`). When some module of the program has an async
+  callable, the main file defines the registry and `main` starts with
+  `defer lamAsyncReportUnretrieved()`, which prints every exception left in it
+  to stderr (`Task exception was never retrieved: ...`) when `main` returns.
+- `await` on an operand typed `interface{}` (an element of a `list[any]`) is
+  a Lam error (semantic checker, and transpiler for imported modules).
 - User-facing channel operations belong in `lamconcurrency.Channel`; actor queues
   compose it through `lamactor.Mailbox`. Both expose blocking `send` / `receive`,
   immediate `offer` / `poll`, and awaitable `asyncSend` / `asyncReceive` methods

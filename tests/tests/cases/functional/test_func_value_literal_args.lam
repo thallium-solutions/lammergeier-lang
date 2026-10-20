@@ -1,0 +1,53 @@
+# Test: an inline list / dict / set literal (or comprehension) passed to a
+# function value takes the callee's declared parameter type: typed lambdas,
+# `func(...)` parameters of functions and methods, annotated locals.
+#
+# expect: 1 2
+# expect: 3
+# expect: 5 2
+# expect: 4
+# expect: 2 [x y]
+# expect: 3 9
+# expect: 2
+# expect: 6
+
+func apply(size: func(list[str]) -> int) -> int {
+    return size(["a", "b"])
+}
+
+func lookup(get: func(dict[str, int], str) -> int) -> int {
+    return get({"a": 1, "b": 2}, "b")
+}
+
+class Runner {
+    func run(self, f: func(list[int]) -> int) -> int {
+        return f([x * 3 for x in [1, 2]])
+    }
+}
+
+func main() {
+    size: func(list[str]) -> int = lambda (xs: list[str]): len(xs)
+    print(size(["a"]), apply(size))
+
+    count = lambda (xs: list[int]): len(xs)
+    print(count([1, 2, 3]))
+
+    get: func(dict[str, int], str) -> int = lambda (d: dict[str, int], k: str): d[k]
+    print(get({"x": 5}, "x"), lookup(get))
+
+    total = lambda (xs: list[float]): xs[0] + xs[1]
+    print(total([1.5, 2.5]))
+
+    keep: func(list[str], str) -> list[str] = lambda (xs: list[str], extra: str): xs + [extra]
+    kept: list[str] = keep(["x"], "y")
+    print(len(kept), kept)
+
+    unique = lambda (s: set[int]): len(s)
+    deepest = lambda (rows: list[list[int]]): rows[1][1]
+    print(unique({1, 2, 2, 3}), deepest([[1], [8, 9]]))
+
+    sizes = lambda (d: dict[str, list[int]]): len(d["k"])
+    print(sizes({"k": [1, 2]}))
+
+    print(Runner().run(lambda (xs: list[int]): xs[0] + xs[1] - 3))
+}

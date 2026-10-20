@@ -15,7 +15,7 @@ func swap(a: int, b: int) -> (int, int) {
 }
 
 func divmod_func(a: int, b: int) -> (int, int) {
-    return a / b, a % b
+    return a // b, a % b
 }
 
 func min_max(a: int, b: int) -> (int, int) {

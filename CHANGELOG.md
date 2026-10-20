@@ -5,6 +5,235 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 3.0.0 — 2026-10-20
+
+### Breaking changes
+
+- **Division follows Python.** `/` is always a float division
+  (`7 / 2 == 3.5`, `4 / 2 == 2.0`, `int / int` is a `float`), `//` is floor
+  division (`-7 // 2 == -4`, `-7.5 // 2 == -4.0`) and `%` takes the sign of
+  the divisor (`-7 % 2 == 1`, `7 % -2 == -1`, floats included: `-7.5 % 2 ==
+  0.5`). Before, `/` and `//` of two ints both truncated toward zero, `%`
+  kept the dividend's sign, `%` on floats failed in `go build`, and
+  `y: float = n / 2` with `n: int` passed `lamc` and failed in `go build`.
+  `/=` on an `int` variable is now a type error (use `//=`).
+- **Every zero divisor raises `ZeroDivisionError`:** int `//` / `%`, float
+  `/` / `//` / `%` and `/` of ints (a float division by zero used to give
+  `+Inf`). The message follows Python (`ZeroDivisionError: division by
+  zero`, `ZeroDivisionError: integer division or modulo by zero`,
+  `ZeroDivisionError: float modulo`); an int division by zero used to print
+  `runtime error: integer divide by zero`.
+- **Numeric fields are typed in expressions** (`self.cents`, `order.total`
+  with a declared `int` / `float` field), so `return self.cents / 100` in an
+  `-> int` method is a compile-time error with the `//` hint instead of a
+  Go build error.
+- Standard library: `Duration.inMilliseconds()` / `inSeconds()` /
+  `inMinutes()` / `inHours()` / `inDays()` and `DateTime.unix()` /
+  `unixMilli()` floor negative values (they truncated toward zero).
+- Official packages: `@lam/sftp` 3.4.0 and `@lam/vulture` 2.0.2 (and the
+  plugins pinning it) used `/` for integer division and do not build with
+  3.0; use `@lam/sftp` 3.5.0, `@lam/vulture` 2.0.3 and the plugin releases
+  pinning it (see "Changed"), which declare `lamc >=1.18, <4`.
+
+**Migrating:** replace every `/` whose result must stay an `int` with `//`
+(indexes, counters, `range(...)` bounds, pagination, unit conversions,
+`len(xs) // 2`). `//` already compiles on 2.x, where it truncated like `/`,
+so code using it for non-negative operands builds and behaves the same with
+2.1 and 3.0. Keep `/` where a fraction is wanted and give the target a
+`float` type. `lamc` reports the leftover cases: `x: int = a / b`, returning
+or passing `a / b` where an `int` is expected and indexing with it fail with
+``cannot assign `float` to `int` variable `x` (`/` always gives a `float`;
+use `//` for integer division)``, also inside imported modules and in
+`Result.Ok(a / b)` for a `Result[int]`. Review `//` and `%` on values that
+may be negative: they now floor (`-7 // 2 == -4`) instead of truncating.
+
+### Changed
+
+- Official libraries: `third_party/lamstripe` and `third_party/lamotel` moved
+  to their own repositories as `@lam/stripe` 1.0.0 and `@lam/otel` 1.0.0
+  (`from @lam/stripe import ...`, `from @lam/otel import ...`; typed Results,
+  see each CHANGELOG), and `third_party/` is gone: the compiler repository
+  vendors no package. New official libraries `@lam/keyring`, `@lam/totp` and
+  `@lam/jobs` 1.0.0. Catalog: every pre-3.0 library has a release that
+  declares `lamc >=1.18, <4` (`@lam/jwt` 3.1.2, `@lam/memcached` 2.0.2,
+  `@lam/protobuf` 3.0.2, `@lam/redis` 2.0.2, `@lam/s3` 2.3.1, `@lam/ssh` 3.0.3,
+  `@lam/sftp` 3.5.0 with PROXY protocol support, `@lam/vulture` 2.0.3 and its
+  plugins `std-plugin` 2.0.4, `tus-plugin` 3.0.3, `ws-plugin` 2.0.3).
+
+- An exception raised in an async task that is never awaited is printed to
+  stderr when `main` returns (`Task exception was never retrieved:
+  ValueError: ...`, like Python's asyncio) instead of disappearing; the exit
+  status is unchanged and an awaited exception is still re-raised at the
+  `await` only.
+- `x()?.y()` on a `Result` means `(x()?).y()` (propagation, then member
+  access); it did not compile before. `?.` on an optional value keeps its
+  safe-navigation meaning.
+- `abs(n)`, `min(...)` and `max(...)` nested in each other stay ints for
+  int arguments, an int widens to a float wherever a float is expected, and
+  inline list comprehensions are typed by their element: code relying on
+  the previous `[]interface{}` shape in `go!` blocks may need an update.
+- `lamc fmt` leaves raw Go in `go! { }` blocks byte for byte as written; it
+  used to run gofmt on them.
+
+### Fixed
+
+- `lamc fmt` corrupted code: gofmt's doc-comment rewriting turned
+  double-backtick spans in `//` comments of `go!` blocks into typographic
+  quotes, the elements of multi-line list / dict literals and call
+  arguments lost their indentation, slices became `s[: 3]` / `x[0: 7]`,
+  `take({...})` became `take( {...})`, and `func match(...)` gained one
+  space before `(` per run. Formatting is idempotent and keeps the generated
+  Go unchanged, checked over the test corpus, the standard library and the
+  official libraries.
+- `await` on a value typed `any` (an element of a `list[any]`) failed in
+  `go build` (`cannot receive from non-channel interface{}`); it is a Lam
+  error pointing at the untyped handle.
+- **Wrong results: a parenthesized right operand lost its parentheses**
+  (since at least 1.19.9). `a - (b + c)` compiled to Go `a - b + c`, so
+  with `a = 10, b = 2, c = 3` it printed `11` instead of `5`; the same
+  happened to `x - (y - z)` on floats, to a unary operator on a group
+  (`-(b + c)` gave `-b + c`, also `a - -(b + c)`, `~(b * c)`), to a shift on
+  the right of `*`, `<<`, `>>` or `&` (`a * (b >> c)`, `a << (b << c)`, and
+  `a & b << c`, which Python groups as `a & (b << c)`), to `a * (b // c)` /
+  `a * (b % c)` where Go's own operator is used (non-negative operands), and,
+  in 2.x, to `a // (b * c)` (`15` for `10 // (2 * 3)`) and `100 % (7 * 3)`
+  (`6`). Programs built with an earlier `lamc` computed
+  wrong values for such expressions without any error; rebuild them. The
+  standard library had no affected expression. Every operator now keeps the
+  grouping of the source, checked against Python's evaluation of thousands
+  of generated expressions over every pair of operators.
+- `a + b ** c`, `c < a ** b` and `n < x / 2` (an `int` mixed with the
+  `float` of `**` or `/`) and `x / (2 << n)` passed `lamc` and failed in
+  `go build` (`mismatched types int and float64`, `shifted operand 2 (type
+  float64) must be integer`): the `int` operand is converted.
+- A `try` / `catch` inside a `do { } catch err { }` body failed in
+  `go build` (`not enough return values`), and a `?` inside a `try` body
+  or `catch` handler (in a `do` body or a `-> Result` function) failed with
+  `too many return values`. The `?` error now leaves the `try` and is
+  propagated to the `do` handler or returned by the function (a `catch`
+  clause never sees it).
+- `a: str = (m.make()?).key` (a member, method call, index or call argument
+  around a `?`) failed in `go build` (`__q1.Value.(string).Key undefined`):
+  the `?` payload was asserted to the declared type of the target instead
+  of the `Result`'s payload type.
+- `f()?.method()` / `load()?.field` on a `Result` was read as safe
+  navigation on the `Result` and failed in `go build` (`Next undefined
+  (type *Result has no field or method Next)`). On a `Result` receiver it
+  is now propagation followed by the member access (`(f()?).method()`), so
+  `b: Box = load(1)?.next()?.next()?` chains fallible calls; `?.` on an
+  optional value is still safe navigation. `r?` on a local declared
+  `Result[T]` is also typed by `T` now.
+- A `?` inside a list, dict or set comprehension (`[half(n)? for n in xs]`,
+  also in the filter) was hoisted out of the loop and failed in `go build`
+  (`undefined: n`). It runs once per element inside the loop now, and an
+  `Err` stops the comprehension and propagates like any `?`.
+- `==` / `!=` on lists, dicts and sets (`xs == ["a", "b"]`, `d["k"] ==
+  ["a"]`, two `list[str]` variables, `counts == {"a": 1}`) passed `lamc`
+  and failed in `go build` (`mismatched types []string and []interface{}`,
+  `slice can only be compared to nil`). They compare element by element,
+  typed by the element type (an element class's `__eq__` is used).
+- A lambda declared `-> Result[list[Item]]` returning `Result.Ok([Item("a")])`
+  built a `[]interface{}` payload and the caller's `?` / `unwrap()` panicked
+  (`interface {} is []interface {}, not []*main.Item`): the payload takes
+  the declared type, like in a top-level function. `?`, `unwrap()` and
+  `unwrapOr()` with a `list[T]` / `dict[str, T]` payload also convert an
+  untyped list / dict built elsewhere (an unannotated lambda, a `Result`
+  built in an `any` context), element by element.
+- `m: int = max(abs(a), 2)` with `a: int` failed in `go build` (`value of
+  type float64`): a nested `abs` / `min` / `max` call was not typed, so the
+  outer call compared floats. Ints stay ints at any nesting depth.
+- A local named like a Go package was treated as the package:
+  `http: HttpRequestOptions = ...; http.header("A", "b")` and `log: Logger =
+  Logger(); log.info("x")` failed in `go build` (`http.header undefined`),
+  and `strings: Box` (or `fmt`, `sort`, `math`, ...) hid the package from the
+  generated code of the same function. Locals shadow packages now; locals
+  spelled like a package the generated code relies on are renamed in Go
+  (`strings__lam`), also inside `go!` blocks of their scope.
+- Symbols imported through a package `__init__.lam` re-export (`from
+  .errs import DemoError`, also aliased or chained through nested packages,
+  and with `import pkg`) lost their type information in the semantic
+  checker: `case DemoError() as d` failed with "`DemoError` is not a class",
+  `b: json = mk()` and `json(Point(3))` (a `__json__` class) failed with
+  "value of type `unknown` is not JSON-compatible", and `s: str =
+  p.count()` passed `lamc` and failed in `go build`. Re-exported functions,
+  classes (fields, methods, constructors, bases) and interfaces now carry
+  the same types as direct imports, and the classes of the defining module
+  are known as with a direct import. A `range(...)` / `enumerate(...)` loop
+  variable is an `int` for the checker (it was `unknown`, so `{"i": i}`
+  passed to a `json` parameter of such a method was reported as not
+  JSON-compatible).
+- An inline list comprehension used as an operand lost its element type:
+  `",".join([w.toUpper() for w in words][1:])` and `[v for k, v in
+  d].reduce(...)` failed in `go build` (`[]interface{}` / `need type
+  assertion`). Outside a typed context a comprehension over a typed list,
+  string, dict, `range(...)` or `enumerate(...)` is typed by its element.
+- A `str` method called with the wrong number of arguments
+  (`"a".replace("x", "", 1)`, `s.split(",", 2)`) passed `lamc` and failed in
+  `go build` (`too many arguments in call to Strings_replace`). It is a Lam
+  error (``error[call]: `str.replace()` takes 2 arguments, got 3``, with the
+  Lam alternative: `replaceFirst`, `splitN`, `fields`), also in imported
+  modules.
+- A class-typed field read through a loop variable (`for it in items {
+  use(it.res) }`, `d["k"] = it.res`, also over a method's result `for it in
+  bag.all()`) failed in `go build` (`it.Res (variable of type *Res) is not
+  an interface`): the loop variable's class was not known, so the field was
+  asserted as if it were `any`.
+- Assigning `{}`, `[]` or another literal to a field declared by a base
+  class (`self.points = {}` in a subclass method with `dict[str, int]` in
+  the base) failed in `go build` (`cannot use map[string]interface{}{} as
+  map[string]int value`): inherited fields are typed like the class's own.
+- Overload resolution fell back to the first variant of the right arity when
+  no variant matched the argument types exactly: `t.fail(2.5, {"a": 1})`
+  with `fail(message: str, attrs: dict[str, any])` and `fail(code: float,
+  attrs: dict[str, any])` bound the `str` variant and failed in `go build`,
+  and so did an int passed to the `float` variant. The variant every
+  argument fits (a collection literal to `any` elements, an int to a
+  `float`, anything to `any`) is chosen, the closest match first; a float
+  literal now selects a `float` variant over an `int` one (`pq.push(3.0,
+  ...)` in `lamheap`).
+- An `any` local assigned a class instance and later something else
+  (`last = b` with a `Box`, then `last = r.error` in another branch of a
+  loop) panicked (`interface {} is string, not *main.Box`): the first
+  assignment retyped the variable as `Box` and the second was asserted to
+  `*Box`. A variable declared `any` stays `any`.
+- A nested `func` inside a class method or constructor was emitted as a Go
+  method declaration inside the function body (`syntax error: unexpected
+  name int`), and the checker warned that the "method" used `self` without
+  declaring it. It is a local closure, like a nested `func` in a top-level
+  function, with access to the method's `self` and locals; passing it to
+  `xs.map(f)` keeps its return type.
+- A lambda passed to a generic class constructor (`Queue[str](lambda items:
+  len(items))` with a `func(list[T]) -> int` parameter) failed in `go build`
+  (`undefined: T`): the parameter types now take the explicit type
+  arguments.
+- Reading an integral JSON number as a `float` (`x: float = doc.sum` with
+  `"sum": 30`, also as a `float` argument or return value) panicked
+  (`interface {} is int, not float64`); the number widens to a float.
+- An `int` passed where a `float` is expected (`half(n)` with `v: float`,
+  `return n + 1` in a `-> float` function, `[1, n]` in a `list[float]`,
+  `f: float = n`, `self.x = n + 1`, `total += n`, a `func(float)` value, an
+  interface method, a lambda or generator declared `float`) passed `lamc`
+  and failed in `go build` (`cannot use n (variable of type int) as float64
+  value`). The int widens implicitly, as in Python.
+- `+` on two lists (`out + firsts`, `xs + [1, 2]`, in expressions, returns,
+  loops, comprehensions and f-strings) passed `lamc` and failed in `go build`
+  (`operator + not defined on out`): it builds a new list typed by the
+  element type and leaves both operands unchanged (mixed element types give
+  a `list[any]`), and `xs += ys` appends the items of `ys`.
+- An inline list / dict / set literal passed to a function value
+  (`size(["a"])` with `size: func(list[str]) -> int`, a `func(...)`
+  parameter, a typed lambda in a local) failed in `go build` (`cannot use
+  []interface{}{…} as []string value`): the literal takes the declared
+  parameter type.
+- Calling an interface method without an argument that has a default value
+  (`n.name()` with `interface Named { func name(suffix: str = "") -> str }`)
+  failed in `go build` (`not enough arguments in call to n.Name`), and a
+  keyword argument (`n.name(suffix="!")`) crashed `lamc` with a Python
+  traceback. Calls through the interface fill its declared defaults and
+  reorder keyword arguments, through parameters, annotated locals, fields,
+  loop / comprehension variables and lambda parameters, also when the
+  interface and the implementing class live in other modules.
+
 ## 2.1.1 — 2026-10-19
 
 ### Changed

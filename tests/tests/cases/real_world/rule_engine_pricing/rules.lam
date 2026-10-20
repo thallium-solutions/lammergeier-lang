@@ -35,7 +35,7 @@ class PriceRule {
         if self.kind == "country" {
             return self.amount
         }
-        return ctx.subtotal * self.amount / 100
+        return ctx.subtotal * self.amount // 100
     }
 }
 
@@ -53,8 +53,8 @@ class PriceRuleEngine {
         for rule in self.rules {
             total += rule.discount(ctx)
         }
-        if total > ctx.subtotal / 2 {
-            return ctx.subtotal / 2
+        if total > ctx.subtotal // 2 {
+            return ctx.subtotal // 2
         }
         return total
     }

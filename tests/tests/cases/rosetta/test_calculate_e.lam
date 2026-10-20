@@ -11,7 +11,7 @@ func main() {
     }
     # Truncate to 6 decimal places by converting to int and back
     truncated: int = int(e * 1000000.0)
-    whole: int = truncated / 1000000
+    whole: int = truncated // 1000000
     frac: int = truncated % 1000000
     print(f"{whole}.{frac}")
 }

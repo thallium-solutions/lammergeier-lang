@@ -1,0 +1,54 @@
+# A lambda passed to a generic class constructor takes the parameter types
+# with the class's type parameters replaced by the explicit type arguments.
+# expect: 2
+# expect: 5
+# expect: 3
+# expect: a=1
+# expect: 6
+
+class Queue[T] {
+    func init(self, measure: func(list[T]) -> int) {
+        self.items: list[T] = []
+        self.measure: func(list[T]) -> int = measure
+    }
+
+    func push(self, v: T) {
+        self.items.append(v)
+    }
+
+    func size(self) -> int {
+        return self.measure(self.items)
+    }
+}
+
+class Pair[K, V] {
+    func init(self, key: K, value: V, show: func(K, V) -> str) {
+        self.key: K = key
+        self.value: V = value
+        self.show: func(K, V) -> str = show
+    }
+
+    func text(self) -> str {
+        return self.show(self.key, self.value)
+    }
+}
+
+func main() {
+    q: Queue[str] = Queue[str](lambda items: len(items))
+    q.push("a")
+    q.push("b")
+    print(q.size())
+    chars: Queue[str] = Queue[str](lambda items: len("".join(items)))
+    chars.push("abc")
+    chars.push("de")
+    print(chars.size())
+    nested: Queue[list[int]] = Queue[list[int]](lambda rows: len(rows) + len(rows[0]))
+    nested.push([1, 2])
+    print(nested.size())
+    p: Pair[str, int] = Pair[str, int]("a", 1, lambda k, v: f"{k}={v}")
+    print(p.text())
+    typed: Queue[int] = Queue[int](lambda (xs: list[int]) -> int: xs.reduce(lambda (a: int, b: int) -> int: a + b, 0))
+    typed.push(1)
+    typed.push(5)
+    print(typed.size())
+}

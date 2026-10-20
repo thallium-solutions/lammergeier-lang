@@ -8,7 +8,7 @@ func chowla(n: int) -> int {
     while i * i <= n {
         if n % i == 0 {
             total += i
-            other: int = n / i
+            other: int = n // i
             if i != other {
                 total += other
             }

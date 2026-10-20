@@ -182,12 +182,16 @@ def test_index_expressions() -> None:
     tree = _parse(
         "func f(xs: list[int], i: int) {\n"
         "    print(xs[0], xs[len(xs) - 1], xs[i + 1], xs[min(i, 2)], xs[max(i, 0)], xs[abs(i)], xs[i % 3])\n"
+        "    print(xs[i // 2], xs[i % i], xs[len(xs) // 2], xs[-3 % len(xs)], xs[len(xs) % i])\n"
         "}\n"
     )
     indexes = [node.children[1] for node in _find(tree, "getitem")]
     results = [index_nonneg(node, {"k": 0}) for node in indexes]
-    assert results == [True, False, False, False, True, True, False], results
+    # Python's ``%`` takes the sign of the divisor: ``i % 3`` is never
+    # negative, ``i // 2`` and ``len(xs) % i`` may be.
+    assert results == [True, False, False, False, True, True, True, False, False, True, True, False], results
     assert index_nonneg(indexes[2], {"i": 0}) and index_nonneg(indexes[6], {"i": 0})
+    assert index_nonneg(indexes[7], {"i": 0}) and index_nonneg(indexes[8], {"i": 0})
     assert index_nonneg(indexes[2], {"i": -1}) and not index_nonneg(indexes[2], {"i": -2})
     print("PASS: non-negative index expressions")
 

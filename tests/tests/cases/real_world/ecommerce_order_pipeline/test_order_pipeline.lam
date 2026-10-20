@@ -15,7 +15,7 @@ from lamhash import Hash
 from lamstrings import Strings
 
 func centsLabel(cents: int) -> str {
-    dollars: int = cents / 100
+    dollars: int = cents // 100
     rem: int = cents % 100
     if rem < 10 {
         return f"{dollars}.0{rem}"

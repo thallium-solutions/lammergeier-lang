@@ -1,0 +1,50 @@
+# Test: calling an interface method without the arguments that have a
+# default value fills the interface's declared defaults (positional and
+# keyword arguments), through a parameter, a local, a field, a list
+# element, a comprehension and a lambda, with the interface and the
+# implementing classes declared in other modules.
+#
+# expect: dog dog! dogdog~
+# expect: tom tom? tomtom tomtom.
+# expect: [dog kit]
+# expect: dogdogdogdog
+# expect: dog# a#
+# expect: lambda dog
+# expect: local Fox fox fox+
+
+from interface_defaults_contract import Named, describe, shout, repeatName, allNames
+from interface_defaults_impl import Dog, Cat
+
+class Owner {
+    func init(self, pet: Named) {
+        self.pet: Named = pet
+    }
+
+    func call(self) -> str {
+        return self.pet.name() + self.pet.name(times=3)
+    }
+}
+
+class Fox {
+    func name(self, suffix: str = "", times: int = 1) -> str {
+        return "fox" * times + suffix
+    }
+}
+
+func main() {
+    print(describe(Dog()), shout(Dog()), repeatName(Dog()))
+    n: Named = Cat("tom")
+    print(n.name(), n.name("?"), n.name(times=2), n.name(suffix=".", times=2))
+    print(allNames([Dog(), Cat("kit")]))
+    print(Owner(Dog()).call())
+    pets: list[Named] = [Dog(), Cat("a")]
+    labels: list[str] = []
+    for p in pets {
+        labels.append(p.name(suffix="#"))
+    }
+    print(" ".join(labels))
+    call = lambda (x: Named): x.name()
+    print(f"lambda {call(Dog())}")
+    fox: Named = Fox()
+    print(f"local Fox {fox.name()}", fox.name(suffix="+"))
+}

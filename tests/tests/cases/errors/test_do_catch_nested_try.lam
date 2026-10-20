@@ -1,0 +1,139 @@
+# try/catch inside a `do { } catch` body (and the other way around).
+# expect: caught 2
+# expect: after try 3
+# expect: error boom
+# expect: outer 7
+# expect: run 2
+# expect: ret early
+# expect: nested 4
+# expect: q error bad
+# expect: retval false -5
+# expect: catch q false
+
+from lamerrors import Result
+
+func boom() -> int {
+    throw ValueError("x")
+}
+
+func fails() -> Result[int] {
+    return Result.Err("boom")
+}
+
+func bad() -> Result[int] {
+    return Result.Err("bad")
+}
+
+func run() -> Result[int] {
+    n: int = 1
+    do {
+        try {
+            _ = boom()
+        } catch ValueError as _e {
+            n = 2
+        }
+    } catch _err {
+        n = -1
+    }
+    return Result.Ok(n)
+}
+
+func early() -> str {
+    do {
+        try {
+            _ = boom()
+        } catch ValueError as _e {
+            return "ret early"
+        }
+    } catch _err {
+        return "err"
+    }
+    return "end"
+}
+
+func viaQ() -> str {
+    out: str = "none"
+    do {
+        try {
+            v: int = bad()?
+            out = f"v {v}"
+        } catch ValueError as _e {
+            out = "value error"
+        }
+    } catch err {
+        out = f"q error {err.message}"
+    }
+    return out
+}
+
+func viaRetval() -> Result[int] {
+    v: int = 0
+    try {
+        v = bad()?
+    } catch ValueError as _e {
+        v = 1
+    }
+    return Result.Ok(v)
+}
+
+func inCatch() -> Result[int] {
+    v: int = 0
+    try {
+        _ = boom()
+    } catch ValueError as _e {
+        v = bad()?
+    }
+    return Result.Ok(v)
+}
+
+func main() {
+    do {
+        n: int = Result.Ok(1)?
+        try {
+            _ = boom()
+        } catch ValueError as _e {
+            n = 2
+        }
+        print(f"caught {n}")
+        try {
+            n = 3
+        } catch ValueError as _e {
+            n = 0
+        }
+        print(f"after try {n}")
+        _ = fails()?
+        print("unreachable")
+    } catch err {
+        print(f"error {err.message}")
+    }
+    try {
+        do {
+            _ = fails()?
+        } catch _err {
+            print("outer 7")
+        }
+    } catch ValueError as _e {
+        print("never")
+    }
+    print(f"run {run().unwrap()}")
+    print(early())
+    do {
+        k: int = 1
+        try {
+            try {
+                _ = boom()
+            } catch ValueError as _e {
+                k = 4
+            }
+        } catch KeyError as _k {
+            k = 0
+        }
+        print(f"nested {k}")
+    } catch _err {
+        print("never")
+    }
+    print(viaQ())
+    r: Result[int] = viaRetval()
+    print(f"retval {r.ok()} {r.unwrapOr(-5)}")
+    print(f"catch q {inCatch().ok()}")
+}

@@ -1,0 +1,75 @@
+# `?` inside a comprehension runs once per element, inside the loop, and
+# an Err leaves the enclosing function (or `do` block).
+# expect: [1 2 3]
+# expect: err: odd 3
+# expect: map[a:1 bb:2]
+# expect: 2
+# expect: [3 4]
+# expect: [[1 2] [2]]
+# expect: do err: odd 5
+# expect: [10 20]
+# expect: calls 2
+
+from lamerrors import Result
+
+calls: int = 0
+
+func half(n: int) -> Result[int] {
+    calls += 1
+    if n % 2 == 1 {
+        return Result.Err(f"odd {n}")
+    }
+    return Result.Ok(n // 2)
+}
+
+func isBig(n: int) -> Result[bool] {
+    return Result.Ok(n > 2)
+}
+
+func halves(xs: list[int]) -> Result[list[int]] {
+    out: list[int] = [half(n)? for n in xs]
+    return Result.Ok(out)
+}
+
+func keyed(names: list[str]) -> Result[dict[str, int]] {
+    return Result.Ok({k: half(len(k) * 2)? for k in names})
+}
+
+func distinct(xs: list[int]) -> Result[set[int]] {
+    return Result.Ok({half(n)? for n in xs})
+}
+
+func big(xs: list[int]) -> Result[list[int]] {
+    return Result.Ok([n for n in xs if isBig(n)?])
+}
+
+func nested(rows: list[list[int]]) -> Result[list[list[int]]] {
+    return Result.Ok([[half(n)? for n in row] for row in rows])
+}
+
+func main() {
+    print(halves([2, 4, 6]).unwrap())
+    r: Result[list[int]] = halves([2, 3, 4])
+    if not r.ok() {
+        print(f"err: {r.error}")
+    }
+    print(keyed(["a", "bb"]).unwrap())
+    print(len(distinct([2, 2, 4]).unwrap()))
+    print(big([1, 2, 3, 4]).unwrap())
+    print(nested([[2, 4], [4]]).unwrap())
+    do {
+        bad: list[int] = [half(n)? for n in [2, 5, 6]]
+        print(bad)
+    } catch err {
+        print(f"do err: {err.message}")
+    }
+    do {
+        good: list[int] = [half(n)? * 10 for n in [2, 4]]
+        print(good)
+    } catch err {
+        print(f"never {err}")
+    }
+    calls = 0
+    _ = halves([2, 3, 4, 6])
+    print(f"calls {calls}")
+}

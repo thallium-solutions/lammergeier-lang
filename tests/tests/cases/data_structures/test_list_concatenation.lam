@@ -1,0 +1,86 @@
+# Test: `+` on two lists builds a new list typed by the element type and
+# leaves both operands unchanged (assignments, returns, f-strings, loops,
+# comprehensions, fields, chains, empty lists); `+=` extends a list with
+# the items of another one.
+#
+# expect: [1 2 3 4] [1 2]
+# expect: [1 2 9] 4
+# expect: [a b c d] [d]
+# expect: [0 5 7]
+# expect: [1 2 3 4]
+# expect: [] 2
+# expect: [1.5 2.5 3]
+# expect: [a x] [a]
+# expect: 13
+# expect: [[1] [2 3]]
+# expect: [1 4 9]
+# expect: [1 2] [1 2] [99 2 5]
+# expect: [a b]
+# expect: [1 2 s]
+# expect: 3 [a b z]
+
+func firstsOf(rows: list[list[int]]) -> list[int] {
+    out: list[int] = [0]
+    firsts: list[int] = [r[0] for r in rows]
+    return out + firsts
+}
+
+class Bag {
+    func init(self) {
+        self.items: list[str] = ["a"]
+    }
+
+    func plus(self, more: list[str]) -> list[str] {
+        return self.items + more
+    }
+}
+
+func main() {
+    xs: list[int] = [1, 2]
+    ys = xs + [3, 4]
+    print(ys, xs)
+    print(f"{xs + [9]} {len(xs + xs)}")
+
+    zs: list[str] = ["a"]
+    zs += ["b", "c"]
+    more: list[str] = ["d"]
+    zs += more
+    print(zs, more)
+
+    print(firstsOf([[5, 6], [7]]))
+    print([1] + [2] + [3, 4])
+
+    empty: list[int] = []
+    print(empty + empty, len(empty + xs))
+
+    fl: list[float] = [1.5]
+    print(fl + [2.5, 3.0])
+
+    b: Bag = Bag()
+    print(b.plus(["x"]), b.items)
+
+    total: int = 0
+    for v in xs + ys {
+        total += v
+    }
+    print(total)
+
+    nested: list[list[int]] = [[1]] + [[2, 3]]
+    print(nested)
+    print([x * x for x in xs + [3]])
+
+    alias = xs
+    joined = xs + [5]
+    joined[0] = 99
+    print(xs, alias, joined)
+
+    names: list[str] = ["b"]
+    print(sorted(names + ["a"]))
+
+    mixed: list[any] = xs + ["s"]
+    print(mixed)
+
+    words: list[str] = ["a", "b"]
+    combined: list[str] = words + ["z"] if len(words) > 1 else words
+    print(len(combined), combined)
+}

@@ -1,0 +1,29 @@
+# Transpilation: a parenthesized right operand keeps its parentheses where
+# Go would regroup it (the Lam tree carries no parentheses).
+# expect-go: fmt.Println(a - (b + c))
+# expect-go: fmt.Println(a - (b - c))
+# expect-go: fmt.Println((-(b + c)))
+# expect-go: fmt.Println(a - (-(b + c)))
+# expect-go: fmt.Println(a / (b * c))
+# expect-go: fmt.Println(((a & (b + c)) | 1))
+# expect-go: fmt.Println(a << (b + 1))
+# expect-go: fmt.Println(a * (b << c))
+# expect-go: fmt.Println(x - (2.0 + 3.0))
+# expect-go: fmt.Println(float64(c) < math.Pow(float64(a), float64(b)))
+
+func main() {
+    a: int = 10
+    b: int = 2
+    c: int = 3
+    x: float = 10.0
+    print(a - (b + c))
+    print(a - (b - c))
+    print(-(b + c))
+    print(a - -(b + c))
+    print(a // (b * c))
+    print(a & (b + c) | 1)
+    print(a << (b + 1))
+    print(a * (b << c))
+    print(x - (2.0 + 3.0))
+    print(c < a ** b)
+}

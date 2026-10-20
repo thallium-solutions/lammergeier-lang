@@ -1,0 +1,9 @@
+# expect-error: cannot assign `int` to `str` variable `label`
+# A `range` loop variable is an `int` for the checker.
+
+func main() {
+    for i in range(3) {
+        label: str = i
+        print(label)
+    }
+}

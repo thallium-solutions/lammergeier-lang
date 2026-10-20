@@ -1,0 +1,25 @@
+# expect-error: use `//` for integer division
+# Helper for 511_int_true_division_in_imported_module.lam: int `/` where an
+# int is expected, in a module the semantic checker does not see.
+
+from lamerrors import Result
+
+class Page {
+    func init(self, total: int, perPage: int) {
+        self.total: int = total
+        self.perPage: int = perPage
+    }
+
+    func pages(self) -> int {
+        return (self.total + self.perPage - 1) / self.perPage
+    }
+}
+
+func middle(lo: int, hi: int) -> int {
+    mid: int = (lo + hi) / 2
+    return mid
+}
+
+func halfResult(n: int) -> Result[int] {
+    return Result.Ok(n / 2)
+}

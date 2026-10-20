@@ -2937,6 +2937,13 @@ def compile_lam(
         go_module_name=go_module,
         source_file=str(source_file),
     )
+    # Some module has an async callable: the main file carries the task
+    # failure registry (``lamAsyncTaskFailed``) and ``main`` reports the
+    # exceptions of tasks nobody awaited.
+    transpiler._emit_async_runtime = bool(
+        _re.search(r"\basync\s+func\b", preprocessed)
+        or any("lamAsyncTaskFailed(" in src for src in lib_sources.values())
+    )
     # Inject library class/static info
     transpiler._class_names.update(lib_class_names)
     transpiler._interfaces.update(lib_pre_interfaces)

@@ -13,8 +13,8 @@ func sum_proper_divisors(n: int) -> int {
     while i * i <= n {
         if n % i == 0 {
             total += i
-            if i != n / i {
-                total += n / i
+            if i != n // i {
+                total += n // i
             }
         }
         i += 1

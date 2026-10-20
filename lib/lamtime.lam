@@ -88,23 +88,23 @@ class Time {
     }
 
     func inMilliseconds(self) -> int {
-        return self.nanosecondsValue / 1000000
+        return self.nanosecondsValue // 1000000
     }
 
     func inSeconds(self) -> int {
-        return self.nanosecondsValue / 1000000000
+        return self.nanosecondsValue // 1000000000
     }
 
     func inMinutes(self) -> int {
-        return self.inSeconds() / 60
+        return self.inSeconds() // 60
     }
 
     func inHours(self) -> int {
-        return self.inMinutes() / 60
+        return self.inMinutes() // 60
     }
 
     func inDays(self) -> int {
-        return self.inHours() / 24
+        return self.inHours() // 24
     }
 
     func add(self, other: Time) -> Time {

@@ -98,6 +98,6 @@ func main() {
 
     # Sanity: the happy path still works.
     happy: int = intGuard(7)
-    half: int = happy / 2
+    half: int = happy // 2
     print(f"pre-condition n: {half}")
 }

@@ -3,22 +3,28 @@
 Lammergeier keeps general-purpose building blocks in the standard library and
 ships service clients, fast-moving protocols, and vendor integrations as
 independently versioned packages. The official packages below are tested with
-`lamc` 2.1 and declare `>=1.18, <3` compatibility; each uses a scoped `@lam/...`
-import and carries its own tests, release notes, and pinned Go dependencies.
-Current releases (all declare `lamc >=1.18, <3`; 3.0.0 removed the root `tag()` helper):
+`lamc` 3.0; each uses a scoped `@lam/...` import and carries its own tests,
+release notes, and pinned Go dependencies. The libraries that existed before
+3.0 declare `>=1.18, <4`; the five added in October 2026 declare `>=2.1, <4`.
+Current releases:
 
 | Release | Notes |
 |---|---|
-| `@lam/jwt@3.1.1` | lamc 2.x compatible; ES256/ES384/ES512, EC keys in `JwtKeySet` and JWKS, `JwtKeySet.decode` for any RS*/PS*/ES* token (root `tag()` removed in 3.0.0) |
-| `@lam/ssh@3.0.2` | lamc 2.x compatible; `golang.org/x/crypto` v0.58.0 (SSH channel denial-of-service fixes; Go 1.26) |
-| `@lam/protobuf@3.0.1` | lamc 2.x compatible; root `tag()` removed |
-| `@lam/vulture/tus-plugin@3.0.2` | lamc 2.x compatible; pins `@lam/vulture` 2.0.2; root `tag()` removed (3.0.0) |
-| `@lam/sftp@3.4.0` | per-address authentication limits (`withAddressAuthRateLimit`, `withAddressLockout`, `SftpAddressLimiter`); lamc 2.x compatible; pins `@lam/ssh` 3.0.2; adaptive ciphers (AES-GCM for clients that support it, `withAdaptiveCiphers`), `onOpenWrite` (errors at OPEN), live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`) |
-| `@lam/s3@2.3.0` | multipart parts streamed from files and readers (`uploadPartFile`, `uploadPartReader`); lamc 2.x compatible; SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
-| `@lam/redis@2.0.1`, `@lam/memcached@2.0.1` | lamc 2.x compatible |
-| `@lam/vulture/ws-plugin@2.0.2` | lamc 2.x compatible; pins `@lam/vulture` 2.0.2 |
-| `@lam/vulture@2.0.2` | lamc 2.x compatible, no API change |
-| `@lam/vulture/std-plugin@2.0.3` | lamc 2.x compatible; pins `@lam/vulture` 2.0.2 |
+| `@lam/jwt@3.1.2` | lamc 3.x compatible; ES256/ES384/ES512, EC keys in `JwtKeySet` and JWKS, `JwtKeySet.decode` for any RS*/PS*/ES* token (root `tag()` removed in 3.0.0) |
+| `@lam/ssh@3.0.3` | lamc 3.x compatible; `golang.org/x/crypto` v0.58.0 (SSH channel denial-of-service fixes; Go 1.26) |
+| `@lam/protobuf@3.0.2` | lamc 3.x compatible; root `tag()` removed |
+| `@lam/vulture/tus-plugin@3.0.3` | lamc 3.x compatible; pins `@lam/vulture` 2.0.3; root `tag()` removed (3.0.0) |
+| `@lam/sftp@3.5.0` | PROXY protocol v1/v2 from trusted load balancers (`withProxyProtocol`); lamc 3.x compatible; pins `@lam/ssh` 3.0.3; per-address authentication limits (`withAddressAuthRateLimit`, `withAddressLockout`, `SftpAddressLimiter`); adaptive ciphers (`withAdaptiveCiphers`), `onOpenWrite`, live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`) |
+| `@lam/s3@2.3.1` | lamc 3.x compatible; multipart parts streamed from files and readers (`uploadPartFile`, `uploadPartReader`); SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
+| `@lam/redis@2.0.2`, `@lam/memcached@2.0.2` | lamc 3.x compatible |
+| `@lam/vulture/ws-plugin@2.0.3` | lamc 3.x compatible; pins `@lam/vulture` 2.0.3 |
+| `@lam/vulture@2.0.3` | lamc 3.x compatible (integer divisions use `//`), no API change |
+| `@lam/vulture/std-plugin@2.0.4` | lamc 3.x compatible; pins `@lam/vulture` 2.0.3 |
+| `@lam/stripe@1.0.0` | moved from `third_party/lamstripe` 0.2.0: typed Results, retries with idempotency keys, pagination, billing meters and meter events, subscriptions, portal, webhook verification (`StripeWebhook`) |
+| `@lam/otel@1.0.0` | moved from `third_party/lamotel` 0.2.1: OpenTelemetry traces, metrics and logs over OTLP/HTTP JSON, W3C propagation, sampling, batching, in-memory exporters |
+| `@lam/keyring@1.0.0` | sealing secrets at rest: key rings with rotation and resealing, HKDF/PBKDF2 derivation, associated data, purpose subkeys, envelope keys |
+| `@lam/totp@1.0.0` | RFC 4226/6238 one-time passwords, otpauth URIs, dependency-free QR codes (SVG / data URI), recovery codes |
+| `@lam/jobs@1.0.0` | PostgreSQL leases, periodic and cron jobs across replicas, job health, instance heartbeats, durable queues with retries and dead letters, worker pools |
 
 Git release tags are the plain version (`3.0.1`, not `v3.0.1`).
 
@@ -38,6 +44,11 @@ package name, capability, or keyword.
 | `@lam/vulture/std-plugin` | Common Vulture plugins for logging, security, compression, metrics, tracing, authentication, sessions, CSRF, and resilience. | `CircuitBreaker`, `compress`, `helmet`, `metrics`, `rateLimit`, `requestLog` (plus other direct installers and `*Plugin` factories) | [thallium-solutions/lam-vulture-std-plugin](https://github.com/thallium-solutions/lam-vulture-std-plugin) |
 | `@lam/vulture/tus-plugin` | Result-returning tus.io resumable-upload route registration and garbage collection for Vulture. | `tusUploads`, `tusGc` | [thallium-solutions/lam-vulture-tus-plugin](https://github.com/thallium-solutions/lam-vulture-tus-plugin) |
 | `@lam/vulture/ws-plugin` | Result-returning WebSocket upgrades, frames, subprotocols, compression, and origin policy for Vulture. | `WebSocket`, `wsRoute`, `wsUpgrade` | [thallium-solutions/lam-vulture-ws-plugin](https://github.com/thallium-solutions/lam-vulture-ws-plugin) |
+| `@lam/stripe` | Stripe API client: customers, products, prices, checkout and portal sessions, subscriptions, invoices, billing meters and meter events, retries with idempotency keys, pagination, webhook signature verification. | `StripeClient`, `StripeConfig`, `StripeWebhook`, `StripeEvent`, `StripeError` | [thallium-solutions/lam-stripe](https://github.com/thallium-solutions/lam-stripe) |
+| `@lam/otel` | OpenTelemetry SDK: traces, metrics and logs exported as OTLP/HTTP JSON, W3C trace context and baggage, samplers, batch processors, in-memory and console exporters. | `Otel`, `OtelConfig`, `OtelTracer`, `OtelSpan`, `OtelMeter`, `OtelLogger` | [thallium-solutions/lam-otel](https://github.com/thallium-solutions/lam-otel) |
+| `@lam/keyring` | Secrets at rest: AES-256-GCM key rings with key ids and rotation, resealing in batches, HKDF/PBKDF2 derivation, associated data, purpose subkeys, envelope (wrapped) keys. | `KeyRing`, `KeyDerivation`, `Resealer` | [thallium-solutions/lam-keyring](https://github.com/thallium-solutions/lam-keyring) |
+| `@lam/totp` | One-time passwords (HOTP/TOTP, SHA-1/256/512), base32 secrets, otpauth URIs, QR codes rendered to SVG with no dependencies, recovery codes. | `Totp`, `Hotp`, `OtpAuth`, `QrCode`, `RecoveryCodes` | [thallium-solutions/lam-totp](https://github.com/thallium-solutions/lam-totp) |
+| `@lam/jobs` | PostgreSQL-backed background work: leases, periodic and cron schedules running once across replicas, job health, instance heartbeats, durable queues with retries, dead letters and worker pools. | `Jobs`, `JobScheduler`, `JobQueue`, `JobWorkers`, `JobLeases`, `JobHealth`, `InstanceHeartbeat` | [thallium-solutions/lam-jobs](https://github.com/thallium-solutions/lam-jobs) |
 
 ## Installation
 
@@ -45,7 +56,7 @@ Install a tagged release directly from Git (release tags are plain versions,
 without a `v` prefix):
 
 ```bash
-lamc install https://github.com/thallium-solutions/lam-redis.git@2.0.0
+lamc install https://github.com/thallium-solutions/lam-redis.git@2.0.2
 ```
 
 From a configured registry, use the scoped package and a SemVer constraint:
@@ -221,6 +232,30 @@ SSH v2 uses Results for `connect`, `close`, command/context runs, session open,
 direct dialing, and TCP channel send/receive/close. A nonzero remote exit is a
 successful transport Result whose `SshCommandResult.success` is `false`.
 
+## Billing, observability, secrets, MFA and background jobs
+
+The five packages added in October 2026 grew out of a production SaaS
+application (a managed SFTP service) and follow the same conventions:
+
+- Stripe billing (subscriptions with metered prices and meter events,
+  checkout and portal sessions, verified webhooks):
+  `from @lam/stripe import StripeClient, StripeConfig, StripeWebhook`.
+- OpenTelemetry (`Otel.setup(OtelConfig.fromEnv())` once, then spans, metrics
+  and logs exported to any OTLP/HTTP collector):
+  `from @lam/otel import Otel, OtelConfig, OtelTracer`.
+- Secrets at rest (sealing credentials and tokens in a database column,
+  rotating keys and resealing in batches):
+  `from @lam/keyring import KeyRing, KeyDerivation, Resealer`.
+- Two-factor authentication (enrolment QR code as SVG or data URI,
+  verification with replay protection, recovery codes):
+  `from @lam/totp import Totp, Hotp, OtpAuth, QrCode, RecoveryCodes`.
+- Background work on PostgreSQL (periodic and cron jobs that run once across
+  replicas, durable queues with retries and dead letters):
+  `from @lam/jobs import Jobs, JobScheduler, JobQueue, JobWorkers`.
+
+Each README has complete examples, the configuration (environment variables)
+and the security or operations notes.
+
 ## Upgrading to the 3.0 releases
 
 `@lam/jwt`, `@lam/protobuf`, `@lam/sftp`, `@lam/ssh` and
@@ -242,6 +277,8 @@ Applications upgrading compiler-era imports should install the matching scoped
 | `from lamemcached import Memcached` | `from @lam/memcached import Memcached` |
 | `from lamprotobuf import Pb` | `from @lam/protobuf import Pb` |
 | `from lamredis import Redis, PubSub` | `from @lam/redis import Redis, PubSub` |
+| `from lamstripe import StripeClient, StripeConfig` | `from @lam/stripe import StripeClient, StripeConfig` (1.0.0: typed Results; see its CHANGELOG) |
+| `from lamotel import OtelTracer, OtelConfig` | `from @lam/otel import OtelTracer, OtelConfig` (1.0.0; see its CHANGELOG) |
 
 Imports are not the only change in v2:
 
@@ -268,7 +305,7 @@ independent scoped packages. Replace legacy compiler-era imports with:
 | `from lamserver_ws import WebSocket, wsRoute` | `from @lam/vulture/ws-plugin import WebSocket, wsRoute` |
 
 ```bash
-lamc install @lam/vulture@2.0.2
+lamc install @lam/vulture@2.0.3
 lamc install @lam/vulture/std-plugin@2.0.3
 # Install only when used:
 lamc install @lam/vulture/ws-plugin@2.0.2

@@ -7,7 +7,7 @@ func mean(arr: list[int]) -> int {
     for v in arr {
         total += v
     }
-    return total / len(arr)
+    return total // len(arr)
 }
 
 func main() {

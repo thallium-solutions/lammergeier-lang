@@ -8,7 +8,7 @@ func ethiopian_multiply(a: int, b: int) -> int {
         if a % 2 != 0 {
             result += b
         }
-        a = a / 2
+        a = a // 2
         b = b * 2
     }
     return result

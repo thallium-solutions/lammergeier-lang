@@ -1,0 +1,25 @@
+# An interface whose method declares default values, and helpers calling it
+# through the interface without (or with keyword) arguments. Used by
+# test_interface_default_args.lam.
+
+interface Named {
+    func name(suffix: str = "", times: int = 1) -> str
+}
+
+func describe(n: Named) -> str {
+    return n.name()
+}
+
+func shout(n: Named) -> str {
+    return n.name(suffix="!")
+}
+
+func repeatName(n: Named) -> str {
+    return n.name("~", times=2)
+}
+
+func allNames(items: list[Named]) -> list[str] {
+    return [n.name() for n in items]
+}
+
+func main() { pass }

@@ -1,0 +1,80 @@
+# A nested `func` inside a method, constructor or static method is a local
+# closure (it may use the method's `self` and locals), not a method.
+# expect: 6 8 30
+# expect: [a! b!]
+# expect: 12
+# expect: ok 4
+# expect: err neg
+
+from lamerrors import Result
+
+class Calc {
+    func init(self, base: int) {
+        self.base: int = base
+        func double(x: int) -> int {
+            return x * 2
+        }
+        self.start: int = double(base)
+    }
+
+    func run(self, n: int) -> int {
+        func addOne(x: int) -> int {
+            return x + 1
+        }
+        return addOne(n) + self.base
+    }
+
+    func total(self) -> int {
+        func helper() -> int {
+            return self.base * 10
+        }
+        return helper()
+    }
+
+    func shout(self, words: list[str]) -> list[str] {
+        suffix: str = "!"
+        func loud(w: str) -> str {
+            return w + suffix
+        }
+        return words.map(loud)
+    }
+
+    func bump(self) {
+        func grow() {
+            self.base += 1
+        }
+        grow()
+        grow()
+    }
+
+    func checked(self, n: int) -> Result[int] {
+        func validate(v: int) -> Result[int] {
+            if v < 0 {
+                return Result.Err("neg")
+            }
+            return Result.Ok(v * 2)
+        }
+        doubled: int = validate(n)?
+        return Result.Ok(doubled)
+    }
+
+    static func triple(n: int) -> int {
+        func times(a: int, b: int) -> int {
+            return a * b
+        }
+        return times(n, 3)
+    }
+}
+
+func main() {
+    c: Calc = Calc(3)
+    print(c.start, c.run(4), c.total())
+    print(c.shout(["a", "b"]))
+    c.bump()
+    print(c.base + Calc.triple(2) + 1)
+    print(f"ok {c.checked(2).unwrap()}")
+    r: Result[int] = c.checked(-1)
+    if not r.ok() {
+        print(f"err {r.error}")
+    }
+}

@@ -1,0 +1,24 @@
+# expect-error: `str.replace()` takes 2 arguments, got 3 (it replaces every occurrence; use `replaceFirst(old, new)` for the first one only)
+# expect-error: `str.split()` takes 1 argument, got 2 (use `splitN(sep, n)` for a bounded split)
+# expect-error: `str.toUpper()` takes 0 arguments, got 1
+# expect-error: `str.padLeft()` takes 1 to 2 arguments, got 3
+# expect-error: `str.contains()` takes 1 argument, got 0
+# A `str` method called with the wrong number of arguments passed the
+# checker and failed in `go build` (`too many arguments in call to
+# Strings_replace`).
+
+class Doc {
+    func init(self) {
+        self.title: str = "a b"
+    }
+}
+
+func main() {
+    path: str = "a/v1/b"
+    print(path.replace("/v1", "", 1))
+    print("a,b,c".split(",", 2))
+    print(path.toUpper(1))
+    d: Doc = Doc()
+    print(d.title.padLeft(5, "*", 1))
+    print(path.contains())
+}

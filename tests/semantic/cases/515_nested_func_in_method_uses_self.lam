@@ -1,0 +1,27 @@
+# expect-pass
+# expect-no-warning: uses `self` but does not declare `self`
+# expect-no-warning: is missing `self`
+# A nested `func` inside a method or constructor is a closure over the
+# method's `self`, not a method of the class.
+
+class Calc {
+    func init(self, base: int) {
+        self.base: int = base
+        func double(x: int) -> int {
+            return x * 2 + self.base
+        }
+        self.start: int = double(base)
+    }
+
+    func total(self) -> int {
+        func helper() -> int {
+            return self.base * 10
+        }
+        return helper()
+    }
+}
+
+func main() {
+    c: Calc = Calc(3)
+    print(c.start, c.total())
+}

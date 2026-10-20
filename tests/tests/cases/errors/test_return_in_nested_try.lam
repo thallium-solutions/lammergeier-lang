@@ -82,7 +82,7 @@ class Calc {
     func half(self, n: int) -> int {
         if n % 2 == 0 {
             try {
-                return n / 2
+                return n // 2
             } catch _e {
                 return -1
             }

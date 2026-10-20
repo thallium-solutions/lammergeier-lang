@@ -1,0 +1,93 @@
+# `(expr?).field` and friends: the `?` payload keeps the Result's payload
+# type; the declared target type applies to the field / call / element.
+# expect: kxk
+# expect: 3 2
+# expect: KX
+# expect: b
+# expect: 2 true
+# expect: payload ok
+# expect: err: no pair
+
+from lamerrors import Result
+
+class Pair {
+    func init(self, key: str) {
+        self.key: str = key
+        self.size: int = len(key)
+    }
+
+    func upper(self) -> str {
+        return self.key.toUpper()
+    }
+}
+
+class Maker {
+    func init(self) {
+        self.n: int = 0
+    }
+
+    func make(self, label: str = "") -> Result[Pair] {
+        if label == "none" {
+            return Result.Err("no pair")
+        }
+        return Result.Ok(Pair("k" + label))
+    }
+
+    func words(self) -> Result[list[str]] {
+        return Result.Ok(["a", "b"])
+    }
+}
+
+func run(m: Maker) -> Result[str] {
+    a: str = (m.make("x")?).key
+    b: str = (m.make()?).key
+    return Result.Ok(a + b)
+}
+
+func sizes(m: Maker) -> Result[str] {
+    n: int = (m.make("xy")?).size
+    w: int = len(m.words()?)
+    return Result.Ok(f"{n} {w}")
+}
+
+func upper(m: Maker) -> Result[str] {
+    u: str = (m.make("x")?).upper()
+    return Result.Ok(u)
+}
+
+func second(m: Maker) -> Result[str] {
+    s: str = (m.words()?)[1]
+    return Result.Ok(s)
+}
+
+func checks(m: Maker) -> Result[str] {
+    count: int = len((m.make("x")?).key)
+    same: bool = (m.make("x")?).key == "kx"
+    return Result.Ok(f"{count} {same}")
+}
+
+func failing(m: Maker) -> Result[str] {
+    k: str = (m.make("none")?).key
+    return Result.Ok(k)
+}
+
+func main() {
+    m: Maker = Maker()
+    print(run(m).unwrap())
+    print(sizes(m).unwrap())
+    print(upper(m).unwrap())
+    print(second(m).unwrap())
+    print(checks(m).unwrap())
+    do {
+        p: str = (m.make("")?).key
+        if p == "k" {
+            print("payload ok")
+        }
+    } catch err {
+        print(f"never {err}")
+    }
+    r: Result[str] = failing(m)
+    if not r.ok() {
+        print(f"err: {r.error}")
+    }
+}

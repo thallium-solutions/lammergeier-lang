@@ -1,0 +1,56 @@
+# Parentheses around the right operand of `-`, `/`, `//`, `%`, a unary
+# minus, a comparison or a bit operator must survive into the generated Go.
+# expect: 5
+# expect: 1
+# expect: 16
+# expect: 15
+# expect: 5.0
+# expect: -5
+# expect: 15
+# expect: 8
+# expect: 2.0
+# expect: 1
+# expect: true
+# expect: 8
+# expect: 0.5
+# expect: 23.0
+# expect: true
+# expect: 640.0
+# expect: 3
+# expect: 24
+# expect: 0.5
+
+func scale(x: float, inMin: float, inMax: float, outMin: float, outMax: float) -> float {
+    return outMin + (x - inMin) * (outMax - outMin) / (inMax - inMin)
+}
+
+func main() {
+    a: int = 10
+    b: int = 2
+    c: int = 3
+    print(a - (b + c))
+    print(a // (b * c))
+    print(100 % (7 * 3))
+    print(a - (b - c) * 5)
+    x: float = 10.0
+    print(f"{x - (2.0 + 3.0):.1f}")
+    print(-(b + c))
+    print(a - -(b + c))
+    print(a - (b if a > 3 else c) + -(-1) - 2 + (c - 2))
+    print(f"{a / (b * c) * 1.2:.1f}")
+    print(a & (b + c) | 1)
+    print((a - b > c) == true)
+    print(a - (b - c) - 3)
+    print(scale(5.0, 0.0, 10.0, 0.0, 1.0))
+    print(f"{a + (b ** c) + 5:.1f}")
+    print(c < a / b)
+    print(f"{a / (2 << c) * 1024:.1f}")
+    n: int = 20
+    n //= b + c
+    print(n - 1)
+    m: int = 3
+    m *= b + c - 1
+    m = m * (b + 4) // c
+    print(m)
+    print(1 / (b * c - 4))
+}

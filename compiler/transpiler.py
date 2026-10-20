@@ -18,10 +18,17 @@ from lark import Tree, Token
 from typing import List, Optional, Tuple, Dict, Set, Any
 from contextlib import contextmanager
 
-from compiler.constants import DUNDER_OPS, STMT_NODES, PYTHON_EXCEPTIONS
+from compiler.constants import (
+    COMPILER_GO_PACKAGES, DUNDER_OPS, GO_BINDING_KEYWORDS, STMT_NODES, PYTHON_EXCEPTIONS,
+)
+
+# Names ``_go_binding_name`` gives a ``__lam`` suffix (besides ``__lam*`` /
+# ``__q*`` temps).
+_BINDING_RENAMED = COMPILER_GO_PACKAGES | GO_BINDING_KEYWORDS
 from compiler.preprocessor import preprocess_go_blocks  # re-export
 from compiler import narrowing as _narrowing
 from compiler.index_bounds import mark_nonnegative_locals
+from compiler.safe_nav import rewrite_result_safe_nav
 from compiler.visitors.helpers import HelpersMixin
 from compiler.visitors.statements import StatementVisitorMixin
 from compiler.visitors.expressions import ExpressionVisitorMixin
@@ -89,6 +96,19 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     # records the value and leaves the ``*Result`` IIFE (see
     # ``_visit_do_stmt``). ``None`` elsewhere.
     "_do_return_target",
+    # Set directly inside a ``do { }`` body (the ``*Result`` IIFE): code
+    # leaving it early returns ``nil``. Reset in nested callables.
+    "_in_do_body",
+    # Set while the class visitor emits the members of a class body: a
+    # ``funcdef`` there is a method; one inside a method body is a nested
+    # function (a closure).
+    "_class_member_level",
+    # Named ``*Result`` of the ``do { }`` IIFE a ``?`` inside a nested
+    # ``try`` IIFE stores its error in (``""`` when none).
+    "_do_q_target",
+    # Zero result a ``?`` inside a comprehension closure returns beside its
+    # error (``""`` outside such a closure).
+    "_comp_q_return",
     "_ternary_go_type",
     "_loop_break_flag",
     "_in_generator",
@@ -107,6 +127,57 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
 )
 
 
+class _BindingTable(dict):
+    """Per-name type table (``_var_go_types`` / ``_var_types``). Bindings are
+    recorded under their Go spelling by some emitters and read under their
+    Lam spelling by others; for a name the Go side renames (``strings`` ->
+    ``strings__lam``, ``type`` -> ``type__lam``) a write stores both
+    spellings so either lookup finds it."""
+
+    __slots__ = ()
+
+    @staticmethod
+    def _twin(key):
+        if isinstance(key, str):
+            if key.endswith("__lam"):
+                base = key[:-5]
+                if base in _BINDING_RENAMED:
+                    return base
+            elif key in _BINDING_RENAMED:
+                return key + "__lam"
+        return None
+
+    def __setitem__(self, key, value):
+        dict.__setitem__(self, key, value)
+        twin = self._twin(key)
+        if twin is not None:
+            dict.__setitem__(self, twin, value)
+
+    def pop(self, key, *default):
+        twin = self._twin(key)
+        if twin is not None:
+            dict.pop(self, twin, None)
+        return dict.pop(self, key, *default)
+
+    def __delitem__(self, key):
+        twin = self._twin(key)
+        if twin is not None:
+            dict.pop(self, twin, None)
+        dict.__delitem__(self, key)
+
+
+def _binding_table_property(attr: str):
+    store = "_bt_" + attr
+
+    def getter(self):
+        return self.__dict__[store]
+
+    def setter(self, value):
+        self.__dict__[store] = value if isinstance(value, _BindingTable) else _BindingTable(value)
+
+    return property(getter, setter)
+
+
 class GoTranspiler(
     HelpersMixin,
     PatternMatchMixin,
@@ -118,6 +189,33 @@ class GoTranspiler(
     DefinitionVisitorMixin,
 ):
     """Walk a Lark tree and produce Go source code."""
+
+    # Exceptions of async tasks that nobody awaited are printed to stderr
+    # when ``main`` returns (like Python's "Task exception was never
+    # retrieved"); an ``await`` that re-raises the exception retrieves it.
+    _ASYNC_RUNTIME_GO = """
+var lamAsyncFailures sync.Map
+
+func lamAsyncTaskFailed(r interface{}) *int {
+\ttoken := new(int)
+\tlamAsyncFailures.Store(token, r)
+\treturn token
+}
+
+func lamAsyncTaskRetrieved(token *int) {
+\tlamAsyncFailures.Delete(token)
+}
+
+func lamAsyncReportUnretrieved() {
+\tlamAsyncFailures.Range(func(_, r interface{}) bool {
+\t\tfmt.Fprintf(os.Stderr, "Task exception was never retrieved: %v\\n", r)
+\t\treturn true
+\t})
+}
+"""
+
+    _var_go_types = _binding_table_property("_var_go_types")
+    _var_types = _binding_table_property("_var_types")
 
     def __init__(self, go_blocks: Optional[Dict[str, str]] = None,
                  stdlib_path: Optional[str] = None,
@@ -210,6 +308,14 @@ class GoTranspiler(
         self._in_async_func: bool = False
         self._async_chan_name: Optional[str] = None
         self._do_return_target: Optional[Tuple[str, str]] = None
+        self._in_do_body: bool = False
+        # Set by the driver on the main module's transpiler when some module
+        # of the program has an async callable: the file defines the task
+        # failure registry and ``main`` reports unretrieved exceptions.
+        self._emit_async_runtime: bool = False
+        self._class_member_level: bool = False
+        self._do_q_target: str = ""
+        self._comp_q_return: str = ""
 
         # Ternary context type
         self._ternary_go_type: Optional[str] = None
@@ -470,6 +576,9 @@ class GoTranspiler(
             return str(node)
         if node.data in STMT_NODES:
             self._emit_line_directive(node)
+            if node.data not in ("funcdef", "classdef"):
+                # ``f()?.method()`` on a ``Result``: ``(f()?).method()``.
+                rewrite_result_safe_nav(node, lambda recv: self._expr_go_type_hint(recv) == "*Result")
         handler = getattr(self, f"_visit_{node.data}", None)
         if handler:
             return handler(node)
@@ -581,6 +690,10 @@ class GoTranspiler(
         self._at_top_level = True
 
         self._emit_top_level(tree)
+        if self._emit_async_runtime:
+            body_lines.extend(self._ASYNC_RUNTIME_GO.splitlines())
+            for pkg in ("fmt", "os", "sync"):
+                self._need_import(pkg)
 
         self.output_lines = old_lines
         if self._lam_errors:
@@ -1207,12 +1320,17 @@ class GoTranspiler(
                 return_type = self._resolve_return_type(return_node)
                 return_key = self._overload_return_key(return_node)
                 method_key = f"{interface_name}.{method_name}"
-                arity = self._count_params(params_node)
-                sig = self._param_types_sig(params_node) if params_node else ()
+                arity = self._count_params(params_node, skip_self=True)
+                sig = self._param_types_sig(params_node, skip_self=True) if params_node else ()
+                # Parameter names and declared defaults: a call through the
+                # interface (``n.name()``) fills them and reorders keywords.
+                self._func_param_counts[method_key] = arity
+                if params_node:
+                    self._collect_param_defaults(method_key, params_node, skip_self=True)
                 self._overloaded_functions.setdefault(method_key, set()).add(arity)
                 self._overload_variants.setdefault(method_key, []).append({
                     "arity": arity,
-                    "required": arity,
+                    "required": arity - len(self._func_defaults.get(method_key, [])),
                     "sig": sig,
                     "return": return_type,
                     "return_key": return_key,
@@ -1482,6 +1600,23 @@ class GoTranspiler(
                 if required <= len(actual) <= len(expected) and matches:
                     candidates.append(variant)
         if not candidates:
+            # ``fail(2.5, {"a": 1})`` against ``fail(str, dict[str, any])`` /
+            # ``fail(float, dict[str, any])``: the variant every argument can
+            # be passed to (a literal collection to an ``any``-element one,
+            # an int to a float, anything to ``any``), the closest first.
+            best_score = -1
+            for variant in variants:
+                expected = tuple(variant.get("sig") or ())
+                required = int(variant.get("required", len(expected)))
+                if not required <= len(actual) <= len(expected):
+                    continue
+                scores = [self._overload_arg_score(e, a) for e, a in zip(expected, actual)]
+                if any(score < 0 for score in scores):
+                    continue
+                if sum(scores) > best_score:
+                    best_score = sum(scores)
+                    candidates = [variant]
+        if not candidates:
             candidates = [
                 variant for variant in variants
                 if int(variant.get("required", variant.get("arity", 0)))
@@ -1500,6 +1635,32 @@ class GoTranspiler(
                 if return_key == contextual_return:
                     return variant
         return candidates[0] if candidates else None
+
+    _OVERLOAD_NUMERIC = frozenset({
+        "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64",
+    })
+
+    def _overload_arg_score(self, expected: str, actual: str) -> int:
+        """How well an argument of Go type ``actual`` fits a parameter of
+        type ``expected``: 3 exact, 2 by conversion (int to float, a
+        collection literal to ``any`` elements), 1 to ``any`` or an unknown
+        argument, -1 when it cannot be passed."""
+        expected, actual = (expected or "").strip(), (actual or "").strip()
+        if expected == actual:
+            return 3
+        if actual in {"", "interface{}"} or expected == "interface{}":
+            return 1
+        if expected in {"float64", "float32"} and actual in self._OVERLOAD_NUMERIC:
+            return 2
+        if expected.startswith("[]") and actual.startswith("[]"):
+            return 2 if self._overload_arg_score(expected[2:], actual[2:]) >= 1 else -1
+        if expected.startswith("map[") and actual.startswith("map["):
+            exp_key, exp_value = self._split_go_map_type(expected)
+            act_key, act_value = self._split_go_map_type(actual)
+            if exp_key == act_key and self._overload_arg_score(exp_value, act_value) >= 1:
+                return 2
+            return -1
+        return -1
 
     def _overload_suffix_for_sig(self, name: str, sig, expected_return: str = ""):
         """Return the Go name suffix for the best variant of ``name``.

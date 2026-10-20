@@ -1,0 +1,41 @@
+# An integral JSON number (`30`) read where a `float` is expected widens
+# instead of panicking (`interface {} is int, not float64`).
+# expect: 30 2.5 30 1 30
+# expect: 15 30
+# expect: 3.5
+# expect: 42.5
+
+from lamjson import Json
+
+func half(v: float) -> float {
+    return v / 2
+}
+
+func pick(doc: json) -> float {
+    return doc.sum
+}
+
+class Stats {
+    func init(self, doc: json) {
+        self.mean: float = doc.mean
+    }
+}
+
+func main() {
+    doc: json = Json.decode("{\"sum\": 30, \"avg\": 2.5, \"items\": [1, 2.5], \"mean\": 42}").unwrap()
+    x: float = doc.sum
+    y: float = doc.avg
+    z: float = doc["sum"]
+    w: float = doc.items[0]
+    n: int = doc.sum
+    print(x, y, z, w, n)
+    print(half(doc.sum), pick(doc))
+    total: float = 0.0
+    for v in doc.items {
+        f: float = v
+        total += f
+    }
+    print(total)
+    s: Stats = Stats(doc)
+    print(s.mean + 0.5)
+}

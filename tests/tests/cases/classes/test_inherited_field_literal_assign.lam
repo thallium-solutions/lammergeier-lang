@@ -1,0 +1,53 @@
+# Assigning `{}` / `[]` / a literal to a field declared by a base class takes
+# the field's declared type (also from a grandparent and from outside).
+# expect: 1 [y]
+# expect: 2 [[1 2]]
+# expect: map[k:[3]] 0
+# expect: 0
+
+class Base {
+    func init(self) {
+        self.points: dict[str, int] = {"a": 1}
+        self.names: list[str] = ["x"]
+        self.groups: dict[str, list[int]] = {}
+    }
+}
+
+class Child(Base) {
+    func init(self) {
+        base.init()
+        self.rows: list[list[int]] = []
+    }
+
+    func reset(self) {
+        self.points = {}
+        self.names = []
+    }
+}
+
+class GrandChild(Child) {
+    func init(self) {
+        base.init()
+    }
+
+    func fill(self) {
+        self.points = {"p": 1, "q": 2}
+        self.rows = [[1, 2]]
+        self.groups = {"k": [3]}
+        self.names = []
+    }
+}
+
+func main() {
+    c: Child = Child()
+    c.reset()
+    c.points["b"] = 2
+    c.names.append("y")
+    print(len(c.points), c.names)
+    g: GrandChild = GrandChild()
+    g.fill()
+    print(len(g.points), g.rows)
+    print(g.groups, len(g.names))
+    g.points = {}
+    print(len(g.points))
+}

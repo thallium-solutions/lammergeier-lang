@@ -26,8 +26,20 @@ class DefinitionVisitorMixin:
                 self._visit_funcdef_inner(node)
         finally:
             self._restore_local_types(saved_types)
+            nested_type = self.__dict__.pop("_nested_func_go_type", None)
+            if nested_type:
+                # A nested ``func`` is a local of the enclosing body.
+                self._var_go_types[nested_type[0]] = nested_type[1]
+                self.__dict__.setdefault("_nested_closure_go_types", {})[nested_type[0]] = nested_type[1]
 
     def _visit_funcdef_inner(self, node: Tree):
+        # A method is a ``funcdef`` directly in a class body; its own body
+        # (and anything nested in it) is not.
+        is_class_member = bool(self.current_class) and self._class_member_level
+        with self._scoped(_class_member_level=False):
+            self._visit_funcdef_member(node, is_class_member)
+
+    def _visit_funcdef_member(self, node: Tree, is_class_member: bool):
         (is_private, is_static, is_async, name_node, params_node,
          return_type_node, suite_node, type_params_node) = self._parse_funcdef(node)
 
@@ -49,7 +61,7 @@ class DefinitionVisitorMixin:
         # the natural Lam form keeps working. Captured locals come
         # along for free because Go closures capture by reference.
         is_nested = (not self._at_top_level
-                     and not self.current_class
+                     and not is_class_member
                      and not is_static
                      and not is_async
                      and func_name != "main")
@@ -97,6 +109,9 @@ class DefinitionVisitorMixin:
             "_in_async_func": False,
             "_async_chan_name": None,
             "_do_return_target": None,
+            "_in_do_body": False,
+            "_do_q_target": "",
+            "_comp_q_return": "",
             "_in_try_iife": False,
             "_in_try_func": False,
             "_in_except_handler": False,
@@ -127,6 +142,10 @@ class DefinitionVisitorMixin:
         # generic ``_go_public_name`` rewrite and emit ``Inner(...)``,
         # which is undefined).
         self._declare_var(func_name)
+        # ``words.map(loud)``: the closure's type, like a typed lambda local.
+        param_types = [t for t in self._param_types_sig(params_node) if t != "..."]
+        if len(param_types) == len(self._param_types_sig(params_node)):
+            self.__dict__["_nested_func_go_type"] = (func_name, f"func({', '.join(param_types)}){ret_str}")
 
         self._emit(f"{func_name} := func({params_str}){ret_str} {{")
         body_start, params_at_start = self._begin_scoped_body(params_node)
@@ -367,9 +386,14 @@ class DefinitionVisitorMixin:
         # An exception escaping the body is handed to ``await`` as a
         # thunk that re-raises it. ``select`` guards against a second
         # publish (a deferred panic after the result was already sent).
+        # The failure is registered until an ``await`` runs the thunk, so an
+        # exception of a task never awaited is reported when ``main`` ends.
         self._emit("defer func() {")
         self._emit("\tif r := recover(); r != nil {")
-        self._emit(f"\t\tselect {{ case {async_ch} <- {thunk_type} {{ panic(r) }}: default: }}")
+        self._emit("\t\t__lamTask := lamAsyncTaskFailed(r)")
+        self._emit(
+            f"\t\tselect {{ case {async_ch} <- {thunk_type} {{ lamAsyncTaskRetrieved(__lamTask); panic(r) }}: default: }}"
+        )
         self._emit("\t}")
         self._emit("}()")
         self._push_scope()
@@ -595,6 +619,8 @@ class DefinitionVisitorMixin:
             self._emit(f"func {go_name}{tp_clause}({params_str}) {{")
 
         body_start, params_at_start = self._begin_scoped_body(params_node)
+        if go_name == "main" and not self.current_class and self._emit_async_runtime:
+            self._emit("defer lamAsyncReportUnretrieved()")
         with self._scoped(
             _current_return_type=current_ret,
             _current_return_type_key=return_type_key,
@@ -1015,7 +1041,8 @@ class DefinitionVisitorMixin:
                             fn_name = self._get_name(fn_node)
                             if fn_name in ("__init__", "init"):
                                 has_init = True
-                            self._visit(child)
+                            with self._scoped(_class_member_level=True):
+                                self._visit(child)
 
                 if not has_init and self._emit_inherited_constructor(class_name, tp_clause):
                     pass

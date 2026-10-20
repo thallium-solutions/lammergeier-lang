@@ -1026,7 +1026,7 @@ func divide(a: int, b: int) -> Result {
     if b == 0 {
         return Result.Err(Error("ZeroDivisionError", "b == 0", None))
     }
-    return Result.Ok(a / b)
+    return Result.Ok(a // b)
 }
 
 fallback: any = divide(10, 0).unwrapOr(0) # 0

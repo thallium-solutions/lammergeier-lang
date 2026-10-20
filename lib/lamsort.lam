@@ -245,7 +245,7 @@ class Sort {
             return Sort._copy(values)
         }
 
-        middle: int = len(values) / 2
+        middle: int = len(values) // 2
         leftValues: list[T] = []
         rightValues: list[T] = []
         for i in range(len(values)) {
@@ -288,7 +288,7 @@ class Sort {
             return Sort._copy(values)
         }
 
-        middle: int = len(values) / 2
+        middle: int = len(values) // 2
         leftValues: list[T] = []
         rightValues: list[T] = []
         for i in range(len(values)) {

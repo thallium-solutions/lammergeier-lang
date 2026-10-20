@@ -9,7 +9,7 @@
 
 func safe_divide(a: int, b: int) -> int {
     try {
-        return a / b
+        return a // b
     } catch Exception as e {
         print("caught_div")
         return 0

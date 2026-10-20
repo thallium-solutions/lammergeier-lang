@@ -172,7 +172,7 @@ func route(method: str, path: list[str], fields: int) -> str {
 
 func half(n: int) -> Result[int] {
     if n % 2 == 0 {
-        return Result.Ok(n / 2)
+        return Result.Ok(n // 2)
     }
     return Result.Err(Error("InputError", "bad input"))
 }

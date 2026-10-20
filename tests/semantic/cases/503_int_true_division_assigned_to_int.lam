@@ -1,0 +1,9 @@
+# expect-error: cannot assign `float` to `int` variable `half`
+# expect-error: `/` always gives a `float`; use `//` for integer division
+# `/` follows Python: an int divided by an int is a float.
+
+func main() {
+    n: int = 7
+    half: int = n / 2
+    print(half)
+}

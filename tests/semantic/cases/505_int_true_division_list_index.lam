@@ -1,0 +1,7 @@
+# expect-error: list index must be `int`, got `float`
+# expect-error: use `//` for integer division
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    print(xs[len(xs) / 2])
+}

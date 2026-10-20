@@ -9,7 +9,7 @@ class Coupon {
 
     func discount(self, subtotal: int) -> int {
         if self.kind == "percent" {
-            return subtotal * self.amount / 100
+            return subtotal * self.amount // 100
         }
         if self.amount > subtotal {
             return subtotal
@@ -34,7 +34,7 @@ class PricingEngine {
     }
 
     func tax(self, cart: Cart) -> int {
-        return cart.taxableSubtotal() * self.taxRatePercent / 100
+        return cart.taxableSubtotal() * self.taxRatePercent // 100
     }
 
     func total(self, cart: Cart, coupon: Coupon, region: str) -> int {

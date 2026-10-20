@@ -1,0 +1,7 @@
+# expect-error: `//=` would make `int` a `float`
+
+func main() {
+    n: int = 10
+    n //= 2.5
+    print(n)
+}

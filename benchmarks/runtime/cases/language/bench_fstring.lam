@@ -10,7 +10,7 @@ from lamtime import Time
 func work() {
     last: str = ""
     for i in range(200000) {
-        last = f"iter={i} half={i / 2} name=user_{i} tag=bench"
+        last = f"iter={i} half={i // 2} name=user_{i} tag=bench"
     }
     if len(last) == 0 {
         print("unreachable")

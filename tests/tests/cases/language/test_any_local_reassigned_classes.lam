@@ -1,0 +1,70 @@
+# An `any` local assigned values of different classes (in loops and
+# branches) stays an `any`: no assertion to the first class it held.
+# expect: error bad
+# expect: box 2
+# expect: 3
+# expect: tag t
+# expect: true
+
+from lamerrors import Result
+
+class Box {
+    func init(self, v: int) {
+        self.v: int = v
+    }
+}
+
+class Tag {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func get(i: int) -> Result[Box] {
+    if i == 1 {
+        return Result.Err("bad")
+    }
+    return Result.Ok(Box(i))
+}
+
+func describe(x: any) -> str {
+    if isinstance(x, Box) {
+        return f"box {x.v}"
+    }
+    if isinstance(x, Tag) {
+        return f"tag {x.name}"
+    }
+    return f"error {x}"
+}
+
+func main() {
+    last: any = None
+    seen: list[str] = []
+    for i in [0, 1, 2] {
+        r: Result[Box] = get(i)
+        if r.ok() {
+            b: Box = r.unwrap()
+            last = b
+        } else {
+            last = r.error
+            seen.append(describe(last))
+        }
+    }
+    print(seen[0])
+    print(describe(last))
+    count: int = 0
+    current: any = Box(1)
+    for k in range(3) {
+        if k % 2 == 0 {
+            current = Tag("t")
+        } else {
+            current = Box(k)
+        }
+        count += 1
+    }
+    print(count)
+    print(describe(current))
+    holder: any = Tag("x")
+    holder = Box(5)
+    print(isinstance(holder, Box))
+}

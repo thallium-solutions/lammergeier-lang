@@ -24,7 +24,7 @@ func main() {
     print(a)
 
     # Int division result
-    b: int = 7 / 2
+    b: int = 7 // 2
     print(b)
 
     # String
@@ -49,7 +49,7 @@ func main() {
     print(d)
 
     # Nested parentheses
-    e: int = ((1 + 2) * (3 + 4)) / 7
+    e: int = ((1 + 2) * (3 + 4)) // 7
     print(e)
 
     print("conv_ok")

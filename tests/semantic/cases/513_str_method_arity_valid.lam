@@ -1,0 +1,12 @@
+# expect-pass
+# Optional arguments of `str` methods (`trimLeft()` / `trimLeft(cutset)`,
+# `padLeft(width[, fill])`, variadic `format`) are accepted.
+
+func main() {
+    s: str = "  hi  "
+    print(s.trimLeft(), s.trimLeft(" h"), s.trimRight())
+    print("7".padLeft(3), "7".padLeft(3, "0"), "x".center(5, "-"))
+    print("{} and {}".format("a", "b"), "plain".format())
+    print("a/v1/v1".replace("/v1", ""), "a/v1/v1".replaceFirst("/v1", ""))
+    print("a,b".split(","), "a b".fields(), "a,b,c".splitN(",", 2))
+}

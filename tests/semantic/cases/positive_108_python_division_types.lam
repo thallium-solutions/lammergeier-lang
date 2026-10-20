@@ -1,0 +1,45 @@
+# expect-pass
+# Python division types: `/` of ints is a `float` (assigned, returned,
+# passed, inferred, in f-strings and typed lambdas), `//` and `%` of ints
+# stay `int` (indexes, ranges), any float operand makes a `float`, and the
+# compound forms fit their target.
+
+func ratio(a: int, b: int) -> float {
+    return a / b
+}
+
+func scale(x: float) -> float {
+    return x * 2
+}
+
+func avg[T: number](a: T, b: T) -> float {
+    return (a + b) / 2
+}
+
+func main() {
+    n: int = 7
+    y: float = n / 2
+    z = n / 2
+    w: float = z
+    q: int = n // 2
+    r: int = n % 2
+    f: float = 7.5
+    fl: float = f // 2
+    fm: float = f % 2
+    mixed: float = n // 2.0
+    g: float = 1.0
+    g /= 2
+    g //= 2
+    g %= 2
+    g /= n
+    k: int = 9
+    k //= 2
+    k %= 2
+    xs: list[int] = [1, 2, 3]
+    mid: int = xs[len(xs) // 2]
+    for i in range(n // 2) {
+        print(i % 2)
+    }
+    half: func(int) -> float = lambda (x: int): x / 2
+    print(y, w, q, r, fl, fm, mixed, g, k, mid, ratio(1, 2), scale(n / 2), half(3), avg(1, 2), f"{n / 2}")
+}

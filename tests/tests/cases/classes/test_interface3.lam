@@ -12,7 +12,7 @@ class Circle {
     }
 
     func area(self) -> int {
-        return self.radius * self.radius * 314 / 100
+        return self.radius * self.radius * 314 // 100
     }
 }
 

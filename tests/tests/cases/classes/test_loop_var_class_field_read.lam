@@ -1,0 +1,60 @@
+# A class-typed field read through a loop / comprehension variable keeps
+# its declared type (no `.(*Res)` assertion on a typed field).
+# expect: 1
+# expect: 2
+# expect: 2
+# expect: [1 2]
+# expect: 20
+# expect: 3
+# expect: k2
+
+class Res {
+    func init(self, v: int) {
+        self.v: int = v
+        self.tag: str = f"k{v}"
+    }
+}
+
+class Item {
+    func init(self, v: int) {
+        self.res: Res = Res(v)
+    }
+}
+
+class Bag {
+    func init(self) {
+        self.items: list[Item] = [Item(1), Item(2)]
+    }
+
+    func all(self) -> list[Item] {
+        return self.items
+    }
+}
+
+func use(r: Res) -> int {
+    return r.v
+}
+
+func main() {
+    items: list[Item] = [Item(1), Item(2)]
+    d: dict[str, Res] = {}
+    for it in items {
+        print(use(it.res))
+        d["k"] = it.res
+    }
+    print(d["k"].v)
+    print([use(it.res) for it in items])
+    total: int = 0
+    for it in Bag().all() {
+        r: Res = it.res
+        total += r.v * 10
+    }
+    print(total - 10)
+    byTag: dict[str, Res] = {}
+    for i, it in enumerate(items) {
+        byTag[it.res.tag] = it.res
+        total = i
+    }
+    print(byTag["k1"].v + byTag["k2"].v)
+    print(items.map(lambda (it: Item) -> str: it.res.tag)[1])
+}

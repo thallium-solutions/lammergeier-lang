@@ -1,5 +1,5 @@
 # Test: Error handling - try/except, try/finally, raise
-# expect: caught: runtime error: integer divide by zero
+# expect: caught: ZeroDivisionError: integer division or modulo by zero
 # expect: safe: 0
 # expect: finally_ran
 # expect: raised_caught
@@ -7,7 +7,7 @@
 
 func safe_div(a: int, b: int) -> int {
     try {
-        return a / b
+        return a // b
     } catch Exception as e {
         print(f"caught: {e}")
         return 0

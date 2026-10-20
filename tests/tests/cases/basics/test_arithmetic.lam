@@ -31,11 +31,11 @@ func main() {
     print(1 - 2 * 2)
 
     # Compound expressions
-    c: int = (2 + 3) * (4 + 16) / 1
+    c: int = (2 + 3) * (4 + 16) // 1
     print(c)
 
     # Integer division
-    print(7 / 2)
+    print(7 // 2)
 
     # Modulo
     print(10 % 3)

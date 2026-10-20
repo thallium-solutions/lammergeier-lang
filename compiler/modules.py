@@ -318,6 +318,41 @@ class WorkspaceIndex:
             facts = self.update_file(path)
         return facts.exports.get(name)
 
+    def facts_for(self, path: Path) -> ModuleFacts | None:
+        path = path.resolve()
+        facts = self.facts_by_path.get(path)
+        if facts is None:
+            try:
+                facts = self.update_file(path)
+            except OSError:
+                return None
+        return facts
+
+    def resolve_export_origin(self, path: Path, name: str, _depth: int = 0) -> tuple[ExportSymbol, Path] | None:
+        """The defining export of ``name`` in the module at ``path``,
+        following re-exports (``from .shapes import Point`` in a package
+        ``__init__.lam``, possibly aliased or chained) to the module that
+        declares it: ``(export, defining_module_path)``. ``None`` when
+        ``name`` is not exported or its origin cannot be resolved."""
+        facts = self.facts_for(path)
+        if facts is None:
+            return None
+        export = facts.exports.get(name)
+        if export is None:
+            return None
+        if export.kind != "import":
+            return export, facts.path
+        if _depth > 16:
+            return None
+        for edge in facts.imports:
+            if edge.imported is None or (edge.alias or edge.imported) != name:
+                continue
+            target = self.resolve_module(facts.path, edge.module)
+            if target is None:
+                return None
+            return self.resolve_export_origin(target, edge.imported, _depth + 1)
+        return None
+
     def module_search_paths(self, from_path: Path, module: str) -> list[Path]:
         if module.startswith("."):
             level = len(module) - len(module.lstrip("."))

@@ -20,7 +20,7 @@ func divide(a: int, b: int) -> Result {
     if b == 0 {
         return Result.Err(Error("DivByZero", "denominator was 0"))
     }
-    return Result.Ok(a / b)
+    return Result.Ok(a // b)
 }
 
 class ResultFactory {

@@ -1,0 +1,23 @@
+# Transpilation: `xs + ys` on lists appends both into a fresh slice of the
+# element type (operands untouched, literals typed by the list); `+=`
+# appends the other list's items; a list literal passed to a function value
+# takes its declared parameter type.
+# expect-go: return append(append([]int{}, out...), firsts...)
+# expect-go: ys := append(append([]int{}, xs...), []int{3, 4}...)
+# expect-go: zs = append(zs, []string{"b"}...)
+# expect-go: var mixed []interface{} = append(append([]interface{}{}, func(s []int) []interface{} { r := make([]interface{}, len(s)); for i, v := range s { r[i] = v }; return r }(xs)...), []interface{}{"s"}...)
+# expect-go: size([]string{"a"})
+
+func joinFirsts(out: list[int], firsts: list[int]) -> list[int] {
+    return out + firsts
+}
+
+func main() {
+    xs: list[int] = [1, 2]
+    ys = xs + [3, 4]
+    zs: list[str] = ["a"]
+    zs += ["b"]
+    mixed: list[any] = xs + ["s"]
+    size: func(list[str]) -> int = lambda (items: list[str]): len(items)
+    print(joinFirsts(xs, ys), zs, mixed, size(["a"]))
+}

@@ -76,7 +76,7 @@ class PercentOff {
     }
 
     func apply(self, subtotal: int) -> int {
-        return subtotal - (subtotal * self.percent / 100)
+        return subtotal - (subtotal * self.percent // 100)
     }
 }
 

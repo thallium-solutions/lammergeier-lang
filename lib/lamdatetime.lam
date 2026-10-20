@@ -218,11 +218,11 @@ class DateTime {
     }
 
     func unix(self) -> int {
-        return self.unixNanoseconds / 1000000000
+        return self.unixNanoseconds // 1000000000
     }
 
     func unixMilli(self) -> int {
-        return self.unixNanoseconds / 1000000
+        return self.unixNanoseconds // 1000000
     }
 
     func unixNano(self) -> int {

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re as _re
 from lark import Tree, Token
 from typing import Dict, List, Optional, Tuple
-from compiler.constants import DUNDER_OPS, GO_BINDING_KEYWORDS, TYPE_MAP
+from compiler.constants import COMPILER_GO_PACKAGES, DUNDER_OPS, GO_BINDING_KEYWORDS, TYPE_MAP
 from compiler.link_symbols import mask_go_literals
 
 
@@ -437,7 +437,35 @@ class HelpersMixin:
     def _go_binding_name(self, name: str) -> str:
         if name in GO_BINDING_KEYWORDS or name.startswith("__lam") or name.startswith("__q"):
             return f"{name}__lam"
+        if name in COMPILER_GO_PACKAGES:
+            # ``http: HttpRequestOptions`` / ``strings: Box``: the Go package of
+            # that name stays reachable (and is not mistaken for the local).
+            return f"{name}__lam"
         return name
+
+    def _rename_shadowing_locals_in_raw_go(self, raw: str) -> str:
+        """Lam locals in scope whose Go spelling got the package suffix
+        (``strings`` -> ``strings__lam``) keep naming them inside ``go!`` code
+        (where Go would resolve the bare name to the local anyway)."""
+        renamed = sorted(
+            (n for n in COMPILER_GO_PACKAGES if n in self.declared_vars or f"{n}__lam" in self.declared_vars),
+            key=len, reverse=True,
+        )
+        if not renamed or not raw:
+            return raw
+        from compiler.link_symbols import mask_go_literals
+        pattern = _re.compile(r"(?<![\w.])(" + "|".join(_re.escape(n) for n in renamed) + r")(?!\w)")
+        masked = mask_go_literals(raw)
+        out: List[str] = []
+        last = 0
+        for match in pattern.finditer(masked):
+            out.append(raw[last:match.start()])
+            out.append(self._go_binding_name(match.group(1)))
+            last = match.end()
+        if not out:
+            return raw
+        out.append(raw[last:])
+        return "".join(out)
 
     def _go_class_name(self, class_name: str) -> str:
         return self._class_go_names.get(class_name, self._go_public_name(class_name))

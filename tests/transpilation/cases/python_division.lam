@@ -1,0 +1,59 @@
+# Transpilation: Python division. `/` converts both operands to float64
+# (a non-zero constant divisor divides directly, any other divisor goes
+# through a closure raising ZeroDivisionError); int `//` and `%` floor
+# through a closure typed by the operands, except when the dividend is
+# provably non-negative and the divisor provably positive (Go's `/` and
+# `%` agree there) or the divisor a power-of-two constant (a shift / mask:
+# two's complement floors); float `//` and `%` use math.Floor / math.Mod
+# with the divisor's sign; integer constants fold.
+# expect-go: half := float64(n) / 2
+# expect-go: ratio := func(a, b float64) float64 { if b == 0 { panic("ZeroDivisionError: division by zero") }; return a / b }(float64(n), float64(d))
+# expect-go: floor := func(a, b int) int { if b == 0 { panic("ZeroDivisionError: integer division or modulo by zero") }; q := a / b; if a%b != 0 && (a < 0) != (b < 0) { q-- }; return q }(n, d)
+# expect-go: rest := func(a, b int) int { if b == 0 { panic("ZeroDivisionError: integer division or modulo by zero") }; r := a % b; if r != 0 && (r < 0) != (b < 0) { r += b }; return r }(n, 3)
+# expect-go: mid := len(xs) / 2
+# expect-go: parity := i % 2
+# expect-go: bucket := i % size
+# expect-go: shifted := n >> 2
+# expect-go: masked := n & 7
+# expect-go: folded := (-4)
+# expect-go: folded2 := 1
+# expect-go: scaled := x / 2.5
+# expect-go: mixed := x * float64(n)
+# expect-go: math.Mod(a, b)
+# expect-go: panic("ZeroDivisionError: float modulo")
+# expect-go: panic("ZeroDivisionError: float floor division by zero")
+# expect-go: k = func(a, b int) int {
+# expect-go: g = func(a, b float64) float64 { if b == 0 { panic("ZeroDivisionError: division by zero") }; return a / b }(g, float64(n))
+# expect-go: g /= 2
+
+func compute(n: int, d: int, x: float, y: float, xs: list[int]) {
+    half = n / 2
+    ratio = n / d
+    floor = n // d
+    rest = n % 3
+    mid = len(xs) // 2
+    size: int = 16
+    for i in range(n) {
+        parity = i % 2
+        bucket = i % size
+        print(parity, bucket)
+    }
+    shifted = n // 4
+    masked = n % 8
+    folded = -7 // 2
+    folded2 = -7 % 2
+    scaled = x / 2.5
+    mixed = x * n
+    fmod = x % y
+    ffloor = x // y
+    k: int = n
+    k //= d
+    g: float = x
+    g /= n
+    g /= 2
+    print(half, ratio, floor, rest, mid, shifted, masked, folded, folded2, scaled, mixed, fmod, ffloor, k, g)
+}
+
+func main() {
+    compute(7, 2, 7.5, 2.0, [1, 2, 3])
+}

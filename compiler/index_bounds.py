@@ -9,8 +9,9 @@ locals of the enclosing function (stored on the ``funcdef`` as
 ``_lam_index_bounds``). A lower bound is known for
 
 * integer literals, ``len(...)`` and ``abs(...)`` (0), ``min`` / ``max``;
-* ``a + b``, ``a - <constant>``, and ``*``, ``//``, ``%`` of non-negative
-  values, a ternary;
+* ``a + b``, ``a - <constant>``, ``*`` and ``//`` of non-negative values,
+  ``a % b`` with a non-negative ``b`` (Python's ``%`` takes the sign of the
+  divisor), a ternary (``/`` is a float division, never an index);
 * locals whose every assignment in the function has a bound: loop
   variables of ``range(n)`` (0), ``range(a, ...)`` (bound of ``a``),
   ``range(a, b, -k)`` (above ``b``), the index of ``enumerate(...)``,
@@ -114,14 +115,20 @@ class _Analysis:
             result = self.lower_bound(children[0], known)
             for op, operand in zip(children[1::2], children[2::2]):
                 right = self.lower_bound(operand, known)
+                op = str(op)
+                if op == "%" and right is not None and right >= 0:
+                    # Python's ``%`` takes the sign of the divisor (a zero
+                    # divisor raises), whatever the dividend.
+                    result = 0
+                    continue
                 if result is None or right is None or result < 0 or right < 0:
                     return None
-                op = str(op)
                 if op == "*":
                     result = result * right
-                elif op in {"//", "%"}:
+                elif op == "//":
                     result = 0
                 else:
+                    # ``/`` is a float division: never an index.
                     return None
             return result
         if d == "test" and len(node.children) == 3:
@@ -302,6 +309,12 @@ def index_nonneg(node, known: Dict[str, float], shadowed_builtins: Set[str] = fr
     """Whether the index expression ``node`` is provably non-negative given
     the lower bounds ``known`` of the enclosing function's locals."""
     return _Analysis(set(shadowed_builtins)).nonneg(node, known)
+
+
+def lower_bound(node, known: Dict[str, float], shadowed_builtins: Set[str] = frozenset()) -> Optional[float]:
+    """A lower bound of the integer expression ``node`` (``None``: unknown)
+    given the bounds ``known`` of the enclosing function's locals."""
+    return _Analysis(set(shadowed_builtins)).lower_bound(node, known)
 
 
 def mark_nonnegative_locals(tree: Tree, shadowed_builtins: Set[str] = frozenset()) -> Set[str]:

@@ -16,7 +16,7 @@ func is_happy(n: int) -> bool {
         while n > 0 {
             d: int = n % 10
             total += d * d
-            n = n / 10
+            n = n // 10
         }
         n = total
         for s in seen {

@@ -102,6 +102,13 @@ Implementation notes:
 
 ## Possible new libraries
 
+> Status (3.0.0): `@lam/stripe`, `@lam/otel`, `@lam/keyring`, `@lam/totp` and
+> `@lam/jobs` 1.0.0 are released and used by MFT, and `third_party/` is
+> removed. The sections below are kept as the record of the plan; the
+> remaining candidates are `@lam/netguard`, `@lam/webhooks`, `@lam/oidc`,
+> `@lam/prometheus`, the `@lam/s3` and `@lam/jwt` additions, the stdlib gaps
+> and `@lam/lockout` / `@lam/outbox`.
+
 Two sources of new official packages: the packages still vendored in
 `third_party/`, and generic code that grew inside the managed-file-transfer
 (MFT) application. Every new package follows the existing conventions: scoped

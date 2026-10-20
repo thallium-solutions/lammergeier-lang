@@ -553,7 +553,7 @@ class Game {
     }
 
     func isScatterMode(self) -> bool {
-        wave: int = (self.tick / 70) % 4
+        wave: int = (self.tick // 70) % 4
         return wave == 1
     }
 

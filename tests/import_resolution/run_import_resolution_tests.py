@@ -794,6 +794,105 @@ def test_namespaced_module_variables() -> None:
     print("PASS: same-name module variables are namespaced")
 
 
+def test_imported_module_propagate_then_call() -> None:
+    """``f()?.method()`` on a ``Result`` inside an imported module (the
+    transpiler rewrites it without the main file's semantic pass)."""
+    _expect_output(
+        {"boxes.lam": (
+            "from lamerrors import Result\n\n"
+            "class Box {\n    func init(self, v: int) {\n        self.v: int = v\n    }\n\n"
+            "    func next(self) -> Result[Box] {\n"
+            "        if self.v >= 3 {\n            return Result.Err(\"stop\")\n        }\n"
+            "        return Result.Ok(Box(self.v + 1))\n    }\n}\n\n"
+            "func load(v: int) -> Result[Box] {\n    return Result.Ok(Box(v))\n}\n\n"
+            "func twoSteps(v: int) -> Result[int] {\n"
+            "    b: Box = load(v)?.next()?.next()?\n    return Result.Ok(b.v)\n}\n"
+        )},
+        "from boxes import twoSteps\n\n"
+        "func main() {\n    print(twoSteps(1).unwrap())\n    print(twoSteps(2).ok())\n}\n",
+        "3\nfalse",
+        "`f()?.method()` on a Result in an imported module",
+    )
+
+
+_GEO_SHAPES = (
+    "from lamerrors import Error\n\n"
+    "class Point {\n    func init(self, x: int) {\n        self.x: int = x\n    }\n\n"
+    "    func count(self) -> int {\n        return self.x * 2\n    }\n\n"
+    "    func __json__(self) -> json {\n        return json({\"x\": self.x})\n    }\n}\n\n"
+    "class GeoError(Error) {\n    func init(self, message: str) {\n"
+    "        base.init(\"geo\", message)\n        self.code: str = \"g1\"\n    }\n}\n\n"
+    "interface Measured {\n    func count() -> int;\n}\n\n"
+    "func mk() -> json {\n    return json({\"a\": 1})\n}\n\n"
+    "func origin() -> Point {\n    return Point(0)\n}\n\n"
+    "func total(m: Measured) -> int {\n    return m.count()\n}\n"
+)
+
+
+def _geo_package(init: str) -> dict[str, str]:
+    return {"geo/__init__.lam": init, "geo/shapes.lam": _GEO_SHAPES}
+
+
+def test_package_reexport_keeps_types() -> None:
+    """Symbols re-exported by a package ``__init__.lam`` carry the same type
+    information as direct imports: json returns, ``__json__``, method return
+    types, class patterns, interfaces."""
+    source = (
+        "from geo import Point, GeoError, Measured, mk, origin, total\n\n"
+        "func describe(err: any) -> str {\n    match err {\n"
+        "        case GeoError() as g {\n            return \"geo \" + g.code\n        }\n"
+        "        case _ {\n            return \"other\"\n        }\n    }\n}\n\n"
+        "func main() {\n    b: json = mk()\n    print(b)\n    print(json(Point(3)))\n"
+        "    p: Point = origin()\n    n: int = p.count() + Point(2).count()\n    print(n)\n"
+        "    m: Measured = Point(5)\n    print(total(m))\n"
+        "    print(describe(GeoError(\"x\")), describe(1))\n}\n"
+    )
+    _expect_output(
+        _geo_package("from .shapes import Point, GeoError, Measured, mk, origin, total\n"),
+        source, "{\"a\":1}\n{\"x\":3}\n4\n10\ngeo g1 other",
+        "package root re-exports keep member types (relative re-export)",
+    )
+    _expect_output(
+        {
+            "geo/__init__.lam": "from geo.inner import Point, GeoError, Measured, mk, origin, total\n",
+            "geo/inner/__init__.lam": "from geo.shapes import Point, GeoError, Measured, mk, origin, total\n",
+            "geo/shapes.lam": _GEO_SHAPES,
+        },
+        source, "{\"a\":1}\n{\"x\":3}\n4\n10\ngeo g1 other",
+        "chained package re-exports keep member types",
+    )
+    _expect_output(
+        _geo_package("from .shapes import Point as Pt, origin\n"),
+        "from geo import Pt, origin\n\nfunc main() {\n    p: Pt = origin()\n"
+        "    n: int = p.count()\n    print(n, Pt(4).count())\n}\n",
+        "0 8",
+        "aliased package re-export keeps member types",
+    )
+    _expect_output(
+        _geo_package("from .shapes import Point, mk\n"),
+        "import geo\n\nfunc main() {\n    b: json = geo.mk()\n    p: geo.Point = geo.Point(3)\n"
+        "    n: int = p.count()\n    print(b, n)\n}\n",
+        "{\"a\":1} 6",
+        "`import package` re-exports keep member types",
+    )
+
+
+def test_package_reexport_type_errors_are_lam_errors() -> None:
+    _expect_build_error(
+        _geo_package("from .shapes import Point, mk\n"),
+        "from geo import Point, mk\n\nfunc main() {\n    p: Point = Point(2)\n"
+        "    s: str = p.count()\n    print(s)\n}\n",
+        ["error[type]", "cannot assign `int` to `str` variable `s`"],
+        "re-exported method return type mismatch is a Lam error",
+    )
+    _expect_build_error(
+        _geo_package("from .shapes import origin\n"),
+        "from geo import origin\n\nfunc main() {\n    s: str = origin()\n    print(s)\n}\n",
+        ["error[type]", "cannot assign `Point` to `str` variable `s`"],
+        "re-exported function return type mismatch is a Lam error",
+    )
+
+
 def main() -> None:
     tests = [
         test_plain_import_missing_module,
@@ -842,6 +941,9 @@ def main() -> None:
         test_library_class_named_like_core_stdlib_class,
         test_main_class_named_like_core_stdlib_class_still_clashes,
         test_namespaces_inside_fstrings,
+        test_imported_module_propagate_then_call,
+        test_package_reexport_keeps_types,
+        test_package_reexport_type_errors_are_lam_errors,
     ]
     for test in tests:
         test()

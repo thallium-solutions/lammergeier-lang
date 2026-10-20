@@ -1,0 +1,6 @@
+# expect-error: division by zero: the right operand of `//` is the constant 0
+
+func main() {
+    n: float = 2.5
+    print(n // 0.0)
+}

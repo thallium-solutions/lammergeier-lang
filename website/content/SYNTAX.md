@@ -178,6 +178,11 @@ counts: dict[str, int] = {}
 flags: set[str] = {}
 ```
 
+`==` and `!=` compare lists, dicts and sets by value, element by element
+(like Python): `words == ["a", "b"]`, `counts == {"a": 1}`, `grid ==
+[[1, 2], [3]]`. Elements of a class with `__eq__` compare through it;
+other class instances compare by identity.
+
 ### Native JSON
 
 `json` is a native recursive value type for REST payloads, configuration files,
@@ -220,7 +225,8 @@ numeric strings, punctuation, empty strings, and whitespace use brackets:
 
 Object bracket/property access and integer array indexing return `json`; an
 annotated primitive assignment performs the runtime extraction
-(`name: str = payload.name`). `len` works on objects, arrays, and strings; `del
+(`name: str = payload.name`); an integral number (`30`) is accepted where a
+`float` is expected (`x: float = doc.sum`, a `float` parameter or return). `len` works on objects, arrays, and strings; `del
 value["key"]` removes an object member. JSON values compare
 structurally with `==` / `!=`, compare to `None` as JSON null, and support
 `missing ?? fallback` in typed contexts.
@@ -303,7 +309,7 @@ func sumAll(*nums: int) -> int {
 }
 
 func divmod_(a: int, b: int) -> (int, int) {
-    return a / b, a % b
+    return a // b, a % b
 }
 
 func outer(base: int) -> func(int) -> int {
@@ -507,6 +513,43 @@ values into Lam locals before returning to normal Lam code.
 | `any`        | `interface{}`  |
 | `None`       | (empty return) |
 
+### Arithmetic and division
+
+`+`, `-`, `*` keep ints as ints; any `float` operand makes the result a
+`float`. An `int` value is accepted wherever a `float` is expected and
+widens implicitly, as in Python: a `float` parameter (`half(n)`), the result
+of a `-> float` function (`return n + 1`), elements of a `list[float]` /
+`dict[str, float]`, a `float` variable or field (`f = n * 2`, `total += n`),
+a comparison with a float (`n < x`). Division follows Python:
+
+| Expression | Result | Notes |
+|------------|--------|-------|
+| `7 / 2`    | `3.5`  | `/` is always a float division |
+| `4 / 2`    | `2.0`  | a `float` even when exact |
+| `7 // 2`   | `3`    | floor division: an `int` for two ints |
+| `-7 // 2`  | `-4`   | floors toward negative infinity |
+| `-7 % 2`   | `1`    | `%` takes the sign of the divisor |
+| `7 % -2`   | `-1`   | |
+| `-7.5 // 2` | `-4.0` | a `float` operand gives a `float` |
+| `-7.5 % 2` | `0.5`  | floats too |
+
+`a == (a // b) * b + a % b` always holds. A zero divisor raises
+`ZeroDivisionError` for every form (`/`, `//`, `%`, ints and floats; never
+an infinity), and a constant `0` divisor is a compile-time error.
+
+```lammergeier
+n: int = 7
+half: float = n / 2      # 3.5
+middle: int = n // 2     # 3
+xs[len(xs) // 2]         # an index must be an int: use //
+mean: float = total / len(values)
+```
+
+Assigning an `int / int` where an `int` is expected is a type error with a
+hint (``cannot assign `float` to `int` variable `middle` (`/` always gives
+a `float`; use `//` for integer division)``), and `/=` on an `int`
+variable is one too (use `//=`).
+
 ---
 
 ## Variables & Annotations
@@ -604,7 +647,9 @@ func main() {
 
 The compiler lowers `func(T, U) -> V` to Go's `func(T, U) V`, so
 function-typed values are first-class Go values you can store, pass,
-and return.
+and return. An inline list / dict / set literal passed to a function value
+takes its declared parameter type (`size(["a"])` with
+`size: func(list[str]) -> int` passes a `list[str]`).
 
 ---
 
@@ -1075,6 +1120,25 @@ may also declare parameter- and return-type overload sets; implementations must
 provide every signature, and contextual return dispatch works through an
 interface receiver.
 
+An interface method may declare default values. A call through the interface
+(a parameter, local, field, list element or lambda parameter typed by it)
+fills the interface's declared defaults and accepts keyword arguments, also
+when the interface and the implementing class live in other modules:
+
+```lammergeier
+interface Named {
+    func name(suffix: str = "") -> str
+}
+
+func describe(n: Named) -> str {
+    return n.name() + " " + n.name(suffix="!")   # name("") and name("!")
+}
+```
+
+Implementations should declare the same defaults
+(`func name(self, suffix: str = "") -> str`) so direct calls on the class
+behave like calls through the interface.
+
 ---
 
 ## Private Members
@@ -1155,7 +1219,15 @@ func main() {
 }
 ```
 
-An exception in a task that is never awaited is discarded with the task.
+An exception in a task that is never awaited is not lost: when `main`
+returns, each such exception is printed to stderr (`Task exception was never
+retrieved: ValueError: bad id -1`, like Python's asyncio) and the exit status
+is unchanged. A task still running when `main` returns is abandoned silently.
+
+`await` needs the handle returned by an async call. Keep handles in an
+unannotated local or list (`tasks = [load(1), load(2)]`) so their type is
+known; awaiting a value typed `any` (an element of a `list[any]`) is a
+compile-time error.
 
 `lamconcurrency.Channel` and `lamactor.Mailbox` use the same operation names:
 `send` / `receive` block, `asyncSend` / `asyncReceive` return awaitable handles,
@@ -1857,7 +1929,13 @@ desc: list[int] = xs.sort(compare=lambda a, b: a > b)
 byLen: list[str] = words.sort(key=lambda w: len(w))
                                    # stable sort by a key (also positional:
                                    # a one-parameter callback is a key)
+both: list[int] = xs + [5, 6]      # a new list; xs is unchanged
+xs += [7]                          # xs = append(xs, 7)
 ```
+
+`a + b` on two lists builds a new list typed by the element type (neither
+operand changes; mixing element types gives a `list[any]`), and `xs += ys`
+appends the items of `ys` to `xs`.
 
 The full set of dispatched string methods is `toUpper`,
 `toLower`, `trim`, `length`, `trimLeft`, `trimRight`, `replace`, `split`,
@@ -1957,15 +2035,17 @@ Exception handling (compiled to Go panic/recover). Uses `catch` (not `except`):
 ```lammergeier
 divisor: int = 0
 try {
-    result: int = 10 / divisor
+    result: int = 10 // divisor
 } catch e {
-    print(f"Error: {e}")      # Error: ZeroDivisionError: ...
+    print(f"Error: {e}")      # Error: ZeroDivisionError: integer division or modulo by zero
 } finally {
     print("cleanup")
 }
 ```
 
-Dividing by the constant `0` (`10 / 0`, `n % 0`) is a compile-time error.
+Dividing by the constant `0` (`10 / 0`, `n // 0`, `n % 0`) is a compile-time error;
+a zero divisor at run time raises `ZeroDivisionError` for `/`, `//` and `%`
+(ints and floats alike).
 
 Inside the `try` block (or anywhere else in your code) you can raise
 an exception explicitly. Both `raise` and `throw` are accepted —
@@ -2009,7 +2089,7 @@ Matching rules:
   catch `FileNotFoundError`, `RuntimeError` catches `NotImplementedError`,
   and `ValueError` also catches the `ParseError` raised by failed
   `int(...)` / `float(...)` conversions.
-- Go runtime faults are classified too: integer division by zero is a
+- Go runtime faults are classified too: a division by zero is a
   `ZeroDivisionError`, an out-of-range index or slice is an `IndexError`,
   a nil dereference is an `AttributeError` and a failed type assertion is
   a `TypeError`.
@@ -2324,6 +2404,24 @@ binding is annotated, so `n: int = parseInt(s)?` produces typed Go
 without any manual value-casting shim. Multiple `?` in one function are
 fine — each gets its own internal temporary.
 
+`?` binds to the expression on its left, so the payload can be used
+directly: `(m.make()?).key`, `len(words()?)`. A `?` followed by `.` on a
+`Result` is propagation then member access (`x()?.y()` means
+`(x()?).y()`), so a chain of fallible calls reads left to right:
+
+```lammergeier
+func lastStep() -> Result[int] {
+    b: Box = load(1)?.next()?.next()?   # each Err returns early
+    return Result.Ok(b.v)
+}
+```
+
+On an `optional[T]` value `?.` keeps its safe-navigation meaning
+(`find(name)?.email` is `None` when `find` returns `None`; see
+[Safe Navigation](#safe-navigation--null-coalescing)). A `?` inside a
+`try` body or `catch` handler also propagates to the enclosing function
+(or `do` block); a `catch` clause never sees it.
+
 `?` only accepts a known `Result` value and only propagates normally from
 a function whose return type is bare `Result` or `Result[T]`. A known
 `int`, `str`, `Option[T]`, or other non-`Result` operand is a Lam
@@ -2456,7 +2554,11 @@ n: int = 0
 n += 5            # 5
 n -= 1            # 4
 n *= 3            # 12
-n //= 5           # 2  (integer division)
+n //= 5           # 2  (floor division)
+n %= 2            # 0
+
+ratio: float = 9.0
+ratio /= 2        # 4.5 (`/=` on an `int` is a type error: use `//=`)
 
 s: str = "ab"
 s += "cd"         # "abcd"
@@ -2585,7 +2687,9 @@ Rules:
 A `func` may be declared inside another `func` body. Lam compiles
 the inner declaration to a Go closure assigned to a local variable
 of the inner function's name, so the inner function can read and
-mutate the surrounding locals exactly like a `lambda`.
+mutate the surrounding locals exactly like a `lambda`. Inside a class
+method or constructor a nested `func` is such a closure too (not a method):
+it uses the method's `self` without declaring it.
 
 The two forms — nested `func` and `lambda` — compile to the same
 Go closure. Capturing an active `for` target emits `warning[capture]` because
@@ -2714,8 +2818,9 @@ index is provably non-negative: non-negative constants, `len(...)`,
 `a` non-negative / `range(a, b, -1)` down to `-1` or a non-negative bound,
 the index of `for i, x in enumerate(xs)`, a local whose every assignment
 in the function keeps it non-negative (`i = 0` ... `i += 1`,
-`mid = len(xs) // 2`), `+`, `*`, `//`, `%`, `min` / `max` / `abs` of such
-values, and `i - k` when `i` is known to be at least `k`
+`mid = len(xs) // 2`), `+`, `*`, `//`, `min` / `max` / `abs` of such
+values, `i % n` with a non-negative `n` (whatever `i`: `%` takes the sign of
+the divisor), and `i - k` when `i` is known to be at least `k`
 (`for i in range(1, len(xs)) { xs[i - 1] }`).
 
 Indexing a string with a single integer follows Go's native behavior and
@@ -2945,6 +3050,10 @@ Two operators make working with nullable values less noisy:
 - `a ?? b` — returns `a` if it is non-`nil`, otherwise `b`. Chains
   fold left-to-right, e.g. `a ?? b ?? c`.
 
+On a `Result` receiver `?.` is not safe navigation: `load()?.name` is
+`(load()?).name`, the [`?` propagation operator](#the--propagation-operator)
+followed by a member access.
+
 ```lammergeier
 class User {
     func init(self, email: str) {
@@ -3087,7 +3196,7 @@ of the body:
 
 ```lammergeier
 func midpoint((x, y): tuple[int, int]) -> int {
-    return (x + y) / 2
+    return (x + y) // 2
 }
 
 func greet((first, last): tuple[str, str]) -> str {
@@ -3792,9 +3901,14 @@ The compiler picks a variant by inferring the Go type of every
 positional argument: typed locals (`nums: list[int]`) participate
 through the variable-type table, literals through their
 expression shape (`42` → `int`, `"hi"` → `string`, `[1, 2, 3]` →
-`[]int`). If argument or return context cannot distinguish otherwise viable
-variants, dispatch falls back deterministically to the first matching
-source-order definition.
+`[]int`). When no variant matches exactly, the variant every argument can
+be passed to wins, the closest first: an exact type, then a conversion (an
+`int` to a `float` parameter, a list / dict literal to `list[any]` /
+`dict[str, any]`), then `any`; so `fail(2.5, {"a": 1})` picks
+`fail(code: float, attrs: dict[str, any])` over `fail(message: str, attrs:
+dict[str, any])`. If argument or return context cannot distinguish
+otherwise viable variants, dispatch falls back deterministically to the
+first matching source-order definition.
 
 ### By return type
 
@@ -4118,6 +4232,15 @@ Internally these are normalised by:
 compact block bodies are expanded, redundant blank lines are collapsed, and a
 directory argument recursively formats every `.lam` file below it. `--stdout`
 is intentionally file-only; use `--check` on files or directories in CI.
+Lines inside an open bracket (the elements of a multi-line list / dict
+literal, the arguments of a call spread over lines) are indented one level
+per line that left brackets open; slices keep `:` tight (`s[:3]`,
+`x[1:n]`). Raw Go inside `go! { }` is left byte for byte as written
+(comments, spacing and indentation); only the `go! {` line follows the Lam
+indentation. Formatting never changes the program: the test suite checks
+that every formatted test case generates the same Go and that formatting is
+idempotent over the test corpus, the standard library and the official
+libraries.
 
 ---
 

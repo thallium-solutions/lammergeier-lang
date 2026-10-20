@@ -12,7 +12,7 @@ class Money {
     }
 
     func __floordiv__(self, other: Money) -> Money {
-        return Money(self.amount / other.amount)
+        return Money(self.amount // other.amount)
     }
 
     func __str__(self) -> str {

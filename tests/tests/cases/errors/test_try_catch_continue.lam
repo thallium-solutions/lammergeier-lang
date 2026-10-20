@@ -18,7 +18,7 @@
 # expect: nested_typed: 11
 
 func divz(d: int) -> int {
-    return 10 / d
+    return 10 // d
 }
 
 # void-style function: catch swallows, code after the try/catch runs.

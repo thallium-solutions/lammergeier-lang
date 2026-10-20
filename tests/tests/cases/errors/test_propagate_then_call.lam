@@ -1,0 +1,94 @@
+# `x()?.y()` on a Result means `(x()?).y()`: propagate the error, then use
+# the payload. `?.` on an optional value keeps its safe-navigation meaning.
+# expect: 3
+# expect: 4 4
+# expect: box 2
+# expect: err: stop at 3
+# expect: label k1
+# expect: Ann
+# expect: None
+# expect: ok 6
+
+from lamerrors import Result
+
+class Box {
+    func init(self, v: int) {
+        self.v: int = v
+    }
+
+    func next(self) -> Result[Box] {
+        if self.v >= 3 {
+            return Result.Err(f"stop at {self.v}")
+        }
+        return Result.Ok(Box(self.v + 1))
+    }
+
+    func label(self) -> str {
+        return f"box {self.v}"
+    }
+}
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func load(k: int) -> Result[Box] {
+    return Result.Ok(Box(k))
+}
+
+func find(name: str) -> optional[User] {
+    if name == "" {
+        return None
+    }
+    return User(name)
+}
+
+func chain() -> Result[int] {
+    b: Box = Box(1).next()?.next()?
+    return Result.Ok(b.v)
+}
+
+func fields() -> Result[str] {
+    v: int = load(4)?.v
+    w: int = load(3)?.v + 1
+    return Result.Ok(f"{v} {w}")
+}
+
+func labelled() -> Result[str] {
+    return Result.Ok(load(1)?.next()?.label())
+}
+
+func tooFar() -> Result[int] {
+    b: Box = load(2)?.next()?.next()?
+    return Result.Ok(b.v)
+}
+
+func keyed() -> Result[str] {
+    r: Result[Box] = load(1)
+    if r?.v == 1 {
+        return Result.Ok("label k1")
+    }
+    return Result.Ok("other")
+}
+
+func main() {
+    print(chain().unwrap())
+    print(fields().unwrap())
+    print(labelled().unwrap())
+    t: Result[int] = tooFar()
+    if not t.ok() {
+        print(f"err: {t.error}")
+    }
+    print(keyed().unwrap())
+    print(find("Ann")?.name ?? "nobody")
+    u: optional[User] = find("")
+    print(u?.name ?? "None")
+    do {
+        total: int = load(1)?.v + load(5)?.v
+        print(f"ok {total}")
+    } catch err {
+        print(f"error {err}")
+    }
+}

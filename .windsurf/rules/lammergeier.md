@@ -25,7 +25,7 @@ description: Behavioral rules for working on lammergeier-lang
 
 ## Third-party packages
 
-- `third_party/` contains vendored-style packages (`lams3`, `lamstripe`, `lamotel`).
+- Official packages live in sibling `lam-*` repositories (`@lam/<name>`, private Bitbucket source mirrored to GitHub with `mirror-to-github.py`, which lists them in `REPOSITORIES`); the compiler repository vendors none (`third_party/` was removed in 3.0.0).
 - Keep stdlib boundaries clear: use Lam stdlib APIs (`lamenv`, `lamhttp`, etc.) where possible; limit raw `go!` blocks to SDK/client construction and unavoidable operations.
 - Never commit real S3 credentials or echo them into command logs/files. Live tests are guarded and should not run without explicit credentials.
 

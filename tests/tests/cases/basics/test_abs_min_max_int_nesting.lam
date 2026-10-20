@@ -1,0 +1,31 @@
+# `abs`, `min` and `max` on ints stay ints, also nested in each other or
+# in arithmetic; a float operand makes them floats.
+# expect: 5 -5 3
+# expect: 6
+# expect: 5
+# expect: 2.5 7.5
+# expect: 10
+# expect: 7
+# expect: b
+
+func spread(xs: list[int]) -> int {
+    return max(xs) - min(xs)
+}
+
+func main() {
+    a: int = -5
+    m: int = max(abs(a), 2)
+    n: int = min(abs(a), 9, a)
+    print(m, n, max(a, 3))
+    k: int = abs(a) + 1
+    print(k)
+    print(abs(min(a, -4)))
+    x: float = -2.5
+    f: float = max(abs(x), 1)
+    g: float = abs(x) * 3
+    print(f, g)
+    print(spread([3, 13, 7]))
+    clamp: int = max(0, min(abs(a) + 2, 10))
+    print(clamp)
+    print(max("a", "b"))
+}

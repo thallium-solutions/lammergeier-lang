@@ -1,0 +1,69 @@
+# A local named like a Go package (`http`, `strings`, `log`, `fmt`, `sort`,
+# `math`, `json`, `time`) is the local: the package stays reachable for the
+# generated code of the same function.
+# expect: 1
+# expect: 3 abab true
+# expect: info: started
+# expect: fmt 2 sort 3.5
+# expect: json ok time 7
+# expect: param 4
+# expect: go 12
+
+from lamhttp import HttpRequestOptions
+
+class Box {
+    func init(self) {
+        self.n: int = 0
+    }
+
+    func bump(self) -> int {
+        self.n += 1
+        return self.n
+    }
+}
+
+class Logger {
+    func init(self) {
+        self.lines: list[str] = []
+    }
+
+    func info(self, msg: str) {
+        self.lines.append("info: " + msg)
+    }
+}
+
+func widen(strings: int) -> int {
+    return strings * 2
+}
+
+func main() {
+    http: HttpRequestOptions = HttpRequestOptions(1000)
+    _ = http.header("A", "b")
+    print(len(http.headers))
+
+    strings: Box = Box()
+    _ = strings.bump()
+    s: str = "ab"
+    print(strings.bump() + 1, s * 2, "b" in s)
+
+    log: Logger = Logger()
+    log.info("started")
+    print(log.lines[0])
+
+    fmt: int = 2
+    sort: float = 3.5
+    print(f"fmt {fmt} sort {sort}")
+
+    json: str = "ok"
+    time: int = 7
+    math: float = 2.0
+    print("json", json, "time", time)
+    print(f"param {widen(int(math))}")
+
+    strings.n = 11
+    go! {
+        strings.N += 1
+        fmt = strings.N
+    }
+    print(f"go {fmt}")
+}

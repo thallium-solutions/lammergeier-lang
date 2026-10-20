@@ -1,0 +1,65 @@
+# `==` / `!=` on lists, dicts and sets compare element by element.
+# expect: true
+# expect: false
+# expect: true true
+# expect: true
+# expect: false true
+# expect: true
+# expect: true false
+# expect: true
+# expect: true
+# expect: true
+# expect: false
+# expect: same
+# expect: true
+# expect: true
+
+class Point {
+    func init(self, x: int) {
+        self.x: int = x
+    }
+
+    func __eq__(self, other: Point) -> bool {
+        return self.x == other.x
+    }
+}
+
+class Tag {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func names() -> list[str] {
+    return ["a", "b"]
+}
+
+func main() {
+    words: list[str] = ["a", "b"]
+    print(words == ["a", "b"])
+    print(words == ["a"])
+    same: bool = words == ["a", "b"]
+    print(f"{same} {words != ['b', 'a']}")
+    other: list[str] = ["a", "b"]
+    print(words == other)
+    nums: list[int] = [1, 2, 3]
+    print(nums == [1, 2], nums != [3, 2, 1])
+    d: dict[str, list[str]] = {"k": ["a", "b"]}
+    print(d["k"] == ["a", "b"])
+    counts: dict[str, int] = {"a": 1, "b": 2}
+    print(counts == {"b": 2, "a": 1}, counts == {"a": 1})
+    grid: list[list[int]] = [[1, 2], [3]]
+    print(grid == [[1, 2], [3]])
+    print([Point(1), Point(2)] == [Point(1), Point(2)])
+    t: Tag = Tag("x")
+    tags: list[Tag] = [t]
+    print(tags == [t])
+    print(tags == [Tag("x")])
+    if names() == words {
+        print("same")
+    }
+    empty: list[int] = []
+    print(empty == [])
+    s: set[int] = {1, 2}
+    print(s == {2, 1})
+}

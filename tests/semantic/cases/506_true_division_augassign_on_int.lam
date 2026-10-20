@@ -1,0 +1,8 @@
+# expect-error: `/=` would make `int` a `float`
+# expect-error: use `//=` for integer division
+
+func main() {
+    n: int = 10
+    n /= 2
+    print(n)
+}

@@ -9,7 +9,7 @@ func binary_search(arr: list[int], target: int) -> int {
     low: int = 0
     high: int = len(arr) - 1
     while low <= high {
-        mid: int = (low + high) / 2
+        mid: int = (low + high) // 2
         if arr[mid] == target {
             return mid
         } elif arr[mid] < target {

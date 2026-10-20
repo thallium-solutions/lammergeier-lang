@@ -67,6 +67,7 @@ from compiler.diagnostics import (
 from compiler.modules import WorkspaceIndex
 from compiler import namespacing as _namespacing
 from compiler import narrowing as _narrowing
+from compiler.safe_nav import rewrite_result_safe_nav
 from compiler.fstrings import decode_placeholders, fstring_body, split_fstring
 from compiler.semantic_narrowing import NarrowingCheckMixin
 from compiler.typesys import (
@@ -1106,6 +1107,9 @@ class SemanticChecker(NarrowingCheckMixin):
         # Types may change between statements (assignments, narrowing).
         self.__dict__["_expr_memo"] = {}
         d = node.data
+        if d not in ("funcdef", "classdef", "decorated", "interfacedef"):
+            # ``f()?.method()`` on a ``Result``: ``(f()?).method()``.
+            rewrite_result_safe_nav(node, self._is_result_receiver)
 
         if d == "funcdef":
             name = self._funcdef_name(node)
@@ -1315,14 +1319,18 @@ class SemanticChecker(NarrowingCheckMixin):
         suite_node = self._suite_node(node)
         if suite_node is not None:
             self._collect_block_defs(suite_node, scope)
-        if self._is_nested_funcdef(node):
+        nested = self._is_nested_funcdef(node)
+        if nested:
             self._warn_loop_captures(node, suite_node, scope.names, "nested function")
         self._scopes.append(scope)
         try:
-            self._check_method_receiver_declaration(node, suite_node)
-            self._check_operator_method_signature(node)
-            self._check_json_method_signature(node)
-            self._check_conversion_method_signature(node)
+            if not nested:
+                # A ``func`` inside a method body is a nested function (a
+                # closure over the method's ``self``), not a method.
+                self._check_method_receiver_declaration(node, suite_node)
+                self._check_operator_method_signature(node)
+                self._check_json_method_signature(node)
+                self._check_conversion_method_signature(node)
             self._check_type_annotations(node)
             if suite_node is not None:
                 self._walk_suite_stmts(self._suite_stmts(suite_node))
@@ -1733,7 +1741,26 @@ class SemanticChecker(NarrowingCheckMixin):
         # element (key/value) types, so they are not "unknown" later.
         ordered_names = self._for_target_names(target_node)
         iterable_type = self._expr_simple_type(iterable) if isinstance(iterable, Tree) else None
-        if isinstance(iterable_type, ListType) and len(ordered_names) == 1 and ordered_names[0] != "_":
+        iter_callee = (
+            self._name_text(iterable.children[0].children[0])
+            if isinstance(iterable, Tree) and iterable.data == "funccall" and iterable.children
+            and isinstance(iterable.children[0], Tree) and iterable.children[0].data == "var"
+            else ""
+        )
+        if iter_callee in {"range", "enumerate"} and iter_callee in self._func_return_types:
+            iter_callee = ""
+        if iter_callee == "range" and len(ordered_names) == 1 and ordered_names[0] != "_":
+            # ``for i in range(n)``: ``i`` is an ``int`` (``{"i": i}`` is
+            # JSON-compatible, ``s: str = i`` an error).
+            scope.var_types[ordered_names[0]] = "int"
+        elif iter_callee == "enumerate" and len(ordered_names) == 2:
+            enum_args = self._call_positional_args(iterable)
+            source_type = self._expr_simple_type(enum_args[0]) if enum_args else None
+            if ordered_names[0] != "_":
+                scope.var_types[ordered_names[0]] = "int"
+            if isinstance(source_type, ListType) and ordered_names[1] != "_":
+                scope.var_types[ordered_names[1]] = render_type(source_type.item)
+        elif isinstance(iterable_type, ListType) and len(ordered_names) == 1 and ordered_names[0] != "_":
             scope.var_types[ordered_names[0]] = render_type(iterable_type.item)
         elif (
             isinstance(iterable_type, NamedType) and iterable_type.name in {"json", "str"}
@@ -2628,6 +2655,12 @@ class SemanticChecker(NarrowingCheckMixin):
         # already-handled by recursing into children. Static-method
         # calls like ``Math.sqrt(x)`` and module attribute calls show
         # up as ``getattr`` so the base-name check above suffices.
+        if d == "await_call" and node.children:
+            operand_type = self._expr_simple_type(node.children[0])
+            if operand_type is not None and self._is_any_type(operand_type):
+                from compiler.constants import await_any_message, lam_simple_expr_text
+                self._error(node, "type", await_any_message(lam_simple_expr_text(node.children[0])))
+
         if d == "lambdef":
             self._visit_lambda(node)
             return
@@ -5335,6 +5368,12 @@ class SemanticChecker(NarrowingCheckMixin):
         type_text = self._call_return_type_text(operand) if isinstance(operand, Tree) else ""
         return parse_type(type_text) if type_text else self._expr_simple_type(operand)
 
+    def _is_result_receiver(self, node: Tree) -> bool:
+        """``node`` (the receiver of ``?.``) is a ``Result``."""
+        type_text = self._call_return_type_text(node) if node.data == "funccall" else ""
+        type_ = parse_type(type_text) if type_text else self._expr_simple_type(node)
+        return type_ is not None and self._is_result_type(type_)
+
     def _propagated_payload_type(self, node: Tree) -> Type | None:
         result_type = self._propagate_operand_type(node)
         if isinstance(result_type, GenericType) and result_type.base == "Result" and len(result_type.args) == 1:
@@ -5453,6 +5492,10 @@ class SemanticChecker(NarrowingCheckMixin):
         method = self._name_text(callee.children[1])
         if self._is_named_type(receiver_type, "str") if receiver_type is not None else False:
             if method in STR_METHODS:
+                from compiler.constants import str_method_arity_message
+                arity = str_method_arity_message(method, len(self._call_positional_args(call)))
+                if arity:
+                    self._error(callee, "call", arity)
                 return
             arg_texts = [lam_simple_expr_text(arg) for arg in self._call_positional_args(call)]
             self._error(
@@ -7919,6 +7962,12 @@ class SemanticChecker(NarrowingCheckMixin):
             receiver_type = self._expr_simple_type(node.children[0])
             if isinstance(receiver_type, NamedType) and receiver_type.name == "json":
                 return NamedType("json")
+            if node.data == "getattr":
+                # ``self.cents`` / ``order.total``: a numeric field's
+                # declared type (``self.cents / 100`` is a ``float``).
+                field_type = self._member_target_type(node)
+                if isinstance(field_type, NamedType) and field_type.name in {"int", "float"}:
+                    return field_type
         if node.data == "propagate":
             return self._propagated_payload_type(node)
         if node.data == "funccall":
@@ -8331,7 +8380,7 @@ class SemanticChecker(NarrowingCheckMixin):
         op_node = node.children[1]
         op_text = str(op_node.children[0]) if isinstance(op_node, Tree) and op_node.children else str(op_node)
         op = op_text[:-1] if op_text.endswith("=") else op_text
-        if op not in {"+", "-", "*", "/", "%"}:
+        if op not in {"+", "-", "*", "/", "//", "%"}:
             return
         target_type = self._expr_simple_type(node.children[0])
         value = node.children[2]
@@ -8360,10 +8409,12 @@ class SemanticChecker(NarrowingCheckMixin):
             self._report_binary_type_error(node, op, target_type, value_type)
             return
         result = self._binary_operator_result_type(op, target_type, value_type)
-        if op == "/" and self._is_named_type(target_type, "int"):
-            return
         if result is not None and not is_assignable(target_type, result):
-            self._error(node, "type", f"`{op_text}` would make `{render_type(target_type)}` a `{render_type(result)}`")
+            hint = (
+                ": `/` always gives a `float`; use `//=` for integer division"
+                if op == "/" and self._is_named_type(target_type, "int") else ""
+            )
+            self._error(node, "type", f"`{op_text}` would make `{render_type(target_type)}` a `{render_type(result)}`{hint}")
 
     def _report_binary_type_error(self, node: Tree, op: str, left: Type, right: Type) -> None:
         left_text = render_type(left)
@@ -8744,7 +8795,7 @@ class SemanticChecker(NarrowingCheckMixin):
             return True
         if op == "-" and (self._set_item_type(left) is not None or self._set_item_type(right) is not None):
             return self._sets_combinable(left, right)
-        if op in {"-", "*", "/", "%"}:
+        if op in {"-", "*", "/", "//", "%"}:
             return self._is_numeric_type(left) and self._is_numeric_type(right)
         return True
 
@@ -8827,6 +8878,14 @@ class SemanticChecker(NarrowingCheckMixin):
             if render_type(left.item) == render_type(right.item):
                 return left
             return ListType(NamedType("any"))
+        if op == "/" and all(
+            self._is_numeric_type(t) or (
+                isinstance(t, NamedType) and self._type_param_constraint(t.name) in self._NUMERIC_CONSTRAINTS
+            )
+            for t in (left, right)
+        ):
+            # Python's true division: always a ``float`` (``7 / 2 == 3.5``).
+            return NamedType("float")
         if self._is_numeric_type(left) and self._is_numeric_type(right):
             if self._is_named_type(left, "float") or self._is_named_type(right, "float"):
                 return NamedType("float")
@@ -9605,8 +9664,32 @@ class SemanticChecker(NarrowingCheckMixin):
         return not any(name in scope.names for scope in self._scopes[:-1])
 
     def _error(self, node, kind: str, msg: str) -> None:
+        if "`float`" in msg and "`int`" in msg and "`//" not in msg and self._has_int_true_division(node):
+            msg = f"{msg} (`/` always gives a `float`; use `//` for integer division)"
         line, col = self._loc(node)
         self.errors.append(SemanticError(line, col, msg, kind))
+
+    def _has_int_true_division(self, node) -> bool:
+        """Whether ``node`` holds an ``int / int`` (a ``float`` since 3.0),
+        the likely cause of a ``float``-for-``int`` mismatch reported on it."""
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            if not isinstance(current, Tree) or current.data in {"suite", "funcdef", "lambdef", "classdef"}:
+                continue
+            if current.data == "term":
+                operands = [child for child in current.children if isinstance(child, Tree)]
+                ops = [str(child) for child in current.children if isinstance(child, Token)]
+                left = self._expr_simple_type(operands[0]) if operands else None
+                for op, right in zip(ops, operands[1:]):
+                    right_type = self._expr_simple_type(right)
+                    if op == "/" and self._is_named_type(left, "int") and self._is_named_type(right_type, "int"):
+                        return True
+                    if left is None or right_type is None:
+                        break
+                    left = self._binary_operator_result_type(op, left, right_type)
+            stack.extend(current.children)
+        return False
 
     def _warning(self, node, kind: str, msg: str) -> None:
         """Append a non-fatal diagnostic. Same shape as :meth:`_error`
@@ -10344,6 +10427,44 @@ def _imported_call_metadata(
             for interfacedef in collect_interfacedefs(imported_tree, export.name):
                 collect_imported_interface(interfacedef, export.name)
 
+    def resolved_exports(mod_path: Path, facts, imported_tree: Tree) -> dict:
+        """``{visible name: (export, tree, path)}`` for the module's exports,
+        a re-export (``from .shapes import Point`` in a package
+        ``__init__.lam``) resolved to the declaring module's export, tree
+        and path, so re-exported symbols carry the same type information as
+        direct imports."""
+        out: dict = {}
+        for export in facts.exports.values():
+            if export.kind != "import":
+                out[export.name] = (export, imported_tree, mod_path)
+                continue
+            origin = module_index.resolve_export_origin(mod_path, export.name)
+            if origin is None:
+                continue
+            origin_export, origin_path = origin
+            origin_tree = imported_tree if origin_path == mod_path else module_tree(origin_path)
+            if origin_tree is not None:
+                out[export.name] = (origin_export, origin_tree, origin_path)
+        # Like a direct import, the classes of a defining module are known
+        # (``origin() -> Point`` with only ``origin`` re-exported).
+        origins = {path: tree for _e, tree, path in out.values() if path != mod_path}
+        for origin_path, origin_tree in origins.items():
+            origin_facts = module_index.facts_for(origin_path)
+            for export in (origin_facts.exports.values() if origin_facts else ()):
+                if export.kind == "class" and export.name not in out:
+                    out[export.name] = (export, origin_tree, origin_path)
+        return out
+
+    def collect_origin_interfaces(entries: dict) -> None:
+        seen: set = set()
+        for _export, origin_tree, origin_path in entries.values():
+            if origin_path in seen:
+                continue
+            seen.add(origin_path)
+            origin_facts = module_index.facts_for(origin_path)
+            if origin_facts is not None:
+                collect_signature_interfaces(origin_facts, origin_tree)
+
     for node in _iter_import_from_nodes(tree):
         module = _import_module_name(node)
         if not module:
@@ -10360,30 +10481,31 @@ def _imported_call_metadata(
         imported_tree = module_tree(mod_path)
         if imported_tree is None:
             continue
+        entries = resolved_exports(mod_path, facts, imported_tree)
         class_aliases = {
             requested: local
             for requested, local, _symbol_node in _from_import_symbols(node)
-            if (facts.exports.get(requested) is not None
-                and facts.exports[requested].kind == "class")
+            if requested in entries and entries[requested][0].kind == "class"
         }
         collected_classes: set[str] = set()
-        for export in facts.exports.values():
+        for name, (export, origin_tree, origin_path) in entries.items():
             if export.kind != "class" or _export_is_private(export):
                 continue
-            local = class_aliases.get(export.name, export.name)
-            metadata.class_identity[local] = f"{mod_path}::{export.name}"
-            for classdef in collect_classdefs(imported_tree, export.name):
+            local = class_aliases.get(name, name)
+            metadata.class_identity[local] = f"{origin_path}::{export.name}"
+            for classdef in collect_classdefs(origin_tree, export.name):
                 collect_imported_class(classdef, local, class_aliases)
                 collected_classes.add(local)
         for requested, local, _symbol_node in _from_import_symbols(node):
-            export = facts.exports.get(requested)
-            if export is None:
+            entry = entries.get(requested)
+            if entry is None:
                 continue
+            export, origin_tree, _origin_path = entry
             if export.kind == "function":
                 if _export_is_private(export):
                     metadata.private_functions.add(local)
                     continue
-                for funcdef in collect_funcdefs(imported_tree, requested):
+                for funcdef in collect_funcdefs(origin_tree, export.name):
                     sig = helper._func_signature(funcdef, local)
                     if sig is not None:
                         metadata.func_sigs.setdefault(local, []).append(
@@ -10391,12 +10513,12 @@ def _imported_call_metadata(
                         )
                     record_func_return_type(funcdef, local, class_aliases)
             elif export.kind == "class" and local not in collected_classes:
-                for classdef in collect_classdefs(imported_tree, requested):
+                for classdef in collect_classdefs(origin_tree, export.name):
                     collect_imported_class(classdef, local, class_aliases)
             elif export.kind == "interface":
-                for interfacedef in collect_interfacedefs(imported_tree, requested):
+                for interfacedef in collect_interfacedefs(origin_tree, export.name):
                     collect_imported_interface(interfacedef, local)
-        collect_signature_interfaces(facts, imported_tree)
+        collect_origin_interfaces(entries)
 
     for node in _iter_import_name_nodes(tree):
         for module, local in _import_name_modules(node):
@@ -10412,18 +10534,19 @@ def _imported_call_metadata(
             imported_tree = module_tree(mod_path)
             if imported_tree is None:
                 continue
+            entries = resolved_exports(mod_path, facts, imported_tree)
             class_aliases = {
-                export.name: f"{local}.{export.name}"
-                for export in facts.exports.values()
+                name: f"{local}.{name}"
+                for name, (export, _t, _p) in entries.items()
                 if export.kind == "class"
             }
-            for export in facts.exports.values():
-                target = f"{local}.{export.name}"
+            for name, (export, origin_tree, origin_path) in entries.items():
+                target = f"{local}.{name}"
                 if export.kind == "function":
                     if _export_is_private(export):
                         metadata.private_functions.add(target)
                         continue
-                    for funcdef in collect_funcdefs(imported_tree, export.name):
+                    for funcdef in collect_funcdefs(origin_tree, export.name):
                         sig = helper._func_signature(funcdef, target)
                         if sig is not None:
                             metadata.method_sigs.setdefault(target, []).append(
@@ -10431,13 +10554,13 @@ def _imported_call_metadata(
                             )
                         record_func_return_type(funcdef, target, class_aliases)
                 elif export.kind == "class":
-                    metadata.class_identity[target] = f"{mod_path}::{export.name}"
-                    for classdef in collect_classdefs(imported_tree, export.name):
+                    metadata.class_identity[target] = f"{origin_path}::{export.name}"
+                    for classdef in collect_classdefs(origin_tree, export.name):
                         collect_imported_class(classdef, target, class_aliases)
                 elif export.kind == "interface":
-                    for interfacedef in collect_interfacedefs(imported_tree, export.name):
+                    for interfacedef in collect_interfacedefs(origin_tree, export.name):
                         collect_imported_interface(interfacedef, target)
-            collect_signature_interfaces(facts, imported_tree)
+            collect_origin_interfaces(entries)
     return metadata
 
 
