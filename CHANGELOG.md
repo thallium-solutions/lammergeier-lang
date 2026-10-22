@@ -5,6 +5,16 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## Unreleased
+
+### Changed
+
+- Catalog: `@lam/stripe` 1.0.1, `@lam/otel` 1.1.0 (split into modules),
+  `@lam/keyring` 1.0.1, `@lam/totp` 1.0.1 and `@lam/jobs` 1.0.1 drop their
+  lamc 2.1 workarounds and require lamc 3.0.
+- Catalog: `@lam/sftp` 3.6.0 (host key rotation, user certificates,
+  `fsync@openssh.com`).
+
 ## 3.0.1 — 2026-10-20
 
 ### Changed

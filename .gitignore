@@ -80,3 +80,6 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# bunny.net API key for website/publish.sh (never commit)
+website/.bunny-token

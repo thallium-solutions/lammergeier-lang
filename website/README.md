@@ -10,7 +10,9 @@ Markdown and `highlight.js` for code highlighting).
 ```
 website/
 ├── index.html                 # single-page app shell
-├── build.sh                   # copies docs/ → content/ (idempotent)
+├── build.sh                   # copies docs/ → content/, sitemap lastmod (idempotent)
+├── publish.sh                 # bunny.net upload + CDN purge
+├── .bunny-token               # bunny.net API key (git-ignored, not in the repo)
 ├── README.md                  # this file
 ├── assets/
 │   ├── css/main.css           # theme + layout
@@ -52,19 +54,44 @@ routing required.
 
 ## Deployment
 
-The contents of `website/` are a self-contained static site. Any host
-that serves static files is enough:
+Production is a bunny.net storage zone (`lammergeier-lang-website-production`)
+behind the pull zone `production-lammergeier-lang` (lammergeier-lang.dev):
 
-- **GitHub Pages** — point Pages at `/website` on the `main` branch.
-- **Netlify / Vercel / Cloudflare Pages** — set the publish directory
-  to `website/`.
-- **Nginx / Apache / any CDN** — upload `website/`, no further config
-  needed. MIME types for `.html`, `.css`, `.js`, `.md` are fine out of
-  the box on every sensible default.
+```bash
+./website/build.sh               # refresh content/ and sitemap.xml
+./website/publish.sh --dry-run   # show what would be deleted and uploaded
+./website/publish.sh             # publish and purge the CDN cache
+```
 
-Remember to re-run `./website/build.sh` before deploying if the source
-docs changed — the site reads the copies under `content/`, not the
-originals in `docs/`.
+**What `publish.sh` does:**
+
+1. Deletes everything in the storage zone.
+2. Uploads `assets/`, `content/`, `index.html`, `robots.txt` and
+   `sitemap.xml`, each with its SHA-256 so bunny.net rejects corrupted
+   uploads.
+3. Purges the pull zone's cache.
+
+**Safety checks.** It refuses to run when `content/` is older than its
+sources (run `build.sh`). It also refuses when the pull zone does not serve
+that storage zone. Zones are matched by exact name, because the API key
+sees every zone of the account.
+
+**API key.** `publish.sh` reads the bunny.net account API key from
+`BUNNY_API_KEY`, or from `website/.bunny-token`:
+
+- the file is git-ignored and must stay so; the script refuses to use it
+  otherwise and keeps it at mode 600;
+- the key is passed to `curl` through a private temporary header file,
+  never on the command line.
+
+**On releases.** A new compiler release published with
+`./mirror-to-github.py` runs `build.sh` and `publish.sh` automatically
+(`--no-website` skips it).
+
+**Search engines.** `build.sh` sets `<lastmod>` in `sitemap.xml` to the last
+commit that touched the docs or the site. The doc pages are hash routes
+(`/#/docs/...`): search engines index them as the home page. Separate
+pages in search results would need path-based routes.
 
 ## Search
 

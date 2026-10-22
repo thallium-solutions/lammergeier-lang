@@ -61,17 +61,17 @@ this specification focuses on authoring and resolution details.
 | `@lam/protobuf` | `3.0.2` | [thallium-solutions/lam-protobuf](https://github.com/thallium-solutions/lam-protobuf) | Protocol Buffers binary, JSON, text, equality, size, and clone helpers. |
 | `@lam/redis` | `2.0.2` | [thallium-solutions/lam-redis](https://github.com/thallium-solutions/lam-redis) | Redis strings, native JSON, collections, sorted sets, pub/sub, and pipelines. |
 | `@lam/s3` | `2.5.0` | [thallium-solutions/lam-s3](https://github.com/thallium-solutions/lam-s3) | S3-compatible object storage with unsuffixed Result APIs, files, buffers, streams, metadata, and presigned URLs. |
-| `@lam/sftp` | `3.5.0` | [thallium-solutions/lam-sftp](https://github.com/thallium-solutions/lam-sftp) | Callback-driven, storage-agnostic SFTP server built on `@lam/ssh`. |
+| `@lam/sftp` | `3.7.0` | [thallium-solutions/lam-sftp](https://github.com/thallium-solutions/lam-sftp) | Callback-driven, storage-agnostic SFTP server built on `@lam/ssh`. |
 | `@lam/ssh` | `3.0.3` | [thallium-solutions/lam-ssh](https://github.com/thallium-solutions/lam-ssh) | Strictly verified SSH clients, commands, sessions, keys, cancellation, and direct TCP channels. |
 | `@lam/vulture` | `2.0.3` | [thallium-solutions/lam-vulture](https://github.com/thallium-solutions/lam-vulture) | Fastify-style HTTP server with routing, hooks, native JSON, schemas, streaming, OpenAPI, and in-process injection. |
 | `@lam/vulture/std-plugin` | `2.0.4` | [thallium-solutions/lam-vulture-std-plugin](https://github.com/thallium-solutions/lam-vulture-std-plugin) | Common logging, security, metrics, tracing, authentication, session, and resilience plugins. |
 | `@lam/vulture/tus-plugin` | `3.0.3` | [thallium-solutions/lam-vulture-tus-plugin](https://github.com/thallium-solutions/lam-vulture-tus-plugin) | tus.io resumable-upload routes and garbage collection. |
 | `@lam/vulture/ws-plugin` | `2.0.3` | [thallium-solutions/lam-vulture-ws-plugin](https://github.com/thallium-solutions/lam-vulture-ws-plugin) | WebSocket upgrades, frames, deadlines, subprotocols, compression, and origin policy. |
-| `@lam/stripe` | `1.0.0` | [thallium-solutions/lam-stripe](https://github.com/thallium-solutions/lam-stripe) | Stripe API client with typed Results, retries, pagination, billing meters, subscriptions and webhook verification. |
-| `@lam/otel` | `1.0.0` | [thallium-solutions/lam-otel](https://github.com/thallium-solutions/lam-otel) | OpenTelemetry traces, metrics and logs over OTLP/HTTP JSON. |
-| `@lam/keyring` | `1.0.0` | [thallium-solutions/lam-keyring](https://github.com/thallium-solutions/lam-keyring) | Sealing secrets at rest with rotating key rings. |
-| `@lam/totp` | `1.0.0` | [thallium-solutions/lam-totp](https://github.com/thallium-solutions/lam-totp) | One-time passwords, otpauth URIs, QR codes and recovery codes. |
-| `@lam/jobs` | `1.0.0` | [thallium-solutions/lam-jobs](https://github.com/thallium-solutions/lam-jobs) | PostgreSQL leases, schedules, job health, heartbeats and durable queues. |
+| `@lam/stripe` | `1.0.1` | [thallium-solutions/lam-stripe](https://github.com/thallium-solutions/lam-stripe) | Stripe API client with typed Results, retries, pagination, billing meters, subscriptions and webhook verification. |
+| `@lam/otel` | `1.1.0` | [thallium-solutions/lam-otel](https://github.com/thallium-solutions/lam-otel) | OpenTelemetry traces, metrics and logs over OTLP/HTTP JSON. |
+| `@lam/keyring` | `1.0.1` | [thallium-solutions/lam-keyring](https://github.com/thallium-solutions/lam-keyring) | Sealing secrets at rest with rotating key rings. |
+| `@lam/totp` | `1.0.1` | [thallium-solutions/lam-totp](https://github.com/thallium-solutions/lam-totp) | One-time passwords, otpauth URIs, QR codes and recovery codes. |
+| `@lam/jobs` | `1.0.1` | [thallium-solutions/lam-jobs](https://github.com/thallium-solutions/lam-jobs) | PostgreSQL leases, schedules, job health, heartbeats and durable queues. |
 
 Every scoped `@lam/...` package above declares a `compatibility.lamc` range
 that includes 3.x. Install an exact release such as

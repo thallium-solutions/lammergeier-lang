@@ -155,6 +155,14 @@ for f in "${CONTENT}"/*.md; do
     rewrite_file "${f}"
 done
 
+# ── sitemap.xml: <lastmod> = last commit touching the site's sources ──
+# (deterministic: rebuilding without new commits leaves the file as is).
+LASTMOD="$(git -C "${ROOT}" log -1 --format=%cs -- docs README.md CONTRIBUTING.md website/index.html website/assets 2>/dev/null || true)"
+if [[ -n "${LASTMOD}" ]]; then
+    sed -i -e '/<lastmod>/d' -e "s|^\(\( *\)<loc>.*</loc>\)$|\1\n\2<lastmod>${LASTMOD}</lastmod>|" "${WEB}/sitemap.xml"
+    echo "sitemap.xml: lastmod ${LASTMOD}"
+fi
+
 echo
 echo "✓ website/content/ populated from source docs."
 echo "  Point a static server at ./website/ to preview:"

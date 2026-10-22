@@ -76,7 +76,7 @@ OFFICIAL_PACKAGES = (
         "@lam/sftp",
         "lam-sftp",
         ("SftpConfig", "SftpHandlers", "SftpRequest", "SftpServer"),
-        "3.5.0",
+        "3.6.0",
     ),
     OfficialPackage(
         "@lam/ssh",
@@ -117,11 +117,11 @@ OFFICIAL_PACKAGES = (
         ("WebSocket", "wsRoute", "wsUpgrade"),
         "2.0.3",
     ),
-    OfficialPackage("@lam/stripe", "lam-stripe", ("StripeClient", "StripeConfig", "StripeWebhook"), "1.0.0"),
-    OfficialPackage("@lam/otel", "lam-otel", ("Otel", "OtelConfig", "OtelTracer"), "1.0.0"),
-    OfficialPackage("@lam/keyring", "lam-keyring", ("KeyRing", "KeyDerivation", "Resealer"), "1.0.0"),
-    OfficialPackage("@lam/totp", "lam-totp", ("Totp", "Hotp", "QrCode", "RecoveryCodes"), "1.0.0"),
-    OfficialPackage("@lam/jobs", "lam-jobs", ("JobScheduler", "JobQueue", "JobWorkers"), "1.0.0"),
+    OfficialPackage("@lam/stripe", "lam-stripe", ("StripeClient", "StripeConfig", "StripeWebhook"), "1.0.1"),
+    OfficialPackage("@lam/otel", "lam-otel", ("Otel", "OtelConfig", "OtelTracer"), "1.1.0"),
+    OfficialPackage("@lam/keyring", "lam-keyring", ("KeyRing", "KeyDerivation", "Resealer"), "1.0.1"),
+    OfficialPackage("@lam/totp", "lam-totp", ("Totp", "Hotp", "QrCode", "RecoveryCodes"), "1.0.1"),
+    OfficialPackage("@lam/jobs", "lam-jobs", ("JobScheduler", "JobQueue", "JobWorkers"), "1.0.1"),
 )
 
 

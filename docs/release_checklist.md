@@ -94,6 +94,12 @@ Replace `vX.Y.Z` with the release version.
 
 ## 9. Post-release check
 
+- **Website:** `./mirror-to-github.py` publishes it with a new release
+  (`website/build.sh`, then `website/publish.sh`: bunny.net upload and CDN
+  purge). If it was skipped (`--no-website`) or failed, run both scripts by
+  hand. Then open <https://lammergeier-lang.dev/> and check that the docs
+  show the release.
+
 - **Fresh checkout:** clone or update a separate checkout at the pushed tag.
 - **Install from tag:** run `./install.sh --user --no-editor` or the intended installation mode.
 - **Compile hello world:** `lamc tests/tests/cases/rosetta/test_hello_world.lam --run`.
