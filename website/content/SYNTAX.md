@@ -137,7 +137,8 @@ func main() {
 }
 ```
 
-`str(x)` formats any value and never fails, including `any`.
+`str(x)` formats any value and never fails, including `any`; `str(data)` of a
+`bytes` value is its UTF-8 text (see [Bytes](#bytes)).
 
 ### Data Flow With Collections
 
@@ -529,6 +530,7 @@ values into Lam locals before returning to normal Lam code.
 | `float`      | `float64`      |
 | `str`        | `string`       |
 | `bool`       | `bool`         |
+| `bytes`      | `[]byte`       |
 | `list[T]`    | `[]T`          |
 | `dict[K, V]` | `map[K]V`      |
 | `json`       | `LamJSON`      |
@@ -573,6 +575,45 @@ Assigning an `int / int` where an `int` is expected is a type error with a
 hint (``cannot assign `float` to `int` variable `middle` (`/` always gives
 a `float`; use `//` for integer division)``), and `/=` on an `int`
 variable is one too (use `//=`).
+
+### Bytes
+
+`bytes` is a sequence of byte values (Go `[]byte`): file contents, hashes,
+network frames.
+
+```lammergeier
+data: bytes = bytes("héllo")        # the UTF-8 encoding (6 bytes)
+text: str = str(data)               # decoded back: "héllo"
+codes: bytes = bytes([104, 105])    # from a list[int]
+dup: bytes = bytes(data)            # a copy
+none: bytes = bytes()               # empty (so is `[]`)
+
+shifted: bytes = [b + 1 for b in codes]     # comprehensions build bytes
+header: bytes = [len(data), 0]              # int expressions too
+
+first: byte = data[0]               # 104, like `str` indexing
+code: int = int(data[-1])
+part: bytes = data[1:3]             # Python slicing (clamped, negative, steps)
+joined: bytes = data + bytes("!")   # a new value; `+=` too
+same: bool = data == bytes("héllo") # compares the contents
+found: bool = 104 in data and bytes("ll") in data   # a byte value or a sub-sequence
+print(data, f"[{data}]")            # héllo [héllo]: the text, like str(data)
+```
+
+- `bytes(x)` takes a `str` (UTF-8), a `bytes` (copied) or a `list[int]`; an
+  `any` holding one of these is converted at run time. Other types are a
+  compile error.
+- Items written where `bytes` is expected — list literals, comprehensions, a
+  `list[int]` given to `bytes(...)` — must be 0..255: a constant outside the
+  range is a compile error and a computed one throws `ValueError: byte must be
+  in range(0, 256), got 300` (no silent wrap-around). An existing
+  `list[int]` variable is not a `bytes`: convert it with `bytes(codes)`.
+- Indexing and iteration give `byte` values (`for b in data`), which compare
+  with ints (`data[0] == 104`) and convert with `int(b)`.
+- `x in data` takes an int byte value (one outside 0..255 is never present)
+  or `bytes`; a `str` needle is a compile error (use `bytes(needle)`).
+- `str(data)`, `print(data)` and f-strings decode UTF-8 (invalid sequences
+  are kept as they are); `repr(data)` keeps Go's `[]byte{...}` form.
 
 ---
 
@@ -3722,7 +3763,7 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamtime`        | `Time`                             | Duration units/arithmetic plus Unix time, sleeps, parsing, formatting, and measurement |
 | `lamcron`        | `Cron`                             | Cron scheduling with standard/seconds-aware expressions, descriptors, and lifecycle controls |
 | `lamconv`        | `Conv`                             | Return-type-overloaded `parse` for decimal int/float/bool plus explicitly named hex/octal/binary parsers |
-| `lamos`          | `Os`, `File`, `FileLineGenerator`  | Result-based OS/filesystem helpers plus streaming file lines and batches |
+| `lamos`          | `Os`, `File`, `FileLineGenerator`  | Result-based OS/filesystem helpers, streaming file lines and batches, and `waitForSignal` |
 | `lamjson`        | `Json`                             | Native `json` runtime, Result-based encode/decode/pretty, validation, and dict/list conversion |
 | `lamyaml`        | `Yaml`                             | Result-returning YAML encoding, decoding, and multi-document decoding |
 | `lamxml`         | `Xml`                              | Native `xml`: `Xml.parse` (well-formed check), escaping, dict/list encoding and shape-shifting decode |
@@ -3733,21 +3774,21 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamre`          | `Re`                               | Result-returning regex match, find, findAll, replaceAll, split, and groups |
 | `lamhttp`        | `Http`, `HttpClient`, `HttpResponse`, `HttpCookie`, `HttpServer` | Overloaded native-JSON requests, response headers/cookies, and a blocking server (`Http.serve`) |
 | `lamsmtp`        | `Smtp`, `Mail`                     | Result-based SMTP delivery and MIME mail construction for text, HTML, and attachments |
-| `lamdb`          | `Db`                               | Database connectivity (connect, close, exec, queryRow, queryAll, queryRows) |
+| `lamdb`          | `Db`, `Tx`, `QueryBuilder`, `Row`  | Database connectivity (connect, exec, query, transactions, query builder) and typed row values (`Row.int`, `Row.str`, `Row.time`, `Row.strList`, `Db.textArray`) |
 | `lammigrate`     | `Migrator`, `SchemaBuilder`        | SQL migration batches and portable programmatic schema helpers |
 | `lamhash`        | `Hash`                             | Hashing (sha256, sha1, sha512, md5, crc32) plus HMAC (hmacSha1/256/512), `constantTimeEquals`, `verifyHmacSha256` |
-| `lamcrypto`      | `Crypto`, `CryptoKeyPair`, `CryptoCertificate` | Secure random data, AES-GCM envelopes, PBKDF2 password hashes, PEM keys/signatures, and X.509 metadata |
+| `lamcrypto`      | `Crypto`, `CryptoKeyPair`, `CryptoCertificate` | Secure random data, AES-GCM envelopes, PBKDF2 and bcrypt password hashes, PEM keys/signatures, and X.509 metadata |
 | `lambase64`      | `Base16`, `Base32`, `Base64`, `Hex` | Standard/raw Base16/Base32/Base64 codecs and compatibility aliases |
 | `lampath`        | `Path`                             | Variadic path joining plus base/dir/ext/abs/glob/existence/splitting helpers |
 | `lamcsv`         | `Csv`, `CsvReader`                 | Result-based CSV parsing/formatting and lazy row/batch streaming |
-| `lamfmt`         | `Fmt`                              | Formatting (sprintf, printf, println, hex, binary, octal, padLeft, padRight, center, formatFloat, repr) |
+| `lamfmt`         | `Fmt`                              | Formatting (sprintf, printf, println, hex, binary, octal, padLeft, padRight, center, formatFloat — fixed decimals or the shortest exact text, repr) |
 | `lamurl`         | `Url`                              | URL parsing (parse, host, path, scheme, encode, decode) |
 | `lamlog`         | `Log`                              | Logging (info/warn/error/debug/fatal plus infof/warnf/errorf/debugf/fatalf) |
 | `lambytes`       | `Bytes`                            | Byte/hex utilities (toBytes, fromBytes, hexEncode, hexDecode) |
 | `lamexec`        | `Exec`, `ExecCommand`, `ExecResult` | Typed execution with env/cwd/stdin, timeout, cancellation, and captured output |
 | `lamunicode`     | `Unicode`                          | Unicode/UTF-8 (runeCount, isValid, isLetter, isDigit, etc.) |
 | `lamenv`         | `Env`                              | String, typed, and Result-based environment access plus set/unset/all |
-| `lamdatetime`    | `DateTime`                         | Date/time formatting and parsing |
+| `lamdatetime`    | `DateTime`                         | Date/time formatting and parsing in IANA zones (zone database compiled in) |
 | `lamdatastructures` | `Queue`, `Deque`, `Stack`, `Set`, `Heap`, `PriorityHeap` | Canonical collection implementations with Result-returning empty-state operations |
 | `lamstack`       | `Stack`                            | Compatibility re-export from `lamdatastructures` |
 | `lamqueue`       | `Queue`, `Deque`                   | Compatibility re-exports from `lamdatastructures` |
@@ -3760,7 +3801,7 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamcli`         | `Cli`                              | CLI args/positionals and overloaded string/integer `getFlag` |
 | `lamtest`        | `Test`                             | Assertion/test framework (assertTrue, assertFalse, assertEqual, assertNotEqual, assertNil, assertNotNil, assertLen, assertContains, assertAlmostEqual, describe, pass, fail, summary) |
 | `lamconcurrency` | `Channel`, `WaitGroup`, `Mutex`, `RWMutex`, `Atomic` | Blocking `send` / `receive`, awaitable `asyncSend` / `asyncReceive`, immediate `offer` / `poll`, and synchronization primitives |
-| `lamcontext`     | `Context`                          | Cancellation trees, unit-aware expiration, inherited values, bounded waits, and native Go context interop |
+| `lamcontext`     | `Context`                          | Cancellation trees, unit-aware expiration, inherited values, bounded waits, signal-cancelled roots (`onSignals`), and native Go context interop |
 | `lamactor`       | `Mailbox`, `ActorRef`, `ActorSystem` | Actor messaging; mailboxes share Channel's blocking, awaitable, and immediate Result APIs |
 | `lamretry`       | `Retry`                            | Result-aware retries and predicate polling with capped exponential backoff and optional jitter |
 | `lamratelimit`   | `TokenBucket`                      | Goroutine-safe token-bucket rate limiting with blocking and immediate acquisition |

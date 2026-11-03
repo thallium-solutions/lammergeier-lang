@@ -1,0 +1,7 @@
+# expect-error: membership test for `bytes` expects an `int` byte value or `bytes`, got `str`
+# `in` on bytes takes a byte value or a sub-sequence; a `str` needle must be
+# converted with `bytes(...)` first.
+func main() {
+    data: bytes = bytes("hello")
+    print("ell" in data)
+}

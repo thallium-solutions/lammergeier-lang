@@ -4,6 +4,12 @@
 # Recoverable filesystem failures are explicit ``Result`` values on the
 # primary, unsuffixed APIs. Empty files and directories remain successful
 # values, distinct from missing or unreadable paths.
+#
+# ``Os.waitForSignal(names)`` blocks until one of the termination signals
+# ``SIGINT``, ``SIGTERM``, ``SIGHUP`` or ``SIGQUIT`` arrives and returns its
+# name; the signals are handled only while it waits. For a non-blocking
+# shape use ``lamcontext.Context.onSignals(names)``, a context cancelled by
+# the first signal.
 
 from lamerrors import Result, Error
 
@@ -13,13 +19,57 @@ go! {
         "fmt"
         "io"
         "os"
+        "os/signal"
         "path/filepath"
         "strings"
         "sync"
+        "syscall"
     )
 
     var lamStdinReader = bufio.NewReader(os.Stdin)
     var lamStdinMu sync.Mutex
+
+    // Termination signals by name (``SIGTERM``, ``TERM`` and ``sigterm``
+    // alike); these four exist on every platform Go targets.
+    func lamOsSignals(names []string) ([]os.Signal, error) {
+        if len(names) == 0 {
+            return nil, fmt.Errorf("no signal names given")
+        }
+        out := make([]os.Signal, 0, len(names))
+        for _, raw := range names {
+            name := strings.ToUpper(strings.TrimSpace(raw))
+            if !strings.HasPrefix(name, "SIG") {
+                name = "SIG" + name
+            }
+            switch name {
+            case "SIGINT":
+                out = append(out, os.Interrupt)
+            case "SIGTERM":
+                out = append(out, syscall.SIGTERM)
+            case "SIGHUP":
+                out = append(out, syscall.SIGHUP)
+            case "SIGQUIT":
+                out = append(out, syscall.SIGQUIT)
+            default:
+                return nil, fmt.Errorf("unknown signal %q (supported: SIGINT, SIGTERM, SIGHUP, SIGQUIT)", raw)
+            }
+        }
+        return out, nil
+    }
+
+    func lamOsSignalName(sig os.Signal) string {
+        switch sig {
+        case os.Interrupt:
+            return "SIGINT"
+        case syscall.SIGTERM:
+            return "SIGTERM"
+        case syscall.SIGHUP:
+            return "SIGHUP"
+        case syscall.SIGQUIT:
+            return "SIGQUIT"
+        }
+        return sig.String()
+    }
 }
 
 class File {
@@ -644,6 +694,32 @@ class Os {
                 "EnvError", "user: USER, LOGNAME, and USERNAME are unset or empty", nil,
             ))
         }
+    }
+
+    static func waitForSignal(names: list[str] = ["SIGINT", "SIGTERM"]) -> str {
+        #- Block until one of ``names`` arrives and return its name
+           (``"SIGTERM"``). Names are ``SIGINT``, ``SIGTERM``, ``SIGHUP`` and
+           ``SIGQUIT`` (the ``SIG`` prefix and case are optional); an unknown
+           or empty list throws ``ValueError``. The signals are caught only
+           while waiting: afterwards they have their default effect again. -#
+        failure: str = ""
+        received: str = ""
+        go! {
+            sigs, err := lamOsSignals(names)
+            if err != nil {
+                failure = err.Error()
+            } else {
+                ch := make(chan os.Signal, 1)
+                signal.Notify(ch, sigs...)
+                got := <-ch
+                signal.Stop(ch)
+                received = lamOsSignalName(got)
+            }
+        }
+        if failure != "" {
+            throw ValueError(failure)
+        }
+        return received
     }
 
     static func hostname() -> Result[str] {

@@ -340,6 +340,19 @@ the value directly through `_expr_to_go`. The unit gate has a static
 contract tests for the cases most likely to regress: anonymous collection call
 arguments, contextual `?` unboxing, and class-pointer argument passing.
 
+### `bytes` lowering
+
+`bytes` is a Go `[]byte`. `bytes(text)` is `[]byte(text)`, `bytes(data)` a
+copy (`append([]byte{}, data...)`), `bytes(codes)` and an `any` argument a
+small converting closure; `str(data)`, `print(data)` and f-string slots are
+`string(data)`. Where a byte is expected (an element of a `bytes` literal or
+comprehension), an `int` expression goes through a checked conversion
+(`func(_v int) byte { if _v < 0 || _v > 255 { panic("ValueError: ...") };
+return byte(_v) }(x)`); int constants stay constants. Slicing and `+` reuse
+the typed slice lowering (a fresh slice for `+`), `==` is `slices.Equal`,
+`x in data` is `slices.Contains` for a byte value (false outside 0..255) and
+`strings.Contains(string(data), string(sub))` for a sub-sequence.
+
 ### Native JSON lowering
 
 A `json` annotation triggers the compiler-managed `lamjson` support module and
@@ -1833,7 +1846,8 @@ reduced numbered source so the next regression can be promoted into a focused
 Third-party Go modules that the Lam stdlib itself depends on are
 listed with frozen versions in
 `compiler/stdlib_go_deps.py::STDLIB_GO_PINS`. Examples: `lamdb`
-blank-imports `modernc.org/sqlite`, while `lamenv` reaches into
+blank-imports `modernc.org/sqlite`, `lamcrypto` imports
+`golang.org/x/crypto/bcrypt`, while `lamenv` reaches into
 `github.com/BurntSushi/toml` and `gopkg.in/yaml.v3`. External packages own
 their pins: `@lam/vulture/ws-plugin`, for example, declares
 `github.com/gorilla/websocket` in its `lamlib.toml`.

@@ -1,0 +1,162 @@
+# expect: login ada ok rehash=true
+# expect: login bob wrong
+# expect: login eve error CryptoPasswordHashError
+# expect: invoice #1 ada 12.5 EUR 2026-11-03 20:05 CET [bio,local] paid=true
+# expect: invoice #2 bob 0.1 EUR 2026-07-02 15:46 CEST [] paid=false
+# expect: invoice #3 eve 1234567.25 EUR never [x y] paid=false
+# expect: total 1234579.85
+# expect: body 7 id=1;ok checksum=592
+# expect: frames 3 hello|wörld|!
+# expect: export {"ada","bob","eve"} ok
+# expect: shutdown SIGTERM 2 workers true
+# The 4.1 additions composed in one small service: bcrypt logins with
+# rehash decisions (Result, `?`, do/catch), typed lamdb rows (Row.* over
+# SQLite, an interface and a generic helper), Europe/Rome times from the
+# embedded zone database, shortest float text, bytes framing
+# (conversions, comprehensions, slicing, `in`, `+`) and a signal-driven
+# shutdown with async workers sharing a Context.
+from lamcrypto import Crypto
+from lamdb import Db, Row
+from lamdatetime import DateTime
+from lamfmt import Fmt
+from lamcontext import Context
+from lamerrors import Result, Error
+
+go! {
+    import (
+        "os"
+        "syscall"
+        "time"
+    )
+}
+
+interface Rendered {
+    func render(self) -> str
+}
+
+class Invoice {
+    func init(self, row: dict[str, any]) {
+        self.id: int = Row.int(row, "id")
+        self.customer: str = Row.str(row, "customer")
+        self.amount: float = Row.float(row, "amount")
+        self.issued: optional[DateTime] = Row.time(row, "issued")
+        self.tags: list[str] = Row.strList(row, "tags")
+        self.paid: bool = Row.bool(row, "paid")
+    }
+
+    func render(self) -> str {
+        when: str = "never"
+        if self.issued != None {
+            when = self.issued.inLocation("Europe/Rome").unwrap().format("2006-01-02 15:04 MST")
+        }
+        return f"#{self.id} {self.customer} {Fmt.formatFloat(self.amount)} EUR {when} [{','.join(self.tags)}] paid={self.paid}"
+    }
+}
+
+func renderAll[T: Rendered](items: list[T]) -> list[str] {
+    return [item.render() for item in items]
+}
+
+func login(name: str, password: str, stored: str) -> Result[str] {
+    if not Crypto.bcryptVerify(password, stored)? {
+        return Result.Err(Error("AuthError", f"{name}: wrong password"))
+    }
+    cost: int = Crypto.bcryptCost(stored)?
+    return Result.Ok(f"{name} ok rehash={cost < 12}")
+}
+
+func frame(payload: bytes) -> bytes {
+    header: bytes = [len(payload)]
+    return header + payload
+}
+
+func unframe(stream: bytes) -> list[bytes] {
+    out: list[bytes] = []
+    i: int = 0
+    while i < len(stream) {
+        size: int = int(stream[i])
+        out.append(stream[i + 1:i + 1 + size])
+        i += 1 + size
+    }
+    return out
+}
+
+class Worker {
+    func init(self) {
+        self.ticks: int = 0
+    }
+
+    async func run(self, ctx: Context) -> bool {
+        while not ctx.wait(10) {
+            self.ticks += 1
+        }
+        return ctx.reason() == "SIGTERM"
+    }
+}
+
+func terminateSoon() {
+    go! {
+        go func() {
+            time.Sleep(100 * time.Millisecond)
+            syscall.Kill(os.Getpid(), syscall.SIGTERM)
+        }()
+    }
+}
+
+func main() {
+    accounts: dict[str, str] = {
+        "ada": "$2b$10$KEYpeI5ywrdKq.CcUC0cPeLHdarx8oS7n8Vl3nshcisB2y8/bM1pW",
+        "bob": "$2a$06$3yhd2wMt5Ke2hEeLZMe5Z./aD3GzMJrkKJ4WOVp62luD6O/MLVmTy",
+        "eve": "md5:abc",
+    }
+    attempts: list[str] = ["ada", "bob", "eve"]
+    for name in attempts {
+        do {
+            print("login", login(name, "correct horse" if name != "bob" else "guess", accounts[name])?)
+        } catch err {
+            print("login", name, "wrong" if err.kind == "AuthError" else f"error {err.kind}")
+        }
+    }
+
+    db: Db = Db.connect("sqlite", ":memory:").unwrap()
+    _ = db.exec("CREATE TABLE invoices (id INTEGER, customer TEXT, amount NUMERIC, issued TEXT, tags TEXT, paid TEXT)").unwrap()
+    rows: list[list[any]] = [
+        [1, "ada", "12.5", "2026-11-03 20:05:00+01", Db.textArray(["bio", "local"]), "t"],
+        [2, "bob", "0.1", "2026-07-02T13:46:40Z", "{}", "f"],
+        [3, "eve", "1234567.25", None, "{x,y}", None],
+    ]
+    for r in rows {
+        _ = db.exec("INSERT INTO invoices VALUES (?, ?, ?, ?, ?, ?)", r).unwrap()
+    }
+    invoices: list[Invoice] = [Invoice(row) for row in db.query("SELECT * FROM invoices ORDER BY id").unwrap()]
+    for line in renderAll(invoices) {
+        print("invoice", line.replace("[x,y]", "[x y]"))
+    }
+    total: float = 0.0
+    for inv in invoices {
+        total += inv.amount
+    }
+    print("total", Fmt.formatFloat(total, 2))
+
+    body: bytes = bytes("id=1;ok")
+    checksum: int = 0
+    for b in body {
+        checksum += int(b)
+    }
+    print("body", len(body), str(body), f"checksum={checksum}")
+    stream: bytes = frame(bytes("hello")) + frame(bytes("wörld")) + frame([33])
+    parts: list[bytes] = unframe(stream)
+    print("frames", len(parts), "|".join([str(p) for p in parts]))
+    exported: str = Db.textArray([inv.customer for inv in invoices])
+    print("export", exported, "ok" if bytes("ada") in bytes(exported) else "missing")
+
+    shutdown: Context = Context.onSignals()
+    first: Worker = Worker()
+    second: Worker = Worker()
+    a = first.run(shutdown.child())
+    b = second.run(shutdown.child())
+    terminateSoon()
+    okA: bool = await a
+    okB: bool = await b
+    print("shutdown", shutdown.reason(), 2, "workers", okA and okB and first.ticks > 0 and second.ticks > 0)
+}

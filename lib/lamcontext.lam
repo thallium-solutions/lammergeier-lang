@@ -17,6 +17,13 @@
 # remaining duration. Missing expiration reports ``-1``; elapsed duration
 # reports ``0``. ``native`` and ``fromNative`` are the Go interop boundary.
 #
+# ``Context.onSignals(names)`` is a root cancelled by the first of the
+# termination signals ``names`` (``SIGINT``, ``SIGTERM``, ``SIGHUP``,
+# ``SIGQUIT``), with the signal name as its ``reason``: the graceful-shutdown
+# scope of a server or worker. After that first signal (or an explicit
+# ``cancel``) the signals have their default effect again, so a second
+# Ctrl-C ends the process.
+#
 # Import with: ``from lamcontext import Context``.
 
 from lamerrors import Result, Error
@@ -25,11 +32,67 @@ go! {
     import (
         "context"
         "fmt"
+        "os"
+        "os/signal"
         "reflect"
         "strings"
         "sync"
+        "syscall"
         "time"
     )
+
+    // Termination signals by name, as in ``lamos`` (``SIGTERM`` / ``term``).
+    func lamContextSignals(names []string) ([]os.Signal, []string, error) {
+        if len(names) == 0 {
+            return nil, nil, fmt.Errorf("no signal names given")
+        }
+        sigs := make([]os.Signal, 0, len(names))
+        canonical := make([]string, 0, len(names))
+        for _, raw := range names {
+            name := strings.ToUpper(strings.TrimSpace(raw))
+            if !strings.HasPrefix(name, "SIG") {
+                name = "SIG" + name
+            }
+            switch name {
+            case "SIGINT":
+                sigs = append(sigs, os.Interrupt)
+            case "SIGTERM":
+                sigs = append(sigs, syscall.SIGTERM)
+            case "SIGHUP":
+                sigs = append(sigs, syscall.SIGHUP)
+            case "SIGQUIT":
+                sigs = append(sigs, syscall.SIGQUIT)
+            default:
+                return nil, nil, fmt.Errorf("unknown signal %q (supported: SIGINT, SIGTERM, SIGHUP, SIGQUIT)", raw)
+            }
+            canonical = append(canonical, name)
+        }
+        return sigs, canonical, nil
+    }
+
+    func lamContextWatchSignals(value *Context, sigs []os.Signal, canonical []string) {
+        state := lamContextStateFor(value)
+        ch := make(chan os.Signal, 1)
+        signal.Notify(ch, sigs...)
+        go func() {
+            select {
+            case got := <-ch:
+                // Default handling is back before anyone sees the
+                // cancellation, so a second signal ends the process.
+                signal.Stop(ch)
+                name := got.String()
+                for i, sig := range sigs {
+                    if sig == got {
+                        name = canonical[i]
+                        break
+                    }
+                }
+                lamContextCancel(state, name)
+            case <-state.native.Done():
+                signal.Stop(ch)
+            }
+        }()
+    }
 
     type lamContextCause struct {
         reason interface{}
@@ -261,6 +324,27 @@ class Context {
             lamContextCancel(lamContextStateFor(value), reason)
             return value
         }
+    }
+
+    static func onSignals(names: list[str] = ["SIGINT", "SIGTERM"]) -> Context {
+        #- Create a root context cancelled by the first of the signals
+           ``names`` (``SIGINT``, ``SIGTERM``, ``SIGHUP``, ``SIGQUIT``; the
+           ``SIG`` prefix and case are optional), with the signal name as
+           its ``reason``. Unknown or no names throw ``ValueError``. -#
+        failure: str = ""
+        created: Context = Context.simple()
+        go! {
+            sigs, canonical, err := lamContextSignals(names)
+            if err != nil {
+                failure = err.Error()
+            } else {
+                lamContextWatchSignals(created, sigs, canonical)
+            }
+        }
+        if failure != "" {
+            throw ValueError(failure)
+        }
+        return created
     }
 
     func child(self) -> Context {

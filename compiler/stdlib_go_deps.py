@@ -61,6 +61,10 @@ STDLIB_GO_PINS: Dict[str, str] = {
     "github.com/moolekkari/validatexml-go": "v0.1.1",
     # ``lamschema`` — JSON Schema (draft-07).
     "github.com/xeipuuv/gojsonschema":      "v1.2.0",
+    # ``lamcrypto`` — bcrypt password hashes. v0.48.0 is the newest release
+    # that still builds with Go 1.24 (v0.49.0+ require Go 1.25, v0.56.0+
+    # Go 1.26); projects may raise it in their own ``lamlib.toml``.
+    "golang.org/x/crypto":                  "v0.48.0",
     # ``lamarray`` — vector kernels, dense linear algebra, statistics.
     # Unpinned, every build ran ``go mod tidy`` against the module proxy to
     # find the latest gonum, which failed intermittently under load.
@@ -83,6 +87,7 @@ STDLIB_GO_PIN_MODULES: Dict[str, tuple[str, ...]] = {
     "github.com/robfig/cron/v3":            ("lamcron",),
     "github.com/moolekkari/validatexml-go": ("lamschema",),
     "github.com/xeipuuv/gojsonschema":      ("lamschema",),
+    "golang.org/x/crypto":                  ("lamcrypto",),
     "gonum.org/v1/gonum":                   ("lamarray",),
     "gopkg.in/yaml.v3":                     ("lamyaml", "lamenv", "lamschema"),
     "modernc.org/sqlite":                   ("lamdb",),

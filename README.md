@@ -110,9 +110,12 @@ area: 78.53981633974483
   references, rename, goto-definition, formatting, and document/workspace
   symbols through the VS Code / Cursor / Windsurf extension.
 - **Batteries for real scripts** — Base16/Base32/Base64 codecs, streaming CSV
-  and file generators, timezone-aware `DateTime` plus unit-safe `Time`, nested
-  SQL predicate groups, cancellable process commands, TCP/TLS/UDP networking,
-  variadic paths, native-JSON HTTP, crypto, a CLI flag parser, and testing.
+  and file generators, timezone-aware `DateTime` (zone database compiled in)
+  plus unit-safe `Time`, nested SQL predicate groups and typed row values
+  (`Row.int` / `Row.time` / `Row.strList`), native `bytes`, cancellable process
+  commands, signal-driven shutdown (`Context.onSignals`), TCP/TLS/UDP
+  networking, variadic paths, native-JSON HTTP, crypto with PBKDF2 and bcrypt
+  passwords, a CLI flag parser, and testing.
 
 See [`docs/SYNTAX.md`](docs/SYNTAX.md) for the complete language reference, and
 [`docs/TRANSPILATION.md`](docs/TRANSPILATION.md) for the authoritative Lam → Go

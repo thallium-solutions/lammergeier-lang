@@ -1,0 +1,86 @@
+# expect: wait SIGHUP
+# expect: wait-default SIGTERM
+# expect: alias SIGQUIT
+# expect: live false <nil>
+# expect: cancelled true SIGINT true SIGINT
+# expect: child true SIGINT
+# expect: values worker true
+# expect: explicit true shutdown
+# expect: error ValueError: unknown signal "SIGKILL" (supported: SIGINT, SIGTERM, SIGHUP, SIGQUIT)
+# expect: error ValueError: no signal names given
+# expect: rounds true
+# Os.waitForSignal and Context.onSignals with signals the program sends
+# itself (a goroutine raises them after a short delay).
+from lamos import Os
+from lamcontext import Context
+
+go! {
+    import (
+        "os"
+        "syscall"
+        "time"
+    )
+}
+
+#- Sends ``name`` to this process after ``delayMs`` (test helper). -#
+func raiseLater(name: str, delayMs: int) {
+    go! {
+        sig := map[string]syscall.Signal{"SIGINT": syscall.SIGINT, "SIGTERM": syscall.SIGTERM, "SIGHUP": syscall.SIGHUP, "SIGQUIT": syscall.SIGQUIT}[name]
+        go func() {
+            time.Sleep(time.Duration(delayMs) * time.Millisecond)
+            syscall.Kill(os.Getpid(), sig)
+        }()
+    }
+}
+
+class Poller {
+    func init(self) {
+        self.rounds: int = 0
+    }
+
+    async func run(self, ctx: Context) -> int {
+        while not ctx.wait(10) {
+            self.rounds += 1
+        }
+        return self.rounds
+    }
+}
+
+func waitFor(names: list[str], sent: str) -> str {
+    raiseLater(sent, 300)
+    return Os.waitForSignal(names)
+}
+
+func main() {
+    print("wait", waitFor(["SIGHUP"], "SIGHUP"))
+    raiseLater("SIGTERM", 300)
+    print("wait-default", Os.waitForSignal())
+    print("alias", waitFor(["hup", "quit"], "SIGQUIT"))
+
+    root: Context = Context.onSignals(["SIGINT", "SIGTERM"])
+    print("live", root.expired(), root.reason())
+    scoped: Context = root.valued("role", "worker")
+    child: Context = scoped.child()
+    poller: Poller = Poller()
+    pending = poller.run(child)
+    raiseLater("SIGINT", 80)
+    done: bool = root.wait(5000)
+    rounds: int = await pending
+    print("cancelled", done, root.reason(), scoped.expired(), scoped.reason())
+    print("child", child.expired(), child.reason())
+    print("values", scoped["role"], "role" in child)
+
+    other: Context = Context.onSignals(["SIGHUP"])
+    other.cancel("shutdown")
+    print("explicit", other.expired(), other.reason())
+
+    invalid: list[list[str]] = [["SIGTERM", "SIGKILL"], []]
+    for names in invalid {
+        try {
+            _ = Context.onSignals(names)
+        } catch ValueError as e {
+            print("error", e)
+        }
+    }
+    print("rounds", rounds > 0 and rounds == poller.rounds)
+}

@@ -490,6 +490,14 @@ s: str = Fmt.sprintf("%d items @ $%.2f", 5, 9.99)
 limited to string parsers; use `Fmt` (or the `str(...)` builtin) when converting
 values to display text.
 
+`Fmt.formatFloat(f, decimals = -1)` rounds to `decimals` digits after the point
+(`formatFloat(2.5, 2)` is `"2.50"`). A negative `decimals` (the default) gives
+the shortest text that reads back as the same float, without an exponent —
+Go's `strconv.FormatFloat(f, 'f', -1, 64)`: `formatFloat(1234567.5)` is
+`"1234567.5"`, `formatFloat(2.0)` is `"2"`, `formatFloat(1e21)` is
+`"1000000000000000000000"` and `formatFloat(0.00001)` is `"0.00001"` (where
+`str(f)` would write an exponent).
+
 ### `lamcsv` — `Csv`, `CsvReader`
 
 CSV parsing, formatting, and lazy file streaming using Go's `encoding/csv`.
@@ -616,6 +624,10 @@ raw: str = Bytes.hexDecode(hx)?
 
 `toBytes`, `fromBytes`, and `hexEncode` are infallible. `hexDecode` returns
 `Result[str]`; `contains` and `count` retain their boolean/integer contracts.
+
+The native `bytes` type needs no import: `bytes(text)` is the UTF-8 encoding,
+`str(data)` decodes it, `bytes(codes)` converts a `list[int]`, and indexing,
+slicing, `+`, `==` and `in` work on the value (see "Bytes" in `SYNTAX.md`).
 
 ---
 
@@ -1222,6 +1234,24 @@ mutates only the current layer. Values, cancellation, and native Go
 | `cancel(reason)` / `expired()` / `reason()` | Cancel or inspect completion. |
 | `expiresIn(unit=None)` | `Result[int]`: absolute Unix-ms expiry or remaining duration (`Ok(-1)` means none, `Ok(0)` means elapsed). |
 | `wait(timeoutMs)` | Bounded wait; `true` means the context completed first. |
+| `Context.onSignals(names = ["SIGINT", "SIGTERM"])` | Root cancelled by the first of the signals, with the signal name as `reason()`. |
+
+`Context.onSignals` is the graceful-shutdown scope of a server or worker pool:
+derive the workers' contexts from it, and they all stop when the process gets
+SIGINT or SIGTERM (or the names given: `SIGINT`, `SIGTERM`, `SIGHUP`, `SIGQUIT`;
+the `SIG` prefix and case are optional, unknown names throw `ValueError`).
+After the first signal, or an explicit `cancel`, the signals have their default
+effect again, so a second Ctrl-C ends a slow shutdown.
+
+```lammergeier
+from lamcontext import Context
+
+shutdown: Context = Context.onSignals()
+while not shutdown.wait(1000) {
+    runPendingJobs(shutdown.child())
+}
+print(f"stopping on {shutdown.reason()}")   # stopping on SIGTERM
+```
 
 ### `lamactor` — `Mailbox`, `ActorRef`, `ActorSystem`
 
@@ -1342,6 +1372,13 @@ Instances expose Unix units, `locationName`, custom/RFC3339/date formatting,
 `fromTimestamp`, `diffSeconds`, `year`, `month`, `day`, `weekday`,
 `isLeapYear`) remain available.
 
+The zone database is compiled into every program that imports `lamdatetime`
+(directly or through `lamdb`, or `lamcron` for `CRON_TZ=...` schedules): Go's `time/tzdata`, about 450 KB.
+`"Europe/Rome"` and the other IANA names resolve in minimal containers
+(`scratch`, distroless, Alpine without `tzdata`) with no `import _
+"time/tzdata"` in a `go!` block; a system zone database or `ZONEINFO`, when
+present, still takes precedence.
+
 ### `lamcron` — `Cron`
 
 Cron-style scheduler wrapping
@@ -1409,6 +1446,23 @@ mutation and inspection, directory listing/walking, `tempFile`, stdin reads,
 `user`, and `hostname` likewise return the payload-specific `Result[T]` shown
 by their signatures. Only `tempDir`, `args`, and the terminating `exit` remain
 direct among these helpers.
+
+`Os.waitForSignal(names = ["SIGINT", "SIGTERM"]) -> str` blocks until one of
+the signals arrives and returns its name (`"SIGTERM"`). Names are `SIGINT`,
+`SIGTERM`, `SIGHUP` and `SIGQUIT` (the termination signals every Go platform
+has; the `SIG` prefix and case are optional); an unknown name or an empty list
+throws `ValueError`. The signals are caught only while waiting. For a
+non-blocking shape — workers that poll or wait with a timeout — use
+`Context.onSignals(names)` from `lamcontext`.
+
+```lammergeier
+from lamos import Os
+
+server.startInBackground()
+received: str = Os.waitForSignal()
+print(f"{received}: draining")
+server.shutdown()
+```
 
 ### `lampath` — `Path`
 
@@ -2566,7 +2620,8 @@ syntax—not schema conformance—needs checking.
 
 ### `lamcrypto` — `Crypto`, `CryptoKeyPair`, `CryptoCertificate`
 
-A practical cryptography layer built only on Go's standard library. Binary
+A practical cryptography layer built on Go's standard library (bcrypt comes
+from `golang.org/x/crypto`, pinned with the stdlib). Binary
 values use `list[int]`, encrypted payloads and signatures are portable strings,
 and asymmetric keys stay in PEM format so applications do not need Go key
 objects.
@@ -2598,9 +2653,34 @@ return typed Results.
 | Secure random data | `randomBytes -> Result[list[int]]`; `randomToken` / `randomHex -> Result[str]` |
 | Authenticated encryption | `encrypt` / `decrypt -> Result[str]`; `isAesKey -> bool` |
 | Password storage | `passwordHash -> Result[str]`; `verifyPassword -> Result[bool]` |
+| bcrypt passwords | `bcryptHash(password, cost = 10) -> Result[str]`; `bcryptVerify(password, encoded) -> Result[bool]`; `bcryptCost(encoded) -> Result[int]` |
 | Keys and signatures | Ed25519/RSA generation returns `Result[CryptoKeyPair]`; `sign -> Result[str]`; `verify -> Result[bool]` |
 | Certificates | `parseCertificate -> Result[CryptoCertificate]` with typed X.509 metadata |
 | Secret comparison | `constantTimeEquals` returns `bool` (delegates to `lamhash.Hash`) |
+
+bcrypt reads and writes the hashes other systems store (`$2a$`, `$2b$`, `$2y$`
+— PHP, Node's `bcrypt`, Python's `bcrypt`, Spring). `bcryptVerify` takes the
+password first, like `verifyPassword`: a wrong password is `Result.Ok(false)`
+and a value that is not a bcrypt hash is a `CryptoPasswordHashError`.
+`bcryptHash` rejects a cost outside 4..31 and passwords over bcrypt's 72-byte
+limit (`CryptoValueError`) instead of truncating them. `bcryptCost` tells
+whether a stored hash is cheaper than today's cost, to rehash after a
+successful login:
+
+```lammergeier
+from lamcrypto import Crypto
+from lamerrors import Result, Error
+
+func login(password: str, stored: str) -> Result[optional[str]] {
+    if not Crypto.bcryptVerify(password, stored)? {
+        return Result.Err(Error("AuthError", "wrong password"))
+    }
+    if Crypto.bcryptCost(stored)? < 12 {
+        return Result.Ok(Crypto.bcryptHash(password, 12)?)   # store the new hash
+    }
+    return Result.Ok(None)
+}
+```
 
 ### `lamhash` — `Hash`
 
@@ -2747,6 +2827,49 @@ Automatic retries on transient errors (closed connection, server gone away,
 bad conn…) are bounded by `setRetries`. Exhausted transient and non-transient
 errors are returned by the same unsuffixed operation as `Result.Err`.
 
+#### Typed row values — `Row`
+
+Rows are `dict[str, any]` holding the drivers' values: `int64`, `float64`,
+`bool`, text (`str`; PostgreSQL `NUMERIC`, `uuid`, arrays and `bytea` arrive as
+text too), date/time columns as Go `time.Time`, and `None` for NULL. `Row`
+reads them typed, so applications need no conversion helpers:
+
+```lammergeier
+from lamdb import Db, Row
+from lamdatetime import DateTime
+
+row: dict[str, any] = db.first("SELECT id, price, name, active, created_at, tags FROM products WHERE id = ?", [7])?
+id: int = Row.int(row, "id")                       # bigint (int64)
+price: float = Row.float(row, "price")             # NUMERIC text "123.45"
+name: str = Row.str(row, "name")
+active: bool = Row.bool(row, "active")
+created: optional[DateTime] = Row.time(row, "created_at")   # UTC DateTime
+createdUnix: int = Row.unix(row, "created_at")
+tags: list[str] = Row.strList(row, "tags")         # text[] "{a,\"b c\",NULL}"
+note: optional[str] = Row.optionalStr(row, "note") # None for NULL
+
+_ = db.exec("UPDATE products SET tags = ?::text[] WHERE id = ?", [Db.textArray(["bio", "local"]), id])?
+```
+
+| Method | Returns | Reads |
+|--------|---------|-------|
+| `Row.int(row, key, fallback = 0)` | `int` | integers, floats (truncated), numeric text, `bool` (1/0), big numbers, a time as Unix seconds |
+| `Row.float(row, key, fallback = 0.0)` | `float` | floats, integers, numeric text (`NUMERIC`), big numbers |
+| `Row.str(row, key, fallback = "")` | `str` | text as it is; numbers in decimal (floats shortest, no exponent); `true` / `false`; times in RFC 3339 UTC with fractional seconds |
+| `Row.bool(row, key, fallback = false)` | `bool` | `bool`, numbers (non-zero), `t` / `true` / `yes` / `on` / `1` and `f` / `false` / `no` / `off` / `0` (any case) |
+| `Row.unix(row, key, fallback = 0)` | `int` | `time.Time`, Unix seconds, timestamp text (`2026-11-03 19:05:00+01`, RFC 3339, `2026-11-03`; no offset is UTC) |
+| `Row.time(row, key)` | `optional[DateTime]` | as `unix`, in UTC (`inLocation` for another zone) |
+| `Row.optionalStr` / `optionalInt` / `optionalFloat` / `optionalBool(row, key)` | `optional[T]` | as above; `None` for NULL, a missing column, or a value that does not convert |
+| `Row.isNull(row, key)` | `bool` | NULL or a missing column |
+| `Row.strList(row, key)` / `Row.intList(row, key)` | `list[str]` / `list[int]` | a PostgreSQL array literal; NULL elements are dropped, NULL is `[]` |
+| `Db.textArray(values)` | `str` | writes `{"a","b c"}` (every element quoted, `"` and `\` escaped) for a `?::text[]` parameter |
+| `Db.parseTextArray(text)` | `Result[list[str]]` | parses an array literal; text that is not one is a `DbArrayError` |
+
+A missing column, NULL, or a value that does not convert gives `fallback`
+(the `optional` variants give `None`); `Row.time` is `None` for instants outside
+the years 1678–2261 (`DateTime` holds Unix nanoseconds), such as a `time`
+column's `0000-01-01` date.
+
 ### `lammigrate` — `Migrator`, `SchemaBuilder`
 
 Knex-style schema migrations on top of `lamdb`. Each migration is
@@ -2875,13 +2998,16 @@ the runtime path is exactly the same as production code.
 | Make HTTP calls (one-shot) | Result-returning `lamhttp.Http.get` / overloaded `.post` |
 | Make HTTP calls (reusable client w/ baseUrl, headers, timeout) | `lamhttp.HttpClient` (`get`/`head`/`delete`/`post(Json)`/`put(Json)`/`patch(Json)`) |
 | Talk to a SQL database | `lamdb` (raw SQL, native JSON/JSONB values, `QueryBuilder`, transactions + savepoints) |
+| Read typed values from database rows (NUMERIC, timestamps, `text[]`) | `lamdb.Row` (`Row.int` / `str` / `float` / `bool` / `time` / `strList`), `Db.textArray` |
 | Run schema migrations | `lammigrate` + `lamc migrate make/up/down/status` |
 | Talk to Redis (strings / native JSON / lists / hashes / sets / zsets / pub-sub / pipelines) | External [`@lam/redis`](libraries.md) package |
 | Talk to memcached over the binary protocol (incl. SASL PLAIN auth) | External [`@lam/memcached`](libraries.md) package |
 | Read / write files | `lamos`, `lampath` |
 | Encrypt, hash, sign, or store passwords safely | `lamcrypto`, `lamhash`, `lambase64`, `lamuuid` |
+| Verify existing bcrypt password hashes (`$2a$` / `$2b$` / `$2y$`) | `lamcrypto` (`Crypto.bcryptVerify`, `bcryptHash`, `bcryptCost`) |
 | Compute statistics or matrix algebra | `lamstats`, `lamarray` |
 | Propagate cancellation, deadlines, and request values | `lamcontext.Context` |
+| Shut down gracefully on SIGINT / SIGTERM | `lamcontext.Context.onSignals()`, `lamos.Os.waitForSignal()` |
 | Schedule work concurrently | `lamconcurrency`, `lamactor` (message-passing) |
 | Cache lookup results | `lamcache` |
 | Iterate lazily | `lamiter` |
@@ -3129,7 +3255,7 @@ index lists the public classes and top-level functions you can import.
 | `lamdata` | `from lamdata import DataFrame, DataFrameGroups, Series` | DataFrames and Series with overloaded typed columns, native JSON, joins, filters, and group-by aggregation. |
 | `lamdatastructures` | `from lamdatastructures import Queue, Deque, Stack, Set, Heap, PriorityHeap` | Canonical data-structure implementations. |
 | `lamdatetime` | `from lamdatetime import DateTime` | Timezone-aware instants, parsing/formatting, calendar and duration arithmetic. |
-| `lamdb` | `from lamdb import Db, Tx, QueryBuilder` | SQL connections, transactions, raw queries, query builder. |
+| `lamdb` | `from lamdb import Db, Tx, QueryBuilder, Row` | SQL connections, transactions, raw queries, query builder, typed row values. |
 | `lamdeque` | `from lamdeque import Deque` | Compatibility re-export of canonical `Deque`. |
 | `lamenv` | `from lamenv import Env, Dotenv, Config` | Overloaded typed/Result environment access, dotenv parsing/loading, and layered config. |
 | `lamerrors` | `from lamerrors import Error, Result` | Structured errors and success/error containers. |
@@ -3246,6 +3372,27 @@ qb.first() -> Result[dict[str, any]]
 qb.insert(record: dict[str, any]) -> Result[int]
 qb.update(record: dict[str, any]) -> Result[int]
 qb.delete() -> Result[int]
+Row.int(row: dict[str, any], key: str, fallback: int = 0) -> int
+Row.float(row: dict[str, any], key: str, fallback: float = 0.0) -> float
+Row.str(row: dict[str, any], key: str, fallback: str = "") -> str
+Row.bool(row: dict[str, any], key: str, fallback: bool = false) -> bool
+Row.unix(row: dict[str, any], key: str, fallback: int = 0) -> int
+Row.time(row: dict[str, any], key: str) -> optional[DateTime]
+Row.optionalStr/optionalInt/optionalFloat/optionalBool(row: dict[str, any], key: str) -> optional[T]
+Row.isNull(row: dict[str, any], key: str) -> bool
+Row.strList(row: dict[str, any], key: str) -> list[str]
+Row.intList(row: dict[str, any], key: str) -> list[int]
+Db.textArray(values: list[str]) -> str
+Db.parseTextArray(text: str) -> Result[list[str]]
+
+# lamcrypto (bcrypt)
+Crypto.bcryptHash(password: str, cost: int = 10) -> Result[str]
+Crypto.bcryptVerify(password: str, encoded: str) -> Result[bool]
+Crypto.bcryptCost(encoded: str) -> Result[int]
+
+# lamos / lamcontext (signals)
+Os.waitForSignal(names: list[str] = ["SIGINT", "SIGTERM"]) -> str
+Context.onSignals(names: list[str] = ["SIGINT", "SIGTERM"]) -> Context
 
 # lamdata
 DataFrame.readCSV(content: str) -> DataFrame

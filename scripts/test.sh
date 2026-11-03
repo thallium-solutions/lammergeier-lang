@@ -93,6 +93,7 @@ run_suite() {
             "$PYTHON" tests/tests/test_go_dependency_diagnostics.py
             "$PYTHON" tests/tests/test_go_error_mapping.py
             "$PYTHON" tests/tests/test_generated_go_contracts.py
+            "$PYTHON" tests/tests/test_stdlib_process_env.py
             "$PYTHON" tests/tests/test_go_library_filenames.py
             "$PYTHON" tests/tests/test_link_symbols.py
             "$PYTHON" tests/tests/test_apidiff.py

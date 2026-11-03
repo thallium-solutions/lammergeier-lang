@@ -47,14 +47,26 @@
 # Expected database failures are returned through unsuffixed ``Result[T]``
 # APIs. Callers can inspect errors, use ``?`` to propagate them, or opt into
 # a panic explicitly with ``unwrap()``.
+#
+# Rows are ``dict[str, any]`` holding the drivers' values: ``int64``,
+# ``float64``, ``bool``, ``str`` (text, NUMERIC, UUID, arrays and blobs all
+# arrive as text), date/time columns as Go ``time.Time`` and NULL as
+# ``None``. The static ``Row`` helpers read them typed — ``Row.int(row,
+# "id")``, ``Row.str``, ``Row.float``, ``Row.bool``, ``Row.unix`` /
+# ``Row.time`` (a ``DateTime``), ``Row.optionalStr`` & co. for nullable
+# columns, ``Row.strList`` for PostgreSQL ``text[]`` — and
+# ``Db.textArray(values)`` writes a ``text[]`` parameter (``?::text[]``).
 
 from lamerrors import Result, Error
+from lamdatetime import DateTime
 
 go! {
     import (
         "database/sql"
         "errors"
         "fmt"
+        "math"
+        "math/big"
         "strings"
         "strconv"
         "sync"
@@ -189,6 +201,52 @@ class Db {
         self.handle: any = None      # *sql.DB
         self.maxRetries: int = 3
         self.retryBaseMs: int = 50
+    }
+
+    static func textArray(values: list[str]) -> str {
+        #- A PostgreSQL array literal for a parameter: ``["a", "b c"]`` ->
+           ``{"a","b c"}`` (every element quoted, ``"`` and ``\`` escaped).
+           Pass it as ``?::text[]``. -#
+        out: str = ""
+        go! {
+            var sb strings.Builder
+            sb.WriteByte('{')
+            for i, value := range values {
+                if i > 0 {
+                    sb.WriteByte(',')
+                }
+                sb.WriteByte('"')
+                sb.WriteString(strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(value))
+                sb.WriteByte('"')
+            }
+            sb.WriteByte('}')
+            out = sb.String()
+        }
+        return out
+    }
+
+    static func parseTextArray(text: str) -> Result[list[str]] {
+        #- The elements of a PostgreSQL array literal (``{a,"b c"}``);
+           unquoted ``NULL`` elements are dropped. Text that is not an array
+           literal is a ``DbArrayError``. -#
+        out: list[str] = []
+        failure: str = ""
+        go! {
+            values, nulls, err := lamDbParseTextArray(text)
+            if err != nil {
+                failure = err.Error()
+            } else {
+                for i, item := range values {
+                    if !nulls[i] {
+                        out = append(out, item)
+                    }
+                }
+            }
+        }
+        if failure != "" {
+            return Result.Err(Error("DbArrayError", failure))
+        }
+        return Result.Ok(out)
     }
 
     static func connect(driver: str, dsn: str) -> Result[Db] {
@@ -563,6 +621,188 @@ class Db {
         qb.driver = self.driver
         qb.tableName = name
         return qb
+    }
+}
+
+class Row {
+    #- Typed reads of a ``dict[str, any]`` row. A missing column, NULL or a
+       value that does not convert gives ``fallback`` (``Row.int``,
+       ``Row.float``, ``Row.str``, ``Row.bool``, ``Row.unix``) or ``None``
+       (``Row.optional*``, ``Row.time``). Numbers convert from any integer
+       or float kind, numeric text (NUMERIC arrives as text: ``"123.45"``)
+       and big numbers; booleans from ``bool``, numbers and ``t`` / ``true``
+       / ``yes`` / ``on`` / ``1`` (and their negatives); times from
+       ``time.Time``, Unix seconds and timestamp texts. -#
+
+    static func int(row: dict[str, any], key: str, fallback: int = 0) -> int {
+        #- The column as an ``int`` (floats and numeric text are truncated,
+           a time is its Unix seconds). -#
+        value: any = row[key] if key in row else None
+        out: int = fallback
+        go! {
+            if n, ok := lamDbRowInt(value); ok {
+                out = n
+            }
+        }
+        return out
+    }
+
+    static func float(row: dict[str, any], key: str, fallback: float = 0.0) -> float {
+        #- The column as a ``float`` (NUMERIC text such as ``"123.45"``). -#
+        value: any = row[key] if key in row else None
+        out: float = fallback
+        go! {
+            if f, ok := lamDbRowFloat(value); ok {
+                out = f
+            }
+        }
+        return out
+    }
+
+    static func str(row: dict[str, any], key: str, fallback: str = "") -> str {
+        #- The column as text: text as it is, numbers in decimal (floats
+           shortest, no exponent), booleans ``true`` / ``false``, times in
+           RFC 3339 UTC with fractional seconds. -#
+        value: any = row[key] if key in row else None
+        out: str = fallback
+        go! {
+            if text, ok := lamDbRowStr(value); ok {
+                out = text
+            }
+        }
+        return out
+    }
+
+    static func bool(row: dict[str, any], key: str, fallback: bool = false) -> bool {
+        #- The column as a ``bool`` (``t`` / ``f`` texts, ``0`` / ``1``). -#
+        value: any = row[key] if key in row else None
+        out: bool = fallback
+        go! {
+            if flag, ok := lamDbRowBool(value); ok {
+                out = flag
+            }
+        }
+        return out
+    }
+
+    static func unix(row: dict[str, any], key: str, fallback: int = 0) -> int {
+        #- A date/time column as Unix seconds (timestamp texts are parsed;
+           texts without an offset are UTC). -#
+        value: any = row[key] if key in row else None
+        out: int = fallback
+        go! {
+            if when, ok := lamDbRowTime(value); ok {
+                out = int(when.Unix())
+            }
+        }
+        return out
+    }
+
+    static func time(row: dict[str, any], key: str) -> optional[DateTime] {
+        #- A date/time column as a ``DateTime`` in UTC (``inLocation`` for
+           another zone), or ``None`` for NULL, a missing column or a value
+           that is not a time. -#
+        value: any = row[key] if key in row else None
+        found: bool = false
+        nanos: int = 0
+        go! {
+            if when, ok := lamDbRowTime(value); ok && when.Year() > 1677 && when.Year() < 2262 {
+                found = true
+                nanos = int(when.UnixNano())
+            }
+        }
+        if not found {
+            return None
+        }
+        return DateTime(nanos, "UTC")
+    }
+
+    static func optionalStr(row: dict[str, any], key: str) -> optional[str] {
+        #- ``Row.str``, or ``None`` for NULL or a missing column. -#
+        if Row.isNull(row, key) {
+            return None
+        }
+        return Row.str(row, key)
+    }
+
+    static func optionalInt(row: dict[str, any], key: str) -> optional[int] {
+        #- ``Row.int``, or ``None`` for NULL, a missing column or a value
+           that is not a number. -#
+        value: any = row[key] if key in row else None
+        found: bool = false
+        out: int = 0
+        go! {
+            out, found = lamDbRowInt(value)
+        }
+        if not found {
+            return None
+        }
+        return out
+    }
+
+    static func optionalFloat(row: dict[str, any], key: str) -> optional[float] {
+        #- ``Row.float``, or ``None`` for NULL, a missing column or a value
+           that is not a number. -#
+        value: any = row[key] if key in row else None
+        found: bool = false
+        out: float = 0.0
+        go! {
+            out, found = lamDbRowFloat(value)
+        }
+        if not found {
+            return None
+        }
+        return out
+    }
+
+    static func optionalBool(row: dict[str, any], key: str) -> optional[bool] {
+        #- ``Row.bool``, or ``None`` for NULL, a missing column or a value
+           that is not a boolean. -#
+        value: any = row[key] if key in row else None
+        found: bool = false
+        out: bool = false
+        go! {
+            out, found = lamDbRowBool(value)
+        }
+        if not found {
+            return None
+        }
+        return out
+    }
+
+    static func isNull(row: dict[str, any], key: str) -> bool {
+        #- True for NULL and for a column the row does not have. -#
+        if key not in row {
+            return true
+        }
+        return row[key] == None
+    }
+
+    static func strList(row: dict[str, any], key: str) -> list[str] {
+        #- A PostgreSQL array column (``text[]``, ``varchar[]``, ``uuid[]``
+           arrive as ``{a,"b c",NULL}``) as a list; NULL elements are
+           dropped, a NULL or malformed value is ``[]``. -#
+        value: any = row[key] if key in row else None
+        out: list[str] = []
+        go! {
+            out = lamDbRowStrList(value)
+        }
+        return out
+    }
+
+    static func intList(row: dict[str, any], key: str) -> list[int] {
+        #- A PostgreSQL ``int[]`` / ``bigint[]`` column as a list; NULL and
+           non-numeric elements are dropped. -#
+        value: any = row[key] if key in row else None
+        out: list[int] = []
+        go! {
+            for _, item := range lamDbRowStrList(value) {
+                if n, ok := lamDbRowInt(item); ok {
+                    out = append(out, n)
+                }
+            }
+        }
+        return out
     }
 }
 
@@ -1751,6 +1991,312 @@ go! {
     // additions like prepared-statement caching can pull it in
     // without re-shuffling imports).
     var _ sync.Mutex
+
+    // ─── Typed row values (``Row``) ───────────────────────────
+    // Every helper returns ``ok == false`` for NULL and for values that do
+    // not convert, so the Lam side picks the fallback / None.
+
+    func lamDbRowText(value interface{}) (string, bool) {
+        switch typed := value.(type) {
+        case string:
+            return typed, true
+        case []byte:
+            return string(typed), true
+        }
+        return "", false
+    }
+
+    func lamDbRowInt(value interface{}) (int, bool) {
+        switch typed := value.(type) {
+        case nil:
+            return 0, false
+        case bool:
+            if typed {
+                return 1, true
+            }
+            return 0, true
+        case int:
+            return typed, true
+        case int8:
+            return int(typed), true
+        case int16:
+            return int(typed), true
+        case int32:
+            return int(typed), true
+        case int64:
+            return int(typed), true
+        case uint:
+            return int(typed), true
+        case uint8:
+            return int(typed), true
+        case uint16:
+            return int(typed), true
+        case uint32:
+            return int(typed), true
+        case uint64:
+            return int(typed), true
+        case float32:
+            return lamDbRowFloatToInt(float64(typed))
+        case float64:
+            return lamDbRowFloatToInt(typed)
+        case time.Time:
+            return int(typed.Unix()), true
+        case *big.Int:
+            if typed.IsInt64() {
+                return int(typed.Int64()), true
+            }
+            return 0, false
+        case *big.Float:
+            if typed.IsInf() {
+                return 0, false
+            }
+            n, accuracy := typed.Int64()
+            if (accuracy == big.Below && n == math.MaxInt64) || (accuracy == big.Above && n == math.MinInt64) {
+                return 0, false
+            }
+            return int(n), true
+        case *big.Rat:
+            f, _ := typed.Float64()
+            return lamDbRowFloatToInt(f)
+        }
+        if text, ok := lamDbRowText(value); ok {
+            text = strings.TrimSpace(text)
+            if n, err := strconv.ParseInt(text, 10, 64); err == nil {
+                return int(n), true
+            }
+            if f, err := strconv.ParseFloat(text, 64); err == nil {
+                return lamDbRowFloatToInt(f)
+            }
+        }
+        return 0, false
+    }
+
+    func lamDbRowFloatToInt(f float64) (int, bool) {
+        if math.IsNaN(f) || math.IsInf(f, 0) || f >= 9.223372036854775807e18 || f < -9.223372036854775808e18 {
+            return 0, false
+        }
+        return int(f), true
+    }
+
+    func lamDbRowFloat(value interface{}) (float64, bool) {
+        switch typed := value.(type) {
+        case nil:
+            return 0, false
+        case float64:
+            return typed, true
+        case float32:
+            return float64(typed), true
+        case *big.Int:
+            f, _ := new(big.Float).SetInt(typed).Float64()
+            return f, true
+        case *big.Float:
+            f, _ := typed.Float64()
+            return f, true
+        case *big.Rat:
+            f, _ := typed.Float64()
+            return f, true
+        case time.Time:
+            return float64(typed.UnixNano()) / 1e9, true
+        }
+        if text, ok := lamDbRowText(value); ok {
+            f, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+            return f, err == nil
+        }
+        if n, ok := lamDbRowInt(value); ok {
+            return float64(n), true
+        }
+        return 0, false
+    }
+
+    func lamDbRowStr(value interface{}) (string, bool) {
+        switch typed := value.(type) {
+        case nil:
+            return "", false
+        case string:
+            return typed, true
+        case []byte:
+            return string(typed), true
+        case bool:
+            return strconv.FormatBool(typed), true
+        case float64:
+            return strconv.FormatFloat(typed, 'f', -1, 64), true
+        case float32:
+            return strconv.FormatFloat(float64(typed), 'f', -1, 32), true
+        case time.Time:
+            return typed.UTC().Format(time.RFC3339Nano), true
+        case *big.Int:
+            return typed.String(), true
+        case *big.Float:
+            return typed.Text('f', -1), true
+        case *big.Rat:
+            if typed.IsInt() {
+                return typed.Num().String(), true
+            }
+            return typed.RatString(), true
+        }
+        return fmt.Sprintf("%v", value), true
+    }
+
+    func lamDbRowBool(value interface{}) (bool, bool) {
+        switch typed := value.(type) {
+        case nil:
+            return false, false
+        case bool:
+            return typed, true
+        case float64:
+            return typed != 0, true
+        case float32:
+            return typed != 0, true
+        }
+        if text, ok := lamDbRowText(value); ok {
+            switch strings.ToLower(strings.TrimSpace(text)) {
+            case "t", "true", "1", "y", "yes", "on":
+                return true, true
+            case "f", "false", "0", "n", "no", "off":
+                return false, true
+            }
+            return false, false
+        }
+        if n, ok := lamDbRowInt(value); ok {
+            return n != 0, true
+        }
+        return false, false
+    }
+
+    // Timestamp texts: RFC 3339, PostgreSQL (``2026-11-03 19:05:00.5+01``)
+    // and SQLite (``2026-11-03 19:05:00``); texts without an offset are UTC.
+    var lamDbRowTimeLayouts = []string{
+        time.RFC3339Nano,
+        "2006-01-02 15:04:05.999999999Z07:00",
+        "2006-01-02 15:04:05.999999999-07",
+        "2006-01-02 15:04:05.999999999",
+        "2006-01-02T15:04:05.999999999",
+        "2006-01-02 15:04",
+        "2006-01-02",
+    }
+
+    func lamDbRowTime(value interface{}) (time.Time, bool) {
+        switch typed := value.(type) {
+        case nil:
+            return time.Time{}, false
+        case time.Time:
+            return typed, true
+        case int64:
+            return time.Unix(typed, 0), true
+        case int:
+            return time.Unix(int64(typed), 0), true
+        case float64:
+            if math.IsNaN(typed) || math.IsInf(typed, 0) {
+                return time.Time{}, false
+            }
+            whole, frac := math.Modf(typed)
+            return time.Unix(int64(whole), int64(frac*1e9)), true
+        }
+        if text, ok := lamDbRowText(value); ok {
+            text = strings.TrimSpace(text)
+            for _, layout := range lamDbRowTimeLayouts {
+                if parsed, err := time.Parse(layout, text); err == nil {
+                    return parsed, true
+                }
+            }
+        }
+        return time.Time{}, false
+    }
+
+    // PostgreSQL array literal (``{a,"b c",NULL}``, nested arrays
+    // flattened, an optional ``[1:2]=`` bounds prefix). ``nulls[i]`` marks
+    // an unquoted NULL element.
+    func lamDbParseTextArray(raw string) ([]string, []bool, error) {
+        text := strings.TrimSpace(raw)
+        if strings.HasPrefix(text, "[") {
+            if eq := strings.Index(text, "="); eq >= 0 {
+                text = strings.TrimSpace(text[eq+1:])
+            }
+        }
+        if len(text) < 2 || text[0] != '{' || text[len(text)-1] != '}' {
+            return nil, nil, fmt.Errorf("not a PostgreSQL array literal: %q", raw)
+        }
+        values := []string{}
+        nulls := []bool{}
+        var current strings.Builder
+        quoted, wasQuoted, escaped, pending := false, false, false, false
+        depth := 0
+        flush := func() {
+            item := current.String()
+            if !wasQuoted {
+                item = strings.TrimSpace(item)
+            }
+            values = append(values, item)
+            nulls = append(nulls, !wasQuoted && strings.EqualFold(item, "NULL"))
+            current.Reset()
+            wasQuoted, pending = false, false
+        }
+        for _, r := range text {
+            switch {
+            case escaped:
+                current.WriteRune(r)
+                escaped = false
+            case quoted && r == '\\':
+                escaped = true
+            case r == '"':
+                quoted = !quoted
+                wasQuoted, pending = true, true
+            case quoted:
+                current.WriteRune(r)
+            case r == '{':
+                depth++
+            case r == '}':
+                if pending || current.Len() > 0 {
+                    flush()
+                }
+                depth--
+            case r == ',':
+                if pending || current.Len() > 0 {
+                    flush()
+                }
+            default:
+                current.WriteRune(r)
+                pending = true
+            }
+        }
+        if quoted || depth != 0 {
+            return nil, nil, fmt.Errorf("unterminated PostgreSQL array literal: %q", raw)
+        }
+        return values, nulls, nil
+    }
+
+    // The elements of an array value (literal text, or a slice from a
+    // driver that decodes arrays); NULL elements are dropped.
+    func lamDbRowStrList(value interface{}) []string {
+        out := []string{}
+        switch typed := value.(type) {
+        case nil:
+            return out
+        case []string:
+            return append(out, typed...)
+        case []interface{}:
+            for _, item := range typed {
+                if text, ok := lamDbRowStr(item); ok {
+                    out = append(out, text)
+                }
+            }
+            return out
+        }
+        text, ok := lamDbRowText(value)
+        if !ok {
+            return out
+        }
+        values, nulls, err := lamDbParseTextArray(text)
+        if err != nil {
+            return out
+        }
+        for i, item := range values {
+            if !nulls[i] {
+                out = append(out, item)
+            }
+        }
+        return out
+    }
 }
 
 func main() {

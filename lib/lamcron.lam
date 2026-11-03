@@ -28,6 +28,9 @@
 # function, or any Lam callable — is accepted. The scheduler
 # recovers panics inside a job and logs them to stderr so one
 # misbehaving callback can't take the whole scheduler down.
+#
+# Zones in ``CRON_TZ=Europe/Rome 0 9 * * *`` come from the zone database
+# compiled into the program (``time/tzdata``): no system tzdata is needed.
 
 from lamconcurrency import Mutex
 from lamerrors import Result, Error
@@ -35,6 +38,7 @@ from lamerrors import Result, Error
 go! {
     import (
         "fmt"
+        _ "time/tzdata"
 
         cron "github.com/robfig/cron/v3"
     )

@@ -1,0 +1,98 @@
+# expect: conv 6 héllo 0 3 abc
+# expect: copy 2 hi hi
+# expect: comp 2 hi 3 bcd 2 ij
+# expect: literal 3 ABC
+# expect: index 104 111 h o
+# expect: slice el lo olleh 0 hello
+# expect: equal true false true false
+# expect: concat hello world 11 hello!
+# expect: in true false true false true true
+# expect: text hello [hello] hello
+# expect: any 3 abc
+# expect: range ValueError: byte must be in range(0, 256), got 300
+# expect: func 532 HELLO
+# expect: empty 0 true true
+# expect: inline 2 hi 2 ij
+# Bytes values: conversions to and from `str` / `list[int]`, comprehensions
+# into `bytes`, indexing, slicing, `==`, `+`, `in`, and text formatting.
+
+func upper(data: bytes) -> bytes {
+    return [b - 32 if b >= 97 and b <= 122 else b for b in data]
+}
+
+func checksum(data: bytes) -> int {
+    total: int = 0
+    for b in data {
+        total += int(b)
+    }
+    return total
+}
+
+func main() {
+    # bytes(str) is the UTF-8 encoding; str(bytes) decodes it.
+    text: str = "héllo"
+    encoded: bytes = bytes(text)
+    empty: bytes = bytes()
+    codes: list[int] = [97, 98, 99]
+    fromList: bytes = bytes(codes)
+    print("conv", len(encoded), str(encoded), len(empty), len(fromList), str(fromList))
+
+    # bytes(bytes) is a copy: changing the copy leaves the source alone.
+    source: bytes = bytes("hi")
+    copied: bytes = bytes(source)
+    copied = copied + bytes("!")
+    print("copy", len(source), str(source), str(copied[:2]))
+
+    # Comprehensions over ints and over bytes build bytes.
+    raw: list[int] = [104, 105]
+    fromComp: bytes = [x for x in raw]
+    shifted: bytes = [x + 1 for x in fromList]
+    filtered: bytes = [x + 1 for x in raw if x > 0]
+    print("comp", len(fromComp), str(fromComp), len(shifted), str(shifted), len(filtered), str(filtered))
+
+    # A list literal of int expressions in a bytes context.
+    base: int = 65
+    lit: bytes = [base, base + 1, 67]
+    print("literal", len(lit), str(lit))
+
+    # Indexing gives a byte (like `str`); negative indexes count from the end.
+    word: bytes = bytes("hello")
+    print("index", word[0], word[-1], str(word[0:1]), str(word[-1:]))
+
+    # Slicing follows Python: clamped bounds, negative bounds and steps.
+    print("slice", str(word[1:3]), str(word[-2:]), str(word[::-1]), len(word[10:]), str(word[:]))
+
+    # Equality compares contents.
+    print("equal", word == bytes("hello"), word == bytes("help"), word != source, word != bytes("hello"))
+
+    # `+` and `+=` build a new value.
+    joined: bytes = word + bytes(" ") + bytes("world")
+    grown: bytes = word
+    grown += bytes("!")
+    print("concat", str(joined), len(joined), str(grown))
+
+    # `in`: a byte value (an int 0..255) or a sub-sequence.
+    needle: int = 300
+    print("in", 104 in word, needle in word, bytes("ll") in word, bytes("lo!") in word, 122 not in word, bytes() in word)
+
+    # str(), f-strings and print show the text.
+    print("text", str(word), f"[{word}]", word)
+
+    # bytes(any): a str, a bytes or a list of ints held in `any`.
+    loose: any = "abc"
+    print("any", len(bytes(loose)), str(bytes(loose)))
+
+    # Values outside 0..255 are a ValueError, not a silent wrap-around.
+    big: list[int] = [1, 300]
+    try {
+        bad: bytes = [v for v in big]
+        print("range", len(bad))
+    } catch ValueError as e {
+        print("range", e)
+    }
+
+    print("func", checksum(word), str(upper(word)))
+    none: bytes = []
+    print("empty", len(none), none == bytes(), bytes() in none)
+    print("inline", len(bytes([104, 105])), str(bytes([104, 105])), len(bytes([c + 1 for c in raw])), str(bytes([c + 1 for c in raw])))
+}

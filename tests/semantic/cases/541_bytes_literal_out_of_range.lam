@@ -1,0 +1,12 @@
+# expect-error: byte value `300` is out of range 0..255
+# expect-error: byte value `256` is out of range 0..255
+# A constant outside 0..255 in a bytes literal used to fail in `go build`
+# ("constant 300 overflows byte").
+func main() {
+    data: bytes = [1, 300]
+    print(len(data))
+}
+
+func other() {
+    print(len(bytes([256])))
+}

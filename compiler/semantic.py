@@ -225,7 +225,7 @@ FLOAT_CAST_FUNCS: Set[str] = {"float", "float32", "float64"}
 _CONVERSION_DUNDERS: dict[str, str] = {"__int__": "int", "__float__": "float", "__bool__": "bool"}
 
 BUILTIN_CAST_FUNCS: Set[str] = {
-    "str", "string", "json", "html", "xml", "bool", *INTEGER_CAST_FUNCS, *FLOAT_CAST_FUNCS,
+    "str", "string", "json", "html", "xml", "bool", "bytes", *INTEGER_CAST_FUNCS, *FLOAT_CAST_FUNCS,
 }
 
 # Standard-library module names that get auto-imported via ``from
@@ -4382,6 +4382,13 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             # ``flags: set[str] = {}``: the annotation makes the empty
             # literal an empty set (sets and dicts share ``map[K]...``).
             return True
+        if self._is_named_type(expected, "bytes") and isinstance(value_node, Tree) and value_node.data == "list":
+            for item in value_node.children:
+                constant = self._integer_literal_value(item)
+                if constant is not None and not 0 <= constant <= 255:
+                    self._error(item, "type", f"byte value `{constant}` is out of range 0..255")
+                    return True
+            return False
         if isinstance(expected, ListType) and isinstance(value_node, Tree) and value_node.data == "list":
             self._check_sequence_literal_items(
                 node,
@@ -4857,6 +4864,20 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             self._check_conversion_cast(name, args[0], actual)
             return
         if self._is_any_type(actual) or self._is_open_type(actual):
+            return
+        if name == "bytes":
+            if isinstance(args[0], Tree) and args[0].data == "list":
+                for item in args[0].children:
+                    constant = self._integer_literal_value(item)
+                    if constant is not None and not 0 <= constant <= 255:
+                        self._error(item, "type", f"byte value `{constant}` is out of range 0..255")
+                        return
+            if not self._bytes_cast_arg_allowed(actual):
+                self._error(
+                    args[0],
+                    "type",
+                    f"cast `bytes` expects `str`, `bytes`, or `list[int]` argument, got `{render_type(actual)}`",
+                )
             return
         if name in INTEGER_CAST_FUNCS or name in FLOAT_CAST_FUNCS:
             if not self._is_primitive_numeric_type(actual):
@@ -6062,6 +6083,9 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             selected = self._call_return_type_for_expected(node, expected)
             if selected is not None:
                 return selected
+        if self._is_named_type(expected, "bytes") and self._byte_items_fit(node):
+            # ``data: bytes = [b + 1 for b in raw]``: int items build bytes.
+            return expected
         if self._fresh_literal_fits(node, expected):
             # ``[Square(1)]`` where a ``list[Shape]`` is expected: a fresh
             # literal is checked element by element (subclass elements
@@ -8648,6 +8672,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         if isinstance(container, NamedType) and container.name in self._class_method_shapes:
             shape = self._class_method_shape(container.name, "__contains__")
             return shape is not None and self._operator_shape_accepts_operand(shape, item)
+        if self._is_named_type(container, "bytes"):
+            # A byte value (an ``int``) or a sub-sequence (``bytes``).
+            return self._is_open_type(item) or (
+                isinstance(item, NamedType) and item.name in {"bytes", "byte", "int", "uint8"}
+            )
         expected = self._membership_item_type(container)
         if expected is None:
             return False
@@ -8670,6 +8699,14 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         return None
 
     def _report_membership_type_error(self, node: Tree, op: str, item: Type, container: Type) -> None:
+        if self._is_named_type(container, "bytes"):
+            self._error(
+                node,
+                "type",
+                f"membership test for `bytes` expects an `int` byte value or `bytes`, "
+                f"got `{render_type(item)}`",
+            )
+            return
         expected = self._membership_item_type(container)
         if expected is None:
             self._error(
@@ -8727,6 +8764,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             msg = f"list index must be `{expected_text}`, got `{actual_text}`"
         elif isinstance(receiver_type, NamedType) and receiver_type.name == "str":
             msg = f"string index must be `{expected_text}`, got `{actual_text}`"
+        elif isinstance(receiver_type, NamedType) and receiver_type.name == "bytes":
+            msg = f"bytes index must be `{expected_text}`, got `{actual_text}`"
         elif isinstance(receiver_type, DictType):
             msg = f"dict key for `{receiver_text}` must be `{expected_text}`, got `{actual_text}`"
         else:
@@ -8941,6 +8980,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 return True
             if self._is_named_type(left, "str") and self._is_named_type(right, "str"):
                 return True
+            if self._is_named_type(left, "bytes") and self._is_named_type(right, "bytes"):
+                return True
             if isinstance(left, ListType) and isinstance(right, ListType):
                 return True
             return False
@@ -9026,6 +9067,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return class_result
         if op == "+" and self._is_named_type(left, "str") and self._is_named_type(right, "str"):
             return NamedType("str")
+        if op == "+" and self._is_named_type(left, "bytes") and self._is_named_type(right, "bytes"):
+            return NamedType("bytes")
         if op == "*" and self._is_string_repeat(left, right):
             return NamedType("str")
         if op in {"-", "|", "&"} and self._sets_combinable(left, right):
@@ -9110,7 +9153,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return receiver_type.item
         if isinstance(receiver_type, DictType):
             return receiver_type.value
-        if self._is_named_type(receiver_type, "str"):
+        if self._is_named_type(receiver_type, "str") or self._is_named_type(receiver_type, "bytes"):
             return NamedType("byte")
         if isinstance(receiver_type, GenericType) and receiver_type.base == "tuple" and receiver_type.args:
             # ``t[1]``: that element; ``t[k]``: the common element type.
@@ -9132,7 +9175,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return NamedType("int")
         if isinstance(receiver_type, DictType):
             return receiver_type.key
-        if isinstance(receiver_type, NamedType) and receiver_type.name == "str":
+        if isinstance(receiver_type, NamedType) and receiver_type.name in {"str", "bytes"}:
             return NamedType("int")
         if isinstance(receiver_type, GenericType) and receiver_type.base == "tuple":
             return NamedType("int")
@@ -9145,7 +9188,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
     @staticmethod
     def _is_sliceable_type(type_: Type) -> bool:
         return isinstance(type_, ListType) or (
-            isinstance(type_, NamedType) and type_.name == "str"
+            isinstance(type_, NamedType) and type_.name in {"str", "bytes"}
         )
 
     @staticmethod
@@ -9198,7 +9241,50 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return NamedType(name)
         if name == "bool":
             return NamedType("bool")
+        if name == "bytes":
+            return NamedType("bytes")
         return None
+
+    _BYTE_ITEM_TYPES = frozenset({"int", "byte", "uint8"})
+
+    def _bytes_cast_arg_allowed(self, type_: Type) -> bool:
+        if self._is_named_type(type_, "str") or self._is_named_type(type_, "string") or self._is_named_type(type_, "bytes"):
+            return True
+        return isinstance(type_, ListType) and (
+            self._is_any_type(type_.item)
+            or isinstance(type_.item, NamedType) and type_.item.name in self._BYTE_ITEM_TYPES
+        )
+
+    def _byte_items_fit(self, node) -> bool:
+        """A list literal or comprehension written where ``bytes`` is
+        expected: its items are ``int`` / ``byte`` values (int constants
+        within 0..255), so it builds the bytes directly."""
+        if not isinstance(node, Tree):
+            return False
+        if node.data == "list":
+            for item in node.children:
+                if not isinstance(item, Tree):
+                    return False
+                constant = self._integer_literal_value(item)
+                if constant is not None:
+                    if not 0 <= constant <= 255:
+                        return False
+                    continue
+                item_type = self._expr_simple_type(item)
+                if item_type is None or self._is_any_type(item_type):
+                    continue
+                if not (isinstance(item_type, NamedType) and item_type.name in self._BYTE_ITEM_TYPES):
+                    return False
+            return True
+        if node.data == "list_comprehension":
+            comp_type = self._expr_simple_type(node)
+            if comp_type is None:
+                return True
+            return isinstance(comp_type, ListType) and (
+                self._is_any_type(comp_type.item)
+                or isinstance(comp_type.item, NamedType) and comp_type.item.name in self._BYTE_ITEM_TYPES
+            )
+        return False
 
     def _string_cast_arg_allowed(self, type_: Type) -> bool:
         return (

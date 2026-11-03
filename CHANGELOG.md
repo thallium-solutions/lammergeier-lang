@@ -5,6 +5,77 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.1.0 — 2026-11-03
+
+### Added
+
+- `bytes(...)` converts: `bytes(text)` is the UTF-8 encoding, `bytes(codes)`
+  a `list[int]`, `bytes(data)` a copy, `bytes()` an empty value (an `any`
+  holding one of these converts at run time). It passed the checker and
+  failed in `go build` ("undefined: Bytes").
+- `bytes` values index (`data[0]` is a `byte`, negative indexes count from
+  the end), slice with Python semantics, join with `+` / `+=`, compare with
+  `==` / `!=`, and test membership of a byte value or a sub-sequence with
+  `in` (`104 in data`, `bytes("ll") in data`); all of them were rejected by
+  the checker. `x in data` with a `str` needle, `data + "x"`, a non-`int`
+  index and `bytes(2.5)` are compile errors.
+- List literals and comprehensions of ints build `bytes` where `bytes` is
+  expected (`data: bytes = [b + 1 for b in raw]`, `[len(payload)] + payload`,
+  `bytes([104, 105])`); they failed in `go build` ("cannot use x (variable of
+  type int) as byte value"). A constant outside 0..255 is a compile error and
+  a computed one throws `ValueError` instead of wrapping around.
+- `Fmt.formatFloat(f, decimals = -1)`: a negative `decimals` (now the default)
+  gives the shortest text that reads back as the same float, without an
+  exponent (Go's `strconv.FormatFloat(f, 'f', -1, 64)`: `1234567.5`, `2`,
+  `0.00001`, `1000000000000000000000`). Non-negative `decimals` are unchanged.
+- `Os.waitForSignal(names = ["SIGINT", "SIGTERM"]) -> str` blocks until one of
+  the signals arrives and returns its name; `Context.onSignals(names = ["SIGINT",
+  "SIGTERM"]) -> Context` is a root context cancelled by the first of them,
+  with the signal name as `reason()`, for graceful shutdowns. `SIGINT`,
+  `SIGTERM`, `SIGHUP` and `SIGQUIT` are supported (prefix and case optional;
+  unknown names throw `ValueError`); after the first signal the default
+  handling is back, so a second Ctrl-C ends the process.
+- `lamdb.Row`: typed reads of database rows — `Row.int`, `Row.float`,
+  `Row.str`, `Row.bool` (with a `fallback`), `Row.unix` and `Row.time`
+  (`optional[DateTime]`) for timestamps and timestamp texts,
+  `Row.optionalStr` / `optionalInt` / `optionalFloat` / `optionalBool` for
+  nullable columns, `Row.isNull`, and `Row.strList` / `Row.intList` for
+  PostgreSQL arrays (`{a,"b c",NULL}`). They read every value the drivers
+  return (`int64`, `float64`, `bool`, text including PostgreSQL `NUMERIC`,
+  `uuid`, arrays and `bytea`, `time.Time`, NULL), plus `[]byte` and
+  `math/big` numbers. `Db.textArray(values)` writes a `text[]` parameter
+  (`?::text[]`) and `Db.parseTextArray(text) -> Result[list[str]]` reads one.
+- `Crypto.bcryptHash(password, cost = 10) -> Result[str]`,
+  `Crypto.bcryptVerify(password, encoded) -> Result[bool]` (a wrong password
+  is `Ok(false)`, a malformed hash an error, like `verifyPassword`) and
+  `Crypto.bcryptCost(encoded) -> Result[int]` for `$2a$` / `$2b$` / `$2y$`
+  hashes stored by other systems. `lamcrypto` now depends on
+  `golang.org/x/crypto`, pinned at v0.48.0 (the newest release that builds
+  with Go 1.24); projects can raise it in `lamlib.toml`.
+
+### Changed
+
+- `str(data)`, `print(data)` and f-strings show a `bytes` value as its UTF-8
+  text (`hello`), like Python's `bytes.decode()`, instead of Go's list form
+  (`[104 101 108 108 111]`); `repr(data)` keeps the Go form.
+- Programs that import `lamdatetime` or `lamcron` (or `lamdb`, whose
+  `Row.time` returns a `DateTime`) embed Go's zone database (`time/tzdata`,
+  about 450 KB), so `"Europe/Rome"` and the other IANA zones (`DateTime`,
+  `CRON_TZ=...`) resolve in minimal containers without system tzdata; a
+  `go! { import _ "time/tzdata" }` is no longer needed. A system zone
+  database or `ZONEINFO` still takes precedence.
+- Catalog: the official packages are tested with lamc 4.1 (their test suites
+  pass unchanged).
+
+### Fixed
+
+- `print(...)` and f-strings showed the Go pointer (`0xc000014070`) of a
+  static or instance method returning `optional[str]` / `optional[int]` /
+  `optional[float]` / `optional[bool]`, and `?? fallback` on such a call kept
+  the pointer; the value (or `<nil>`) is shown now.
+- `value == None` / `!= None` on an `optional[Cls]` whose class defines
+  `__eq__` called `__eq__` and crashed on the nil value; it is a nil test.
+
 ## 4.0.6 — 2026-11-03
 
 ### Fixed

@@ -320,6 +320,14 @@ class ExpressionVisitorMixin:
             dynamic = self._hier_dynamic_to_go(raw, self._hier_expr_go_type(node), go_type)
             if dynamic:
                 return dynamic
+        if go_type in {"byte", "uint8"} and isinstance(node, Tree) and self._numeric_literal_value(node) is None:
+            # An ``int`` where a byte is expected (``data: bytes = [x for x
+            # in codes]``): a checked conversion, like Python's ``bytes``.
+            source = self._expr_go_type_hint(node) or ""
+            if not source and node.data in {"arith_expr", "term", "factor"}:
+                source = self._numeric_operand_kind(node)
+            if source == "int":
+                return self._checked_byte_to_go(raw)
         if go_type in {"float64", "float32"} and isinstance(node, Tree) and self._numeric_literal_value(node) is None:
             # Implicit int -> float widening (Python): ``half(n)``,
             # ``return n + 1`` in a ``-> float``, ``xs: list[float] = [n]``.
@@ -565,6 +573,50 @@ class ExpressionVisitorMixin:
             return self._dict_comp_to_go(node, map_type="map[string]interface{}")
         return self._expr_to_go(node)
 
+    def _checked_byte_to_go(self, value_go: str) -> str:
+        """``value_go`` (an ``int``) as a ``byte``; values outside 0..255
+        raise ``ValueError`` instead of wrapping around."""
+        self._need_import("fmt")
+        return (
+            "func(_v int) byte { if _v < 0 || _v > 255 { panic(fmt.Sprintf("
+            "\"ValueError: byte must be in range(0, 256), got %d\", _v)) }; return byte(_v) }"
+            f"({value_go})"
+        )
+
+    def _bytes_conversion_to_go(self, raw_arg, arg_go: str) -> str:
+        """``bytes()`` / ``bytes(text)`` / ``bytes(codes)`` / ``bytes(data)``."""
+        if raw_arg is None:
+            return "[]byte{}"
+        if isinstance(raw_arg, Tree) and raw_arg.data in {"list", "list_comprehension"}:
+            # ``bytes([104, 105])`` / ``bytes([c + 1 for c in codes])``.
+            return self._typed_value_to_go(raw_arg, "[]byte")
+        source = (self._expr_go_type_hint(raw_arg) or self._infer_type_from_value(raw_arg) or "").strip()
+        if source == "string":
+            return f"[]byte({arg_go})"
+        if source == "[]byte":
+            # A copy: the result never aliases the argument.
+            return f"append([]byte{{}}, {arg_go}...)"
+        if source.startswith("[]") and self._slice_elem_go_type(source) in {"int", "byte", "uint8"}:
+            if self._slice_elem_go_type(source) != "int":
+                return f"append([]byte{{}}, {arg_go}...)"
+            return (
+                "func(_src []int) []byte { _out := make([]byte, len(_src)); "
+                f"for _i, _v := range _src {{ _out[_i] = {self._checked_byte_to_go('_v')} }}; return _out }}({arg_go})"
+            )
+        self._need_import("fmt")
+        return (
+            "func(_src interface{}) []byte { switch _v := _src.(type) { "
+            "case string: return []byte(_v); "
+            "case []byte: return append([]byte{}, _v...); "
+            "case []int: _out := make([]byte, len(_v)); for _i, _n := range _v { "
+            f"_out[_i] = {self._checked_byte_to_go('_n')} }}; return _out; "
+            "case []interface{}: _out := make([]byte, len(_v)); for _i, _x := range _v { "
+            "_n, _ok := _x.(int); if !_ok { panic(fmt.Sprintf(\"TypeError: bytes(...) expects int items, got %T\", _x)) }; "
+            f"_out[_i] = {self._checked_byte_to_go('_n')} }}; return _out }}; "
+            "panic(fmt.Sprintf(\"TypeError: bytes(...) cannot convert %T\", _src)) }"
+            f"({arg_go})"
+        )
+
     def _typed_list_literal_to_go(self, node: Tree, go_type: str) -> str:
         elem_type = self._slice_elem_go_type(go_type)
         elems = [
@@ -802,8 +854,8 @@ class ExpressionVisitorMixin:
                 name = self._get_name(callee.children[0])
                 if name == "json":
                     return "LamJSON"
-                if name in {"int", "float", "bool", "str"} and name not in self._function_go_names:
-                    return {"int": "int", "float": "float64", "bool": "bool", "str": "string"}[name]
+                if name in {"int", "float", "bool", "str", "bytes"} and name not in self._function_go_names:
+                    return {"int": "int", "float": "float64", "bool": "bool", "str": "string", "bytes": "[]byte"}[name]
                 if name == "len" and name not in self._user_functions:
                     return "int"
                 if name in {"abs", "min", "max"} and name not in self._user_functions and name not in self._var_go_types:
@@ -906,6 +958,11 @@ class ExpressionVisitorMixin:
                     # or imported), so ``Rows.str(r, k).contains(...)`` and
                     # similar chains dispatch on the value's type.
                     raw_return = self._method_return_types.get(f"{class_name}.{method}", "")
+                    go_return = self._method_return_types.get(f"go:{class_name}.{method}", "")
+                    if go_return.startswith("*") and go_return[1:] in self._OPTIONAL_VALUE_GO_TYPES:
+                        # ``print(Row.optionalStr(r, k))``: an ``optional[str]``
+                        # is a ``*string`` (the raw name is just ``str``).
+                        return go_return
                     scalar = {"str": "string", "int": "int", "float": "float64", "bool": "bool", "bytes": "[]byte", "json": "LamJSON"}
                     if raw_return in scalar:
                         return scalar[raw_return]
@@ -2053,8 +2110,16 @@ class ExpressionVisitorMixin:
             return f"len({args[0]})" if args else "0"
 
         if func_str == "str":
+            raw_args = self._get_raw_call_args(args_node)
+            if args and raw_args and self._expr_go_type_hint(raw_args[0]) == "[]byte":
+                # ``str(data)``: the UTF-8 text of the bytes.
+                return f"string({args[0]})"
             self._need_import("fmt")
             return f'fmt.Sprintf("%v", {args[0]})' if args else '""'
+
+        if func_str == "bytes" and "bytes" not in self._user_functions:
+            raw_args = self._get_raw_call_args(args_node)
+            return self._bytes_conversion_to_go(raw_args[0] if raw_args else None, args[0] if args else "")
 
         if func_str == "json":
             raw_args = self._get_raw_call_args(args_node)
@@ -3347,6 +3412,9 @@ class ExpressionVisitorMixin:
         """An ``optional[str]``-style value (a Go ``*string``) shown by
         ``print`` / f-strings: the pointed-to value, or ``<nil>``."""
         hint = self._expr_go_type_hint(node) if isinstance(node, Tree) else ""
+        if hint == "[]byte":
+            # ``print(data)`` / ``f"{data}"`` show the text, like ``str(data)``.
+            return f"string({value_go})"
         if hint and hint.startswith("*") and hint[1:] in self._OPTIONAL_VALUE_GO_TYPES:
             return f"func() interface{{}} {{ if __lamP := {value_go}; __lamP != nil {{ return *__lamP }}; return nil }}()"
         return value_go
@@ -5085,6 +5153,10 @@ class ExpressionVisitorMixin:
             return ""
 
         if len(comp_ops) == 1 and len(exprs) == 2:
+            if comp_ops[0] in {"==", "!="} and (self._is_none_literal(exprs[0]) or self._is_none_literal(exprs[1])):
+                # ``value == None`` on an ``optional[Cls]``: a nil test, not
+                # ``__eq__`` (which would run on a nil receiver).
+                return ""
             dunder = CMP_TO_DUNDER.get(comp_ops[0], "")
             method = self._get_dunder_method(cls, dunder) if dunder else ""
             if method:
@@ -5671,6 +5743,20 @@ class ExpressionVisitorMixin:
             self._need_import("strings")
             item_go = self._typed_value_to_go(item_node, "string")
             return f"strings.Contains({container_go}, {item_go})"
+
+        if container_type == "[]byte":
+            item_type = self._expr_go_type_hint(item_node) or self._infer_type_from_value(item_node) or ""
+            if item_type == "[]byte":
+                # A sub-sequence (the empty one is in every value).
+                self._need_import("strings")
+                return f"strings.Contains(string({container_go}), string({self._expr_to_go(item_node)}))"
+            # A byte value: an int outside 0..255 is never present.
+            self._need_import("slices")
+            item_go = self._expr_to_go(item_node)
+            return (
+                f"func(_b []byte, _v int) bool {{ return _v >= 0 && _v < 256 && "
+                f"slices.Contains(_b, byte(_v)) }}({container_go}, int({item_go}))"
+            )
 
         if container_type.startswith("map["):
             key_type, _value_type = self._split_go_map_type(container_type)

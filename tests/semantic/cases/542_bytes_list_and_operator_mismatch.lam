@@ -1,0 +1,17 @@
+# expect-error: cannot assign `list[str]` to `bytes` variable `names`
+# expect-error: cannot assign `list[int]` to `bytes` variable `copied`
+# expect-error: cannot add `bytes` and `str`
+# expect-error: bytes index must be `int`, got `str`
+# expect-error: cannot assign `bytes` to `list[int]` variable `back`
+# Only int items build bytes; an existing `list[int]` converts with
+# `bytes(codes)`, and bytes join only with bytes.
+func main() {
+    names: bytes = ["a", "b"]
+    codes: list[int] = [1, 2]
+    copied: bytes = codes
+    data: bytes = bytes("hi")
+    joined: bytes = data + "!"
+    first: byte = data["0"]
+    back: list[int] = data
+    print(len(names), len(copied), len(joined), first, len(back))
+}

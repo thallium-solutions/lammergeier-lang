@@ -1,0 +1,10 @@
+# expect-error: cast `bytes` expects `str`, `bytes`, or `list[int]` argument, got `float`
+# expect-error: cast `bytes` expects `str`, `bytes`, or `list[int]` argument, got `list[str]`
+# `bytes(x)` converts text, bytes and lists of ints; other values used to
+# pass the checker and fail in `go build` ("undefined: Bytes").
+func main() {
+    a: bytes = bytes(2.5)
+    names: list[str] = ["a"]
+    b: bytes = bytes(names)
+    print(len(a), len(b))
+}

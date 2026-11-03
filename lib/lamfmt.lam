@@ -1,9 +1,16 @@
 # Lammergeier standard library: formatting utilities
+#
+# ``Fmt.formatFloat(f, decimals)`` writes ``decimals`` fixed digits; a
+# negative ``decimals`` (the default) writes the shortest text that reads
+# back as the same float, never with an exponent (``1234567.5``, ``0.00001``,
+# ``2``), like Go's ``strconv.FormatFloat(f, 'f', -1, 64)``.
+#
 # Import with: from lamfmt import Fmt
 
 go! {
     import (
         "fmt"
+        "strconv"
         "strings"
     )
 }
@@ -79,8 +86,14 @@ class Fmt {
         }
     }
 
-    static func formatFloat(f: float, decimals: int) -> str {
+    static func formatFloat(f: float, decimals: int = -1) -> str {
+        #- ``f`` with ``decimals`` digits after the point (rounded); a
+           negative ``decimals`` gives the shortest exact text without an
+           exponent (``1e21`` -> ``1000000000000000000000``, ``2.0`` -> ``2``). -#
         go! {
+            if decimals < 0 {
+                return strconv.FormatFloat(f, 'f', -1, 64)
+            }
             return fmt.Sprintf("%.*f", decimals, f)
         }
     }

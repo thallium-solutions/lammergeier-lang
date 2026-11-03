@@ -1,4 +1,11 @@
 # Lammergeier standard library: date/time utilities
+#
+# Locations are IANA zone names (``"Europe/Rome"``), ``"UTC"``, ``"Local"``
+# or RFC 3339 offsets (``"+02:00"``). The zone database is compiled into
+# every program that imports this module (Go's ``time/tzdata``, about
+# 450 KB), so zones resolve in minimal containers without system tzdata;
+# an installed system database (or ``ZONEINFO``) still takes precedence.
+#
 # Import with: from lamdatetime import DateTime
 
 from lamerrors import Result, Error
@@ -8,6 +15,7 @@ go! {
     import (
         "fmt"
         "time"
+        _ "time/tzdata"
     )
 
     // lamDateTimeLocation accepts IANA names and RFC 3339 numeric offsets.

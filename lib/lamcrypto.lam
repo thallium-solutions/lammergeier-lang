@@ -5,6 +5,12 @@
 # envelopes, PBKDF2-SHA256 password hashes, Ed25519/RSA PEM keys and signing,
 # and typed X.509 certificate metadata without exposing Go key objects.
 #
+# ``bcryptHash`` / ``bcryptVerify`` / ``bcryptCost`` read and write bcrypt
+# hashes (``$2a$``, ``$2b$``, ``$2y$``) for passwords stored by other
+# systems; they use ``golang.org/x/crypto/bcrypt`` (the Go team's extended
+# crypto module, pinned with the stdlib). New hashes may use either scheme;
+# ``passwordHash`` stays the default.
+#
 # Binary values stay friendly to Lam programs: random bytes are ``list[int]``;
 # encrypted values, password hashes, and signatures are portable strings; key
 # material remains PEM. Recoverable input and runtime failures are returned as
@@ -30,8 +36,11 @@ go! {
         "crypto/x509"
         "encoding/pem"
         "fmt"
+        "errors"
         "strconv"
         "time"
+
+        "golang.org/x/crypto/bcrypt"
     )
 
     func lamCryptoAESGCMSeal(key []byte, nonce []byte, plaintext []byte, aad []byte) ([]byte, error) {
@@ -56,8 +65,8 @@ go! {
         return gcm.Open(nil, nonce, ciphertext, aad)
     }
 
-    // PBKDF2 from RFC 8018, specialised to HMAC-SHA256. Keeping this small
-    // implementation here avoids pulling golang.org/x/crypto into the stdlib.
+    // PBKDF2 from RFC 8018, specialised to HMAC-SHA256 (kept local: the
+    // existing hashes depend on exactly this derivation).
     func lamCryptoPBKDF2SHA256(password []byte, salt []byte, iterations int, keyLength int) []byte {
         hashLength := sha256.Size
         blockCount := (keyLength + hashLength - 1) / hashLength
@@ -400,6 +409,75 @@ class Crypto {
             actualRaw = string(lamCryptoPBKDF2SHA256([]byte(password), []byte(saltRaw), iterations, 32))
         }
         return Result.Ok(Crypto.constantTimeEquals(Bytes.hexEncode(actualRaw), parts[3]))
+    }
+
+    static func bcryptHash(password: str, cost: int = 10) -> Result[str] {
+        #- Hash a password with bcrypt (``$2a$<cost>$...``, 60 characters).
+           ``cost`` is 4..31 (each step doubles the work); passwords longer
+           than bcrypt's 72-byte limit are rejected rather than truncated.
+           Both are ``CryptoValueError``. -#
+        if cost < 4 or cost > 31 {
+            return Result.Err(Error("CryptoValueError", "bcrypt cost must be between 4 and 31", None))
+        }
+        if len(password) > 72 {
+            return Result.Err(Error("CryptoValueError", "bcrypt passwords are limited to 72 bytes", None))
+        }
+        out: str = ""
+        failure: str = ""
+        go! {
+            hashed, err := bcrypt.GenerateFromPassword([]byte(password), cost)
+            if err != nil {
+                failure = err.Error()
+            } else {
+                out = string(hashed)
+            }
+        }
+        if failure != "" {
+            return Result.Err(Error("CryptoValueError", failure, None))
+        }
+        return Result.Ok(out)
+    }
+
+    static func bcryptVerify(password: str, encoded: str) -> Result[bool] {
+        #- Verify a bcrypt hash (``$2a$``, ``$2b$`` or ``$2y$``) in constant
+           time. A wrong password is ``Result.Ok(false)``; a value that is
+           not a bcrypt hash is a ``CryptoPasswordHashError``. -#
+        matched: bool = false
+        failure: str = ""
+        go! {
+            err := bcrypt.CompareHashAndPassword([]byte(encoded), []byte(password))
+            switch {
+            case err == nil:
+                matched = true
+            case errors.Is(err, bcrypt.ErrMismatchedHashAndPassword):
+                matched = false
+            default:
+                failure = err.Error()
+            }
+        }
+        if failure != "" {
+            return Result.Err(Error("CryptoPasswordHashError", f"malformed bcrypt hash: {failure}", None))
+        }
+        return Result.Ok(matched)
+    }
+
+    static func bcryptCost(encoded: str) -> Result[int] {
+        #- The cost of a bcrypt hash (to rehash old, cheaper hashes after a
+           successful login). Non-bcrypt values are ``CryptoPasswordHashError``. -#
+        cost: int = 0
+        failure: str = ""
+        go! {
+            parsed, err := bcrypt.Cost([]byte(encoded))
+            if err != nil {
+                failure = err.Error()
+            } else {
+                cost = parsed
+            }
+        }
+        if failure != "" {
+            return Result.Err(Error("CryptoPasswordHashError", f"malformed bcrypt hash: {failure}", None))
+        }
+        return Result.Ok(cost)
     }
 
     static func generateEd25519KeyPair() -> Result[CryptoKeyPair] {

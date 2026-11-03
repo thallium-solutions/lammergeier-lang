@@ -1,0 +1,54 @@
+# expect: fixed 3.14 3 2.50 -0.1
+# expect: shortest 3.14159 2 0.1 1234567.5 -42.125
+# expect: small 0.00001 0.000123
+# expect: large 1000000000000000000000 123456789012345680000
+# expect: exact 0.30000000000000004 0.1 33.333333333333336
+# expect: special 0 NaN +Inf -Inf
+# expect: default 2.5 7
+# expect: roundtrip true true true
+# expect: prices 12.5|8|0.99
+# expect: total 21.49
+# Fmt.formatFloat: fixed decimals for decimals >= 0, Go's shortest exact
+# text ('f', -1) for a negative count (the default), never an exponent.
+from lamfmt import Fmt
+from lamconv import Conv
+from lamerrors import Result
+
+class Price {
+    func init(self, amount: float) {
+        self.amount: float = amount
+    }
+
+    func text(self) -> str {
+        return Fmt.formatFloat(self.amount, -1)
+    }
+}
+
+func roundTrips(value: float) -> bool {
+    parsed: Result[float] = Conv.parse(Fmt.formatFloat(value))
+    return parsed.ok() and parsed.unwrap() == value
+}
+
+func main() {
+    print("fixed", Fmt.formatFloat(3.14159, 2), Fmt.formatFloat(3.14159, 0), Fmt.formatFloat(2.5, 2), Fmt.formatFloat(-0.1, 1))
+    print("shortest", Fmt.formatFloat(3.14159, -1), Fmt.formatFloat(2.0, -1), Fmt.formatFloat(0.1, -1), Fmt.formatFloat(1234567.5, -1), Fmt.formatFloat(-42.125, -1))
+    print("small", Fmt.formatFloat(0.00001, -1), Fmt.formatFloat(0.000123, -5))
+    print("large", Fmt.formatFloat(1e21, -1), Fmt.formatFloat(123456789012345678901.0, -1))
+    third: float = 100.0 / 3.0
+    tenth: float = 0.1
+    print("exact", Fmt.formatFloat(tenth + 0.2, -1), Fmt.formatFloat(0.1, -1), Fmt.formatFloat(third, -1))
+    zero: float = 0.0
+    huge: float = 1e308
+    big: float = huge * 10.0
+    nan: float = big - big
+    print("special", Fmt.formatFloat(zero), Fmt.formatFloat(nan), Fmt.formatFloat(big), Fmt.formatFloat(-big))
+    print("default", Fmt.formatFloat(2.5), Fmt.formatFloat(7.0))
+    print("roundtrip", roundTrips(tenth + 0.2), roundTrips(third), roundTrips(1e-7))
+    prices: list[Price] = [Price(12.5), Price(8.0), Price(0.99)]
+    print("prices", "|".join([p.text() for p in prices]))
+    total: float = 0.0
+    for p in prices {
+        total += p.amount
+    }
+    print("total", Fmt.formatFloat(total, 2))
+}

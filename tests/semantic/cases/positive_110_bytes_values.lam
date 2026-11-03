@@ -1,0 +1,28 @@
+# expect-pass
+# expect-no-warning: value of type `unknown`
+# Bytes conversions, comprehensions, indexing, slicing, `+`, `==` and `in`
+# are typed: none of them is reported.
+func tail(data: bytes, n: int) -> bytes {
+    return data[len(data) - n:]
+}
+
+func main() {
+    text: str = "héllo"
+    data: bytes = bytes(text)
+    codes: list[int] = [104, 105]
+    fromCodes: bytes = bytes(codes)
+    fromComp: bytes = [c + 1 for c in codes if c > 0]
+    fromBytes: bytes = [b for b in data]
+    literal: bytes = [0, 255, codes[0]]
+    first: byte = data[0]
+    last: int = int(data[-1])
+    part: bytes = data[1:3]
+    joined: bytes = data + part
+    joined += fromCodes
+    same: bool = data == bytes(text) and part != data
+    found: bool = 104 in data and bytes("ll") in data and first in data and 300 not in data
+    back: str = str(joined)
+    copyOf: bytes = bytes(data)
+    empty: bytes = bytes()
+    print(len(fromComp), len(fromBytes), len(literal), last, len(part), same, found, back, len(copyOf), len(empty), len(tail(data, 2)))
+}

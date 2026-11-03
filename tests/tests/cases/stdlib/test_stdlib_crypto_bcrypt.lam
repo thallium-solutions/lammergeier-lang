@@ -1,0 +1,78 @@
+# expect: vectors true true true true true
+# expect: wrong false false false
+# expect: hash $2a$ 60 true false 4
+# expect: costs 10 6 5 4
+# expect: default-cost 10
+# expect: bad-cost CryptoValueError CryptoValueError
+# expect: too-long CryptoValueError
+# expect: malformed CryptoPasswordHashError CryptoPasswordHashError CryptoPasswordHashError
+# expect: distinct true true
+# expect: users ada:ok bob:wrong eve:error
+# expect: migrate pbkdf2-sha256 true
+# Crypto.bcryptHash / bcryptVerify / bcryptCost: hashes made by other
+# implementations ($2a$, $2b$, $2y$ from Python's bcrypt and PHP) verify,
+# a wrong password is Ok(false), malformed hashes and bad parameters are
+# errors.
+from lamcrypto import Crypto
+from lamerrors import Result, Error
+
+class StoredUser {
+    func init(self, name: str, hash: str) {
+        self.name: str = name
+        self.hash: str = hash
+    }
+}
+
+func kind(r: Result) -> str {
+    if r.ok() {
+        return "ok"
+    }
+    err: Error = r.error
+    return err.kind
+}
+
+func check(user: StoredUser, password: str) -> str {
+    verdict: Result[bool] = Crypto.bcryptVerify(password, user.hash)
+    if not verdict.ok() {
+        return f"{user.name}:error"
+    }
+    return f"{user.name}:{'ok' if verdict.unwrap() else 'wrong'}"
+}
+
+#- Verifies a legacy bcrypt hash and upgrades it to PBKDF2 on success. -#
+func login(password: str, stored: str) -> Result[str] {
+    if stored.startsWith("$2") {
+        if not Crypto.bcryptVerify(password, stored)? {
+            return Result.Err(Error("AuthError", "wrong password"))
+        }
+        return Crypto.passwordHash(password, 1000)
+    }
+    return Result.Ok(stored)
+}
+
+func main() {
+    b10: str = "$2b$10$KEYpeI5ywrdKq.CcUC0cPeLHdarx8oS7n8Vl3nshcisB2y8/bM1pW"
+    a06: str = "$2a$06$3yhd2wMt5Ke2hEeLZMe5Z./aD3GzMJrkKJ4WOVp62luD6O/MLVmTy"
+    b05: str = "$2b$05$nDDmbSRXgEm2pS7pE7Bq.OOR4Uu58K12axzhkwZHsxxbErhG4Raqe"
+    y05: str = "$2y$05$nDDmbSRXgEm2pS7pE7Bq.OOR4Uu58K12axzhkwZHsxxbErhG4Raqe"
+    empty: str = "$2b$04$70rts3RGov3UlWQLwaUHBeTLsW3Hr3K6KfVRJ7PF6x.zDLC0Cw/bO"
+    print("vectors", Crypto.bcryptVerify("correct horse", b10).unwrap(), Crypto.bcryptVerify("correct horse", a06).unwrap(), Crypto.bcryptVerify("pässwörd", b05).unwrap(), Crypto.bcryptVerify("pässwörd", y05).unwrap(), Crypto.bcryptVerify("", empty).unwrap())
+    print("wrong", Crypto.bcryptVerify("correct horsE", b10).unwrap(), Crypto.bcryptVerify("passwörd", y05).unwrap(), Crypto.bcryptVerify("x", empty).unwrap())
+
+    made: str = Crypto.bcryptHash("s3cret", 4).unwrap()
+    print("hash", made[:4], len(made), Crypto.bcryptVerify("s3cret", made).unwrap(), Crypto.bcryptVerify("s3cret!", made).unwrap(), Crypto.bcryptCost(made).unwrap())
+    print("costs", Crypto.bcryptCost(b10).unwrap(), Crypto.bcryptCost(a06).unwrap(), Crypto.bcryptCost(y05).unwrap(), Crypto.bcryptCost(empty).unwrap())
+    print("default-cost", Crypto.bcryptCost(Crypto.bcryptHash("x").unwrap()).unwrap())
+    print("bad-cost", kind(Crypto.bcryptHash("x", 3)), kind(Crypto.bcryptHash("x", 32)))
+    print("too-long", kind(Crypto.bcryptHash("a" * 73, 4)))
+    print("malformed", kind(Crypto.bcryptVerify("x", "")), kind(Crypto.bcryptVerify("x", "pbkdf2-sha256$1000$abc$def")), kind(Crypto.bcryptCost("$2b$")))
+    again: str = Crypto.bcryptHash("s3cret", 4).unwrap()
+    print("distinct", again != made, Crypto.bcryptVerify("s3cret", again).unwrap())
+
+    users: list[StoredUser] = [StoredUser("ada", b10), StoredUser("bob", a06), StoredUser("eve", "not-a-hash")]
+    passwords: dict[str, str] = {"ada": "correct horse", "bob": "nope", "eve": "x"}
+    print("users", " ".join([check(u, passwords[u.name]) for u in users]))
+
+    upgraded: str = login("correct horse", b10).unwrap()
+    print("migrate", upgraded.split("$")[0], Crypto.verifyPassword("correct horse", upgraded).unwrap())
+}

@@ -1,0 +1,73 @@
+# expect: print x <nil> 3 <nil> 2.5 true
+# expect: fstring [x] [<nil>]
+# expect: coalesce x none 3 -1
+# expect: none true false false true
+# expect: eq true false
+# expect: instance y <nil>
+# A static or instance method returning `optional[str]` (`int`, `float`,
+# `bool`) is shown as its value by print and f-strings (it printed the Go
+# pointer), and `value == None` on an `optional[Cls]` of a class with
+# `__eq__` is a nil test (it called `__eq__` on the nil value and crashed).
+class Point {
+    func init(self, x: int) {
+        self.x: int = x
+    }
+
+    func __eq__(self, other: Point) -> bool {
+        return self.x == other.x
+    }
+
+    static func find(x: int) -> optional[Point] {
+        if x > 0 {
+            return Point(x)
+        }
+        return None
+    }
+
+    static func label(x: int) -> optional[str] {
+        if x > 0 {
+            return "x"
+        }
+        return None
+    }
+
+    static func count(x: int) -> optional[int] {
+        if x > 0 {
+            return x
+        }
+        return None
+    }
+
+    static func ratio(x: int) -> optional[float] {
+        if x > 0 {
+            return 2.5
+        }
+        return None
+    }
+
+    static func flag(x: int) -> optional[bool] {
+        if x > 0 {
+            return true
+        }
+        return None
+    }
+
+    func tag(self, on: bool) -> optional[str] {
+        if on {
+            return "y"
+        }
+        return None
+    }
+}
+
+func main() {
+    print("print", Point.label(1), Point.label(0), Point.count(3), Point.count(0), Point.ratio(1), Point.flag(1))
+    print("fstring", f"[{Point.label(1)}]", f"[{Point.label(0)}]")
+    print("coalesce", Point.label(1) ?? "none", Point.label(0) ?? "none", Point.count(3) ?? -1, Point.count(0) ?? -1)
+    missing: optional[Point] = Point.find(0)
+    found: optional[Point] = Point.find(2)
+    print("none", missing == None, missing != None, found == None, found != None)
+    print("eq", found == Point(2), found == Point(3))
+    p: Point = Point(1)
+    print("instance", p.tag(true), p.tag(false))
+}

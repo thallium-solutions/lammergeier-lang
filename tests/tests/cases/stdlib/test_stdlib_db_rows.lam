@@ -1,0 +1,143 @@
+# expect: sqlite-int 7 0 -1 42 1
+# expect: sqlite-float 2.5 7 0 12.75
+# expect: sqlite-str Ada 7 2.5  none
+# expect: sqlite-bool true false true false true
+# expect: sqlite-null true true false
+# expect: sqlite-optional Ada <nil> 7 <nil> 2.5 true <nil>
+# expect: sqlite-time 2026-11-03T19:05:00Z 1793732700 1793732700 none
+# expect: sqlite-list a|b c|d,e 3 1,2,3
+# expect: pg-int 9007199254740993 1 0 123 1793732700 12
+# expect: pg-float 123.45 0.5 1 true
+# expect: pg-str 123.45 bytea 2026-11-03T19:05:00.123456Z true 12345678901234567890 ab\c
+# expect: pg-bool true false true false false true
+# expect: pg-time 2026-11-03 20:05 CET 1793732700 2026-11-03T19:05:00Z none
+# expect: pg-list 4 [a] [b c] [d"e] [f\g] 0 0 [] [x]
+# expect: pg-intlist 3 6 0
+# expect: text-array {} {"a","b c","d\"e","f\\g",""}
+# expect: parse-array 3 true x,,NULL false
+# expect: roundtrip true
+# expect: shop Café Uno|4.5|2|tags=bio,local|open=true|since=2026-11-03
+# Typed reads of lamdb rows: SQLite rows from a real database, PostgreSQL
+# shaped values (lib/pq: int64, float64, bool, time.Time, text for
+# NUMERIC and arrays; []byte, big numbers from other drivers), and the
+# text[] literal encoder / parser.
+from lamdb import Db, Row
+from lamdatetime import DateTime
+from lamerrors import Result
+
+go! {
+    import (
+        "math/big"
+        "time"
+    )
+}
+
+#- A row shaped like the values lib/pq and other drivers produce. -#
+func pgRow() -> dict[str, any] {
+    go! {
+        when := time.Date(2026, 11, 3, 20, 5, 0, 123456000, time.FixedZone("", 3600))
+        huge, _ := new(big.Int).SetString("12345678901234567890", 10)
+        return map[string]interface{}{
+            "id": int64(9007199254740993),
+            "flag": true,
+            "off": false,
+            "price": "123.45",
+            "ratio": float64(0.5),
+            "count": int32(12),
+            "blob": []byte("bytea"),
+            "created": when,
+            "big": huge,
+            "bigf": big.NewFloat(1.0),
+            "tags": "{a,\"b c\",\"d\\\"e\",\"f\\\\g\",NULL}",
+            "none": "{}",
+            "nulls": "{NULL}",
+            "quoted": "{\"\"}",
+            "single": "{x}",
+            "ints": "{1,2,3}",
+            "missingInts": nil,
+            "text": "ab\\c",
+            "yes": "yes",
+            "no": "F",
+            "numericText": "  42.9 ",
+            "nothing": nil,
+            "stamp": "2026-11-03 20:05:00+01",
+        }
+    }
+}
+
+class Shop {
+    func init(self, row: dict[str, any]) {
+        self.name: str = Row.str(row, "name")
+        self.rating: float = Row.float(row, "rating")
+        self.products: int = Row.int(row, "products")
+        self.tags: list[str] = Row.strList(row, "tags")
+        self.open: bool = Row.bool(row, "open")
+        self.since: optional[DateTime] = Row.time(row, "since")
+    }
+
+    func describe(self) -> str {
+        since: str = "never"
+        if self.since != None {
+            since = self.since.date()
+        }
+        return f"{self.name}|{self.rating}|{self.products}|tags={','.join(self.tags)}|open={self.open}|since={since}"
+    }
+}
+
+func timeText(row: dict[str, any], key: str) -> str {
+    value: optional[DateTime] = Row.time(row, key)
+    if value == None {
+        return "none"
+    }
+    return value.rfc3339()
+}
+
+func sqliteRows(db: Db) -> Result[dict[str, any]] {
+    _ = db.exec("CREATE TABLE t (n INTEGER, f REAL, s TEXT, b BOOLEAN, d DATETIME, tags TEXT, blank TEXT, word TEXT)")?
+    _ = db.exec("INSERT INTO t VALUES (7, 2.5, 'Ada', 1, '2026-11-03 19:05:00', '{a,\"b c\",\"d,e\"}', NULL, 'oops')")?
+    return db.first("SELECT n, f, s, b, d, tags, blank AS \"nothing\", word, 12.75 AS money, 'yes' AS yes, '{1,2,3}' AS ints, 42 AS answer, -1 AS neg FROM t")
+}
+
+func main() {
+    db: Db = Db.connect("sqlite", ":memory:").unwrap()
+    row: dict[str, any] = sqliteRows(db).unwrap()
+    print("sqlite-int", Row.int(row, "n"), Row.int(row, "word"), Row.int(row, "missing", -1), Row.int(row, "answer"), Row.int(row, "b"))
+    print("sqlite-float", Row.float(row, "f"), Row.float(row, "n"), Row.float(row, "nothing"), Row.float(row, "money"))
+    print("sqlite-str", Row.str(row, "s"), Row.str(row, "n"), Row.str(row, "f"), Row.str(row, "nothing"), Row.str(row, "missing", "none"))
+    print("sqlite-bool", Row.bool(row, "b"), Row.bool(row, "nothing"), Row.bool(row, "yes"), Row.bool(row, "word"), Row.bool(row, "word", true))
+    print("sqlite-null", Row.isNull(row, "nothing"), Row.isNull(row, "missing"), Row.isNull(row, "s"))
+    print("sqlite-optional", Row.optionalStr(row, "s"), Row.optionalStr(row, "nothing"), Row.optionalInt(row, "n"), Row.optionalInt(row, "word"), Row.optionalFloat(row, "f"), Row.optionalBool(row, "b"), Row.optionalBool(row, "word"))
+    print("sqlite-time", timeText(row, "d"), Row.unix(row, "d"), Row.int(row, "d"), timeText(row, "nothing"))
+    tags: list[str] = Row.strList(row, "tags")
+    print("sqlite-list", "|".join(tags), len(Row.intList(row, "ints")), ",".join([str(n) for n in Row.intList(row, "ints")]))
+
+    pg: dict[str, any] = pgRow()
+    print("pg-int", Row.int(pg, "id"), Row.int(pg, "flag"), Row.int(pg, "off"), Row.int(pg, "price"), Row.int(pg, "created"), Row.int(pg, "count"))
+    print("pg-float", Row.float(pg, "price"), Row.float(pg, "ratio"), Row.float(pg, "bigf"), Row.float(pg, "big") > 1e19)
+    print("pg-str", Row.str(pg, "price"), Row.str(pg, "blob"), Row.str(pg, "created"), Row.str(pg, "flag"), Row.str(pg, "big"), Row.str(pg, "text"))
+    print("pg-bool", Row.bool(pg, "flag"), Row.bool(pg, "off"), Row.bool(pg, "yes"), Row.bool(pg, "no"), Row.bool(pg, "nothing"), Row.bool(pg, "id"))
+    created: DateTime = Row.time(pg, "created") ?? DateTime(0, "UTC")
+    rome: DateTime = created.inLocation("Europe/Rome").unwrap()
+    print("pg-time", rome.format("2006-01-02 15:04 MST"), Row.unix(pg, "created"), timeText(pg, "stamp"), timeText(pg, "price"))
+    listed: list[str] = Row.strList(pg, "tags")
+    print("pg-list", len(listed), " ".join([f"[{t}]" for t in listed]), len(Row.strList(pg, "none")), len(Row.strList(pg, "nulls")), " ".join([f"[{t}]" for t in Row.strList(pg, "quoted")]), " ".join([f"[{t}]" for t in Row.strList(pg, "single")]))
+    ints: list[int] = Row.intList(pg, "ints")
+    total: int = 0
+    for n in ints {
+        total += n
+    }
+    print("pg-intlist", len(ints), total, len(Row.intList(pg, "missingInts")))
+
+    values: list[str] = ["a", "b c", "d\"e", "f\\g", ""]
+    print("text-array", Db.textArray([]), Db.textArray(values))
+    parsed: list[str] = Db.parseTextArray("{x,\"\",\"NULL\"}").unwrap()
+    malformed: Result[list[str]] = Db.parseTextArray("x,y")
+    print("parse-array", len(parsed), parsed[1] == "", ",".join(parsed), malformed.ok())
+    back: list[str] = Db.parseTextArray(Db.textArray(values)).unwrap()
+    print("roundtrip", back == values)
+
+    _ = db.exec("CREATE TABLE shops (name TEXT, rating REAL, products INTEGER, tags TEXT, open INTEGER, since DATE)").unwrap()
+    _ = db.exec("INSERT INTO shops VALUES (?, ?, ?, ?, ?, ?)", ["Café Uno", 4.5, 2, Db.textArray(["bio", "local"]), 1, "2026-11-03"]).unwrap()
+    shops: list[Shop] = [Shop(r) for r in db.query("SELECT * FROM shops").unwrap()]
+    print("shop", shops[0].describe())
+}
