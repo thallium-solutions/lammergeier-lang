@@ -1,0 +1,6 @@
+# expect-error: cannot assign `str` to `html` variable `page`
+# A str is never markup by itself: use a literal, html(text) or Html.parse.
+func main() {
+    page: html = "<b>x</b>"
+    print(page)
+}

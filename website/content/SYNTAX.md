@@ -252,6 +252,25 @@ Dynamic `Json.fromValue(any)` data, decoded wire shapes, object-vs-array access,
 missing keys, bounds, cycles/depth, and non-finite runtime floats remain runtime
 checks because their values are not knowable from source.
 
+### Native HTML and XML
+
+`html` and `xml` are native markup values, written between `<>` and `</>`
+with `${expr}` slots. Text inserted anywhere is escaped, markup values are
+inserted as markup, `<script>`/`<style>` content stays JavaScript/CSS, and
+classes opt in with `__html__` / `__xml__`. Values support `+`, `+=`, `==`
+and DOM-style methods (`select`, `first`, `setAttr`, `append`...). See
+[Markup: html and xml](#markup-html-and-xml).
+
+```lammergeier
+func row(name: str, qty: int) -> html {
+    return <><tr class="${'empty' if qty == 0 else ''}"><td>${name}</td><td>${qty}</td></tr></>
+}
+
+rows: list[html] = [row("Bag", 2), row("<Shoes>", 0)]
+table: html = <><table>${rows}</table></>
+feed: xml = <><?xml version="1.0"?><items count="${len(rows)}"/></>
+```
+
 ### Control Flow
 
 `if`, `elif`, `else`, `while`, `for`, `break`, `continue`, `defer`,
@@ -479,24 +498,25 @@ values into Lam locals before returning to normal Lam code.
 22. [Dictionaries with Non-String Keys](#dictionaries-with-non-string-keys)
 23. [Enumerate](#enumerate)
 24. [F-Strings](#f-strings)
-25. [Multi-line Expressions](#multi-line-expressions)
-26. [Multiline Strings](#multiline-strings)
-27. [Comments](#comments)
-28. [File Management](#file-management)
-29. [Try / Catch / Finally](#try--catch--finally)
-30. [Errors & Results](#errors--results)
-31. [With Statement](#with-statement)
-32. [Del Statement](#del-statement)
-33. [Slice Assignment](#slice-assignment)
-34. [Generators / Yield](#generators--yield)
-35. [Functional Programming](#functional-programming)
-36. [Multiple Return Values](#multiple-return-values)
-37. [Importing Custom Libraries](#importing-custom-libraries)
-38. [Standard Library](#standard-library)
-39. [Raw Go Injection (go!)](#raw-go-injection-go)
-40. [Default Parameter Values](#default-parameter-values)
-41. [Function Overloading](#function-overloading)
-42. [Compilation](#compilation)
+25. [Markup: html and xml](#markup-html-and-xml)
+26. [Multi-line Expressions](#multi-line-expressions)
+27. [Multiline Strings](#multiline-strings)
+28. [Comments](#comments)
+29. [File Management](#file-management)
+30. [Try / Catch / Finally](#try--catch--finally)
+31. [Errors & Results](#errors--results)
+32. [With Statement](#with-statement)
+33. [Del Statement](#del-statement)
+34. [Slice Assignment](#slice-assignment)
+35. [Generators / Yield](#generators--yield)
+36. [Functional Programming](#functional-programming)
+37. [Multiple Return Values](#multiple-return-values)
+38. [Importing Custom Libraries](#importing-custom-libraries)
+39. [Standard Library](#standard-library)
+40. [Raw Go Injection (go!)](#raw-go-injection-go)
+41. [Default Parameter Values](#default-parameter-values)
+42. [Function Overloading](#function-overloading)
+43. [Compilation](#compilation)
 
 ---
 
@@ -510,6 +530,9 @@ values into Lam locals before returning to normal Lam code.
 | `bool`       | `bool`         |
 | `list[T]`    | `[]T`          |
 | `dict[K, V]` | `map[K]V`      |
+| `json`       | `LamJSON`      |
+| `html`       | `LamHTML`      |
+| `xml`        | `LamXML`       |
 | `any`        | `interface{}`  |
 | `None`       | (empty return) |
 
@@ -1679,6 +1702,152 @@ slot uses `%v` so any value type works.
 > undefined names (at their line and column), unknown members and methods
 > (``f"{seen.join(" ")}"`` on a list suggests ``" ".join(seen)``) and type
 > errors are reported.
+
+---
+
+## Markup: html and xml
+
+`html` and `xml` are native types, siblings of [`json`](#native-json): values
+are trees of elements, text, comments and declarations, not strings. They are
+written directly in code between `<>` and `</>`:
+
+```lammergeier
+func card(name: str, price: float, soldOut: bool) -> html {
+    return <>
+        <article class="card ${'sold-out' if soldOut else ''}">
+            <h2>${name}</h2>
+            <p>${price}</p>
+            <button disabled=${soldOut}>Buy</button>
+        </article>
+    </>
+}
+
+func main() {
+    page: html = <><!DOCTYPE html><html><body>${card("Bag & co", 120.5, false)}</body></html></>
+    print(page)
+}
+```
+
+**Literals.** Everything between `<>` and `</>` is markup: plain text is
+valid (`<>Hello</>`), so are fragments with several elements, documents with
+a `<!DOCTYPE>` or `<?xml?>` prolog, and the empty literal `<></>`. Whitespace
+containing a newline right after `<>` and right before `</>` is layout and is
+dropped; the rest is kept as written. A literal spans as many lines as
+needed and `#` or braces inside it are text, not Lam.
+
+**Which type.** The target decides: an annotation (`doc: xml = <>...</>`), a
+parameter, a return type, the element type of a list, the other operand of
+`+`, the receiver of a DOM method, or the literal it is written in (inside
+`${...}` of an xml literal a literal is xml). With no target it is `html`.
+
+**Slots.** `${expr}` inserts a value, and what it inserts depends on where it
+stands:
+
+| Where | Value | Result |
+| --- | --- | --- |
+| element content | `str`, numbers, `bool` | text, escaped (`<` becomes `&lt;`) |
+| element content | `html` / `xml` of the literal's kind | inserted as markup (a copy) |
+| element content | class with `__html__` / `__xml__` | its markup |
+| element content | `list[...]` of the above | each item in order |
+| element content | `None` / empty optional | nothing |
+| element content | `json` | its JSON text |
+| attribute value | `str`, numbers, part of a value (`class="a ${b}"`) | text, escaped |
+| whole attribute value | `true` / `false` / `None` | bare attribute (`disabled`) / left out |
+| `<script>`, `<style>` | `str`, numbers, `json` | JavaScript/CSS text; `json` as JSON |
+
+`${...}` can not stand in a tag or attribute name, a comment, a doctype or a
+processing instruction, and an attribute or script value can not be markup:
+the compiler reports these. Inserting `html` into an xml literal (or the
+reverse) and classes without the matching `__html__` / `__xml__` method are
+compile errors too. Write `\$` for a literal dollar sign (`\${x}` stays
+`${x}`, e.g. for JavaScript template strings).
+
+**Script and style.** The content of `<script>` and `<style>` is JavaScript
+and CSS text, not markup: braces, `<` and quotes mean nothing to the
+compiler and nothing is interpreted. A value inserted there can not close
+the element (`</` is written `<\/`); insert data as `${json(value)}` or a
+`json` value, which is written as JSON.
+
+**HTML is read leniently**, the way hand-written HTML is: void elements
+(`<br>`, `<img>`, `<input>`...) need no end tag, `<li>`, `<p>`, `<td>`,
+`<tr>`, `<option>`... are closed by the next sibling, stray end tags are
+ignored, `<div/>` is written `<div></div>`, self-closing tags inside `<svg>`
+and `<math>` stay self-closing, elements are never moved (no `<tbody>` is
+added, so `<tr>` fragments work). Character references are read (`&copy;`
+is `©`); output escapes only `&`, `<`, `>` (and `"` in attributes).
+**XML is checked**: an xml literal must be well formed (the compiler
+reports `malformed XML literal`); the prolog, comments, namespace prefixes,
+`<a/>` versus `<a></a>` and the case of names are kept.
+
+**Conversions and protocol.** `html(value)` / `xml(value)` convert text
+(escaped), numbers, lists and classes implementing
+`func __html__(self) -> html` / `func __xml__(self) -> xml`. A string is
+never markup by itself: `page: html = "<b>x</b>"` is an error. Markup
+received as text is parsed explicitly: `Html.parse(text) -> html` (lenient,
+never fails; only for text you trust) and `Xml.parse(text) -> Result[xml]`.
+`str(value)`, `print`, f-strings and JSON encoding write the markup text.
+
+```lammergeier
+class Product {
+    func init(self, name: str) { self.name: str = name }
+    func __html__(self) -> html { return <><li>${self.name}</li></> }
+    func __xml__(self) -> xml { return <><product>${self.name}</product></> }
+}
+
+func main() {
+    items: list[Product] = [Product("Bag"), Product("Shoes")]
+    menu: html = <><ul>${items}</ul></>
+    feed: xml = <><?xml version="1.0"?><catalog>${items}</catalog></>
+    print(menu, feed)
+}
+```
+
+**Operators.** `+` and `+=` join markup like strings: `html + html`,
+`html + str` and `str + html` give `html` (the `str` is text, escaped); the
+same for `xml`. `==` / `!=` compare the markup text. `html + xml`, numbers
+and other types are compile errors.
+
+**DOM-style methods.** `select` and `first` take CSS selectors and return
+live parts of the value: changing them changes the value they came from.
+Methods that change the markup apply to every element of the value they are
+called on.
+
+| Method | Result |
+| --- | --- |
+| `select(selector)` | `list[T]` of matching elements (below the value) |
+| `first(selector)` | first match, or an empty value |
+| `isEmpty()` | `bool`: no nodes |
+| `tag()`, `text()` | name of the first element; all text content |
+| `attr(name)`, `hasAttr(name)`, `attrs()` | attribute value (`""` when missing), presence, `dict[str, str]` |
+| `hasClass(c)`, `addClass(c)`, `removeClass(c)`, `toggleClass(c)` | `class` handling |
+| `setAttr(name, value)`, `removeAttr(name)` | change attributes |
+| `setText(text)`, `setInner(content)` | replace the children (text is escaped) |
+| `append(content)`, `prepend(content)` | add children (`T`, `str` or a list) |
+| `remove()`, `replaceWith(content)` | take the element out of its parent / swap it |
+| `children()`, `nodes()`, `parent()` | child elements, top-level nodes, parent element |
+| `clone()` | an independent deep copy |
+
+`T` is the receiver's type. Selectors: `tag`, `*`, `#id`, `.class`,
+`[attr]`, `[attr=v]` (also `~=`, `^=`, `$=`, `*=`, `|=`), `:first-child`,
+`:last-child`, `:only-child`, `:nth-child(n|odd|even)`, `:empty`,
+`:not(...)`, the combinators ` `, `>`, `+`, `~` and `,` groups; names match
+case-insensitively in html and exactly in xml (`ns|tag` for a prefixed
+name). Inserting a value (a slot, `append`, `setInner`...) copies it, so a
+component can be reused; `+` keeps the operands' nodes.
+
+```lammergeier
+for a in page.select("a[href^=\"https://\"]") {
+    a.setAttr("rel", "noopener")
+}
+page.first("ul.menu").append(<><li>New</li></>)
+```
+
+The runtime is the stdlib module `lammarkup`, imported automatically when a
+program uses the types. `lamhtml` (`Html`) and `lamxml` (`Xml`) hold parsing
+and escaping; `HtmlTemplate.render` returns `html`, `Mail.setHtml` takes
+`html`, `lamhttp` sends `html` / `xml` bodies with their Content-Type and
+reads responses with `response.html()` / `response.xml()`, and
+`@lam/vulture` handlers can return `html`, `xml`, `json` or `str` directly.
 
 ---
 
@@ -3533,14 +3702,16 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamerrors`      | `Result`, `Error`                  | Structured errors and `Result` (Ok/Err/unwrap/unwrapOr) for the `?` and `do/catch` system. See [Errors & Results](#errors--results) |
 | `lammath`        | `Math`                             | Math functions (sqrt, sin, cos, pow, log, etc.) |
 | `lamstrings`     | `Strings`                          | String utilities (repeat, contains, trim, split, join, etc.) |
-| `lamtemplate`    | `Template`, `HtmlTemplate`         | Result-based Go text and autoescaped HTML templates with file, named-template, and helper support |
+| `lamtemplate`    | `Template`, `HtmlTemplate`         | Result-based Go text templates and autoescaped HTML templates rendering native `html`, with file, named-template, and helper support |
 | `lamtime`        | `Time`                             | Duration units/arithmetic plus Unix time, sleeps, parsing, formatting, and measurement |
 | `lamcron`        | `Cron`                             | Cron scheduling with standard/seconds-aware expressions, descriptors, and lifecycle controls |
 | `lamconv`        | `Conv`                             | Return-type-overloaded `parse` for decimal int/float/bool plus explicitly named hex/octal/binary parsers |
 | `lamos`          | `Os`, `File`, `FileLineGenerator`  | Result-based OS/filesystem helpers plus streaming file lines and batches |
 | `lamjson`        | `Json`                             | Native `json` runtime, Result-based encode/decode/pretty, validation, and dict/list conversion |
 | `lamyaml`        | `Yaml`                             | Result-returning YAML encoding, decoding, and multi-document decoding |
-| `lamxml`         | `Xml`, `XmlNode`                   | Result-based XML encoding/decoding plus DOM-style node traversal |
+| `lamxml`         | `Xml`                              | Native `xml`: `Xml.parse` (well-formed check), escaping, dict/list encoding and shape-shifting decode |
+| `lamhtml`        | `Html`                             | Native `html`: lenient `Html.parse` and escaping |
+| `lammarkup`      | `Markup`                           | Runtime of the native `html` / `xml` types (imported automatically) |
 | `lamrandom`      | `Random`                           | Pseudo-random values and secure bytes/tokens; UUID generation belongs to `lamuuid` |
 | `lamsort`        | `Sort`                             | Generic natural/comparator sorting, asc/desc checks, named algorithms, reverse, and lazy sorted generators |
 | `lamre`          | `Re`                               | Result-returning regex match, find, findAll, replaceAll, split, and groups |

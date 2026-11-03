@@ -1,0 +1,25 @@
+# expect: 2
+# expect: Lam
+# expect: en
+# expect: <library><book id="1" lang="it"><title>Go</title></book><book id="2"><title>Lam</title></book><book id="3"/></library>
+# expect: Go,Lam
+# expect: true
+# expect: false
+
+# The same DOM-style methods work on xml; names are case-sensitive.
+func titles(doc: xml) -> str {
+    return ",".join([t.text() for t in doc.select("title")])
+}
+
+func main() {
+    doc: xml = <><library><book id="1" lang="en"><title>Go</title></book><book id="2"><title>Lam</title></book></library></>
+    print(len(doc.select("book")))
+    print(doc.first("book[id=2] > title").text())
+    print(doc.first("book").attr("lang"))
+    doc.first("book").setAttr("lang", "it")
+    doc.first("library").append(<><book id="3"/></>)
+    print(doc)
+    print(titles(doc))
+    print(doc.first("book").hasAttr("lang"))
+    print(doc.first("BOOK").hasAttr("lang") if not doc.first("BOOK").isEmpty() else false)
+}

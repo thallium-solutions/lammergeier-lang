@@ -1,0 +1,28 @@
+# expect-pass
+# Every documented form type-checks.
+class Badge {
+    func init(self, label: str) { self.label: str = label }
+    func __html__(self) -> html { return <><span class="badge">${self.label}</span></> }
+    func __xml__(self) -> xml { return <><badge>${self.label}</badge></> }
+}
+
+func feed(items: list[str]) -> xml {
+    return <><?xml version="1.0"?><feed>${[<><entry>${i}</entry></> for i in items]}</feed></>
+}
+
+func page(title: optional[str], count: int, ready: bool, data: json) -> html {
+    body: html = <><h1 data-count="${count}" hidden=${not ready}>${title}</h1>${Badge("new")}</>
+    body += " & more"
+    body += <><script>const data = ${data}; if (data) { run() }</script></>
+    for b in body.select("span.badge") {
+        b.setAttr("title", "badge")
+    }
+    return body + html(Badge("x"))
+}
+
+func main() {
+    print(feed(["a"]))
+    print(page("Hi", 2, true, {"a": 1}))
+    doc: xml = xml(Badge("b"))
+    print(doc.first("badge").text())
+}

@@ -1,0 +1,19 @@
+# expect: true
+# expect: true
+# expect: 8
+# expect: wrapped: <b>x</b>
+# expect: false
+# expect: true
+
+func main() {
+    a: html = <><b>x</b></>
+    b: html = <><b>x</b></>
+    print(a == b)
+    print(a != <><i>x</i></>)
+    s: str = str(a)
+    print(s.length())
+    print(f"wrapped: {a}")
+    empty: html = <></>
+    print(a.isEmpty())
+    print(empty.isEmpty())
+}

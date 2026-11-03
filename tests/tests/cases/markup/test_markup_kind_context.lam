@@ -1,0 +1,57 @@
+# expect: <entry><Title>A</Title></entry>
+# expect: <wrap><Item/><Item/></wrap>
+# expect: <x>yes</x>
+# expect: <r><Br/></r>
+# expect: <p>html<br></p>
+# expect: html <b/> -> <b></b>
+# expect: xml <b/>
+# expect: <empty/>
+
+# The target decides the kind: return type, parameter type, annotation,
+# the element type of a list; a literal inside ${...} of an xml literal is
+# xml too. Without a target it is html.
+func entry(title: str) -> xml {
+    return <><entry><Title>${title}</Title></entry></>
+}
+
+func wrap(parts: list[xml]) -> xml {
+    return <><wrap>${parts}</wrap></>
+}
+
+func pick(flag: bool) -> xml {
+    return <><x>yes</x></> if flag else <><x>no</x></>
+}
+
+func main() {
+    print(entry("A"))
+    parts: list[xml] = [<><Item/></>, <><Item/></>]
+    print(wrap(parts))
+    print(pick(true))
+    print(<><r>${<><Br/></>}</r></> + xmlEmpty())
+    print(<><p>html<br></p></>)
+    overloads()
+}
+
+func describe(value: html) -> str {
+    return f"html <b/> -> {value}"
+}
+
+func describe(value: xml) -> str {
+    return f"xml {value}"
+}
+
+func wrapDefault(doc: xml = <><empty/></>) -> xml {
+    return doc
+}
+
+func overloads() {
+    # Overloads taking html and xml: an untargeted literal is html.
+    print(describe(<><b/></>))
+    typed: xml = <><b/></>
+    print(describe(typed))
+    print(wrapDefault())
+}
+
+func xmlEmpty() -> xml {
+    return <></>
+}

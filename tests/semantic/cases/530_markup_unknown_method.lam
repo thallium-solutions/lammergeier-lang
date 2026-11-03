@@ -1,0 +1,8 @@
+# expect-error: `html` has no method `innerHTML`
+# expect-error: `xml.select()` takes 1 argument, got 0
+func main() {
+    page: html = <><b>x</b></>
+    doc: xml = <><a/></>
+    print(page.innerHTML())
+    print(doc.select())
+}

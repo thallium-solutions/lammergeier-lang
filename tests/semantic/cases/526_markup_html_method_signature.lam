@@ -1,0 +1,11 @@
+# expect-error: `Card.__html__` must declare only `self`, got 2 parameters
+# expect-error: `Card.__xml__` must return `xml`, got `str`
+class Card {
+    func init(self, title: str) { self.title: str = title }
+    func __html__(self, extra: int) -> html { return <><b>${self.title}</b></> }
+    func __xml__(self) -> str { return self.title }
+}
+
+func main() {
+    print(Card("a").title)
+}

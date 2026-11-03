@@ -56,6 +56,20 @@ class HttpRequestOptions {
         self.contentType = "application/json"
         return self
     }
+
+    func html(self, value: html) -> HttpRequestOptions {
+        #- An HTML body, sent as ``text/html; charset=utf-8``. -#
+        self.body = str(value)
+        self.contentType = "text/html; charset=utf-8"
+        return self
+    }
+
+    func xml(self, value: xml) -> HttpRequestOptions {
+        #- An XML body, sent as ``application/xml``. -#
+        self.body = str(value)
+        self.contentType = "application/xml"
+        return self
+    }
 }
 
 class Http {
@@ -367,6 +381,28 @@ class HttpResponse {
         return Json.decode(self.body)
     }
 
+    func html(self) -> html {
+        #- The response body read as HTML (lenient: it never fails). -#
+        out: html = <></>
+        source: str = self.body
+        go! {
+            out = lamHTMLParseString(source)
+        }
+        return out
+    }
+
+    func xml(self) -> Result[xml] {
+        #- The response body parsed as XML; malformed XML is an ``XmlError``. -#
+        source: str = self.body
+        go! {
+            doc, err := lamXMLParseString(source)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("XmlError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(doc)
+        }
+    }
+
     func cookies(self) -> list[HttpCookie] {
         #- Return parsed response cookies in Set-Cookie header order. -#
         values: list[HttpCookie] = []
@@ -418,6 +454,16 @@ class HttpRequest {
 
     func json(self, value: json) -> HttpRequest {
         self.options.json(value)
+        return self
+    }
+
+    func html(self, value: html) -> HttpRequest {
+        self.options.html(value)
+        return self
+    }
+
+    func xml(self, value: xml) -> HttpRequest {
+        self.options.xml(value)
         return self
     }
 

@@ -240,7 +240,7 @@ class HtmlTemplate {
         }
     }
 
-    func render(self, data: dict[str, any]) -> Result[str] {
+    func render(self, data: dict[str, any]) -> Result[html] {
         go! {
             if s._tpl == nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", "no template parsed", nil))
@@ -250,11 +250,11 @@ class HtmlTemplate {
             if err := t.Execute(&buf, data); err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
             }
-            return LAMMERGEIER.Result.Ok(buf.String())
+            return LAMMERGEIER.Result.Ok(lamHTMLParseString(buf.String()))
         }
     }
 
-    func renderNamed(self, name: str, data: dict[str, any]) -> Result[str] {
+    func renderNamed(self, name: str, data: dict[str, any]) -> Result[html] {
         go! {
             if s._tpl == nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", "no template parsed", nil))
@@ -264,7 +264,7 @@ class HtmlTemplate {
             if err := t.ExecuteTemplate(&buf, name, data); err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("TemplateError", err.Error(), nil))
             }
-            return LAMMERGEIER.Result.Ok(buf.String())
+            return LAMMERGEIER.Result.Ok(lamHTMLParseString(buf.String()))
         }
     }
 }

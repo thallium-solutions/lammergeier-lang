@@ -1,0 +1,22 @@
+# expect: <input type="checkbox" disabled>
+# expect: <span data-count="3" class="badge big">3</span>
+# expect: <a>no title</a>
+# expect: <option value="it" selected>Italiano</option>
+# expect: <img src="/i/42.avif" alt="">
+
+# An attribute whose whole value is one ${...}: true writes the bare
+# attribute, false or None leaves it out; any other value is text.
+func main() {
+    disabled: bool = true
+    checked: bool = false
+    print(<><input type="checkbox" disabled=${disabled} checked=${checked}></>)
+    count: int = 3
+    size: str = "big" if count > 2 else "small"
+    print(<><span data-count="${count}" class="badge ${size}">${count}</span></>)
+    title: optional[str] = None
+    print(<><a title="${title}">no title</a></>)
+    current: str = "it"
+    print(<><option value="${current}" selected=${current == "it"}>Italiano</option></>)
+    id: int = 42
+    print(<><img src="/i/${id}.avif" alt=""></>)
+}

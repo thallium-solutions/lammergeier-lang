@@ -1,0 +1,5 @@
+# expect-error: an attribute value cannot be `html`; insert text (str, numbers, bool or None)
+func main() {
+    inner: html = <><b>x</b></>
+    print(<><a title="${inner}">x</a></>)
+}

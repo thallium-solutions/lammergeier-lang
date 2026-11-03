@@ -43,7 +43,7 @@ form regardless of tier.
 | Tier | Purpose | Modules |
 | --- | --- | --- |
 | core | Small, general-purpose modules expected to stay lightweight and broadly useful. | `lamstrings`, `lammath`, `lampath`, `lamjson`, `lamerrors`, `lamenv`, `lamtime`, `lamdatetime`, `lamconv`, `lamfmt`, `lamlog`, `lamtest` |
-| data | File formats, tabular/numeric data, and data-shaping helpers. | `lamcsv`, `lamyaml`, `lamxml`, `lamdata`, `lamarray`, `lamstats`, `lamrandom` |
+| data | File formats, markup, tabular/numeric data, and data-shaping helpers. | `lamcsv`, `lamyaml`, `lamxml`, `lamhtml`, `lammarkup`, `lamdata`, `lamarray`, `lamstats`, `lamrandom` |
 | net | Network protocols and clients. | `lamhttp`, `lamsmtp`, `lamnet`, `lamurl` |
 | infra | Database and operational infrastructure. | `lamdb`, `lammigrate`, `lamcron`, `lamexec`, `lamcache` |
 | concurrency | Concurrency primitives, cancellation, async coordination, resilience, and collections. | `lamactor`, `lamconcurrency`, `lamcontext`, `lamretry`, `lamratelimit`, `lamdatastructures` (canonical), `lamqueue`, `lamdeque`, `lamheap`, `lamstack`, and `lamset` (compatibility re-exports), `lamiter`, `lamsort` |
@@ -1550,7 +1550,10 @@ posted: HttpResponse = postedResult.unwrap()
 `HttpRequestOptions` carries per-request headers, query parameters, timeout,
 content type, and body. `Http.request` returns `Result[HttpResponse]`;
 `Http.build` exposes the same request core through chainable `header`, `query`,
-`timeout`, `text`, `json`, and `send` methods. `HttpClient` adds reusable base
+`timeout`, `text`, `json`, `html`, `xml`, and `send` methods (`html` / `xml`
+bodies are sent as `text/html; charset=utf-8` / `application/xml`).
+`HttpResponse.json()`, `.html()` (lenient) and `.xml()` (`Result[xml]`) read
+the body as the native types. `HttpClient` adds reusable base
 URL, default-header, and default-timeout behavior.
 
 The convenience methods are also Result-based: `get`, `head`, `delete`,
@@ -2476,7 +2479,7 @@ m.addTo("bob@example.com")
 m.addCc("carol@example.com")
 m.setSubject("Invoice")
 m.setText("PDF attached.")
-m.setHtml("<h1>Invoice</h1><p>PDF attached.</p>")
+m.setHtml(<><h1>Invoice</h1><p>PDF attached.</p></>)
 m.attach("invoice.pdf", "application/pdf", pdfBytes)
 sentRich: bool = Smtp.send(host="smtp.example.com:587",
                            username="alice", password="app-password",
@@ -2860,7 +2863,8 @@ the runtime path is exactly the same as production code.
 | Manipulate strings | `lamstrings`, `lamunicode`, `lamre` |
 | Parse / build JSON | `lamjson` |
 | Parse / build YAML (Kubernetes manifests, CI configs, …) | `lamyaml` |
-| Parse / build XML (RSS feeds, SOAP, OpenSearch) | `lamxml` |
+| Build / query HTML pages and fragments | native `html` literals, `lamhtml` |
+| Parse / build XML (RSS feeds, SOAP, OpenSearch, sitemaps) | native `xml` literals, `lamxml` |
 | Build a web service | External `@lam/vulture` + `@lam/vulture/std-plugin` packages |
 | Validate request bodies | `lamschema` (JSON Schema) |
 | Issue / verify JWTs (with kid + JWKS rotation) | External [`@lam/jwt`](#/docs/libraries) package |
@@ -2899,38 +2903,46 @@ the runtime path is exactly the same as production code.
 
 ## New modules (April 2026)
 
-### `lamxml` — XML encode / decode + DOM walk
+### Native `html` / `xml`, `lamhtml` — `Html`, `lamxml` — `Xml`
+
+`html` and `xml` are native types written as literals between `<>` and
+`</>` (see [SYNTAX.md, Markup: html and xml](#/docs/syntax?h=markup-html-and-xml)).
+Their runtime, `lammarkup`, is imported automatically. The modules hold
+parsing, escaping and the dict/list XML encoding:
 
 ```lammergeier
-from lamxml import Xml, XmlNode
+from lamhtml import Html
+from lamxml import Xml
 from lamerrors import Result
 
-# Shape-shifted decode (mirrors Json.decode):
-doc: any = Xml.decode("<book id='42'><title>Refactoring</title></book>")?
-
-# Proper DOM tree:
-root: XmlNode = Xml.parse(rssFeed)?
-go! {
-    if rn, ok := root.(*XmlNode); ok {
-        for _, item := range rn.FindAll("item") {
-            if it, ok := item.(*XmlNode); ok {
-                title := it.Find("title")  // returns *XmlNode or nil
-                _ = title
-            }
-        }
-    }
+func titles(feedText: str) -> Result[list[str]] {
+    feed: xml = Xml.parse(feedText)?
+    return Result.Ok([item.first("title").text() for item in feed.select("channel > item")])
 }
 
-# Encode:
-xmlStr: str = Xml.encode({"name": "alice", "age": 30}, "person")
-# → "<person><name>alice</name><age>30</age></person>"
+func main() {
+    snippet: html = Html.parse("<p class=note>Hi <b>there</b>")
+    snippet.first("b").setText("you")
+    print(snippet)                                   # <p class="note">Hi <b>you</b></p>
+    print(Html.escape("<a & b>"))                    # &lt;a &amp; b&gt;
+    person: xml = Xml.encode({"name": "alice", "age": 30}, "person")
+    shape: any = Xml.decode(str(person)).unwrap()    # dict: name -> "alice", age -> "30"
+    print(shape)
+}
 ```
 
-`Xml.decode(xml) -> Result[any]` and `Xml.parse(xml) -> Result[XmlNode]` use
-their primary names for parse errors; `Xml.encode(value, root="root") -> str`
-is direct. Mapping nodes lower to `dict[str, any]`, sequence-like collisions
-collapse into `list[any]`, and attributes are folded into the dict under
-`@name` keys.
+| API | Result |
+| --- | --- |
+| `Html.parse(text) -> html` | lenient HTML reading (never fails); only for trusted text |
+| `Html.escape(text) -> str` / `Xml.escape(text) -> str` | text escaped for content and attribute values |
+| `Xml.parse(text) -> Result[xml]` | well-formed XML or an `XmlError` |
+| `Xml.encode(value, root="root") -> xml` | maps become one child per key, lists repeated `<item>`, scalars text |
+| `Xml.decode(text) -> Result[any]` | the shape-shifted form: `dict[str, any]` (attributes under `@name`), repeated tags as `list[any]`, leaf text as `str` |
+
+The DOM-style methods of the values (`select`, `first`, `text`, `attr`,
+`setAttr`, `addClass`, `append`, `remove`, `replaceWith`, `clone`...) are
+listed in SYNTAX.md. `XmlNode` was removed in 4.0.0: `Xml.parse` returns the
+native `xml` value.
 
 ### `lamyaml` — YAML 1.2 encode / decode
 
@@ -3017,14 +3029,17 @@ t: Template = Template()
 _ = t.parse("Hello, {{.Name}}! {{len .Hobbies}} hobbies.")?
 out: str = t.render({"Name": "Alice", "Hobbies": ["a", "b"]})?
 
-# Browser output autoescapes:
+# Browser output autoescapes and renders a native html value:
 ht: HtmlTemplate = HtmlTemplate()
 _ = ht.parse("<p>{{.Body}}</p>")?
-print(ht.render({"Body": "<b>bold</b>"})?)   # <p>&lt;b&gt;bold&lt;/b&gt;</p>
+page: html = ht.render({"Body": "<b>bold</b>"})?
+print(page)   # <p>&lt;b&gt;bold&lt;/b&gt;</p>
 ```
 
 Both template classes expose `parse`, `parseFile`, `parseFiles`, `render`, and
-`renderNamed` as typed Result-returning methods. Shared helper map: `upper` /
+`renderNamed` as typed Result-returning methods; `Template` renders `str`,
+`HtmlTemplate` renders `html`. For markup built in code, literals
+(`<>...</>`) are usually simpler than templates. Shared helper map: `upper` /
 `lower` / `title` / `trim` / `replace` / `join` / `default`.
 
 ### `lamretry.Retry` — exponential backoff with jitter
@@ -3122,10 +3137,12 @@ index lists the public classes and top-level functions you can import.
 | `lamfmt` | `from lamfmt import Fmt` | `sprintf`, printing, padding, integer bases, float formatting. |
 | `lamhash` | `from lamhash import Hash` | SHA/MD5/CRC/HMAC and constant-time comparison. |
 | `lamheap` | `from lamheap import Heap, PriorityHeap` | Compatibility re-export of numeric heaps from `lamdatastructures`. |
+| `lamhtml` | `from lamhtml import Html` | Native `html`: lenient parsing and escaping. |
 | `lamhttp` | `from lamhttp import Http, HttpClient, HttpRequest, HttpRequestOptions, HttpResponse, HttpCookie, HttpServer` | Typed request options, fluent Result-returning requests, repeated response headers, cookies, reusable client, tiny blocking server. |
 | `lamiter` | `from lamiter import Iter` | Lazy iterator pipelines: map/filter/take/drop/reduce/enumerate. |
 | `lamjson` | `from lamjson import Json` | Native `json`, wire encoding/decoding, safe Result-based collection conversion, and kind inspection. |
 | `lamlog` | `from lamlog import Log` | Leveled logging and formatted log helpers. |
+| `lammarkup` | `from lammarkup import Markup` | Runtime of the native `html` / `xml` types (imported automatically) and `Markup.escape`. |
 | `lammath` | `from lammath import Math` | Constants, trig, logs, rounding, combinatorics, number theory. |
 | `lammigrate` | `from lammigrate import Migrator, SchemaBuilder` | SQL migrations and schema helpers. |
 | `lamnet` | `from lamnet import Net, TcpConn, TcpListener, UdpConn, UdpPacket` | DNS, reachability, TCP/TLS/UDP sockets, deadlines, and addresses. |
@@ -3149,7 +3166,7 @@ index lists the public classes and top-level functions you can import.
 | `lamunicode` | `from lamunicode import Unicode` | Rune counts, validity, categories, rune conversion. |
 | `lamurl` | `from lamurl import Url` | URL parse parts and percent encode/decode. |
 | `lamuuid` | `from lamuuid import Uuid` | UUID v4/v7/nil/parse/validate. |
-| `lamxml` | `from lamxml import Xml, XmlNode` | XML encode/decode/parse and node traversal. |
+| `lamxml` | `from lamxml import Xml` | Native `xml` parsing (well-formed check), escaping, dict/list encoding and shape-shifting decode. |
 | `lamyaml` | `from lamyaml import Yaml` | Result-returning YAML encode/decode/decodeAll. |
 
 ### Official external packages used in this guide

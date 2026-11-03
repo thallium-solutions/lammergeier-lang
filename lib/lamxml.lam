@@ -1,28 +1,21 @@
-# Lammergeier standard library: XML encoding / decoding + DOM walk.
+# Lammergeier standard library: XML parsing, escaping and encoding.
 #
-# Wraps Go's ``encoding/xml`` plus a small DOM-style walker for cases
-# where the schema isn't known at compile time (RSS feeds, SOAP
-# envelopes, OpenSearch results, configuration that mixes attributes
-# and child elements freely).
+# Documents are native ``xml`` values (see docs/SYNTAX.md "Markup:
+# html and xml"): literals between ``<>`` and ``</>`` with an ``xml``
+# target, or ``Xml.parse(text)``. They support ``select`` / ``first``
+# with CSS selectors, attribute and text access and DOM-style edits.
 #
-# Two layers:
+#   * ``Xml.parse(text) -> Result[xml]`` — well-formed XML only.
+#   * ``Xml.escape(text) -> str``.
+#   * ``Xml.encode(value, root) -> xml`` / ``Xml.decode(text) -> Result[any]``
+#     — JSON-flavoured shape-shifting (map → one child per key, list →
+#     repeated ``<item>`` elements, scalar → text), for when both ends
+#     are yours.
 #
-#   1. ``Xml.encode(value)`` / ``Xml.decode(xmlStr)`` — JSON-flavoured
-#      shape-shifting:
-#        * map  →  one root element with one child per key
-#        * list →  repeated elements at the parent level
-#        * scalar → text content
-#      Useful when you control both ends and want a quick "stringly
-#      typed" interchange format.
-#
-#   2. ``Xml.parse(xmlStr) -> XmlNode`` — proper DOM tree. Each
-#      ``XmlNode`` carries ``tag`` / ``attrs`` / ``text`` / ``children``
-#      and supports ``find(tag)`` / ``findAll(tag)`` /
-#      ``attr(name, fallback)`` for ergonomic traversal.
-#
-# Import with: ``from lamxml import Xml, XmlNode``.
+# Import with: ``from lamxml import Xml``.
 
 from lamerrors import Result, Error
+from lammarkup import Markup
 
 go! {
     import (
@@ -79,178 +72,55 @@ go! {
 }
 
 
-class XmlNode {
-    #- DOM-style XML node. Plain holder; navigation methods below
-       avoid mutating the tree so call sites can share a parsed
-       document across goroutines without coordination.
-
-       Field shapes:
-         * ``tag``       — element name (``""`` for the synthetic
-                           root wrapper used by sequence-like inputs).
-         * ``attrs``     — ``dict[str, str]`` of attribute → value.
-         * ``text``      — text content. Mixed-content elements (a
-                           tag with both text and child elements)
-                           keep their full text concatenated.
-         * ``children``  — ``list[XmlNode]`` of nested elements in
-                           document order.
-    -#
-
-    func init(self,
-                  tag: str = "",
-                  attrs: dict[str, str] = None,
-                  text: str = "",
-                  children: list[any] = None) {
-        self.tag: str = tag
-        self.text: str = text
-        a: dict[str, str] = {}
-        if attrs != None {
-            a = attrs
-        }
-        self.attrs: dict[str, str] = a
-        c: list[any] = []
-        if children != None {
-            c = children
-        }
-        self.children: list[any] = c
-    }
-
-    func attr(self, name: str, fallback: str = "") -> str {
-        #- Look up an attribute, falling back to ``fallback`` if it's
-           missing. -#
-        out: str = fallback
-        go! {
-            if v, ok := s.Attrs[name]; ok {
-                out = v
-            }
-        }
-        return out
-    }
-
-    func find(self, tag: str) -> any {
-        #- Return the first direct-child element with this tag, or
-           ``None`` if there isn't one. Use ``findAll`` for recursive
-           or repeated lookups. -#
-        for c in self.children {
-            go! {
-                if cn, ok := c.(*XmlNode); ok && cn.Tag == tag {
-                    return cn
-                }
-            }
-        }
-        return None
-    }
-
-    func findAll(self, tag: str) -> list[any] {
-        #- Recursive collect of every descendant element with this
-           tag, document-order. Empty when nothing matches. -#
-        out: list[any] = []
-        go! {
-            var walk func(n *XmlNode)
-            walk = func(n *XmlNode) {
-                for _, c := range n.Children {
-                    if cn, ok := c.(*XmlNode); ok {
-                        if cn.Tag == tag {
-                            out = append(out, cn)
-                        }
-                        walk(cn)
-                    }
-                }
-            }
-            walk(s)
-        }
-        return out
-    }
-
-    func toString(self) -> str {
-        #- Render the node back to an XML string. Round-tripping
-           ``parse`` → ``toString`` is *not* byte-exact (whitespace
-           is lost) but the resulting tree is structurally
-           equivalent. -#
-        sb: str = ""
-        go! {
-            // Inner closure restructured into an if/else chain so
-            // the lowering doesn't insert a phantom ``return ""``
-            // for the bare ``return`` early-exit (the auto-padding
-            // pass uses the surrounding Lam method's return type,
-            // which doesn't apply inside a void closure).
-            var build func(n *XmlNode, w *strings.Builder)
-            build = func(n *XmlNode, w *strings.Builder) {
-                w.WriteByte('<')
-                w.WriteString(n.Tag)
-                for k, v := range n.Attrs {
-                    w.WriteByte(' ')
-                    w.WriteString(k)
-                    w.WriteString("=\"")
-                    xml.EscapeText(w, []byte(v))
-                    w.WriteByte('"')
-                }
-                if n.Text == "" && len(n.Children) == 0 {
-                    w.WriteString("/>")
-                } else {
-                    w.WriteByte('>')
-                    if n.Text != "" {
-                        xml.EscapeText(w, []byte(n.Text))
-                    }
-                    for _, c := range n.Children {
-                        if cn, ok := c.(*XmlNode); ok {
-                            build(cn, w)
-                        }
-                    }
-                    w.WriteString("</")
-                    w.WriteString(n.Tag)
-                    w.WriteByte('>')
-                }
-            }
-            var w strings.Builder
-            build(s, &w)
-            sb = w.String()
-        }
-        return sb
-    }
-}
-
-
 class Xml {
-    #- Static encode/decode/parse helpers. -#
+    #- Parsing, escaping and the dict/list encoding of ``xml`` values. -#
 
-    static func encode(value: any, root: str = "root") -> str {
-        #- Marshal a Lam-shaped value to XML wrapped in a single
-           ``<root>`` element. ``root`` lets the caller name the
-           wrapper to match an external schema. -#
-        out: str = ""
+    static func parse(source: str) -> Result[xml] {
+        #- Reads well-formed XML (prolog, comments, namespaces prefixes
+           kept); malformed input is an ``XmlError``. -#
+        go! {
+            doc, err := lamXMLParseString(source)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("XmlError", err.Error(), nil))
+            }
+            return LAMMERGEIER.Result.Ok(doc)
+        }
+    }
+
+    static func escape(text: str) -> str {
+        #- ``text`` escaped for XML content and attribute values. -#
+        return Markup.escape(text)
+    }
+
+    static func encode(value: any, root: str = "root") -> xml {
+        #- A Lam-shaped value (dicts, lists, scalars) as XML wrapped in a
+           single ``<root>`` element: one child per key, ``<item>`` per
+           list entry, scalars as text. -#
+        out: xml = <></>
         rootName: str = root
         go! {
             var sb strings.Builder
             lamXmlEncodeValue(rootName, value, &sb)
-            out = sb.String()
+            parsed, err := lamXMLParseString(sb.String())
+            if err == nil {
+                out = parsed
+            }
         }
         return out
     }
 
-    static func decode(xmlStr: str) -> Result[any] {
-        #- Parse an XML document into a Lam-shaped tree, mirroring
-           ``Json.decode``. Element trees become ``dict[str, any]``;
-           repeated tags collapse into ``list[any]``; leaf text
-           becomes a ``str``. -#
+    static func decode(source: str) -> Result[any] {
+        #- The JSON-flavoured shape of an XML document: element trees
+           become ``dict[str, any]`` (attributes under ``@name``), repeated
+           tags collapse into ``list[any]``, leaf text becomes a ``str``.
+           Pass ``str(doc)`` for an ``xml`` value. -#
         go! {
-            dec := xml.NewDecoder(strings.NewReader(xmlStr))
+            dec := xml.NewDecoder(strings.NewReader(source))
             v, err := lamXmlDecodeOne(dec)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("XmlError", err.Error(), nil))
             }
             return LAMMERGEIER.Result.Ok(v)
-        }
-    }
-
-    static func parse(xmlStr: str) -> Result[XmlNode] {
-        #- Parse to a proper DOM (``XmlNode``). -#
-        go! {
-            dec := xml.NewDecoder(strings.NewReader(xmlStr))
-            n, err := lamXmlParseDom(dec)
-            if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("XmlError", err.Error(), nil))
-            }
-            return LAMMERGEIER.Result.Ok(n)
         }
     }
 }
@@ -321,51 +191,6 @@ go! {
             }
         }
         return out, nil
-    }
-
-    // lamXmlParseDom builds the DOM-flavoured tree exposed via
-    // ``XmlNode``. Compared to lamXmlDecodeElement we keep the
-    // original attribute / text / child-order distinctions because
-    // DOM consumers care about them.
-    func lamXmlParseDom(dec *xml.Decoder) (*XmlNode, error) {
-        for {
-            tok, err := dec.Token()
-            if err != nil { return nil, err }
-            if start, ok := tok.(xml.StartElement); ok {
-                return lamXmlParseDomElement(dec, start)
-            }
-        }
-    }
-
-    func lamXmlParseDomElement(dec *xml.Decoder, start xml.StartElement) (*XmlNode, error) {
-        node := &XmlNode{
-            Tag:      start.Name.Local,
-            Attrs:    map[string]string{},
-            Children: []interface{}{},
-        }
-        for _, a := range start.Attr {
-            node.Attrs[a.Name.Local] = a.Value
-        }
-        var textBuf strings.Builder
-        for {
-            tok, err := dec.Token()
-            if err != nil {
-                if err == io.EOF { return nil, io.ErrUnexpectedEOF }
-                return nil, err
-            }
-            switch t := tok.(type) {
-            case xml.StartElement:
-                child, err := lamXmlParseDomElement(dec, t)
-                if err != nil { return nil, err }
-                node.Children = append(node.Children, child)
-            case xml.CharData:
-                textBuf.Write([]byte(t))
-            case xml.EndElement:
-                node.Text = strings.TrimSpace(textBuf.String())
-                return node, nil
-            }
-        }
-        return node, nil
     }
 }
 

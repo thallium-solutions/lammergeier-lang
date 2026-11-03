@@ -85,7 +85,14 @@ def render_type(type_: Type) -> str:
         ret = render_type(type_.ret)
         return f"func({params})" if ret == "None" else f"func({params}) -> {ret}"
     if isinstance(type_, UnionType):
-        return " | ".join(render_type(option) for option in type_.options)
+        # A function type with a result is grouped: its result type would
+        # take the rest of the union.
+        return " | ".join(
+            f"({render_type(option)})"
+            if isinstance(option, FuncType) and render_type(option.ret) != "None"
+            else render_type(option)
+            for option in type_.options
+        )
     if isinstance(type_, GenericType):
         args = ", ".join(render_type(arg) for arg in type_.args)
         return f"{type_.base}[{args}]"
@@ -120,7 +127,7 @@ def _is_json_assignable_type(type_: Type) -> bool:
 _VALUE_TYPE_NAMES = frozenset({
     "bool", "str", "string", "int", "int8", "int16", "int32", "int64",
     "uint", "uint8", "uint16", "uint32", "uint64", "float", "float32", "float64",
-    "byte", "rune", "json", "bytes",
+    "byte", "rune", "json", "html", "xml", "bytes",
 })
 
 
@@ -498,6 +505,11 @@ class _TextTypeParser:
             raise TypeParseError(f"unexpected end of type {self.source!r}")
         if token == "func":
             return self._parse_func()
+        if token == "(":
+            self._advance()
+            grouped = self._parse_union()
+            self._expect(")")
+            return grouped
         if not _is_name_token(token):
             raise TypeParseError(f"expected type name, got {token!r}")
         name = self._advance()

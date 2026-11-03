@@ -1,0 +1,28 @@
+# expect-error: argument `handler` to `register` has type `func(Req) -> int`, expected `func(Req) | (func(Req) -> str)`
+# A function passed where a union of callback shapes is expected must fit
+# one of them (it used to reach the runtime unchecked).
+class Req {
+    func init(self) { self.path: str = "/" }
+}
+
+func register(handler: func(Req) | func(Req) -> str) {
+    print("registered")
+}
+
+func plain(r: Req) {
+    print(r.path)
+}
+
+func text(r: Req) -> str {
+    return r.path
+}
+
+func bad(r: Req) -> int {
+    return len(r.path)
+}
+
+func main() {
+    register(plain)
+    register(text)
+    register(bad)
+}

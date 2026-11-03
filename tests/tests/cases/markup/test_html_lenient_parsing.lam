@@ -1,0 +1,24 @@
+# expect: <ul><li>one</li><li>two</li></ul>
+# expect: <p>first</p><p>second</p>
+# expect: <br><img src="a.png" alt=""/><hr/>
+# expect: <div></div><span>x</span>
+# expect: <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>T &amp; U</title></head><body>ok</body></html>
+# expect: <p>ac</p>
+# expect: <table><tr><td>1</td><td>2</td></tr></table>
+# expect: <svg viewBox="0 0 10 10"><path d="M0 0L10 10"/></svg>
+# expect: <!-- note --><p>x</p>
+
+# HTML is read leniently, the way it is written by hand: void elements,
+# tags closed implicitly (li, p, td...), stray end tags ignored. Elements are
+# not moved around (no <tbody> is added).
+func main() {
+    print(<><ul><li>one<li>two</ul></>)
+    print(<><p>first<p>second</>)
+    print(<><br><img src="a.png" alt=""/><hr/></>)
+    print(<><div/><span>x</span></>)
+    print(<><!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>T &amp; U</title></head><body>ok</body></html></>)
+    print(<><p>a</b>c</p></>)
+    print(<><table><tr><td>1<td>2</tr></table></>)
+    print(<><svg viewBox="0 0 10 10"><path d="M0 0L10 10"/></svg></>)
+    print(<><!-- note --><p>x</p></>)
+}

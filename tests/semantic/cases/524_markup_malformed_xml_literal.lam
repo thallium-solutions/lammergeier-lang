@@ -1,0 +1,5 @@
+# expect-error: malformed XML literal
+func main() {
+    doc: xml = <><a><b></a></>
+    print(doc)
+}

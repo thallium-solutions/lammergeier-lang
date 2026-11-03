@@ -1,0 +1,8 @@
+# expect-error: cannot add `html` and `int`
+# expect-error: cannot add `xml` and `html`
+func main() {
+    page: html = <><b>x</b></>
+    doc: xml = <><a/></>
+    print(page + 1)
+    print(doc + page)
+}

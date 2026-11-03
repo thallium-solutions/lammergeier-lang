@@ -1,0 +1,22 @@
+# expect: <p class="x">Hi <b>you</b></p>
+# expect: you
+# expect: <a><b>1</b></a>
+# expect: false
+# expect: &lt;a &amp; &quot;b&quot;&gt;
+# expect: 1
+
+from lamhtml import Html
+from lamxml import Xml
+
+# Markup from strings: Html.parse is lenient (it never fails), Xml.parse
+# reports malformed XML as an error.
+func main() {
+    h: html = Html.parse("<p class=x>Hi <b>you</b>")
+    print(h)
+    print(h.first("b").text())
+    print(Xml.parse("<a><b>1</b></a>").unwrap())
+    bad: Result[xml] = Xml.parse("<a><b></a>")
+    print(bad.ok())
+    print(Html.escape("<a & \"b\">"))
+    print(Xml.parse("<a><b>1</b></a>").unwrap().first("b").text())
+}

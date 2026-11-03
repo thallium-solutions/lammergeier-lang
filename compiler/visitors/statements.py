@@ -604,6 +604,10 @@ class StatementVisitorMixin:
         with self._scoped(_index_target=True):
             target_str = self._expr_to_go(node.children[0])
         op = self._get_augassign_op(node.children[1])
+        markup = self._markup_augassign_to_go(target_str, node.children[0], op, node.children[2]) if isinstance(node.children[0], Tree) else None
+        if markup is not None:
+            self._emit(markup)
+            return
         # ``total += f()?``: the ``?`` payload has the target's type.
         target_type = self._expr_go_type_hint(node.children[0]) if isinstance(node.children[0], Tree) else ""
         set_op = {"|=": "|", "&=": "&", "-=": "-"}.get(op)

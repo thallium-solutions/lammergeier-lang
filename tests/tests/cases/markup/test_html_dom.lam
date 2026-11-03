@@ -1,0 +1,47 @@
+# expect: 3
+# expect: b
+# expect: item active
+# expect: div
+# expect: Hi there
+# expect: true
+# expect: <div id="app"><ul class="list"><li class="item done">a</li><li class="item done">b</li><li data-x="1">c</li><li>d</li></ul></div>
+# expect: 4
+# expect: <ul class="list"><li>only</li></ul>
+# expect: true
+# expect: <ul class="list"><li class="new">z</li><li class="item done">b</li><li data-x="1">c</li><li>d</li></ul>
+# expect: id=app
+# expect: <p>Hi <b>you &amp; me</b></p>
+
+# DOM-style access: select/first take CSS selectors and return live parts of
+# the value, so changing them changes the value they came from.
+func main() {
+    page: html = <><div id="app"><ul class="list"><li class="item">a</li><li class="item active">b</li><li>c</li></ul><p>Hi <b>there</b></p></div></>
+    items: list[html] = page.select("ul.list > li")
+    print(len(items))
+    print(items[1].text())
+    print(page.first("li.active").attr("class"))
+    print(page.first("#app").tag())
+    print(page.first("p").text())
+    print(page.first("nav").isEmpty())
+    for li in page.select("li.item") {
+        li.addClass("done")
+    }
+    page.first("li:last-child").setAttr("data-x", "1")
+    page.first("p b").setText("you & me")
+    detached: html = page.first("p").clone()
+    page.first("ul").append(<><li>d</li></>)
+    page.first("li.active").removeClass("active")
+    page.first("p").remove()
+    print(page)
+    print(len(page.first("ul").children()))
+    copy: html = page.clone()
+    copy.first("ul").setInner(<><li>only</li></>)
+    print(copy.first("ul"))
+    print(page.first("ul").hasClass("list"))
+    page.first("li").replaceWith(<><li class="new">z</li></>)
+    print(page.first("ul"))
+    for name, value in page.first("div").attrs() {
+        print(f"{name}={value}")
+    }
+    print(detached)
+}

@@ -1,0 +1,9 @@
+# expect-error: value of type `Image` cannot be inserted into xml; implement `func __xml__(self) -> xml`
+class Image {
+    func init(self, src: str) { self.src: str = src }
+}
+
+func main() {
+    doc: xml = <><gallery>${Image("a.png")}</gallery></>
+    print(doc)
+}

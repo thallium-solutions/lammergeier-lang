@@ -1,0 +1,54 @@
+# expect: void /a
+# expect: html <p>/b</p>
+# expect: str /c
+# expect: 3 one
+
+# A parameter typed as a union of function shapes takes any of them; raw Go
+# tells them apart by their type. Parentheses group types.
+class Req {
+    func init(self, path: str) { self.path: str = path }
+}
+
+go! {
+    import "fmt"
+}
+
+func register(path: str, handler: func(Req) | (func(Req) -> html) | (func(Req) -> str)) {
+    go! {
+        switch h := handler.(type) {
+        case func(*Req):
+            fmt.Print("void ")
+            h(NewReq(path))
+        case func(*Req) LamHTML:
+            fmt.Println("html", h(NewReq(path)).String())
+        case func(*Req) string:
+            fmt.Println("str", h(NewReq(path)))
+        }
+    }
+}
+
+func plain(r: Req) {
+    print(r.path)
+}
+
+func page(r: Req) -> html {
+    return <><p>${r.path}</p></>
+}
+
+func text(r: Req) -> str {
+    return r.path
+}
+
+func pick(n: int) -> (int | str) {
+    if n > 1 {
+        return n
+    }
+    return "one"
+}
+
+func main() {
+    register("/a", plain)
+    register("/b", page)
+    register("/c", text)
+    print(pick(3), pick(1))
+}

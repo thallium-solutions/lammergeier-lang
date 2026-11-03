@@ -24,6 +24,8 @@ TYPE_MAP: Dict[str, str] = {
     "dict": "map[string]interface{}",
     "set": "map[interface{}]bool",
     "json": "LamJSON",
+    "html": "LamHTML",
+    "xml": "LamXML",
     "any": "interface{}",
     "object": "interface{}",
     "error": "error",

@@ -26,6 +26,7 @@ from compiler.constants import (
 # ``__q*`` temps).
 _BINDING_RENAMED = COMPILER_GO_PACKAGES | GO_BINDING_KEYWORDS
 from compiler.preprocessor import preprocess_go_blocks  # re-export
+from compiler.visitors.markup import MarkupTranspilerMixin
 from compiler import narrowing as _narrowing
 from compiler.index_bounds import mark_nonnegative_locals
 from compiler.safe_nav import rewrite_result_safe_nav
@@ -179,6 +180,7 @@ def _binding_table_property(attr: str):
 
 
 class GoTranspiler(
+    MarkupTranspilerMixin,
     HelpersMixin,
     PatternMatchMixin,
     SubtypingMixin,
@@ -1442,6 +1444,10 @@ func lamAsyncReportUnretrieved() {
                     preferred = "String"
                 elif method == "__json__":
                     preferred = "LamJSON"
+                elif method == "__html__":
+                    preferred = "LamHTML"
+                elif method == "__xml__":
+                    preferred = "LamXML"
                 elif method == "__len__":
                     preferred = "Len"
                 else:

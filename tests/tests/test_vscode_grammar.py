@@ -313,6 +313,21 @@ def test_stdlib_modules(repository: dict[str, Any]) -> None:
         assert re.fullmatch(module_pattern, module)
 
 
+def test_markup_literals(grammar: dict[str, Any], repository: dict[str, Any]) -> None:
+    """``<>...</>`` html/xml literals: embedded HTML with ``${expr}`` slots
+    highlighted as Lam code, ``\\$`` as an escape, and the types."""
+    assert {"include": "#markup-literal"} in grammar["patterns"]
+    literal = repository["markup-literal"]["patterns"][0]
+    assert literal["begin"] == "<>" and literal["end"] == "</>"
+    inner = literal["patterns"]
+    slot = next(p for p in inner if p.get("begin") == "\\$\\{")
+    assert slot["patterns"] == [{"include": "source.lammergeier"}]
+    assert any(p.get("match") == "\\\\\\$" for p in inner)
+    assert {"include": "text.html.basic"} in inner
+    types = repository["types"]["patterns"][0]["match"]
+    assert re.search(types, "page: html") and re.search(types, "doc: xml")
+
+
 def test_folding_configuration() -> None:
     configuration = json.loads(LANGUAGE_CONFIGURATION.read_text(encoding="utf-8"))
     markers = configuration["folding"]["markers"]
@@ -371,6 +386,7 @@ def main() -> int:
     test_operators(repository)
     test_numbers_constants_and_builtins(repository)
     test_stdlib_modules(repository)
+    test_markup_literals(grammar, repository)
     test_folding_configuration()
     test_plist_parity(grammar)
     print("PASS: VS Code and Linguist grammars cover Lammergeier syntax and corpus")

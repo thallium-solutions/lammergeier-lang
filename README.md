@@ -74,6 +74,10 @@ area: 78.53981633974483
   object keys, supports JavaScript-style property/index access, converts classes
   through `json(value)` / `__json__()`, converts cleanly to/from dict/list, and
   flows directly through HTTP, Redis, and SQL JSON/JSONB parameters.
+- **Native HTML and XML** — `html` and `xml` values are written as markup
+  between `<>` and `</>` with `${expr}` slots, escaped by context, composed
+  with `+` and components (`__html__` / `__xml__`), queried and edited with
+  CSS selectors, and returned directly from `@lam/vulture` handlers.
 - **Your module casing** — library, package, and `.lam` module names preserve
   snake_case, camelCase, PascalCase, or SCREAMING_SNAKE_CASE; imports use the
   exact spelling selected by the author.

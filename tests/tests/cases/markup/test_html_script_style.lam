@@ -1,0 +1,17 @@
+# expect: <style>.card { color: #c00; } .card:hover { color: red }</style>
+# expect: <script>const state = {"tags":["a","\u003c/script\u003e"],"user":"Ada"}; if (state.user) { console.log(state.user) }</script>
+# expect: <script>const name = "<\/script><b>";</script>
+# expect: <script>let t = `${x}`;</script>
+
+# <script> and <style> hold JS and CSS as text: their braces and tags are
+# not markup. A json value inserted there is written as JSON; nothing
+# inserted can close the element early.
+func main() {
+    color: str = "#c00"
+    print(<><style>.card { color: ${color}; } .card:hover { color: red }</style></>)
+    data: json = {"user": "Ada", "tags": ["a", "</script>"]}
+    print(<><script>const state = ${data}; if (state.user) { console.log(state.user) }</script></>)
+    sneaky: str = "</script><b>"
+    print(<><script>const name = "${sneaky}";</script></>)
+    print(<><script>let t = `\${x}`;</script></>)
+}

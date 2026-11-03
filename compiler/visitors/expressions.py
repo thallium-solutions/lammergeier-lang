@@ -228,6 +228,8 @@ class ExpressionVisitorMixin:
         boxed = self._optional_value_to_go(node, go_type)
         if boxed:
             return boxed
+        if go_type in {"LamHTML", "LamXML"} and self._is_markup_marker_node(node):
+            return self._markup_call_to_go(node, "html" if go_type == "LamHTML" else "xml")
         if go_type == "LamJSON":
             raw = self._json_value_to_go(node)
             return raw if self._expr_go_type_hint(node) == "LamJSON" else f"lamJSONMust({raw})"
@@ -418,7 +420,7 @@ class ExpressionVisitorMixin:
 
     _OPTIONAL_VALUE_GO_TYPES = frozenset({
         "int", "int8", "int16", "int32", "int64", "uint", "float64", "float32",
-        "string", "bool", "byte", "rune",
+        "string", "bool", "byte", "rune", "LamHTML", "LamXML",
     })
 
     # ─── Native sets (``map[T]bool``) ──────────────────────────
@@ -723,6 +725,9 @@ class ExpressionVisitorMixin:
         """Best-effort Go type for an expression that can be assigned to."""
         if not isinstance(node, Tree):
             return ""
+        markup_type = self._markup_expr_go_type(node)
+        if markup_type:
+            return markup_type
         if node.data == "lambdef":
             return self._lambda_go_func_type(node)
         if node.data == "null_coalesce":
@@ -818,7 +823,7 @@ class ExpressionVisitorMixin:
                 if ret.startswith("func(") and name not in self._class_names:
                     return ret
                 if (
-                    (ret in {"string", "int", "float64", "bool"} or ret.startswith(("[]", "map[")))
+                    (ret in {"string", "int", "float64", "bool", "LamHTML", "LamXML"} or ret.startswith(("[]", "map[")))
                     and name in self._user_functions
                     and len(self._overload_variants.get(name, ())) <= 1
                     and name not in self._var_go_types
@@ -1336,6 +1341,9 @@ class ExpressionVisitorMixin:
             return ":".join(parts)
 
         if d == "arith_expr" or d == "term":
+            concat = self._markup_concat_to_go(node)
+            if concat is not None:
+                return concat
             overloaded = self._try_operator_overload(node)
             if overloaded:
                 return overloaded
@@ -1870,6 +1878,9 @@ class ExpressionVisitorMixin:
         return self._funccall_to_go_inner(node)
 
     def _funccall_to_go_inner(self, node: Tree) -> str:
+        markup = self._markup_call_to_go(node)
+        if markup is not None:
+            return markup
         func = node.children[0]
         args_node = node.children[1] if len(node.children) > 1 else None
         args: Optional[List[str]] = None
@@ -1932,6 +1943,9 @@ class ExpressionVisitorMixin:
         if isinstance(func, Tree) and func.data == "getattr":
             raw_obj = self._expr_to_go(func.children[0])
             raw_method = self._get_name(func.children[1])
+            markup_method = self._markup_method_to_go(func, args_node, raw_obj)
+            if markup_method is not None:
+                return markup_method
             self._check_str_receiver_method(func, args_node)
             _alias, parent_base, parent_receiver = self._parent_alias_call_info(func)
             if parent_base and raw_method:
@@ -5442,6 +5456,9 @@ class ExpressionVisitorMixin:
             return self._membership_to_go(left, right)
         if op == "not in":
             return f"!({self._membership_to_go(left, right)})"
+        markup_equal = self._markup_comparison_to_go(left, op, right)
+        if markup_equal is not None:
+            return markup_equal
         left_go = self._comparison_operand_to_go(left)
         right_go = self._comparison_operand_to_go(right)
         left_json = self._expr_go_type_hint(left) == "LamJSON"

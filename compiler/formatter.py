@@ -26,11 +26,38 @@ def format_lam_source(source: str) -> FormatResult:
 
     reparable = _canonicalize_doc_comment_terminators(source)
     _parse_or_raise(reparable)
+    # Markup literals are kept exactly as written (their text is HTML/XML,
+    # not Lam code): each becomes a placeholder while the lines are laid out.
+    protected, literals = _protect_markup_literals(reparable)
     # f-string slots may hold the delimiter quote (``f"{d["k"]}"``): hide it
     # so the line scanners below see one string literal.
-    formatted = restore_fstring_quotes(_format_lines(protect_fstring_quotes(reparable)))
+    formatted = restore_fstring_quotes(_format_lines(protect_fstring_quotes(protected)))
+    for index, literal in enumerate(literals):
+        formatted = formatted.replace(_markup_placeholder(index), literal, 1)
     _parse_or_raise(formatted)
     return FormatResult(text=formatted, changed=formatted != source)
+
+
+def _markup_placeholder(index: int) -> str:
+    return f"__lamFormatMarkup{index}__"
+
+
+def _protect_markup_literals(source: str) -> tuple[str, list[str]]:
+    from compiler.markup import markup_literal_spans
+
+    spans = markup_literal_spans(source)
+    if not spans:
+        return source, []
+    out: list[str] = []
+    literals: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        out.append(source[cursor:start])
+        out.append(_markup_placeholder(len(literals)))
+        literals.append(source[start:end])
+        cursor = end
+    out.append(source[cursor:])
+    return "".join(out), literals
 
 
 def _parse_or_raise(source: str) -> None:

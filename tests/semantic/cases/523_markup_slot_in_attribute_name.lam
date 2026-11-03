@@ -1,0 +1,5 @@
+# expect-error: `${...}` can only be used in element content and attribute values
+func main() {
+    name: str = "title"
+    print(<><div ${name}="x"></div></>)
+}

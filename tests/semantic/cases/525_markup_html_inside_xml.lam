@@ -1,0 +1,6 @@
+# expect-error: cannot insert `html` into an xml literal
+func main() {
+    inner: html = <><b>x</b></>
+    doc: xml = <><a>${inner}</a></>
+    print(doc)
+}

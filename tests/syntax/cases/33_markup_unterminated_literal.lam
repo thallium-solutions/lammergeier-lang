@@ -1,0 +1,6 @@
+# expect-error: syntax check failed
+# expect-error: unterminated markup literal
+func main() {
+    page = <><b>never closed</b>
+    print(page)
+}

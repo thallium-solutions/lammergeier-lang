@@ -1,0 +1,28 @@
+# expect: <?xml version="1.0" encoding="UTF-8"?>
+# expect: <rss version="2.0"><channel><title>News &amp; Updates</title><item><guid isPermaLink="false">a1</guid><enclosure url="https://x.test/a.mp3?x=1&amp;y=2" length="10"/></item></channel></rss>
+# expect: <root></root>
+# expect: <a:feed xmlns:a="urn:a"><a:entry id="1">x</a:entry></a:feed>
+# expect: <![CDATA[ok]]> becomes text: <c>a &lt; b</c>
+# expect: <Mixed Case="Kept">t</Mixed>
+
+# With an xml target the literal is XML: checked well-formed by the
+# compiler, prolog, namespaces prefixes and self-closing tags kept as
+# written, names case-sensitive.
+func main() {
+    title: str = "News & Updates"
+    url: str = "https://x.test/a.mp3?x=1&y=2"
+    feed: xml = <><?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>${title}</title><item><guid isPermaLink="false">a1</guid><enclosure url="${url}" length="10"/></item></channel></rss></>
+    print(feed)
+    empty: xml = <><root></root></>
+    print(empty)
+    ns: xml = <><a:feed xmlns:a="urn:a"><a:entry id="1">x</a:entry></a:feed></>
+    print(ns)
+    cdata: xml = <><c><![CDATA[a < b]]></c></>
+    print(f"<![CDATA[ok]]> becomes text: {cdata}")
+    print(xmlCase())
+}
+
+func xmlCase() -> xml {
+    return <><Mixed Case="Kept">t</Mixed></>
+}

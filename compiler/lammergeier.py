@@ -976,6 +976,22 @@ class ParsePreprocessResult:
     go_blocks: dict[str, str]
     source_map: SourceMap
     diagnostics: tuple[tuple[int, int, str], ...] = ()
+    # Errors that stop parsing (an unterminated markup literal), reported
+    # as syntax errors: (line, column, message).
+    syntax_errors: tuple[tuple[int, int, str], ...] = ()
+
+
+def render_preprocess_syntax_error(error: tuple[int, int, str], source: str, path) -> str:
+    """A syntax-error block for an error found before parsing."""
+    from compiler.syntax_errors import SyntaxDiagnostic
+
+    line, column, message = error
+    lines = source.splitlines()
+    source_line = lines[line - 1] if 0 < line <= len(lines) else ""
+    return SyntaxDiagnostic(
+        path=str(path), line=line, column=column, message=message,
+        expected=(), hint=None, source_line=source_line,
+    ).render()
 
 
 def preprocess_for_parse(source: str) -> ParsePreprocessResult:
@@ -987,6 +1003,10 @@ def preprocess_for_parse(source: str) -> ParsePreprocessResult:
     changing the call sites.
     """
     diagnostics = tuple(dict_destructure_diagnostics(source))
+    # Markup literals first: their text is not Lam code (``#`` starts no
+    # comment there, braces are CSS/JS).
+    from compiler.markup import preprocess_markup_literals
+    source, markup_errors = preprocess_markup_literals(source)
     rewritten = apply_lammergeier_aliases(source)
     rewritten = _strip_doc_comments_preserve_lines(rewritten)
     preprocessed, go_blocks = preprocess_go_blocks(rewritten)
@@ -1004,6 +1024,7 @@ def preprocess_for_parse(source: str) -> ParsePreprocessResult:
         go_blocks=go_blocks,
         source_map=SourceMap.identity(len(source.splitlines()) or 1),
         diagnostics=diagnostics,
+        syntax_errors=tuple((d.line, d.column, d.message) for d in markup_errors),
     )
 
 
@@ -1833,6 +1854,9 @@ def compile_lam(
     parse_input = preprocess_for_parse(source)
     preprocessed = parse_input.source
     go_blocks = parse_input.go_blocks
+    if parse_input.syntax_errors:
+        print(render_preprocess_syntax_error(parse_input.syntax_errors[0], source, source_path), file=sys.stderr)
+        sys.exit(1)
 
     if verbose:
         print(f"[lamc] go! blocks found: {len(go_blocks)}", file=sys.stderr)
@@ -1972,8 +1996,31 @@ def compile_lam(
                 return True
         return any(_uses_native_json(child) for child in node.children if isinstance(child, Tree))
 
+    def _uses_native_markup(node) -> bool:
+        """html / xml types, markup literals or ``html(...)`` / ``xml(...)``."""
+        if not isinstance(node, Tree):
+            return False
+        if node.data == "type_name":
+            return any(
+                str(token) in {"html", "xml"}
+                for token in node.scan_values(lambda value: isinstance(value, Token))
+            )
+        if node.data == "funccall" and node.children:
+            callee = node.children[0]
+            if isinstance(callee, Tree) and callee.data == "var" and [
+                str(token) for token in callee.scan_values(lambda value: isinstance(value, Token))
+            ] in (["__markup__"], ["html"], ["xml"]):
+                return True
+        return any(_uses_native_markup(child) for child in node.children if isinstance(child, Tree))
+
     _direct_import_sites = _extract_import_sites(tree)
     _pre_transpiler._lam_imports.extend(mod for mod, _ in _direct_import_sites)
+    if (
+        _uses_native_markup(tree)
+        and source_file.resolve() != (stdlib_dir / "lammarkup.lam").resolve()
+        and "lammarkup" not in _pre_transpiler._lam_imports
+    ):
+        _pre_transpiler._lam_imports.append("lammarkup")
     if (
         _uses_native_json(tree)
         and source_file.resolve() != (stdlib_dir / "lamjson.lam").resolve()
@@ -2314,6 +2361,13 @@ def compile_lam(
             and all(mod != "lamjson" for mod, _ in worklist)
         ):
             worklist.append(("lamjson", mod_file))
+        if (
+            mod_name != "lammarkup"
+            and _uses_native_markup(sub_tree)
+            and "lammarkup" not in seen
+            and all(mod != "lammarkup" for mod, _ in worklist)
+        ):
+            worklist.append(("lammarkup", mod_file))
         # If this library calls any string method that the
         # built-in dispatcher routes through ``Strings_*``,
         # ``lamstrings`` has to be in the import graph too —

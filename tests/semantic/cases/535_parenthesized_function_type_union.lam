@@ -1,0 +1,40 @@
+# expect-error: argument `handler` to `register` has type `func(Req) -> int`, expected `func(Req) | (func(Req) -> html) | (func(Req) -> str)`
+# Parentheses group types: `(func(R) -> html) | (func(R) -> str)` is a union
+# of two function shapes (without them the result type takes the rest of
+# the union: `func(R) -> html | str`).
+class Req {
+    func init(self) { self.path: str = "/" }
+}
+
+func register(handler: func(Req) | (func(Req) -> html) | (func(Req) -> str)) {
+    print("registered")
+}
+
+func returnsUnion(flag: bool) -> int | str {
+    return 1 if flag else "one"
+}
+
+func plain(r: Req) {
+    print(r.path)
+}
+
+func page(r: Req) -> html {
+    return <><p>${r.path}</p></>
+}
+
+func text(r: Req) -> str {
+    return r.path
+}
+
+func bad(r: Req) -> int {
+    return len(r.path)
+}
+
+func main() {
+    register(plain)
+    register(page)
+    register(text)
+    register(bad)
+    grouped: (int) = 3
+    print(grouped, returnsUnion(true))
+}

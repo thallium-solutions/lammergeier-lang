@@ -1,0 +1,35 @@
+# Lammergeier standard library: HTML parsing and escaping.
+#
+# Pages and fragments are native ``html`` values (see docs/SYNTAX.md
+# "Markup: html and xml"): literals between ``<>`` and ``</>``,
+# ``html(value)`` for text and classes with ``__html__``, or
+# ``Html.parse(text)`` for markup received as a string.
+#
+# Import with: ``from lamhtml import Html``.
+
+from lammarkup import Markup
+
+class Html {
+    #- Parsing and escaping of ``html`` values. -#
+
+    static func parse(source: str) -> html {
+        #- Reads HTML leniently, as browsers accept hand-written markup:
+           void elements, implicitly closed ``li`` / ``p`` / ``td``...,
+           stray end tags ignored. It never fails. Only parse markup you
+           trust: it is inserted as markup, not as text. -#
+        out: html = <></>
+        go! {
+            out = lamHTMLParseString(source)
+        }
+        return out
+    }
+
+    static func escape(text: str) -> str {
+        #- ``text`` escaped for HTML content and attribute values. -#
+        return Markup.escape(text)
+    }
+}
+
+func main() {
+    pass
+}

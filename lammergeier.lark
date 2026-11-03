@@ -77,7 +77,13 @@ typed_param: name ":" type_expr
 
 type_expr: type_union
 
-?type_union: type_primary ("|" type_primary)*  -> type_union
+?type_union: _type_union_item ("|" _type_union_item)*  -> type_union
+
+// ``(func(R) -> html) | (func(R) -> str)``: parentheses group types (the
+// result type of ``func`` otherwise takes the rest of the union). A group's
+// members are spliced into the enclosing union, which is associative.
+_type_union_item: type_primary
+                | "(" _type_union_item ("|" _type_union_item)* ")"
 
 ?type_primary: type_generic
              | type_atom

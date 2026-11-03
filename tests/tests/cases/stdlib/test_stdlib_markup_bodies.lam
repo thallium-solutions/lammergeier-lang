@@ -1,0 +1,84 @@
+# Test: native html / xml values across the stdlib — lamhttp request
+# bodies (Content-Type from the type) and response decoding, HtmlTemplate
+# rendering to html, Mail.setHtml, Html.parse / Html.escape.
+#
+# expect: html-request: text/html; charset=utf-8 <p>Hi &amp; bye</p>
+# expect: xml-request: application/xml <ping n="1"/>
+# expect: html-response: Shop
+# expect: xml-response: 2
+# expect: xml-response-error: true
+# expect: template: <ul><li>a &lt;b&gt;</li></ul>
+# expect: template-dom: a <b>
+# expect: mail-html-accepted: true
+# expect: escape: &lt;a href=&quot;x&quot;&gt;
+
+from lamerrors import Result
+from lamhttp import HttpClient, HttpResponse
+from lamtemplate import HtmlTemplate
+from lamsmtp import Mail
+from lamhtml import Html
+
+go! {
+    import (
+        "fmt"
+        "io"
+        "net"
+        "net/http"
+        "strings"
+    )
+}
+
+func startServer() -> str {
+    base: str = ""
+    go! {
+        ln, err := net.Listen("tcp", "127.0.0.1:0")
+        if err != nil {
+            panic(err)
+        }
+        mux := http.NewServeMux()
+        mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
+            body, _ := io.ReadAll(r.Body)
+            fmt.Fprintf(w, "%s %s", r.Header.Get("Content-Type"), string(body))
+        })
+        mux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
+            fmt.Fprint(w, "<html><head><title>Shop</title></head><body><p>x</body></html>")
+        })
+        mux.HandleFunc("/feed", func(w http.ResponseWriter, r *http.Request) {
+            fmt.Fprint(w, "<feed><entry/><entry/></feed>")
+        })
+        mux.HandleFunc("/broken", func(w http.ResponseWriter, r *http.Request) {
+            fmt.Fprint(w, strings.Repeat("<a>", 2))
+        })
+        go func() { _ = http.Serve(ln, mux) }()
+        base = "http://" + ln.Addr().String()
+    }
+    return base
+}
+
+func main() {
+    api: HttpClient = HttpClient(startServer(), 5000)
+    page: html = <><p>Hi &amp; bye</p></>
+    sent: HttpResponse = api.build("POST", "/echo").html(page).send().unwrap()
+    print(f"html-request: {sent.body}")
+    ping: xml = <><ping n="1"/></>
+    sentXml: HttpResponse = api.build("POST", "/echo").xml(ping).send().unwrap()
+    print(f"xml-request: {sentXml.body}")
+
+    remote: html = api.get("/page").unwrap().html()
+    print(f"html-response: {remote.first('title').text()}")
+    feed: xml = api.get("/feed").unwrap().xml().unwrap()
+    print(f"xml-response: {len(feed.select('entry'))}")
+    broken: Result[xml] = api.get("/broken").unwrap().xml()
+    print(f"xml-response-error: {not broken.ok()}")
+
+    tpl: HtmlTemplate = HtmlTemplate()
+    _ = tpl.parse("<ul><li>{{.Item}}</li></ul>")
+    rendered: html = tpl.render({"Item": "a <b>"}).unwrap()
+    print(f"template: {rendered}")
+    print(f"template-dom: {rendered.first('li').text()}")
+
+    mail: Mail = Mail()
+    mail.setHtml(<><h1>Report</h1></>)
+    print(f"mail-html-accepted: {true}")
+    print(f"escape: {Html.escape('<a href=\"x\">')}")
+}

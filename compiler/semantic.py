@@ -70,6 +70,7 @@ from compiler import narrowing as _narrowing
 from compiler.safe_nav import rewrite_result_safe_nav
 from compiler.fstrings import decode_placeholders, fstring_body, split_fstring
 from compiler.semantic_narrowing import NarrowingCheckMixin
+from compiler.semantic_markup import MarkupSemanticMixin
 from compiler.typesys import (
     DictType,
     FuncType,
@@ -154,7 +155,7 @@ BUILTIN_TYPES: Set[str] = {
     "None", "any", "bool", "str", "string", "bytes", "int", "int8",
     "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32",
     "uint64", "float", "float32", "float64", "byte", "rune",
-    "list", "dict", "set", "tuple", "json", "func", "Result", "Option", "File",
+    "list", "dict", "set", "tuple", "json", "html", "xml", "func", "Result", "Option", "File",
     "Error",
 }
 
@@ -184,7 +185,7 @@ BUILTIN_FUNCS: Set[str] = {
     "len", "range", "enumerate", "sorted", "reversed",
     "append", "format",
     # Type constructors / casts
-    "str", "string", "json", "int", "float", "bool", "bytes",
+    "str", "string", "json", "html", "xml", "int", "float", "bool", "bytes",
     "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",
     "uint32", "uint64", "float32", "float64", "byte", "rune",
     "list", "dict", "set", "tuple",
@@ -193,7 +194,7 @@ BUILTIN_FUNCS: Set[str] = {
     # Go-flavoured passthroughs
     "panic", "recover", "make", "new", "cap", "copy", "delete", "close",
     # Internal sentinels (transpiler-injected)
-    "__go_block__", "__go_inline__",
+    "__go_block__", "__go_inline__", "__markup__",
 }
 
 BUILTIN_CONSTANTS: Set[str] = {
@@ -224,7 +225,7 @@ FLOAT_CAST_FUNCS: Set[str] = {"float", "float32", "float64"}
 _CONVERSION_DUNDERS: dict[str, str] = {"__int__": "int", "__float__": "float", "__bool__": "bool"}
 
 BUILTIN_CAST_FUNCS: Set[str] = {
-    "str", "string", "json", "bool", *INTEGER_CAST_FUNCS, *FLOAT_CAST_FUNCS,
+    "str", "string", "json", "html", "xml", "bool", *INTEGER_CAST_FUNCS, *FLOAT_CAST_FUNCS,
 }
 
 # Standard-library module names that get auto-imported via ``from
@@ -408,7 +409,7 @@ class _ImportedCallMetadata:
     class_type_params: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
-class SemanticChecker(NarrowingCheckMixin):
+class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
     """Walks a parsed Lam tree and accumulates :class:`SemanticError`."""
 
     def __init__(
@@ -1341,6 +1342,7 @@ class SemanticChecker(NarrowingCheckMixin):
                 self._check_method_receiver_declaration(node, suite_node)
                 self._check_operator_method_signature(node)
                 self._check_json_method_signature(node)
+                self._check_markup_method_signature(node)
                 self._check_conversion_method_signature(node)
             self._check_type_annotations(node)
             if suite_node is not None:
@@ -2679,6 +2681,8 @@ class SemanticChecker(NarrowingCheckMixin):
         if d == "funccall":
             if self._mark_go_marker_uses(node):
                 return
+            if self._is_markup_marker(node):
+                self._check_markup_literal(node)
             target = self._call_target_name(node)
             if target in self._external_private_functions:
                 self._error(
@@ -4794,6 +4798,8 @@ class SemanticChecker(NarrowingCheckMixin):
                 f"cast `json` expects exactly 1 argument, got {pos_count}",
             )
             return
+        if self._check_markup_cast(name, call, pos_count, has_starargs):
+            return
         if not has_starargs and pos_count > 1:
             self._error(
                 call,
@@ -5506,6 +5512,8 @@ class SemanticChecker(NarrowingCheckMixin):
             if self._is_named_type(field_type, "str") if field_type is not None else False:
                 receiver_type = field_type
         method = self._name_text(callee.children[1])
+        if self._check_markup_receiver_method(call, callee, receiver_type, method):
+            return
         if self._is_named_type(receiver_type, "str") if receiver_type is not None else False:
             if method in STR_METHODS:
                 from compiler.constants import str_method_arity_message
@@ -5994,6 +6002,12 @@ class SemanticChecker(NarrowingCheckMixin):
         return None
 
     def _expr_type_for_expected(self, node, expected: Type) -> Type | None:
+        if self._is_markup_marker(node):
+            # A markup literal's kind comes from where it is written (see
+            # ``_markup_context_kind``), never from the candidate being
+            # checked: each overload of ``send(html)`` / ``send(xml)`` would
+            # otherwise re-type it.
+            return NamedType(self._markup_kind(node))
         if (
             isinstance(expected, GenericType)
             and expected.base == "set"
@@ -6097,6 +6111,26 @@ class SemanticChecker(NarrowingCheckMixin):
                 if not generic_mapping:
                     continue
                 expected = self._substitute_generic_type(expected, generic_mapping)
+            if isinstance(expected, UnionType) and expected.options and all(
+                isinstance(option, FuncType) for option in expected.options
+            ):
+                # ``handler: func(R) | func(R) -> str``: a function passed by
+                # name must fit one of the callback shapes.
+                reference = self._function_reference_type(arg_node)
+                if reference is not None:
+                    def _void(t) -> bool:
+                        return t.ret is None or (isinstance(t.ret, NamedType) and t.ret.name == "None")
+
+                    # The shape without a result only takes functions that
+                    # return nothing: the others are told apart by result.
+                    fits = any(
+                        self._callback_compatible(option, reference, arg_node)
+                        and (not _void(option) or _void(reference))
+                        for option in expected.options
+                    )
+                    if not fits:
+                        out.append((param_name, expected, reference, arg_node))
+                    continue
             if isinstance(expected, FuncType):
                 # A function passed by name must fit the callback's shape.
                 reference = self._function_reference_type(arg_node)
@@ -8006,6 +8040,11 @@ class SemanticChecker(NarrowingCheckMixin):
         if node.data == "propagate":
             return self._propagated_payload_type(node)
         if node.data == "funccall":
+            if self._is_markup_marker(node):
+                return NamedType(self._markup_kind(node))
+            markup_result = self._markup_method_result_type(node)
+            if markup_result is not None:
+                return markup_result
             cast_type = self._builtin_cast_result_type(node)
             if cast_type is not None:
                 return cast_type
@@ -8808,6 +8847,9 @@ class SemanticChecker(NarrowingCheckMixin):
         return None
 
     def _binary_operator_allowed(self, op: str, left: Type, right: Type) -> bool:
+        markup = self._markup_binary_result(op, left, right)
+        if markup is not None:
+            return markup is not False
         if self._is_any_type(left) or self._is_any_type(right):
             return True
         if self._class_binary_operator_result_type(op, left, right) is not None:
@@ -8896,6 +8938,9 @@ class SemanticChecker(NarrowingCheckMixin):
         )
 
     def _binary_operator_result_type(self, op: str, left: Type, right: Type) -> Type | None:
+        markup = self._markup_binary_result(op, left, right)
+        if markup:
+            return markup
         if self._is_any_type(left):
             return right
         if self._is_any_type(right):
@@ -9071,6 +9116,8 @@ class SemanticChecker(NarrowingCheckMixin):
             return NamedType("str")
         if name == "json":
             return NamedType("json")
+        if name in {"html", "xml"}:
+            return NamedType(name)
         if name == "bool":
             return NamedType("bool")
         return None

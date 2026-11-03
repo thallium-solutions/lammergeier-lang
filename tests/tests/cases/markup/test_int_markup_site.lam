@@ -1,0 +1,68 @@
+# expect:
+# <!DOCTYPE html><html lang="en"><head><title>Shop · Home</title><style>body { margin: 0 }</style></head><body><nav><a href="/" class="active">Home</a><a href="https://blog.example" rel="noopener" target="_blank">Blog</a></nav><main><h1>Featured</h1><ul class="grid"><li class="card"><h2>Bag</h2><p>€ 120.50</p></li><li class="card sold-out"><h2>Shoes &amp; Socks</h2><p>sold out</p></li></ul></main><script>window.shop = {"count":2};</script></body></html>
+# <?xml version="1.0" encoding="UTF-8"?>
+# <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://shop.example/p/bag</loc></url><url><loc>https://shop.example/p/shoes-socks</loc></url></urlset>
+# 2 cards, 1 sold out
+# end-expect
+
+# A small site generator: components as functions and classes, a layout,
+# DOM post-processing of the finished page, and an XML sitemap built from
+# the same data.
+class Product {
+    func init(self, name: str, slug: str, cents: int, stock: int) {
+        self.name: str = name
+        self.slug: str = slug
+        self.cents: int = cents
+        self.stock: int = stock
+    }
+
+    func price(self) -> str {
+        euros: int = self.cents // 100
+        rest: int = self.cents % 100
+        pad: str = "0" if rest < 10 else ""
+        return f"€ {euros}.{pad}{rest}"
+    }
+
+    func __html__(self) -> html {
+        card: html = <><li class="card"><h2>${self.name}</h2><p>${self.price() if self.stock > 0 else "sold out"}</p></li></>
+        if self.stock == 0 {
+            card.addClass("sold-out")
+        }
+        return card
+    }
+
+    func __xml__(self) -> xml {
+        return <><url><loc>https://shop.example/p/${self.slug}</loc></url></>
+    }
+}
+
+func link(href: str, label: str, current: str) -> html {
+    return <><a href="${href}" class="${'active' if href == current else ''}">${label}</a></>
+}
+
+func layout(title: str, body: html, count: int) -> html {
+    state: json = {"count": count}
+    return <><!DOCTYPE html><html lang="en"><head><title>Shop · ${title}</title><style>body { margin: 0 }</style></head><body>${body}<script>window.shop = ${state};</script></body></html></>
+}
+
+func sitemap(products: list[Product]) -> xml {
+    return <><?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${products}</urlset></>
+}
+
+func main() {
+    products: list[Product] = [Product("Bag", "bag", 12050, 3), Product("Shoes & Socks", "shoes-socks", 8000, 0)]
+    nav: html = link("/", "Home", "/") + link("https://blog.example", "Blog", "/")
+    body: html = <><nav>${nav}</nav><main><h1>Featured</h1><ul class="grid">${products}</ul></main></>
+    page: html = layout("Home", body, len(products))
+    for a in page.select("a[href^=\"https://\"]") {
+        a.setAttr("rel", "noopener")
+        a.setAttr("target", "_blank")
+    }
+    for a in page.select("a[class=\"\"]") {
+        a.removeAttr("class")
+    }
+    print(page)
+    print(sitemap(products))
+    print(f"{len(page.select('li.card'))} cards, {len(page.select('.sold-out'))} sold out")
+}

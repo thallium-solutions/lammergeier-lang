@@ -1,0 +1,34 @@
+# expect: <ul><li>a</li><li>b &amp; c</li></ul>
+# expect: <ol><li>2</li><li>4</li><li>6</li></ol>
+# expect: <ul></ul>
+# expect: <section><ul><li>a</li><li>b &amp; c</li></ul><footer>end</footer></section>
+# expect: <ul><li>a</li><li>b &amp; c</li></ul>
+# expect: <p>none</p>
+
+# html values interpolated in content are inserted as markup (not escaped);
+# lists are inserted item by item; None inserts nothing.
+func item(label: str) -> html {
+    return <><li>${label}</li></>
+}
+
+func optionalNote(show: bool) -> optional[html] {
+    if show {
+        return <><em>shown</em></>
+    }
+    return None
+}
+
+func main() {
+    labels: list[str] = ["a", "b & c"]
+    items: list[html] = [item(l) for l in labels]
+    menu: html = <><ul>${items}</ul></>
+    print(menu)
+    print(<><ol>${[<><li>${n * 2}</li></> for n in [1, 2, 3]]}</ol></>)
+    empty: list[html] = []
+    print(<><ul>${empty}</ul></>)
+    nested: html = <><section>${menu}${<><footer>end</footer></>}</section></>
+    print(nested)
+    # Inserting a value copies it: menu is unchanged by being inserted.
+    print(menu)
+    print(<><p>${optionalNote(false)}none</p></>)
+}

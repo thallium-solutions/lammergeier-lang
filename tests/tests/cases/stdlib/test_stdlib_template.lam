@@ -61,7 +61,9 @@ func main() {
     _ = ht.parse("{{.H}}")
     htd: dict[str, any] = {}
     htd["H"] = raw
-    print(f"html-escape-rendered: {resultString(ht.render(htd))}")
+    # HtmlTemplate renders a native html value.
+    rendered: html = ht.render(htd).unwrap()
+    print(f"html-escape-rendered: {rendered}")
 
     # ── Named templates via define/end.
     t4: Template = Template()

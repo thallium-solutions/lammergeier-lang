@@ -1,0 +1,30 @@
+# expect: <div class="card"><h1>Title</h1><p>Hello world</p></div>
+# expect: just text, no tags
+# expect: <span>default kind is html</span>
+# expect:
+# <ul>
+#     <li>one</li>
+# </ul>
+# end-expect
+# expect: <p>© 2026 &amp; &lt;b&gt;</p>
+
+# Markup literals are written between <> and </>; with no target type they
+# are html. The whitespace (with a newline) right after <> and right before
+# </> is dropped, the rest is kept as written.
+func main() {
+    page: html = <><div class="card"><h1>Title</h1><p>Hello world</p></div></>
+    print(page)
+    textOnly: html = <>just text, no tags</>
+    print(textOnly)
+    untyped = <><span>default kind is html</span></>
+    print(untyped)
+    multi: html = <>
+<ul>
+    <li>one</li>
+</ul>
+    </>
+    print(multi)
+    # Character references are read; output escapes only what must be.
+    entities: html = <><p>&copy; 2026 &amp; &lt;b&gt;</p></>
+    print(entities)
+}

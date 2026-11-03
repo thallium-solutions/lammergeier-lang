@@ -1,0 +1,20 @@
+# expect: <p title="say &quot;hi&quot;">Hello &lt;script&gt;alert('x')&lt;/script&gt; &amp; co</p>
+# expect: <a href="/search?q=a&amp;b=1">a &lt; b</a>
+# expect: <span>3 items, 2.5 kg, true</span>
+# expect: <p>Price: ${amount}, cost: $5</p>
+
+# ${expr} inserts a value. Text is escaped wherever it lands: element content
+# or attribute value. \$ writes a literal dollar sign.
+func main() {
+    name: str = "<script>alert('x')</script> & co"
+    title: str = "say \"hi\""
+    print(<><p title="${title}">Hello ${name}</p></>)
+    query: str = "a&b=1"
+    label: str = "a < b"
+    print(<><a href="/search?q=${query}">${label}</a></>)
+    count: int = 3
+    weight: float = 2.5
+    ready: bool = true
+    print(<><span>${count} items, ${weight} kg, ${ready}</span></>)
+    print(<><p>Price: \${amount}, cost: $5</p></>)
+}

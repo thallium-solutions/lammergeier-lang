@@ -1,0 +1,5 @@
+# expect-error: `${...}` can only be used in element content and attribute values
+func main() {
+    note: str = "x"
+    print(<><!-- ${note} --><p>x</p></>)
+}

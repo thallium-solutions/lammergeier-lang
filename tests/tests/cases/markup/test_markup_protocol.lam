@@ -1,0 +1,38 @@
+# expect: <article class="product"><h2>Bag</h2><span>120.5</span></article>
+# expect: <product price="120.5">Bag</product>
+# expect: <main><article class="product"><h2>Bag</h2><span>120.5</span></article><article class="product"><h2>Shoe &lt;XL&gt;</h2><span>80</span></article></main>
+# expect: <catalog><product price="120.5">Bag</product><product price="80">Shoe &lt;XL&gt;</product></catalog>
+# expect: plain &lt;text&gt;
+# expect: 42
+# expect: <b>kept</b>
+
+# __html__ / __xml__ give a class its markup, like __json__ gives JSON:
+# html(obj) / xml(obj) and ${obj} use them. html(text) escapes text.
+class Product {
+    func init(self, name: str, price: float) {
+        self.name: str = name
+        self.price: float = price
+    }
+
+    func __html__(self) -> html {
+        return <><article class="product"><h2>${self.name}</h2><span>${self.price}</span></article></>
+    }
+
+    func __xml__(self) -> xml {
+        return <><product price="${self.price}">${self.name}</product></>
+    }
+}
+
+func main() {
+    bag: Product = Product("Bag", 120.5)
+    print(html(bag))
+    print(xml(bag))
+    products: list[Product] = [bag, Product("Shoe <XL>", 80.0)]
+    print(<><main>${products}</main></>)
+    catalog: xml = <><catalog>${products}</catalog></>
+    print(catalog)
+    print(html("plain <text>"))
+    print(html(42))
+    bold: html = <><b>kept</b></>
+    print(html(bold))
+}

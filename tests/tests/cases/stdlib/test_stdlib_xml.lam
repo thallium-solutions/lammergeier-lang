@@ -4,8 +4,8 @@
 #   * Encoding a nested map (root + scalars).
 #   * Decoding a hand-written XML doc via ``Xml.decode`` (shape-
 #     shifted form: pure-text → string, mixed → map).
-#   * ``Xml.parse`` builds an XmlNode tree with attrs / text /
-#     children / find / findAll.
+#   * ``Xml.parse`` gives a native ``xml`` value: select / first /
+#     attr / text.
 #   * decode / parse return ``Err`` on malformed input.
 #
 # expect: enc-prefix-ok: true
@@ -22,7 +22,7 @@
 # expect: bad-decode-iserr: true
 # expect: bad-parse-iserr: true
 
-from lamxml import Xml, XmlNode
+from lamxml import Xml
 from lamerrors import Result
 
 go! {
@@ -34,7 +34,7 @@ func main() {
     payload: dict[str, any] = {}
     payload["name"] = "alice"
     payload["age"] = 30
-    enc: str = Xml.encode(payload, "person")
+    enc: str = str(Xml.encode(payload, "person"))
     encPrefix: bool = false
     encName: bool = false
     go! {
@@ -44,55 +44,18 @@ func main() {
     print(f"enc-prefix-ok: {encPrefix}")
     print(f"enc-name-ok: {encName}")
 
-    # ── parse / DOM walk ──
+    # ── parse / DOM walk (native xml) ──
     src: str = "<catalog><book id=\"bk-1\"><title>Refactoring</title><author>Martin Fowler</author><pages>432</pages></book><book><title>Domain Driven Design</title><author>Eric Evans</author></book></catalog>"
-    root: any = Xml.parse(src).unwrap()
-    rootTag: str = ""
-    bookCount: int = 0
-    title1: str = ""
-    title2: str = ""
-    attrId: str = ""
-    attrDefault: str = ""
-    findAuthor: str = ""
-    go! {
-        if rn, ok := root.(*XmlNode); ok {
-            rootTag = rn.Tag
-            books := rn.FindAll("book")
-            bookCount = len(books)
-            if len(books) > 0 {
-                if b, ok := books[0].(*XmlNode); ok {
-                    if t := b.Find("title"); t != nil {
-                        if tn, ok := t.(*XmlNode); ok {
-                            title1 = tn.Text
-                        }
-                    }
-                    attrId = b.Attr("id", "missing")
-                    attrDefault = b.Attr("nope", "unknown")
-                    if a := b.Find("author"); a != nil {
-                        if an, ok := a.(*XmlNode); ok {
-                            findAuthor = an.Text
-                        }
-                    }
-                }
-            }
-            if len(books) > 1 {
-                if b, ok := books[1].(*XmlNode); ok {
-                    if t := b.Find("title"); t != nil {
-                        if tn, ok := t.(*XmlNode); ok {
-                            title2 = tn.Text
-                        }
-                    }
-                }
-            }
-        }
-    }
-    print(f"dom-root-tag: {rootTag}")
-    print(f"dom-book-count: {bookCount}")
-    print(f"dom-first-title: {title1}")
-    print(f"dom-second-title: {title2}")
-    print(f"dom-attr-id: {attrId}")
+    root: xml = Xml.parse(src).unwrap()
+    books: list[xml] = root.select("book")
+    attrDefault: str = books[0].attr("nope") if books[0].hasAttr("nope") else "unknown"
+    print(f"dom-root-tag: {root.tag()}")
+    print(f"dom-book-count: {len(books)}")
+    print(f"dom-first-title: {books[0].first('title').text()}")
+    print(f"dom-second-title: {books[1].first('title').text()}")
+    print(f"dom-attr-id: {books[0].attr('id')}")
     print(f"dom-attr-default: {attrDefault}")
-    print(f"dom-find-author: {findAuthor}")
+    print(f"dom-find-author: {books[0].first('author').text()}")
 
     # ── shape-shifted decode ──
     decoded: any = Xml.decode(src).unwrap()

@@ -7,6 +7,60 @@ by commit date.
 
 ## Unreleased
 
+## 4.0.0 — 2026-11-03
+
+### Added
+
+- Native `html` and `xml` types, siblings of `json`. Markup is written
+  directly between `<>` and `</>` with `${expr}` slots: text is escaped
+  wherever it lands (content or attribute value), `html`/`xml` values and
+  lists of them are inserted as markup, `true`/`false`/`None` as a whole
+  attribute value write or drop a bare attribute, and `<script>`/`<style>`
+  content stays JavaScript/CSS (a `json` value there is written as JSON, and
+  nothing inserted can close the element). `\$` writes a dollar sign. A
+  literal's kind comes from its target (annotation, parameter, return type,
+  list element type, `+` operand, DOM method receiver, enclosing literal);
+  without one it is `html`. HTML is read leniently (void and implicitly
+  closed elements, stray end tags ignored, nothing moved); xml literals must
+  be well formed (checked by the compiler).
+- `html(value)` / `xml(value)` and the `__html__` / `__xml__` protocol (like
+  `__json__`); `+`, `+=`, `==`, `str()`, f-strings and JSON encoding.
+- DOM-style methods on markup values: `select` / `first` with CSS
+  selectors, `text`, `tag`, `attr`, `attrs`, `hasAttr`, `setAttr`,
+  `removeAttr`, class helpers, `setText`, `setInner`, `append`, `prepend`,
+  `remove`, `replaceWith`, `children`, `nodes`, `parent`, `clone`,
+  `isEmpty`.
+- Compile-time diagnostics for markup: slots in tag/attribute names,
+  comments or doctypes, markup values in attributes or scripts, `html`
+  inside `xml` (and the reverse), classes without `__html__`/`__xml__`,
+  malformed XML literals, unknown DOM methods and wrong arities, an
+  unterminated `<>`. `lamc fmt` keeps literals exactly as written; the VS
+  Code grammar highlights them as HTML with Lam slots.
+- Stdlib: `lammarkup` (runtime, imported automatically), `lamhtml`
+  (`Html.parse`, `Html.escape`), `HttpRequestOptions.html/xml` and
+  `HttpRequest.html/xml` (bodies with their Content-Type),
+  `HttpResponse.html()` / `.xml()`, `Xml.escape`.
+- Parenthesized types: `(func(R) -> html) | (func(R) -> str)` is a union of
+  function shapes (without parentheses the result type takes the rest of
+  the union, as before). Diagnostics render such unions with parentheses.
+
+### Breaking changes
+
+- `Xml.parse(text)` returns `Result[xml]` (a native value with the DOM
+  methods); `XmlNode` is removed. `Xml.encode(value, root)` returns `xml`
+  (use `str(...)` for the text). `Xml.decode(text)` is unchanged.
+- `HtmlTemplate.render` / `renderNamed` return `Result[html]`.
+- `Mail.setHtml` takes `html` (`m.setHtml(<><p>Hi</p></>)`).
+- `html` and `xml` are type names: a variable or function named `html` /
+  `xml` shadows the conversion builtins.
+
+### Fixed
+
+- A function passed where a union of function types is expected
+  (`handler: func(R) | (func(R) -> str)`) had to fit none of them: it is now
+  checked, and a shape without a result only takes functions that return
+  nothing.
+
 ### Changed
 
 - Catalog: `@lam/stripe` 1.0.1, `@lam/otel` 1.1.0 (split into modules),

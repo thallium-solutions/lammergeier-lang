@@ -1,0 +1,14 @@
+# expect-go: lamHTMLRender(
+# expect-go: lamXMLRender(
+# expect-go: func (s *Card) LamHTML() LamHTML {
+
+class Card {
+    func init(self, title: str) { self.title: str = title }
+    func __html__(self) -> html { return <><b>${self.title}</b></> }
+}
+
+func main() {
+    page: html = <><div>${Card("a")}</div></>
+    doc: xml = <><a/></>
+    print(page, doc)
+}

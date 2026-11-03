@@ -1,0 +1,8 @@
+# expect-error: value of type `Image` cannot be inserted into html; implement `func __html__(self) -> html`
+class Image {
+    func init(self, src: str) { self.src: str = src }
+}
+
+func main() {
+    print(<><div>${Image("a.png")}</div></>)
+}

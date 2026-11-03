@@ -37,7 +37,7 @@
 #     m.addTo("bob@example.com")
 #     m.setSubject("Invoice")
 #     m.setText("PDF attached.")
-#     m.setHtml("<p>PDF attached.</p>")
+#     m.setHtml(<><p>PDF attached.</p></>)
 #     m.attach("invoice.pdf", "application/pdf", pdfBytes)
 #     Smtp.send(host="localhost:1025", mail=m)
 #
@@ -455,10 +455,11 @@ class Mail {
         }
     }
 
-    func setHtml(self, body: str) {
+    func setHtml(self, body: html) {
+        #- HTML body (a native ``html`` value). -#
         go! {
             m := s._msg.(*lamSmtpMessage)
-            m.Html = body
+            m.Html = body.String()
         }
     }
 

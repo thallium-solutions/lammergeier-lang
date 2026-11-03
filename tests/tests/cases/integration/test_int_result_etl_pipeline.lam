@@ -183,7 +183,7 @@ func main() {
     Os.writeFile(yamlPath, yamlText).unwrap()
     Test.assertTrue(Yaml.decode(resultString(Os.readFile(yamlPath))).ok(), "18 YAML summary round trip")
 
-    xmlText: str = Xml.encode(summary, "summary")
+    xmlText: str = str(Xml.encode(summary, "summary"))
     Os.writeFile(xmlPath, xmlText).unwrap()
     Test.assertTrue(Xml.decode(resultString(Os.readFile(xmlPath))).ok(), "19 XML summary round trip")
 

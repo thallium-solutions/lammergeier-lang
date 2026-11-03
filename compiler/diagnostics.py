@@ -123,6 +123,7 @@ _SEMANTIC_CODES: dict[str, str] = {
     "unused": "LAM1012",
     "match": "LAM1013",
     "json": "LAM1014",
+    "markup": "LAM1015",
 }
 
 
