@@ -7,6 +7,15 @@ by commit date.
 
 ## Unreleased
 
+## 4.0.5 — 2026-11-03
+
+### Fixed
+
+- `?` did not short-circuit: in `flag and check()?`, `flag or check()?` and
+  `f()? if c else x` the call ran (and could return early) even when the left
+  side or the condition decided the result. The call and its early return now
+  run only when that operand is evaluated.
+
 ## 4.0.4 — 2026-11-03
 
 ### Fixed

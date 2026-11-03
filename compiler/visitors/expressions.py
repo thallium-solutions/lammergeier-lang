@@ -276,6 +276,11 @@ class ExpressionVisitorMixin:
             if node.data == "set_comprehension" and self._is_go_set_type(go_type):
                 return self._set_comp_to_go(node, map_type=go_type)
             if node.data == "test" and len(node.children) == 3 and go_type:
+                if self._holds_propagate(node.children[0]) or self._holds_propagate(node.children[2]):
+                    with self._scoped(_propagate_cast_hint=go_type if go_type != "interface{}" else ""):
+                        hoisted = self._ternary_propagate_to_go(node)
+                    if hoisted is not None:
+                        return hoisted
                 narrowed = self._nr_ternary_to_go(
                     node, go_type, lambda b: self._typed_value_to_go(b, go_type, type_key),
                 )
@@ -1433,6 +1438,9 @@ class ExpressionVisitorMixin:
             return f"!({self._expr_to_go(node.children[0])})"
 
         if d in ("or_test", "and_test"):
+            hoisted = self._short_circuit_propagate_to_go(node)
+            if hoisted is not None:
+                return hoisted
             narrowed = self._nr_binary_to_go(node)
             if narrowed is not None:
                 return narrowed
@@ -1504,6 +1512,9 @@ class ExpressionVisitorMixin:
 
         if d == "test":
             if len(node.children) == 3:
+                hoisted = self._ternary_propagate_to_go(node)
+                if hoisted is not None:
+                    return hoisted
                 common = self._ternary_common_go_type(node)
                 narrowed = self._nr_ternary_to_go(
                     node, common or "interface{}",
@@ -3608,6 +3619,59 @@ class ExpressionVisitorMixin:
             converted = self._result_ok_payload_conversion(value, payload)
             return f"{ok_func}({converted})" if converted else ""
         return f"{ok_func}({self._typed_value_to_go(value, payload)})"
+
+    @staticmethod
+    def _holds_propagate(node) -> bool:
+        return isinstance(node, Tree) and any(True for _ in node.find_data("propagate"))
+
+    def _short_circuit_propagate_to_go(self, node) -> str | None:
+        """``a and f()?`` / ``a or f()?``: a ``?`` after the first operand
+        lowers to statements (call, early return), which must run only when
+        the left side does not decide the result (they used to run first,
+        always)."""
+        operands = [c for c in node.children if isinstance(c, Tree)]
+        if len(operands) < 2 or not any(self._holds_propagate(c) for c in operands[1:]):
+            return None
+        self._q_temp_counter += 1
+        tmp = f"__lamSc{self._q_temp_counter}"
+        self._emit(f"{tmp} := bool({self._expr_to_go(operands[0])})")
+        self._declare_var(tmp)
+        guard = tmp if node.data == "and_test" else f"!{tmp}"
+        for operand in operands[1:]:
+            self._emit(f"if {guard} {{")
+            self.indent += 1
+            with self._scoped(_propagate_cast_hint="bool"):
+                part = self._expr_to_go(operand)
+            self._emit(f"{tmp} = bool({part})")
+            self.indent -= 1
+            self._emit("}")
+        return tmp
+
+    def _ternary_propagate_to_go(self, node) -> str | None:
+        """``f()? if c else x``: the branch holding ``?`` runs only when chosen."""
+        true_node, cond_node, false_node = node.children
+        if not (self._holds_propagate(true_node) or self._holds_propagate(false_node)):
+            return None
+        common = self._ternary_common_go_type(node) or self._propagate_cast_hint or "interface{}"
+        cond = self._expr_to_go(cond_node)
+        self._q_temp_counter += 1
+        tmp = f"__lamTe{self._q_temp_counter}"
+        self._emit(f"var {tmp} {common}")
+        self._declare_var(tmp)
+        self._emit(f"if {cond} {{")
+        self.indent += 1
+        with self._scoped(_propagate_cast_hint=common if common != "interface{}" else ""):
+            value = self._typed_value_to_go(true_node, common) if common != "interface{}" else self._expr_to_go(true_node)
+        self._emit(f"{tmp} = {value}")
+        self.indent -= 1
+        self._emit("} else {")
+        self.indent += 1
+        with self._scoped(_propagate_cast_hint=common if common != "interface{}" else ""):
+            value = self._typed_value_to_go(false_node, common) if common != "interface{}" else self._expr_to_go(false_node)
+        self._emit(f"{tmp} = {value}")
+        self.indent -= 1
+        self._emit("}")
+        return tmp
 
     def _retyped_lowered_arg(self, node, lowered: str, go_type: str) -> str:
         """``node`` (already lowered to ``lowered``) as a ``go_type`` value.

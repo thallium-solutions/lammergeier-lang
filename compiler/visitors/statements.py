@@ -248,6 +248,7 @@ class StatementVisitorMixin:
             if (
                 isinstance(value, Tree) and value.data == "test" and len(value.children) == 3
                 and not self._nr_ternary_narrows(value)
+                and not (self._holds_propagate(value.children[0]) or self._holds_propagate(value.children[2]))
             ):
                 with self._scoped(_expected_expr_type_key=overload_type_key):
                     true_val = self._typed_value_to_go(value.children[0], go_type, overload_type_key)
@@ -378,6 +379,7 @@ class StatementVisitorMixin:
             if (
                 isinstance(value_node, Tree) and value_node.data == "test" and len(value_node.children) == 3
                 and not self._nr_ternary_narrows(value_node)
+                and not (self._holds_propagate(value_node.children[0]) or self._holds_propagate(value_node.children[2]))
             ):
                 if target_go_type:
                     true_val = self._typed_value_to_go(value_node.children[0], target_go_type)
@@ -843,6 +845,7 @@ class StatementVisitorMixin:
             elif (
                 isinstance(val_node, Tree) and val_node.data == "test" and len(val_node.children) == 3
                 and not self._nr_ternary_narrows(val_node)
+                and not (self._holds_propagate(val_node.children[0]) or self._holds_propagate(val_node.children[2]))
             ):
                 if return_type:
                     with self._scoped(_expected_expr_type_key=return_type_key):

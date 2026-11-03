@@ -1,0 +1,62 @@
+# expect: run(false): nothing called
+# expect: called and
+# expect: both
+# expect: called or
+# expect: or-branch
+# expect: or-branch
+# expect: run2(true): nothing called
+# expect: called pick
+# expect: picked yes
+# expect: run3(false): nothing called
+# expect: run4(false): no
+# Regression: `?` on the right of `and` / `or` (and in a ternary branch) ran
+# its call even when the left side decided the result.
+from lamerrors import Result
+
+func check(label: str) -> Result[bool] {
+    print(f"called {label}")
+    return Result.Ok(true)
+}
+
+func pick(label: str) -> Result[str] {
+    print(f"called {label}")
+    return Result.Ok("yes")
+}
+
+func run(flag: bool) -> Result[bool] {
+    if flag and check("and")? {
+        print("both")
+    }
+    return Result.Ok(true)
+}
+
+func run2(flag: bool) -> Result[bool] {
+    if flag or check("or")? {
+        print("or-branch")
+    }
+    return Result.Ok(true)
+}
+
+func run3(flag: bool) -> Result[str] {
+    value: str = pick("pick")? if flag else "no"
+    return Result.Ok(value)
+}
+
+func run4(flag: bool) -> Result[str] {
+    value: str = "start"
+    value = pick("assign")? if flag else "no"
+    return Result.Ok(value)
+}
+
+func main() {
+    _ = run(false)
+    print("run(false): nothing called")
+    _ = run(true)
+    _ = run2(false)
+    _ = run2(true)
+    print("run2(true): nothing called")
+    print(f"picked {run3(true).unwrap()}")
+    _ = run3(false)
+    print("run3(false): nothing called")
+    print(f"run4(false): {run4(false).unwrap()}")
+}
