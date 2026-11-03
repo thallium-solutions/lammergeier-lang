@@ -64,7 +64,7 @@ from compiler.diagnostics import (
     SourceSpan,
     semantic_code,
 )
-from compiler.modules import WorkspaceIndex
+from compiler.modules import WorkspaceIndex, module_facts_from_path
 from compiler import namespacing as _namespacing
 from compiler import narrowing as _narrowing
 from compiler.safe_nav import rewrite_result_safe_nav
@@ -549,6 +549,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         self._ast_classes: dict[str, ClassDecl] = {}
         self._go_blocks: dict[str, str] = dict(go_blocks or {})
         self._support_imports: set[tuple[str, str, str]] = set()
+        # ``id(return_stmt)`` -> types of the block-scoped locals visible
+        # at that ``return`` (loop / branch bodies). Return values are
+        # checked after the body walk, when those block scopes are gone.
+        self._return_block_types: dict[int, dict[str, str]] = {}
 
     # ─── Public API ────────────────────────────────────────────
 
@@ -1242,6 +1246,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         if d == "return_stmt":
             if not any(s.kind == "function" for s in self._scopes):
                 self._error(node, "flow", "`return` can only be used inside a function")
+            self._record_return_block_types(node)
             self._visit_expr_subtree(node)
             return
 
@@ -3740,8 +3745,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         if name in BUILTIN_TYPES or name in ANNOTATION_TYPE_NAMES:
             return True
         if name in self._class_method_shapes or name in self._interface_methods:
-            self._is_resolved(name)
-            return True
+            if self._is_resolved(name) or "." in name or not self._scopes:
+                return True
+            # A class of an imported module that this module never imported
+            # (its metadata is collected for typed returns): Go resolved it
+            # because every module shares one package.
+            return False
         return self._is_resolved(name)
 
     def _suggest_type(self, name: str) -> Optional[str]:
@@ -3964,11 +3973,36 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             inner = self._member_target_type(obj)
             if inner is not None:
                 class_name = self._receiver_class_from_type_text(render_type(inner))
+        elif isinstance(obj, Tree) and obj.data in {"getitem", "funccall", "propagate"}:
+            # ``docs[0].body`` / ``shelf.items[0].body`` / ``load(text).body``
+            # / ``load(text)?.body``: the receiver's class from the element /
+            # return / payload type.
+            obj_type = self._member_receiver_type(obj)
+            if obj_type is not None:
+                class_name = self._receiver_class_from_type_text(render_type(obj_type))
         if not class_name:
             return None
         field_types = self._class_field_types.get(class_name, {})
         type_text = field_types.get(attr)
         return parse_type(type_text) if type_text else None
+
+    def _member_receiver_type(self, node) -> Type | None:
+        """Type of a member-access receiver: a field's declared type for
+        ``obj.items`` (``_expr_simple_type`` keeps only scalar fields), and
+        the element type of an indexed field (``shelf.items[0]``)."""
+        if not isinstance(node, Tree):
+            return None
+        if node.data == "getattr":
+            return self._member_target_type(node)
+        if node.data == "getitem" and len(node.children) >= 2:
+            index = node.children[1]
+            if not (isinstance(index, Tree) and index.data == "slice"):
+                container = self._member_receiver_type(node.children[0])
+                if isinstance(container, ListType):
+                    return container.item
+                if isinstance(container, DictType):
+                    return container.value
+        return self._expr_simple_type(node)
 
     def _assignment_target_display(self, target) -> str:
         if not isinstance(target, Tree):
@@ -7720,6 +7754,22 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 )
                 self._method_sigs.setdefault(f"{class_name}.{name}", []).append(sig)
 
+    def _record_return_block_types(self, ret: Tree) -> None:
+        """Remember the local types a ``return`` sees: its value is
+        checked after the body walk, once the loop scope declaring
+        ``c: json = items[k]`` has been popped (or the terminating
+        ``if`` branch's types have been dropped at the join)."""
+        types: dict[str, str] = {}
+        for scope in reversed(self._scopes):
+            if scope.kind not in {"block", "function"}:
+                break
+            for local, type_text in scope.var_types.items():
+                types.setdefault(local, type_text)
+            if scope.kind == "function":
+                break
+        if types:
+            self._return_block_types[id(ret)] = types
+
     def _check_function_returns(self, funcdef: Tree, suite_node: Tree) -> None:
         name = self._funcdef_name(funcdef) or "<anonymous>"
         returns = list(self._return_stmts_in(suite_node))
@@ -7749,35 +7799,16 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                     f"not all paths in `{name}` return a value",
                 )
             for ret in returns:
-                if not self._return_has_value(ret):
-                    self._error(
-                        ret, "return",
-                        f"`return` in `{name}` must return a value because the function declares a return type",
-                    )
+                block_types = self._return_block_types.get(id(ret))
+                if not block_types:
+                    self._check_return_value(ret, name, expected_type, expected_model)
                     continue
-                value_node = self._return_value(ret)
-                if self._check_result_ok_payload(value_node, expected_model, f"`{name}` returns", ret):
-                    continue
-                if (isinstance(expected_model, NamedType)
-                        and expected_model.name == "json"
-                        and isinstance(value_node, Tree)):
-                    self._check_json_expr(value_node, f"invalid json return from `{name}`")
-                    continue
-                actual_model = (
-                    self._expr_type_for_expected(value_node, expected_model)
-                    if expected_model is not None else self._return_value_type(ret)
-                )
-                actual_type = render_type(actual_model) if actual_model is not None else ""
-                expected_name = render_type(expected_model) if expected_model is not None else expected_type
-                if (actual_model is not None
-                        and expected_model is not None
-                        and not is_assignable(expected_model, actual_model)
-                        and not self._nominal_type_assignable(expected_model, actual_model)
-                        and not self._numeric_constant_fits_type_param(expected_model, value_node)):
-                    self._error(
-                        ret, "return",
-                        f"function `{name}` returns `{actual_type}`, expected `{expected_name}`",
-                    )
+                # Re-enter the loop / branch scope the ``return`` sits in.
+                self._scopes.append(_Scope(kind="block", var_types=dict(block_types)))
+                try:
+                    self._check_return_value(ret, name, expected_type, expected_model)
+                finally:
+                    self._scopes.pop()
             return
         if self._funcdef_returns_none(funcdef):
             for ret in returns:
@@ -7786,6 +7817,37 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                         ret, "return",
                         f"`return` in `{name}` cannot return a value because the function returns `None`",
                     )
+
+    def _check_return_value(self, ret: Tree, name: str, expected_type, expected_model) -> None:
+        if not self._return_has_value(ret):
+            self._error(
+                ret, "return",
+                f"`return` in `{name}` must return a value because the function declares a return type",
+            )
+            return
+        value_node = self._return_value(ret)
+        if self._check_result_ok_payload(value_node, expected_model, f"`{name}` returns", ret):
+            return
+        if (isinstance(expected_model, NamedType)
+                and expected_model.name == "json"
+                and isinstance(value_node, Tree)):
+            self._check_json_expr(value_node, f"invalid json return from `{name}`")
+            return
+        actual_model = (
+            self._expr_type_for_expected(value_node, expected_model)
+            if expected_model is not None else self._return_value_type(ret)
+        )
+        actual_type = render_type(actual_model) if actual_model is not None else ""
+        expected_name = render_type(expected_model) if expected_model is not None else expected_type
+        if (actual_model is not None
+                and expected_model is not None
+                and not is_assignable(expected_model, actual_model)
+                and not self._nominal_type_assignable(expected_model, actual_model)
+                and not self._numeric_constant_fits_type_param(expected_model, value_node)):
+            self._error(
+                ret, "return",
+                f"function `{name}` returns `{actual_type}`, expected `{expected_name}`",
+            )
 
     def _suite_definitely_terminates(self, suite_node: Tree) -> bool:
         for stmt in self._suite_stmts(suite_node):
@@ -8033,9 +8095,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 return NamedType("json")
             if node.data == "getattr":
                 # ``self.cents`` / ``order.total``: a numeric field's
-                # declared type (``self.cents / 100`` is a ``float``).
+                # declared type (``self.cents / 100`` is a ``float``); a
+                # ``json`` field indexes / measures like a ``json`` local
+                # (``doc.body[i]`` is a ``json``).
                 field_type = self._member_target_type(node)
-                if isinstance(field_type, NamedType) and field_type.name in {"int", "float"}:
+                if isinstance(field_type, NamedType) and field_type.name in {"int", "float", "json"}:
                     return field_type
         if node.data == "propagate":
             return self._propagated_payload_type(node)
@@ -8670,6 +8734,14 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         self._error(node, "type", msg)
 
     def _check_slice_index_types(self, node: Tree, receiver_type: Type, slice_node: Tree) -> None:
+        if self._is_named_type(receiver_type, "json"):
+            # Previously lowered to invalid Go (``lamJSONGet(v, 1:)``).
+            self._error(
+                node,
+                "json",
+                "type `json` cannot be sliced; convert an array with `Json.toList(value)` and slice the list",
+            )
+            return
         if not self._is_sliceable_type(receiver_type):
             if self._getitem_receiver_check_is_conclusive(receiver_type):
                 self._error(
@@ -9024,10 +9096,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         receiver_type = self._expr_simple_type(receiver)
         if receiver_type is None:
             return None
+        if isinstance(receiver_type, NamedType) and receiver_type.name == "json":
+            # A json slice is rejected by ``_check_slice_index_types``;
+            # keep it ``json`` so it does not cascade into "unknown".
+            return NamedType("json")
         if index.data == "slice":
             return receiver_type if self._is_sliceable_type(receiver_type) else None
-        if isinstance(receiver_type, NamedType) and receiver_type.name == "json":
-            return NamedType("json")
         if isinstance(receiver_type, NamedType) and receiver_type.name in self._class_method_shapes:
             shape = self._class_method_shape(receiver_type.name, "__getitem__")
             if shape is not None and shape.return_type_text:
@@ -10310,6 +10384,14 @@ def _check_imported_exports(
             suggestion = get_close_matches(requested, sorted(exports), n=1, cutoff=0.72)
             if suggestion:
                 msg += f"\n  help: did you mean `{suggestion[0]}`?"
+            else:
+                # ``from .metering import MetricIngress`` where ``.units``
+                # declares it.
+                defining = _defining_modules(module_index, source_path, requested)
+                if not defining and _index_workspace_modules(module_index, source_path):
+                    defining = _defining_modules(module_index, source_path, requested)
+                if defining:
+                    msg += f"\n  help: did you mean `from {defining[0]} import {requested}`?"
             if exports:
                 exported = "\n".join(f"    - {name}" for name in sorted(exports))
                 msg += f"\n  exported by `{module}`:\n{exported}"
@@ -10661,6 +10743,167 @@ def _is_reexport_only_module(tree: Tree) -> bool:
     return True
 
 
+def check_module_names(
+    tree: Tree,
+    *,
+    go_blocks: Optional[dict[str, str]] = None,
+    module_index: WorkspaceIndex,
+    source_path: Path,
+) -> List[SemanticError]:
+    """Name resolution of an imported module of the build.
+
+    Every module of a program compiles into one Go package, so a name a
+    module never imported (``queryValues`` defined by another module) or
+    an import of a name its module lacks still built: Go resolved it.
+    Only the full check of the main file caught these. This reports, for
+    an imported module, the undefined names and unresolvable imports
+    (the other diagnostics stay main-file only); it skips the imported
+    call metadata, which is what makes :func:`check_source` expensive.
+    """
+    errors = SemanticChecker(go_blocks=go_blocks).check(tree, ast_module=build_module(tree))
+    errors = [
+        e for e in errors
+        if not e.is_warning and (
+            e.kind == "undefined"
+            or (e.kind == "type" and _UNKNOWN_TYPE_RE.match(e.message) is not None)
+        )
+    ]
+    _suggest_defining_imports(errors, module_index=module_index, source_path=source_path)
+    errors.extend(_check_imported_exports(tree, module_index=module_index, source_path=source_path))
+    return errors
+
+
+_UNDEFINED_NAME_RE = re.compile(r"^undefined name `([A-Za-z_]\w*)`")
+_UNKNOWN_TYPE_RE = re.compile(r"^unknown type `([A-Za-z_]\w*)`")
+
+
+def _suggest_defining_imports(
+    errors: List[SemanticError],
+    *,
+    module_index: WorkspaceIndex,
+    source_path: Path,
+) -> None:
+    """``undefined name `queryValues``` -> ``help: did you mean `from
+    luxyt.web.forms import queryValues`?`` when a module of the build
+    (one the index has seen) declares that top-level name."""
+    if not errors:
+        return
+    source_path = Path(source_path).resolve()
+    for index, err in enumerate(errors):
+        if err.is_warning or "help: did you mean `from " in err.message:
+            continue
+        if err.kind == "undefined":
+            match = _UNDEFINED_NAME_RE.match(err.message)
+        elif err.kind == "type":
+            match = _UNKNOWN_TYPE_RE.match(err.message)
+        else:
+            match = None
+        if match is None:
+            continue
+        name = match.group(1)
+        candidates = _defining_modules(module_index, source_path, name)
+        if not candidates and _index_workspace_modules(module_index, source_path):
+            candidates = _defining_modules(module_index, source_path, name)
+        if not candidates:
+            continue
+        hint = f"from {candidates[0]} import {name}"
+        if err.kind == "type":
+            message = f"unknown type `{name}`"
+        elif " — did you mean" in err.message:
+            # The spelling suggestion (``querValues``) is less likely
+            # than the import when the exact name exists in a module.
+            message = err.message.split(" — did you mean", 1)[0]
+        else:
+            message = err.message
+        errors[index] = SemanticError(
+            err.line, err.col, f"{message}\n  help: did you mean `{hint}`?", err.kind,
+            severity=err.severity,
+        )
+
+
+def _defining_modules(module_index: WorkspaceIndex, source_path: Path, name: str) -> list[str]:
+    """Import names of the indexed modules declaring a public ``name``."""
+    out: list[str] = []
+    source_path = Path(source_path).resolve()
+    known = dict(getattr(module_index, "_suggestion_facts", {}))
+    known.update(module_index.facts_by_path)
+    for path, facts in sorted(known.items(), key=lambda item: str(item[0])):
+        if path == source_path:
+            continue
+        export = facts.exports.get(name)
+        if export is None or export.kind == "import" or _export_is_private(export):
+            continue
+        module = _import_module_for_suggestion(module_index, source_path, path)
+        if module and module not in out:
+            out.append(module)
+    return out
+
+
+def _index_workspace_modules(module_index: WorkspaceIndex, source_path: Path) -> bool:
+    """Index every ``.lam`` module under the search roots (once per index),
+    for import suggestions of a name no module of the build declares yet
+    (only runs on the error path). ``True`` when new modules were added."""
+    if getattr(module_index, "_suggestion_facts", None) is not None:
+        return False
+    # Kept apart from ``facts_by_path``: these modules are not part of the
+    # build and must not take part in import resolution.
+    extra: dict[Path, object] = {}
+    module_index._suggestion_facts = extra
+    import tempfile
+    import time
+
+    # A hint must not stall a build or the LSP on a large tree (a file in
+    # ``/tmp`` or the home directory): skip such roots, cap the time.
+    skipped = {Path("/").resolve(), Path.home().resolve(), Path(tempfile.gettempdir()).resolve()}
+    deadline = time.monotonic() + 0.5
+    added = False
+    for root in module_index._search_roots(source_path):
+        if root in skipped:
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            if time.monotonic() > deadline:
+                return added
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in {".git", ".hg", ".svn", "__pycache__", "build", "dist", "node_modules"}
+                and not d.startswith(".")
+            ]
+            for filename in filenames:
+                if not filename.endswith(".lam"):
+                    continue
+                if time.monotonic() > deadline:
+                    return added
+                path = (Path(dirpath) / filename).resolve()
+                if path in module_index.facts_by_path or path in extra:
+                    continue
+                try:
+                    extra[path] = module_facts_from_path(path)
+                except (OSError, UnicodeDecodeError):
+                    continue
+                added = True
+    return added
+
+
+def _import_module_for_suggestion(module_index: WorkspaceIndex, source_path: Path, module_path: Path) -> str:
+    """The module name ``source_path`` would import ``module_path`` by:
+    dotted from the project / extlibs / stdlib root (``luxyt.web.forms``),
+    else relative to the importing module's directory (``.forms``)."""
+    roots = [
+        root for root in module_index._search_roots(source_path)
+        if (root != source_path.parent or root == module_index.root)
+        and module_index._is_under(module_path, root)
+    ]
+    if roots:
+        root = max(roots, key=lambda item: len(item.parts))
+        name = module_index.module_name_under(root, module_path)
+        if name:
+            return name
+    if module_index._is_under(module_path, source_path.parent):
+        name = module_index.module_name_under(source_path.parent, module_path)
+        return f".{name}" if name else ""
+    return ""
+
+
 def check_source(
     tree: Tree,
     *,
@@ -10713,6 +10956,7 @@ def check_source(
             if not (getattr(err, "severity", "") == "warning" and err.message.startswith("unused import"))
         ]
     if module_index is not None and source_path is not None:
+        _suggest_defining_imports(errors, module_index=module_index, source_path=source_path)
         errors.extend(_check_imported_exports(
             tree,
             module_index=module_index,

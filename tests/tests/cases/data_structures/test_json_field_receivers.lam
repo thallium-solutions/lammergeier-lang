@@ -1,0 +1,80 @@
+# A `json` class field indexes, measures, reads attributes and is assigned
+# like a `json` local whatever the receiver: `docs[0].body[i]`,
+# `m["k"].body`, `holder.items[0].body`, `load()?.body` were lowered to a
+# raw Go index on the `LamJSON` struct ("cannot index ... struct type
+# LamJSON"), and `v: json = c.body[i]` was typed `unknown`.
+from lamjson import Json
+from lamerrors import Result
+
+class Doc {
+    func init(self, text: str) {
+        self.body: json = Json.decode(text).unwrap()
+    }
+    func at(self, i: int) -> json {
+        return self.body[i]
+    }
+}
+
+class Shelf {
+    func init(self) {
+        self.items: list[Doc] = [Doc("[1, 2]"), Doc("{\"k\": \"v\", \"n\": {\"m\": 7}}")]
+        self.byName: dict[str, Doc] = {"x": Doc("[5, 6, 7]")}
+    }
+}
+
+func load(text: str) -> Result[Doc] {
+    return Result.Ok(Doc(text))
+}
+
+func viaPropagate() -> Result[int] {
+    n: int = len(load("[1, 2, 3]")?.body)
+    second: int = load("[8, 9]")?.body[1]
+    return Result.Ok(n * 10 + second)
+}
+
+func describe(c: Doc, i: int) -> str {
+    v: json = c.body[i]
+    return Json.encode(v).unwrap()
+}
+
+func main() {
+    c: Doc = Doc("[10, 20, {\"k\": \"v\"}]")
+    i: int = 1
+    v: json = c.body[i]
+    print(Json.encode(v).unwrap(), len(c.body), Json.encode(c.body[2].k).unwrap())
+    docs: list[Doc] = [Doc("[1, 2]"), Doc("[3, 4]")]
+    print(docs[0].body[i], len(docs[1].body), describe(docs[1], 0))
+    s: Shelf = Shelf()
+    print(s.items[0].body[0], s.items[1].body.n.m, s.items[1].body["k"])
+    print(s.byName["x"].body[2], len(s.byName["x"].body))
+    for d in s.items {
+        print(len(d.body))
+    }
+    e: json = s.items[1].body["n"]
+    print(Json.encode(e).unwrap(), Json.encode(docs[0].at(1)).unwrap())
+    docs[0].body[0] = 100
+    s.items[1].body["k"] = "w"
+    s.items[1].body.extra = [true]
+    del s.items[1].body["n"]
+    print(Json.encode(docs[0].body).unwrap(), Json.encode(s.items[1].body).unwrap())
+    print(docs[0].body == docs[0].body, s.items[1].body.missing == None)
+    print(viaPropagate().unwrap())
+    total: int = 0
+    for k in range(len(s.byName["x"].body)) {
+        n: int = s.byName["x"].body[k]
+        total += n
+    }
+    print(total)
+}
+
+# expect: 20 3 "v"
+# expect: 2 2 3
+# expect: 1 7 "v"
+# expect: 7 3
+# expect: 2
+# expect: 2
+# expect: {"m":7} 2
+# expect: [100,2] {"extra":[true],"k":"w"}
+# expect: true true
+# expect: 39
+# expect: 18

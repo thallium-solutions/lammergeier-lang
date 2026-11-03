@@ -5,7 +5,38 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
-## Unreleased
+## 4.0.6 — 2026-11-03
+
+### Fixed
+
+- A local declared inside a loop or a branch and returned from there
+  (`c: json = items[k]` in a `while`, then `return c`) was typed `unknown`:
+  a `json` return was rejected as not JSON-compatible and other mismatches
+  were left to `go build`. Return values are now checked with the types the
+  `return` sees.
+- Indexing, `len()`, attribute access and assignment on a `json` class field
+  reached through an element, a call or `?` (`docs[0].body[i]`,
+  `shelf.items[0].body`, `load()?.body`) failed in `go build` ("cannot index
+  ... struct type LamJSON"), and `v: json = c.body[i]` was typed `unknown`.
+  A `json` field now behaves like a `json` local, so `"k" in doc.body` (an
+  always-false reflection test) is reported like it is for a local, and
+  slicing a `json` value (`value[1:]`, invalid Go before) is a Lam error.
+- Typed locals in a constructor (`base: int = n * 2` in `init`) were hoisted
+  as fields whose initializer ran at the top of the Go constructor, before
+  the locals it reads ("undefined: base" in `go build`); they also leaked
+  into the struct. They are plain locals now.
+- An imported module could use a function, constant, class or interface of
+  another module without importing it, and import a name its target module
+  does not declare (`from .x import lxNumber`): every module compiles into
+  one Go package, which resolved them, and only the main file was checked.
+  Imported project and `extlibs` modules are now checked for undefined names,
+  unknown annotation types and unresolvable imports, with the import to add
+  (`from app.web.forms import queryValues`); in the
+  main file a class of a module imported for another name is no longer
+  accepted as an annotation. Raw `go!` code is not checked.
+- Module export facts ignored every declaration after a brace inside a
+  string literal or a comment (`text.startsWith("{")`), so importing them
+  was reported as `does not export`.
 
 ## 4.0.5 — 2026-11-03
 

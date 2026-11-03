@@ -1,0 +1,16 @@
+# Provider for test_json_field_imported_class.lam: a class with a `json`
+# field and a function returning it.
+from lamjson import Json
+
+class JsonDoc {
+    func init(self, text: str) {
+        self.body: json = Json.decode(text).unwrap()
+        self.name: str = "doc"
+    }
+}
+
+func loadDoc(text: str) -> JsonDoc {
+    return JsonDoc(text)
+}
+
+func main() { pass }

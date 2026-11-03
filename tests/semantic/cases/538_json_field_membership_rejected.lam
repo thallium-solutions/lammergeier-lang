@@ -1,0 +1,16 @@
+# expect-error: right operand of `in` must be `list`, `dict`, `set`, or `str`, got `json`
+# A `json` field is typed like a `json` local: `"k" in doc.body` is rejected
+# the same way (it compiled to a reflection test that is always false).
+from lamjson import Json
+
+class Doc {
+    func init(self, text: str) {
+        self.body: json = Json.decode(text).unwrap()
+    }
+}
+
+func main() {
+    d: Doc = Doc("{\"k\": 1}")
+    docs: list[Doc] = [d]
+    print("k" in d.body, "k" in docs[0].body)
+}

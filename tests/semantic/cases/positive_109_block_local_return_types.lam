@@ -1,0 +1,75 @@
+# expect-pass
+# expect-no-warning: invalid json return
+# A local declared inside a loop or a branch and returned from there keeps
+# its declared type: the return checks run after the body walk, once the
+# block scopes are gone (`c: json = items[k]` was typed `unknown`).
+from lamjson import Json
+
+class Box {
+    func init(self, v: int) {
+        self.v: int = v
+    }
+}
+
+func pickWhile(items: list[json]) -> json {
+    k: int = 0
+    while k < len(items) {
+        c: json = items[k]
+        k += 1
+        return c
+    }
+    return None
+}
+
+func pickFor(items: list[json]) -> json {
+    for it in items {
+        found: json = it
+        return found
+    }
+    return None
+}
+
+func pickIf(items: list[json], first: bool) -> json {
+    if first {
+        head: json = items[0]
+        return head
+    } elif len(items) > 1 {
+        second: json = items[1]
+        return second
+    }
+    return None
+}
+
+func pickNested(rows: list[list[json]]) -> json {
+    for row in rows {
+        for cell in row {
+            if cell != None {
+                hit: json = cell
+                return hit
+            }
+        }
+    }
+    return None
+}
+
+func firstName(names: list[str]) -> str {
+    for n in names {
+        upper: str = n.toUpper()
+        return upper
+    }
+    return ""
+}
+
+func firstBox(xs: list[int]) -> Box {
+    while len(xs) > 0 {
+        b: Box = Box(xs[0])
+        return b
+    }
+    return Box(0)
+}
+
+func main() {
+    docs: list[json] = [Json.decode("{\"a\": 1}").unwrap(), Json.decode("[2]").unwrap()]
+    print(pickWhile(docs), pickFor(docs), pickIf(docs, false), pickNested([docs]))
+    print(firstName(["x"]), firstBox([3]).v)
+}

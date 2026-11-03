@@ -222,8 +222,65 @@ def test_missing_module_returns_none() -> None:
     print("PASS: missing modules resolve to None")
 
 
+def test_module_facts_ignore_braces_in_strings_and_comments() -> None:
+    """A ``"{"`` literal, a brace in a comment, a doc comment, a triple-quoted
+    string or a ``go!`` block's Go strings / comments do not open a block:
+    the scanner hid every later top-level declaration (``from .api import
+    hCreate`` was reported as not exported)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "api.lam"
+        source = '''
+func opens(text: str) -> bool {
+    return text.startsWith("{") or text.endsWith('[{')
+}
+
+func afterString() -> int {
+    return 1
+}
+
+# a stray { in a comment
+#- POST /v1/items {name, unbalanced {
+   continued -#
+func afterComments() -> int {
+    return 2
+}
+
+TEMPLATE: str = """
+{ "open": [
+"""
+
+func afterTriple() -> int {
+    local: int = 3
+    return local
+}
+
+func raw() -> str {
+    go! {
+        s := "{" + `}{{` // }
+        /* { */
+        _ = s
+    }
+    return ""
+}
+
+class AfterGo {
+    func init(self) {
+        self.label: str = "}"
+    }
+}
+'''.lstrip()
+        facts = module_facts_from_source(path, source)
+        names = set(facts.exports)
+        for expected in ("opens", "afterString", "afterComments", "TEMPLATE", "afterTriple", "raw", "AfterGo"):
+            assert expected in names, (expected, sorted(names))
+        for unexpected in ("local", "continued", "s", "name"):
+            assert unexpected not in names, (unexpected, sorted(names))
+    print("PASS: module facts ignore braces in strings, comments and go! text")
+
+
 def main() -> int:
     tests = [
+        test_module_facts_ignore_braces_in_strings_and_comments,
         test_module_facts_exports_and_imports,
         test_workspace_resolves_local_sibling,
         test_workspace_resolves_package_init,

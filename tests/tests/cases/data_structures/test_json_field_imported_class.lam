@@ -1,0 +1,20 @@
+# The `json` field of an imported class indexes / measures through every
+# receiver form (element, call result), as a local does.
+from lamjson import Json
+from json_field_doc_provider import JsonDoc, loadDoc
+
+func main() {
+    docs: list[JsonDoc] = [JsonDoc("[1, 2, 3]"), loadDoc("{\"a\": {\"b\": 4}}")]
+    i: int = 2
+    print(docs[0].body[i], len(docs[0].body), docs[1].body.a.b)
+    print(loadDoc("[7, 8]").body[1], len(loadDoc("[7, 8]").body))
+    holders: dict[str, JsonDoc] = {"p": loadDoc("[9]")}
+    print(holders["p"].body[0], holders["p"].body == loadDoc("[9]").body)
+    v: json = docs[1].body["a"]
+    print(Json.encode(v).unwrap())
+}
+
+# expect: 3 3 4
+# expect: 8 2
+# expect: 9 true
+# expect: {"b":4}

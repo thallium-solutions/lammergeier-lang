@@ -245,7 +245,8 @@ The semantic checker reports statically knowable JSON mistakes during Lam
 compilation: non-string object keys; tuple/set arrays; incompatible nested
 values; direct `any`; missing or malformed `__json__` declarations; implicit
 class conversion; invalid `json(value)` arguments; invalid boolean/class/etc.
-indices (only `str` or `int` are allowed); incompatible assignments/returns/call
+indices (only `str` or `int` are allowed); slices (`value[1:]`: convert an array
+with `Json.toList` first); incompatible assignments/returns/call
 arguments; and malformed literal strings passed to `Json.decode`,
 `Json.decodeInto`, or `Schema.validate`.
 Dynamic `Json.fromValue(any)` data, decoded wire shapes, object-vs-array access,
@@ -3614,6 +3615,21 @@ func main() {
 ```
 
 `import @lam/jwt` without `as` is a compile error that suggests the alias.
+
+Every module sees only its own definitions, its imports and the builtins,
+even though all modules are compiled into one Go package. Using another
+module's function, constant, class or interface (in code or in a type
+annotation) without importing it is an `undefined name` / `unknown type`
+error in that module, with the import to add; importing a name the target
+module does not declare is an `import resolution failed` error. Both are
+checked in every imported project and `extlibs` module, not only in the
+main file. Raw `go!` code is not checked.
+
+```text
+error: semantic check failed for lib/app/web/views.lam
+  line 5: error[undefined]: undefined name `queryValues`
+  help: did you mean `from app.web.forms import queryValues`?
+```
 
 Every module has its own namespace for top-level **functions, constants,
 module-level variables, classes and interfaces**: two libraries may both

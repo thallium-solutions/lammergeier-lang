@@ -1,0 +1,20 @@
+# expect-error: type `json` cannot be sliced; convert an array with `Json.toList(value)` and slice the list
+# expect-no-warning: value of type `unknown`
+# Slicing a `json` value (a local, a field, an element) was lowered to
+# invalid Go (`lamJSONGet(v, 1:)`); it is now a Lam diagnostic.
+from lamjson import Json
+
+class Doc {
+    func init(self, text: str) {
+        self.body: json = Json.decode(text).unwrap()
+    }
+}
+
+func main() {
+    v: json = Json.decode("[1, 2, 3]").unwrap()
+    tail: json = v[1:]
+    d: Doc = Doc("[1, 2]")
+    head: json = d.body[:1]
+    docs: list[Doc] = [d]
+    print(tail, head, docs[0].body[0:1])
+}

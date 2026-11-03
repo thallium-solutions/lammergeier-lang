@@ -1,0 +1,65 @@
+# Locals declared inside loop / branch bodies and returned from there keep
+# their declared type (`c: json = items[k]` returned from a `while` was
+# typed `unknown` and rejected as not JSON-compatible).
+from lamjson import Json
+
+class Tag {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func pick2(items: list[json]) -> json {
+    k: int = 0
+    while k < len(items) {
+        c: json = items[k]
+        k += 1
+        return c
+    }
+    return None
+}
+
+func firstWith(items: list[json], key: str) -> json {
+    for it in items {
+        if key in Json.toDict(it).unwrapOr({}) {
+            hit: json = it[key]
+            return hit
+        }
+    }
+    return None
+}
+
+func choose(items: list[json], wantLast: bool) -> json {
+    if wantLast {
+        last: json = items[len(items) - 1]
+        return last
+    } else {
+        first: json = items[0]
+        return first
+    }
+}
+
+func tagFor(names: list[str], wanted: str) -> Tag {
+    for n in names {
+        if n == wanted {
+            t: Tag = Tag(n.toUpper())
+            return t
+        }
+    }
+    return Tag("none")
+}
+
+func main() {
+    docs: list[json] = [Json.decode("{\"a\": 1}").unwrap(), Json.decode("{\"b\": [2, 3]}").unwrap()]
+    print(Json.encode(pick2(docs)).unwrap())
+    print(Json.encode(pick2([])).unwrap())
+    print(Json.encode(firstWith(docs, "b")).unwrap())
+    print(Json.encode(choose(docs, true)).unwrap(), Json.encode(choose(docs, false)).unwrap())
+    print(tagFor(["x", "y"], "y").name, tagFor([], "q").name)
+}
+
+# expect: {"a":1}
+# expect: null
+# expect: [2,3]
+# expect: {"b":[2,3]} {"a":1}
+# expect: Y none

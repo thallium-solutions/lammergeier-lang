@@ -1,0 +1,24 @@
+# expect-error: function `label` returns `int`, expected `str`
+# expect-error: function `pick` returns `str`, expected `int`
+# Block-scoped locals returned from a loop or a branch are now typed, so a
+# mismatch is reported instead of reaching `go build`.
+
+func label(xs: list[int]) -> str {
+    for x in xs {
+        n: int = x * 2
+        return n
+    }
+    return ""
+}
+
+func pick(flag: bool) -> int {
+    if flag {
+        s: str = "a"
+        return s
+    }
+    return 0
+}
+
+func main() {
+    print(label([1]), pick(true))
+}

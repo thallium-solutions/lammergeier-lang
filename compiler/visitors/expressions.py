@@ -949,9 +949,10 @@ class ExpressionVisitorMixin:
                         obj_go_type = self._var_go_types.get(obj_name, "")
                         if obj_go_type.startswith("*") and "[" not in obj_go_type:
                             class_name = self._hier_class_from_go_type(obj_go_type) or ""
-            elif isinstance(obj, Tree) and obj.data in {"funccall", "getattr", "getattr_safe"}:
-                # ``current().box`` / ``holder.inner.box``: the receiver's class
-                # from call return types and field types.
+            elif isinstance(obj, Tree) and obj.data in {"funccall", "getattr", "getattr_safe", "getitem", "propagate"}:
+                # ``current().box`` / ``holder.inner.box`` / ``docs[0].body`` /
+                # ``load()?.body``: the receiver's class from call return
+                # types, field types and container element types.
                 class_name = self._infer_receiver_class(obj) or self._result_error_view_class(obj, attr)
             if class_name:
                 # The class, then its ancestors (``self.points`` declared by

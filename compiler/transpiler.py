@@ -1844,13 +1844,33 @@ func lamAsyncReportUnretrieved() {
                             self._init_param_types[pname] = ptype
 
         for stmt in self._suite_stmts(suite_node):
-            if isinstance(stmt, Tree):
-                if stmt.data == "annassign":
-                    self._extract_field_from_assign(class_name, stmt)
-                elif stmt.data == "assign_stmt":
-                    for child in stmt.children:
-                        if isinstance(child, Tree):
-                            self._extract_field_from_assign(class_name, child)
+            if not isinstance(stmt, Tree):
+                continue
+            if stmt.data == "annassign":
+                candidates = [stmt]
+            elif stmt.data == "assign_stmt":
+                candidates = [c for c in stmt.children if isinstance(c, Tree)]
+            else:
+                continue
+            for node in candidates:
+                if node.data == "annassign" and not self._is_self_field_annassign(node):
+                    # ``base: int = n * 2`` is a constructor local, not a
+                    # field: it used to be hoisted as a defaulted field
+                    # whose value ran before the locals it reads.
+                    continue
+                self._extract_field_from_assign(class_name, node)
+
+    def _is_self_field_annassign(self, node: Tree) -> bool:
+        """``self.x: T = value`` (not a ``x: T = value`` local)."""
+        _private, _static, children = self._annassign_parts(node)
+        target = children[0] if children else None
+        if not (isinstance(target, Tree) and target.data == "getattr" and target.children):
+            return False
+        obj = target.children[0]
+        return (
+            isinstance(obj, Tree) and obj.data == "var" and bool(obj.children)
+            and self._get_name(obj.children[0]) == "self"
+        )
 
     def _extract_field_from_stmt(self, class_name: str, node: Tree):
         if node.data == "assign_stmt":

@@ -69,15 +69,116 @@ def module_name_for_path(path: Path) -> str:
     return path.stem
 
 
+def _mask_non_code(source: str) -> str:
+    """``source`` with the contents of string literals and comments (Lam
+    ``#`` / ``#- -#``; ``//``, ``/* */``, backtick and rune literals inside
+    ``go!`` blocks) blanked out, newlines kept: the braces of ``"{"`` or of
+    a comment do not open a block (they hid every later top-level
+    declaration from the export facts)."""
+    out = list(source)
+    n = len(source)
+    i = 0
+    go_depth = 0  # brace depth inside a ``go!`` block, 0 outside
+
+    def blank(start: int, end: int) -> None:
+        for k in range(start, min(end, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def quoted_end(start: int, quote: str) -> int:
+        k = start + 1
+        while k < n:
+            ch = source[k]
+            if ch == "\\":
+                k += 2
+                continue
+            if ch == quote or ch == "\n":
+                return k + 1
+            k += 1
+        return n
+
+    while i < n:
+        ch = source[i]
+        if go_depth:
+            if ch == "`":
+                end = source.find("`", i + 1)
+                end = n if end < 0 else end + 1
+                blank(i + 1, end - 1)
+                i = end
+                continue
+            if ch in "\"'":
+                end = quoted_end(i, ch)
+                blank(i + 1, end - 1)
+                i = end
+                continue
+            if source.startswith("//", i):
+                end = source.find("\n", i)
+                end = n if end < 0 else end
+                blank(i, end)
+                i = end
+                continue
+            if source.startswith("/*", i):
+                end = source.find("*/", i + 2)
+                end = n if end < 0 else end + 2
+                blank(i, end)
+                i = end
+                continue
+            if ch == "{":
+                go_depth += 1
+            elif ch == "}":
+                go_depth -= 1
+            i += 1
+            continue
+        if source.startswith(('"""', "'''"), i):
+            quote = source[i:i + 3]
+            end = source.find(quote, i + 3)
+            end = n if end < 0 else end + 3
+            blank(i + 3, end - 3)
+            i = end
+            continue
+        if ch in "\"'":
+            end = quoted_end(i, ch)
+            blank(i + 1, end - 1)
+            i = end
+            continue
+        if source.startswith("#-", i):
+            end = source.find("-#", i + 2)
+            end = n if end < 0 else end + 2
+            blank(i, end)
+            i = end
+            continue
+        if ch == "#":
+            end = source.find("\n", i)
+            end = n if end < 0 else end
+            blank(i, end)
+            i = end
+            continue
+        if source.startswith("go!", i) and (i == 0 or not (source[i - 1].isalnum() or source[i - 1] == "_")):
+            brace = i + 3
+            while brace < n and source[brace] in " \t":
+                brace += 1
+            if brace < n and source[brace] == "{":
+                go_depth = 1
+                i = brace + 1
+                continue
+        i += 1
+    return "".join(out)
+
+
 def module_facts_from_source(path: Path, source: str) -> ModuleFacts:
     path = path.resolve()
     facts = ModuleFacts(path=path, module_name=module_name_for_path(path))
     depth = 0
+    masked_lines = _mask_non_code(source).splitlines()
 
     for lineno, raw in enumerate(source.splitlines(), 1):
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            depth += raw.count("{") - raw.count("}")
+        masked = masked_lines[lineno - 1] if lineno - 1 < len(masked_lines) else raw
+        stripped = masked.strip()
+        if not stripped:
+            continue
+        brace_delta = masked.count("{") - masked.count("}")
+        if stripped.startswith("#"):
+            depth += brace_delta
             continue
 
         _collect_import_edges(facts, raw, lineno)
@@ -91,7 +192,7 @@ def module_facts_from_source(path: Path, source: str) -> ModuleFacts:
                 (_CONST_RE, "const"),
                 (_ASSIGN_RE, "variable"),
             ):
-                match = regex.match(raw)
+                match = regex.match(masked)
                 if match:
                     name = match.group(1)
                     if name in _NON_EXPORT_ASSIGN_NAMES:
@@ -99,7 +200,7 @@ def module_facts_from_source(path: Path, source: str) -> ModuleFacts:
                     _record_export(facts, name, kind, lineno, match.start(1) + 1, raw)
                     break
 
-        depth += raw.count("{") - raw.count("}")
+        depth += brace_delta
 
     return facts
 

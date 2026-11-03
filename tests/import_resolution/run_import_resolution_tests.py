@@ -893,8 +893,206 @@ def test_package_reexport_type_errors_are_lam_errors() -> None:
     )
 
 
+def _emit_go_output(files: dict[str, str], source: str) -> tuple[int, str]:
+    """``--emit-go`` of ``main.lam`` next to ``files``: (exit code, output)
+    with the temporary root replaced by ``{root}``."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for rel, text in files.items():
+            _write(root / rel, text)
+        main = root / "main.lam"
+        _write(main, source)
+        proc = _run(main)
+        combined = (proc.stderr or "") + "\n" + (proc.stdout or "")
+        return proc.returncode, combined.replace(str(root.resolve()), "{root}").replace(str(root), "{root}")
+
+
+def _expect_semantic_errors(files: dict[str, str], source: str, expected: list[str], label: str) -> None:
+    code, out = _emit_go_output(files, source)
+    if code == 0:
+        raise AssertionError(f"{label}: expected a semantic error, the compile succeeded")
+    missing = [text for text in expected if text not in out]
+    if missing:
+        raise AssertionError(f"{label}: missing {missing!r} in:\n{out[:2500]}")
+    print(f"PASS: {label}")
+
+
+_WEB_FORMS = (
+    "const LIMIT: int = 3\n\n"
+    "class Form {\n    func init(self) {\n        self.n: int = 1\n    }\n}\n\n"
+    "func queryValues(q: str) -> list[str] {\n    return q.split(\"&\")\n}\n"
+)
+
+
+def test_module_undefined_function_is_reported() -> None:
+    _expect_semantic_errors(
+        {
+            "web/forms.lam": _WEB_FORMS,
+            "web/views.lam": (
+                "func render(q: str) -> int {\n    vals: list[str] = queryValues(q)\n    return len(vals)\n}\n"
+            ),
+        },
+        "from web.views import render\n\nfunc main() {\n    print(render(\"a&b\"))\n}\n",
+        [
+            "semantic check failed for {root}/web/views.lam",
+            "line 2: error[undefined]: undefined name `queryValues`",
+            "help: did you mean `from web.forms import queryValues`?",
+        ],
+        "an imported module using a function it never imported is a Lam error",
+    )
+
+
+def test_module_undefined_class_const_and_type_are_reported() -> None:
+    _expect_semantic_errors(
+        {
+            "web/forms.lam": _WEB_FORMS,
+            "web/views.lam": (
+                "from .forms import queryValues\n\n"
+                "func build() -> Form {\n    return Form()\n}\n\n"
+                "func limit(f: Form) -> int {\n    return f.n + LIMIT + len(queryValues(\"a\"))\n}\n"
+            ),
+        },
+        "from web.views import limit, build\n\nfunc main() {\n    print(limit(build()))\n}\n",
+        [
+            "line 3: error[type]: unknown type `Form`",
+            "line 4: error[undefined]: undefined name `Form`",
+            "line 8: error[undefined]: undefined name `LIMIT`",
+            "help: did you mean `from web.forms import Form`?",
+            "help: did you mean `from web.forms import LIMIT`?",
+        ],
+        "un-imported class (value and annotation) and const in a module are Lam errors",
+    )
+
+
+def test_module_import_of_missing_name_is_reported() -> None:
+    _expect_semantic_errors(
+        {
+            "app/units.lam": "const MetricIngress: str = \"ingress\"\n",
+            "app/metering.lam": "from .units import MetricIngress\n\nfunc meter() -> str {\n    return MetricIngress\n}\n",
+            "app/x.lam": "func lyNumber() -> int {\n    return 1\n}\n",
+            "app/links.lam": (
+                "from .x import lxNumber\nfrom .metering import meter, MetricEgress\n\n"
+                "func link() -> str {\n    return meter()\n}\n"
+            ),
+        },
+        "from app.links import link\n\nfunc main() {\n    print(link())\n}\n",
+        [
+            "semantic check failed for {root}/app/links.lam",
+            "module `x` does not export `lxNumber`",
+            "help: did you mean `lyNumber`?",
+            "module `metering` does not export `MetricEgress`",
+        ],
+        "a module importing a name its target lacks is a Lam error",
+    )
+    _expect_semantic_errors(
+        {
+            "app/units.lam": "const MetricIngress: str = \"ingress\"\n",
+            "app/metering.lam": "func meter() -> str {\n    return \"m\"\n}\n",
+            "app/links.lam": (
+                "from .metering import meter, MetricIngress\n\n"
+                "func link() -> str {\n    return meter() + MetricIngress\n}\n"
+            ),
+        },
+        "from app.links import link\n\nfunc main() {\n    print(link())\n}\n",
+        [
+            "module `metering` does not export `MetricIngress`",
+            "help: did you mean `from app.units import MetricIngress`?",
+        ],
+        "a missing import suggests the module that declares the name",
+    )
+
+
+def test_main_type_from_module_imported_for_another_name() -> None:
+    _expect_semantic_errors(
+        {"web/forms.lam": _WEB_FORMS},
+        "from web.forms import queryValues\n\n"
+        "func show(f: Form) -> int {\n    return f.n\n}\n\n"
+        "func main() {\n    print(queryValues(\"a\"))\n}\n",
+        [
+            "line 3: error[type]: unknown type `Form`",
+            "help: did you mean `from web.forms import Form`?",
+        ],
+        "main: a class of a module imported only for another name is not visible",
+    )
+    _expect_semantic_errors(
+        {"web/forms.lam": _WEB_FORMS},
+        "func main() {\n    print(queryValues(\"a\"))\n}\n",
+        [
+            "error[undefined]: undefined name `queryValues`",
+            "help: did you mean `from web.forms import queryValues`?",
+        ],
+        "main: an undefined name suggests the module that declares it",
+    )
+
+
+def test_module_name_checks_accept_valid_programs() -> None:
+    files = {
+        "pkg/shapes.lam": (
+            "from lamjson import Json\n\n"
+            "const SCALE: int = 2\n\n"
+            "interface Named {\n    func name(self) -> str\n}\n\n"
+            "class Point {\n    func init(self, x: int) {\n        self.x: int = x\n    }\n"
+            "    static func origin() -> Point {\n        return Point(0)\n    }\n"
+            "    func name(self) -> str {\n        return f\"p{self.x * SCALE}\"\n    }\n}\n\n"
+            "func doubled(p: Point) -> Point {\n    return Point(p.x * SCALE)\n}\n\n"
+            "func encodeIt(p: Point) -> str {\n    doc: json = {\"x\": p.x}\n    return Json.encode(doc).unwrap()\n}\n"
+        ),
+        "pkg/__init__.lam": "from .shapes import Point, doubled, SCALE, Named, encodeIt\n",
+        "pkg/more.lam": (
+            "from .shapes import doubled, Point, SCALE\n\n"
+            "func viaSibling() -> int {\n    return doubled(Point(3)).x + SCALE\n}\n"
+        ),
+        "extlibs/extpkg/__init__.lam": (
+            "func extHello() -> str {\n    return helperExt()\n}\n\n"
+            "func helperExt() -> str {\n    return \"ext\"\n}\n"
+        ),
+        "views.lam": (
+            "import pkg\nfrom pkg import Point, Named, encodeIt\nfrom pkg.more import viaSibling\n"
+            "from extpkg import extHello\n\n"
+            "func describe(n: Named) -> str {\n    return n.name()\n}\n\n"
+            "func goTwice(v: int) -> int {\n    out: int = 0\n    go! {\n        out = v * scaleGo\n    }\n"
+            "    return out\n}\n\n"
+            "go! {\nconst scaleGo = 2\n}\n\n"
+            "func render() -> str {\n    p: Point = Point.origin()\n    q: pkg.Point = pkg.doubled(Point(5))\n"
+            "    items: list[Point] = [p, q]\n    total: int = 0\n    for it in items {\n        total += it.x\n    }\n"
+            "    return f\"{describe(q)}-{total}-{viaSibling()}-{extHello()}-{goTwice(4)} \" + encodeIt(q)\n}\n"
+        ),
+    }
+    _expect_output(
+        files,
+        "from views import render\n\nfunc main() {\n    print(render())\n}\n",
+        "p20-10-8-ext-8 {\"x\":10}",
+        "re-exports, module aliases, siblings, extlibs, go! and statics pass the module name checks",
+    )
+
+
+def test_module_exports_after_brace_strings_resolve() -> None:
+    _expect_output(
+        {
+            "api/templates.lam": (
+                "func isObject(text: str) -> bool {\n    return text.startsWith(\"{\")\n}\n\n"
+                "#- POST /v1/templates {name, description} -#\n"
+                "func createTemplate() -> str {\n    return \"created\"\n}\n"
+            ),
+            "api/routes.lam": (
+                "from .templates import isObject, createTemplate\n\n"
+                "func route() -> str {\n    return createTemplate() + str(isObject(\"{}\"))\n}\n"
+            ),
+        },
+        "from api.routes import route\n\nfunc main() {\n    print(route())\n}\n",
+        "createdtrue",
+        "a declaration after a \"{\" string literal is still exported",
+    )
+
+
 def main() -> None:
     tests = [
+        test_module_undefined_function_is_reported,
+        test_module_undefined_class_const_and_type_are_reported,
+        test_module_import_of_missing_name_is_reported,
+        test_main_type_from_module_imported_for_another_name,
+        test_module_name_checks_accept_valid_programs,
+        test_module_exports_after_brace_strings_resolve,
         test_plain_import_missing_module,
         test_from_import_missing_module,
         test_missing_module_suggestion,

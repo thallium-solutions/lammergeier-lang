@@ -1734,6 +1734,38 @@ def _render_transpile_diagnostics(err, display_path: str, source: str | None = N
     return _semantic.render_errors(diags, source, display_path)
 
 
+def _check_imported_module_names(modules, module_index) -> None:
+    """Report undefined names and unresolvable imports of the imported
+    modules (``modules``: ``(path, source, go_blocks, tree)``) and exit.
+
+    All modules compile into one Go package, so these used to build: Go
+    resolved the name another module declares. The stdlib is trusted and
+    skipped; project modules and ``extlibs`` packages are checked.
+    """
+    from compiler import semantic as _semantic
+
+    stdlib_dir = module_index.stdlib_dir
+    blocks: list[str] = []
+    for mod_file, mod_source, mod_go_blocks, mod_tree in modules:
+        if module_index._is_under(mod_file, stdlib_dir):
+            continue
+        try:
+            diags = _semantic.check_module_names(
+                mod_tree,
+                go_blocks=mod_go_blocks,
+                module_index=module_index,
+                source_path=mod_file,
+            )
+        except Exception:  # noqa: BLE001 - a checker crash must not block the build
+            continue
+        if _semantic.has_errors(diags):
+            diags.sort(key=lambda d: (d.line, d.col))
+            blocks.append(_semantic.render_errors(diags, mod_source, str(mod_file)))
+    if blocks:
+        print("\n".join(blocks), file=sys.stderr)
+        sys.exit(1)
+
+
 def _effective_extlibs_dirs(
     source_dir: Path,
     extlibs_paths: list[str] | None,
@@ -2313,6 +2345,9 @@ def compile_lam(
     # Import graph (module file -> imported module files, in source order)
     # for the top-level statement initialization order.
     module_import_files: dict[Path, list[Path]] = {}
+    # Imported modules whose names are checked once the import graph is
+    # complete: ``(path, source, go_blocks, tree)``.
+    name_check_modules: list[tuple[Path, str, dict, Tree]] = []
     while worklist:
         mod_name, from_file = worklist.pop()
         mod_file = _resolve_lib_path(mod_name, from_file)
@@ -2339,11 +2374,13 @@ def compile_lam(
                 for export in module_facts.exports.values()
                 if export.kind == "class" and export.detail.lstrip().startswith("private ")
             )
-            sub_pre = preprocess_for_parse(sub_source).source
+            sub_parse_input = preprocess_for_parse(sub_source)
+            sub_pre = sub_parse_input.source
             sub_parser = create_parser()
             sub_tree = sub_parser.parse(sub_pre + "\n")
         except Exception:
             continue
+        name_check_modules.append((mod_file, sub_source, sub_parse_input.go_blocks, sub_tree))
         module_import_files[mod_file] = []
         for imp in _extract_imports(sub_tree):
             # Relative names are meaningful only together with ``mod_file``;
@@ -2390,6 +2427,10 @@ def compile_lam(
             symbols=_namespacing.top_level_symbols(sub_tree),
             bindings=_namespacing.import_bindings(sub_tree),
         )
+
+    if not no_semantic_check:
+        # Before namespacing rewrites the module trees.
+        _check_imported_module_names(name_check_modules, module_index)
 
     main_module_path = source_file.resolve()
     ns_modules[main_module_path] = _namespacing.ModuleInfo(

@@ -66,6 +66,7 @@ def phase_timings(enabled: bool, driver=None):
         "preprocess": L.preprocess_for_parse,
         "create_parser": L.create_parser,
         "check_source": S.check_source,
+        "check_module_names": S.check_module_names,
         "transpile": GoTranspiler.transpile,
         "run": L.subprocess.run,
     }
@@ -97,6 +98,8 @@ def phase_timings(enabled: bool, driver=None):
     L.preprocess_for_parse = timer.wrap("preprocess", saved["preprocess"])
     L.create_parser = lambda *a, **k: _TimedParser(saved["create_parser"](*a, **k))
     S.check_source = timer.wrap("semantic", saved["check_source"])
+    # Name resolution of the imported modules (undefined names, imports).
+    S.check_module_names = timer.wrap("module_names", saved["check_module_names"])
     GoTranspiler.transpile = timer.wrap("transpile", saved["transpile"])
     L.subprocess.run = timed_run
     start = time.perf_counter()
@@ -107,6 +110,7 @@ def phase_timings(enabled: bool, driver=None):
         L.preprocess_for_parse = saved["preprocess"]
         L.create_parser = saved["create_parser"]
         S.check_source = saved["check_source"]
+        S.check_module_names = saved["check_module_names"]
         GoTranspiler.transpile = saved["transpile"]
         L.subprocess.run = saved["run"]
         print("LAMC_TIMINGS " + json.dumps(timer.report(), sort_keys=True), file=sys.stderr)

@@ -1,0 +1,96 @@
+# Typed locals of a constructor are locals, not fields: `base: int = n * 2`
+# in `init` was hoisted as a field whose default ran at the top of the Go
+# constructor, before the locals it reads were declared
+# ("undefined: base" in `go build`).
+from lamjson import Json
+
+class Point {
+    func init(self, x: int) {
+        self.x: int = x
+    }
+}
+
+class Chain {
+    func init(self, n: int) {
+        base: int = n * 2
+        doubled: int = base * 2
+        self.total: int = doubled + 1
+    }
+}
+
+class Shadow {
+    func init(self, n: int) {
+        # A local named like the field it initializes, then reassigned.
+        total: int = n + 1
+        self.total: int = total * 10
+        label: str = "first"
+        self.label: str = label
+        label = "second"
+        self.after: str = label
+    }
+}
+
+class Mixed {
+    func init(self, n: int, flag: bool) {
+        origin: Point = Point(n)
+        maybe: optional[Point] = None
+        if flag {
+            maybe = Point(n * 3)
+        }
+        names: list[str] = ["a", "bb"]
+        counts: dict[str, int] = {"a": n}
+        doc: json = {"n": n, "names": names}
+        self.origin: Point = origin
+        self.maybeX: int = maybe.x if maybe != None else -1
+        self.label: str = ",".join(names) + str(counts["a"])
+        self.doc: json = doc
+        if flag {
+            extra: int = n + 100
+            self.maybeX = self.maybeX + extra
+        }
+        acc: int = 0
+        for c in names {
+            step: int = len(c)
+            acc += step
+        }
+        self.acc: int = acc
+    }
+}
+
+class Defaults {
+    seed: int = 5
+
+    func init(self, n: int) {
+        offset: int = n + self.seed
+        self.value: int = offset * 2
+    }
+}
+
+class Sub(Chain) {
+    func init(self, n: int) {
+        start: int = n - 1
+        base.init(start)
+        bonus: int = self.total + 1
+        self.bonus: int = bonus
+    }
+}
+
+func main() {
+    print(Chain(4).total)
+    s: Shadow = Shadow(2)
+    print(s.total, s.label, s.after)
+    m: Mixed = Mixed(4, true)
+    print(m.origin.x, m.maybeX, m.label, m.acc, Json.encode(m.doc).unwrap())
+    t: Mixed = Mixed(2, false)
+    print(t.maybeX, t.acc)
+    print(Defaults(1).value, Defaults(1).seed)
+    sub: Sub = Sub(3)
+    print(sub.total, sub.bonus)
+}
+
+# expect: 17
+# expect: 30 first second
+# expect: 4 116 a,bb4 3 {"n":4,"names":["a","bb"]}
+# expect: -1 3
+# expect: 12 5
+# expect: 9 10
