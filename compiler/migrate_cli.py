@@ -112,45 +112,51 @@ def _build_runner_program(
     dir_e = _escape(mig_dir)
     body = [
         'from lamdb import Db',
+        'from lamerrors import Result',
         'from lammigrate import Migrator',
         '',
         'func main() {',
-        f'    db: Db = Db.connect("{driver_e}", "{dsn_e}")',
-        f'    mig: Migrator = Migrator(db, "{dir_e}")',
-        '    mig.ensureSchema()',
+        '    do {',
+        f'        db: Db = Db.connect("{driver_e}", "{dsn_e}")?',
+        f'        mig: Migrator = Migrator(db, "{dir_e}")',
+        '        _ = mig.ensureSchema()?',
     ]
     if verb == "status":
         body += [
-            '    info: dict[str, any] = mig.status()',
-            '    print("total: " + str(info["total"]))',
-            '    print("ran: " + str(info["ran"]))',
-            '    print("pending: " + str(info["pending"]))',
-            '    print("lastBatch: " + str(info["lastBatch"]))',
-            '    ranList: list[str] = []',
-            '    pendingList: list[str] = []',
-            '    go! {',
-            '        if v, ok := info["ranNames"].([]string); ok { ranList = v }',
-            '        if v, ok := info["pendingNames"].([]string); ok { pendingList = v }',
-            '    }',
-            '    for n in ranList { print("ran-file: " + n) }',
-            '    for n in pendingList { print("pending-file: " + n) }',
+            '        info: dict[str, any] = mig.status()?',
+            '        print("total: " + str(info["total"]))',
+            '        print("ran: " + str(info["ran"]))',
+            '        print("pending: " + str(info["pending"]))',
+            '        print("lastBatch: " + str(info["lastBatch"]))',
+            '        ranList: list[str] = []',
+            '        pendingList: list[str] = []',
+            '        go! {',
+            '            if v, ok := info["ranNames"].([]string); ok { ranList = v }',
+            '            if v, ok := info["pendingNames"].([]string); ok { pendingList = v }',
+            '        }',
+            '        for n in ranList { print("ran-file: " + n) }',
+            '        for n in pendingList { print("pending-file: " + n) }',
         ]
     elif verb == "up":
         body += [
-            f'    applied: list[str] = mig.up({int(steps)})',
-            '    print("applied-count: " + str(len(applied)))',
-            '    for n in applied { print("applied: " + n) }',
+            f'        applied: list[str] = mig.up({int(steps)})?',
+            '        print("applied-count: " + str(len(applied)))',
+            '        for n in applied { print("applied: " + n) }',
         ]
     elif verb == "down":
         body += [
-            f'    undone: list[str] = mig.down({int(steps)})',
-            '    print("rolled-back-count: " + str(len(undone)))',
-            '    for n in undone { print("rolled-back: " + n) }',
+            f'        undone: list[str] = mig.down({int(steps)})?',
+            '        print("rolled-back-count: " + str(len(undone)))',
+            '        for n in undone { print("rolled-back: " + n) }',
         ]
     else:
         raise ValueError(f"unknown verb: {verb}")
     body += [
-        '    db.close()',
+        '        _ = db.close()',
+        '    } catch err {',
+        '        print("error: " + str(err))',
+        '        exit(1)',
+        '    }',
         '}',
         '',
     ]

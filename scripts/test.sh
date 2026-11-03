@@ -98,6 +98,7 @@ run_suite() {
             "$PYTHON" tests/tests/test_apidiff.py
             "$PYTHON" tests/tests/test_doctor.py
             "$PYTHON" tests/tests/test_lib_run.py
+            "$PYTHON" tests/tests/test_migrate_cli.py
             "$PYTHON" tests/tests/test_github_lams3_install.py
             "$PYTHON" tests/tests/test_manifest.py
             "$PYTHON" tests/tests/test_install_cli.py

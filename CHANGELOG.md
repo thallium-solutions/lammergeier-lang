@@ -7,6 +7,17 @@ by commit date.
 
 ## Unreleased
 
+## 4.0.1 — 2026-11-03
+
+### Fixed
+
+- `lamc migrate up` / `down` / `status` failed before touching the database:
+  the program the CLI compiles still used the lamdb/lammigrate API from
+  before `Result` (`db: Db = Db.connect(...)` is "cannot assign `Result[Db]`
+  to `Db`"). It now propagates errors and exits with code 1 and the message
+  (an unreachable database, a failing statement) instead of panicking.
+  Covered end to end on SQLite by `tests/tests/test_migrate_cli.py`.
+
 ## 4.0.0 — 2026-11-03
 
 ### Added
