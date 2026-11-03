@@ -97,7 +97,7 @@ OFFICIAL_PACKAGES = (
             "Server",
             "SseEmitter",
         ),
-        "3.0.0",
+        "3.1.0",
     ),
     OfficialPackage(
         "@lam/vulture/std-plugin",

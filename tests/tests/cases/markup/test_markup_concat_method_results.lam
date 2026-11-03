@@ -1,0 +1,26 @@
+# expect: <b>Bag</b> &gt;
+# expect: &lt; <b>Bag</b><i>!</i>
+# expect: <item>1</item><item>2</item>
+# Regression: `card.label() + " >"` (a method returning html) was lowered as
+# a Go string `+` and failed to build.
+class Card {
+    func init(self, name: str) { self.name: str = name }
+    func label(self) -> html { return <><b>${self.name}</b></> }
+    static func mark() -> html { return <><i>!</i></> }
+}
+
+class Feed {
+    func init(self) { self.n: int = 0 }
+    func item(self) -> xml {
+        self.n += 1
+        return <><item>${self.n}</item></>
+    }
+}
+
+func main() {
+    card: Card = Card("Bag")
+    print(card.label() + " >")
+    print("< " + card.label() + Card.mark())
+    feed: Feed = Feed()
+    print(feed.item() + feed.item())
+}

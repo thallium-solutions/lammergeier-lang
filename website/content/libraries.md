@@ -12,7 +12,7 @@ Current releases:
 
 | Release | Notes |
 |---|---|
-| `@lam/vulture@3.0.0` | handlers may return `html`, `xml`, `json` or `str` (sent with the type's default Content-Type unless one is set); `res.send(html|xml)`, `res.html(html)`, `res.xml(...)`; requires lamc 4.0 |
+| `@lam/vulture@3.1.0` | `HEAD` answered by GET routes, `req.queryAll` (3.1.0); handlers may return `html`, `xml`, `json` or `str` (sent with the type's default Content-Type unless one is set); `res.send(html|xml)`, `res.html(html)`, `res.xml(...)`; requires lamc 4.0 |
 | `@lam/vulture/std-plugin@2.0.5` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0 |
 | `@lam/vulture/tus-plugin@3.0.4` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0; root `tag()` removed (3.0.0) |
 | `@lam/vulture/ws-plugin@2.0.4` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0 |

@@ -823,7 +823,7 @@ class ExpressionVisitorMixin:
                 if ret.startswith("func(") and name not in self._class_names:
                     return ret
                 if (
-                    (ret in {"string", "int", "float64", "bool", "LamHTML", "LamXML"} or ret.startswith(("[]", "map[")))
+                    (ret in {"string", "int", "float64", "bool", "LamHTML", "LamXML", "LamJSON"} or ret.startswith(("[]", "map[")))
                     and name in self._user_functions
                     and len(self._overload_variants.get(name, ())) <= 1
                     and name not in self._var_go_types
@@ -1207,6 +1207,10 @@ class ExpressionVisitorMixin:
             if len(nodes) == 2 and self._expr_go_type_hint(nodes[0]) == "LamJSON":
                 left = self._expr_to_go(nodes[0])
                 expected = (getattr(self, "_expected_expr_go_type", "") or "").strip()
+                if expected in {"", "LamJSON"}:
+                    # ``value: json = doc.key ?? None``: a JSON value either way.
+                    fallback = self._typed_value_to_go(nodes[1], "LamJSON")
+                    return f"func() LamJSON {{ if !lamJSONIsNull({left}) {{ return {left} }}; return {fallback} }}()"
                 if expected and expected not in {"LamJSON", "interface{}"}:
                     left_value = f"lamJSONRaw({left}).({expected})"
                     fallback = self._typed_value_to_go(nodes[1], expected)
@@ -2430,7 +2434,7 @@ class ExpressionVisitorMixin:
                     return f"len({raw_obj})"
                 if raw_method == "append" and args:
                     typed_args = [
-                        self._typed_value_to_go(arg_node, _elem_go) if _elem_go else arg
+                        self._retyped_lowered_arg(arg_node, arg, _elem_go) if _elem_go else arg
                         for arg_node, arg in zip(raw_args_nodes, args)
                     ]
                     if len(args) > len(typed_args):
@@ -2448,13 +2452,13 @@ class ExpressionVisitorMixin:
                     return f"func() {result_type} {{ last := {raw_obj}[len({raw_obj})-1]; {raw_obj} = {raw_obj}[:len({raw_obj})-1]; return last }}()"
                 if raw_method == "extend" and args:
                     typed_arg = (
-                        self._typed_value_to_go(raw_args_nodes[0], f"[]{_elem_go}")
+                        self._retyped_lowered_arg(raw_args_nodes[0], args[0], f"[]{_elem_go}")
                         if _elem_go and raw_args_nodes else args[0]
                     )
                     return f"{raw_obj} = append({raw_obj}, {typed_arg}...)"
                 if raw_method == "insert" and len(args) >= 2:
                     item_arg = (
-                        self._typed_value_to_go(raw_args_nodes[1], _elem_go)
+                        self._retyped_lowered_arg(raw_args_nodes[1], args[1], _elem_go)
                         if _elem_go and len(raw_args_nodes) > 1 else args[1]
                     )
                     scratch_type = f"[]{_elem_go}" if _elem_go else "[]interface{}"
@@ -3604,6 +3608,17 @@ class ExpressionVisitorMixin:
             converted = self._result_ok_payload_conversion(value, payload)
             return f"{ok_func}({converted})" if converted else ""
         return f"{ok_func}({self._typed_value_to_go(value, payload)})"
+
+    def _retyped_lowered_arg(self, node, lowered: str, go_type: str) -> str:
+        """``node`` (already lowered to ``lowered``) as a ``go_type`` value.
+        An argument holding ``?`` is not lowered again: that would emit its
+        call and early return a second time (``xs.append(f()?)`` called
+        ``f`` twice)."""
+        if isinstance(node, Tree) and any(True for _ in node.find_data("propagate")):
+            if lowered.endswith(".Value") and go_type and go_type != "interface{}":
+                return self._result_payload_assert_go(lowered, go_type)
+            return lowered
+        return self._typed_value_to_go(node, go_type)
 
     def _result_payload_assert_go(self, value: str, payload: str) -> str:
         """``value`` (a ``Result`` payload read as ``interface{}`` by

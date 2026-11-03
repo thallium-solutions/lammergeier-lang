@@ -7,6 +7,23 @@ by commit date.
 
 ## Unreleased
 
+## 4.0.3 — 2026-11-03
+
+### Fixed
+
+- `xs.append(f()?)` (also `extend` / `insert`) evaluated `f()` twice: its side
+  effects ran twice and an error was returned only after the second call.
+- `card.label() + " >"` where a method returns `html` / `xml` was lowered as a
+  Go string `+` and failed in `go build`; markup joins now use the checker's
+  types.
+- `value: json = doc["b"] ?? None` and indexing the json a function returns
+  (`doc()["a"]`) failed in `go build`.
+
+### Changed
+
+- Catalog: `@lam/vulture` 3.1.0 (`HEAD` answered by GET routes,
+  `req.queryAll` for repeated query parameters).
+
 ## 4.0.2 — 2026-11-03
 
 ### Fixed

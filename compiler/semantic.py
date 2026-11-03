@@ -8444,6 +8444,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 left_type = self._binary_operator_result_type(op, left_type, right_type)
             else:
                 left_type = None
+        if isinstance(left_type, NamedType) and left_type.name in {"html", "xml"} and node.data == "arith_expr":
+            # The transpiler joins markup with lamHTMLConcat / lamXMLConcat:
+            # record the kind (Go type hints do not know every method result).
+            node._lam_markup_kind = left_type.name
 
     def _check_augassign_types(self, node: Tree) -> None:
         """``n += "x"`` / ``s *= "x"``: the operator must accept the operand

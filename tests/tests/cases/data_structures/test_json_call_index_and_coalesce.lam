@@ -1,0 +1,20 @@
+# expect: null
+# expect: "fallback"
+# expect: "x"
+# expect: 2
+# Regression: `value: json = doc["b"] ?? None` and `doc()["a"]` (indexing the
+# json a function returns) failed in the Go build.
+func doc() -> json {
+    return {"a": "x", "n": [1, 2]}
+}
+
+func main() {
+    d: json = {"a": "x"}
+    missing: json = d["b"] ?? None
+    print(missing)
+    fallback: json = d["b"] ?? "fallback"
+    print(fallback)
+    first: json = doc()["a"]
+    print(first)
+    print(len(doc()["n"]))
+}

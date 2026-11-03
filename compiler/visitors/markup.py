@@ -137,6 +137,8 @@ class MarkupTranspilerMixin:
         if result:
             return result
         if node.data == "arith_expr" and {str(c) for c in node.children[1::2]} == {"+"}:
+            if getattr(node, "_lam_markup_kind", None):
+                return MARKUP_GO_TYPES[node._lam_markup_kind]
             kinds = {self._markup_go_kind(c) for c in node.children[0::2] if isinstance(c, Tree)} - {""}
             if len(kinds) == 1:
                 return MARKUP_GO_TYPES[kinds.pop()]
@@ -147,10 +149,12 @@ class MarkupTranspilerMixin:
         if node.data != "arith_expr" or {str(c) for c in node.children[1::2]} != {"+"}:
             return None
         operands = [c for c in node.children[0::2]]
-        kinds = {self._markup_go_kind(c) for c in operands if isinstance(c, Tree)} - {""}
-        if len(kinds) != 1:
-            return None
-        kind = kinds.pop()
+        kind = getattr(node, "_lam_markup_kind", None) or ""
+        if not kind:
+            kinds = {self._markup_go_kind(c) for c in operands if isinstance(c, Tree)} - {""}
+            if len(kinds) != 1:
+                return None
+            kind = kinds.pop()
         func = "lamHTMLConcat" if kind == "html" else "lamXMLConcat"
         out = self._markup_operand_to_go(operands[0], kind)
         for operand in operands[1:]:
