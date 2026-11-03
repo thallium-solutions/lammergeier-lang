@@ -1,0 +1,49 @@
+# expect: ada
+# expect: nobody
+# expect: 0
+# expect: none-list
+# Regression: `x: optional[User] = f()?` where f returns Result.Ok(None)
+# type-asserted the nil payload (`.(*User)`) and panicked.
+from lamerrors import Result
+
+class User {
+    func init(self, name: str) { self.name: str = name }
+}
+
+func find(name: str) -> Result[optional[User]] {
+    if name == "" {
+        return Result.Ok(None)
+    }
+    return Result.Ok(User(name))
+}
+
+func lookup(name: str) -> Result[str] {
+    user: optional[User] = find(name)?
+    if user == None {
+        return Result.Ok("nobody")
+    }
+    return Result.Ok(user.name)
+}
+
+func maybeCount(flag: bool) -> Result[optional[int]] {
+    if flag {
+        return Result.Ok(None)
+    }
+    return Result.Ok(0)
+}
+
+func countText(flag: bool) -> Result[str] {
+    n: optional[int] = maybeCount(flag)?
+    if n == None {
+        return Result.Ok("none-list")
+    }
+    value: int = n ?? -1
+    return Result.Ok(str(value))
+}
+
+func main() {
+    print(lookup("ada").unwrap())
+    print(lookup("").unwrap())
+    print(countText(false).unwrap())
+    print(countText(true).unwrap())
+}

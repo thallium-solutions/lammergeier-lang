@@ -7,6 +7,15 @@ by commit date.
 
 ## Unreleased
 
+## 4.0.2 — 2026-11-03
+
+### Fixed
+
+- `user: optional[User] = find()?` panicked when `find` returned
+  `Result.Ok(None)` (the nil payload was type-asserted to `*User`), and an
+  `optional[int]` payload holding a plain `Result.Ok(0)` was asserted to
+  `*int`. Optional payloads now unwrap to `None` / a pointer to the value.
+
 ## 4.0.1 — 2026-11-03
 
 ### Fixed

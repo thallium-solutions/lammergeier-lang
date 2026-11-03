@@ -3645,6 +3645,18 @@ class ExpressionVisitorMixin:
                 f"src := v.(map[string]interface{{}}); out := make({payload}, len(src)); "
                 f"for k, e := range src {{ out[k] = {self._result_payload_assert_go('e', map_value)} }}; return out }}({value})"
             )
+        if payload.startswith("*") and payload[1:] in self._OPTIONAL_VALUE_GO_TYPES:
+            # ``Result[optional[int]]``: ``Result.Ok(0)`` holds an ``int``,
+            # ``Result.Ok(None)`` nothing.
+            inner = payload[1:]
+            return (
+                f"func(v interface{{}}) {payload} {{ switch x := v.(type) {{ case nil: return nil; "
+                f"case {payload}: return x; case {inner}: return &x }}; return v.({payload}) }}({value})"
+            )
+        if payload.startswith("*") and payload != "*Result":
+            # ``Result[optional[User]]`` holding ``Result.Ok(None)``: the nil
+            # payload is a nil pointer (asserting it to ``*User`` panicked).
+            return f"func(v interface{{}}) {payload} {{ if v == nil {{ return nil }}; return v.({payload}) }}({value})"
         return f"{value}.({payload})"
 
     def _result_ok_payload_conversion(self, value: Tree, payload: str) -> str:
