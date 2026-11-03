@@ -7,6 +7,14 @@ by commit date.
 
 ## Unreleased
 
+## 4.0.4 — 2026-11-03
+
+### Fixed
+
+- 4.0.3 regression: a dict literal holding `?` appended to a `list[json]`
+  (`rows.append({"doc": Json.decode(text)?})`) was no longer converted to
+  `json` and failed in `go build`.
+
 ## 4.0.3 — 2026-11-03
 
 ### Fixed

@@ -3617,6 +3617,10 @@ class ExpressionVisitorMixin:
         if isinstance(node, Tree) and any(True for _ in node.find_data("propagate")):
             if lowered.endswith(".Value") and go_type and go_type != "interface{}":
                 return self._result_payload_assert_go(lowered, go_type)
+            if go_type == "LamJSON":
+                # ``rows.append({"doc": Json.decode(text)?})``: the literal
+                # was lowered untyped; lamJSONMust normalises it.
+                return lowered if self._expr_go_type_hint(node) == "LamJSON" else f"lamJSONMust({lowered})"
             return lowered
         return self._typed_value_to_go(node, go_type)
 

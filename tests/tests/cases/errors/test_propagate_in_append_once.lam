@@ -3,10 +3,16 @@
 # expect: [a b]
 # expect: called bad
 # expect: stopped at bad
+# expect: called c
+# expect: [{"label":"!","name":"c"}]
 # Regression: `xs.append(f()?)` evaluated `f()` twice (side effects ran twice).
 from lamerrors import Result, Error
 
 func f(name: str) -> Result[str] {
+    if name == "c" {
+        print("called c")
+        return Result.Ok("")
+    }
     print(f"called {name}")
     if name == "bad" {
         return Result.Err(Error("Bad", "bad"))
@@ -28,4 +34,17 @@ func main() {
     if not failed.ok() {
         print("stopped at bad")
     }
+    later()
+}
+
+func wrapped(names: list[str]) -> Result[list[json]] {
+    rows: list[json] = []
+    for name in names {
+        rows.append({"name": name, "label": f(name)? + "!"})
+    }
+    return Result.Ok(rows)
+}
+
+func later() {
+    print(wrapped(["c"]).unwrap())
 }
