@@ -1,0 +1,67 @@
+# Regression (4.1.2): `?` operands in statement positions: augmented
+# assignment, `if` / `while` / `for range` / `match` heads, `print` in a
+# `do` block of a non-`Result` function, and annotated targets whose type
+# differs from the payload (`x: float = parse(s)?`, `o: optional[int] =
+# parse(s)?`, `y: any = parse(s)? * 2`).
+#
+# expect: loops: 10700
+# expect: match: four
+# expect: print: 8 -1 true
+# expect: caught: ParseError: empty input
+# expect: annotated: 3 4 1 1.5 10
+
+from lamerrors import Result, Error
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err(Error("ParseError", "empty input"))
+    }
+    return Result.Ok(s.length())
+}
+
+func loops(s: str) -> Result[int] {
+    total = 0
+    total += parse(s)? * 2
+    if parse(s)? * 2 > 4 {
+        total += 100
+    }
+    for i in range(parse(s)? - 1) {
+        total += i
+    }
+    while total < parse(s)? * 1000 {
+        total *= 10
+    }
+    return Result.Ok(total)
+}
+
+func matched(s: str) -> Result[str] {
+    match parse(s)? * 2 {
+        case 4 { return Result.Ok("four") }
+        case _ { return Result.Ok("other") }
+    }
+}
+
+func annotated() -> Result[str] {
+    x: float = parse("abc")?
+    y: any = parse("ab")? * 2
+    o: optional[int] = parse("a")?
+    z: float = parse("abc")? / 2
+    w: int = parse("ab")? * parse("abcde")?
+    return Result.Ok(f"{x} {y} {o} {z} {w}")
+}
+
+func report() {
+    do {
+        print(f"print: {parse("abcd")? * 2} {-parse("a")?} {parse("ab")? > 1}")
+        print(parse("")? * 2)
+    } catch err {
+        print(f"caught: {err}")
+    }
+}
+
+func main() {
+    print(f"loops: {loops("abc").unwrap()}")
+    print(f"match: {matched("ab").unwrap()}")
+    report()
+    print(f"annotated: {annotated().unwrap()}")
+}

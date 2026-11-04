@@ -165,10 +165,38 @@ class SubtypingMixin:
                     for cls in descendants
                     if method in data["sigs"].get(cls, {})
                 ]
-                if overrides and all(o == key for o in overrides):
+                if overrides and all(self._hier_sigkey_overrides(class_name, key, o) for o in overrides):
                     out.add(method)
             memo[class_name] = out
         return memo[class_name]
+
+    def _hier_sigkey_overrides(self, class_name: str, base_key: str, key: Optional[str]) -> bool:
+        """Whether a descendant's dispatch signature ``key`` overrides
+        ``class_name``'s ``base_key``. The type parameters of a generic
+        ``class_name`` stand for the type arguments the descendant binds
+        (``(T)string`` in ``Registry[T]`` is overridden by ``(*User)string``
+        in ``class Users(Registry[User])``), consistently across the key;
+        the semantic checker has already matched them to the descendant's
+        actual type arguments."""
+        if key is None:
+            return False
+        if key == base_key:
+            return True
+        params = [p for p in self._class_type_param_names_of(class_name) if p]
+        if not params:
+            return False
+        pattern = re.escape(base_key)
+        seen: Set[str] = set()
+
+        def bind(match) -> str:
+            name = match.group(1)
+            if name in seen:
+                return f"(?P={name})"
+            seen.add(name)
+            return f"(?P<{name}>.+?)"
+
+        pattern = re.sub(r"\b(" + "|".join(re.escape(p) for p in params) + r")\b", bind, pattern)
+        return bool(seen) and re.fullmatch(pattern, key) is not None
 
     def _hier_needs_virtual(self, static_class: str, method: str) -> bool:
         """``x.method()`` with ``x`` statically a ``static_class`` must
@@ -371,6 +399,16 @@ class SubtypingMixin:
                 f"func (s {recv}) _lamUp_{self._go_class_name(ancestor)}() {go_type} "
                 f"{{ if s == nil {{ return nil }}; return {path} }}"
             )
+            self._emit("")
+        if subclassed and self.class_field_defaults.get(class_name):
+            # Class-body field defaults for subclasses of other modules
+            # (``_emit_ancestor_init``); this class's own defaults only,
+            # its ancestors are initialised by the caller's walk.
+            self._emit(f"func (s {recv}) _lamFieldDefaults() {{")
+            self.indent += 1
+            self._emit_field_defaults(class_name, receiver="s")
+            self.indent -= 1
+            self._emit("}")
             self._emit("")
         self._emit_hierarchy_format(class_name, recv, subclassed)
 

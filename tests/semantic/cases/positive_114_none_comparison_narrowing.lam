@@ -1,0 +1,59 @@
+# expect-pass
+# Regression (4.1.2): `== None` / `!= None` / `is None` / `is not None`
+# tests narrow optional locals and parameters like `isinstance(x, None)`;
+# fields copied to a local first narrow too, and `??` unwraps a field.
+
+class View {
+    func init(self) {
+        self.cached: optional[html] = None
+        self.n: optional[int] = None
+    }
+
+    func page(self) -> html {
+        cached = self.cached
+        if cached == None {
+            return <></>
+        }
+        return cached
+    }
+
+    func count(self) -> int {
+        return self.n ?? 0
+    }
+
+    func size(self, n: optional[int]) -> int {
+        if n is not None {
+            return n
+        }
+        return 0
+    }
+}
+
+func double(n: optional[int]) -> int {
+    if None == n {
+        return 0
+    }
+    return n * 2
+}
+
+func name(s: optional[str]) -> str {
+    if s is None {
+        return "-"
+    }
+    return s.toUpper()
+}
+
+func total(xs: list[optional[int]]) -> int {
+    t = 0
+    for x in xs {
+        if x != None {
+            t += x
+        }
+    }
+    return t
+}
+
+func main() {
+    v: View = View()
+    print(v.page(), v.count(), v.size(2), double(3), name("a"), total([1, None]))
+}

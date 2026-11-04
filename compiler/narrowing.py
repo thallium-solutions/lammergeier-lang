@@ -109,6 +109,15 @@ def condition_facts(cond, truth: bool = True) -> List[Fact]:
         for child in cond.children:
             out.extend(condition_facts(child, False))
         return out
+    none_test = none_comparison(cond)
+    if none_test is not None:
+        # ``x == None`` / ``x is None`` (``is_none``) and their negations:
+        # the same facts as ``isinstance(x, None)``.
+        subject, is_none = none_test
+        name = subject_name(subject)
+        if not name or truth == is_none:
+            return []
+        return [(name, NOT_NONE)]
     call = isinstance_call(cond)
     if call is None:
         return []
@@ -119,6 +128,29 @@ def condition_facts(cond, truth: bool = True) -> List[Fact]:
     if is_none_type(type_node):
         return [] if truth else [(name, NOT_NONE)]
     return [(name, type_node)] if truth else []
+
+
+def none_comparison(node) -> Optional[Tuple[object, bool]]:
+    """``(subject, is_none)`` of ``x == None`` / ``x != None`` / ``x is
+    None`` / ``x is not None`` (``None`` on either side); ``is_none`` is
+    true for the ``==`` / ``is`` forms."""
+    if not (isinstance(node, Tree) and node.data == "comparison" and len(node.children) == 3):
+        return None
+    left, op, right = node.children
+    if not (isinstance(op, Tree) and op.data == "comp_op"):
+        return None
+    words = [str(tok) for tok in op.children]
+    if words in (["=="], ["is"]):
+        is_none = True
+    elif words in (["!="], ["is", "not"]):
+        is_none = False
+    else:
+        return None
+    if is_none_type(right) and not is_none_type(left):
+        return left, is_none
+    if is_none_type(left) and not is_none_type(right):
+        return right, is_none
+    return None
 
 
 def _dotted(node) -> str:

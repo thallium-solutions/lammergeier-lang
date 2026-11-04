@@ -257,6 +257,10 @@ func lamAsyncReportUnretrieved() {
         self._program_class_bases: Dict[str, List[str]] = {}
         self._program_method_sigkeys: Dict[str, Dict[str, Optional[str]]] = {}
         self._program_own_init: Set[str] = set()
+        # Library classes with class-body field defaults (``notFound: str =
+        # "x"``): a subclass in another module applies them through the
+        # class's ``_lamFieldDefaults()`` helper.
+        self._program_field_default_classes: Set[str] = set()
         self._class_type_param_names: Dict[str, List[str]] = {}
         self._local_class_init_defs: Dict[str, Tree] = {}
         self._program_class_type_params: Dict[str, List[str]] = {}
@@ -1562,6 +1566,11 @@ func lamAsyncReportUnretrieved() {
                             for v in child_variants
                         }
                         for variant in base_variants:
+                            # ``class Users(Registry[User])``: the base's
+                            # ``row(item: T)`` is ``row(item: *User)`` here,
+                            # so an override with ``User`` replaces it
+                            # instead of becoming a second overload.
+                            variant = self._bind_inherited_variant(class_name, base, variant)
                             signature = (
                                 tuple(variant.get("sig") or ()),
                                 str(variant.get("return_key") or variant.get("return") or ""),
@@ -1610,6 +1619,21 @@ func lamAsyncReportUnretrieved() {
                     v["suffix"] = f"_{a}_{self._sig_suffix(signature)}"
                 else:
                     v["suffix"] = f"_{a}"
+
+    def _bind_inherited_variant(self, class_name: str, base: str, variant: dict) -> dict:
+        """``variant`` of a generic ``base`` method with the type arguments
+        ``class_name`` instantiates the base with (``T`` -> ``*User``)."""
+        sig = list(variant.get("sig") or ())
+        returns = [str(variant.get("return_key") or ""), str(variant.get("return") or "")]
+        bound = self._subst_inherited_init_types(class_name, base, sig + returns)
+        if bound == sig + returns:
+            return variant
+        return dict(
+            variant,
+            sig=tuple(bound[:len(sig)]),
+            return_key=bound[len(sig)],
+            **{"return": bound[len(sig) + 1]},
+        )
 
     def _overload_variant_for_sig(self, name: str, sig, expected_return: str = ""):
         variants = self._overload_variants.get(name) or []

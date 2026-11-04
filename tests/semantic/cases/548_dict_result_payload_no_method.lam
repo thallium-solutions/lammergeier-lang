@@ -1,0 +1,22 @@
+# expect-pass
+# expect-no-warning: dicts have no
+# 4.1.2: dict payloads reached through `?` used with the dict operations
+# Lam has (`in`, indexing, `len`, `for key, value in ...`) are accepted.
+from lamerrors import Result
+
+func table() -> Result[dict[str, int]] {
+    return Result.Ok({"a": 1, "b": 2})
+}
+
+func summary() -> Result[str] {
+    total = 0
+    for key, value in table()? {
+        total += value + len(key)
+    }
+    first = table()?["a"] * 10
+    return Result.Ok(f"{total} {first} {"b" in table()?} {len(table()?) * 2}")
+}
+
+func main() {
+    print(summary().unwrap())
+}

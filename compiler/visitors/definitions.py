@@ -631,8 +631,22 @@ class DefinitionVisitorMixin:
         self._emit("}")
         self._emit("")
 
+    def _bound_base_type_args(self, class_name: str, base: str, subst: dict) -> str:
+        """``_base_type_args`` of ``class_name``'s generic ``base`` with
+        ``class_name``'s own type parameters bound by ``subst`` (``[U]`` in
+        ``class Named[U](Registry[U])`` is ``[string]`` under ``Tags(Named[str])``)."""
+        if not subst:
+            return self._base_type_args(class_name, base)
+        nodes = getattr(self, "_class_base_type_nodes", {}).get(class_name, {}).get(base)
+        if not nodes:
+            return ""
+        with self._scoped(_generic_names=self._generic_names | set(subst)):
+            args = [self._type_expr_to_go(a) or "any" for a in nodes]
+        pattern = re.compile(r"\b(" + "|".join(re.escape(p) for p in subst) + r")\b")
+        return "[" + ", ".join(pattern.sub(lambda m: subst[m.group(1)], a) for a in args) + "]"
+
     def _emit_ancestor_init(self, class_name: str, *, receiver: str,
-                            visited: "set | None" = None) -> None:
+                            visited: "set | None" = None, subst: "dict | None" = None) -> None:
         """Emit ``<receiver>.<Parent> = &Parent{}`` for every
         embedded ancestor on the ``class_name`` chain, recursing
         depth-first so grandparents are also initialised.
@@ -655,12 +669,24 @@ class DefinitionVisitorMixin:
                 # An imported generic grand-ancestor: its type arguments
                 # are not known here; the parent constructor builds it.
                 continue
-            self._emit(f"{path} = &{go_base}{self._base_type_args(class_name, base)}{{}}")
+            type_args = self._bound_base_type_args(class_name, base, subst or {})
+            self._emit(f"{path} = &{go_base}{type_args}{{}}")
             # Recurse to cover grandparents (``Puppy -> Dog ->
             # Animal``). The receiver for the next level is the
-            # freshly-allocated parent pointer we just wrote.
-            self._emit_ancestor_init(base, receiver=path, visited=visited)
-            self._emit_field_defaults(base, receiver=path)
+            # freshly-allocated parent pointer we just wrote. A generic
+            # intermediate's parameters take the arguments just used.
+            base_params = self._class_type_param_names_of(base)
+            base_subst = {}
+            if type_args and base_params:
+                base_subst = dict(zip(base_params, self._split_type_arg_list(type_args)))
+            self._emit_ancestor_init(base, receiver=path, visited=visited, subst=base_subst)
+            if base not in self.class_bases and base in self._program_field_default_classes:
+                # A base of another module: its class-body defaults are
+                # applied by the helper its module emits (the default
+                # expressions resolve in that module's namespace).
+                self._emit(f"{path}._lamFieldDefaults()")
+            else:
+                self._emit_field_defaults(base, receiver=path)
 
     # ─── Virtual dispatch ──────────────────────────────────────
     #

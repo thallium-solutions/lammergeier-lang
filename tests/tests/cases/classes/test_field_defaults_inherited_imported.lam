@@ -1,0 +1,67 @@
+# Regression (4.1.2): class-body field defaults of every ancestor are
+# applied when a subclass declares its own `init`, also when the ancestors
+# live in another module (they were left zero: `notFound` was ""), whether
+# or not `init` calls `base.init()`, through a generic base, and with the
+# default naming the defining module's constant (`Label` is also a constant
+# of this module).
+from field_defaults_provider import Base, Mid, Configured, Box
+
+const Label: str = "main-label"
+
+class Child(Base) {
+    func init(self) {
+        self.extra: str = "e"
+    }
+}
+
+class Leaf(Mid) {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+}
+
+class Tuned(Base) {
+    count: int = 9
+
+    func init(self) {
+        self.tags.append("u")
+    }
+}
+
+class Wrapped(Configured) {
+    func init(self) {
+        base.init(5)
+        self.mode = self.mode + "!"
+    }
+}
+
+class Ints(Box[int]) {
+    func init(self) {
+        self.items: list[int] = [1]
+    }
+}
+
+class Plain(Base) {
+    pass
+}
+
+func main() {
+    c: Child = Child()
+    print(f"[{c.notFound}] {c.count} {c.extra} {c.label()}")
+    l: Leaf = Leaf(2)
+    print(f"[{l.notFound}] {l.title} {l.n} {l.label()}")
+    t: Tuned = Tuned()
+    print(t.label(), Label)
+    w: Wrapped = Wrapped()
+    print(w.mode, w.n)
+    i: Ints = Ints()
+    print(i.size, len(i.items))
+    print(Plain().label())
+}
+
+# expect: [provider-label] 3 e provider-label/3/1
+# expect: [provider-label] mid 2 provider-label/3/1
+# expect: provider-label/9/2 main-label
+# expect: auto! 5
+# expect: 2 1
+# expect: provider-label/3/1

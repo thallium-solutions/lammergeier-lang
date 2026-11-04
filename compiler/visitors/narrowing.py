@@ -207,6 +207,10 @@ class NarrowingLowerMixin:
             current = types.get(name)
             if current is None:
                 current = self._pm_subject_type(Tree("var", [Tree("name", [name])]))
+            if current is None and target is narrowing.NOT_NONE:
+                # ``for v in values`` over a ``list[optional[int]]``: the
+                # loop variable is only known by its Go type (``*int``).
+                current = self._nr_optional_from_go(self._var_go_types.get(go_name, "") or "")
             narrowed = self._nr_narrowed_type(current, target)
             if narrowed is None or (current is not None and render_type(narrowed) == render_type(current)):
                 continue
@@ -218,6 +222,20 @@ class NarrowingLowerMixin:
             types[name] = narrowed
             plan.append((name, go_name, narrowed, lines))
         return plan
+
+    def _nr_optional_from_go(self, go: str) -> Optional[Type]:
+        """``optional[T]`` for the Go pointer to a value type ``T`` (``*int``,
+        ``*string``, ``*LamHTML``, ``*[]T``, ...); ``None`` otherwise."""
+        if not go.startswith("*"):
+            return None
+        inner_go = go[1:]
+        if inner_go == "LamHTML":
+            inner: Optional[Type] = NamedType("html")
+        elif inner_go.startswith(("[]", "map[")) or inner_go in TYPE_MAP.values():
+            inner = self._pm_type_from_go(inner_go)
+        else:
+            return None
+        return GenericType("optional", (inner,)) if inner is not None else None
 
     def _nr_bind_lines(self, go_name: str, current: Optional[Type], narrowed: Type) -> Optional[List[str]]:
         """Go statements rebinding ``go_name`` as its narrowed view."""

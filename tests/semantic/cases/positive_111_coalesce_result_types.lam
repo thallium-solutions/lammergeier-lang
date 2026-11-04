@@ -1,0 +1,43 @@
+# expect-pass
+# `??` results are typed by the optional's payload: int results widen into
+# floats, chains and `?` compose, and an optional fallback keeps the
+# optional type.
+from lamerrors import Result
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+        self.age: optional[int] = None
+    }
+}
+
+func find(n: int) -> optional[int] {
+    if n > 0 {
+        return n
+    }
+    return None
+}
+
+func lookup() -> optional[User] {
+    return None
+}
+
+func load() -> Result[optional[int]] {
+    return Result.Ok(find(1))
+}
+
+func ratio() -> Result[float] {
+    w = load()? ?? 0
+    return Result.Ok(1.5 * (100 - w))
+}
+
+func main() {
+    w = find(4) ?? 0
+    x: float = find(1) ?? 2
+    y = find(1) ?? find(2) ?? 3
+    z: optional[int] = find(1) ?? find(2)
+    u = lookup() ?? User("x")
+    a: int = u.age ?? 0
+    s: str = (lookup() ?? u).name
+    print(1.5 * (100 - w), x, y + 1, z, a, s, ratio().unwrap())
+}

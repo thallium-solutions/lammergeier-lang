@@ -1,0 +1,73 @@
+# expect-pass
+# Regression (4.1.2): overrides of a generic base's methods with the bound
+# type argument (parameters, returns, `list[T]`, `optional[T]`, a generic
+# intermediate class and two subclasses binding different types).
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Registry[T] {
+    func init(self) {
+        self.items: list[T] = []
+    }
+
+    func row(self, _item: T) -> str {
+        return "?"
+    }
+
+    func first(self) -> T {
+        return self.items[0]
+    }
+
+    func keep(self, xs: list[T]) -> int {
+        return len(xs)
+    }
+
+    func find(self, _key: str) -> optional[T] {
+        return None
+    }
+}
+
+class Users(Registry[User]) {
+    func row(self, item: User) -> str {
+        return item.name
+    }
+
+    func first(self) -> User {
+        return User("x")
+    }
+
+    func keep(self, xs: list[User]) -> int {
+        return len(xs) + 1
+    }
+
+    func find(self, _key: str) -> optional[User] {
+        return None
+    }
+}
+
+class Counts(Registry[int]) {
+    func row(self, item: int) -> str {
+        return str(item)
+    }
+}
+
+class Named[U](Registry[U]) {
+    func label(self) -> str {
+        return "n"
+    }
+}
+
+class Tags(Named[str]) {
+    func row(self, item: str) -> str {
+        return item
+    }
+}
+
+func main() {
+    u: Users = Users()
+    print(u.row(User("a")), Counts().row(2), Tags().row("t"), Tags().label(), u.keep([]))
+}

@@ -1,0 +1,128 @@
+# Regression (4.1.2): `??` over optional classes, optional fields,
+# `optional[list[T]]`, `optional[dict[str, T]]` and `json` gives the
+# payload type, so fields, methods, indexing, `len` and element arithmetic
+# work on the result (`(lookup(1) ?? User("g")).greet()`, `xs[0] * 1.5`).
+# `optional[list[int]]` / `optional[dict[str, int]]` box a list / dict
+# returned or assigned (it failed `go build`: "cannot use xs as *[]int").
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+        self.nick: optional[str] = None
+        self.age: optional[int] = None
+        self.score: optional[float] = None
+        self.friend: optional[User] = None
+    }
+
+    func greet(self) -> str {
+        return "hi " + self.name
+    }
+}
+
+class Admin(User) {
+    func init(self, name: str) {
+        base.init(name)
+    }
+
+    func greet(self) -> str {
+        return "admin " + self.name
+    }
+}
+
+func lookup(n: int) -> optional[User] {
+    if n > 0 {
+        return User("bob")
+    }
+    return None
+}
+
+func items(n: int) -> optional[list[int]] {
+    if n > 0 {
+        return [1, 2, 3]
+    }
+    return None
+}
+
+func names(n: int) -> optional[list[str]] {
+    xs: list[str] = ["a", "b"]
+    if n > 0 {
+        return xs
+    }
+    return None
+}
+
+func table(n: int) -> optional[dict[str, int]] {
+    if n > 0 {
+        return {"a": 1, "b": 2}
+    }
+    return None
+}
+
+func main() {
+    # classes, subclasses, methods on the result
+    u = lookup(0) ?? User("guest")
+    print(u.name, u.greet())
+    print((lookup(1) ?? User("g")).greet(), (lookup(0) ?? Admin("root")).greet())
+    typed: User = lookup(1) ?? User("x")
+    print(typed.name.toUpper())
+
+    # optional fields
+    v = User("zed")
+    nick = v.nick ?? "none"
+    print(nick.toUpper(), len(v.nick ?? ""))
+    age = v.age ?? 18
+    print(age + 1, age * 0.5)
+    v.age = 40
+    print((v.age ?? 0) - 1, (v.score ?? 1) * 2.5)
+    print((v.friend ?? v).name, (u.friend ?? lookup(1) ?? User("n")).greet())
+
+    # optional lists and dicts
+    xs = items(1) ?? []
+    print(len(xs), xs[0] * 1.5, xs[-1])
+    ys = items(0) ?? [9]
+    ys.append(10)
+    print(ys, len(items(0) ?? [4, 5, 6]))
+    zs: list[int] = items(0) ?? []
+    print(len(zs), (names(1) ?? [])[1].toUpper(), len(names(0) ?? []))
+    for n in items(1) ?? [] {
+        print(n * 10)
+    }
+    d = table(1) ?? {}
+    print(d["a"] + 1, len(table(0) ?? {}), (table(0) ?? {"z": 7})["z"] * 2)
+    maybe: optional[list[int]] = None
+    print(maybe == None, maybe ?? [0])
+    maybe = [5]
+    print(maybe != None, maybe)
+
+    # json: a json value, or the annotated target's type
+    doc: json = {"a": "hello", "n": 3, "user": {"city": None}}
+    j = doc.a ?? "x"
+    print(j, doc.user.city ?? "unknown")
+    t: str = doc.b ?? "dflt"
+    print(t.toUpper())
+    k: int = doc.n ?? 0
+    print(k + 1, (doc.zz ?? 4) == 4)
+    half: float = doc.n ?? 0
+    print(half / 2)
+}
+
+# expect: guest hi guest
+# expect: hi bob admin root
+# expect: BOB
+# expect: NONE 0
+# expect: 19 9
+# expect: 39 2.5
+# expect: zed hi bob
+# expect: 3 1.5 3
+# expect: [9 10] 3
+# expect: 0 B 0
+# expect: 10
+# expect: 20
+# expect: 30
+# expect: 2 0 14
+# expect: true [0]
+# expect: true [5]
+# expect: "hello" "unknown"
+# expect: DFLT
+# expect: 4 true
+# expect: 1.5

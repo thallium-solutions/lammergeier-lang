@@ -1,0 +1,102 @@
+# Regression (4.1.2): a `?` result used as an operand of an arithmetic
+# operator took the enclosing context's type instead of the callee's payload.
+# `return Result.Ok(parse(s)? * 2)` published `interface{}` (the `Result.Ok`
+# argument) and `go build` failed with "__q1.Value * 2 (mismatched types
+# interface{} and int)"; the same for `return`, `do` bodies, unannotated
+# assignments, unary minus and int/float mixes. The operand now takes the
+# payload type of `parse` (`Result[int]`).
+#
+# expect: ok-times: 6
+# expect: ok-plus: 3
+# expect: do-times: 8
+# expect: unannotated: 4
+# expect: negated: -3 -6
+# expect: floats: 6 6
+# expect: widened: 6 1.5
+# expect: mixed: 2
+# expect: any-context: 10
+# expect: errors: false false false
+# expect: caught: ParseError: empty input
+
+from lamerrors import Result, Error
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err(Error("ParseError", "empty input"))
+    }
+    return Result.Ok(s.length())
+}
+
+func ratio(s: str) -> Result[float] {
+    return Result.Ok(s.length() / 2.0)
+}
+
+func okTimes(s: str) -> Result[int] {
+    return Result.Ok(parse(s)? * 2)
+}
+
+func okPlus(s: str) -> Result[int] {
+    return Result.Ok(1 + parse(s)?)
+}
+
+func doTimes(s: str) -> Result[int] {
+    do {
+        return Result.Ok(parse(s)? * 2)
+    } catch e {
+        return Result.Err(e)
+    }
+}
+
+func unannotated(s: str) -> Result[int] {
+    n = parse(s)? * 3
+    m = -parse(s)?
+    return Result.Ok(n + m)
+}
+
+func negated(s: str) -> Result[int] {
+    return Result.Ok(-parse(s)?)
+}
+
+func floats(s: str) -> Result[float] {
+    return Result.Ok(ratio(s)? * 4.0 + parse(s)?)
+}
+
+func floatsSplit(s: str) -> Result[float] {
+    c = ratio(s)? * 4.0
+    return Result.Ok(c + parse(s)?)
+}
+
+func widened(s: str) -> Result[float] {
+    x: float = parse(s)? * 2
+    return Result.Ok(x)
+}
+
+func division(s: str) -> Result[float] {
+    return Result.Ok(parse(s)? / 2)
+}
+
+func mixed(s: str) -> Result[int] {
+    return Result.Ok((parse(s)? + parse(s + s)?) % 4 * parse(s)? // 2)
+}
+
+func anyContext(s: str) -> Result[any] {
+    return Result.Ok(parse(s)? * 10)
+}
+
+func main() {
+    print(f"ok-times: {okTimes("abc").unwrap()}")
+    print(f"ok-plus: {okPlus("ab").unwrap()}")
+    print(f"do-times: {doTimes("abcd").unwrap()}")
+    print(f"unannotated: {unannotated("ab").unwrap()}")
+    print(f"negated: {negated("abc").unwrap()} {-okTimes("abc").unwrap()}")
+    print(f"floats: {floats("ab").unwrap()} {floatsSplit("ab").unwrap()}")
+    print(f"widened: {widened("abc").unwrap()} {division("abc").unwrap()}")
+    print(f"mixed: {mixed("ab").unwrap()}")
+    print(f"any-context: {anyContext("a").unwrap()}")
+    print(f"errors: {okTimes("").ok()} {doTimes("").ok()} {floats("").ok()}")
+    do {
+        print(parse("")? * 2)
+    } catch err {
+        print(f"caught: {err}")
+    }
+}

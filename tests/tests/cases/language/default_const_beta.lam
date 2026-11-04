@@ -1,0 +1,14 @@
+# Provider for test_default_const_namespaces.lam: a second module with a
+# `Size` constant used as a default.
+
+const Size: int = 25
+
+func other(n: int = Size) -> int {
+    return n
+}
+
+func label(prefix: str = "b", n: int = Size) -> str {
+    return f"{prefix}{n}"
+}
+
+func main() { pass }

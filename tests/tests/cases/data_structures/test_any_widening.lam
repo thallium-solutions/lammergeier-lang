@@ -1,0 +1,147 @@
+# Regression (4.1.2): a concretely typed list / dict widens implicitly where
+# a `list[any]` / `dict[str, any]` is expected: annotated assignments and
+# reassignments, arguments, returns, `Result.Ok` payloads, `?` results,
+# class fields, optional targets, nested lists and dict / list literal
+# elements. `xs: list[any] = ys` with `ys: list[int]` used to fail
+# `go build` ("cannot use ys (variable of type []int) as []interface{}").
+# The widened value is a copy: element writes and appends through it do not
+# reach the source list (as with Python's `list(ys)`).
+from lamerrors import Result
+
+class Point {
+    func init(self, x: int) {
+        self.x: int = x
+    }
+}
+
+func count(xs: list[any]) -> int {
+    return len(xs)
+}
+
+func size(d: dict[str, any]) -> int {
+    return len(d)
+}
+
+func asAny(ys: list[int]) -> list[any] {
+    return ys
+}
+
+func table() -> dict[str, any] {
+    d: dict[str, int] = {"a": 1}
+    return d
+}
+
+func rows() -> Result[list[int]] {
+    return Result.Ok([1, 2])
+}
+
+func wrapped() -> Result[list[any]] {
+    ys: list[str] = ["p", "q"]
+    return Result.Ok(ys)
+}
+
+func loaded() -> Result[int] {
+    xs: list[any] = rows()?
+    xs.append("tail")
+    return Result.Ok(len(xs))
+}
+
+class Db {
+    func init(self) {
+        pass
+    }
+
+    func query(self, q: str, args: list[any]) -> Result[list[dict[str, any]]] {
+        return Result.Ok([{"q": q, "n": len(args)}])
+    }
+}
+
+func extra() -> list[any] {
+    return [3]
+}
+
+# A `list[any]` argument built by concatenation inside a statement that
+# expects another type (`rows: list[dict[str, any]] = db.query(...)?`) is
+# typed by its own parameter, not by the statement.
+func queried(db: Db, args: list[any]) -> Result[str] {
+    ids: list[int] = [7, 8]
+    rows: list[dict[str, any]] = db.query("a", [1, "a"] + extra() + [2])?
+    more: list[dict[str, any]] = db.query("b", [5] + args)?
+    other: list[dict[str, any]] = db.query("c", ids)?
+    return Result.Ok(f"{rows[0]['n']} {more[0]['n']} {other[0]['n']}")
+}
+
+func floats(xs: list[float]) -> float {
+    total: float = 0.0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+
+func main() {
+    ys: list[int] = [1, 2, 3]
+    xs: list[any] = ys
+    print(xs, len(xs))
+    xs[0] = "one"
+    xs.append(4.5)
+    print(xs, ys)
+    names: list[str] = ["a", "b"]
+    xs = names
+    print(xs, count(ys), count(names), count([1, "x"]))
+    print(asAny(ys), size(table()), wrapped().unwrap(), loaded().unwrap())
+
+    d: dict[str, int] = {"a": 1, "b": 2}
+    e: dict[str, any] = d
+    e["c"] = "three"
+    print(size(d), size(e), len(d))
+
+    grid: list[list[int]] = [[1, 2], [3]]
+    flat: list[any] = grid
+    nested: list[list[any]] = grid
+    nested[0].append("x")
+    print(len(flat), nested, grid)
+
+    points: list[Point] = [Point(1), Point(2)]
+    objs: list[any] = points
+    total = 0
+    for o in objs {
+        if isinstance(o, Point) {
+            total += o.x
+        }
+    }
+    print(total, floats(ys))
+
+    m: dict[str, list[any]] = {"nums": ys, "strs": names}
+    pair: list[list[any]] = [ys, names]
+    print(len(m["nums"]), pair)
+    maybe: optional[list[any]] = ys
+    print(maybe ?? [], maybe == None)
+    mixed = [n * 2 for n in ys]
+    print(count(mixed) + size(e))
+
+    # extend / += / + with a concrete list, int elements into list[float]
+    bag: list[any] = ["s"]
+    bag.extend(ys)
+    bag += names
+    print(bag, len(bag + ys))
+    fs: list[float] = [0.5]
+    fs.extend(ys)
+    fs += ys
+    print(fs, floats(fs))
+    print(queried(Db(), ["k", "l"]).unwrap())
+}
+
+# expect: [1 2 3] 3
+# expect: [one 2 3 4.5] [1 2 3]
+# expect: [a b] 3 2 2
+# expect: [1 2 3] 1 [p q] 3
+# expect: 2 3 2
+# expect: 2 [[1 2 x] [3]] [[1 2] [3]]
+# expect: 3 6
+# expect: 3 [[1 2 3] [a b]]
+# expect: [1 2 3] false
+# expect: 6
+# expect: [s 1 2 3 a b] 9
+# expect: [0.5 1 2 3 1 2 3] 12.5
+# expect: 4 3 2

@@ -1,0 +1,54 @@
+# Provider for test_propagate_payload_imported.lam: functions, a generic
+# function, a class (instance and static methods) and an interface whose
+# methods return `Result` payloads, used through `?` from another module.
+from lamerrors import Result, Error
+
+interface Counter {
+    func count(self) -> Result[int]
+}
+
+class Meter {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func count(self) -> Result[int] {
+        if self.n < 0 {
+            return Result.Err(Error("MeterError", "negative"))
+        }
+        return Result.Ok(self.n)
+    }
+
+    func name(self) -> Result[str] {
+        return Result.Ok(f"m{self.n}")
+    }
+
+    static func open(n: int) -> Result[Meter] {
+        return Result.Ok(Meter(n))
+    }
+}
+
+func parseLen(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err(Error("ParseError", "empty"))
+    }
+    return Result.Ok(s.length())
+}
+
+func ratio(s: str) -> Result[float] {
+    return Result.Ok(s.length() / 4.0)
+}
+
+func names() -> Result[list[str]] {
+    return Result.Ok(["x", "y"])
+}
+
+func pick[T](xs: list[T]) -> Result[T] {
+    return Result.Ok(xs[len(xs) - 1])
+}
+
+func counter(n: int) -> Counter {
+    return Meter(n)
+}
+
+func main() { pass }

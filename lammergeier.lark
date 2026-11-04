@@ -173,7 +173,13 @@ import_name: "import" dotted_as_names
 import_from: "from" (dots? (dotted_name | scoped_name) | dots) "import" ("*" | "(" import_as_names ")" | import_as_names)
 !dots: "."+
 import_as_name: name ["as" name]
-dotted_as_name: (dotted_name | scoped_name) ["as" name]
+dotted_as_name: (dotted_name | scoped_name | relative_module) ["as" name]
+// ``import .kit as ui`` / ``import ..pkg.mod as m``: a module relative to
+// the importing file, imported under a (required) alias. One token, like
+// ``SCOPED_NAME``; only ``import`` positions accept it (``from .kit import
+// x`` keeps its ``dots`` + ``dotted_name`` shape).
+relative_module: RELATIVE_MODULE
+RELATIVE_MODULE.2: /\.+[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/
 import_as_names: import_as_name ("," import_as_name)* [","]
 dotted_as_names: dotted_as_name ("," dotted_as_name)*
 dotted_name: name ("." name)*

@@ -1,0 +1,21 @@
+# Regression (4.1.2): a default parameter value naming a module constant
+# resolves in the defining module even when other modules (and this one)
+# declare a constant of the same name: `pick()` with `n: int = Size` failed
+# in `go build` ("undefined: Size") or took another module's `Size`. Covers
+# functions, constructors, instance and static methods, expressions over
+# the constant, an aliased imported constant and keyword arguments.
+from default_const_alpha import pick, mixed, Grid
+from default_const_beta import other, label
+
+const Size: int = 7
+
+func main() {
+    print(pick(), pick(1), other(), Size)
+    print(mixed(), mixed(b=3), label(), label("x"), label(n=2))
+    g: Grid = Grid()
+    print(g.w, g.cell(), g.cell(0), Grid.make(), Grid(1).w)
+}
+
+# expect: 20 1 25 7
+# expect: 20/25 20/3 b25 x25 b2
+# expect: 40 61 40 200 1

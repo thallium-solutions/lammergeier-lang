@@ -1,0 +1,59 @@
+# Regression (4.1.2): an `optional` payload (`Result[optional[int]]`) kept
+# its `*int` shape under `??` (`x: int = maybe(4)? ?? 0` asserted `int` and
+# the fallback closure stayed `interface{}`), and an unknown / `any` payload
+# still takes the type of its annotated target (`x: int = anyVal()? * 2`),
+# as before.
+#
+# expect: optional: 4 7 6 n3 anon! true 5
+# expect: any: 42 abc!
+# expect: forwarded: 30
+
+from lamerrors import Result
+
+func maybe(n: int) -> Result[optional[int]] {
+    if n < 0 {
+        return Result.Ok(None)
+    }
+    return Result.Ok(n)
+}
+
+func maybeName(n: int) -> Result[optional[str]] {
+    if n < 0 {
+        return Result.Ok(None)
+    }
+    return Result.Ok(f"n{n}")
+}
+
+func anyVal() -> Result[any] {
+    return Result.Ok(21)
+}
+
+func anyText() -> Result[any] {
+    return Result.Ok("abc")
+}
+
+func optionals() -> Result[str] {
+    x: int = maybe(4)? ?? 0
+    y: int = maybe(-4)? ?? 7
+    z = maybe(2)? ?? 1
+    s: str = maybeName(3)? ?? "none"
+    w = (maybeName(-1)? ?? "anon") + "!"
+    v = maybe(-1)?
+    return Result.Ok(f"{x} {y} {z * 3} {s} {w} {v == None} {maybe(5)?}")
+}
+
+func anys() -> Result[str] {
+    x: int = anyVal()? * 2
+    t: str = anyText()? + "!"
+    return Result.Ok(f"{x} {t}")
+}
+
+func forward() -> Result[any] {
+    return Result.Ok((maybe(3)? ?? 0) * 10)
+}
+
+func main() {
+    print(f"optional: {optionals().unwrap()}")
+    print(f"any: {anys().unwrap()}")
+    print(f"forwarded: {forward().unwrap()}")
+}

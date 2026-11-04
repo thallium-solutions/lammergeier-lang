@@ -1,0 +1,54 @@
+# Regression (4.1.2): `?` operands inside function arguments, builtins,
+# list / dict literals and comprehensions keep the callee's payload type.
+# `max(parse(s)? * 2, 3)` used to assert the payload as a float, a
+# `{w: parse(w)? + 1 for w in words}` comprehension saw `interface{}` and
+# `[word(w)?.toUpper() for w in words]` was a `[]interface{}` (`join`
+# failed in `go build`).
+#
+# expect: args: 14
+# expect: literals: [4 3 6 1]
+# expect: comprehensions: [2 4] 3 [-2] 20 A!/AB!
+# expect: errors: false false
+
+from lamerrors import Result, Error
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err(Error("ParseError", "empty input"))
+    }
+    return Result.Ok(s.length())
+}
+
+func word(s: str) -> Result[str] {
+    return Result.Ok(s + "!")
+}
+
+func twice(n: int) -> int {
+    return n * 2
+}
+
+func args(s: str) -> Result[int] {
+    return Result.Ok(twice(parse(s)? + 1) + max(parse(s)? * 2, 3))
+}
+
+func literals(s: str) -> Result[list[int]] {
+    xs = [parse(s)? * 2, parse(s)? + 1]
+    d = {"n": parse(s)? * 3}
+    return Result.Ok([xs[0], xs[1], d["n"], len([word(s)? + "x"])])
+}
+
+func comprehensions(words: list[str]) -> Result[str] {
+    xs = [parse(w)? * 2 for w in words]
+    d = {w: parse(w)? + 1 for w in words}
+    ys: list[int] = [-parse(w)? for w in words if parse(w)? > 1]
+    total = len([parse(w)? * 10 for w in words]) * 10
+    labels = [word(w)?.toUpper() for w in words]
+    return Result.Ok(f"{xs} {d["ab"]} {ys} {total} {"/".join(labels)}")
+}
+
+func main() {
+    print(f"args: {args("abc").unwrap()}")
+    print(f"literals: {literals("ab").unwrap()}")
+    print(f"comprehensions: {comprehensions(["a", "ab"]).unwrap()}")
+    print(f"errors: {args("").ok()} {comprehensions(["a", ""]).ok()}")
+}

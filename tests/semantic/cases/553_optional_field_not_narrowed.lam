@@ -1,0 +1,54 @@
+# expect-error: function `page` returns `optional[html]`, expected `html` (a `None` test does not narrow a field: copy it to a local first, `cached = self.cached`, test and return `cached`, or use `self.cached ?? ...`)
+# expect-error: function `count` returns `optional[int]`, expected `int`
+# expect-error: function `label` returns `optional[str]`, expected `str`
+# expect-error: cannot assign `optional[int]` to `int` variable `n`
+# expect-error: argument `i` to `take` has type `optional[int]`, expected `int`
+# Regression (4.1.2): an optional field returned (or assigned, or passed)
+# where its payload type is expected is a Lam error in methods as in
+# functions; it compiled to broken Go ("cannot use s.Cached (variable of
+# type *LamHTML) as LamHTML value") because fields are not narrowed by a
+# `None` test.
+
+class View {
+    func init(self) {
+        self.cached: optional[html] = None
+        self.n: optional[int] = None
+    }
+
+    func page(self) -> html {
+        if self.cached == None {
+            return <></>
+        }
+        return self.cached
+    }
+
+    func count(self) -> int {
+        if self.n != None {
+            return self.n
+        }
+        return 0
+    }
+}
+
+class Holder {
+    func init(self) {
+        self.name: optional[str] = None
+    }
+}
+
+func label(h: Holder) -> str {
+    if h.name == None {
+        return ""
+    }
+    return h.name
+}
+
+func take(i: int) -> int {
+    return i
+}
+
+func main() {
+    v: View = View()
+    n: int = v.n
+    print(v.page(), v.count(), label(Holder()), n, take(v.n))
+}

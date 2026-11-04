@@ -1,0 +1,132 @@
+# Regression (4.1.2): `?` operands on instance, `self`, static, subclass,
+# interface and generic results inside larger expressions take the
+# method's payload type (`Result[int]`, `Result[T]` with `T` bound by the
+# call or the receiver's type arguments, `Result[Shape]` holding a
+# `Square`), not the `interface{}` of the enclosing `Result.Ok(...)`.
+#
+# expect: methods: 410 true
+# expect: interface: 12:repo5!:REPO5
+# expect: shapes: 109
+# expect: generics: 28 3.5
+# expect: generic-error: EmptyError: empty
+
+from lamerrors import Result, Error
+
+interface Source {
+    func count(self) -> Result[int]
+    func label(self) -> Result[str]
+}
+
+class Shape {
+    func init(self, w: int) {
+        self.w: int = w
+    }
+
+    func area(self) -> int {
+        return self.w * self.w
+    }
+}
+
+class Square(Shape) {
+    func init(self, w: int) {
+        base.init(w)
+    }
+
+    func area(self) -> int {
+        return self.w * self.w + 1
+    }
+}
+
+class Repo {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func size(self) -> Result[int] {
+        if self.n < 0 {
+            return Result.Err(Error("RepoError", "negative"))
+        }
+        return Result.Ok(self.n)
+    }
+
+    func scaled(self, k: int) -> Result[int] {
+        return Result.Ok(self.size()? * k)
+    }
+
+    static func make(n: int) -> Result[Repo] {
+        return Result.Ok(Repo(n))
+    }
+
+    func count(self) -> Result[int] {
+        return Result.Ok(self.n + 1)
+    }
+
+    func label(self) -> Result[str] {
+        return Result.Ok(f"repo{self.n}")
+    }
+}
+
+class Box[T] {
+    func init(self, v: T) {
+        self.v: T = v
+    }
+
+    func get(self) -> Result[T] {
+        return Result.Ok(self.v)
+    }
+}
+
+func first[T](xs: list[T]) -> Result[T] {
+    if len(xs) == 0 {
+        return Result.Err(Error("EmptyError", "empty"))
+    }
+    return Result.Ok(xs[0])
+}
+
+func sumFirst[T: number](a: list[T], b: list[T]) -> Result[T] {
+    return Result.Ok(first(a)? + first(b)?)
+}
+
+func shape(square: bool) -> Result[Shape] {
+    if square {
+        return Result.Ok(Square(3))
+    }
+    return Result.Ok(Shape(3))
+}
+
+func methods(r: Repo) -> Result[int] {
+    return Result.Ok(r.size()? * 2 + r.scaled(3)? + Repo.make(4)?.size()? * 100)
+}
+
+func viaInterface(s: Source) -> Result[str] {
+    return Result.Ok(f"{s.count()? * 2}:{s.label()? + "!"}:{s.label()?.toUpper()}")
+}
+
+func shapes() -> Result[int] {
+    return Result.Ok(shape(true)?.area() * 10 + shape(false)?.area())
+}
+
+func generics() -> Result[int] {
+    b: Box[int] = Box[int](7)
+    return Result.Ok(first([1, 2])? * 10 + b.get()? * 2 + sumFirst([1, 2], [3])?)
+}
+
+func floats() -> Result[float] {
+    return Result.Ok(first([1.5])? * 2 + sumFirst([0.25], [0.25])?)
+}
+
+func emptyFirst() -> Result[int] {
+    empty: list[int] = []
+    return Result.Ok(first(empty)? + 1)
+}
+
+func main() {
+    print(f"methods: {methods(Repo(2)).unwrap()} {not methods(Repo(-1)).ok()}")
+    print(f"interface: {viaInterface(Repo(5)).unwrap()}")
+    print(f"shapes: {shapes().unwrap()}")
+    print(f"generics: {generics().unwrap()} {floats().unwrap()}")
+    r = emptyFirst()
+    if not r.ok() {
+        print(f"generic-error: {r.error}")
+    }
+}

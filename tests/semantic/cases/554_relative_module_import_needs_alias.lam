@@ -1,0 +1,8 @@
+# expect-error: `import .support_import_helper` needs an alias: write `import .support_import_helper as support_import_helper` (a relative module path cannot qualify names; then use `support_import_helper.name`)
+# `import .module` (4.1.2) binds the module under the alias it requires,
+# like a scoped package.
+import .support_import_helper
+
+func main() {
+    print("x")
+}

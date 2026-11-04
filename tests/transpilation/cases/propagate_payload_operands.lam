@@ -1,0 +1,47 @@
+# Transpilation (4.1.2): a `?` operand asserts its callee's payload type
+# even when the enclosing context publishes another one: `Result.Ok(...)`
+# takes `interface{}` and `x: float = ...` takes `float64`, but `parse(s)?`
+# is a `Result[int]`, so it reads `__qN.Value.(int)` (and is widened to
+# `float64` where the expression needs it). An `any` payload still takes
+# the annotated target's type.
+
+# expect-go: return Result_Ok(__q1.Value.(int) * 2)
+# expect-go: var x float64 = float64(__q2.Value.(int) * 2)
+# expect-go: * 4.0) + float64(__q4.Value.(int)))
+# expect-go: var y int = __q5.Value.(int) * 2
+
+from lamerrors import Result
+
+func parse(s: str) -> Result[int] {
+    return Result.Ok(s.length())
+}
+
+func ratio(s: str) -> Result[float] {
+    return Result.Ok(s.length() / 2.0)
+}
+
+func anyVal() -> Result[any] {
+    return Result.Ok(21)
+}
+
+func doubled(s: str) -> Result[int] {
+    return Result.Ok(parse(s)? * 2)
+}
+
+func widened(s: str) -> Result[float] {
+    x: float = parse(s)? * 2
+    return Result.Ok(x)
+}
+
+func mixed(s: str) -> Result[float] {
+    return Result.Ok(ratio(s)? * 4.0 + parse(s)?)
+}
+
+func fromAny() -> Result[int] {
+    y: int = anyVal()? * 2
+    return Result.Ok(y)
+}
+
+func main() {
+    print(doubled("ab").unwrap(), widened("ab").unwrap(), mixed("ab").unwrap(), fromAny().unwrap())
+}

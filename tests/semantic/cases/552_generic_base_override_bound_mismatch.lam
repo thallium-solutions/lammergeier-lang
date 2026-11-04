@@ -1,0 +1,57 @@
+# expect-error: class `Users` overrides `Registry.row` with incompatible parameters: got (Admin), expected (User)
+# expect-error: class `Users` overrides `Registry.first` with return `Admin`, expected `User`
+# expect-error: class `Tags` overrides `Registry.keep` with incompatible parameters: got (list[int]), expected (list[str])
+# Regression (4.1.2): an override of a generic base's method is checked
+# against the base's signature with the subclass's type arguments bound
+# (`T` is `User` in `class Users(Registry[User])`), so a different type is
+# still an error, naming the bound type.
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Admin {
+    func init(self) {
+        self.level: int = 1
+    }
+}
+
+class Registry[T] {
+    func init(self) {
+        self.items: list[T] = []
+    }
+
+    func row(self, _item: T) -> str {
+        return "?"
+    }
+
+    func first(self) -> T {
+        return self.items[0]
+    }
+
+    func keep(self, xs: list[T]) -> int {
+        return len(xs)
+    }
+}
+
+class Users(Registry[User]) {
+    func row(self, _item: Admin) -> str {
+        return "admin"
+    }
+
+    func first(self) -> Admin {
+        return Admin()
+    }
+}
+
+class Tags(Registry[str]) {
+    func keep(self, xs: list[int]) -> int {
+        return len(xs)
+    }
+}
+
+func main() {
+    print(len(Users().items), len(Tags().items))
+}

@@ -1,0 +1,82 @@
+# Regression (4.1.2): calling a function value (`rate: func(Item) -> float`)
+# with a subclass instance (`rate(book)` with `book: Featured`, `class
+# Featured(Item)`) upcasts the argument like a call of a declared function
+# (it failed in `go build`): locals, parameters, `func(...)` fields,
+# several arguments and grandchildren; the
+# callee still sees the most-derived object (overrides run).
+
+class Item {
+    func init(self, p: float) {
+        self.p: float = p
+    }
+
+    func price(self) -> float {
+        return self.p
+    }
+}
+
+class Featured(Item) {
+    func init(self, p: float) {
+        base.init(p)
+    }
+
+    func price(self) -> float {
+        return self.p * 10.0
+    }
+}
+
+class Premium(Featured) {
+    func init(self, p: float) {
+        base.init(p)
+    }
+}
+
+class Pricer {
+    func init(self, rate: func(Item) -> float) {
+        self.rate: func(Item) -> float = rate
+        self.pair: func(Item, Item) -> str = lambda(a: Item, b: Item) -> str: f"{a.price()}+{b.price()}"
+    }
+
+    func apply(self, it: Featured) -> float {
+        return self.rate(it)
+    }
+
+    func both(self, a: Premium, b: Item) -> str {
+        return self.pair(a, b)
+    }
+}
+
+func total(items: list[Featured], rate: func(Item) -> float) -> float {
+    t: float = 0.0
+    for it in items {
+        t += rate(it)
+    }
+    return t
+}
+
+func describe(label: func(Item, int) -> str, it: Premium) -> str {
+    return label(it, 2)
+}
+
+func main() {
+    rate: func(Item) -> float = lambda(i: Item) -> float: i.price() * 2.0
+    book: Featured = Featured(1.5)
+    gold: Premium = Premium(0.5)
+    plain: Item = Item(4.0)
+    print(rate(book), rate(Featured(1.0)), rate(gold), rate(plain))
+    print(total([book, Featured(2.0)], rate))
+    p: Pricer = Pricer(rate)
+    print(p.apply(book), p.rate(gold), p.both(gold, book))
+    label = lambda(i: Item, n: int) -> str: f"{i.price() * n}"
+    print(describe(label, gold))
+    names: list[str] = []
+    keep: func(Item) -> int = lambda(i: Item) -> int: len(names)
+    names.append("x")
+    print(keep(gold) + 1)
+}
+
+# expect: 30 20 10 8
+# expect: 70
+# expect: 30 10 5+15
+# expect: 10
+# expect: 2

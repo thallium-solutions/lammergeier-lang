@@ -1,0 +1,25 @@
+# expect-error: unknown member `u.gret` on class `User` — did you mean `u.greet`?
+# expect-error: unknown member `User.nme` on class `User` — did you mean `User.name`?
+# Regression (4.1.2): `opt ?? fallback` over an `optional[User]` is a
+# `User`, so member checks apply to the result (bound to a local or used
+# directly), as for any `User` value.
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func greet(self) -> str {
+        return self.name
+    }
+}
+
+func lookup() -> optional[User] {
+    return None
+}
+
+func main() {
+    u = lookup() ?? User("x")
+    print(u.gret())
+    print((lookup() ?? User("y")).nme)
+}

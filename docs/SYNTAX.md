@@ -584,6 +584,32 @@ hint (``cannot assign `float` to `int` variable `middle` (`/` always gives
 a `float`; use `//` for integer division)``), and `/=` on an `int`
 variable is one too (use `//=`).
 
+### Widening to `any`
+
+Any value can be stored where `any` is expected (`a: any = 3`). A list or a
+dict of a concrete type is accepted where a `list[any]` / `dict[K, any]` is
+expected, as in Python: annotated assignments and reassignments, arguments,
+returns, `Result.Ok(...)` payloads, `?` results (`xs: list[any] = rows()?`),
+fields, `optional[list[any]]` targets, `extend` / `+=`, and nested lists
+(`list[list[int]]` to `list[list[any]]` or `list[any]`); likewise
+`list[int]` where a `list[float]` is expected. In Go a `[]int` is not a
+`[]interface{}`, so the widened value is a **copy**: element writes and
+appends through it do not reach the original list (and a `list[any]`
+parameter receiving a `list[int]` works on its own copy). The keys must
+still match (`dict[int, int]` is not a `dict[str, any]`), lists of a class
+stay invariant (`list[Square]` is not a `list[Shape]`) and sets do not
+widen.
+
+```lammergeier
+ys: list[int] = [1, 2, 3]
+xs: list[any] = ys          # a copy of ys
+xs[0] = "one"
+xs.append(4.5)
+print(xs, ys)               # [one 2 3 4.5] [1 2 3]
+counts: dict[str, int] = {"a": 1}
+meta: dict[str, any] = counts
+```
+
 ### Bytes
 
 `bytes` is a sequence of byte values (Go `[]byte`): file contents, hashes,
@@ -722,7 +748,12 @@ The compiler lowers `func(T, U) -> V` to Go's `func(T, U) V`, so
 function-typed values are first-class Go values you can store, pass,
 and return. An inline list / dict / set literal passed to a function value
 takes its declared parameter type (`size(["a"])` with
-`size: func(list[str]) -> int` passes a `list[str]`).
+`size: func(list[str]) -> int` passes a `list[str]`), and a subclass
+instance is accepted where the function value expects its base class
+(`rate(book)` with `rate: func(Item) -> float` and `book: Featured`,
+`class Featured(Item)`), for function-typed locals, parameters and fields
+alike, exactly as for a declared function; the callee still sees the
+`Featured` object, so its overrides run.
 
 ---
 
@@ -838,7 +869,11 @@ func main() {
 Fields can also be declared in the class body. An initializer there is a
 per-instance default: every constructor assigns it before running the
 `init` body (ancestors' defaults first), and each instance gets its own
-fresh value, so `items: list[T] = []` is not shared between instances:
+fresh value, so `items: list[T] = []` is not shared between instances.
+A subclass with its own `init` gets the defaults of every ancestor too,
+whether or not it calls `base.init()` and also when the ancestors are
+declared in another module (their initializers are evaluated in that
+module):
 
 ```lammergeier
 class Counter {
@@ -2049,6 +2084,27 @@ The test holds in:
 Conditions combine with `not`, `and` (every test of a true `and` holds) and
 `or` (every negated test of a false `or` holds).
 
+A `None` comparison is the same test as `isinstance(x, None)`: after
+`if h == None { return ... }` an `optional[html]` parameter is an `html`,
+in functions, methods, static methods and lambdas alike; returned (or
+passed) where an `optional[html]` is expected it is an optional again:
+
+```lammergeier
+func page(h: optional[html]) -> html {
+    if h == None {
+        return <><i>empty</i></>
+    }
+    return h                              # an `html` here
+}
+
+func bump(n: optional[int]) -> optional[int] {
+    if n is None {
+        return None
+    }
+    return n + 1                          # `int` arithmetic, boxed again
+}
+```
+
 What a value narrows to:
 
 | Declared type of `x` | Test | `x` becomes |
@@ -2057,7 +2113,7 @@ What a value narrows to:
 | `any`, a type parameter | `int` / `float` / `str` / `bool` | that type |
 | `any` | `list` / `dict` | `list[any]` / `dict[str, any]` |
 | `any`, an interface | a class or an interface | that class / interface |
-| `optional[T]` | `not isinstance(x, None)`, `isinstance(x, T)` | `T` |
+| `optional[T]` | `not isinstance(x, None)`, `isinstance(x, T)`, `x != None`, `x is not None` (and the `else` / guard side of `x == None`, `x is None`; `None` may be on either side) | `T` |
 | `json` | `int` / `float` / `str` / `bool` | that type (a JSON array or object stays `json`) |
 | any | a tuple of classes `(Square, BigSquare)` | their nearest common class, when narrower than the declared type; a tuple mixing builtins narrows nothing |
 
@@ -2068,7 +2124,10 @@ Narrowing never applies to:
   declared type there; bind the narrowed value to a new name instead;
 - fields (`self.shape`, `holder.shape`): another call could change them
   between the test and the use; copy the field to a local first
-  (`s: Shape = self.shape` then `if isinstance(s, Square)`);
+  (`s: Shape = self.shape` then `if isinstance(s, Square)`). An optional
+  field stays optional after `if self.cached == None { return ... }`, so
+  `return self.cached` where an `html` is expected is a Lam error (in
+  methods as in functions) whose help suggests the local copy or `??`;
 - module globals, and locals a nested function rebinds (`nonlocal x`), for
   the same reason;
 - a `list` / `dict` narrowed from `any` that the region changes in place
@@ -2647,8 +2706,13 @@ func doubleDesugared(s: str) -> Result[int] {
 
 The compiler injects the matching type assertion when the receiving
 binding is annotated, so `n: int = parseInt(s)?` produces typed Go
-without any manual value-casting shim. Multiple `?` in one function are
-fine — each gets its own internal temporary.
+without any manual value-casting shim. When the callee declares its
+payload (`-> Result[int]`), that type is the `?` value's type everywhere,
+so it can be an operand directly: `return Result.Ok(parse(s)? * 2)`,
+`f"{word(s)?.toUpper()}"`, `rows()?[0] + 1`, `ratio()? * 4.0 +
+parse(s)?` (the int is widened), `[load(r)?.name for r in rows]` (a
+`list[str]`). Multiple `?` in one function are fine — each gets its own
+internal temporary.
 
 `?` binds to the expression on its left, so the payload can be used
 directly: `(m.make()?).key`, `len(words()?)`. A `?` followed by `.` on a
@@ -3334,13 +3398,30 @@ func main() {
 On a class or `optional[...]` receiver `obj?.field` is typed: it is an
 `optional` of the field's type (`optional[str]` for a `str` field, the
 field's own type when it already holds `None`), so `?.` chains
-(`user?.profile?.email`), and `??` with a fallback of the payload type
-yields that type (`e: str = user?.email ?? "x"`). `print` and f-strings
-show an optional value's payload, or `<nil>`. `d[key] ?? fallback` on a
-dict selects the fallback when the key is missing. In other contexts
-(`None ?? 42`, receivers of unknown type, `?.method()` calls) both
-operators return `interface{}`; assign to an annotated variable when a
-concrete type is required downstream. `optional[User]` and
+(`user?.profile?.email`). `print` and f-strings show an optional value's
+payload, or `<nil>`.
+
+`opt ?? fallback` on an `optional[T]` with a fallback of type `T` is a `T`,
+in an annotated target or not: `w = find(4) ?? 0` makes `w` an `int`, so
+`1.5 * (100 - w)`, `(name() ?? "x").toUpper()`, `f"{find(1) ?? 0}"`,
+comparisons, arguments, `return`, `Result.Ok(...)`, ternaries and
+comprehensions see that type. This holds for value payloads, classes (a
+subclass fallback is fine: `lookup() ?? Admin("root")` is a `User`),
+optional fields (`obj.maybe ?? d`), `optional[list[T]]` /
+`optional[dict[K, V]]` (an empty `[]` / `{}` fallback takes the payload
+type), generic functions returning `optional[T]` (`first(xs) ?? 0`),
+`?` on a `Result[optional[T]]` (`load()? ?? 0`) and functions of other
+modules. An `int` payload with a `float` fallback (or the reverse) is a
+`float`; `a ?? b ?? c` is `a ?? (b ?? c)`, so `a(1) ?? a(2) ?? 3` is an
+`int` and `opt ?? other` with two `optional[T]` stays an `optional[T]`.
+On a `json` value, `doc.key ?? "x"` is a `json` (an annotated target
+extracts its type: `name: str = doc.name ?? "anon"`, `x: float = doc.n ??
+0`). `d[key] ?? fallback` on a dict selects the fallback when the key is
+missing and has the value type. In other contexts (`None ?? 42`, a
+fallback of another type such as `find(1) ?? "none"`, receivers of
+unknown type, `?.method()` calls) both operators return `interface{}`;
+assign to an annotated variable when a concrete type is required
+downstream. `optional[User]` and
 `Option[User]` annotations retain `User` as the safe-navigation receiver
 for member suggestions and call-shape checks, and lower to one `*User`
 pointer rather than a pointer-to-pointer. `optional[any]` stays dynamic.
@@ -3349,9 +3430,10 @@ An `optional[T]` (or `Option[T]`) variable, field, parameter or return
 accepts `None` and any `T`, compares with `None` (`n == None`,
 `n != None`), and an optional class reference can be assigned back to the
 class type (class-typed variables already hold `None`). A value payload
-(`optional[int]` is a Go `*int`) is boxed automatically when an `int` is
-assigned or returned, and `opt ?? fallback` unwraps it to an `int`; it does
-not convert to a plain `int` implicitly.
+(`optional[int]` is a Go `*int`; `optional[list[int]]` a `*[]int`,
+`optional[dict[str, int]]` a `*map[string]int`) is boxed automatically when
+an `int` (a list, a dict) is assigned or returned, and `opt ?? fallback`
+unwraps it to an `int`; it does not convert to a plain `int` implicitly.
 
 ```lammergeier
 class Node {
@@ -3637,6 +3719,40 @@ func main() {
 }
 ```
 
+An override of a generic parent's method is written with the bound types:
+in `class Users(Registry[User])`, the parent's `row(self, item: T) -> str`
+is overridden by `row(self, item: User) -> str` (and `-> T`, `list[T]`,
+`optional[T]` become `-> User`, `list[User]`, `optional[User]`); another
+type is an `error[inheritance]` naming the bound type (`expected (User)`).
+The parent's own methods and calls through a `Registry[User]` value run the
+override, also when the parent is declared in another module and through a
+generic intermediate class (`class Named[U](Registry[U])`, `class
+Tags(Named[str])`):
+
+```lammergeier
+class Registry[T] {
+    func init(self) {
+        self.items: list[T] = []
+    }
+    func row(self, _item: T) -> str {
+        return "?"
+    }
+    func render(self) -> str {
+        out = ""
+        for it in self.items {
+            out += self.row(it) + ";"
+        }
+        return out
+    }
+}
+
+class Users(Registry[User]) {
+    func row(self, item: User) -> str {
+        return "user:" + item.name
+    }
+}
+```
+
 ---
 
 ## Importing Custom Libraries
@@ -3704,14 +3820,35 @@ func main() {
 
 `import @lam/jwt` without `as` is a compile error that suggests the alias.
 
+A module next to the importing file (or in a parent package) can be imported
+the same way with a relative path: `import .kit as ui` binds the sibling
+`kit.lam` (or `kit/__init__.lam`), `import ..shared.util as util` goes one
+package up first. Like `from .kit import name`, a relative path is resolved
+from the importing file only (never through the stdlib / extlibs / project
+search). The alias is required (a relative path cannot be written as a
+qualifier): `import .kit` alone is an error suggesting `import .kit as kit`.
+
+```lammergeier
+# lib/shop/views.lam
+import .kit as ui           # lib/shop/kit.lam
+import ..common.text as tx  # lib/common/text.lam
+
+func header(l: ui.Listing) -> html {
+    return ui.page(tx.title(l.name)) + ui.badge(true)
+}
+```
+
 Every module sees only its own definitions, its imports and the builtins,
 even though all modules are compiled into one Go package. Using another
 module's function, constant, class or interface (in code or in a type
 annotation) without importing it is an `undefined name` / `unknown type`
 error in that module, with the import to add; importing a name the target
-module does not declare is an `import resolution failed` error. Both are
-checked in every imported project and `extlibs` module, not only in the
-main file. Raw `go!` code is not checked.
+module does not declare is an `import resolution failed` error, and so is
+a relative import of a module that does not exist (`from .missing import
+Thing`, `import ..gone as g`), reported with its line and the paths
+searched. These are checked in every imported project and `extlibs` module,
+not only in the main file, absolute imports of missing modules included.
+Raw `go!` code is not checked.
 
 ```text
 error: semantic check failed for lib/app/web/views.lam
@@ -4084,6 +4221,12 @@ print(greet("Bob", "Hi"))    # Hi, Bob!
 ```
 
 Defaults work in constructors and static/instance methods too.
+
+A default is evaluated where the function is defined, not where it is
+called: `func pick(n: int = Size)` in one module uses that module's `Size`
+even when the caller (or another module) declares its own `Size`, and an
+imported constant used as a default (`from cfg import Size as S` then
+`n: int = S`) keeps meaning that constant.
 
 > **Note:** Variadic functions (`*args`) are excluded from default filling.
 

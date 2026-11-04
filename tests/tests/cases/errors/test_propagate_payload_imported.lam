@@ -1,0 +1,44 @@
+# Regression (4.1.2): `?` operands on results of another module (functions,
+# a generic function, instance / static methods and an interface method)
+# keep the imported payload types inside larger expressions:
+# `Result.Ok(parseLen(s)? * 2 + pick([1, 5])? - Meter(3).count()?)` used to
+# fail `go build` with "mismatched types interface{} and int".
+from lamerrors import Result
+from propagate_payload_provider import Meter, Counter, parseLen, ratio, names, pick, counter
+
+func total(s: str) -> Result[int] {
+    return Result.Ok(parseLen(s)? * 2 + pick([1, 5])? - Meter(3).count()?)
+}
+
+func text(m: Meter) -> Result[str] {
+    return Result.Ok(m.name()? + "/" + names()?[0] + f"{m.name()?.toUpper()}{-parseLen("ab")?}")
+}
+
+func viaInterface(c: Counter) -> Result[int] {
+    return Result.Ok(c.count()? * 10 + counter(2).count()?)
+}
+
+func mixed() -> Result[float] {
+    return Result.Ok(ratio("ab")? * 2 + parseLen("abc")?)
+}
+
+func opened() -> Result[int] {
+    do {
+        return Result.Ok(Meter.open(4)?.count()? * 3)
+    } catch e {
+        return Result.Err(e)
+    }
+}
+
+func main() {
+    print(total("abc").unwrap(), text(Meter(1)).unwrap(), viaInterface(Meter(4)).unwrap())
+    print(mixed().unwrap(), opened().unwrap(), not total("").ok())
+    r = viaInterface(Meter(-1))
+    if not r.ok() {
+        print(f"err: {r.error}")
+    }
+}
+
+# expect: 8 m1/xM1-2 42
+# expect: 4 12 true
+# expect: err: MeterError: negative

@@ -1,0 +1,107 @@
+# Cross-feature fixture (4.1.2): an order-pricing pipeline where `?`
+# results are used directly as operands everywhere: parsing with
+# `Result[int]` / `Result[float]`, an interface price source, a generic
+# lookup, an `optional` discount, comprehensions, ternaries, f-strings,
+# `do/catch` and early returns on the first bad line.
+#
+# expect: order A: 2 x apple @ 1.5 = 3 (discount 0)
+# expect: order A: 1 x pear @ 2 = 1.8 (discount 10)
+# expect: total: 4.8 lines=2 big=false
+# expect: bad: ParseError: bad quantity `x`
+# expect: missing: PriceError: no price for `kiwi`
+# expect: summary: 3 lines, 6 units, codes=APPLE/PEAR/PLUM
+
+from lamerrors import Result, Error
+
+interface PriceSource {
+    func price(self, item: str) -> Result[float]
+    func discount(self, item: str) -> Result[optional[int]]
+}
+
+class Catalog {
+    func init(self) {
+        self.prices: dict[str, float] = {"apple": 1.5, "pear": 2.0, "plum": 0.5}
+    }
+
+    func price(self, item: str) -> Result[float] {
+        if item not in self.prices {
+            return Result.Err(Error("PriceError", f"no price for `{item}`"))
+        }
+        return Result.Ok(self.prices[item])
+    }
+
+    func discount(self, item: str) -> Result[optional[int]] {
+        if item == "pear" {
+            return Result.Ok(10)
+        }
+        return Result.Ok(None)
+    }
+}
+
+class Line {
+    func init(self, qty: int, item: str) {
+        self.qty: int = qty
+        self.item: str = item
+    }
+}
+
+func parseQty(text: str) -> Result[int] {
+    if not text.isDigit() {
+        return Result.Err(Error("ParseError", f"bad quantity `{text}`"))
+    }
+    return Result.Ok(int(text))
+}
+
+func parseLine(raw: str) -> Result[Line] {
+    parts = raw.split(" ")
+    return Result.Ok(Line(parseQty(parts[0])? * 1, parts[1]))
+}
+
+func lastOf[T](xs: list[T]) -> Result[T] {
+    if len(xs) == 0 {
+        return Result.Err(Error("EmptyError", "no lines"))
+    }
+    return Result.Ok(xs[len(xs) - 1])
+}
+
+func lineTotal(src: PriceSource, line: Line) -> Result[float] {
+    off: int = src.discount(line.item)? ?? 0
+    return Result.Ok(src.price(line.item)? * line.qty * (100 - off) / 100)
+}
+
+func price(src: PriceSource, order: str, raws: list[str]) -> Result[str] {
+    lines = [parseLine(r)? for r in raws]
+    for line in lines {
+        print(f"order {order}: {line.qty} x {line.item} @ {src.price(line.item)?} = {lineTotal(src, line)?} (discount {src.discount(line.item)? ?? 0})")
+    }
+    total = 0.0
+    for line in lines {
+        total += lineTotal(src, line)?
+    }
+    big = "true" if total > 10.0 else "false"
+    return Result.Ok(f"total: {total} lines={len(lines)} big={big}")
+}
+
+func summary(raws: list[str]) -> Result[str] {
+    units = 0
+    for r in raws {
+        units += parseLine(r)?.qty
+    }
+    codes = [parseLine(r)?.item.toUpper() for r in raws]
+    return Result.Ok(f"{len(raws)} lines, {units + lastOf([0])?} units, codes={"/".join(codes)} ")
+}
+
+func main() {
+    src: PriceSource = Catalog()
+    print(price(src, "A", ["2 apple", "1 pear"]).unwrap())
+    bad = price(src, "B", ["2 apple", "x pear"])
+    if not bad.ok() {
+        print(f"bad: {bad.error}")
+    }
+    do {
+        print(price(src, "C", ["1 kiwi"])?)
+    } catch err {
+        print(f"missing: {err}")
+    }
+    print(f"summary: {summary(["1 apple", "2 pear", "3 plum"]).unwrap().trim()}")
+}

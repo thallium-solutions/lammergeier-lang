@@ -1,0 +1,64 @@
+# Provider for test_generic_box_modules.lam: functions and methods returning
+# `Result[Box[Row]]` / `Box[...]` built from list comprehensions passed
+# straight to the generic constructor.
+from lamerrors import Result
+from generic_box_provider import Box
+
+interface Source {
+    func name() -> str
+}
+
+class Db {
+    func name(self) -> str {
+        return "db"
+    }
+}
+
+class Row {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func load(src: Source, n: int) -> Result[Box[Row]] {
+    return Result.Ok(Box[Row]([Row(f"{src.name()}{i}") for i in range(n)], n))
+}
+
+func names(n: int) -> Box[str] {
+    return Box[str]([str(i) for i in range(n)], n)
+}
+
+class Table {
+    func init(self, prefix: str) {
+        self.prefix: str = prefix
+    }
+
+    func fetch(self, n: int) -> Result[Box[Row]] {
+        return Result.Ok(Box[Row]([Row(self.prefix + str(i)) for i in range(n)], n))
+    }
+
+    func squares(self, n: int) -> Box[int] {
+        return Box[int]([i * i for i in range(n) if i > 0], n - 1)
+    }
+
+    func byName(self, xs: list[str]) -> Box[Row] {
+        return Box[Row]([Row(x.toUpper()) for x in xs], len(xs))
+    }
+}
+
+class Pager[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+
+    func page(self, n: int) -> Box[T] {
+        return Box[T]([self.items[i] for i in range(n)], len(self.items))
+    }
+}
+
+func count() -> Result[int] {
+    b: Box[Row] = load(Db(), 3)?
+    return Result.Ok(b.total)
+}
+
+func main() { pass }

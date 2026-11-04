@@ -3689,17 +3689,22 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 f"give the subclass method another name)",
             )
             return
+        # ``class Users(Registry[User])``: the base's ``row(self, item: T)``
+        # is ``row(self, item: User)`` for this subclass.
+        bound = self._inherited_type_arg_texts(class_name)
         for child_sig in child_overloads:
             for base_sig in base_overloads:
-                if child_sig.param_types != base_sig.param_types:
+                base_params = tuple(self._bind_type_text(t, bound) for t in base_sig.param_types)
+                if child_sig.param_types != base_params:
                     continue
-                if child_sig.return_type_text != base_sig.return_type_text:
+                base_return_text = self._bind_type_text(base_sig.return_type_text, bound)
+                if child_sig.return_type_text != base_return_text:
                     self._error(
                         node,
                         "inheritance",
                         f"class `{class_name}` overrides `{base}.{method_name}` with return "
                         f"`{child_sig.return_type_text or 'None'}`, expected "
-                        f"`{base_sig.return_type_text or 'None'}`",
+                        f"`{base_return_text or 'None'}`",
                     )
                 return
 
@@ -3715,7 +3720,9 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return
 
         child_param_types = self._shape_param_texts(child_shape)
-        base_param_types = self._shape_param_texts(base_shape)
+        base_param_types = tuple(
+            self._bind_type_text(t, bound) for t in self._shape_param_texts(base_shape)
+        )
         for got, expected in zip(child_param_types, base_param_types):
             if "any" in {got, expected} or got == expected:
                 continue
@@ -3730,7 +3737,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return
 
         child_return = self._shape_return_text(child_shape)
-        base_return = self._shape_return_text(base_shape)
+        base_return = self._bind_type_text(self._shape_return_text(base_shape), bound)
         if child_return != base_return:
             self._error(
                 node,
@@ -3738,6 +3745,27 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 f"class `{class_name}` overrides `{base}.{method_name}` with "
                 f"return `{child_return}`, expected `{base_return}`",
             )
+
+    def _inherited_type_arg_texts(self, class_name: str) -> dict[str, str]:
+        """``{T: "User"}`` for ``class Users(Registry[User])`` (transitively)."""
+        if not self._class_base_type_args.get(class_name) and not any(
+            self._class_base_type_args.get(base) for base in self._all_base_names(class_name)
+        ):
+            return {}
+        return {
+            param: render_type(arg)
+            for param, arg in self._inherited_type_arg_mapping(class_name).items()
+        }
+
+    @staticmethod
+    def _bind_type_text(text: str, bound: dict[str, str]) -> str:
+        if not bound or not text:
+            return text
+        return re.sub(
+            r"\b(" + "|".join(re.escape(name) for name in bound) + r")\b",
+            lambda m: bound[m.group(1)],
+            text,
+        )
 
     def _class_method_kind(self, class_name: str, method_name: str) -> str:
         if method_name in self._class_static_methods.get(class_name, set()):
@@ -5656,9 +5684,17 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         if not (isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2):
             return
         receiver = callee.children[0]
-        if not (isinstance(receiver, Tree) and receiver.data == "var" and receiver.children):
+        if not isinstance(receiver, Tree):
             return
-        if not self._var_type(self._name_text(receiver.children[0])).startswith("dict["):
+        if receiver.data == "var" and receiver.children:
+            if not self._var_type(self._name_text(receiver.children[0])).startswith("dict["):
+                return
+        elif receiver.data in {"funccall", "propagate", "getitem"}:
+            # ``table()?.keys()`` / ``load().keys()`` / ``rows[0].keys()``:
+            # a receiver typed ``dict[K, V]`` by its call or element type.
+            if not isinstance(self._expr_simple_type(receiver), DictType):
+                return
+        else:
             return
         method = self._name_text(callee.children[1])
         self._error(
@@ -7103,6 +7139,13 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 f"`import {module}` needs an alias: write `import {module} as {suggested}` "
                 f"(a scoped package path cannot qualify names; then use `{suggested}.name`)",
             )
+        elif not is_from and module.startswith(".") and not alias:
+            suggested = _namespacing.default_module_local(module)
+            self._error(
+                node, "import",
+                f"`import {module}` needs an alias: write `import {module} as {suggested}` "
+                f"(a relative module path cannot qualify names; then use `{suggested}.name`)",
+            )
 
     def _import_conflict_hint(self, name: str) -> str:
         module, imported = getattr(self, "_import_origins", {}).get(name, ("", None))
@@ -7990,9 +8033,23 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 and not is_assignable(expected_model, actual_model)
                 and not self._nominal_type_assignable(expected_model, actual_model)
                 and not self._numeric_constant_fits_type_param(expected_model, value_node)):
+            hint = ""
+            if (
+                isinstance(actual_model, GenericType)
+                and actual_model.base in {"optional", "Option"}
+                and isinstance(value_node, Tree)
+                and value_node.data == "getattr"
+            ):
+                # ``if self.cached == None { return ... }`` narrows nothing.
+                field_text = self._assignment_target_display(value_node)
+                local = field_text.rsplit(".", 1)[-1]
+                hint = (
+                    f" (a `None` test does not narrow a field: copy it to a local first, "
+                    f"`{local} = {field_text}`, test and return `{local}`, or use `{field_text} ?? ...`)"
+                )
             self._error(
                 ret, "return",
-                f"function `{name}` returns `{actual_type}`, expected `{expected_name}`",
+                f"function `{name}` returns `{actual_type}`, expected `{expected_name}`{hint}",
             )
 
     # Class-level (they read no checker state): the transpiler asks them
@@ -8260,6 +8317,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 field_type = self._member_target_type(node)
                 if isinstance(field_type, NamedType) and field_type.name in {"int", "float", "json"}:
                     return field_type
+                if isinstance(field_type, GenericType) and field_type.base in {"optional", "Option"}:
+                    # ``return self.cached`` with ``cached: optional[html]``
+                    # where an ``html`` is expected: a field is an optional
+                    # like a local (fields are never narrowed by a test).
+                    return field_type
         if node.data == "propagate":
             return self._propagated_payload_type(node)
         if node.data == "funccall":
@@ -8301,9 +8363,75 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 return method_type
         if node.data == "test":
             return self._ternary_result_type(node)
+        if node.data == "null_coalesce":
+            return self._null_coalesce_result_type(node)
         value_type = self._constructor_value_type(node)
         if value_type:
             return NamedType(value_type)
+        return None
+
+    def _null_coalesce_result_type(self, node: Tree) -> Type | None:
+        """``a ?? b ?? c`` folds from the right (``a ?? (b ?? c)``):
+        ``optional[T] ?? T`` is a ``T`` (an ``int`` payload with a ``float``
+        fallback is a ``float``), ``optional[T] ?? optional[T]`` stays
+        optional, an optional class reference with a fallback of the class
+        (or a subclass) is the class, ``x ?? None`` is ``x``, ``d[k] ?? v``
+        on a ``dict[K, V]`` is a ``V`` and a ``json`` operand gives a
+        ``json``. Anything else is unknown (``None``)."""
+        operands = [child for child in node.children if child is not None]
+        if not operands:
+            return None
+        result = self._coalesce_operand_type(operands[-1])
+        if len(operands) == 1:
+            return result
+        for operand in reversed(operands[:-1]):
+            if result is None:
+                return None
+            result = self._coalesce_pair_type(operand, result)
+        return result
+
+    def _coalesce_operand_type(self, operand) -> Type | None:
+        if isinstance(operand, Tree) and operand.data in {"const_none"}:
+            return NamedType("None")
+        if (
+            isinstance(operand, Tree) and operand.data == "var" and operand.children
+            and self._name_text(operand.children[0]) in {"None", "nil"}
+        ):
+            return NamedType("None")
+        actual = self._expr_simple_type(operand)
+        if actual is None and isinstance(operand, Tree) and operand.data in {"getattr", "getattr_safe"}:
+            actual = self._member_target_type(operand)
+        return actual
+
+    def _coalesce_pair_type(self, left_node, right: Type) -> Type | None:
+        left = self._coalesce_operand_type(left_node)
+        if left is None:
+            return None
+        if isinstance(left, NamedType) and left.name == "json":
+            return left
+        if isinstance(right, NamedType) and right.name == "None":
+            return left
+        inner = None
+        if isinstance(left, GenericType) and left.base in {"optional", "Option"} and len(left.args) == 1:
+            inner = left.args[0]
+        elif (
+            isinstance(left_node, Tree) and left_node.data == "getitem"
+            and isinstance(self._expr_simple_type(left_node.children[0]), DictType)
+        ):
+            inner = left  # ``d[key] ?? fallback``: a missing key selects the fallback
+        elif isinstance(left, NamedType) and left.name in self._class_method_shapes:
+            inner = left  # class references hold ``None``
+        if inner is None or self._is_any_type(inner):
+            return None
+        if render_type(right) == render_type(left) and inner is not left:
+            return left  # ``optional[T] ?? optional[T]``
+        if self._is_any_type(right):
+            return inner
+        if isinstance(inner, NamedType) and isinstance(right, NamedType):
+            if inner.name == "int" and right.name == "float":
+                return right
+        if is_assignable(inner, right) or self._nominal_type_assignable(inner, right):
+            return inner
         return None
 
     def _numeric_builtin_result_type(self, name: str, call: Tree) -> Type | None:
@@ -10532,7 +10660,7 @@ def _import_name_modules(node: Tree) -> list[tuple[str, str]]:
             for part in item.children:
                 if isinstance(part, Tree) and part.data == "dotted_name":
                     module = _dotted_name_text(part)
-                elif isinstance(part, Tree) and part.data == "scoped_name":
+                elif isinstance(part, Tree) and part.data in {"scoped_name", "relative_module"}:
                     module = str(part.children[0]) if part.children else ""
                 elif isinstance(part, Tree) and part.data == "name":
                     alias = SemanticChecker._name_text(part)
@@ -10569,14 +10697,29 @@ def _check_imported_exports(
     *,
     module_index: WorkspaceIndex,
     source_path: Path,
+    report_missing: bool = False,
 ) -> list[SemanticError]:
+    """Imports of names a module does not export; with ``report_missing``
+    (imported modules: the main file has its own resolution report) also
+    imports of modules that do not exist."""
     errors: list[SemanticError] = []
+    for node in _iter_import_name_nodes(tree) if report_missing else ():
+        # ``import .kit as ui`` / ``import pkg.mod as m`` of a module that
+        # does not exist: a Lam error here, not a Go "undefined" later.
+        for module_text, _local in _import_name_modules(node):
+            if module_index.resolve_module(source_path, module_text) is None:
+                errors.append(_missing_module_error(node, module_text, module_index, source_path))
     for node in _iter_import_from_nodes(tree):
         module = _import_module_name(node)
         if not module:
             continue
-        mod_path = module_index.resolve_module(source_path, module)
+        # ``from .missing import Thing``: resolved like the build does
+        # (relative to this module only).
+        spec = _import_from_dots(node) + module
+        mod_path = module_index.resolve_module(source_path, spec)
         if mod_path is None:
+            if report_missing:
+                errors.append(_missing_module_error(node, spec, module_index, source_path))
             continue
         try:
             facts = module_index.facts_by_path.get(mod_path) or module_index.update_file(mod_path)
@@ -10621,6 +10764,35 @@ def _check_imported_exports(
             line, col = _tree_loc(symbol_node)
             errors.append(SemanticError(line, col, msg, "import"))
     return errors
+
+
+def _import_from_dots(node: Tree) -> str:
+    """The leading dots of ``from ..pkg.mod import x`` (``""`` if absolute)."""
+    for child in node.children:
+        if isinstance(child, Tree) and child.data == "dots":
+            return "".join(str(token) for token in child.children)
+    return ""
+
+
+def _missing_module_error(node: Tree, module: str, module_index: WorkspaceIndex, source_path: Path) -> SemanticError:
+    """``module `x` could not be found`` for an imported module's import,
+    relative or absolute, with the paths Lammergeier looked at (as for the
+    main file) and the closest known module. An import that binds nothing is
+    an error even when another module happens to provide its names."""
+    line, col = _tree_loc(node)
+    msg = f"import resolution failed: module `{module}` could not be found"
+    if not module.startswith("."):
+        try:
+            known = module_index.available_modules(source_path)
+        except OSError:
+            known = []
+        suggestion = get_close_matches(module, known, n=1, cutoff=0.72)
+        if suggestion:
+            msg += f"\n  help: did you mean `{suggestion[0]}`?"
+    searched = module_index.module_search_paths(source_path, module)
+    if searched:
+        msg += "\n  help: Lammergeier looked for " + " or ".join(f"`{p}`" for p in searched) + "."
+    return SemanticError(line, col, msg, "import")
 
 
 def _export_is_private(export) -> bool:
@@ -10987,10 +11159,14 @@ def check_module_names(
         if not e.is_warning and (
             e.kind == "undefined"
             or (e.kind == "type" and _UNKNOWN_TYPE_RE.match(e.message) is not None)
+            # ``import .kit`` / ``import @scope/pkg`` without ``as``.
+            or (e.kind == "import" and "` needs an alias: write `import " in e.message)
         )
     ]
     _suggest_defining_imports(errors, module_index=module_index, source_path=source_path)
-    errors.extend(_check_imported_exports(tree, module_index=module_index, source_path=source_path))
+    errors.extend(_check_imported_exports(
+        tree, module_index=module_index, source_path=source_path, report_missing=True,
+    ))
     return errors
 
 

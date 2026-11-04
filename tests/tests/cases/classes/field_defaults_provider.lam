@@ -1,0 +1,37 @@
+# Provider for test_field_defaults_inherited_imported.lam: classes with
+# class-body field defaults (one naming a module constant whose name the
+# test file also declares) subclassed in another module.
+
+const Label: str = "provider-label"
+
+class Base {
+    notFound: str = Label
+    count: int = 3
+    tags: list[str] = ["t"]
+
+    func label(self) -> str {
+        return f"{self.notFound}/{self.count}/{len(self.tags)}"
+    }
+}
+
+class Mid(Base) {
+    title: str = "mid"
+}
+
+class Configured {
+    mode: str = "auto"
+
+    func init(self, n: int) {
+        self.n: int = n
+    }
+}
+
+class Box[T] {
+    size: int = 2
+
+    func init(self) {
+        self.items: list[T] = []
+    }
+}
+
+func main() { pass }

@@ -1,0 +1,36 @@
+# Provider for test_any_widening_imported.lam: `list[any]` /
+# `dict[str, any]` parameters and concretely typed results.
+from lamerrors import Result
+
+func describe(xs: list[any]) -> str {
+    out: str = ""
+    for x in xs {
+        out += f"<{x}>"
+    }
+    return out
+}
+
+func keys(d: dict[str, any]) -> int {
+    return len(d)
+}
+
+func scores() -> dict[str, int] {
+    return {"ada": 3, "bob": 5}
+}
+
+func ids() -> Result[list[int]] {
+    return Result.Ok([7, 8, 9])
+}
+
+class Bag {
+    func init(self) {
+        self.items: list[any] = []
+    }
+
+    func fill(self, xs: list[any]) -> int {
+        self.items = xs
+        return len(self.items)
+    }
+}
+
+func main() { pass }

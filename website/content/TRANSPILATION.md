@@ -747,13 +747,22 @@ func Double(s string) *Result {
 }
 ```
 
-The `.Value.(int)` cast is injected automatically when the immediate typed
-context supplies a target Go type. Typed assignments, returns, call arguments,
-and collection elements all route through `_typed_value_to_go`, which publishes
-the expected type for the `propagate` branch in `_expr_to_go`. In `any`
-contexts, such as `return Result.Ok(parseInt(s)?)`, the immediate argument type
-wins over the enclosing `-> Result` return type and the substitution stays
-plain `__qN.Value`.
+The `.Value.(T)` cast asserts the callee's payload type whenever it is known
+(`Result[int]` gives `.Value.(int)`), whatever the surrounding context: the
+`?` value is an operand there, so `return Result.Ok(parse(s)? * 2)` emits
+`Result_Ok(__q1.Value.(int) * 2)` although `Result.Ok(...)` expects an
+`interface{}`, and `x: float = parse(s)? * 2` emits
+`float64(__q1.Value.(int) * 2)`. The payload type is also the `?`
+expression's type hint, so operators
+around it widen ints next to floats, concatenate strings and type list
+comprehensions. Only an unknown or `any` payload (an untyped `-> Result`, a
+`Result[any]`) takes the target Go type of the immediate typed context: typed
+assignments, returns, call arguments, and collection elements all route
+through `_typed_value_to_go`, which publishes the expected type for the
+`propagate` branch in `_expr_to_go`. In `any` contexts, such as `return
+Result.Ok(parseInt(s)?)` with an untyped `parseInt`, the immediate argument
+type wins over the enclosing `-> Result` return type and the substitution
+stays plain `__qN.Value`.
 
 A signature-level payload marker such as `Result[int]` lowers to the same
 `*Result` shown above. The marker improves Lam-side inference but is erased
@@ -790,8 +799,9 @@ each statement is checked and emitted, `compiler/safe_nav.py` rewrites a
 `getattr_safe` whose receiver is a `Result` (the semantic checker's type, or
 the transpiler's `*Result` hint for modules the checker does not see) into
 `getattr(propagate(receiver), y)`, receivers first, so chains
-`load()?.next()?.next()?` work link by link. Lambda bodies keep `?.` as
-written.
+`load()?.next()?.next()?` work link by link. F-string slots, parsed when
+the f-string is lowered, get the same rewrite on a copy of the slot tree
+(`f"{word()?.toUpper()}"`). Lambda bodies keep `?.` as written.
 
 A comprehension whose element or filter holds a `?` keeps the `?` inside
 its loop: the closure returns `([]T, *Result)`, each `?` guard returns
@@ -1113,7 +1123,11 @@ func Point_origin() *Point {
   (`count: int = 0`) becomes an assignment `s.Count = 0` in every
   constructor (including the generated no-`init` one), emitted after the
   embedded parents are allocated and before the `init` body; inherited
-  defaults are assigned through the parent path (`s.Base.Count = 0`).
+  defaults are assigned through the parent path (`s.Base.Count = 0`). A
+  subclassed class with defaults also gets `func (s *Base)
+  _lamFieldDefaults()` (its own defaults only), which a subclass declared
+  in another module calls on the parent path (`s.Base._lamFieldDefaults()`)
+  so the initializers are lowered in the defining module's namespace.
 - `self` in method bodies is rewritten to `s`.
 - Static methods are emitted as plain functions named
   `<Class>_<method>`. Callers who write `Class.method(...)` or
@@ -1242,7 +1256,10 @@ var s *Shape = NewSquare()._lamUp_Shape()
   embedded ancestor, after the parents are allocated and again after an
   explicit `base.init(...)` / alias `init` call or an inherited
   constructor, which replace the parent pointer), `_lamBindSelf` and an
-  interface listing the methods it defines that a descendant overrides.
+  interface listing the methods it defines that a descendant overrides
+  (for a generic class `lamVirtualRegistry[T]`; an override counts when its
+  signature is the parent's with the type parameters bound consistently,
+  `(T)string` overridden by `(*User)string` in `class Users(Registry[User])`).
   Each such method gets a wrapper `_lamVirt_<M>` that Go inlines. A call
   `x.m(...)` — `self.m()` inside the class or any receiver from outside —
   lowers to `x._lamVirt_M(...)` only when a strict descendant of the static
@@ -1390,6 +1407,8 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `xs[a:b:c]` with negative / stepped bounds | typed IIFE keeping the receiver's Go type (`[]T` / `string`), reflection only for unknown receivers |
 | `obj?.field` on a pointer receiver | `func() *T { if o := obj; o != nil { v := o.F; return &v }; return nil }()` for a value field (`T` itself when nilable) |
 | `d[k] ?? fallback` on a map        | comma-ok lookup: the fallback for a missing key                            |
+| `opt ?? fallback` on an `optional[T]` | `func() T { if __lamL := opt; __lamL != nil { return *__lamL }; return fallback }()` typed `T` (`float64` for an int payload with a float fallback, the pointer for two optionals, a class pointer as is); `a ?? b ?? c` nests as `a ?? (b ?? c)` |
+| a `list[T]` / `dict[K, T]` where `list[any]` / `dict[K, any]` (or `list[float]` for ints) is expected | `_container_widening_go`: an IIFE copying the elements into a new `[]interface{}` / `map[K]interface{}` (element-wise for nested lists, `float64(e)` for ints; `nil` stays `nil`) |
 | `1.5 * n` with `n: int`            | `1.5 * float64(n)` (int operands of a mixed int/float expression)          |
 | an `int` where a `float` is expected | `float64(n)`: `_typed_value_to_go` widens an int-typed value for a `float` target (arguments, returns, collection elements, declarations, fields, `+=` / `-=` / `*=`), and calls of `func(float)` values convert their int arguments |
 | `[expr for x in xs if c]`          | IIFE building a `[]T` slice: `T` from the typed context, else from `expr` with the loop variables typed by their iterables (lists, strings, dicts, `range`, `enumerate`), else `interface{}` |

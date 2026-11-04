@@ -32,7 +32,7 @@ class StatementVisitorMixin:
                 for das in child.children:
                     if isinstance(das, Tree) and das.data == "dotted_as_name":
                         head = das.children[0]
-                        if isinstance(head, Tree) and head.data == "scoped_name":
+                        if isinstance(head, Tree) and head.data in {"scoped_name", "relative_module"}:
                             name = str(head.children[0]) if head.children else ""
                         else:
                             name = self._dotted_name_to_str(head)

@@ -124,7 +124,7 @@ def _name_text(node) -> str:
 def _dotted_text(node) -> str:
     if isinstance(node, Tree) and node.data == "dotted_name":
         return ".".join(_name_text(c) for c in node.children)
-    if isinstance(node, Tree) and node.data == "scoped_name":
+    if isinstance(node, Tree) and node.data in {"scoped_name", "relative_module"}:
         return _name_text(node)
     return ""
 
@@ -701,6 +701,42 @@ def _locally_bound_names(tree: Tree) -> set[str]:
     from compiler.narrowing import assigned_names
 
     return assigned_names([tree])
+
+
+def qualify_default_values(func_defaults: dict, plan: Optional[NamespacePlan]) -> None:
+    """Make a module's parameter defaults name its own values from anywhere.
+
+    A default is lowered where the function is *called*, possibly in another
+    module: ``func pick(n: int = Size)`` with ``Size`` renamed to
+    ``Size__a`` (another module defines a ``Size`` too) must not resolve to
+    the caller's ``Size``. Value references (consts, module variables and
+    imported values under their local name) and renamed exported functions
+    are rewritten, on copies, to the Go identifiers of the defining module.
+    """
+    if plan is None:
+        return
+    rewrites = dict(plan.const_go_names)
+    rewrites.update(
+        (name, go) for name, go in plan.function_go_names.items() if go[:1].isupper()
+    )
+    if not rewrites:
+        return
+    for key, defaults in list(func_defaults.items()):
+        qualified = []
+        changed = False
+        for entry in defaults:
+            index, node = entry
+            if isinstance(node, Tree):
+                copied = copy.deepcopy(node)
+                holder = Tree("default_value", [copied])
+                rewrite_tree(holder, rewrites, {})
+                if holder.children[0] != node:
+                    qualified.append((index, holder.children[0]))
+                    changed = True
+                    continue
+            qualified.append(entry)
+        if changed:
+            func_defaults[key] = qualified
 
 
 # ── Transpiler metadata view ─────────────────────────────────────────

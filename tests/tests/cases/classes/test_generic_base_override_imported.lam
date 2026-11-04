@@ -1,0 +1,39 @@
+# Regression (4.1.2): a subclass overriding methods of an imported generic
+# base with the bound type argument (`row(self, item: User)` for the base's
+# `row(self, item: T)`, `fetch(self) -> Page[User]` for `-> Page[T]`) is
+# accepted, and the base's own methods (in the other module) dispatch to
+# the overrides, also through a base-typed reference.
+from generic_registry_provider import Registry, Page
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Users(Registry[User]) {
+    func init(self) {
+        base.init("users")
+    }
+
+    func fetch(self) -> Page[User] {
+        return Page[User]([User("a"), User("<b>")], 2)
+    }
+
+    func row(self, item: User) -> html {
+        return <><tr><td>${item.name}</td></tr></>
+    }
+}
+
+func render(r: Registry[User]) -> str {
+    return str(r.rows())
+}
+
+func main() {
+    u: Users = Users()
+    print(str(u.rows()))
+    print(render(u), u.key)
+}
+
+# expect: <table data-total="2"><tr><td>a</td></tr><tr><td>&lt;b&gt;</td></tr></table>
+# expect: <table data-total="2"><tr><td>a</td></tr><tr><td>&lt;b&gt;</td></tr></table> users

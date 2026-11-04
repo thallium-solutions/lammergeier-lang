@@ -1,0 +1,30 @@
+# Provider for test_default_const_namespaces.lam: parameter defaults naming
+# this module's constant `Size` (another module and the test declare one
+# too) and a constant imported under an alias.
+from default_const_beta import Size as BetaSize
+
+const Size: int = 20
+
+func pick(n: int = Size) -> int {
+    return n
+}
+
+func mixed(a: int = Size, b: int = BetaSize) -> str {
+    return f"{a}/{b}"
+}
+
+class Grid {
+    func init(self, w: int = Size * 2) {
+        self.w: int = w
+    }
+
+    func cell(self, k: int = Size + 1) -> int {
+        return k + self.w
+    }
+
+    static func make(n: int = Size) -> int {
+        return n * 10
+    }
+}
+
+func main() { pass }

@@ -1,0 +1,27 @@
+# expect-error: dicts have no `keys()` method
+# expect-error: dicts have no `values()` method
+# expect-error: dicts have no `items()` method
+# 4.1.2: a dict reached through `?`, a call or an index (`table()?.keys()`,
+# `load().values()`, `shards[0].items()`) is checked like a dict local:
+# these calls used to pass `lamc` and fail only in `go build`.
+from lamerrors import Result
+
+func table() -> Result[dict[str, int]] {
+    return Result.Ok({"a": 1})
+}
+
+func load() -> dict[str, int] {
+    return {"b": 2}
+}
+
+func names() -> Result[int] {
+    shards: list[dict[str, int]] = [{"c": 3}]
+    ks = table()?.keys()
+    vs = load().values()
+    its = shards[0].items()
+    return Result.Ok(len(ks) + len(vs) + len(its))
+}
+
+func main() {
+    print(names().unwrap())
+}

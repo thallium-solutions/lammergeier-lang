@@ -1,0 +1,30 @@
+# Provider for test_generic_box_modules.lam: a third module calling the
+# generic-result functions and methods of `generic_box_rows`.
+from lamerrors import Result
+from generic_box_rows import Row, Db, Table, Pager, load, names
+from generic_box_provider import Box
+
+class Holder {
+    func init(self) {
+        self.db: Db = Db()
+    }
+}
+
+func viaJson() -> json {
+    h: Holder = Holder()
+    b: Box[Row] = load(h.db, 2)?
+    t: Table = Table("t")
+    c: Box[Row] = t.fetch(3)?
+    return {"n": b.total + c.total, "first": c.first().name}
+}
+
+func summary() -> Result[str] {
+    t: Table = Table("s")
+    rows = t.fetch(2)?
+    sq: Box[int] = t.squares(4)
+    up: Box[Row] = t.byName(["a", "b"])
+    p: Pager[str] = Pager[str](["x", "y", "z"])
+    return Result.Ok(f"{rows.first().name} {sq.items} {up.first().name} {names(3).items} {p.page(2).items}")
+}
+
+func main() { pass }

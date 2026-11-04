@@ -1,0 +1,157 @@
+# Stress (4.1.2): a pricing report composing typed `??` results and
+# implicit `list[T]` / `dict[str, T]` -> `list[any]` / `dict[str, any]`
+# widening with interfaces, inheritance, generics, lambdas,
+# comprehensions, `Result` / `?`, `do/catch`, `match`, optional fields
+# and f-strings.
+#
+# expect: prices: 15 4.5 9
+# expect: labels: [BOOK pen mug]
+# expect: discounted: 13.5 4.05 8.1
+# expect: audit: <book> <pen> <mug> <3>
+# expect: meta: 3 items, 2 tagged
+# expect: buckets: cheap=1 mid=1 dear=1
+# expect: first tag: SALE / none
+# expect: report: 3 rows, total 28.5
+# expect: failed: no stock for ghost
+# expect: widened: [15 4.5 9] [[book pen] [mug]]
+
+from lamerrors import Result
+
+interface Priced {
+    func price(self) -> float
+}
+
+class Item {
+    func init(self, name: str, cents: int) {
+        self.name: str = name
+        self.cents: int = cents
+        self.discount: optional[float] = None
+        self.tags: optional[list[str]] = None
+        self.stock: optional[int] = None
+    }
+
+    func price(self) -> float {
+        return self.cents / 100
+    }
+
+    func label(self) -> optional[str] {
+        return None
+    }
+}
+
+class Featured(Item) {
+    func init(self, name: str, cents: int) {
+        base.init(name, cents)
+    }
+
+    func label(self) -> optional[str] {
+        return self.name.toUpper()
+    }
+}
+
+func cheapest[T](xs: list[T], key: func(T) -> float) -> optional[T] {
+    if len(xs) == 0 {
+        return None
+    }
+    best = xs[0]
+    for x in xs {
+        if key(x) < key(best) {
+            best = x
+        }
+    }
+    return best
+}
+
+func audit(values: list[any]) -> str {
+    parts: list[str] = [f"<{v}>" for v in values]
+    return " ".join(parts)
+}
+
+func summary(meta: dict[str, any]) -> str {
+    return f"{meta['count']} items, {meta['tagged']} tagged"
+}
+
+func stockOf(item: Item) -> Result[optional[int]] {
+    if item.name == "ghost" {
+        return Result.Err(f"no stock for {item.name}")
+    }
+    return Result.Ok(item.stock)
+}
+
+func reserve(item: Item) -> Result[int] {
+    do {
+        left = stockOf(item)? ?? 10
+        return Result.Ok(left - 1)
+    } catch e {
+        return Result.Err(e)
+    }
+}
+
+func bucket(p: float) -> str {
+    match p {
+        case x if x < 5 { return "cheap" }
+        case x if x < 10 { return "mid" }
+        case _ { return "dear" }
+    }
+}
+
+func total(rows: list[any]) -> float {
+    acc = 0.0
+    for r in rows {
+        if isinstance(r, float) {
+            acc += r
+        }
+    }
+    return acc
+}
+
+func main() {
+    book = Featured("book", 1500)
+    pen = Item("pen", 450)
+    mug = Item("mug", 900)
+    mug.discount = 0.1
+    pen.tags = ["sale", "new"]
+    mug.tags = ["home"]
+    items: list[Item] = [book, pen, mug]
+
+    prices: list[float] = [i.price() for i in items]
+    print(f"prices: {prices[0]} {prices[1]} {prices[2]}")
+    labels = [(i.label() ?? i.name) for i in items]
+    print(f"labels: {labels}")
+    rate: func(Item) -> float = lambda i: i.price() * (1 - (i.discount ?? 0.1))
+    print("discounted:", rate(items[0]), rate(pen), rate(mug))
+
+    names: list[str] = [i.name for i in items]
+    audited: list[any] = names
+    audited.append(len(names))
+    print("audit:", audit(audited))
+    counts: dict[str, int] = {"count": len(items), "tagged": len([i for i in items if (i.tags ?? []) != []])}
+    print("meta:", summary(counts))
+
+    tally: dict[str, int] = {}
+    for p in prices {
+        b = bucket(p)
+        tally[b] = (tally[b] ?? 0) + 1
+    }
+    print(f"buckets: cheap={tally['cheap']} mid={tally['mid']} dear={tally['dear']}")
+
+    firstTag = ((pen.tags ?? ["none"])[0]).toUpper()
+    print(f"first tag: {firstTag} / {(book.tags ?? ['none'])[0]}")
+
+    rows: list[any] = prices
+    low = cheapest(items, lambda i: i.price()) ?? book
+    print(f"report: {len(rows)} rows, total {total(rows)}")
+    if low.name != "pen" {
+        print("unexpected cheapest")
+    }
+    r = reserve(Item("ghost", 1))
+    if not r.ok() {
+        print(f"failed: {r.error}")
+    }
+    if reserve(mug).unwrap() != 9 {
+        print("unexpected stock")
+    }
+    grouped: list[list[str]] = [["book", "pen"], ["mug"]]
+    widened: list[list[any]] = grouped
+    print("widened:", rows, widened)
+}

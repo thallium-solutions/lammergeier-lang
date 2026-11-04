@@ -1,0 +1,20 @@
+# Regression (4.1.2): a generic class of one module (`Box[T]`) in the
+# `Result` return of a function and of a method of a second module, called
+# from a third module, failed in `go build` ("undefined: Load", "t.Fetch
+# undefined": the pre-scan saw `Result[interface{}]` and mangled the names
+# as overloads), and a list comprehension passed straight to the imported
+# generic constructor was emitted as `[]T`.
+from generic_box_api import viaJson, summary
+from generic_box_rows import load, names, count, Db, Table
+
+func main() {
+    print(viaJson())
+    print(summary().unwrap())
+    print(load(Db(), 2).unwrap().first().name, names(2).items, count().unwrap())
+    print(Table("m").fetch(1).unwrap().total)
+}
+
+# expect: {"first":"t0","n":5}
+# expect: s0 [1 4 9] A [0 1 2] [x y]
+# expect: db0 [0 1] 3
+# expect: 1

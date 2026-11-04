@@ -1,0 +1,118 @@
+# Regression (4.1.2): overriding a method of a generic base binds the base's
+# type parameters to the subclass's type arguments: `class Users(Registry[User])`
+# overrides `row(self, item: T)` with `row(self, item: User)` (it was
+# rejected with "expected (T)"), and calls made by the base's own methods or
+# through a base-typed reference run the override.
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Registry[T] {
+    func init(self) {
+        self.items: list[T] = []
+    }
+
+    func add(self, item: T) {
+        self.items.append(item)
+    }
+
+    func row(self, _item: T) -> str {
+        return "?"
+    }
+
+    func first(self) -> T {
+        return self.items[0]
+    }
+
+    func rows(self, xs: list[T]) -> int {
+        return len(xs)
+    }
+
+    func find(self, _key: str) -> optional[T] {
+        return None
+    }
+
+    func render(self) -> str {
+        out = ""
+        for it in self.items {
+            out += self.row(it) + ";"
+        }
+        return out + str(self.rows(self.items))
+    }
+}
+
+class Users(Registry[User]) {
+    func row(self, item: User) -> str {
+        return "user:" + item.name
+    }
+
+    func first(self) -> User {
+        return User("first-" + self.items[0].name)
+    }
+
+    func rows(self, xs: list[User]) -> int {
+        return len(xs) * 10
+    }
+
+    func find(self, key: str) -> optional[User] {
+        for u in self.items {
+            if u.name == key {
+                return u
+            }
+        }
+        return None
+    }
+}
+
+class Counts(Registry[int]) {
+    func row(self, item: int) -> str {
+        return f"#{item * 2}"
+    }
+}
+
+class Named[U](Registry[U]) {
+    func label(self) -> str {
+        return "named:" + self.render()
+    }
+}
+
+class Tags(Named[str]) {
+    func row(self, item: str) -> str {
+        return item.toUpper()
+    }
+}
+
+func show(r: Registry[User]) -> str {
+    return r.render() + "/" + r.first().name
+}
+
+func main() {
+    u: Users = Users()
+    u.add(User("ann"))
+    u.add(User("bob"))
+    print(u.row(u.items[0]), u.render(), u.first().name)
+    print(show(u))
+    found = u.find("bob")
+    print(found?.name ?? "-", u.find("zed")?.name ?? "-")
+    c: Counts = Counts()
+    c.add(3)
+    c.add(4)
+    print(c.render())
+    t: Tags = Tags()
+    t.add("x")
+    t.add("yz")
+    print(t.label())
+    plain: Registry[str] = Registry[str]()
+    plain.add("p")
+    print(plain.render())
+}
+
+# expect: user:ann user:ann;user:bob;20 first-ann
+# expect: user:ann;user:bob;20/first-ann
+# expect: bob -
+# expect: #6;#8;2
+# expect: named:X;YZ;2
+# expect: ?;1

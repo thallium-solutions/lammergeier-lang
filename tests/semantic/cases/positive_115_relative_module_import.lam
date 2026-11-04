@@ -1,0 +1,8 @@
+# expect-pass
+# `import .module as alias` (4.1.2): a module relative to this file,
+# reached through its alias.
+import .support_import_helper as helper
+
+func main() {
+    print(helper.makeResult().unwrap())
+}

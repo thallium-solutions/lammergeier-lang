@@ -1,0 +1,59 @@
+# Regression (4.1.2): `?` operands in ternary branches and nested `?`
+# (`half(parse(s)? * 2)? * 3`): every `?` asserts its own callee's payload,
+# and the enclosing expression's type no longer overrides it.
+#
+# expect: ternary: 24 1 2.5
+# expect: nested: 8 5
+# expect: odd: OddError: 3 is odd
+# expect: empty: ParseError: empty input
+
+from lamerrors import Result, Error
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err(Error("ParseError", "empty input"))
+    }
+    return Result.Ok(s.length())
+}
+
+func ratio(s: str) -> Result[float] {
+    return Result.Ok(s.length() / 4.0)
+}
+
+func half(n: int) -> Result[int] {
+    if n % 2 == 1 {
+        return Result.Err(Error("OddError", f"{n} is odd"))
+    }
+    return Result.Ok(n // 2)
+}
+
+func ternary(s: str, big: bool) -> Result[int] {
+    a = parse(s)? * 10 if big else parse(s)? - 1
+    return Result.Ok(a + (parse(s)? * 2 if big else 0))
+}
+
+func widen(s: str) -> Result[float] {
+    return Result.Ok(parse(s)? * 1 if s == "ab" else ratio(s)? * 2)
+}
+
+func nested(s: str) -> Result[int] {
+    return Result.Ok(half(parse(s)? * 2)? * 3 + half(parse(s + s)?)?)
+}
+
+func deep(s: str) -> Result[int] {
+    return Result.Ok(half(half(parse(s)? * 4)?)? + 1)
+}
+
+func main() {
+    print(f"ternary: {ternary("ab", true).unwrap()} {ternary("ab", false).unwrap()} {widen("abcde").unwrap()}")
+    print(f"nested: {nested("ab").unwrap()} {deep("abcd").unwrap()}")
+    do {
+        print(f"never {deep("abc")? + half(parse("abc")?)?}")
+    } catch err {
+        print(f"odd: {err}")
+    }
+    e = nested("")
+    if not e.ok() {
+        print(f"empty: {e.error}")
+    }
+}

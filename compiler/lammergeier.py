@@ -1758,8 +1758,13 @@ def _check_imported_module_names(modules, module_index) -> None:
             )
         except Exception:  # noqa: BLE001 - a checker crash must not block the build
             continue
+        diags.sort(key=lambda d: (d.line, d.col))
+        # Advisory diagnostics (an absolute import of a module that does
+        # not exist) are printed without stopping the build.
+        warnings_text = _semantic.render_warnings(diags, mod_source, str(mod_file))
+        if warnings_text:
+            print(warnings_text, file=sys.stderr)
         if _semantic.has_errors(diags):
-            diags.sort(key=lambda d: (d.line, d.col))
             blocks.append(_semantic.render_errors(diags, mod_source, str(mod_file)))
     if blocks:
         print("\n".join(blocks), file=sys.stderr)
@@ -2332,6 +2337,7 @@ def compile_lam(
     lib_pre_class_bases: dict[str, list[str]] = {}
     lib_pre_method_sigkeys: dict[str, dict] = {}
     lib_pre_own_init: set[str] = set()
+    lib_pre_field_default_classes: set[str] = set()
     lib_pre_class_type_params: dict[str, list[str]] = {}
     # Imported generic classes (``class Bag[T]``) -> Go type-parameter clause.
     lib_pre_generic_classes: dict[str, str] = {}
@@ -2461,11 +2467,13 @@ def compile_lam(
     # static-member access can be lowered correctly. Runs on the namespaced
     # trees, so renamed classes are recorded under their unique names.
     harvest_modules: list[tuple[Path, object]] = []
+    harvest_plans: dict[Path, object] = {}
     for mod_file, ns_info in list(ns_modules.items()):
         if mod_file == main_module_path:
             continue
         sub_tree = ns_info.tree
         harvest_plan = ns_plans.get(mod_file)
+        harvest_plans[mod_file] = harvest_plan
         if harvest_plan is not None:
             _namespacing.rewrite_tree(
                 sub_tree, harvest_plan.rewrites, harvest_plan.module_access,
@@ -2477,7 +2485,12 @@ def compile_lam(
     # lowers to ``Sql`` (not the class pointer ``*Sql``), exactly as the
     # module's own transpile sees it, so both record the same overload
     # variant and the function keeps one Go name.
+    # Generic classes likewise: ``func load() -> Result[Box[Row]]`` with
+    # ``class Box[T]`` in a third module records the payload ``*Box[*Row]``
+    # (not ``interface{}``), so the pre-scan and the module's own transpile
+    # agree on one variant and ``load`` is not mangled as an overload.
     program_interfaces: set[str] = set()
+    program_generic_classes: dict[str, str] = {}
     for _mod_file, sub_tree in harvest_modules:
         try:
             type_collector = GoTranspiler(
@@ -2486,6 +2499,9 @@ def compile_lam(
             )
             type_collector._collect_declared_type_names(sub_tree)
             program_interfaces.update(type_collector._interfaces)
+            for cls, clause in type_collector._generic_classes.items():
+                if clause:
+                    program_generic_classes.setdefault(cls, clause)
         except Exception:
             pass
     for mod_file, sub_tree in harvest_modules:
@@ -2495,9 +2511,14 @@ def compile_lam(
                 go_module_name=go_module,
             )
             sub_collector._interfaces.update(program_interfaces)
+            for cls, clause in program_generic_classes.items():
+                sub_collector._generic_classes.setdefault(cls, clause)
             sub_collector._collect_declared_type_names(sub_tree)
             sub_collector._collect_function_names(sub_tree)
             sub_collector._collect_class_fields(sub_tree)
+            # Defaults are lowered at call sites in other modules: they
+            # name this module's (possibly renamed) values by Go name.
+            _namespacing.qualify_default_values(sub_collector._func_defaults, harvest_plans.get(mod_file))
             ns_meta_sources[mod_file] = sub_collector
             lib_pre_class_names.update(sub_collector._class_names)
             lib_pre_interfaces.update(sub_collector._interfaces)
@@ -2540,6 +2561,9 @@ def compile_lam(
             for cls, sigkeys in sub_collector._class_method_sigkeys.items():
                 lib_pre_method_sigkeys[cls] = dict(sigkeys)
             lib_pre_own_init.update(sub_collector._class_own_init)
+            lib_pre_field_default_classes.update(
+                cls for cls, defaults in sub_collector.class_field_defaults.items() if defaults
+            )
             lib_pre_class_type_params.update(sub_collector._class_type_param_names)
             for cls, clause in sub_collector._generic_classes.items():
                 if clause:
@@ -2561,17 +2585,28 @@ def compile_lam(
     # (namespaced) classes: ``class Sub(t.Config)`` names ``Config__two``.
     _main_hier_source = _pre_transpiler
     _main_hier_plan = ns_plans.get(main_module_path)
-    if _main_hier_plan is not None and not _main_hier_plan.is_empty():
+    _main_hier_renamed = _main_hier_plan is not None and not _main_hier_plan.is_empty()
+    if _main_hier_renamed or program_generic_classes:
+        # Dispatch signatures of the main file's methods with the program's
+        # generic classes and interfaces known: ``fetch(self) -> Page[User]``
+        # overriding an imported ``Registry[T].fetch -> Page[T]`` is
+        # ``()*Page[*User]`` (not ``()interface{}``), so the base's module
+        # sees the override.
         try:
-            import copy as _copy
-            _main_hier_tree = _copy.deepcopy(tree)
-            _namespacing.rewrite_tree(
-                _main_hier_tree, _main_hier_plan.rewrites, _main_hier_plan.module_access,
-                _main_hier_plan.declaration_renames,
-            )
+            _main_hier_tree = tree
+            if _main_hier_renamed:
+                import copy as _copy
+                _main_hier_tree = _copy.deepcopy(tree)
+                _namespacing.rewrite_tree(
+                    _main_hier_tree, _main_hier_plan.rewrites, _main_hier_plan.module_access,
+                    _main_hier_plan.declaration_renames,
+                )
             _main_hier_source = GoTranspiler(
                 go_blocks=[], stdlib_path=stdlib_path, go_module_name=go_module,
             )
+            _main_hier_source._interfaces.update(program_interfaces)
+            for cls, clause in program_generic_classes.items():
+                _main_hier_source._generic_classes.setdefault(cls, clause)
             _main_hier_source._collect_declared_type_names(_main_hier_tree)
             _main_hier_source._collect_function_names(_main_hier_tree)
         except Exception:
@@ -2597,6 +2632,7 @@ def compile_lam(
         target_transpiler._program_class_bases = program_class_bases
         target_transpiler._program_method_sigkeys = program_method_sigkeys
         target_transpiler._program_own_init = program_own_init
+        target_transpiler._program_field_default_classes = lib_pre_field_default_classes
         target_transpiler._program_class_type_params = program_class_type_params
 
     def _hierarchy_cache_key(mod_file: Path) -> bytes:
@@ -2756,6 +2792,7 @@ def compile_lam(
         + [f"generic-class:{cls}:{clause}" for cls, clause in sorted(lib_pre_generic_classes.items())]
         + [f"sigkeys:{cls}:{','.join(f'{m}={k}' for m, k in sorted(keys.items(), key=lambda kv: kv[0]))}" for cls, keys in sorted(lib_pre_method_sigkeys.items())]
         + [f"own-init:{cls}" for cls in sorted(lib_pre_own_init)]
+        + [f"field-defaults:{cls}" for cls in sorted(lib_pre_field_default_classes)]
     )).encode("utf-8")
 
     def _transpile_lib(mod_name, mod_file):
@@ -2947,6 +2984,17 @@ def compile_lam(
                 ),
                 extra=lib_cache_extra,
             )
+
+        # The module's own defaults are lowered at call sites in other
+        # modules: name its (possibly renamed) values by Go name, as the
+        # cached form (lowered above, in this module) does.
+        own_defaults = {
+            key: pairs for key, pairs in lib_transpiler._func_defaults.items()
+            if str(key).split("#", 1)[0] in lib_transpiler._module_function_names
+            or str(key).split("#", 1)[0].split(".", 1)[0] in lib_transpiler.class_bases
+        }
+        _namespacing.qualify_default_values(own_defaults, ns_plan)
+        lib_transpiler._func_defaults.update(own_defaults)
 
         return (
             mod_name,

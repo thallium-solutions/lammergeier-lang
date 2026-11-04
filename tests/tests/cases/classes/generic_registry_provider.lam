@@ -1,0 +1,35 @@
+# Provider for test_generic_base_override_imported.lam: a generic base
+# whose own methods call the methods a subclass in another module
+# overrides with the bound type argument.
+
+class Page[T] {
+    func init(self, items: list[T], total: int) {
+        self.items: list[T] = items
+        self.total: int = total
+    }
+}
+
+class Registry[T] {
+    func init(self, key: str) {
+        self.key: str = key
+    }
+
+    func fetch(self) -> Page[T] {
+        return Page[T]([], 0)
+    }
+
+    func row(self, _item: T) -> html {
+        return <></>
+    }
+
+    func rows(self) -> html {
+        out: html = <></>
+        found: Page[T] = self.fetch()
+        for item in found.items {
+            out += self.row(item)
+        }
+        return <><table data-total="${found.total}">${out}</table></>
+    }
+}
+
+func main() { pass }

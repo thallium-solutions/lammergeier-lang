@@ -135,6 +135,7 @@ _TOKEN_LABELS: dict[str, str] = {
     "RPAR": "`)`",
     "RSQB": "`]`",
     "SCOPED_NAME": "a scoped package name like `@scope/name`",
+    "RELATIVE_MODULE": "a relative module like `.sibling` (with `as alias`)",
     "SEMICOLON": "the end of the statement",
     "SLASH": "`/`",
     "STAR": "`*`",

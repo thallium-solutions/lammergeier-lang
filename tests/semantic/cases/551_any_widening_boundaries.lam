@@ -1,0 +1,28 @@
+# expect-error: cannot assign `dict[int, int]` to `dict[str, any]` variable `d`
+# expect-error: cannot assign `list[Square]` to `list[Shape]` variable `shapes`
+# expect-error: cannot assign `list[str]` to `list[int]` variable `nums`
+# `list[T]` -> `list[any]` and `dict[K, T]` -> `dict[K, any]` widen
+# implicitly (4.1.2, a converted copy); keys still have to match, class
+# elements stay invariant and unrelated element types are still errors.
+
+class Shape {
+    func init(self) {
+        pass
+    }
+}
+
+class Square(Shape) {
+    func init(self) {
+        base.init()
+    }
+}
+
+func main() {
+    ik: dict[int, int] = {1: 2}
+    d: dict[str, any] = ik
+    sq: list[Square] = [Square()]
+    shapes: list[Shape] = sq
+    words: list[str] = ["a"]
+    nums: list[int] = words
+    print(d, shapes, nums)
+}

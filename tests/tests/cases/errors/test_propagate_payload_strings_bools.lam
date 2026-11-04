@@ -1,0 +1,67 @@
+# Regression (4.1.2): `?` results as operands of string concatenation,
+# comparisons, membership and boolean operators keep the callee's payload
+# type (`str` / `int` / `bool`), also inside f-string slots, instead of the
+# `interface{}` of the enclosing `Result.Ok(...)`.
+#
+# expect: concat: hi!? hi!hi!
+# expect: compare: true false true
+# expect: logic: true false true
+# expect: fslots: 4|hi!|true|-2
+# expect: repeat: ab!ab!
+# expect: err: ParseError: empty input
+
+from lamerrors import Result, Error
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err(Error("ParseError", "empty input"))
+    }
+    return Result.Ok(s.length())
+}
+
+func word(s: str) -> Result[str] {
+    return Result.Ok(s + "!")
+}
+
+func flag(s: str) -> Result[bool] {
+    return Result.Ok(s.length() > 2)
+}
+
+func concat(s: str) -> Result[str] {
+    t = word(s)? + word(s)?
+    return Result.Ok(word(s)? + "?" + " " + t)
+}
+
+func compare(a: str, b: str) -> Result[str] {
+    bigger = parse(a)? > parse(b)?
+    same = parse(a)? == parse(b)?
+    listed = parse(a)? in [3, 4]
+    return Result.Ok(f"{bigger} {same} {listed}")
+}
+
+func logic(s: str) -> Result[str] {
+    both = flag(s)? and parse(s)? == 3
+    neither = not flag(s)? or parse(s)? > 9
+    either = flag("")? or not flag("a")?
+    return Result.Ok(f"{both} {neither} {either}")
+}
+
+func slots(s: str) -> Result[str] {
+    return Result.Ok(f"{parse(s)? * 2}|{word(s)?}|{flag(s)? or parse(s)? > 1}|{-parse(s)?}")
+}
+
+func repeat(s: str) -> Result[str] {
+    return Result.Ok(word(s)? * parse(s)?)
+}
+
+func main() {
+    print(f"concat: {concat("hi").unwrap()}")
+    print(f"compare: {compare("abc", "ab").unwrap()}")
+    print(f"logic: {logic("abc").unwrap()}")
+    print(f"fslots: {slots("hi").unwrap()}")
+    print(f"repeat: {repeat("ab").unwrap()}")
+    r = slots("")
+    if not r.ok() {
+        print(f"err: {r.error}")
+    }
+}

@@ -5,6 +5,154 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.1.2 — 2026-11-04
+
+### Added
+
+- Relative module imports: `import .kit as ui` binds the sibling module
+  `kit.lam` (or `kit/__init__.lam`) and `import ..shared.util as util`
+  goes up one package first; members are reached through the alias
+  (`ui.page(...)`, `ui.Listing.read(...)`, `ui.PageSize`, annotations
+  `l: ui.Listing`), as for `import pkg.mod as m`. Like `from .kit import
+  x`, the path is resolved from the importing file only. The alias is
+  required, like for scoped packages (`import .kit` alone is a Lam error
+  suggesting `import .kit as kit`); `import .` with no module name is a
+  syntax error listing the form. Works in the main file, in package modules
+  and in a package `__init__.lam`.
+
+### Fixed
+
+- A `?` result used as an operand took the type of the enclosing context
+  instead of the callee's payload: `return Result.Ok(parse(s)? * 2)` (also
+  in a `do` block) failed in `go build` with "__q1.Value * 2 (mismatched
+  types interface{} and int)", because `Result.Ok(...)` publishes
+  `interface{}`. A known payload type now always wins (the context only
+  fills in an unknown or `any` payload, as before), and the payload type is
+  the operand's type for the surrounding expression. This covers arithmetic,
+  unary minus, comparisons, membership, `and` / `or` / `not`, string
+  concatenation and repetition, int/float mixes (`ratio()? * 4.0 +
+  parse(s)?`, `x: float = parse(s)? * 2`), f-string slots, method calls and
+  indexing on the payload (`rows()?[0] * 2`, `rows()?[-1]`), function and
+  builtin arguments (`max(parse(s)? * 2, 3)`), list / dict literals and
+  comprehensions (`[word(w)?.toUpper() for w in words]` is a `list[str]`),
+  ternaries, nested `?` (`half(parse(s)? * 2)? * 3`), `return`,
+  unannotated assignments, augmented assignments and `if` / `while` /
+  `for` / `match` heads, for functions, generic functions, instance /
+  static / `self` methods, interface methods, `optional` payloads (`maybe()?
+  ?? 0`) and all of these imported from another module.
+- `f"{word(s)?.toUpper()}"`: `?.` on a `Result` inside an f-string slot was
+  lowered as safe navigation on the `Result` ("Word(s).ToUpper undefined");
+  it is propagation then member access, as outside f-strings.
+- Calling a method on a dict reached through a call, `?` or an index
+  (`table()?.keys()`, `load().values()`, `rows[0].items()`) passed `lamc`
+  and failed in `go build`; it is the same Lam `error[type]` ("dicts have no
+  `keys()` method") as on a dict local.
+- `??` results were untyped: `w = find(4) ?? 0` with `find() ->
+  optional[int]` left `w` unknown, so `1.5 * (100 - w)` failed in `go build`
+  ("1.5 (untyped float constant) truncated to int"), and chains, generic
+  calls, optional lists / dicts and mixed int / float operands fell back to
+  `interface{}`. `opt ?? fallback` now has the payload type for the compiler
+  and the semantic checker (unannotated and annotated targets): value
+  payloads, classes (a subclass fallback is upcast), optional fields,
+  `optional[list[T]]` / `optional[dict[K, V]]` (an empty `[]` / `{}`
+  fallback takes the payload type), generic functions returning
+  `optional[T]` (`first(xs) ?? 0`, also with `T` a class), `load()? ?? 0`
+  and functions of other modules; an int payload with a float fallback (or
+  the reverse) is a `float`, `a ?? b ?? c` is `a ?? (b ?? c)` and two
+  optionals of one type stay optional. The result composes with arithmetic,
+  concatenation, f-strings, comparisons, arguments, `Result.Ok`, `return`,
+  ternaries, lambdas, comprehensions and method calls
+  (`(name() ?? "x").toUpper()`, `(lookup() ?? Admin("r")).greet()` runs the
+  override), and member / assignment checks apply to it (`q: str = find(1)
+  ?? 0` is a Lam error). `x: float = doc.n ?? 0` on an integral JSON number
+  no longer panics.
+- `optional[list[T]]` and `optional[dict[K, V]]` did not compile: returning
+  or assigning a list / dict failed in `go build` ("cannot use xs as *[]int
+  value"). They are boxed like value payloads, print their payload and
+  unwrap with `??`.
+- A generic function call's result type now carries the call's type
+  arguments (`last([1, 2]) * 1.5` widens the `int`).
+- A list or dict of a concrete type did not convert to `list[any]` /
+  `dict[str, any]`, although the checker accepted it: `xs: list[any] = ys`
+  with `ys: list[int]` (also `xs: list[any] = rows()?`) failed in `go build`
+  ("cannot use ys (variable of type []int) as []interface{} value"). It
+  widens implicitly, as in Python, to a converted **copy** (element writes
+  and appends through it do not reach the original) at annotated
+  assignments and reassignments, arguments (functions, methods, imported),
+  returns, `Result.Ok(...)` payloads (`unwrap()` panicked), fields,
+  `optional[list[any]]` targets, `extend` / `+=`, list / dict literal
+  elements and nested lists (`list[list[int]]` to `list[list[any]]`), and
+  `list[int]` where a `list[float]` is expected. Keys must still match and
+  class element types stay invariant (Lam errors, as before).
+- A generic class of one module in the `Result` return of another module's
+  function or method (`func load(conn: Sql, n: int) -> Result[Box[Row]]`
+  and `Table.fetch` in `users.lam`, `class Box[T]` in `box.lam`) failed in
+  `go build` when called from a third library module ("undefined: Load",
+  "t.Fetch undefined"): the import pre-scan did not know `Box` was generic,
+  recorded the payload as `interface{}`, and the module's own transpile
+  then saw two "overloads" and mangled the names. Every module's generic
+  classes are now known before any signature is collected (also for the
+  main file's method signatures).
+- A list comprehension passed straight to an imported generic constructor
+  (`Box[Row]([Row(n) for n in names], 3)` with `class Box[T]` in another
+  module, in a method or a function) was emitted as `[]T`; the class's
+  type parameters are bound to the explicit type arguments for imported
+  classes too.
+- Overriding a method of a generic base was rejected ("incompatible
+  parameters: got (User), expected (T)") and, once accepted, did not
+  dispatch: in `class Users(Registry[User])`, `row(self, item: User)`,
+  `first(self) -> User`, `keep(self, xs: list[User])` and `find(self, k:
+  str) -> optional[User]` override `row(item: T)`, `-> T`, `list[T]`,
+  `optional[T]`. Override checks bind the base's type parameters to the
+  subclass's type arguments (another type is still an `error[inheritance]`,
+  naming the bound type), the override replaces the base variant instead
+  of becoming an overload, and the base's own methods and calls through a
+  `Registry[User]` value run it, also when the base is declared in another
+  module. A generic intermediate class (`class Named[U](Registry[U])`,
+  `class Tags(Named[str])`) no longer emits `&Registry[*U]{}` ("undefined:
+  U") for the grandparent.
+- Class-body field defaults of an ancestor declared in another module were
+  skipped when the subclass has its own `init` (`notFound: str = "x"` in
+  `Base`, `class Child(Base) { func init(self) {...} }` in another module
+  gave `""`). Every ancestor's defaults are applied, ancestors first and
+  before the `init` body, with or without `base.init()`, through a generic
+  base too; the defining module evaluates them (in its namespace) through a
+  `_lamFieldDefaults()` helper.
+- A default parameter naming a module constant (`func pick(n: int = Size)`)
+  failed in `go build` ("undefined: Size") when another module, or the
+  caller, declares a constant of the same name, and an imported constant
+  under an alias (`from cfg import Size as S`, `n: int = S`) was not
+  found. Defaults resolve in the defining module: functions, constructors,
+  instance and static methods, expressions over the constant, keyword
+  calls, callers in the main file and in other library modules.
+- `x == None` / `x != None` / `x is None` / `x is not None` (`None` on
+  either side) now narrow an optional local or parameter like
+  `isinstance(x, None)`: returning an `optional[html]` (or any optional)
+  as its payload after a `None` check was refused, in functions and
+  methods alike; a narrowed value returned or passed where an optional is
+  expected is boxed again, a loop variable over a `list[optional[T]]`
+  narrows too, and `n ?? -1` on a narrowed `n` is `n` (it emitted an
+  `interface{}` that `value: int = ...` rejected). An optional *field* (`return self.cached` after `if
+  self.cached == None`) passed the checker and compiled to broken Go
+  ("cannot use s.Cached (variable of type *LamHTML) as LamHTML value");
+  fields are not narrowed, so it is now the same Lam error as for a local
+  (also for assignments and arguments), with a help suggesting a local
+  copy or `??`.
+- An imported module's relative import of a module that does not exist
+  (`from .missing import Thing`, `from ..gone.deep import X`, `import
+  .nokit as k`) was skipped and surfaced as a Go "undefined: Thing"; it is
+  an `error[import]` ("module `.missing` could not be found") at the import
+  line with the paths searched. So is an absolute import of a missing
+  module in an imported module (`from lamsyncx import Mutex`), also skipped
+  silently so far, even when another module of the build happens to provide
+  its names: such an import binds nothing.
+- Calling a function value with a subclass instance (`rate(book)` with
+  `rate: func(Item) -> float` and `book: Featured`, `class Featured(Item)`)
+  failed in `go build` ("cannot use book (variable of type *Featured) as
+  *Item value"); the argument is upcast as for a declared function, for
+  function-typed locals, parameters and fields (`self.rate(it)`), and the
+  callee still runs the overrides.
+
 ## 4.1.1 — 2026-11-04
 
 ### Changed

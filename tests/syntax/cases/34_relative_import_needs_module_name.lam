@@ -1,0 +1,10 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected `.`
+# expect-error: a relative module like `.sibling` (with `as alias`)
+# `import .kit as ui` (4.1.2) needs a module name after the dots.
+
+import . as ui
+
+func main() {
+    pass
+}

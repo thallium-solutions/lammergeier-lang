@@ -1,0 +1,15 @@
+# Provider for test_generic_box_modules.lam: a generic class used by the
+# other modules of the test.
+
+class Box[T] {
+    func init(self, items: list[T], total: int) {
+        self.items: list[T] = items
+        self.total: int = total
+    }
+
+    func first(self) -> T {
+        return self.items[0]
+    }
+}
+
+func main() { pass }

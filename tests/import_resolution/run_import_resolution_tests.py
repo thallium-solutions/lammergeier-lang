@@ -1146,6 +1146,285 @@ def test_module_exports_after_brace_strings_resolve() -> None:
     )
 
 
+# ── 4.1.2 regressions: package layouts ────────────────────────────────
+
+
+_R6_BOX = (
+    "class Box[T] {\n"
+    "    func init(self, items: list[T], total: int) {\n"
+    "        self.items: list[T] = items\n"
+    "        self.total: int = total\n"
+    "    }\n"
+    "}\n"
+)
+_R6_DB = (
+    "interface Sql {\n    func name() -> str\n}\n\n"
+    "class Db {\n    func name(self) -> str { return \"db\" }\n}\n\n"
+    "func connect() -> Sql { return Db() }\n"
+)
+_R6_USERS = (
+    "from lamerrors import Result\nfrom .box import Box\nfrom .db import Sql, Db\n\n"
+    "class Row {\n    func init(self, name: str) { self.name: str = name }\n}\n\n"
+    "func load(conn: Sql, n: int) -> Result[Box[Row]] {\n"
+    "    return Result.Ok(Box[Row]([Row(conn.name()) for i in range(n)], n))\n}\n\n"
+    "class Table {\n"
+    "    func fetch(self, n: int) -> Result[Box[Row]] {\n"
+    "        rows: list[Row] = [Row(\"b\") for i in range(n)]\n"
+    "        return Result.Ok(Box[Row](rows, n))\n    }\n\n"
+    "    func names(self, n: int) -> Box[str] {\n"
+    "        return Box[str]([str(i) for i in range(n)], n)\n    }\n}\n\n"
+    "func count() -> Result[int] {\n    b: Box[Row] = load(Db(), 3)?\n    return Result.Ok(b.total)\n}\n"
+)
+_R6_API = (
+    "from lamerrors import Result\nfrom .users import Row, load, Table\nfrom .box import Box\nfrom .db import Db, Sql\n\n"
+    "class Holder {\n    func init(self) { self.db: Sql = Db() }\n}\n\n"
+    "func viaJson() -> json {\n    h: Holder = Holder()\n    b: Box[Row] = load(h.db, 2)?\n"
+    "    t: Table = Table()\n    c: Box[Row] = t.fetch(3)?\n"
+    "    return {\"n\": b.total + c.total, \"names\": t.names(2).items, \"row\": b.items[0].name}\n}\n"
+)
+
+
+def test_generic_result_across_three_package_modules() -> None:
+    files = {
+        "lib/app/box.lam": _R6_BOX,
+        "lib/app/db.lam": _R6_DB,
+        "lib/app/users.lam": _R6_USERS,
+        "lib/app/api.lam": _R6_API,
+    }
+    _expect_output(
+        files,
+        "from app.api import viaJson\n\nfunc main() {\n    print(viaJson())\n}\n",
+        "{\"n\":5,\"names\":[\"0\",\"1\"],\"row\":\"db\"}",
+        "Result[Box[Row]] function and method of one package module called from another",
+    )
+    _expect_output(
+        files,
+        "from app.api import viaJson\nfrom app.users import load, count, Table\nfrom app.db import connect\n\n"
+        "func main() {\n    print(viaJson(), load(connect(), 1).unwrap().total, count().unwrap(), Table().fetch(2).unwrap().total)\n}\n",
+        "{\"n\":5,\"names\":[\"0\",\"1\"],\"row\":\"db\"} 1 3 2",
+        "the same functions called from main and from the package",
+    )
+
+
+def test_generic_comprehension_argument_in_package_method() -> None:
+    _expect_output(
+        {
+            "lib/pg/page.lam": (
+                "class Page[T] {\n    func init(self, items: list[T], total: int) {\n"
+                "        self.items: list[T] = items\n        self.total: int = total\n    }\n}\n"
+            ),
+            "lib/pg/users.lam": (
+                "from .page import Page\n\n"
+                "class User {\n    func init(self, name: str) { self.name: str = name }\n}\n\n"
+                "class Repo {\n    func init(self, names: list[str]) { self.names: list[str] = names }\n\n"
+                "    func page(self) -> Page[User] {\n"
+                "        return Page[User]([User(n.toUpper()) for n in self.names if n != \"\"], len(self.names))\n    }\n\n"
+                "    func lengths(self) -> Page[int] {\n"
+                "        return Page[int]([len(n) for n in self.names], 0)\n    }\n}\n\n"
+                "class Mapper[T] {\n    func init(self, items: list[T]) { self.items: list[T] = items }\n\n"
+                "    func page(self) -> Page[T] {\n        return Page[T]([x for x in self.items], len(self.items))\n    }\n}\n"
+            ),
+        },
+        "from pg.users import Repo, Mapper\n\nfunc main() {\n"
+        "    r: Repo = Repo([\"ann\", \"\", \"bo\"])\n    p = r.page()\n"
+        "    m: Mapper[float] = Mapper[float]([1.5])\n"
+        "    print(len(p.items), p.items[1].name, p.total, r.lengths().items, m.page().items)\n}\n",
+        "2 BO 3 [3 0 2] [1.5]",
+        "a comprehension passed to an imported generic constructor in a method",
+    )
+
+
+def test_inherited_field_defaults_across_package_modules() -> None:
+    _expect_output(
+        {
+            "lib/adm/base.lam": (
+                "const NotFound: str = \"Admin.not-found\"\n\n"
+                "class Base {\n    notFound: str = NotFound\n    columns: list[str] = []\n    key: str = \"\"\n\n"
+                "    func label(self) -> str {\n        return self.key + \"/\" + self.notFound + str(len(self.columns))\n    }\n}\n"
+            ),
+            "lib/adm/child.lam": (
+                "from .base import Base\n\nconst NotFound: str = \"child-local\"\n\n"
+                "class Child(Base) {\n    func init(self) {\n        self.key = \"child\"\n        self.columns = [\"a\"]\n    }\n}\n\n"
+                "class Other(Base) {\n    func init(self) {\n        base.init()\n        self.key = NotFound\n    }\n}\n"
+            ),
+        },
+        "from adm.child import Child, Other\nfrom adm.base import Base\n\n"
+        "class Local(Base) {\n    func init(self, k: str) {\n        self.key = k\n    }\n}\n\n"
+        "func show(b: Base) -> str {\n    return b.label()\n}\n\n"
+        "func main() {\n    c: Child = Child()\n"
+        "    print(f\"[{c.key}] [{c.notFound}] {show(c)}\")\n    print(Other().label(), Local(\"m\").label())\n}\n",
+        "[child] [Admin.not-found] child/Admin.not-found1\nchild-local/Admin.not-found0 m/Admin.not-found0",
+        "ancestor class-body defaults of another package module with a subclass init",
+    )
+
+
+def test_default_parameter_constants_across_package_modules() -> None:
+    _expect_output(
+        {
+            "lib/cfg/a.lam": (
+                "const Size: int = 20\n\nfunc pick(n: int = Size) -> int {\n    return n\n}\n\n"
+                "class Sizer {\n    func init(self, w: int = Size + 1) { self.w: int = w }\n}\n"
+            ),
+            "lib/cfg/b.lam": "const Size: int = 25\n\nfunc other() -> int { return Size }\n",
+            "lib/cfg/c.lam": (
+                "from .a import pick, Sizer\nfrom .b import other\n\nconst Size: int = 3\n\n"
+                "func viaLib() -> str {\n    return f\"{pick()} {Sizer().w} {other()} {Size}\"\n}\n"
+            ),
+        },
+        "from cfg.a import pick\nfrom cfg.b import other\nfrom cfg.c import viaLib\n\n"
+        "func main() {\n    print(pick(), other(), viaLib())\n}\n",
+        "20 25 20 21 25 3",
+        "defaults naming a module constant resolve in the defining module (main and library callers)",
+    )
+
+
+_KIT = (
+    "const PageSize: int = 25\n\n"
+    "class Listing {\n    func init(self, base: str) { self.base: str = base }\n"
+    "    static func read(base: str) -> Listing { return Listing(base + \"!\") }\n}\n\n"
+    "func badge(on: bool) -> html {\n    return <><b>${'y' if on else 'n'}</b></>\n}\n\n"
+    "func page(title: str) -> html {\n    return <><h1>${title}</h1></>\n}\n"
+)
+
+
+def test_relative_module_import_with_alias() -> None:
+    files = {
+        "lib/pkg/sub/kit.lam": _KIT,
+        "lib/pkg/shared.lam": "func tag(s: str) -> str {\n    return \"<\" + s + \">\"\n}\n",
+        "lib/pkg/sub/users.lam": (
+            "import .kit as ui\nimport ..shared as sh\n\n"
+            "class Table {\n    func init(self, key: str) { self.key: str = key }\n"
+            "    func handle(self, x: int) -> str { return f\"{self.key}:{x}\" }\n}\n\n"
+            "func render(l: ui.Listing) -> html {\n    return ui.page(l.base) + ui.badge(true)\n}\n\n"
+            "func run(f: func(int) -> str) -> str { return f(3) }\n\n"
+            "func demo() -> str {\n    t: Table = Table(\"users\")\n"
+            "    return run(t.handle) + str(render(ui.Listing.read(\"b\"))) + str(ui.PageSize) + sh.tag(\"s\")\n}\n"
+        ),
+    }
+    _expect_output(
+        files,
+        "from pkg.sub.users import demo\n\nfunc main() {\n    print(demo())\n}\n",
+        "users:3<h1>b!</h1><b>y</b>25<s>",
+        "`import .kit as ui` / `import ..shared as sh` in a package module",
+    )
+    _expect_output(
+        dict(files, **{"lib/pkg/sub/__init__.lam": "import .kit as k\n\nfunc size() -> int {\n    return k.PageSize * 2\n}\n"}),
+        "import .lib.pkg.sub.kit as kit\nimport pkg.sub as sub\n\n"
+        "func main() {\n    l: kit.Listing = kit.Listing.read(\"m\")\n    print(l.base, kit.PageSize, sub.size(), str(kit.badge(false)))\n}\n",
+        "m! 25 50 <b>n</b>",
+        "relative module imports from the main file and from a package `__init__`",
+    )
+    _expect_build_error(
+        {"lib/pkg/kit.lam": _KIT, "lib/pkg/users.lam": "import .kit\n\nfunc demo() -> int {\n    return kit.PageSize\n}\n"},
+        "from pkg.users import demo\n\nfunc main() {\n    print(demo())\n}\n",
+        ["`import .kit` needs an alias: write `import .kit as kit`", "users.lam"],
+        "a relative module import without an alias is a Lam error",
+    )
+    _expect_build_error(
+        {"lib/pkg/users.lam": "import .nokit as k\n\nfunc demo() -> int {\n    return k.PageSize\n}\n"},
+        "from pkg.users import demo\n\nfunc main() {\n    print(demo())\n}\n",
+        ["module `.nokit` could not be found", "lib/pkg/nokit.lam", "line 1"],
+        "a relative module import of a missing module is a Lam error",
+    )
+
+
+def test_imported_module_missing_relative_module() -> None:
+    _expect_build_error(
+        {"lib/pkg/a.lam": "from .missing import Thing\n\nfunc use(t: Thing) -> int {\n    return 1\n}\n"},
+        "from pkg.a import use\n\nfunc main() {\n    print(\"x\")\n}\n",
+        [
+            "semantic check failed for",
+            "line 1: error[import]: import resolution failed: module `.missing` could not be found",
+            "lib/pkg/missing.lam",
+        ],
+        "an imported module's `from .missing import` is a Lam error with its location",
+    )
+    _expect_build_error(
+        {
+            "lib/pkg/b.lam": "func ok() -> int {\n    return 1\n}\n",
+            "lib/pkg/a.lam": "from .b import ok\nfrom ..gone.deep import Thing\nimport nothere.mod as nm\n\nfunc use() -> int {\n    return ok()\n}\n",
+        },
+        "from pkg.a import use\n\nfunc main() {\n    print(use())\n}\n",
+        [
+            "line 2: error[import]: import resolution failed: module `..gone.deep` could not be found",
+            "line 3: error[import]: import resolution failed: module `nothere.mod` could not be found",
+        ],
+        "a missing module is an error, parent-relative or absolute",
+    )
+    # An absolute import of a missing module, even when another module of the
+    # build provides its names (``Mutex`` from lamconcurrency), binds nothing.
+    _expect_build_error(
+        {
+            "lib/pkg/a.lam": "from lamsyncx import Mutex\n\nfunc use() -> int {\n    return 2\n}\n",
+            "lib/pkg/b.lam": "from lamconcurrency import Mutex\n\nfunc lock() -> Mutex {\n    return Mutex()\n}\n",
+        },
+        "from pkg.a import use\nfrom pkg.b import lock\n\nfunc main() {\n    _ = lock()\n    print(use())\n}\n",
+        [
+            "line 1: error[import]: import resolution failed: module `lamsyncx` could not be found",
+            "lib/pkg/a.lam",
+        ],
+        "an imported module's absolute import of a missing module is a Lam error",
+    )
+    print("PASS: an imported module's absolute import of a missing module is an error")
+    out_built, out = _build_and_run(
+        {"lib/pkg/a.lam": "from .missing import Thing\n\nfunc use(t: Thing) -> int {\n    return 1\n}\n"},
+        "from pkg.a import use\n\nfunc main() {\n    print(\"x\")\n}\n",
+    )
+    if out_built or "undefined: Thing" in out or "Go build failed" in out:
+        raise AssertionError(f"the missing module surfaced as a Go error:\n{out[:1500]}")
+    print("PASS: no Go `undefined` error for a missing relative module")
+
+
+def test_package_stress_412_regressions() -> None:
+    """Cross-feature fixture: relative alias imports, generic results across
+    modules, generic-base overrides, inherited defaults, defaults naming
+    clashing constants, None-test narrowing and function values with
+    subclass arguments, composed in one package."""
+    files = {
+        "lib/shop/kit.lam": (
+            "const Limit: int = 3\n\n"
+            "class Page[T] {\n    func init(self, items: list[T], total: int) {\n"
+            "        self.items: list[T] = items\n        self.total: int = total\n    }\n}\n\n"
+            "class Registry[T] {\n    title: str = \"registry\"\n\n"
+            "    func fetch(self) -> Page[T] {\n        return Page[T]([], 0)\n    }\n\n"
+            "    func row(self, _item: T) -> str {\n        return \"?\"\n    }\n\n"
+            "    func rows(self) -> str {\n        out = self.title + \":\"\n"
+            "        for item in self.fetch().items {\n            out += self.row(item) + \",\"\n        }\n        return out\n    }\n}\n"
+        ),
+        "lib/shop/items.lam": (
+            "from lamerrors import Result\nimport .kit as k\n\nconst Limit: int = 10\n\n"
+            "class Item {\n    func init(self, name: str, p: float) {\n        self.name: str = name\n        self.p: float = p\n    }\n\n"
+            "    func price(self) -> float {\n        return self.p\n    }\n}\n\n"
+            "class Featured(Item) {\n    func init(self, name: str, p: float) {\n        base.init(name, p)\n    }\n\n"
+            "    func price(self) -> float {\n        return self.p * 2.0\n    }\n}\n\n"
+            "func load(n: int = Limit) -> Result[k.Page[Item]] {\n"
+            "    return Result.Ok(k.Page[Item]([Featured(f\"f{i}\", 1.0) if i % 2 == 0 else Item(f\"i{i}\", 1.0) for i in range(n)], n))\n}\n\n"
+            "class Catalog(k.Registry[Item]) {\n    func init(self, n: int = k.Limit) {\n        self.n: int = n\n    }\n\n"
+            "    func fetch(self) -> k.Page[Item] {\n        return load(self.n).unwrap()\n    }\n\n"
+            "    func row(self, item: Item) -> str {\n        return f\"{item.name}={item.price()}\"\n    }\n}\n"
+        ),
+        "lib/shop/report.lam": (
+            "from lamerrors import Result\nfrom .items import Item, Featured, Catalog, load\nimport .kit as k\n\n"
+            "func cheapest(page: k.Page[Item], rate: func(Item) -> float) -> optional[str] {\n"
+            "    best: optional[Item] = None\n    for it in page.items {\n"
+            "        if best == None or rate(it) < rate(best) {\n            best = it\n        }\n    }\n"
+            "    if best == None {\n        return None\n    }\n    return best.name\n}\n\n"
+            "func report() -> Result[str] {\n    page = load()?\n"
+            "    rate: func(Item) -> float = lambda(i: Item) -> float: i.price()\n"
+            "    star: Featured = Featured(\"star\", 0.1)\n"
+            "    name = cheapest(page, rate) ?? \"-\"\n"
+            "    c: Catalog = Catalog()\n"
+            "    return Result.Ok(f\"{page.total} {name} {rate(star)} {c.rows()}\")\n}\n"
+        ),
+    }
+    _expect_output(
+        files,
+        "from shop.report import report\n\nfunc main() {\n    print(report().unwrap())\n}\n",
+        "10 i1 0.2 registry:f0=2,i1=1,f2=2,",
+        "4.1.2 regressions composed in one package",
+    )
+
+
 def main() -> None:
     tests = [
         test_module_undefined_function_is_reported,
@@ -1205,6 +1484,13 @@ def main() -> None:
         test_imported_module_propagate_then_call,
         test_package_reexport_keeps_types,
         test_package_reexport_type_errors_are_lam_errors,
+        test_generic_result_across_three_package_modules,
+        test_generic_comprehension_argument_in_package_method,
+        test_inherited_field_defaults_across_package_modules,
+        test_default_parameter_constants_across_package_modules,
+        test_relative_module_import_with_alias,
+        test_imported_module_missing_relative_module,
+        test_package_stress_412_regressions,
     ]
     for test in tests:
         test()

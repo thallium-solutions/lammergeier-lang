@@ -1,0 +1,46 @@
+# expect-pass
+# A concretely typed list / dict is accepted where `list[any]` /
+# `dict[str, any]` is expected (assignment, argument, return, `Result.Ok`,
+# `?`, fields, nested lists) and `list[int]` where `list[float]` is.
+from lamerrors import Result
+
+class Holder {
+    func init(self) {
+        self.items: list[any] = []
+    }
+}
+
+func count(xs: list[any]) -> int {
+    return len(xs)
+}
+
+func widen(d: dict[str, int]) -> dict[str, any] {
+    return d
+}
+
+func rows() -> Result[list[int]] {
+    return Result.Ok([1])
+}
+
+func wrapped(ys: list[str]) -> Result[list[any]] {
+    return Result.Ok(ys)
+}
+
+func loaded() -> Result[int] {
+    xs: list[any] = rows()?
+    return Result.Ok(len(xs))
+}
+
+func total(xs: list[float]) -> float {
+    return xs[0]
+}
+
+func main() {
+    ys: list[int] = [1, 2]
+    xs: list[any] = ys
+    grid: list[list[int]] = [[1]]
+    nested: list[list[any]] = grid
+    h = Holder()
+    h.items = ys
+    print(xs, nested, count(ys), widen({"a": 1}), wrapped(["s"]).unwrap(), loaded().unwrap(), total(ys))
+}

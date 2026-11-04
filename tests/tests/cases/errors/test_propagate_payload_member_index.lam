@@ -1,0 +1,66 @@
+# Regression (4.1.2): methods, indexing and `len` on a `?` payload used
+# inside larger expressions. `rows()?[0] * 2` lost the element type,
+# `rows()?[-1]` emitted a negative constant index, and an f-string slot
+# `{word(s)?.toUpper()}` was lowered as safe navigation on the `*Result`
+# ("Word(s).ToUpper undefined") because the `Result` `?.` rewrite did not
+# reach f-string slots.
+#
+# expect: methods: AB!ab! 6
+# expect: index: 250
+# expect: slots: AB!|11|x|2
+# expect: lists: [10 20 30 40] 6
+# expect: calls: 2 [20 40 60] 5 true
+# expect: err: false
+
+from lamerrors import Result, Error
+
+func word(s: str) -> Result[str] {
+    if s == "" {
+        return Result.Err(Error("WordError", "empty"))
+    }
+    return Result.Ok(s + "!")
+}
+
+func rows() -> Result[list[int]] {
+    return Result.Ok([10, 20, 30])
+}
+
+func table() -> Result[dict[str, int]] {
+    return Result.Ok({"a": 1, "b": 2})
+}
+
+func names() -> Result[list[str]] {
+    return Result.Ok(["x", "y"])
+}
+
+func methods(s: str) -> Result[str] {
+    return Result.Ok(word(s)?.toUpper() + word(s)?.toLower() + " " + str(word(s)?.length() * 2))
+}
+
+func index() -> Result[int] {
+    return Result.Ok(rows()?[0] * 2 + rows()?[-1] + table()?["b"] * 100)
+}
+
+func slots(s: str) -> Result[str] {
+    return Result.Ok(f"{word(s)?.toUpper()}|{rows()?[0] + 1}|{names()?[0]}|{len(names()?)}")
+}
+
+func lists() -> Result[str] {
+    xs = rows()? + [40]
+    return Result.Ok(f"{xs} {len(rows()?) * 2}")
+}
+
+func calls() -> Result[str] {
+    doubled = rows()?.map(lambda x: x * 2)
+    big = rows()?.filter(lambda x: x > 15).length() + rows()?.length()
+    return Result.Ok(f"{table()?["a"] + 1} {doubled} {big} {"b" in table()?}")
+}
+
+func main() {
+    print(f"methods: {methods("Ab").unwrap()}")
+    print(f"index: {index().unwrap()}")
+    print(f"slots: {slots("ab").unwrap()}")
+    print(f"lists: {lists().unwrap()}")
+    print(f"calls: {calls().unwrap()}")
+    print(f"err: {slots("").ok()}")
+}

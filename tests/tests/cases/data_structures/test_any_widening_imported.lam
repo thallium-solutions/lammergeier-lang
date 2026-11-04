@@ -1,0 +1,29 @@
+# Regression (4.1.2): implicit `list[T]` -> `list[any]` and
+# `dict[str, T]` -> `dict[str, any]` widening across modules: imported
+# parameters, imported results, an imported `Result[list[int]]` consumed
+# with `?`, and an imported class method storing the list in a field.
+from lamerrors import Result
+from any_widening_provider import Bag, describe, keys, scores, ids
+
+func collect() -> Result[str] {
+    got: list[any] = ids()?
+    got.append("end")
+    return Result.Ok(describe(got))
+}
+
+func main() {
+    nums: list[int] = [1, 2]
+    print(describe(nums), describe(["x", "y"]), keys(scores()))
+    all: dict[str, any] = scores()
+    all["eve"] = "n/a"
+    print(len(all), len(scores()))
+    print(collect().unwrap())
+    bag = Bag()
+    words: list[str] = ["w"]
+    print(bag.fill(words), bag.fill(nums), describe(bag.items))
+}
+
+# expect: <1><2> <x><y> 2
+# expect: 3 2
+# expect: <7><8><9><end>
+# expect: 1 2 <1><2>
