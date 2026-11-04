@@ -3197,7 +3197,13 @@ class ExpressionVisitorMixin:
         if func_str in self._class_names:
             go_cls = self._go_class_name(func_str)
             init_key = f"{func_str}.init"
-            call_args = self._planned_call_args(init_key, args_node)
+            if self._class_type_param_names_of(func_str):
+                # ``Box([Row(x) for x in xs])``: the arguments are lowered
+                # with the class's type parameters inferred at this call
+                # (a comprehension hinted by ``list[T]`` would be ``[]T``).
+                call_args = self._planned_call_args_inferred(init_key, args_node)
+            else:
+                call_args = self._planned_call_args(init_key, args_node)
             return f"New{go_cls}({', '.join(call_args)})"
         if func_str and func_str[0].isupper() and "." not in func_str:
             return f"New{func_str}({', '.join(args)})"

@@ -6238,6 +6238,9 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             if isinstance(selected, GenericType) and selected.base == "Result" and len(selected.args) == 1:
                 return selected.args[0]
         if isinstance(node, Tree) and node.data == "funccall":
+            targeted = self._generic_constructor_for_expected(node, expected)
+            if targeted is not None:
+                return targeted
             selected = self._call_return_type_for_expected(node, expected)
             if selected is not None:
                 return selected
@@ -8349,6 +8352,9 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                         isinstance(local_type.ret, NamedType) and local_type.ret.name == "None"
                     ):
                         return local_type.ret
+            inferred_ctor = self._inferred_generic_constructor_type(node)
+            if inferred_ctor is not None:
+                return inferred_ctor
             call_type = self._call_return_type_text(node) or self._call_return_type(node)
             if call_type:
                 return parse_type(call_type)
@@ -8368,6 +8374,51 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         value_type = self._constructor_value_type(node)
         if value_type:
             return NamedType(value_type)
+        return None
+
+    def _inferred_generic_constructor_type(self, node: Tree) -> Type | None:
+        """``Box([1, 2])`` of a generic ``class Box[T]`` is a ``Box[int]``:
+        the class's type arguments are inferred from the constructor's
+        arguments, as for generic functions (an explicit ``Box[int](...)``
+        is typed elsewhere). ``None`` when the class is not generic or an
+        argument leaves a type parameter unbound (the caller keeps the
+        bare class)."""
+        class_name = self._constructor_value_type(node)
+        params = self._class_type_params.get(class_name, ()) if class_name else ()
+        if not params:
+            return None
+        for sig in self._ctor_sigs_for(class_name):
+            if not isinstance(sig, _CallableSig) or tuple(sig.generic_names) != tuple(params):
+                continue
+            mapping = self._generic_type_mapping_for_sig(node, sig)
+            if all(name in mapping for name in params):
+                return GenericType(class_name, tuple(mapping[name] for name in params))
+        return None
+
+    def _generic_constructor_for_expected(self, node: Tree, expected: Type) -> Type | None:
+        """``b: Box[float] = Box([x / 2.0 for x in xs])``: a generic
+        constructor called where a ``Box[...]`` is expected takes the
+        expected type arguments when every argument the checker could type
+        agrees with them (a comprehension it cannot type binds nothing); a
+        conflicting argument keeps the inferred type, so the assignment is
+        still reported."""
+        if not isinstance(expected, GenericType):
+            return None
+        class_name = self._constructor_value_type(node)
+        params = self._class_type_params.get(class_name, ()) if class_name else ()
+        if not params or expected.base != class_name or len(expected.args) != len(params):
+            return None
+        wanted = dict(zip(params, expected.args))
+        for sig in self._ctor_sigs_for(class_name):
+            if not isinstance(sig, _CallableSig) or tuple(sig.generic_names) != tuple(params):
+                continue
+            mapping = self._generic_type_mapping_for_sig(node, sig)
+            if all(
+                render_type(bound) == render_type(wanted[name]) or self._is_any_type(bound)
+                for name, bound in mapping.items() if name in wanted
+            ):
+                return expected
+            return GenericType(class_name, tuple(mapping.get(name, wanted[name]) for name in params))
         return None
 
     def _null_coalesce_result_type(self, node: Tree) -> Type | None:

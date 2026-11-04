@@ -5,6 +5,20 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.1.3 — 2026-11-04
+
+### Fixed
+
+- A generic class's type arguments are inferred from its constructor's
+  arguments, as the documentation describes for generic functions:
+  `a: Box[int] = Box([1, 2])` was rejected ("cannot assign `Box` to
+  `Box[int]`"), and a list comprehension passed to the constructor
+  (`Box([Row(x) for x in xs])`, in one module or with the class imported)
+  was emitted as `[]T` ("undefined: T"). An argument the checker cannot
+  type takes the target's type arguments (`c: Box[float] = Box([x / 2.0
+  for x in xs])`); a conflicting one is still reported (`labels: Box[str]
+  = Box([1, 2])`: "cannot assign `Box[int]` to `Box[str]`").
+
 ## 4.1.2 — 2026-11-04
 
 ### Added

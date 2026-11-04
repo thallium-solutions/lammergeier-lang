@@ -1,0 +1,45 @@
+# Provider for test_generic_ctor_inferred_imported.lam: an imported generic
+# class built with its type argument inferred from a list comprehension
+# (`Box([Row(...) for ...])`, no `Box[Row]`), in functions, methods,
+# `Result.Ok`, returns, assignments and arguments.
+from lamerrors import Result
+from generic_box_provider import Box
+
+class Row {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func load(n: int) -> Result[Box[Row]] {
+    return Result.Ok(Box([Row(f"r{i}") for i in range(n)], n))
+}
+
+func names(n: int) -> Box[str] {
+    return Box([str(i) for i in range(n)], n)
+}
+
+func describe(b: Box[int]) -> str {
+    return f"{b.items}/{b.total}"
+}
+
+class Table {
+    func init(self, prefix: str) {
+        self.prefix: str = prefix
+    }
+
+    func fetch(self, n: int) -> Result[Box[Row]] {
+        return Result.Ok(Box([Row(self.prefix + str(i)) for i in range(n)], n))
+    }
+
+    func squares(self, n: int) -> str {
+        b: Box[int] = Box([i * i for i in range(n) if i > 0], n - 1)
+        return describe(b) + " " + describe(Box([i + 10 for i in range(2)], 2))
+    }
+
+    func nested(self) -> Box[list[str]] {
+        return Box([[w, w.toUpper()] for w in ["a", "b"]], 2)
+    }
+}
+
+func main() { pass }
