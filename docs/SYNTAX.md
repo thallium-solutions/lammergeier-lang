@@ -232,6 +232,14 @@ value["key"]` removes an object member. JSON values compare
 structurally with `==` / `!=`, compare to `None` as JSON null, and support
 `missing ?? fallback` in typed contexts.
 
+Indexing a missing object key yields JSON null (`None`), and so does indexing
+any JSON value that is not an object or an array (null, a string, a number or
+a boolean, with a `str` or an `int` index): `doc.user.address.city ?? "unknown"`
+is `"unknown"` when `user` is null or absent, and `doc["name"][0]` on a string
+is `None` (convert with `name: str = doc.name` to work with its characters).
+Integer indexing out of an array's bounds and a `str` index on an array (or an
+`int` one on an object) still fail at run time.
+
 The builtin `json(value)` performs statically checked conversion. A string stays
 a JSON string; use `Json.decode(text)` to parse encoded JSON. A custom class must
 implement `__json__` and still be passed explicitly to `json(instance)`.
@@ -736,6 +744,32 @@ func main() {
     print(greet("World"))   # Hello, World!
 }
 ```
+
+### List parameters
+
+A `list` argument is passed as a Go slice: writes to its elements
+(`xs[0] = 1`, `xs.sort(inplace=true)`) are seen by the caller, but changes of
+its length (`append`, `extend`, `insert`, `pop`, `xs += ys`) are not — unlike
+Python, where the caller's list grows too. The compiler warns
+(`warning[list-param]`) when a function changes the length of a list
+parameter it does not return. Return the list and reassign it at the call
+site, or keep the list in a class field:
+
+```lammergeier
+func withItem(items: list[int], v: int) -> list[int] {
+    items.append(v)
+    return items
+}
+
+func main() {
+    xs: list[int] = [1]
+    xs = withItem(xs, 2)
+    print(xs)               # [1 2]
+}
+```
+
+A function that rebinds the parameter first (`xs = xs[:]`) works on its own
+list and is not warned about.
 
 ---
 
@@ -1290,8 +1324,9 @@ retrieved: ValueError: bad id -1`, like Python's asyncio) and the exit status
 is unchanged. A task still running when `main` returns is abandoned silently.
 
 `await` needs the handle returned by an async call. Keep handles in an
-unannotated local or list (`tasks = [load(1), load(2)]`) so their type is
-known; awaiting a value typed `any` (an element of a `list[any]`) is a
+unannotated local or list (`tasks = [load(1), load(2)]`, or with async
+methods `[worker.run(1), other.run(2)]`, `[Loader.doubled(1)]`) so their type
+is known; awaiting a value typed `any` (an element of a `list[any]`) is a
 compile-time error.
 
 `lamconcurrency.Channel` and `lamactor.Mailbox` use the same operation names:
@@ -2686,7 +2721,19 @@ with an empty `kind`, its text as `message` and the original value as
 `cause`; it prints exactly as the value did.
 
 A `return` inside the `do` body (or inside the handler) returns from the
-enclosing function, exactly as it would outside the block:
+enclosing function, exactly as it would outside the block. When both the body
+and the handler end in `return` / `raise`, the `do/catch` block ends the
+function (no trailing `return` is needed):
+
+```lammergeier
+func parseOr(s: str, fallback: int) -> int {
+    do {
+        return parseInt(s)?
+    } catch _err {
+        return fallback
+    }
+}
+```
 
 ```lammergeier
 from lamerrors import Result
@@ -3690,7 +3737,11 @@ func main() {
 Defining a top-level `tag` and also importing another module's `tag` without
 `as` is an error that suggests an alias (`from alpha import tag as alphaTag`).
 The same works for classes (`from settings import Config as SettingsConfig`
-next to your own `class Config`).
+next to your own `class Config`). Names that differ only in the case of their
+first letter (`userColumns()` in one module, `UserColumns` in another) are
+namespaced the same way, because exported Go identifiers capitalise the first
+letter. One function may be reached both ways in a file (`import m as p` with
+`from m import load`: `p.load()` and `load()` are the same function).
 
 Two exceptions keep their names and are still reported by the link-time clash
 diagnostic if something else in the program defines the same name in the

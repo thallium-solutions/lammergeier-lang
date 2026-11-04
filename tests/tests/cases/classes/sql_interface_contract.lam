@@ -1,0 +1,11 @@
+# Provider for test_imported_interface_results.lam: an application `Sql`
+# interface whose methods return `Result` payloads (rows as dicts, a count).
+from lamerrors import Result
+
+interface Sql {
+    func query(self, q: str) -> Result[list[dict[str, any]]]
+    func count(self, table: str) -> Result[int]
+    func name(self) -> str
+}
+
+func main() { pass }

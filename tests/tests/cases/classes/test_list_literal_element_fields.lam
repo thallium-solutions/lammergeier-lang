@@ -1,0 +1,42 @@
+# Regression (4.1.1): indexing an unannotated list literal directly
+# (`[obj][0].field`, `[a, b][-1].method()`) lowered the literal to
+# `[]interface{}`, so field access / method calls on the element (and
+# negative indices, and arithmetic on `[1, 2][0]`) failed in go build.
+#
+# expect: a b a
+# expect: Lc Lb
+# expect: A 2 3
+# expect: first=La n=1
+# expect: a
+# expect: 5 x
+# expect: [La Lb]
+# expect: b
+
+class Item {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func label(self) -> str {
+        return "L" + self.name
+    }
+}
+
+func pick(items: list[Item], i: int) -> Item {
+    return items[i]
+}
+
+func main() {
+    obj = Item("a")
+    other = Item("b")
+    print([obj][0].name, [Item("b")][0].name, [obj, other][0].name)
+    print([obj, Item("c")][-1].label(), [obj, other][1].label())
+    print([obj][0].name.toUpper(), len([obj, other]), [1, 2][0] + [1, 2][-1])
+    first = [obj, other][0]
+    print(f"first={first.label()} n={len([first])}")
+    i = 0
+    print([obj, other][i].name)
+    print([5, 6][0], ["x", "y"][i])
+    print([[obj, other][k].label() for k in range(2)])
+    print(pick([obj, other], 1).name if [obj][0].name == "a" else "?")
+}

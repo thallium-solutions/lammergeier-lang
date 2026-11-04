@@ -1,0 +1,49 @@
+# Helper module for test_case_only_names_across_modules.lam: top-level names
+# that differ from case_names_upper.lam's only in their first letter.
+
+const maxRows: int = 10
+
+func userTable() -> str {
+    return "users"
+}
+
+func userColumns() -> list[str] {
+    return ["id", "name"]
+}
+
+class userRow {
+    func init(self, id: int) {
+        self.id: int = id
+    }
+
+    func label(self) -> str {
+        return f"row{self.id}"
+    }
+}
+
+private func Helper() -> str {
+    return "lower-helper"
+}
+
+interface shape {
+    func area(self) -> int
+}
+
+class Square {
+    func init(self, side: int) {
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+func describeLower() -> str {
+    s: shape = Square(3)
+    return f"{userTable()}:{len(userColumns())}:{userRow(maxRows).label()}:{Helper()}:{s.area()}"
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

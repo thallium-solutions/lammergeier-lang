@@ -119,6 +119,13 @@ class StatementVisitorMixin:
         if not target_str or target_str == "_" or "." in target_str or "[" in target_str:
             return
         class_name = self._infer_receiver_class(value_node)
+        if class_name and class_name in self._interfaces and class_name not in self._class_names:
+            # ``conn = requestDb()`` with ``requestDb() -> Sql``: the local
+            # is the interface (its methods' results are known).
+            if target_str not in self.declared_vars or self._var_types.get(target_str) == class_name:
+                self._var_types[target_str] = class_name
+                self._var_go_types[target_str] = self._go_class_name(class_name)
+            return
         if not class_name or class_name not in self._class_names:
             return
         if target_str in self.declared_vars and self._var_go_types.get(target_str) == "interface{}":
@@ -309,7 +316,7 @@ class StatementVisitorMixin:
         # dispatch, ternary handling) — the same registries
         # ``annassign`` populates.
         raw_type = self._get_raw_type_name(type_node) if type_node is not None else ""
-        if raw_type and raw_type in self._class_names:
+        if raw_type and raw_type in (self._class_names | self._interfaces):
             self._var_types[target_str] = raw_type
         elif type_node is not None:
             self._var_types.pop(target_str, None)
@@ -545,12 +552,29 @@ class StatementVisitorMixin:
         ):
             return False
         inferred = self._semantic_inferred_go_type(node)
-        if inferred is None or self._contains_async_handle_call(value_node):
+        if inferred is None:
+            # ``r = conn.query(q)`` with a ``Result[list[dict[str, any]]]``
+            # result: the local stays a ``*Result`` but keeps its payload,
+            # so ``r.unwrap()[0]`` / ``r?`` know the rows' type.
+            # A name reused by another function must not keep a payload.
+            self._var_result_payloads.pop(target_str, None)
+            type_text = getattr(node, "_lam_inferred_type", "") or ""
+            type_node = None
+            if type_text.startswith("Result[") and "unknown" not in type_text:
+                type_node = self._lam_type_text_node(type_text)
+            if type_node is not None:
+                self._note_result_payload(target_str, type_node)
+            elif isinstance(value_node, Tree) and value_node.data == "funccall":
+                payload = self._propagated_payload_go_type(value_node)
+                if payload and payload != "interface{}":
+                    self._var_result_payloads[target_str] = payload
+            return False
+        if self._contains_async_handle_call(value_node):
             return False
         type_node, go_type = inferred
         own = self._expr_go_type_hint(value_node) or self._infer_type_from_value(value_node) or ""
         raw_type = self._get_raw_type_name(type_node)
-        if raw_type and raw_type in self._class_names:
+        if raw_type and raw_type in (self._class_names | self._interfaces):
             self._var_types[target_str] = raw_type
         else:
             self._var_types.pop(target_str, None)
@@ -599,6 +623,15 @@ class StatementVisitorMixin:
             callee = node.children[0]
             if isinstance(callee, Tree) and callee.data == "var" and callee.children:
                 if self._get_name(callee.children[0]) in self._async_functions:
+                    return True
+            if isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2:
+                # ``a.run(1)`` / ``Worker.make(2)`` with an async method.
+                receiver = callee.children[0]
+                class_name = self._infer_receiver_class(receiver)
+                if not class_name and isinstance(receiver, Tree) and receiver.data == "var" and receiver.children:
+                    candidate = self._get_name(receiver.children[0])
+                    class_name = candidate if candidate in self._class_names else ""
+                if class_name and self._async_method_handle_go_type(class_name, self._get_name(callee.children[1])):
                     return True
         return any(self._contains_async_handle_call(c) for c in node.children)
 
@@ -1572,11 +1605,16 @@ class StatementVisitorMixin:
                 assign_op = "=" if already_declared else ":="
                 self._emit(f"for {var_name} {assign_op} range {iter_str} {{")
             elif key_name and val_name:
-                if dict_literal_type:
-                    self._var_go_types[key_name] = "string"
-                    self._var_go_types[val_name] = dict_literal_type[len("map[string]"):]
                 k_decl = key_name in self.declared_vars
                 v_decl = val_name in self.declared_vars
+                # ``for k, v in vars`` over a ``dict[str, str]`` (parameter,
+                # local, field or literal): both names have the map's key and
+                # value types, so ``v if c else k`` stays a ``string``.
+                map_type = dict_literal_type or (iterable_type or "").strip()
+                key_type, value_type = self._split_go_map_type(map_type)
+                for name, go_type, declared in ((key_name, key_type, k_decl), (val_name, value_type, v_decl)):
+                    if name != "_" and not declared and go_type and go_type != "interface{}":
+                        self._var_go_types[name] = go_type
                 assign_op = "=" if (k_decl and v_decl) else ":="
                 self._emit(f"for {key_name}, {val_name} {assign_op} range {iter_str} {{")
             elif self._range_single_target_uses_key(iterable_node):
@@ -1657,10 +1695,19 @@ class StatementVisitorMixin:
         """The ``[]T`` to iterate the list literal ``node`` as: ``inferred``
         unless the elements' expression types say otherwise (one shared
         concrete ``T``, or ``[]interface{}`` when two known types differ)."""
+        children = [c for c in node.children if c is not None]
+        # ``for n in [["a"], []]``: the empty literal takes its siblings' type.
         types = {
             (self._expr_go_type_hint(c) or self._infer_type_from_value(c) or "").strip()
-            for c in node.children if c is not None
+            for c in children if not self._is_empty_collection_literal(c)
         }
+        if types and len(types) == 1:
+            only = next(iter(types))
+            if any(
+                self._is_empty_collection_literal(c) and not self._empty_literal_fits(c, only)
+                for c in children
+            ):
+                types.add("[]interface{}")
         known = {t for t in types if t not in {"", "interface{}", "any"}}
         if len(known) > 1:
             return "[]interface{}"
@@ -2326,6 +2373,11 @@ class StatementVisitorMixin:
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
         self._emit("}")
+        from compiler.semantic import SemanticChecker
+        if SemanticChecker._stmt_definitely_terminates(node):
+            # Body and handler both return / raise: control never gets
+            # here, and Go needs a terminating statement to see it.
+            self._emit('panic("unreachable: do/catch")')
 
     # ─── With ──────────────────────────────────────────────────
 

@@ -1,0 +1,22 @@
+# Provider for test_imported_interface_results.lam: a third module that
+# loops over interface `Result` rows with `?` and calls `requestDb` from
+# another module without annotating the result.
+from lamerrors import Result
+from sql_interface_contract import Sql
+from sql_interface_store import requestDb
+
+func rowIds(conn: Sql, q: str) -> Result[list[int]] {
+    ids: list[int] = []
+    for row in conn.query(q)? {
+        ids.append(int(row["id"]))
+    }
+    return Result.Ok(ids)
+}
+
+func summary(label: str) -> str {
+    conn = requestDb(label, 3)
+    total = conn.count("ab").unwrapOr(0)
+    return f"{conn.name()}:{total}:{rowIds(conn, "q").unwrap()}"
+}
+
+func main() { pass }

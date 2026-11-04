@@ -1,0 +1,33 @@
+# Helper module for test_case_only_names_across_modules.lam.
+
+func MaxRows() -> int {
+    return 20
+}
+
+UserTable: str = "UT"
+
+func UserColumns() -> int {
+    return 3
+}
+
+class UserRow {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+helper: str = "upper-helper"
+
+class Shape {
+    func init(self) {
+        self.sides: int = 4
+    }
+}
+
+func describeUpper() -> str {
+    return f"{MaxRows()}:{UserTable}:{UserColumns()}:{UserRow("u").name}:{helper}:{Shape().sides}"
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

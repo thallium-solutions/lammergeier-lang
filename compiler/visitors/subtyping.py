@@ -226,6 +226,17 @@ class SubtypingMixin:
             data["by_go"] = by_go
         return by_go.get(base, "")
 
+    def _interface_from_go_type(self, go_type: str) -> str:
+        """``Sql`` (the Go type of an interface value) -> the Lam interface
+        name (or ``""``)."""
+        go_type = (go_type or "").strip()
+        if not go_type or go_type.startswith(("*", "[", "map[", "func(")):
+            return ""
+        for name in sorted(self._interfaces):
+            if name not in self._class_names and self._go_class_name(name) == go_type:
+                return name
+        return ""
+
     def _generic_receiver_subst(self, class_name: str, func) -> Dict[str, str]:
         """``{T: *Shape}`` for a method called on ``reg: Registry[Shape]``."""
         params = self._class_type_param_names_of(class_name) if class_name else []

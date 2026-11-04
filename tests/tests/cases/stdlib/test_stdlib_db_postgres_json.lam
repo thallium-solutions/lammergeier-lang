@@ -1,7 +1,13 @@
+# Needs a disposable PostgreSQL (it creates and drops lam_json_native_test):
+#   docker run -d --rm --name lam-test-pg -e POSTGRES_PASSWORD=test -p 127.0.0.1:55470:5432 postgres:16-alpine
+#   LAM_TEST_POSTGRES_DSN='postgres://postgres:test@127.0.0.1:55470/postgres?sslmode=disable'
+# Skipped when the variable is unset: never a default address.
+# requires-env: LAM_TEST_POSTGRES_DSN
 # expect: postgres-json:Ada:2
 # expect: true
 
 from lamdb import Db
+from lamenv import Env
 from lamjson import Json
 from lamerrors import Result
 
@@ -22,7 +28,7 @@ func resultJson(result: Result) -> json {
 }
 
 func main() {
-    db: Db = resultDb(Db.connect("postgres", "postgres://postgres:Password@localhost:5432/postgres?sslmode=disable"))
+    db: Db = resultDb(Db.connect("postgres", Env.get("LAM_TEST_POSTGRES_DSN").unwrap()))
     db.exec("DROP TABLE IF EXISTS lam_json_native_test").unwrap()
     db.exec("CREATE TABLE lam_json_native_test (id INTEGER PRIMARY KEY, payload JSONB)").unwrap()
     payload: json = {"name": "Ada", "roles": ["admin", "writer"], "active": true}

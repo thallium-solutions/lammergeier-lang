@@ -1,0 +1,29 @@
+# Helper module for test_module_alias_with_from_import.lam.
+
+const LIMIT: int = 3
+
+func load(name: str) -> str {
+    return f"load:{name}"
+}
+
+func load(n: int) -> str {
+    return f"load#{n}"
+}
+
+func save(name: str, times: int = 1) -> str {
+    return f"save:{name}x{times}"
+}
+
+class Loader {
+    func init(self, root: str) {
+        self.root: str = root
+    }
+
+    func fetch(self, name: str) -> str {
+        return load(self.root + "/" + name)
+    }
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

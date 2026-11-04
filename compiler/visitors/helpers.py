@@ -927,6 +927,11 @@ class HelpersMixin:
             if base in {"optional", "Option"}:
                 if not type_args:
                     return "interface{}"
+                if self._get_raw_type_name(node) in self._interfaces:
+                    # ``optional[Sql]`` with ``Sql`` an interface: the Go
+                    # interface value is already nil-able (``*Sql`` would be
+                    # a pointer to an interface, which has no methods).
+                    return type_args[0]
                 return type_args[0] if type_args[0].startswith("*") else f"*{type_args[0]}"
             if base == "chan":
                 return f"chan {type_args[0]}" if type_args else "chan interface{}"
@@ -1253,6 +1258,21 @@ class HelpersMixin:
                 return method
         return ""
 
+    @staticmethod
+    def _is_empty_collection_literal(node) -> bool:
+        """``[]`` or ``{}`` written as a literal."""
+        return (
+            isinstance(node, Tree) and node.data in {"list", "dict"}
+            and not any(c is not None for c in node.children)
+        )
+
+    @staticmethod
+    def _empty_literal_fits(node, go_type: str) -> bool:
+        """Whether the empty literal ``node`` can be a ``go_type`` value."""
+        if node.data == "list":
+            return go_type.startswith("[]")
+        return go_type.startswith("map[")
+
     def _infer_type_from_value(self, node) -> str:
         from compiler.constants import PYTHON_EXCEPTIONS
         if isinstance(node, Token):
@@ -1271,13 +1291,22 @@ class HelpersMixin:
             # ``-1`` / ``+2.5``: the sign does not change the numeric type.
             return self._infer_type_from_value(node.children[-1])
         if d == "list":
+            children = [c for c in node.children if c is not None]
+            # ``[["a"], []]``: an empty list / dict literal takes the type
+            # of its sibling lists / dicts (``[][]string``).
             elem_types = [
                 self._infer_type_from_value(c)
-                for c in node.children
-                if c is not None
+                for c in children
+                if not self._is_empty_collection_literal(c)
             ]
             elem_types = [t for t in elem_types if t and t != "interface{}"]
             if elem_types and all(t == elem_types[0] for t in elem_types):
+                if len(elem_types) < len(children) and any(
+                    self._is_empty_collection_literal(c)
+                    and not self._empty_literal_fits(c, elem_types[0])
+                    for c in children
+                ):
+                    return "[]interface{}"
                 return "[]" + elem_types[0]
             return "[]interface{}"
         if d == "dict":
@@ -1331,6 +1360,11 @@ class HelpersMixin:
                     return self._async_handle_go_type(self._func_return_go_types.get(name, ""))
                 if name and name[0].isupper() and name not in PYTHON_EXCEPTIONS:
                     return "*" + self._go_class_name(name)
+            if isinstance(func, Tree) and func.data == "getattr" and len(func.children) >= 2:
+                # ``[a.run(1), b.run(2)]`` with ``async func run``: handles.
+                handle = self._expr_go_type_hint(node) or ""
+                if handle.startswith("chan func()"):
+                    return handle
         return "interface{}"
 
     # ─── Overload-by-type signature helpers ────────────────────

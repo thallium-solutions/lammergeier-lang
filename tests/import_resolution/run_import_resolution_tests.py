@@ -794,6 +794,67 @@ def test_namespaced_module_variables() -> None:
     print("PASS: same-name module variables are namespaced")
 
 
+def test_namespaced_case_only_names() -> None:
+    """Regression (4.1.1): names differing only in the case of their first
+    letter share a Go identifier once exported; they are namespaced too."""
+    # A main-module function next to a library variable / class.
+    _assert_builds_and_prints(
+        "from b import UserTable, Report, bumpUsers\n\nfunc userTable() -> str {\n    return \"main\"\n}\n\n"
+        "func report() -> str {\n    return Report().name\n}\n\n"
+        "func main() {\n    print(userTable() + UserTable + report() + f\"{bumpUsers()}\")\n}\n",
+        {
+            "b.lam": "UserTable: str = \"-lib\"\nusers: int = 1\n\nclass Report {\n    func init(self) {\n        self.name: str = \"-rep\"\n    }\n}\n\n"
+            "func bumpUsers() -> int {\n    users += 1\n    return users\n}\n",
+        },
+        "main-lib-rep2",
+    )
+    # Three modules: a function, a mutated variable and a class.
+    _assert_builds_and_prints(
+        "import a\nimport b\nimport c\n\nfunc main() {\n    _ = b.bump()\n    print(a.counter(), b.Counter, c.counter, b.read())\n}\n",
+        {
+            "a.lam": "func counter() -> int {\n    return 1\n}\n",
+            "b.lam": "Counter: int = 10\n\nfunc bump() -> int {\n    Counter += 1\n    return Counter\n}\n\nfunc read() -> int {\n    return Counter\n}\n",
+            "c.lam": "counter: str = \"c\"\n",
+        },
+        "1 11 c 11",
+    )
+    print("PASS: names differing only in their first letter's case are namespaced")
+
+
+def test_module_alias_and_from_import_of_one_function() -> None:
+    """Regression (4.1.1): ``import m as p`` plus ``from m import load`` with
+    both ``p.load()`` and ``load()`` called gave the function a second Go
+    name (``Load__lam2``) that the defining module never declared."""
+    lib = "func load() -> str {\n    return \"load\"\n}\n\nfunc g() -> str {\n    return \"g\"\n}\n"
+    _assert_builds_and_prints(
+        "import m as p\nfrom m import load\n\nfunc main() {\n    print(p.g(), load(), p.load())\n}\n",
+        {"m.lam": lib},
+        "g load load",
+    )
+    # The from-import first, an aliased from-import and a library user.
+    _assert_builds_and_prints(
+        "from m import load\nfrom m import load as ld\nimport m as p\nfrom user import both\n\n"
+        "func main() {\n    print(load() + p.load() + ld() + both())\n}\n",
+        {
+            "m.lam": lib,
+            "user.lam": "import m as p\nfrom m import load\n\nfunc both() -> str {\n    return p.load() + load() + p.g()\n}\n",
+        },
+        "loadloadloadloadloadg",
+    )
+    # The function shares its Go name with a class of its module
+    # (``apiState`` -> ``ApiState__lam2`` next to ``class ApiState``).
+    _assert_builds_and_prints(
+        "import core as c\nfrom core import apiState, ApiState\nfrom core import apiState as st\n\n"
+        "func main() {\n    s: ApiState = c.apiState()\n    print(apiState().n + st().n + s.n + c.ApiState().n)\n}\n",
+        {
+            "core.lam": "class ApiState {\n    func init(self) {\n        self.n: int = 1\n    }\n}\n\n"
+            "func apiState() -> ApiState {\n    return ApiState()\n}\n",
+        },
+        "4",
+    )
+    print("PASS: a function reached through a module alias and a from-import")
+
+
 def test_imported_module_propagate_then_call() -> None:
     """``f()?.method()`` on a ``Result`` inside an imported module (the
     transpiler rewrites it without the main file's semantic pass)."""
@@ -1133,6 +1194,8 @@ def main() -> None:
         test_scoped_package_import_requires_alias,
         test_local_definition_conflict_suggests_alias,
         test_namespaced_module_variables,
+        test_namespaced_case_only_names,
+        test_module_alias_and_from_import_of_one_function,
         test_imported_function_interface_parameter,
         test_namespaced_classes_in_two_modules,
         test_importer_raw_go_follows_renames,

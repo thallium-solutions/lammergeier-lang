@@ -1,0 +1,47 @@
+# Regression (4.1.1): indexing a json null, string, number or bool
+# (`v: json = None; v["a"]`, `doc["name"][0]`, `doc.missing.city`) panicked
+# ("cannot index json null"). Like a missing object key, indexing a json
+# value that is not an object or an array now yields json null (`None`), so
+# chained lookups through absent data compose with `== None` and `??`.
+#
+# expect: true true
+# expect: true true true
+# expect: true
+# expect: unknown unknown
+# expect: n/a
+# expect: [Ada ? ?]
+# expect: 0
+# expect: Rome true
+# expect: null
+
+from lamjson import Json
+
+func city(doc: json) -> str {
+    return doc.user.address.city ?? "unknown"
+}
+
+func cities(docs: list[json]) -> list[str] {
+    out: list[str] = []
+    for d in docs {
+        out.append(d["user"]["name"] ?? "?")
+    }
+    return out
+}
+
+func main() {
+    v: json = None
+    x = v["a"]
+    print(x == None, v[0] == None)
+    doc: json = {"name": "Ada", "age": 36, "ok": true, "tags": ["x"], "meta": None}
+    print(doc["name"][0] == None, doc.age["n"] == None, doc["ok"][1] == None)
+    print(doc.meta.deep.deeper == None)
+    print(city(doc), city({"user": None}))
+    label: str = doc["meta"]["label"] ?? "n/a"
+    print(label)
+    print(cities([{"user": {"name": "Ada"}}, {"user": "plain"}, {"other": 1}]))
+    tagKey: str = doc.tags[0]["x"] ?? ""
+    print(len(tagKey))
+    nested: json = {"user": {"address": {"city": "Rome"}}}
+    print(city(nested), nested.user.address.city.name == None)
+    print(Json.encode(doc.name.first).unwrap())
+}

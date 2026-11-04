@@ -1,0 +1,27 @@
+# Regression (4.1.1): `import m as p` together with `from m import f` in one
+# file, calling both `p.f()` and `f()`, gave `f` a second Go name
+# (`Load__lam2`) that m never declared, and go build failed with
+# "undefined: Load__lam2".
+#
+# expect: load:a load:b load#2 load#3
+# expect: save:ax1 save:bx2 save:cx3
+# expect: load:/r/x load:/s/y 3 3
+# expect: [load:k0 load:k1 load:k2]
+# expect: load#7 save:zx1
+
+import alias_loader as p
+from alias_loader import load, save, Loader, LIMIT
+from alias_loader import save as store
+
+func viaBoth(n: int) -> str {
+    return f"{p.load(n)} {load(n + 1)}"
+}
+
+func main() {
+    print(load("a"), p.load("b"), viaBoth(2))
+    print(save("a"), p.save("b", 2), store("c", times=3))
+    print(Loader("/r").fetch("x"), p.Loader("/s").fetch("y"), LIMIT, p.LIMIT)
+    print([p.load(f"k{i}") for i in range(LIMIT)])
+    f: func(int) -> str = lambda n: load(n)
+    print(f(7), p.save("z"))
+}

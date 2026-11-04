@@ -2460,6 +2460,7 @@ def compile_lam(
     # Harvest each library's class names and static members so cross-library
     # static-member access can be lowered correctly. Runs on the namespaced
     # trees, so renamed classes are recorded under their unique names.
+    harvest_modules: list[tuple[Path, object]] = []
     for mod_file, ns_info in list(ns_modules.items()):
         if mod_file == main_module_path:
             continue
@@ -2470,11 +2471,30 @@ def compile_lam(
                 sub_tree, harvest_plan.rewrites, harvest_plan.module_access,
                 harvest_plan.declaration_renames,
             )
+        harvest_modules.append((mod_file, sub_tree))
+    # Every module's interfaces are known before any signature is collected:
+    # ``func requestDb() -> Sql`` with ``Sql`` an interface of another module
+    # lowers to ``Sql`` (not the class pointer ``*Sql``), exactly as the
+    # module's own transpile sees it, so both record the same overload
+    # variant and the function keeps one Go name.
+    program_interfaces: set[str] = set()
+    for _mod_file, sub_tree in harvest_modules:
+        try:
+            type_collector = GoTranspiler(
+                go_blocks=[], stdlib_path=stdlib_path,
+                go_module_name=go_module,
+            )
+            type_collector._collect_declared_type_names(sub_tree)
+            program_interfaces.update(type_collector._interfaces)
+        except Exception:
+            pass
+    for mod_file, sub_tree in harvest_modules:
         try:
             sub_collector = GoTranspiler(
                 go_blocks=[], stdlib_path=stdlib_path,
                 go_module_name=go_module,
             )
+            sub_collector._interfaces.update(program_interfaces)
             sub_collector._collect_declared_type_names(sub_tree)
             sub_collector._collect_function_names(sub_tree)
             sub_collector._collect_class_fields(sub_tree)

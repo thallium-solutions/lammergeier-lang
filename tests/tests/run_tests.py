@@ -132,9 +132,27 @@ def _failure_summary(message: str, limit: int = 12) -> list[str]:
     return (kept or lines)[:limit]
 
 
+SKIPPED = "SKIPPED"
+
+
+def required_env(source: str) -> list[str]:
+    """Names listed in ``# requires-env: NAME [NAME...]`` header lines: the
+    test needs an external service and is skipped (not failed) unless every
+    variable is set. Such tests never fall back to a default address."""
+    names: list[str] = []
+    for line in source.splitlines():
+        m = re.match(r'^\s*#\s*requires-env:\s*(.+)$', line)
+        if m:
+            names.extend(m.group(1).split())
+    return names
+
+
 def run_test(lam_file: Path, verbose: bool = False) -> tuple[bool, str]:
     """Compile and run a single .lam file, return (success, message)."""
     source = lam_file.read_text(encoding="utf-8")
+    missing = [name for name in required_env(source) if not os.environ.get(name)]
+    if missing:
+        return True, f"{SKIPPED}: set {' '.join(missing)}"
     expected = extract_expected(source)
 
     with tempfile.TemporaryDirectory(prefix="lammergeier_test_") as tmpdir:
@@ -238,10 +256,14 @@ def main():
 
     passed = 0
     failed = 0
+    skipped = 0
     errors = []
 
     for rel, success, message in results:
-        if success:
+        if success and message.startswith(SKIPPED):
+            skipped += 1
+            print(f"  ⏭️  SKIP  {rel} ({message})")
+        elif success:
             passed += 1
             print(f"  ✅ PASS  {rel}")
         else:
@@ -253,7 +275,7 @@ def main():
                     print(f"         {line}")
 
     print(f"\n{'='*60}")
-    print(f"Results: {passed} passed, {failed} failed, {passed + failed} total")
+    print(f"Results: {passed} passed, {failed} failed, {skipped} skipped, {passed + failed + skipped} total")
 
     if errors:
         print(f"\nFailed tests:")

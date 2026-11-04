@@ -936,6 +936,24 @@ class ExpressionVisitorMixin:
                     candidate = self._get_name(receiver.children[0])
                     if candidate in self._class_names:
                         class_name = candidate
+                async_handle = self._async_method_handle_go_type(class_name, method) if class_name else ""
+                if async_handle:
+                    # ``tasks = [a.run(1), b.run(2)]``: a handle, not the
+                    # method's declared result (of a generic class: with
+                    # the call's type arguments, ``Box[str]("x").get()``).
+                    if f"{class_name}.{method}" in self._generic_method_returns:
+                        static = (
+                            isinstance(receiver, Tree) and receiver.data == "var" and receiver.children
+                            and self._get_name(receiver.children[0]) == class_name
+                            and class_name not in self.declared_vars
+                        )
+                        payload = self._generic_method_result_go_type(
+                            class_name, method, receiver,
+                            node.children[1] if len(node.children) > 1 else None,
+                            static=bool(static),
+                        )
+                        return self._async_handle_go_type(payload) if payload else ""
+                    return async_handle
                 if class_name and f"{class_name}.{method}" in self._result_payload_go_types:
                     return "*Result"
                 if class_name:
@@ -1364,9 +1382,15 @@ class ExpressionVisitorMixin:
             if isinstance(inner, Tree) and inner.data == "slice":
                 obj_go = self._expr_to_go(node.children[0])
                 return self._slice_to_go(obj_go, inner, node.children[0])
-            obj = self._expr_to_go(node.children[0])
+            literal_type = self._list_literal_index_type(node.children[0])
+            if literal_type:
+                # ``[obj][0].name``: index the typed slice, so the element
+                # keeps its class (not ``[]interface{}{obj}[0]``).
+                obj = self._typed_value_to_go(node.children[0], literal_type)
+            else:
+                obj = self._expr_to_go(node.children[0])
             negative = self._negative_int_constant(inner)
-            receiver_type = self._expr_go_type_hint(node.children[0]) or ""
+            receiver_type = literal_type or self._expr_go_type_hint(node.children[0]) or ""
             if negative is not None and not receiver_type.startswith("map[") and receiver_type not in {"interface{}"}:
                 # ``xs[-1]``: Python semantics, counted from the end (an
                 # index still out of range raises ``IndexError``).
@@ -3964,6 +3988,35 @@ class ExpressionVisitorMixin:
             pending.extend(self.class_bases.get(current, []))
         return False
 
+    def _async_method_handle_go_type(self, class_name: str, method: str) -> str:
+        """``chan func() T`` when ``class_name.method`` (or the method a base
+        class declares) is an ``async func`` with a known handle type."""
+        pending = [class_name]
+        seen: set = set()
+        while pending:
+            current = pending.pop(0)
+            if not current or current in seen:
+                continue
+            seen.add(current)
+            handle = self._method_return_types.get(f"async:{current}.{method}", "")
+            if handle:
+                return handle
+            if method in self._instance_methods.get(current, set()) or method in self._static_methods.get(current, set()):
+                return ""
+            pending.extend(self.class_bases.get(current, []) or self._program_class_bases.get(current, []))
+        return ""
+
+    def _list_literal_index_type(self, node) -> str:
+        """``[]T`` of a list literal indexed directly (``[a, b][i]``) when its
+        elements share one concrete Go type; ``""`` otherwise."""
+        if not (isinstance(node, Tree) and node.data == "list" and node.children):
+            return ""
+        inferred = self._infer_type_from_value(node) or ""
+        literal_type = self._list_literal_elem_hint_type(node, inferred)
+        if not literal_type.startswith("[]") or literal_type in {"[]interface{}", "[]any"}:
+            return ""
+        return literal_type
+
     def _ternary_common_go_type(self, node) -> str:
         """Common Go type of ``a if c else b`` branches; ``""`` when unknown.
 
@@ -4223,6 +4276,10 @@ class ExpressionVisitorMixin:
                     returned_class = returned.removeprefix("*").split("[", 1)[0]
                     if returned.startswith("*") and returned_class in self._class_names:
                         return returned_class
+                    # ``requestDb().query(q)`` with ``requestDb() -> Sql``.
+                    returned_interface = self._interface_from_go_type(returned)
+                    if returned_interface:
+                        return returned_interface
             if (
                 isinstance(inner_func, Tree) and inner_func.data == "getitem"
                 and isinstance(inner_func.children[0], Tree) and inner_func.children[0].data == "var"
@@ -4625,7 +4682,10 @@ class ExpressionVisitorMixin:
                 self._var_go_types[idx] = "int"
             silence([idx, val])
             return
-        iter_str = self._expr_to_go(iter_expr)
+        # ``return Result.Ok([f(r) for r in conn.query(q)?])``: the iterable's
+        # ``?`` payload is not the enclosing statement's type.
+        with self._scoped(_propagate_cast_hint=""):
+            iter_str = self._expr_to_go(iter_expr)
         if self._is_generator_call(iter_expr):
             # A generator is a channel: one value per receive.
             if targets:
@@ -4657,8 +4717,15 @@ class ExpressionVisitorMixin:
                 self._var_go_types[var_str] = literal_type[2:]
                 literal_typed = True
         if len(targets) == 2 and self._range_single_target_uses_key(iter_expr):
+            map_type = self._expr_go_type_hint(iter_expr) or self._infer_type_from_value(iter_expr) or ""
+            dict_literal_type = self._uniform_dict_literal_type(iter_expr)
+            if dict_literal_type:
+                # ``[f"{k}:{v}" for k, v in {"k": "v"}]``: range over the
+                # typed map the targets are typed from.
+                iter_str = self._typed_dict_literal_to_go(iter_expr, dict_literal_type)
+                map_type = dict_literal_type
             lines.append(f"{tabs}for {targets[0]}, {targets[1]} := range {iter_str} {{")
-            key_type, value_type = self._split_go_map_type(self._expr_go_type_hint(iter_expr) or self._infer_type_from_value(iter_expr) or "")
+            key_type, value_type = self._split_go_map_type(map_type)
             if key_type and targets[0] != "_":
                 self._var_go_types[targets[0]] = key_type
             if value_type and targets[1] != "_":

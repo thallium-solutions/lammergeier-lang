@@ -1,0 +1,55 @@
+# Provider for test_imported_interface_results.lam: classes implementing the
+# `Sql` interface of another module and functions whose declared result is
+# that interface (alone, in a list, optional and in a Result).
+from lamerrors import Result
+from sql_interface_contract import Sql
+
+class MemorySql {
+    func init(self, label: str, rows: int) {
+        self.label: str = label
+        self.rows: int = rows
+    }
+
+    func query(self, q: str) -> Result[list[dict[str, any]]] {
+        if q == "" {
+            return Result.Err("empty query")
+        }
+        out: list[dict[str, any]] = []
+        for i in range(self.rows) {
+            out.append({"id": i + 1, "q": q, "db": self.label})
+        }
+        return Result.Ok(out)
+    }
+
+    func count(self, table: str) -> Result[int] {
+        return Result.Ok(self.rows * len(table))
+    }
+
+    func name(self) -> str {
+        return self.label
+    }
+}
+
+func requestDb(label: str, rows: int = 2) -> Sql {
+    return MemorySql(label, rows)
+}
+
+func allDbs() -> list[Sql] {
+    return [requestDb("a", 1), requestDb("b", 3)]
+}
+
+func findDb(label: str) -> optional[Sql] {
+    if label == "" {
+        return None
+    }
+    return requestDb(label)
+}
+
+func openDb(label: str) -> Result[Sql] {
+    if label == "" {
+        return Result.Err("no label")
+    }
+    return Result.Ok(requestDb(label, 1))
+}
+
+func main() { pass }

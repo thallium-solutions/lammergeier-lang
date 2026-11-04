@@ -1,0 +1,63 @@
+# 4.1.1 contract for list parameters (Go slices passed by value): element
+# writes are shared with the caller, length changes are not. The compiler
+# warns (`warning[list-param]`) when a function appends to a list parameter
+# it does not return; returning the list and reassigning it at the call
+# site, or keeping the list in a class field, shares the change.
+#
+# expect: [100 2 3]
+# expect: [1 2 3 4] 4
+# expect: [a b] 2
+# expect: [x y z]
+# expect: [1 2] 3
+
+class Collector {
+    func init(self) {
+        self.items: list[str] = []
+    }
+
+    func add(self, item: str) {
+        self.items.append(item)
+    }
+}
+
+func bumpFirst(xs: list[int]) {
+    xs[0] = 100
+}
+
+func withNext(xs: list[int]) -> list[int] {
+    xs.append(len(xs) + 1)
+    return xs
+}
+
+func collect(c: Collector, items: list[str]) -> int {
+    for item in items {
+        c.add(item)
+    }
+    return len(c.items)
+}
+
+func extended(xs: list[str], more: list[str]) -> list[str] {
+    xs.extend(more)
+    return xs
+}
+
+func copyGrow(xs: list[int]) -> int {
+    mine = xs[:]
+    mine.append(9)
+    return len(mine)
+}
+
+func main() {
+    a: list[int] = [1, 2, 3]
+    bumpFirst(a)
+    print(a)
+    b: list[int] = [1, 2, 3]
+    b = withNext(b)
+    print(b, len(b))
+    c = Collector()
+    n = collect(c, ["a", "b"])
+    print(c.items, n)
+    print(extended(["x"], ["y", "z"]))
+    d: list[int] = [1, 2]
+    print(d, copyGrow(d))
+}

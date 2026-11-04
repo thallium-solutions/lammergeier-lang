@@ -5,6 +5,67 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.1.1 — 2026-11-04
+
+### Changed
+
+- Tests: the PostgreSQL core test no longer connects to `localhost:5432`;
+  it reads `LAM_TEST_POSTGRES_DSN` (a disposable database) and is skipped
+  when the variable is unset (`# requires-env:` in the core runner).
+
+### Fixed
+
+- A function whose declared result is an interface of another module
+  (`func requestDb() -> Sql`) could not be called from a third module: the
+  defining module and its callers chose different Go names for it ("undefined:
+  RequestDb_1_str_ret_ptrSql"). `optional[Sql]` of an interface is the
+  interface value itself (not a pointer to it).
+- `for row in conn.query(q)?` with `conn` typed by an interface (a parameter,
+  a local or the result of a call) knows the rows' type, as for a class:
+  it failed in `go build` ("cannot range over __q1.Value"); interface method
+  results keep their `Result` payload and container type too
+  (`conn.query(q).unwrap()[0]["id"]`, comprehensions over `conn.query(q)?`).
+- Top-level names of two modules that differ only in the case of their first
+  letter (`userColumns()` in one module, `UserColumns` in another; also
+  classes, interfaces, constants, variables and private functions) map to the
+  same Go identifier; they are now namespaced per module like same-name
+  definitions instead of failing with a top-level symbol clash or a Go
+  redeclaration.
+- `import m as p` together with `from m import load` in one file, calling
+  both `p.load()` and `load()` (or a `from m import load as ld` alias next to
+  `load`), gave the function a second Go name that `m` never declared
+  ("undefined: Load__lam2").
+- Indexing an unannotated list literal directly (`[obj][0].name`,
+  `[a, b][-1].label()`, `[1, 2][0] + 1`) typed the literal as `[]interface{}`
+  and failed in `go build`.
+- Async *method* calls in a list literal (`tasks = [a.run(1), b.run(2)]`,
+  static, inherited, generic and imported methods) are handles, as async
+  function calls already were; the list was typed by the methods' results and
+  `go build` failed.
+- A list literal of lists holding an empty list (`for n in [["a"], []]`,
+  `[[], ["b"]][1]`) gives the empty list its siblings' type: passing `n` to a
+  `list[str]` parameter panicked at run time ("interface {} is []interface {},
+  not []string") and `len(n)` / `for s in n` failed in `go build`. Empty
+  `{}` next to dict literals works the same way.
+- Indexing a JSON value that is neither an object nor an array (null, a
+  string, a number, a boolean) yields JSON null, like a missing object key,
+  instead of panicking ("cannot index json null"): `doc.user.address.city ??
+  "unknown"` works when `user` is null. Out-of-range array indexes and
+  wrongly typed indexes on objects / arrays still fail at run time.
+- `do { ... return a } catch err { ... return b }` whose body and handler both
+  return (or raise) ends the function: it was reported as "not all paths in
+  `f` return a value", and the generated Go had no final return.
+- The key / value variables of `for k, v in d` over a typed dict (a
+  `dict[str, str] = {}` parameter, a local, a field, or a comprehension over a
+  dict literal) keep their types in expressions such as `len(v if c else k)`
+  and `(k if c else v).toUpper()`, which failed in `go build`.
+- A function that changes the length of a `list` parameter it does not return
+  (`xs.append(v)`, `extend`, `insert`, `pop`, `xs += ys`) now gets a
+  compile-time warning (`warning[list-param]`): Lam lists are Go slices passed
+  by value, so the caller does not see the new length (element writes are
+  shared). Return the list and reassign it at the call site, or keep it in a
+  class field. Giving lists Python's reference semantics is planned for 4.2.
+
 ## 4.1.0 — 2026-11-03
 
 ### Added

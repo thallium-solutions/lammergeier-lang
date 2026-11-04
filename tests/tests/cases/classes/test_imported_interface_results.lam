@@ -1,0 +1,59 @@
+# Regression (4.1.1): a function declared in another module whose result is
+# an interface of a third module (`func requestDb(...) -> Sql`) was emitted
+# under one Go name and called under another ("undefined:
+# RequestDb_1_str_ret_ptrSql"), and `for row in conn.query(...)?` through
+# the interface did not know the rows' type ("cannot range over
+# __q1.Value").
+from lamerrors import Result
+from sql_interface_contract import Sql
+from sql_interface_store import requestDb, allDbs, findDb, openDb
+from sql_interface_report import rowIds, summary
+
+func firstIds(q: str) -> Result[str] {
+    conn: Sql = requestDb("main")
+    out: list[str] = []
+    for row in conn.query(q)? {
+        out.append(f"{row["db"]}#{row["id"]}")
+    }
+    n = conn.count("abc")?
+    return Result.Ok(f"{out} n={n}")
+}
+
+func describe(conn: Sql) -> str {
+    return conn.name()
+}
+
+func main() {
+    # Unannotated results, chained and passed on.
+    print(requestDb("x").name(), len(requestDb("y", 4).query("s").unwrap()))
+    db = requestDb("z")
+    print(describe(db), describe(requestDb("w")))
+    rows = db.query("t").unwrap()
+    print(rows[0]["id"], rows[1]["q"])
+    # Interface results inside other types.
+    for conn in allDbs() {
+        print(conn.name(), rowIds(conn, "k").unwrap())
+    }
+    found = findDb("f")
+    if found != None {
+        print("found", found.name())
+    }
+    print(findDb("") == None)
+    print(openDb("o").unwrap().name(), not openDb("").ok())
+    # `?` loops through the interface, in this module and another one.
+    print(firstIds("sel").unwrap())
+    print(not firstIds("").ok(), not rowIds(requestDb("e"), "").ok())
+    print(summary("rep"))
+}
+
+# expect: x 4
+# expect: z w
+# expect: 1 t
+# expect: a [1]
+# expect: b [1 2 3]
+# expect: found f
+# expect: true
+# expect: o true
+# expect: [main#1 main#2] n=6
+# expect: true true
+# expect: rep:6:[1 2 3]

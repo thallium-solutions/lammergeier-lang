@@ -1353,10 +1353,132 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             if suite_node is not None:
                 self._walk_suite_stmts(self._suite_stmts(suite_node))
                 self._check_function_returns(node, suite_node)
+                self._warn_list_param_resizes(params_node, suite_node)
             self._emit_unused_param_warnings(scope, params_node)
             self._emit_unused_local_warnings(scope)
         finally:
             self._scopes.pop()
+
+    # List methods that change a list's length; on a parameter the change
+    # stays local (``xs = append(xs, v)`` on the callee's slice header).
+    _LIST_RESIZE_METHODS = ("append", "extend", "insert", "pop")
+
+    def _warn_list_param_resizes(self, params_node, suite_node: Tree) -> None:
+        """Warn when a function changes the length of a ``list`` parameter
+        it does not return: Lam lists are Go slices passed by value, so
+        the caller keeps its old length (element writes are shared).
+
+        Quiet when the parameter is returned (``return xs``,
+        ``return xs, n``, ``return Result.Ok(xs)``) or rebound in the body
+        (``xs = xs[:]``: the function works on its own list, as in Python).
+        """
+        types = self._param_type_map(params_node)
+        names = {name for name, text in types.items() if text == "list" or text.startswith("list[")}
+        if not names:
+            return
+        first_site: dict[str, tuple] = {}
+        rebound: set[str] = set()
+        returned: set[str] = set()
+
+        def var_name(node) -> str:
+            if isinstance(node, Tree) and node.data == "var" and node.children:
+                return self._name_text(node.children[0])
+            return ""
+
+        def direct_names(node) -> set[str]:
+            """``xs`` / ``xs, n`` / ``Result.Ok(xs)`` -> ``{"xs"}``."""
+            name = var_name(node)
+            if name:
+                return {name}
+            if not isinstance(node, Tree):
+                return set()
+            if node.data in {"tuple", "testlist", "testlist_tuple", "exprlist", "arguments", "argvalue"}:
+                out: set[str] = set()
+                for child in node.children:
+                    out |= direct_names(child)
+                return out
+            if node.data == "funccall" and len(node.children) > 1:
+                callee = node.children[0]
+                callee_name = (
+                    self._name_text(callee.children[1])
+                    if isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2
+                    else var_name(callee)
+                )
+                if callee_name == "Ok":
+                    # ``return Result.Ok(xs)``.
+                    return direct_names(node.children[1])
+            return set()
+
+        def target_names(node) -> set[str]:
+            name = var_name(node)
+            if name:
+                return {name}
+            if isinstance(node, Tree) and node.data in {"tuple", "exprlist", "testlist", "testlist_tuple", "untyped_for_target", "typed_for_target"}:
+                out: set[str] = set()
+                for child in node.children:
+                    out |= target_names(child)
+                return out
+            return set()
+
+        def visit(node, active: set, outer: bool) -> None:
+            if not isinstance(node, Tree) or not active:
+                return
+            if node.data == "classdef":
+                return
+            if node.data in {"funcdef", "lambdef"}:
+                # A nested callable: its parameters shadow, its returns are
+                # its own.
+                params = self._funcdef_params(node) if node.data == "funcdef" else None
+                shadow = set(self._param_names(params)) if params is not None else set()
+                if node.data == "lambdef":
+                    shadow = {
+                        self._name_text(sub.children[0])
+                        for sub in node.iter_subtrees()
+                        if sub.data in {"typed_lambda_param", "inline_lambda_param"} and sub.children
+                    }
+                for child in node.children:
+                    visit(child, active - shadow, False)
+                return
+            if node.data in {"assign", "annassign"} and node.children:
+                targets = node.children[:-1] if node.data == "assign" else node.children[:1]
+                for target in targets:
+                    rebound.update(target_names(target) & active)
+            elif node.data == "for_stmt" and node.children:
+                rebound.update(target_names(node.children[0]) & active)
+            elif node.data == "augassign" and len(node.children) >= 3:
+                name = var_name(node.children[0])
+                op = node.children[1]
+                if isinstance(op, Tree):
+                    op_text = "".join(str(t) for t in op.scan_values(lambda v: isinstance(v, Token)))
+                else:
+                    op_text = str(op)
+                if name in active and op_text == "+=":
+                    first_site.setdefault(name, (node, f"`{name} += ...`"))
+            elif node.data == "return_stmt" and outer:
+                for child in node.children:
+                    returned.update(direct_names(child) & active)
+            elif node.data == "funccall" and node.children:
+                callee = node.children[0]
+                if isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2:
+                    name = var_name(callee.children[0])
+                    method = self._name_text(callee.children[1])
+                    if name in active and method in self._LIST_RESIZE_METHODS:
+                        first_site.setdefault(name, (node, f"`{name}.{method}(...)`"))
+            for child in node.children:
+                visit(child, active, outer)
+
+        visit(suite_node, set(names), True)
+        for name in sorted(first_site, key=lambda n: self._loc(first_site[n][0])):
+            if name in rebound or name in returned:
+                continue
+            site, text = first_site[name]
+            self._warning(
+                site, "list-param",
+                f"{text} changes the length of list parameter `{name}`, but the caller's list "
+                f"does not see it (a list is passed as a Go slice: element writes are shared, "
+                f"appends are not); return it (`return {name}`) and reassign it at the call site, "
+                f"or keep the list in a class field",
+            )
 
     def _is_nested_funcdef(self, node: Tree) -> bool:
         if not self._scopes:
@@ -7873,31 +7995,41 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 f"function `{name}` returns `{actual_type}`, expected `{expected_name}`",
             )
 
-    def _suite_definitely_terminates(self, suite_node: Tree) -> bool:
-        for stmt in self._suite_stmts(suite_node):
-            if self._stmt_definitely_terminates(stmt):
+    # Class-level (they read no checker state): the transpiler asks them
+    # too, so a construct the checker accepts as terminating also ends the
+    # emitted Go function with a terminating statement.
+    @classmethod
+    def _suite_definitely_terminates(cls, suite_node: Tree) -> bool:
+        for stmt in cls._suite_stmts(suite_node):
+            if cls._stmt_definitely_terminates(stmt):
                 return True
         return False
 
-    def _stmt_definitely_terminates(self, node) -> bool:
+    @classmethod
+    def _stmt_definitely_terminates(cls, node) -> bool:
         if not isinstance(node, Tree):
             return False
         if node.data == "simple_stmt":
-            return any(self._stmt_definitely_terminates(child) for child in node.children)
+            return any(cls._stmt_definitely_terminates(child) for child in node.children)
         if node.data in {"return_stmt", "raise_stmt"}:
             return True
         if node.data == "if_stmt":
-            return self._if_stmt_definitely_terminates(node)
+            return cls._if_stmt_definitely_terminates(node)
         if node.data == "match_stmt":
-            return self._match_stmt_definitely_terminates(node)
+            return cls._match_stmt_definitely_terminates(node)
         if node.data == "try_stmt":
-            return self._try_stmt_definitely_terminates(node)
+            return cls._try_stmt_definitely_terminates(node)
+        if node.data == "do_stmt":
+            # ``do { ... return a } catch err { ... return b }``: the body
+            # either returns / raises or a ``?`` jumps to the handler.
+            suites = [c for c in node.children if isinstance(c, Tree) and c.data == "suite"]
+            return len(suites) == 2 and all(cls._suite_definitely_terminates(s) for s in suites)
         if node.data in {"for_stmt", "while_stmt"}:
             # ``for ... { return x } else { return y }``: without a ``break``
             # every way out of the loop runs the ``else`` block.
             suites = [c for c in node.children if isinstance(c, Tree) and c.data == "suite"]
-            if len(suites) >= 2 and not self._suite_contains_own_break(suites[0]):
-                return self._suite_definitely_terminates(suites[-1])
+            if len(suites) >= 2 and not cls._suite_contains_own_break(suites[0]):
+                return cls._suite_definitely_terminates(suites[-1])
         return False
 
     @staticmethod
@@ -7916,7 +8048,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return any(SemanticChecker._suite_contains_own_break(c) for c in suites[1:])
         return any(SemanticChecker._suite_contains_own_break(child) for child in node.children)
 
-    def _if_stmt_definitely_terminates(self, node: Tree) -> bool:
+    @classmethod
+    def _if_stmt_definitely_terminates(cls, node: Tree) -> bool:
         suites = []
         direct_suite_count = 0
         for child in node.children:
@@ -7946,25 +8079,27 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                     suites.append(elif_suite)
         if direct_suite_count < 2:
             return False
-        return bool(suites) and all(self._suite_definitely_terminates(s) for s in suites)
+        return bool(suites) and all(cls._suite_definitely_terminates(s) for s in suites)
 
-    def _match_stmt_definitely_terminates(self, node: Tree) -> bool:
+    @classmethod
+    def _match_stmt_definitely_terminates(cls, node: Tree) -> bool:
         suites = []
         has_wildcard = False
         for child in node.children:
             if not isinstance(child, Tree) or child.data != "case":
                 continue
-            pattern, guard, suite = self._case_parts(child)
-            case_has_wildcard = guard is None and self._pattern_irrefutable(pattern)
+            pattern, guard, suite = cls._case_parts(child)
+            case_has_wildcard = guard is None and cls._pattern_irrefutable(pattern)
             if suite is not None:
                 suites.append(suite)
             if case_has_wildcard:
                 has_wildcard = True
         return has_wildcard and bool(suites) and all(
-            self._suite_definitely_terminates(s) for s in suites
+            cls._suite_definitely_terminates(s) for s in suites
         )
 
-    def _try_stmt_definitely_terminates(self, node: Tree) -> bool:
+    @classmethod
+    def _try_stmt_definitely_terminates(cls, node: Tree) -> bool:
         suites = []
         has_catch = False
         for child in node.children:
@@ -7985,7 +8120,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                         suites.append(catch_suite)
                         has_catch = True
         return has_catch and bool(suites) and all(
-            self._suite_definitely_terminates(s) for s in suites
+            cls._suite_definitely_terminates(s) for s in suites
         )
 
     def _funcdef_return_type_root(self, node: Tree) -> str:

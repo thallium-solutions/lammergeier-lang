@@ -1,0 +1,110 @@
+# Regression (4.1.1): results of methods called through an interface value
+# keep their declared types: `for row in conn.query(q)?` (a
+# `Result[list[dict[str, any]]]`) failed in `go build` ("cannot range over
+# __q1.Value"), and so did a local holding such a `Result` (also for a class
+# receiver), an interface method returning another interface or a list, and
+# `optional[Iface]` (lowered to a pointer to an interface).
+from lamerrors import Result
+
+interface Sql {
+    func query(self, q: str) -> Result[list[dict[str, any]]]
+    func tables(self) -> list[str]
+    func child(self, name: str) -> Sql
+    func label(self) -> str
+}
+
+class MemSql {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func query(self, q: str) -> Result[list[dict[str, any]]] {
+        if q == "" {
+            return Result.Err("empty query")
+        }
+        rows: list[dict[str, any]] = [{"id": 1, "who": self.name}, {"id": 2, "who": self.name}]
+        return Result.Ok(rows)
+    }
+
+    func tables(self) -> list[str] {
+        return ["users", "posts"]
+    }
+
+    func child(self, name: str) -> Sql {
+        return MemSql(self.name + "/" + name)
+    }
+
+    func label(self) -> str {
+        return self.name
+    }
+}
+
+func open(name: str) -> Sql {
+    return MemSql(name)
+}
+
+func maybe(name: str) -> optional[Sql] {
+    if name == "" {
+        return None
+    }
+    return open(name)
+}
+
+func ids(conn: Sql, q: str) -> Result[list[int]] {
+    out: list[int] = []
+    for row in conn.query(q)? {
+        out.append(int(row["id"]))
+    }
+    return Result.Ok(out)
+}
+
+func total(conn: Sql) -> Result[int] {
+    rows = conn.query("all")?
+    n = 0
+    for row in rows {
+        n += int(row["id"])
+    }
+    return Result.Ok(n + len(rows))
+}
+
+func whoList(conn: Sql) -> Result[list[str]] {
+    return Result.Ok([str(row["who"]) for row in conn.query("w")?])
+}
+
+func main() {
+    db = open("main")
+    print(ids(db, "q").unwrap(), not ids(db, "").ok())
+    print(total(db).unwrap(), whoList(db.child("c")).unwrap())
+    r = db.query("x")
+    print(r.unwrap()[1]["id"], len(r.unwrap()))
+    m = MemSql("cls")
+    rc = m.query("y")
+    print(rc.unwrap()[0]["who"])
+    for t in db.tables() {
+        print(t.toUpper())
+    }
+    print(db.child("a").child("b").label(), open("o").tables()[1])
+    found = maybe("m")
+    if found != None {
+        print(found.label(), maybe("") == None)
+    }
+    do {
+        first = db.query("d")?
+        print("do", first[0]["who"])
+        _ = db.query("")?
+        print("not reached")
+    } catch err {
+        print("caught", err)
+    }
+}
+
+# expect: [1 2] true
+# expect: 5 [main/c main/c]
+# expect: 2 2
+# expect: cls
+# expect: USERS
+# expect: POSTS
+# expect: main/a/b posts
+# expect: m true
+# expect: do main
+# expect: caught empty query

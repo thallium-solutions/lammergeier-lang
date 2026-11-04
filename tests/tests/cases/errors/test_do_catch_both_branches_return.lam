@@ -1,0 +1,130 @@
+# Regression (4.1.1): a `do { ... return a } catch err { ... return b }`
+# block whose body and handler both return is a terminating statement: it
+# was rejected with "not all paths in `f` return a value" (and the emitted
+# Go lacked a final return).
+#
+# expect: 2 -1
+# expect: long short bad
+# expect: [1 2] []
+# expect: ok:3 err:empty
+# expect: 5 -1
+# expect: caught: ValueError: bad input: empty
+# expect: 4 false
+# expect: 14 0
+
+from lamerrors import Result
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err("empty")
+    }
+    return Result.Ok(len(s))
+}
+
+func parseOr(s: str) -> int {
+    do {
+        return parse(s)?
+    } catch _err {
+        return -1
+    }
+}
+
+func classify(s: str) -> str {
+    do {
+        n = parse(s)?
+        if n > 3 {
+            return "long"
+        } else {
+            return "short"
+        }
+    } catch _err {
+        return "bad"
+    }
+}
+
+func range2(s: str) -> list[int] {
+    do {
+        n = parse(s)?
+        out: list[int] = []
+        for i in range(n) {
+            out.append(i + 1)
+        }
+        return out
+    } catch _err {
+        return []
+    }
+}
+
+func describe(s: str) -> str {
+    do {
+        n = parse(s)?
+        return f"ok:{n}"
+    } catch err {
+        match err.message {
+            case "empty" { return "err:empty" }
+            case _ { return "err:other" }
+        }
+    }
+}
+
+class Counter {
+    func init(self, base: int) {
+        self.base: int = base
+    }
+
+    func add(self, s: str) -> int {
+        do {
+            return self.base + parse(s)?
+        } catch _err {
+            return -1
+        }
+    }
+}
+
+func strict(s: str) -> int {
+    do {
+        return parse(s)?
+    } catch err {
+        raise ValueError(f"bad input: {err}")
+    }
+}
+
+func wrapped(s: str) -> Result[int] {
+    do {
+        n = parse(s)?
+        return Result.Ok(n * 2)
+    } catch err {
+        return Result.Err(err.message)
+    }
+}
+
+func total(items: list[str]) -> int {
+    sum = 0
+    for s in items {
+        sum += parseOr(s) if s != "" else 0
+    }
+    if len(items) == 0 {
+        return 0
+    }
+    do {
+        return sum + parse(items[0])?
+    } catch _err {
+        return 0
+    }
+}
+
+func main() {
+    print(parseOr("ab"), parseOr(""))
+    print(classify("abcd"), classify("ab"), classify(""))
+    print(range2("ab"), range2(""))
+    print(describe("abc"), describe(""))
+    c = Counter(4)
+    print(c.add("a"), c.add(""))
+    try {
+        print(strict(""))
+    } catch ValueError as e {
+        print(f"caught: {e}")
+    }
+    print(wrapped("ab").unwrap(), wrapped("").ok())
+    print(total(["abcd", "ab", "abcd"]), total(["", ""]))
+}

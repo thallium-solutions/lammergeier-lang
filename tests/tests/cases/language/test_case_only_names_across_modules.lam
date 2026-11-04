@@ -1,0 +1,37 @@
+# Regression (4.1.1): top-level names of two modules that differ only in the
+# case of their first letter (`userTable` / `UserTable`, `userRow` /
+# `UserRow`, `maxRows` / `MaxRows()`) map to the same Go identifier once
+# exported, and the program failed with a top-level symbol clash (or a Go
+# redeclaration). Such names are namespaced per module like same-name ones.
+#
+# expect: users:2:row10:lower-helper:9
+# expect: 20:UT:3:u:upper-helper:4
+# expect: users UT [id name] 3
+# expect: row7 u 10 20
+# expect: 16 4
+# expect: users/UT 2/3
+# expect: main-userColumns 3
+
+from case_names_lower import userTable, userColumns, userRow, maxRows, shape, Square, describeLower
+from case_names_upper import UserTable, UserColumns, UserRow, MaxRows, Shape, describeUpper
+import case_names_lower as lo
+import case_names_upper as up
+
+func pick(s: shape) -> int {
+    return s.area()
+}
+
+func main() {
+    print(describeLower())
+    print(describeUpper())
+    print(userTable(), UserTable, userColumns(), UserColumns())
+    print(userRow(7).label(), UserRow("u").name, maxRows, MaxRows())
+    print(pick(Square(4)), Shape().sides)
+    # Through module aliases and in f-strings.
+    print(f"{lo.userTable()}/{up.UserTable} {len(lo.userColumns())}/{up.UserColumns()}")
+    print(mainColumns())
+}
+
+func mainColumns() -> str {
+    return f"main-userColumns {up.UserColumns()}"
+}

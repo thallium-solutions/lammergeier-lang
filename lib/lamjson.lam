@@ -173,7 +173,9 @@ go! {
             if index < 0 || index >= len(current) { panic("json array index out of range") }
             return LamJSON{value: current[index]}
         default:
-            panic(fmt.Sprintf("cannot index json %s", lamJSONKind(value)))
+            // null, string, number, bool: nothing to look up, like a
+            // missing object key (``doc.user.address`` with ``user: null``).
+            return LamJSON{value: nil}
         }
     }
 

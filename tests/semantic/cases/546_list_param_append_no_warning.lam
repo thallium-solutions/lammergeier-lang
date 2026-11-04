@@ -1,0 +1,80 @@
+# expect-pass
+# expect-no-warning: warning[list-param]
+# The list-parameter warning stays quiet when the caller does see the
+# change or the function works on its own copy: the list is returned,
+# rebound first, only its elements are written, it is a field or a local,
+# or a nested function's own parameter shadows it.
+from lamerrors import Result
+
+class Bag {
+    func init(self) {
+        self.items: list[int] = []
+    }
+
+    func put(self, v: int) {
+        self.items.append(v)
+    }
+}
+
+func withItem(items: list[int], v: int) -> list[int] {
+    items.append(v)
+    return items
+}
+
+func pair(xs: list[int]) -> (list[int], int) {
+    xs.append(1)
+    return xs, len(xs)
+}
+
+func wrapped(xs: list[str]) -> Result[list[str]] {
+    xs.append("w")
+    return Result.Ok(xs)
+}
+
+func copyThenGrow(xs: list[int]) -> int {
+    xs = xs[:]
+    xs.append(9)
+    return len(xs)
+}
+
+func reset(xs: list[int]) -> int {
+    xs = []
+    xs.append(1)
+    return len(xs)
+}
+
+func bump(xs: list[int]) {
+    xs[0] = xs[0] + 1
+}
+
+func local(n: int) -> list[int] {
+    out: list[int] = []
+    out.append(n)
+    return out
+}
+
+func nested(xs: list[int]) -> int {
+    func inner(xs: list[int]) -> list[int] {
+        xs.append(0)
+        return xs
+    }
+    return len(inner([1])) + len(xs)
+}
+
+func readOnly(xs: list[int]) -> int {
+    total = 0
+    for x in xs {
+        total += x
+    }
+    return total + len(xs)
+}
+
+func main() {
+    b = Bag()
+    b.put(1)
+    a: list[int] = [1]
+    a = withItem(a, 2)
+    p, n = pair(a)
+    bump(a)
+    print(p, n, wrapped([]).unwrap(), copyThenGrow(a), reset(a), local(3), nested(a), readOnly(a), b.items)
+}

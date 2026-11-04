@@ -296,6 +296,14 @@ benchmark harness. Know them; use the right one.
 
 ### End-to-end tests
 
+Tests that need an external service declare it with
+`# requires-env: NAME` and read the address from that variable only: the
+runner reports them as skipped when it is unset, and they never fall back
+to a default address (that could be someone's development database). Today:
+`LAM_TEST_POSTGRES_DSN`, a **disposable** PostgreSQL
+(`docker run -d --rm --name lam-test-pg -e POSTGRES_PASSWORD=test -p 127.0.0.1:55470:5432 postgres:16-alpine`,
+then `postgres://postgres:test@127.0.0.1:55470/postgres?sslmode=disable`).
+
 Shape:
 
 ```lammergeier

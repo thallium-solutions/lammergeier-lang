@@ -1,0 +1,103 @@
+# Regression (4.1.1): calls of async *methods* inside a list literal
+# (`[a.run(1), b.run(2)]`) were typed as the methods' declared results
+# (`[]int{a.Run(1), ...}`) instead of handles, so go build failed. Function
+# calls already worked; methods (instance, static, inherited, generic and
+# imported ones) now yield handles too.
+#
+# expect: 2 4
+# expect: [a:1 b:2]
+# expect: m3 m4
+# expect: base-6 sub-7
+# expect: 6 3
+# expect: [x y]
+# expect: http://h/a http://h/bc
+# expect: 11 true
+# expect: 10 12 14
+# expect: done 2
+
+from async_workers_provider import Fetcher
+
+class Worker {
+    func init(self, tag: str) {
+        self.tag: str = tag
+    }
+
+    async func run(self, x: int) -> int {
+        return x * 2
+    }
+
+    async func label(self, x: int) -> str {
+        return f"{self.tag}:{x}"
+    }
+
+    static async func make(x: int) -> str {
+        return f"m{x}"
+    }
+
+    async func touch(self) {
+        self.tag = self.tag + "!"
+    }
+}
+
+class Base {
+    async func describe(self, n: int) -> str {
+        return f"base-{n}"
+    }
+}
+
+class Sub(Base) {
+    async func own(self, n: int) -> str {
+        return f"sub-{n}"
+    }
+}
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    async func get(self) -> T {
+        return self.value
+    }
+}
+
+async func triple(x: int) -> int {
+    return x * 3
+}
+
+func main() {
+    a = Worker("a")
+    b = Worker("b")
+    tasks = [a.run(1), b.run(2)]
+    out: list[int] = []
+    for t in tasks {
+        out.append(await t)
+    }
+    print(out[0], out[1])
+    labels = [a.label(1), b.label(2)]
+    print([await h for h in labels])
+    statics = [Worker.make(3), Worker.make(4)]
+    print(await statics[0], await statics[1])
+    s = Sub()
+    mixed = [s.describe(6), s.own(7)]
+    print(await mixed[0], await mixed[1])
+    # Function and method handles of one payload type share a list.
+    both = [triple(2), a.run(1)]
+    print(await both[0], await both[1] + 1)
+    boxes = [Box[str]("x").get(), Box[str]("y").get()]
+    print([await h for h in boxes])
+    f = Fetcher("http://h/")
+    pages = [f.fetch("a"), f.fetch("bc")]
+    print(await pages[0], await pages[1])
+    sizes = [f.size("ab"), f.size("")]
+    print((await sizes[0]).unwrap(), not (await sizes[1]).ok())
+    more = [a.run(5)]
+    more.append(a.run(6))
+    more.append(b.run(7))
+    print(await more[0], await more[1], await more[2])
+    touches = [a.touch(), b.touch()]
+    for h in touches {
+        await h
+    }
+    print("done", len(touches))
+}

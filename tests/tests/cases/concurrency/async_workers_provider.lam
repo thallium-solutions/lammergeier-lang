@@ -1,0 +1,24 @@
+# Helper module for test_async_method_handles_in_lists.lam: a class with
+# async methods declared in another module.
+from lamerrors import Result
+
+class Fetcher {
+    func init(self, base: str) {
+        self.base: str = base
+    }
+
+    async func fetch(self, path: str) -> str {
+        return self.base + path
+    }
+
+    async func size(self, path: str) -> Result[int] {
+        if path == "" {
+            return Result.Err("empty path")
+        }
+        return Result.Ok(len(self.base + path))
+    }
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

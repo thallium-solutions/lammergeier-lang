@@ -1,0 +1,36 @@
+# expect-pass
+# Regression (4.1.1): `do { ... return a } catch e { ... return b }` returns
+# on every path; it was reported as "not all paths return a value".
+from lamerrors import Result
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err("empty")
+    }
+    return Result.Ok(len(s))
+}
+
+func parseOr(s: str) -> int {
+    do {
+        return parse(s)?
+    } catch _err {
+        return -1
+    }
+}
+
+func classify(s: str) -> str {
+    do {
+        n = parse(s)?
+        if n > 3 {
+            return "long"
+        } else {
+            return "short"
+        }
+    } catch err {
+        raise ValueError(f"bad input: {err}")
+    }
+}
+
+func main() {
+    print(parseOr("a"), classify("abcd"))
+}

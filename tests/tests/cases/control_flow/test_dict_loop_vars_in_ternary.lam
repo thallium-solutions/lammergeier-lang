@@ -1,0 +1,76 @@
+# Regression (4.1.1): the key / value variables of `for k, v in d` over a
+# typed dict (a `dict[str, str] = {}` parameter, a local, a field) had no
+# Go type, so `a if c else b` built from them lowered to an `interface{}`
+# closure and `len(v if c else k)` / `(k if c else v).toUpper()` failed in
+# go build.
+#
+# expect: 1 1 1
+# expect: 6 HEADER VXx
+# expect: [a=1 b=- c=3]
+# expect: 0
+# expect: [2 A cc]
+# expect: 10 [k:v]
+# expect: 7.5
+
+class Env {
+    func init(self) {
+        self.vars: dict[str, str] = {"HOME": "/root", "SHELL": ""}
+    }
+
+    func shown(self) -> int {
+        total = 0
+        for name, value in self.vars {
+            total += len(value if value != "" else name)
+        }
+        return total
+    }
+}
+
+func lengths(vars: dict[str, str] = {}, strict: bool = false) -> list[int] {
+    out: list[int] = []
+    for key, value in vars {
+        out.append(len(value if strict else key))
+    }
+    return out
+}
+
+func upperFirst(headers: dict[str, str] = {}) -> str {
+    out = ""
+    for name, value in headers {
+        out += (name if len(name) > 1 else value).toUpper() + " "
+    }
+    return out.trim()
+}
+
+func render(vars: dict[str, str] = {}) -> list[str] {
+    out: list[str] = []
+    for key in vars {
+        out.append(f"{key}={vars[key] if vars[key] != "" else "-"}")
+    }
+    return sorted(out)
+}
+
+func counts(m: dict[str, int] = {}, scale: bool = false) -> float {
+    total = 0.0
+    for k, n in m {
+        total += n * 1.5 if scale else float(n)
+    }
+    return total
+}
+
+func main() {
+    print(lengths({"a": "x"})[0], lengths({"b": "y"}, true)[0], len(lengths({"zz": "q"}, true)))
+    print(len(upperFirst({"header": "v"})), upperFirst({"header": "v"}), upperFirst({"x": "vx"}).capitalize() + "x")
+    print(render({"b": "", "a": "1", "c": "3"}))
+    print(len(lengths()))
+    words: dict[str, str] = {"a": "A", "bb": "2", "cc": "c"}
+    picked: list[str] = []
+    for k, v in words {
+        picked.append(v if len(k) == 1 or v.isDigit() else k)
+    }
+    print(sorted(picked))
+    e = Env()
+    pairs = [f"{k}:{v if v != "" else "-"}" for k, v in {"k": "v"}]
+    print(e.shown(), pairs)
+    print(counts({"a": 5}, true))
+}

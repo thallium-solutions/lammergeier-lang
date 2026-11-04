@@ -1,0 +1,21 @@
+# expect-error: not all paths in `parseOr` return a value
+# A `do` body that returns does not make the function terminate when the
+# handler can fall through (4.1.1 treats do/catch as terminating only when
+# both blocks do).
+from lamerrors import Result
+
+func parse(s: str) -> Result[int] {
+    return Result.Ok(len(s))
+}
+
+func parseOr(s: str) -> int {
+    do {
+        return parse(s)?
+    } catch err {
+        print(err)
+    }
+}
+
+func main() {
+    print(parseOr("a"))
+}

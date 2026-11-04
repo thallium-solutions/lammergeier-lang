@@ -1,0 +1,66 @@
+# expect-warning: warning[list-param]
+# expect-warning: `items.append(...)` changes the length of list parameter `items`
+# expect-warning: `rows.extend(...)` changes the length of list parameter `rows`
+# expect-warning: `xs.insert(...)` changes the length of list parameter `xs`
+# expect-warning: `stack.pop(...)` changes the length of list parameter `stack`
+# expect-warning: `acc += ...` changes the length of list parameter `acc`
+# expect-warning: `names.append(...)` changes the length of list parameter `names`
+# expect-warning: `seen.append(...)` changes the length of list parameter `seen`
+# expect-warning: the caller's list does not see it
+# 4.1.1: appending to a list parameter is invisible to the caller (Lam lists
+# are Go slices passed by value), unlike Python. Warn until 4.2 gives lists
+# reference semantics.
+
+class Registry {
+    func init(self) {
+        self.count: int = 0
+    }
+
+    func register(self, names: list[str], name: str) {
+        names.append(name)
+        self.count += 1
+    }
+}
+
+func add(items: list[int], v: int) {
+    items.append(v)
+}
+
+func addAll(rows: list[str], more: list[str]) {
+    rows.extend(more)
+}
+
+func front(xs: list[int]) {
+    xs.insert(0, 1)
+}
+
+func drop(stack: list[int]) -> int {
+    return stack.pop()
+}
+
+func grow(acc: list[int], n: int) -> int {
+    acc += [n]
+    return len(acc)
+}
+
+func visit(seen: list[str], node: str) -> bool {
+    if node in seen {
+        return false
+    }
+    for _ in range(1) {
+        if node != "" {
+            seen.append(node)
+        }
+    }
+    return true
+}
+
+func main() {
+    a: list[int] = [1]
+    add(a, 2)
+    r: list[str] = []
+    addAll(r, ["x"])
+    front(a)
+    print(drop(a), grow(a, 3), visit(r, "n"))
+    Registry().register(r, "z")
+}

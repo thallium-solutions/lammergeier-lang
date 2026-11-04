@@ -1213,7 +1213,7 @@ func lamAsyncReportUnretrieved() {
             self._class_self_calls.setdefault(class_name, set())
             for child in self._suite_stmts(suite):
                 if isinstance(child, Tree) and child.data == "funcdef":
-                    (is_priv, is_stat, _, fn_node, params_node,
+                    (is_priv, is_stat, is_async_method, fn_node, params_node,
                      return_type_node, method_suite,
                      method_type_params) = self._parse_funcdef(child)
                     fn_name = self._get_name(fn_node)
@@ -1256,6 +1256,14 @@ func lamAsyncReportUnretrieved() {
                         return_type = self._resolve_return_type(return_type_node)
                         if declared_generic_names and return_type:
                             self._generic_method_returns[method_key] = return_type
+                        if is_async_method:
+                            # ``[a.run(1), b.run(2)]``: a call of an async
+                            # method yields a handle (``chan func() T``).
+                            # Kept with the method return types so imported
+                            # classes carry it to other modules.
+                            self._method_return_types.setdefault(
+                                f"async:{method_key}", self._async_handle_go_type(return_type or ""),
+                            )
                         return_key = self._overload_return_key(return_type_node)
                         payload_type = self._result_payload_go_type(return_type_node)
                         if payload_type:
@@ -1323,6 +1331,18 @@ func lamAsyncReportUnretrieved() {
                 return_type = self._resolve_return_type(return_node)
                 return_key = self._overload_return_key(return_node)
                 method_key = f"{interface_name}.{method_name}"
+                # Result payloads and class / container results of the
+                # method, as for class methods: ``for row in
+                # conn.query(q)?`` with ``conn: Sql`` ranges over the
+                # declared ``list[dict[str, any]]``.
+                payload_type = self._result_payload_go_type(return_node)
+                if payload_type:
+                    self._result_payload_go_types.setdefault(method_key, payload_type)
+                raw_return = self._get_raw_type_name(return_node) if return_node else ""
+                if raw_return:
+                    self._method_return_types.setdefault(method_key, raw_return)
+                if return_type.startswith(("[]", "map[", "*")):
+                    self._method_return_types.setdefault(f"go:{method_key}", return_type)
                 arity = self._count_params(params_node, skip_self=True)
                 sig = self._param_types_sig(params_node, skip_self=True) if params_node else ()
                 # Parameter names and declared defaults: a call through the
@@ -1394,8 +1414,15 @@ func lamAsyncReportUnretrieved() {
                 claimed[self._static_var_go_name(class_name, field)] = f"static-field:{class_name}.{field}"
         for name, go_name in self._link_function_go_names.items():
             self._function_go_names[name] = go_name
+            # ``from m import load as ld`` next to ``from m import load``:
+            # both name m's one Go function, so the alias claims it for
+            # ``load`` (which must not be pushed to ``Load__lam2``). A name
+            # a type already holds stays the type's (``from core import
+            # apiState as st`` next to ``class ApiState``: ``apiState`` is
+            # ``ApiState__lam2`` in ``core`` and here, and ``st`` follows).
+            owner = f"function:{self._link_function_aliases.get(name, name)}"
             for variant in self._overload_variants.get(name, []) or [{"suffix": ""}]:
-                claimed[go_name + str(variant.get("suffix", ""))] = f"function:{name}"
+                claimed.setdefault(go_name + str(variant.get("suffix", "")), owner)
         ordered = sorted(
             self._user_functions,
             key=lambda item: (item not in self._overload_variants, item[:1].isupper(), item),

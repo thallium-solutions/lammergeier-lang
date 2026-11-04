@@ -1,0 +1,59 @@
+# Regression (4.1.1): a list literal of lists holding an empty list
+# (`[["a"], []]`) iterated or indexed directly was lowered to
+# `[]interface{}`, so `for n in [["a"], []] { show(n) }` panicked at run
+# time ("interface {} is []interface {}, not []string") and `len(n)` or
+# `for s in n` failed in go build. The empty list takes its siblings'
+# element type.
+#
+# expect: [a] 1
+# expect: [] 0
+# expect: a
+# expect: total=4
+# expect: [] [b c]
+# expect: 0 2 1
+# expect: [x] []
+# expect: 1 true
+# expect: 0 false
+# expect: [0 1]
+# expect: 1 0
+# expect: [[1 2] [] [3]]
+
+func show(xs: list[str]) -> int {
+    print(xs, len(xs))
+    return len(xs)
+}
+
+func sum(xs: list[int]) -> int {
+    total = 0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+
+func main() {
+    for n in [["a"], []] {
+        _ = show(n)
+    }
+    for n in [[], ["a"]] {
+        for s in n {
+            print(s)
+        }
+    }
+    total = 0
+    for group in [[1, 2], [], [0]] {
+        total += len(group) if len(group) > 0 else 1
+    }
+    print(f"total={total}")
+    print([[], ["b", "c"]][0], [[], ["b", "c"]][1])
+    print(len([[], ["b", "c"]][0]), len([["a"], ["b", "c"], []][1]), sum([[], [1]][1]))
+    for pair in [[["x"], []]] {
+        print(pair[0], pair[1])
+    }
+    for m in [{"k": 1}, {}] {
+        print(len(m), "k" in m)
+    }
+    print([len(m) for m in [{}, {"k": 1}]])
+    print(len([[1], []][0]), len([[1], []][1]))
+    print([[1, 2], [], [3]])
+}

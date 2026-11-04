@@ -470,6 +470,19 @@ def rename_go_identifiers(go_source: str, renames: dict[str, str]) -> str:
     return "".join(out)
 
 
+def _go_public_name(name: str) -> str:
+    """Exported Go spelling of a class / interface name (as the transpiler's
+    ``_go_public_name``)."""
+    if not name:
+        return name
+    if name.startswith("__") and name.endswith("__"):
+        clean = name.strip("_")
+        return clean[0].upper() + clean[1:] if clean else name
+    if name.startswith("_"):
+        return name
+    return name[0].upper() + name[1:]
+
+
 def module_tag(module_name: str) -> str:
     tag = re.sub(r"[^0-9A-Za-z]+", "_", module_name).strip("_")
     return tag or "mod"
@@ -497,7 +510,6 @@ def build_plans(
     for path, info in modules.items():
         for name, kind in info.symbols.items():
             owners.setdefault(name, []).append(path)
-    colliding = {name for name, paths in owners.items() if len(paths) > 1}
     function_names = {
         name for info in modules.values() for name, kind in info.symbols.items() if kind in FUNCTION_KINDS
     }
@@ -507,19 +519,40 @@ def build_plans(
             return function_go_name(name, kind == "private func")
         return name
 
+    def default_go_identifier(name: str, kind: str) -> str:
+        """The Go identifier a definition gets before any namespacing."""
+        if kind in TYPE_KINDS:
+            return _go_public_name(name)
+        return default_go(name, kind)
+
+    # Definitions of different modules that would share a Go identifier:
+    # same Lam name, or names differing only in the case of their first
+    # letter once exported (``userTable()`` -> ``UserTable`` next to a
+    # ``UserTable`` variable or class of another module).
+    go_owners: dict[str, list[tuple[Path, str]]] = {}
+    for path, info in modules.items():
+        for name, kind in info.symbols.items():
+            go_owners.setdefault(default_go_identifier(name, kind), []).append((path, name))
+    clashing: set[tuple[Path, str]] = {
+        (path, name) for name, paths in owners.items() if len(paths) > 1 for path in paths
+    }
+    for entries in go_owners.values():
+        if len({path for path, _name in entries}) > 1:
+            clashing.update(entries)
+    colliding = {name for _path, name in clashing}
+
     def pinned(path: Path, name: str) -> bool:
         return path == main_path or (modules[path].name, name) in PINNED_CLASSES
 
     # (path, name) -> new Go name (functions, consts, vars) or new Lam name
     # (classes, interfaces).
     renamed: dict[tuple[Path, str], str] = {}
-    for name in colliding:
-        for path in owners[name]:
-            if pinned(path, name):
-                continue
-            kind = modules[path].symbols[name]
-            tag = module_tag(modules[path].name)
-            renamed[(path, name)] = f"{name}__{tag}" if kind in TYPE_KINDS else f"{default_go(name, kind)}__{tag}"
+    for path, name in clashing:
+        if pinned(path, name):
+            continue
+        kind = modules[path].symbols[name]
+        tag = module_tag(modules[path].name)
+        renamed[(path, name)] = f"{name}__{tag}" if kind in TYPE_KINDS else f"{default_go(name, kind)}__{tag}"
 
     def go_renames_for(name: str, kind: str, new: str) -> dict[str, str]:
         if kind in TYPE_KINDS:
@@ -605,7 +638,11 @@ def build_plans(
                     if symbol is None:
                         continue
                     lam_name = member
-                    if (member in bound and claimed.get(member) != symbol) or (
+                    # ``import m as p`` before ``from m import load``:
+                    # ``p.load`` is the very function ``load`` names here
+                    # (not yet claimed), so it shares its Lam (and Go) name.
+                    own = claimed.get(member) or resolve_symbol(path, member)
+                    if (member in bound and own != symbol) or (
                         member in claimed and claimed[member] != symbol
                     ):
                         lam_name = f"{binding.local}__{member}"
