@@ -1,0 +1,67 @@
+# expect: any 2026-11-03T19:05:00Z UTC 1793732700
+# expect: any 2026-11-03T20:05:00+01:00 Europe/Rome 1793732700
+# expect: any 2026-11-03T21:05:00+02:00 +02:00 1793732700
+# expect: any 2026-11-03T00:00:00+01:00 Europe/Rome 1793660400
+# expect: order 2026-03-04 2026-04-03
+# expect: no-match ParseError true
+# expect: no-layouts ParseError true
+# expect: bad-zone LocationError
+# expect: common 2026-11-03T19:05:00.123456+01:00 +01:00
+# expect: common 2026-11-03T19:05:00+05:30 +05:30
+# expect: common 2026-11-03T19:05:00-03:00 -03:00
+# expect: common 2026-11-03T19:05:00.5Z UTC
+# expect: common 2026-11-03T19:05:00.25Z UTC
+# expect: common 2026-11-03T19:05:00Z UTC
+# expect: common 2026-11-03T19:05:00+01:00 Europe/Rome
+# expect: common-rfc 2026-11-03T19:05:00Z 2026-11-03T00:00:00Z
+# expect: unix 1793732700 1793732700 1793732700 0
+# DateTime.parseAny: the first matching layout wins, zoned layouts keep
+# the text's offset, plain ones read in the supplied location, errors for
+# no match / no layouts / unknown zone; DateTime.parseCommon on PostgreSQL
+# timestamptz / timestamp and SQLite texts; and a Unix-seconds reader over
+# a list of database and client layouts with a fallback.
+from lamdatetime import DateTime
+from lamerrors import Result
+
+const Layouts: list[str] = ["2006-01-02T15:04:05Z07:00", "2006-01-02 15:04:05.999999999-07", "2006-01-02 15:04:05.999999999Z07:00", "2006-01-02"]
+
+func show(value: str, location: str) -> str {
+    parsed: Result[DateTime] = DateTime.parseAny(value, Layouts, location)
+    if not parsed.ok() {
+        return f"error {parsed.error}"
+    }
+    when: DateTime = parsed.unwrap()
+    return f"{when.rfc3339()} {when.locationName()} {when.unix()}"
+}
+
+func unixOf(text: str, fallback: int) -> int {
+    parsed: Result[DateTime] = DateTime.parseAny(text.trim(), Layouts)
+    return parsed.unwrap().unix() if parsed.ok() else fallback
+}
+
+func main() {
+    print(f"any {show('2026-11-03T19:05:00Z', 'Europe/Rome')}")
+    print(f"any {show('2026-11-03 20:05:00.5+01', 'Europe/Rome')}")
+    print(f"any {show('2026-11-03 21:05:00+02:00', 'Europe/Rome')}")
+    print(f"any {show('2026-11-03', 'Europe/Rome')}")
+
+    # Day-first and month-first layouts: the order decides.
+    dayFirst: DateTime = DateTime.parseAny("04/03/2026", ["02/01/2006", "01/02/2006"]).unwrap()
+    monthFirst: DateTime = DateTime.parseAny("04/03/2026", ["01/02/2006", "02/01/2006"]).unwrap()
+    print(f"order {dayFirst.date()} {monthFirst.date()}")
+
+    missing: Result[DateTime] = DateTime.parseAny("yesterday", Layouts)
+    print(f"no-match {missing.error.kind} {missing.error.message.contains('no layout matched')}")
+    none: Result[DateTime] = DateTime.parseAny("2026-11-03", [])
+    print(f"no-layouts {none.error.kind} {none.error.message.contains('no layouts given')}")
+    print(f"bad-zone {DateTime.parseAny('2026-11-03', Layouts, 'Mars/Base').error.kind}")
+
+    for text in ["2026-11-03 19:05:00.123456+01", "2026-11-03 19:05:00+05:30", "2026-11-03 19:05:00-03", "2026-11-03 19:05:00.5", "2026-11-03T19:05:00.25", "2026-11-03 19:05:00"] {
+        when: DateTime = DateTime.parseCommon(text).unwrap()
+        print(f"common {when.format('2006-01-02T15:04:05.999999Z07:00')} {when.locationName()}")
+    }
+    rome: DateTime = DateTime.parseCommon("2026-11-03 19:05:00", "Europe/Rome").unwrap()
+    print(f"common {rome.rfc3339()} {rome.locationName()}")
+    print(f"common-rfc {DateTime.parseCommon('2026-11-03T19:05:00Z').unwrap().rfc3339()} {DateTime.parseCommon('2026-11-03').unwrap().rfc3339()}")
+    print(f"unix {unixOf(' 2026-11-03T19:05:00Z ', 0)} {unixOf('2026-11-03 20:05:00+01', 0)} {unixOf('2026-11-03 19:05:00.999+00:00', 0)} {unixOf('garbage', 0)}")
+}

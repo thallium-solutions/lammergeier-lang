@@ -224,9 +224,9 @@ class Player(Entity) {
     func levelUp(self) {
         self.level += 1
         self.expToNext = self.level * 100 + self.level * self.level * 10
-        self.stats.maxHp += 10 + self.stats.vit / 2
+        self.stats.maxHp += 10 + self.stats.vit // 2
         self.stats.hp = self.stats.maxHp
-        self.stats.maxMp += 5 + self.stats.int_ / 3
+        self.stats.maxMp += 5 + self.stats.int_ // 3
         self.stats.mp = self.stats.maxMp
         self.stats.str_ += 2
         self.stats.agi += 1

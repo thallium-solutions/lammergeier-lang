@@ -1,0 +1,61 @@
+# expect-pass
+# expect-no-warning: value of type `unknown`
+# Generator values are typed for their consumers (JSON checks, member
+# access, assignments), and a bare `return` ends a generator.
+from lamcsv import Csv
+from lamerrors import Result
+
+class Item {
+    func init(self, name: str, qty: int) {
+        self.name: str = name
+        self.qty: int = qty
+    }
+}
+
+func items(limit: int) -> Item {
+    if limit <= 0 {
+        return
+    }
+    yield Item("a", 1)
+    yield Item("b", 2)
+}
+
+class Shelf {
+    func init(self, names: list[str]) {
+        self.names: list[str] = names
+    }
+
+    func each(self) -> Item {
+        for n in self.names {
+            yield Item(n, len(n))
+        }
+    }
+
+    static func counts(n: int) -> Result[int] {
+        if n < 0 {
+            yield Result.Err("negative")
+            return
+        }
+        yield Result.Ok(n)
+    }
+}
+
+func main() {
+    for batch in Csv.batches("d.csv", 2) {
+        rows: list[list[str]] = batch.unwrap()
+        doc: json = {"rows": len(rows)}
+        print(doc)
+    }
+    for it in items(2) {
+        print({"name": it.name, "qty": it.qty})
+    }
+    for it in Shelf(["x"]).each() {
+        print(it.qty + 1)
+    }
+    total: int = 0
+    for c in Shelf.counts(3) {
+        total += c.unwrapOr(0)
+    }
+    names: list[str] = [it.name for it in items(1)]
+    print(total, names)
+}

@@ -1,0 +1,23 @@
+# expect-error: missing required argument `s` in call to `pad`
+# expect-error: unknown keyword argument `widht` in call to `pad` — did you mean `width`?
+# expect-error: too many positional arguments in call to `pad`: expected at most 3, got 4
+# expect-error: missing required argument `x` in call to `inner`
+# A nested function's calls are checked against its own parameters, as
+# for top-level functions (defaults may be left out).
+
+func outer(n: int) -> str {
+    func pad(s: str, width: int = 5, fill: str = ".") -> str {
+        return fill * (width - len(s)) + s
+    }
+    func middle() -> int {
+        func inner(x: int, y: int = 1) -> int {
+            return x + y
+        }
+        return inner(y=2)
+    }
+    return pad() + pad("a", widht=3) + pad("a", 1, "-", 9) + str(middle()) + pad(str(n))
+}
+
+func main() {
+    print(outer(1))
+}

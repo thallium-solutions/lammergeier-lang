@@ -1,0 +1,74 @@
+# expect: component a%20b%26c%2F%C3%A9!*'()~-_.%3B%2C%3F%23%5B%5D%2B%3D%40%24%25
+# expect: component-roundtrip true a b+é
+# expect: component-error DecodeError
+# expect: path /files/a%20b/%C3%BC.txt%3Fx%23y$&+,:;=@
+# expect: segment a%2Fb%20c
+# expect: userinfo us%20er%40x%3Ap%2Fw%3F$&+,;=
+# expect: dsn postgres://app%40corp:p%40ss%3Aw%2Fd@db:5432/x
+# expect: query-dict q=a+b&tag=x&tag=y
+# expect: query-flat page=2&q=a%26b%3Dc
+# expect: query-pairs tag=x&q=a+b&tag=y&tag=x
+# expect: query-empty [] [] []
+# expect: parse [a b] [x y] 1 true 3
+# expect: parse-roundtrip true
+# expect: parse-error false UrlQueryError
+# expect: pair-error true
+# expect: page /products?brand=Gucci&brand=Prada&q=borsa+pelle&page=3&size=20
+# lamurl escaping (encodeURIComponent, paths, segments, user info) and the
+# query builder / parser: dict and pair forms, repeated keys, empty input,
+# round trips, malformed escapes, and a pagination link built from a
+# parsed query (the shape of a JSON:API "links" member).
+from lamurl import Url
+from lamerrors import Result
+
+func pageLink(path: str, rawQuery: str, page: int, size: int) -> Result[str] {
+    params: dict[str, list[str]] = Url.parseQuery(rawQuery)?
+    keys: list[str] = []
+    for key, _values in params {
+        keys.append(key)
+    }
+    pairs: list[list[str]] = []
+    for key in keys.sort() {
+        if key != "page" and key != "size" {
+            for value in params[key] {
+                pairs.append([key, value])
+            }
+        }
+    }
+    pairs.append(["page", str(page)])
+    pairs.append(["size", str(size)])
+    return Result.Ok(f"{path}?{Url.query(pairs)}")
+}
+
+func main() {
+    print(f"component {Url.encodeComponent("a b&c/é!*'()~-_.;,?#[]+=@$%")}")
+    original: str = "a b+é/?&="
+    print(f"component-roundtrip {Url.decodeComponent(Url.encodeComponent(original)).unwrap() == original} {Url.decodeComponent('a%20b+%C3%A9').unwrap()}")
+    bad: Result[str] = Url.decodeComponent("%e")
+    print(f"component-error {bad.error.kind}")
+    print(f"path {Url.encodePath('/files/a b/ü.txt?x#y$&+,:;=@')}")
+    print(f"segment {Url.encodePathSegment('a/b c')}")
+    print(f"userinfo {Url.encodeUserInfo('us er@x:p/w?$&+,;=')}")
+    print(f"dsn postgres://{Url.encodeUserInfo('app@corp')}:{Url.encodeUserInfo('p@ss:w/d')}@db:5432/x")
+
+    print(f"query-dict {Url.query({'tag': ['x', 'y'], 'q': ['a b'], 'none': []})}")
+    print(f"query-flat {Url.query({'q': 'a&b=c', 'page': '2'})}")
+    print(f"query-pairs {Url.query([['tag', 'x'], ['q', 'a b'], ['tag', 'y'], ['tag', 'x']])}")
+    noDict: dict[str, list[str]] = {}
+    noFlat: dict[str, str] = {}
+    noPairs: list[list[str]] = []
+    print(f"query-empty [{Url.query(noDict)}] [{Url.query(noFlat)}] [{Url.query(noPairs)}]")
+
+    parsed: dict[str, list[str]] = Url.parseQuery("?q=a+b&tag=x&tag=y&flag").unwrap()
+    print(f"parse {parsed['q']} {parsed['tag']} {len(parsed['flag'])} {parsed['flag'][0] == ''} {len(parsed)}")
+    data: dict[str, list[str]] = {"name": ["Zoë & co"], "id": ["1", "2"], "empty": [""]}
+    print(f"parse-roundtrip {Url.parseQuery(Url.query(data)).unwrap() == data}")
+    broken: Result[dict[str, list[str]]] = Url.parseQuery("a=%zz")
+    print(f"parse-error {broken.ok()} {broken.error.kind}")
+    try {
+        _ = Url.query([["only-key"]])
+    } catch e {
+        print(f"pair-error {str(e).startsWith('UrlQueryError: query pair 0 has 1 items')}")
+    }
+    print(f"page {pageLink('/products', 'size=10&q=borsa+pelle&page=1&brand=Gucci&brand=Prada', 3, 20).unwrap()}")
+}

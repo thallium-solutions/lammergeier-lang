@@ -1,0 +1,66 @@
+# Needs a disposable PostgreSQL (it creates and drops lam_errors_* tables):
+#   docker run -d --rm --name lam-test-pg -e POSTGRES_PASSWORD=test -p 127.0.0.1:55470:5432 postgres:16-alpine
+#   LAM_TEST_POSTGRES_DSN='postgres://postgres:test@127.0.0.1:55470/postgres?sslmode=disable'
+# Skipped when the variable is unset: never a default address.
+# requires-env: LAM_TEST_POSTGRES_DSN
+# expect: unique true 23505 false
+# expect: unique-text DbExecError: pq: duplicate key value violates unique constraint "lam_errors_users_email_key" (23505)
+# expect: foreign-key true 23503
+# expect: not-null 23502 check 23514 missing-table 42P01
+# expect: deferred-commit true
+# expect: search 1 2 [Ada 100%_off ada@example.com]
+# expect: search-literal 1 [Ada 100%_off]
+# expect: in 2
+# expect: times 2026-11-03T19:05:00.123456Z 2026-11-03T19:05:00Z 03/11/2026 20:05
+# expect: parsed 1793732700 1793732700
+# PostgreSQL SQLSTATE codes behind lamdb failures (unique, foreign key,
+# not null, check, undefined table, a deferred constraint failing at
+# commit), the Where builder's ILIKE search with literal % and _ over text
+# and uuid columns, and timestamptz texts read back with Row.timeText and
+# DateTime.parseCommon.
+from lamdb import Db, Row, Tx, Where
+from lamdatetime import DateTime
+from lamenv import Env
+from lamerrors import Result
+
+func main() {
+    db: Db = Db.connect("postgres", Env.get("LAM_TEST_POSTGRES_DSN").unwrap()).unwrap()
+    db.exec("DROP TABLE IF EXISTS lam_errors_posts, lam_errors_users").unwrap()
+    db.exec("CREATE TABLE lam_errors_users (id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT CHECK (name <> ''), created TIMESTAMPTZ NOT NULL DEFAULT '2026-11-03 19:05:00.123456+00')").unwrap()
+    db.exec("CREATE TABLE lam_errors_posts (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES lam_errors_users(id) DEFERRABLE INITIALLY DEFERRED)").unwrap()
+    db.exec("INSERT INTO lam_errors_users (email, name) VALUES (?, ?), (?, ?), (?, ?)", ["ada@example.com", "Ada 100%_off", "bob@example.com", "Bob", "x@example.com", "Ada 1000 off"]).unwrap()
+
+    dup: Result[int] = db.exec("INSERT INTO lam_errors_users (email, name) VALUES (?, ?)", ["ada@example.com", "Again"])
+    print(f"unique {Db.isUniqueViolation(dup)} {Db.sqlState(dup)} {Db.isForeignKeyViolation(dup)}")
+    print(f"unique-text {dup.error}")
+    fk: Result[int] = db.exec("INSERT INTO lam_errors_posts (user_id) VALUES (?)", [404])
+    print(f"foreign-key {Db.isForeignKeyViolation(fk)} {Db.sqlState(fk)}")
+    nn: Result[int] = db.exec("INSERT INTO lam_errors_users (email) VALUES (NULL)")
+    ck: Result[int] = db.exec("INSERT INTO lam_errors_users (email, name) VALUES ('c@example.com', '')")
+    missing: Result[list[dict[str, any]]] = db.query("SELECT * FROM lam_errors_missing")
+    print(f"not-null {Db.sqlState(nn)} check {Db.sqlState(ck)} missing-table {Db.sqlState(missing)}")
+
+    func orphanPost(tx: Tx) -> Result[bool] {
+        _ = tx.exec("INSERT INTO lam_errors_posts (user_id) VALUES (?)", [405])?
+        return Result.Ok(true)
+    }
+    committed: Result[bool] = db.transaction(orphanPost)
+    print(f"deferred-commit {Db.isForeignKeyViolation(committed)}")
+
+    search: Where = Where().ilikeAny(["name", "email", "id"], "ADA")
+    found: list[dict[str, any]] = db.query(f"SELECT name, email FROM lam_errors_users {search.sql()} AND email <> ? ORDER BY id", search.paramsWith(["x@example.com"])).unwrap()
+    both: list[dict[str, any]] = db.query(f"SELECT id FROM lam_errors_users {search.sql()}", search.params()).unwrap()
+    print(f"search {len(found)} {len(both)} [{Row.str(found[0], 'name')} {Row.str(found[0], 'email')}]")
+    literal: Where = Where().ilikeAny(["name"], "100%_")
+    exact: list[dict[str, any]] = db.query(f"SELECT name FROM lam_errors_users {literal.sql()}", literal.params()).unwrap()
+    print(f"search-literal {len(exact)} [{Row.str(exact[0], 'name')}]")
+    ids: Where = Where().addIn("email", ["ada@example.com", "bob@example.com", "nobody@example.com"])
+    print(f"in {len(db.query(f'SELECT id FROM lam_errors_users {ids.sql()}', ids.params()).unwrap())}")
+
+    row: dict[str, any] = db.first("SELECT created, created::text AS created_text FROM lam_errors_users WHERE email = ?", ["ada@example.com"]).unwrap()
+    print(f"times {Row.str(row, 'created')} {Row.timeText(row, 'created')} {Row.timeText(row, 'created_text', '02/01/2006 15:04', 'Europe/Rome')}")
+    fromText: DateTime = DateTime.parseCommon(Row.str(row, "created_text")).unwrap()
+    print(f"parsed {fromText.unix()} {Row.unix(row, 'created')}")
+
+    db.exec("DROP TABLE lam_errors_posts, lam_errors_users").unwrap()
+}

@@ -1,0 +1,76 @@
+# Regression: top-level names of one module that differ only in the case of
+# their first letter (`languages()` and `const Languages`, `class point` and
+# `Point`, `interface shape` and `Shape`, `private func Helper` and
+# `helper`) map to the same Go identifier and failed with a Go
+# redeclaration ("Languages redeclared in this block"), in the main file and
+# in an imported module. 4.1.1 only separated such names across modules.
+#
+# expect: [en it de fr] [en it]
+# expect: 7 3 9 S
+# expect: fn var
+# expect: 3:2:3:9:S
+# expect: [en it de] [en it]
+# expect: 3 9 S
+# expect: 3:2
+# expect: [en it de] [en it] reassigned=[x]
+# expect: [en it fr] [en it es] [eu us] 4
+
+from case_names_same_module import languages as libLanguages, Languages as LibLanguages, point as libPoint, Point as LibPoint, describeModule, Regions
+import case_names_same_module as m
+
+const Codes: list[str] = ["en", "it"]
+
+func codes() -> list[str] {
+    return Codes + ["de", "fr"]
+}
+
+Total: int = 7
+
+class total {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+}
+
+Area: str = "S"
+
+interface area {
+    func size(self) -> int
+}
+
+class Box {
+    func init(self, side: int) {
+        self.side: int = side
+    }
+
+    func size(self) -> int {
+        return self.side * self.side
+    }
+}
+
+helper: str = "var"
+
+private func Helper() -> str {
+    return "fn"
+}
+
+Names: list[str] = ["a"]
+
+func names() -> list[str] {
+    Names = ["x"]
+    return Names
+}
+
+func main() {
+    print(codes(), Codes)
+    b: area = Box(3)
+    print(Total, total(3).n, b.size(), Area)
+    print(Helper(), helper)
+    print(describeModule())
+    print(libLanguages(), LibLanguages)
+    print(libPoint(LibPoint).x, m.Sq(3).area(), m.Shape)
+    print(f"{len(m.languages())}:{len(m.Languages)}")
+    print(m.languages(), m.Languages, f"reassigned={names()}")
+    # Imported consts keep their element type in expressions.
+    print(LibLanguages + ["fr"], m.Languages + ["es"], Regions + ["us"], LibPoint + 1)
+}

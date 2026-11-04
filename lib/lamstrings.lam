@@ -1,5 +1,18 @@
 # Lammergeier standard library: string utilities
 # Import with: from lamstrings import Strings
+#
+# Every ``Strings.name(s, ...)`` helper is also a method on ``str`` values
+# (``s.name(...)``), lowered to the same function.
+#
+# Case conversion (``camelCase``, ``pascalCase``, ``snakeCase``,
+# ``kebabCase``) splits ``s`` into words first: any rune that is not a
+# letter or a digit separates words (``_``, ``-``, spaces, ``.``...), and a
+# word also ends before an upper-case letter that follows a lower-case
+# letter or a digit (``userName`` -> ``user`` ``Name``) and before the last
+# capital of a run followed by a lower-case letter (``HTTPServer`` ->
+# ``HTTP`` ``Server``). Digits stay with the word before them
+# (``line2Text`` -> ``line2`` ``Text``). The words are then joined in the
+# target style, lower-cased (``camelCase``: ``userId`` from ``user_ID``).
 
 go! {
     import (
@@ -7,6 +20,58 @@ go! {
         "strings"
         "unicode"
     )
+
+    // lamStringsWords splits s into words for the case conversions (see the
+    // module comment for the rules).
+    func lamStringsWords(s string) []string {
+        runes := []rune(s)
+        words := []string{}
+        var current []rune
+        for i, r := range runes {
+            if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+                if len(current) > 0 {
+                    words = append(words, string(current))
+                    current = nil
+                }
+            } else {
+                if len(current) > 0 && unicode.IsUpper(r) {
+                    prev := current[len(current)-1]
+                    nextLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
+                    if unicode.IsLower(prev) || unicode.IsDigit(prev) || (unicode.IsUpper(prev) && nextLower) {
+                        words = append(words, string(current))
+                        current = nil
+                    }
+                }
+                current = append(current, r)
+            }
+        }
+        if len(current) > 0 {
+            words = append(words, string(current))
+        }
+        return words
+    }
+
+    // lamStringsTitleWord upper-cases the first rune of word and lower-cases
+    // the rest.
+    func lamStringsTitleWord(word string) string {
+        runes := []rune(strings.ToLower(word))
+        if len(runes) > 0 {
+            runes[0] = unicode.ToUpper(runes[0])
+        }
+        return string(runes)
+    }
+
+    func lamStringsJoinWords(s string, sep string, upperFirst bool, upperRest bool) string {
+        words := lamStringsWords(s)
+        for i, word := range words {
+            if (i == 0 && upperFirst) || (i > 0 && upperRest) {
+                words[i] = lamStringsTitleWord(word)
+            } else {
+                words[i] = strings.ToLower(word)
+            }
+        }
+        return strings.Join(words, sep)
+    }
 }
 
 class Strings {
@@ -303,6 +368,36 @@ class Strings {
                 }
             }
             return strings.Join(lines, "\n")
+        }
+    }
+
+    static func camelCase(s: str) -> str {
+        #- ``slots_total`` / ``purchased-products-limit`` / ``User ID`` ->
+           ``slotsTotal`` / ``purchasedProductsLimit`` / ``userId``. -#
+        go! {
+            return lamStringsJoinWords(s, "", false, true)
+        }
+    }
+
+    static func pascalCase(s: str) -> str {
+        #- ``user_name`` -> ``UserName``. -#
+        go! {
+            return lamStringsJoinWords(s, "", true, true)
+        }
+    }
+
+    static func snakeCase(s: str) -> str {
+        #- ``slotsTotal`` / ``HTTPServer`` / ``user-id`` -> ``slots_total`` /
+           ``http_server`` / ``user_id``. -#
+        go! {
+            return lamStringsJoinWords(s, "_", false, false)
+        }
+    }
+
+    static func kebabCase(s: str) -> str {
+        #- ``purchasedProductsLimit`` -> ``purchased-products-limit``. -#
+        go! {
+            return lamStringsJoinWords(s, "-", false, false)
         }
     }
 

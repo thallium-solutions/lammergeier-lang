@@ -1,0 +1,43 @@
+# expect-error: cannot assign `list[list[str]]` to `int` variable `n`
+# expect-error: cannot assign `int` to `str` variable `s`
+# expect-error: unknown member `it.nope` on class `Item`
+# expect-error: cannot assign `list[int]` to `list[str]` variable `firsts`
+# The values a generator yields have its declared element type: a stdlib
+# generator's `Result` payload, a class, `generator[T]`'s `T`, in `for`
+# loops and comprehensions.
+from lamcsv import Csv
+from lamerrors import Result
+
+func numbers() -> Result[int] {
+    yield Result.Ok(1)
+}
+
+func pairs() -> generator[list[int]] {
+    yield [1, 2]
+}
+
+class Item {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func items() -> Item {
+    yield Item("a")
+}
+
+func main() {
+    for batch in Csv.batches("d.csv", 2) {
+        n: int = batch.unwrap()
+        print(n)
+    }
+    for r in numbers() {
+        s: str = r.unwrap()
+        print(s)
+    }
+    for it in items() {
+        print(it.nope)
+    }
+    firsts: list[str] = [p[0] for p in pairs()]
+    print(firsts)
+}

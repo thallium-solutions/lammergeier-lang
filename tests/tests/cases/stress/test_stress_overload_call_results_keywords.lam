@@ -1,0 +1,81 @@
+# expect: call-result html <b>z</b>|str q!|html <i>t</i>|json {"a":1}
+# expect: nested html <b>x</b>
+# expect: imported <b>x</b>
+# expect: float-literal float 1e+21 float 2.5e-05 int 7
+# expect: keywords float 1.5/2/;|float 1.5/2/;|int 3/0/.|float 2.5/-1/,
+# expect: keywords-required int 4/1/.
+# expect: keywords-mixed float 2/3/.|int 5/2/;
+# Overload resolution regressions found while adding the 4.2 stdlib APIs:
+# an argument that is a call of a function or static method picks the
+# overload of its declared result (html / str / json, local and imported),
+# a float literal without "." (1e21) picks the float overload, and keyword
+# arguments are matched to each overload's parameter names in any order.
+from lamhtml import Html, HtmlPolicy
+
+class Show {
+    static func mk(s: str) -> html {
+        return Html.parse(s)
+    }
+
+    static func show(x: str) -> str {
+        return "str " + x
+    }
+
+    static func show(x: html) -> str {
+        return "html " + str(x)
+    }
+
+    static func show(x: json) -> str {
+        return "json " + str(x)
+    }
+
+    static func both(s: str) -> str {
+        return Show.show(Show.mk(s))
+    }
+
+    static func kind(value: int) -> str {
+        return f"int {value}"
+    }
+
+    static func kind(value: float) -> str {
+        return f"float {value}"
+    }
+
+    static func fmt(value: int, decimals: int = 0, sep: str = ".") -> str {
+        return f"int {value}/{decimals}/{sep}"
+    }
+
+    static func fmt(value: float, decimals: int = -1, sep: str = ",") -> str {
+        return f"float {value}/{decimals}/{sep}"
+    }
+
+    static func need(value: int, count: int, sep: str = ".") -> str {
+        return f"int {value}/{count}/{sep}"
+    }
+
+    static func need(value: str, sep: str = ".") -> str {
+        return f"str {value}/{sep}"
+    }
+}
+
+func plain(s: str) -> str {
+    return s + "!"
+}
+
+func page(s: str) -> html {
+    return Html.parse(s)
+}
+
+func doc() -> json {
+    return {"a": 1}
+}
+
+func main() {
+    print(f"call-result {Show.both('<b>z</b>')}|{Show.show(plain('q'))}|{Show.show(page('<i>t</i>'))}|{Show.show(doc())}")
+    print(f"nested {Show.show(Show.mk(str(Show.mk('<b>x</b>'))))}")
+    print(f"imported {Html.sanitize(Html.parse('<b>x</b><script>y</script>'), HtmlPolicy().allowTags(['b']))}")
+    print(f"float-literal {Show.kind(1e21)} {Show.kind(2.5E-5)} {Show.kind(7)}")
+    print(f"keywords {Show.fmt(1.5, decimals=2, sep=';')}|{Show.fmt(1.5, sep=';', decimals=2)}|{Show.fmt(3)}|{Show.fmt(2.5, sep=',')}")
+    print(f"keywords-required {Show.need(4, count=1)}")
+    print(f"keywords-mixed {Show.fmt(value=2.0, decimals=3, sep='.')}|{Show.fmt(sep=';', value=5, decimals=2)}")
+}

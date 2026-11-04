@@ -1,0 +1,16 @@
+# expect-error: value of type `Plain` is not JSON-compatible; implement `func __json__(self) -> json`
+# `json(self)` needs the class's own `__json__`.
+
+class Plain {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func doc(self) -> json {
+        return json(self)
+    }
+}
+
+func main() {
+    print(Plain(1).doc())
+}

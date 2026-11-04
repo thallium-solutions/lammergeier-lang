@@ -128,6 +128,7 @@ STR_METHODS: Set[str] = {
     "capitalize", "isAlpha", "isDigit", "isAlnum", "isSpace", "reverse", "center",
     "zfill", "padLeft", "padRight", "splitLines", "splitN", "replaceFirst",
     "containsAny", "isEmpty", "isBlank", "indent", "dedent", "format",
+    "camelCase", "pascalCase", "snakeCase", "kebabCase",
 }
 # Result types of the ``str`` methods (everything else returns ``str``).
 STR_METHOD_RESULT_TYPES: Dict[str, str] = {
@@ -153,6 +154,8 @@ STR_METHOD_HINTS: Dict[str, str] = {
     "toLowerCase": "toLower", "includes": "contains", "trimStart": "trimLeft",
     "trimEnd": "trimRight", "replaceAll": "replace", "padStart": "padLeft",
     "padEnd": "padRight",
+    "toCamelCase": "camelCase", "toSnakeCase": "snakeCase", "toKebabCase": "kebabCase",
+    "toPascalCase": "pascalCase",
 }
 # Methods other languages have on strings that Lam spells as an operator,
 # slicing or indexing. ``{s}`` is the receiver, ``{a}``/``{b}`` the first
@@ -269,6 +272,7 @@ STR_METHOD_ARITY: Dict[str, tuple] = {
     "zfill": (1, 1), "padLeft": (1, 2), "padRight": (1, 2), "splitLines": (0, 0),
     "splitN": (2, 2), "replaceFirst": (2, 2), "containsAny": (1, 1), "isEmpty": (0, 0),
     "isBlank": (0, 0), "indent": (1, 1), "dedent": (0, 0), "format": (0, None),
+    "camelCase": (0, 0), "pascalCase": (0, 0), "snakeCase": (0, 0), "kebabCase": (0, 0),
 }
 
 
@@ -309,6 +313,13 @@ def str_method_arity_message(method: str, given: int) -> str:
     return message
 
 
+# Python builtins Lam spells differently: the idiom an undefined-name error
+# suggests (``all(x > 0 for x in xs)``).
+PYTHON_BUILTIN_IDIOMS: Dict[str, str] = {
+    "all": "the list method `xs.all(lambda x: x > 0)` (`flags.all(lambda b: b)` on a `list[bool]`)",
+    "any": "the list method `xs.any(lambda x: x > 0)` (`flags.any(lambda b: b)` on a `list[bool]`)",
+    "sum": "`xs.reduce(lambda a, b: a + b, 0)`",
+}
 LIST_METHOD_HINTS: Dict[str, str] = {
     "add": "append", "push": "append", "size": "length", "len": "length",
     "forEach": "foreach", "each": "foreach", "some": "any", "every": "all",

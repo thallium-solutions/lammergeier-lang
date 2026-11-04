@@ -1,0 +1,46 @@
+# Regression: an f-string slot holding a comprehension, a generator
+# argument or a lambda was not checked by the semantic pass, so
+# `f"{all(x > 0 for x in xs)}"` reached Go as `All(x > 0 x xs)` (invalid
+# Go). Such slots are checked like any expression (`all` / `any` / `sum`
+# are not Lam builtins: a Lam error suggests the list methods), and a
+# generator expression as the only argument (`max(x for x in xs)`,
+# `", ".join(s for s in xs)`, `f(x for x in xs)`) is the list
+# comprehension `[...]`, inside and outside f-strings.
+#
+# expect: min=1 max=6 len=2
+# expect: sorted=[-3 -2 -1] sum=6
+# expect: all=true any=true none=false
+# expect: join=ANN, BOB total=60
+# expect: 2 9
+# expect: ANN, BOB 9 3
+# expect: n=3 top=3 all=true
+# expect: imported=30 [1 4 9]
+# expect: nested=[[1 2] [2 4]] first=[ann] lens=map[ann:3 bob:3]
+# expect: words=2 shortest=3
+
+from fstring_comprehension_provider import summary, total
+
+class Team {
+    func init(self, names: list[str]) {
+        self.names: list[str] = names
+    }
+
+    func describe(self) -> str {
+        return f"words={len([n for n in self.names if len(n) == 3])} shortest={min(len(n) for n in self.names)}"
+    }
+}
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    names: list[str] = ["ann", "bob"]
+    print(f"min={min(x for x in xs)} max={max(x * 2 for x in xs)} len={len([x for x in xs if x > 1])}")
+    print(f"sorted={sorted(-x for x in xs)} sum={xs.reduce(lambda a, b: a + b, 0)}")
+    print(f"all={xs.all(lambda x: x > 0)} any={[x > 2 for x in xs].any(lambda b: b)} none={xs.any(lambda x: x > 5)}")
+    print(f"join={", ".join(n.toUpper() for n in names)} total={total(x * 10 for x in xs)}")
+    print(f"{len({n: len(n) for n in names})} {[[y * x for y in xs] for x in xs][2][2]}")
+    print(", ".join(n.toUpper() for n in names), total(x + 1 for x in xs), max(len(n) for n in names))
+    print(summary(xs))
+    print(f"imported={total(x * 5 for x in xs)} {[x * x for x in xs]}")
+    print(f"nested={[[x, x * 2] for x in xs if x < 3]} first={[n for n in names if n.startsWith("a")]} lens={ {n: len(n) for n in names} }")
+    print(Team(["ann", "bob"]).describe())
+}

@@ -1,0 +1,14 @@
+# Helper module for test_fstring_comprehension_slots.lam: f-string slots
+# with comprehensions, generator arguments and lambdas in another module.
+
+func summary(xs: list[int]) -> str {
+    return f"n={len([x for x in xs if x > 0])} top={max(x for x in xs)} all={xs.all(lambda x: x > 0)}"
+}
+
+func total(xs: list[int]) -> int {
+    return xs.reduce(lambda a, b: a + b, 0)
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

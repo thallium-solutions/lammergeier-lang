@@ -114,8 +114,10 @@ area: 78.53981633974483
   plus unit-safe `Time`, nested SQL predicate groups and typed row values
   (`Row.int` / `Row.time` / `Row.strList`), native `bytes`, cancellable process
   commands, signal-driven shutdown (`Context.onSignals`), TCP/TLS/UDP
-  networking, variadic paths, native-JSON HTTP, crypto with PBKDF2 and bcrypt
-  passwords, a CLI flag parser, and testing.
+  networking, variadic paths, native-JSON HTTP with multipart uploads, typed
+  JSON member reads, query-string builders, an allowlist HTML sanitizer
+  (`Html.sanitize`), SQLSTATE-based constraint checks, crypto with PBKDF2 and
+  bcrypt passwords, a CLI flag parser, and testing.
 
 See [`docs/SYNTAX.md`](#/docs/syntax) for the complete language reference, and
 [`docs/TRANSPILATION.md`](#/docs/transpilation) for the authoritative Lam → Go

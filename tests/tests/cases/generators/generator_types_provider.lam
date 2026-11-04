@@ -1,0 +1,49 @@
+# Helper module for test_generator_element_types.lam: generators of another
+# module (a function, a static method and an instance method) with declared
+# element types.
+
+from lamerrors import Result
+
+class Item {
+    func init(self, name: str, qty: int) {
+        self.name: str = name
+        self.qty: int = qty
+    }
+
+    func label(self) -> str {
+        return f"{self.name}x{self.qty}"
+    }
+}
+
+func items() -> Item {
+    yield Item("pen", 2)
+    yield Item("ink", 5)
+}
+
+class Source {
+    func init(self, words: list[str]) {
+        self.words: list[str] = words
+    }
+
+    static func chunks(words: list[str], size: int) -> Result[list[str]] {
+        if size <= 0 {
+            yield Result.Err("size")
+            return
+        }
+        i: int = 0
+        while i < len(words) {
+            yield Result.Ok(words[i:i + size])
+            i += size
+        }
+    }
+
+    func upper(self) -> str {
+        for w in self.words {
+            yield w.toUpper()
+        }
+    }
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

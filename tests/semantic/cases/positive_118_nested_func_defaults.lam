@@ -1,0 +1,23 @@
+# expect-pass
+# expect-no-warning: missing required argument
+# Nested functions with defaults: positional, keyword and default-only
+# calls; a nested function shadowing a top-level function of another
+# shape uses its own parameters.
+
+func pad(s: str) -> str {
+    return s
+}
+
+func outer(n: int) -> str {
+    func pad(s: str, width: int = 5, fill: str = ".") -> str {
+        return fill * (width - len(s)) + s
+    }
+    func count(step: int = 1) -> int {
+        return n + step
+    }
+    return pad(str(n)) + pad("a", width=3) + pad("b", fill="-", width=2) + str(count()) + str(count(step=2))
+}
+
+func main() {
+    print(outer(1), pad("x"))
+}

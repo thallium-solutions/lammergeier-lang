@@ -508,6 +508,9 @@ func lamAsyncReportUnretrieved() {
         self._generic_names: set = set()
         self._generic_constraints: Dict[str, str] = {}
         self._nested_generic_functions: Dict[str, Dict[str, Any]] = {}
+        # Nested ``func`` name -> its parameter metadata key (defaults,
+        # keyword order); scoped to the enclosing function's body.
+        self._nested_func_keys: Dict[str, str] = {}
         self._hoisted_nested_generic_funcs: List[str] = []
         self._nested_generic_counter: int = 0
 
@@ -642,6 +645,7 @@ func lamAsyncReportUnretrieved() {
         self._raw_go_top = []
         self._generic_constraints = {}
         self._nested_generic_functions = {}
+        self._nested_func_keys = {}
         self._hoisted_nested_generic_funcs = []
         self._nested_generic_counter = 0
         self._static_var_go_names = {
@@ -1243,7 +1247,8 @@ func lamAsyncReportUnretrieved() {
                     # (which use the `Class.init` key) pick up defaults too.
                     key_name = "init" if fn_name == "__init__" else fn_name
                     method_key = f"{class_name}.{key_name}"
-                    if is_stat and self._tree_contains(method_suite, "yield_expr"):
+                    if self._tree_contains(method_suite, "yield_expr"):
+                        # Static and instance-method generators.
                         self._generator_functions.add(method_key)
                     _, method_type_param_names, _ = self._type_params_to_go(
                         method_type_params,
@@ -1642,6 +1647,9 @@ func lamAsyncReportUnretrieved() {
             variant for variant in variants
             if tuple(variant.get("sig") or ()) == actual
         ]
+        keywords = getattr(sig, "keywords", None)
+        if not candidates and keywords:
+            candidates = self._overload_variants_by_keywords(variants, actual, keywords)
         if not candidates:
             for variant in variants:
                 expected = tuple(variant.get("sig") or ())
@@ -1693,6 +1701,42 @@ func lamAsyncReportUnretrieved() {
                 if return_key == contextual_return:
                     return variant
         return candidates[0] if candidates else None
+
+    def _overload_variants_by_keywords(self, variants, actual: tuple, keywords: dict) -> list:
+        """The best variants for a call with keyword arguments: each keyword
+        goes to the variant's parameter of that name, the positional
+        arguments come first, every required parameter must be supplied, and
+        the closest argument types win (``_overload_arg_score``)."""
+        positional = actual[: len(actual) - len(keywords)]
+        best_score, best = -1, []
+        for variant in variants:
+            expected = tuple(variant.get("sig") or ())
+            names = list(self._func_param_names.get(str(variant.get("meta_key") or ""), []))
+            if len(names) != len(expected) or len(positional) > len(expected):
+                continue
+            slots = list(positional) + [None] * (len(expected) - len(positional))
+            viable = True
+            for keyword, go_type in keywords.items():
+                if keyword not in names or slots[names.index(keyword)] is not None:
+                    viable = False
+                    break
+                slots[names.index(keyword)] = go_type
+            required = int(variant.get("required", len(expected)))
+            if not viable or any(slot is None for slot in slots[:required]):
+                continue
+            scores = [
+                self._overload_arg_score(exp, slot)
+                for exp, slot in zip(expected, slots) if slot is not None
+            ]
+            if any(score < 0 for score in scores):
+                continue
+            # Equal scores stay candidates: the return-type context chooses
+            # among variants that differ only in their result.
+            if sum(scores) > best_score:
+                best_score, best = sum(scores), [variant]
+            elif sum(scores) == best_score:
+                best.append(variant)
+        return best
 
     _OVERLOAD_NUMERIC = frozenset({
         "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64",

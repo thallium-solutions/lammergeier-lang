@@ -1,0 +1,15 @@
+# Helper package for test_inherited_fields_typed_json.lam: a subclass in the
+# package itself (two levels of inheritance across modules).
+
+from .base import Problem
+
+class HttpProblem(Problem) {
+    func init(self, title: str) {
+        base.init(title, 500)
+        self.detail: str = "server error"
+    }
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

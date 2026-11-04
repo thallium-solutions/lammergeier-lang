@@ -1,0 +1,163 @@
+# expect: import 3 ok 2 rejected
+# expect: rejected line 3: price "NaN" ParseError
+# expect: rejected line 4: duplicate sku BAG-1
+# expect: listing {"data":[{"listedAt":"2026-11-03T19:05:00Z","priceText":"1.200,50","sku":"BAG-1","title":"Borsa \"Jackie\""},{"listedAt":"2026-11-03T23:00:00Z","priceText":"89,90","sku":"SHO-2","title":"Scarpe 100% pelle"}],"links":{"next":"/products?page=2\u0026q=e\u0026size=2"}}
+# expect: search 100%: SHO-2
+# expect: card <article><h3>Borsa "Jackie"</h3><p>Vera <b>pelle</b> <a href="https://shop.example/bag" target="_blank" rel="noopener noreferrer">scheda</a></p></article>
+# expect: card <article><h3>Scarpe 100% pelle</h3><p>Comode</p></article>
+# expect: patch title=Borsa Jackie 1961 price=1.250 published=true unknown=0
+# expect: upload 2 parts 200 body-received=true
+# expect: export sku;title;price|BAG-1;"Borsa ""Jackie"" 1961";1.250,00|SHO-2;Scarpe 100% pelle;89,90|WAL-3;Portafoglio;1.000.000,00
+# expect: workers 3 3
+# The 4.2 additions composed in one small catalogue service: a ';' CSV
+# import (Csv delimiter, Conv.parseFinite, DateTime.parseAny, `?` and
+# do/catch) into SQLite where duplicates are told apart by
+# Db.isUniqueViolation; a JSON:API-style listing (Where, Row.timeText,
+# Fmt.grouped, Json.mapKeys + Strings.camelCase, Url.query paging links);
+# product cards rendered from sanitized descriptions through an interface
+# and a generic helper; a JSON patch read with the typed Json getters; a
+# Multipart upload to a local Http.serve handler; and async workers
+# grouping prices concurrently.
+from lamcsv import Csv
+from lamconv import Conv
+from lamdatetime import DateTime
+from lamdb import Db, Row, Where
+from lamfmt import Fmt
+from lamhtml import Html, HtmlPolicy
+from lamhttp import Http, HttpClient, HttpRequestOptions, HttpResponse, HttpServer, Multipart
+from lamjson import Json
+from lamstrings import Strings
+from lamurl import Url
+from lamerrors import Result, Error
+
+const ListedLayouts: list[str] = ["2006-01-02 15:04:05.999999999-07", "2006-01-02T15:04:05Z07:00", "02/01/2006"]
+
+interface Card {
+    func card(self) -> html
+}
+
+class Product {
+    func init(self, sku: str, title: str, price: float, listed: DateTime, description: str) {
+        self.sku: str = sku
+        self.title: str = title
+        self.price: float = price
+        self.listed: DateTime = listed
+        self.description: str = description
+    }
+
+    func card(self) -> html {
+        return <><article><h3>${self.title}</h3>${Html.sanitize(self.description, HtmlPolicy.basic().allowAttributes("a", ["target"]))}</article></>
+    }
+}
+
+func renderAll[T: Card](items: list[T]) -> list[str] {
+    return [str(item.card()) for item in items]
+}
+
+func parseLine(fields: list[str]) -> Result[Product] {
+    if len(fields) != 5 {
+        return Result.Err(Error("ImportError", f"{len(fields)} fields"))
+    }
+    price: float = Conv.parseFinite(fields[2].replace(".", "").replace(",", "."))?
+    listed: DateTime = DateTime.parseAny(fields[3], ListedLayouts, "Europe/Rome")?
+    return Result.Ok(Product(fields[0], fields[1], price, listed, fields[4]))
+}
+
+func store(db: Db, p: Product) -> Result[bool] {
+    inserted: Result[int] = db.exec("INSERT INTO products (sku, title, price, listed, description) VALUES (?, ?, ?, ?, ?)", [p.sku, p.title, p.price, p.listed.unix(), p.description])
+    if Db.isUniqueViolation(inserted) {
+        return Result.Err(Error("DuplicateError", f"duplicate sku {p.sku}"))
+    }
+    _ = inserted?
+    return Result.Ok(true)
+}
+
+func listing(db: Db, search: str, page: int, size: int) -> Result[json] {
+    where: Where = Where().add("price > ?", [0]).likeAny(["title", "sku"], search)
+    rows: list[dict[str, any]] = db.query(f"SELECT sku, title, price, datetime(listed, 'unixepoch') AS listed_at FROM products {where.sql()} ORDER BY sku LIMIT ? OFFSET ?", where.paramsWith([size, (page - 1) * size]))?
+    items: list[json] = []
+    for row in rows {
+        items.append({"sku": Row.str(row, "sku"), "title": Row.str(row, "title"), "price_text": Fmt.grouped(Row.float(row, "price"), ".", 2, ","), "listed_at": Row.timeText(row, "listed_at")})
+    }
+    next: str = "/products?" + Url.query({"q": [search], "page": [str(page + 1)], "size": [str(size)]})
+    doc: json = {"data": items, "links": {"next": next}}
+    return Result.Ok(Json.mapKeys(doc, Strings.camelCase))
+}
+
+class Patch {
+    func init(self, body: str) {
+        doc: json = Json.decode(body).unwrapOr({})
+        self.title: str = Json.getStr(doc, "title")
+        self.price: float = Json.getFloat(doc, "price", -1.0)
+        self.published: bool = Json.getBool(Json.getObject(doc, "flags"), "published")
+        self.unknown: int = Json.getInt(doc, "nope")
+    }
+}
+
+async func groupPrices(prices: list[float]) -> list[str] {
+    return [Fmt.grouped(p, ".", 2, ",") for p in prices]
+}
+
+func main() {
+    source: list[list[str]] = [
+        ["sku", "title", "price", "listed", "description"],
+        ["BAG-1", "Borsa \"Jackie\"", "1.200,50", "2026-11-03 20:05:00+01", "<p onclick=x>Vera <b>pelle</b> <a href=\"https://shop.example/bag\" target=_blank>scheda</a><script>alert(1)</script></p>"],
+        ["SHO-2", "Scarpe 100% pelle", "89,90", "04/11/2026", "<p>Comode<img src=x onerror=alert(1)></p>"],
+        ["BAD-3", "Rotto", "NaN", "2026-11-03T10:00:00Z", "x"],
+        ["BAG-1", "Copia", "10", "2026-11-03T10:00:00Z", "x"],
+    ]
+    csvText: str = Csv.formatAll(source, ";")
+    lines: list[list[str]] = Csv.parseAll(csvText, ";").unwrap()
+
+    db: Db = Db.connect("sqlite", ":memory:").unwrap()
+    _ = db.exec("CREATE TABLE products (sku TEXT PRIMARY KEY, title TEXT NOT NULL, price REAL, listed INTEGER, description TEXT)").unwrap()
+    imported: list[Product] = []
+    rejected: list[str] = []
+    for i, fields in enumerate(lines[1:]) {
+        do {
+            p: Product = parseLine(fields)?
+            _ = store(db, p)?
+            imported.append(p)
+        } catch err {
+            reason: str = err.message if err.kind == "DuplicateError" else f"price \"{fields[2]}\" {err.kind}"
+            rejected.append(f"line {i + 1}: {reason}")
+        }
+    }
+    _ = db.exec("INSERT INTO products VALUES ('WAL-3', 'Portafoglio', 1000000, 1793800000, '')").unwrap()
+    print(f"import {len(imported) + 1} ok {len(rejected)} rejected")
+    for r in rejected {
+        print(f"rejected {r}")
+    }
+
+    print(f"listing {listing(db, 'e', 1, 2).unwrap()}")
+    found: list[dict[str, any]] = db.query("SELECT sku FROM products " + Where().likeAny(["title"], "100%").sql(), Where().likeAny(["title"], "100%").params()).unwrap()
+    print(f"search 100%: {','.join([Row.str(r, 'sku') for r in found])}")
+    for line in renderAll(imported) {
+        print(f"card {line}")
+    }
+
+    patch: Patch = Patch('{"title":"Borsa Jackie 1961","price":1250,"flags":{"published":true},"nope":"7"}')
+    print(f"patch title={patch.title} price={Fmt.grouped(patch.price, '.')} published={patch.published} unknown={patch.unknown}")
+
+    server: HttpServer = Http.serve(0, lambda method, path, body: f"{body.count('Content-Disposition')} {len(body)}").unwrap()
+    port: int = server.port().unwrap()
+    form: Multipart = Multipart().setBoundary("cat-42").field("sku", "BAG-1").file("photo", "bag.jpg", "image/jpeg", bytes([255, 216, 255, 0, 1, 2]))
+    reply: HttpResponse = HttpClient(f"http://127.0.0.1:{port}").request("POST", "/upload", HttpRequestOptions().multipart(form)).unwrap()
+    parts: list[str] = reply.body.split(" ")
+    print(f"upload {parts[0]} parts {reply.status} body-received={len(form.body()) == int(parts[1])}")
+    server.close().unwrap()
+
+    _ = db.exec("UPDATE products SET title = ?, price = ? WHERE sku = ?", ["Borsa \"Jackie\" 1961", patch.price, "BAG-1"]).unwrap()
+    exportRows: list[list[str]] = [["sku", "title", "price"]]
+    for row in db.query("SELECT sku, title, price FROM products ORDER BY sku").unwrap() {
+        exportRows.append([Row.str(row, "sku"), Row.str(row, "title"), Fmt.grouped(Row.float(row, "price"), ".", 2, ",")])
+    }
+    print(f"export {Csv.formatAll(exportRows, ';').trim().replace('\n', '|')}")
+
+    prices: list[float] = [p.price for p in imported]
+    a = groupPrices(prices)
+    b = groupPrices([1.5, 2.5, 3.5])
+    first: list[str] = await a
+    second: list[str] = await b
+    print(f"workers {len(first) + 1} {len(second)}")
+}

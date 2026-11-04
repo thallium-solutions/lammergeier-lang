@@ -1,0 +1,15 @@
+# Helper module for test_nested_func_defaults.lam: a nested function with
+# defaults inside an imported function, and a const used as a default.
+
+const DefaultWidth: int = 4
+
+func framed(text: str) -> str {
+    func wrap(s: str, left: str = "[", right: str = "]") -> str {
+        return left + s + right
+    }
+    return wrap(text) + wrap(text, "<", ">") + wrap(text, right=")")
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

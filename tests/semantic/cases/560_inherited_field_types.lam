@@ -1,0 +1,33 @@
+# expect-error: custom class `Owner` requires explicit conversion with `json(value)`
+# expect-error: value of type `list[Owner]` is not JSON-compatible
+# expect-error: cannot add `int` and `str`
+# Fields a subclass inherits keep their declared types in the subclass:
+# JSON checks and assignments see them (a base of another module too).
+from inherited_field_types_helper import Record
+
+class Named {
+    func init(self, name: str) {
+        self.name: str = name
+        self.count: int = 1
+    }
+}
+
+class Labeled(Named) {
+    func size(self) -> int {
+        return self.count + "x"
+    }
+}
+
+class Audited(Record) {
+    func __json__(self) -> json {
+        return {"owner": self.owner}
+    }
+
+    func doc(self) -> json {
+        return {"owners": self.history, "id": self.id}
+    }
+}
+
+func main() {
+    print(Labeled("x").size(), json(Audited(1)), Audited(2).doc())
+}

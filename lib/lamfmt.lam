@@ -5,14 +5,44 @@
 # back as the same float, never with an exponent (``1234567.5``, ``0.00001``,
 # ``2``), like Go's ``strconv.FormatFloat(f, 'f', -1, 64)``.
 #
+# ``Fmt.grouped(value, separator, decimals, decimalSeparator)`` writes a
+# number with its integer digits in groups of three: ``1,234,567.5`` by
+# default, ``1.234.567,50`` with ``Fmt.grouped(1234567.5, ".", 2, ",")``
+# (Italian and most of continental Europe), ``1 234 567`` with a space.
+#
 # Import with: from lamfmt import Fmt
 
 go! {
     import (
         "fmt"
+        "math"
         "strconv"
         "strings"
     )
+
+    // lamFmtGrouped groups the integer digits of a plain decimal text
+    // (``-1234567.25``) and swaps in decimalSeparator.
+    func lamFmtGrouped(text string, separator string, decimalSeparator string) string {
+        sign := ""
+        if strings.HasPrefix(text, "-") {
+            sign = "-"
+            text = text[1:]
+        }
+        whole, fraction, hasFraction := strings.Cut(text, ".")
+        var sb strings.Builder
+        sb.WriteString(sign)
+        for i := 0; i < len(whole); i++ {
+            if i > 0 && (len(whole)-i)%3 == 0 {
+                sb.WriteString(separator)
+            }
+            sb.WriteByte(whole[i])
+        }
+        if hasFraction {
+            sb.WriteString(decimalSeparator)
+            sb.WriteString(fraction)
+        }
+        return sb.String()
+    }
 }
 
 class Fmt {
@@ -95,6 +125,39 @@ class Fmt {
                 return strconv.FormatFloat(f, 'f', -1, 64)
             }
             return fmt.Sprintf("%.*f", decimals, f)
+        }
+    }
+
+    static func grouped(value: int, separator: str = ",", decimals: int = 0, decimalSeparator: str = ".") -> str {
+        #- ``1234567`` -> ``"1,234,567"``; ``Fmt.grouped(136000, ".")`` ->
+           ``"136.000"``. A positive ``decimals`` adds that many zero digits
+           after ``decimalSeparator`` (``Fmt.grouped(5, ",", 2)`` ->
+           ``"5.00"``). -#
+        go! {
+            text := strconv.Itoa(value)
+            if decimals > 0 {
+                text += "." + strings.Repeat("0", decimals)
+            }
+            return lamFmtGrouped(text, separator, decimalSeparator)
+        }
+    }
+
+    static func grouped(value: float, separator: str = ",", decimals: int = -1, decimalSeparator: str = ".") -> str {
+        #- ``1234567.5`` -> ``"1,234,567.5"``; ``Fmt.grouped(1360.0, ".", 2,
+           ",")`` -> ``"1.360,00"``. ``decimals`` digits after the separator
+           (rounded, like ``formatFloat``); a negative ``decimals`` (the
+           default) writes the shortest text that reads back as the same
+           float, without an exponent. NaN and infinities are ``"NaN"``,
+           ``"+Inf"``, ``"-Inf"``. -#
+        go! {
+            if math.IsNaN(value) || math.IsInf(value, 0) {
+                return strconv.FormatFloat(value, 'f', -1, 64)
+            }
+            text := strconv.FormatFloat(value, 'f', decimals, 64)
+            if decimals < 0 {
+                text = strconv.FormatFloat(value, 'f', -1, 64)
+            }
+            return lamFmtGrouped(text, separator, decimalSeparator)
         }
     }
 

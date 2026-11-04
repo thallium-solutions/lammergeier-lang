@@ -1,0 +1,59 @@
+# expect-pass
+# expect-no-warning: value of type `unknown`
+# The 4.2 stdlib APIs type-check in their documented shapes: str case
+# methods, Json getters and mapKeys with a function reference or lambda,
+# Url query overloads, Fmt.grouped overloads with keywords, Where chains,
+# Multipart chains, HtmlPolicy chains and Html.sanitize on str and html.
+from lamjson import Json
+from lamstrings import Strings
+from lamurl import Url
+from lamfmt import Fmt
+from lamconv import Conv
+from lamdatetime import DateTime
+from lamdb import Db, Row, Where
+from lamcsv import Csv
+from lamhttp import HttpRequestOptions, Multipart
+from lamhtml import Html, HtmlPolicy
+from lamerrors import Result
+
+func main() {
+    key: str = "order_id".camelCase()
+    snake: str = Strings.snakeCase(key)
+    doc: json = {"order_id": 1, "tags": ["a"]}
+    renamed: json = Json.mapKeys(doc, Strings.camelCase)
+    upper: json = Json.mapKeys(doc, lambda k: k.toUpper(), deep=false)
+    n: int = Json.getInt(doc, "order_id")
+    f: float = Json.getFloat(doc, "x", 1.5)
+    s: str = Json.getStr(doc, "x", fallback="-")
+    b: bool = Json.getBool(doc, "x")
+    items: list[json] = Json.getList(doc, "tags")
+    inner: json = Json.getObject(doc, "x")
+    deep: json = Json.at(doc, ["tags", 0])
+    present: bool = Json.has(doc, "tags")
+    q1: str = Url.query({"a": ["1", "2"]})
+    q2: str = Url.query({"a": "1"})
+    q3: str = Url.query([["a", "1"]])
+    parsed: Result[dict[str, list[str]]] = Url.parseQuery(q1)
+    c: str = Url.encodeComponent(s) + Url.encodePath("/a b") + Url.encodePathSegment("a/b") + Url.encodeUserInfo("u@x")
+    g1: str = Fmt.grouped(1234)
+    g2: str = Fmt.grouped(1234.5, ".", 2, ",")
+    g3: str = Fmt.grouped(1234.5, decimals=1)
+    finite: Result[float] = Conv.parseFinite("1.5")
+    when: Result[DateTime] = DateTime.parseAny("2026-11-03", ["2006-01-02"], "UTC")
+    w: Where = Where().add("a = ?", [1]).addIf(b, "b = ?", [2]).addIn("c", [1, 2]).ilikeAny(["d"], s).likeAny(["e"], s, "prefix")
+    sql: str = w.sql() + w.sql("AND")
+    params: list[any] = w.paramsWith([10])
+    pattern: str = Where.likePattern(s, "exact", "!")
+    state: str = Db.sqlState(finite)
+    unique: bool = Db.isUniqueViolation(finite) or Db.isForeignKeyViolation(finite.error)
+    row: dict[str, any] = {"t": "2026-11-03 19:05:00"}
+    text: str = Row.timeText(row, "t") + Row.timeText(row, "t", "2006", location="Europe/Rome", fallback="")
+    csv: str = Csv.formatAll([["a", "b"]], delimiter=";") + Csv.formatRow(["a"], "\t")
+    rows: Result[list[list[str]]] = Csv.parseAll(csv, ";")
+    form: Multipart = Multipart().setBoundary("x").field("a", "b").file("f", "f.txt", "text/plain", bytes("x"))
+    options: HttpRequestOptions = HttpRequestOptions().multipart(form)
+    body: bytes = form.body()
+    policy: HtmlPolicy = HtmlPolicy.rich().allowTags(["h2"]).denyTags(["img"]).allowAttributes("a", ["target"]).allowSchemes(["tel"]).allowStyles(["color"]).allowDataImages().allowRelativeUrls(false)
+    page: html = Html.sanitize("<b>x</b>") + Html.sanitize("<i>y</i>", policy) + Html.sanitize(Html.parse("<p>z</p>"), HtmlPolicy.basic())
+    print(key, snake, renamed, upper, n, f, s, b, len(items), inner, deep, present, q2, q3, parsed.ok(), c, g1, g2, g3, finite.ok(), when.ok(), sql, len(params), pattern, state, unique, text, rows.ok(), options.contentType, len(body), page)
+}

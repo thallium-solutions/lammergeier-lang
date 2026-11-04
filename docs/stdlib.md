@@ -395,6 +395,7 @@ from lamstrings import Strings
 | `Strings.isAlpha(s)` / `isDigit(s)` / `isAlnum(s)` / `isSpace(s)` / `isEmpty(s)` / `isBlank(s)` | `bool` |
 | `Strings.startsWith(s, p)` / `endsWith(s, p)` / `containsAny(s, chars)` | `bool` |
 | `Strings.indent(s, prefix)` / `dedent(s)` | `str` |
+| `Strings.camelCase(s)` / `pascalCase(s)` / `snakeCase(s)` / `kebabCase(s)` | `str` |
 | `Strings.format(template, *args)` — `fmt.Sprintf`-style formatter (`"%s"` / `"%d"` / `"%v"` verbs) | `str` |
 
 `Strings` is also the backing for built-in string-method
@@ -432,6 +433,27 @@ accept a bare no-argument form; when you omit `cutset`, the
 compiler supplies ASCII whitespace (`" \t\n"`). Formatting uses
 Go `fmt.Sprintf` verbs, so prefer `"%s"`, `"%d"`, `"%v"`,
 `"%.2f"`, and similar Go-style placeholders.
+
+Case conversion splits the text into words, then joins them in the
+target style, lower-cased (the first letter of each word but the first
+upper-cased for `camelCase`, of every word for `pascalCase`):
+
+```lammergeier
+print("slots_total".camelCase())               # slotsTotal
+print("purchased-products-limit".camelCase())  # purchasedProductsLimit
+print("userID".snakeCase())                    # user_id
+print("HTTPServer".kebabCase())                # http-server
+print("user name".pascalCase())                # UserName
+```
+
+Any rune that is not a letter or a digit separates words (`_`, `-`,
+spaces, `.`); a word also ends before an upper-case letter that follows a
+lower-case letter or a digit (`userName`), and before the last capital of
+a run followed by a lower-case letter (`HTTPServer` -> `HTTP` `Server`).
+Digits stay with the word before them, so `line2Text` is `line2_text`
+(and `version_2` becomes `version2`). Leading and trailing separators
+disappear (`__private__` -> `private`). `Json.mapKeys(doc,
+Strings.camelCase)` renames the keys of a whole document.
 
 ### `lamunicode` — `Unicode`
 
@@ -498,6 +520,24 @@ Go's `strconv.FormatFloat(f, 'f', -1, 64)`: `formatFloat(1234567.5)` is
 `"1000000000000000000000"` and `formatFloat(0.00001)` is `"0.00001"` (where
 `str(f)` would write an exponent).
 
+`Fmt.grouped(value, separator = ",", decimals, decimalSeparator = ".")` writes
+the integer digits in groups of three, for an `int` or a `float`:
+
+```lammergeier
+Fmt.grouped(1234567)                    # "1,234,567"
+Fmt.grouped(1234567.5)                  # "1,234,567.5"
+Fmt.grouped(1360.0, ".", 2, ",")        # "1.360,00"   (Italian, German...)
+Fmt.grouped(136000 / 100.0, ",", 2)     # "1,360.00"   (English)
+Fmt.grouped(1234567, " ")               # "1 234 567"
+Fmt.grouped(5, decimals=2)              # "5.00"
+```
+
+For a `float`, `decimals` digits are written after the point, rounded like
+`formatFloat`; a negative `decimals` (the default) writes the shortest text
+that reads back as the same float, never with an exponent. For an `int`,
+`decimals` (default `0`) adds that many zeros. The sign comes first
+(`"-1.234"`); NaN and infinities are `"NaN"`, `"+Inf"`, `"-Inf"`.
+
 ### `lamcsv` — `Csv`, `CsvReader`
 
 CSV parsing, formatting, and lazy file streaming using Go's `encoding/csv`.
@@ -517,13 +557,31 @@ for rowResult in Csv.rows("large.csv") {
 
 | Method | Returns |
 |--------|---------|
-| `Csv.parseAll(content)` / `Csv.parseFile(path)` | `Result[list[list[str]]]` |
-| `Csv.rows(path)` / `Csv.streamRows(path)` | lazy generator yielding `Result[list[str]]` |
-| `Csv.batches(path, batchSize = 100)` / `streamBatches(...)` | lazy generator yielding `Result[list[list[str]]]` |
-| `Csv.formatRow(fields)` | `str` |
-| `Csv.formatAll(rows)` | `str` |
+| `Csv.parseAll(content, delimiter = ",")` / `Csv.parseFile(path, delimiter = ",")` | `Result[list[list[str]]]` |
+| `Csv.rows(path, delimiter = ",")` / `Csv.streamRows(...)` | lazy generator yielding `Result[list[str]]` |
+| `Csv.batches(path, batchSize = 100, delimiter = ",")` / `streamBatches(...)` | lazy generator yielding `Result[list[list[str]]]` |
+| `Csv.formatRow(fields, delimiter = ",")` | `str` (no trailing newline) |
+| `Csv.formatAll(rows, delimiter = ",")` | `str` (every record ends with `\n`) |
 
-`CsvReader.open(path) -> Result[CsvReader]` provides explicit streaming control;
+Every reader and writer takes a `delimiter`: `";"` for the spreadsheets of
+locales that write decimal commas, `"\t"` for TSV, any single character other
+than `"`, `\r`, `\n` and the Unicode replacement character (another value
+throws a `CsvDelimiterError`):
+
+```lammergeier
+out: str = Csv.formatAll([["name", "price"], ["Borsa; pelle", "1.200,50"]], ";")
+# name;price
+# "Borsa; pelle";1.200,50
+rows: list[list[str]] = Csv.parseAll(out, ";")?
+```
+
+Quoting follows RFC 4180: a field is quoted when it contains the delimiter,
+`"`, `\r` or `\n`, starts with white space or is exactly `\.`, and a `"`
+inside it is doubled. Reading accepts quoted fields spanning lines and
+`\r\n` record ends, and requires every record to have as many fields as the
+first (a `CsvParseError` otherwise).
+
+`CsvReader.open(path, delimiter = ",") -> Result[CsvReader]` provides explicit streaming control;
 `readRow() -> Result[list[str]]` sets `reader.eof` and returns `Ok([])` at EOF,
 and `close() -> Result[bool]` is idempotent. Generator open/read/parse/close
 failures are yielded once as `Result.Err`, so callers can process large files
@@ -561,6 +619,41 @@ back: json = Json.fromValue(asDict)?
 | `Json.kind(data)` | `str`: `null`, `boolean`, `string`, `number`, `array`, or `object` |
 | `Json.decodeInto(s, target)` | `Result[any]` (Go/class compatibility) |
 | `Json.isValid(s)` | `bool` |
+| `Json.has(doc, key)` | `bool`: `doc` is an object with the member (even null) |
+| `Json.getStr(doc, key, fallback = "")` | `str` |
+| `Json.getInt(doc, key, fallback = 0)` | `int` |
+| `Json.getFloat(doc, key, fallback = 0.0)` | `float` |
+| `Json.getBool(doc, key, fallback = false)` | `bool` |
+| `Json.getList(doc, key)` | `list[json]` (`[]` when not an array) |
+| `Json.getObject(doc, key)` | `json` (a new `{}` when not an object) |
+| `Json.at(doc, path)` | `json` at a path of keys / indexes, null when missing |
+| `Json.mapKeys(doc, rename, deep = true)` | `json` copy with renamed object keys |
+
+Typed member reads are tolerant, for request bodies and stored documents:
+the member comes back when it has the requested kind, `fallback` otherwise
+— a missing member, null, another kind, or a `doc` that is not an object.
+
+```lammergeier
+body: json = Json.decode(req.body)?
+name: str = Json.getStr(body, "name")                  # "" when absent
+page: int = Json.getInt(body, "page", 1)
+city: str = Json.getStr(Json.getObject(body, "address"), "city")
+lastId: int = Json.getInt(Json.at(body, ["orders", -1]), "id")
+api: json = Json.mapKeys(row, Strings.camelCase)       # slots_total -> slotsTotal
+```
+
+- `getInt` takes integers and floats with an integral value inside the
+  `int` range (`3.0` is `3`; `3.5` and `1e300` are `fallback`); `getFloat`
+  takes any number. Strings are never converted (`"12"` is `fallback`: use
+  `Conv.parse`), and `getBool` takes only `true` / `false`.
+- `getList` and `getObject` return the document's own containers, so a
+  change made through them changes `doc`; the `{}` of a missing object is new.
+- `Json.at(doc, ["user", "tags", 0])`: `str` steps read members, `int` steps
+  array elements (negative from the end); a missing step gives null.
+- `Json.mapKeys` copies the document; with `deep` (the default) nested
+  objects, also inside arrays, are renamed too, with `deep=false` only the
+  keys of `doc` itself. Keys are renamed in sorted order: when two keys get
+  the same name, the later key's value wins.
 
 `Json.fromValue` is the runtime boundary for dynamic `any`; `fromDict` and
 `fromList` remain compatibility aliases that delegate to it. The conversion
@@ -571,7 +664,7 @@ JSON/JSONB query parameters.
 
 ### `lamurl` — `Url`
 
-URL parsing and percent-encoding.
+URL parsing, percent-encoding and query strings.
 
 ```lammergeier
 from lamurl import Url
@@ -580,6 +673,9 @@ from lamerrors import Result
 host: str = Url.host("https://example.com:8080/path?q=1")?
 encoded: str = Url.encode("hello world")
 decoded: str = Url.decode(encoded)?
+link: str = "/search?" + Url.query({"q": ["borsa pelle"], "tag": ["a", "b"]})
+# /search?q=borsa+pelle&tag=a&tag=b
+params: dict[str, list[str]] = Url.parseQuery("q=a+b&tag=x&tag=y")?
 ```
 
 | Method | Returns |
@@ -587,8 +683,35 @@ decoded: str = Url.decode(encoded)?
 | `Url.parse(rawUrl)` | `Result[str]` |
 | `Url.scheme(rawUrl)` / `host(rawUrl)` / `path(rawUrl)` | `Result[str]` |
 | `Url.queryParam(rawUrl, key)` | `Result[str]`; a missing key is `Ok("")` |
-| `Url.encode(s)` | `str` |
+| `Url.encode(s)` | `str` — a query value, form encoded (space is `+`) |
 | `Url.decode(s)` | `Result[str]` |
+| `Url.encodeComponent(s)` | `str` — JavaScript's `encodeURIComponent` |
+| `Url.decodeComponent(s)` | `Result[str]` (`+` stays a plus) |
+| `Url.encodePath(s)` | `str` — a whole path, `/` kept |
+| `Url.encodePathSegment(s)` | `str` — one segment, `/` escaped |
+| `Url.encodeUserInfo(s)` | `str` — a user name or password |
+| `Url.query(params)` | `str` — from `dict[str, list[str]]`, `dict[str, str]` or `[key, value]` pairs |
+| `Url.parseQuery(s)` | `Result[dict[str, list[str]]]` |
+
+Which escaping goes where:
+
+- `encodeComponent` leaves only `A-Z a-z 0-9 - _ . ! ~ * ' ( )` unescaped and
+  writes every other byte of the UTF-8 text as `%XX` (`"a b&c/é"` ->
+  `"a%20b%26c%2F%C3%A9"`), exactly as JavaScript's `encodeURIComponent`: for
+  values put into URLs that browsers or JavaScript code decode.
+- `encodePath` escapes a path but keeps `/` and `$ & + , : ; = @`
+  (`"/files/a b/ü.txt"` -> `"/files/a%20b/%C3%BC.txt"`); `?` and `#` are
+  escaped. `encodePathSegment` also escapes `/` (`"a/b"` -> `"a%2Fb"`).
+- `encodeUserInfo` escapes `@ / ? :` and the characters outside a URL, for
+  `postgres://{user}:{password}@host/db`.
+- `Url.query` form-encodes keys and values (`encode`) and joins them with
+  `&`, without a leading `?`. A dict gives its keys in sorted order and each
+  key's values in order (a key with no values is left out); a list of
+  `[key, value]` pairs keeps their order and repeated keys (a pair with
+  another number of items throws a `UrlQueryError`).
+- `Url.parseQuery` ignores a leading `?`, reads `key=value` pairs separated
+  by `&` (a key without `=` has the value `""`) and decodes `+` and `%XX`; a
+  malformed escape or a `;` separator is a `UrlQueryError`.
 
 ### `lambase64` — `Base16`, `Base32`, `Base64`, `Hex`
 
@@ -839,6 +962,17 @@ equally specific enclosing return context) whenever the surrounding expression
 would otherwise be ambiguous. Formatting belongs to `Fmt` and the `str(...)`
 builtin.
 
+`Conv.parse` for a float follows Go's `strconv.ParseFloat`, so it accepts
+`"NaN"`, `"Inf"` and `"-Infinity"`. `Conv.parseFinite(s) -> Result[float]`
+accepts the same decimal, exponent and hexadecimal notations but only finite
+values, without the `_` separators of Go literals: `"NaN"`, `"inf"`, `"1e400"`
+(overflow) and `"1_000"` are a `ParseError`. Use it for numbers typed by people
+or read from files; surrounding spaces are not accepted (`s.trim()` first).
+
+```lammergeier
+price: float = Conv.parseFinite(form.get("price").trim())?
+```
+
 The base parsers intentionally retain `fromHex` / `fromOctal` / `fromBin`.
 All three have the same `(str) -> Result[int]` type but different radix
 semantics, so no return context could choose among them. Their explicit names
@@ -1046,9 +1180,12 @@ value: any = divide(10, 2).unwrap()       # 5
 ```
 
 `Error(kind, message, cause=None)` stores `.kind`, `.message`, and
-`.cause`; `str(error)` renders `Kind: message` and appends the cause
-when present (an empty `kind` renders just the message: that is how the
-`err` of `do { } catch err` wraps a non-`Error` value).
+`.cause`; `str(error)` renders `Kind: message` and appends
+` (cause: ...)` when there is a cause whose text differs from the message
+(an empty `kind` renders just the message: that is how the `err` of
+`do { } catch err` wraps a non-`Error` value). `lamdb` keeps the driver's
+error as the cause of its failures (`Db.sqlState` reads it); since its text
+is the message, those errors print as before.
 
 `Result` is non-generic at runtime. Both `.value` and `.error` are typed
 `any`, and every `Result[T]` lowers to the same Go `*Result`. The compiler does
@@ -1362,8 +1499,27 @@ print(rome.format("2006-01-02 15:04 MST"))
 
 Construct with `current(location = "UTC")`, `fromUnix`, `fromUnixMilli`,
 `fromUnixNano`, `parse(layout, value, location = "UTC")`, `parseRfc3339`, or
-`parseCommon`; invalid layouts, values, and IANA timezone names return
-`Result[DateTime]`. `convert` reformats text in a named timezone.
+`parseCommon`, or `parseAny(value, layouts, location = "UTC")`; invalid
+layouts, values, and IANA timezone names return `Result[DateTime]`. `convert`
+reformats text in a named timezone.
+
+`DateTime.parseAny` tries Go layouts in order and keeps the first that
+matches: day-first before month-first, database texts before client texts.
+A layout with an offset (`Z07:00`, `-07`) keeps the text's offset as the
+location; the others read the text in `location`. No layout matching (or an
+empty list) is a `ParseError` naming the last layout's failure, an unknown
+zone a `LocationError`.
+
+```lammergeier
+const Layouts: list[str] = ["2006-01-02 15:04:05.999999999-07", "2006-01-02T15:04:05Z07:00", "02/01/2006"]
+when: DateTime = DateTime.parseAny(text.trim(), Layouts, "Europe/Rome")?
+```
+
+`parseCommon` reads RFC 3339, RFC 1123 / 822, ISO `2006-01-02 15:04:05`,
+`2006-01-02 15:04`, `2006-01-02`, US `01/02/2006` forms, and the timestamp
+texts of PostgreSQL and SQLite: `timestamptz` (`2026-11-03
+19:05:00.123456+01`, `+05:30` offsets) and `timestamp` / `datetime`
+(`2026-11-03 19:05:00.5`, `2026-11-03T19:05:00`), fractional seconds optional.
 
 Instances expose Unix units, `locationName`, custom/RFC3339/date formatting,
 `inLocation`, `add` / `subtract`, `since` / `until`, calendar-aware `addDays` /
@@ -1618,6 +1774,37 @@ handler (a function, or a lambda typed from it:
 `Http.serve(0, lambda method, path, body: f"{method} {path}")`) and returns
 `Result[HttpServer]`; `HttpServer.port()` gives the bound port and
 `HttpServer.close()` returns `Result[bool]`.
+
+`Multipart` builds a `multipart/form-data` body (RFC 7578), as a browser
+sends a form with file inputs, for `HttpRequestOptions.multipart(form)` /
+`HttpRequest.multipart(form)` or for tests that need the raw body:
+
+```lammergeier
+from lamhttp import HttpClient, HttpRequestOptions, Multipart
+
+form: Multipart = Multipart().field("title", "Jackie").field("tag", "a").field("tag", "b")
+form.file("photo", "bag.jpg", "image/jpeg", photoBytes)
+res = HttpClient("https://shop.example").request("POST", "/upload", HttpRequestOptions().multipart(form))?
+
+body: bytes = form.body()          # the encoded body
+header: str = form.contentType()   # multipart/form-data; boundary=lam-...
+```
+
+| Method | Returns |
+|--------|---------|
+| `Multipart()` | an empty form with a random boundary (`lam-` and 48 hex digits) |
+| `field(name, value)` / `file(name, filename, contentType, data: bytes)` | the form (chainable) |
+| `setBoundary(boundary)` | the form; a fixed boundary for stable test bodies |
+| `body()` | `bytes` |
+| `contentType()` / `boundaryText()` / `partCount()` | `str` / `str` / `int` |
+
+Parts keep their order; a file with an empty content type is sent as
+`application/octet-stream`; binary data is sent as it is. Names and file
+names are quoted as browsers quote them (`"` -> `%22`, CR -> `%0D`, LF ->
+`%0A`), so they cannot add headers. A content type with a line break, an
+invalid boundary (1–70 letters, digits, `'()+_,-./:=?` or spaces, not ending
+with a space) or part data that contains the boundary line throws a
+`ValueError`.
 
 ### `@lam/vulture` — `Server`, `Request`, `Response`, `SseEmitter`, `HttpError`
 
@@ -2722,7 +2909,7 @@ direct.
 
 ## Database
 
-### `lamdb` — `Db`, `Tx`, `QueryBuilder`
+### `lamdb` — `Db`, `Tx`, `QueryBuilder`, `Row`, `Where`
 
 Driver-agnostic SQL access. Drivers ship with the runtime — SQLite
 (`modernc.org/sqlite`, pure-Go so no C toolchain needed), MySQL
@@ -2827,6 +3014,75 @@ Automatic retries on transient errors (closed connection, server gone away,
 bad conn…) are bounded by `setRetries`. Exhausted transient and non-transient
 errors are returned by the same unsuffixed operation as `Result.Err`.
 
+#### Constraint violations — `Db.sqlState`
+
+A driver failure keeps the driver's error as the `Error.cause`, so its code
+can be read without matching messages:
+
+```lammergeier
+inserted: Result[int] = db.exec("INSERT INTO users (email) VALUES (?)", [email])
+if Db.isUniqueViolation(inserted) {
+    return Result.Err(Error("SignupError", f"{email} is already registered"))
+}
+_ = inserted?
+```
+
+| Method | Returns |
+|--------|---------|
+| `Db.sqlState(err)` | `str`: the SQLSTATE, `""` when there is no driver error |
+| `Db.isUniqueViolation(err)` | `bool`: SQLSTATE `23505` (unique or primary key) |
+| `Db.isForeignKeyViolation(err)` | `bool`: SQLSTATE `23503` |
+
+`err` is a failed `Result` (from `exec`, `query`, the builder, `transaction`
+— a deferred constraint failing at commit included), its `Error`, or a driver
+error. PostgreSQL reports its own SQLSTATE (`23505`, `23503`, `23502` not null,
+`23514` check, `40001` serialization failure, `42P01` undefined table...).
+SQLite's extended result codes and MySQL's error numbers are mapped to the
+same class 23 codes (`23505` unique / primary key, `23503` foreign key —
+SQLite checks them only with `PRAGMA foreign_keys = ON` —, `23502` not null,
+`23514` check, `23000` other constraints); other MySQL errors give their own
+SQLSTATE and other SQLite errors `""`. A success, an `Error` built by hand or a
+value that is not an error gives `""` / `false`. Printing such an error is
+unchanged: an `Error` whose cause reads as its message does not repeat it.
+
+#### WHERE clauses for hand-written SQL — `Where`
+
+`Where` collects conditions and their `?` parameters in order, for SQL that
+the query builder does not express:
+
+```lammergeier
+from lamdb import Db, Row, Where
+
+w: Where = Where().add("shop_id = ?", [shopId]).addIf(onlyActive, "disabled = ?", [false])
+w.addIn("status", ["paid", "shipped"]).ilikeAny(["title", "brand", "id"], search)   # PostgreSQL
+rows = db.query(f"SELECT * FROM products {w.sql()} ORDER BY id LIMIT ? OFFSET ?", w.paramsWith([size, offset]))?
+# SELECT * FROM products WHERE (shop_id = ?) AND (status IN (?, ?)) AND
+#   (CAST(title AS TEXT) ILIKE ? ESCAPE '!' OR ...) ORDER BY id LIMIT ? OFFSET ?
+```
+
+| Method | Returns |
+|--------|---------|
+| `Where()` | an empty clause |
+| `add(clause, params = [])` / `addIf(condition, clause, params = [])` | the `Where` (chainable) |
+| `addIn(column, values)` | `column IN (?, ...)`; an empty list matches no row (`1 = 0`) |
+| `ilikeAny(columns, text, match = "contains")` | PostgreSQL `CAST(col AS TEXT) ILIKE ? ESCAPE '!'` over the columns, OR-ed |
+| `likeAny(columns, text, match = "contains")` | `col LIKE ? ESCAPE '!'`, every driver |
+| `sql(prefix = "WHERE")` | `str`: `""` with no condition |
+| `params()` / `paramsWith(extra)` | `list[any]` (a copy; `extra` appended) |
+| `isEmpty()` | `bool` |
+| `Where.likePattern(text, match = "contains", escape = "\\")` | `str` |
+
+Conditions are joined with `AND`, each in parentheses, so a condition holding
+`OR` keeps its meaning, also when more SQL follows (`w.sql() + " AND
+visible"`). `ilikeAny` / `likeAny` trim `text` and add nothing when it is
+empty; the `%` and `_` the user typed match themselves. `match` is
+`"contains"` (`%text%`), `"prefix"`, `"suffix"` or `"exact"`.
+`Where.likePattern` escapes the escape character, `%` and `_` for a
+hand-written `LIKE ?`: the default backslash is PostgreSQL's and MySQL's
+default escape (SQLite needs `ESCAPE '\'`). Column names and SQL fragments
+are inserted as written — never build them from user input; values always
+go through parameters.
+
 #### Typed row values — `Row`
 
 Rows are `dict[str, any]` holding the drivers' values: `int64`, `float64`,
@@ -2859,6 +3115,7 @@ _ = db.exec("UPDATE products SET tags = ?::text[] WHERE id = ?", [Db.textArray([
 | `Row.bool(row, key, fallback = false)` | `bool` | `bool`, numbers (non-zero), `t` / `true` / `yes` / `on` / `1` and `f` / `false` / `no` / `off` / `0` (any case) |
 | `Row.unix(row, key, fallback = 0)` | `int` | `time.Time`, Unix seconds, timestamp text (`2026-11-03 19:05:00+01`, RFC 3339, `2026-11-03`; no offset is UTC) |
 | `Row.time(row, key)` | `optional[DateTime]` | as `unix`, in UTC (`inLocation` for another zone) |
+| `Row.timeText(row, key, layout = "2006-01-02T15:04:05Z07:00", location = "UTC", fallback = "")` | `str` | as `unix`, written with a Go layout: by default RFC 3339 in whole seconds (`2026-11-03T19:05:00Z`, where `Row.str` keeps the fraction); an unknown location throws a `LocationError` |
 | `Row.optionalStr` / `optionalInt` / `optionalFloat` / `optionalBool(row, key)` | `optional[T]` | as above; `None` for NULL, a missing column, or a value that does not convert |
 | `Row.isNull(row, key)` | `bool` | NULL or a missing column |
 | `Row.strList(row, key)` / `Row.intList(row, key)` | `list[str]` / `list[int]` | a PostgreSQL array literal; NULL elements are dropped, NULL is `[]` |
@@ -2987,6 +3244,7 @@ the runtime path is exactly the same as production code.
 | Parse / build JSON | `lamjson` |
 | Parse / build YAML (Kubernetes manifests, CI configs, …) | `lamyaml` |
 | Build / query HTML pages and fragments | native `html` literals, `lamhtml` |
+| Clean untrusted HTML (comments, rich text) against XSS | `lamhtml.Html.sanitize` + `HtmlPolicy` |
 | Parse / build XML (RSS feeds, SOAP, OpenSearch, sitemaps) | native `xml` literals, `lamxml` |
 | Build a web service | External `@lam/vulture` + `@lam/vulture/std-plugin` packages |
 | Validate request bodies | `lamschema` (JSON Schema) |
@@ -2998,7 +3256,14 @@ the runtime path is exactly the same as production code.
 | Make HTTP calls (one-shot) | Result-returning `lamhttp.Http.get` / overloaded `.post` |
 | Make HTTP calls (reusable client w/ baseUrl, headers, timeout) | `lamhttp.HttpClient` (`get`/`head`/`delete`/`post(Json)`/`put(Json)`/`patch(Json)`) |
 | Talk to a SQL database | `lamdb` (raw SQL, native JSON/JSONB values, `QueryBuilder`, transactions + savepoints) |
-| Read typed values from database rows (NUMERIC, timestamps, `text[]`) | `lamdb.Row` (`Row.int` / `str` / `float` / `bool` / `time` / `strList`), `Db.textArray` |
+| Read typed values from database rows (NUMERIC, timestamps, `text[]`) | `lamdb.Row` (`Row.int` / `str` / `float` / `bool` / `time` / `timeText` / `strList`), `Db.textArray` |
+| Tell a duplicate key from other database failures | `Db.isUniqueViolation`, `Db.isForeignKeyViolation`, `Db.sqlState` |
+| Build WHERE clauses for hand-written SQL (filters, ILIKE search) | `lamdb.Where` |
+| Read typed members of JSON request bodies | `Json.getStr` / `getInt` / `getFloat` / `getBool` / `getList` / `getObject` / `has` / `at` |
+| Rename JSON keys (`snake_case` <-> `camelCase`) | `Json.mapKeys` + `Strings.camelCase` / `snakeCase` / `kebabCase` |
+| Build / parse query strings, escape URL parts | `Url.query`, `Url.parseQuery`, `Url.encodeComponent` / `encodePath` / `encodeUserInfo` |
+| Send multipart form uploads | `lamhttp.Multipart` + `HttpRequestOptions.multipart` |
+| Format numbers with thousands separators (`1.234,50`) | `Fmt.grouped` |
 | Run schema migrations | `lammigrate` + `lamc migrate make/up/down/status` |
 | Talk to Redis (strings / native JSON / lists / hashes / sets / zsets / pub-sub / pipelines) | External [`@lam/redis`](libraries.md) package |
 | Talk to memcached over the binary protocol (incl. SASL PLAIN auth) | External [`@lam/memcached`](libraries.md) package |
@@ -3069,6 +3334,78 @@ The DOM-style methods of the values (`select`, `first`, `text`, `attr`,
 `setAttr`, `addClass`, `append`, `remove`, `replaceWith`, `clone`...) are
 listed in SYNTAX.md. `XmlNode` was removed in 4.0.0: `Xml.parse` returns the
 native `xml` value.
+
+#### Sanitizing untrusted HTML — `Html.sanitize`, `HtmlPolicy`
+
+`Html.sanitize(markup, policy = HtmlPolicy.basic()) -> html` turns markup
+you do not trust (user comments, rich-text editor output, admin-authored
+snippets, an `html` value built from them) into an `html` value that keeps
+only what the policy allows:
+
+```lammergeier
+from lamhtml import Html, HtmlPolicy
+
+clean: html = Html.sanitize(comment.body)          # basic formatting and links
+article: html = Html.sanitize(editorHtml, HtmlPolicy.rich().allowStyles(["color", "text-align"]))
+page: html = <><section>${clean}</section></>
+
+policy: HtmlPolicy = HtmlPolicy().allowTags(["p", "a", "b"]).allowAttributes("a", ["href"]).allowSchemes(["tel"])
+```
+
+| `HtmlPolicy` | Allows |
+| --- | --- |
+| `HtmlPolicy()` | nothing: only the text survives |
+| `HtmlPolicy.basic()` | `a` (`href`, `title`), `abbr`, `b`, `blockquote` / `q` (`cite`), `br`, `cite`, `code`, `del`, `em`, `i`, `ins`, `kbd`, `li`, `mark`, `ol`, `p`, `pre`, `s`, `small`, `span`, `strong`, `sub`, `sup`, `u`, `ul`; `http` / `https` / `mailto` and relative URLs |
+| `HtmlPolicy.rich()` | `basic` plus `h1`–`h6`, `hr`, `div`, `section`, `article`, `aside`, `header`, `footer`, `img` (`src`, `alt`, `width`, `height`), `figure`, `figcaption`, tables (`colspan`, `rowspan`, `scope`), `dl` / `dt` / `dd`, `details` (`open`) / `summary`, `a` `target` / `rel`, and `class`, `title`, `lang`, `dir` everywhere |
+| `allowTags(tags)` / `denyTags(tags)` | adds / removes elements |
+| `allowAttributes(tag, attributes)` | attributes on `tag`, `"*"` for every allowed element |
+| `allowSchemes(schemes)` | more URL schemes (`javascript`, `vbscript`, `data` are refused) |
+| `allowRelativeUrls(allowed = true)` | relative URLs on or off |
+| `allowDataImages(allowed = true)` | base64 PNG / GIF / JPEG / WebP / AVIF `data:` URLs in `img src` |
+| `allowStyles(properties)` | the `style` attribute, keeping only these CSS properties |
+
+The policy methods return the policy, so they chain; its fields (`tags`,
+`attributes`, `urlSchemes`, `relativeUrls`, `dataImages`, `styleProperties`,
+`noopener`) can also be set directly. The sanitizer works on the parsed tree
+and builds a new one, default-deny — what it covers:
+
+- **Elements**: an element the policy does not allow is removed and its
+  content kept. `script`, `style`, `template`, `iframe`, `frame`,
+  `frameset`, `object`, `embed`, `applet`, `noscript`, `noembed`,
+  `noframes`, `xmp`, `plaintext`, `svg`, `math`, `base`, `link`, `meta`,
+  `head`, `title`, `param` and `portal` are removed with their content even
+  when a policy lists them. Comments (including IE conditional comments),
+  doctypes and processing instructions are removed. Nesting deeper than 256
+  elements is flattened.
+- **Attributes**: only those allowed for the element (or `"*"`) are kept;
+  event handlers (`on*`) and `srcdoc` never are; of a duplicated attribute
+  the first is kept, as browsers do.
+- **URLs** (`href`, `src`, `action`, `formaction`, `cite`, `poster`,
+  `background`, `longdesc`, `xlink:href`, `srcset` candidates...): the
+  value is kept only when its scheme is allowed or it is relative (when
+  allowed). The scheme is read after removing control characters and white
+  space, which browsers ignore there, and after entities are decoded, so
+  `java&#x09;script:`, `&#106;avascript:`, `javascript&colon;` and
+  ` javascript:` are all `javascript:`. `data:` URLs are refused except
+  base64 raster images in `img src` with `allowDataImages` (never
+  `image/svg+xml`).
+- **Styles**: `style` attributes are removed unless `allowStyles` lists
+  properties; then only those properties are kept, with values made of
+  letters, digits, spaces and `# % . , ( ) + - ! /`, and without `url(`,
+  `expression`, `javascript`, `image(`, `attr(`, `var(` or comments.
+- **Links** with a `target` other than `_self` / `_parent` / `_top` get
+  `rel="noopener noreferrer"` (unless `noopener` is turned off).
+- **Output**: the result is serialized from the new tree, so text and
+  attribute values are always escaped and the only markup is the allowed
+  elements: the browser parses what the policy checked, which closes the
+  parser-differential (mXSS) tricks that rely on re-parsing comments, raw
+  text or foreign content. Sanitizing an output again gives it back
+  unchanged.
+
+`id` and `name` (DOM clobbering) and `class` are not allowed by `basic`;
+allow them only when the page cannot be confused by them. The sanitizer does
+not judge where a link leads (an allowed `https:` URL can still point to a
+phishing site) and does not rewrite CSS.
 
 ### `lamyaml` — YAML 1.2 encode / decode
 
@@ -3248,25 +3585,25 @@ index lists the public classes and top-level functions you can import.
 | `lamcompress` | `from lamcompress import Compress` | gzip/gunzip and zlib deflate/inflate as base64 strings. |
 | `lamconcurrency` | `from lamconcurrency import Channel, WaitGroup, Mutex, RWMutex, Atomic` | Go-style concurrency primitives. |
 | `lamcontext` | `from lamcontext import Context` | Cancellation trees, unit-aware expiration, values, bounded waits, and Go context interop. |
-| `lamconv` | `from lamconv import Conv` | Result-based int/float/bool and explicitly named radix string parsers. |
+| `lamconv` | `from lamconv import Conv` | Result-based int/float/bool, finite-float and explicitly named radix string parsers. |
 | `lamcrypto` | `from lamcrypto import Crypto, CryptoKeyPair, CryptoCertificate` | Secure random data, AES-GCM, password hashes, PEM keys/signatures, and X.509 metadata. |
 | `lamcron` | `from lamcron import Cron` | Cron scheduler, seconds-aware mode, start/stop/remove. |
-| `lamcsv` | `from lamcsv import Csv, CsvReader` | Parse/format CSV plus lazy row/batch file streaming. |
+| `lamcsv` | `from lamcsv import Csv, CsvReader` | Parse/format CSV with any delimiter plus lazy row/batch file streaming. |
 | `lamdata` | `from lamdata import DataFrame, DataFrameGroups, Series` | DataFrames and Series with overloaded typed columns, native JSON, joins, filters, and group-by aggregation. |
 | `lamdatastructures` | `from lamdatastructures import Queue, Deque, Stack, Set, Heap, PriorityHeap` | Canonical data-structure implementations. |
-| `lamdatetime` | `from lamdatetime import DateTime` | Timezone-aware instants, parsing/formatting, calendar and duration arithmetic. |
-| `lamdb` | `from lamdb import Db, Tx, QueryBuilder, Row` | SQL connections, transactions, raw queries, query builder, typed row values. |
+| `lamdatetime` | `from lamdatetime import DateTime` | Timezone-aware instants, parsing (one layout, the first of several, common and database forms)/formatting, calendar and duration arithmetic. |
+| `lamdb` | `from lamdb import Db, Tx, QueryBuilder, Row, Where` | SQL connections, transactions, raw queries, query builder, typed row values, SQLSTATE checks, WHERE builder. |
 | `lamdeque` | `from lamdeque import Deque` | Compatibility re-export of canonical `Deque`. |
 | `lamenv` | `from lamenv import Env, Dotenv, Config` | Overloaded typed/Result environment access, dotenv parsing/loading, and layered config. |
 | `lamerrors` | `from lamerrors import Error, Result` | Structured errors and success/error containers. |
 | `lamexec` | `from lamexec import Exec, ExecCommand, ExecResult` | Typed process execution with env/cwd/stdin, timeout, cancellation, and captured output. |
-| `lamfmt` | `from lamfmt import Fmt` | `sprintf`, printing, padding, integer bases, float formatting. |
+| `lamfmt` | `from lamfmt import Fmt` | `sprintf`, printing, padding, integer bases, float formatting, thousands grouping. |
 | `lamhash` | `from lamhash import Hash` | SHA/MD5/CRC/HMAC and constant-time comparison. |
 | `lamheap` | `from lamheap import Heap, PriorityHeap` | Compatibility re-export of numeric heaps from `lamdatastructures`. |
-| `lamhtml` | `from lamhtml import Html` | Native `html`: lenient parsing and escaping. |
-| `lamhttp` | `from lamhttp import Http, HttpClient, HttpRequest, HttpRequestOptions, HttpResponse, HttpCookie, HttpServer` | Typed request options, fluent Result-returning requests, repeated response headers, cookies, reusable client, tiny blocking server. |
+| `lamhtml` | `from lamhtml import Html, HtmlPolicy` | Native `html`: lenient parsing, escaping, allowlist sanitizing. |
+| `lamhttp` | `from lamhttp import Http, HttpClient, HttpRequest, HttpRequestOptions, HttpResponse, HttpCookie, HttpServer, Multipart` | Typed request options, fluent Result-returning requests, multipart bodies, repeated response headers, cookies, reusable client, tiny blocking server. |
 | `lamiter` | `from lamiter import Iter` | Lazy iterator pipelines: map/filter/take/drop/reduce/enumerate. |
-| `lamjson` | `from lamjson import Json` | Native `json`, wire encoding/decoding, safe Result-based collection conversion, and kind inspection. |
+| `lamjson` | `from lamjson import Json` | Native `json`, wire encoding/decoding, safe Result-based collection conversion, kind inspection, typed member reads, key renaming. |
 | `lamlog` | `from lamlog import Log` | Leveled logging and formatted log helpers. |
 | `lammarkup` | `from lammarkup import Markup` | Runtime of the native `html` / `xml` types (imported automatically) and `Markup.escape`. |
 | `lammath` | `from lammath import Math` | Constants, trig, logs, rounding, combinatorics, number theory. |
@@ -3285,12 +3622,12 @@ index lists the public classes and top-level functions you can import.
 | `lamsort` | `from lamsort import Sort` | Generic natural/comparator sorting, direction checks, named algorithms, and lazy sorted generators. |
 | `lamstack` | `from lamstack import Stack` | Compatibility re-export of canonical LIFO `Stack`. |
 | `lamstats` | `from lamstats import Stats` | Generic numeric/ordered descriptive statistics and percentiles. |
-| `lamstrings` | `from lamstrings import Strings` | UTF-8 string manipulation and formatting helpers. |
+| `lamstrings` | `from lamstrings import Strings` | UTF-8 string manipulation, case conversion and formatting helpers. |
 | `lamtemplate` | `from lamtemplate import Template, HtmlTemplate` | Text and HTML templates. |
 | `lamtest` | `from lamtest import Test` | Assertions, counters, summaries. |
 | `lamtime` | `from lamtime import Time` | Nanosecond durations, unit factories/arithmetic, Unix time, sleeps, and measurement. |
 | `lamunicode` | `from lamunicode import Unicode` | Rune counts, validity, categories, rune conversion. |
-| `lamurl` | `from lamurl import Url` | URL parse parts and percent encode/decode. |
+| `lamurl` | `from lamurl import Url` | URL parse parts, percent encode/decode per URL part, query string build/parse. |
 | `lamuuid` | `from lamuuid import Uuid` | UUID v4/v7/nil/parse/validate. |
 | `lamxml` | `from lamxml import Xml` | Native `xml` parsing (well-formed check), escaping, dict/list encoding and shape-shifting decode. |
 | `lamyaml` | `from lamyaml import Yaml` | Result-returning YAML encode/decode/decodeAll. |
@@ -3384,6 +3721,78 @@ Row.strList(row: dict[str, any], key: str) -> list[str]
 Row.intList(row: dict[str, any], key: str) -> list[int]
 Db.textArray(values: list[str]) -> str
 Db.parseTextArray(text: str) -> Result[list[str]]
+Row.timeText(row: dict[str, any], key: str, layout: str = "2006-01-02T15:04:05Z07:00", location: str = "UTC", fallback: str = "") -> str
+Db.sqlState(err: any) -> str
+Db.isUniqueViolation(err: any) -> bool
+Db.isForeignKeyViolation(err: any) -> bool
+Where() -> Where
+w.add(clause: str, params: list[any] = []) -> Where
+w.addIf(condition: bool, clause: str, params: list[any] = []) -> Where
+w.addIn(column: str, values: list[any]) -> Where
+w.ilikeAny(columns: list[str], text: str, match: str = "contains") -> Where
+w.likeAny(columns: list[str], text: str, match: str = "contains") -> Where
+w.sql(prefix: str = "WHERE") -> str
+w.params() -> list[any]
+w.paramsWith(extra: list[any]) -> list[any]
+w.isEmpty() -> bool
+Where.likePattern(text: str, match: str = "contains", escape: str = "\\") -> str
+
+# lamjson (typed reads, key renaming)
+Json.has(doc: json, key: str) -> bool
+Json.getStr(doc: json, key: str, fallback: str = "") -> str
+Json.getInt(doc: json, key: str, fallback: int = 0) -> int
+Json.getFloat(doc: json, key: str, fallback: float = 0.0) -> float
+Json.getBool(doc: json, key: str, fallback: bool = false) -> bool
+Json.getList(doc: json, key: str) -> list[json]
+Json.getObject(doc: json, key: str) -> json
+Json.at(doc: json, path: list[any]) -> json
+Json.mapKeys(doc: json, rename: func(str) -> str, deep: bool = true) -> json
+
+# lamstrings (also str methods: s.camelCase())
+Strings.camelCase(s: str) -> str
+Strings.pascalCase(s: str) -> str
+Strings.snakeCase(s: str) -> str
+Strings.kebabCase(s: str) -> str
+
+# lamurl
+Url.encodeComponent(s: str) -> str
+Url.decodeComponent(s: str) -> Result[str]
+Url.encodePath(s: str) -> str
+Url.encodePathSegment(s: str) -> str
+Url.encodeUserInfo(s: str) -> str
+Url.query(params: dict[str, list[str]]) -> str
+Url.query(params: dict[str, str]) -> str
+Url.query(pairs: list[list[str]]) -> str
+Url.parseQuery(s: str) -> Result[dict[str, list[str]]]
+
+# lamconv / lamfmt / lamdatetime / lamcsv
+Conv.parseFinite(s: str) -> Result[float]
+Fmt.grouped(value: int, separator: str = ",", decimals: int = 0, decimalSeparator: str = ".") -> str
+Fmt.grouped(value: float, separator: str = ",", decimals: int = -1, decimalSeparator: str = ".") -> str
+DateTime.parseAny(value: str, layouts: list[str], location: str = "UTC") -> Result[DateTime]
+Csv.parseAll(content: str, delimiter: str = ",") -> Result[list[list[str]]]
+Csv.formatRow(fields: list[str], delimiter: str = ",") -> str
+Csv.formatAll(rows: list[list[str]], delimiter: str = ",") -> str
+
+# lamhttp (multipart)
+Multipart() -> Multipart
+form.field(name: str, value: str) -> Multipart
+form.file(name: str, filename: str, contentType: str, data: bytes) -> Multipart
+form.setBoundary(boundary: str) -> Multipart
+form.body() -> bytes
+form.contentType() -> str
+options.multipart(form: Multipart) -> HttpRequestOptions
+request.multipart(form: Multipart) -> HttpRequest
+
+# lamhtml (sanitizing)
+Html.sanitize(markup: str | html) -> html
+Html.sanitize(markup: str | html, policy: HtmlPolicy) -> html
+HtmlPolicy() / HtmlPolicy.basic() / HtmlPolicy.rich() -> HtmlPolicy
+policy.allowTags(tags: list[str]) / denyTags(tags: list[str]) -> HtmlPolicy
+policy.allowAttributes(tag: str, attributes: list[str]) -> HtmlPolicy
+policy.allowSchemes(schemes: list[str]) -> HtmlPolicy
+policy.allowRelativeUrls(allowed: bool = true) / allowDataImages(allowed: bool = true) -> HtmlPolicy
+policy.allowStyles(properties: list[str]) -> HtmlPolicy
 
 # lamcrypto (bcrypt)
 Crypto.bcryptHash(password: str, cost: int = 10) -> Result[str]

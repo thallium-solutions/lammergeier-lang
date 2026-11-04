@@ -1,0 +1,44 @@
+# Helper module for test_case_only_names_same_module.lam: names of ONE
+# module that differ only in the case of their first letter, between a
+# function / class / interface and a const / variable.
+
+const Languages: list[str] = ["en", "it"]
+
+func languages() -> list[str] {
+    return Languages + ["de"]
+}
+
+Point: int = 3
+
+const Regions: list[str] = ["eu"]
+
+class point {
+    func init(self, x: int) {
+        self.x: int = x
+    }
+}
+
+Shape: str = "S"
+
+interface shape {
+    func area(self) -> int
+}
+
+class Sq {
+    func init(self, side: int) {
+        self.side: int = side
+    }
+
+    func area(self) -> int {
+        return self.side * self.side
+    }
+}
+
+func describeModule() -> str {
+    s: shape = Sq(Point)
+    return f"{len(languages())}:{len(Languages)}:{point(Point).x}:{s.area()}:{Shape}"
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

@@ -806,7 +806,8 @@ class ExpressionVisitorMixin:
         "trimLeft": "string", "trimRight": "string", "replace": "string", "title": "string",
         "capitalize": "string", "reverse": "string", "center": "string", "zfill": "string",
         "padLeft": "string", "padRight": "string", "replaceFirst": "string", "indent": "string",
-        "dedent": "string", "format": "string",
+        "dedent": "string", "format": "string", "camelCase": "string", "pascalCase": "string",
+        "snakeCase": "string", "kebabCase": "string",
     }
 
     def _expr_go_type_hint_plain_field(self, node) -> str:
@@ -1043,7 +1044,11 @@ class ExpressionVisitorMixin:
                 return ""
             if name == "self" and self.current_class:
                 return f"*{self._go_class_name(self.current_class)}"
-            return self._var_go_types.get(name, "")
+            found = self._var_go_types.get(name, "")
+            if not found and name in self._link_const_go_names:
+                # A namespaced global (``Names`` emitted as ``Names__main``).
+                found = self._var_go_types.get(self._link_const_go_names[name], "")
+            return found
         if node.data == "funccall" and node.children:
             callee = node.children[0]
             if isinstance(callee, Tree) and callee.data == "var" and callee.children:
@@ -2668,6 +2673,10 @@ class ExpressionVisitorMixin:
             "isBlank":    lambda o, a: _strings_call("isBlank", o),
             "indent":     lambda o, a: _strings_call("indent", o, a[0]),
             "dedent":     lambda o, a: _strings_call("dedent", o),
+            "camelCase":  lambda o, a: _strings_call("camelCase", o),
+            "pascalCase": lambda o, a: _strings_call("pascalCase", o),
+            "snakeCase":  lambda o, a: _strings_call("snakeCase", o),
+            "kebabCase":  lambda o, a: _strings_call("kebabCase", o),
             # ``Strings.format`` is variadic so the ``args`` are
             # forwarded as-is. Empty ``a`` is fine — Sprintf with
             # no extras just returns the template untouched.
@@ -3183,14 +3192,22 @@ class ExpressionVisitorMixin:
             return f"/* go inline {block_id} not found */"
 
         # ── User-defined function ──
+        nested_key = self._nested_func_keys.get(func_str)
         if func_str in self._nested_generic_functions:
+            if nested_key:
+                # Defaults and keywords of the nested function.
+                args = self._planned_call_args(nested_key, args_node)
             return self._nested_generic_call_to_go(func_str, args)
 
-        if func_str in self._user_functions:
+        if func_str in self._user_functions and not (nested_key and func_str in self.declared_vars):
             return self._user_function_call_to_go(func_str, args, kwargs, args_node)
 
         # ── Local variable (lambda, etc.) ──
         if func_str in self.declared_vars:
+            if nested_key:
+                # ``pad(s)`` / ``pad(s, fill="0")`` of a nested
+                # ``func pad(s: str, width: int = 5, fill: str = ".")``.
+                return f"{func_str}({', '.join(self._planned_call_args(nested_key, args_node))})"
             return f"{func_str}({', '.join(self._func_value_call_args(func_str, args, kwargs, args_node))})"
 
         # ── Constructor ──

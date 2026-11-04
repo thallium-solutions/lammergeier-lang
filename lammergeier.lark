@@ -40,7 +40,7 @@ decorated: decorators (classdef | funcdef)
 // private async def helper(x: int) -> str:
 // def variadic(*args: int) -> int:
 
-funcdef: [PRIVATE] [STATIC_FUNC] [ASYNC] FUNC name [type_params] "(" [typed_parameters] ")" ["->" return_type] suite
+funcdef: [PRIVATE_FUNC] [STATIC_FUNC] [ASYNC] FUNC name [type_params] "(" [typed_parameters] ")" ["->" return_type] suite
 
 // Generic type parameters: ``foo[T, U: comparable](x: T) -> U``.
 // Constraints use ``:`` (not Go's implicit whitespace) so the grammar
@@ -51,6 +51,10 @@ type_param: name [":" type_constraint]
 type_constraint: dotted_name
 
 PRIVATE: "private"
+// ``private`` of a ``func`` is its own token: after ``x = 1;`` a plain
+// ``PRIVATE`` would start another small statement (``private x: int``) and
+// ``x = 1\nprivate func f()`` failed to parse.
+PRIVATE_FUNC.3: /private(?=[\t \f\r\n]+(?:static[\t \f\r\n]+)?(?:async[\t \f\r\n]+)?func\b)/
 STATIC_FUNC.3: /static(?=[\t \f\r\n]+(?:async[\t \f\r\n]+)?func\b)/
 STATIC: "static"
 ASYNC: "async"
@@ -438,7 +442,11 @@ _exprlist: test_or_star_expr ("," test_or_star_expr)* [","]
 arguments: argvalue ("," argvalue)* ("," [starargs | kwargs])?
          | starargs
          | kwargs
-         | comprehension{test}
+         | genexp_arg
+
+// ``any(x > 0 for x in xs)``: a generator expression as the only argument
+// is the list comprehension ``[x > 0 for x in xs]`` (evaluated eagerly).
+genexp_arg: comprehension{test} -> list_comprehension
 
 starargs: stararg ("," stararg)* ("," argvalue)* ["," kwargs]
 stararg: "*" test

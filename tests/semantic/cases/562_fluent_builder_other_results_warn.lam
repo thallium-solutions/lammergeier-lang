@@ -1,0 +1,51 @@
+# expect-warning: dropped return value of `b.count()`
+# expect-warning: dropped return value of `Builder.make()`
+# expect-warning: dropped `Result` from `b.check()`
+# expect-warning: dropped return value of `q.size()`
+# expect-warning: dropped return value of `b.other()`
+# expect-no-warning: dropped return value of `b.add()`
+# Only builder steps (an instance method returning the receiver's class)
+# are quiet: other results, static factories and `Result`s still warn.
+from lamerrors import Result
+from fluent_builder_helper import Query
+
+class Other {
+}
+
+class Builder {
+    func init(self) {
+        self.n: int = 0
+    }
+
+    func add(self) -> Builder {
+        self.n += 1
+        return self
+    }
+
+    func count(self) -> int {
+        return self.n
+    }
+
+    func check(self) -> Result[Builder] {
+        return Result.Ok(self)
+    }
+
+    func other(self) -> Other {
+        return Other()
+    }
+
+    static func make() -> Builder {
+        return Builder()
+    }
+}
+
+func main() {
+    b: Builder = Builder()
+    b.add()
+    b.count()
+    Builder.make()
+    b.check()
+    b.other()
+    q: Query = Query()
+    q.size()
+}

@@ -141,6 +141,7 @@ _TOKEN_LABELS: dict[str, str] = {
     "STAR": "`*`",
     "STATIC": "`static`",
     "STATIC_FUNC": "`static func`",
+    "PRIVATE_FUNC": "`private func`",
     "STRING": "a string literal",
     "THROW": "`throw`",
     "TRUE": "`True`",

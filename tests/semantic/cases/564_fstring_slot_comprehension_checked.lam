@@ -1,0 +1,19 @@
+# expect-error: undefined name `all` in f-string; Lam has no `all()` builtin, use the list method `xs.all(lambda x: x > 0)`
+# expect-error: undefined name `any` in f-string; Lam has no `any()` builtin
+# expect-error: undefined name `sum` in f-string; Lam has no `sum()` builtin, use `xs.reduce(lambda a, b: a + b, 0)`
+# expect-error: undefined name `all`; Lam has no `all()` builtin
+# expect-error: undefined name `missing` in f-string
+# expect-error: undefined name `y` in f-string
+# expect-error: `list[int]` has no method `allOf`
+# F-string slots holding comprehensions, generator arguments and lambdas
+# are checked like other expressions instead of reaching Go.
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    print(f"{all(x > 0 for x in xs)} {any([x > 2 for x in xs])} {sum(x for x in xs)}")
+    ok: bool = all(x > 0 for x in xs)
+    print(ok)
+    print(f"{xs.map(lambda v: v + missing)}")
+    print(f"{[y for y in xs]} {y}")
+    print(f"{xs.allOf(lambda v: v > 0)}")
+}

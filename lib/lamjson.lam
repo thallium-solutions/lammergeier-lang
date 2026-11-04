@@ -5,6 +5,16 @@
 # arrays, string-keyed objects, nested json values, and class instances that
 # implement ``func __json__(self) -> json``. Fallible public operations return
 # ``Result`` so callers can handle malformed input without panics or sentinels.
+#
+# Typed member reads are tolerant: ``Json.getStr(doc, "name")``,
+# ``getInt``, ``getFloat``, ``getBool`` return the member when it has the
+# requested kind and ``fallback`` otherwise (a missing member, null, another
+# kind, or a ``doc`` that is not an object). ``getInt`` takes integers and
+# floats with an integral value (``3.0``; not ``3.5``), ``getFloat`` any
+# number; strings are never converted (``Conv.parse`` them). ``Json.has``
+# tells a member set to null from a missing one, ``Json.at(doc, ["user",
+# "tags", 0])`` follows a path, and ``Json.mapKeys(doc, Strings.camelCase)``
+# renames object keys.
 
 from lamerrors import Result, Error
 
@@ -16,6 +26,7 @@ go! {
         "io"
         "math"
         "reflect"
+        "sort"
         "strconv"
         "strings"
     )
@@ -28,10 +39,23 @@ go! {
         LamJSON() LamJSON
     }
 
+    // lamDynamicValue: the most-derived object of a class instance viewed
+    // as one of its bases (the compiler's ``_lamDyn``), so ``json(p)`` of a
+    // ``p: Base`` holding a subclass runs the subclass's ``__json__``.
+    func lamDynamicValue(value interface{}) interface{} {
+        if d, ok := value.(interface{ _lamDyn() interface{} }); ok {
+            if actual := d._lamDyn(); actual != nil {
+                return actual
+            }
+        }
+        return value
+    }
+
     func lamJSONNormalize(value interface{}, depth int) (interface{}, error) {
         if depth > 256 {
             return nil, fmt.Errorf("json nesting exceeds 256 levels or contains a cycle")
         }
+        value = lamDynamicValue(value)
         switch v := value.(type) {
         case LamJSON:
             return lamJSONNormalize(v.value, depth+1)
@@ -355,6 +379,131 @@ go! {
         if err != nil { return "null" }
         return string(data)
     }
+
+    // ── Typed member reads (Json.has / getStr / getInt / ...) ─────────
+
+    // lamJSONMember is the member ``key`` of an object; found is false for
+    // a missing member and for anything that is not an object.
+    func lamJSONMember(doc LamJSON, key string) (interface{}, bool) {
+        members, ok := doc.value.(map[string]interface{})
+        if !ok { return nil, false }
+        value, found := members[key]
+        return value, found
+    }
+
+    // lamJSONAsInt reads a JSON number as an int: integers that fit, and
+    // floats with an integral value inside the int64 range (``3.0``).
+    func lamJSONAsInt(value interface{}) (int, bool) {
+        switch v := value.(type) {
+        case int: return v, true
+        case int8: return int(v), true
+        case int16: return int(v), true
+        case int32: return int(v), true
+        case int64: return int(v), true
+        case uint: if uint64(v) <= math.MaxInt64 { return int(v), true }
+        case uint8: return int(v), true
+        case uint16: return int(v), true
+        case uint32: return int(v), true
+        case uint64: if v <= math.MaxInt64 { return int(v), true }
+        case float32: return lamJSONIntegralFloat(float64(v))
+        case float64: return lamJSONIntegralFloat(v)
+        }
+        return 0, false
+    }
+
+    func lamJSONIntegralFloat(f float64) (int, bool) {
+        if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) { return 0, false }
+        if f < -9.223372036854775808e18 || f >= 9.223372036854775807e18 { return 0, false }
+        return int(f), true
+    }
+
+    func lamJSONAsFloat(value interface{}) (float64, bool) {
+        switch v := value.(type) {
+        case int: return float64(v), true
+        case int8: return float64(v), true
+        case int16: return float64(v), true
+        case int32: return float64(v), true
+        case int64: return float64(v), true
+        case uint: return float64(v), true
+        case uint8: return float64(v), true
+        case uint16: return float64(v), true
+        case uint32: return float64(v), true
+        case uint64: return float64(v), true
+        case float32: return float64(v), true
+        case float64: return v, true
+        }
+        return 0, false
+    }
+
+    // lamJSONAt follows a path of object keys (str) and array indexes (int,
+    // negative from the end); anything missing on the way is null.
+    func lamJSONAt(doc LamJSON, path []interface{}) LamJSON {
+        current := doc.value
+        for _, step := range path {
+            switch node := current.(type) {
+            case map[string]interface{}:
+                key, ok := step.(string)
+                if !ok { return LamJSON{value: nil} }
+                current = node[key]
+            case []interface{}:
+                index, ok := lamJSONIndex(step)
+                if !ok { return LamJSON{value: nil} }
+                if index < 0 { index += len(node) }
+                if index < 0 || index >= len(node) { return LamJSON{value: nil} }
+                current = node[index]
+            default:
+                return LamJSON{value: nil}
+            }
+        }
+        return LamJSON{value: current}
+    }
+
+    // lamJSONCopy deep-copies objects and arrays (scalars are immutable).
+    func lamJSONCopy(value interface{}) interface{} {
+        switch v := value.(type) {
+        case map[string]interface{}:
+            out := make(map[string]interface{}, len(v))
+            for key, item := range v { out[key] = lamJSONCopy(item) }
+            return out
+        case []interface{}:
+            out := make([]interface{}, len(v))
+            for i, item := range v { out[i] = lamJSONCopy(item) }
+            return out
+        }
+        return value
+    }
+
+    // lamJSONMapKeys renames object keys with rename, in sorted key order so
+    // a collision keeps the value of the greatest original key.
+    func lamJSONMapKeys(value interface{}, rename func(string) string, deep bool, depth int) interface{} {
+        if depth > 256 { panic("json nesting exceeds 256 levels") }
+        switch v := value.(type) {
+        case map[string]interface{}:
+            keys := make([]string, 0, len(v))
+            for key := range v { keys = append(keys, key) }
+            sort.Strings(keys)
+            out := make(map[string]interface{}, len(v))
+            for _, key := range keys {
+                if deep {
+                    out[rename(key)] = lamJSONMapKeys(v[key], rename, true, depth+1)
+                } else {
+                    out[rename(key)] = lamJSONCopy(v[key])
+                }
+            }
+            return out
+        case []interface{}:
+            out := make([]interface{}, len(v))
+            for i, item := range v {
+                if deep {
+                    out[i] = lamJSONMapKeys(item, rename, true, depth+1)
+                } else {
+                    out[i] = lamJSONCopy(item)
+                }
+            }
+            return out
+        }
+        return value
+    }
 }
 
 class Json {
@@ -463,6 +612,134 @@ class Json {
             _, err := lamJSONParse(s)
             return err == nil
         }
+    }
+
+    static func has(doc: json, key: str) -> bool {
+        #- True when ``doc`` is an object with the member ``key``, even when
+           the member is null. -#
+        found: bool = false
+        go! {
+            _, found = lamJSONMember(doc, key)
+        }
+        return found
+    }
+
+    static func getStr(doc: json, key: str, fallback: str = "") -> str {
+        #- The string member ``key``; ``fallback`` when it is missing, null or
+           not a string, or when ``doc`` is not an object. -#
+        out: str = fallback
+        go! {
+            if member, found := lamJSONMember(doc, key); found {
+                if text, ok := member.(string); ok {
+                    out = text
+                }
+            }
+        }
+        return out
+    }
+
+    static func getInt(doc: json, key: str, fallback: int = 0) -> int {
+        #- The number member ``key`` as an ``int``: an integer, or a float
+           with an integral value (``3.0``) inside the int range. A fraction
+           (``3.5``), any other kind, null or a missing member is
+           ``fallback``. -#
+        out: int = fallback
+        go! {
+            if member, found := lamJSONMember(doc, key); found {
+                if n, ok := lamJSONAsInt(member); ok {
+                    out = n
+                }
+            }
+        }
+        return out
+    }
+
+    static func getFloat(doc: json, key: str, fallback: float = 0.0) -> float {
+        #- The number member ``key`` (integer or float) as a ``float``;
+           ``fallback`` for any other kind, null or a missing member. -#
+        out: float = fallback
+        go! {
+            if member, found := lamJSONMember(doc, key); found {
+                if f, ok := lamJSONAsFloat(member); ok {
+                    out = f
+                }
+            }
+        }
+        return out
+    }
+
+    static func getBool(doc: json, key: str, fallback: bool = false) -> bool {
+        #- The boolean member ``key``; ``fallback`` for any other kind (the
+           string ``"true"`` included), null or a missing member. -#
+        out: bool = fallback
+        go! {
+            if member, found := lamJSONMember(doc, key); found {
+                if flag, ok := member.(bool); ok {
+                    out = flag
+                }
+            }
+        }
+        return out
+    }
+
+    static func getList(doc: json, key: str) -> list[json] {
+        #- The elements of the array member ``key``; ``[]`` when it is
+           missing, null or not an array. The elements are the document's
+           own values (changing an object element changes ``doc``). -#
+        out: list[json] = []
+        go! {
+            if member, found := lamJSONMember(doc, key); found {
+                if items, ok := member.([]interface{}); ok {
+                    for _, item := range items {
+                        out = append(out, LamJSON{value: item})
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    static func getObject(doc: json, key: str) -> json {
+        #- The object member ``key`` (the document's own object), or a new
+           empty object when it is missing, null or not an object, so reads
+           chain: ``Json.getStr(Json.getObject(doc, "user"), "name")``. -#
+        out: json = {}
+        go! {
+            if member, found := lamJSONMember(doc, key); found {
+                if _, ok := member.(map[string]interface{}); ok {
+                    out = LamJSON{value: member}
+                }
+            }
+        }
+        return out
+    }
+
+    static func at(doc: json, path: list[any]) -> json {
+        #- The value at ``path``: ``str`` steps read object members, ``int``
+           steps array elements (negative from the end). A missing member,
+           an index out of range, a step of the wrong type or a scalar on the
+           way gives null: ``Json.at(doc, ["orders", -1, "id"])``. -#
+        out: json = None
+        go! {
+            out = lamJSONAt(doc, path)
+        }
+        return out
+    }
+
+    static func mapKeys(doc: json, rename: func(str) -> str, deep: bool = true) -> json {
+        #- A copy of ``doc`` with every object key replaced by
+           ``rename(key)``: ``Json.mapKeys(doc, Strings.camelCase)``. With
+           ``deep`` (the default) the keys of nested objects, also inside
+           arrays, are renamed too; ``deep=false`` renames only the keys of
+           ``doc`` itself when it is an object. Keys are renamed in sorted
+           order, so when two keys get the same name the value of the later
+           one wins. Values are copied: changing the result never changes
+           ``doc``. -#
+        out: json = None
+        go! {
+            out = LamJSON{value: lamJSONMapKeys(doc.value, rename, deep, 0)}
+        }
+        return out
     }
 }
 

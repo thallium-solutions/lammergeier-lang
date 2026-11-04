@@ -1,0 +1,88 @@
+# expect: semicolon name;price;note|"Borsa; pelle";1.200,50;ok|"a""b";" lead";|;x;"line1
+# expect: roundtrip true 4
+# expect: tab a,b	c|"x	y"	z
+# expect: comma "a,b",c
+# expect: unicode a§b§"c§d"
+# expect: parse-semicolon [id name] [1 Ada; Lovelace] [2 Bob]
+# expect: parse-comma-default 1
+# expect: crlf 2 [a b]
+# expect: invalid-delimiter "ab" true
+# expect: invalid-delimiter "\"" true
+# expect: invalid-delimiter "\n" true
+# expect: invalid-delimiter "" true
+# expect: ragged CsvParseError
+# expect: file 3 Café;3,5
+# expect: batches 2 1
+# expect: export id;product;price|1;Borsa;1.200,50|2;"Scarpe; tacco";89,90
+# lamcsv delimiters: formatting and parsing with ';', tab and a non-ASCII
+# rune, RFC 4180 quoting (delimiter, quotes, leading space, line breaks),
+# CRLF input, invalid delimiters thrown, ragged records reported, the file
+# readers (parseFile, rows, batches) and an export of typed records.
+from lamcsv import Csv
+from lamfmt import Fmt
+from lamos import Os
+from lamerrors import Result
+
+class Product {
+    func init(self, id: int, name: str, price: float) {
+        self.id: int = id
+        self.name: str = name
+        self.price: float = price
+    }
+
+    func fields(self) -> list[str] {
+        return [str(self.id), self.name, Fmt.grouped(self.price, ".", 2, ",")]
+    }
+}
+
+func resultBatch(result: Result) -> list[list[str]] {
+    go! { return result.Value.([][]string) }
+}
+
+func export(products: list[Product]) -> str {
+    rows: list[list[str]] = [["id", "product", "price"]]
+    for p in products {
+        rows.append(p.fields())
+    }
+    return Csv.formatAll(rows, ";")
+}
+
+func main() {
+    rows: list[list[str]] = [["name", "price", "note"], ["Borsa; pelle", "1.200,50", "ok"], ["a\"b", " lead", ""], ["", "x", "line1\nline2"]]
+    out: str = Csv.formatAll(rows, ";")
+    print(f"semicolon {out.replace('\n', '|')}".split("|line2")[0])
+    back: list[list[str]] = Csv.parseAll(out, ";").unwrap()
+    print(f"roundtrip {back == rows} {len(back)}")
+    print(f"tab {Csv.formatRow(['a,b', 'c'], '\t')}|{Csv.formatRow(['x\ty', 'z'], '\t')}")
+    print(f"comma {Csv.formatRow(['a,b', 'c'])}")
+    print(f"unicode {Csv.formatRow(['a', 'b', 'c§d'], '§')}")
+    parsed: list[list[str]] = Csv.parseAll("id;name\n1;\"Ada; Lovelace\"\n2;Bob\n", ";").unwrap()
+    print(f"parse-semicolon {parsed[0]} {parsed[1]} {parsed[2]}")
+    print(f"parse-comma-default {len(Csv.parseAll('a;b\n').unwrap()[0])}")
+    crlf: list[list[str]] = Csv.parseAll("a;b\r\nc;d\r\n", ";").unwrap()
+    print(f"crlf {len(crlf)} {crlf[0]}")
+    for bad in ["ab", "\"", "\n", ""] {
+        try {
+            _ = Csv.formatRow(["x"], bad)
+            print("invalid-delimiter accepted")
+        } catch e {
+            print(f"invalid-delimiter {Fmt.repr(bad)} {str(e).startsWith('CsvDelimiterError')}")
+        }
+    }
+    ragged: Result[list[list[str]]] = Csv.parseAll("a;b\nc\n", ";")
+    print(f"ragged {ragged.error.kind}")
+
+    path: str = Os.tempDir() + "/lam_csv_delimiter_test.csv"
+    Os.writeFile(path, "name;rating\nCafé;3,5\nBar;4\n").unwrap()
+    all: list[list[str]] = Csv.parseFile(path, ";").unwrap()
+    print(f"file {len(all)} {';'.join(all[1])}")
+    sizes: list[int] = []
+    for batch in Csv.batches(path, 2, ";") {
+        rowsOfBatch: list[list[str]] = resultBatch(batch)
+        sizes.append(len(rowsOfBatch))
+    }
+    print(f"batches {sizes[0]} {sizes[1]}")
+    Os.remove(path).unwrap()
+
+    print(f"export {export([Product(1, 'Borsa', 1200.5), Product(2, 'Scarpe; tacco', 89.9)]).trim().replace('\n', '|')}")
+}

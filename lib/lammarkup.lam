@@ -688,6 +688,9 @@ go! {
     }
 
     func lamMDeref(v interface{}) interface{} {
+        // A class instance viewed as a base: its most-derived object, whose
+        // ``__html__`` / ``__xml__`` / ``__str__`` apply.
+        v = lamDynamicValue(v)
         rv := reflect.ValueOf(v)
         for rv.IsValid() && rv.Kind() == reflect.Ptr {
             if rv.IsNil() {

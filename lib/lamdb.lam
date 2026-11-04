@@ -15,7 +15,7 @@
 #
 # Quick start::
 #
-#     from lamdb import Db, QueryBuilder
+#     from lamdb import Db, QueryBuilder, Row, Where
 #
 #     db: Db = Db.connect("sqlite", ":memory:")?
 #     _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?
@@ -54,8 +54,17 @@
 # ``None``. The static ``Row`` helpers read them typed — ``Row.int(row,
 # "id")``, ``Row.str``, ``Row.float``, ``Row.bool``, ``Row.unix`` /
 # ``Row.time`` (a ``DateTime``), ``Row.optionalStr`` & co. for nullable
-# columns, ``Row.strList`` for PostgreSQL ``text[]`` — and
+# columns, ``Row.strList`` for PostgreSQL ``text[]``, ``Row.timeText`` for a
+# timestamp in a Go layout (whole seconds by default) — and
 # ``Db.textArray(values)`` writes a ``text[]`` parameter (``?::text[]``).
+#
+# Failures keep the driver's error as their ``Error.cause``:
+# ``Db.sqlState(result)`` reads its SQLSTATE (SQLite and MySQL constraint
+# codes mapped to the standard ones) and ``Db.isUniqueViolation`` /
+# ``Db.isForeignKeyViolation`` test for ``23505`` / ``23503`` without
+# matching messages. ``Where`` builds the WHERE clause of hand-written SQL
+# with its parameters in order (``add``, ``addIf``, ``addIn``, escaped
+# ``ilikeAny`` / ``likeAny`` searches).
 
 from lamerrors import Result, Error
 from lamdatetime import DateTime
@@ -72,9 +81,9 @@ go! {
         "sync"
         "time"
 
-        _ "github.com/lib/pq"
-        _ "github.com/go-sql-driver/mysql"
-        _ "modernc.org/sqlite"
+        lamMysql "github.com/go-sql-driver/mysql"
+        lamPq "github.com/lib/pq"
+        lamSqlite "modernc.org/sqlite"
     )
 
     // ─── Driver normalisation ─────────────────────────────────
@@ -188,6 +197,86 @@ go! {
         }
         return false
     }
+
+    // ─── Driver error codes (``Db.sqlState``) ─────────────────
+    // Driver failures keep the driver's error as the ``Error.cause``; these
+    // helpers find it behind a failed ``Result`` / ``Error`` chain and read
+    // its code, never its message.
+    func lamDbDriverCause(value interface{}, depth int) error {
+        if depth > 32 {
+            return nil
+        }
+        switch typed := value.(type) {
+        case nil:
+            return nil
+        case *Result:
+            if typed == nil {
+                return nil
+            }
+            return lamDbDriverCause(typed.Error, depth+1)
+        case *Error:
+            if typed == nil {
+                return nil
+            }
+            return lamDbDriverCause(typed.Cause, depth+1)
+        case error:
+            return typed
+        }
+        return nil
+    }
+
+    // lamDbSQLState is the SQLSTATE of a driver error: PostgreSQL's own
+    // code, MySQL's error number mapped to the standard class 23 codes where
+    // MySQL reports only ``23000``, and SQLite's extended result code mapped
+    // the same way (``23505`` unique, ``23503`` foreign key, ``23502`` not
+    // null, ``23514`` check, ``23000`` other constraints).
+    func lamDbSQLState(value interface{}) string {
+        err := lamDbDriverCause(value, 0)
+        if err == nil {
+            return ""
+        }
+        var pqErr *lamPq.Error
+        if errors.As(err, &pqErr) {
+            return string(pqErr.Code)
+        }
+        var sqliteErr *lamSqlite.Error
+        if errors.As(err, &sqliteErr) {
+            code := sqliteErr.Code()
+            switch code {
+            case 2067, 1555, 2579: // SQLITE_CONSTRAINT_UNIQUE, _PRIMARYKEY, _ROWID
+                return "23505"
+            case 787: // SQLITE_CONSTRAINT_FOREIGNKEY
+                return "23503"
+            case 1299: // SQLITE_CONSTRAINT_NOTNULL
+                return "23502"
+            case 275: // SQLITE_CONSTRAINT_CHECK
+                return "23514"
+            }
+            if code&0xff == 19 { // SQLITE_CONSTRAINT and its other extended codes
+                return "23000"
+            }
+            return ""
+        }
+        var mysqlErr *lamMysql.MySQLError
+        if errors.As(err, &mysqlErr) {
+            switch mysqlErr.Number {
+            case 1062, 1169, 1586: // ER_DUP_ENTRY, ER_DUP_UNIQUE, ER_DUP_ENTRY_WITH_KEY_NAME
+                return "23505"
+            case 1216, 1217, 1451, 1452, 1701: // foreign key failures
+                return "23503"
+            case 1048, 1364: // ER_BAD_NULL_ERROR, ER_NO_DEFAULT_FOR_FIELD
+                return "23502"
+            case 3819: // ER_CHECK_CONSTRAINT_VIOLATED
+                return "23514"
+            }
+            state := string(mysqlErr.SQLState[:])
+            if strings.Trim(state, "\x00") == "" {
+                return ""
+            }
+            return state
+        }
+        return ""
+    }
 }
 
 class Db {
@@ -249,6 +338,37 @@ class Db {
         return Result.Ok(out)
     }
 
+    static func sqlState(err: any) -> str {
+        #- The SQLSTATE code of a database failure — a failed ``Result``, its
+           ``Error`` or a driver error — read from the driver's error code
+           (never its message): PostgreSQL's code as it is (``"23505"``,
+           ``"40001"``...); MySQL and SQLite constraint failures mapped to
+           ``"23505"`` (unique / primary key), ``"23503"`` (foreign key),
+           ``"23502"`` (not null), ``"23514"`` (check) or ``"23000"``, other
+           MySQL errors their own SQLSTATE. ``""`` when there is no driver
+           error (a success, a connection that was never made, a value that
+           is not an error). -#
+        out: str = ""
+        go! {
+            out = lamDbSQLState(err)
+        }
+        return out
+    }
+
+    static func isUniqueViolation(err: any) -> bool {
+        #- True when ``err`` (a failed ``Result``, its ``Error`` or a driver
+           error) is a unique or primary-key constraint violation (SQLSTATE
+           ``23505``): ``if Db.isUniqueViolation(inserted) { ... }``. -#
+        return Db.sqlState(err) == "23505"
+    }
+
+    static func isForeignKeyViolation(err: any) -> bool {
+        #- True when ``err`` is a foreign-key constraint violation (SQLSTATE
+           ``23503``; SQLite reports them only with ``PRAGMA foreign_keys =
+           ON``). -#
+        return Db.sqlState(err) == "23503"
+    }
+
     static func connect(driver: str, dsn: str) -> Result[Db] {
         #- Open and verify a pooled database connection. Driver resolution,
            open, and ping failures are returned as ``DbConnectError``. -#
@@ -256,7 +376,7 @@ class Db {
             d := lamDbResolveDriver(driver)
             handle, err := sql.Open(d, dsn)
             if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbConnectError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbConnectError", err.Error(), err))
             }
             handle.SetMaxOpenConns(25)
             handle.SetMaxIdleConns(5)
@@ -264,7 +384,7 @@ class Db {
             handle.SetConnMaxLifetime(30 * time.Minute)
             if err := handle.Ping(); err != nil {
                 handle.Close()
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbConnectError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbConnectError", err.Error(), err))
             }
             db := &Db{Driver: d, Dsn: dsn, Handle: handle, MaxRetries: 3, RetryBaseMs: 50}
             return LAMMERGEIER.Result.Ok(db)
@@ -310,7 +430,7 @@ class Db {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbCloseError", "database is not connected", nil))
             }
             if err := h.Close(); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbCloseError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbCloseError", err.Error(), err))
             }
             return LAMMERGEIER.Result.Ok(true)
         }
@@ -323,7 +443,7 @@ class Db {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbPingError", "database is not connected", nil))
             }
             if err := h.Ping(); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbPingError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbPingError", err.Error(), err))
             }
             return LAMMERGEIER.Result.Ok(true)
         }
@@ -370,7 +490,7 @@ class Db {
                 time.Sleep(time.Duration(self.RetryBaseMs<<k) * time.Millisecond)
             }
             if lastErr != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", lastErr.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", lastErr.Error(), lastErr))
             }
             return LAMMERGEIER.Result.Ok(int(affected))
         }
@@ -433,7 +553,7 @@ class Db {
             if lastErr == nil {
                 lastErr = fmt.Errorf("query failed without a driver error")
             }
-            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", lastErr.Error(), nil))
+            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", lastErr.Error(), lastErr))
         }
     }
 
@@ -448,7 +568,7 @@ class Db {
                     if !ok || raw == nil {
                         parsed, err := lamJSONFrom(nil)
                         if err != nil {
-                            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), nil))
+                            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), err))
                         }
                         row[column] = parsed
                         continue
@@ -461,7 +581,7 @@ class Db {
                     default:
                         parsed, err := lamJSONFrom(value)
                         if err != nil {
-                            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), nil))
+                            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), err))
                         }
                         row[column] = parsed
                         continue
@@ -502,7 +622,7 @@ class Db {
             default: value, err = lamJSONFrom(typed)
             }
             if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), err))
             }
             return LAMMERGEIER.Result.Ok(value)
         }
@@ -550,7 +670,7 @@ class Db {
             }
             tx, err := handle.Begin()
             if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
             }
             txObj := &Tx{Conn: tx, Driver: self.Driver, RolledBack: false, Committed: false}
             defer func() {
@@ -586,7 +706,7 @@ class Db {
                 return LAMMERGEIER.Result.Ok(true)
             }
             if err := tx.Commit(); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
             }
             txObj.Committed = true
             return LAMMERGEIER.Result.Ok(true)
@@ -603,7 +723,7 @@ class Db {
             }
             tx, err := handle.Begin()
             if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
             }
             txObj := &Tx{Conn: tx, Driver: self.Driver, RolledBack: false, Committed: false}
             return LAMMERGEIER.Result.Ok(txObj)
@@ -717,6 +837,27 @@ class Row {
         return DateTime(nanos, "UTC")
     }
 
+    static func timeText(row: dict[str, any], key: str, layout: str = "2006-01-02T15:04:05Z07:00", location: str = "UTC", fallback: str = "") -> str {
+        #- A date/time column written with a Go ``layout`` in ``location``:
+           by default RFC 3339 in whole seconds, UTC (``2026-11-03T19:05:00Z``,
+           where ``Row.str`` keeps the fractional seconds). Timestamp texts
+           are parsed as for ``Row.unix``; NULL, a missing column or a value
+           that is not a time is ``fallback``. An unknown ``location`` throws
+           a ``LocationError``. -#
+        value: any = row[key] if key in row else None
+        out: str = fallback
+        go! {
+            loc, err := lamDateTimeLocation(location)
+            if err != nil {
+                panic(fmt.Sprintf("LocationError: Row.timeText %s: %v", location, err))
+            }
+            if when, ok := lamDbRowTime(value); ok {
+                out = when.In(loc).Format(layout)
+            }
+        }
+        return out
+    }
+
     static func optionalStr(row: dict[str, any], key: str) -> optional[str] {
         #- ``Row.str``, or ``None`` for NULL or a missing column. -#
         if Row.isNull(row, key) {
@@ -806,6 +947,141 @@ class Row {
     }
 }
 
+class Where {
+    #- A WHERE clause for hand-written SQL, built condition by condition with
+       its ``?`` parameters in order:
+
+           w: Where = Where().add("shop_id = ?", [shopId]).addIf(onlyActive, "disabled = ?", [false])
+           _ = w.ilikeAny(["title", "brand"], search)
+           rows = db.query(f"SELECT * FROM products {w.sql()} LIMIT ?", w.paramsWith([20]))?
+
+       Conditions are joined with ``AND``, each in parentheses, so a
+       condition holding ``OR`` keeps its meaning, also when more SQL follows
+       (``w.sql() + " AND visible"``). A ``Where`` with no conditions renders
+       as ``""``. Column names and SQL
+       fragments are inserted as written: never build them from user input;
+       values always go through parameters. -#
+
+    func init(self) {
+        self.clauses: list[str] = []
+        self.values: list[any] = []
+    }
+
+    func add(self, clause: str, params: list[any] = []) -> Where {
+        #- Adds ``clause`` (with its ``?`` placeholders) and its ``params``. -#
+        self.clauses.append(clause)
+        for value in params {
+            self.values.append(value)
+        }
+        return self
+    }
+
+    func addIf(self, condition: bool, clause: str, params: list[any] = []) -> Where {
+        #- ``add`` when ``condition`` is true (optional filters). -#
+        if condition {
+            self.add(clause, params)
+        }
+        return self
+    }
+
+    func addIn(self, column: str, values: list[any]) -> Where {
+        #- ``column IN (?, ?, ...)`` over ``values``; an empty list matches
+           no row (``1 = 0``). -#
+        if len(values) == 0 {
+            return self.add("1 = 0")
+        }
+        marks: list[str] = ["?" for _ in values]
+        return self.add(f"{column} IN ({', '.join(marks)})", values)
+    }
+
+    func ilikeAny(self, columns: list[str], text: str, match: str = "contains") -> Where {
+        #- PostgreSQL: ``CAST(a AS TEXT) ILIKE ? ESCAPE '!' OR ...`` over
+           ``columns`` for ``text`` (trimmed; nothing is added when it is
+           empty): the rows where any column contains it, case-insensitively.
+           ``%`` and ``_`` typed by the user match themselves
+           (``Where.likePattern``); ``match`` is ``"contains"``,
+           ``"prefix"``, ``"suffix"`` or ``"exact"``. -#
+        return self._likeAny(columns, text, match, "CAST({column} AS TEXT) ILIKE ? ESCAPE '!'")
+    }
+
+    func likeAny(self, columns: list[str], text: str, match: str = "contains") -> Where {
+        #- ``a LIKE ? ESCAPE '!' OR ...``: ``ilikeAny`` for every driver (case
+           sensitivity is the database's: SQLite and MySQL's default
+           collations ignore ASCII case, PostgreSQL does not). -#
+        return self._likeAny(columns, text, match, "{column} LIKE ? ESCAPE '!'")
+    }
+
+    func _likeAny(self, columns: list[str], text: str, match: str, shape: str) -> Where {
+        needle: str = text.trim()
+        if needle == "" or len(columns) == 0 {
+            return self
+        }
+        pattern: str = Where.likePattern(needle, match, "!")
+        parts: list[str] = [shape.replace("{column}", column) for column in columns]
+        values: list[any] = [pattern for _ in columns]
+        return self.add(" OR ".join(parts), values)
+    }
+
+    func sql(self, prefix: str = "WHERE") -> str {
+        #- ``"WHERE (a = ?) AND (b = ?)"`` (``prefix`` first, ``""`` leaves it
+           out: ``"AND " + w.sql("")``); ``""`` when there is no condition. -#
+        if len(self.clauses) == 0 {
+            return ""
+        }
+        body: str = " AND ".join([f"({clause})" for clause in self.clauses])
+        if prefix == "" {
+            return body
+        }
+        return f"{prefix} {body}"
+    }
+
+    func params(self) -> list[any] {
+        #- The parameters of the conditions, in order (a copy). -#
+        return [value for value in self.values]
+    }
+
+    func paramsWith(self, extra: list[any]) -> list[any] {
+        #- The parameters followed by ``extra`` (``LIMIT ? OFFSET ?``). -#
+        out: list[any] = self.params()
+        for value in extra {
+            out.append(value)
+        }
+        return out
+    }
+
+    func isEmpty(self) -> bool {
+        return len(self.clauses) == 0
+    }
+
+    static func likePattern(text: str, match: str = "contains", escape: str = "\\") -> str {
+        #- A LIKE / ILIKE pattern matching ``text`` literally: ``escape``,
+           ``%`` and ``_`` in ``text`` are escaped with ``escape`` (the
+           default backslash is PostgreSQL's and MySQL's default escape
+           character; SQLite needs an explicit ``ESCAPE '\'``). ``match``:
+           ``"contains"`` (``%text%``, the default), ``"prefix"``
+           (``text%``), ``"suffix"`` (``%text``) or ``"exact"``. Another
+           ``match``, or an ``escape`` that is not one ASCII character other
+           than ``%`` and ``_``, throws a ``ValueError``. -#
+        if len(escape) != 1 or escape == "%" or escape == "_" {
+            throw ValueError(f"Where.likePattern: escape must be one character other than % and _, got {escape}")
+        }
+        escaped: str = text.replace(escape, escape + escape).replace("%", escape + "%").replace("_", escape + "_")
+        if match == "contains" {
+            return f"%{escaped}%"
+        }
+        if match == "prefix" {
+            return f"{escaped}%"
+        }
+        if match == "suffix" {
+            return f"%{escaped}"
+        }
+        if match == "exact" {
+            return escaped
+        }
+        throw ValueError(f"Where.likePattern: match must be contains, prefix, suffix or exact, got {match}")
+    }
+}
+
 class Tx {
     #- Active transaction handle yielded by ``Db.transaction``. -#
 
@@ -827,11 +1103,11 @@ class Tx {
             for i, p := range params { args[i] = p }
             res, err := tx.Exec(q, args...)
             if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", err.Error(), err))
             }
             n, err := res.RowsAffected()
             if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", err.Error(), err))
             }
             return LAMMERGEIER.Result.Ok(int(n))
         }
@@ -848,12 +1124,12 @@ class Tx {
             for i, p := range params { args[i] = p }
             rows, err := tx.Query(q, args...)
             if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), err))
             }
             cols, err := rows.Columns()
             if err != nil {
                 rows.Close()
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), err))
             }
             out := []map[string]interface{}{}
             for rows.Next() {
@@ -874,7 +1150,7 @@ class Tx {
             if err == nil { err = rows.Err() }
             rows.Close()
             if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), err))
             }
             return LAMMERGEIER.Result.Ok(out)
         }
@@ -887,7 +1163,7 @@ class Tx {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
             }
             if err := tx.Rollback(); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
             }
             self.RolledBack = true
             return LAMMERGEIER.Result.Ok(true)
@@ -901,7 +1177,7 @@ class Tx {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
             }
             if err := tx.Commit(); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
             }
             self.Committed = true
             return LAMMERGEIER.Result.Ok(true)
@@ -919,7 +1195,7 @@ class Tx {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
             }
             if _, err := tx.Exec("SAVEPOINT " + savepointName); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
             }
             return LAMMERGEIER.Result.Ok(true)
         }
@@ -935,7 +1211,7 @@ class Tx {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
             }
             if _, err := tx.Exec("ROLLBACK TO SAVEPOINT " + savepointName); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
             }
             return LAMMERGEIER.Result.Ok(true)
         }
@@ -950,7 +1226,7 @@ class Tx {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
             }
             if _, err := tx.Exec("RELEASE SAVEPOINT " + savepointName); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), nil))
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
             }
             return LAMMERGEIER.Result.Ok(true)
         }

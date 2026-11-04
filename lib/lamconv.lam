@@ -7,13 +7,20 @@
 #     parsed: Result[int] = Conv.parse(s)
 #     n: int = parsed?
 #     fallback: int = parsed.unwrapOr(0)
+#
+# ``Conv.parse`` (float) follows Go's ``strconv.ParseFloat`` and accepts
+# ``"NaN"``, ``"Inf"`` and ``"-Infinity"``; ``Conv.parseFinite`` accepts the
+# same decimal (and hexadecimal) notations, without ``_`` separators, and
+# only finite values: numbers that come from users or files.
 
 from lamerrors import Result, Error
 
 go! {
     import (
         "fmt"
+        "math"
         "strconv"
+        "strings"
     )
 }
 
@@ -62,6 +69,35 @@ class Conv {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
                     "ParseError",
                     fmt.Sprintf("cannot parse %q as bool: %v", s, err),
+                    nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(v)
+        }
+    }
+
+    static func parseFinite(s: str) -> Result[float] {
+        #- Parse ``s`` as a finite 64-bit float: like ``Conv.parse`` (float),
+           but ``NaN`` and infinities (``"Inf"``, ``"-infinity"``, ``"1e400"``
+           overflowing) are a ``ParseError`` too, and so are the ``_`` digit
+           separators of Go literals (``"1_000"``). Surrounding spaces are not
+           allowed (``s.trim()`` first). -#
+        go! {
+            v, err := strconv.ParseFloat(s, 64)
+            if err == nil && strings.Contains(s, "_") {
+                err = fmt.Errorf("digit separators are not allowed")
+            }
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ParseError",
+                    fmt.Sprintf("cannot parse %q as float: %v", s, err),
+                    nil,
+                ))
+            }
+            if math.IsNaN(v) || math.IsInf(v, 0) {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "ParseError",
+                    fmt.Sprintf("cannot parse %q as a finite float", s),
                     nil,
                 ))
             }

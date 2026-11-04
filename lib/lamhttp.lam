@@ -5,6 +5,10 @@
 # and return ``Result[HttpResponse]``. ``Http.build`` / ``HttpClient.build``
 # expose the same core through a fluent request builder. All one-shot and
 # reusable-client verbs use the same transport-error convention.
+#
+# ``Multipart`` builds ``multipart/form-data`` bodies (form fields and file
+# uploads) for ``HttpRequestOptions.multipart`` / ``HttpRequest.multipart``,
+# or for any test that needs the raw body and its content type.
 
 from lamconv import Conv
 from lamerrors import Result, Error
@@ -12,6 +16,9 @@ from lamjson import Json
 
 go! {
     import (
+        "bytes"
+        "crypto/rand"
+        "encoding/hex"
         "fmt"
         "io"
         "net"
@@ -19,6 +26,24 @@ go! {
         "strings"
         "time"
     )
+
+    // Field names and file names are quoted as browsers do (WHATWG
+    // multipart/form-data): ``"`` -> %22, CR -> %0D, LF -> %0A, so a name
+    // can never end the header or add one.
+    var lamMultipartNameEscaper = strings.NewReplacer("\"", "%22", "\r", "%0D", "\n", "%0A")
+
+    func lamMultipartBoundaryValid(boundary string) bool {
+        if len(boundary) < 1 || len(boundary) > 70 || strings.HasSuffix(boundary, " ") {
+            return false
+        }
+        for _, c := range boundary {
+            ok := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.ContainsRune("'()+_,-./:=? ", c)
+            if !ok {
+                return false
+            }
+        }
+        return true
+    }
 }
 
 class HttpRequestOptions {
@@ -61,6 +86,19 @@ class HttpRequestOptions {
         #- An HTML body, sent as ``text/html; charset=utf-8``. -#
         self.body = str(value)
         self.contentType = "text/html; charset=utf-8"
+        return self
+    }
+
+    func multipart(self, form: Multipart) -> HttpRequestOptions {
+        #- A ``multipart/form-data`` body built by ``form`` (fields and
+           files, binary data kept as is) with its content type. -#
+        data: bytes = form.body()
+        text: str = ""
+        go! {
+            text = string(data)
+        }
+        self.body = text
+        self.contentType = form.contentType()
         return self
     }
 
@@ -424,6 +462,141 @@ class HttpResponse {
     }
 }
 
+class Multipart {
+    #- A ``multipart/form-data`` body (RFC 7578), as a browser sends a form
+       with file inputs:
+
+           form: Multipart = Multipart().field("title", "Jackie").file("photo", "bag.jpg", "image/jpeg", data)
+           res = client.request("POST", "/upload", HttpRequestOptions().multipart(form))?
+
+       Parts keep the order they were added in. The boundary is random (48
+       hex digits after ``lam-``) unless ``setBoundary`` fixes one (stable
+       bodies for tests). Names and file names are quoted as browsers quote
+       them (``"`` -> ``%22``, CR -> ``%0D``, LF -> ``%0A``); field values
+       and file data are sent as they are. -#
+
+    func init(self) {
+        self.boundary: str = ""
+        self.partNames: list[str] = []
+        self.partFileNames: list[str] = []
+        self.partTypes: list[str] = []
+        self.partFiles: list[bool] = []
+        self.partData: list[bytes] = []
+        generated: str = ""
+        go! {
+            random := make([]byte, 24)
+            if _, err := rand.Read(random); err != nil {
+                panic(fmt.Sprintf("MultipartError: cannot generate a boundary: %v", err))
+            }
+            generated = "lam-" + hex.EncodeToString(random)
+        }
+        self.boundary = generated
+    }
+
+    func field(self, name: str, value: str) -> Multipart {
+        #- Adds a form field. -#
+        data: bytes = []
+        go! {
+            data = []byte(value)
+        }
+        self.partNames.append(name)
+        self.partFileNames.append("")
+        self.partTypes.append("")
+        self.partFiles.append(false)
+        self.partData.append(data)
+        return self
+    }
+
+    func file(self, name: str, filename: str, contentType: str, data: bytes) -> Multipart {
+        #- Adds a file named ``filename`` under the field ``name``; an empty
+           ``contentType`` is ``application/octet-stream``. A content type
+           holding CR or LF throws a ``ValueError``. -#
+        if "\r" in contentType or "\n" in contentType {
+            throw ValueError("Multipart.file: the content type must not contain line breaks")
+        }
+        self.partNames.append(name)
+        self.partFileNames.append(filename)
+        self.partTypes.append(contentType if contentType != "" else "application/octet-stream")
+        self.partFiles.append(true)
+        self.partData.append(data)
+        return self
+    }
+
+    func setBoundary(self, boundary: str) -> Multipart {
+        #- Uses ``boundary`` instead of the random one: 1 to 70 characters
+           among letters, digits and ``'()+_,-./:=?`` and the space (not
+           last), else a ``ValueError`` is thrown. -#
+        valid: bool = false
+        go! {
+            valid = lamMultipartBoundaryValid(boundary)
+        }
+        if not valid {
+            throw ValueError(f"Multipart.setBoundary: invalid boundary {boundary}")
+        }
+        self.boundary = boundary
+        return self
+    }
+
+    func boundaryText(self) -> str {
+        #- The boundary separating the parts. -#
+        return self.boundary
+    }
+
+    func contentType(self) -> str {
+        #- ``multipart/form-data; boundary=...`` for the ``Content-Type``
+           header (the boundary quoted when it needs to be). -#
+        boundary: str = self.boundary
+        go! {
+            if strings.ContainsAny(boundary, "()<>@,;:\\\"/[]?= ") {
+                return "multipart/form-data; boundary=\"" + boundary + "\""
+            }
+            return "multipart/form-data; boundary=" + boundary
+        }
+    }
+
+    func partCount(self) -> int {
+        #- The number of parts. -#
+        return len(self.partNames)
+    }
+
+    func body(self) -> bytes {
+        #- The encoded body. A part whose data contains the boundary line
+           (only possible with a fixed boundary) throws a ``ValueError``. -#
+        boundary: str = self.boundary
+        names: list[str] = self.partNames
+        fileNames: list[str] = self.partFileNames
+        types: list[str] = self.partTypes
+        files: list[bool] = self.partFiles
+        payloads: list[bytes] = self.partData
+        out: bytes = []
+        clash: str = ""
+        go! {
+            var buf bytes.Buffer
+            delimiter := []byte("\r\n--" + boundary)
+            for i := range names {
+                if clash == "" && bytes.Contains(append([]byte("\r\n"), payloads[i]...), delimiter) {
+                    clash = names[i]
+                }
+                buf.WriteString("--" + boundary + "\r\n")
+                buf.WriteString("Content-Disposition: form-data; name=\"" + lamMultipartNameEscaper.Replace(names[i]) + "\"")
+                if files[i] {
+                    buf.WriteString("; filename=\"" + lamMultipartNameEscaper.Replace(fileNames[i]) + "\"\r\n")
+                    buf.WriteString("Content-Type: " + types[i])
+                }
+                buf.WriteString("\r\n\r\n")
+                buf.Write(payloads[i])
+                buf.WriteString("\r\n")
+            }
+            buf.WriteString("--" + boundary + "--\r\n")
+            out = buf.Bytes()
+        }
+        if clash != "" {
+            throw ValueError(f"Multipart.body: the data of part {clash} contains the boundary")
+        }
+        return out
+    }
+}
+
 class HttpRequest {
     func init(self, client: HttpClient, method: str, path: str) {
         self.client: HttpClient = client
@@ -459,6 +632,11 @@ class HttpRequest {
 
     func html(self, value: html) -> HttpRequest {
         self.options.html(value)
+        return self
+    }
+
+    func multipart(self, form: Multipart) -> HttpRequest {
+        self.options.multipart(form)
         return self
     }
 

@@ -1397,14 +1397,21 @@ class StatementVisitorMixin:
             if go_name != "_" and go_name not in self.declared_vars
         ]
         saved = {
-            name: (self._var_go_types.pop(name, self._NO_TYPE), self._var_types.pop(name, self._NO_TYPE))
+            name: (
+                self._var_go_types.pop(name, self._NO_TYPE),
+                self._var_types.pop(name, self._NO_TYPE),
+                self._var_result_payloads.pop(name, self._NO_TYPE),
+            )
             for name in fresh
         }
         try:
             self._visit_for_stmt_inner(node)
         finally:
-            for name, (go_type, class_name) in saved.items():
-                for table, value in ((self._var_go_types, go_type), (self._var_types, class_name)):
+            for name, (go_type, class_name, payload) in saved.items():
+                for table, value in (
+                    (self._var_go_types, go_type), (self._var_types, class_name),
+                    (self._var_result_payloads, payload),
+                ):
                     if value is self._NO_TYPE:
                         table.pop(name, None)
                     else:
@@ -1603,6 +1610,7 @@ class StatementVisitorMixin:
                 return
             if is_chan:
                 assign_op = "=" if already_declared else ":="
+                self._bind_generator_loop_target(var_name, iterable_node)
                 self._emit(f"for {var_name} {assign_op} range {iter_str} {{")
             elif key_name and val_name:
                 k_decl = key_name in self.declared_vars
@@ -1795,6 +1803,27 @@ class StatementVisitorMixin:
                     return al[0]
         return None
 
+    def _bind_generator_loop_target(self, var_name: str, iterable_node) -> None:
+        """``for batch in Csv.batches(path)``: the target has the declared
+        element type of the generator (``*Result`` with its payload
+        ``[][]string``, a class, ``generator[T]``'s ``T``), so
+        ``batch.unwrap()`` / ``it.name`` are typed."""
+        if var_name == "_":
+            return
+        elem = (self._expr_go_type_hint(iterable_node) or "").strip()
+        if elem.startswith("chan "):
+            elem = elem[5:].strip()
+        if elem and elem != "interface{}":
+            self._var_go_types[var_name] = elem
+            if elem.startswith("*"):
+                class_name = self._hier_class_from_go_type(elem) or elem[1:].split("[", 1)[0]
+                if class_name in self._class_names:
+                    self._var_types[var_name] = class_name
+        if elem == "*Result":
+            payload = self._propagated_payload_go_type(iterable_node)
+            if payload and payload != "interface{}":
+                self._var_result_payloads[var_name] = payload
+
     def _is_generator_call(self, node) -> bool:
         if not isinstance(node, Tree) or node.data != "funccall":
             return False
@@ -1804,10 +1833,18 @@ class StatementVisitorMixin:
             return name in self._generator_functions
         if isinstance(func, Tree) and func.data == "getattr" and len(func.children) >= 2:
             receiver = func.children[0]
+            method_name = self._get_name(func.children[1])
             if isinstance(receiver, Tree) and receiver.data == "var" and receiver.children:
                 class_name = self._get_name(receiver.children[0])
-                method_name = self._get_name(func.children[1])
-                return f"{class_name}.{method_name}" in self._generator_functions
+                if f"{class_name}.{method_name}" in self._generator_functions:
+                    return True
+            # ``for w in src.words()`` / ``Source(xs).words()``: an
+            # instance-method generator of the receiver's class (or a base).
+            receiver_class = self._infer_receiver_class(receiver)
+            if receiver_class:
+                for cls in [receiver_class] + self._hier_ancestors(receiver_class):
+                    if f"{cls}.{method_name}" in self._generator_functions:
+                        return True
         return False
 
     def _split_tuple_target(self, target_node):

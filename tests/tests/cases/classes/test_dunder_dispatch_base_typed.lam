@@ -1,0 +1,93 @@
+# Regression: `json(p)`, `html(p)`, markup slots and explicit dunder calls
+# used the base class's `__json__` / `__html__` / `__xml__` / `__str__`
+# when `p` was statically typed as the base class (`p: Problem =
+# MyProblem(...)`), although other methods dispatch to the override. The
+# most-derived object's method now runs, in the main file and in the
+# module that declares the base, for parameters, list elements, `self`,
+# caught exceptions and `Result` payloads.
+#
+# expect: {"code":7,"title":"t"}
+# expect: {"code":7,"title":"t"}
+# expect: {"code":7,"title":"t"}
+# expect: MyProblem(t,7) MyProblem(t,7) MyProblem(t,7)
+# expect: <i>t</i> <i>t</i>
+# expect: <ul><i>t</i><b>b</b></ul>
+# expect: <p title="MyProblem(t,7)"><i>t</i></p>
+# expect: <feed><my-problem code="7">t</my-problem></feed>
+# expect: <my-problem code="7">t</my-problem>
+# expect: {"code":7,"title":"t"} {"code":7,"title":"t"} MyProblem(t,7)
+# expect: [{"code":7,"title":"t"},{"title":"b"},{"code":9,"deep":true,"title":"d"}]
+# expect: {"code":9,"deep":true,"title":"d"} <i>d</i> MyProblem(d,9)
+# expect: {"title":"plain"} <b>plain</b> Problem(plain)
+# expect: caught {"code":1,"title":"boom"}
+# expect: ok {"code":2,"title":"res"}
+# expect: {"items":[{"code":7,"title":"t"},{"title":"b"}]}
+
+from lamerrors import Result
+from dunder_dispatch_provider import Problem, encode, page, feed
+
+class MyProblem(Problem) {
+    func init(self, title: str, code: int) {
+        base.init(title)
+        self.code: int = code
+    }
+
+    func __json__(self) -> json {
+        return {"title": self.title, "code": self.code}
+    }
+
+    func __html__(self) -> html {
+        return <><i>${self.title}</i></>
+    }
+
+    func __xml__(self) -> xml {
+        return <><my-problem code="${self.code}">${self.title}</my-problem></>
+    }
+
+    func __str__(self) -> str {
+        return f"MyProblem({self.title},{self.code})"
+    }
+}
+
+class DeepProblem(MyProblem) {
+    func __json__(self) -> json {
+        return {"title": self.title, "code": self.code, "deep": true}
+    }
+}
+
+# A subclass that overrides nothing: the base methods run.
+class PlainProblem(Problem) {
+}
+
+func load(title: str) -> Result[Problem] {
+    return Result.Ok(MyProblem(title, 2))
+}
+
+func main() {
+    p: Problem = MyProblem("t", 7)
+    print(json(p))
+    print(p.__json__())
+    print(encode(p))
+    print(str(p), f"{p}", p.__str__())
+    print(html(p), p.__html__())
+    print(page([p, Problem("b")]))
+    print(<><p title="${str(p)}">${p}</p></>)
+    print(feed(p))
+    print(p.__xml__())
+    print(p.render())
+    ps: list[Problem] = [p, Problem("b"), DeepProblem("d", 9)]
+    print(json([json(x) for x in ps]))
+    d: Problem = ps[2]
+    print(json(d), html(d), d)
+    q: Problem = PlainProblem("plain")
+    print(json(q), html(q), q)
+    try {
+        throw MyProblem("boom", 1)
+    } catch Problem as e {
+        print(f"caught {json(e)}")
+    }
+    r: Result[Problem] = load("res")
+    print(f"ok {json(r.unwrap())}")
+    doc: json = {"items": [json(x) for x in ps[:2]]}
+    print(doc)
+}

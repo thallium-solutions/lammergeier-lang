@@ -1,22 +1,484 @@
-# Lammergeier standard library: HTML parsing and escaping.
+# Lammergeier standard library: HTML parsing, escaping and sanitizing.
 #
 # Pages and fragments are native ``html`` values (see docs/SYNTAX.md
 # "Markup: html and xml"): literals between ``<>`` and ``</>``,
 # ``html(value)`` for text and classes with ``__html__``, or
 # ``Html.parse(text)`` for markup received as a string.
 #
-# Import with: ``from lamhtml import Html``.
+# ``Html.sanitize(markup, policy)`` turns untrusted markup (user comments,
+# rich-text editor output, admin-authored snippets) into an ``html`` value
+# that keeps only what an ``HtmlPolicy`` allows. It works on the parsed tree
+# and builds a new one, default-deny:
+#
+#   * elements not in the policy are removed but their content is kept;
+#     ``script``, ``style``, ``template``, ``iframe``, ``frame``,
+#     ``frameset``, ``object``, ``embed``, ``applet``, ``noscript``,
+#     ``noembed``, ``noframes``, ``xmp``, ``plaintext``, ``svg``, ``math``,
+#     ``base``, ``link``, ``meta``, ``head``, ``title``, ``param`` and
+#     ``portal`` are removed with their content, even when a policy lists
+#     them;
+#   * comments, doctypes and processing instructions are removed;
+#   * attributes not allowed for the element are removed; event handlers
+#     (``on*``) and ``srcdoc`` always are;
+#   * URL attributes (``href``, ``src``, ``action``, ``formaction``,
+#     ``cite``, ``poster``, ``background``, ``xlink:href``, ``srcset``...)
+#     keep a value only when its scheme is allowed (``http``, ``https``,
+#     ``mailto`` by default) or it is relative (when allowed); control
+#     characters and white space are ignored when reading the scheme, as
+#     browsers do, so ``java&#9;script:`` is ``javascript:``. ``data:``
+#     URLs are refused except base64 PNG / GIF / JPEG / WebP / AVIF images
+#     in ``img src`` when ``allowDataImages`` is on (never SVG);
+#   * ``style`` attributes are removed unless ``allowStyles`` lists
+#     properties, and then keep only those properties with plain values
+#     (no ``url(``, ``expression``, escapes, quotes or comments);
+#   * a link with a ``target`` other than ``_self`` / ``_parent`` /
+#     ``_top`` gets ``rel="noopener noreferrer"``.
+#
+# The result is serialized from the new tree, so every text and attribute
+# value is escaped and the only markup is the allowed elements: what the
+# browser parses is what the policy checked. ``id`` and ``name`` (DOM
+# clobbering) and ``class`` are not allowed by ``HtmlPolicy.basic()``.
+#
+# Import with: ``from lamhtml import Html, HtmlPolicy``.
 
 from lammarkup import Markup
 
+go! {
+    import (
+        "strings"
+    )
+
+    type lamSanPolicy struct {
+        tags       map[string]bool
+        attrs      map[string]map[string]bool
+        schemes    map[string]bool
+        relative   bool
+        dataImages bool
+        styles     map[string]bool
+        noopener   bool
+    }
+
+    // Removed with their content whatever the policy says: script and
+    // style text, nested documents, plugins, raw-text and foreign content
+    // the serializer does not round-trip, and document-level elements.
+    var lamSanDropWithContent = map[string]bool{
+        "script": true, "style": true, "template": true, "iframe": true, "frame": true,
+        "frameset": true, "object": true, "embed": true, "applet": true, "noscript": true,
+        "noembed": true, "noframes": true, "xmp": true, "plaintext": true, "svg": true,
+        "math": true, "base": true, "link": true, "meta": true, "head": true, "title": true,
+        "param": true, "portal": true,
+    }
+
+    var lamSanURLAttrs = map[string]bool{
+        "href": true, "src": true, "cite": true, "action": true, "formaction": true,
+        "poster": true, "background": true, "longdesc": true, "lowsrc": true, "dynsrc": true,
+        "usemap": true, "xlink:href": true, "data": true, "codebase": true, "classid": true,
+        "profile": true, "manifest": true, "icon": true, "ping": true, "archive": true,
+        "itemtype": true,
+    }
+
+    func lamSanName(name string, extra string) (string, bool) {
+        lower := strings.ToLower(strings.TrimSpace(name))
+        if lower == "" {
+            return "", false
+        }
+        for _, c := range lower {
+            if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || strings.ContainsRune(extra, c)) {
+                return "", false
+            }
+        }
+        return lower, true
+    }
+
+    func lamSanNewPolicy(tags []string, attrs map[string][]string, schemes []string, relative bool, dataImages bool, styles []string, noopener bool) *lamSanPolicy {
+        p := &lamSanPolicy{
+            tags: map[string]bool{}, attrs: map[string]map[string]bool{}, schemes: map[string]bool{},
+            relative: relative, dataImages: dataImages, styles: map[string]bool{}, noopener: noopener,
+        }
+        for _, tag := range tags {
+            if name, ok := lamSanName(tag, ""); ok {
+                p.tags[name] = true
+            }
+        }
+        for tag, names := range attrs {
+            key, ok := lamSanName(tag, "*")
+            if !ok {
+                continue
+            }
+            if p.attrs[key] == nil {
+                p.attrs[key] = map[string]bool{}
+            }
+            for _, attr := range names {
+                if name, ok := lamSanName(attr, "_:."); ok {
+                    p.attrs[key][name] = true
+                }
+            }
+        }
+        for _, scheme := range schemes {
+            lower := strings.ToLower(strings.TrimSpace(scheme))
+            if lamSanSchemeSyntax(lower) && lower != "javascript" && lower != "vbscript" && lower != "data" {
+                p.schemes[lower] = true
+            }
+        }
+        for _, property := range styles {
+            if name, ok := lamSanName(property, ""); ok {
+                p.styles[name] = true
+            }
+        }
+        return p
+    }
+
+    func (p *lamSanPolicy) allowsAttr(tag string, attr string) bool {
+        return p.attrs[tag][attr] || p.attrs["*"][attr]
+    }
+
+    func lamSanSchemeSyntax(scheme string) bool {
+        if scheme == "" || scheme[0] < 'a' || scheme[0] > 'z' {
+            return false
+        }
+        for i := 1; i < len(scheme); i++ {
+            c := scheme[i]
+            if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.') {
+                return false
+            }
+        }
+        return true
+    }
+
+    // lamSanCompactURL drops what browsers ignore in a URL before reading
+    // its scheme (tab, LF and CR anywhere, C0 controls and spaces at the
+    // ends); dropping every C0 control and space anywhere is stricter.
+    func lamSanCompactURL(value string) string {
+        var sb strings.Builder
+        for _, r := range value {
+            if r > 0x20 && r != 0x7f {
+                sb.WriteRune(r)
+            }
+        }
+        return sb.String()
+    }
+
+    func lamSanDataImage(compact string) bool {
+        lower := strings.ToLower(compact)
+        for _, kind := range []string{"png", "gif", "jpeg", "jpg", "webp", "avif"} {
+            prefix := "data:image/" + kind + ";base64,"
+            if strings.HasPrefix(lower, prefix) {
+                payload := compact[len(prefix):]
+                for i := 0; i < len(payload); i++ {
+                    c := payload[i]
+                    if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=') {
+                        return false
+                    }
+                }
+                return true
+            }
+        }
+        return false
+    }
+
+    func lamSanURL(value string, tag string, attr string, p *lamSanPolicy) bool {
+        compact := lamSanCompactURL(value)
+        end := strings.IndexAny(compact, ":/?#")
+        if end < 0 || compact[end] != ':' {
+            return p.relative
+        }
+        scheme := strings.ToLower(compact[:end])
+        if !lamSanSchemeSyntax(scheme) {
+            return false
+        }
+        if scheme == "data" {
+            return p.dataImages && tag == "img" && (attr == "src" || attr == "srcset") && lamSanDataImage(compact)
+        }
+        return p.schemes[scheme]
+    }
+
+    // lamSanSrcset checks every candidate URL of a srcset ("a.png 1x, b.png 2x").
+    func lamSanSrcset(value string, tag string, attr string, p *lamSanPolicy) bool {
+        for _, candidate := range strings.Split(value, ",") {
+            fields := strings.Fields(candidate)
+            if len(fields) == 0 {
+                return false
+            }
+            if !lamSanURL(fields[0], tag, attr, p) {
+                return false
+            }
+        }
+        return true
+    }
+
+    func lamSanStyleValue(value string) bool {
+        for i := 0; i < len(value); i++ {
+            c := value[i]
+            if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.IndexByte(" #%.,()+-!/", c) >= 0) {
+                return false
+            }
+        }
+        lower := strings.ToLower(value)
+        for _, banned := range []string{"url(", "expression", "javascript", "vbscript", "/*", "*/", "image(", "image-set", "attr(", "var(", "env(", "element("} {
+            if strings.Contains(lower, banned) {
+                return false
+            }
+        }
+        return true
+    }
+
+    func lamSanStyle(value string, p *lamSanPolicy) string {
+        var kept []string
+        for _, declaration := range strings.Split(value, ";") {
+            name, val, ok := strings.Cut(declaration, ":")
+            if ok {
+                property := strings.ToLower(strings.TrimSpace(name))
+                val = strings.TrimSpace(val)
+                if p.styles[property] && val != "" && lamSanStyleValue(val) {
+                    kept = append(kept, property+": "+val)
+                }
+            }
+        }
+        return strings.Join(kept, "; ")
+    }
+
+    func lamSanAttrs(n *lamMNode, tag string, p *lamSanPolicy) []lamMAttr {
+        var out []lamMAttr
+        seen := map[string]bool{}
+        opensWindow := false
+        for _, a := range n.attrs {
+            name := strings.ToLower(a.name)
+            if seen[name] {
+                // Browsers keep the first of duplicated attributes.
+                continue
+            }
+            seen[name] = true
+            if (strings.HasPrefix(name, "on") && name != "open") || name == "srcdoc" {
+                continue
+            }
+            clean, valid := lamSanName(name, "_:.")
+            if !valid || !p.allowsAttr(tag, clean) {
+                continue
+            }
+            value := a.value
+            keep := true
+            if clean == "style" {
+                value = lamSanStyle(value, p)
+                keep = value != ""
+            } else if clean == "srcset" || clean == "imagesrcset" {
+                keep = lamSanSrcset(value, tag, clean, p)
+            } else if lamSanURLAttrs[clean] {
+                keep = lamSanURL(value, tag, clean, p)
+            }
+            if keep {
+                if clean == "target" {
+                    target := strings.ToLower(strings.TrimSpace(value))
+                    opensWindow = target != "" && target != "_self" && target != "_parent" && target != "_top"
+                }
+                out = append(out, lamMAttr{name: clean, value: value, hasValue: a.hasValue || value != ""})
+            }
+        }
+        if opensWindow && p.noopener {
+            relIndex := -1
+            for i, a := range out {
+                if a.name == "rel" {
+                    relIndex = i
+                }
+            }
+            tokens := []string{}
+            if relIndex >= 0 {
+                tokens = strings.Fields(strings.ToLower(out[relIndex].value))
+            }
+            for _, required := range []string{"noopener", "noreferrer"} {
+                found := false
+                for _, token := range tokens {
+                    if token == required {
+                        found = true
+                    }
+                }
+                if !found {
+                    tokens = append(tokens, required)
+                }
+            }
+            rel := lamMAttr{name: "rel", value: strings.Join(tokens, " "), hasValue: true}
+            if relIndex >= 0 {
+                out[relIndex] = rel
+            } else {
+                out = append(out, rel)
+            }
+        }
+        return out
+    }
+
+    func lamSanNodes(nodes []*lamMNode, p *lamSanPolicy, depth int) []*lamMNode {
+        out := []*lamMNode{}
+        for _, n := range nodes {
+            switch n.kind {
+            case lamMText:
+                if n.data != "" {
+                    out = append(out, &lamMNode{kind: lamMText, data: n.data})
+                }
+            case lamMElement:
+                name := strings.ToLower(n.name)
+                if lamSanDropWithContent[name] {
+                    // Removed with everything inside.
+                } else if !p.tags[name] || depth >= 256 {
+                    out = append(out, lamSanNodes(n.children, p, depth+1)...)
+                } else {
+                    el := &lamMNode{kind: lamMElement, name: name, attrs: lamSanAttrs(n, name, p)}
+                    if !lamHTMLVoid[name] {
+                        el.children = lamSanNodes(n.children, p, depth+1)
+                        for _, child := range el.children {
+                            child.parent = el
+                        }
+                    }
+                    out = append(out, el)
+                }
+            }
+            // Comments, doctypes and processing instructions are dropped.
+        }
+        return out
+    }
+}
+
+class HtmlPolicy {
+    #- What ``Html.sanitize`` keeps. ``HtmlPolicy()`` allows nothing (only
+       the text survives); ``HtmlPolicy.basic()`` and ``HtmlPolicy.rich()``
+       are starting points, and the ``allow*`` methods extend a policy and
+       return it, so they chain:
+
+           policy: HtmlPolicy = HtmlPolicy.basic().allowTags(["h2", "h3"]).allowAttributes("a", ["target"])
+
+       Names are matched case-insensitively; tag and attribute names that
+       are not plain names are ignored. The fields can also be set directly.
+    -#
+
+    func init(self) {
+        #- Allowed element names. -#
+        self.tags: list[str] = []
+        #- Allowed attributes per element name; ``"*"`` for every allowed
+           element. -#
+        self.attributes: dict[str, list[str]] = {}
+        #- URL schemes allowed in URL attributes. -#
+        self.urlSchemes: list[str] = ["http", "https", "mailto"]
+        #- Whether relative URLs (``/a``, ``page.html``, ``#top``,
+           ``//host/x``) are allowed. -#
+        self.relativeUrls: bool = true
+        #- Whether ``img src`` may hold a base64 ``data:image/...`` URL. -#
+        self.dataImages: bool = false
+        #- CSS properties a ``style`` attribute may keep. -#
+        self.styleProperties: list[str] = []
+        #- Whether links opening another window get ``rel="noopener
+           noreferrer"``. -#
+        self.noopener: bool = true
+    }
+
+    static func basic() -> HtmlPolicy {
+        #- Text formatting, lists, quotes, code and links (``a href title``,
+           ``http`` / ``https`` / ``mailto`` and relative URLs): user
+           comments and descriptions. -#
+        policy: HtmlPolicy = HtmlPolicy()
+        policy.allowTags(["a", "abbr", "b", "blockquote", "br", "cite", "code", "del", "em", "i", "ins", "kbd", "li", "mark", "ol", "p", "pre", "q", "s", "small", "span", "strong", "sub", "sup", "u", "ul"])
+        policy.allowAttributes("a", ["href", "title"])
+        policy.allowAttributes("abbr", ["title"])
+        policy.allowAttributes("blockquote", ["cite"])
+        policy.allowAttributes("q", ["cite"])
+        return policy
+    }
+
+    static func rich() -> HtmlPolicy {
+        #- ``basic`` plus headings, images (``src alt title width height``),
+           tables, figures, definition lists, ``details`` / ``summary``,
+           sectioning ``div`` / ``section`` / ``article``..., ``hr``, links
+           with ``target`` / ``rel``, and the ``class``, ``title``, ``lang``,
+           ``dir`` attributes everywhere: rich-text editor output. -#
+        policy: HtmlPolicy = HtmlPolicy.basic()
+        policy.allowTags(["h1", "h2", "h3", "h4", "h5", "h6", "hr", "div", "section", "article", "aside", "header", "footer", "img", "figure", "figcaption", "table", "caption", "thead", "tbody", "tfoot", "tr", "th", "td", "dl", "dt", "dd", "details", "summary"])
+        policy.allowAttributes("*", ["class", "title", "lang", "dir"])
+        policy.allowAttributes("a", ["target", "rel"])
+        policy.allowAttributes("img", ["src", "alt", "width", "height"])
+        policy.allowAttributes("th", ["colspan", "rowspan", "scope"])
+        policy.allowAttributes("td", ["colspan", "rowspan"])
+        policy.allowAttributes("details", ["open"])
+        return policy
+    }
+
+    func allowTags(self, tags: list[str]) -> HtmlPolicy {
+        #- Allows the elements ``tags`` (without attributes). -#
+        for tag in tags {
+            name: str = tag.toLower()
+            if name not in self.tags {
+                self.tags.append(name)
+            }
+        }
+        return self
+    }
+
+    func denyTags(self, tags: list[str]) -> HtmlPolicy {
+        #- Stops allowing the elements ``tags`` (their content is kept). -#
+        denied: list[str] = [tag.toLower() for tag in tags]
+        self.tags = [tag for tag in self.tags if tag not in denied]
+        return self
+    }
+
+    func allowAttributes(self, tag: str, attributes: list[str]) -> HtmlPolicy {
+        #- Allows ``attributes`` on the element ``tag`` (``"*"``: on every
+           allowed element). -#
+        key: str = tag.toLower()
+        current: list[str] = self.attributes[key] if key in self.attributes else []
+        for attribute in attributes {
+            name: str = attribute.toLower()
+            if name not in current {
+                current.append(name)
+            }
+        }
+        self.attributes[key] = current
+        return self
+    }
+
+    func allowSchemes(self, schemes: list[str]) -> HtmlPolicy {
+        #- Allows more URL schemes (``["tel"]``). ``javascript``, ``vbscript``
+           and ``data`` are never accepted as schemes here: ``data:`` images
+           have ``allowDataImages``. -#
+        for scheme in schemes {
+            name: str = scheme.toLower()
+            if name != "javascript" and name != "vbscript" and name != "data" and name not in self.urlSchemes {
+                self.urlSchemes.append(name)
+            }
+        }
+        return self
+    }
+
+    func allowRelativeUrls(self, allowed: bool = true) -> HtmlPolicy {
+        self.relativeUrls = allowed
+        return self
+    }
+
+    func allowDataImages(self, allowed: bool = true) -> HtmlPolicy {
+        #- Lets ``img src`` hold base64 PNG / GIF / JPEG / WebP / AVIF
+           ``data:`` URLs (the ``img`` element and ``src`` must be allowed). -#
+        self.dataImages = allowed
+        return self
+    }
+
+    func allowStyles(self, properties: list[str]) -> HtmlPolicy {
+        #- Allows the ``style`` attribute on every allowed element, keeping
+           only the CSS ``properties`` listed (``["color", "text-align"]``)
+           with plain values. -#
+        for property in properties {
+            name: str = property.toLower()
+            if name not in self.styleProperties {
+                self.styleProperties.append(name)
+            }
+        }
+        return self.allowAttributes("*", ["style"])
+    }
+}
+
 class Html {
-    #- Parsing and escaping of ``html`` values. -#
+    #- Parsing, escaping and sanitizing of ``html`` values. -#
 
     static func parse(source: str) -> html {
         #- Reads HTML leniently, as browsers accept hand-written markup:
            void elements, implicitly closed ``li`` / ``p`` / ``td``...,
            stray end tags ignored. It never fails. Only parse markup you
-           trust: it is inserted as markup, not as text. -#
+           trust: it is inserted as markup, not as text (``sanitize``
+           untrusted markup). -#
         out: html = <></>
         go! {
             out = lamHTMLParseString(source)
@@ -27,6 +489,40 @@ class Html {
     static func escape(text: str) -> str {
         #- ``text`` escaped for HTML content and attribute values. -#
         return Markup.escape(text)
+    }
+
+    static func sanitize(markup: str) -> html {
+        #- ``markup`` cleaned with ``HtmlPolicy.basic()``. -#
+        return Html.sanitize(Html.parse(markup), HtmlPolicy.basic())
+    }
+
+    static func sanitize(markup: str, policy: HtmlPolicy) -> html {
+        #- ``markup`` (untrusted text) parsed and cleaned with ``policy``
+           (see the module comment for what is removed). -#
+        return Html.sanitize(Html.parse(markup), policy)
+    }
+
+    static func sanitize(markup: html) -> html {
+        #- An ``html`` value cleaned with ``HtmlPolicy.basic()``. -#
+        return Html.sanitize(markup, HtmlPolicy.basic())
+    }
+
+    static func sanitize(markup: html, policy: HtmlPolicy) -> html {
+        #- A clean copy of ``markup`` that keeps only what ``policy``
+           allows; ``markup`` itself is not changed. -#
+        tags: list[str] = policy.tags
+        attributes: dict[str, list[str]] = policy.attributes
+        schemes: list[str] = policy.urlSchemes
+        relative: bool = policy.relativeUrls
+        dataImages: bool = policy.dataImages
+        styles: list[str] = policy.styleProperties
+        noopener: bool = policy.noopener
+        out: html = <></>
+        go! {
+            rules := lamSanNewPolicy(tags, attributes, schemes, relative, dataImages, styles, noopener)
+            out = LamHTML{lamMNewFrag(false, lamSanNodes(markup.frag().all(), rules, 0))}
+        }
+        return out
     }
 }
 

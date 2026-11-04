@@ -1913,6 +1913,13 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 scope.var_types[ordered_names[0]] = render_type(iterable_type.key)
             if ordered_names[1] != "_":
                 scope.var_types[ordered_names[1]] = render_type(iterable_type.value)
+        else:
+            # ``for batch in Csv.batches(path)``: a generator's values have
+            # its declared element type (``Result[list[list[str]]]``).
+            yielded = self._generator_call_element_types(iterable, iterable_type, len(ordered_names))
+            for name, type_ in zip(ordered_names, yielded or []):
+                if name != "_":
+                    scope.var_types[name] = render_type(type_)
         if bodies:
             self._collect_block_defs(bodies[0], scope)
         self._scopes.append(scope)
@@ -2639,6 +2646,14 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             scope.names.add(alias)
             scope.definite_names.add(alias)
             scope.catch_nodes[alias] = alias_node
+            caught = (
+                self._name_text(type_test.children[0])
+                if isinstance(type_test, Tree) and type_test.data == "var" and type_test.children else ""
+            )
+            if caught and caught in self._class_method_shapes and not self._class_type_params.get(caught):
+                # ``catch Problem as e``: ``e`` is a ``Problem`` (``json(e)``,
+                # ``e.title``).
+                scope.var_types[alias] = caught
         if type_test is not None:
             self._visit_expr_subtree(type_test)
         self._scopes.append(scope)
@@ -2744,11 +2759,14 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 self._check_definite_read(node, name)
                 self._check_top_level_read_order(node, name)
             elif name:
+                from compiler.constants import PYTHON_BUILTIN_IDIOMS
                 suggestion = self._suggest_name(name)
                 msg = f"undefined name `{name}`"
                 if self.__dict__.get("_in_fstring_slot"):
                     msg += " in f-string"
-                if suggestion:
+                if name in PYTHON_BUILTIN_IDIOMS:
+                    msg += f"; Lam has no `{name}()` builtin, use {PYTHON_BUILTIN_IDIOMS[name]}"
+                elif suggestion:
                     msg += f" — did you mean `{suggestion}`?"
                 self._error(node, "undefined", msg)
             return
@@ -3103,7 +3121,14 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                     continue
                 target, iterable = cf.children[0], cf.children[1]
                 self._visit_expr_subtree(iterable)
-                self._bind_comprehension_target(target, self._expr_simple_type(iterable), scope)
+                iterable_type = self._expr_simple_type(iterable)
+                yielded = self._generator_call_element_types(
+                    iterable, iterable_type, len(self._for_target_names(target)),
+                )
+                if yielded is not None and not isinstance(iterable_type, (ListType, DictType)):
+                    # ``[r.unwrap() for r in gen()]``: a generator's values.
+                    iterable_type = ListType(yielded[0]) if len(yielded) == 1 else ListType(GenericType("tuple", tuple(yielded)))
+                self._bind_comprehension_target(target, iterable_type, scope)
             self._check_comprehension_filter_types(node)
             comp = node.children[0] if node.children else None
             if isinstance(comp, Tree) and comp.data == "comprehension" and len(comp.children) > 2 \
@@ -4132,9 +4157,31 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 class_name = self._receiver_class_from_type_text(render_type(obj_type))
         if not class_name:
             return None
-        field_types = self._class_field_types.get(class_name, {})
-        type_text = field_types.get(attr)
+        type_text = self._class_field_type_text(class_name, attr)
         return parse_type(type_text) if type_text else None
+
+    def _class_field_type_text(self, class_name: str, attr: str) -> str:
+        """Declared type of field ``attr`` of ``class_name``, including the
+        fields it inherits (from a base of this module, another module or a
+        package): ``self.title`` in a subclass is the base's ``str``. A
+        generic base's type parameters are bound to the subclass's type
+        arguments (``item: T`` of ``Box[T]`` is an ``int`` in ``class
+        IntBox(Box[int])``); one left unbound is not reported."""
+        type_text = self._class_field_types.get(class_name, {}).get(attr)
+        if type_text:
+            return type_text
+        for base in self._all_base_names(class_name):
+            type_text = self._class_field_types.get(base, {}).get(attr)
+            if not type_text:
+                continue
+            params = self._class_type_params.get(base, ())
+            if params:
+                bound = self._inherited_type_arg_texts(class_name)
+                type_text = self._bind_type_text(type_text, bound)
+                if any(re.search(rf"\b{re.escape(p)}\b", type_text) for p in params if p not in bound):
+                    return ""
+            return type_text
+        return ""
 
     def _member_receiver_type(self, node) -> Type | None:
         """Type of a member-access receiver: a field's declared type for
@@ -4264,6 +4311,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                         return issue
             return None
         if node.data == "null_coalesce":
+            # ``self.extra ?? "none"``: the payload type of the result.
+            whole = self._expr_simple_type(node)
+            if whole is not None and is_assignable(NamedType("json"), whole):
+                return None
             # ``value ?? {"fallback": true}``: every alternative must be JSON.
             for child in node.children:
                 if isinstance(child, Tree):
@@ -4297,6 +4348,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         actual = self._expr_simple_type(node)
         if actual is None and node.data in {"getattr", "getattr_safe"}:
             actual = self._member_target_type(node)
+        if (
+            actual is None and node.data == "var" and node.children
+            and self._name_text(node.children[0]) == "self" and self._current_class_stack
+        ):
+            # ``json(self)`` in a method: the class's own ``__json__``.
+            actual = NamedType(self._current_class_stack[-1])
         if self._is_any_type(actual):
             rendered = render_type(actual) if actual is not None else "unknown"
             return node, f"cast `json` cannot statically convert `{rendered}`; use `Json.fromValue` for dynamic values"
@@ -5861,6 +5918,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 return "", []
         if callee.data == "var":
             name = self._name_text(callee.children[0]) if callee.children else ""
+            for scope in reversed(self._scopes):
+                if name in scope.names and scope.kind != "module":
+                    nested = scope.__dict__.get("nested_sigs", {}).get(name)
+                    if nested is not None:
+                        return name, [nested]
+                    break
             if name in self._class_method_shapes:
                 return name, self._ctor_sigs_for(name)
             return name, self._func_sigs.get(name, [])
@@ -6682,12 +6745,40 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                             "use `xs = xs.sort()` or `xs.sort(inplace=true)`",
                         )
                     return
-            if key in self._nonvoid_methods:
+            if key in self._nonvoid_methods and not self._is_builder_step(key):
                 self._warning(
                     expr_stmt,
                     "unused",
                     self._dropped_return_warning_message(display or key, self._method_return_type(key)),
                 )
+
+    def _is_builder_step(self, key: str) -> bool:
+        """``w.addIf(...)`` / ``form.file(...)`` as a statement: an instance
+        method whose declared return type is the receiver's class or one of
+        its bases (type arguments aside; not ``optional`` / ``Result``) is a
+        fluent builder step that returns ``self`` for chaining, so the
+        dropped-return warning does not apply. Static methods (factories)
+        and every other result still warn."""
+        class_name, _, method = key.rpartition(".")
+        if not class_name or not method:
+            return False
+        if self._class_method_kind(class_name, method) != "instance" and not any(
+            self._class_method_kind(base, method) == "instance" for base in self._all_base_names(class_name)
+        ):
+            return False
+        texts = set(self._method_return_type_texts.get(key, set()))
+        if not texts:
+            shape = self._class_method_shapes.get(class_name, {}).get(method)
+            text = shape.return_type_text or shape.return_type if shape is not None else ""
+            if text:
+                texts.add(text)
+        if len(texts) != 1:
+            return False
+        text = next(iter(texts)).strip()
+        returned = text.split("[", 1)[0].strip()
+        if not returned or returned in {"optional", "Option", "Result"} or "|" in text:
+            return False
+        return returned == class_name or returned in self._all_base_names(class_name)
 
     def _call_has_true_keyword(self, call: Tree, keyword: str) -> bool:
         """``f(..., keyword=true)`` or a single trailing ``true`` positional."""
@@ -6770,9 +6861,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
 
     def _fstring_slot_tree(self, expr: str):
         """A fresh parse tree of the slot expression ``expr`` (``None`` when
-        it does not parse or binds names of its own)."""
+        it does not parse). Comprehensions and lambdas in a slot bind their
+        names in their own scopes, as in any expression."""
         text = expr.strip()
-        if not text or re.search(r"\blambda\b|\bfor\b", text) or text.endswith("="):
+        if not text or text.endswith("="):
             return None
         cache = SemanticChecker.__dict__.get("_FSTRING_TREE_CACHE")
         if cache is None:
@@ -7489,6 +7581,13 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             name = self._funcdef_name(stmt)
             if name:
                 scope.names.add(name)
+                if scope.kind != "module":
+                    # A nested function: its calls are checked against its
+                    # parameters (arity, keywords, defaults).
+                    scope.__dict__.setdefault("nested_sigs", {})[name] = self._callable_signature_from_params(
+                        self._funcdef_params(stmt), name, skip_self=False,
+                        generic_names=tuple(self._funcdef_type_params(stmt)),
+                    )
             return
         if d == "classdef":
             name = self._classdef_name(stmt)
@@ -7558,7 +7657,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
 
     @staticmethod
     def _funcdef_is_private(node: Tree) -> bool:
-        return any(isinstance(c, Token) and c.type == "PRIVATE" for c in node.children)
+        return any(isinstance(c, Token) and c.type in {"PRIVATE", "PRIVATE_FUNC"} for c in node.children)
 
     @staticmethod
     def _funcdef_is_static(node: Tree) -> bool:
@@ -7990,7 +8089,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                     funcdef, "return",
                     f"not all paths in `{name}` return a value",
                 )
+            is_generator = self._suite_has_yield(suite_node)
             for ret in returns:
+                if is_generator and not self._return_has_value(ret):
+                    # A bare ``return`` ends a generator (its ``-> T`` is the
+                    # type of the values it yields).
+                    continue
                 block_types = self._return_block_types.get(id(ret))
                 if not block_types:
                     self._check_return_value(ret, name, expected_type, expected_model)
@@ -9183,7 +9287,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         comp = node.children[0] if node.children else None
         if not isinstance(comp, Tree) or comp.data != "comprehension" or not comp.children:
             return None
-        result_type = self._expr_simple_type(comp.children[0])
+        with self._comprehension_target_types(node):
+            result_type = self._expr_simple_type(comp.children[0])
+            if result_type is None and isinstance(comp.children[0], Tree) and comp.children[0].data == "getattr":
+                # ``[p.title for p in ps]``: the field's declared type.
+                result_type = self._member_target_type(comp.children[0])
         if result_type is None:
             return None
         return ListType(result_type)
@@ -9195,11 +9303,83 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         kv = comp.children[0]
         if not isinstance(kv, Tree) or kv.data != "key_value" or len(kv.children) < 2:
             return None
-        key_type = self._expr_simple_type(kv.children[0])
-        value_type = self._expr_simple_type(kv.children[1])
+        with self._comprehension_target_types(node):
+            key_type = self._expr_simple_type(kv.children[0])
+            value_type = self._expr_simple_type(kv.children[1])
         if key_type is None or value_type is None:
             return None
         return DictType(key_type, value_type)
+
+    @contextmanager
+    def _comprehension_target_types(self, node: Tree):
+        """Type a comprehension's result with its loop targets bound to the
+        element types of their iterables (``[p.title for p in ps]`` with
+        ``ps: list[Problem]`` is a ``list[str]``), also where it is typed
+        outside its own walk (a ``return`` checked after the body). Reports
+        nothing: ``_visit_comprehension`` checks the targets."""
+        scope = _Scope(kind="block")
+        self._scopes.append(scope)
+        try:
+            for cf in self._iter_comp_fors(node):
+                if len(cf.children) < 2:
+                    continue
+                names = self._for_target_names(cf.children[0])
+                scope.names.update(names)
+                scope.definite_names.update(names)
+                iterable_type = self._expr_simple_type(cf.children[1])
+                elements = self._iteration_element_types(iterable_type, len(names))
+                if elements is None:
+                    elements = self._generator_call_element_types(cf.children[1], iterable_type, len(names))
+                if elements is not None and len(elements) == len(names):
+                    for name, type_ in zip(names, elements):
+                        scope.var_types[name] = render_type(type_)
+            yield
+        finally:
+            self._scopes.pop()
+
+    _GENERATOR_TYPE_NAMES = frozenset({"generator", "iterator", "Generator", "Iterator"})
+
+    def _generator_call_element_types(self, iterable, iterable_type: Type | None, count: int) -> list[Type] | None:
+        """Element types of iterating the call ``iterable`` when it is a
+        generator: its declared ``-> T`` (a ``Result``, a class, a scalar,
+        not a collection) or the ``T`` of ``-> generator[T]``; ``count``
+        targets destructure a yielded tuple."""
+        if not (isinstance(iterable, Tree) and iterable.data == "funccall") or iterable_type is None:
+            return None
+        element: Type | None = None
+        if isinstance(iterable_type, GenericType):
+            if iterable_type.base in self._GENERATOR_TYPE_NAMES and len(iterable_type.args) == 1:
+                element = iterable_type.args[0]
+            elif iterable_type.base not in {"set", "tuple", "list", "dict"}:
+                element = iterable_type
+        elif isinstance(iterable_type, NamedType):
+            if iterable_type.name not in {"json", "str", "string", "any", "object", "None"} and not (
+                self._is_unknown_open_assignment_type(iterable_type)
+            ):
+                element = iterable_type
+        if element is None:
+            return None
+        if count == 1:
+            return [element]
+        if isinstance(element, GenericType) and element.base == "tuple" and len(element.args) == count:
+            return list(element.args)
+        return None
+
+    def _iteration_element_types(self, iterable_type: Type | None, count: int) -> list[Type] | None:
+        if iterable_type is None or self._is_any_type(iterable_type):
+            return None
+        if isinstance(iterable_type, ListType):
+            item = iterable_type.item
+            if isinstance(item, GenericType) and item.base == "tuple" and count > 1:
+                return list(item.args)
+            return [item]
+        if isinstance(iterable_type, DictType):
+            return [iterable_type.key, iterable_type.value] if count == 2 else [iterable_type.key]
+        if isinstance(iterable_type, GenericType) and iterable_type.base == "set" and iterable_type.args:
+            return [iterable_type.args[0]]
+        if isinstance(iterable_type, NamedType) and iterable_type.name == "str":
+            return [NamedType("str")]
+        return None
 
     @staticmethod
     def _homogeneous_type_or_any(types: list[Type], default: Type) -> Type:

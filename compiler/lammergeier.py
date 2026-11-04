@@ -2095,6 +2095,7 @@ def compile_lam(
         "zfill", "padLeft", "padRight", "splitLines", "splitN",
         "replaceFirst", "startsWith", "endsWith", "containsAny",
         "isEmpty", "isBlank", "indent", "dedent", "format",
+        "camelCase", "pascalCase", "snakeCase", "kebabCase",
     )
     _lam_string_method_re = _re.compile(
         r"\.(?:" + "|".join(_STRING_METHOD_DISPATCH_NAMES) + r")\s*\("
@@ -2455,9 +2456,19 @@ def compile_lam(
         base = _pre_transpiler._go_private_name(name) if private else _pre_transpiler._go_public_name(name)
         return _pre_transpiler._go_binding_name(base)
 
+    _ns_value_types: dict = {}
+
+    def _ns_value_go_type(path: Path, name: str) -> str:
+        if path not in _ns_value_types:
+            info = ns_modules.get(path)
+            _ns_value_types[path] = (
+                _namespacing.top_level_value_go_types(info.tree, _pre_transpiler) if info is not None else {}
+            )
+        return _ns_value_types[path].get(name, "")
+
     try:
         ns_plans = _namespacing.build_plans(
-            ns_modules, main_module_path, _ns_resolve, _ns_function_go_name,
+            ns_modules, main_module_path, _ns_resolve, _ns_function_go_name, _ns_value_go_type,
         )
     except _namespacing.NamespaceError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -2668,6 +2679,8 @@ def compile_lam(
         target_transpiler._namespace_rewrites.update(plan.rewrites)
         target_transpiler._namespace_module_access.update(plan.module_access)
         target_transpiler._namespace_declarations.update(plan.declaration_renames)
+        for value_name, value_type in plan.imported_value_types.items():
+            target_transpiler._var_go_types.setdefault(value_name, value_type)
         _namespacing.apply_metadata_view(target_transpiler, plan, sources)
 
     interface_type_names = {

@@ -1,0 +1,30 @@
+# expect-pass
+# Helper module for the fluent-builder dropped-return cases.
+
+class Query {
+    func init(self) {
+        self.parts: list[str] = []
+    }
+
+    func where(self, clause: str) -> Query {
+        self.parts.append(clause)
+        return self
+    }
+
+    func copy(self) -> Query {
+        out: Query = Query()
+        out.parts = self.parts[:]
+        return out
+    }
+
+    func size(self) -> int {
+        return len(self.parts)
+    }
+
+    static func make() -> Query {
+        return Query()
+    }
+}
+
+func main() {
+}

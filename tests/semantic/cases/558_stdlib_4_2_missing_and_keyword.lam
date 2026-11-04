@@ -1,0 +1,15 @@
+# expect-error: missing required argument `rename` in call to `Json.mapKeys`
+# expect-error: unknown keyword argument `separatr`
+# expect-error: missing required argument `layouts` in call to `DateTime.parseAny`
+# Missing arguments and misspelled keywords of the 4.2 additions are
+# reported before Go sees them.
+from lamjson import Json
+from lamfmt import Fmt
+from lamdatetime import DateTime
+
+func main() {
+    doc: json = {"a_b": 1}
+    _ = Json.mapKeys(doc)
+    _ = Fmt.grouped(1234.5, separatr=".")
+    _ = DateTime.parseAny("2026-11-03")
+}

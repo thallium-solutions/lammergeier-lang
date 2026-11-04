@@ -1,0 +1,57 @@
+# expect: slots_total -> slotsTotal SlotsTotal slots_total slots-total
+# expect: purchased-products-limit -> purchasedProductsLimit PurchasedProductsLimit purchased_products_limit purchased-products-limit
+# expect: userID -> userId UserId user_id user-id
+# expect: HTTPServer -> httpServer HttpServer http_server http-server
+# expect: getHTTPResponseCode -> getHttpResponseCode GetHttpResponseCode get_http_response_code get-http-response-code
+# expect: line2Text -> line2Text Line2Text line2_text line2-text
+# expect: __private__ -> private Private private private
+# expect: Hello  World. -> helloWorld HelloWorld hello_world hello-world
+# expect: Ünïcode_wörd -> ünïcodeWörd ÜnïcodeWörd ünïcode_wörd ünïcode-wörd
+# expect: empty [][][][]
+# expect: static slotsTotal slots_total slots-total SlotsTotal
+# expect: roundtrip true
+# expect: camel {"items":[{"itemId":1,"unitPrice":2.5}],"orderId":7,"shipTo":{"zipCode":"44121"}}
+# expect: shallow {"items":[{"item_id":1,"unit_price":2.5}],"orderId":7,"shipTo":{"zip_code":"44121"}}
+# expect: snake {"items":[{"item_id":1,"unit_price":2.5}],"order_id":7,"ship_to":{"zip_code":"44121"}}
+# expect: original {"items":[{"item_id":1,"unit_price":2.5}],"order_id":7,"ship_to":{"zip_code":"44121"}}
+# expect: collision {"ab":2}
+# expect: lambda {"A":{"B":[{"C":null}]}}
+# expect: scalars 3 "x" null [1,2]
+# Key-case conversion: the str methods and their Strings.* forms (word
+# splitting on separators, case changes, acronyms, digits, Unicode), and
+# Json.mapKeys with a function reference, a lambda, deep and shallow
+# renaming, copies and key collisions.
+from lamstrings import Strings
+from lamjson import Json
+
+func show(s: str) -> str {
+    return f"{s} -> {s.camelCase()} {s.pascalCase()} {s.snakeCase()} {s.kebabCase()}"
+}
+
+func main() {
+    for s in ["slots_total", "purchased-products-limit", "userID", "HTTPServer", "getHTTPResponseCode", "line2Text", "__private__", "Hello  World.", "Ünïcode_wörd"] {
+        print(show(s))
+    }
+    e: str = ""
+    print(f"empty [{e.camelCase()}][{e.pascalCase()}][{e.snakeCase()}][{e.kebabCase()}]")
+    print(f"static {Strings.camelCase('slots-total')} {Strings.snakeCase('slotsTotal')} {Strings.kebabCase('SlotsTotal')} {Strings.pascalCase('slots total')}")
+
+    names: list[str] = ["order_id", "ship_to", "unit_price", "zip_code"]
+    back: list[str] = [n.camelCase().snakeCase() for n in names]
+    print(f"roundtrip {back == names}")
+
+    doc: json = {"order_id": 7, "ship_to": {"zip_code": "44121"}, "items": [{"item_id": 1, "unit_price": 2.5}]}
+    camel: json = Json.mapKeys(doc, Strings.camelCase)
+    print(f"camel {camel}")
+    print(f"shallow {Json.mapKeys(doc, Strings.camelCase, deep=false)}")
+    print(f"snake {Json.mapKeys(camel, Strings.snakeCase)}")
+    camel["orderId"] = 8
+    print(f"original {doc}")
+    print(f"collision {Json.mapKeys({'a_b': 1, 'ab': 2}, lambda k: k.replace('_', ''))}")
+    print(f"lambda {Json.mapKeys({'a': {'b': [{'c': None}]}}, lambda k: k.toUpper())}")
+    n: json = 3
+    t: json = "x"
+    z: json = None
+    arr: json = [1, 2]
+    print(f"scalars {Json.mapKeys(n, Strings.camelCase)} {Json.mapKeys(t, Strings.camelCase)} {Json.mapKeys(z, Strings.camelCase)} {Json.mapKeys(arr, Strings.camelCase)}")
+}

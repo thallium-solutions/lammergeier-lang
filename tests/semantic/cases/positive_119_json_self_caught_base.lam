@@ -1,0 +1,34 @@
+# expect-pass
+# expect-no-warning: value of type `unknown`
+# `json(self)` in a method, `json(e)` of a typed `catch` binding and
+# `json(p)` of a base-typed value whose subclass overrides `__json__`.
+
+class Problem {
+    func init(self, title: str) {
+        self.title: str = title
+    }
+
+    func __json__(self) -> json {
+        return {"title": self.title}
+    }
+
+    func doc(self) -> json {
+        return json(self)
+    }
+}
+
+class NotFound(Problem) {
+    func __json__(self) -> json {
+        return {"title": self.title, "status": 404}
+    }
+}
+
+func main() {
+    p: Problem = NotFound("missing")
+    print(json(p), p.doc(), p.__json__())
+    try {
+        throw NotFound("x")
+    } catch Problem as e {
+        print(json(e), e.title)
+    }
+}

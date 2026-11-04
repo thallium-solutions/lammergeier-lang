@@ -1,0 +1,86 @@
+# expect: str Ada|?|-|-|null->n|deep
+# expect: int 36|2|-1|-2|7|-5|9007199254740993|-3
+# expect: float 3.5|36|1e+300|0.25|-1
+# expect: bool true|false|true|false
+# expect: has true|true|false|false|false
+# expect: list 2 a,b|0|0
+# expect: list-shared {"id":10}
+# expect: object A|{}|{}|true
+# expect: at "1"|"b"|"a"|null|null|null|null|null
+# expect: scalar-doc 9|false|x|0
+# expect: order Ada (36) admin,writer total=12.5 vip=false notes=2
+# expect: parse-defaults guest 0 0 true
+# Json typed member reads: kinds, fallbacks (missing, null, wrong kind, a
+# document that is not an object), integral floats, paths, and the shared
+# values of getList / getObject; then a realistic order payload read into a
+# class through the getters.
+from lamjson import Json
+from lamerrors import Result
+
+class Order {
+    func init(self, doc: json) {
+        customer: json = Json.getObject(doc, "customer")
+        self.name: str = Json.getStr(customer, "name", "anonymous")
+        self.age: int = Json.getInt(customer, "age")
+        self.roles: list[str] = names(Json.getList(customer, "roles"))
+        self.total: float = Json.getFloat(doc, "total")
+        self.vip: bool = Json.getBool(customer, "vip")
+        self.notes: int = len(Json.getList(doc, "notes"))
+    }
+
+    func line(self) -> str {
+        return f"{self.name} ({self.age}) {','.join(self.roles)} total={self.total} vip={self.vip} notes={self.notes}"
+    }
+}
+
+func names(items: list[json]) -> list[str] {
+    out: list[str] = []
+    for item in items {
+        if Json.kind(item) == "string" {
+            name: str = item
+            out.append(name)
+        }
+    }
+    return out
+}
+
+func parse(text: str) -> Result[Order] {
+    doc: json = Json.decode(text)?
+    return Result.Ok(Order(doc))
+}
+
+func main() {
+    doc: json = Json.decode('{"name":"Ada","age":36,"ratio":2.0,"half":3.5,"big":1e300,"neg":-5,"huge":9007199254740993,"negf":-3.0,"quarter":0.25,"ok":true,"no":false,"flag":"true","tags":["a","b"],"user":{"first":"A","home":{"zip":"1"}},"nil":null,"items":[{"id":9}],"deep":{"s":"deep"}}').unwrap()
+
+    print(f"str {Json.getStr(doc, 'name')}|{Json.getStr(doc, 'age', '?')}|{Json.getStr(doc, 'missing', '-')}|{Json.getStr(doc, 'tags', '-')}|null->{Json.getStr(doc, 'nil', 'n')}|{Json.getStr(Json.getObject(doc, 'deep'), 's')}")
+    print(f"int {Json.getInt(doc, 'age')}|{Json.getInt(doc, 'ratio')}|{Json.getInt(doc, 'half', -1)}|{Json.getInt(doc, 'big', -2)}|{Json.getInt(doc, 'name', 7)}|{Json.getInt(doc, 'neg')}|{Json.getInt(doc, 'huge')}|{Json.getInt(doc, 'negf')}")
+    print(f"float {Json.getFloat(doc, 'half')}|{Json.getFloat(doc, 'age')}|{Json.getFloat(doc, 'big')}|{Json.getFloat(doc, 'quarter')}|{Json.getFloat(doc, 'ok', -1.0)}")
+    print(f"bool {Json.getBool(doc, 'ok')}|{Json.getBool(doc, 'no', true)}|{Json.getBool(doc, 'flag', true)}|{Json.getBool(doc, 'flag')}")
+    print(f"has {Json.has(doc, 'name')}|{Json.has(doc, 'nil')}|{Json.has(doc, 'missing')}|{Json.has(Json.getObject(doc, 'tags'), 'a')}|{Json.has(doc['tags'], '0')}")
+
+    tags: list[json] = Json.getList(doc, "tags")
+    tagTexts: list[str] = names(tags)
+    print(f"list {len(tags)} {','.join(tagTexts)}|{len(Json.getList(doc, 'name'))}|{len(Json.getList(doc, 'missing'))}")
+
+    # getList / getObject return the document's own containers.
+    items: list[json] = Json.getList(doc, "items")
+    first: json = items[0]
+    first["id"] = 10
+    print(f"list-shared {Json.at(doc, ['items', 0])}")
+    user: json = Json.getObject(doc, "user")
+    empty: json = Json.getObject(doc, "missing")
+    empty["x"] = 1
+    print(f"object {Json.getStr(user, 'first')}|{Json.getObject(doc, 'name')}|{Json.getObject(doc, 'missing')}|{Json.has(doc, 'missing') == false}")
+
+    print(f"at {Json.at(doc, ['user', 'home', 'zip'])}|{Json.at(doc, ['tags', -1])}|{Json.at(doc, ['tags', -2])}|{Json.at(doc, ['tags', 5])}|{Json.at(doc, ['tags', 'x'])}|{Json.kind(Json.at(doc, ['user', 'home', 'zip', 0]))}|{Json.at(doc, ['nil', 'a'])}|{Json.at(doc, ['missing', 0, 'x'])}")
+
+    # A document that is not an object reads every member as missing.
+    arr: json = [1, 2]
+    text: json = "x"
+    print(f"scalar-doc {Json.getInt(arr, 'x', 9)}|{Json.has(arr, 'x')}|{Json.getStr(text, 'x', 'x')}|{len(Json.getList(arr, 'x'))}")
+
+    order: Order = parse('{"customer":{"name":"Ada","age":36.0,"roles":["admin","writer"],"vip":"yes"},"total":12.5,"notes":[{},{}]}').unwrap()
+    print(f"order {order.line()}")
+    guest: Order = parse('{"customer":null,"total":"12"}').unwrap()
+    print(f"parse-defaults {guest.name.replace('anonymous', 'guest')} {guest.age} {guest.total} {len(guest.roles) == 0}")
+}

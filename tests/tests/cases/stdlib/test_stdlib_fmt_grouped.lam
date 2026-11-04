@@ -1,0 +1,44 @@
+# expect: int 1,234,567|-1.234.567|0|999|1,000|-100|5.00|136.000,00|-9,223,372,036,854,775,808
+# expect: float 1,234,567.5|1.360,00|-0.5|1,000,000,000,000,000,000,000|1 234.6|1,000.00|0.001|-1,000|12
+# expect: special NaN|+Inf|-Inf
+# expect: keywords 1'234'567.89|12.345,7
+# expect: it 1.360,00 1,360.00 0,05 -12.345,68
+# expect: price 1.234,50|1.200|12.345
+# expect: typed 1,234 2,500.25
+# Fmt.grouped: int and float overloads, separators, fixed and shortest
+# decimals, rounding, signs, NaN / infinities, keyword arguments, and
+# money texts in Italian and English styles. ``1e21`` (a float literal
+# without a ``.``) picks the float overload.
+from lamfmt import Fmt
+from lamconv import Conv
+from lamerrors import Result
+
+func money(cents: int, lang: str) -> str {
+    if lang == "it" {
+        return Fmt.grouped(cents / 100.0, ".", 2, ",")
+    }
+    return Fmt.grouped(cents / 100.0, ",", 2, ".")
+}
+
+func price(value: float) -> str {
+    cents: int = int(value * 100.0 + 0.5)
+    if cents % 100 == 0 {
+        return Fmt.grouped(cents // 100, ".")
+    }
+    return Fmt.grouped(value, ".", 2, ",")
+}
+
+func main() {
+    print(f"int {Fmt.grouped(1234567)}|{Fmt.grouped(-1234567, '.')}|{Fmt.grouped(0)}|{Fmt.grouped(999)}|{Fmt.grouped(1000)}|{Fmt.grouped(-100)}|{Fmt.grouped(5, ',', 2)}|{Fmt.grouped(136000, '.', 2, ',')}|{Fmt.grouped(-9223372036854775807 - 1)}")
+    print(f"float {Fmt.grouped(1234567.5)}|{Fmt.grouped(1360.0, '.', 2, ',')}|{Fmt.grouped(-0.5)}|{Fmt.grouped(1e21)}|{Fmt.grouped(1234.567, ' ', 1)}|{Fmt.grouped(999.996, ',', 2)}|{Fmt.grouped(0.001)}|{Fmt.grouped(-1000.0)}|{Fmt.grouped(12.0)}")
+    nan: Result[float] = Conv.parse("NaN")
+    inf: Result[float] = Conv.parse("Inf")
+    negInf: Result[float] = Conv.parse("-Inf")
+    print(f"special {Fmt.grouped(nan.unwrap())}|{Fmt.grouped(inf.unwrap())}|{Fmt.grouped(negInf.unwrap())}")
+    print(f"keywords {Fmt.grouped(1234567.891, separator="'", decimals=2)}|{Fmt.grouped(12345.67, decimalSeparator=",", separator=".", decimals=1)}")
+    print(f"it {money(136000, 'it')} {money(136000, 'en')} {money(5, 'it')} {money(-1234568, 'it')}")
+    print(f"price {price(1234.5)}|{price(1200.0)}|{price(12345.0)}")
+    n: int = 1234
+    f: float = 2500.25
+    print(f"typed {Fmt.grouped(n)} {Fmt.grouped(f)}")
+}

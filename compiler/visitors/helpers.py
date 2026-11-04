@@ -9,6 +9,16 @@ from compiler.constants import COMPILER_GO_PACKAGES, DUNDER_OPS, GO_BINDING_KEYW
 from compiler.link_symbols import mask_go_literals
 
 
+class CallArgSig(tuple):
+    """A call's inferred argument types whose trailing ``keywords`` were
+    passed by name (``{name: go_type}``)."""
+
+    def __new__(cls, types, keywords):
+        sig = super().__new__(cls, types)
+        sig.keywords = dict(keywords)
+        return sig
+
+
 class HelpersMixin:
     """Naming, type conversion, and utility helpers."""
 
@@ -1281,8 +1291,10 @@ class HelpersMixin:
             return "interface{}"
         d = node.data
         if d == "number":
-            tok = str(node.children[0])
-            return "float64" if "." in tok else "int"
+            tok = node.children[0]
+            # ``1e21`` is a float literal without a ``.``.
+            is_float = getattr(tok, "type", "") == "FLOAT_NUMBER" or "." in str(tok)
+            return "float64" if is_float else "int"
         if d == "string" or d == "fstring":
             return "string"
         if d == "const_true" or d == "const_false":
@@ -1290,6 +1302,13 @@ class HelpersMixin:
         if d == "factor" and node.children and isinstance(node.children[-1], Tree) and node.children[-1].data == "number":
             # ``-1`` / ``+2.5``: the sign does not change the numeric type.
             return self._infer_type_from_value(node.children[-1])
+        if d == "factor" and len(node.children) == 2 and isinstance(node.children[-1], Tree):
+            # ``-x`` (``sorted([-x for x in xs])``): the operand's numeric type.
+            operand = node.children[-1]
+            inner = self._expr_go_type_hint(operand) or self._infer_type_from_value(operand)
+            if inner in {"int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",
+                         "uint32", "uint64", "float32", "float64"}:
+                return inner
         if d == "list":
             children = [c for c in node.children if c is not None]
             # ``[["a"], []]``: an empty list / dict literal takes the type
@@ -1349,6 +1368,10 @@ class HelpersMixin:
             # ``describe(nums)`` reaches the ``list[int]`` overload.
             if var_name in self._var_go_types:
                 return self._var_go_types[var_name]
+            linked = self._link_const_go_names.get(var_name)
+            if linked and linked in self._var_go_types:
+                # A namespaced global (``Names`` emitted as ``Names__main``).
+                return self._var_go_types[linked]
             return "interface{}"
         if d == "funccall":
             func = node.children[0]
@@ -1831,17 +1854,20 @@ class HelpersMixin:
         annotations on every literal.
         """
         sig = []
+        keywords: Dict[str, str] = {}
         if not isinstance(args_node, Tree) or args_node.data != "arguments":
             return tuple(sig)
         for child in args_node.children:
             if not isinstance(child, Tree):
                 continue
             node = child
+            keyword = ""
             if child.data == "argvalue":
                 if len(child.children) == 2:
                     # ``name=value`` — dispatch on the value while the call
                     # planner handles name-based reordering later.
                     node = child.children[1]
+                    keyword = self._get_name(child.children[0])
                 elif child.children and isinstance(child.children[0], Tree):
                     node = child.children[0]
             elif child.data in ("stararg", "kwargs", "starparams"):
@@ -1851,8 +1877,52 @@ class HelpersMixin:
                 # ``put(key, chunk + "end")``: typed variables and arithmetic
                 # on them, so the ``str`` overload wins over ``any``.
                 inferred = self._expr_go_type_hint(node) or inferred
+            if inferred in ("", "interface{}"):
+                # ``Html.sanitize(Html.parse(s), p)``: a call of a function
+                # or static method whose variants all declare one result.
+                inferred = self._declared_call_result_go_type(node) or inferred
             sig.append(inferred)
+            if keyword:
+                keywords[keyword] = inferred
+        if keywords:
+            # The keyword values stay in source order in the tuple (arity and
+            # exact matches as before) and are also named, so a variant can
+            # be matched by its parameter names (``grouped(1.5, decimals=2)``).
+            return CallArgSig(sig, keywords)
         return tuple(sig)
+
+    def _declared_call_result_go_type(self, node) -> str:
+        """The declared Go result type of ``f(...)`` / ``Class.method(...)``
+        when every variant of the callee returns the same non-generic type
+        (``""`` otherwise)."""
+        if not (isinstance(node, Tree) and node.data == "funccall" and node.children):
+            return ""
+        callee = node.children[0]
+        key = ""
+        if isinstance(callee, Tree) and callee.data in ("var", "name") and callee.children:
+            key = self._get_name(callee)
+            if key in getattr(self, "_var_go_types", {}):
+                # A local function value shadowing a top-level function.
+                return ""
+        elif (
+            isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2
+            and isinstance(callee.children[0], Tree) and callee.children[0].data in ("var", "name")
+        ):
+            owner = self._get_name(callee.children[0])
+            if owner in getattr(self, "_class_names", set()):
+                key = f"{owner}.{self._get_name(callee.children[1])}"
+        if not key:
+            return ""
+        if key in getattr(self, "_func_generic_params", {}) or key in getattr(self, "_generic_method_returns", {}):
+            return ""
+        variants = getattr(self, "_overload_variants", {}).get(key) or []
+        results = {str(variant.get("return") or "") for variant in variants}
+        if len(results) != 1:
+            return ""
+        result = results.pop()
+        if not result or result == "interface{}":
+            return ""
+        return result
 
     def _fill_default_args(self, func_key: str, args: list) -> list:
         """Fill in default argument values for calls with fewer args than params.

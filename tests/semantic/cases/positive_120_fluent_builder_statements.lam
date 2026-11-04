@@ -1,0 +1,67 @@
+# expect-pass
+# expect-no-warning: dropped return value
+# A call of an instance method whose declared return type is the
+# receiver's class (or a base of it) used as a statement is a fluent
+# builder step, not a dropped value: local, imported and stdlib builders
+# (`Where.addIf`, `Multipart.file`), chains, `self` calls, inherited and
+# generic builders.
+from lamdb import Where
+from lamhttp import Multipart
+from fluent_builder_helper import Query
+
+class Builder {
+    func init(self) {
+        self.parts: list[str] = []
+    }
+
+    func add(self, s: str) -> Builder {
+        self.parts.append(s)
+        return self
+    }
+
+    func addAll(self, xs: list[str]) -> Builder {
+        for x in xs {
+            self.add(x)
+        }
+        return self
+    }
+}
+
+class LoudBuilder(Builder) {
+    func shout(self, s: str) -> LoudBuilder {
+        self.add(s.toUpper())
+        return self
+    }
+}
+
+class Bag[T] {
+    func init(self) {
+        self.items: list[T] = []
+    }
+
+    func put(self, item: T) -> Bag[T] {
+        self.items.append(item)
+        return self
+    }
+}
+
+func main() {
+    w: Where = Where()
+    w.addIf(true, "a = ?", [1])
+    w.add("b = ?", [2])
+    form: Multipart = Multipart()
+    form.field("x", "1")
+    form.file("f", "a.txt", "text/plain", bytes("hi"))
+    b: Builder = Builder()
+    b.add("x")
+    b.add("y").add("z")
+    b.addAll(["p", "q"])
+    loud: LoudBuilder = LoudBuilder()
+    loud.shout("a")
+    loud.add("b")
+    q: Query = Query()
+    q.where("x = 1")
+    bag: Bag[int] = Bag[int]()
+    bag.put(1).put(2)
+    print(w.sql(), len(b.parts), len(loud.parts), q.size(), len(bag.items), form.contentType() != "")
+}

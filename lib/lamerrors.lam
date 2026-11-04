@@ -44,7 +44,9 @@ class Error {
             # it prints as before, just its text.
             return self.message
         }
-        if self.cause != None {
+        # A cause that reads as the message itself (a driver error kept for
+        # inspection, ``Db.sqlState``) is not repeated.
+        if self.cause != None and str(self.cause) != self.message {
             return f"{self.kind}: {self.message} (cause: {self.cause})"
         }
         return f"{self.kind}: {self.message}"

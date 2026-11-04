@@ -6,6 +6,14 @@
 # 450 KB), so zones resolve in minimal containers without system tzdata;
 # an installed system database (or ``ZONEINFO``) still takes precedence.
 #
+# Parsing: ``DateTime.parse(layout, value)`` reads one Go layout,
+# ``DateTime.parseAny(value, layouts)`` the first of several that matches,
+# and ``DateTime.parseCommon(value)`` the usual interchange forms (RFC 3339,
+# RFC 1123/822, ISO ``2006-01-02 15:04:05``, US ``01/02/2006``) and the
+# timestamp texts of PostgreSQL (``2026-11-03 19:05:00.123456+01``,
+# ``timestamptz`` and ``timestamp``) and SQLite. A text with an offset keeps
+# that offset as its location; one without is read in ``location``.
+#
 # Import with: from lamdatetime import DateTime
 
 from lamerrors import Result, Error
@@ -43,6 +51,10 @@ go! {
         zonedLayouts := []string{
             time.RFC3339Nano,
             time.RFC3339,
+            // PostgreSQL timestamptz texts: ``2026-11-03 19:05:00.5+01``,
+            // ``+05:30`` offsets.
+            "2006-01-02 15:04:05.999999999Z07:00",
+            "2006-01-02 15:04:05.999999999-07",
             time.RFC1123Z,
             time.RFC1123,
             time.RFC822Z,
@@ -57,7 +69,9 @@ go! {
             }
         }
         localLayouts := []string{
-            "2006-01-02 15:04:05",
+            // ``timestamp`` without a zone, fractional seconds optional.
+            "2006-01-02 15:04:05.999999999",
+            "2006-01-02T15:04:05.999999999",
             "2006-01-02 15:04",
             "2006-01-02",
             "01/02/2006 15:04:05",
@@ -72,6 +86,22 @@ go! {
             }
         }
         return time.Time{}, fmt.Errorf("no common date/time format matched: %w", lastErr)
+    }
+
+    // lamDateTimeLocationOf is the location name a parsed time keeps: the
+    // supplied one, or the text's own offset when it differs (``+01:00``,
+    // ``UTC`` for ``Z``).
+    func lamDateTimeLocationOf(parsed time.Time, loc *time.Location, supplied string) string {
+        _, offset := parsed.Zone()
+        _, suppliedOffset := parsed.In(loc).Zone()
+        if offset == suppliedOffset {
+            return supplied
+        }
+        name := parsed.Format("Z07:00")
+        if name == "Z" {
+            return "UTC"
+        }
+        return name
     }
 
     // Calendar month changes clamp to the target month's last day. This is
@@ -199,18 +229,57 @@ class DateTime {
                 parseError = err.Error()
             } else {
                 unixNanoseconds = int(parsed.UnixNano())
-                _, offset := parsed.Zone()
-                _, suppliedOffset := parsed.In(loc).Zone()
-                if offset != suppliedOffset {
-                    parsedLocation = parsed.Format("Z07:00")
-                    if parsedLocation == "Z" {
-                        parsedLocation = "UTC"
-                    }
-                }
+                parsedLocation = lamDateTimeLocationOf(parsed, loc, location)
             }
         }
         if parseError != "" {
             return Result.Err(Error("ParseError", f"DateTime.parseCommon {value}: {parseError}"))
+        }
+        return Result.Ok(DateTime(unixNanoseconds, parsedLocation))
+    }
+
+    static func parseAny(value: str, layouts: list[str], location: str = "UTC") -> Result[DateTime] {
+        #- Parse ``value`` with the first of the Go ``layouts`` that matches
+           it, in order: ``DateTime.parseAny(text, ["2006-01-02T15:04:05Z07:00",
+           "2006-01-02"])``. A layout with an offset (``Z07:00``, ``-07``)
+           keeps the text's offset as the location; the others read the text
+           in ``location``. An unknown location, an empty ``layouts`` or no
+           matching layout is an error (``LocationError`` / ``ParseError``,
+           the message names the last layout's failure). -#
+        unixNanoseconds: int = 0
+        parsedLocation: str = location
+        parseError: str = ""
+        locationError: str = ""
+        go! {
+            loc, err := lamDateTimeLocation(location)
+            if err != nil {
+                locationError = err.Error()
+            } else if len(layouts) == 0 {
+                parseError = "no layouts given"
+            } else {
+                matched := false
+                for _, layout := range layouts {
+                    if !matched {
+                        parsed, err := time.ParseInLocation(layout, value, loc)
+                        if err == nil {
+                            matched = true
+                            unixNanoseconds = int(parsed.UnixNano())
+                            parsedLocation = lamDateTimeLocationOf(parsed, loc, location)
+                        } else {
+                            parseError = err.Error()
+                        }
+                    }
+                }
+                if matched {
+                    parseError = ""
+                }
+            }
+        }
+        if locationError != "" {
+            return Result.Err(Error("LocationError", f"DateTime.parseAny {location}: {locationError}"))
+        }
+        if parseError != "" {
+            return Result.Err(Error("ParseError", f"DateTime.parseAny {value}: no layout matched ({parseError})"))
         }
         return Result.Ok(DateTime(unixNanoseconds, parsedLocation))
     }

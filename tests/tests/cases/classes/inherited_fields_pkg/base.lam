@@ -1,0 +1,24 @@
+# Helper package module for test_inherited_fields_typed_json.lam: the base
+# class whose fields subclasses in other modules read.
+
+class Problem {
+    func init(self, title: str, status: int) {
+        self.title: str = title
+        self.status: int = status
+        self.type_: str = "about:blank"
+        self.tags: list[str] = []
+        self.ratio: float = 0.5
+        self.extra: optional[str] = None
+    }
+}
+
+class Box[T] {
+    func init(self, item: T) {
+        self.item: T = item
+        self.label: str = "box"
+    }
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

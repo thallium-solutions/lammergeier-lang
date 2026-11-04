@@ -1,0 +1,143 @@
+# Nested functions (a `func` inside a function, method or another nested
+# function) with default parameters: callers may leave out defaulted
+# arguments and pass keywords in any order, as for top-level functions.
+#
+# expect: ....7|..7|00007|-x
+# expect: 3:a,b,c
+# expect: 5 7 10
+# expect: total=6 calls=3
+# expect: [a]<a>[a)
+# expect: ab|ab|xx
+# expect: ok 5 err neg
+# expect: 1-2-3
+# expect: <<hi>>
+# expect: 120 6
+# expect: v=2.5 v=3
+# expect: inner=7 inner=9
+
+from lamerrors import Result
+from nested_defaults_provider import DefaultWidth, framed
+
+func outer(n: int) -> str {
+    func pad(s: str, width: int = 5, fill: str = ".") -> str {
+        out: str = s
+        while len(out) < width {
+            out = fill + out
+        }
+        return out
+    }
+    return pad(str(n)) + "|" + pad(str(n), 3) + "|" + pad(str(n), fill="0") + "|" + pad("x", width=2, fill="-")
+}
+
+func joined(items: list[str]) -> str {
+    # A default referencing an outer parameter and a list default.
+    func render(xs: list[str] = items, sep: str = ",") -> str {
+        return f"{len(xs)}:{sep.join(xs)}"
+    }
+    return render()
+}
+
+class Scaler {
+    func init(self, base: int) {
+        self.base: int = base
+    }
+
+    func run(self) -> str {
+        func scale(x: int, factor: int = 1, offset: int = 0) -> int {
+            return self.base * factor + x + offset
+        }
+        return f"{scale(0)} {scale(2)} {scale(0, offset=5)}"
+    }
+}
+
+func counting() -> str {
+    total: int = 0
+    calls: int = 0
+    func add(x: int = 1) {
+        total += x
+        calls += 1
+    }
+    add()
+    add(2)
+    add(x=3)
+    return f"total={total} calls={calls}"
+}
+
+func repeat(s: str) -> str {
+    func twice(x: str, times: int = 2) -> str {
+        return x * times
+    }
+    func nested(x: str) -> str {
+        # A nested function calling another one with its default.
+        return twice(x)
+    }
+    return nested(s) + "|" + twice(s) + "|" + twice("x", times=2)
+}
+
+func checked(n: int) -> Result[int] {
+    func validate(x: int, label: str = "neg") -> Result[int] {
+        if x < 0 {
+            return Result.Err(label)
+        }
+        return Result.Ok(x)
+    }
+    return validate(n)
+}
+
+func dashed(a: int, b: int, c: int) -> str {
+    func part(x: int, sep: str = "-", last: bool = false) -> str {
+        return str(x) if last else f"{x}{sep}"
+    }
+    return part(a) + part(b, sep="-") + part(c, last=true)
+}
+
+func wrapped(s: str) -> str {
+    func wrap(x: str, depth: int = DefaultWidth - 2) -> str {
+        return "<" * depth + x + ">" * depth
+    }
+    return wrap(s)
+}
+
+func factorials() -> str {
+    func fact(n: int, acc: int = 1) -> int {
+        if n <= 1 {
+            return acc
+        }
+        return fact(n - 1, acc * n)
+    }
+    return f"{fact(5)} {fact(3)}"
+}
+
+func values() -> str {
+    func show(v: float = 2.5, prefix: str = "v=") -> str {
+        return f"{prefix}{v}"
+    }
+    return show() + " " + show(3.0)
+}
+
+func layered() -> str {
+    func middle(x: int) -> str {
+        func inner(y: int, plus: int = 5) -> int {
+            return y + plus
+        }
+        return f"inner={inner(x)} inner={inner(x, plus=7)}"
+    }
+    return middle(2)
+}
+
+func main() {
+    print(outer(7))
+    print(joined(["a", "b", "c"]))
+    print(Scaler(5).run())
+    print(counting())
+    print(framed("a"))
+    print(repeat("a").replace("aa", "ab"))
+    r: Result[int] = checked(5)
+    e: Result[int] = checked(-1)
+    print(f"ok {r.unwrap()} err {e.error.message}")
+    print(dashed(1, 2, 3))
+    print(wrapped("hi"))
+    print(factorials())
+    print(values())
+    print(layered())
+}

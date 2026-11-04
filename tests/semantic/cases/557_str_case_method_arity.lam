@@ -1,0 +1,10 @@
+# expect-error: `str.camelCase()` takes 0 arguments, got 1
+# expect-error: `str.snakeCase()` takes 0 arguments, got 2
+# expect-error: `str.kebabCase()` takes 0 arguments, got 1
+# The case conversions take no argument (the separator is in the name).
+func main() {
+    name: str = "user_name"
+    _ = name.camelCase("_")
+    _ = name.snakeCase("-", true)
+    _ = name.kebabCase(1)
+}

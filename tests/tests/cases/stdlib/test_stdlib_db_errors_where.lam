@@ -1,0 +1,125 @@
+# expect: unique false true 23505 true false
+# expect: unique-text DbExecError: constraint failed: UNIQUE constraint failed: users.email (2067)
+# expect: primary-key true 23505
+# expect: foreign-key true 23503 false
+# expect: not-null 23502 check 23514
+# expect: other [] false false
+# expect: non-errors false false false [] []
+# expect: builder-unique true
+# expect: tx-unique true
+# expect: where WHERE (id > ?) AND (CAST(name AS TEXT) ILIKE ? ESCAPE '!' OR CAST(email AS TEXT) ILIKE ? ESCAPE '!') [0 %100!%!_% %100!%!_%]
+# expect: like 1 Ada 100%_off
+# expect: like-literal 0 1
+# expect: empty [] true [] WHERE (1 = 0) AND (id IN (?, ?))
+# expect: one-clause WHERE (a = ? OR b = ?) AND visible
+# expect: paginate 2 [Ada 100%_off Bea] [1 7 2 0]
+# expect: pattern %a\\b\%c\_d% x% %x 50!% a!!b
+# expect: pattern-errors 2
+# expect: time 2026-11-03T19:05:00Z|2026-11-03T18:05:00Z|03/11/2026 19:05|-|1970-01-01T00:00:12Z|2026-11-03T19:05:00Z
+# expect: time-str 2026-11-03T19:05:00.123456Z
+# expect: time-zone LocationError
+# expect: signup ada@x created|ada@x taken|eve@x created
+# lamdb driver error codes and the Where builder on SQLite: unique, primary
+# key, foreign key, not-null and check violations read from the driver's
+# extended result codes (Result, Error, QueryBuilder and transaction
+# failures), errors that are not constraint failures, Where conditions
+# with ILIKE / LIKE escaping, IN lists, pagination parameters, LIKE
+# patterns, Row.timeText, and a signup flow that turns a unique violation
+# into a domain answer.
+from lamdb import Db, Row, Tx, Where
+from lamerrors import Result, Error
+
+go! {
+    import "time"
+}
+
+func driverTimeRow() -> dict[str, any] {
+    go! {
+        return map[string]interface{}{"at": time.Date(2026, 11, 3, 20, 5, 0, 123456000, time.FixedZone("", 3600))}
+    }
+}
+
+func signup(db: Db, email: str) -> Result[str] {
+    inserted: Result[int] = db.exec("INSERT INTO users (email, name) VALUES (?, ?)", [email, email])
+    if Db.isUniqueViolation(inserted) {
+        return Result.Ok(f"{email} taken")
+    }
+    _ = inserted?
+    return Result.Ok(f"{email} created")
+}
+
+func main() {
+    db: Db = Db.connect("sqlite", ":memory:").unwrap()
+    db.exec("PRAGMA foreign_keys = ON").unwrap()
+    db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT)").unwrap()
+    db.exec("CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), title TEXT CHECK (length(title) > 0))").unwrap()
+    db.exec("INSERT INTO users (email, name) VALUES (?, ?)", ["a@x", "Ada 100%_off"]).unwrap()
+    db.exec("INSERT INTO users (email, name) VALUES (?, ?)", ["b@x", "Bea"]).unwrap()
+
+    dup: Result[int] = db.exec("INSERT INTO users (email, name) VALUES (?, ?)", ["a@x", "B"])
+    print(f"unique {dup.ok()} {Db.isUniqueViolation(dup)} {Db.sqlState(dup)} {Db.isUniqueViolation(dup.error)} {Db.isForeignKeyViolation(dup)}")
+    print(f"unique-text {dup.error}")
+    pk: Result[int] = db.exec("INSERT INTO users (id, email) VALUES (1, 'z@x')")
+    print(f"primary-key {Db.isUniqueViolation(pk)} {Db.sqlState(pk)}")
+    fk: Result[int] = db.exec("INSERT INTO posts (user_id, title) VALUES (?, ?)", [99, "t"])
+    print(f"foreign-key {Db.isForeignKeyViolation(fk)} {Db.sqlState(fk)} {Db.isUniqueViolation(fk)}")
+    nn: Result[int] = db.exec("INSERT INTO users (email) VALUES (NULL)")
+    ck: Result[int] = db.exec("INSERT INTO posts (user_id, title) VALUES (1, '')")
+    print(f"not-null {Db.sqlState(nn)} check {Db.sqlState(ck)}")
+    syntax: Result[list[dict[str, any]]] = db.query("SELEKT 1")
+    print(f"other [{Db.sqlState(syntax)}] {Db.isUniqueViolation(syntax)} {Db.isForeignKeyViolation(syntax)}")
+    plain: Error = Error("DbExecError", "UNIQUE constraint failed (23505)")
+    print(f"non-errors {Db.isUniqueViolation(Result.Ok(1))} {Db.isUniqueViolation('duplicate key 23505')} {Db.isUniqueViolation(plain)} [{Db.sqlState(None)}] [{Db.sqlState(42)}]")
+
+    builder: Result[int] = db.table("users").insert({"email": "b@x", "name": "again"})
+    print(f"builder-unique {Db.isUniqueViolation(builder)}")
+    func insertTwice(tx: Tx) -> Result[bool] {
+        _ = tx.exec("INSERT INTO users (email) VALUES (?)", ["c@x"])?
+        _ = tx.exec("INSERT INTO users (email) VALUES (?)", ["c@x"])?
+        return Result.Ok(true)
+    }
+    committed: Result[bool] = db.transaction(insertTwice)
+    print(f"tx-unique {Db.isUniqueViolation(committed)}")
+
+    w: Where = Where().add("id > ?", [0]).addIf(false, "name = ?", ["zz"]).ilikeAny(["name", "email"], " 100%_ ")
+    print(f"where {w.sql()} {w.params()}")
+    w2: Where = Where().add("id > ?", [0]).likeAny(["name", "email"], " 100%_ ")
+    rows: list[dict[str, any]] = db.query(f"SELECT id, name FROM users {w2.sql()} ORDER BY id", w2.params()).unwrap()
+    print(f"like {len(rows)} {Row.str(rows[0], 'name')}")
+    literal: Where = Where().likeAny(["name"], "0x_off")
+    matchAny: Where = Where().likeAny(["name"], "0%_off")
+    print(f"like-literal {len(db.query(f'SELECT id FROM users {literal.sql()}', literal.params()).unwrap())} {len(db.query(f'SELECT id FROM users {matchAny.sql()}', matchAny.params()).unwrap())}")
+    print(f"empty [{Where().sql()}] {Where().likeAny(['name'], '   ').isEmpty()} {Where().params()} {Where().addIn('id', []).sql()} {Where().addIn('id', [1, 2]).sql('AND')}")
+    print(f"one-clause {Where().add('a = ? OR b = ?', [1, 2]).sql()} AND visible")
+
+    page: Where = Where().addIn("id", [1, 7, 2])
+    pageRows: list[dict[str, any]] = db.query(f"SELECT name FROM users {page.sql()} ORDER BY id LIMIT ? OFFSET ?", page.paramsWith([10, 0])).unwrap()
+    print(f"paginate {len(pageRows)} {[Row.str(r, 'name') for r in pageRows]} {page.paramsWith([0])}")
+
+    print(f"pattern {Where.likePattern('a\\b%c_d')} {Where.likePattern('x', 'prefix')} {Where.likePattern('x', 'suffix', '!')} {Where.likePattern('50%', 'exact', '!')} {Where.likePattern('a!b', 'exact', '!')}")
+    failures: int = 0
+    for args in [["x", "fuzzy", "\\"], ["x", "contains", "%"]] {
+        try {
+            _ = Where.likePattern(args[0], args[1], args[2])
+        } catch ValueError as _e {
+            failures += 1
+        }
+    }
+    print(f"pattern-errors {failures}")
+
+    row: dict[str, any] = db.first("SELECT '2026-11-03 19:05:00' AS t, '2026-11-03 19:05:00.5+01' AS pg, 12 AS n").unwrap()
+    driver: dict[str, any] = driverTimeRow()
+    print(f"time {Row.timeText(row, 't')}|{Row.timeText(row, 'pg')}|{Row.timeText(row, 'pg', '02/01/2006 15:04', 'Europe/Rome')}|{Row.timeText(row, 'zz', fallback='-')}|{Row.timeText(row, 'n')}|{Row.timeText(driver, 'at')}")
+    print(f"time-str {Row.str(driver, 'at')}")
+    try {
+        _ = Row.timeText(row, "t", location="Mars/Base")
+    } catch e {
+        print(f"time-zone {str(e).split(':')[0]}")
+    }
+
+    answers: list[str] = []
+    for email in ["ada@x", "ada@x", "eve@x"] {
+        answers.append(signup(db, email).unwrap())
+    }
+    print(f"signup {'|'.join(answers)}")
+}

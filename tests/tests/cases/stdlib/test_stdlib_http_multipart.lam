@@ -1,0 +1,131 @@
+# expect: content-type true 52 4
+# expect: options tag=a,b; title=Jackie 1961; file photo bag %221%22.jpg image/jpeg 6 00ff0d0a2d2d
+# expect: builder x=y
+# expect: static note=città
+# expect: fixed multipart/form-data; boundary=XyZ-1
+# expect: body --XyZ-1|Content-Disposition: form-data; name="a%0Ab%22"||1|--XyZ-1|Content-Disposition: form-data; name="f"; filename=""|Content-Type: application/octet-stream||hi|--XyZ-1--|
+# expect: quoted multipart/form-data; boundary="a b"
+# expect: empty --E--|
+# expect: random-differs true
+# expect: bad-boundary true
+# expect: bad-content-type true
+# expect: clash true
+# expect: upload 3 files 5 bytes
+# lamhttp.Multipart: fields and binary files sent through
+# HttpRequestOptions.multipart, the fluent HttpRequest.multipart and
+# Http.request, parsed by Go's multipart reader on a local server; fixed
+# and quoted boundaries, name escaping, an empty form, and the thrown
+# ValueErrors (invalid boundary, content type with a line break, data
+# containing the boundary).
+from lamhttp import Http, HttpClient, HttpRequestOptions, HttpResponse, Multipart
+
+go! {
+    import (
+        "fmt"
+        "io"
+        "net"
+        "net/http"
+        "sort"
+        "strings"
+    )
+}
+
+func startServer() -> int {
+    go! {
+        listener, err := net.Listen("tcp", "127.0.0.1:0")
+        if err != nil {
+            panic(err)
+        }
+        mux := http.NewServeMux()
+        mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+            if err := r.ParseMultipartForm(1 << 20); err != nil {
+                fmt.Fprintf(w, "error %v", err)
+            } else {
+                keys := []string{}
+                for k := range r.MultipartForm.Value {
+                    keys = append(keys, k)
+                }
+                sort.Strings(keys)
+                parts := []string{}
+                for _, k := range keys {
+                    parts = append(parts, k+"="+strings.Join(r.MultipartForm.Value[k], ","))
+                }
+                for k, headers := range r.MultipartForm.File {
+                    for _, fh := range headers {
+                        f, _ := fh.Open()
+                        data, _ := io.ReadAll(f)
+                        parts = append(parts, fmt.Sprintf("file %s %s %s %d %x", k, fh.Filename, fh.Header.Get("Content-Type"), len(data), data))
+                    }
+                }
+                fmt.Fprint(w, strings.Join(parts, "; "))
+            }
+        })
+        go http.Serve(listener, mux)
+        return listener.Addr().(*net.TCPAddr).Port
+    }
+}
+
+class Upload {
+    func init(self, name: str, data: bytes) {
+        self.name: str = name
+        self.data: bytes = data
+    }
+}
+
+func uploadForm(uploads: list[Upload]) -> Multipart {
+    form: Multipart = Multipart().field("count", str(len(uploads)))
+    for upload in uploads {
+        _ = form.file("files", upload.name, "text/plain", upload.data)
+    }
+    return form
+}
+
+func main() {
+    port: int = startServer()
+    base: str = f"http://127.0.0.1:{port}"
+    form: Multipart = Multipart().field("title", "Jackie 1961").field("tag", "a").field("tag", "b").file("photo", "bag \"1\".jpg", "image/jpeg", bytes([0, 255, 13, 10, 45, 45]))
+    print(f"content-type {form.contentType().startsWith('multipart/form-data; boundary=lam-')} {len(form.boundaryText())} {form.partCount()}")
+
+    client: HttpClient = HttpClient(base)
+    res: HttpResponse = client.request("POST", "/upload", HttpRequestOptions().multipart(form)).unwrap()
+    print(f"options {res.body}")
+    built: HttpResponse = client.build("POST", "/upload").multipart(Multipart().field("x", "y")).send().unwrap()
+    print(f"builder {built.body}")
+    direct: HttpResponse = Http.request("POST", f"{base}/upload", HttpRequestOptions().multipart(Multipart().field("note", "città"))).unwrap()
+    print(f"static {direct.body}")
+
+    fixed: Multipart = Multipart().setBoundary("XyZ-1").field("a\nb\"", "1").file("f", "", "", bytes("hi"))
+    print(f"fixed {fixed.contentType()}")
+    print(f"body {str(fixed.body()).replace('\r\n', '|')}")
+    print(f"quoted {Multipart().setBoundary('a b').contentType()}")
+    print(f"empty {str(Multipart().setBoundary('E').body()).replace('\r\n', '|')}")
+    print(f"random-differs {Multipart().boundaryText() != Multipart().boundaryText()}")
+
+    try {
+        _ = Multipart().setBoundary("bad\nboundary")
+        print("bad-boundary accepted")
+    } catch ValueError as e {
+        print(f"bad-boundary {str(e).contains('invalid boundary')}")
+    }
+    try {
+        _ = Multipart().file("f", "x.txt", "text/plain\r\nX-Evil: 1", bytes("x"))
+        print("bad-content-type accepted")
+    } catch ValueError as e {
+        print(f"bad-content-type {str(e).contains('line breaks')}")
+    }
+    try {
+        _ = Multipart().setBoundary("B").field("x", "data\r\n--B--").body()
+        print("clash accepted")
+    } catch ValueError as e {
+        print(f"clash {str(e).contains('contains the boundary')}")
+    }
+
+    uploads: list[Upload] = [Upload("a.txt", bytes("ab")), Upload("b.txt", bytes("cde")), Upload("c.txt", bytes(""))]
+    reply: HttpResponse = client.request("POST", "/upload", HttpRequestOptions().multipart(uploadForm(uploads))).unwrap()
+    fileCount: int = reply.body.count("file files")
+    total: int = 0
+    for size in [len(u.data) for u in uploads] {
+        total += size
+    }
+    print(f"upload {fileCount} files {total} bytes")
+}

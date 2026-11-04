@@ -1,0 +1,19 @@
+# expect-pass
+# Helper module for 560_inherited_field_types.lam.
+
+class Owner {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Record {
+    func init(self, id: int) {
+        self.id: int = id
+        self.owner: Owner = Owner("o")
+        self.history: list[Owner] = []
+    }
+}
+
+func main() {
+}

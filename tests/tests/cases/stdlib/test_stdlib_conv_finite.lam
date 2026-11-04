@@ -1,0 +1,53 @@
+# expect: ok 12.5|-0.001|1e+06|16|0|1.7976931348623157e+308
+# expect: rejected NaN:false nan:false Inf:false -Infinity:false +inf:false 1e400:false -1e400:false
+# expect: malformed :false  1:false 1,5:false abc:false 1_000:false 0x_1p4:false
+# expect: kinds ParseError ParseError
+# expect: message cannot parse "Inf" as a finite float
+# expect: parse-accepts true
+# expect: total 3 valid 15.75 skipped=4
+# Conv.parseFinite: finite decimal / exponent / hexadecimal floats, NaN and
+# infinity spellings and overflow rejected (where Conv.parse accepts them),
+# malformed text, error kinds, and a `?`-propagating price parser summing
+# the valid values of a list.
+from lamconv import Conv
+from lamerrors import Result, Error
+
+func price(text: str) -> Result[float] {
+    value: float = Conv.parseFinite(text.trim())?
+    if value < 0.0 {
+        return Result.Err(Error("RangeError", f"{text} is negative"))
+    }
+    return Result.Ok(value)
+}
+
+func main() {
+    print(f"ok {Conv.parseFinite('12.5').unwrap()}|{Conv.parseFinite('-0.001').unwrap()}|{Conv.parseFinite('1e6').unwrap()}|{Conv.parseFinite('0x1p4').unwrap()}|{Conv.parseFinite('0').unwrap()}|{Conv.parseFinite('1.7976931348623157e308').unwrap()}")
+    rejected: list[str] = []
+    for text in ["NaN", "nan", "Inf", "-Infinity", "+inf", "1e400", "-1e400"] {
+        rejected.append(f"{text}:{Conv.parseFinite(text).ok()}")
+    }
+    print(f"rejected {' '.join(rejected)}")
+    malformed: list[str] = []
+    for text in ["", " 1", "1,5", "abc", "1_000", "0x_1p4"] {
+        malformed.append(f"{text}:{Conv.parseFinite(text).ok()}")
+    }
+    print(f"malformed {' '.join(malformed)}")
+    print(f"kinds {Conv.parseFinite('NaN').error.kind} {Conv.parseFinite('x').error.kind}")
+    print(f"message {Conv.parseFinite('Inf').error.message}")
+    accepted: Result[float] = Conv.parse("Inf")
+    print(f"parse-accepts {accepted.ok()}")
+
+    total: float = 0.0
+    valid: int = 0
+    skipped: int = 0
+    for text in ["10.5", " 2.25 ", "NaN", "-1", "3", "Infinity", "x"] {
+        parsed: Result[float] = price(text)
+        if parsed.ok() {
+            total += parsed.unwrap()
+            valid += 1
+        } else {
+            skipped += 1
+        }
+    }
+    print(f"total {valid} valid {total} skipped={skipped}")
+}

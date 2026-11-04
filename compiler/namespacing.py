@@ -83,6 +83,9 @@ class NamespacePlan:
     # also bound here) -> canonical name: the alias uses the canonical
     # function's final Go name, including any de-duplication suffix.
     function_aliases: dict[str, str] = field(default_factory=dict)
+    # Imported consts / variables -> their Go type (builtin types only), so
+    # expressions of the importing module type them (``Codes + ["fr"]``).
+    imported_value_types: dict[str, str] = field(default_factory=dict)
 
     def cache_key(self) -> str:
         parts = [
@@ -99,6 +102,7 @@ class NamespacePlan:
             "go:" + ",".join(f"{k}>{v}" for k, v in sorted(self.go_renames.items())),
             "dc:" + ",".join(f"{k}>{v}" for k, v in sorted(self.declaration_renames.items())),
             "fa:" + ",".join(f"{k}>{v}" for k, v in sorted(self.function_aliases.items())),
+            "vt:" + ",".join(f"{k}>{v}" for k, v in sorted(self.imported_value_types.items())),
         ]
         return "|".join(parts)
 
@@ -106,7 +110,7 @@ class NamespacePlan:
         return not (
             self.rewrites or self.module_access or self.function_go_names
             or self.const_go_names or self.metadata_from or self.hidden or self.go_renames
-            or self.declaration_renames or self.function_aliases
+            or self.declaration_renames or self.function_aliases or self.imported_value_types
         )
 
 
@@ -203,6 +207,45 @@ def top_level_symbols(tree: Tree) -> dict[str, str]:
                     )
                     if target is not None:
                         out.setdefault(_name_text(target), "var")
+    return out
+
+
+_BUILTIN_VALUE_GO_TYPE = re.compile(
+    r"(?:\[\]|map\[(?:string|int|bool|float64)\])*(?:string|int|float64|bool|byte|LamJSON|interface\{\})"
+)
+
+
+def top_level_value_go_types(tree: Tree, transpiler) -> dict[str, str]:
+    """Go types of a module's consts and annotated globals whose type is
+    built from builtin types (``const Codes: list[str]`` -> ``[]string``;
+    an unannotated const takes its literal's type). Other modules use them
+    to type expressions over the imported names."""
+    out: dict[str, str] = {}
+    for stmt in _top_level_statements(tree):
+        name, type_node, value_node = "", None, None
+        if stmt.data == "const_stmt" and stmt.children:
+            name = _name_text(stmt.children[0])
+            type_node = stmt.children[1] if len(stmt.children) > 1 else None
+            value_node = stmt.children[2] if len(stmt.children) > 2 else None
+        elif stmt.data == "assign_stmt":
+            for sub in stmt.children:
+                if isinstance(sub, Tree) and sub.data == "annassign":
+                    parts = [c for c in sub.children if not isinstance(c, Token) and c is not None]
+                    if len(parts) >= 2 and isinstance(parts[0], Tree) and parts[0].data == "var":
+                        name, type_node = _name_text(parts[0]), parts[1]
+        if not name:
+            continue
+        try:
+            if isinstance(type_node, Tree):
+                go_type = transpiler._type_expr_to_go(type_node)
+            elif isinstance(value_node, Tree):
+                go_type = transpiler._infer_type_from_value(value_node)
+            else:
+                go_type = ""
+        except Exception:
+            go_type = ""
+        if go_type and go_type != "interface{}" and _BUILTIN_VALUE_GO_TYPE.fullmatch(go_type):
+            out[name] = go_type
     return out
 
 
@@ -505,6 +548,7 @@ def build_plans(
     main_path: Path,
     resolve: Callable[[str, Path], Optional[Path]],
     function_go_name: Callable[[str, bool], str],
+    value_go_type: Optional[Callable[[Path, str], str]] = None,
 ) -> dict[Path, NamespacePlan]:
     owners: dict[str, list[Path]] = {}
     for path, info in modules.items():
@@ -541,6 +585,24 @@ def build_plans(
             clashing.update(entries)
     colliding = {name for _path, name in clashing}
 
+    # Definitions of ONE module that share a Go identifier: a const or
+    # variable keeps its Lam spelling in Go, so ``const Languages`` clashes
+    # with ``func languages`` (``Languages``), ``class point`` and
+    # ``private func Helper`` (``helper``). The value is given a
+    # module-qualified Go name, in the main module too (nothing imports it,
+    # and the function / type keeps the name other modules expect).
+    local_value_clashes: set[tuple[Path, str]] = set()
+    for entries in go_owners.values():
+        by_path: dict[Path, list[str]] = {}
+        for path, name in entries:
+            by_path.setdefault(path, []).append(name)
+        for path, names in by_path.items():
+            if len(set(names)) < 2:
+                continue
+            for name in names:
+                if modules[path].symbols.get(name) in VALUE_KINDS:
+                    local_value_clashes.add((path, name))
+
     def pinned(path: Path, name: str) -> bool:
         return path == main_path or (modules[path].name, name) in PINNED_CLASSES
 
@@ -553,6 +615,10 @@ def build_plans(
         kind = modules[path].symbols[name]
         tag = module_tag(modules[path].name)
         renamed[(path, name)] = f"{name}__{tag}" if kind in TYPE_KINDS else f"{default_go(name, kind)}__{tag}"
+    for path, name in local_value_clashes:
+        if (path, name) not in renamed:
+            kind = modules[path].symbols[name]
+            renamed[(path, name)] = f"{default_go(name, kind)}__{module_tag(modules[path].name)}"
 
     def go_renames_for(name: str, kind: str, new: str) -> dict[str, str]:
         if kind in TYPE_KINDS:
@@ -618,6 +684,10 @@ def build_plans(
                     plan.rewrites[lam_name] = target
                 return
             go = new or default_go(def_name, kind)
+            if kind in VALUE_KINDS and value_go_type is not None:
+                value_type = value_go_type(def_path, def_name)
+                if value_type:
+                    plan.imported_value_types[lam_name] = value_type
             if lam_name != def_name or new is not None:
                 target_map = plan.function_go_names if kind in FUNCTION_KINDS else plan.const_go_names
                 target_map[lam_name] = go

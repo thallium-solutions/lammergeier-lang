@@ -18,6 +18,7 @@ class DefinitionVisitorMixin:
         # comprehension variables) end with it: a same-named variable of
         # another function or method must not inherit them.
         saved_types = self._save_local_types()
+        saved_nested = dict(self._nested_func_keys)
         try:
             with self._scoped(
                 _nr_module_code=False,
@@ -26,6 +27,7 @@ class DefinitionVisitorMixin:
                 self._visit_funcdef_inner(node)
         finally:
             self._restore_local_types(saved_types)
+            self._restore_nested_func_keys(saved_nested)
             nested_type = self.__dict__.pop("_nested_func_go_type", None)
             if nested_type:
                 # A nested ``func`` is a local of the enclosing body.
@@ -142,12 +144,19 @@ class DefinitionVisitorMixin:
         # generic ``_go_public_name`` rewrite and emit ``Inner(...)``,
         # which is undefined).
         self._declare_var(func_name)
+        self._register_nested_func_params(func_name, params_node)
         # ``words.map(loud)``: the closure's type, like a typed lambda local.
         param_types = [t for t in self._param_types_sig(params_node) if t != "..."]
         if len(param_types) == len(self._param_types_sig(params_node)):
             self.__dict__["_nested_func_go_type"] = (func_name, f"func({', '.join(param_types)}){ret_str}")
 
-        self._emit(f"{func_name} := func({params_str}){ret_str} {{")
+        if self._mentions_names([suite_node], {func_name}):
+            # A recursive nested function: Go closures cannot name
+            # themselves, so the variable is declared first.
+            self._emit(f"var {func_name} func({params_str}){ret_str}")
+            self._emit(f"{func_name} = func({params_str}){ret_str} {{")
+        else:
+            self._emit(f"{func_name} := func({params_str}){ret_str} {{")
         body_start, params_at_start = self._begin_scoped_body(params_node)
         with self._scoped(
             _current_return_type=return_type,
@@ -157,6 +166,7 @@ class DefinitionVisitorMixin:
             self._visit_suite(suite_node)
         self._finish_scoped_body(body_start, params_at_start)
         self._emit("}")
+        self.__dict__["_nested_func_key_new"] = (func_name, self._nested_func_keys.get(func_name))
         # Mark as used so Go's "declared and not used" check can't
         # trip on closures that are passed straight to ``srv.onRequest(...)``
         # later — that case is a normal use, but for safety against
@@ -164,6 +174,42 @@ class DefinitionVisitorMixin:
         # ``_ = name`` only when the rest of the suite never references
         # it. The semantic checker doesn't currently track this, so we
         # leave it to the Go compiler to surface unused closures.
+
+    def _register_nested_func_params(self, func_name: str, params_node) -> None:
+        """Parameter names, types and defaults of a nested ``func`` under a
+        key of its own (``<nested>.<name>``), so calls fill defaults and
+        order keywords like calls of top-level functions (the closure's Go
+        signature has every parameter). The enclosing function's
+        ``_visit_funcdef`` drops the entry when its body ends."""
+        key = f"<nested>.{func_name}#{id(params_node)}"
+        for table in (self._func_defaults, self._func_param_names, self._func_param_go_types):
+            table.pop(key, None)
+        self._collect_param_defaults(key, params_node)
+        self._func_param_counts[key] = self._count_params(params_node) if params_node else 0
+        if params_node and self._has_variadic(params_node):
+            self._variadic_functions.add(key)
+        self._nested_func_keys[func_name] = key
+        self.__dict__.setdefault("_nested_func_created_keys", set()).add(key)
+
+    def _restore_nested_func_keys(self, saved: dict) -> None:
+        """End of a ``funcdef``: the nested functions declared in its body
+        go out of scope (their metadata is dropped, so it never reaches the
+        library cache); a nested function just declared stays visible in the
+        enclosing body (``_nested_func_key_new``)."""
+        pending = self.__dict__.pop("_nested_func_key_new", None)
+        keep = dict(saved)
+        if pending:
+            keep[pending[0]] = pending[1]
+        self._nested_func_keys = keep
+        if keep:
+            return
+        # The outermost function ended: no nested function is visible.
+        created = self.__dict__.pop("_nested_func_created_keys", set())
+        for key in created:
+            for table in (self._func_defaults, self._func_param_names,
+                          self._func_param_go_types, self._func_param_counts):
+                table.pop(key, None)
+            self._variadic_functions.discard(key)
 
     def _emit_nested_generic_funcdef(
         self, func_name, params_node, return_type_node, suite_node,
@@ -183,6 +229,7 @@ class DefinitionVisitorMixin:
             "type_param_names": list(tp_names or []),
         }
         self._nested_generic_functions[func_name] = info
+        self._register_nested_func_params(func_name, params_node)
 
         capture_params = [
             f"{name} {go_type}" for name, go_type in captures
@@ -230,6 +277,7 @@ class DefinitionVisitorMixin:
             self.declared_vars = old_declared
             self.scope_stack = old_scopes
             self._nested_generic_functions = old_nested
+            self.__dict__["_nested_func_key_new"] = (func_name, self._nested_func_keys.get(func_name))
 
     def _nested_generic_type_clause(
         self, tp_clause: str, outer_type_names: list,
@@ -354,6 +402,42 @@ class DefinitionVisitorMixin:
         body_start = len(self.output_lines)
         params_at_start = set(self.declared_vars)
         with self._scoped(_in_generator=True, _generator_chan="_ch", _generator_elem_type=elem_type):
+            self._visit_suite(suite_node)
+        self._emit_unused_local_silencers(body_start, params_at_start)
+        self._pop_scope()
+        self.indent -= 1
+        self._emit("}()")
+        self._emit("return _ch")
+        self.indent -= 1
+        self._emit("}")
+        self._emit("")
+
+    def _emit_generator_method(
+        self, go_method, return_type, params_node, suite_node,
+        tp_clause: str = "", elem_type: str = "",
+    ):
+        """An instance-method generator: the method returns an unbuffered
+        channel fed by a goroutine running the body with ``self`` bound to
+        the receiver (as ``_emit_generator_func`` for functions)."""
+        cls = self.current_class
+        go_cls = self._go_class_name(cls)
+        class_args = self._class_type_args(cls)
+        params_str = self._typed_params_to_go(params_node, skip_self=True)
+        chan_type = return_type if return_type else "interface{}"
+        recv = self._receiver_name_for(params_node, suite_node)
+        self._emit(f"func ({recv} *{go_cls}{class_args}) {go_method}{tp_clause}({params_str}) chan {chan_type} {{")
+        self.indent += 1
+        self._emit(f"_ch := make(chan {chan_type})")
+        self._emit("go func() {")
+        self.indent += 1
+        self._emit("defer close(_ch)")
+        self._push_scope()
+        self._emit_params_prologue(params_node, skip_self=True)
+        self._declare_var(recv)
+        body_start = len(self.output_lines)
+        params_at_start = set(self.declared_vars)
+        with self._scoped(_self_replacement=recv, _in_generator=True, _generator_chan="_ch",
+                          _generator_elem_type=elem_type):
             self._visit_suite(suite_node)
         self._emit_unused_local_silencers(body_start, params_at_start)
         self._pop_scope()
@@ -534,6 +618,12 @@ class DefinitionVisitorMixin:
                 go_name = self._generic_method_go_name(self.current_class, func_name) + method_suffix
                 self._emit_method(go_name, return_type, params_node, suite_node, tp_clause=tp_clause,
                                   return_type_key=return_type_key, as_function=True)
+            elif self._tree_contains(suite_node, "yield_expr"):
+                method_name = self._go_method_name(self.current_class, func_name) + method_suffix
+                self._emit_generator_method(
+                    method_name, return_type, params_node, suite_node, tp_clause=tp_clause,
+                    elem_type=self._generator_elem_go_type(return_type_node),
+                )
             else:
                 method_name = self._go_method_name(self.current_class, func_name) + method_suffix
                 self._emit_method(method_name, return_type, params_node, suite_node, tp_clause=tp_clause, return_type_key=return_type_key)
@@ -716,8 +806,10 @@ class DefinitionVisitorMixin:
 
         The methods ``class_name`` defines (in this module) that a
         descendant anywhere in the program overrides with the same
-        signature. Dunders, generators, methods with their own type
-        parameters and overloaded names keep static dispatch.
+        signature. Dunders (except ``__json__`` / ``__html__`` /
+        ``__xml__`` / ``__str__`` / ``__repr__``), generators, methods with
+        their own type parameters and overloaded names keep static
+        dispatch.
         """
         if class_name in self._virtual_plans:
             return self._virtual_plans[class_name]

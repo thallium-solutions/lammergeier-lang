@@ -41,14 +41,20 @@ _SIMPLE_RECEIVER_RE = re.compile(r"[A-Za-z_][\w.]*(\[[^\]]*\])?(\(.*\))?")
 class SubtypingMixin:
     """Hierarchy queries and support-code emission (see module docstring)."""
 
+    # Conversion dunders an explicit call (``p.__json__()``) dispatches like
+    # other methods; ``json(p)`` / ``html(p)`` / markup slots reach the
+    # most-derived object at run time (``lamDynamicValue``) and ``str(p)``
+    # through ``Format``.
+    _VIRTUAL_DUNDERS = frozenset({"__json__", "__html__", "__xml__", "__str__", "__repr__"})
+
     # ─── Collection ────────────────────────────────────────────
 
     def _record_method_sigkey(self, class_name: str, method_name: str, funcdef: Tree,
                               class_type_param_names) -> None:
         """Remember the dispatch signature of an instance method.
 
-        ``None`` marks a method that never dispatches virtually: dunders,
-        generators, methods with their own type parameters and overloaded
+        ``None`` marks a method that never dispatches virtually: dunders
+        (except the conversions of ``_VIRTUAL_DUNDERS``), generators, methods with their own type parameters and overloaded
         names (several definitions).
         """
         (_p, _is_static, is_async, _n, params_node, return_type_node,
@@ -58,7 +64,7 @@ class SubtypingMixin:
             bucket[method_name] = None
             return
         if (
-            method_name.startswith("__")
+            (method_name.startswith("__") and method_name not in self._VIRTUAL_DUNDERS)
             or method_type_params is not None
             or self._tree_contains(suite, "yield_expr")
         ):

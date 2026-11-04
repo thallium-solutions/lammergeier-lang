@@ -1,0 +1,46 @@
+# Helper module for test_dunder_dispatch_base_typed.lam: a base class with
+# `__json__`, `__html__`, `__xml__` and `__str__`, and functions that only
+# know the base type.
+
+class Problem {
+    func init(self, title: str) {
+        self.title: str = title
+    }
+
+    func __json__(self) -> json {
+        return {"title": self.title}
+    }
+
+    func __html__(self) -> html {
+        return <><b>${self.title}</b></>
+    }
+
+    func __xml__(self) -> xml {
+        return <><problem>${self.title}</problem></>
+    }
+
+    func __str__(self) -> str {
+        return f"Problem({self.title})"
+    }
+
+    func render(self) -> str {
+        # ``self`` is the base type here too.
+        return f"{json(self)} {self.__json__()} {self}"
+    }
+}
+
+func encode(p: Problem) -> str {
+    return str(json(p))
+}
+
+func page(items: list[Problem]) -> html {
+    return <><ul>${items}</ul></>
+}
+
+func feed(p: Problem) -> xml {
+    return <><feed>${p}</feed></>
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

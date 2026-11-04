@@ -1,0 +1,99 @@
+# Regression: fields a class inherits (from a base in the same module, in
+# another module or in a package) were typed `unknown` inside the
+# subclass, so `return {"title": self.title}` in a subclass's `__json__`
+# (or any method returning `json`) was rejected ("value of type `unknown`
+# is not JSON-compatible"), and other checks did not see the field types.
+#
+# expect: {"status":400,"tags":["a"],"title":"x","type":"about:blank"}
+# expect: {"detail":"server error","status":500,"title":"y"}
+# expect: {"ratio":0.5,"status":409,"title":"z"}
+# expect: {"label":"box","n":3}
+# expect: {"code":7,"kind":"local","name":"n"}
+# expect: {"extra":"e","title":"x"}
+# expect: 0.25 X 2
+# expect: {"titles":["x","y"]}
+
+from inherited_fields_pkg.base import Problem, Box
+from inherited_fields_pkg import HttpProblem
+
+class MyProblem(Problem) {
+    func __json__(self) -> json {
+        return {"type": self.type_, "title": self.title, "status": self.status, "tags": self.tags}
+    }
+}
+
+class Deep(HttpProblem) {
+    func __json__(self) -> json {
+        return {"title": self.title, "detail": self.detail, "status": self.status}
+    }
+}
+
+class Conflict(Problem) {
+    func init(self, title: str) {
+        base.init(title, 409)
+        self.seen: int = 1
+    }
+
+    func doc(self) -> json {
+        return {"title": self.title, "status": self.status, "ratio": self.ratio}
+    }
+}
+
+class IntBox(Box[int]) {
+    func __json__(self) -> json {
+        return {"label": self.label, "n": self.item}
+    }
+}
+
+class Named {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Coded(Named) {
+    func init(self, name: str, code: int) {
+        base.init(name)
+        self.code: int = code
+    }
+}
+
+class Local(Coded) {
+    func __json__(self) -> json {
+        return {"name": self.name, "code": self.code, "kind": "local"}
+    }
+}
+
+class WithExtra(Problem) {
+    func __json__(self) -> json {
+        return {"title": self.title, "extra": self.extra ?? "none"}
+    }
+
+    func half(self) -> float {
+        # Inherited numeric fields keep their type in arithmetic.
+        return self.ratio / 2
+    }
+
+    func shout(self) -> str {
+        return self.title.toUpper()
+    }
+}
+
+func titles(ps: list[Problem]) -> json {
+    return {"titles": [p.title for p in ps]}
+}
+
+func main() {
+    m: MyProblem = MyProblem("x", 400)
+    m.tags.append("a")
+    print(json(m))
+    print(json(Deep("y")))
+    print(Conflict("z").doc())
+    print(json(IntBox(3)))
+    print(json(Local("n", 7)))
+    w: WithExtra = WithExtra("x", 1)
+    w.extra = "e"
+    print(json(w))
+    print(w.half(), w.shout(), len(w.title) + 1)
+    print(titles([m, Deep("y")]))
+}

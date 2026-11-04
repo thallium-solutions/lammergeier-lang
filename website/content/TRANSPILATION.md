@@ -1001,8 +1001,12 @@ func Add(a int, b int) int {
   and assigns each variant a stable Go-name suffix: `Name_<argcount>` when
   arities differ, `Name_<argcount>_<sigSuffix>` when parameter signatures differ,
   and `Name_<argcount>_<sigSuffix>_ret_<returnSuffix>` when only return types
-  differ. Call sites infer parameter signatures through `_infer_call_arg_sig`.
-  Annotated assignments, enclosing returns, and typed receiving parameters
+  differ. Call sites infer parameter signatures through `_infer_call_arg_sig`
+  (an argument that is a call of a function or static method contributes its
+  declared result type, `_declared_call_result_go_type`); keyword arguments
+  are also returned by name (`CallArgSig.keywords`) and matched to each
+  variant's parameter names (`_overload_variants_by_keywords`) when the
+  source-order signature matches no variant. Annotated assignments, enclosing returns, and typed receiving parameters
   publish `_expected_expr_go_type`, which selects a matching return variant.
   `Result[T]` still lowers to runtime `*Result`, but `_overload_return_key`
   retains the payload as a compiler-only key such as `*Result[int]`; identical
@@ -1290,7 +1294,13 @@ var s *Shape = NewSquare()._lamUp_Shape()
   being built by `base.init(...)` still runs the parent's own method: the
   binding happens when the parent constructor returns.
 - Dispatch stays static for dunder methods (printing dispatches through
-  `Format`), generator methods, methods with their own type parameters,
+  `Format`) except the conversions `__json__` / `__html__` / `__xml__` /
+  `__str__` / `__repr__`: an explicit call (`p.__json__()`) goes through
+  `_lamVirt_<M>` like other methods, and the runtime of `json(p)`,
+  `html(p)`, `xml(p)` and markup slots converts the most-derived object
+  (`lamDynamicValue`, the value's `_lamDyn()`), so a base-typed value runs
+  the subclass's override. Dispatch also stays static for generator methods,
+  methods with their own type parameters,
   overloaded method names, method values (`self.m` without a call) and
   overrides whose signature spells a generic base's type parameter
   differently (`get(self) -> int` overriding `Box[T].get(self) -> T`).
@@ -1743,7 +1753,12 @@ for value in Streams.values([3, 1, 2]) { print(value) }
 ```
 
 The generated signature is `func Streams_values[T any]([]T) chan T`, and the
-loop becomes `for value := range Streams_values([]int{3, 1, 2})`. Imported
+loop becomes `for value := range Streams_values([]int{3, 1, 2})`. An
+instance-method generator is a method returning the channel, with the body's
+goroutine using the receiver as `self`. The loop variable takes the
+generator's element type for the rest of the lowering: its Go type (a class
+pointer keeps method calls typed) and, for `Result[T]`, the payload `T`, so
+`batch.unwrap()` asserts `[][]string` for `Csv.batches`. Imported
 generator metadata follows the module graph, so the same lowering applies when
 `Streams` comes from an external library. Generic callable arguments also
 contextually lower non-empty inline list literals to their concrete slice type

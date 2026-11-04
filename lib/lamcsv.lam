@@ -4,6 +4,20 @@
 # Parsing and file operations return Result values. Csv.rows and Csv.batches
 # are lazy generators: each yielded row or batch is itself a Result, allowing
 # an open/read/parse failure to be reported without loading the whole file.
+#
+# Every reader and writer takes a ``delimiter`` (default ``","``; ``";"``
+# for the spreadsheets of locales that write decimal commas, ``"\t"`` for
+# TSV). It must be one character other than ``"``, ``\r``, ``\n`` and the
+# Unicode replacement character; another value throws a
+# ``CsvDelimiterError``.
+#
+# Writing follows RFC 4180: a field is quoted when it contains the
+# delimiter, ``"``, ``\r`` or ``\n``, starts with white space (a space, a
+# tab...) or is exactly ``\.``, and a ``"`` inside a quoted field is
+# doubled; every record ends with ``\n``.
+# Reading accepts the same (quoted fields may span lines, ``\r\n`` record
+# ends are accepted) and requires every record to have as many fields as
+# the first one.
 
 from lamerrors import Result, Error
 
@@ -14,12 +28,19 @@ go! {
         "io"
         "os"
         "strings"
+        "unicode/utf8"
     )
-}
 
-func _csvRowValue(result: Result) -> list[str] {
-    #- Recover the concrete row payload from Result's erased value slot. -#
-    go! { return result.Value.([]string) }
+    // lamCsvComma checks a delimiter: one rune that is not a quote, a line
+    // break or the replacement character (an invalid one is a programming
+    // error and throws).
+    func lamCsvComma(delimiter string) rune {
+        r, size := utf8.DecodeRuneInString(delimiter)
+        if size == 0 || size != len(delimiter) || r == '"' || r == '\r' || r == '\n' || r == utf8.RuneError {
+            panic(fmt.Sprintf("CsvDelimiterError: invalid CSV delimiter %q (one character other than a quote or a line break)", delimiter))
+        }
+        return r
+    }
 }
 
 class CsvReader {
@@ -34,15 +55,18 @@ class CsvReader {
         self.closed: bool = false
     }
 
-    static func open(path: str) -> Result[CsvReader] {
+    static func open(path: str, delimiter: str = ",") -> Result[CsvReader] {
         go! {
+            comma := lamCsvComma(delimiter)
             f, err := os.Open(path)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
                     "CsvFileError", fmt.Sprintf("open %q: %v", path, err), nil,
                 ))
             }
-            return LAMMERGEIER.Result.Ok(NewCsvReader(csv.NewReader(f), f))
+            r := csv.NewReader(f)
+            r.Comma = comma
+            return LAMMERGEIER.Result.Ok(NewCsvReader(r, f))
         }
     }
 
@@ -97,10 +121,11 @@ class CsvReader {
 }
 
 class Csv {
-    static func parseAll(content: str) -> Result[list[list[str]]] {
+    static func parseAll(content: str, delimiter: str = ",") -> Result[list[list[str]]] {
         #- Parse CSV already held in memory. -#
         go! {
             r := csv.NewReader(strings.NewReader(content))
+            r.Comma = lamCsvComma(delimiter)
             records, err := r.ReadAll()
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
@@ -111,24 +136,24 @@ class Csv {
         }
     }
 
-    static func parseFile(path: str) -> Result[list[list[str]]] {
+    static func parseFile(path: str, delimiter: str = ",") -> Result[list[list[str]]] {
         #- Parse a complete file through the streaming row generator. Use
            rows or batches when the complete result should not be retained. -#
         records: list[list[str]] = []
-        for rowResult in Csv.rows(path) {
+        for rowResult in Csv.rows(path, delimiter) {
             if not rowResult.ok() {
                 return Result.Err(rowResult.error)
             }
-            row: list[str] = _csvRowValue(rowResult)
+            row: list[str] = rowResult.unwrap()
             records.append(row)
         }
         return Result.Ok(records)
     }
 
-    static func rows(path: str) -> Result[list[str]] {
+    static func rows(path: str, delimiter: str = ",") -> Result[list[str]] {
         #- Lazily yield Result[row] values from path. A file or parse error is
            yielded once, after which iteration ends. Empty files yield none. -#
-        opened: Result[CsvReader] = CsvReader.open(path)
+        opened: Result[CsvReader] = CsvReader.open(path, delimiter)
         if not opened.ok() {
             yield Result.Err(opened.error)
             return
@@ -153,7 +178,7 @@ class Csv {
         }
     }
 
-    static func batches(path: str, batchSize: int = 100) -> Result[list[list[str]]] {
+    static func batches(path: str, batchSize: int = 100, delimiter: str = ",") -> Result[list[list[str]]] {
         #- Lazily yield Result[batch] values. batchSize must be positive; the
            final successful batch may contain fewer rows. -#
         if batchSize <= 0 {
@@ -162,12 +187,12 @@ class Csv {
         }
 
         batch: list[list[str]] = []
-        for rowResult in Csv.rows(path) {
+        for rowResult in Csv.rows(path, delimiter) {
             if not rowResult.ok() {
                 yield Result.Err(rowResult.error)
                 return
             }
-            row: list[str] = _csvRowValue(rowResult)
+            row: list[str] = rowResult.unwrap()
             batch.append(row)
             if len(batch) == batchSize {
                 yield Result.Ok(batch)
@@ -179,35 +204,38 @@ class Csv {
         }
     }
 
-    static func streamRows(path: str) -> Result[list[str]] {
+    static func streamRows(path: str, delimiter: str = ",") -> Result[list[str]] {
         #- Descriptive alias for rows. -#
-        for rowResult in Csv.rows(path) {
+        for rowResult in Csv.rows(path, delimiter) {
             yield rowResult
         }
     }
 
-    static func streamBatches(path: str, batchSize: int = 100) -> Result[list[list[str]]] {
+    static func streamBatches(path: str, batchSize: int = 100, delimiter: str = ",") -> Result[list[list[str]]] {
         #- Descriptive alias for batches. -#
-        for batchResult in Csv.batches(path, batchSize) {
+        for batchResult in Csv.batches(path, batchSize, delimiter) {
             yield batchResult
         }
     }
 
-    static func formatRow(fields: list[str]) -> str {
+    static func formatRow(fields: list[str], delimiter: str = ",") -> str {
         #- Format one RFC 4180-style record, excluding its trailing newline. -#
         go! {
             var buf strings.Builder
             w := csv.NewWriter(&buf)
+            w.Comma = lamCsvComma(delimiter)
             _ = w.Write(fields)
             w.Flush()
             return strings.TrimSuffix(buf.String(), "\n")
         }
     }
 
-    static func formatAll(rows: list[list[str]]) -> str {
+    static func formatAll(rows: list[list[str]], delimiter: str = ",") -> str {
+        #- Format records, each followed by ``\n`` (``""`` for no rows). -#
         go! {
             var buf strings.Builder
             w := csv.NewWriter(&buf)
+            w.Comma = lamCsvComma(delimiter)
             for _, row := range rows {
                 _ = w.Write(row)
             }

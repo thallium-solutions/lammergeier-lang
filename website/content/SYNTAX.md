@@ -242,7 +242,11 @@ Integer indexing out of an array's bounds and a `str` index on an array (or an
 
 The builtin `json(value)` performs statically checked conversion. A string stays
 a JSON string; use `Json.decode(text)` to parse encoded JSON. A custom class must
-implement `__json__` and still be passed explicitly to `json(instance)`.
+implement `__json__` and still be passed explicitly to `json(instance)` (also
+`json(self)` in a method). Like other methods, `__json__` dispatches on the
+object: `json(p)` with `p: Problem` holding a subclass instance runs the
+subclass's override (as do `html(p)`, `xml(p)`, markup slots, `str(p)` and
+explicit `p.__json__()` calls for `__html__` / `__xml__` / `__str__`).
 `Json.fromDict`, `Json.fromList`, and `Json.fromValue` validate dynamic Lam
 values and convert them to `json`. `Json.toDict` / `Json.toList` convert an
 object/array back for algorithms where ordinary collections are more useful.
@@ -1714,6 +1718,14 @@ The `[...]` form remains the right choice when you want to index
 or slice the result; `(...)` signals that consumers will iterate
 once.
 
+A comprehension written as the only argument of a call, without its own
+brackets, is the list comprehension: `max(len(n) for n in names)`,
+`", ".join(n.toUpper() for n in names)` and `total(x * 2 for x in xs)` (with
+`total(xs: list[int])`) pass `[...]`, in f-string slots too. Lam has no
+`all()` / `any()` / `sum()` builtins: use the list methods `xs.all(lambda x:
+x > 0)`, `xs.any(...)` and `xs.reduce(lambda a, b: a + b, 0)` (the compiler
+suggests them).
+
 > **Allocation note.** `(...)` is **not** a lazy generator — it
 > lowers to the same "build a `[]T`, then iterate it once" IIFE
 > as `[...]`. A `(x for x in range(10_000_000))` will allocate
@@ -1813,7 +1825,9 @@ slot uses `%v` so any value type works.
 > (``f"{d["n"]:.2f}"``). A slot is checked like any other expression:
 > undefined names (at their line and column), unknown members and methods
 > (``f"{seen.join(" ")}"`` on a list suggests ``" ".join(seen)``) and type
-> errors are reported.
+> errors are reported, also in slots holding comprehensions, generator
+> arguments and lambdas (``f"{max(len(n) for n in names)}"``,
+> ``f"{xs.all(lambda x: x > 0)}"``).
 
 ---
 
@@ -2249,8 +2263,9 @@ The full set of dispatched string methods is `toUpper`,
 `capitalize`, `isAlpha`, `isDigit`, `isAlnum`, `isSpace`, `reverse`,
 `center`, `zfill`, `padLeft`, `padRight`, `splitLines`, `splitN`,
 `replaceFirst`, `containsAny`, `isEmpty`, `isBlank`, `indent`, `dedent`,
+`camelCase`, `pascalCase`, `snakeCase`, `kebabCase`,
 `format` — the same identifiers `lamstrings.Strings` exposes as static
-methods. The list methods are `length`, `append`, `pop` (`pop()` removes the
+methods (`"slots_total".camelCase()` is `"slotsTotal"`). The list methods are `length`, `append`, `pop` (`pop()` removes the
 last item, `pop(i)` the item at `i`, negative from the end), `extend`,
 `insert`, `sort`, `map`, `filter`, `reduce`, `any`, `all` and `foreach`.
 Calling any other method on a `str` or `list[T]` is a compile error with a
@@ -3082,6 +3097,25 @@ it to module scope. Nested funcs may carry their own generic type
 parameters (see "Functions, Defaults, Lambdas, and Nested Helpers")
 and can be declared inside `if` / `else` blocks too.
 
+Parameters of a nested `func` take defaults and keyword arguments like
+those of a top-level function, and calls are checked against them
+(missing, unknown or extra arguments are Lam errors). A default is
+evaluated at each call that leaves the argument out and may read the
+enclosing function's locals and parameters. A nested `func` may call
+itself recursively:
+
+```lammergeier
+func report(n: int) -> str {
+    func pad(s: str, width: int = 5, fill: str = ".") -> str {
+        return fill * (width - len(s)) + s
+    }
+    func fact(k: int, acc: int = 1) -> int {
+        return acc if k <= 1 else fact(k - 1, acc * k)
+    }
+    return pad(str(n)) + pad(str(fact(n)), fill="0")    # ....300006
+}
+```
+
 ---
 
 ## Slicing
@@ -3216,6 +3250,33 @@ for value in Sort.iterSorted([3, 1, 2]) {
 `Sort.iterSorted` uses natural ordering; `Sort.iterSortedWith` accepts a typed
 three-way comparator for arbitrary classes. Both copy the input and select each
 next value incrementally.
+
+The declared return type of a generator is the type of the values it yields
+(`-> generator[T]` is accepted too), and the loop variable (or comprehension
+target) has that type: `for batch in Csv.batches(path)` gives a
+`Result[list[list[str]]]`, so `rows: list[list[str]] = batch?` or
+`batch.unwrap()[0]` are typed, for stdlib, local and imported generators.
+Functions, static methods and instance methods (`self` is the receiver) can
+be generators, and a bare `return` ends one:
+
+```lammergeier
+class Shelf {
+    func init(self, names: list[str]) { self.names: list[str] = names }
+
+    func labels(self, limit: int) -> str {
+        if limit <= 0 {
+            return
+        }
+        for n in self.names[:limit] {
+            yield n.toUpper()
+        }
+    }
+}
+
+for label in Shelf(["a", "b"]).labels(1) {
+    print(label.toLower())    # a
+}
+```
 
 ---
 
@@ -3877,7 +3938,11 @@ The same works for classes (`from settings import Config as SettingsConfig`
 next to your own `class Config`). Names that differ only in the case of their
 first letter (`userColumns()` in one module, `UserColumns` in another) are
 namespaced the same way, because exported Go identifiers capitalise the first
-letter. One function may be reached both ways in a file (`import m as p` with
+letter. Within one module, a const or variable whose name differs from a
+function, class or interface only in that letter (`const Languages` next to
+`func languages()`, `Point` next to `class point`) gets a module-qualified Go
+name; Lam code (including `go!` blocks of that module) keeps using both
+names. One function may be reached both ways in a file (`import m as p` with
 `from m import load`: `p.load()` and `load()` are the same function).
 
 Two exceptions keep their names and are still reported by the link-time clash
@@ -4322,8 +4387,13 @@ print(describe(nums))          # list[int]: [1 2 3]
 The compiler picks a variant by inferring the Go type of every
 positional argument: typed locals (`nums: list[int]`) participate
 through the variable-type table, literals through their
-expression shape (`42` → `int`, `"hi"` → `string`, `[1, 2, 3]` →
-`[]int`). When no variant matches exactly, the variant every argument can
+expression shape (`42` → `int`, `"hi"` → `string`, `1e21` and `2.5` →
+`float`, `[1, 2, 3]` → `[]int`), and a call of a function or static method
+through its declared result (`Html.sanitize(Html.parse(s), policy)` picks the
+`html` variant). Keyword arguments are matched to each variant's parameter
+names, in any order: with `grouped(value: int, decimals: int = 0)` and
+`grouped(value: float, decimals: int = -1)`, `grouped(2.5, decimals=1)` is the
+`float` one. When no variant matches exactly, the variant every argument can
 be passed to wins, the closest first: an exact type, then a conversion (an
 `int` to a `float` parameter, a list / dict literal to `list[any]` /
 `dict[str, any]`), then `any`; so `fail(2.5, {"a": 1})` picks
@@ -4751,8 +4821,13 @@ The pipeline runs in three layers:
    comprehensions, inferred generic/operator results, and propagated `?`
    payloads. Dropping a known non-void local/imported/static/inferred-instance
    call emits a warning; `Result`/`Option` wording asks the caller to handle it
-   or assign to `_`. A `?` outside a compatible Result-returning target remains
-   a warning because the documented dynamic fallback converts `Err` to panic.
+   or assign to `_`. A fluent builder step is not a dropped value: an instance
+   method whose declared return type is the receiver's class or one of its
+   bases (type arguments aside, not `optional` / `Result`), such as
+   `w.addIf(...)` or `form.file(...)`, may stand alone as a statement; static
+   factories and other results still warn. A `?` outside a compatible
+   Result-returning target remains a warning because the documented dynamic
+   fallback converts `Err` to panic.
 
    Skip with `--no-semantic-check` when chasing a transpiler bug,
    but it's on by default because it's cheap (&lt;50 ms) and catches

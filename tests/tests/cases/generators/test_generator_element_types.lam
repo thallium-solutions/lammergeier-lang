@@ -1,0 +1,106 @@
+# Regression: the values a generator yields had no element type for the
+# consumer when the declared type is a `Result`: `for batch in
+# Csv.batches(path)` gave `batch.unwrap()` the Go type `interface{}`
+# ("cannot use batch.Unwrap() (value of type interface{}) as [][]string
+# value"). The loop target now has the generator's declared element type
+# (`Result[T]` payloads, classes, lists, `generator[T]`), for stdlib, local
+# and imported generators (functions, static and instance methods), also
+# in comprehensions. Instance-method generators compile too.
+#
+# expect: batch 2 A
+# expect: batch 1 E
+# expect: rows A,C,E
+# expect: doubled 2 6
+# expect: pen pen:2 PEN
+# expect: ink ink:5 INK
+# expect: chunk [a b] 2
+# expect: chunk [c] 1
+# expect: size error
+# expect: upper A B
+# expect: local X Y
+# expect: firsts [1 3] sum 4
+# expect: labels [penx2 inkx5]
+# expect: payloads [[a b] [c]]
+# expect: total 7
+
+from lamerrors import Result
+from lamcsv import Csv
+from lamos import Os
+from generator_types_provider import Item, items, Source
+
+func numbers() -> Result[int] {
+    yield Result.Ok(1)
+    yield Result.Ok(3)
+}
+
+func pairs() -> generator[list[int]] {
+    yield [1, 2]
+    yield [3, 4]
+}
+
+class Letters {
+    func init(self, letters: list[str]) {
+        self.letters: list[str] = letters
+    }
+
+    func each(self) -> str {
+        for l in self.letters {
+            yield l.toUpper()
+        }
+    }
+}
+
+func readAll(path: str) -> Result[int] {
+    total: int = 0
+    for batch in Csv.batches(path, 2) {
+        rows: list[list[str]] = batch?
+        total += len(rows)
+    }
+    return Result.Ok(total)
+}
+
+func main() {
+    path: str = "/tmp/lam_generator_element_types.csv"
+    _ = Os.writeFile(path, "a,b\nc,d\ne,f\n")
+    for batch in Csv.batches(path, 2) {
+        rows: list[list[str]] = batch.unwrap()
+        print("batch", len(rows), batch.unwrap()[0][0].toUpper())
+    }
+    firstCol: list[str] = []
+    for r in Csv.rows(path) {
+        firstCol.append(r.unwrap()[0].toUpper())
+    }
+    print("rows", ",".join(firstCol))
+    doubled: list[int] = []
+    for n in numbers() {
+        doubled.append(n.unwrap() * 2)
+    }
+    print("doubled", doubled[0], doubled[1])
+    for it in items() {
+        print(it.name, f"{it.name}:{it.qty}", it.name.toUpper())
+    }
+    for chunk in Source.chunks(["a", "b", "c"], 2) {
+        words: list[str] = chunk.unwrap()
+        print("chunk", words, len(chunk.unwrap()))
+    }
+    for bad in Source.chunks(["a"], 0) {
+        if not bad.ok() {
+            print("size error")
+        }
+    }
+    up: list[str] = []
+    for w in Source(["a", "b"]).upper() {
+        up.append(w)
+    }
+    print("upper", " ".join(up))
+    ls: list[str] = []
+    for l in Letters(["x", "y"]).each() {
+        ls.append(l)
+    }
+    print("local", " ".join(ls))
+    firsts: list[int] = [p[0] for p in pairs()]
+    print("firsts", firsts, "sum", firsts[0] + firsts[1])
+    print("labels", [it.label() for it in items()])
+    print("payloads", [c.unwrap() for c in Source.chunks(["a", "b", "c"], 2)])
+    print("total", readAll(path).unwrap() + 4)
+}

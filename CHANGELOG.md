@@ -5,6 +5,150 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.2.0 — 2026-11-04
+
+### Added
+
+- `lamjson` typed member reads: `Json.getStr(doc, key, fallback="")`,
+  `getInt`, `getFloat`, `getBool` return the member when it has the
+  requested kind and `fallback` otherwise (missing, null, another kind, a
+  `doc` that is not an object); `getInt` takes integers and integral floats
+  (`3.0`, not `3.5`), strings are never converted. `Json.has(doc, key)`
+  tells a null member from a missing one, `Json.getList` / `getObject` give
+  the document's own array / object (`[]` / a new `{}` otherwise),
+  `Json.at(doc, ["orders", -1, "id"])` follows a path, and
+  `Json.mapKeys(doc, rename, deep=true)` copies a document with renamed
+  object keys.
+- Key-case conversion: `Strings.camelCase`, `pascalCase`, `snakeCase`,
+  `kebabCase`, also as `str` methods (`"slots_total".camelCase()` is
+  `"slotsTotal"`, `"HTTPServer".snakeCase()` is `"http_server"`); words
+  split on non-alphanumerics, case changes and acronym ends, digits stay
+  with the word before them.
+- `lamurl`: `Url.encodeComponent` (JavaScript's `encodeURIComponent`) /
+  `decodeComponent`, `Url.encodePath` (`/` kept), `encodePathSegment`,
+  `encodeUserInfo`; `Url.query(params)` builds a form-encoded query string
+  from a `dict[str, list[str]]` / `dict[str, str]` (keys sorted) or
+  `[key, value]` pairs (order and repeated keys kept), and
+  `Url.parseQuery(s) -> Result[dict[str, list[str]]]` reads one.
+- `Conv.parseFinite(s) -> Result[float]`: like `Conv.parse` but `NaN`,
+  infinities, overflow and `_` separators are a `ParseError`.
+- `Fmt.grouped(value, separator=",", decimals, decimalSeparator=".")` for
+  `int` and `float`: `1,234,567.5`, `Fmt.grouped(1360.0, ".", 2, ",")` is
+  `1.360,00`.
+- `DateTime.parseAny(value, layouts, location="UTC") -> Result[DateTime]`:
+  the first matching Go layout wins, zoned layouts keep the text's offset.
+  `DateTime.parseCommon` also reads PostgreSQL `timestamptz` /
+  `timestamp` texts (`2026-11-03 19:05:00.123456+01`, `+05:30`, fractional
+  seconds optional).
+- `lamdb`: driver failures keep the driver's error as `Error.cause`, and
+  `Db.sqlState(err)` reads its SQLSTATE from the driver's error code
+  (PostgreSQL's own; SQLite extended result codes and MySQL error numbers
+  mapped to `23505` / `23503` / `23502` / `23514` / `23000`), with
+  `Db.isUniqueViolation(err)` / `Db.isForeignKeyViolation(err)` for a
+  failed `Result`, its `Error` or a driver error. `Where` builds WHERE
+  clauses for hand-written SQL: `add(sql, params)`, `addIf(cond, ...)`,
+  `addIn(column, values)`, `ilikeAny(columns, text)` (PostgreSQL) /
+  `likeAny` with the user's `%` / `_` escaped, `sql(prefix="WHERE")`,
+  `params()`, `paramsWith(extra)`, and `Where.likePattern(text, match,
+  escape)`. `Row.timeText(row, key, layout, location, fallback)` writes a
+  timestamp column with a Go layout (RFC 3339 in whole seconds by default).
+- `lamcsv`: a `delimiter` on every reader and writer (`Csv.formatAll(rows,
+  ";")`, `Csv.parseAll(text, ";")`, `parseFile`, `rows`, `batches`,
+  `CsvReader.open`); an invalid delimiter throws a `CsvDelimiterError`. The
+  RFC 4180 quoting rules are documented.
+- `lamhttp.Multipart`: `multipart/form-data` bodies with `field(name,
+  value)`, `file(name, filename, contentType, data: bytes)`, `body() ->
+  bytes`, `contentType()`, `setBoundary` for stable test bodies, sent with
+  `HttpRequestOptions.multipart(form)` / `HttpRequest.multipart(form)`;
+  names are quoted as browsers quote them.
+- `Html.sanitize(markup: str | html, policy=HtmlPolicy.basic()) -> html`
+  with `HtmlPolicy` (`HtmlPolicy()`, `.basic()`, `.rich()`, `allowTags`,
+  `denyTags`, `allowAttributes`, `allowSchemes`, `allowRelativeUrls`,
+  `allowDataImages`, `allowStyles`): default-deny on the parsed tree;
+  scripts, plugins, frames, foreign content, comments, event handlers,
+  `srcdoc` and `javascript:` / `vbscript:` / `data:` URLs (read as browsers
+  read them) are removed, `style` keeps only allowed properties with plain
+  values, links opening a window get `rel="noopener noreferrer"`, and the
+  output is serialized from the new tree. Covered by 32 XSS payloads and a
+  fuzz test that checks 1,500 random inputs with Python's HTML tokenizer.
+
+### Changed
+
+- A fluent builder step used as a statement no longer gets the "dropped
+  return value" warning: a call of an instance method whose declared return
+  type is the receiver's class or one of its bases (type arguments aside, not
+  `optional` / `Result`), such as `w.addIf(...)`, `form.file(...)`,
+  `b.add("x").add("y")` or an inherited / generic builder (`Bag[T].put ->
+  Bag[T]`), local, imported or stdlib. Static factories (`Builder.make()`),
+  `Result`s and other results still warn.
+
+### Fixed
+
+- An argument that is a call of a function or static method picks the
+  overload of its declared result: `Html.sanitize(Html.parse(s), p)` and
+  `show(make(s))` (with `show(str)` / `show(html)` variants) chose the first
+  variant and failed in `go build` ("cannot use ... (value of struct type
+  LamHTML) as string value").
+- A float literal without a `.` (`1e21`, `2.5E-5`) was typed `int` when
+  choosing an overload, so `grouped(1e21)` called the `int` variant.
+- Keyword arguments are matched to each overload's parameter names:
+  `Fmt.grouped(1234.5, decimals=1)` or `f(2.5, sep=";", decimals=2)` in any
+  order picked the first variant (`int`) and failed in `go build`.
+- `str(Error(...))` no longer repeats a cause whose text is the message.
+- `json(p)` with `p` typed as a base class (`p: Problem = MyProblem(...)`, a
+  `Problem` parameter, list element, `self`, a `catch Problem as e` binding,
+  a `Result[Problem]` payload) ran the base's `__json__` instead of the
+  subclass's override; so did `html(p)`, `xml(p)`, markup slots
+  (`<>${p}</>`, a `list[Problem]` in a slot, `str` in attributes) and
+  explicit `p.__json__()` / `__html__()` / `__xml__()` / `__str__()` calls.
+  The most-derived object's method now runs, in the module declaring the base
+  too. `json(self)` in a method and `json(e)` of a typed `catch` binding were
+  rejected ("value of type `unknown`").
+- Nested functions with default parameters did not compile: calls leaving out
+  a defaulted argument failed in `go build` ("not enough arguments in call to
+  pad") and keyword arguments were dropped. Calls of a nested function fill
+  defaults and order keywords like calls of top-level functions (also nested
+  in methods, in other nested functions and in imported modules), and the
+  semantic checker reports missing, unknown and extra arguments. A recursive
+  nested function failed with "undefined: fact".
+- A const or variable whose name differs from a function, class or interface
+  of the same module only in its first letter (`const Languages` and `func
+  languages()`, `Point` and `class point`, `helper` and `private func
+  Helper`) failed with a Go redeclaration; 4.1.1 only separated such names
+  across modules. The value gets a module-qualified Go name (main file and
+  imported modules). An imported const or global (`from m import Codes`)
+  was untyped in the importing module, so `Codes + ["fr"]` failed in `go
+  build` ("mismatched types []string and []interface{}").
+- `private func f()` right after a simple statement (`x: int = 1`, a call, a
+  class field) was a syntax error ("Unexpected `func`").
+- Fields a class inherits (from a base in the same module, another module or
+  a package) were `unknown` inside the subclass, so `return {"title":
+  self.title}` in a subclass's `__json__` (or any method returning `json`)
+  was rejected and other checks (`self.count + "x"`) missed them; a generic
+  base's field takes the subclass's type argument (`item: T` of `Box[int]`).
+  `{"extra": self.extra ?? "none"}` and `{"titles": [p.title for p in ps]}`
+  were rejected in JSON literals for the same reason (an `optional` before
+  `??`, untyped comprehension targets).
+- An f-string slot holding a comprehension, a generator argument or a lambda
+  skipped the semantic check, so `f"{all(x > 0 for x in xs)}"` reached Go as
+  `All(x > 0 x xs)`. Such slots are checked like other expressions; `all`,
+  `any` and `sum`, which Lam spells `xs.all(lambda x: ...)`, `xs.any(...)`
+  and `xs.reduce(lambda a, b: a + b, 0)`, are Lam errors that suggest those
+  methods. A generator expression as the only argument (`max(len(n) for n
+  in names)`, `", ".join(s.upper() for s in xs)`, `total(x * 2 for x in
+  xs)`), accepted by the grammar, is the list comprehension `[...]`, in and
+  out of f-strings. `sorted([-x for x in xs])` compared the numbers as text.
+- Values yielded by a generator had no element type for the consumer when it
+  declares a `Result` or a class: `for batch in Csv.batches(path)` gave
+  `batch.unwrap()` the Go type `interface{}` ("cannot use batch.Unwrap()
+  ... as [][]string value"). The loop target (or comprehension target) now
+  has the declared element type (`Result[T]` with its payload, classes,
+  `generator[T]`'s `T`) for stdlib, local and imported generators, in the
+  compiler and the semantic checker (`n: int = batch.unwrap()` is a Lam
+  error). Instance-method generators did not compile ("missing return") and
+  a bare `return` in a generator was rejected; both work. `lamcsv` no longer
+  needs its internal payload helper.
+
 ## 4.1.3 — 2026-11-04
 
 ### Fixed

@@ -1,0 +1,43 @@
+# Regression: a `private func` right after a simple statement (`x: int = 1`,
+# `count = 0`, a call, a class field) failed to parse ("Unexpected `func`"):
+# after the statement's `;` the parser read `private` as the start of a
+# `private x: T` field / global. `private` before `func` (also `private
+# static func` / `private async func`) now always starts a function.
+#
+# expect: started
+# expect: 2 1 7
+# expect: 10 hidden 3
+
+limit: int = 1
+private func two() -> int {
+    return 2
+}
+count = 7
+private func seven() -> int {
+    return count
+}
+print("started")
+private func unused() -> int {
+    return 0
+}
+
+class Counter {
+    total: int = 10
+    private static func label() -> str {
+        return "hidden"
+    }
+    private value: int = 3
+    private func current() -> int {
+        return self.value
+    }
+
+    func show() -> str {
+        return f"{self.total} {Counter.label()} {self.current()}"
+    }
+}
+
+func main() {
+    print(two(), limit, seven())
+    print(Counter().show())
+    _ = unused()
+}
