@@ -1,0 +1,36 @@
+# expect-error: argument `errors` to `shopForm` has type `dict[str, any]`, expected `list[FieldError]`
+# expect-error: argument `createMode` to `shopForm` has type `list[any]`, expected `bool`
+# expect-error: argument `errors` to `Validation` has type `dict[str, any]`, expected `list[FieldError]`
+# expect-error: argument `more` to `Validation.add` has type `dict[str, any]`, expected `list[FieldError]`
+# expect-error: argument `errors` to `Validation.of` has type `dict[str, any]`, expected `list[FieldError]`
+# expect-error: argument `items` to `first` has type `dict[str, any]`, expected `list[T]`
+# expect-error: default value of parameter `errors` has type `dict[str, any]`, expected `list[FieldError]`
+# expect-error: cannot assign `list[any]` to `dict[str, int]` variable `counts`
+# expect-error: function `lookup` returns `list[any]`, expected `dict[str, FieldError]`
+# expect-error: cannot assign `dict[str, any]` to `FieldError` variable `self.last`
+# Imported by 567_imported_module_literal_shapes.lam; compiled alone, the
+# semantic checker reports these with the same wording.
+from .fields import FieldError
+from .forms import shopForm, Validation, first
+
+class Panel {
+    func init(self) {
+        self.last: FieldError = {}
+    }
+}
+
+func render(errors: list[FieldError] = {}) -> str {
+    out: str = shopForm("save", {}, false)
+    out += shopForm("save", [], [])
+    v: Validation = Validation({})
+    out += str(v.add({}))
+    out += str(Validation.of(errors={}).ok)
+    out += str(first({}))
+    counts: dict[str, int] = []
+    out += str(len(counts)) + str(len(errors))
+    return out
+}
+
+func lookup() -> dict[str, FieldError] {
+    return []
+}

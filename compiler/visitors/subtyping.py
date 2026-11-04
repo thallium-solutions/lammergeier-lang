@@ -66,7 +66,7 @@ class SubtypingMixin:
         if (
             (method_name.startswith("__") and method_name not in self._VIRTUAL_DUNDERS)
             or method_type_params is not None
-            or self._tree_contains(suite, "yield_expr")
+            or self._suite_has_own_yield(suite)
         ):
             bucket[method_name] = None
             return

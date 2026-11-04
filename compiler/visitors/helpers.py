@@ -5,7 +5,7 @@ from __future__ import annotations
 import re as _re
 from lark import Tree, Token
 from typing import Dict, List, Optional, Tuple
-from compiler.constants import COMPILER_GO_PACKAGES, DUNDER_OPS, GO_BINDING_KEYWORDS, TYPE_MAP
+from compiler.constants import COMPILER_GO_PACKAGES, DUNDER_OPS, GENERATOR_TYPE_NAMES, GO_BINDING_KEYWORDS, TYPE_MAP
 from compiler.link_symbols import mask_go_literals
 
 
@@ -405,6 +405,116 @@ class HelpersMixin:
         entry = (line, col, message, kind)
         if entry not in self._lam_errors:
             self._lam_errors.append(entry)
+
+    # ─── Literal shapes against declared types ──────────────────
+
+    _LITERAL_KINDS = {
+        "list": "list", "list_comprehension": "list",
+        "dict": "dict", "dict_comprehension": "dict",
+        "set": "set", "set_comprehension": "set",
+    }
+    _GO_SCALAR_LAM_NAMES = {
+        "string": "str", "int": "int", "int8": "int8", "int16": "int16", "int32": "int32",
+        "int64": "int64", "uint": "uint", "uint8": "uint8", "uint16": "uint16",
+        "uint32": "uint32", "uint64": "uint64", "float64": "float", "float32": "float32",
+        "bool": "bool", "byte": "byte", "rune": "rune", "LamHTML": "html", "LamXML": "xml",
+    }
+
+    def _go_literal_shape_conflicts(self, kind: str, go_type: str) -> bool:
+        """A ``kind`` (``list`` / ``dict`` / ``set``) literal can never be a
+        value of the declared Go type ``go_type``: a ``{}`` where a slice,
+        a class, a scalar or a function is expected, a ``[]`` where a map
+        is, ... ``interface{}``, ``LamJSON`` and type parameters accept
+        anything; a ``map[K]bool`` (a set) takes ``{}`` and set literals."""
+        go_type = (go_type or "").strip()
+        if not go_type or go_type in {"interface{}", "any", "LamJSON"} or go_type in self._generic_names:
+            return False
+        if go_type.startswith("[]"):
+            return kind != "list"
+        if go_type.startswith("map["):
+            if self._is_go_set_type(go_type):
+                return kind == "list"
+            return kind != "dict"
+        if go_type.startswith("*"):
+            inner = go_type[1:]
+            if inner.startswith(("[]", "map[")):
+                return self._go_literal_shape_conflicts(kind, inner)
+            if inner in self._GO_SCALAR_LAM_NAMES or inner == "Result":
+                return True
+            return inner.split("[", 1)[0] in {self._go_class_name(c) for c in self._class_names}
+        if go_type in self._GO_SCALAR_LAM_NAMES or go_type.startswith(("func(", "chan ")):
+            return True
+        return go_type in {self._go_class_name(i) for i in self._interfaces}
+
+    def _go_type_lam_text(self, go_type: str) -> str:
+        """``[]*FieldError`` -> ``list[FieldError]`` (for diagnostics)."""
+        go_type = (go_type or "").strip()
+        if go_type in self._GO_SCALAR_LAM_NAMES:
+            return self._GO_SCALAR_LAM_NAMES[go_type]
+        if go_type in {"interface{}", "any"}:
+            return "any"
+        if go_type == "LamJSON":
+            return "json"
+        if go_type == "[]byte":
+            return "bytes"
+        if go_type.startswith("[]"):
+            return f"list[{self._go_type_lam_text(go_type[2:])}]"
+        if go_type.startswith("map[") and "]" in go_type:
+            key, value = self._split_go_map_type(go_type)
+            if key and value:
+                return f"dict[{self._go_type_lam_text(key)}, {self._go_type_lam_text(value)}]"
+        if go_type.startswith("chan "):
+            return f"generator[{self._go_type_lam_text(go_type[5:])}]"
+        if go_type.startswith("*"):
+            inner = go_type[1:]
+            base, _, args = inner.partition("[")
+            classes = [c for c in self._class_names if self._go_class_name(c) == base]
+            if classes:
+                if not args:
+                    return classes[0]
+                parts = self._split_type_arg_list("[" + args) if hasattr(self, "_split_type_arg_list") else []
+                return f"{classes[0]}[{', '.join(self._go_type_lam_text(p) for p in parts)}]" if parts else classes[0]
+            if inner == "Result":
+                return "Result"
+            return f"optional[{self._go_type_lam_text(inner)}]"
+        return go_type
+
+    def _literal_lam_type_text(self, node, kind: str) -> str:
+        if isinstance(node, Tree) and node.data in {"list", "dict", "set"} and not node.children:
+            return {"list": "list[any]", "dict": "dict[str, any]", "set": "set[any]"}[kind]
+        inferred = (self._infer_type_from_value(node) or "").strip()
+        if inferred and inferred != "interface{}":
+            text = self._go_type_lam_text(inferred)
+            if kind == "set" and text.startswith("dict[") and text.endswith(", bool]"):
+                return "set[" + text[5:-len(", bool]")] + "]"
+            return text
+        return {"list": "list[any]", "dict": "dict[str, any]", "set": "set[any]"}[kind]
+
+    def _check_literal_go_shape(self, node, go_type: str, template: str) -> None:
+        """Report a collection literal that no value of the declared
+        ``go_type`` can be (``shopForm(c, {}, false)`` with ``errors:
+        list[FieldError]``). The semantic checker reports these for the
+        compiled file; this is the same diagnostic for imported modules.
+        ``template`` holds ``{actual}`` and ``{expected}``."""
+        if isinstance(node, Tree) and node.data == "argvalue" and len(node.children) == 1:
+            node = node.children[0]
+        kind = self._LITERAL_KINDS.get(node.data, "") if isinstance(node, Tree) else ""
+        if not kind or not self._go_literal_shape_conflicts(kind, go_type):
+            return
+        self._report_lam_error(node, "type", template.format(
+            actual=self._literal_lam_type_text(node, kind),
+            expected=self._go_type_lam_text(go_type),
+        ))
+
+    @staticmethod
+    def _call_key_lam_name(func_key: str) -> str:
+        """``Validation.init`` -> ``Validation``, ``<nested>.pad#12`` -> ``pad``."""
+        name = func_key.split("#", 1)[0]
+        if name.startswith("<nested>."):
+            name = name[len("<nested>."):]
+        if name.endswith(".init") or name.endswith(".__init__"):
+            name = name.rsplit(".", 1)[0]
+        return name
 
     def _pin_multiline_to(self, node, body: str) -> str:
         """Prepend a ``//line`` pragma to each line of a multi-line Go
@@ -945,6 +1055,10 @@ class HelpersMixin:
                 return type_args[0] if type_args[0].startswith("*") else f"*{type_args[0]}"
             if base == "chan":
                 return f"chan {type_args[0]}" if type_args else "chan interface{}"
+            if base in GENERATOR_TYPE_NAMES:
+                # ``generator[Circle]``: generators lower to a channel of
+                # their element type.
+                return f"chan {type_args[0] or 'interface{}'}" if len(type_args) == 1 else "chan interface{}"
             if base == "Result" and len(type_args) <= 1:
                 return "*Result"
             # Instantiation of a user-defined generic class:
@@ -1232,6 +1346,18 @@ class HelpersMixin:
             if isinstance(child, Tree) and self._tree_contains(child, data_name):
                 return True
         return False
+
+    def _suite_has_own_yield(self, node) -> bool:
+        """``yield`` in a function body, not in a function, lambda or class
+        declared inside it (a nested generator does not make the enclosing
+        function one)."""
+        if not isinstance(node, Tree):
+            return False
+        if node.data == "yield_expr":
+            return True
+        if node.data in ("funcdef", "lambdef", "classdef"):
+            return False
+        return any(self._suite_has_own_yield(child) for child in node.children)
 
     # ─── Class inference ───────────────────────────────────────
 
@@ -1604,6 +1730,10 @@ class HelpersMixin:
                         if target_idx < len(param_types):
                             target_type = param_types[target_idx]
                     value_node = child.children[1]
+                    self._check_literal_go_shape(
+                        value_node, target_type,
+                        f"argument `{kw_name}` to `{self._call_key_lam_name(func_key)}` has type `{{actual}}`, expected `{{expected}}`",
+                    )
                     target_type = self._concretize_generic_literal_param_type(
                         func_key, value_node, target_type,
                     )
@@ -1614,6 +1744,7 @@ class HelpersMixin:
                     target_type = self._param_go_type_at(
                         param_types, positional_idx,
                     )
+                    self._check_positional_literal_shape(func_key, child, target_type, positional_idx, param_names)
                     target_type = self._concretize_generic_literal_param_type(
                         func_key, child, target_type,
                     )
@@ -1625,6 +1756,7 @@ class HelpersMixin:
                 target_type = self._param_go_type_at(
                     param_types, positional_idx,
                 )
+                self._check_positional_literal_shape(func_key, child, target_type, positional_idx, param_names)
                 target_type = self._concretize_generic_literal_param_type(
                     func_key, child, target_type,
                 )
@@ -1633,6 +1765,13 @@ class HelpersMixin:
                 )
                 positional_idx += 1
         return positional, kwargs
+
+    def _check_positional_literal_shape(self, func_key: str, arg, target_type: str, idx: int, param_names: List[str]) -> None:
+        name = param_names[idx] if idx < len(param_names) and param_names[idx] else f"#{idx + 1}"
+        self._check_literal_go_shape(
+            arg, target_type,
+            f"argument `{name}` to `{self._call_key_lam_name(func_key)}` has type `{{actual}}`, expected `{{expected}}`",
+        )
 
     @staticmethod
     def _param_go_type_at(param_types: List[str], idx: int) -> str:

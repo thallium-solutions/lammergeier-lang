@@ -1787,7 +1787,10 @@ of a `list[optional[int]]`. Numbers compare numerically (ints and floats
 mixed, `[10, 9, 2.5]` sorts as `[2.5 9 10]`), strings by bytes, `false <
 true`, and values of different kinds order as `None` < `bool` < number <
 `str` < other values (those by their text); `min` / `max` of an empty
-list throw a `ValueError`:
+list throw a `ValueError`. `min(xs, key=fn)` / `max(xs, key=fn)` (also
+`max(a, b, key=fn)`) return the first value with the smallest / largest
+`fn(value)` (keys compare like `sorted`'s), with the list's element type
+(`max(shapes, key=lambda s: s.area()).name` of a `list[Shape]`):
 
 ```lammergeier
 words: list[str] = ["ccc", "a", "bb"]
@@ -3280,8 +3283,10 @@ The declared return type of a generator is the type of the values it yields
 target) has that type: `for batch in Csv.batches(path)` gives a
 `Result[list[list[str]]]`, so `rows: list[list[str]] = batch?` or
 `batch.unwrap()[0]` are typed, for stdlib, local and imported generators.
-Functions, static methods and instance methods (`self` is the receiver) can
-be generators, and a bare `return` ends one:
+Each `yield` must give a value of that type (`yield "x"` in a
+`-> generator[int]` is a Lam error). Functions, static methods, instance
+methods (`self` is the receiver) and functions nested in another function
+can be generators, and a bare `return` ends one:
 
 ```lammergeier
 class Shelf {
@@ -3300,6 +3305,22 @@ class Shelf {
 for label in Shelf(["a", "b"]).labels(1) {
     print(label.toLower())    # a
 }
+```
+
+`generator[T]` is also a type for parameters, variables and fields holding
+a generator (a value read once, element by element), with any element type
+(a class, a generic class, `optional[T]`, a list, a dict, a tuple):
+
+```lammergeier
+func circles() -> generator[Circle] {
+    yield Circle("north", 1)
+}
+
+func titles(g: generator[Circle]) -> list[str] {
+    return [c.title for c in g]
+}
+
+print(titles(circles()))      # [north]
 ```
 
 ---
@@ -4316,6 +4337,11 @@ called: `func pick(n: int = Size)` in one module uses that module's `Size`
 even when the caller (or another module) declares its own `Size`, and an
 imported constant used as a default (`from cfg import Size as S` then
 `n: int = S`) keeps meaning that constant.
+
+A default is a value of the parameter's type, checked like an assignment:
+`errors: list[FieldError] = {}` or `limit: int = "10"` is a Lam error, and
+`None` is a default only for types that can hold it (lists, dicts, sets,
+classes, `optional[T]`; `name: str = None` needs `optional[str]`).
 
 > **Note:** Variadic functions (`*args`) are excluded from default filling.
 

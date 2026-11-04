@@ -325,6 +325,8 @@ def _type_to_go(
             return args[0] if args[0].startswith("*") else f"*{args[0]}"
         if type_.base == "chan":
             return f"chan {args[0]}" if args else "chan interface{}"
+        if type_.base in {"generator", "iterator", "Generator", "Iterator"}:
+            return f"chan {args[0]}" if len(args) == 1 else "chan interface{}"
         if type_.base == "Result" and len(args) <= 1:
             return "*Result"
         if type_.base in generic_classes:

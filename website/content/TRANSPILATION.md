@@ -1445,6 +1445,7 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `xs.sort(key=f)` / `xs.sort(f)` with a one-parameter `f` | `sort.SliceStable` comparing `f(x)` (ordered keys natively, `any` / `json` / type-parameter / `optional` keys by kind, others by `%v`) |
 | `sorted(xs, key=f, reverse=b)`     | `sort.SliceStable` copy preserving the receiver/context element type; `key` compares `f(x)` |
 | `sorted` / `xs.sort()` / `min(xs)` / `max(xs)` of `list[any]`, `list[json]`, `list[T]`, `list[optional[int]]` | an inline `func(a, b interface{}) int` comparing by kind (`reflect`): numbers numerically, strings by bytes, `false < true`, `None` < bool < number < str < other (by `%v`); `min` / `max` loop over the list (`slices.Min` needs `cmp.Ordered`) |
+| `min(xs, key=fn)` / `max(a, b, key=fn)` | an inline `func(xs []T) T` keeping the first value with the smallest / largest `key(v)` (keys compared like `sorted`'s; an empty list panics with `ValueError`) |
 | `enumerate(xs)`                    | IIFE materializing index/value pairs as `[]interface{}` tuples            |
 | `isinstance(x, T)`                 | Type-specific runtime check: assertion, nil test, or `reflect.Kind` (`lamJSONRaw(x)` first on `json`, `x != nil` on an optional value type) |
 
@@ -1754,7 +1755,12 @@ for value in Streams.values([3, 1, 2]) { print(value) }
 ```
 
 The generated signature is `func Streams_values[T any]([]T) chan T`, and the
-loop becomes `for value := range Streams_values([]int{3, 1, 2})`. An
+loop becomes `for value := range Streams_values([]int{3, 1, 2})`. The type
+`generator[T]` lowers to `chan T` (`-> generator[Circle]` returns a
+`chan *Circle`, a `g: generator[int]` parameter is a `chan int`), and a
+generator nested in a function is a closure returning its channel
+(`inner := func() chan *Circle { _ch := make(chan *Circle); go func() { ...
+}(); return _ch }`). An
 instance-method generator is a method returning the channel, with the body's
 goroutine using the receiver as `self`. The loop variable takes the
 generator's element type for the rest of the lowering: its Go type (a class

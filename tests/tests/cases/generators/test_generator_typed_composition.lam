@@ -1,0 +1,165 @@
+# Typed generators composed with other constructs: tuple destructuring of a
+# `generator[tuple[str, int]]`, a generator consuming another one, the
+# `-> T` element-type form, nested generators capturing locals (also in a
+# method and in a generator), a generic class element, a generator stored
+# in a field, Result propagation inside a generator consumer and sorting
+# the collected values.
+#
+# expect: pair a 1
+# expect: pair b 2
+# expect: dict a=1 b=2
+# expect: scaled 10 20 30
+# expect: iter 7 8
+# expect: captured x-1 x-2
+# expect: method shelf:a shelf:b
+# expect: chain 2 4
+# expect: boxes 5 6
+# expect: field 1 2 3
+# expect: parsed 6
+# expect: bad parse
+# expect: sorted [ant bee cat]
+# expect: longest bee 3
+
+from lamerrors import Result
+
+class Box[T] {
+    func init(self, v: T) {
+        self.v: T = v
+    }
+}
+
+class Animal {
+    func init(self, name: str, legs: int) {
+        self.name: str = name
+        self.legs: int = legs
+    }
+}
+
+func pairs() -> generator[tuple[str, int]] {
+    yield ("a", 1)
+    yield ("b", 2)
+}
+
+func base() -> generator[int] {
+    yield 1
+    yield 2
+    yield 3
+}
+
+func scaled(src: generator[int], k: int) -> generator[int] {
+    for n in src {
+        yield n * k
+    }
+}
+
+func sevens() -> int {
+    yield 7
+    yield 8
+}
+
+func boxed[T](items: list[T]) -> generator[Box[T]] {
+    for it in items {
+        yield Box(it)
+    }
+}
+
+func evens() -> generator[int] {
+    func inner(limit: int) -> generator[int] {
+        for i in range(1, limit + 1) {
+            yield i
+        }
+    }
+    for n in inner(4) {
+        if n % 2 == 0 {
+            yield n
+        }
+    }
+}
+
+class Shelf {
+    func init(self, items: list[str]) {
+        self.items: list[str] = items
+        self.source: generator[int] = base()
+    }
+
+    func labels(self) -> list[str] {
+        prefix: str = "shelf:"
+        func each() -> generator[str] {
+            for it in self.items {
+                yield prefix + it
+            }
+        }
+        return [l for l in each()]
+    }
+}
+
+func parsedSum(words: list[str]) -> Result[int] {
+    func numbers() -> generator[Result[int]] {
+        for w in words {
+            if w == "x" {
+                yield Result.Err(f"not a number: {w}")
+            } else {
+                yield Result.Ok(int(w))
+            }
+        }
+    }
+    total: int = 0
+    for r in numbers() {
+        total += r?
+    }
+    return Result.Ok(total)
+}
+
+func animals() -> generator[Animal] {
+    yield Animal("cat", 4)
+    yield Animal("ant", 6)
+    yield Animal("bee", 3)
+}
+
+func main() {
+    for name, n in pairs() {
+        print("pair", name, n)
+    }
+    print("dict", " ".join([f"{k}={v}" for k, v in pairs()]))
+    print("scaled", " ".join([str(n) for n in scaled(base(), 10)]))
+    got: list[int] = []
+    for s in sevens() {
+        got.append(s)
+    }
+    print("iter", got[0], got[1])
+    tag: str = "x-"
+    func tagged() -> generator[str] {
+        for n in base() {
+            if n < 3 {
+                yield tag + str(n)
+            }
+        }
+    }
+    print("captured", " ".join([t for t in tagged()]))
+    print("method", " ".join(Shelf(["a", "b"]).labels()))
+    print("chain", " ".join([str(e) for e in evens()]))
+    vals: list[int] = []
+    for b in boxed([5, 6]) {
+        vals.append(b.v)
+    }
+    print("boxes", vals[0], vals[1])
+    shelf: Shelf = Shelf([])
+    fs: list[str] = []
+    for n in shelf.source {
+        fs.append(str(n))
+    }
+    print("field", " ".join(fs))
+    print("parsed", parsedSum(["1", "2", "3"]).unwrap())
+    if not parsedSum(["1", "x"]).ok() {
+        print("bad parse")
+    }
+    names: list[str] = sorted([a.name for a in animals()])
+    print("sorted", names)
+    longest: Animal = Animal("", 0)
+    for a in animals() {
+        if len(a.name) >= len(longest.name) and a.legs < 4 {
+            longest = a
+        }
+    }
+    print("longest", longest.name, longest.legs)
+}

@@ -1,0 +1,57 @@
+# expect-error: `yield` in `shapes` gives `str`, expected `Circle`
+# expect-error: `yield` in `counts` gives `str`, expected `int`
+# expect-error: `yield` in `parsed` gives `int`, expected `Result[int]`
+# expect-error: `yield` in `rows` gives `dict[str, any]`, expected `list[int]`
+# expect-error: `yield` in `inner` gives `float`, expected `str`
+# A generator's `yield` values have its element type (`T` of
+# `-> generator[T]`, or the declared `-> T`), also in a nested generator;
+# they built a channel Go could not send to.
+from lamerrors import Result
+
+class Circle {
+    func init(self, title: str) {
+        self.title: str = title
+    }
+}
+
+func shapes() -> generator[Circle] {
+    yield Circle("a")
+    yield "b"
+}
+
+func counts() -> int {
+    yield 1
+    yield "two"
+}
+
+func parsed(words: list[str]) -> generator[Result[int]] {
+    for w in words {
+        yield int(w)
+    }
+}
+
+func rows() -> generator[list[int]] {
+    yield [1]
+    yield {}
+}
+
+func main() {
+    func inner() -> generator[str] {
+        yield 1.5
+    }
+    for c in shapes() {
+        print(c.title)
+    }
+    for n in counts() {
+        print(n)
+    }
+    for r in parsed(["1"]) {
+        print(r.ok())
+    }
+    for row in rows() {
+        print(row)
+    }
+    for s in inner() {
+        print(s)
+    }
+}

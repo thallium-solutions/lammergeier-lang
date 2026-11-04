@@ -1,0 +1,62 @@
+# expect-pass
+# Empty literals where they fit: `[]` for lists, optional lists, json
+# arrays, bytes, tuples and generic lists; `{}` for dicts, sets, optional
+# dicts and json objects; defaults of the parameter's type, including
+# `None` for nilable types (lists, dicts, classes, optionals).
+
+class Item {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+}
+
+func count[T](xs: list[T]) -> int { return len(xs) }
+func size[K: comparable, V](m: dict[K, V]) -> int { return len(m) }
+func names(items: list[Item] = [], index: dict[str, Item] = {}, seen: set[str] = {}) -> int {
+    return len(items) + len(index) + len(seen)
+}
+func doc(body: json = {}, rows: json = [], raw: bytes = []) -> int { return len(raw) }
+func optionalOnes(xs: optional[list[int]] = [], m: optional[dict[str, int]] = {}, o: optional[Item] = None) -> bool {
+    return o == None
+}
+func nilable(xs: list[int] = None, m: dict[str, int] = None, item: Item = None) -> int {
+    return len(xs) + len(m)
+}
+func firstOf[T](xs: list[T] = []) -> int { return len(xs) }
+func limit(n: int = 10, ratio: float = 1, name: str = "x", flag: bool = false) -> int { return n }
+func listing() -> list[Item] { return [] }
+func indexing() -> dict[str, Item] { return {} }
+func tags() -> set[str] { return {} }
+func pair() -> tuple[int, int] { return (1, 2) }
+func docs() -> json { return [] }
+
+class Holder {
+    func init(self) {
+        self.items: list[Item] = []
+        self.index: dict[str, Item] = {}
+        self.seen: set[str] = {}
+        self.payload: json = {}
+    }
+}
+
+func main() {
+    xs: list[int] = []
+    m: dict[str, int] = {}
+    s: set[int] = {}
+    j: json = []
+    o: optional[list[str]] = []
+    b: bytes = []
+    print(xs, m, s, j, o, b)
+    print(count([]), size({}), Box([1]).items, names(), names([], {}, {}))
+    print(doc(), optionalOnes(), nilable(), firstOf([1]), limit())
+    print(listing(), indexing(), tags(), pair(), docs(), Holder().items)
+    byName: dict[str, list[Item]] = {}
+    byName["a"] = []
+    print(byName)
+}

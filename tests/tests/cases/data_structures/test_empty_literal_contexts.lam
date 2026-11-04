@@ -1,0 +1,49 @@
+# Empty literals across a module boundary where they fit the declared type
+# (the 4.2.2 checks reject only the literals no value of the type can be):
+# `[]` and `{}` as positional, keyword, constructor, method, static and
+# generic arguments, as defaults, field values and returns, composed with
+# a `generator[FieldError]` method and comprehensions.
+#
+# expect: save errors=0 create=false index=0 keys=
+# expect: create errors=2 create=true index=1 keys=required,email
+# expect: empty 0 0 {}
+# expect: added 1 [name]
+# expect: merged 3 fields name,email,age
+# expect: generic 0 2
+# expect: each required/email
+# expect: none []
+# expect: fields 0
+# expect: grouped map[email:1 name:1]
+
+from empty_literal_contexts_provider import FieldError, Validation, render, count
+
+func noErrors() -> list[FieldError] {
+    return []
+}
+
+func grouped(v: Validation) -> dict[str, int] {
+    out: dict[str, int] = {}
+    for e in v.each() {
+        out[e.field] = len(e.key)
+    }
+    return {k: 1 for k, _ in out}
+}
+
+func main() {
+    print(render("save", [], false))
+    errs: list[FieldError] = [FieldError("name", "required"), FieldError("mail", "email")]
+    print(render("create", errs, createMode=true, index={"name": errs[0]}))
+    v: Validation = Validation()
+    print("empty", len(v.errors), len(v.seen), v.meta)
+    _ = v.add([FieldError("name", "required")])
+    print("added", len(v.errors), [e.field for e in v.errors])
+    w: Validation = Validation(errors=[FieldError("email", "format")], seen={})
+    merged: Validation = Validation.merge([v, w], extra=[FieldError("age", "range")])
+    print("merged", len(merged.errors), "fields", ",".join([e.field for e in merged.each()]))
+    print("generic", count([]), count(errs))
+    print("each", "/".join([e.key for e in Validation(errs).each()]))
+    print("none", noErrors())
+    print("fields", len(Validation([], {}).add([]).errors))
+    g: Validation = Validation([FieldError("name", "a"), FieldError("email", "b")])
+    print("grouped", grouped(g))
+}

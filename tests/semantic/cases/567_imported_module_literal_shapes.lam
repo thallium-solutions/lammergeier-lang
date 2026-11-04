@@ -1,0 +1,27 @@
+# expect-error: admin.lam
+# expect-error: argument `errors` to `shopForm` has type `dict[str, any]`, expected `list[FieldError]`
+# expect-error: argument `createMode` to `shopForm` has type `list[any]`, expected `bool`
+# expect-error: argument `errors` to `Validation` has type `dict[str, any]`, expected `list[FieldError]`
+# expect-error: argument `more` to `Validation.add` has type `dict[str, any]`, expected `list[FieldError]`
+# expect-error: argument `errors` to `Validation.of` has type `dict[str, any]`, expected `list[FieldError]`
+# expect-error: argument `items` to `first` has type `dict[str, any]`, expected `list[T]`
+# expect-error: default value of parameter `errors` has type `dict[str, any]`, expected `list[FieldError]`
+# expect-error: cannot assign `list[any]` to `dict[str, int]` variable `counts`
+# expect-error: function `lookup` returns `list[any]`, expected `dict[str, FieldError]`
+# expect-error: cannot assign `dict[str, any]` to `FieldError` variable `self.last`
+# Regression (4.2.0/4.2.1): `shopForm(..., {}, false)` with `errors:
+# list[FieldError]` in an imported module passed the checks (only the
+# compiled file gets the full semantic check) and failed at `go build`
+# ("cannot use map[string]interface{}{} ... as []*FieldError value"). A
+# collection literal no value of the declared type can be is reported for
+# every module of the build: call arguments (positional, keyword,
+# constructor, instance and static methods, generic parameters), defaults,
+# annotated variables and fields, and returns.
+from literal_shape_package.admin import render, lookup
+from literal_shape_package.forms import fine
+
+func main() {
+    print(render())
+    print(len(lookup()))
+    print(fine())
+}

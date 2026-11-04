@@ -1,0 +1,64 @@
+# expect-error: cannot assign `list[any]` to `dict[str, int]` variable `counts`
+# expect-error: cannot assign `list[any]` to `optional[dict[str, int]]` variable `maybe`
+# expect-error: cannot assign `list[any]` to `Item` variable `self.item`
+# expect-error: argument `name` to `label` has type `list[any]`, expected `str`
+# expect-error: argument `tags` to `tagged` has type `list[any]`, expected `set[str]`
+# expect-error: argument `items` to `Box` has type `dict[str, any]`, expected `list[T]`
+# expect-error: argument `xs` to `count` has type `dict[str, any]`, expected `list[T]`
+# expect-error: argument `m` to `size` has type `list[any]`, expected `dict[K, V]`
+# expect-error: function `table` returns `list[any]`, expected `dict[str, Item]`
+# expect-error: function `one` returns `list[any]`, expected `Item`
+# expect-error: cannot assign `list[any]` to `Item` target `byName[...]`
+# expect-error: default value of parameter `errors` has type `dict[str, any]`, expected `list[Item]`
+# expect-error: default value of parameter `index` has type `list[any]`, expected `dict[str, int]`
+# expect-error: default value of parameter `seen` has type `list[any]`, expected `set[int]`
+# expect-error: default value of parameter `owner` has type `dict[str, any]`, expected `Item`
+# expect-error: default value of parameter `limit` has type `str`, expected `int`
+# expect-error: default value of parameter `title` is `None`, but `str` cannot be `None`
+# expect-error: default value of parameter `xs` has type `dict[str, any]`, expected `list[T]`
+# An empty `[]` has no element to type it and was accepted anywhere; a
+# parameter default was never checked; a `{}` passed to a generic `list[T]`
+# was skipped. All built Go code that did not compile.
+
+class Item {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Holder {
+    func init(self) {
+        self.item: Item = []
+    }
+}
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+}
+
+func label(name: str) -> str { return name }
+func tagged(tags: set[str]) -> int { return len(tags) }
+func count[T](xs: list[T]) -> int { return len(xs) }
+func size[K: comparable, V](m: dict[K, V]) -> int { return len(m) }
+func table() -> dict[str, Item] { return [] }
+func one() -> Item { return [] }
+func report(errors: list[Item] = {}) -> int { return len(errors) }
+func indexed(index: dict[str, int] = []) -> int { return len(index) }
+func unique(seen: set[int] = []) -> int { return len(seen) }
+func owned(owner: Item = {}) -> str { return owner.name }
+func limited(limit: int = "10") -> int { return limit }
+func titled(title: str = None) -> str { return title }
+func firstOf[T](xs: list[T] = {}) -> int { return len(xs) }
+
+func main() {
+    counts: dict[str, int] = []
+    maybe: optional[dict[str, int]] = []
+    print(counts, maybe, Holder().item.name)
+    print(label([]), tagged([]), Box({}).items, count({}), size([]))
+    print(table(), one().name)
+    byName: dict[str, Item] = {}
+    byName["a"] = []
+    print(report(), indexed(), unique(), owned(), limited(), titled(), firstOf([1]))
+}

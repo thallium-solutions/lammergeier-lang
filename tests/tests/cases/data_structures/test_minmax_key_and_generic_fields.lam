@@ -1,0 +1,84 @@
+# Regression: `min` / `max` with `key=` ignored the key (`max(xs, key=lambda
+# x: -x)` was the largest value) and did not build for lists of classes,
+# generic classes, lists or dicts ("*Circle does not satisfy cmp.Ordered");
+# the field of a generic class element read in a lambda or comprehension
+# (`sorted(boxes, key=lambda b: b.v)`, `[b.v for b in boxes]`) leaked the
+# class's type parameter into the caller ("undefined: T"). Keys compare
+# like `sorted`'s, the first best value wins, an empty list throws
+# `ValueError`, and the result keeps the element type.
+#
+# expect: max int key 1
+# expect: min str key a
+# expect: max args key 3
+# expect: max class mars 2
+# expect: min class mars
+# expect: best moons 96
+# expect: imported jupiter 95
+# expect: fewest earth
+# expect: ties first mars
+# expect: generic max b 2.5
+# expect: generic sorted [a c b]
+# expect: generic values [1 3 2]
+# expect: generic map [2 4 3]
+# expect: nested list [1 2 3]
+# expect: dict min 1
+# expect: key fn 4
+# expect: bool key yes
+# expect: empty ValueError: max() of an empty list
+# expect: chained MARS
+
+from minmax_key_provider import Planet, Slot, planets
+
+class Box[T] {
+    func init(self, v: T, tag: str) {
+        self.v: T = v
+        self.tag: str = tag
+    }
+}
+
+func moonCount(p: Planet) -> int {
+    return p.moons
+}
+
+func heaviest(slots: list[Slot[str]]) -> Slot[str] {
+    return max(slots, key=lambda s: s.weight)
+}
+
+func main() {
+    xs: list[int] = [3, 1, 2]
+    print("max int key", max(xs, key=lambda x: -x))
+    words: list[str] = ["ccc", "a", "bb"]
+    print("min str key", min(words, key=lambda w: len(w)))
+    print("max args key", max(3, 5, key=lambda x: -x))
+    ps: list[Planet] = [Planet("mars", 2), Planet("venus", 0), Planet("earth", 1)]
+    top: Planet = max(ps, key=lambda p: p.moons)
+    print("max class", top.name, top.moons)
+    print("min class", min(ps, key=lambda p: len(p.name)).name)
+    print("best moons", max(planets(), key=lambda p: p.moons).moons + 1)
+    big: Planet = max(planets(), key=moonCount)
+    print("imported", big.name, big.moons)
+    print("fewest", min([p for p in planets() if p.moons > 0], key=lambda p: p.moons).name)
+    twins: list[Planet] = [Planet("mars", 2), Planet("phobos", 2)]
+    print("ties first", max(twins, key=lambda p: p.moons).name)
+    slots: list[Slot[str]] = [Slot("a", 1.0), Slot("b", 2.5), Slot("c", 2.0)]
+    h: Slot[str] = heaviest(slots)
+    print("generic max", h.value, h.weight)
+    boxes: list[Box[int]] = [Box(1, "a"), Box(3, "b"), Box(2, "c")]
+    print("generic sorted", [b.tag for b in sorted(boxes, key=lambda b: b.v)])
+    print("generic values", [b.v for b in boxes])
+    print("generic map", boxes.map(lambda b: b.v + 1))
+    rows: list[list[int]] = [[1, 2, 3], [4], [5, 6]]
+    print("nested list", max(rows, key=lambda r: len(r)))
+    ds: list[dict[str, int]] = [{"n": 2}, {"n": 1}]
+    print("dict min", min(ds, key=lambda d: d["n"])["n"])
+    print("key fn", max([Planet("a", 4), Planet("b", 3)], key=moonCount).moons)
+    flags: list[Planet] = [Planet("no", 0), Planet("yes", 7)]
+    print("bool key", max(flags, key=lambda p: p.moons > 0).name)
+    try {
+        empty: list[Planet] = []
+        print(max(empty, key=lambda p: p.moons).name)
+    } catch ValueError as e {
+        print("empty", e)
+    }
+    print("chained", max(ps, key=lambda p: p.moons).name.toUpper())
+}

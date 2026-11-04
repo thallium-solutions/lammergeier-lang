@@ -226,6 +226,12 @@ class StatementVisitorMixin:
                 go_type, type_node = inferred_generic
         overload_type_key = self._overload_return_key(type_node)
         self._check_int_true_division(value, go_type)
+        if value is not None:
+            from compiler.constants import lam_simple_expr_text
+            self._check_literal_go_shape(
+                value, go_type,
+                f"cannot assign `{{actual}}` to `{{expected}}` variable `{lam_simple_expr_text(target) or '<target>'}`",
+            )
 
         raw_type = self._get_raw_type_name(type_node)
         if raw_type and raw_type in (self._class_names | self._interfaces) and "." not in target_str:
@@ -868,6 +874,11 @@ class StatementVisitorMixin:
             return_type_key = getattr(self, "_current_return_type_key", "") or return_type
             self._check_result_ok_return(val_node, return_type_key)
             self._check_int_true_division(val_node, return_type)
+            if not self._in_nested_callable and not self._in_generator and self._lam_func_names:
+                self._check_literal_go_shape(
+                    val_node, return_type,
+                    f"function `{self._lam_func_names[-1]}` returns `{{actual}}`, expected `{{expected}}`",
+                )
             if isinstance(val_node, Tree) and val_node.data == "testlist_tuple":
                 expected_types = self._split_go_tuple_type(return_type)
                 vals = []
@@ -1568,7 +1579,7 @@ class StatementVisitorMixin:
                     iter_str = self._expr_to_go(iterable_node)
             else:
                 iter_str = self._expr_to_go(iterable_node)
-            is_chan = self._is_generator_call(iterable_node)
+            is_chan = self._is_generator_call(iterable_node) or self._is_chan_iterable(iterable_node)
             # ``for k, v in mapping`` — when the for-target is a
             # 2-tuple, range over the map directly so both names bind
             # idiomatically. Without this, the catch-all branch below
@@ -1824,12 +1835,27 @@ class StatementVisitorMixin:
             if payload and payload != "interface{}":
                 self._var_result_payloads[var_name] = payload
 
+    def _is_chan_iterable(self, node) -> bool:
+        """``for c in g`` with ``g: generator[Circle]`` (a ``chan *Circle``
+        parameter, local or field): one value per receive."""
+        return (self._expr_go_type_hint(node) or "").strip().startswith("chan ")
+
+    def _generator_iter_elem_go_type(self, node) -> str:
+        """Go type of the values received from the generator ``node`` (a
+        call or a ``generator[T]`` value); ``""`` when unknown or dynamic."""
+        hint = (self._expr_go_type_hint(node) or "").strip()
+        if hint.startswith("chan "):
+            hint = hint[5:].strip()
+        return "" if hint in {"", "interface{}"} else hint
+
     def _is_generator_call(self, node) -> bool:
         if not isinstance(node, Tree) or node.data != "funccall":
             return False
         func = node.children[0]
         if isinstance(func, Tree) and func.data == "var":
             name = self._get_name(func.children[0])
+            if name in self._nested_generator_elems and name in self.declared_vars:
+                return True
             return name in self._generator_functions
         if isinstance(func, Tree) and func.data == "getattr" and len(func.children) >= 2:
             receiver = func.children[0]

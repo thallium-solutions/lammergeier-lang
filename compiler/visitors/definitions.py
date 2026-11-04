@@ -19,6 +19,8 @@ class DefinitionVisitorMixin:
         # another function or method must not inherit them.
         saved_types = self._save_local_types()
         saved_nested = dict(self._nested_func_keys)
+        saved_nested_generators = dict(self._nested_generator_elems)
+        self._lam_func_names.append(self._get_name(self._parse_funcdef(node)[3]) or "<anonymous>")
         try:
             with self._scoped(
                 _nr_module_code=False,
@@ -26,8 +28,17 @@ class DefinitionVisitorMixin:
             ):
                 self._visit_funcdef_inner(node)
         finally:
+            self._lam_func_names.pop()
             self._restore_local_types(saved_types)
+            pending = self.__dict__.get("_nested_func_key_new")
+            new_name = pending[0] if pending else ""
             self._restore_nested_func_keys(saved_nested)
+            restored = dict(saved_nested_generators)
+            if new_name and new_name in self._nested_generator_elems:
+                restored[new_name] = self._nested_generator_elems[new_name]
+            elif new_name:
+                restored.pop(new_name, None)
+            self._nested_generator_elems = restored
             nested_type = self.__dict__.pop("_nested_func_go_type", None)
             if nested_type:
                 # A nested ``func`` is a local of the enclosing body.
@@ -55,6 +66,7 @@ class DefinitionVisitorMixin:
         self._generic_names.update(tp_names)
         for tp_name, tp_constraint in tp_pairs:
             self._generic_constraints[tp_name] = tp_constraint
+        self._check_param_default_shapes(params_node)
 
         # ── Nested function definitions ───────────────────────────
         # Go has no nested named functions; ``func name() {}`` inside
@@ -102,6 +114,26 @@ class DefinitionVisitorMixin:
             self._generic_names = prev_generic_names
             self._generic_constraints = prev_generic_constraints
 
+    def _check_param_default_shapes(self, params_node) -> None:
+        """``func f(errors: list[FieldError] = {})``: a collection literal
+        default no value of the parameter's type can be (reported for
+        imported modules too, see ``_check_literal_go_shape``)."""
+        if not isinstance(params_node, Tree):
+            return
+        for child in params_node.children:
+            if not (isinstance(child, Tree) and child.data == "typed_paramvalue" and len(child.children) >= 2):
+                continue
+            param, default = child.children[0], child.children[1]
+            if not (isinstance(param, Tree) and param.data == "typed_param" and isinstance(default, Tree)):
+                continue
+            type_node = next((c for c in param.children[1:] if isinstance(c, Tree) and c.data == "type_expr"), None)
+            if type_node is None:
+                continue
+            self._check_literal_go_shape(
+                default, self._type_expr_to_go(type_node),
+                f"default value of parameter `{self._get_name(param.children[0])}` has type `{{actual}}`, expected `{{expected}}`",
+            )
+
     @staticmethod
     def _callable_boundary_context() -> dict:
         """Scoped overrides for a nested Go function body (closure, lambda,
@@ -136,6 +168,12 @@ class DefinitionVisitorMixin:
         """
         return_type = self._resolve_return_type(return_type_node)
         params_str = self._typed_params_to_go(params_node)
+        is_generator = self._suite_has_own_yield(suite_node)
+        elem_type = ""
+        if is_generator:
+            # A nested generator is a closure returning its channel.
+            elem_type = self._generator_chan_elem(return_type, self._generator_elem_go_type(return_type_node))
+            return_type = f"chan {elem_type}"
         ret_str = f" {return_type}" if return_type else ""
 
         # Register the closure name in the *outer* scope so the
@@ -157,14 +195,35 @@ class DefinitionVisitorMixin:
             self._emit(f"{func_name} = func({params_str}){ret_str} {{")
         else:
             self._emit(f"{func_name} := func({params_str}){ret_str} {{")
-        body_start, params_at_start = self._begin_scoped_body(params_node)
-        with self._scoped(
-            _current_return_type=return_type,
-            _q_propagate_ok=(return_type == "*Result"),
-            **self._callable_boundary_context(),
-        ):
-            self._visit_suite(suite_node)
-        self._finish_scoped_body(body_start, params_at_start)
+        if is_generator:
+            self._nested_generator_elems[func_name] = elem_type
+            self.indent += 1
+            self._emit(f"_ch := make(chan {elem_type})")
+            self._emit("go func() {")
+            self.indent += 1
+            self._emit("defer close(_ch)")
+            self.indent -= 1
+            body_start, params_at_start = self._begin_scoped_body(params_node)
+            with self._scoped(**{
+                **self._callable_boundary_context(),
+                "_in_generator": True, "_generator_chan": "_ch",
+                "_generator_elem_type": elem_type if elem_type != "interface{}" else "",
+            }):
+                self._visit_suite(suite_node)
+            self._finish_scoped_body(body_start, params_at_start)
+            self._emit("}()")
+            self._emit("return _ch")
+            self.indent -= 1
+        else:
+            self._nested_generator_elems.pop(func_name, None)
+            body_start, params_at_start = self._begin_scoped_body(params_node)
+            with self._scoped(
+                _current_return_type=return_type,
+                _q_propagate_ok=(return_type == "*Result"),
+                **self._callable_boundary_context(),
+            ):
+                self._visit_suite(suite_node)
+            self._finish_scoped_body(body_start, params_at_start)
         self._emit("}")
         self.__dict__["_nested_func_key_new"] = (func_name, self._nested_func_keys.get(func_name))
         # Mark as used so Go's "declared and not used" check can't
@@ -390,7 +449,7 @@ class DefinitionVisitorMixin:
         params_node, suite_node, elem_type: str = "",
     ):
         """Emit a top-level or static generator as an unbuffered channel."""
-        chan_type = return_type if return_type else "interface{}"
+        chan_type = self._generator_chan_elem(return_type, elem_type)
         self._emit(f"func {go_name}{type_clause}({params_str}) chan {chan_type} {{")
         self.indent += 1
         self._emit(f"_ch := make(chan {chan_type})")
@@ -412,6 +471,16 @@ class DefinitionVisitorMixin:
         self._emit("}")
         self._emit("")
 
+    @staticmethod
+    def _generator_chan_elem(return_type: str, elem_type: str) -> str:
+        """Element type of a generator's channel: ``T`` of ``-> generator[T]``
+        (whose Go return type is already ``chan T``) or the declared ``-> T``."""
+        if elem_type:
+            return elem_type
+        if return_type.startswith("chan "):
+            return return_type[5:].strip() or "interface{}"
+        return return_type or "interface{}"
+
     def _emit_generator_method(
         self, go_method, return_type, params_node, suite_node,
         tp_clause: str = "", elem_type: str = "",
@@ -423,7 +492,7 @@ class DefinitionVisitorMixin:
         go_cls = self._go_class_name(cls)
         class_args = self._class_type_args(cls)
         params_str = self._typed_params_to_go(params_node, skip_self=True)
-        chan_type = return_type if return_type else "interface{}"
+        chan_type = self._generator_chan_elem(return_type, elem_type)
         recv = self._receiver_name_for(params_node, suite_node)
         self._emit(f"func ({recv} *{go_cls}{class_args}) {go_method}{tp_clause}({params_str}) chan {chan_type} {{")
         self.indent += 1
@@ -565,7 +634,7 @@ class DefinitionVisitorMixin:
                     # never uses ``T`` is not generic (Go could not infer T).
                     class_clause = ""
                 static_clause = self._merge_generic_clauses(class_clause, tp_clause)
-                if self._tree_contains(suite_node, "yield_expr"):
+                if self._suite_has_own_yield(suite_node):
                     self._emit_generator_func(
                         go_name, static_clause, params_str, return_type,
                         params_node, suite_node,
@@ -618,7 +687,7 @@ class DefinitionVisitorMixin:
                 go_name = self._generic_method_go_name(self.current_class, func_name) + method_suffix
                 self._emit_method(go_name, return_type, params_node, suite_node, tp_clause=tp_clause,
                                   return_type_key=return_type_key, as_function=True)
-            elif self._tree_contains(suite_node, "yield_expr"):
+            elif self._suite_has_own_yield(suite_node):
                 method_name = self._go_method_name(self.current_class, func_name) + method_suffix
                 self._emit_generator_method(
                     method_name, return_type, params_node, suite_node, tp_clause=tp_clause,
@@ -657,7 +726,7 @@ class DefinitionVisitorMixin:
             return
 
         has_try = self._suite_contains_try(suite_node)
-        has_yield = self._tree_contains(suite_node, "yield_expr")
+        has_yield = self._suite_has_own_yield(suite_node)
 
         # ── Generator function → goroutine + channel ──
         if has_yield:

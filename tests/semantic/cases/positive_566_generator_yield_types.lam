@@ -1,0 +1,87 @@
+# expect-pass
+# Yields that fit the generator's element type: subclasses, None for an
+# optional, Result payloads and errors, empty literals of the element's
+# kind, json values, tuples, type parameters and int constants widened to
+# float.
+from lamerrors import Result
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+}
+
+func shapes() -> generator[Shape] {
+    yield Shape("a")
+    yield Square(2)
+}
+
+func maybe() -> generator[optional[Shape]] {
+    yield None
+    yield Shape("b")
+}
+
+func parsed(words: list[str]) -> generator[Result[int]] {
+    for w in words {
+        if w == "" {
+            yield Result.Err("empty")
+        } else {
+            yield Result.Ok(int(w))
+        }
+    }
+}
+
+func rows() -> generator[list[int]] {
+    yield []
+    yield [1, 2]
+}
+
+func tables() -> generator[dict[str, int]] {
+    yield {}
+    yield {"a": 1}
+}
+
+func flags() -> generator[set[str]] {
+    yield {}
+}
+
+func docs() -> generator[json] {
+    yield {}
+    yield []
+    yield {"a": [1, 2]}
+}
+
+func pairs() -> generator[tuple[str, int]] {
+    yield ("a", 1)
+}
+
+func each[T](items: list[T]) -> generator[T] {
+    for it in items {
+        yield it
+    }
+}
+
+func ratios() -> generator[float] {
+    yield 1
+    yield 2.5
+}
+
+func main() {
+    for s in shapes() { print(s.name) }
+    for m in maybe() { print(m == None) }
+    for r in parsed(["1", ""]) { print(r.ok()) }
+    for row in rows() { print(len(row)) }
+    for t in tables() { print(len(t)) }
+    for f in flags() { print(len(f)) }
+    for d in docs() { print(d) }
+    for k, v in pairs() { print(k, v) }
+    for e in each([1, 2]) { print(e) }
+    for x in ratios() { print(x) }
+}

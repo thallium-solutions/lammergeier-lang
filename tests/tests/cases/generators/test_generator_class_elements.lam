@@ -1,0 +1,170 @@
+# Regression (4.2.0/4.2.1): a generator declared `-> generator[T]` compiled
+# to a `chan interface{}`, so a consumer reading a field of a yielded class
+# failed at `go build` ("c.Title undefined (type interface{} has no field or
+# method Title)"), as did arithmetic on `generator[int]` values, a
+# `generator[T]` parameter or variable ("cannot range over g (variable of
+# type interface{})") and a generator declared inside a function (whose
+# `yield` turned the enclosing function into a generator). `generator[T]`
+# is now a typed channel of T: class, generic class, optional, list and dict
+# element types, for local, nested, imported, static and instance
+# generators, loops and comprehensions.
+#
+# expect: local north 3 south 12
+# expect: total 15
+# expect: ints 6
+# expect: param north,south
+# expect: var 2
+# expect: nested inner 4
+# expect: nested count 3
+# expect: pairs 3 7
+# expect: rings ring0 1 ring1 2
+# expect: lookup AB 2 2 C 1 1
+# expect: maybe ab skip cd
+# expect: static big 2 small 1
+# expect: each a1 b2
+# expect: titles [north south]
+# expect: areas [3 12]
+# expect: wide [south]
+# expect: left sums [1 3]
+# expect: imported north 1 south 2
+# expect: generic north 1
+# expect: chained 4
+# expect: sum pair 10
+
+from generator_class_provider import Circle, Atlas, circles, pairs
+
+func localCircles() -> generator[Circle] {
+    yield Circle("north", 1)
+    yield Circle("south", 2)
+}
+
+func numbers() -> generator[int] {
+    yield 1
+    yield 2
+    yield 3
+}
+
+func titles(g: generator[Circle]) -> list[str] {
+    out: list[str] = []
+    for c in g {
+        out.append(c.Title)
+    }
+    return out
+}
+
+func each[T](items: list[T]) -> generator[T] {
+    for it in items {
+        yield it
+    }
+}
+
+class Shapes {
+    func init(self, prefix: str) {
+        self.prefix: str = prefix
+    }
+
+    static func sized() -> generator[Circle] {
+        yield Circle("big", 2)
+        yield Circle("small", 1)
+    }
+
+    func each(self) -> generator[Circle] {
+        yield Circle(self.prefix + "1", 1)
+        yield Circle("b2", 2)
+    }
+}
+
+func main() {
+    parts: list[str] = []
+    total: int = 0
+    for c in localCircles() {
+        parts.append(f"{c.Title} {c.area()}")
+        total += c.area()
+    }
+    print("local", " ".join(parts))
+    print("total", total)
+    doubled: int = 0
+    for n in numbers() {
+        doubled += n
+    }
+    print("ints", doubled)
+    print("param", ",".join(titles(localCircles())))
+    g: generator[Circle] = localCircles()
+    last: int = 0
+    for c in g {
+        last = c.r
+    }
+    print("var", last)
+
+    func inner() -> generator[Circle] {
+        yield Circle("inner", 2)
+    }
+    func counter(n: int) -> generator[int] {
+        for i in range(n) {
+            yield i + 1
+        }
+    }
+    for c in inner() {
+        print("nested", c.Title, c.r * c.r)
+    }
+    count: int = 0
+    for k in counter(3) {
+        count = k
+    }
+    print("nested count", count)
+
+    sums: list[int] = []
+    for p in pairs() {
+        sums.append(p.left + p.right)
+    }
+    print("pairs", sums[0], sums[1])
+    rings: list[str] = []
+    for row in Atlas.rings(2) {
+        rings.append(f"{row[0].Title} {row[0].r}")
+    }
+    print("rings", " ".join(rings))
+    found: list[str] = []
+    for m in Atlas(["ab", "c"]).lookup() {
+        for k, v in m {
+            found.append(f"{v.Title} {v.r} {len(k)}")
+        }
+    }
+    print("lookup", " ".join(found))
+    seen: list[str] = []
+    for o in Atlas(["ab", "x", "cd"]).maybe() {
+        if o != None {
+            seen.append(o.Title)
+        } else {
+            seen.append("skip")
+        }
+    }
+    print("maybe", " ".join(seen))
+    sized: list[str] = []
+    for c in Shapes.sized() {
+        sized.append(f"{c.Title} {c.r}")
+    }
+    print("static", " ".join(sized))
+    eachs: list[str] = []
+    for c in Shapes("a").each() {
+        eachs.append(c.Title)
+    }
+    print("each", " ".join(eachs))
+    print("titles", [c.Title for c in localCircles()])
+    print("areas", [c.area() for c in Shapes.sized()][::-1])
+    print("wide", [c.Title for c in circles() if c.r > 1])
+    print("left sums", [p.left for p in pairs()])
+    imported: list[str] = []
+    for c in circles() {
+        imported.append(f"{c.Title} {c.r}")
+    }
+    print("imported", " ".join(imported))
+    for c in each([Circle("north", 1)]) {
+        print("generic", c.Title, c.r)
+    }
+    print("chained", len([r for r in Atlas.rings(4)]))
+    pairTotal: int = 0
+    for p in pairs() {
+        pairTotal += p.left + p.right
+    }
+    print("sum pair", pairTotal)
+}

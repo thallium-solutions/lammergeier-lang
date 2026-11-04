@@ -511,6 +511,11 @@ func lamAsyncReportUnretrieved() {
         # Nested ``func`` name -> its parameter metadata key (defaults,
         # keyword order); scoped to the enclosing function's body.
         self._nested_func_keys: Dict[str, str] = {}
+        # Nested generator ``func`` name -> its channel's element type;
+        # scoped like ``_nested_func_keys``.
+        self._nested_generator_elems: Dict[str, str] = {}
+        # Lam names of the functions being lowered (innermost last).
+        self._lam_func_names: List[str] = []
         self._hoisted_nested_generic_funcs: List[str] = []
         self._nested_generic_counter: int = 0
 
@@ -646,6 +651,7 @@ func lamAsyncReportUnretrieved() {
         self._generic_constraints = {}
         self._nested_generic_functions = {}
         self._nested_func_keys = {}
+        self._nested_generator_elems = {}
         self._hoisted_nested_generic_funcs = []
         self._nested_generic_counter = 0
         self._static_var_go_names = {
@@ -1146,7 +1152,7 @@ func lamAsyncReportUnretrieved() {
                 if isinstance(child, Token) and str(child) == "private":
                     self._private_functions.add(name)
                     break
-            if self._tree_contains(suite_node, "yield_expr"):
+            if self._suite_has_own_yield(suite_node):
                 self._generator_functions.add(name)
                 elem = self._generator_elem_go_type(return_type_node)
                 if elem:
@@ -1247,7 +1253,7 @@ func lamAsyncReportUnretrieved() {
                     # (which use the `Class.init` key) pick up defaults too.
                     key_name = "init" if fn_name == "__init__" else fn_name
                     method_key = f"{class_name}.{key_name}"
-                    if self._tree_contains(method_suite, "yield_expr"):
+                    if self._suite_has_own_yield(method_suite):
                         # Static and instance-method generators.
                         self._generator_functions.add(method_key)
                     _, method_type_param_names, _ = self._type_params_to_go(

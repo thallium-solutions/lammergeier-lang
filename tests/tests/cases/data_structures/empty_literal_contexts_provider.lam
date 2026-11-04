@@ -1,0 +1,52 @@
+# Helper module for test_empty_literal_contexts.lam: a validation API
+# taking `list[FieldError]`, sets and json, with empty-literal defaults.
+
+class FieldError {
+    func init(self, field: str, key: str) {
+        self.field: str = field
+        self.key: str = key
+    }
+}
+
+class Validation {
+    func init(self, errors: list[FieldError] = [], seen: set[str] = {}) {
+        self.errors: list[FieldError] = errors
+        self.seen: set[str] = seen
+        self.meta: json = {}
+    }
+
+    func add(self, more: list[FieldError]) -> Validation {
+        for e in more {
+            self.errors.append(e)
+            self.seen.add(e.field)
+        }
+        return self
+    }
+
+    static func merge(parts: list[Validation], extra: list[FieldError] = []) -> Validation {
+        out: Validation = Validation([], {})
+        for p in parts {
+            _ = out.add(p.errors)
+        }
+        return out.add(extra)
+    }
+
+    func each(self) -> generator[FieldError] {
+        for e in self.errors {
+            yield e
+        }
+    }
+}
+
+func render(action: str, errors: list[FieldError], createMode: bool, index: dict[str, FieldError] = {}) -> str {
+    keys: list[str] = [e.key for e in errors]
+    return f"{action} errors={len(errors)} create={createMode} index={len(index)} keys={','.join(keys)}"
+}
+
+func count[T](items: list[T]) -> int {
+    return len(items)
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

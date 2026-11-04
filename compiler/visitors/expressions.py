@@ -1108,6 +1108,15 @@ class ExpressionVisitorMixin:
                 if ret.startswith("func(") and name not in self._class_names:
                     return ret
                 if (
+                    ret.startswith("chan ")
+                    and name in self._user_functions
+                    and len(self._overload_variants.get(name, ())) <= 1
+                    and name not in self._var_go_types
+                    and name not in self._async_functions
+                ):
+                    # ``circles()`` with ``-> generator[Circle]``: a ``chan *Circle``.
+                    return ret
+                if (
                     (ret in {"string", "int", "float64", "bool", "LamHTML", "LamXML", "LamJSON"} or ret.startswith(("[]", "map[")))
                     and name in self._user_functions
                     and len(self._overload_variants.get(name, ())) <= 1
@@ -1263,10 +1272,25 @@ class ExpressionVisitorMixin:
                 for owner in [class_name, *self._hier_ancestors(class_name)]:
                     for field_name, field_type in self.class_fields.get(owner, []):
                         if field_name == attr or self._go_field_name(owner, field_name) == attr:
-                            return field_type
+                            return self._generic_field_go_type(owner, field_type, obj, class_name)
                     field_type = self._external_field_types.get(owner, {}).get(attr)
                     if field_type:
-                        return field_type
+                        return self._generic_field_go_type(owner, field_type, obj, class_name)
+        return ""
+
+    def _generic_field_go_type(self, owner: str, field_type: str, receiver_node, class_name: str) -> str:
+        """``b.v`` with ``v: T`` of ``class Box[T]`` read on a ``*Box[int]``
+        (a loop, comprehension or lambda variable, an element): ``int``. A
+        type parameter the receiver does not bind is unknown (``""``), never
+        a ``T`` outside the class."""
+        params = self._class_type_param_names_of(owner)
+        if not params or not mentions_names(field_type, params):
+            return field_type
+        subst = self._receiver_type_subst(owner, receiver_node, class_name)
+        if subst:
+            return substitute_go_type(field_type, subst)
+        if all(p in self._generic_names for p in params if mentions_names(field_type, [p])):
+            return field_type
         return ""
 
     # ─── Main expression dispatcher ───────────────────────────
@@ -2421,6 +2445,10 @@ class ExpressionVisitorMixin:
                          "float32", "float64"):
             return f"{func_str}({', '.join(args)})" if args else f"{func_str}(0)"
 
+        if func_str in {"min", "max"} and args and self._raw_call_kwargs(args_node).get("key") is not None:
+            lowered = self._minmax_key_to_go(func_str, args_node)
+            if lowered:
+                return lowered
         if func_str in {"abs", "min", "max"} and args:
             lowered = self._numeric_builtin_to_go(func_str, args, self._get_raw_call_args(args_node))
             if lowered:
@@ -4895,7 +4923,11 @@ class ExpressionVisitorMixin:
         if isinstance(node, Tree) and node.data == "funccall" and node.children:
             callee = node.children[0]
             if isinstance(callee, Tree) and callee.data == "var" and callee.children:
-                return self._generator_elem_go_types.get(self._get_name(callee.children[0]), "")
+                name = self._get_name(callee.children[0])
+                if name in self._nested_generator_elems and name in self.declared_vars:
+                    elem = self._nested_generator_elems[name]
+                    return "" if elem == "interface{}" else elem
+                return self._generator_elem_go_types.get(name, "")
         return ""
 
     def _list_comp_static_elem_go_type(self, node) -> str:
@@ -5067,19 +5099,31 @@ class ExpressionVisitorMixin:
         # ``?`` payload is not the enclosing statement's type.
         with self._scoped(_propagate_cast_hint=""):
             iter_str = self._expr_to_go(iter_expr)
-        if self._is_generator_call(iter_expr):
+        if self._is_generator_call(iter_expr) or self._is_chan_iterable(iter_expr):
             # A generator is a channel: one value per receive.
+            chan_elem = self._generator_iter_elem_go_type(iter_expr)
             if targets:
                 pair_name = f"_lamCompPair{depth}"
                 lines.append(f"{tabs}for {pair_name} := range {iter_str} {{")
+                # A ``chan []interface{}`` (``generator[tuple[...]]``) yields
+                # slices; a dynamic channel yields ``interface{}`` values.
+                pair_expr = pair_name if chan_elem.startswith("[]") else f"{pair_name}.([]interface{{}})"
                 for index, target in enumerate(targets):
                     if target != "_":
-                        lines.append(f"{bind_tabs}{target} := {pair_name}.([]interface{{}})[{index}]")
+                        lines.append(f"{bind_tabs}{target} := {pair_expr}[{index}]")
                 silence(targets)
             else:
                 name = var_str if var_str != "_" else f"_lamCompItem{depth}"
-                elem = self._generator_call_elem_go_type(iter_expr)
-                if elem and name == var_str:
+                elem = "" if chan_elem else self._generator_call_elem_go_type(iter_expr)
+                if chan_elem and name == var_str:
+                    # ``[c.title for c in circles()]``: the channel is typed.
+                    lines.append(f"{tabs}for {name} := range {iter_str} {{")
+                    self._var_go_types[name] = chan_elem
+                    if chan_elem.startswith("*"):
+                        class_name = self._hier_class_from_go_type(chan_elem) or chan_elem[1:].split("[", 1)[0]
+                        if class_name in self._class_names:
+                            self._var_types[name] = class_name
+                elif elem and name == var_str:
                     # ``for b in batches()`` with ``-> generator[list[int]]``.
                     lines.append(f"{tabs}for {name}Raw := range {iter_str} {{")
                     lines.append(f"{bind_tabs}{name} := {name}Raw.({elem})")
@@ -5155,6 +5199,90 @@ class ExpressionVisitorMixin:
         else:
             lines.append(f"{tabs}for _, {var_str} := range {iter_str} {{")
 
+    @staticmethod
+    def _positional_raw_args(args_node) -> list:
+        """The positional argument nodes of a call (keywords left out)."""
+        if not isinstance(args_node, Tree) or args_node.data != "arguments":
+            return []
+        out = []
+        for child in args_node.children:
+            if not isinstance(child, Tree):
+                continue
+            if child.data == "argvalue":
+                if len(child.children) == 1 and isinstance(child.children[0], Tree):
+                    out.append(child.children[0])
+                continue
+            out.append(child)
+        return out
+
+    def _minmax_key_plan(self, raw_args: list):
+        """``(slice_type, source)`` of the values ``min``/``max`` with a
+        ``key`` choose from: one list argument (``max(shapes, key=...)``) or
+        the arguments themselves (``max(a, b, key=...)``); ``None`` when no
+        argument."""
+        if not raw_args:
+            return None
+        if len(raw_args) == 1:
+            node = raw_args[0]
+            slice_type = (self._expr_go_type_hint(node) or self._infer_type_from_value(node) or "").strip()
+            if not slice_type.startswith("[]"):
+                slice_type = "[]interface{}"
+            return slice_type, node
+        types = {
+            (self._expr_go_type_hint(n) or self._infer_type_from_value(n) or "").strip()
+            for n in raw_args
+        }
+        elem = types.pop() if len(types) == 1 else "interface{}"
+        return f"[]{elem or 'interface{}'}", raw_args
+
+    def _minmax_key_to_go(self, name: str, args_node) -> str:
+        """``min(xs, key=fn)`` / ``max(a, b, key=fn)``: the first value with
+        the smallest / largest ``fn(value)`` (keys compare like ``sorted``'s);
+        an empty list throws ``ValueError``."""
+        plan = self._minmax_key_plan(self._positional_raw_args(args_node))
+        if plan is None:
+            return ""
+        slice_type, source_node = plan
+        elem = self._slice_elem_go_type(slice_type) or "interface{}"
+        if isinstance(source_node, list):
+            source = f"{slice_type}{{{', '.join(self._typed_value_to_go(n, elem) for n in source_node)}}}"
+        else:
+            source = self._typed_value_to_go(source_node, slice_type)
+        key_node = self._raw_call_kwargs(args_node)["key"]
+        if self._is_lambda_node(key_node):
+            key_type = self._lambda_result_go_type(key_node, [elem]) or "interface{}"
+        else:
+            split = self._split_go_func_type(self._expr_go_type_hint(key_node) or "")
+            key_type = split[1] if split else ""
+            if not key_type and isinstance(key_node, Tree) and key_node.data == "var":
+                key_type = self._func_return_go_types.get(self._get_name(key_node.children[0]), "")
+            key_type = key_type or "interface{}"
+        key_fn = self._typed_value_to_go(key_node, f"func({elem}) {key_type}")
+        ordered = {
+            "int", "int8", "int16", "int32", "int64",
+            "uint", "uint8", "uint16", "uint32", "uint64",
+            "float32", "float64", "string",
+        }
+        prologue = ""
+        if key_type in ordered:
+            better = "k < bk" if name == "min" else "k > bk"
+        elif key_type == "bool":
+            better = "!k && bk" if name == "min" else "k && !bk"
+        elif self._orders_dynamically(key_type):
+            prologue = f"_c := {self._dynamic_compare_go()}; "
+            better = "_c(k, bk) < 0" if name == "min" else "_c(k, bk) > 0"
+        else:
+            self._need_import("fmt")
+            prologue = "_s := func(v interface{}) string { return fmt.Sprintf(\"%v\", v) }; "
+            better = "_s(k) < _s(bk)" if name == "min" else "_s(k) > _s(bk)"
+        return (
+            f"func(xs {slice_type}) {elem} {{ if len(xs) == 0 {{ "
+            f"panic(\"ValueError: {name}() of an empty list\") }}; "
+            f"key := {key_fn}; {prologue}best := xs[0]; bk := key(best); "
+            f"for _, v := range xs[1:] {{ k := key(v); if {better} {{ best, bk = v, k }} }}; "
+            f"return best }}({source})"
+        )
+
     def _numeric_builtin_go_type(self, name: str, call: Tree) -> str:
         """Go result type of ``abs`` / ``min`` / ``max`` (matching
         ``_numeric_builtin_to_go``), ``""`` when unknown."""
@@ -5165,6 +5293,10 @@ class ExpressionVisitorMixin:
             raw = [args_node]
         else:
             return ""
+        if name in {"min", "max"} and self._raw_call_kwargs(args_node).get("key") is not None:
+            # ``max(shapes, key=lambda s: s.area)``: one of the values.
+            plan = self._minmax_key_plan(self._positional_raw_args(args_node))
+            return plan[0][2:] if plan and plan[0] != "[]interface{}" else ""
         if any(c.data in {"argvalue", "starargs", "kwargs", "comprehension"} for c in raw):
             return ""
         types = [self._expr_go_type_hint(c) or self._infer_type_from_value(c) or "" for c in raw]

@@ -1,0 +1,9 @@
+# expect-pass
+# Helper of 567_imported_module_literal_shapes.lam.
+
+class FieldError {
+    func init(self, field: str, key: str) {
+        self.field: str = field
+        self.key: str = key
+    }
+}

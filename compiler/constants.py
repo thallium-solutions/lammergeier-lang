@@ -41,6 +41,9 @@ PYTHON_EXCEPTIONS: Set[str] = {
     "ArithmeticError", "LookupError", "NameError",
 }
 
+# ``generator[T]`` spellings: a generator of ``T`` (a Go ``chan T``).
+GENERATOR_TYPE_NAMES = frozenset({"generator", "iterator", "Generator", "Iterator"})
+
 # Statement-level AST node names (used for source-line mapping)
 STMT_NODES = frozenset({
     'funcdef', 'classdef', 'if_stmt', 'for_stmt', 'while_stmt',

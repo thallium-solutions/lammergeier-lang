@@ -1263,6 +1263,13 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             self._visit_expr_subtree(node)
             return
 
+        if d == "yield_stmt":
+            # Checked against the generator's element type after the body
+            # walk, with the local types it sees (as a ``return``).
+            self._record_return_block_types(node)
+            self._visit_expr_subtree(node)
+            return
+
         if d in ("raise_stmt", "del_stmt", "assert_stmt",
                  "yield_expr", "defer_stmt"):
             self._visit_expr_subtree(node)
@@ -1341,6 +1348,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             self._warn_loop_captures(node, suite_node, scope.names, "nested function")
         self._scopes.append(scope)
         try:
+            self._check_param_defaults(params_node)
             if not nested:
                 # A ``func`` inside a method body is a nested function (a
                 # closure over the method's ``self``), not a method.
@@ -4051,12 +4059,21 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             # ``[(o.a.b, o.c()) for o in xs]``: element parts the checker
             # could not type are ``any``, not a mismatch.
             return
-        name = next((target for target in self._assign_targets(node) if target), "<target>")
+        name = next((target for target in self._assign_targets(node) if target), "") or self._annassign_target_display(node)
         self._error(
             value_node,
             "type",
             f"cannot assign `{render_type(actual)}` to `{render_type(expected)}` variable `{name}`",
         )
+
+    def _annassign_target_display(self, node: Tree) -> str:
+        """``self.last`` for ``self.last: T = v`` (``<target>`` if unknown)."""
+        for child in node.children:
+            if isinstance(child, Tree):
+                if child.data == "type_expr":
+                    break
+                return self._assignment_target_display(child) or "<target>"
+        return "<target>"
 
     @classmethod
     def _type_mentions_any(cls, type_) -> bool:
@@ -6293,6 +6310,13 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         ):
             # An empty ``{}`` where a ``set[T]`` is expected is an empty set.
             return expected
+        if isinstance(node, Tree) and node.data == "list" and not node.children:
+            # ``[]`` has no element to type it: an empty list of the expected
+            # list type, or a list where no list fits (``dict[str, int]``,
+            # ``set[str]``, a class, a scalar).
+            if self._literal_shape_conflicts("list", expected):
+                return ListType(NamedType("any"))
+            return expected
         consumed = self._result_consumer_call(node)
         if consumed is not None:
             # Return-type overloads (``Conv.parse``) are chosen by the payload
@@ -6328,6 +6352,67 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 return expected
             return self._compatible_ternary_types(true_type, false_type)
         return self._expr_simple_type(node)
+
+    _SCALAR_TYPE_NAMES = frozenset({
+        "bool", "str", "string", "int", "int8", "int16", "int32", "int64",
+        "uint", "uint8", "uint16", "uint32", "uint64", "float", "float32", "float64",
+        "byte", "rune", "html", "xml",
+    })
+
+    @staticmethod
+    def _collection_literal_kind(node) -> str:
+        """``list`` / ``dict`` / ``set`` for a collection literal or
+        comprehension (``""`` otherwise); ``{}`` is a ``dict``."""
+        if not isinstance(node, Tree):
+            return ""
+        return {
+            "list": "list", "list_comprehension": "list",
+            "dict": "dict", "dict_comprehension": "dict",
+            "set": "set", "set_comprehension": "set",
+        }.get(node.data, "")
+
+    def _literal_shape_conflicts(self, kind: str, expected: Type | None, type_params: tuple = ()) -> bool:
+        """A ``kind`` (``list`` / ``dict`` / ``set``) literal can never be a
+        value of ``expected``, whatever its elements: a list where a
+        ``dict``, ``set``, class, interface, scalar, ``Result`` or function
+        is expected, a dict where a list is, ... ``json``, ``any``, type
+        parameters and unknown names accept anything; an empty ``{}`` is
+        an empty set too, ``[]`` a tuple or ``bytes``."""
+        if expected is None:
+            return False
+        inner = expected
+        if isinstance(inner, GenericType) and inner.base in {"optional", "Option"} and len(inner.args) == 1:
+            inner = inner.args[0]
+        if isinstance(inner, UnionType):
+            return all(self._literal_shape_conflicts(kind, option, type_params) for option in inner.options)
+        if isinstance(inner, ListType):
+            return kind != "list"
+        if isinstance(inner, DictType):
+            return kind != "dict"
+        if isinstance(inner, FuncType):
+            return True
+        if isinstance(inner, GenericType):
+            if inner.base == "set":
+                return kind == "list"
+            if inner.base == "tuple":
+                return kind != "list"
+            if inner.base in {"optional", "Option"}:
+                return False
+            return inner.base in {"Result", "chan"} | set(self._GENERATOR_TYPE_NAMES) or (
+                inner.base in self._class_method_shapes and inner.base not in type_params
+            )
+        if isinstance(inner, NamedType):
+            name = inner.name
+            if name in type_params or name in self._current_type_params():
+                return False
+            if name in {"list", "dict", "set"}:
+                return kind != name and not (name == "set" and kind == "dict")
+            if name == "bytes":
+                return kind != "list"
+            if name in self._SCALAR_TYPE_NAMES or name == "Result":
+                return True
+            return name in self._class_method_shapes or name in self._interface_methods
+        return False
 
     def _fresh_literal_fits(self, node, expected: Type) -> bool:
         """A non-empty list/dict/set literal whose every element fits the
@@ -6390,6 +6475,16 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 continue
             expected = parse_type(expected_name)
             if self._type_mentions_generic(expected, sig.generic_names):
+                literal = self._unwrap_argvalue(arg_node)
+                kind = self._collection_literal_kind(literal)
+                if kind and self._literal_shape_conflicts(kind, expected, tuple(sig.generic_names)):
+                    # ``first({})`` with ``first[T](xs: list[T])``: no ``T``
+                    # makes a dict a list.
+                    actual = self._expr_simple_type(literal) or (
+                        ListType(NamedType("any")) if kind == "list" else NamedType(kind)
+                    )
+                    out.append((param_name, expected, actual, arg_node))
+                    continue
                 if not generic_mapping:
                     continue
                 expected = self._substitute_generic_type(expected, generic_mapping)
@@ -8118,6 +8213,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             self._return_type_model(expected_type_node)
             if expected_type_node is not None else None
         )
+        if expected_model is not None and self._suite_has_yield(suite_node):
+            self._check_generator_yields(suite_node, name, expected_model)
         if self._funcdef_has_nonvoid_return(funcdef):
             if not returns:
                 if self._suite_has_go_block(suite_node) or self._suite_has_yield(suite_node):
@@ -8161,6 +8258,130 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                         ret, "return",
                         f"`return` in `{name}` cannot return a value because the function returns `None`",
                     )
+
+    _NON_NIL_TYPE_NAMES = frozenset({
+        "bool", "str", "string", "int", "int8", "int16", "int32", "int64",
+        "uint", "uint8", "uint16", "uint32", "uint64", "float", "float32", "float64",
+        "byte", "rune", "html", "xml",
+    })
+
+    def _check_param_defaults(self, params_node) -> None:
+        """``func f(errors: list[FieldError] = {})``: a parameter's default
+        is a value of its type (callers that omit the argument receive it;
+        a mismatch built Go code that did not compile)."""
+        if not isinstance(params_node, Tree):
+            return
+        for child in params_node.children:
+            if not (isinstance(child, Tree) and child.data == "typed_paramvalue" and len(child.children) >= 2):
+                continue
+            param, default = child.children[0], child.children[1]
+            if not (isinstance(param, Tree) and param.data == "typed_param" and isinstance(default, Tree)):
+                continue
+            type_node = next((c for c in param.children[1:] if isinstance(c, Tree) and c.data == "type_expr"), None)
+            if type_node is None:
+                continue
+            name = self._name_text(param.children[0])
+            try:
+                expected = parse_type(type_node)
+            except Exception:
+                continue
+            if isinstance(expected, NamedType) and expected.name == "json":
+                self._check_json_expr(default, f"invalid json default for parameter `{name}`")
+                continue
+            if self._is_any_type(expected) or self._is_unknown_open_assignment_type(expected):
+                continue
+            if self._type_mentions_generic(expected, tuple(self._current_type_params())):
+                kind = self._collection_literal_kind(default)
+                if kind and self._literal_shape_conflicts(kind, expected):
+                    actual = self._expr_simple_type(default) or ListType(NamedType("any"))
+                    self._error(
+                        default, "type",
+                        f"default value of parameter `{name}` has type `{render_type(actual)}`, expected `{render_type(expected)}`",
+                    )
+                continue
+            if self._is_none_value(default):
+                # ``xs: list[int] = None`` is a nil slice; a value type
+                # (``str``, ``int``, ...) has no ``None``.
+                if isinstance(expected, NamedType) and expected.name in self._NON_NIL_TYPE_NAMES:
+                    self._error(
+                        default, "type",
+                        f"default value of parameter `{name}` is `None`, but `{render_type(expected)}` cannot be `None` (use `optional[{render_type(expected)}]`)",
+                    )
+                continue
+            actual = self._expr_type_for_expected(default, expected)
+            if actual is None or self._is_any_type(actual) or self._is_unknown_open_assignment_type(actual):
+                continue
+            if is_assignable(expected, actual) or self._nominal_type_assignable(expected, actual):
+                continue
+            if self._numeric_constant_fits_type_param(expected, default):
+                continue
+            self._error(
+                default, "type",
+                f"default value of parameter `{name}` has type `{render_type(actual)}`, expected `{render_type(expected)}`",
+            )
+
+    def _is_none_value(self, node) -> bool:
+        if isinstance(node, Tree) and node.data == "var" and node.children:
+            return self._name_text(node.children[0]) in {"None", "nil"}
+        if isinstance(node, Tree) and node.data == "const_none":
+            return True
+        return self._literal_expr_type(node) == "None"
+
+    def _yield_stmts_in(self, node):
+        if not isinstance(node, Tree):
+            return
+        if node.data == "yield_stmt":
+            yield node
+            return
+        if node.data in {"funcdef", "classdef", "lambdef"}:
+            return
+        for child in node.children:
+            yield from self._yield_stmts_in(child)
+
+    def _check_generator_yields(self, suite_node: Tree, name: str, declared: Type) -> None:
+        """Each ``yield v`` of a generator gives a value of its element type:
+        ``T`` of ``-> generator[T]``, else the declared ``-> T``."""
+        element = declared
+        if isinstance(declared, GenericType) and declared.base in self._GENERATOR_TYPE_NAMES:
+            if len(declared.args) != 1:
+                return
+            element = declared.args[0]
+        if self._is_any_type(element) or self._is_unknown_open_assignment_type(element):
+            return
+        for stmt in self._yield_stmts_in(suite_node):
+            expr = next((c for c in stmt.children if isinstance(c, Tree)), None)
+            if not (isinstance(expr, Tree) and expr.data == "yield_expr" and expr.children):
+                continue
+            value_node = expr.children[0]
+            if not isinstance(value_node, Tree):
+                continue
+            block_types = self._return_block_types.get(id(stmt))
+            if block_types:
+                self._scopes.append(_Scope(kind="block", var_types=dict(block_types)))
+            try:
+                self._check_yield_value(value_node, name, element)
+            finally:
+                if block_types:
+                    self._scopes.pop()
+
+    def _check_yield_value(self, value_node: Tree, name: str, element: Type) -> None:
+        if isinstance(element, NamedType) and element.name == "json":
+            self._check_json_expr(value_node, f"invalid json yield from `{name}`")
+            return
+        if self._check_result_ok_payload(value_node, element, f"`{name}` yields"):
+            return
+        actual = self._expr_type_for_expected(value_node, element)
+        if actual is None or self._is_any_type(actual) or self._is_unknown_open_assignment_type(actual):
+            return
+        if is_assignable(element, actual) or self._nominal_type_assignable(element, actual):
+            return
+        if self._numeric_constant_fits_type_param(element, value_node):
+            return
+        self._error(
+            value_node,
+            "type",
+            f"`yield` in `{name}` gives `{render_type(actual)}`, expected `{render_type(element)}`",
+        )
 
     def _check_return_value(self, ret: Tree, name: str, expected_type, expected_model) -> None:
         if not self._return_has_value(ret):

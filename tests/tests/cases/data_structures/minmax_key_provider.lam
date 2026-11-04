@@ -1,0 +1,24 @@
+# Helper module for test_minmax_key_and_generic_fields.lam: a class and a
+# generic class of another module.
+
+class Planet {
+    func init(self, name: str, moons: int) {
+        self.name: str = name
+        self.moons: int = moons
+    }
+}
+
+class Slot[T] {
+    func init(self, value: T, weight: float) {
+        self.value: T = value
+        self.weight: float = weight
+    }
+}
+
+func planets() -> list[Planet] {
+    return [Planet("mars", 2), Planet("earth", 1), Planet("jupiter", 95)]
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

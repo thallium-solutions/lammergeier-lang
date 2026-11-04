@@ -1,0 +1,63 @@
+# Helper module for test_generator_class_elements.lam: generators of another
+# module declared `-> generator[T]` with class, generic class, optional,
+# list and dict element types (a function, a static and an instance method).
+
+class Circle {
+    func init(self, title: str, r: int) {
+        self.Title: str = title
+        self.r: int = r
+    }
+
+    func area(self) -> int {
+        return 3 * self.r * self.r
+    }
+}
+
+class Pair[T] {
+    func init(self, left: T, right: T) {
+        self.left: T = left
+        self.right: T = right
+    }
+}
+
+func circles() -> generator[Circle] {
+    yield Circle("north", 1)
+    yield Circle("south", 2)
+}
+
+func pairs() -> generator[Pair[int]] {
+    yield Pair(1, 2)
+    yield Pair(3, 4)
+}
+
+class Atlas {
+    func init(self, names: list[str]) {
+        self.names: list[str] = names
+    }
+
+    static func rings(n: int) -> generator[list[Circle]] {
+        for i in range(n) {
+            yield [Circle(f"ring{i}", i + 1)]
+        }
+    }
+
+    func lookup(self) -> generator[dict[str, Circle]] {
+        for n in self.names {
+            yield {n: Circle(n.toUpper(), len(n))}
+        }
+    }
+
+    func maybe(self) -> generator[optional[Circle]] {
+        for n in self.names {
+            if len(n) > 1 {
+                yield Circle(n, len(n))
+            } else {
+                yield None
+            }
+        }
+    }
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

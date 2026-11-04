@@ -5,6 +5,66 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.2.2 — 2026-11-04
+
+### Fixed
+
+- A collection literal that no value of the declared type can be passed
+  the checks in an imported module and failed in `go build`:
+  `shopForm(c, action, shop, None, {}, false)` with `errors:
+  list[FieldError]` ("cannot use map[string]interface{}{} ... as
+  []*FieldError value"). Only the compiled file gets the full semantic
+  check; imported modules got name resolution only. A `{}` / `[]` / set
+  literal or comprehension where its kind cannot fit (a list where a dict,
+  set, class, interface, scalar or function is expected, a dict where a
+  list is, ...) is now a Lam error in every module of the build, for call
+  arguments (positional and keyword, functions, constructors, instance and
+  static methods, also across modules and for generic `list[T]`
+  parameters), parameter defaults, annotated variables and fields, and
+  returns, with the semantic checker's wording. `{}` stays an empty set
+  for a `set[T]` and an empty object for `json`, `[]` an empty array for
+  `json`.
+- In the compiled file, an empty `[]` was accepted for any type (`counts:
+  dict[str, int] = []`, `label([])` with `name: str`, `return []` from a
+  `-> Item`, `byName["a"] = []` into a `dict[str, Item]`, a `set[str]`
+  argument), a `{}` passed to a generic `list[T]` parameter or constructor
+  (`count({})`, `Box({})`) was skipped, and parameter defaults were not
+  checked at all (`limit: int = "10"`, `errors: list[Item] = {}`,
+  `title: str = None`): all failed in `go build`. They are Lam errors;
+  `None` stays a valid default for lists, dicts, sets, classes and
+  optionals. An annotated field's error names it (`self.last`, was
+  `<target>`).
+- A generator declared `-> generator[T]` compiled to a `chan interface{}`:
+  reading a field of a yielded class (`for c in circles() { print(c.Title)
+  }`) failed in `go build` ("c.Title undefined (type interface{} has no
+  field or method Title)"), as did arithmetic on `generator[int]` values,
+  a `generator[T]` parameter, variable or field ("cannot range over g
+  (variable of type interface{})") and a comprehension over a typed
+  generator method. `generator[T]` is a `chan T`: class, generic class,
+  `optional`, list, dict and tuple element types work for local, imported,
+  static, instance and generic generators, `for` loops (also destructuring
+  a `generator[tuple[...]]`) and comprehensions.
+- A generator declared inside a function made the enclosing function a
+  generator (`main` became `func main() chan interface{}`) and the nested
+  one had no body ("missing return"); it is a closure returning its
+  channel, capturing the enclosing locals (also in methods and in other
+  generators).
+- A `yield` value was not checked against the generator's element type
+  (`yield int(w)` in a `-> generator[Result[int]]`, `yield "x"` in a
+  `-> int` generator) and failed in `go build`; it is a Lam error.
+- `min` / `max` with `key=` ignored the key (`max(xs, key=lambda x: -x)`
+  returned the largest value) and failed in `go build` for lists of
+  classes, generic classes, lists and dicts ("*Circle does not satisfy
+  cmp.Ordered"). They return the first value with the smallest / largest
+  key (compared like `sorted`'s keys), keep the element type
+  (`max(ps, key=f).name`), take several arguments (`max(a, b, key=f)`) and
+  throw `ValueError` on an empty list.
+- The field of a generic class element read in a lambda or a comprehension
+  (`sorted(boxes, key=lambda b: b.v)`, `[b.v for b in boxes]`,
+  `boxes.map(lambda b: b.v + 1)` with `boxes: list[Box[int]]`) leaked the
+  class's type parameter into the caller ("undefined: T"); it has the
+  element's type argument.
+
 ## 4.2.1 — 2026-11-04
 
 ### Fixed

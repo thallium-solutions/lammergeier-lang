@@ -1,0 +1,38 @@
+# expect-pass
+# Helper of 567_imported_module_literal_shapes.lam: functions, a class and a
+# generic function taking a `list[FieldError]` (from a relative import),
+# also called with the empty literals that fit (`[]` for a list, `{}` for a
+# set or a json object, `[]` for a json array).
+from .fields import FieldError
+
+func shopForm(action: str, errors: list[FieldError], createMode: bool, flags: set[str] = {}) -> str {
+    return f"{action} {len(errors)} {createMode} {len(flags)}"
+}
+
+func payload(doc: json = {}, items: json = []) -> json {
+    return doc
+}
+
+class Validation {
+    func init(self, errors: list[FieldError], ok: bool = true) {
+        self.errors: list[FieldError] = errors
+        self.ok: bool = ok
+    }
+
+    func add(self, more: list[FieldError]) -> int {
+        return len(self.errors) + len(more)
+    }
+
+    static func of(errors: list[FieldError]) -> Validation {
+        return Validation(errors)
+    }
+}
+
+func first[T](items: list[T]) -> int {
+    return len(items)
+}
+
+func fine() -> str {
+    v: Validation = Validation([])
+    return shopForm("a", [], false, {}) + str(v.add([])) + str(payload({}, []))
+}
