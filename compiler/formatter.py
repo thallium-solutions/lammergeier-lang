@@ -80,12 +80,20 @@ def _format_lines(source: str) -> str:
     # brackets, so ``take(\n    {...},\n)`` and ``print(f(\n    1\n))``
     # indent their continuation lines one level.
     open_lines: list[int] = []
+    prev_code: int | None = None  # the last code line laid out
+    prev_dot_extra: int | None = None  # its extra level when it continued a chain
     i = 0
 
     def indent_level(text: str) -> int:
         closers = _leading_closing_brackets(text)
-        still_open = open_lines[:len(open_lines) - closers] if closers else open_lines
-        return len(set(still_open))
+        if closers and closers <= len(open_lines):
+            # A line starting with closing brackets aligns with the line
+            # that opened the outermost of them, even when that line has
+            # other brackets still open (``}, 0)`` closing the body of a
+            # lambda opened by ``reduce(lambda ... {``, ``], [``).
+            first = open_lines[-closers]
+            return len({line for line in open_lines[:-closers] if line != first})
+        return len(set(open_lines))
 
     def track(text: str, line_id: int) -> None:
         for ch in _bracket_chars(text):
@@ -126,6 +134,13 @@ def _format_lines(source: str) -> str:
             continue
 
         line_depth = indent_level(stripped)
+        dot_extra = None
+        if stripped.startswith(".") and not stripped.startswith("..") and prev_code is not None:
+            # ``xs\n.map(f)\n.filter(g)``: a method chain continues the
+            # statement one level in (unless the line before the chain
+            # left a bracket open, which already indents it).
+            dot_extra = prev_dot_extra if prev_dot_extra is not None else int(prev_code not in open_lines)
+            line_depth += dot_extra
         formatted = _format_code_line(stripped)
         if formatted == "}" and out and out[-1] == "":
             out.pop()
@@ -137,6 +152,8 @@ def _format_lines(source: str) -> str:
             continue
         out.append("    " * line_depth + formatted)
         track(stripped, i)
+        prev_code = i
+        prev_dot_extra = dot_extra
         i += 1
     return "\n".join(out).rstrip() + "\n"
 
@@ -302,6 +319,10 @@ def _split_compact_line(line: str, layout_stack: list[str]) -> list[str]:
             i += 1
             prev_meaningful = ch
             continue
+        if ch in "([":
+            layout_stack.append(ch)
+        elif ch in ")]" and layout_stack and layout_stack[-1] in "([":
+            layout_stack.pop()
         if ch == "{":
             kind = _layout_brace_kind(prev_meaningful, "".join(buf))
             layout_stack.append(kind)
@@ -312,6 +333,8 @@ def _split_compact_line(line: str, layout_stack: list[str]) -> list[str]:
             i += 1
             continue
         if ch == "}":
+            while layout_stack and layout_stack[-1] in "([":
+                layout_stack.pop()  # unbalanced ``(`` / ``[`` inside braces
             kind = layout_stack.pop() if layout_stack else "block"
             if kind in {"block", "lambda_block"} and "".join(buf).strip():
                 _flush_layout_segment(out, buf)
@@ -320,9 +343,12 @@ def _split_compact_line(line: str, layout_stack: list[str]) -> list[str]:
             if kind in {"block", "lambda_block"}:
                 # Keep ``else``/``catch`` on the same virtual line as
                 # the closing brace so the normal line formatter can emit
-                # Go-like ``} else {``.
+                # Go-like ``} else {``, and what follows a lambda body in
+                # its expression (``}), {"k": 1})``, ``}, 0)``).
                 rest = code[i + 1:].lstrip()
-                if not _starts_following_clause(rest):
+                if not _starts_following_clause(rest) and not (
+                    kind == "lambda_block" and rest[:1] in tuple(")]},.")
+                ):
                     _flush_layout_segment(out, buf)
             i += 1
             continue
@@ -373,11 +399,16 @@ def _last_layout_word(prefix: str) -> str:
 
 
 def _previous_layout_char(layout_stack: list[str]) -> str:
-    return "{" if layout_stack and layout_stack[-1] in {"block", "lambda_block"} else ""
+    """The meaningful character a line continues after: ``{`` inside a
+    block, ``(`` inside brackets or a literal (a ``{`` starting the line
+    there is a dict / set literal), nothing at statement level."""
+    if not layout_stack:
+        return ""
+    return "{" if layout_stack[-1] in {"block", "lambda_block"} else "("
 
 
 def _inside_layout_expression(layout_stack: list[str]) -> bool:
-    return bool(layout_stack and layout_stack[-1] == "literal")
+    return bool(layout_stack and layout_stack[-1] in {"literal", "(", "["})
 
 
 def _starts_following_clause(text: str) -> bool:

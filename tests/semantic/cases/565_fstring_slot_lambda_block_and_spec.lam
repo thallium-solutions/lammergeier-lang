@@ -1,0 +1,29 @@
+# expect-error: undefined name `missing` in f-string
+# expect-error: undefined name `threshhold` in f-string — did you mean `threshold`?
+# expect-error: list `filter` expects a `func(int) -> bool` callback, got `func(int) -> int`
+# expect-error: unsupported f-string format spec `^7`: centering has no Go verb; use `.center(7)`
+# expect-error: unsupported f-string format spec `,`: digit grouping has no Go verb; use `Fmt.grouped(value)`
+# expect-error: unsupported f-string format spec `*>6`: only a space fill is supported
+# expect-error: f-string conversion `!r` is not supported; use `repr(...)` or a format spec
+# expect-error: f-string self-documenting `=` is not supported; write the label (`limit={limit}`)
+# expect-error: f-string slot `xs[0] +` is not a valid expression
+# expect-error: empty f-string slot `{}`; write `{{}}` for literal braces
+# 4.2.1: a lambda with a block body in an f-string slot is parsed with the
+# statement preprocessing and checked like any expression; format specs
+# without a Go equivalent are reported instead of reaching Go.
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    limit: int = 2
+    threshold: int = 1
+    print(f"{xs.all(lambda (x: int) -> bool { return x > missing })}")
+    print(f"{xs.any(lambda(x: int) -> bool { return x > threshhold })}")
+    print(f"{xs.filter(lambda (x: int) -> int { return x + threshold })}")
+    print(f"[{limit:^7}]")
+    print(f"[{limit:,}]")
+    print(f"[{limit:*>6}]")
+    print(f"[{limit!r}]")
+    print(f"[{limit=}]")
+    print(f"[{xs[0] +}]")
+    print(f"[{}]")
+}

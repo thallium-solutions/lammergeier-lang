@@ -68,7 +68,7 @@ from compiler.modules import WorkspaceIndex, module_facts_from_path
 from compiler import namespacing as _namespacing
 from compiler import narrowing as _narrowing
 from compiler.safe_nav import rewrite_result_safe_nav
-from compiler.fstrings import decode_placeholders, fstring_body, split_fstring
+from compiler.fstrings import decode_placeholders, fstring_body, fstring_spec_to_go, parse_slot, split_fstring
 from compiler.semantic_narrowing import NarrowingCheckMixin
 from compiler.semantic_markup import MarkupSemanticMixin
 from compiler.typesys import (
@@ -6844,18 +6844,68 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 continue
             text = part.expr
             tree = self._fstring_slot_tree(text) if text.strip() else None
+            if tree is not None and part.has_spec:
+                verb, reason = fstring_spec_to_go(part.spec)
+                if verb is None:
+                    self._error(
+                        self._fstring_slot_span(node, raw, decoded, part.start),
+                        "fstring",
+                        f"unsupported f-string format spec `{part.spec}`: {reason}",
+                    )
             if tree is None and part.has_spec:
                 text = f"{part.expr}:{part.spec}"
                 tree = self._fstring_slot_tree(text)
+            if tree is None and self._report_fstring_slot_form(node, raw, decoded, part):
+                continue
             if tree is None:
                 slot = text
                 for m in _FSTRING_IDENT_RE.finditer(slot):
                     self._is_resolved(m.group(0))
+                shown = part.expr.strip()
+                self._error(
+                    self._fstring_slot_span(node, raw, decoded, part.start),
+                    "fstring",
+                    f"f-string slot `{shown}` is not a valid expression" if shown else "empty f-string slot `{}`; write `{{}}` for literal braces",
+                )
                 self._check_fstring_slot_names(node, raw, decoded, part.start, slot)
                 continue
             self._place_fstring_slot_tree(tree, node.children[0], decoded, part.start, prefix)
             with self._fstring_slot_scope():
                 self._visit_expr_subtree(tree)
+
+    _FSTRING_CONVERSION_RE = re.compile(r"^(?P<head>.*?)\s*!(?P<conv>[rsa])\s*$", re.S)
+
+    def _fstring_slot_span(self, node: Tree, raw: str, body: str, offset: int) -> SourceSpan:
+        """The line and column of ``offset`` in the f-string body."""
+        token = node.children[0]
+        base_line = getattr(token, "line", 0) or 0
+        base_col = getattr(token, "column", 0) or 0
+        prefix = 4 if raw.startswith(('f"""', "f'''")) else 2
+        before = body[:offset]
+        line = base_line + before.count("\n")
+        col = (offset - before.rfind("\n")) if "\n" in before else base_col + prefix + offset
+        return SourceSpan(None, line, col)
+
+    def _report_fstring_slot_form(self, node: Tree, raw: str, body: str, part) -> bool:
+        """Report a slot using Python's ``!r`` conversion or ``=`` (which
+        have no lowering) when its expression does not parse otherwise."""
+        expr = part.expr.strip()
+        span = self._fstring_slot_span(node, raw, body, part.start)
+        m = self._FSTRING_CONVERSION_RE.match(expr)
+        if m and m.group("head") and self._fstring_slot_tree(m.group("head")) is not None:
+            self._error(
+                span, "fstring",
+                f"f-string conversion `!{m.group('conv')}` is not supported; use `repr(...)` or a format spec",
+            )
+            return True
+        if expr.endswith("=") and not expr.endswith(("==", "!=", "<=", ">=")) and self._fstring_slot_tree(expr[:-1]) is not None:
+            name = expr[:-1].strip()
+            self._error(
+                span, "fstring",
+                f"f-string self-documenting `=` is not supported; write the label (`{name}={{{name}}}`)",
+            )
+            return True
+        return False
 
     _FSTRING_SLOT_PREFIX = "lamFstrSlot = ("
 
@@ -6871,11 +6921,9 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             cache = {}
             SemanticChecker._FSTRING_TREE_CACHE = cache
         if text not in cache:
-            try:
-                from compiler.lammergeier import create_parser as _cp
-                tree = _cp().parse(f"{self._FSTRING_SLOT_PREFIX}{expr});\n")
-            except Exception:
-                tree = None
+            # A lambda with a block body is parsed with the statement
+            # preprocessing (``compiler/fstrings.py``: ``parse_slot``).
+            tree = parse_slot(self._FSTRING_SLOT_PREFIX, expr)
             rhs = None
             if tree is not None:
                 for sub in tree.iter_subtrees_topdown():

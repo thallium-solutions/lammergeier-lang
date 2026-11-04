@@ -1,0 +1,20 @@
+# Helper module for test_fstring_lambda_slots.lam: f-string slots holding
+# block-bodied lambdas and Python format specs in another module.
+
+func describe(xs: list[int]) -> str {
+    return f"provider={xs.all(lambda (x: int) -> bool { return x > 0 })} [{len(xs):>3}] [{xs.map(lambda(x: int) -> int { return x + 1 })[1:]}]"
+}
+
+class Scores {
+    func init(self, values: list[int]) {
+        self.values: list[int] = values
+    }
+
+    func render(self) -> str {
+        return f"scores=[{self.values.reduce(lambda (a: int, b: int) -> int { return a + b }, 0):<4}] {self.values.any(lambda (v: int) -> bool { return v > 6 })}"
+    }
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

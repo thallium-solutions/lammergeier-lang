@@ -13,7 +13,7 @@ from compiler.constants import (
 from compiler.typesys import DictType
 from compiler.visitors.generics import mentions_names, substitute_go_type
 from compiler.index_bounds import index_nonneg, lower_bound
-from compiler.fstrings import fstring_body, split_fstring
+from compiler.fstrings import fstring_body, fstring_spec_to_go, parse_slot, split_fstring
 from compiler import narrowing
 
 
@@ -1059,6 +1059,14 @@ class ExpressionVisitorMixin:
                     return {"int": "int", "float": "float64", "bool": "bool", "str": "string", "bytes": "[]byte"}[name]
                 if name == "len" and name not in self._user_functions:
                     return "int"
+                if name == "sorted" and name not in self._user_functions and name not in self._var_go_types:
+                    # ``for x in sorted(opt)``: a copy of the argument's list type.
+                    args_node = node.children[1] if len(node.children) > 1 else None
+                    raw_args = self._get_raw_call_args(args_node) if isinstance(args_node, Tree) else []
+                    if raw_args:
+                        source = self._expr_go_type_hint(raw_args[0]) or self._infer_type_from_value(raw_args[0]) or ""
+                        if source.startswith("[]"):
+                            return source
                 if name in {"abs", "min", "max"} and name not in self._user_functions and name not in self._var_go_types:
                     # ``max(abs(a), 2)``: ints stay ints (``_numeric_builtin_to_go``).
                     result = self._numeric_builtin_go_type(name, node)
@@ -2487,6 +2495,10 @@ class ExpressionVisitorMixin:
                     less_expr = f"{left} < {right}"
                 elif key_type == "bool":
                     less_expr = f"!{left} && {right}"
+                elif self._orders_dynamically(key_type):
+                    # ``list[any]`` / ``json`` / ``T``: by kind at run time.
+                    prologue += f"lamCmp := {self._dynamic_compare_go()}; "
+                    less_expr = f"lamCmp({left}, {right}) < 0"
                 else:
                     self._need_import("fmt")
                     less_expr = f'fmt.Sprintf("%v", {left}) < fmt.Sprintf("%v", {right})'
@@ -2905,15 +2917,19 @@ class ExpressionVisitorMixin:
                             self._builtin_func_ref_to_go(key_raw, f"func({_elem_type}) {key_type}")
                             or _resolve_func_ref(self._expr_to_go(key_raw))
                         )
+                    key_cmp = ""
                     if key_type in self._ORDERED_GO_TYPES:
                         key_less = "_k(_r[i]) < _k(_r[j])"
                     elif key_type == "bool":
                         key_less = "!_k(_r[i]) && _k(_r[j])"
+                    elif self._orders_dynamically(key_type):
+                        key_cmp = f"_c := {self._dynamic_compare_go()}; "
+                        key_less = "_c(_k(_r[i]), _k(_r[j])) < 0"
                     else:
                         self._need_import("fmt")
                         key_less = 'fmt.Sprintf("%v", _k(_r[i])) < fmt.Sprintf("%v", _k(_r[j]))'
                     return (
-                        f"func() {_slice_type} {{ _r := {target_expr}; _k := {key_fn}; "
+                        f"func() {_slice_type} {{ _r := {target_expr}; _k := {key_fn}; {key_cmp}"
                         f"sort.SliceStable(_r, func(i, j int) bool {{ return {key_less} }}); return _r }}()"
                     )
                 if compare_expr:
@@ -2935,6 +2951,13 @@ class ExpressionVisitorMixin:
                     less_expr = "_r[i] < _r[j]"
                 elif _elem_type == "bool":
                     less_expr = "!_r[i] && _r[j]"
+                elif self._orders_dynamically(_elem_type):
+                    # ``list[any]`` / ``list[json]`` / ``list[T]``: by kind.
+                    return (
+                        f"func() {_slice_type} {{ _r := {target_expr}; _c := {self._dynamic_compare_go()}; "
+                        f"sort.SliceStable(_r, func(i, j int) bool {{ "
+                        f"return _c(_r[i], _r[j]) < 0 }}); return _r }}()"
+                    )
                 else:
                     self._need_import("fmt")
                     less_expr = (
@@ -3253,15 +3276,10 @@ class ExpressionVisitorMixin:
             cached = self._fstring_slot_result_nav(cached)
             with self._scoped(_synthetic_positions=True):
                 return self._optional_display_go(self._expr_to_go(cached), cached)
-        try:
-            from compiler.lammergeier import create_parser as _cp
-        except Exception:
-            return None
-        try:
-            parser = _cp()
-            wrapped = f"_lamFstrTmp = ({expr});\n"
-            tree = parser.parse(wrapped)
-        except Exception:
+        # A lambda with a block body needs the statement preprocessing
+        # (``compiler/fstrings.py``: ``parse_slot``).
+        tree = parse_slot("_lamFstrTmp = (", expr)
+        if tree is None:
             cache[expr] = None
             return None
         # Find the assign tree's RHS — the parser produces a tiny
@@ -3387,6 +3405,17 @@ class ExpressionVisitorMixin:
 
     _FSTRING_SPEC_VERBS = 'fdseEgGoxXbcn%'
 
+    def _fstring_expr_parses(self, expr: str) -> bool:
+        """The text before a slot's top-level ``:`` is an expression (so the
+        rest is its format spec)."""
+        expr = expr.strip()
+        if not expr:
+            return False
+        cache = self.__dict__.setdefault("_fstring_parse_ok_cache", {})
+        if expr not in cache:
+            cache[expr] = parse_slot("_lamFstrTmp = (", expr) is not None
+        return cache[expr]
+
     def _fstring_to_go(self, node: Tree) -> str:
         self._need_import("fmt")
         raw = str(node.children[0])
@@ -3402,7 +3431,12 @@ class ExpressionVisitorMixin:
                     fmt_str += part.replace("%", "%%")
                     continue
                 spec = part.spec
-                if part.has_spec and spec and (spec[-1] in self._FSTRING_SPEC_VERBS or spec.startswith('.')):
+                verb = fstring_spec_to_go(spec)[0] if part.has_spec else "%v"
+                if verb and (not part.has_spec or self._fstring_expr_parses(part.expr)):
+                    # ``{x:.2f}`` / ``{x:>5}`` / ``{x:}``: the Go verb.
+                    fmt_str += verb
+                    go_args.append(self._transform_fstring_expr(part.expr))
+                elif part.has_spec and spec and (spec[-1] in self._FSTRING_SPEC_VERBS or spec.startswith('.')):
                     fmt_str += f"%{spec}"
                     go_args.append(self._transform_fstring_expr(part.expr))
                 else:
@@ -3487,6 +3521,60 @@ class ExpressionVisitorMixin:
         "uint", "uint8", "uint16", "uint32", "uint64",
         "float32", "float64", "string",
     })
+
+    # Ordering of values whose static type is not an ordered Go type
+    # (``any``, ``json``, a type parameter, ``optional[int]``): by kind at
+    # run time. Numbers compare numerically (ints exactly, a float with
+    # anything numerically, NaN first), strings by bytes, ``false <
+    # true``; values of different kinds order as None < bool < number <
+    # str < other, other values by their ``%v`` text. ``json`` values are
+    # seen through (``LamMatchRaw``), set pointers are dereferenced.
+    _DYNAMIC_COMPARE_GO = (
+        "func(a, b interface{}) int { "
+        "key := func(v interface{}) (int, interface{}) { "
+        "if raw, ok := v.(interface{ LamMatchRaw() interface{} }); ok { v = raw.LamMatchRaw() }; "
+        "rv := reflect.ValueOf(v); "
+        "for rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) && !rv.IsNil() && rv.Elem().Kind() != reflect.Struct { rv = rv.Elem() }; "
+        "if !rv.IsValid() || ((rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) && rv.IsNil()) { return 0, nil }; "
+        "switch rv.Kind() { "
+        "case reflect.Bool: return 1, rv.Bool(); "
+        "case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64: return 2, rv.Int(); "
+        "case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr: return 2, rv.Uint(); "
+        "case reflect.Float32, reflect.Float64: return 2, rv.Float(); "
+        "case reflect.String: return 3, rv.String() }; "
+        "return 4, fmt.Sprintf(\"%v\", v) }; "
+        "ka, va := key(a); kb, vb := key(b); "
+        "if ka != kb { if ka < kb { return -1 }; return 1 }; "
+        "switch x := va.(type) { "
+        "case bool: if y := vb.(bool); x == y { return 0 } else if !x { return -1 }; return 1; "
+        "case string: y := vb.(string); if x < y { return -1 } else if x > y { return 1 }; return 0; "
+        "case int64: if y, ok := vb.(int64); ok { if x < y { return -1 } else if x > y { return 1 }; return 0 }; "
+        "if y, ok := vb.(uint64); ok { if x < 0 || uint64(x) < y { return -1 } else if uint64(x) > y { return 1 }; return 0 }; "
+        "case uint64: if y, ok := vb.(uint64); ok { if x < y { return -1 } else if x > y { return 1 }; return 0 }; "
+        "if y, ok := vb.(int64); ok { if y < 0 || x > uint64(y) { return 1 } else if x < uint64(y) { return -1 }; return 0 } }; "
+        "num := func(v interface{}) float64 { switch n := v.(type) { case int64: return float64(n); case uint64: return float64(n); case float64: return n }; return 0 }; "
+        "x, y := num(va), num(vb); "
+        "if x != x || y != y { if x != x && y != y { return 0 } else if x != x { return -1 }; return 1 }; "
+        "if x < y { return -1 } else if x > y { return 1 }; return 0 }"
+    )
+
+    def _dynamic_compare_go(self) -> str:
+        """A Go ``func(a, b interface{}) int`` ordering values by kind
+        (``_DYNAMIC_COMPARE_GO``)."""
+        self._need_import("fmt")
+        self._need_import("reflect")
+        return self._DYNAMIC_COMPARE_GO
+
+    def _orders_dynamically(self, go_type: str) -> bool:
+        """Values of ``go_type`` are ordered by kind at run time: ``any``,
+        ``json``, a type parameter, a pointer to an ordered type
+        (``optional[int]``) or a type the compiler could not determine."""
+        t = (go_type or "").strip()
+        if t in ("", "interface{}", "any", "LamJSON"):
+            return True
+        if t.startswith("*") and (t[1:] in self._ORDERED_GO_TYPES or t[1:] == "bool"):
+            return True
+        return t in (getattr(self, "_generic_names", None) or ())
 
     def _sort_callback_arity(self, node) -> int:
         """Parameter count of a ``sort`` callback (lambda or function name);
@@ -5113,6 +5201,16 @@ class ExpressionVisitorMixin:
             self._need_import("math")
             return f"math.Abs(float64({args[0]}))"
         if len(args) == 1 and types and types[0].startswith("[]"):
+            elem = self._slice_elem_go_type(types[0])
+            if self._orders_dynamically(elem):
+                # ``min(xs)`` of a ``list[any]`` / ``list[json]``: by kind.
+                better = "< 0" if name == "min" else "> 0"
+                return (
+                    f"func(xs {types[0]}) {elem} {{ if len(xs) == 0 {{ "
+                    f"panic(\"ValueError: {name}() of an empty list\") }}; "
+                    f"_c := {self._dynamic_compare_go()}; best := xs[0]; "
+                    f"for _, v := range xs[1:] {{ if _c(v, best) {better} {{ best = v }} }}; return best }}({args[0]})"
+                )
             self._need_import("slices")
             return f"slices.{name.capitalize()}({args[0]})"
         if types and all(t in ints for t in types) and len(set(types)) == 1:

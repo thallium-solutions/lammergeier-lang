@@ -1442,8 +1442,9 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `xs.any(fn)` / `xs.all(fn)`        | IIFE with early return                                                    |
 | `xs.foreach(fn)`                   | IIFE with no result                                                       |
 | `xs.sort([compare][, inplace])`    | `sort.Slice` copy by default; when `inplace=true`, sorts and returns `xs` |
-| `xs.sort(key=f)` / `xs.sort(f)` with a one-parameter `f` | `sort.SliceStable` comparing `f(x)` (ordered keys natively, others by `%v`) |
+| `xs.sort(key=f)` / `xs.sort(f)` with a one-parameter `f` | `sort.SliceStable` comparing `f(x)` (ordered keys natively, `any` / `json` / type-parameter / `optional` keys by kind, others by `%v`) |
 | `sorted(xs, key=f, reverse=b)`     | `sort.SliceStable` copy preserving the receiver/context element type; `key` compares `f(x)` |
+| `sorted` / `xs.sort()` / `min(xs)` / `max(xs)` of `list[any]`, `list[json]`, `list[T]`, `list[optional[int]]` | an inline `func(a, b interface{}) int` comparing by kind (`reflect`): numbers numerically, strings by bytes, `false < true`, `None` < bool < number < str < other (by `%v`); `min` / `max` loop over the list (`slices.Min` needs `cmp.Ordered`) |
 | `enumerate(xs)`                    | IIFE materializing index/value pairs as `[]interface{}` tuples            |
 | `isinstance(x, T)`                 | Type-specific runtime check: assertion, nil test, or `reflect.Kind` (`lamJSONRaw(x)` first on `json`, `x != nil` on an optional value type) |
 
@@ -2013,7 +2014,12 @@ inputs and forward to the underlying Go API.
   and the line-based passes see one literal; the slot splitter restores
   it, finds each slot's end and format spec outside nested strings and
   brackets, and every slot expression is parsed and lowered (and checked)
-  like ordinary code. The formatter applies the same protection.
+  like ordinary code (`fstrings.parse_slot`: a slot that does not parse as
+  written, a lambda with a block body, goes through the statement
+  preprocessing first, which adds the `;` before its `}`). The format spec
+  becomes a Go verb (`fstrings.fstring_spec_to_go`: Go verbs as written,
+  Python's `<` / `>` alignment as the `-` flag / a width); specs with no
+  verb are semantic errors. The formatter applies the same protection.
 - **Lam `int(s)` is a Go type-conversion, not a parser:** parse a whole string
   with an explicitly typed Result, for example `parsed: Result[int] =
   Conv.parse(s)`, or call `strconv.Atoi(s)` from a `go!` block. `Conv.parse`

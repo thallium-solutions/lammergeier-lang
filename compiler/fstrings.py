@@ -13,10 +13,14 @@ literal body into text and slots, honouring nested strings and brackets:
 a slot ends at the ``}`` closing it at bracket depth 0 outside strings,
 and its format spec starts at the first ``:`` at depth 0 outside strings.
 The escaped-delimiter form (``f"{d[\\"k\\"]}"``) keeps working.
+:func:`parse_slot` parses a slot expression (with the statement
+preprocessing when a lambda in it has a block body) and
+:func:`fstring_spec_to_go` maps a format spec to a Go ``fmt`` verb.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
@@ -306,6 +310,90 @@ def split_fstring(body: str, q: str) -> Optional[List[Part]]:
     if text:
         parts.append("".join(text))
     return parts
+
+
+def parse_slot(prefix: str, expr: str):
+    """Parse the slot expression ``expr`` wrapped as ``{prefix}{expr});``
+    (``prefix`` opens a parenthesised assignment) into a parse tree, or
+    ``None``. A slot is parsed as written first; when that fails (a lambda
+    with a block body, ``lambda (x: int) -> bool { return x > 0 }``, needs
+    the ``;`` before its ``}``) the wrapped text goes through the statement
+    preprocessing every source line gets before parsing."""
+    from compiler.lammergeier import create_parser, preprocess_for_parse
+
+    parser = create_parser()
+    try:
+        return parser.parse(f"{prefix}{expr});\n")
+    except Exception:
+        pass
+    if "{" not in expr:
+        return None
+    try:
+        text = preprocess_for_parse(f"{prefix}{expr})\n").source
+        return parser.parse(text if text.endswith("\n") else text + "\n")
+    except Exception:
+        return None
+
+
+# ─── Format specs ─────────────────────────────────────────────
+
+#: A spec that already is a Go ``fmt`` verb (``.2f``, ``5d``, ``-8s``,
+#: ``+d``, ``#x``, ``08.3f``): used as written.
+_GO_SPEC_RE = re.compile(r"[+\-# 0]*\d*(?:\.\d+)?[bcdeEfFgGoOqstTUvxX]")
+
+#: Python's format-spec mini-language: ``[[fill]align][sign][z][#][0]
+#: [width][grouping][.precision][type]``.
+_PY_SPEC_RE = re.compile(
+    r"(?:(?P<fill>.)?(?P<align>[<>^=]))?(?P<sign>[+\- ])?(?P<z>z)?(?P<alt>#)?"
+    r"(?P<zero>0)?(?P<width>\d+)?(?P<group>[,_])?(?:\.(?P<prec>\d+))?(?P<type>[a-zA-Z%])?",
+    re.S,
+)
+
+_PY_TYPES_TO_GO = {t: t for t in "bcdeEfFgGosxX"}
+
+
+def fstring_spec_to_go(spec: str) -> Tuple[Optional[str], str]:
+    """``(Go verb, "")`` for the format spec of an f-string slot (the text
+    after its top-level ``:``), or ``(None, reason)`` when Go's ``fmt`` has
+    no equivalent. A Go verb (``.2f``, ``5d``, ``-8s``) is used as written;
+    Python's alignment forms map to Go flags: ``>5`` is ``%5v``, ``<6`` is
+    ``%-6v``, ``>8.2f`` is ``%8.2f``, an empty spec is ``%v``. Centering,
+    a fill other than a space, ``=`` alignment, digit grouping, ``z``, ``n``
+    and ``%`` have no verb."""
+    if spec == "":
+        return "%v", ""
+    if _GO_SPEC_RE.fullmatch(spec):
+        return f"%{spec}", ""
+    m = _PY_SPEC_RE.fullmatch(spec)
+    if m is None:
+        return None, "it is neither a Go `fmt` verb nor a Python format spec"
+    if m.group("align") == "^":
+        width = m.group("width") or "n"
+        return None, f"centering has no Go verb; use `.center({width})` on the `str` value"
+    if m.group("align") == "=":
+        return None, "`=` alignment has no Go verb; use `0` padding (`05d`)"
+    if m.group("fill") not in (None, " "):
+        return None, "only a space fill is supported (`>6`, `<6`); use `05d` for zero padding"
+    if m.group("group"):
+        return None, "digit grouping has no Go verb; use `Fmt.grouped(value)` from `lamfmt`"
+    if m.group("z"):
+        return None, "`z` has no Go verb"
+    kind = m.group("type") or "v"
+    if kind != "v" and kind not in _PY_TYPES_TO_GO:
+        return None, f"type `{kind}` has no Go verb"
+    flags = ""
+    if m.group("align") == "<":
+        flags += "-"
+    sign = m.group("sign")
+    if sign in ("+", " "):
+        flags += sign
+    if m.group("alt"):
+        flags += "#"
+    if m.group("zero") and m.group("align") != "<":
+        flags += "0"
+    width = m.group("width") or ""
+    prec = f".{m.group('prec')}" if m.group("prec") is not None else ""
+    return f"%{flags}{width}{prec}{_PY_TYPES_TO_GO.get(kind, kind)}", ""
 
 
 def restore_fstring_quotes(text: str) -> str:

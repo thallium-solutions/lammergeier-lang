@@ -1,0 +1,72 @@
+# Regression (4.2.1): `sorted()`, `.sort()` and `min` / `max` of a list
+# whose element type is not an ordered Go type (`list[any]`, `list[json]`,
+# a type parameter, `list[optional[int]]`) compared the values' text
+# (`[10, 9]` sorted as `[10 9]`, optionals by address) or did not build
+# (`min(xs)` on a `list[any]`). They compare by kind at run time: numbers
+# numerically (ints and floats mixed), strings by bytes, false < true, and
+# values of different kinds in the order None < bool < number < str <
+# other values (those by their text).
+#
+# expect: any=[1 9 10 100] desc=[100 10 9 1] method=[1 9 10 100]
+# expect: key=[1 9 10 100] method-key=[1 9 10 100]
+# expect: result=[2.5 9 10 100] other-module=[2.5 9 10 100]
+# expect: generic=[1 9 10 100] [10 a b] [-1 2.5 10] [false true]
+# expect: generic-desc=[100 10 9 1]
+# expect: mixed=[<nil> true 2.5 9 10 a b]
+# expect: json-any=[-3 1.5 9 10 100]
+# expect: json=[9 10 100] [9 10 100] min=9 max=100
+# expect: minmax=1 100 2.5 b
+# expect: optional=[-1 9 10]
+# expect: big=[-5 99999999999 100000000000]
+# expect: dict=[9 10 100]
+# expect: empty=[] caught=true
+# expect: board=[3 20 100] inplace=[1 9 10 100]
+
+from lamjson import Json
+from dynamic_sort_provider import scores, sortAny, ordered, orderedDesc
+
+class Board {
+    func init(self, points: list[any]) {
+        self.points: list[any] = points
+    }
+
+    func ranking(self) -> list[any] {
+        return self.points.sort(key=lambda p: p)
+    }
+}
+
+func emptyMin(xs: list[any]) -> bool {
+    try {
+        _ = min(xs)
+    } catch e {
+        return true
+    }
+    return false
+}
+
+func main() {
+    a: list[any] = [10, 9, 100, 1]
+    print(f"any={sorted(a)} desc={sorted(a, reverse=true)} method={a.sort()}")
+    print(f"key={sorted(a, key=lambda v: v)} method-key={a.sort(lambda v: v)}")
+    print(f"result={sorted(scores())} other-module={sortAny(scores())}")
+    print(f"generic={ordered([10, 9, 100, 1])} {ordered(["b", "a", "10"])} {ordered([2.5, -1.0, 10.0])} {ordered([true, false])}")
+    print(f"generic-desc={orderedDesc([10, 9, 100, 1])}")
+    mixed: list[any] = ["b", 10, "a", 9, true, None, 2.5]
+    print(f"mixed={sorted(mixed)}")
+    doc: json = Json.decode("[10, 9, 100, 1.5, -3]").unwrap()
+    fromJson: list[any] = Json.toList(doc).unwrap()
+    print(f"json-any={sorted(fromJson)}")
+    js: list[json] = Json.getList(Json.decode("{\"k\": [10, 9, 100]}").unwrap(), "k")
+    print(f"json={sorted(js)} {js.sort()} min={min(js)} max={max(js)}")
+    print(f"minmax={min(a)} {max(a)} {min(scores())} {max(mixed)}")
+    opt: list[optional[int]] = [10, None, 9]
+    print(f"optional={[x ?? -1 for x in sorted(opt)]}")
+    big: list[any] = [100000000000, 99999999999, -5]
+    print(f"big={sorted(big)}")
+    counts: dict[str, any] = {"a": 10, "b": 9, "c": 100}
+    print(f"dict={sorted([v for k, v in counts])}")
+    empty: list[any] = []
+    print(f"empty={sorted(empty)} caught={emptyMin(empty)}")
+    a.sort(inplace=true)
+    print(f"board={Board([20, 3, 100]).ranking()} inplace={a}")
+}

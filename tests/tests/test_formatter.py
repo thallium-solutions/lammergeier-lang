@@ -372,6 +372,124 @@ def test_formatter_keeps_slices_compact() -> None:
     print("PASS: formatter writes slices without spaces around `:`")
 
 
+def test_formatter_call_arguments_starting_with_literals() -> None:
+    """4.2.1: an argument starting with ``{`` / ``[`` / markup gets no space
+    after ``(`` (``res.json( {...})`` was written before 4.1.x), a dict
+    literal alone on a continuation line stays a literal (it was laid out
+    as a block, ``{`` / ``"k": v`` / ``}`` / ``,``), and a lambda with a
+    block body keeps ``})`` / ``}, 0)`` after its body."""
+    source = (
+        "func f(a: any, b: any = None) -> any {\n    return a\n}\n\n"
+        "func main() {\n"
+        "    xs: list[int] = [1, 2]\n"
+        "    f( {\"ok\": true})\n"
+        "    f(f( {\"a\": 1}))\n"
+        "    f( [1, 2])\n"
+        "    f( <><b>x</b></>)\n"
+        "    f( {\n"
+        "        \"k\": 1\n"
+        "    })\n"
+        "    injected = f(\n"
+        "    \"POST\",\n"
+        "    {\"Content-Type\": \"application/json\"},\n"
+        "    )\n"
+        "    rows = f([\n"
+        "{\"id\": 1},\n"
+        "{\"id\": 2}\n"
+        "])\n"
+        "    page = f(\n"
+        "<><p>hi</p></>,\n"
+        "[3, 4]\n"
+        ")\n"
+        "    m = xs.map(lambda (x: int) -> int { return x })\n"
+        "    n = xs.map(lambda (x: int) -> int {\n"
+        "        return x\n"
+        "    })\n"
+        "    t = xs.reduce(lambda (a: int, b: int) -> int { return a + b }, 0)\n"
+        "    pair = f(xs.map(lambda (x: int) -> int { return x }), {\"k\": 1})\n"
+        "    print(injected, rows, page, m, n, t, pair)\n"
+        "}\n"
+    )
+    expected = (
+        "func f(a: any, b: any = None) -> any {\n    return a\n}\n\n"
+        "func main() {\n"
+        "    xs: list[int] = [1, 2]\n"
+        "    f({\"ok\": true})\n"
+        "    f(f({\"a\": 1}))\n"
+        "    f([1, 2])\n"
+        "    f(<><b>x</b></>)\n"
+        "    f({\n"
+        "        \"k\": 1\n"
+        "    })\n"
+        "    injected = f(\n"
+        "        \"POST\",\n"
+        "        {\"Content-Type\": \"application/json\"},\n"
+        "    )\n"
+        "    rows = f([\n"
+        "        {\"id\": 1},\n"
+        "        {\"id\": 2}\n"
+        "    ])\n"
+        "    page = f(\n"
+        "        <><p>hi</p></>,\n"
+        "        [3, 4]\n"
+        "    )\n"
+        "    m = xs.map(lambda(x: int) -> int {\n"
+        "        return x\n"
+        "    })\n"
+        "    n = xs.map(lambda(x: int) -> int {\n"
+        "        return x\n"
+        "    })\n"
+        "    t = xs.reduce(lambda(a: int, b: int) -> int {\n"
+        "        return a + b\n"
+        "    }, 0)\n"
+        "    pair = f(xs.map(lambda(x: int) -> int {\n"
+        "        return x\n"
+        "    }), {\"k\": 1})\n"
+        "    print(injected, rows, page, m, n, t, pair)\n"
+        "}\n"
+    )
+    result = format_lam_source(source)
+    assert result.text == expected, result.text
+    assert format_lam_source(expected).text == expected
+    assert not format_lam_source(expected).changed
+    print("PASS: formatter keeps call arguments starting with `{` / `[` / markup and lambda bodies tight")
+
+
+def test_formatter_indents_method_chains() -> None:
+    """4.2.1: a method chain continued on the next lines (``.map(f)``) is
+    indented one level under its statement, as written in the docs; it was
+    moved back to the statement's level. A chain inside an open bracket is
+    indented by the bracket only."""
+    source = (
+        "func main() {\n"
+        "    xs: list[int] = [1, 2]\n"
+        "    b: list[int] = xs\n"
+        ".map(lambda x: x * 2)\n"
+        "            .filter(lambda x: x > 2)\n"
+        "    c: list[int] = (xs\n"
+        "  .map(lambda x: x + 1)\n"
+        "  .filter(lambda x: x > 1))\n"
+        "    print(b, c)\n"
+        "}\n"
+    )
+    expected = (
+        "func main() {\n"
+        "    xs: list[int] = [1, 2]\n"
+        "    b: list[int] = xs\n"
+        "        .map(lambda x: x * 2)\n"
+        "        .filter(lambda x: x > 2)\n"
+        "    c: list[int] = (xs\n"
+        "        .map(lambda x: x + 1)\n"
+        "        .filter(lambda x: x > 1))\n"
+        "    print(b, c)\n"
+        "}\n"
+    )
+    result = format_lam_source(source)
+    assert result.text == expected, result.text
+    assert format_lam_source(expected).text == expected
+    print("PASS: formatter indents method chains continued on the next lines")
+
+
 def main() -> int:
     tests = [
         test_formatter_snapshot,
@@ -387,6 +505,8 @@ def main() -> int:
         test_formatter_keeps_go_comments_byte_for_byte,
         test_formatter_indents_multiline_literals_and_calls,
         test_formatter_keeps_slices_compact,
+        test_formatter_call_arguments_starting_with_literals,
+        test_formatter_indents_method_chains,
     ]
     for test in tests:
         test()

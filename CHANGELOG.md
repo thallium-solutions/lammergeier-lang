@@ -5,6 +5,51 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.2.1 — 2026-11-04
+
+### Fixed
+
+- A lambda with a block body in an f-string slot
+  (`f"{xs.all(lambda (x: int) -> bool { return x > 0 })}"`, also
+  `lambda(x: int)`, several statements, strings holding braces) failed in
+  `go build` ("syntax error: unexpected :"): the slot was parsed without the
+  statement preprocessing (the `;` before the body's `}`), so it was neither
+  checked nor lowered and reached Go as written. Slots that do not parse as
+  written now get that preprocessing, in the semantic pass and in the
+  lowering; undefined names and type errors inside such a lambda are
+  reported at their place.
+- F-string format specs follow Python's alignment forms where Go has a
+  verb: `{x:>5}` (`%5v`), `{s:<6}` (`%-6v`), `{x:>8.2f}`, `{x:+d}`, `{x:.2}`
+  and `{x:}` reached Go as an expression (`x:>5`) and failed in `go build`.
+  Specs with no Go verb (centering `{s:^7}`, a fill such as `{n:*>6}`, `=`,
+  grouping `{n:,}`, `z`, `n`, `%`), the conversions `!r` / `!s` / `!a`,
+  `{x=}`, an empty slot `{}` and a slot that is not an expression are
+  compile errors naming the alternative (`s.center(7)`, `Fmt.grouped(n)`,
+  `repr(x)`, `x={x}`, `{{}}`) instead of invalid Go. Dict literals, slices
+  (`xs[1:]`, `xs[::-1]`), ternaries and nested f-strings in a slot keep
+  working with a spec after them.
+- `sorted()`, `xs.sort()` (also with a `key` returning such values) and
+  `min(xs)` / `max(xs)` of a list whose elements are not of an ordered type
+  compared the values' text, so `[10, 9, 100]` of a `list[any]` sorted as
+  `[10 100 9]` and a `list[optional[int]]` by pointer address, and
+  `min` / `max` of a `list[any]` / `list[json]` failed in `go build`
+  ("does not satisfy cmp.Ordered"). Elements of `list[any]` (from a literal,
+  `Json.toList`, a function result, a comprehension), `list[json]`,
+  `list[T]` in a generic function and `list[optional[...]]` compare by kind
+  at run time: numbers numerically (ints and floats mixed), strings by
+  bytes, `false < true`, and different kinds as None < bool < number <
+  str < other values (by their text); `min` / `max` of an empty list throw a
+  `ValueError`. `for x in sorted(opt)` keeps the list's element type.
+- `lamc fmt`: a dict literal alone on a continuation line (an argument of a
+  call spread over lines, an item of a list of dicts) was laid out as a
+  block (`{` / `"k": v` / `}` / `,` on separate lines); the `}` of a lambda
+  body inside a call was split from what follows it (`}` and `)` on two
+  lines, `}, 0)` indented one level too deep); a method chain continued on
+  the next lines (`.map(f)`) was moved back to the statement's level. The
+  stray space before a dict / list / markup argument (`res.json( {...})`),
+  written by formatters before 3.0.0, is removed (fixed in 3.0.0; the
+  formatter tests now also cover lists, markup and nested calls).
+
 ## 4.2.0 — 2026-11-04
 
 ### Added

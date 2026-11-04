@@ -1777,12 +1777,24 @@ generators too (`[x for x in gen()]`).
 
 `sorted(xs)` returns a sorted copy (stable); `sorted(xs, key=fn)` orders by
 `fn(x)` (a lambda or function reference) and `reverse=true` sorts in
-descending order:
+descending order. Values whose type is not an ordered type (`int`,
+`float`, `str`, `bool` and the sized numeric types compare directly) are
+compared by kind at run time — in `sorted`, `xs.sort()`, `min(xs)` /
+`max(xs)` of one list, and with a `key` returning such a value: the
+elements of a `list[any]` (also from `Json.toList`, a function result or a
+comprehension), of a `list[json]`, of a `list[T]` in a generic function and
+of a `list[optional[int]]`. Numbers compare numerically (ints and floats
+mixed, `[10, 9, 2.5]` sorts as `[2.5 9 10]`), strings by bytes, `false <
+true`, and values of different kinds order as `None` < `bool` < number <
+`str` < other values (those by their text); `min` / `max` of an empty
+list throw a `ValueError`:
 
 ```lammergeier
 words: list[str] = ["ccc", "a", "bb"]
 byLength: list[str] = sorted(words, key=lambda w: len(w))   # [a bb ccc]
 desc: list[str] = sorted(words, reverse=true)               # [ccc bb a]
+mixed: list[any] = [10, "b", 9, None, 2.5]
+print(sorted(mixed))                                        # [<nil> 2.5 9 10 b]
 ```
 
 ---
@@ -1813,7 +1825,17 @@ print(f"email={user?.profile?.email ?? 'none'}")
 
 The `:fmt` suffix maps directly to a Go `fmt` verb — `{x:.2f}`
 becomes `%.2f`, `{n:5d}` becomes `%5d`, etc. Without a suffix the
-slot uses `%v` so any value type works.
+slot uses `%v` so any value type works. Python's alignment forms map to
+Go flags: `{x:>5}` is `%5v` (padded on the left), `{s:<6}` is `%-6v`
+(padded on the right), `{x:>8.2f}` is `%8.2f`, `{x:+d}` is `%+d`,
+`{x:.2}` is `%.2v` and an empty spec (`{x:}`) is `%v`; a width without an
+alignment pads on the left as in Go (`{s:6}`), also for strings. Specs
+without a Go verb are compile errors that name the alternative: centering
+(`{s:^7}`: use `s.center(7)`), a fill other than a space (`{n:*>6}`), `=`
+alignment, digit grouping (`{n:,}`: use `Fmt.grouped(n)`), `z`, `n` and
+`%`; so are the conversions `!r` / `!s` / `!a` (use `repr(x)`), the
+self-documenting `{x=}` (write `x={x}`), an empty slot `{}` (`{{}}` is a
+literal brace) and a slot that is not an expression.
 
 > **Quoting.** A slot may contain string literals in either quote,
 > including the f-string's own (``f"{d["k"]}"``, ``f"{",".join(xs)}"``,
@@ -1827,7 +1849,9 @@ slot uses `%v` so any value type works.
 > (``f"{seen.join(" ")}"`` on a list suggests ``" ".join(seen)``) and type
 > errors are reported, also in slots holding comprehensions, generator
 > arguments and lambdas (``f"{max(len(n) for n in names)}"``,
-> ``f"{xs.all(lambda x: x > 0)}"``).
+> ``f"{xs.all(lambda x: x > 0)}"``), including lambdas with a typed head
+> or a block body (``f"{xs.all(lambda (x: int) -> bool { return x > 0 })}"``,
+> whose braces, colons and strings stay inside the slot).
 
 ---
 
@@ -4726,8 +4750,13 @@ directory argument recursively formats every `.lam` file below it. `--stdout`
 is intentionally file-only; use `--check` on files or directories in CI.
 Lines inside an open bracket (the elements of a multi-line list / dict
 literal, the arguments of a call spread over lines) are indented one level
-per line that left brackets open; slices keep `:` tight (`s[:3]`,
-`x[1:n]`). Raw Go inside `go! { }` is left byte for byte as written
+per line that left brackets open, and a line starting with closing brackets
+aligns with the line that opened them (`}, 0)` after a lambda body); an
+argument starting with `{` / `[` / markup follows `(` without a space
+(`res.json({"ok": true})`), a dict literal on its own line stays one
+literal, a lambda body's `}` keeps what follows it (`})`), and a method
+chain continued on the next lines (`.map(f)`) is indented one level under
+its statement. Slices keep `:` tight (`s[:3]`, `x[1:n]`). Raw Go inside `go! { }` is left byte for byte as written
 (comments, spacing and indentation); only the `go! {` line follows the Lam
 indentation. Formatting never changes the program: the test suite checks
 that every formatted test case generates the same Go and that formatting is

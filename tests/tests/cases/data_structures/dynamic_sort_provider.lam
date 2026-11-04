@@ -1,0 +1,22 @@
+# Helper module for test_sort_dynamic_kinds.lam: lists whose element type
+# is `any` or a type parameter, built and sorted in another module.
+
+func scores() -> list[any] {
+    return [10, 9, 100, 2.5]
+}
+
+func sortAny(xs: list[any]) -> list[any] {
+    return sorted(xs)
+}
+
+func ordered[T](xs: list[T]) -> list[T] {
+    return sorted(xs)
+}
+
+func orderedDesc[T](xs: list[T]) -> list[T] {
+    return xs.sort()[::-1]
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}
