@@ -1,0 +1,71 @@
+# 4.3.0: a function passed by name where the parameter's function type has
+# fewer parameters (the others have defaults) or no result was accepted by
+# the checker and failed in `go build` (Go function values must match
+# exactly). The argument is a closure calling the function with its
+# defaults filled; a function that fits is passed as is, a lambda works as
+# before (a union of callback types gets the value as is: see
+# tests/semantic/cases/608_function_value_with_defaults.lam).
+#
+# expect: a!
+# expect: b-b-
+# expect: c?
+# expect: each x1
+# expect: d.
+# expect: total 6
+# expect: imported [k] 2xpear
+
+from type_param_letters import t, item
+
+const Mark: str = "!"
+
+func suffix(text: str, mark: str = Mark) -> str {
+    return text + mark
+}
+
+func repeat(text: str, times: int = 2, sep: str = "-") -> str {
+    return (text + sep) * times
+}
+
+func show(name: str, count: int) -> int {
+    print(f"each {name}{count}")
+    return count
+}
+
+func apply(f: func(str) -> str, x: str) -> str {
+    return f(x)
+}
+
+func applyBoth(f: func(str, str) -> str, x: str) -> str {
+    return f(x, "?")
+}
+
+func onEach(callback: func(str, int)) {
+    callback("x", 1)
+}
+
+class Totals {
+    func init(self) {
+        self.sum: int = 0
+    }
+
+    func addAll(self, xs: list[int], step: func(int) -> int) -> int {
+        for x in xs {
+            self.sum += step(x)
+        }
+        return self.sum
+    }
+}
+
+func double(n: int, factor: int = 2) -> int {
+    return n * factor
+}
+
+func main() {
+    print(apply(suffix, "a"))
+    print(apply(repeat, "b"))
+    print(applyBoth(suffix, "c"))
+    onEach(show)
+    print(apply(lambda s: suffix(s, "."), "d"))
+    print(f"total {Totals().addAll([1, 2], double)}")
+    print(f"imported {apply(t, 'k')} {apply(item, 'pear').replace('1x', '2x')}")
+}

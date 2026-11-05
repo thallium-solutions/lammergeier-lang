@@ -1,0 +1,18 @@
+# expect-error: line 17: error[json]: argument `payload` to `send`: custom class `Row` requires explicit conversion with `json(value)`
+# A comprehension's items must be JSON (a class needs `__json__` and
+# `json(...)`).
+
+func send(payload: json) {
+    print(payload)
+}
+
+class Row {
+    func init(self, id: str) {
+        self.id: str = id
+    }
+}
+
+func main() {
+    rows: list[Row] = [Row("r1")]
+    send({"rows": [r for r in rows]})
+}

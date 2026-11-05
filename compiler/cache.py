@@ -194,6 +194,30 @@ def save(lib_content: bytes, entry: Dict[str, Any], extra: bytes = b"") -> None:
         return
 
 
+# ─── Semantic-check markers ───────────────────────────────────
+
+
+def _check_marker_path(key: str) -> Path:
+    return cache_dir() / "checks" / key[:2] / f"{key[2:]}.check"
+
+
+def has_clean_check(module_content: bytes, extra: bytes) -> bool:
+    """Whether an imported module with ``module_content`` passed the semantic
+    check with no diagnostics, against the imports ``extra`` digests (see
+    ``lammergeier._imported_check_cache_extra``). An empty marker file per
+    clean check; a module with diagnostics is never recorded."""
+    return _check_marker_path(cache_key(module_content, extra)).is_file()
+
+
+def mark_clean_check(module_content: bytes, extra: bytes) -> None:
+    path = _check_marker_path(cache_key(module_content, extra))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    except OSError:
+        return
+
+
 # ─── Serialisation helpers ────────────────────────────────────
 
 
@@ -328,7 +352,7 @@ def clear() -> int:
     if not d.is_dir():
         return 0
     removed = 0
-    for pattern in ("*.json", "*.bin"):
+    for pattern in ("*.json", "*.bin", "*.check"):
         for entry in d.rglob(pattern):
             try:
                 entry.unlink()

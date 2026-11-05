@@ -1,0 +1,12 @@
+# Helper of test_same_named_classes_modules.lam: imports from the package without naming its `Problem`
+# (the importer still knows the package's classes for its signatures).
+
+from .kit import Server
+
+func makeServer() -> Server {
+    return Server()
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

@@ -1,0 +1,31 @@
+# expect-error: line 29: error[type]: argument `handler` to `register` has type `func(str, str) -> str`, expected `func(str) | (func(str) -> str)`; `suffix` is called with 1 argument here but has 2 parameters (a callback of several types gets the function value as is, without its defaults); pass a lambda: `lambda a: suffix(a)`
+# expect-no-warning: line 27
+# expect-no-warning: line 28
+# expect-no-warning: line 30
+# A function with default parameters passed where a function type with
+# fewer parameters is expected is adapted by the code generator (a closure
+# filling the defaults, see
+# tests/tests/cases/language/test_function_values_with_defaults.lam); a
+# parameter typed by a union of callback types receives the function value
+# as is, so there it is a Lam error suggesting a lambda (it failed in `go
+# build` or at run time).
+
+func suffix(text: str, mark: str = "!") -> str {
+    return text + mark
+}
+
+func apply(f: func(str) -> str, x: str) -> str {
+    return f(x)
+}
+
+func register(handler: func(str) | (func(str) -> str)) {
+    print("registered")
+}
+
+func main() {
+    s: str = "a"
+    print(apply(suffix, s))
+    register(lambda a: suffix(a))
+    register(suffix)
+    print(apply(lambda a: suffix(a, "?"), s))
+}

@@ -1,0 +1,14 @@
+# expect-error: argument `v` to `narrow` has type `int | str | bool`, expected `int | str`
+# A union with an alternative the parameter does not take is still an error.
+
+func narrow(v: int | str) -> str {
+    return f"{v}"
+}
+
+func pass(v: int | str | bool) -> str {
+    return narrow(v)
+}
+
+func main() {
+    print(pass(true))
+}

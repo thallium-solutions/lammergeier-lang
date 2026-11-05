@@ -61,12 +61,77 @@ def test_preprocessor_rewrites_keep_line_numbers() -> None:
     print("PASS: preprocessor rewrites keep later line numbers")
 
 
+def _semantic_positions(source: str) -> dict[str, tuple[int, int]]:
+    from compiler.lammergeier import create_parser, preprocess_for_parse
+    from compiler.semantic import check_source
+
+    prepared = preprocess_for_parse(source)
+    tree = create_parser().parse(prepared.source + "\n")
+    errors = check_source(tree, go_blocks=prepared.go_blocks)
+    return {e.message.split(";")[0]: (e.line, e.col) for e in errors if not e.is_warning}
+
+
+def test_markup_slots_keep_line_and_column() -> None:
+    """A markup literal is rewritten into a marker call whose slot
+    arguments sit at the line and column of their ``${``: errors in a slot,
+    in a slot of a literal nested in a slot, and in the code after a
+    multi-line literal point at the source (they used to point at the
+    literal's first line)."""
+    from compiler.lammergeier import preprocess_for_parse
+
+    source = (
+        "func wrap(body: html, cls: str = \"\") -> html {\n"           # 1
+        "    return <><div class=\"${cls}\">${body}</div></>\n"        # 2
+        "}\n"                                                          # 3
+        "func row(label: html, n: int) -> html {\n"                    # 4
+        "    return wrap(<>\n"                                         # 5
+        "        <td>${n + \"a\"}</td>\n"                              # 6
+        "        <td>${wrap(<>\n"                                      # 7
+        "            <b title=\"${label}\">${missingName}</b>\n"       # 8
+        "        </>, cls = \"x\")}</td>\n"                            # 9
+        "    </>, cls = otherMissing)\n"                               # 10
+        "}\n"                                                          # 11
+        "func main() {\n"                                              # 12
+        "    print(str(row(<>x</>, 1)))\n"                             # 13
+        "}\n"
+    )
+    out = preprocess_for_parse(source).source.split("\n")
+    assert len(out) == len(source.split("\n")), out
+    positions = _semantic_positions(source)
+    assert positions["cannot add `int` and `str`"] == (6, 15), positions
+    assert positions["an attribute value cannot be `html`"] == (8, 25), positions
+    assert positions["undefined name `missingName`"] == (8, 35), positions
+    assert positions["undefined name `otherMissing`"] == (10, 16), positions
+    print("PASS: markup slots keep their line and column")
+
+
+def test_multiline_fstring_slots_keep_line_and_column() -> None:
+    """A multi-line f-string is collapsed onto one line before parsing; its
+    slots are still reported at their own line and column."""
+    source = (
+        "func main() {\n"                       # 1
+        "    n: int = 1\n"                      # 2
+        "    a: str = f\"\"\"first {n}\n"          # 3
+        "second {n + \"x\"}\n"                  # 4
+        "  third {missingName}\"\"\"\n"          # 5
+        "    print(a)\n"                        # 6
+        "}\n"
+    )
+    positions = _semantic_positions(source)
+    assert positions["cannot add `int` and `str`"] == (4, 9), positions
+    assert positions["undefined name `missingName` in f-string"][0] == 5, positions
+    assert positions["undefined name `missingName` in f-string"][1] == 10, positions
+    print("PASS: multi-line f-string slots keep their line and column")
+
+
 def main() -> int:
     tests = [
         test_identity_map,
         test_deleted_lines_map,
         test_eof_maps_to_last_original_line,
         test_preprocessor_rewrites_keep_line_numbers,
+        test_markup_slots_keep_line_and_column,
+        test_multiline_fstring_slots_keep_line_and_column,
     ]
     for test in tests:
         test()

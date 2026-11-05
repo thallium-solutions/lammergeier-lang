@@ -1,0 +1,24 @@
+# expect-pass
+# `iterator[T]` is another name of `generator[T]` (4.3.0: the checker said
+# "unknown type `iterator`" while the code generator accepted it).
+func count(n: int) -> iterator[int] {
+    i: int = 0
+    while i < n {
+        yield i
+        i += 1
+    }
+}
+
+func total(it: iterator[int]) -> int {
+    s: int = 0
+    for x in it {
+        s += x
+    }
+    return s
+}
+
+func main() {
+    g: generator[int] = count(3)
+    it: iterator[int] = g
+    print(total(it), total(count(2)), [x * 2 for x in count(3)])
+}

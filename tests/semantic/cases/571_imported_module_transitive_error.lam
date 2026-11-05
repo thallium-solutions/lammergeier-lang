@@ -1,0 +1,9 @@
+# expect-error: full_check_errors/deep.lam
+# expect-error: line 5: error[return]: function `depth` returns `str`, expected `int`
+# 4.3.0: the module imported by an imported module is checked too (each
+# module of the program once).
+from full_check_errors.service import describe
+
+func main() {
+    print(describe())
+}

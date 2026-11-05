@@ -1,0 +1,40 @@
+# expect-pass
+# Helper of 605/606: a package (like Vulture) with a `Problem` class, a
+# generic class and a server whose methods take its `Problem`.
+
+class Problem {
+    func init(self, status: int = 500, title: str = "") {
+        self.status: int = status
+        self.title: str = title
+    }
+
+    func withStatus(self, status: int) -> Problem {
+        self.status = status
+        return self
+    }
+
+    static func validation(where: str) -> Problem {
+        return Problem(400, "invalid " + where)
+    }
+}
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+}
+
+class Server {
+    func init(self) {
+        self.sent: list[Problem] = []
+    }
+
+    func fail(self, p: Problem) -> int {
+        self.sent.append(p)
+        return p.status
+    }
+
+    func last(self) -> Problem {
+        return self.sent[len(self.sent) - 1]
+    }
+}

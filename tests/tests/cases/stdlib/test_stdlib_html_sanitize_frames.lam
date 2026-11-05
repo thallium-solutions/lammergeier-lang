@@ -1,0 +1,154 @@
+# expect: video-hosts www.youtube.com www.youtube-nocookie.com player.vimeo.com
+# expect: youtube <iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ?si=abc&amp;start=3" width="560" height="315" title="YouTube video player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"></iframe>
+# expect: normalised <iframe src="https://www.youtube.com/embed/x" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"></iframe>
+# expect: stripped <iframe src="https://player.vimeo.com/video/1" width="100%" title="t" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"></iframe>
+# expect: in-paragraph <p>watch <iframe src="https://www.youtube-nocookie.com/embed/x" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"></iframe> now</p>
+# expect: subdomain <iframe src="https://player.vimeo.com/video/2" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"></iframe>|
+# expect: ports 1 kept: https://media.example.com:8443/v
+# expect: not-opted-in <p>a  b</p> | <p>a  b</p>
+# expect: attacks 34 dropped 34
+# expect: attacks-idempotent 34
+# expect: other-policies-unchanged true
+# expect: ads 3 frames 1 clean true
+# Html.sanitize with HtmlPolicy.allowFrames: a YouTube embed kept and
+# normalised (fixed attribute order, filtered allow features, forced
+# sandbox, default referrer policy), uppercase and :443 normalisation,
+# attributes outside the fixed set dropped, a frame inside an allowed
+# element, subdomains of a listed host, a listed non-default port, policies
+# that did not opt in, 34 attack payloads (other and look-alike hosts,
+# userinfo, ports, protocol-relative / relative / http URLs, encoded
+# javascript:, data:, srcdoc, IDN homographs, backslashes, IP literals,
+# nested frames, frames in svg / math, frame / object / embed), and admin
+# ads rendered through a class, a default-argument policy builder and a
+# generator.
+from lamhtml import Html, HtmlPolicy
+
+const Sandbox: str = "allow-scripts allow-same-origin allow-presentation allow-popups"
+
+const Attacks: list[str] = [
+    "<iframe src=\"https://evil.com/embed/x\"></iframe>",
+    "<iframe src=\"https://www.youtube.com.evil.com/embed/x\"></iframe>",
+    "<iframe src=\"https://evil.com/?www.youtube.com\"></iframe>",
+    "<iframe src=\"https://evil.com#www.youtube.com\"></iframe>",
+    "<iframe src=\"https://www.youtube.com@evil.com/embed/x\"></iframe>",
+    "<iframe src=\"https://user:pass@www.youtube.com/embed/x\"></iframe>",
+    "<iframe src=\"https://youtube.com/embed/x\"></iframe>",
+    "<iframe src=\"https://evilwww.youtube.com/embed/x\"></iframe>",
+    "<iframe src=\"javascript:alert(1)//www.youtube.com\"></iframe>",
+    "<iframe src=\"&#106;avascript:alert(1)\"></iframe>",
+    "<iframe src=\"java&#x09;script:alert(1)\"></iframe>",
+    "<iframe src=\" JAVASCRIPT:alert(1)\"></iframe>",
+    "<iframe src=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\"></iframe>",
+    "<iframe srcdoc=\"<script>alert(1)</script>\"></iframe>",
+    "<iframe srcdoc=\"<script>alert(1)</script>\" src=\"https://evil.com/\"></iframe>",
+    "<iframe src=\"http://www.youtube.com/embed/x\"></iframe>",
+    "<iframe src=\"//www.youtube.com/embed/x\"></iframe>",
+    "<iframe src=\"/embed/x\"></iframe>",
+    "<iframe src=\"ht tps://www.youtube.com/embed/x\"></iframe>",
+    "<iframe src=\"ht&#9;tps://www.youtube.com/embed/x\"></iframe>",
+    "<iframe src=\"https://www.youtube.com:8080/embed/x\"></iframe>",
+    "<iframe src=\"https://www.y\u043eutube.com/embed/x\"></iframe>",
+    "<iframe src=\"https://www.youtube.com%2eevil.com/embed/x\"></iframe>",
+    "<iframe src=\"https://evil.com\\@www.youtube.com/\"></iframe>",
+    "<iframe src=\"https:///evil.com/embed/x\"></iframe>",
+    "<iframe src=\"https://[::1]/embed/x\"></iframe>",
+    "<iframe src=\"https://127.0.0.1/embed/x\"></iframe>",
+    "<iframe src=\"https://evil.com/x\"><iframe src=\"https://www.youtube.com/embed/x\"></iframe></iframe>",
+    "<IFRAME SRC=\"https://EVIL.com/embed\"></IFRAME>",
+    "<svg><iframe src=\"https://www.youtube.com/embed/x\"></iframe></svg>",
+    "<math><mtext><iframe src=\"https://www.youtube.com/embed/x\"></iframe></mtext></math>",
+    "<frameset><frame src=\"https://www.youtube.com/embed/x\"></frameset>",
+    "<object data=\"https://www.youtube.com/embed/x\"></object><embed src=\"https://www.youtube.com/embed/x\">",
+    "<iframe></iframe>",
+]
+
+#- Every frame left in ``clean`` (re-parsed) is a listed host's https URL
+   with only the fixed attributes and the forced sandbox. -#
+func framesSafe(clean: html, hosts: list[str]) -> bool {
+    allowed: list[str] = ["src", "width", "height", "title", "allow", "allowfullscreen", "loading", "referrerpolicy", "sandbox"]
+    for frame in Html.parse(str(clean)).select("iframe") {
+        attrs: dict[str, str] = frame.attrs()
+        for name, value in attrs {
+            if name not in allowed {
+                return false
+            }
+        }
+        if "sandbox" not in attrs or attrs["sandbox"] != Sandbox {
+            return false
+        }
+        src: str = attrs["src"] if "src" in attrs else ""
+        if not hosts.any(lambda host: src.startsWith(f"https://{host}/")) {
+            return false
+        }
+    }
+    return true
+}
+
+func adPolicy(extra: list[str] = []) -> HtmlPolicy {
+    hosts: list[str] = HtmlPolicy.videoHosts()
+    for host in extra {
+        hosts.append(host)
+    }
+    return HtmlPolicy.rich().allowFrames(hosts)
+}
+
+class Ad {
+    func init(self, title: str, body: str) {
+        self.title: str = title
+        self.body: str = body
+    }
+
+    func __html__(self) -> html {
+        return <><aside><h4>${self.title}</h4>${Html.sanitize(self.body, adPolicy())}</aside></>
+    }
+}
+
+func ads() -> generator[Ad] {
+    yield Ad("launch", "<p>New!</p><iframe src=\"https://www.youtube.com/embed/launch\" allowfullscreen onload=\"alert(1)\"></iframe>")
+    yield Ad("<b>sale</b>", "<iframe src=\"https://evil.example/ad\"></iframe><p>50% off</p>")
+    yield Ad("old", "<script>alert(1)</script><iframe src=\"javascript:alert(1)\"></iframe>")
+}
+
+func main() {
+    print(f"video-hosts {' '.join(HtmlPolicy.videoHosts())}")
+    frames: HtmlPolicy = HtmlPolicy().allowFrames(HtmlPolicy.videoHosts())
+    youtube: str = "<iframe width=\"560\" height=\"315\" src=\"https://www.youtube.com/embed/dQw4w9WgXcQ?si=abc&amp;start=3\" title=\"YouTube video player\" frameborder=\"0\" allow=\"accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share\" referrerpolicy=\"strict-origin-when-cross-origin\" allowfullscreen></iframe>"
+    print(f"youtube {Html.sanitize(youtube, frames)}")
+    print(f"normalised {Html.sanitize('<IFRAME SRC=\"HTTPS://WWW.YouTube.COM:443/embed/x\" sandbox=\"allow-top-navigation allow-forms\" referrerpolicy=\"unsafe-url\" loading=LAZY name=n srcdoc=\"<script>alert(1)</script>\">fallback <b>x</b></IFRAME>', frames)}")
+    print(f"stripped {Html.sanitize('<iframe src=\"https://player.vimeo.com/video/1\" src=\"https://evil.com/\" width=\"100%\" height=\"1e9\" title=\"t\" allow=\"camera; microphone; geolocation; payment *\" loading=\"auto\" referrerpolicy=\"NO-REFERRER\" onload=\"alert(1)\" style=\"position:fixed\" class=\"x\" id=\"y\" credentialless csp=\"x\"></iframe>', frames)}")
+    print(f"in-paragraph {Html.sanitize('<p>watch <iframe src=\"https://www.youtube-nocookie.com/embed/x\"></iframe> now</p>', HtmlPolicy.basic().allowFrames(HtmlPolicy.videoHosts()))}")
+    parent: HtmlPolicy = HtmlPolicy().allowFrames(["Vimeo.com"])
+    print(f"subdomain {Html.sanitize('<iframe src=\"https://player.vimeo.com/video/2\"></iframe>', parent)}|{Html.sanitize('<iframe src=\"https://vimeo.com.evil.com/video/2\"></iframe>', parent)}")
+    ported: HtmlPolicy = HtmlPolicy().allowFrames(["media.example.com:8443", "bad host", "https://scheme.example", "user@at.example"])
+    kept: html = Html.sanitize("<iframe src=\"https://media.example.com:8443/v\"></iframe><iframe src=\"https://media.example.com/v\"></iframe><iframe src=\"https://media.example.com:9443/v\"></iframe><iframe src=\"https://scheme.example/v\"></iframe><iframe src=\"https://at.example/v\"></iframe>", ported)
+    keptFrames: list[html] = kept.select("iframe")
+    print(f"ports {len(keptFrames)} kept: {keptFrames[0].attr('src')}")
+    notOptedIn: str = "<p>a <iframe src=\"https://www.youtube.com/embed/x\">t</iframe> b</p>"
+    print(f"not-opted-in {Html.sanitize(notOptedIn)} | {Html.sanitize(notOptedIn, HtmlPolicy.basic().allowTags(['iframe']).allowAttributes('iframe', ['src']))}")
+
+    policy: HtmlPolicy = HtmlPolicy.rich().allowFrames(HtmlPolicy.videoHosts())
+    dropped: int = 0
+    stable: int = 0
+    for payload in Attacks {
+        clean: html = Html.sanitize(payload, policy)
+        text: str = str(clean).toLower()
+        if len(clean.select("iframe")) == 0 and not text.contains("<iframe") and not text.contains("javascript") and not text.contains("srcdoc") and not text.contains("<frame") and not text.contains("<object") and not text.contains("<embed") {
+            dropped += 1
+        } else {
+            print(f"frame kept for {payload}: {clean}")
+        }
+        if str(Html.sanitize(str(clean), policy)) == str(clean) {
+            stable += 1
+        }
+    }
+    print(f"attacks {len(Attacks)} dropped {dropped}")
+    print(f"attacks-idempotent {stable}")
+
+    sample: str = "<p>x</p><iframe src=\"https://www.youtube.com/embed/x\"></iframe>"
+    print(f"other-policies-unchanged {str(Html.sanitize(sample, HtmlPolicy.rich())) == '<p>x</p>' and len(HtmlPolicy.rich().frameHosts) == 0}")
+
+    rendered: html = <><section>${[ad for ad in ads()]}</section></>
+    out: str = str(rendered)
+    clean: bool = framesSafe(rendered, HtmlPolicy.videoHosts()) and not out.contains("onload") and not out.contains("evil.example") and not out.contains("javascript") and out.contains("&lt;b&gt;sale&lt;/b&gt;")
+    print(f"ads {len(rendered.select('aside'))} frames {len(rendered.select('iframe'))} clean {clean}")
+}

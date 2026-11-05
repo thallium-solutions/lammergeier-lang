@@ -12,11 +12,15 @@ expressions (Lam code, whose own literals are rewritten the same way). The
 semantic checker and the transpiler give the call its kind (``html`` by
 default, ``xml`` from the context), check the slots and lower it to the
 runtime in ``lib/lammarkup.lam``. A rewritten literal keeps the source's
-line count: the lines it spanned are added back after the statement's line.
+lines: the slot arguments are moved to the line and column of their
+``${`` (line breaks and spaces inside the call's parentheses), so
+diagnostics in a slot, a nested literal or the code after a multi-line
+literal point at the source.
 """
 
 from __future__ import annotations
 
+import bisect
 import re
 import xml.dom.minidom
 import xml.parsers.expat
@@ -148,31 +152,43 @@ def _string_prefix_start(src: str, i: int) -> bool:
 
 
 class _Scanner:
+    """Rewrites markup literals into marker calls that keep every slot at
+    its line and column (see :func:`preprocess_markup_literals`)."""
+
     def __init__(self, src: str):
         self.src = src
         # (start, end) of every outermost literal, for the formatter.
         self.spans: list[tuple[int, int]] = []
+        self._line_starts = [0] + [m.end() for m in re.finditer("\n", src)]
+
+    def _position(self, offset: int) -> tuple[int, int]:
+        """(0-based line, 0-based column) of ``offset`` in the source."""
+        line = bisect.bisect_right(self._line_starts, offset) - 1
+        return line, offset - self._line_starts[line]
 
     # ── Lam code ────────────────────────────────────────────────────────
 
-    def code(self, start: int, stop_at_brace: bool) -> tuple[str, int]:
-        """Rewrites Lam code from ``start``; with ``stop_at_brace`` stops at
-        the ``}`` closing a ``${`` slot. Returns (rewritten, index after)."""
+    def code(self, start: int, stop_at_brace: bool, column: int = 0) -> tuple[str, int]:
+        """Rewrites Lam code from ``start``, whose output begins at
+        ``column``; with ``stop_at_brace`` stops at the ``}`` closing a
+        ``${`` slot. Returns (rewritten, index after). Line breaks are kept
+        one for one, so the output has the source's lines."""
         src = self.src
         out: list[str] = []
-        pending_newlines = 0
         depth = 0
         i = start
+
+        def emit(text: str) -> None:
+            nonlocal column
+            out.append(text)
+            newline = text.rfind("\n")
+            column = len(text) - newline - 1 if newline >= 0 else column + len(text)
+
         while i < len(src):
             ch = src[i]
-            if ch == "\n":
-                out.append("\n" * (1 + pending_newlines) if not stop_at_brace else " ")
-                pending_newlines = 0
-                i += 1
-                continue
             if ch in "\"'" and _string_prefix_start(src, i):
                 end = _skip_string(src, i)
-                out.append(src[i:end].replace("\n", " ") if stop_at_brace else src[i:end])
+                emit(src[i:end])
                 i = end
                 continue
             if ch == "#":
@@ -183,21 +199,22 @@ class _Scanner:
                     end = src.find("\n", i)
                     end = len(src) if end < 0 else end
                 if stop_at_brace:
-                    out.append(" ")
+                    # A comment cannot stay inside the marker call's
+                    # arguments; its line breaks do.
+                    emit("\n" * src.count("\n", i, end) or " ")
                 else:
-                    out.append(src[i:end])
+                    emit(src[i:end])
                 i = end
                 continue
             if src.startswith("go!", i) and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
                 end = _skip_go_block(src, i)
-                out.append(src[i:end])
+                emit(src[i:end])
                 i = end
                 continue
             if src.startswith("<>", i):
-                call, end, spanned = self.literal(i)
-                out.append(call)
+                call, end = self.literal(i, column)
+                emit(call)
                 if not stop_at_brace:
-                    pending_newlines += spanned
                     self.spans.append((i, end))
                 i = end
                 continue
@@ -210,23 +227,29 @@ class _Scanner:
                     if depth == 0:
                         return "".join(out), i + 1
                     depth -= 1
-            out.append(ch)
+            emit(ch)
             i += 1
         if stop_at_brace:
             raise _Unterminated(start, "unterminated `${...}` in markup literal")
-        if pending_newlines:
-            out.append("\n" * pending_newlines)
         return "".join(out), i
 
     # ── Markup ──────────────────────────────────────────────────────────
 
-    def literal(self, start: int) -> tuple[str, int, int]:
-        """``src[start:]`` starts with ``<>``. Returns (marker call, index
-        after ``</>``, newlines the literal spanned)."""
+    def literal(self, start: int, column: int = 0) -> tuple[str, int]:
+        """``src[start:]`` starts with ``<>`` and its call begins at output
+        ``column``. Returns (marker call, index after ``</>``).
+
+        The call is ``__markup__("template"`` on the literal's line, then
+        each slot as ``,(code)`` with the ``,`` where the slot's ``$`` was
+        (line breaks and spaces inside the call's parentheses move it
+        there; on the literal's first line the template may push it to the
+        right), then ``)`` where the literal's last ``>`` was: the slot
+        expressions, and the code after the literal, keep their lines and
+        (but for that first line) their columns."""
         src = self.src
         i = start + 2
         static: list[str] = []
-        slots: list[str] = []
+        slots: list[tuple[int, str]] = []
         while True:
             if i >= len(src):
                 raise _Unterminated(start, "unterminated markup literal: `<>` has no matching `</>`")
@@ -239,17 +262,46 @@ class _Scanner:
                 i += 2
                 continue
             if src.startswith("${", i):
-                code, after = self.code(i + 2, stop_at_brace=True)
+                code, after = self.code(i + 2, stop_at_brace=True, column=self._position(i + 2)[1])
                 static.append(f"{SLOT_OPEN}{len(slots)}{SLOT_CLOSE}")
-                slots.append(code.strip() or "None")
+                slots.append((i, code))
                 i = after
                 continue
             static.append(ch)
             i += 1
         template = _trim_literal_edges("".join(static))
-        args = [_lam_string_literal(template)] + [f"({code})" for code in slots]
-        call = f"{MARKER}({', '.join(args)})"
-        return call, end, src.count("\n", start, end)
+        out: list[str] = [f"{MARKER}({_lam_string_literal(template)}"]
+        line = self._position(start)[0]
+        column += len(out[0])
+
+        def move_to(offset: int) -> None:
+            nonlocal line, column
+            target_line, target_column = self._position(offset)
+            if target_line > line:
+                out.append("\n" * (target_line - line))
+                line, column = target_line, 0
+            if column < target_column:
+                out.append(" " * (target_column - column))
+                column = target_column
+
+        def emit(text: str) -> None:
+            nonlocal line, column
+            out.append(text)
+            breaks = text.count("\n")
+            if breaks:
+                line += breaks
+                column = len(text) - text.rfind("\n") - 1
+            else:
+                column += len(text)
+
+        for dollar, code in slots:
+            move_to(dollar)
+            if not code.strip():
+                code = "None" + "\n" * code.count("\n")
+            emit(f",({code})")
+        move_to(end - 1)
+        emit(")")
+        return "".join(out), end
 
 
 def _trim_literal_edges(text: str) -> str:

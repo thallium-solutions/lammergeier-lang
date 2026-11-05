@@ -1,0 +1,9 @@
+# expect-pass
+# Helper of 570_imported_module_type_errors.lam.
+
+class FieldError {
+    func init(self, field: str, key: str) {
+        self.field: str = field
+        self.key: str = key
+    }
+}

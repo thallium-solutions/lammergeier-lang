@@ -69,7 +69,9 @@ area: 78.53981633974483
   and generic functions.
 - **Pre-emission safety** — branch-sensitive definite assignment, call-shape
   and type checks, `Result[T]` / `Option[T]` propagation checks, operator
-  validation, and Go-name collision diagnostics run before Go generation.
+  validation, and Go-name collision diagnostics run before Go generation, on
+  every module of the program (project modules, installed packages and the
+  stdlib), so mistakes in an imported module are reported at its own line.
 - **Native JSON** — `json` recursively enforces real JSON values and string
   object keys, supports JavaScript-style property/index access, converts classes
   through `json(value)` / `__json__()`, converts cleanly to/from dict/list, and

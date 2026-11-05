@@ -1,0 +1,6 @@
+# expect-error: function `depth` returns `str`, expected `int`
+# Imported (through service.lam) by 571_imported_module_transitive_error.lam.
+
+func depth() -> int {
+    return "three"
+}

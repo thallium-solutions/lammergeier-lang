@@ -1,0 +1,7 @@
+# Package of test_int_full_check_program.lam: re-exports the catalog.
+
+from .catalog import Product, Catalog, CurrencyCode
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

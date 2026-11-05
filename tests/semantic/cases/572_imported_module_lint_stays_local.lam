@@ -1,0 +1,10 @@
+# expect-pass
+# expect-no-warning: unused parameter `verbose`
+# expect-no-warning: unused local `unused`
+# 4.3.0: imported modules get the full check, but only their errors (and
+# import advisories) are reported: lint warnings stay the compiled file's.
+from full_check_errors.lint import greet
+
+func main() {
+    print(greet("ada", false))
+}

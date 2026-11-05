@@ -1,0 +1,46 @@
+# expect-error: line 16: error[generic]: generic function `t` is `T` in Go, which the type parameter `T` in scope shadows
+# expect-error: line 22: error[generic]: generic function `t` is `T` in Go
+# expect-no-warning: generic function `k`
+# Functions are capitalised in Go (`t` is `T`). Inside a declaration whose
+# type parameter has that name, a plain function is reached through a
+# package-level alias; a generic one cannot be aliased without
+# instantiation, so it is a Lam error instead of a Go type conversion. A
+# local of that name, a private function (lowercase in Go) and a plain
+# function are fine.
+
+func t[X](x: X) -> X {
+    return x
+}
+
+func useIt[T](a: T) -> T {
+    return t(a)
+}
+
+class Holder[T] {
+    func init(self, v: T) {
+        self.v: T = v
+        self.copy: T = t(v)
+    }
+}
+
+private func k[X](x: X) -> X {
+    return x
+}
+
+func plain(s: str) -> str {
+    return s
+}
+
+func fine[K, T](a: K) -> K {
+    t: int = 1
+    print(t)
+    print(plain("p"))
+    return k(a)
+}
+
+func main() {
+    print(useIt(1))
+    h: Holder[int] = Holder(2)
+    print(h.v)
+    print(fine[int, str](3))
+}

@@ -1,0 +1,68 @@
+# expect-pass
+# Helper of 569_imported_module_full_check.lam: interfaces (one with every
+# method of the other), a class with `__json__`, a generic class, a reader
+# whose `next` returns a dynamic `Result[any]`.
+
+from lamerrors import Result
+
+interface Sql {
+    func exec(query: str) -> int
+}
+
+interface SqlTx {
+    func exec(query: str) -> int
+    func commit() -> bool
+}
+
+class Tx {
+    func init(self) {
+        self.done: bool = false
+    }
+
+    func exec(self, query: str) -> int {
+        return len(query)
+    }
+
+    func commit(self) -> bool {
+        self.done = true
+        return self.done
+    }
+}
+
+class Square {
+    func init(self, side: int) {
+        self.side: int = side
+    }
+
+    func __json__(self) -> json {
+        return {"side": self.side}
+    }
+}
+
+func area(s: Square) -> int {
+    return s.side * s.side
+}
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+
+    func copy(self) -> Box[T] {
+        return Box[T](self.items)
+    }
+}
+
+class Reader {
+    func init(self, lines: list[str]) {
+        self.lines: list[str] = lines
+    }
+
+    func next(self) -> Result[any] {
+        if len(self.lines) == 0 {
+            return Result.Ok(None)
+        }
+        line: str = self.lines.pop()
+        return Result.Ok(line)
+    }
+}

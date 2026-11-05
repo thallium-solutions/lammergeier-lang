@@ -1,0 +1,5 @@
+# expect-pass
+# Subpackage of full_check_package (569_imported_module_full_check.lam): its
+# entry module re-exports a function, a constant and a class.
+
+from .money import cents, Currency, Amount

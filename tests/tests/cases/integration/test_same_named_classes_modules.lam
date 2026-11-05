@@ -1,0 +1,18 @@
+# 4.3.0 regression (luxyt): a module importing a package's `Problem` as
+# `HttpProblem` and defining its own `Problem`, and a module using the local
+# one next to imports that know the package's classes. The checker merged
+# the two classes (unknown statics, the package's constructor); the program
+# compiles and each `Problem` keeps its own members.
+#
+# expect: endpoint_not_found 404 405 a user_missing
+# expect: http 404 endpoint_not_found
+
+from shadowed_names_pkg.routes import run, statusProblem
+from shadowed_names_pkg.problems import Problem
+
+func main() {
+    p: Problem = statusProblem(404)
+    print(p.code + " " + run())
+    h = p.http()
+    print(f"http {h.status} {h.title}")
+}

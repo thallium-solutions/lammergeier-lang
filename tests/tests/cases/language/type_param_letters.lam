@@ -1,0 +1,19 @@
+# Helper module for test_functions_named_like_type_parameters.lam: functions
+# whose Go names (`T`, `K`, `V`, `Item`) are the type parameters of generic
+# declarations in the importing module.
+
+func t(key: str) -> str {
+    return "[" + key + "]"
+}
+
+func k(n: int) -> int {
+    return n * 10
+}
+
+func item(name: str, qty: int = 1) -> str {
+    return f"{qty}x{name}"
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

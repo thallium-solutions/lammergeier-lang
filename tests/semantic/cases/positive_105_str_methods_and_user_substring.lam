@@ -11,7 +11,9 @@ class Text {
     }
 
     func charAt(self, i: int) -> str {
-        return self.raw[i]
+        # Indexing a `str` gives a `byte` (586_class_field_types_checked);
+        # the one-character slice is a `str`.
+        return self.raw[i:i + 1]
     }
 }
 

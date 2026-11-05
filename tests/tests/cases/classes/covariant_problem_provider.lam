@@ -1,0 +1,46 @@
+# Helper module for test_covariant_overrides_imported.lam: a problem
+# document in the style of Vulture's `Problem`, with builder methods
+# returning `Problem`, a static constructor and a method calling the
+# builders on `self`.
+
+class Problem {
+    func init(self, status: int = 500, title: str = "") {
+        self.status: int = status
+        self.title: str = title
+        self.errors: list[str] = []
+    }
+
+    func withError(self, field: str, message: str) -> Problem {
+        self.errors.append(f"{field}: {message}")
+        return self
+    }
+
+    func withTitle(self, title: str) -> Problem {
+        self.title = title
+        return self
+    }
+
+    func required(self, fields: list[str]) -> Problem {
+        for f in fields {
+            self.withError(f, "required")
+        }
+        return self
+    }
+
+    func describe(self) -> str {
+        return f"{self.status} {self.title} [{', '.join(self.errors)}]"
+    }
+
+    static func validation(where: str, status: int = 400) -> Problem {
+        return Problem(status, f"invalid {where}")
+    }
+}
+
+#- A base-typed caller: dispatches to the subclass builders. -#
+func failField(p: Problem, field: str) -> Problem {
+    return p.withError(field, "bad")
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

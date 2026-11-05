@@ -1,0 +1,28 @@
+# expect-pass
+# 4.3.0: a value of a union type passed on to a parameter of the same (or a
+# wider) union was rejected: each alternative of the argument is checked
+# against the expected union.
+
+func register(handler: func(str) | (func(str) -> int)) -> int {
+    return 1
+}
+
+func forward(handler: func(str) | (func(str) -> int)) -> int {
+    return register(handler)
+}
+
+func widen(v: int | str) -> str {
+    return describe(v)
+}
+
+func describe(v: int | str | bool) -> str {
+    return f"{v}"
+}
+
+func shout(s: str) {
+    print(s)
+}
+
+func main() {
+    print(forward(shout), widen(3), widen("x"))
+}

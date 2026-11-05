@@ -1,0 +1,9 @@
+# expect-pass
+# Helper of 605/606: imports from the package without naming its `Problem`
+# (the importer still knows the package's classes for its signatures).
+
+from .kit import Server
+
+func makeServer() -> Server {
+    return Server()
+}

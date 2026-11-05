@@ -1,0 +1,8 @@
+# expect-pass
+# Helper of 569_imported_module_full_check.lam.
+
+class Column {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}

@@ -376,6 +376,9 @@ func lamAsyncReportUnretrieved() {
 
         # Top-level go! raw lines
         self._raw_go_top: List[str] = []
+        # Package-level aliases of functions a type parameter in scope
+        # shadows (``_unshadowed_function``): Go name -> alias.
+        self._shadowed_function_aliases: Dict[str, str] = {}
 
         # Operator overloading
         self._class_dunder_methods: Dict[str, Dict[str, str]] = {}
@@ -449,6 +452,9 @@ func lamAsyncReportUnretrieved() {
         # lowering uses these to replace list[T] with a literal's inferred
         # concrete slice type rather than leaking T into caller Go.
         self._func_generic_params: Dict[str, Set[str]] = {}
+        # Declared order of a generic function's type parameters, to bind
+        # explicit type arguments (``pair[int, str](...)``).
+        self._func_generic_order: Dict[str, List[str]] = {}
         # ``Class.method`` -> the method's own type parameters, for instance
         # methods declaring them (``func map[U](self, ...)``). Go methods
         # cannot have type parameters, so these lower to package-level
@@ -648,6 +654,7 @@ func lamAsyncReportUnretrieved() {
         self._function_go_names = {}
         self._private_methods = {}
         self._raw_go_top = []
+        self._shadowed_function_aliases = {}
         self._generic_constraints = {}
         self._nested_generic_functions = {}
         self._nested_func_keys = {}
@@ -746,6 +753,11 @@ func lamAsyncReportUnretrieved() {
 
         if self._hoisted_nested_generic_funcs:
             body_lines = self._hoisted_nested_generic_funcs + [""] + body_lines
+        if self._shadowed_function_aliases:
+            body_lines = body_lines + [""] + [
+                f"var {alias} = {go_name}"
+                for go_name, alias in sorted(self._shadowed_function_aliases.items())
+            ]
 
         return "\n".join(header_lines + body_lines) + "\n"
 
@@ -1161,6 +1173,7 @@ func lamAsyncReportUnretrieved() {
             _, type_param_names, _ = self._type_params_to_go(type_params_node)
             if type_param_names:
                 self._func_generic_params[name] = set(type_param_names)
+                self._func_generic_order[name] = list(type_param_names)
             generic_names = self._generic_names | set(type_param_names)
             with self._scoped(_generic_names=generic_names):
                 variadic = self._has_variadic(params_node) if params_node else False
@@ -1173,6 +1186,9 @@ func lamAsyncReportUnretrieved() {
                 payload_type = self._result_payload_go_type(return_type_node)
                 if payload_type:
                     self._result_payload_go_types.setdefault(name, payload_type)
+                elem_payload = self._elem_result_payload_go_type(return_type_node)
+                if elem_payload:
+                    self._result_payload_go_types.setdefault(f"{name}[]", elem_payload)
                 # Count params and collect defaults.
                 arity = self._count_params(params_node)
                 self._func_param_counts[name] = arity
@@ -1193,6 +1209,7 @@ func lamAsyncReportUnretrieved() {
                         self._result_payload_go_types.setdefault(meta_key, payload_type)
                     if type_param_names:
                         self._func_generic_params[meta_key] = set(type_param_names)
+                        self._func_generic_order[meta_key] = list(type_param_names)
                     if params_node:
                         self._collect_param_defaults(meta_key, params_node)
                     required = arity - len(self._func_defaults.get(meta_key, []))
@@ -1283,6 +1300,9 @@ func lamAsyncReportUnretrieved() {
                         payload_type = self._result_payload_go_type(return_type_node)
                         if payload_type:
                             self._result_payload_go_types.setdefault(method_key, payload_type)
+                        elem_payload = self._elem_result_payload_go_type(return_type_node)
+                        if elem_payload:
+                            self._result_payload_go_types.setdefault(f"{method_key}[]", elem_payload)
                         skip_self = not is_stat
                         arity = self._count_params(params_node, skip_self=skip_self)
                         self._func_param_counts[method_key] = arity
@@ -1353,6 +1373,9 @@ func lamAsyncReportUnretrieved() {
                 payload_type = self._result_payload_go_type(return_node)
                 if payload_type:
                     self._result_payload_go_types.setdefault(method_key, payload_type)
+                elem_payload = self._elem_result_payload_go_type(return_node)
+                if elem_payload:
+                    self._result_payload_go_types.setdefault(f"{method_key}[]", elem_payload)
                 raw_return = self._get_raw_type_name(return_node) if return_node else ""
                 if raw_return:
                     self._method_return_types.setdefault(method_key, raw_return)
@@ -1588,6 +1611,13 @@ func lamAsyncReportUnretrieved() {
                             )
                             if signature in own_signatures:
                                 continue
+                            if any(
+                                own_sig == signature[0] and self._local_covariant_return(own_ret, signature[1])
+                                for own_sig, own_ret in own_signatures
+                            ):
+                                # ``withError(...) -> MyProblem`` overrides
+                                # the base's ``-> Problem`` (covariant).
+                                continue
                             child_variants.append(dict(variant, suffix=""))
                             own_signatures.add(signature)
                             changed = True
@@ -1630,6 +1660,28 @@ func lamAsyncReportUnretrieved() {
                     v["suffix"] = f"_{a}_{self._sig_suffix(signature)}"
                 else:
                     v["suffix"] = f"_{a}"
+
+    def _local_covariant_return(self, child_ret: str, base_ret: str) -> bool:
+        """``*Sub`` / ``*Base`` Go return types of classes of this module,
+        ``Sub`` a strict subclass of ``Base`` (read before the program-wide
+        hierarchy of ``compiler/visitors/subtyping.py`` is built)."""
+        if not (child_ret.startswith("*") and base_ret.startswith("*")) or "[" in child_ret + base_ret:
+            return False
+        by_go = {self._go_class_name(name): name for name in self._class_names}
+        child, base = by_go.get(child_ret[1:]), by_go.get(base_ret[1:])
+        if not child or not base or child == base:
+            return False
+        seen: set = set()
+        todo = list(self.class_bases.get(child, []))
+        while todo:
+            current = todo.pop()
+            if current == base:
+                return True
+            if current in seen:
+                continue
+            seen.add(current)
+            todo.extend(self.class_bases.get(current, []))
+        return False
 
     def _bind_inherited_variant(self, class_name: str, base: str, variant: dict) -> dict:
         """``variant`` of a generic ``base`` method with the type arguments
@@ -2002,8 +2054,10 @@ func lamAsyncReportUnretrieved() {
                         existing = [f for f, _ in self.class_fields.get(class_name, [])]
                         if field_name not in existing:
                             self.class_fields[class_name].append((field_name, go_type))
+                        self._note_field_elem_payload(class_name, field_name, type_node)
             elif isinstance(target, Tree) and target.data == "var":
                 field_name = self._get_name(target.children[0])
+                self._note_field_elem_payload(class_name, field_name, type_node)
                 go_type = self._type_expr_to_go(type_node) if type_node else "interface{}"
                 existing = [f for f, _ in self.class_fields.get(class_name, [])]
                 if field_name not in existing:
@@ -2028,6 +2082,13 @@ func lamAsyncReportUnretrieved() {
                         existing = [f for f, _ in self.class_fields.get(class_name, [])]
                         if field_name not in existing:
                             self.class_fields[class_name].append((field_name, go_type))
+
+    def _note_field_elem_payload(self, class_name: str, field_name: str, type_node) -> None:
+        """``self.cached: list[Result[int]]``: ``for r in self.cached`` binds
+        ``Result`` values whose payload is an ``int``."""
+        payload = self._elem_result_payload_go_type(type_node) if type_node is not None else ""
+        if payload:
+            self._result_payload_go_types.setdefault(f"{class_name}.{field_name}[]", payload)
 
     def _annassign_parts(self, node: Tree) -> Tuple[bool, bool, List]:
         """Return ``(private, static, children_without_modifiers)``."""

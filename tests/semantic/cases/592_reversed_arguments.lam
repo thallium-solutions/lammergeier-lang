@@ -1,0 +1,15 @@
+# expect-error: line 9: error[type]: reversed() takes a list or a str, got `dict[str, int]`
+# expect-error: line 10: error[type]: reversed() takes a list or a str, got `int`
+# expect-error: line 11: error[call]: reversed() expects exactly 1 argument (a list or a str), got 2
+# expect-error: line 12: error[type]: cannot assign `list[int]` to `int` variable `n`
+# expect-error: line 13: error[type]: cannot assign `list[str]` to `str` variable `s`
+# `reversed` takes one list (a reversed copy) or str (its characters).
+func main() {
+    counts: dict[str, int] = {"a": 1}
+    print(reversed(counts))
+    print(reversed(3))
+    print(reversed([1], [2]))
+    n: int = reversed([1, 2])
+    s: str = reversed("ab")
+    print(n, s)
+}

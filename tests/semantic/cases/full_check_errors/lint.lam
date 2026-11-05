@@ -1,0 +1,8 @@
+# expect-warning: unused parameter `verbose`
+# Imported by 572_imported_module_lint_stays_local.lam: compiled alone it
+# warns; imported, its lint warnings are not repeated in every build.
+
+func greet(name: str, verbose: bool) -> str {
+    unused: int = 1
+    return "hi " + name
+}

@@ -1,0 +1,54 @@
+# expect-error: class `Other` overrides `Problem.withStatus` with return `Unrelated`, expected `Problem`
+# expect-error: class `Ints` overrides `Box.again` with return `Ints` (a subclass of `Box[int]`)
+# expect-error: class `Later` overrides `Problem.later` with return `Later` (a subclass of `Problem`): covariant returns of an async method are not supported; return `Problem`
+# expect-error: class `Mixed` overrides static method `Problem.validation` with a instance method
+# expect-no-warning: `Fine`
+# Covariant returns: an override may return a subclass of the base
+# method's return class. A return that is not a subclass is still an
+# error; a generic class, an async method and a static/instance mix are
+# reported precisely (the code generator cannot dispatch them).
+from covariant_base_helper import Problem, Box
+
+class Unrelated {
+    func init(self) {
+        self.x: int = 0
+    }
+}
+
+class Other(Problem) {
+    func withStatus(self, status: int) -> Unrelated {
+        return Unrelated()
+    }
+}
+
+class Ints(Box[int]) {
+    func again(self) -> Ints {
+        return self
+    }
+}
+
+class Later(Problem) {
+    async func later(self) -> Later {
+        return self
+    }
+}
+
+class Mixed(Problem) {
+    func validation(self) -> Problem {
+        return self
+    }
+}
+
+class Fine(Problem) {
+    func copy(self) -> Fine {
+        return Fine(self.status)
+    }
+
+    static func validation(a: int, b: int, c: int) -> Fine {
+        return Fine(a + b + c)
+    }
+}
+
+func main() {
+    print(Fine.validation(1, 2, 3).copy().status)
+}

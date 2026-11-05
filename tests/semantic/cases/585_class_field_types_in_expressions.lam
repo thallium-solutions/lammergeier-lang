@@ -1,0 +1,36 @@
+# expect-pass
+# 4.3.0: a field's declared type types the expressions it is in, not only
+# int/float/json/optional fields: `self.code + "x"` is a `str`,
+# `self.totals["a"]` an `int`, `for t in self.tiers` binds a `Tier` (all
+# were "unknown" and rejected as JSON values).
+
+class Tier {
+    func init(self, id: int) {
+        self.id: int = id
+    }
+
+    func __json__(self) -> json {
+        return {"id": self.id}
+    }
+}
+
+class Report {
+    func init(self) {
+        self.code: str = "nf"
+        self.totals: dict[str, int] = {"a": 1}
+        self.tiers: list[Tier] = [Tier(1), Tier(2)]
+    }
+
+    func __json__(self) -> json {
+        items: list[json] = []
+        for t in self.tiers {
+            row: json = json(t)
+            items.append(row)
+        }
+        return {"type": "urn:" + self.code, "a": self.totals["a"], "tiers": items, "ids": [t.id for t in self.tiers]}
+    }
+}
+
+func main() {
+    print(json(Report()))
+}

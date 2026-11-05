@@ -1,0 +1,25 @@
+# expect-error: line 21: error[type]: cannot assign `list[Product]` to `list[str]` variable `names`
+# expect-error: line 22: error[type]: cannot assign `int` to `str` variable `label`
+# A field of a generic class read on an instantiated receiver has the
+# receiver's type arguments (`p.items` of a `Page[Product]` is a
+# `list[Product]`, its `total` an `int`), never the class's `T`.
+class Product {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Page[T] {
+    func init(self, items: list[T], total: int) {
+        self.items: list[T] = items
+        self.total: int = total
+    }
+}
+
+func main() {
+    p: Page[Product] = Page[Product]([Product("a")], 1)
+    names: list[str] = p.items
+    label: str = p.total
+    firsts: list[str] = [item.name for item in p.items]
+    print(names, label, firsts, p.items[0].name)
+}

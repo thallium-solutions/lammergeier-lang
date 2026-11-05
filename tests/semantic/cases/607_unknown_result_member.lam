@@ -1,0 +1,34 @@
+# expect-error: line 25: error[member]: unknown member `r.isOk` on class `Result`
+# expect-error: line 26: error[member]: unknown member `r.unwrapOrElse` on class `Result` — did you mean `r.unwrapOr`?
+# expect-error: line 28: error[member]: unknown member `g.isErr` on class `Result`
+# expect-error: line 31: error[member]: unknown member `x.payload` on class `Result`
+# expect-error: line 33: error[member]: unknown member `Result.isOk` on class `Result`
+# expect-no-warning: `r.ok`
+# expect-no-warning: `r.error`
+# Members of a `Result[T]` (a local, a loop variable, a call) were never
+# checked: `r.isOk()` passed the checker and failed in `go build`. The
+# members are lamerrors' (`ok`, `unwrap`, `unwrapOr`, `value`, `error`).
+
+from lamerrors import Result
+
+func one() -> Result[int] {
+    return Result.Ok(1)
+}
+
+func results() -> generator[Result[int]] {
+    yield Result.Ok(2)
+}
+
+func main() {
+    r: Result[int] = one()
+    print(r.ok(), r.unwrap(), r.unwrapOr(0), r.value, r.error)
+    print(r.isOk())
+    print(r.unwrapOrElse(0))
+    for g in results() {
+        print(g.isErr())
+    }
+    for x in [one()] {
+        print(x.payload)
+    }
+    print(one().isOk())
+}

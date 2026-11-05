@@ -1,0 +1,14 @@
+# expect-error: argument `p` to `Server.fail` has type `Problem`, expected `kit.Problem`
+# expect-error: unknown member `Problem.validation` on class `Problem`
+# The package's `Problem` (known to this module through `Server`'s
+# signatures, but not imported) and the local `Problem` stay two classes:
+# one is not passed for the other, and the local one has no `validation`.
+
+from shadowed_class_package.problems import Problem
+from shadowed_class_package.kit import Server
+
+func main() {
+    server: Server = Server()
+    print(server.fail(Problem("x")))
+    print(Problem.validation("body").code)
+}

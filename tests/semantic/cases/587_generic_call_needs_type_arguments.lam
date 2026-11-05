@@ -1,0 +1,39 @@
+# expect-error: line 32: error[type]: cannot infer type parameter `T` of `firstOf`
+# expect-error: line 33: error[type]: cannot infer type parameter `T` of `Box`
+# expect-error: line 34: error[type]: cannot infer type parameter `T` of `ident`
+# expect-error: line 35: error[type]: cannot infer type parameter `T` of `merge`
+# expect-error: line 36: error[type]: cannot infer type parameters `K`, `V` of `Pair`
+# expect-error: line 37: error[type]: cannot infer type parameter `T` of `Box`
+# expect-error: write the type arguments, e.g. `firstOf[int](...)`
+# 4.3.0: a generic call no argument gives a type parameter to (a default
+# `xs: list[T] = []`, `None`, an empty literal where the result must be
+# another instantiation) was lowered with a Go `[]T{}` / `nil` and failed in
+# `go build` ("undefined: T", "cannot infer T", "cannot use *Box[interface
+# {}] as *Box[int]"). It is a Lam error asking for the type arguments.
+
+class Box[T] {
+    func init(self, items: list[T] = []) {
+        self.items: list[T] = items
+    }
+}
+
+class Pair[K, V] {
+    func init(self, key: optional[K] = None, value: optional[V] = None) {
+        self.key: optional[K] = key
+        self.value: optional[V] = value
+    }
+}
+
+func firstOf[T](xs: list[T] = []) -> int { return len(xs) }
+func ident[T](x: optional[T]) -> optional[T] { return x }
+func merge[T](xs: list[T], extra: list[T] = []) -> list[T] { return xs + extra }
+
+func main() {
+    print(firstOf())
+    b = Box()
+    print(ident(None))
+    ints: list[int] = merge([])
+    p = Pair()
+    c: Box[int] = Box([])
+    print(len(b.items), len(ints), p.key, len(c.items))
+}

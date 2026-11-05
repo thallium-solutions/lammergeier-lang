@@ -1,0 +1,50 @@
+# Module of test_int_full_check_program.lam: JSON documents, optional
+# labels, markup and reversed lists over the catalog module's types,
+# constants and interfaces (checked like the compiled file since 4.3.0).
+
+from lamerrors import Result, Error
+from .catalog import Product, Page, Store, WritableStore, Catalog, MaxItems, Sections
+import .catalog as cat
+
+func price(store: Store, name: str) -> Result[int] {
+    found: optional[Product] = store.get(name)
+    if found == None {
+        return Result.Err(Error("NotFound", name))
+    }
+    return Result.Ok(found.cents)
+}
+
+func priceOf(store: WritableStore, name: str) -> Result[int] {
+    return price(store, name)
+}
+
+func label(p: Product) -> optional[str] {
+    return p.tags[0] if len(p.tags) > 0 else None
+}
+
+func page(c: Catalog) -> Page[Product] {
+    items: list[Product] = [p for p in c.products()]
+    return Page[Product](reversed(items)[:MaxItems], len(items))
+}
+
+func document(c: Catalog) -> json {
+    p: Page[Product] = page(c)
+    rows: list[json] = []
+    for item in p.items {
+        rows.append({"product": json(item), "label": label(item) ?? "-", "tags": item.tags})
+    }
+    return {
+        "currency": cat.CurrencyCode,
+        "total": p.total,
+        "rows": rows,
+        "sections": [{"name": s, "upper": s.toUpper()} for s in Sections],
+    }
+}
+
+func badge(p: Product) -> html {
+    return <><b title="${label(p)}" data-sale="${'yes' if 'sale' in p.tags else None}">${p.name}</b></>
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

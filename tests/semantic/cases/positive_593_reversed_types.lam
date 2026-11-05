@@ -1,0 +1,20 @@
+# expect-pass
+# `reversed(xs)` has the list's type, `reversed(s)` is a `list[str]`.
+class Item {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func main() {
+    xs: list[int] = reversed([1, 2, 3])
+    items: list[Item] = reversed([Item("a"), Item("b")])
+    first: str = reversed(items)[0].name
+    chars: list[str] = reversed("abc")
+    word: str = "".join(reversed("abc"))
+    total: int = 0
+    for x in reversed(xs) {
+        total += x
+    }
+    print(xs, len(items), first, chars, word, total, [c + "!" for c in reversed(chars)])
+}

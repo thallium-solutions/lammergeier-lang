@@ -1,0 +1,78 @@
+# Regression (4.3.0): a top-level function is capitalised in Go (`t` is `T`),
+# and inside a generic function or class whose type parameter has that name
+# Go resolved the identifier to the type parameter: `t("x")` was a
+# conversion to `T`, `t` passed as a handler "is not an expression" (or
+# undefined). Such references go through a package-level alias, for
+# functions of this module and imported ones, as values, calls, defaults,
+# lambdas, list callbacks and f-string slots.
+#
+# expect: run [a] [g] [direct]
+# expect: box 7: [in] [box] 70
+# expect: pairs 10:[k1] 20:[k2]
+# expect: router GET [/home] -> [home]
+# expect: items 2xapple 1xpear
+# expect: shadow-local 99
+# expect: plain [z] 30
+
+from type_param_letters import t, k, item
+
+func v(n: int) -> int {
+    return n + 1
+}
+
+func run[T](x: T, f: func(str) -> str) -> str {
+    g: func(str) -> str = t
+    return f"{f(str(x))} {g('g')} {t('direct')}"
+}
+
+class Box[T] {
+    func init(self, v: T) {
+        self.v: T = v
+        self.render: func(str) -> str = t
+    }
+
+    func show(self, f: func(str) -> str) -> str {
+        return f"{self.v}: {f('in')} {self.render('box')} {k(7)}"
+    }
+}
+
+func pairs[K, V](keys: list[K], fallback: V, fmt: func(str) -> str) -> list[str] {
+    return [f"{k(i + 1)}:{fmt(str(key))}" for i, key in enumerate(keys) if str(fallback) != str(key)]
+}
+
+class Router[V] {
+    func init(self, default: V) {
+        self.default: V = default
+        self.handlers: dict[str, func(str) -> str] = {}
+    }
+
+    func add(self, path: str, handler: func(str) -> str = t) {
+        self.handlers[path] = handler
+    }
+
+    func dispatch(self, method: str, path: str) -> str {
+        return f"{method} {t(path)} -> {self.handlers[path]('home')}" + (str(v(1)) if false else "")
+    }
+}
+
+func items[Item](names: list[Item]) -> list[str] {
+    return [item(str(n), 2) if i == 0 else item(str(n)) for i, n in enumerate(names)]
+}
+
+func shadowLocal[T](_x: T) -> int {
+    t: int = 99
+    return t
+}
+
+func main() {
+    print("run " + run("a", t))
+    b: Box[int] = Box(7)
+    print("box " + b.show(t))
+    print("pairs " + " ".join(pairs(["k1", "k2"], 0, lambda s: t(s))))
+    r: Router[int] = Router(0)
+    r.add("/home")
+    print("router " + r.dispatch("GET", "/home"))
+    print("items " + " ".join(items(["apple", "pear"])))
+    print(f"shadow-local {shadowLocal('x')}")
+    print(f"plain {t('z')} {k(3)}")
+}

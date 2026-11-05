@@ -189,6 +189,10 @@ def _subclass_assignable(hook, expected: Type, actual: Type) -> bool:
     return False
 
 
+def _is_dynamic_name(type_: Type) -> bool:
+    return isinstance(type_, NamedType) and type_.name in {"any", "object"}
+
+
 def _is_assignable(expected: Type, actual: Type) -> bool:
     expected_inner = _optional_inner(expected)
     actual_inner = _optional_inner(actual)
@@ -225,11 +229,15 @@ def _is_assignable(expected: Type, actual: Type) -> bool:
             return expected.name in {"None", "any", "object"}
         if isinstance(expected, UnionType):
             return any(_is_assignable(option, actual) for option in expected.options)
-        return False
+        # A function value is a Go func: ``None`` is the unset callback
+        # (``self.onDone: func(int) = None``).
+        return isinstance(expected, FuncType)
+    if isinstance(actual, UnionType):
+        # Each alternative must fit (``A | B`` into ``A | B | C``); checked
+        # first so a union flows into an equal or wider union.
+        return all(_is_assignable(expected, option) for option in actual.options)
     if isinstance(expected, UnionType):
         return any(_is_assignable(option, actual) for option in expected.options)
-    if isinstance(actual, UnionType):
-        return all(_is_assignable(expected, option) for option in actual.options)
     if isinstance(expected, ListType) and isinstance(actual, NamedType) and actual.name == "list":
         return True
     if isinstance(expected, DictType) and isinstance(actual, NamedType) and actual.name == "dict":
@@ -248,6 +256,18 @@ def _is_assignable(expected: Type, actual: Type) -> bool:
     if isinstance(expected, FuncType) and isinstance(actual, FuncType):
         return expected == actual
     if isinstance(expected, GenericType) and isinstance(actual, GenericType):
+        if (
+            expected.base == actual.base == "Result"
+            and len(expected.args) == len(actual.args)
+        ):
+            # A ``Result`` is one runtime type whatever its payload: a
+            # ``Result[any]`` (``next()`` of a dynamic reader) is returned as a
+            # ``Result[str]`` like an ``any`` value is assigned to a ``str``.
+            # Other payloads must be the same type (unwrapping asserts it).
+            return all(
+                e == a or _is_dynamic_name(e) or _is_dynamic_name(a)
+                for e, a in zip(expected.args, actual.args)
+            )
         return expected == actual
     if isinstance(expected, NamedType) and isinstance(actual, NamedType):
         return _named_type_assignable(expected.name, actual.name)
@@ -397,6 +417,9 @@ def _generic_type(base: str, args: Sequence[Type]) -> Type:
         key = args[0] if len(args) >= 1 else NamedType("str")
         value = args[1] if len(args) >= 2 else NamedType("any")
         return DictType(key, value)
+    if base == "iterator" and len(args) == 1:
+        # ``iterator[T]`` is another name of ``generator[T]`` (a ``chan T``).
+        base = "generator"
     return GenericType(base, tuple(args))
 
 

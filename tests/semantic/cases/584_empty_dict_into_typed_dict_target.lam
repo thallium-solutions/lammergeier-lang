@@ -1,0 +1,34 @@
+# expect-pass
+# 4.3.0: `handle.ready = {}` with `ready: dict[int, Part]` was rejected
+# ("cannot assign `dict[str, any]` to `dict[int, Part]`"): an empty `{}` is
+# an empty dict of the expected type, for fields, variables and arguments.
+
+class Part {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+}
+
+class Handle {
+    func init(self) {
+        self.ready: dict[int, Part] = {}
+    }
+
+    func reset(self) {
+        self.ready = {}
+    }
+}
+
+func count(parts: dict[int, Part]) -> int {
+    return len(parts)
+}
+
+func main() {
+    h: Handle = Handle()
+    h.ready[1] = Part(1)
+    print(count(h.ready))
+    h.reset()
+    byId: dict[int, Part] = {1: Part(2)}
+    byId = {}
+    print(count(h.ready), count(byId), count({}))
+}

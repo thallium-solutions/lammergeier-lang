@@ -1,0 +1,14 @@
+# expect-error: line 11: error[type]: ternary branches must have compatible types: got `str` and `None`
+# expect-error: line 12: error[type]: cannot assign `optional[str]` to `str` variable `s`
+# expect-error: line 13: error[type]: argument `name` to `greet` has type `optional[str]`, expected `str`
+# A `None` branch makes an `optional`: a new variable without annotation has
+# no type to hold it, and a `str` variable or parameter does not take it.
+func greet(name: str) -> str {
+    return "hi " + name
+}
+
+func main(on: bool) {
+    v = "x" if on else None
+    s: str = "x" if on else None
+    print(v, s, greet("y" if on else None))
+}

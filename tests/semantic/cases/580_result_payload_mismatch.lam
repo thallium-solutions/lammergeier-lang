@@ -1,0 +1,22 @@
+# expect-error: function `convert` returns `Result[int]`, expected `Result[str]`
+# Payloads that are not `any` must match: unwrapping asserts the type.
+from lamerrors import Result, Error
+
+func parse(text: str) -> Result[int] {
+    if text == "" {
+        return Result.Err(Error("ParseError", "empty"))
+    }
+    return Result.Ok(len(text))
+}
+
+func convert(text: str) -> Result[str] {
+    parsed: Result[int] = parse(text)
+    if not parsed.ok() {
+        return parsed
+    }
+    return Result.Ok(str(parsed.unwrap()))
+}
+
+func main() {
+    print(convert("x").unwrap())
+}

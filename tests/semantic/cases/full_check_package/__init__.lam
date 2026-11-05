@@ -1,0 +1,6 @@
+# expect-pass
+# Package entry of 569_imported_module_full_check.lam: re-exports a class,
+# a constant and a function of its modules.
+
+from .shapes import Square, area
+from .consts import Prefix

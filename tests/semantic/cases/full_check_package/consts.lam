@@ -1,0 +1,8 @@
+# expect-pass
+# Helper of 569_imported_module_full_check.lam: top-level constants and
+# variables, annotated and inferred, read by other modules.
+
+const Prefix: str = "urn:shop:"
+const Limit: int = 3
+Langs: list[str] = ["it", "en"]
+Fallback = "none"

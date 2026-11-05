@@ -1,0 +1,40 @@
+# expect-pass
+# Helper module for 604_covariant_override_rules.lam and
+# positive_604_covariant_override_imported.lam.
+
+class Problem {
+    func init(self, status: int = 500) {
+        self.status: int = status
+    }
+
+    func withStatus(self, status: int) -> Problem {
+        self.status = status
+        return self
+    }
+
+    func copy(self) -> Problem {
+        return Problem(self.status)
+    }
+
+    async func later(self) -> Problem {
+        return self
+    }
+
+    func label(self) -> str {
+        return "problem"
+    }
+
+    static func validation(where: str, status: int = 400) -> Problem {
+        return Problem(status)
+    }
+}
+
+class Box[T] {
+    func init(self, v: T) {
+        self.v: T = v
+    }
+
+    func again(self) -> Box[T] {
+        return self
+    }
+}

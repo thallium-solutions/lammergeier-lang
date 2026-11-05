@@ -20,6 +20,12 @@ The compiler lives under `compiler/`, with the transpiler entry-point in
    and the raw Go source is stored in a side table keyed by `N`.
 2. **Parser** – `lammergeier.lark` feeds Lark to produce a parse tree over
    the preprocessed source.
+   The **semantic checker** (`compiler/semantic.py`) then checks the
+   compiled file and, once the import graph is known, every imported module
+   (project, `extlibs`, stdlib), each with the metadata of its own imports
+   (`_imported_call_metadata`, sharing parsed trees and class tables across
+   the build through `ProgramCheckCache`); a module that checks clean is
+   cached by content (its own and its imports').
 3. **Transpiler** walks the tree and emits Go. Go blocks are re-inserted
    verbatim in place of their placeholders.
 4. **Formatter + compiler** (`go fmt` + `go build`) produce the final
@@ -190,7 +196,13 @@ with its parameters), so chains such as
 link, `Result[T]` payloads (`it.first().unwrap()`) and inferred locals.
 The Go call itself still relies on Go's inference, except for a static
 method whose parameter no argument determines (`Iter.repeat(None, 2)`
-emits `Iter_repeat[interface{}](nil, 2)`).
+emits `Iter_repeat[interface{}](nil, 2)`). Parameter defaults are lowered
+with the same bindings, or with explicit type arguments bound in the
+declared order (`_func_generic_order`): `firstOf[str]()` with `xs: list[T]
+= []` emits `FirstOf[string]([]string{})`, `merge(xs)` with `extra:
+list[T] = []` and `xs: list[int]` emits `Merge(xs, []int{})`. A call no
+argument binds is rejected by the semantic checker (it would need a Go
+`[]T{}` outside the function).
 
 Builtins passed as function values (`it.map(len)`, `xs.map(str)`) are
 not Go values; where a `func(P) R` is expected they become
@@ -1272,6 +1284,20 @@ var s *Shape = NewSquare()._lamUp_Shape()
   is a direct Go call exactly as before, so hot loops over plain classes
   are unaffected. A plain `Shape` pays one nil check per virtual call, a
   subclass instance an interface call.
+- **Covariant returns.** Go has no covariant methods: `func (s *AppProblem)
+  WithError(...) *AppProblem` does not implement an interface method
+  returning `*Problem`. A method some descendant overrides with a subclass
+  return type is listed in the interface as an adapter,
+  `_lamOv_Problem_WithError(...) *Problem`, that the defining class
+  implements by calling its own method and every overriding class by
+  calling its override and upcasting the result
+  (`s.WithError(...)._lamUp_Problem()`); classes that do not override
+  inherit their parent's adapter by promotion. The override itself keeps
+  its Go name and its own return type, so calls through an `*AppProblem`
+  are direct and typed, and `_lamVirt_WithError` forwards to the adapter.
+  Static methods are package-level functions named after their class
+  (`AppProblem_validation`), so a subclass static of a base static's name
+  is another function.
 - **Dynamic class.** `_lamDyn()` returns the most-derived object and
   `_lamIs_C()` (defined on every class in a hierarchy and promoted to all
   its descendants) recovers its `*C` view, so `isinstance(x, Square)` on a
@@ -1446,6 +1472,7 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `sorted(xs, key=f, reverse=b)`     | `sort.SliceStable` copy preserving the receiver/context element type; `key` compares `f(x)` |
 | `sorted` / `xs.sort()` / `min(xs)` / `max(xs)` of `list[any]`, `list[json]`, `list[T]`, `list[optional[int]]` | an inline `func(a, b interface{}) int` comparing by kind (`reflect`): numbers numerically, strings by bytes, `false < true`, `None` < bool < number < str < other (by `%v`); `min` / `max` loop over the list (`slices.Min` needs `cmp.Ordered`) |
 | `min(xs, key=fn)` / `max(a, b, key=fn)` | an inline `func(xs []T) T` keeping the first value with the smallest / largest `key(v)` (keys compared like `sorted`'s; an empty list panics with `ValueError`) |
+| `reversed(xs)` / `reversed(s)`     | `func(src []T) []T` filling a new slice back to front (same slice type); for a `str`, `[]rune(src)` read back to front into a `[]string` |
 | `enumerate(xs)`                    | IIFE materializing index/value pairs as `[]interface{}` tuples            |
 | `isinstance(x, T)`                 | Type-specific runtime check: assertion, nil test, or `reflect.Kind` (`lamJSONRaw(x)` first on `json`, `x != nil` on an optional value type) |
 
@@ -1756,7 +1783,7 @@ for value in Streams.values([3, 1, 2]) { print(value) }
 
 The generated signature is `func Streams_values[T any]([]T) chan T`, and the
 loop becomes `for value := range Streams_values([]int{3, 1, 2})`. The type
-`generator[T]` lowers to `chan T` (`-> generator[Circle]` returns a
+`generator[T]` (and its other name `iterator[T]`) lowers to `chan T` (`-> generator[Circle]` returns a
 `chan *Circle`, a `g: generator[int]` parameter is a `chan int`), and a
 generator nested in a function is a closure returning its channel
 (`inner := func() chan *Circle { _ch := make(chan *Circle); go func() { ...

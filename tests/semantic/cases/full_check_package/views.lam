@@ -1,0 +1,109 @@
+# expect-pass
+# Helper of 569_imported_module_full_check.lam: every construct the full
+# semantic check of an imported module used to misreport (4.3.0), checked
+# here as an imported module and when compiled alone.
+
+from lamerrors import Result
+from .consts import Prefix, Limit, Langs, Fallback
+import .consts as c
+from .shapes import Sql, SqlTx, Tx, Square, Box, Reader
+from .listing import Column
+import .ui as ui
+from .shapes import area
+from .kit import cents, Currency, Amount
+
+const Kind: str = "view"
+
+class Part {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+}
+
+class Page {
+    func init(self) {
+        self.code: str = "nf"
+        self.totals: dict[str, int] = {"seen": 2}
+        self.parts: dict[int, Part] = {}
+        self.squares: list[Square] = [Square(2), Square(3)]
+        self.onDone: func(int) = None
+    }
+
+    func reset(self) {
+        self.parts = {}
+    }
+
+    func doc(self) -> json {
+        out: json = {
+            "type": Prefix + self.code,
+            "seen": self.totals["seen"],
+            "limit": c.Limit + Limit,
+            "langs": [lang for lang in Langs],
+            "fallback": Fallback,
+        }
+        items: list[json] = []
+        for s in self.squares {
+            items.append(json(s))
+        }
+        rows: list[json] = []
+        rows.append({"scope": {"name": Kind, "area": area(self.squares[0])}, "items": items})
+        out["price"] = {"cents": cents(Amount(3)), "currency": Currency}
+        out["rows"] = rows
+        out["columns"] = [{"name": col.name} for col in self.columns()]
+        return out
+    }
+
+    func columns(self) -> list[Column] {
+        return [Column("id"), Column("title")]
+    }
+}
+
+func run(db: Sql) -> int {
+    return db.exec("SELECT 1")
+}
+
+func inTransaction() -> int {
+    tx: SqlTx = Tx()
+    return run(tx)
+}
+
+func names(page: Page) -> list[str] {
+    return ui.columnNames(page.columns())
+}
+
+func optionalLabel(on: bool) -> optional[str] {
+    wrap: optional[str] = "on" if on else None
+    return wrap
+}
+
+func badge(on: bool) -> html {
+    return <><span title="${'on' if on else None}">${Kind}</span></>
+}
+
+func register(handler: func(int) | (func(int) -> str)) -> int {
+    callbacks: list[func(int) | (func(int) -> str)] = [handler]
+    return len(callbacks)
+}
+
+func forward(handler: func(int) | (func(int) -> str)) -> int {
+    return register(handler)
+}
+
+func nextLine(r: Reader) -> Result[str] {
+    return r.next()
+}
+
+func boxSize(b: Box[int]) -> int {
+    return len(b.items)
+}
+
+go! {
+    func lamAllPositive(values []int, self bool) bool {
+        for _, v := range values {
+            if v <= 0 {
+                return false
+            }
+        }
+        return self
+    }
+}

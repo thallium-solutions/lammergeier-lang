@@ -288,7 +288,7 @@ class DateTime {
         #- Convert between arbitrary Go layouts without discarding parse errors. -#
         parsed: Result[DateTime] = DateTime.parse(fromLayout, value, location)
         if not parsed.ok() {
-            return parsed
+            return Result.Err(parsed.error)
         }
         dateTime: DateTime = parsed.unwrap()
         return Result.Ok(dateTime.format(toLayout))

@@ -934,11 +934,18 @@ class DefinitionVisitorMixin:
                 seen.add(go_method)
                 if is_async:
                     return_type = self._async_handle_go_type(return_type)
+                # A covariant override somewhere below: dispatch through an
+                # adapter every overriding class defines (``_lamOv_...``).
+                adapter = (
+                    f"_lamOv_{self._go_class_name(def_class)}_{go_method}"
+                    if self._hier_covariant_method(def_class, name) else ""
+                )
                 specs.append((
                     go_method,
                     self._typed_params_to_go(params_node, skip_self=True),
                     ", ".join(self._param_forward_names(params_node)),
                     return_type,
+                    adapter,
                 ))
         return specs
 
@@ -948,8 +955,8 @@ class DefinitionVisitorMixin:
         iface = f"lamVirtual{go_cls}"
         self._emit(f"type {iface}{tp_clause} interface {{")
         self.indent += 1
-        for go_method, params, _args, ret in specs:
-            self._emit(f"{go_method}({params}){' ' + ret if ret else ''}")
+        for go_method, params, _args, ret, adapter in specs:
+            self._emit(f"{adapter or go_method}({params}){' ' + ret if ret else ''}")
         self.indent -= 1
         self._emit("}")
         self._emit("")
@@ -957,14 +964,22 @@ class DefinitionVisitorMixin:
         self._emit(f"\tif iv, ok := v.({iface}{class_args}); ok {{ s._lamSelf = iv }}")
         self._emit("}")
         self._emit("")
-        for go_method, params, args, ret in specs:
+        for go_method, params, args, ret, adapter in specs:
+            if adapter:
+                # The class's own adapter, promoted to the descendants that
+                # do not override the method.
+                self._emit(
+                    f"func (s *{go_cls}{class_args}) {adapter}({params}){' ' + ret if ret else ''} "
+                    f"{{ {'return ' if ret else ''}s.{go_method}({args}) }}"
+                )
+                self._emit("")
             self._emit(f"func (_lamRecv *{go_cls}{class_args}) _lamVirt_{go_method}({params}){' ' + ret if ret else ''} {{")
             self.indent += 1
             if ret:
-                self._emit(f"if _lamRecv._lamSelf != nil {{ return _lamRecv._lamSelf.{go_method}({args}) }}")
+                self._emit(f"if _lamRecv._lamSelf != nil {{ return _lamRecv._lamSelf.{adapter or go_method}({args}) }}")
                 self._emit(f"return _lamRecv.{go_method}({args})")
             else:
-                self._emit(f"if _lamRecv._lamSelf != nil {{ _lamRecv._lamSelf.{go_method}({args}); return }}")
+                self._emit(f"if _lamRecv._lamSelf != nil {{ _lamRecv._lamSelf.{adapter or go_method}({args}); return }}")
                 self._emit(f"_lamRecv.{go_method}({args})")
             self.indent -= 1
             self._emit("}")

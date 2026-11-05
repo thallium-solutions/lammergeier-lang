@@ -1,0 +1,33 @@
+# expect-error: argument `tx` to `finish` has type `Sql`, expected `SqlTx`
+# expect-error: argument `r` to `read` has type `Writer`, expected `Reader`
+# An interface lacking a method of another (or declaring it with another
+# signature) is not that interface.
+
+interface Sql {
+    func exec(query: str) -> int
+}
+
+interface SqlTx {
+    func exec(query: str) -> int
+    func commit() -> bool
+}
+
+interface Reader {
+    func read(n: int) -> str
+}
+
+interface Writer {
+    func read(n: str) -> str
+}
+
+func finish(tx: SqlTx) -> bool {
+    return tx.commit()
+}
+
+func read(r: Reader) -> str {
+    return r.read(1)
+}
+
+func main(db: Sql, w: Writer) {
+    print(finish(db), read(w))
+}

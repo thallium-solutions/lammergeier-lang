@@ -12,6 +12,15 @@ browser does) and must hold only allowed elements and attributes, no
 comments / declarations / processing instructions, no event handlers, and
 URL attributes whose scheme (read as browsers read it) is allowed.
 Sanitizing an output again must not change it.
+
+A third policy, ``rich`` with ``allowFrames(HtmlPolicy.videoHosts())``, runs
+on the same inputs plus frame-focused ones (``iframe`` / ``frame`` in mixed
+case with look-alike hosts, userinfo, ports, downgrades, encoded schemes,
+``srcdoc``, ``sandbox`` / ``allow`` / ``referrerpolicy`` values, nesting in
+``svg`` / ``math`` / other frames): every ``iframe`` left must load an
+``https`` URL of a listed host or a subdomain of one, carry only the fixed
+attributes with the forced ``sandbox``, safe ``allow`` features and
+referrer policy, and have no content.
 """
 
 from __future__ import annotations
@@ -40,12 +49,14 @@ func main() {
     doc: json = Json.decode(Os.readStdin().unwrap()).unwrap()
     basic: HtmlPolicy = HtmlPolicy.basic()
     rich: HtmlPolicy = HtmlPolicy.rich().allowStyles(["color", "text-align"]).allowDataImages()
+    frames: HtmlPolicy = HtmlPolicy.rich().allowFrames(HtmlPolicy.videoHosts())
     rows: list[list[str]] = []
     for i in range(len(doc)) {
         text: str = doc[i]
         b: str = str(Html.sanitize(text, basic))
         r: str = str(Html.sanitize(text, rich))
-        rows.append([b, str(Html.sanitize(b, basic)), r, str(Html.sanitize(r, rich))])
+        f: str = str(Html.sanitize(text, frames))
+        rows.append([b, str(Html.sanitize(b, basic)), r, str(Html.sanitize(r, rich)), f, str(Html.sanitize(f, frames))])
     }
     print(Json.encode(Json.fromValue(rows).unwrap()).unwrap())
 }
@@ -69,6 +80,21 @@ RICH_ATTRS = {
     "th": {"colspan", "rowspan", "scope"}, "td": {"colspan", "rowspan"},
     "details": {"open"},
 }
+FRAME_TAGS = RICH_TAGS | {"iframe"}
+FRAME_ATTRS = dict(RICH_ATTRS)
+FRAME_ATTRS["*"] = {"class", "title", "lang", "dir"}
+FRAME_ATTRS["iframe"] = {
+    "src", "width", "height", "title", "allow", "allowfullscreen", "loading", "referrerpolicy", "sandbox",
+}
+FRAME_SANDBOX = "allow-scripts allow-same-origin allow-presentation allow-popups"
+FRAME_SRC = re.compile(
+    r"^https://(?:[a-z0-9-]+\.)*(?:www\.youtube\.com|www\.youtube-nocookie\.com|player\.vimeo\.com)(?:[/?#]|$)"
+)
+FRAME_FEATURES = {
+    "accelerometer", "autoplay", "clipboard-write", "encrypted-media", "gyroscope", "picture-in-picture",
+    "fullscreen",
+}
+FRAME_REFERRERS = {"no-referrer", "origin", "same-origin", "strict-origin", "strict-origin-when-cross-origin"}
 URL_ATTRS = {"href", "src", "cite", "action", "formaction", "poster", "background", "xlink:href"}
 SCHEMES = {"http", "https", "mailto"}
 DATA_IMAGE = re.compile(r"^data:image/(png|gif|jpeg|jpg|webp|avif);base64,[A-Za-z0-9+/=]*$", re.I)
@@ -98,6 +124,31 @@ STYLES = [
     "color: red; position: fixed", "x:y;color:blue", "text-align:center", "color:red/*x*/",
 ]
 TARGETS = ["_blank", "_self", "other", "_top", " _BLANK "]
+FRAME_ELEMENTS = ["iframe", "IFRAME", "IfRaMe", "frame", "svg", "math", "p", "object", "embed"]
+FRAME_ATTR_NAMES = [
+    "src", "SRC", "srcdoc", "sandbox", "allow", "allowfullscreen", "referrerpolicy", "loading", "name",
+    "width", "height", "title", "onload", "style", "csp", "credentialless",
+]
+FRAME_URLS = [
+    "https://www.youtube.com/embed/x", "HTTPS://WWW.YOUTUBE.COM:443/embed/y", "https://player.vimeo.com/video/1",
+    "https://www.youtube-nocookie.com/embed/z?a=1&b=2", "https://sub.player.vimeo.com/v",
+    "https://www.youtube.com.evil.com/x", "https://evil.com/?www.youtube.com", "https://evil.com#www.youtube.com",
+    "https://www.youtube.com@evil.com/", "https://u:p@www.youtube.com/", "https://youtube.com/embed/x",
+    "https://evilwww.youtube.com/", "http://www.youtube.com/embed/x", "//www.youtube.com/embed/x",
+    "/embed/x", "ht\ttps://www.youtube.com/embed/x", "ht&#9;tps://www.youtube.com/", "https://www.youtube.com:8080/",
+    "https://www.y\u043eutube.com/", "https://www.youtube.com%2eevil.com/", "https://evil.com\\@www.youtube.com/",
+    "https:///evil.com/", "https://[::1]/", "https://127.0.0.1/", "javascript:alert(1)//www.youtube.com",
+    "&#106;avascript:alert(1)", "data:text/html,<script>alert(1)</script>", " https://www.youtube.com/embed/x ",
+    "https://www.youtube.com./x", "https://www.youtube.com:0443/embed/x", "https://www.youtube.com:99999/",
+]
+FRAME_VALUES = {
+    "sandbox": ["allow-top-navigation allow-forms", "", "allow-scripts", "allow-popups-to-escape-sandbox"],
+    "allow": ["autoplay; camera; microphone", "fullscreen *; payment", "geolocation", "AUTOPLAY; autoplay"],
+    "referrerpolicy": ["unsafe-url", "no-referrer", "ORIGIN", "no-referrer-when-downgrade", "x"],
+    "loading": ["lazy", "EAGER", "auto"],
+    "width": ["560", "100%", "1e9", "-1", "\"><script>"],
+    "height": ["315", "0", "abc"],
+}
 FRAGMENTS = [
     "<!--", "-->", "<![CDATA[", "]]>", "</", "<", ">", "&lt;", "&#60;", "\"", "'", "=", "/", "text",
     "\u2028", "<!DOCTYPE html>", "<?xml version='1.0'?>", "&amp;", "&", "</script>", "</style>",
@@ -147,13 +198,67 @@ def _markup(rng: random.Random) -> str:
     return "".join(out)
 
 
+def _frame_attr(rng: random.Random) -> str:
+    name = rng.choice(FRAME_ATTR_NAMES)
+    lower = name.lower()
+    if lower == "src":
+        value = rng.choice(FRAME_URLS)
+    elif lower in FRAME_VALUES:
+        value = rng.choice(FRAME_VALUES[lower])
+    elif lower == "allowfullscreen" and rng.random() < 0.5:
+        return f" {name}"
+    else:
+        value = rng.choice(["<script>alert(1)</script>", "alert(1)", "x", "javascript:alert(1)"])
+    quote = rng.choice(["\"", "'", "\""])
+    return f" {name}={quote}{value}{quote}"
+
+
+def _frame_markup(rng: random.Random) -> str:
+    out = []
+    for _ in range(rng.randint(1, 6)):
+        roll = rng.random()
+        if roll < 0.55:
+            tag = rng.choice(FRAME_ELEMENTS)
+            attrs = "".join(_frame_attr(rng) for _ in range(rng.randint(0, 5)))
+            if rng.random() < 0.5:
+                attrs = f" src=\"{rng.choice(FRAME_URLS)}\"" + attrs
+            out.append(f"<{tag}{attrs}{rng.choice(['>', '>', '/>', ''])}")
+        elif roll < 0.8:
+            out.append(f"</{rng.choice(FRAME_ELEMENTS)}>")
+        else:
+            out.append(rng.choice(FRAGMENTS + ["fallback", "<b>x</b>"]))
+    return "".join(out)
+
+
 class _Checker(HTMLParser):
     def __init__(self, tags: set, attrs: dict, rich: bool) -> None:
         super().__init__(convert_charrefs=True)
         self.tags, self.attrs, self.rich = tags, attrs, rich
         self.problems: list[str] = []
+        self.in_frame = False
+
+    def _check_frame(self, attrs: list) -> None:
+        found = dict(attrs)
+        if len(found) != len(attrs):
+            self.problems.append("duplicated iframe attribute")
+        if found.get("sandbox") != FRAME_SANDBOX:
+            self.problems.append(f"iframe sandbox={found.get('sandbox')!r}")
+        if not FRAME_SRC.match(found.get("src") or ""):
+            self.problems.append(f"iframe src={found.get('src')!r}")
+        if found.get("referrerpolicy") not in FRAME_REFERRERS:
+            self.problems.append(f"iframe referrerpolicy={found.get('referrerpolicy')!r}")
+        if "allow" in found and any(f.strip() not in FRAME_FEATURES for f in (found["allow"] or "").split(";")):
+            self.problems.append(f"iframe allow={found['allow']!r}")
+        for size in ("width", "height"):
+            if size in found and not re.match(r"^[0-9]{1,5}%?$", found[size] or ""):
+                self.problems.append(f"iframe {size}={found[size]!r}")
 
     def _check(self, tag: str, attrs: list) -> None:
+        if self.in_frame:
+            self.problems.append(f"<{tag}> inside an iframe")
+        if tag == "iframe" and tag in self.tags:
+            self._check_frame(attrs)
+            self.in_frame = True
         if tag not in self.tags:
             self.problems.append(f"element <{tag}>")
             return
@@ -190,7 +295,13 @@ class _Checker(HTMLParser):
     def handle_startendtag(self, tag, attrs):
         self._check(tag, attrs)
 
+    def handle_data(self, data):
+        if self.in_frame:
+            self.problems.append("content inside an iframe")
+
     def handle_endtag(self, tag):
+        if tag == "iframe":
+            self.in_frame = False
         if tag not in self.tags:
             self.problems.append(f"end tag </{tag}>")
 
@@ -241,13 +352,18 @@ def _run(inputs: list[str]) -> list[list[str]]:
 def test_random_markup_comes_out_clean_and_stable() -> None:
     rng = random.Random(SEED)
     inputs = [_markup(rng) for _ in range(CASES)]
+    frame_rng = random.Random(SEED + 1)
+    inputs += [_frame_markup(frame_rng) for _ in range(CASES)]
     outputs = _run(inputs)
     assert len(outputs) == len(inputs)
     failures = []
-    for source, (basic, basic_again, rich, rich_again) in zip(inputs, outputs):
+    kept_frames = 0
+    for source, (basic, basic_again, rich, rich_again, framed, framed_again) in zip(inputs, outputs):
+        kept_frames += framed.count("<iframe")
         for label, out, again, tags, attrs, is_rich in (
             ("basic", basic, basic_again, BASIC_TAGS, BASIC_ATTRS, False),
             ("rich", rich, rich_again, RICH_TAGS, RICH_ATTRS, True),
+            ("frames", framed, framed_again, FRAME_TAGS, FRAME_ATTRS, False),
         ):
             problems = _problems(out, tags, attrs, is_rich)
             if out != again:
@@ -255,6 +371,8 @@ def test_random_markup_comes_out_clean_and_stable() -> None:
             if problems:
                 failures.append(f"{label} {source!r} -> {out!r}: {', '.join(problems)}")
     assert not failures, f"{len(failures)} unsafe outputs, first: " + "\n".join(failures[:5])
+    # The frame inputs must exercise the kept path too, not only refusals.
+    assert kept_frames >= 50, f"only {kept_frames} frames kept"
 
 
 def main() -> int:
@@ -267,7 +385,7 @@ def main() -> int:
         except AssertionError as exc:
             failed += 1
             print(f"  FAIL  {test.__name__}: {exc}")
-    print(f"\nhtml sanitize fuzz: {len(tests) - failed} passed, {failed} failed, {len(tests)} total ({CASES} inputs)")
+    print(f"\nhtml sanitize fuzz: {len(tests) - failed} passed, {failed} failed, {len(tests)} total ({2 * CASES} inputs)")
     return 1 if failed else 0
 
 

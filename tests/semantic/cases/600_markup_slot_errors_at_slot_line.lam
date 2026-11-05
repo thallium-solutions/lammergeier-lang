@@ -1,0 +1,49 @@
+# expect-error: line 25: error[markup]: an attribute value cannot be `html`
+# expect-error: line 31: error[type]: cannot add `int` and `str`
+# expect-error: line 34: error[undefined]: undefined name `missingCount`
+# expect-error: line 38: error[undefined]: undefined name `afterLiteral`
+# expect-error: line 43: error[type]: cannot add `int` and `str`
+# expect-error: line 46: error[undefined]: undefined name `inFstring`
+# A multi-line markup literal used to report every error of its slots at
+# the literal's first line (`return <>`, line 18 here): the slots, a slot of
+# a literal nested in a slot (the luxyt product row), and code after the
+# literal are reported at their own lines, as are the slots of a
+# multi-line f-string.
+
+func postForm(action: str, body: html, cls: str = "") -> html {
+    return <><form action="${action}" class="${cls}">${body}</form></>
+}
+
+func row(label: html, labelText: str, n: int) -> html {
+    return <>
+        <tr>
+            <td>${n}</td>
+            <td>
+                ${postForm("/x", <>
+                    <input type="hidden" name="n" value="${n}">
+                    <button type="submit"
+                        title="${label}">${label}</button>
+                </>, cls = "flex")}
+            </td>
+            <td title="${labelText}">
+                ${labelText}
+            </td>
+            <td>${n + "items"}</td>
+            <td>
+                ${
+                    missingCount
+                }
+            </td>
+        </tr>
+    </> if afterLiteral else <></>
+}
+
+func main() {
+    text: str = f"""first
+second {1 + "x"} and
+third"""
+    other: str = f"""a {text}
+b {inFstring}"""
+    print(text + other)
+    print(str(row(<>x</>, "x", 1)))
+}

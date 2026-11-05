@@ -1,0 +1,14 @@
+# expect-pass
+# Helper of 569_imported_module_full_check.lam, re-exported by kit/__init__.lam.
+
+const Currency: str = "EUR"
+
+class Amount {
+    func init(self, value: int) {
+        self.value: int = value
+    }
+}
+
+func cents(amount: Amount) -> int {
+    return amount.value * 100
+}

@@ -1129,10 +1129,32 @@ class HelpersMixin:
     def _note_result_payload(self, name: str, type_node) -> None:
         """Record (or clear) the ``Result[T]`` payload of a local binding."""
         payload = self._result_payload_go_type(type_node)
+        elem_payload = self._elem_result_payload_go_type(type_node)
+        if elem_payload and elem_payload != "interface{}":
+            self._var_result_payloads[f"{name}[]"] = elem_payload
+        else:
+            self._var_result_payloads.pop(f"{name}[]", None)
         if payload and payload != "interface{}":
             self._var_result_payloads[name] = payload
         else:
             self._var_result_payloads.pop(name, None)
+
+    def _elem_result_payload_go_type(self, type_node) -> str:
+        """Payload Go type of the ``Result`` elements of a ``generator`` /
+        ``iterator`` / ``list`` type (``generator[Result[int]]`` -> ``int``).
+        Recorded under ``"<name>[]"`` next to the ``Result`` payloads, so the
+        loop variable of ``for r in results()`` unwraps to an ``int``."""
+        if not isinstance(type_node, Tree):
+            return ""
+        if type_node.data in {"single_return_type", "type_expr", "type_union"}:
+            children = [child for child in type_node.children if isinstance(child, Tree)]
+            return self._elem_result_payload_go_type(children[0]) if len(children) == 1 else ""
+        if type_node.data == "type_generic" and type_node.children:
+            base = self._dotted_name_to_str(type_node.children[0])
+            args = [child for child in type_node.children[1:] if isinstance(child, Tree)]
+            if base in {"generator", "iterator", "list"} and len(args) == 1:
+                return self._result_payload_go_type(args[0])
+        return ""
 
     def _result_payload_go_type(self, type_node) -> str:
         if not isinstance(type_node, Tree):
@@ -1833,13 +1855,23 @@ class HelpersMixin:
                 if isinstance(entry, str):
                     result.append(entry)
                 else:
-                    target_type = self._param_go_type_at(
+                    target_type = self._call_subst_go_type(self._param_go_type_at(
                         self._func_param_go_types.get(func_key, []), i,
-                    )
+                    ))
                     result.append(self._typed_value_to_go(entry, target_type))
             else:
                 raise RuntimeError(self._missing_required_arg_message(func_key, i))
         return result
+
+    def _call_subst_go_type(self, go_type: str) -> str:
+        """A parameter's Go type with the type parameters bound at this call
+        (``_call_type_subst``): a default ``[]`` of ``xs: list[T]`` lowers
+        to ``[]int{}``, never ``[]T{}`` outside the generic function."""
+        subst = getattr(self, "_call_type_subst", None)
+        if not subst or not go_type:
+            return go_type
+        pattern = _re.compile(r"\b(" + "|".join(_re.escape(k) for k in subst) + r")\b")
+        return pattern.sub(lambda m: subst[m.group(1)], go_type)
 
     def _missing_required_arg_message(self, func_key: str, idx: int) -> str:
         names = self._func_param_names.get(func_key, [])
@@ -1889,6 +1921,9 @@ class HelpersMixin:
         inner = node
         if isinstance(node, Tree) and node.data == "argvalue" and node.children:
             inner = node.children[0]
+        adapter = self._function_value_adapter(inner, go_type)
+        if adapter:
+            return adapter
         if isinstance(inner, Tree) and inner.data == "starargs":
             parts = [
                 self._transpile_argvalue_with_type(c, go_type)
@@ -2063,6 +2098,69 @@ class HelpersMixin:
             return ""
         return result
 
+    @staticmethod
+    def _split_go_func_type(go_type: str):
+        """``(["*Auth", "int"], "bool")`` for ``func(*Auth, int) bool``."""
+        if not go_type.startswith("func("):
+            return None
+        depth = 0
+        params: List[str] = []
+        current = ""
+        for i in range(4, len(go_type)):
+            ch = go_type[i]
+            if ch in "([{":
+                depth += 1
+                if depth == 1 and ch == "(":
+                    continue
+            elif ch in ")]}":
+                depth -= 1
+                if depth == 0:
+                    if current.strip():
+                        params.append(current.strip())
+                    return params, go_type[i + 1:].strip()
+            elif ch == "," and depth == 1:
+                params.append(current.strip())
+                current = ""
+                continue
+            current += ch
+        return None
+
+    def _function_value_adapter(self, node, go_type: str) -> str:
+        """A module function passed by name to a parameter of function type
+        ``go_type`` that has fewer parameters (the rest have defaults) or no
+        result: Go function values must match exactly, so the argument is a
+        closure calling the function with the defaults filled
+        (``func(a *Auth) bool { return AcceptWithDefault(a, false) }``).
+        ``""`` when the function fits as is."""
+        if not go_type.startswith("func(") or not (isinstance(node, Tree) and node.data == "var" and node.children):
+            return ""
+        name = self._get_name(node.children[0])
+        if (
+            not name or name in self.declared_vars or name not in self._user_functions
+            or len(self._overload_variants.get(name, [])) > 1
+            or self._func_generic_params.get(name) or name in self._variadic_functions
+        ):
+            return ""
+        split = self._split_go_func_type(self._call_subst_go_type(go_type))
+        own_types = self._func_param_go_types.get(name)
+        if split is None or own_types is None:
+            return ""
+        params, ret = split
+        own_ret = self._func_return_go_types.get(name, "")
+        if len(params) == len(own_types) and (ret or not own_ret):
+            return ""
+        if len(params) > len(own_types):
+            return ""
+        names = [f"_lamArg{i}" for i in range(len(params))]
+        args = self._fill_default_args(name, list(names))
+        if len(args) != len(own_types):
+            return ""
+        call = f"{self._unshadowed_function(self._go_user_function_name(name), name)}({', '.join(args)})"
+        signature = ", ".join(f"{n} {t}" for n, t in zip(names, params))
+        if ret:
+            return f"func({signature}) {ret} {{ return {call} }}"
+        return f"func({signature}) {{ {call} }}"
+
     def _fill_default_args(self, func_key: str, args: list) -> list:
         """Fill in default argument values for calls with fewer args than params.
 
@@ -2090,9 +2188,9 @@ class HelpersMixin:
                 if isinstance(entry, str):
                     result.append(entry)
                 else:
-                    target_type = self._param_go_type_at(
+                    target_type = self._call_subst_go_type(self._param_go_type_at(
                         self._func_param_go_types.get(func_key, []), i,
-                    )
+                    ))
                     result.append(self._typed_value_to_go(entry, target_type))
             else:
                 raise RuntimeError(self._missing_required_arg_message(func_key, i))

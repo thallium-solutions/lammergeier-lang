@@ -1,0 +1,29 @@
+# expect-pass
+# 4.3.0: `base.init()` in a subclass whose base declares no `init` (only
+# field defaults) calls the implicit constructor; it was reported as
+# "unknown member `base.init`" (this also made such a base imported from
+# another module fail the full check of that module).
+
+class Base {
+    key: str = ""
+    columns: list[str] = []
+}
+
+class Other(Base) {
+    func init(self) {
+        base.init()
+        self.key = "other"
+    }
+}
+
+class Deeper(Other) {
+    func init(self) {
+        base.init()
+        self.columns = ["a"]
+    }
+}
+
+func main() {
+    d: Deeper = Deeper()
+    print(Other().key, d.key, d.columns)
+}

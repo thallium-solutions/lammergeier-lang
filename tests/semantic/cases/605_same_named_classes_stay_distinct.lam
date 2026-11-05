@@ -1,0 +1,20 @@
+# expect-pass
+# expect-no-warning: semantic check failed
+# expect-no-warning: unknown member
+# expect-no-warning: expected `int`
+# 4.3.0 regression (luxyt): `problems.lam` imports a package's `Problem` as
+# `HttpProblem` and defines its own `Problem`; `routes.lam` imports the
+# local one and, before or after it, modules that know the package's
+# classes. The checker collected those classes under their bare names, so
+# `Problem` in `routes.lam` became the package's ("unknown member
+# `Problem.notFound`", "argument `status` to `Problem` has type `str`,
+# expected `int`"). An alias binds only the alias, and a class the module
+# does not name keeps its own identity.
+
+from shadowed_class_package.routes import run, statusProblem
+from shadowed_class_package.problems import Problem
+
+func main() {
+    p: Problem = statusProblem(404)
+    print(p.code + " " + run())
+}

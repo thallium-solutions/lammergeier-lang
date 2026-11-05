@@ -1,0 +1,28 @@
+# expect-pass
+# 4.3.0: a dict literal appended to a `list[json]` was typed `dict[str,
+# any]` and rejected ("list append expects `json`"), as was a list
+# comprehension of dict literals passed where `json` is expected: a literal
+# is JSON when each of its values is (as for `x: json = {...}`).
+
+func send(payload: json) {
+    print(payload)
+}
+
+class Row {
+    func init(self, id: str, tags: list[str]) {
+        self.id: str = id
+        self.tags: list[str] = tags
+    }
+}
+
+func main() {
+    names: dict[str, str] = {"a": "alpha"}
+    records: dict[str, list[json]] = {"a": [1, "x"]}
+    scopes: list[json] = []
+    for key in names {
+        scopes.append({"scope": {"name": names[key]}, "records": records[key]})
+    }
+    rows: list[Row] = [Row("r1", ["x"]), Row("r2", [])]
+    send({"scopes": scopes, "rows": [{"id": r.id, "tags": r.tags, "n": len(r.tags)} for r in rows]})
+    send([{"id": r.id} for r in rows])
+}

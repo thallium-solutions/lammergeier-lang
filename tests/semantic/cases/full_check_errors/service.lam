@@ -1,0 +1,8 @@
+# expect-error: deep.lam
+# Imported by 571_imported_module_transitive_error.lam: fine itself, its
+# own import has the error.
+from .deep import depth
+
+func describe() -> str {
+    return f"depth {depth()}"
+}

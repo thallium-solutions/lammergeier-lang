@@ -32,7 +32,13 @@
 #     properties, and then keep only those properties with plain values
 #     (no ``url(``, ``expression``, escapes, quotes or comments);
 #   * a link with a ``target`` other than ``_self`` / ``_parent`` /
-#     ``_top`` gets ``rel="noopener noreferrer"``.
+#     ``_top`` gets ``rel="noopener noreferrer"``;
+#   * ``iframe`` is kept only by a policy built with ``allowFrames(hosts)``
+#     (trusted embeds, ``HtmlPolicy.videoHosts()`` for YouTube and Vimeo):
+#     its ``src`` must be an ``https://`` URL of a listed host or of a
+#     subdomain of one, read strictly (no userinfo, other port, white space,
+#     backslash, non-ASCII or IP host), and the frame is rebuilt with a
+#     fixed attribute set and a forced ``sandbox`` (see ``allowFrames``).
 #
 # The result is serialized from the new tree, so every text and attribute
 # value is escaped and the only markup is the allowed elements: what the
@@ -56,6 +62,33 @@ go! {
         dataImages bool
         styles     map[string]bool
         noopener   bool
+        frames     []lamSanFrameHost
+    }
+
+    // A host frames may load from (allowFrames): the host itself and its
+    // subdomains, on the default https port or on the listed one.
+    type lamSanFrameHost struct {
+        host string
+        port string
+    }
+
+    // Every kept frame gets this sandbox, whatever the markup says: the
+    // player runs its scripts with its own origin (cookies, storage),
+    // goes full screen and opens links in new windows, but cannot
+    // navigate the page, submit forms, open modal dialogs or download.
+    const lamSanFrameSandbox = "allow-scripts allow-same-origin allow-presentation allow-popups"
+
+    // Permissions-policy features a kept frame may ask for in "allow".
+    var lamSanFrameFeatures = map[string]bool{
+        "accelerometer": true, "autoplay": true, "clipboard-write": true, "encrypted-media": true,
+        "gyroscope": true, "picture-in-picture": true, "fullscreen": true,
+    }
+
+    // Referrer policies a kept frame may choose; the default is
+    // strict-origin-when-cross-origin (unsafe-url and the like are refused).
+    var lamSanFrameReferrers = map[string]bool{
+        "no-referrer": true, "origin": true, "same-origin": true, "strict-origin": true,
+        "strict-origin-when-cross-origin": true,
     }
 
     // Removed with their content whatever the policy says: script and
@@ -90,10 +123,15 @@ go! {
         return lower, true
     }
 
-    func lamSanNewPolicy(tags []string, attrs map[string][]string, schemes []string, relative bool, dataImages bool, styles []string, noopener bool) *lamSanPolicy {
+    func lamSanNewPolicy(tags []string, attrs map[string][]string, schemes []string, relative bool, dataImages bool, styles []string, noopener bool, frameHosts []string) *lamSanPolicy {
         p := &lamSanPolicy{
             tags: map[string]bool{}, attrs: map[string]map[string]bool{}, schemes: map[string]bool{},
             relative: relative, dataImages: dataImages, styles: map[string]bool{}, noopener: noopener,
+        }
+        for _, entry := range frameHosts {
+            if host, port, ok := lamSanHostPort(strings.TrimSpace(entry)); ok {
+                p.frames = append(p.frames, lamSanFrameHost{host: host, port: port})
+            }
         }
         for _, tag := range tags {
             if name, ok := lamSanName(tag, ""); ok {
@@ -305,6 +343,166 @@ go! {
         return out
     }
 
+    // lamSanHostPort reads "host" or "host:port" as a plain ASCII DNS name
+    // (lowercased; labels of letters, digits and inner hyphens; the last
+    // label starts with a letter, so IP addresses are refused) and a port
+    // number, "" for the default 443.
+    func lamSanHostPort(authority string) (string, string, bool) {
+        host, port := authority, ""
+        if i := strings.LastIndexByte(authority, ':'); i >= 0 {
+            host, port = authority[:i], strings.TrimLeft(authority[i+1:], "0")
+            if port == "" || len(port) > 5 {
+                return "", "", false
+            }
+            number := 0
+            for i := 0; i < len(port); i++ {
+                if port[i] < '0' || port[i] > '9' {
+                    return "", "", false
+                }
+                number = number*10 + int(port[i]-'0')
+            }
+            if number > 65535 {
+                return "", "", false
+            }
+            if port == "443" {
+                port = ""
+            }
+        }
+        host = strings.ToLower(host)
+        if host == "" || len(host) > 253 {
+            return "", "", false
+        }
+        labels := strings.Split(host, ".")
+        for _, label := range labels {
+            if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+                return "", "", false
+            }
+            for i := 0; i < len(label); i++ {
+                c := label[i]
+                if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+                    return "", "", false
+                }
+            }
+        }
+        if last := labels[len(labels)-1]; last[0] < 'a' || last[0] > 'z' {
+            return "", "", false
+        }
+        return host, port, true
+    }
+
+    // lamSanFrameSrc accepts a frame URL only as "https://host[:port]/..."
+    // with a host listed in the policy (or a subdomain of one) and gives it
+    // back with the scheme and host lowercased and the default port
+    // dropped. Entities are already decoded; C0 controls and spaces at the
+    // ends are ignored as browsers do, but anywhere else (also tabs and
+    // line breaks, which browsers drop) they refuse the URL, as do
+    // backslashes (read as "/" by browsers), non-ASCII characters (IDN
+    // look-alikes), userinfo ("@"), percent-encoded hosts and IP literals.
+    func lamSanFrameSrc(value string, hosts []lamSanFrameHost) (string, bool) {
+        v := strings.TrimFunc(value, func(r rune) bool { return r <= 0x20 })
+        for i := 0; i < len(v); i++ {
+            if v[i] <= 0x20 || v[i] >= 0x7f || v[i] == '\\' {
+                return "", false
+            }
+        }
+        if len(v) < 8 || !strings.EqualFold(v[:8], "https://") {
+            return "", false
+        }
+        authority, tail := v[8:], ""
+        if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+            authority, tail = authority[:end], authority[end:]
+        }
+        if strings.ContainsAny(authority, "@%[]") {
+            return "", false
+        }
+        host, port, ok := lamSanHostPort(authority)
+        if !ok {
+            return "", false
+        }
+        for _, allowed := range hosts {
+            if port == allowed.port && (host == allowed.host || strings.HasSuffix(host, "."+allowed.host)) {
+                if port != "" {
+                    host += ":" + port
+                }
+                return "https://" + host + tail, true
+            }
+        }
+        return "", false
+    }
+
+    func lamSanFrameSize(value string) bool {
+        digits := strings.TrimSuffix(value, "%")
+        if digits == "" || len(digits) > 5 {
+            return false
+        }
+        for i := 0; i < len(digits); i++ {
+            if digits[i] < '0' || digits[i] > '9' {
+                return false
+            }
+        }
+        return true
+    }
+
+    // lamSanFrame rebuilds an iframe kept by allowFrames, nil when its src
+    // is not allowed. Only src, width, height, title, allow (known
+    // features, without origin lists), allowfullscreen, loading and
+    // referrerpolicy are kept, in that order; sandbox is always replaced
+    // by lamSanFrameSandbox and the fallback content is dropped.
+    func lamSanFrame(n *lamMNode, p *lamSanPolicy) *lamMNode {
+        values := map[string]string{}
+        for _, a := range n.attrs {
+            name := strings.ToLower(a.name)
+            if _, seen := values[name]; !seen {
+                values[name] = a.value
+            }
+        }
+        rawSrc, hasSrc := values["src"]
+        src, ok := lamSanFrameSrc(rawSrc, p.frames)
+        if !hasSrc || !ok {
+            return nil
+        }
+        attrs := []lamMAttr{{name: "src", value: src, hasValue: true}}
+        for _, size := range []string{"width", "height"} {
+            if value, has := values[size]; has && lamSanFrameSize(strings.TrimSpace(value)) {
+                attrs = append(attrs, lamMAttr{name: size, value: strings.TrimSpace(value), hasValue: true})
+            }
+        }
+        if title := values["title"]; title != "" {
+            attrs = append(attrs, lamMAttr{name: "title", value: title, hasValue: true})
+        }
+        features := []string{}
+        for _, item := range strings.Split(values["allow"], ";") {
+            fields := strings.Fields(item)
+            if len(fields) == 0 {
+                continue
+            }
+            feature := strings.ToLower(fields[0])
+            duplicate := false
+            for _, f := range features {
+                duplicate = duplicate || f == feature
+            }
+            if lamSanFrameFeatures[feature] && !duplicate {
+                features = append(features, feature)
+            }
+        }
+        if len(features) > 0 {
+            attrs = append(attrs, lamMAttr{name: "allow", value: strings.Join(features, "; "), hasValue: true})
+        }
+        if _, has := values["allowfullscreen"]; has {
+            attrs = append(attrs, lamMAttr{name: "allowfullscreen"})
+        }
+        if loading := strings.ToLower(strings.TrimSpace(values["loading"])); loading == "lazy" || loading == "eager" {
+            attrs = append(attrs, lamMAttr{name: "loading", value: loading, hasValue: true})
+        }
+        referrer := strings.ToLower(strings.TrimSpace(values["referrerpolicy"]))
+        if !lamSanFrameReferrers[referrer] {
+            referrer = "strict-origin-when-cross-origin"
+        }
+        attrs = append(attrs, lamMAttr{name: "referrerpolicy", value: referrer, hasValue: true})
+        attrs = append(attrs, lamMAttr{name: "sandbox", value: lamSanFrameSandbox, hasValue: true})
+        return &lamMNode{kind: lamMElement, name: "iframe", attrs: attrs, children: []*lamMNode{}}
+    }
+
     func lamSanNodes(nodes []*lamMNode, p *lamSanPolicy, depth int) []*lamMNode {
         out := []*lamMNode{}
         for _, n := range nodes {
@@ -315,7 +513,12 @@ go! {
                 }
             case lamMElement:
                 name := strings.ToLower(n.name)
-                if lamSanDropWithContent[name] {
+                if name == "iframe" && len(p.frames) > 0 && depth < 256 {
+                    // Kept only as rebuilt by allowFrames; never its content.
+                    if frame := lamSanFrame(n, p); frame != nil {
+                        out = append(out, frame)
+                    }
+                } else if lamSanDropWithContent[name] {
                     // Removed with everything inside.
                 } else if !p.tags[name] || depth >= 256 {
                     out = append(out, lamSanNodes(n.children, p, depth+1)...)
@@ -366,6 +569,8 @@ class HtmlPolicy {
         #- Whether links opening another window get ``rel="noopener
            noreferrer"``. -#
         self.noopener: bool = true
+        #- Hosts ``iframe`` elements may load from (see ``allowFrames``). -#
+        self.frameHosts: list[str] = []
     }
 
     static func basic() -> HtmlPolicy {
@@ -468,6 +673,37 @@ class HtmlPolicy {
         }
         return self.allowAttributes("*", ["style"])
     }
+
+    func allowFrames(self, hosts: list[str]) -> HtmlPolicy {
+        #- Keeps ``iframe`` elements whose ``src`` is an ``https://`` URL of
+           one of ``hosts`` or of a subdomain of one (``"vimeo.com"`` also
+           allows ``player.vimeo.com``), for trusted embeds such as videos
+           in admin-authored content. A host is a plain ASCII name, with
+           ``:port`` to allow that port instead of 443; other entries are
+           ignored. A kept frame is rebuilt with ``src``, ``width``,
+           ``height``, ``title``, ``allow`` (only ``accelerometer``,
+           ``autoplay``, ``clipboard-write``, ``encrypted-media``,
+           ``gyroscope``, ``picture-in-picture``, ``fullscreen``),
+           ``allowfullscreen``, ``loading``, ``referrerpolicy`` (default
+           ``strict-origin-when-cross-origin``) and always ``sandbox="allow-
+           scripts allow-same-origin allow-presentation allow-popups"``; its
+           content is dropped. Never list the host serving your own pages:
+           ``allow-scripts`` with ``allow-same-origin`` lets a same-origin
+           frame remove its sandbox. -#
+        for host in hosts {
+            name: str = host.trim().toLower()
+            if name != "" and name not in self.frameHosts {
+                self.frameHosts.append(name)
+            }
+        }
+        return self
+    }
+
+    static func videoHosts() -> list[str] {
+        #- The embed hosts of YouTube (also its no-cookie domain) and Vimeo,
+           for ``allowFrames``. -#
+        return ["www.youtube.com", "www.youtube-nocookie.com", "player.vimeo.com"]
+    }
 }
 
 class Html {
@@ -517,9 +753,10 @@ class Html {
         dataImages: bool = policy.dataImages
         styles: list[str] = policy.styleProperties
         noopener: bool = policy.noopener
+        frameHosts: list[str] = policy.frameHosts
         out: html = <></>
         go! {
-            rules := lamSanNewPolicy(tags, attributes, schemes, relative, dataImages, styles, noopener)
+            rules := lamSanNewPolicy(tags, attributes, schemes, relative, dataImages, styles, noopener, frameHosts)
             out = LamHTML{lamMNewFrag(false, lamSanNodes(markup.frag().all(), rules, 0))}
         }
         return out

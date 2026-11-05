@@ -1,0 +1,42 @@
+# Regression (4.3.0): a method a subclass inherits (from a base of this
+# module or of another one) did not type the literal arguments of its calls
+# on a subclass value: `b.count(["x", "y"])` passed a Go `[]interface{}`
+# to a `[]string` parameter and failed in `go build`.
+#
+# expect: local 2 3 {a=1}
+# expect: imported 422 invalid body [app q: required, app r: required]
+
+from covariant_problem_provider import Problem
+
+class Counter {
+    func count(self, xs: list[str], extra: dict[str, int] = {}) -> int {
+        return len(xs) + len(extra)
+    }
+
+    func show(self, pairs: dict[str, int]) -> str {
+        return "{" + ",".join([f"{k}={v}" for k, v in pairs]) + "}"
+    }
+}
+
+class Sub(Counter) {
+    func init(self) {
+        self.n: int = 0
+    }
+}
+
+class Deeper(Sub) {
+}
+
+class AppProblem(Problem) {
+    func withError(self, field: str, message: str) -> AppProblem {
+        self.errors.append(f"app {field}: {message}")
+        return self
+    }
+}
+
+func main() {
+    d: Deeper = Deeper()
+    print(f"local {Sub().count(['x', 'y'])} {d.count(['z'], {'k': 1, 'j': 2})} {d.show({'a': 1})}")
+    p: AppProblem = AppProblem(422, "invalid body")
+    print(f"imported {p.required(['q', 'r']).describe()}")
+}

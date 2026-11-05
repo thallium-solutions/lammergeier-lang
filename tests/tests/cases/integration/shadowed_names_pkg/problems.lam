@@ -1,0 +1,34 @@
+# Helper of test_same_named_classes_modules.lam: imports the package's `Problem` as `HttpProblem` and
+# defines its own `Problem` (another constructor, statics, a generic class
+# of the same name as the package's).
+
+from .kit import Server, Problem as HttpProblem
+
+class Problem {
+    func init(self, code: str, message: str = "") {
+        self.code: str = code
+        self.message: str = message
+    }
+
+    static func notFound(what: str) -> Problem {
+        return Problem(what + "_not_found", "no " + what)
+    }
+
+    func http(self) -> HttpProblem {
+        return HttpProblem(404, self.code)
+    }
+}
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+}
+
+func send(server: Server, p: Problem) -> int {
+    return server.fail(p.http())
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

@@ -1,0 +1,56 @@
+# reversed(xs) (4.3.0; it was accepted by the checker but failed in
+# `go build` with "undefined: Reversed"): a reversed copy of a list, the
+# argument left unchanged; for a `str`, its characters last first as a
+# `list[str]`, like Python's iterator of characters (`"".join(reversed(s))`).
+# expect: [3 2 1] [1 2 3]
+# expect: 3
+# expect: 2
+# expect: 1
+# expect: olleh
+# expect: éd
+# expect: [c b a]
+# expect: [z y x]
+# expect: bob ada
+# expect: 0 []
+# expect: [4 9]
+# expect: [2.5 1.5]
+# expect: [[3 4] [1 2]]
+# expect: true
+# expect: 3 a
+
+class Person {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func names(people: list[Person]) -> list[str] {
+    return [p.name for p in reversed(people)]
+}
+
+func lastFirst(xs: list[str]) -> str {
+    return reversed(xs)[0]
+}
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    ys: list[int] = reversed(xs)
+    print(ys, xs)
+    for x in reversed(xs) {
+        print(x)
+    }
+    print("".join(reversed("hello")))
+    print("".join(reversed("dé")))
+    print(reversed("abc"))
+    letters = ["x", "y", "z"]
+    print(reversed(letters))
+    people: list[Person] = [Person("ada"), Person("bob")]
+    print(" ".join(names(people)))
+    empty: list[int] = []
+    print(len(reversed(empty)), reversed(empty))
+    print(reversed([n * n for n in [3, 2] if n > 0]))
+    print(reversed([1.5, 2.5]))
+    print(reversed([[1, 2], [3, 4]]))
+    print(reversed(reversed(xs)) == xs)
+    print(reversed(xs)[0], lastFirst(["b", "a"]))
+}

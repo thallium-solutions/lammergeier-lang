@@ -28,6 +28,12 @@ from typing import List, Optional, Tuple, Union
 #: characters), one per quote kind so the text can be restored as is.
 PLACEHOLDERS = {'"': "\ue000", "'": "\ue001"}
 
+#: Follows the ``\\n`` escape of each line break of a multi-line f-string
+#: collapsed onto one line before parsing (``_collapse_multiline_strings``),
+#: so the slots' source lines can be found again. :func:`split_fstring`
+#: drops it from the text and the slots; it never reaches the output.
+SOURCE_NEWLINE = "\ue00a"
+
 _PREFIX_LETTERS = set("rRbBuUfF")
 _OPEN = "([{"
 _CLOSE = ")]}"
@@ -296,8 +302,12 @@ def split_fstring(body: str, q: str) -> Optional[List[Part]]:
                 return None
             expr, spec, has_spec, end = scanned
             if text:
-                parts.append("".join(text))
+                parts.append("".join(text).replace(SOURCE_NEWLINE, ""))
                 text = []
+            # A line break inside a slot of a multi-line f-string is white
+            # space of the expression.
+            expr = expr.replace("\\n" + SOURCE_NEWLINE, " ").replace(SOURCE_NEWLINE, "")
+            spec = spec.replace(SOURCE_NEWLINE, "")
             parts.append(Slot(expr, spec, has_spec, i + 1, end))
             i = end + 1
             continue
@@ -308,8 +318,21 @@ def split_fstring(body: str, q: str) -> Optional[List[Part]]:
         text.append(ch)
         i += 1
     if text:
-        parts.append("".join(text))
+        parts.append("".join(text).replace(SOURCE_NEWLINE, ""))
     return parts
+
+
+def fstring_source_position(body: str, offset: int, line: int, column: int, prefix: int) -> tuple[int, int]:
+    """(line, column) in the source of ``offset`` in the body of an
+    f-string token starting at ``line`` / ``column``: line breaks are real
+    ones (a token spanning lines) or :data:`SOURCE_NEWLINE` marks (a
+    multi-line f-string collapsed before parsing)."""
+    before = body[:offset]
+    breaks = before.count("\n") + before.count(SOURCE_NEWLINE)
+    if not breaks:
+        return line, column + prefix + offset
+    last = max(before.rfind("\n"), before.rfind(SOURCE_NEWLINE))
+    return line + breaks, offset - last
 
 
 def parse_slot(prefix: str, expr: str):

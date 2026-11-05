@@ -1,0 +1,30 @@
+# expect-error: argument `total` to `invoice` has type `str`, expected `int`
+# expect-error: function `label` returns `int`, expected `str`
+# expect-error: `yield` in `ids` gives `str`, expected `int`
+# expect-error: argument `errors` to `summary` has type `list[str]`, expected `list[FieldError]`
+# expect-error: cannot assign `str` to `int` variable `count`
+# Imported by 570_imported_module_type_errors.lam (4.3.0: imported modules
+# get the full semantic check); these used to fail in `go build`.
+from .fields import FieldError
+
+func invoice(total: int) -> str {
+    return f"total {total}"
+}
+
+func label(n: int) -> str {
+    return n
+}
+
+func ids() -> generator[int] {
+    yield "a"
+}
+
+func summary(errors: list[FieldError]) -> int {
+    return len(errors)
+}
+
+func render() -> str {
+    keys: list[str] = ["a"]
+    count: int = "many"
+    return invoice("12") + str(summary(keys)) + str(count)
+}

@@ -166,6 +166,47 @@ def case_cache_hit_maps_lines_to_current_copy() -> None:
         assert str(first_lib.resolve()) not in library, "stale path from the first copy leaked"
 
 
+def _count_checks(p: Path) -> int:
+    return sum(1 for _ in p.rglob("*.check")) if p.is_dir() else 0
+
+
+def case_semantic_check_markers() -> None:
+    """An imported module that passes the full semantic check (4.3.0) is
+    recorded by its content and its imports' content: a rebuild skips it, a
+    change in a module it imports checks it again, a module with an error is
+    never recorded, ``--no-cache`` records nothing and ``--clear-cache``
+    removes the records."""
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td) / "proj"
+        cache = Path(td) / "cache"
+        main, lib = _write_project(proj)
+        units = lib.parent / "units.lam"
+        units.write_text('const Prefix: str = "widget-"\n', encoding="utf-8")
+        lib.write_text(
+            "from units import Prefix\n\n"
+            "func widget_label(id: int) -> str {\n"
+            "    return Prefix + str(id)\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        _run([str(main), "--no-cache", "--emit-go"], cache)
+        assert _count_checks(cache) == 0, "--no-cache must not record checks"
+        _run([str(main), "--emit-go"], cache)
+        assert _count_checks(cache) == 2, "widget and units checked clean"
+        _run([str(main), "--emit-go"], cache)
+        assert _count_checks(cache) == 2, "a rebuild reuses the records"
+        units.write_text('const Prefix: str = "gadget-"\n', encoding="utf-8")
+        _run([str(main), "--emit-go"], cache)
+        assert _count_checks(cache) == 4, "a changed import re-checks its importers"
+        units.write_text('const Prefix: int = "gadget-"\n', encoding="utf-8")
+        failed = _run([str(main), "--emit-go"], cache, check=False)
+        assert failed.returncode != 0 and "units.lam" in failed.stderr, failed.stderr
+        assert "cannot assign `str` to `int`" in failed.stderr or "Prefix" in failed.stderr, failed.stderr
+        assert _count_checks(cache) == 4, "a module with an error is not recorded"
+        _run([str(main), "--clear-cache"], cache)
+        assert _count_checks(cache) == 0, "--clear-cache removes the records"
+
+
 # ─── Driver ───────────────────────────────────────────────────
 
 
@@ -176,6 +217,7 @@ CASES = [
     case_clear_cache,
     case_warm_output_matches_no_cache,
     case_cache_hit_maps_lines_to_current_copy,
+    case_semantic_check_markers,
 ]
 
 

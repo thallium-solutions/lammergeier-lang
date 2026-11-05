@@ -1,0 +1,12 @@
+# expect-pass
+# 4.3.0: one class imported directly (`from .listing import Column`) and
+# seen through a module alias that imports it (`ui.Column` of `import .ui
+# as ui`) is one type, also inside `list[...]`: passing a `list[Column]`
+# where `list[ui.Column]` is expected was rejected.
+from full_check_package.listing import Column
+import full_check_package.ui as ui
+
+func main() {
+    columns: list[Column] = [Column("id"), Column("title")]
+    print(ui.columnNames(columns))
+}

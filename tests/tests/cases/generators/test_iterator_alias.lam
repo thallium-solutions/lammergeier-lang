@@ -1,0 +1,50 @@
+# `iterator[T]` is another name of `generator[T]` (4.3.0; the checker
+# rejected it as an unknown type while the code generator accepted it):
+# declarations, parameters and variables of either name hold the same
+# values, with the element type checked.
+# expect: 0
+# expect: 1
+# expect: 2
+# expect: 6
+# expect: 1
+# expect: a-b
+# expect: [10 20]
+
+class Item {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func count(n: int) -> iterator[int] {
+    i: int = 0
+    while i < n {
+        yield i
+        i += 1
+    }
+}
+
+func total(it: iterator[int]) -> int {
+    s: int = 0
+    for x in it {
+        s += x
+    }
+    return s
+}
+
+func items() -> iterator[Item] {
+    yield Item("a")
+    yield Item("b")
+}
+
+func main() {
+    for x in count(3) {
+        print(x)
+    }
+    print(total(count(4)))
+    g: generator[int] = count(2)
+    print(total(g))
+    print("-".join([it.name for it in items()]))
+    tens: list[int] = [x * 10 for x in count(3) if x > 0]
+    print(tens)
+}

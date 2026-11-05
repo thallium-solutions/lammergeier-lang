@@ -1,0 +1,32 @@
+# expect-pass
+# 4.3.0: a top-level `go!` block whose Go code declares an identifier named
+# `self` (a parameter `func(n *node, self bool)`, `self := ...`, a receiver)
+# was rejected ("`self` is only rewritten inside class methods"), which
+# made the stdlib's `lammarkup` fail the full check of imported modules.
+
+go! {
+    type lamNode struct{ n int }
+
+    func (self *lamNode) double() int {
+        return self.n * 2
+    }
+
+    func lamMatch(values []int, self bool) bool {
+        walk := func(v int, self bool) bool { return self && v > 0 }
+        for _, v := range values {
+            if !walk(v, self) {
+                return false
+            }
+        }
+        return true
+    }
+
+    func lamDouble(n int) int {
+        self := &lamNode{n: n}
+        return self.double()
+    }
+}
+
+func main() {
+    print("ok")
+}

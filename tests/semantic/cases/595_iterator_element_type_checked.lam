@@ -1,0 +1,12 @@
+# expect-error: line 4: error[type]: `yield` in `words` gives `int`, expected `str`
+# expect-error: line 9: error[type]: cannot assign `str` to `int` variable `n`
+func words() -> iterator[str] {
+    yield 1
+}
+
+func main() {
+    for w in words() {
+        n: int = w
+        print(n)
+    }
+}

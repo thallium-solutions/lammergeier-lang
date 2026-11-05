@@ -1,0 +1,31 @@
+# expect-pass
+# Generic calls whose type parameters come from an argument, explicit type
+# arguments (also with defaults), a subclass of an instantiated generic
+# base, and an empty literal where any instantiation fits (`T` is `any`).
+
+class Box[T] {
+    func init(self, items: list[T] = []) {
+        self.items: list[T] = items
+    }
+}
+
+class IntBox(Box[int]) {
+    func total(self) -> int {
+        return len(self.items)
+    }
+}
+
+func firstOf[T](xs: list[T] = []) -> int { return len(xs) }
+func count[T](xs: list[T]) -> int { return len(xs) }
+func merge[T](xs: list[T], extra: list[T] = []) -> list[T] { return xs + extra }
+
+func main() {
+    print(firstOf[str](), firstOf([1, 2]), count([]), merge([1]), merge(["a"], []))
+    b: Box[int] = Box[int]()
+    c = Box([1])
+    d = Box([])
+    e: Box[str] = Box(["x"])
+    print(len(b.items), len(c.items), len(d.items), len(e.items), IntBox().total())
+    n: int = count([])
+    print(n)
+}

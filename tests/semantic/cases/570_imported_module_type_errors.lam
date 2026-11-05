@@ -1,0 +1,14 @@
+# expect-error: full_check_errors/orders.lam
+# expect-error: line 15: error[return]: function `label` returns `int`, expected `str`
+# expect-error: line 19: error[type]: `yield` in `ids` gives `str`, expected `int`
+# expect-error: line 28: error[type]: cannot assign `str` to `int` variable `count`
+# expect-error: line 29: error[type]: argument `total` to `invoice` has type `str`, expected `int`
+# expect-error: line 29: error[type]: argument `errors` to `summary` has type `list[str]`, expected `list[FieldError]`
+# 4.3.0: an imported module gets the full semantic check, with its own
+# imports (`FieldError` from `.fields`): a type error there is a Lam error
+# at its file and line, no longer a `go build` failure.
+from full_check_errors.orders import render
+
+func main() {
+    print(render())
+}

@@ -1,0 +1,85 @@
+# 4.3.0: a subclass of an imported class may override a builder method with
+# its own type as the return type (covariant return: `withError(...) ->
+# AppProblem` overriding `-> Problem`) and define a static method of the
+# same name as a base static with another signature. Calls through an
+# `AppProblem` chain into the subclass's methods; calls through a `Problem`
+# (a parameter, `self` in a base method, a list of problems) dispatch to the
+# override and get a `Problem`. A further subclass narrows again, and one
+# that does not override inherits the dispatch.
+#
+# expect: chain 422 invalid body [app a: b] code=E1
+# expect: base-typed 422 invalid body [app a: b, app x: bad]
+# expect: self-call 422 invalid body [app a: b, app x: bad, app name: required, app email: required]
+# expect: deep 409 conflict [api id: taken] code=E2 trace=t-1
+# expect: deep-base 409 conflict [api id: taken, api y: bad]
+# expect: inherited 400 invalid query [app q: bad] code=
+# expect: plain 400 invalid form [z: bad]
+# expect: statics 400 invalid form | 422 invalid body | 409 conflict
+# expect: list app x: bad | api x: bad | x: bad
+
+from covariant_problem_provider import Problem, failField
+
+class AppProblem(Problem) {
+    func init(self, status: int = 500, title: str = "", code: str = "") {
+        base.init(status, title)
+        self.code: str = code
+    }
+
+    func withError(self, field: str, message: str) -> AppProblem {
+        self.errors.append(f"app {field}: {message}")
+        return self
+    }
+
+    func withCode(self, code: str) -> AppProblem {
+        self.code = code
+        return self
+    }
+
+    static func validation(code: str) -> AppProblem {
+        return AppProblem(422, "invalid body", code)
+    }
+}
+
+class ApiProblem(AppProblem) {
+    func init(self, status: int, title: str, trace: str) {
+        base.init(status, title, "")
+        self.trace: str = trace
+    }
+
+    func withError(self, field: str, message: str) -> ApiProblem {
+        self.errors.append(f"api {field}: {message}")
+        return self
+    }
+
+    func withCode(self, code: str) -> ApiProblem {
+        self.code = code
+        return self
+    }
+
+    static func validation(trace: str, status: int) -> ApiProblem {
+        return ApiProblem(status, "conflict", trace)
+    }
+}
+
+class QueryProblem(AppProblem) {
+    func init(self) {
+        base.init(400, "invalid query", "")
+    }
+}
+
+func main() {
+    p: AppProblem = AppProblem.validation("E1").withError("a", "b")
+    print(f"chain {p.describe()} code={p.code}")
+    print(f"base-typed {failField(p, 'x').describe()}")
+    print(f"self-call {p.required(['name', 'email']).describe()}")
+    d: ApiProblem = ApiProblem.validation("t-1", 409).withError("id", "taken").withCode("E2")
+    print(f"deep {d.describe()} code={d.code} trace={d.trace}")
+    print(f"deep-base {failField(d, 'y').describe()}")
+    q: QueryProblem = QueryProblem()
+    q.withError("q", "bad")
+    print(f"inherited {q.describe()} code={q.code}")
+    print(f"plain {failField(Problem.validation('form'), 'z').describe()}")
+    print(f"statics {Problem.validation('form').describe()[:16]} | {AppProblem.validation('E').describe()[:16]} | {ApiProblem.validation('t', 409).describe()[:12]}")
+    problems: list[Problem] = [AppProblem(), ApiProblem(500, "x", "t"), Problem()]
+    print("list " + " | ".join([pr.withError("x", "bad").errors[0] for pr in problems]))
+}

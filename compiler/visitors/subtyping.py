@@ -188,6 +188,8 @@ class SubtypingMixin:
             return False
         if key == base_key:
             return True
+        if self._hier_covariant_sigkey(class_name, base_key, key):
+            return True
         params = [p for p in self._class_type_param_names_of(class_name) if p]
         if not params:
             return False
@@ -203,6 +205,61 @@ class SubtypingMixin:
 
         pattern = re.sub(r"\b(" + "|".join(re.escape(p) for p in params) + r")\b", bind, pattern)
         return bool(seen) and re.fullmatch(pattern, key) is not None
+
+    @staticmethod
+    def _hier_split_sigkey(key: str) -> tuple:
+        """``("async ", "(string,int)", "*Problem")`` of a dispatch key."""
+        prefix = "async " if key.startswith("async ") else ""
+        rest = key[len(prefix):]
+        depth = 0
+        for i, ch in enumerate(rest):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return prefix, rest[:i + 1], rest[i + 1:]
+        return prefix, rest, ""
+
+    def _hier_covariant_go_return(self, child_ret: str, base_ret: str) -> bool:
+        """``child_ret`` (``*MyProblem``) points to a strict subclass of the
+        class ``base_ret`` (``*Problem``) points to; both plain classes."""
+        if not (child_ret.startswith("*") and base_ret.startswith("*")) or "[" in child_ret + base_ret:
+            return False
+        child_cls = self._hier_class_from_go_type(child_ret)
+        base_cls = self._hier_class_from_go_type(base_ret)
+        return bool(child_cls and base_cls and child_cls != base_cls and self._hier_is_subclass(child_cls, base_cls))
+
+    def _hier_covariant_sigkey(self, class_name: str, base_key: str, key: str) -> bool:
+        """A covariant override: same parameters, a return type that is a
+        subclass of the base's (``withError(...) -> MyProblem`` overriding
+        ``-> Problem``). Plain (not async) methods of non-generic classes
+        only, as the semantic checker requires."""
+        if self._class_type_param_names_of(class_name):
+            return False
+        base_async, base_params, base_ret = self._hier_split_sigkey(base_key)
+        async_, params, ret = self._hier_split_sigkey(key)
+        if base_async or async_ or params != base_params:
+            return False
+        return self._hier_covariant_go_return(ret, base_ret)
+
+    def _hier_covariant_method(self, class_name: str, method: str) -> bool:
+        """``method`` (virtual in ``class_name``, which defines it) has a
+        covariant override in some descendant: its dispatch goes through
+        ``_lamOv_<Class>_<M>`` adapters returning the base type, since a Go
+        method returning ``*MyProblem`` cannot satisfy an interface method
+        returning ``*Problem``."""
+        if method not in self._hier_virtual_methods(class_name):
+            return False
+        data = self._hier()
+        base_key = data["sigs"].get(class_name, {}).get(method)
+        if not base_key:
+            return False
+        return any(
+            self._hier_covariant_sigkey(class_name, base_key, data["sigs"][cls].get(method) or "")
+            for cls in self._hier_descendants(class_name)
+            if method in data["sigs"].get(cls, {})
+        )
 
     def _hier_needs_virtual(self, static_class: str, method: str) -> bool:
         """``x.method()`` with ``x`` statically a ``static_class`` must
@@ -417,6 +474,35 @@ class SubtypingMixin:
             self._emit("}")
             self._emit("")
         self._emit_hierarchy_format(class_name, recv, subclassed)
+        self._emit_covariant_adapters(class_name, recv)
+
+    def _emit_covariant_adapters(self, class_name: str, recv: str) -> None:
+        """``func (s *C) _lamOv_<D>_<M>(...) <D's return>`` for each method
+        ``M`` this class defines that an ancestor ``D`` dispatches through
+        adapters (``_hier_covariant_method``): it calls this class's ``M``
+        and upcasts its result to ``D``'s return type."""
+        data = self._hier()
+        local = self._local_class_methods.get(class_name, {})
+        for ancestor in self._hier_ancestors(class_name):
+            for method in sorted(self._hier_virtual_methods(ancestor)):
+                funcdefs = local.get(method)
+                if not funcdefs or len(funcdefs) != 1 or not self._hier_covariant_method(ancestor, method):
+                    continue
+                base_key = data["sigs"].get(ancestor, {}).get(method) or ""
+                own_key = data["sigs"].get(class_name, {}).get(method) or ""
+                base_ret = self._hier_split_sigkey(base_key)[2]
+                own_ret = self._hier_split_sigkey(own_key)[2]
+                (_p, _s, _a, _n, params_node, _r, _suite, _tp) = self._parse_funcdef(funcdefs[0])
+                go_method = self._go_method_name(class_name, method)
+                params = self._typed_params_to_go(params_node, skip_self=True)
+                call = f"s.{go_method}({', '.join(self._param_forward_names(params_node))})"
+                adapter = f"_lamOv_{self._go_class_name(ancestor)}_{self._go_method_name(ancestor, method)}"
+                if base_ret:
+                    value = self._hier_upcast_to_go(call, own_ret, base_ret) or call
+                    self._emit(f"func (s {recv}) {adapter}({params}) {base_ret} {{ return {value} }}")
+                else:
+                    self._emit(f"func (s {recv}) {adapter}({params}) {{ {call} }}")
+                self._emit("")
 
     def _emit_hierarchy_format(self, class_name: str, recv: str, subclassed: bool) -> None:
         if self._hier_user_format_method(class_name):

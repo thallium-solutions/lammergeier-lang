@@ -1,0 +1,35 @@
+# Integration (4.3.0): a package whose modules are each fully checked
+# (imported constants, an `iterator[T]` generator, a generic class, an
+# interface with every method of another, `None` callbacks, JSON literals
+# and comprehensions, optional ternaries, markup, `reversed`), compiled and
+# run.
+# expect: changed: tea
+# expect: changed: jam
+# expect: changed: oil
+# expect: changed: rye
+# expect: 4
+# expect: {"currency":"EUR","rows":[{"label":"-","product":{"cents":250,"name":"rye"},"tags":[]},{"label":"sale","product":{"cents":900,"name":"oil"},"tags":["sale"]},{"label":"new","product":{"cents":450,"name":"jam"},"tags":["new","sale"]}],"sections":[{"name":"new","upper":"NEW"},{"name":"sale","upper":"SALE"}],"total":4}
+# expect: 450 true
+# expect: <b title="new" data-sale="yes">jam</b> <b>rye</b>
+# expect: EUR 0
+
+from fullcheck_shop import Product, Catalog, CurrencyCode
+from fullcheck_shop.render import document, priceOf, badge
+
+func announce(name: str) {
+    print(f"changed: {name}")
+}
+
+func main() {
+    c: Catalog = Catalog()
+    c.onChange = announce
+    c.put(Product("tea", 300, []))
+    c.put(Product("jam", 450, ["new", "sale"]))
+    c.put(Product("oil", 900, ["sale"]))
+    print(c.put(Product("rye", 250, [])))
+    print(document(c))
+    print(priceOf(c, "jam").unwrap(), not priceOf(c, "salt").ok())
+    print(badge(c.get("jam") ?? Product("?", 0, [])), badge(c.get("rye") ?? Product("?", 0, [])))
+    c.clear()
+    print(CurrencyCode, len(c.order))
+}

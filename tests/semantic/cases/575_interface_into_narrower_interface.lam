@@ -1,0 +1,39 @@
+# expect-pass
+# 4.3.0: Go interfaces are structural, so an interface value with every
+# method of another (`SqlTx` adds `commit` to `Sql`) is one: passing a
+# `SqlTx` where a `Sql` is expected was reported as a type error.
+
+interface Sql {
+    func exec(query: str) -> int
+}
+
+interface SqlTx {
+    func exec(query: str) -> int
+    func commit() -> bool
+}
+
+class Tx {
+    func init(self) {
+        self.n: int = 0
+    }
+
+    func exec(self, query: str) -> int {
+        self.n += len(query)
+        return self.n
+    }
+
+    func commit(self) -> bool {
+        return self.n > 0
+    }
+}
+
+func run(db: Sql) -> int {
+    return db.exec("SELECT 1")
+}
+
+func main() {
+    tx: SqlTx = Tx()
+    print(run(tx), tx.commit())
+    db: Sql = tx
+    print(run(db))
+}

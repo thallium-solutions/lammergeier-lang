@@ -1,0 +1,9 @@
+# expect-pass
+# Helper of 569_imported_module_full_check.lam: takes the `Column` of
+# `listing` (imported here, so `import .ui as ui` sees it as `ui.Column`).
+
+from .listing import Column
+
+func columnNames(columns: list[Column]) -> list[str] {
+    return [c.name for c in columns]
+}

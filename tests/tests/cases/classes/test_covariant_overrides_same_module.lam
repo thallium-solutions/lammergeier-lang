@@ -1,0 +1,112 @@
+# 4.3.0: covariant returns in one module. The override of a builder
+# returning its own class kept the base's Go method next to it as a
+# return-type overload (`WithError_2_..._ret_ptrNode`) and never dispatched
+# from base-typed values; it replaces it and dispatches, also from `self`
+# in a base method, through a subclass that does not override, and with a
+# void and a non-covariant override of other methods of the same class.
+#
+# expect: chain <section><b>Hi</b></section>
+# expect: base-typed <section><b>Hi</b><i>x</i></section>
+# expect: through-self <article>[a][b]</article>
+# expect: inherited <aside>[q]</aside>
+# expect: names Section Article Aside Node
+# expect: statics Node:0 Section:2
+
+class Node {
+    func init(self, tag: str = "div") {
+        self.tag: str = tag
+        self.children: list[str] = []
+    }
+
+    func add(self, child: str) -> Node {
+        self.children.append(child)
+        return self
+    }
+
+    func addAll(self, items: list[str]) -> Node {
+        for item in items {
+            self.add(item)
+        }
+        return self
+    }
+
+    func name(self) -> str {
+        return "Node"
+    }
+
+    func render(self) -> str {
+        return f"<{self.tag}>{''.join(self.children)}</{self.tag}>"
+    }
+
+    static func make() -> Node {
+        return Node()
+    }
+}
+
+class Section(Node) {
+    func init(self) {
+        base.init("section")
+    }
+
+    func add(self, child: str) -> Section {
+        self.children.append(f"<b>{child}</b>" if len(self.children) == 0 else f"<i>{child}</i>")
+        return self
+    }
+
+    func name(self) -> str {
+        return "Section"
+    }
+
+    static func make(count: int) -> Section {
+        s: Section = Section()
+        for i in range(count) {
+            s.children.append("")
+        }
+        return s
+    }
+}
+
+class Article(Node) {
+    func init(self) {
+        base.init("article")
+    }
+
+    func add(self, child: str) -> Article {
+        self.children.append(f"[{child}]")
+        return self
+    }
+
+    func name(self) -> str {
+        return "Article"
+    }
+}
+
+class Aside(Article) {
+    func init(self) {
+        base.init()
+        self.tag = "aside"
+    }
+
+    func name(self) -> str {
+        return "Aside"
+    }
+}
+
+func extend(n: Node, child: str) -> Node {
+    return n.add(child)
+}
+
+func main() {
+    s: Section = Section().add("Hi")
+    print(f"chain {s.render()}")
+    print(f"base-typed {extend(s, 'x').render()}")
+    a: Article = Article()
+    a.addAll(["a", "b"])
+    print(f"through-self {a.render()}")
+    side: Aside = Aside()
+    _ = extend(side, "q")
+    print(f"inherited {side.render()}")
+    nodes: list[Node] = [Section(), Article(), Aside(), Node()]
+    print("names " + " ".join([n.name() for n in nodes]))
+    print(f"statics {Node.make().name()}:{len(Node.make().children)} {Section.make(2).name()}:{len(Section.make(2).children)}")
+}

@@ -1,10 +1,11 @@
 # expect-error: division_module_helper.lam
-# expect-error: `/` always gives a `float`; use `//` for integer division (the target is `int`)
+# expect-error: `/` always gives a `float`; use `//` for integer division
 # expect-error: line 14:
 # expect-error: line 19:
 # expect-error: line 24:
-# The same mistake in an imported module (not run through the semantic
-# checker) is reported by the transpiler instead of failing in `go build`.
+# The same mistake in an imported module is a Lam error instead of failing
+# in `go build` (reported by the transpiler before 4.3.0, by the semantic
+# checker since imported modules get the full check).
 
 from division_module_helper import Page, middle, halfResult
 

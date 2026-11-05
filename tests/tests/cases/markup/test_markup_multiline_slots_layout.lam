@@ -1,0 +1,52 @@
+# expect: <ul class="list"><li>a: 2</li><li>b: 4</li></ul>
+# expect: <form action="/x" class="row"><button title="Save">Save</button><i>3</i></form>
+# expect: <p>multi line slot 6 and more</p>
+# expect: tail 10
+# expect: empty [] ok
+# expect: f-string 1 / 2 / 3
+# expect: f-string spanning slot 8!
+# Multi-line markup literals are rewritten with each slot at its own line
+# and column (the marker call spans the literal's lines): rendering is
+# unchanged for slots on several lines, literals nested in slots, comments
+# and empty slots, code after the literal on its last line, and
+# multi-line f-strings (a slot may now span lines too).
+
+func form(action: str, body: html, cls: str = "") -> html {
+    return <><form action="${action}" class="${cls}">${body}</form></>
+}
+
+func items(names: list[str]) -> html {
+    return <>
+        <ul class="list">${[
+            <><li>${names[i]}: ${(i + 1) * 2}</li></>
+            for i in range(len(names))
+        ]}</ul>
+    </>
+}
+
+func main() {
+    print(str(items(["a", "b"])))
+    label: str = "Save"
+    n: int = 3
+    print(str(form("/x", <>
+        <button title="${label}">${label}</button><i>${
+            n  # the count
+        }</i>
+    </>, cls = "row")))
+    print(str(<><p>multi line slot ${n *
+        2} and more</p></>))
+    tail: int = len(str(<>
+        <b>x</b>
+    </>)) + len("ab"
+    )
+    print(f"tail {tail}")
+    empty: html = <>${
+    }</>
+    print(f"empty [{empty}] ok")
+    print(f"""f-string {1} /
+{n - 1} /
+{n}""".replace("\n", " "))
+    print(f"""f-string spanning slot {
+        n + 5
+    }!""")
+}

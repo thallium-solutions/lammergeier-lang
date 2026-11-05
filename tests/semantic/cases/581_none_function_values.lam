@@ -1,0 +1,31 @@
+# expect-pass
+# 4.3.0: a function value is a Go func, so `None` is the unset callback
+# (`self.onDone: func(int) = None`); it was rejected ("cannot assign `None`
+# to `func(int)` variable").
+
+class Job {
+    func init(self) {
+        self.onDone: func(int) = None
+        self.score: func(str, int) -> int = None
+    }
+
+    func finish(self, code: int) {
+        if self.onDone != None {
+            self.onDone(code)
+        }
+    }
+}
+
+func report(code: int) {
+    print(f"done {code}")
+}
+
+func main() {
+    job: Job = Job()
+    job.finish(1)
+    job.onDone = report
+    job.finish(2)
+    cb: func(int) = None
+    cb = report
+    cb(3)
+}

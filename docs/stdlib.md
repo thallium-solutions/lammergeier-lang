@@ -3363,10 +3363,12 @@ policy: HtmlPolicy = HtmlPolicy().allowTags(["p", "a", "b"]).allowAttributes("a"
 | `allowRelativeUrls(allowed = true)` | relative URLs on or off |
 | `allowDataImages(allowed = true)` | base64 PNG / GIF / JPEG / WebP / AVIF `data:` URLs in `img src` |
 | `allowStyles(properties)` | the `style` attribute, keeping only these CSS properties |
+| `allowFrames(hosts)` | `iframe` embeds of these `https` hosts and their subdomains (below) |
+| `HtmlPolicy.videoHosts()` | `["www.youtube.com", "www.youtube-nocookie.com", "player.vimeo.com"]`, for `allowFrames` |
 
 The policy methods return the policy, so they chain; its fields (`tags`,
 `attributes`, `urlSchemes`, `relativeUrls`, `dataImages`, `styleProperties`,
-`noopener`) can also be set directly. The sanitizer works on the parsed tree
+`noopener`, `frameHosts`) can also be set directly. The sanitizer works on the parsed tree
 and builds a new one, default-deny — what it covers:
 
 - **Elements**: an element the policy does not allow is removed and its
@@ -3374,7 +3376,8 @@ and builds a new one, default-deny — what it covers:
   `frameset`, `object`, `embed`, `applet`, `noscript`, `noembed`,
   `noframes`, `xmp`, `plaintext`, `svg`, `math`, `base`, `link`, `meta`,
   `head`, `title`, `param` and `portal` are removed with their content even
-  when a policy lists them. Comments (including IE conditional comments),
+  when a policy lists them (`iframe` is kept only as `allowFrames`
+  describes). Comments (including IE conditional comments),
   doctypes and processing instructions are removed. Nesting deeper than 256
   elements is flattened.
 - **Attributes**: only those allowed for the element (or `"*"`) are kept;
@@ -3401,6 +3404,58 @@ and builds a new one, default-deny — what it covers:
   parser-differential (mXSS) tricks that rely on re-parsing comments, raw
   text or foreign content. Sanitizing an output again gives it back
   unchanged.
+
+##### Trusted embeds — `allowFrames`
+
+Frames stay removed unless a policy opts in with `allowFrames(hosts)`, for
+markup whose author you trust with embeds (admin-authored ads, editorial
+pages) and only for the hosts listed:
+
+```lammergeier
+adPolicy: HtmlPolicy = HtmlPolicy.rich().allowFrames(HtmlPolicy.videoHosts())
+ad: html = Html.sanitize(admin.body, adPolicy)
+# <iframe src="https://www.youtube.com/embed/x" width="560" height="315" allowfullscreen
+#   referrerpolicy="strict-origin-when-cross-origin"
+#   sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"></iframe>
+```
+
+- **Hosts**: an `iframe` is kept only when its `src` is an absolute
+  `https://` URL whose host equals a listed host or is a subdomain of one
+  (`"vimeo.com"` also allows `player.vimeo.com`; `www.youtube.com` does not
+  allow `youtube.com` nor `www.youtube.com.evil.com`). Entries are plain
+  ASCII host names, lowercased; `host:port` allows that port instead of the
+  default 443 (another port is refused). Other entries are ignored.
+- **URL reading**: entities are decoded first and control characters and
+  spaces at the ends ignored, as for other URLs. Anything browsers would
+  read differently from what was checked refuses the frame: white space or
+  control characters inside the URL (`ht&#9;tps:`), a backslash, non-ASCII
+  characters (IDN look-alikes such as a Cyrillic `о`; write
+  internationalised hosts as their `xn--` form, compared as written),
+  userinfo (`https://www.youtube.com@evil.com`), a percent-encoded host, an
+  IP address, an empty host (`https:///evil.com`), a trailing dot. `http:`
+  (downgrade), protocol-relative (`//host`), relative, `data:` and
+  `javascript:` sources and frames without `src` are removed. The kept
+  `src` has its scheme and host lowercased and `:443` dropped.
+- **Attributes**: the frame is rebuilt with `src`, `width` / `height`
+  (digits, optionally `%`), `title`, `allow` (only `accelerometer`,
+  `autoplay`, `clipboard-write`, `encrypted-media`, `gyroscope`,
+  `picture-in-picture`, `fullscreen`, without origin lists),
+  `allowfullscreen`, `loading` (`lazy` / `eager`) and `referrerpolicy`
+  (`no-referrer`, `origin`, `same-origin`, `strict-origin`, or the default
+  `strict-origin-when-cross-origin`), in that order. `srcdoc`, `name`,
+  event handlers, `style`, `class`, `id`, `csp` and everything else are
+  dropped, and so is the frame's content (fallback text, nested frames).
+- **Sandbox**: every kept frame gets `sandbox="allow-scripts
+  allow-same-origin allow-presentation allow-popups"`, replacing the
+  markup's: players need their scripts and their own origin (cookies,
+  storage), full screen and "watch on YouTube" windows, but a frame cannot
+  navigate your page (`allow-top-navigation`), submit forms, open modal
+  dialogs or download. `allow-scripts` with `allow-same-origin` would let a
+  frame of *your own* origin remove its sandbox, so never list the host
+  that serves your pages.
+- `frame`, `frameset`, `object`, `embed` and frames inside `svg` / `math`
+  or another frame are always removed; policies without `allowFrames`
+  behave as before.
 
 `id` and `name` (DOM clobbering) and `class` are not allowed by `basic`;
 allow them only when the page cannot be confused by them. The sanitizer does
@@ -3793,6 +3848,8 @@ policy.allowAttributes(tag: str, attributes: list[str]) -> HtmlPolicy
 policy.allowSchemes(schemes: list[str]) -> HtmlPolicy
 policy.allowRelativeUrls(allowed: bool = true) / allowDataImages(allowed: bool = true) -> HtmlPolicy
 policy.allowStyles(properties: list[str]) -> HtmlPolicy
+policy.allowFrames(hosts: list[str]) -> HtmlPolicy
+HtmlPolicy.videoHosts() -> list[str]
 
 # lamcrypto (bcrypt)
 Crypto.bcryptHash(password: str, cost: int = 10) -> Result[str]

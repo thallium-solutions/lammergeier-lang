@@ -1,0 +1,17 @@
+# expect-pass
+# 4.3.0: a subclass of a generic class imported through a module alias
+# (`class Ints(sh.Box[int])`) overriding a method that returns the generic
+# class (`-> sh.Box[int]`) was "overrides `sh.Box.copy` with return
+# `sh.Box[int]`, expected `Box[int]`": the alias now renames generic class
+# names in imported signatures too.
+import full_check_package.shapes as sh
+
+class Ints(sh.Box[int]) {
+    func copy(self) -> sh.Box[int] {
+        return sh.Box[int]([n * 2 for n in self.items])
+    }
+}
+
+func main() {
+    print(Ints([1, 2]).copy().items)
+}

@@ -1,0 +1,34 @@
+# expect-pass
+# Helper of 605: binds the local `Problem` / `Box` (of `problems.lam`)
+# before and after imports of modules that know the package's classes.
+
+from .problems import Problem, Box, send
+from .kit import Server
+from .helpers import makeServer
+
+class ApiProblem(Problem) {
+    func init(self, code: str) {
+        base.init(code, "api")
+    }
+
+    static func notFound(what: str) -> ApiProblem {
+        return ApiProblem(what + "_missing")
+    }
+}
+
+func statusProblem(status: int) -> Problem {
+    if status == 404 {
+        return Problem.notFound("endpoint")
+    }
+    p: Problem = Problem("method_not_allowed", "not allowed")
+    return p
+}
+
+func run() -> str {
+    server: Server = makeServer()
+    n: int = send(server, statusProblem(404))
+    server.fail(statusProblem(405).http().withStatus(405))
+    b: Box[str] = Box(["a"])
+    api: Problem = ApiProblem.notFound("user")
+    return f"{n} {server.last().status} {b.items[0]} {api.code}"
+}

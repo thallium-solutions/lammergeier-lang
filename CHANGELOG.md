@@ -5,6 +5,201 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.3.0 — 2026-11-05
+
+### Changed
+
+- **Every module of the program gets the full semantic check**, not only the
+  compiled file: project modules, `extlibs` packages and the stdlib, each
+  once, in its own scope and with the signatures, overloads, classes,
+  generic classes, interfaces, constants and module-level variables of what
+  it imports (also re-exported by a package `__init__.lam`, reached through
+  `import .m as m` or a relative import). Imported modules used to get name
+  resolution only, so their type errors failed in `go build` with Go
+  messages (`{}` passed to a `list[FieldError]`, a generator's element type,
+  a misused `json` value, a wrong argument or return type). They are Lam
+  errors at the imported file's line, with the compiled file's wording.
+  Warnings (unused names, dropped results, `?` outside a `Result` function)
+  stay those of the compiled file; an imported module only adds its import
+  advisories. A module that checks clean is cached by the compiler, its
+  content and the content of every module it imports (`--no-cache` checks
+  all), and the checks of one build share parsed trees and imported class
+  tables.
+
+  **Migration**: code that built before may now be rejected where an
+  imported module was wrong all along. The usual cases, each with the
+  compiled file's message:
+  - a module importing itself (`from .paging import Page` inside
+    `paging.lam`): remove the import;
+  - `?` / `do`-`catch` in a module that does not import `Result` (it only
+    built because another module imported `lamerrors`): add `from lamerrors
+    import Result`;
+  - an `any` value passed where `json` is expected (`Json.encode(raw)` with
+    `raw: any`): convert it with `Json.fromValue(raw)?`;
+  - `json(x)` of an `optional[Class]` (it panics on `None`): test for
+    `None` first or pass the class value;
+  - an `html` value in a markup attribute (`title="${label}"`): insert a
+    `str`;
+  - a `Result[A]` returned as a `Result[B]` (an error result re-wrapped as
+    is): `return Result.Err(r.error)`.
+- A field's declared type now types every expression it is in (it was
+  known only for `int`, `float`, `json` and `optional` fields, other fields
+  were unknown): `self.code + "x"` is a `str`, `self.totals["a"]` an `int`,
+  `for t in self.tiers` binds the element type, `p.items` of a
+  `Page[Product]` is a `list[Product]`. Mistakes such as `return
+  self.raw[i]` (a `byte`) from a `-> str` method are reported instead of
+  failing in `go build`.
+- A generic call no argument gives a type parameter to is a Lam error
+  asking for explicit type arguments: a parameter default (`firstOf()` with
+  `xs: list[T] = []`), `None` (`ident(None)`), or an empty `[]` / `{}`
+  where the result must be a given instantiation (`b: Box[int] = Box([])`).
+  These failed in `go build` (`undefined: T`, `cannot use *Box[interface
+  {}] as *Box[int]`). An empty literal whose result may be anything
+  (`count([])`, `b = Box([])`) still makes the parameter `any`.
+
+### Added
+
+- `reversed(xs)` returns a reversed copy of a list (same list type, `xs`
+  unchanged); `reversed(s)` of a `str` gives its characters last first as a
+  `list[str]`, matching Python's iterator of characters (`"".join(reversed(
+  s))`, `for ch in reversed(s)`). It was accepted by the checker and failed
+  in `go build` ("undefined: Reversed"); any other argument is a compile
+  error.
+- `iterator[T]` is another name of `generator[T]` (a Go `chan T`) for
+  return types, parameters, variables and fields: the code generator
+  accepted it while the checker reported "unknown type `iterator`".
+- Stdlib: `HtmlPolicy.allowFrames(hosts)` keeps trusted embeds (admin-authored
+  ads with videos) in `Html.sanitize`, which otherwise always removes frames:
+  an `iframe` survives only when its `src` is an absolute `https://` URL of a
+  listed host or of a subdomain of one (`host:port` for another port), read
+  strictly (entities decoded; white space, control characters, backslashes,
+  non-ASCII / IDN look-alikes, userinfo, percent-encoded or IP hosts,
+  `http:`, protocol-relative, relative, `data:` and `javascript:` sources
+  refuse it). The frame is rebuilt with `src` (scheme and host lowercased,
+  `:443` dropped), `width`, `height`, `title`, `allow` (seven player
+  features), `allowfullscreen`, `loading` and `referrerpolicy` (default
+  `strict-origin-when-cross-origin`), always gets `sandbox="allow-scripts
+  allow-same-origin allow-presentation allow-popups"` and loses its content;
+  `srcdoc`, `name`, event handlers and every other attribute are dropped.
+  `HtmlPolicy.videoHosts()` lists YouTube (also `youtube-nocookie`) and
+  Vimeo's embed hosts. `frame`, `object`, `embed` and frames in `svg` /
+  `math` stay removed. The sanitizer's fuzz test covers frames.
+- Covariant return types: an override may return a subclass of the base
+  method's return class, as builders do (`withError(...) -> AppProblem`
+  overriding `-> Problem` in a subclass of Vulture's `Problem`, also through
+  further subclasses); calls through the subclass are typed with it and calls
+  through the base type still dispatch to the override (Go has no covariant
+  methods: the dispatch interface uses adapters that upcast the result, see
+  docs/TRANSPILATION.md). Methods of generic classes, returns of a generic
+  class and `async` methods keep requiring the base's return type, with a
+  message saying so.
+- Static methods do not override: a subclass may declare a static method
+  with a base static's name and another signature (`static func
+  validation(code: str) -> AppProblem` next to `Problem.validation(where,
+  issues, status)`); the checker compared them as overrides and rejected it.
+
+### Fixed
+
+- False positives of the checker, found by checking every module of the
+  stdlib, the official packages, two applications and the examples (they
+  also affected the compiled file):
+  - a union value passed to a parameter of the same or a wider union
+    (`handler: func(R, S) | (func(R, S) -> html)` passed on): each
+    alternative is checked;
+  - an interface value where another interface is expected when it has
+    every method of it with the same signature (`SqlTx` where `Sql` is
+    expected), as in Go;
+  - one class reached under two names (`Column` and `ui.Column` through
+    `import .ui as ui`), also inside `list[...]` / `dict[...]`;
+  - imported constants and top-level variables had no type (`Prefix + "a"`
+    was "not JSON-compatible"), also through a module alias (`c.Limit`);
+  - a dict literal appended to a `list[json]` ("list append expects
+    `json`, got `dict[str, any]`") and a list comprehension of dict
+    literals passed as `json`: a literal is JSON when its values are;
+  - `{}` assigned to a `dict[int, Part]` field or variable;
+  - `"x" if c else None` where an optional fits (an `optional` / `any`
+    variable, argument or result, a list item, JSON, a markup attribute, an
+    f-string slot); a new unannotated variable or a `str` target still
+    rejects it;
+  - `None` for a function value (`self.onDone: func(int) = None`);
+  - a `Result[any]` returned as a `Result[str]`;
+  - `json(t)` / field reads of `t` in `for t in self.tiers`;
+  - a `go!` block whose Go code declares an identifier `self` (a parameter
+    `func(n *node, self bool)`, a receiver, `self := ...`), which made the
+    stdlib's `lammarkup` fail;
+  - `base.init()` in a subclass whose base declares no `init` (only field
+    defaults: the implicit constructor);
+  - a subclass of a generic class imported through a module alias
+    (`class Ints(sh.Box[int])`) overriding a method returning the generic
+    class (`-> sh.Box[int]`) was told the base returns `Box[int]`: the
+    alias renames generic class names in imported signatures too.
+- Errors inside the slots of a multi-line markup literal (and of a literal
+  nested in a slot), and in code after such a literal on its last line, were
+  reported at the literal's first line (`return <>`), and errors in the
+  slots of a multi-line f-string at the string's first line. They are
+  reported at the slot's own line and column: the literal's marker call now
+  spans the literal's lines with each slot argument at the place of its
+  `${`, and a collapsed multi-line f-string marks its line breaks. A slot of
+  a multi-line f-string may also span lines now (it was "not a valid
+  expression").
+- A top-level function is capitalised in Go (`t` is `T`); inside a generic
+  function or class with a type parameter of that name, Go resolved a
+  reference to the function as the type parameter: `t("x")` was a
+  conversion, `t` passed as a handler "is not an expression". Such
+  references go through a package-level alias of the function (calls,
+  values, defaults, lambdas, list callbacks and f-string slots, for
+  functions of the module and imported ones); a generic function cannot be
+  aliased and is a Lam error naming the clash.
+- An overloaded function used as a value (`apply(fmtValue, x)`) failed in
+  `go build` ("undefined: FmtValue", there is one Go function per variant);
+  it is a Lam error suggesting a lambda.
+- A type parameter that no parameter of a generic function mentions (only
+  its result, or nothing: `make[R]() -> list[R]`) is a Lam error asking for
+  the type arguments; Go reported "cannot infer R".
+- A method a subclass inherits (from a base of the same module or of an
+  imported one) did not type the literal arguments of calls on a subclass
+  value: `sub.need(["a"])` passed a `[]interface{}` to a `[]string`
+  parameter.
+- The loop variable of `for r in results()` with `-> generator[Result[int]]`
+  (reported on 4.2.1) was typed by the checker but lost its payload in the
+  generated Go: `r.unwrap() * 2` failed in `go build` ("mismatched types
+  interface{} and int"). `Result` elements keep their payload over
+  generators, iterators and lists returned by functions and methods,
+  annotated locals, parameters and fields, and in comprehensions.
+- Two classes of the same name in different modules were merged by the
+  checker of a module that knew both: a module importing a package's
+  `Problem` as `HttpProblem` and defining its own `Problem` (luxyt's
+  `api/problems.lam`), used by a module that also imports from the package,
+  got "unknown member `Problem.notFound`" and the package's constructor
+  ("argument `status` to `Problem` has type `str`, expected `int`"). The
+  other classes of an imported module (known so its signatures can be
+  checked) were collected under their bare names, overriding or merging with
+  the importer's own bindings, and the class names written in a re-exported
+  class's module were read with the importer's aliases. Every class is now
+  tracked by its defining module: an alias binds only the alias, a class the
+  importer does not name keeps its name unless the importer binds that name
+  to another class (it is then `kit.Problem` in messages), and members,
+  constructors, statics, method signatures, bases and type parameters stay
+  per class. A local whose inferred type is such a class is declared by Go
+  inference.
+- Members of a `Result[T]` value were not checked (`r.isOk()` failed in `go
+  build`): they are those of lamerrors' `Result` (`ok`, `unwrap`,
+  `unwrapOr`, `value`, `error`), with a did-you-mean suggestion.
+- A module function passed by name where the parameter's function type has
+  fewer parameters (the others have defaults: `apply(suffix, "a")` with `f:
+  func(str) -> str`) or no result (`onEach(show)` with a `func(str, int)`
+  callback and `show` returning an `int`) was accepted by the checker, as
+  documented since 1.19.4, but failed in `go build`: the argument is now a
+  closure calling the function with its defaults filled. A parameter typed
+  by a union of callback types receives the function value as is, so a
+  function relying on its defaults there is a Lam error suggesting a lambda.
+- Explicit type arguments type the defaults of a generic function:
+  `firstOf[str]()` with `xs: list[T] = []` passed a Go `[]T{}` ("undefined:
+  T"); a default typed by the other arguments' type parameters too
+  (`merge(xs)` with `extra: list[T] = []`).
+- Stdlib: `DateTime.convert` returned the `Result[DateTime]` of a failed
+  parse as its `Result[str]`; it re-wraps the error.
+
 ## 4.2.2 — 2026-11-04
 
 ### Fixed

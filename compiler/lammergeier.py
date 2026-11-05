@@ -69,7 +69,7 @@ from compiler.link_symbols import find_symbol_clashes, render_symbol_clashes
 from compiler import namespacing as _namespacing
 from compiler.modules import WorkspaceIndex
 from compiler.source_map import SourceMap
-from compiler.fstrings import protect_fstring_quotes
+from compiler.fstrings import SOURCE_NEWLINE, protect_fstring_quotes
 from compiler.version import LAMC_VERSION
 try:
     from compiler.syntax_errors import SyntaxDiagnosticError, render_syntax_error
@@ -1167,7 +1167,9 @@ def _collapse_multiline_strings(source: str) -> str:
                     sq = quote[0]
                     content = content.replace('\r\n', '\n').replace('\r', '\n')
                     content = content.replace('\\', '\\\\')
-                    content = content.replace('\n', '\\n')
+                    # An f-string's line breaks keep a mark after their
+                    # escape: its slots are reported at their own lines.
+                    content = content.replace('\n', '\\n' + (SOURCE_NEWLINE if prefix else ''))
                     content = content.replace(sq, '\\' + sq)
                     result.append(f'{prefix}{sq}{content}{sq}')
                     pending_newlines += source[i:end].count('\n')
@@ -1734,33 +1736,89 @@ def _render_transpile_diagnostics(err, display_path: str, source: str | None = N
     return _semantic.render_errors(diags, source, display_path)
 
 
-def _check_imported_module_names(modules, module_index) -> None:
-    """Report undefined names and unresolvable imports of the imported
-    modules (``modules``: ``(path, source, go_blocks, tree)``) and exit.
+def _imported_check_cache_extra(mod_file: Path, import_graph, sources: dict) -> bytes | None:
+    """Cache discriminator of an imported module's semantic check: its path
+    and the path and content of every module it imports, directly or not
+    (the signatures, classes and values it is checked against). ``None``
+    when a module of that closure has no known source."""
+    import hashlib
 
-    All modules compile into one Go package, so these used to build: Go
-    resolved the name another module declares. The stdlib is trusted and
-    skipped; project modules and ``extlibs`` packages are checked.
+    seen: set[Path] = set()
+    pending = [mod_file]
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        pending.extend(import_graph.get(current, ()))
+    digest = hashlib.sha256(b"lam-semantic-check-v1\0")
+    for path in sorted(seen, key=str):
+        source = sources.get(path)
+        if source is None:
+            return None
+        digest.update(str(path).encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256(source.encode("utf-8")).digest())
+    return digest.hexdigest().encode("ascii")
+
+
+def _check_imported_modules(
+    modules,
+    module_index,
+    shared=None,
+    *,
+    import_graph=None,
+    use_cache: bool = False,
+) -> None:
+    """Full semantic check of every imported module of the program
+    (``modules``: ``(path, source, go_blocks, tree)``: project modules,
+    ``extlibs`` packages and the stdlib, each once, transitively), then
+    exit when one has errors.
+
+    Every module is checked like the compiled file, in its own scope and
+    with what it imports (signatures, classes, interfaces, generics and
+    top-level values of the imported modules, ``__init__`` re-exports,
+    relative imports): all modules compile into one Go package, so a type
+    error in an imported module used to surface as a ``go build`` error.
+    Errors point at the imported file and line. Lint warnings stay limited
+    to the compiled file; an imported module only reports advisory import
+    warnings (an absolute import of a module that does not exist).
+
+    A module that checks clean is remembered in the compile cache, keyed by
+    the compiler, its content and the content of every module it imports.
     """
+    from compiler import cache as _cache
     from compiler import semantic as _semantic
 
-    stdlib_dir = module_index.stdlib_dir
+    if shared is None:
+        shared = _semantic.ProgramCheckCache()
+    sources = {Path(mod_file).resolve(): mod_source for mod_file, mod_source, _b, _t in modules}
+    for mod_file, _mod_source, _mod_go_blocks, mod_tree in modules:
+        shared.add_tree(mod_file, mod_tree)
     blocks: list[str] = []
     for mod_file, mod_source, mod_go_blocks, mod_tree in modules:
-        if module_index._is_under(mod_file, stdlib_dir):
+        cache_extra = (
+            _imported_check_cache_extra(Path(mod_file).resolve(), import_graph or {}, sources)
+            if use_cache else None
+        )
+        if cache_extra is not None and _cache.has_clean_check(mod_source.encode("utf-8"), cache_extra):
             continue
         try:
-            diags = _semantic.check_module_names(
+            diags = _semantic.check_source(
                 mod_tree,
                 go_blocks=mod_go_blocks,
                 module_index=module_index,
                 source_path=mod_file,
+                shared=shared,
+                imported_module=True,
             )
         except Exception:  # noqa: BLE001 - a checker crash must not block the build
             continue
+        diags = [d for d in diags if not d.is_warning or d.kind == "import"]
+        if not diags:
+            if cache_extra is not None:
+                _cache.mark_clean_check(mod_source.encode("utf-8"), cache_extra)
+            continue
         diags.sort(key=lambda d: (d.line, d.col))
-        # Advisory diagnostics (an absolute import of a module that does
-        # not exist) are printed without stopping the build.
         warnings_text = _semantic.render_warnings(diags, mod_source, str(mod_file))
         if warnings_text:
             print(warnings_text, file=sys.stderr)
@@ -1918,8 +1976,10 @@ def compile_lam(
     # are printed but the build still proceeds (Go-style "warn don't
     # error" semantics for advisory diagnostics). The check is pure-
     # AST so it adds <50ms even on the largest .lam.
+    program_check_cache = None
     if not no_semantic_check:
         from compiler import semantic as _semantic
+        program_check_cache = _semantic.ProgramCheckCache()
         sem_diags = [
             _semantic.SemanticError(line, col, message, "assign")
             for line, col, message in parse_input.diagnostics
@@ -1929,6 +1989,7 @@ def compile_lam(
             go_blocks=go_blocks,
             module_index=module_index,
             source_path=source_file,
+            shared=program_check_cache,
         ))
         warning_block = _semantic.render_warnings(sem_diags, source, str(source_path))
         if warning_block:
@@ -2323,6 +2384,7 @@ def compile_lam(
     # is a ``str`` in a ternary or a ``+``).
     lib_pre_method_return_types: dict[str, str] = {}
     lib_pre_func_generic_params: dict[str, set[str]] = {}
+    lib_pre_func_generic_order: dict[str, list[str]] = {}
     lib_pre_generic_instance_methods: dict[str, list[str]] = {}
     lib_pre_generic_method_returns: dict[str, str] = {}
     lib_pre_generator_functions: set[str] = set()
@@ -2437,7 +2499,10 @@ def compile_lam(
 
     if not no_semantic_check:
         # Before namespacing rewrites the module trees.
-        _check_imported_module_names(name_check_modules, module_index)
+        _check_imported_modules(
+            name_check_modules, module_index, program_check_cache,
+            import_graph=module_import_files, use_cache=use_cache,
+        )
 
     main_module_path = source_file.resolve()
     ns_modules[main_module_path] = _namespacing.ModuleInfo(
@@ -2551,6 +2616,8 @@ def compile_lam(
                 lib_pre_method_return_types.setdefault(key, ret)
             for key, names in sub_collector._func_generic_params.items():
                 lib_pre_func_generic_params.setdefault(key, set()).update(names)
+            for key, order in sub_collector._func_generic_order.items():
+                lib_pre_func_generic_order.setdefault(key, list(order))
             for key, names in sub_collector._generic_instance_methods.items():
                 lib_pre_generic_instance_methods.setdefault(key, list(names))
             for key, ret in sub_collector._generic_method_returns.items():
@@ -2891,6 +2958,8 @@ def compile_lam(
             lib_transpiler._method_return_types.setdefault(key, ret)
         for key, names in lib_pre_func_generic_params.items():
             lib_transpiler._func_generic_params.setdefault(key, set()).update(names)
+        for key, order in lib_pre_func_generic_order.items():
+            lib_transpiler._func_generic_order.setdefault(key, list(order))
         for key, names in lib_pre_generic_instance_methods.items():
             lib_transpiler._generic_instance_methods.setdefault(key, list(names))
         for key, ret in lib_pre_generic_method_returns.items():
@@ -3149,6 +3218,8 @@ def compile_lam(
         transpiler._func_return_go_types.setdefault(key, type_)
     for key, names in lib_pre_func_generic_params.items():
         transpiler._func_generic_params.setdefault(key, set()).update(names)
+    for key, order in lib_pre_func_generic_order.items():
+        transpiler._func_generic_order.setdefault(key, list(order))
     for key, names in lib_pre_generic_instance_methods.items():
         transpiler._generic_instance_methods.setdefault(key, list(names))
     for key, ret in lib_pre_generic_method_returns.items():

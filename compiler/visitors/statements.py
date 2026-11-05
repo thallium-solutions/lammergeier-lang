@@ -170,6 +170,15 @@ class StatementVisitorMixin:
         type_text = getattr(node, "_lam_inferred_type", "")
         if not type_text or re.search(r"\b(any|unknown|object|None|T\d*)\b", type_text):
             return None
+        # A class the checker knows under a name this module does not bind
+        # (``HttpProblem`` returned by another module's method, a
+        # ``kit.Problem`` it shadows): no declaration, Go infers it.
+        known = self._class_names | self._interfaces | set(self._generic_names) | {"Result", "Error"}
+        if any(
+            (name[0].isupper() or "." in name) and name not in known
+            for name in re.findall(r"[A-Za-z_][\w.]*", type_text)
+        ):
+            return None
         type_node = self._lam_type_text_node(type_text)
         if type_node is None:
             return None
@@ -1467,6 +1476,12 @@ class StatementVisitorMixin:
             self._var_go_types[var_name] = "int"
         elif iterable_type.startswith("[]"):
             self._var_go_types[var_name] = iterable_type[2:]
+            if iterable_type == "[]*Result":
+                # ``for r in rows`` with ``rows: list[Result[int]]``:
+                # ``r.unwrap()`` is an ``int``.
+                payload = self._iterable_result_payload_go_type(iterable_node)
+                if payload and payload != "interface{}":
+                    self._var_result_payloads[var_name] = payload
         if self._flow_iterable_statically_nonempty(iterable_node) and not self._flow_contains_loop_exit(suite_node):
             self._hoist_flow_locals([suite_node])
 
@@ -1830,7 +1845,12 @@ class StatementVisitorMixin:
                 class_name = self._hier_class_from_go_type(elem) or elem[1:].split("[", 1)[0]
                 if class_name in self._class_names:
                     self._var_types[var_name] = class_name
-        if elem == "*Result":
+        elem_payload = self._iterable_result_payload_go_type(iterable_node)
+        if elem_payload and elem_payload != "interface{}" and elem in ("", "*Result"):
+            # ``for r in src.each()`` with ``-> generator[Result[int]]``.
+            self._var_go_types[var_name] = "*Result"
+            self._var_result_payloads[var_name] = elem_payload
+        elif elem == "*Result":
             payload = self._propagated_payload_go_type(iterable_node)
             if payload and payload != "interface{}":
                 self._var_result_payloads[var_name] = payload

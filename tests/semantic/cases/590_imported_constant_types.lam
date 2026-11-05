@@ -1,0 +1,19 @@
+# expect-error: line 15: error[type]: cannot assign `str` to `int` variable `n`
+# expect-error: line 16: error[type]: cannot assign `int` to `str` variable `s`
+# expect-error: line 17: error[type]: cannot assign `list[str]` to `list[int]` variable `xs`
+# 4.3.0: imported constants and top-level variables have their declared
+# type (they were unknown: `{"t": Prefix + "a"}` was "not JSON-compatible"
+# and misuses went to `go build`), also through `import ... as m`.
+from full_check_package.consts import Prefix, Limit, Langs, Fallback
+import full_check_package.consts as c
+
+func doc() -> json {
+    return {"t": Prefix + "a", "n": Limit, "langs": Langs, "f": Fallback, "c": c.Prefix, "m": c.Limit + 1}
+}
+
+func main() {
+    n: int = Prefix
+    s: str = c.Limit
+    xs: list[int] = Langs
+    print(doc(), n, s, xs)
+}

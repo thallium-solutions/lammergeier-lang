@@ -1,0 +1,20 @@
+# expect-pass
+# 4.3.0: a `Result[any]` (the result of a dynamic reader) returned as a
+# `Result[str]` was rejected, though an `any` value is assigned to a `str`
+# and a `Result` is one runtime type whatever its payload.
+from lamerrors import Result
+
+func next(lines: list[str]) -> Result[any] {
+    if len(lines) == 0 {
+        return Result.Ok(None)
+    }
+    return Result.Ok(lines[0])
+}
+
+func nextLine(lines: list[str]) -> Result[str] {
+    return next(lines)
+}
+
+func main() {
+    print(nextLine(["a", "b"]).unwrap())
+}

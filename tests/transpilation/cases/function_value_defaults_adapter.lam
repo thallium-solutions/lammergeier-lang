@@ -1,0 +1,32 @@
+# Transpilation: a function passed by name to a parameter of function type
+# with fewer parameters (defaults) or no result becomes a closure filling
+# the defaults; a function that fits is passed as is.
+# expect-go: Apply(func(_lamArg0 string) string { return Suffix(_lamArg0, "!") }, "a")
+# expect-go: OnEach(func(_lamArg0 string, _lamArg1 int) { Show(_lamArg0, _lamArg1) })
+# expect-go: ApplyBoth(Suffix, "c")
+
+func suffix(text: str, mark: str = "!") -> str {
+    return text + mark
+}
+
+func show(name: str, count: int) -> int {
+    return count
+}
+
+func apply(f: func(str) -> str, x: str) -> str {
+    return f(x)
+}
+
+func applyBoth(f: func(str, str) -> str, x: str) -> str {
+    return f(x, "?")
+}
+
+func onEach(callback: func(str, int)) {
+    callback("x", 1)
+}
+
+func main() {
+    print(apply(suffix, "a"))
+    print(applyBoth(suffix, "c"))
+    onEach(show)
+}

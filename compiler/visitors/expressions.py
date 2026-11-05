@@ -13,7 +13,7 @@ from compiler.constants import (
 from compiler.typesys import DictType
 from compiler.visitors.generics import mentions_names, substitute_go_type
 from compiler.index_bounds import index_nonneg, lower_bound
-from compiler.fstrings import fstring_body, fstring_spec_to_go, parse_slot, split_fstring
+from compiler.fstrings import SOURCE_NEWLINE, fstring_body, fstring_spec_to_go, parse_slot, split_fstring
 from compiler import narrowing
 
 
@@ -1067,6 +1067,14 @@ class ExpressionVisitorMixin:
                         source = self._expr_go_type_hint(raw_args[0]) or self._infer_type_from_value(raw_args[0]) or ""
                         if source.startswith("[]"):
                             return source
+                if name == "reversed" and name not in self._user_functions and name not in self._var_go_types:
+                    args_node = node.children[1] if len(node.children) > 1 else None
+                    raw_args = self._get_raw_call_args(args_node) if isinstance(args_node, Tree) else []
+                    if len(raw_args) == 1:
+                        source = self._reversed_source_go_type(raw_args[0])
+                        if source == "string":
+                            return "[]string"
+                        return source if source.startswith("[]") else "[]interface{}"
                 if name in {"abs", "min", "max"} and name not in self._user_functions and name not in self._var_go_types:
                     # ``max(abs(a), 2)``: ints stay ints (``_numeric_builtin_to_go``).
                     result = self._numeric_builtin_go_type(name, node)
@@ -1331,7 +1339,7 @@ class ExpressionVisitorMixin:
                 and not self._in_funccall_head
                 and name != "main"
             ):
-                return self._go_user_function_name(name)
+                return self._unshadowed_function(self._go_user_function_name(name), name)
             if (
                 self._in_funccall_head
                 and name in self._user_functions
@@ -1917,6 +1925,26 @@ class ExpressionVisitorMixin:
     def _is_private_method_name(self, method_name: str) -> bool:
         return any(method_name in methods for methods in self._private_methods.values())
 
+    def _unshadowed_function(self, go_name: str, func_name: str) -> str:
+        """``go_name`` of a package-level function, or a package-level alias
+        of it when a type parameter in scope has the same Go name: ``t`` is
+        ``T`` in Go, which inside ``func f[T]`` / ``class Box[T]`` names the
+        type parameter (``T("x")`` is a conversion, ``T`` as a value "is not
+        an expression"). The alias (``var lamFuncRef_T_<module> = T``) is
+        declared at package level, where ``T`` is the function. A generic
+        function cannot be aliased without instantiation and is left as is
+        (the checker reports that case)."""
+        if go_name not in self._generic_names:
+            return go_name
+        if self._func_generic_params.get(func_name) or self._func_generic_order.get(func_name):
+            return go_name
+        alias = self._shadowed_function_aliases.get(go_name)
+        if alias is None:
+            module = self._module_init_name.removeprefix("lamModuleInit_")
+            alias = f"lamFuncRef_{go_name}_{module}"
+            self._shadowed_function_aliases[go_name] = alias
+        return alias
+
     def _go_user_function_name(self, func_name: str) -> str:
         if func_name in self._function_go_names:
             return self._function_go_names[func_name]
@@ -1958,10 +1986,18 @@ class ExpressionVisitorMixin:
                 call_key = str(variant.get("meta_key") or func_name)
         if type_args is None and args_node is not None and self._func_generic_params.get(call_key):
             call_args = self._planned_call_args_inferred(call_key, args_node)
+        elif type_args is not None and self._func_generic_order.get(call_key):
+            # ``firstOf[str]()``: the explicit type arguments type the
+            # arguments and the defaults (``xs: list[T] = []`` is ``[]string{}``).
+            order = self._func_generic_order[call_key]
+            subst = {name: str(arg) for name, arg in zip(order, type_args)}
+            with self._scoped(_call_type_subst={**self._call_type_subst, **subst}):
+                call_args = self._planned_call_args(call_key, args_node, args, kwargs)
         else:
             call_args = self._planned_call_args(call_key, args_node, args, kwargs)
         if type_args is not None:
             return f"{go_name}[{self._args_to_go(type_args)}]({self._args_to_go(call_args)})"
+        go_name = self._unshadowed_function(go_name, call_key)
         return f"{go_name}({self._args_to_go(call_args)})"
 
     def _planned_call_args(
@@ -2070,6 +2106,17 @@ class ExpressionVisitorMixin:
                     return iface
         return obj_class
 
+    def _inherited_method_param_key(self, class_name: str, method_name: str) -> str:
+        """``"Base.method"`` of the nearest non-generic ancestor defining
+        ``method_name`` with known parameter types (``""`` when none)."""
+        for ancestor in self._hier_ancestors(class_name):
+            key = f"{ancestor}.{method_name}"
+            if key in self._func_param_go_types:
+                if self._class_type_param_names_of(ancestor) or len(self._overload_variants.get(key, [])) > 1:
+                    return ""
+                return key
+        return ""
+
     def _known_instance_method_call_to_go(
         self, func_str: str, raw_obj: str, method_name: str, func, args_node,
     ) -> Optional[str]:
@@ -2091,6 +2138,11 @@ class ExpressionVisitorMixin:
             suffix = self._overload_suffix_for_sig(method_key, call_sig)
             if variant is not None:
                 call_key = str(variant.get("meta_key") or method_key)
+        if call_key not in self._func_param_go_types and len(self._overload_variants.get(method_key, [])) <= 1:
+            # A method inherited from a base (of another module): its
+            # parameters type the arguments (``s.need(["a"])`` passes a
+            # ``[]string``).
+            call_key = self._inherited_method_param_key(obj_class, method_name) or call_key
         subst = self._generic_receiver_subst(obj_class, func)
         generic_names = sorted(self._func_generic_params.get(call_key, set()) or self._func_generic_params.get(method_key, set()))
         if generic_names:
@@ -2543,6 +2595,11 @@ class ExpressionVisitorMixin:
                     f"sort.SliceStable(tmp, func(i, j int) bool {{ return {less_expr} }}); return tmp }}()"
                 )
 
+        if func_str == "reversed" and "reversed" not in self._user_functions and "reversed" not in self._var_go_types:
+            raw_args = self._get_raw_call_args(args_node)
+            if len(raw_args) == 1:
+                return self._reversed_to_go(raw_args[0])
+
         if func_str == "enumerate":
             # In a for-head ``for i, v in enumerate(xs)`` the for-stmt
             # visitor rewrites this directly into a Go ``range`` loop.
@@ -2879,7 +2936,7 @@ class ExpressionVisitorMixin:
 
             def _resolve_func_ref(fn_expr):
                 if fn_expr in self._user_functions:
-                    return self._go_user_function_name(fn_expr)
+                    return self._unshadowed_function(self._go_user_function_name(fn_expr), fn_expr)
                 return fn_expr
 
             def _is_user_func_arg(arg_expr):
@@ -3427,7 +3484,7 @@ class ExpressionVisitorMixin:
             if len(self._overloaded_functions.get(func_name, set())) > 1:
                 arg_count = len([a.strip() for a in call_args.split(",") if a.strip()]) if call_args.strip() else 0
                 go_name = f"{go_name}_{arg_count}"
-            return f"{go_name}({call_args})"
+            return f"{self._unshadowed_function(go_name, func_name)}({call_args})"
 
         return expr
 
@@ -3479,6 +3536,7 @@ class ExpressionVisitorMixin:
         # starts with ``f"``/``f'`` so the shorter prefix would win
         # and leave two quote characters dangling on each end, which
         # then leak into the emitted Go format string.
+        raw = raw.replace(SOURCE_NEWLINE, "")
         if raw.startswith('f"""') or raw.startswith("f'''"):
             raw = raw[4:-3]
         elif raw.startswith("f'") or raw.startswith('f"'):
@@ -3585,6 +3643,36 @@ class ExpressionVisitorMixin:
         "if x != x || y != y { if x != x && y != y { return 0 } else if x != x { return -1 }; return 1 }; "
         "if x < y { return -1 } else if x > y { return 1 }; return 0 }"
     )
+
+    def _reversed_to_go(self, arg) -> str:
+        """``reversed(xs)``: a reversed copy of a list (same slice type); for
+        a ``str``, its characters (runes) last first as a ``[]string``, so
+        ``"".join(reversed(s))`` and ``for ch in reversed(s)`` work as in
+        Python. The argument is evaluated once and never modified."""
+        go_type = self._reversed_source_go_type(arg)
+        source = self._typed_value_to_go(arg, go_type) if go_type.startswith("[]") else self._expr_to_go(arg)
+        if go_type == "string":
+            return (
+                f"func(src string) []string {{ rs := []rune(src); out := make([]string, len(rs)); "
+                f"for i, r := range rs {{ out[len(rs)-1-i] = string(r) }}; return out }}({source})"
+            )
+        if go_type.startswith("[]"):
+            return (
+                f"func(src {go_type}) {go_type} {{ out := make({go_type}, len(src)); "
+                f"for i, v := range src {{ out[len(src)-1-i] = v }}; return out }}({source})"
+            )
+        self._need_import("reflect")
+        return (
+            "func(src interface{}) []interface{} { v := reflect.ValueOf(src); "
+            "if v.Kind() == reflect.String { rs := []rune(v.String()); out := make([]interface{}, len(rs)); "
+            "for i, r := range rs { out[len(rs)-1-i] = string(r) }; return out }; "
+            "n := v.Len(); out := make([]interface{}, n); "
+            "for i := 0; i < n; i++ { out[n-1-i] = v.Index(i).Interface() }; return out }"
+            f"({source})"
+        )
+
+    def _reversed_source_go_type(self, arg) -> str:
+        return self._expr_go_type_hint(arg) or self._infer_type_from_value(arg) or ""
 
     def _dynamic_compare_go(self) -> str:
         """A Go ``func(a, b interface{}) int`` ordering values by kind
@@ -4493,17 +4581,39 @@ class ExpressionVisitorMixin:
         payload = self._result_payload_of(callee.children[0])
         return "" if payload in {"", "interface{}"} else payload
 
-    def _propagated_payload_go_type(self, operand) -> str:
+    def _iterable_result_payload_go_type(self, iterable) -> str:
+        """Payload Go type of the ``Result`` elements of ``iterable``: a
+        call of a function / method declared ``-> generator[Result[T]]`` /
+        ``-> list[Result[T]]`` or a variable annotated so."""
+        if isinstance(iterable, Tree) and iterable.data == "var" and iterable.children:
+            return self._var_result_payloads.get(f"{self._get_name(iterable.children[0])}[]", "")
+        if isinstance(iterable, Tree) and iterable.data in {"getattr", "getattr_safe"} and len(iterable.children) >= 2:
+            # ``self.cached`` with a field ``cached: list[Result[int]]``.
+            receiver = iterable.children[0]
+            class_name = self.current_class if (
+                isinstance(receiver, Tree) and receiver.data == "var" and receiver.children
+                and self._get_name(receiver.children[0]) == "self"
+            ) else self._infer_receiver_class(receiver)
+            if class_name:
+                field = self._get_name(iterable.children[1])
+                for owner in [class_name] + list(self._hier_ancestors(class_name)):
+                    payload = self._result_payload_go_types.get(f"{owner}.{field}[]", "")
+                    if payload:
+                        return payload
+            return ""
+        return self._propagated_payload_go_type(iterable, "[]")
+
+    def _propagated_payload_go_type(self, operand, suffix: str = "") -> str:
         if isinstance(operand, Tree) and operand.data == "var":
             # ``r?`` with ``r: Result[Box]``.
-            return self._result_payload_of(operand)
+            return self._result_payload_of(operand) if not suffix else ""
         if not isinstance(operand, Tree) or operand.data != "funccall" or not operand.children:
             return ""
         callee = operand.children[0]
         if not isinstance(callee, Tree):
             return ""
         if callee.data == "var" and callee.children:
-            return self._payload_go_type_for_call(self._get_name(callee.children[0]), operand)
+            return self._payload_go_type_for_call(self._get_name(callee.children[0]) + suffix, operand)
         if callee.data not in {"getattr", "getattr_safe"} or len(callee.children) < 2:
             return ""
         receiver = callee.children[0]
@@ -4512,14 +4622,14 @@ class ExpressionVisitorMixin:
             return ""
         if receiver.data != "var" or not receiver.children:
             class_name = self._infer_receiver_class(receiver)
-            return self._payload_go_type_for_call(f"{class_name}.{method}", operand) if class_name else ""
+            return self._payload_go_type_for_call(f"{class_name}.{method}{suffix}", operand) if class_name else ""
         receiver_name = self._get_name(receiver.children[0])
         class_name = receiver_name if receiver_name in self._class_names else self._var_types.get(receiver_name, "")
         if not class_name and receiver_name == "self" and self.current_class:
             # ``self.items()?`` inside a method of the class.
             class_name = self.current_class
         key = f"{class_name}.{method}" if class_name else f"{receiver_name}.{method}"
-        return self._payload_go_type_for_call(key, operand)
+        return self._payload_go_type_for_call(key + suffix, operand)
 
     def _payload_go_type_for_call(self, key: str, call_node: Tree) -> str:
         """Result payload Go type of the callee ``key`` at ``call_node``.
@@ -5017,6 +5127,18 @@ class ExpressionVisitorMixin:
         return []
 
     def _append_comprehension_loop(self, lines: List[str], clause: Tree, depth: int) -> None:
+        self._append_comprehension_loop_inner(lines, clause, depth)
+        var_expr = clause.children[0]
+        if isinstance(var_expr, Tree) and var_expr.data == "var" and var_expr.children:
+            # ``[r.unwrap() * 2 for r in results()]`` over ``Result[int]``
+            # elements: the variable keeps the payload.
+            name = self._go_binding_name(self._get_name(var_expr.children[0]))
+            payload = self._iterable_result_payload_go_type(clause.children[1])
+            if payload and payload != "interface{}" and self._var_go_types.get(name) in (None, "", "*Result"):
+                self._var_go_types[name] = "*Result"
+                self._var_result_payloads[name] = payload
+
+    def _append_comprehension_loop_inner(self, lines: List[str], clause: Tree, depth: int) -> None:
         var_expr = clause.children[0]
         iter_expr = clause.children[1]
         # The loop variables are locals of the comprehension, even when a

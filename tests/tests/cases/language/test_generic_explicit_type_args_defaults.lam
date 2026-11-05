@@ -1,0 +1,43 @@
+# Explicit type arguments type a generic function's parameter defaults
+# (4.3.0: `firstOf[str]()` with `xs: list[T] = []` passed `[]T{}` and
+# failed in `go build` with "undefined: T"); a default typed by the other
+# arguments' type parameters too. A call no argument types needs the
+# explicit form (a Lam error, see the semantic tests).
+# expect: 0 1
+# expect: [1 2]
+# expect: [a b c]
+# expect: 1 2
+# expect: 0
+# expect: 2
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+}
+
+func firstOf[T](xs: list[T] = []) -> int {
+    return len(xs)
+}
+
+func merge[T](xs: list[T], extra: list[T] = []) -> list[T] {
+    return xs + extra
+}
+
+func pair[K, V](k: K, v: V, more: list[V] = []) -> int {
+    return len(more) + 1
+}
+
+func main() {
+    print(firstOf[str](), firstOf([1]))
+    print(merge([1, 2]))
+    print(merge(["a"], ["b", "c"]))
+    print(pair[str, int]("a", 1), pair("a", 2, [3]))
+    b: Box[int] = Box[int]([])
+    print(b.size())
+    print(Box(["x", "y"]).size())
+}

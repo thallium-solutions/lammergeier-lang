@@ -1,6 +1,6 @@
 # expect-error: use `//` for integer division
 # Helper for 511_int_true_division_in_imported_module.lam: int `/` where an
-# int is expected, in a module the semantic checker does not see.
+# int is expected, in an imported module.
 
 from lamerrors import Result
 

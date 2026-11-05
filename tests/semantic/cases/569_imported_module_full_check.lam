@@ -1,0 +1,31 @@
+# expect-pass
+# expect-no-warning: semantic check failed
+# expect-no-warning: unused parameter
+# 4.3.0: every module of the program gets the full semantic check (before,
+# imported modules only got name checks and their type errors failed in
+# `go build`). The imported modules of this program use what the checker
+# used to misreport across modules: imported constants and variables (also
+# through `import .m as m` and a package `__init__` re-export), a class seen
+# under two names (`Column`, `ui.Column`), an interface with every method of
+# another, the same callback union passed on, a `Result[any]` returned as a
+# `Result[str]`, `None` for a function field, `{}` for a `dict[int, Part]`
+# field, JSON literals and comprehensions, `for s in self.squares`, a
+# ternary with `None` where an optional is expected, a `go!` block whose Go
+# code names a parameter `self`. Lint warnings stay the compiled file's.
+
+from full_check_package.views import Page, inTransaction, names, optionalLabel, badge, forward, nextLine
+from full_check_package.shapes import Reader
+from full_check_package import Square, Prefix
+
+func show(n: int) {
+    print(n)
+}
+
+func main() {
+    page: Page = Page()
+    page.reset()
+    print(page.doc())
+    print(inTransaction(), names(page), optionalLabel(true) ?? "-", badge(false))
+    print(forward(show))
+    print(nextLine(Reader(["a"])).unwrap(), Prefix, json(Square(4)))
+}

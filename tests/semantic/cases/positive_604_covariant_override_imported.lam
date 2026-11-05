@@ -1,0 +1,45 @@
+# expect-pass
+# expect-no-warning: overrides
+# A subclass of an imported class overrides builder methods with its own
+# type as the return type (covariant returns) and defines a static method
+# with the base static's name and another signature.
+from covariant_base_helper import Problem
+
+class AppProblem(Problem) {
+    func init(self, status: int = 500, code: str = "") {
+        base.init(status)
+        self.code: str = code
+    }
+
+    func withStatus(self, status: int) -> AppProblem {
+        self.status = status
+        return self
+    }
+
+    func copy(self) -> AppProblem {
+        return AppProblem(self.status, self.code)
+    }
+
+    static func validation(code: str) -> AppProblem {
+        return AppProblem(422, code)
+    }
+}
+
+class Narrow(AppProblem) {
+    func withStatus(self, status: int) -> Narrow {
+        self.status = status + 1
+        return self
+    }
+
+    static func validation() -> Narrow {
+        return Narrow(409, "n")
+    }
+}
+
+func main() {
+    a: AppProblem = AppProblem.validation("E1").withStatus(400).copy()
+    n: Narrow = Narrow.validation().withStatus(1)
+    p: Problem = a.withStatus(401)
+    q: Problem = Problem.validation("body")
+    print(f"{a.code} {n.code} {p.status} {q.status}")
+}

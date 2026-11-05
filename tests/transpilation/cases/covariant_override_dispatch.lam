@@ -1,0 +1,59 @@
+# Transpilation: an override returning a subclass of the base's return
+# class (covariant) keeps its Go name and return type; the dispatch
+# interface lists an adapter returning the base type, defined by the base
+# and by each overriding class (with an upcast), and `_lamVirt_` forwards
+# to it. A plain override of another method keeps the direct interface
+# method; static methods of the same name are two functions.
+# expect-go: _lamOv_Node_Add(child string) *Node
+# expect-go: Name() string
+# expect-go: func (s *Node) _lamOv_Node_Add(child string) *Node { return s.Add(child) }
+# expect-go: if _lamRecv._lamSelf != nil { return _lamRecv._lamSelf._lamOv_Node_Add(child) }
+# expect-go: if _lamRecv._lamSelf != nil { return _lamRecv._lamSelf.Name() }
+# expect-go: func (s *Section) Add(child string) *Section {
+# expect-go: func (s *Section) _lamOv_Node_Add(child string) *Node { return s.Add(child)._lamUp_Node() }
+# expect-go: func Node_make() *Node {
+# expect-go: func Section_make(count int) *Section {
+# expect-go: return n._lamVirt_Add(child)
+
+class Node {
+    func init(self) {
+        self.children: list[str] = []
+    }
+
+    func add(self, child: str) -> Node {
+        self.children.append(child)
+        return self
+    }
+
+    func name(self) -> str {
+        return "node"
+    }
+
+    static func make() -> Node {
+        return Node()
+    }
+}
+
+class Section(Node) {
+    func add(self, child: str) -> Section {
+        self.children.append(f"<b>{child}</b>")
+        return self
+    }
+
+    func name(self) -> str {
+        return "section"
+    }
+
+    static func make(count: int) -> Section {
+        return Section()
+    }
+}
+
+func extend(n: Node, child: str) -> Node {
+    return n.add(child)
+}
+
+func main() {
+    print(extend(Section(), "x").name())
+    print(Section.make(1).add("y").name() + Node.make().name())
+}

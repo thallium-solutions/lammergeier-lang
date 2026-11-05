@@ -1,0 +1,27 @@
+# expect-error: line 23: error[call]: overloaded function `fmtValue` cannot be used as a value
+# expect-error: line 24: error[call]: overloaded function `fmtValue` cannot be used as a value
+# expect-no-warning: line 25
+# expect-no-warning: line 26
+# An overloaded function has one Go function per variant; its bare name
+# passed or stored as a function value failed in `go build` ("undefined:
+# FmtValue"). It is a Lam error; a lambda calling it (the variant chosen by
+# the argument) and plain calls work.
+
+func fmtValue(v: str) -> str {
+    return "s:" + v
+}
+
+func fmtValue(v: int) -> str {
+    return "i:" + str(v)
+}
+
+func apply(f: func(str) -> str, x: str) -> str {
+    return f(x)
+}
+
+func main() {
+    print(apply(fmtValue, "a"))
+    g: func(str) -> str = fmtValue
+    print(apply(lambda s: fmtValue(s), "b"))
+    print(fmtValue(1) + g("c"))
+}

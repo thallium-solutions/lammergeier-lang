@@ -757,7 +757,20 @@ instance is accepted where the function value expects its base class
 (`rate(book)` with `rate: func(Item) -> float` and `book: Featured`,
 `class Featured(Item)`), for function-typed locals, parameters and fields
 alike, exactly as for a declared function; the callee still sees the
-`Featured` object, so its overrides run.
+`Featured` object, so its overrides run. `None` is a valid function value
+(the unset callback, as a Go `nil` func): `self.onDone: func(int) = None`,
+tested with `if self.onDone != None { self.onDone(code) }`.
+
+A module function passed by name to a parameter of function type may have
+more parameters when the extra ones have defaults, and may return a value
+where the callback returns nothing: `apply(suffix, "a")` with `f: func(str)
+-> str` and `func suffix(text: str, mark: str = "!")` passes a closure that
+calls `suffix(text, "!")` (Go function values must match exactly, so the
+compiler writes that closure). A parameter typed by a union of callback
+types (`handler: func(R) | (func(R) -> str)`) receives the function value as
+is, so there the function must have exactly the callback's parameters; a
+lambda fills the defaults: `register(lambda a: suffix(a))`. An overloaded
+function is not a value (pass a lambda calling it).
 
 ---
 
@@ -822,6 +835,19 @@ func classify(age: int) -> str {
 
 # In function arguments
 print("even" if x % 2 == 0 else "odd")
+```
+
+Both branches must have compatible types. A `None` branch next to a value
+(`"x" if c else None`) makes an `optional[str]`: it is valid where an
+optional fits (an `optional[...]` or `any` variable, field, parameter or
+result, a list item, a JSON value, an f-string slot, a markup attribute,
+where `None` omits the attribute), and an error for a new unannotated
+variable (`v = "x" if c else None`: nothing gives the optional a type) or
+where a plain `str` is expected:
+
+```lammergeier
+wrap: optional[str] = cls if cls != "" else None
+link: html = <><a href="${url}" target="${'_blank' if external else None}">go</a></>
 ```
 
 ---
@@ -978,6 +1004,37 @@ class Square(Shape) {
 
 print(Square().describe())   # area 9
 ```
+
+An override takes the parent method's parameter types. Its return type is
+the parent's or, when the parent returns a class, a subclass of that class
+(a *covariant* return): a builder can return its own class, so chains on the
+subclass keep its methods while calls through the parent type still get a
+parent and still run the override:
+
+```lammergeier
+class Problem {
+    func withError(self, field: str, message: str) -> Problem { ...; return self }
+    static func validation(where: str) -> Problem { ... }
+}
+
+class AppProblem(Problem) {
+    func withError(self, field: str, message: str) -> AppProblem { ...; return self }
+    func withCode(self, code: str) -> AppProblem { ...; return self }
+    static func validation(code: str) -> AppProblem { ... }   # not an override
+}
+
+p: AppProblem = AppProblem.validation("E1").withError("a", "b").withCode("E2")
+q: Problem = p
+q.withError("c", "d")        # AppProblem.withError, returns a Problem
+```
+
+Covariant returns are not available for methods of generic classes, for
+returns of a generic class and for `async` methods (a compile error says
+so). Static methods do not override: `AppProblem.validation` and
+`Problem.validation` are two functions, each called through its class, so a
+subclass may declare a static method of a base static's name with any
+signature (a static method may not replace an instance method, nor the
+reverse).
 
 When a method or field is not declared on the child, ordinary access through
 `self` or an instance can use the inherited member:
@@ -1250,7 +1307,10 @@ Conformance is structural: a class with the required method set can be passed to
 an interface-typed parameter without an explicit declaration. Interface methods
 may spell the receiver (`func draw(self) -> str`) or omit it (`func draw() ->
 str`); either way `self` is not counted as a parameter. An interface may
-be empty (`interface Marker { }`); every value conforms to it. Imported
+be empty (`interface Marker { }`); every value conforms to it. An interface
+value is accepted where another interface is expected when it has every
+method of it with the same signature (a `SqlTx` with `exec` and `commit`
+where a `Sql` with `exec` is expected), as in Go. Imported
 interfaces work the same way. The importing module carries the interface's
 method metadata across the package boundary, so callers may import only the
 concrete class and a function whose signature uses that interface. Interfaces
@@ -1800,6 +1860,22 @@ mixed: list[any] = [10, "b", 9, None, 2.5]
 print(sorted(mixed))                                        # [<nil> 2.5 9 10 b]
 ```
 
+`reversed(xs)` returns a reversed copy of a list (the same list type; `xs`
+is not modified). As in Python, `reversed(s)` of a `str` gives its
+characters last first, as a `list[str]` (Python returns an iterator of
+characters): `"".join(reversed(s))` reverses a string (like `s.reverse()`)
+and `for ch in reversed(s)` walks it backwards. Any other argument (a dict,
+a number) is a compile error:
+
+```lammergeier
+nums: list[int] = [1, 2, 3]
+print(reversed(nums), nums)          # [3 2 1] [1 2 3]
+print("".join(reversed("héllo")))    # olléh
+for n in reversed(nums) {
+    print(n)                         # 3, 2, 1
+}
+```
+
 ---
 
 ## F-Strings
@@ -2304,8 +2380,8 @@ own receiver and arguments: `label.substring(0, 2)` → slicing `label[0:2]`
 (also `substr`, `slice`), `label.charAt(i)` → indexing `label[i]`,
 `a.concat(b)` → `a + b`, `a.equals(b)` → `a == b`, `indexOf` → `index`,
 `toUpperCase` → `toUpper`, `includes` → `contains`. The error is reported for
-imported modules too (the transpiler reports it there with the same message,
-since `lamc build` runs the semantic checker on the compiled file only).
+imported modules too (every module of the program gets the semantic check,
+see [Module imports and namespaces](#module-imports-and-namespaces)).
 See [TRANSPILATION.md](#/docs/transpilation)
 for the emission details, including which method names require
 at least one argument (`replace` / `split` / `index` / `count` /
@@ -2661,7 +2737,11 @@ in a `-> Result[str]` is a compile error, because `Json.encode` already
 returns `Result[str]` and the caller's `unwrap()` would find a `Result` where
 it expects a `str`; write `Result.Ok(Json.encode(v)?)` or `return
 Json.encode(v)`. `Result[any]`, a bare `Result`, `Result[Result[T]]` and
-generic payloads accept any value that fits them. A value that fits only
+generic payloads accept any value that fits them. A `Result[any]` (from a
+dynamic reader) may be returned or assigned as a `Result[T]`, like an `any`
+value assigned to a `T`; two different payloads (`Result[DateTime]` where a
+`Result[str]` is expected) are an error: re-wrap the error with
+`Result.Err(r.error)`. A value that fits only
 through a conversion is converted: `Result.Ok(1)` in a `Result[float]` holds
 `1.0`, and `Result.Ok(Circle())` in a `Result[Shape]` holds the `Shape` view
 of the circle (overridden methods still dispatch to `Circle`); `unwrap()`,
@@ -3279,7 +3359,8 @@ three-way comparator for arbitrary classes. Both copy the input and select each
 next value incrementally.
 
 The declared return type of a generator is the type of the values it yields
-(`-> generator[T]` is accepted too), and the loop variable (or comprehension
+(`-> generator[T]` is accepted too, and `iterator[T]` is another name of
+`generator[T]`), and the loop variable (or comprehension
 target) has that type: `for batch in Csv.batches(path)` gives a
 `Result[list[list[str]]]`, so `rows: list[list[str]] = batch?` or
 `batch.unwrap()[0]` are typed, for stdlib, local and imported generators.
@@ -3693,6 +3774,15 @@ the type parameters of a callback parameter (`mapList(names, len2)` with
 argument is `any` or otherwise unknown, the checker keeps the conservative
 fallback instead of guessing.
 
+When no argument gives a type parameter its type, the call needs explicit
+type arguments: a parameter default (`firstOf()` with `xs: list[T] = []`),
+`None` (`ident(None)`), or an empty `[]` / `{}` where the result must be a
+given instantiation (`b: Box[int] = Box([])`) is a compile error suggesting
+`firstOf[int]()` / `Box[int]([])`. Explicit type arguments also type the
+defaults (`firstOf[str]()` passes an empty `list[str]`). An empty literal
+whose result may be anything (`count([])`, `b = Box([])`) makes the type
+parameter `any`.
+
 Lambdas passed to a generic function or method take their parameter types
 from the type arguments known at the call, and their result binds the
 rest, like Go's own inference: the receiver's type arguments first
@@ -3952,9 +4042,21 @@ error in that module, with the import to add; importing a name the target
 module does not declare is an `import resolution failed` error, and so is
 a relative import of a module that does not exist (`from .missing import
 Thing`, `import ..gone as g`), reported with its line and the paths
-searched. These are checked in every imported project and `extlibs` module,
-not only in the main file, absolute imports of missing modules included.
-Raw `go!` code is not checked.
+searched. Raw `go!` code is not checked.
+
+Every module of the program gets the **full semantic check**, not only the
+compiled file: project modules, `extlibs` packages and the stdlib, each
+once, in its own scope and with what it imports (the signatures, overloads,
+classes, generic classes, interfaces, constants and module-level variables
+of the imported modules, also re-exported by a package `__init__.lam` or
+reached through `import .m as m`). A type error, a wrong call, a JSON or
+markup misuse in an imported module is reported at that module's file and
+line instead of failing in `go build` (before 4.3.0 imported modules only
+got these name checks). Warnings (unused names, dropped results) stay those
+of the compiled file; an imported module only adds its import advisories.
+A module that checks clean is remembered in the compile cache (keyed by
+the compiler, the module and every module it imports), so a rebuild only
+checks what changed (`--no-cache` checks everything).
 
 ```text
 error: semantic check failed for lib/app/web/views.lam
@@ -4931,6 +5033,10 @@ single-file programs:
   loads it in tens of milliseconds instead of rebuilding the LALR
   tables.
 - Library outputs are content-addressed and reused across builds.
+- The semantic check of every imported module shares the build's parsed
+  trees; a module that checks clean is recorded by its content and its
+  imports' content, so a rebuild only re-checks the modules that changed
+  or import a changed module.
 - `go mod tidy` runs only inside an isolated tmpdir, so it never
   touches the user's checkout.
 

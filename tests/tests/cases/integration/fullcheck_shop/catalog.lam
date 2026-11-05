@@ -1,0 +1,73 @@
+# Module of test_int_full_check_program.lam: classes, a generic class, an
+# interface pair and constants other modules of the package use.
+
+const CurrencyCode: str = "EUR"
+const MaxItems: int = 3
+Sections: list[str] = ["new", "sale"]
+
+class Product {
+    func init(self, name: str, cents: int, tags: list[str]) {
+        self.name: str = name
+        self.cents: int = cents
+        self.tags: list[str] = tags
+    }
+
+    func __json__(self) -> json {
+        return {"name": self.name, "cents": self.cents}
+    }
+}
+
+class Page[T] {
+    func init(self, items: list[T], total: int) {
+        self.items: list[T] = items
+        self.total: int = total
+    }
+}
+
+interface Store {
+    func get(name: str) -> optional[Product]
+}
+
+interface WritableStore {
+    func get(name: str) -> optional[Product]
+    func put(p: Product) -> int
+}
+
+class Catalog {
+    func init(self) {
+        self.byName: dict[str, Product] = {}
+        self.order: list[str] = []
+        self.onChange: func(str) = None
+    }
+
+    func get(self, name: str) -> optional[Product] {
+        if name in self.byName {
+            return self.byName[name]
+        }
+        return None
+    }
+
+    func put(self, p: Product) -> int {
+        self.byName[p.name] = p
+        self.order.append(p.name)
+        if self.onChange != None {
+            self.onChange(p.name)
+        }
+        return len(self.order)
+    }
+
+    func clear(self) {
+        self.byName = {}
+        self.order = []
+    }
+
+    func products(self) -> iterator[Product] {
+        for name in self.order {
+            yield self.byName[name]
+        }
+    }
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}
