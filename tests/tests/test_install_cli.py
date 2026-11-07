@@ -589,6 +589,38 @@ def test_git_branch_ref_follows_new_commits() -> None:
     print("PASS: git branch refs follow new commits")
 
 
+def test_git_cache_on_another_filesystem() -> None:
+    """Regression: the git cache was cloned with ``--local`` (hard links), so
+    a cache on another filesystem than the project (a Docker BuildKit cache
+    mount, a tmpfs) failed with ``Invalid cross-device link``, for plain and
+    ``--frozen`` installs alike."""
+    import os
+    shm = Path("/dev/shm")
+    if not shm.is_dir() or os.stat(shm).st_dev == os.stat(tempfile.gettempdir()).st_dev:
+        print("SKIP: git cache on another filesystem (no separate tmpfs)")
+        return
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory(dir=str(shm)) as cache:
+        tmp_p = Path(tmp)
+        env = dict(os.environ, LAMC_CACHE=cache)
+        repo = _make_git_lib(tmp_p, "lamxdev", "1.0.0", tag="1.0.0", body='func where() -> str { return "xdev" }')
+        proj = tmp_p / "proj"; proj.mkdir()
+        (proj / "lamlib.toml").write_text(textwrap.dedent(f"""
+            [library]
+            name    = "myapp"
+            version = "0.1.0"
+
+            [dependencies]
+            lamxdev = {{ git = "{repo.as_uri()}", ref = "1.0.0" }}
+        """).lstrip(), encoding="utf-8")
+        first = subprocess.run(LAMC + ["install"], cwd=str(proj), capture_output=True, text=True, env=env)
+        assert first.returncode == 0, first.stderr
+        shutil.rmtree(proj / "extlibs")
+        frozen = subprocess.run(LAMC + ["install", "--frozen"], cwd=str(proj), capture_output=True, text=True, env=env)
+        assert frozen.returncode == 0, frozen.stderr
+        assert '"xdev"' in (proj / "extlibs" / "lamxdev" / "__init__.lam").read_text()
+    print("PASS: a git cache on another filesystem installs")
+
+
 def test_frozen_succeeds_when_manifest_and_lockfile_agree() -> None:
     """``--frozen`` validates the manifest \u2194 lockfile pair and then
     materialises every pin from the lockfile (skipping the resolver).
@@ -842,6 +874,7 @@ def main() -> int:
         test_install_spec_writes_manifest_dependency,
         test_git_install_writes_manifest_dependency,
         test_bare_install_reads_git_dependency,
+        test_git_cache_on_another_filesystem,
         test_frozen_succeeds_when_manifest_and_lockfile_agree,
         test_frozen_refuses_on_manifest_lockfile_drift,
         test_frozen_offline_works_after_cache_warmup,

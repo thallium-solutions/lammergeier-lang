@@ -389,11 +389,19 @@ def _clone_git(spec: str, dst: Path,
                 ["git", "clone", "--quiet", "--bare", url, str(cache_dir)],
                 check=True, capture_output=True, text=True)
 
-        # 2. Clone from the cache to dst (local protocol — fast).
-        subprocess.run(
+        # 2. Clone from the cache to dst (local protocol — fast, hard
+        #    links). A cache on another filesystem (a Docker cache mount, a
+        #    tmpfs) cannot be hard-linked: copy the objects instead.
+        linked = subprocess.run(
             ["git", "clone", "--quiet", "--local",
              str(cache_dir), str(dst)],
-            check=True, capture_output=True, text=True)
+            capture_output=True, text=True)
+        if linked.returncode != 0:
+            shutil.rmtree(dst, ignore_errors=True)
+            subprocess.run(
+                ["git", "clone", "--quiet", "--no-hardlinks",
+                 str(cache_dir), str(dst)],
+                check=True, capture_output=True, text=True)
 
         # 3. Check out the requested ref (or stay on default HEAD).
         if ref:

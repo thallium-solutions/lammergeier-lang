@@ -292,7 +292,10 @@ def extract_surface(src: str) -> ApiSurface:
 def surface_from_path(path: Path) -> ApiSurface:
     """Aggregate the public API of every ``.lam`` file under
     ``path``. Hidden dirs + ``tests`` / ``benchmarks`` / ``extlibs`` /
-    ``build`` are skipped because they're not published surface."""
+    ``build`` are skipped because they're not published surface, and so
+    are nested packages (a subdirectory with its own ``lamlib.toml``, such
+    as a scoped ``@lam/vulture/dev-plugin`` installed inside
+    ``@lam/vulture``): their exports are not the parent's API."""
     surface = ApiSurface()
     base = Path(path)
     if base.is_file():
@@ -305,7 +308,10 @@ def surface_from_path(path: Path) -> ApiSurface:
             continue
         # Only directories *inside* the package count: an installed package
         # itself lives under ``extlibs/``.
-        if any(part in skip_dirs or part.startswith(".") for part in p.relative_to(base).parts):
+        rel = p.relative_to(base)
+        if any(part in skip_dirs or part.startswith(".") for part in rel.parts):
+            continue
+        if any((base.joinpath(*rel.parts[:depth]) / "lamlib.toml").is_file() for depth in range(1, len(rel.parts))):
             continue
         if p.suffix != ".lam":
             continue

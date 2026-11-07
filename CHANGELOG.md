@@ -5,6 +5,20 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.5.1 — 2026-11-07
+
+### Fixed
+
+- `lamc install` with the git cache on another filesystem than the project
+  (the `RUN --mount=type=cache,target=/root/.lammergeier/cache` Docker
+  recipe, a tmpfs) failed with `Invalid cross-device link`: the cache was
+  cloned with hard links only. It now falls back to copying the objects.
+- `lamc install` no longer reports a scoped sub-package installed inside its
+  parent (`extlibs/@lam/vulture/dev-plugin`, `/std-plugin`) as part of the
+  parent's API: upgrading `@lam/vulture` with a plugin installed failed as a
+  "mis-labelled release" (`class LiveReload removed`). Directories with their
+  own `lamlib.toml` are left out of the API surface.
+
 ## 4.5.0 — 2026-11-07
 
 ### Added

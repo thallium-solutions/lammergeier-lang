@@ -306,6 +306,34 @@ def test_surface_from_path_inside_extlibs() -> None:
         assert worst_severity(changes) == "patch", changes
 
 
+def test_surface_skips_nested_scoped_packages() -> None:
+    """Scoped sub-packages are installed inside their parent's directory
+    (``extlibs/@lam/vulture/dev-plugin``). Their exports are not the parent's
+    API: upgrading the parent must not report them as removed."""
+    import tempfile
+    from compiler.apidiff import surface_from_path
+    with tempfile.TemporaryDirectory() as td:
+        installed = Path(td) / "app" / "extlibs" / "@acme" / "web"
+        (installed / "dev-plugin" / "inner").mkdir(parents=True)
+        (installed / "lamlib.toml").write_text('[library]\nname = "@acme/web"\nversion = "1.0.0"\n', encoding="utf-8")
+        (installed / "__init__.lam").write_text("func serve() -> int {\n    return 1\n}\n", encoding="utf-8")
+        (installed / "dev-plugin" / "lamlib.toml").write_text('[library]\nname = "@acme/web/dev-plugin"\nversion = "1.0.0"\n', encoding="utf-8")
+        (installed / "dev-plugin" / "__init__.lam").write_text("class Reload {\n    func init(self) {\n        self.n: int = 0\n    }\n}\n", encoding="utf-8")
+        (installed / "dev-plugin" / "inner" / "more.lam").write_text("func helper() -> int {\n    return 2\n}\n", encoding="utf-8")
+        (installed / "helpers").mkdir()
+        (installed / "helpers" / "util.lam").write_text("func util() -> int {\n    return 3\n}\n", encoding="utf-8")
+        surface = surface_from_path(installed)
+        assert "serve" in surface.funcs and "util" in surface.funcs, surface.funcs
+        assert "Reload" not in surface.classes and "helper" not in surface.funcs, (surface.classes, surface.funcs)
+        upgraded = Path(td) / "src" / "web"
+        (upgraded / "helpers").mkdir(parents=True)
+        (upgraded / "lamlib.toml").write_text((installed / "lamlib.toml").read_text(encoding="utf-8"), encoding="utf-8")
+        (upgraded / "__init__.lam").write_text((installed / "__init__.lam").read_text(encoding="utf-8") + "\nfunc extra() -> int {\n    return 4\n}\n", encoding="utf-8")
+        (upgraded / "helpers" / "util.lam").write_text((installed / "helpers" / "util.lam").read_text(encoding="utf-8"), encoding="utf-8")
+        changes = compare(surface, surface_from_path(upgraded))
+        assert worst_severity(changes) == "feature", changes
+
+
 def main() -> int:
     tests = [
         test_extract_top_level_funcs,
@@ -322,6 +350,7 @@ def main() -> int:
         test_no_change_yields_patch,
         test_expected_bump_mapping,
         test_surface_from_path_inside_extlibs,
+        test_surface_skips_nested_scoped_packages,
         test_go_blocks_and_locals_are_not_fields,
     ]
     failures = 0
