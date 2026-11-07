@@ -1,0 +1,608 @@
+# Lammergeier standard library: translated texts with ``{name}`` parameters.
+#
+# A ``Translations`` value holds, for each supported language, a flat map
+# from dotted keys (``Feed.title``) to texts. ``Translations.load(dir,
+# languages, fallback)`` reads every ``<dir>/<lang>/*.json`` file in name
+# order; a file is a JSON object whose nested objects become dotted keys
+# (``{"Feed": {"title": "Feed"}}`` is ``Feed.title``) and whose number and
+# boolean values become their JSON text. Arrays, ``null``, empty keys, a key
+# defined twice for a language (in one file or in two) and malformed JSON
+# are ``TranslationError`` results naming the file, the line and the key, so
+# a broken translation fails at start-up rather than on a page. A missing
+# ``<dir>/<lang>`` directory means the language has no texts yet (every
+# lookup falls back), so a language can be added before it is translated.
+#
+# Lookups never fail: ``raw(lang, key)`` is the text in ``lang``, else in the
+# fallback language, else the key itself, so a missing text is visible but
+# harmless. ``text`` replaces ``{name}`` placeholders verbatim (plain text:
+# mail subjects, attribute values set through markup slots, logs);
+# ``markup`` treats the translation as trusted markup, HTML-escapes the
+# parameter values and returns an ``html`` value; ``plain`` is that markup's
+# text content. ``missing(lang, other)`` lists the keys a translation lacks,
+# for a CI completeness check, and ``language`` / ``negotiate`` pick a
+# supported language from user input or an ``Accept-Language`` header.
+#
+# The JSON reader is a small streaming walk over ``encoding/json`` tokens
+# (a decoded map would silently keep only the last of two equal keys).
+# A loaded ``Translations`` is only read, so it can be shared by concurrent
+# requests; ``add`` and ``merge`` are not synchronised and belong to set-up.
+#
+# Import with: ``from lami18n import Translations``.
+
+from lamconv import Conv
+from lamerrors import Result, Error
+from lamhtml import Html
+from lamos import Os
+from lampath import Path
+
+go! {
+    import (
+        "bytes"
+        "encoding/json"
+        "errors"
+        "fmt"
+        "io"
+    )
+
+    // lamI18nLine is the 1-based line of byte ``offset`` in ``data``.
+    func lamI18nLine(data []byte, offset int64) int {
+        if offset > int64(len(data)) {
+            offset = int64(len(data))
+        }
+        if offset < 0 {
+            offset = 0
+        }
+        return bytes.Count(data[:offset], []byte("\n")) + 1
+    }
+
+    type lamI18nReader struct {
+        data  []byte
+        dec   *json.Decoder
+        keys  []string
+        texts []string
+        line  int
+        fault string
+    }
+
+    func (r *lamI18nReader) fail(message string) bool {
+        r.line = lamI18nLine(r.data, r.dec.InputOffset())
+        r.fault = message
+        return false
+    }
+
+    func (r *lamI18nReader) syntax(err error) bool {
+        var syntaxErr *json.SyntaxError
+        if errors.As(err, &syntaxErr) {
+            r.line = lamI18nLine(r.data, syntaxErr.Offset)
+        } else {
+            r.line = lamI18nLine(r.data, int64(len(r.data)))
+        }
+        if err == io.EOF {
+            err = io.ErrUnexpectedEOF
+        }
+        r.fault = fmt.Sprintf("invalid JSON: %v", err)
+        return false
+    }
+
+    // object reads the members of an object whose ``{`` was consumed.
+    func (r *lamI18nReader) object(prefix string) bool {
+        for r.dec.More() {
+            tok, err := r.dec.Token()
+            if err != nil {
+                return r.syntax(err)
+            }
+            name, ok := tok.(string)
+            if !ok {
+                return r.syntax(fmt.Errorf("object key expected"))
+            }
+            if name == "" {
+                return r.fail(fmt.Sprintf("empty key in %q", prefix))
+            }
+            key := prefix + name
+            tok, err = r.dec.Token()
+            if err != nil {
+                return r.syntax(err)
+            }
+            switch value := tok.(type) {
+            case json.Delim:
+                if value == '[' {
+                    return r.fail(fmt.Sprintf("key %q: arrays are not supported", key))
+                }
+                if !r.object(key + ".") {
+                    return false
+                }
+            case string:
+                r.keys = append(r.keys, key)
+                r.texts = append(r.texts, value)
+            case json.Number:
+                r.keys = append(r.keys, key)
+                r.texts = append(r.texts, value.String())
+            case bool:
+                r.keys = append(r.keys, key)
+                r.texts = append(r.texts, fmt.Sprint(value))
+            case nil:
+                return r.fail(fmt.Sprintf("key %q: null is not a text", key))
+            }
+        }
+        tok, err := r.dec.Token()
+        if err != nil {
+            return r.syntax(err)
+        }
+        if delim, ok := tok.(json.Delim); !ok || delim != '}' {
+            return r.syntax(fmt.Errorf("object end expected"))
+        }
+        return true
+    }
+
+    // lamI18nFlatten reads one translation file: its dotted keys and texts
+    // in file order, or the line (0 = none) and description of the problem.
+    func lamI18nFlatten(source string) ([]string, []string, int, string) {
+        data := bytes.TrimPrefix([]byte(source), []byte("\xef\xbb\xbf"))
+        r := &lamI18nReader{data: data, dec: json.NewDecoder(bytes.NewReader(data)), keys: []string{}, texts: []string{}}
+        r.dec.UseNumber()
+        tok, err := r.dec.Token()
+        if err != nil {
+            r.syntax(err)
+            return nil, nil, r.line, r.fault
+        }
+        if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+            return nil, nil, 0, "the top level must be a JSON object"
+        }
+        if !r.object("") {
+            return nil, nil, r.line, r.fault
+        }
+        if _, err := r.dec.Token(); err != io.EOF {
+            if err != nil {
+                r.syntax(err)
+                return nil, nil, r.line, r.fault
+            }
+            r.fail("unexpected data after the top-level object")
+            return nil, nil, r.line, r.fault
+        }
+        return r.keys, r.texts, 0, ""
+    }
+}
+
+class Translations {
+    #- Translated texts per language, looked up by dotted key with a
+       fallback language. Build one with ``Translations.load`` (JSON files)
+       or ``Translations(languages, fallback)`` plus ``add`` / ``merge``. -#
+
+    func init(self, languages: list[str], fallback: str = "") {
+        #- ``languages`` are the supported language codes, in order (the
+           first is the default of ``language`` and ``negotiate``);
+           ``fallback`` is the language consulted when a key is missing,
+           ``""`` meaning the first language. Invalid arguments (no
+           languages, an empty, padded or duplicate code, a fallback that
+           is not listed) are a ``ValueError``. -#
+        problem: str = Translations._problem(languages, fallback)
+        if problem != "" {
+            throw ValueError(f"Translations: {problem}")
+        }
+        self.supported: list[str] = [lang for lang in languages]
+        self.fallbackLanguage: str = fallback if fallback != "" else languages[0]
+        self.texts: dict[str, dict[str, str]] = {}
+        self.sources: dict[str, dict[str, str]] = {}
+        for lang in languages {
+            texts: dict[str, str] = {}
+            sources: dict[str, str] = {}
+            self.texts[lang] = texts
+            self.sources[lang] = sources
+        }
+    }
+
+    static func _problem(languages: list[str], fallback: str) -> str {
+        if len(languages) == 0 {
+            return "no languages"
+        }
+        seen: list[str] = []
+        for lang in languages {
+            if lang == "" or lang.trim() != lang or lang.contains("/") or lang.contains("\\") {
+                return f"invalid language \"{lang}\""
+            }
+            if lang in seen {
+                return f"duplicate language \"{lang}\""
+            }
+            seen.append(lang)
+        }
+        if fallback != "" and fallback not in languages {
+            return f"fallback \"{fallback}\" is not one of the languages"
+        }
+        return ""
+    }
+
+    static func load(dir: str, languages: list[str], fallback: str = "") -> Result[Translations] {
+        #- Reads ``<dir>/<lang>/*.json`` for every language, files in name
+           order (other and hidden files, and subdirectories, are ignored).
+           ``dir`` must exist; a missing ``<dir>/<lang>`` leaves that
+           language without texts. Every failure is a ``TranslationError``
+           naming the file (and line and key when known). -#
+        problem: str = Translations._problem(languages, fallback)
+        if problem != "" {
+            return Result.Err(Error("TranslationError", problem))
+        }
+        found: Result[bool] = Path.exists(dir)
+        if not found.ok() or not found.unwrap() {
+            return Result.Err(Error("TranslationError", f"translations directory \"{dir}\" does not exist", found.error))
+        }
+        isRoot: Result[bool] = Os.isDir(dir)
+        if not isRoot.ok() or not isRoot.unwrap() {
+            return Result.Err(Error("TranslationError", f"translations directory \"{dir}\" is not a directory", isRoot.error))
+        }
+        out: Translations = Translations(languages, fallback)
+        for lang in languages {
+            langDir: str = Path.join(dir, lang)
+            exists: Result[bool] = Path.exists(langDir)
+            if not exists.ok() {
+                return Result.Err(Error("TranslationError", f"cannot read {langDir}", exists.error))
+            }
+            if not exists.unwrap() {
+                continue
+            }
+            isDir: Result[bool] = Os.isDir(langDir)
+            if not isDir.ok() or not isDir.unwrap() {
+                return Result.Err(Error("TranslationError", f"{langDir} is not a directory", isDir.error))
+            }
+            listed: Result[list[str]] = Os.listFiles(langDir)
+            if not listed.ok() {
+                return Result.Err(Error("TranslationError", f"cannot list {langDir}", listed.error))
+            }
+            names: list[str] = listed.unwrap()
+            for name in sorted(names) {
+                if not name.endsWith(".json") or name.startsWith(".") {
+                    continue
+                }
+                _ = out._loadFile(lang, Path.join(langDir, name))?
+            }
+        }
+        return Result.Ok(out)
+    }
+
+    func _loadFile(self, lang: str, path: str) -> Result[int] {
+        read: Result[str] = Os.readFile(path)
+        if not read.ok() {
+            return Result.Err(Error("TranslationError", f"cannot read {path}", read.error))
+        }
+        content: str = read.unwrap()
+        keys: list[str] = []
+        texts: list[str] = []
+        line: int = 0
+        problem: str = ""
+        go! {
+            keys, texts, line, problem = lamI18nFlatten(content)
+        }
+        if problem != "" {
+            where: str = f"{path}:{line}" if line > 0 else path
+            return Result.Err(Error("TranslationError", f"{where}: {problem}"))
+        }
+        for i in range(len(keys)) {
+            clash: str = self._define(lang, keys[i], texts[i], path, path)
+            if clash != "" {
+                return Result.Err(Error("TranslationError", clash))
+            }
+        }
+        return Result.Ok(len(keys))
+    }
+
+    func _clash(self, lang: str, key: str, where: str) -> str {
+        if key == "" {
+            return f"{where}: empty key"
+        }
+        sources: dict[str, str] = self.sources[lang]
+        if key not in sources {
+            return ""
+        }
+        first: str = sources[key]
+        if first == where {
+            return f"{where}: key \"{key}\" is defined twice"
+        }
+        if first == "" {
+            return f"{where}: key \"{key}\" is already defined"
+        }
+        return f"{where}: key \"{key}\" is already defined in {first}"
+    }
+
+    func _define(self, lang: str, key: str, text: str, where: str, source: str) -> str {
+        clash: str = self._clash(lang, key, where)
+        if clash != "" {
+            return clash
+        }
+        texts: dict[str, str] = self.texts[lang]
+        sources: dict[str, str] = self.sources[lang]
+        texts[key] = text
+        sources[key] = source
+        return ""
+    }
+
+    func add(self, lang: str, key: str, text: str) -> Result[bool] {
+        #- Adds one text. An unsupported language, an empty key or a key
+           already defined for ``lang`` is a ``TranslationError``. Not
+           synchronised: add texts before sharing the value. -#
+        if lang not in self.supported {
+            return Result.Err(Error("TranslationError", f"unsupported language \"{lang}\""))
+        }
+        clash: str = self._define(lang, key, text, lang, "")
+        if clash != "" {
+            return Result.Err(Error("TranslationError", clash))
+        }
+        return Result.Ok(true)
+    }
+
+    func merge(self, lang: str, texts: dict[str, str]) -> Result[int] {
+        #- Adds every text of ``texts`` and returns how many, or adds none
+           and returns the ``TranslationError`` of the first problem (keys in
+           sorted order), as for ``add``. Not synchronised. -#
+        if lang not in self.supported {
+            return Result.Err(Error("TranslationError", f"unsupported language \"{lang}\""))
+        }
+        keys: list[str] = sorted(texts)
+        for key in keys {
+            clash: str = self._clash(lang, key, lang)
+            if clash != "" {
+                return Result.Err(Error("TranslationError", clash))
+            }
+        }
+        for key in keys {
+            _ = self._define(lang, key, texts[key], lang, "")
+        }
+        return Result.Ok(len(keys))
+    }
+
+    func languages(self) -> list[str] {
+        #- The supported languages, in order (a copy). -#
+        return [lang for lang in self.supported]
+    }
+
+    func fallback(self) -> str {
+        #- The language consulted when a key is missing. -#
+        return self.fallbackLanguage
+    }
+
+    func has(self, lang: str, key: str) -> bool {
+        #- ``key`` has a text in ``lang`` itself (the fallback is not
+           consulted). -#
+        if lang not in self.supported {
+            return false
+        }
+        texts: dict[str, str] = self.texts[lang]
+        return key in texts
+    }
+
+    func count(self, lang: str = "") -> int {
+        #- The number of texts of ``lang``; ``""`` counts every language. -#
+        if lang == "" {
+            total: int = 0
+            for each in self.supported {
+                total += self.count(each)
+            }
+            return total
+        }
+        if lang not in self.supported {
+            return 0
+        }
+        texts: dict[str, str] = self.texts[lang]
+        return len(texts)
+    }
+
+    func keys(self, lang: str) -> list[str] {
+        #- The keys of ``lang``, sorted (``[]`` for an unsupported
+           language). -#
+        if lang not in self.supported {
+            return []
+        }
+        texts: dict[str, str] = self.texts[lang]
+        return sorted(texts)
+    }
+
+    func missing(self, lang: str, other: str) -> list[str] {
+        #- The keys of ``lang`` that ``other`` lacks, sorted: with the
+           reference language as ``lang``, what a translation still needs. -#
+        return [key for key in self.keys(lang) if not self.has(other, key)]
+    }
+
+    func raw(self, lang: str, key: str) -> str {
+        #- The text of ``key`` in ``lang``, else in the fallback language,
+           else ``key`` itself. Placeholders are left as written. -#
+        if self.has(lang, key) {
+            texts: dict[str, str] = self.texts[lang]
+            return texts[key]
+        }
+        if self.has(self.fallbackLanguage, key) {
+            fallbackTexts: dict[str, str] = self.texts[self.fallbackLanguage]
+            return fallbackTexts[key]
+        }
+        return key
+    }
+
+    func text(self, lang: str, key: str, params: dict[str, str] = {}) -> str {
+        #- ``raw`` with every ``{name}`` whose name is a key of ``params``
+           replaced by its value verbatim; other braces stay as written and
+           inserted values are not scanned again. Plain text: never put the
+           result into markup as markup. -#
+        return Translations._substitute(self.raw(lang, key), params, false)
+    }
+
+    func markup(self, lang: str, key: str, params: dict[str, str] = {}) -> html {
+        #- ``raw`` read as trusted markup, with the parameter values
+           HTML-escaped before they replace their ``{name}``: translations
+           may contain tags and entities, parameters (user names, titles)
+           are always text. -#
+        return Html.parse(Translations._substitute(self.raw(lang, key), params, true))
+    }
+
+    func plain(self, lang: str, key: str, params: dict[str, str] = {}) -> str {
+        #- The text content of ``markup``: tags removed, entities decoded
+           (for plain-text mail bodies or notifications). -#
+        return self.markup(lang, key, params).text()
+    }
+
+    func language(self, candidate: str) -> str {
+        #- The supported language for ``candidate``, compared without regard
+           to case and with ``_`` read as ``-``: the same code, else the
+           language equal to its primary subtag (``en-US`` -> ``en``), else
+           the first language sharing that primary subtag (``pt`` ->
+           ``pt-BR``), else the first language. -#
+        found: str = self._match(candidate)
+        return found if found != "" else self.supported[0]
+    }
+
+    func negotiate(self, header: str) -> str {
+        #- The supported language an ``Accept-Language`` header value prefers:
+           ranges in quality order (``q`` from 0 to 1, default 1; header
+           order breaks ties), each matched as by ``language``; ``*`` stands
+           for the first language not refused with ``q=0``. Entries with a
+           malformed quality are ignored; with no match the result is the
+           first language not refused, or the first language. -#
+        refused: list[str] = []
+        ranges: list[str] = []
+        qualities: list[float] = []
+        for entry in header.split(",") {
+            parts: list[str] = entry.split(";")
+            tag: str = parts[0].trim()
+            quality: float = 1.0
+            valid: bool = tag != ""
+            for param in parts[1:] {
+                pair: list[str] = param.trim().splitN("=", 2)
+                if len(pair) == 2 and pair[0].trim().toLower() == "q" {
+                    quality = Translations._quality(pair[1].trim())
+                    if quality < 0.0 {
+                        valid = false
+                    }
+                }
+            }
+            if not valid {
+                continue
+            }
+            if quality == 0.0 {
+                if tag != "*" {
+                    exact: str = self._exact(tag)
+                    if exact != "" {
+                        refused.append(exact)
+                    }
+                }
+                continue
+            }
+            ranges.append(tag)
+            qualities.append(quality)
+        }
+        accepted: list[str] = [lang for lang in self.supported if lang not in refused]
+        best: str = ""
+        bestQuality: float = 0.0
+        for i in range(len(ranges)) {
+            if qualities[i] <= bestQuality {
+                continue
+            }
+            found: str = ""
+            if ranges[i] == "*" {
+                if len(accepted) > 0 {
+                    found = accepted[0]
+                }
+            } else {
+                found = self._match(ranges[i])
+                if found in refused {
+                    found = ""
+                }
+            }
+            if found != "" {
+                best = found
+                bestQuality = qualities[i]
+            }
+        }
+        if best != "" {
+            return best
+        }
+        return accepted[0] if len(accepted) > 0 else self.supported[0]
+    }
+
+    static func _quality(value: str) -> float {
+        # RFC 9110 qvalue: 0, 0.x, 0.xx, 0.xxx or 1, 1.0... (-1 when invalid).
+        if value == "" or len(value) > 5 or (value[0:1] != "0" and value[0:1] != "1") {
+            return -1.0
+        }
+        if len(value) > 1 and (value[1:2] != "." or (len(value) > 2 and not value[2:].isDigit())) {
+            return -1.0
+        }
+        parsed: Result[float] = Conv.parse(value + "0" if value.endsWith(".") else value)
+        if not parsed.ok() {
+            return -1.0
+        }
+        quality: float = parsed.unwrap()
+        return quality if quality <= 1.0 else -1.0
+    }
+
+    static func _norm(tag: str) -> str {
+        return tag.trim().toLower().replace("_", "-")
+    }
+
+    static func _primary(tag: str) -> str {
+        return Translations._norm(tag).split("-")[0]
+    }
+
+    func _exact(self, candidate: str) -> str {
+        wanted: str = Translations._norm(candidate)
+        for lang in self.supported {
+            if Translations._norm(lang) == wanted {
+                return lang
+            }
+        }
+        return ""
+    }
+
+    func _match(self, candidate: str) -> str {
+        if Translations._norm(candidate) == "" {
+            return ""
+        }
+        exact: str = self._exact(candidate)
+        if exact != "" {
+            return exact
+        }
+        primary: str = Translations._primary(candidate)
+        for lang in self.supported {
+            if Translations._norm(lang) == primary {
+                return lang
+            }
+        }
+        for lang in self.supported {
+            if Translations._primary(lang) == primary {
+                return lang
+            }
+        }
+        return ""
+    }
+
+    static func _substitute(template: str, params: dict[str, str], escape: bool) -> str {
+        if len(params) == 0 or template.index("{") < 0 {
+            return template
+        }
+        out: list[str] = []
+        rest: str = template
+        while true {
+            open_: int = rest.index("{")
+            if open_ < 0 {
+                out.append(rest)
+                break
+            }
+            out.append(rest[:open_])
+            after: str = rest[open_ + 1:]
+            close_: int = after.index("}")
+            if close_ < 0 {
+                out.append(rest[open_:])
+                break
+            }
+            name: str = after[:close_]
+            if name.index("{") >= 0 or name not in params {
+                out.append("{")
+                rest = after
+                continue
+            }
+            value: str = params[name]
+            out.append(Html.escape(value) if escape else value)
+            rest = after[close_ + 1:]
+        }
+        return "".join(out)
+    }
+}
+
+func main() {
+    pass
+}

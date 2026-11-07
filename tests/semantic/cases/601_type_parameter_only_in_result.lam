@@ -1,8 +1,10 @@
-# expect-error: line 16: error[type]: cannot infer type parameter `V` of `pick`
-# expect-error: line 17: error[type]: cannot infer type parameter `R` of `make`
+# expect-error: line 18: error[type]: cannot infer type parameter `V` of `pick`
+# expect-error: line 19: error[type]: cannot infer type parameter `R` of `make`
 # A type parameter no parameter of a function mentions (only its result,
 # or nothing) cannot be inferred by Go ("cannot infer V" in `go build`);
-# it is a Lam error asking for the type arguments, which work.
+# it is a Lam error asking for the type arguments, which work. An
+# annotated variable the call initializes binds it (`xs: list[int] =
+# make()` emits `Make[int]()`); an unannotated one does not.
 
 func pick[K, V](keys: list[K]) -> int {
     return len(keys)
@@ -14,8 +16,9 @@ func make[R]() -> list[R] {
 
 func main() {
     print(pick(["a"]))
-    xs: list[int] = make()
+    zs = make()
     print(pick[str, int](["a"]))
     ys: list[str] = make[str]()
-    print(len(xs) + len(ys))
+    xs: list[int] = make()
+    print(len(xs) + len(ys) + len(zs))
 }

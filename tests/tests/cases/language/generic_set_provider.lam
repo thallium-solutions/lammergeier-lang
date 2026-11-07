@@ -1,0 +1,43 @@
+# Helper module for test_generic_set_dict_keys.lam: generic functions and
+# a generic class with `set[T]` / `dict[K, V]` in an imported module.
+
+func uniqueCount[T](xs: list[T]) -> int {
+    seen: set[T] = set()
+    for x in xs {
+        seen.add(x)
+    }
+    return len(seen)
+}
+
+func invert[K, V](d: dict[K, V]) -> dict[V, K] {
+    out: dict[V, K] = {}
+    for k, v in d {
+        out[v] = k
+    }
+    return out
+}
+
+class Tally[T] {
+    func init(self) {
+        self.counts: dict[T, int] = {}
+    }
+
+    func add(self, x: T) {
+        if x in self.counts {
+            self.counts[x] += 1
+        } else {
+            self.counts[x] = 1
+        }
+    }
+
+    func of(self, x: T) -> int {
+        if x in self.counts {
+            return self.counts[x]
+        }
+        return 0
+    }
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

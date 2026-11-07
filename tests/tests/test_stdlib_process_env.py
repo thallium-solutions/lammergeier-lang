@@ -338,6 +338,39 @@ def test_context_on_signals_stops_listening_when_cancelled() -> None:
         assert code == -signal.SIGHUP, (code, lines)
 
 
+def test_context_on_signals_cancelled_under_load_restores_default() -> None:
+    """A signal that arrives right after ``cancel()``, before the watcher
+    stopped listening, still gets the default handling (here: many
+    contexts cancelled back to back, then the signal at once)."""
+    with tempfile.TemporaryDirectory() as td:
+        binary = _build(
+            """
+            from lamcontext import Context
+            from lamtime import Time
+
+            func main() {
+                for i in range(200) {
+                    ctx: Context = Context.onSignals(["SIGHUP"])
+                    ctx.cancel("done")
+                }
+                last: Context = Context.onSignals(["SIGHUP"])
+                last.cancel("done")
+                print("ready")
+                Time.sleepMs(5000)
+                print("still running")
+            }
+            """,
+            Path(td),
+        )
+        for _ in range(5):
+            proc = subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            assert proc.stdout is not None
+            assert proc.stdout.readline().strip() == "ready"
+            proc.send_signal(signal.SIGHUP)
+            code, lines, _err = _finish(proc)
+            assert code == -signal.SIGHUP, (code, lines)
+
+
 def main() -> int:
     tests = [
         test_generated_go_embeds_zone_database_only_for_zone_apis,
@@ -347,6 +380,7 @@ def main() -> int:
         test_wait_for_signal_rejects_unknown_names,
         test_context_on_signals_cancels_and_restores_default_handling,
         test_context_on_signals_stops_listening_when_cancelled,
+        test_context_on_signals_cancelled_under_load_restores_default,
     ]
     failed = 0
     for test in tests:

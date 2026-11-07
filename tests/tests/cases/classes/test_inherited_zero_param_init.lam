@@ -1,0 +1,92 @@
+# Regression: a class without its own `init` inherits a parameterless
+# `init` too (docs/SYNTAX.md "Inherited constructors"). `NewSub()` only
+# allocated the parent, so the inherited `init` never ran: its fields kept
+# their Go zero values (`self.items[k] = v` panicked with `assignment to
+# entry in nil map`) and its side effects were lost. Covers a plain base,
+# a two-level chain, a generic base instantiated by a generic and by a
+# concrete subclass, subclass field defaults and methods using the fields.
+#
+# expect: registry init
+# expect: plain=1 total=5
+# expect: registry init
+# expect: deep=2 tag=deep
+# expect: registry init
+# expect: generic=2 q=2
+# expect: registry init
+# expect: concrete=1 a=7 label=ints
+# expect: typed=9 size=3
+# expect: inherited_zero_param_init_ok
+
+class Registry[K: comparable, V] {
+    func init(self) {
+        self.items: dict[K, V] = {}
+        self.total: int = 0
+        print("registry init")
+    }
+
+    func put(self, key: K, value: V) {
+        self.items[key] = value
+        self.total += 1
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+}
+
+class Plain {
+    func init(self) {
+        self.items: dict[str, int] = {}
+        self.total: int = 0
+        print("registry init")
+    }
+
+    func add(self, key: str, value: int) {
+        self.items[key] = value
+        self.total += value
+    }
+}
+
+class PlainSub(Plain) {
+}
+
+class Middle(Plain) {
+    tag: str = "deep"
+}
+
+class Deep(Middle) {
+}
+
+class Sub[V](Registry[str, V]) {
+    func get(self, key: str) -> V {
+        return self.items[key]
+    }
+}
+
+class IntRegistry(Registry[str, int]) {
+    label: str = "ints"
+}
+
+func fillInts(r: Sub[int]) -> int {
+    r.put("z", 9)
+    return r.get("z")
+}
+
+func main() {
+    p = PlainSub()
+    p.add("a", 5)
+    print(f"plain={len(p.items)} total={p.total}")
+    d: Deep = Deep()
+    d.add("a", 1)
+    d.add("b", 2)
+    print(f"deep={len(d.items)} tag={d.tag}")
+    s = Sub[int]()
+    s.put("q", 2)
+    s.put("r", 3)
+    print(f"generic={s.size()} q={s.get("q")}")
+    i: IntRegistry = IntRegistry()
+    i.put("a", 7)
+    print(f"concrete={i.total} a={i.items["a"]} label={i.label}")
+    print(f"typed={fillInts(s)} size={s.size()}")
+    print("inherited_zero_param_init_ok")
+}

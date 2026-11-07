@@ -1,0 +1,26 @@
+# Helper module for test_sorted_sets_dicts.lam: `sorted()` over sets,
+# set comprehensions and dicts inside an imported library module.
+
+func roles() -> set[str] {
+    return {"viewer", "admin", "editor"}
+}
+
+func joinedRoles(rs: set[str]) -> str {
+    return ",".join(sorted(rs))
+}
+
+func rolesDesc(rs: set[str]) -> list[str] {
+    return sorted(rs, reverse=true)
+}
+
+func upperWords(words: list[str]) -> str {
+    return ",".join(sorted({w.toUpper() for w in words if len(w) > 0}))
+}
+
+func headerNames(headers: dict[str, str]) -> list[str] {
+    return sorted(headers)
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

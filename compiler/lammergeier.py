@@ -1829,9 +1829,19 @@ def _check_imported_modules(
         sys.exit(1)
 
 
+def _project_root_for(source_dir: Path) -> Path:
+    """The directory of the nearest ``lamlib.toml`` (within six levels),
+    else ``source_dir``: entry points below the project root (``cmd/``,
+    ``tests/``) resolve the project's packages, ``lib/`` and ``extlibs/``
+    from there, like the language server."""
+    manifest = _find_project_manifest(source_dir)
+    return manifest.parent.resolve() if manifest is not None else source_dir.resolve()
+
+
 def _effective_extlibs_dirs(
     source_dir: Path,
     extlibs_paths: list[str] | None,
+    project_root: Path | None = None,
 ) -> list[Path]:
     """Return the Lam library search path for installed third-party libs."""
     extlibs_dirs: list[Path] = []
@@ -1852,6 +1862,8 @@ def _effective_extlibs_dirs(
             if seg:
                 _push_extlibs(Path(seg))
     _push_extlibs(source_dir / "extlibs")
+    if project_root is not None:
+        _push_extlibs(project_root / "extlibs")
     _push_extlibs(Path.home() / ".lammergeier" / "extlibs")
     return extlibs_dirs
 
@@ -1898,6 +1910,7 @@ def compile_lam(
     extlibs_paths: list[str] | None = None,
     use_cache: bool = True,
     no_semantic_check: bool = False,
+    run_args: list[str] | None = None,
 ):
     """Full compilation pipeline.
 
@@ -1914,18 +1927,23 @@ def compile_lam(
 
       1. ``extlibs_paths`` (this argument), left-to-right
       2. ``LAMC_EXTLIBS`` env var, colon-separated
-      3. ``<source_dir>/extlibs`` (per-project vendored deps)
+      3. ``<source_dir>/extlibs``, then ``<project_root>/extlibs``
+         (per-project installed deps)
       4. ``~/.lammergeier/extlibs`` (user-global install)
+
+    The project layer is the source's directory, then the project root
+    (the directory of the nearest ``lamlib.toml``) and its ``lib/``.
     """
     source_file = Path(source_path).resolve()
     if not source_file.exists():
         print(f"error: file not found: {source_path}", file=sys.stderr)
         sys.exit(1)
     source_dir = source_file.parent
-    extlibs_dirs = _effective_extlibs_dirs(source_dir, extlibs_paths)
+    project_root = _project_root_for(source_dir)
+    extlibs_dirs = _effective_extlibs_dirs(source_dir, extlibs_paths, project_root)
     stdlib_dir = Path(stdlib_path).resolve() if stdlib_path else PROJECT_ROOT / "lib"
     module_index = WorkspaceIndex(
-        source_dir,
+        project_root,
         stdlib_dir=stdlib_dir,
         extlibs_dirs=extlibs_dirs,
     )
@@ -2176,7 +2194,7 @@ def compile_lam(
     # Overall resolution order: stdlib first (immutable, so users
     # can't accidentally shadow core modules), extlibs next, then
     # project-local directories as the fallback.
-    lib_dirs = [stdlib_dir, *extlibs_dirs, source_dir, source_dir / "lib"]
+    lib_dirs = [stdlib_dir, *extlibs_dirs, source_dir, project_root, project_root / "lib"]
 
     def _resolve_lib_path(mod_name: str, from_file: Path = source_file):
         """Locate a Lam module through the shared workspace index.
@@ -2385,6 +2403,12 @@ def compile_lam(
     lib_pre_method_return_types: dict[str, str] = {}
     lib_pre_func_generic_params: dict[str, set[str]] = {}
     lib_pre_func_generic_order: dict[str, list[str]] = {}
+    # Lam parameter / result types and generic-method type-parameter
+    # order: calls in other modules bind type parameters Go cannot see
+    # (``inTx[T](conn, fn: func(Conn) -> Result[T])``).
+    lib_pre_func_param_lam_types: dict = {}
+    lib_pre_func_return_lam_types: dict = {}
+    lib_pre_method_generic_order: dict[str, list[str]] = {}
     lib_pre_generic_instance_methods: dict[str, list[str]] = {}
     lib_pre_generic_method_returns: dict[str, str] = {}
     lib_pre_generator_functions: set[str] = set()
@@ -2618,6 +2642,12 @@ def compile_lam(
                 lib_pre_func_generic_params.setdefault(key, set()).update(names)
             for key, order in sub_collector._func_generic_order.items():
                 lib_pre_func_generic_order.setdefault(key, list(order))
+            for key, types in sub_collector._func_param_lam_types.items():
+                lib_pre_func_param_lam_types.setdefault(key, types)
+            for key, type_ in sub_collector._func_return_lam_types.items():
+                lib_pre_func_return_lam_types.setdefault(key, type_)
+            for key, order in sub_collector._method_generic_order.items():
+                lib_pre_method_generic_order.setdefault(key, list(order))
             for key, names in sub_collector._generic_instance_methods.items():
                 lib_pre_generic_instance_methods.setdefault(key, list(names))
             for key, ret in sub_collector._generic_method_returns.items():
@@ -2960,6 +2990,12 @@ def compile_lam(
             lib_transpiler._func_generic_params.setdefault(key, set()).update(names)
         for key, order in lib_pre_func_generic_order.items():
             lib_transpiler._func_generic_order.setdefault(key, list(order))
+        for key, types in lib_pre_func_param_lam_types.items():
+            lib_transpiler._func_param_lam_types.setdefault(key, types)
+        for key, type_ in lib_pre_func_return_lam_types.items():
+            lib_transpiler._func_return_lam_types.setdefault(key, type_)
+        for key, order in lib_pre_method_generic_order.items():
+            lib_transpiler._method_generic_order.setdefault(key, list(order))
         for key, names in lib_pre_generic_instance_methods.items():
             lib_transpiler._generic_instance_methods.setdefault(key, list(names))
         for key, ret in lib_pre_generic_method_returns.items():
@@ -3141,6 +3177,8 @@ def compile_lam(
                         _func_param_names=fn_param_names,
                         _func_param_go_types=fn_param_go_types,
                         _func_generic_params=getattr(_collector, "_func_generic_params", {}),
+                        _func_param_lam_types=getattr(_collector, "_func_param_lam_types", {}),
+                        _func_return_lam_types=getattr(_collector, "_func_return_lam_types", {}),
                         _overload_variants=overload_variants,
                         _user_functions=user_fns,
                         _private_functions=priv_fns,
@@ -3220,6 +3258,12 @@ def compile_lam(
         transpiler._func_generic_params.setdefault(key, set()).update(names)
     for key, order in lib_pre_func_generic_order.items():
         transpiler._func_generic_order.setdefault(key, list(order))
+    for key, types in lib_pre_func_param_lam_types.items():
+        transpiler._func_param_lam_types.setdefault(key, types)
+    for key, type_ in lib_pre_func_return_lam_types.items():
+        transpiler._func_return_lam_types.setdefault(key, type_)
+    for key, order in lib_pre_method_generic_order.items():
+        transpiler._method_generic_order.setdefault(key, list(order))
     for key, names in lib_pre_generic_instance_methods.items():
         transpiler._generic_instance_methods.setdefault(key, list(names))
     for key, ret in lib_pre_generic_method_returns.items():
@@ -3485,7 +3529,7 @@ def compile_lam(
 
         # ── Run ──
         if run:
-            proc = subprocess.run([output_abs], capture_output=False)
+            proc = subprocess.run([output_abs] + list(run_args or []), capture_output=False)
             sys.exit(proc.returncode)
 
     finally:
@@ -3497,7 +3541,7 @@ def compile_lam(
 # is routed to its dedicated handler; anything else is treated as
 # the legacy ``lamc <source.lam>`` invocation — so existing scripts,
 # docs, and tests keep working verbatim.
-_LAMC_SUBCOMMANDS = ("build", "fmt", "doctor", "migrate", "version", "lib")
+_LAMC_SUBCOMMANDS = ("build", "dev", "fmt", "doctor", "migrate", "version", "lib")
 
 
 def _build_build_parser() -> "argparse.ArgumentParser":
@@ -3522,7 +3566,8 @@ def _build_build_parser() -> "argparse.ArgumentParser":
     ap.add_argument("--emit-ast", action="store_true",
                     help="Print Lark AST and exit")
     ap.add_argument("--run", action="store_true",
-                    help="Compile and run immediately")
+                    help="Compile and run immediately; arguments after `--` "
+                         "are passed to the program")
     ap.add_argument("--transpile-only", action="store_true",
                     help="Generate .go file without compiling")
     ap.add_argument("-v", "--verbose", action="store_true",
@@ -3575,7 +3620,15 @@ def _cmd_build(argv: list) -> int:
     """Run the compile/transpile pipeline. Returns the process exit
     code the outer dispatcher should propagate.
     """
+    run_args: list = []
+    if "--" in argv:
+        split = argv.index("--")
+        argv, run_args = argv[:split], argv[split + 1:]
     args = _build_build_parser().parse_args(argv)
+    args.run_args = run_args
+    if run_args and not args.run:
+        print("error: arguments after `--` need --run", file=sys.stderr)
+        return 2
 
     if args.clear_cache:
         removed = _lamcache.clear()
@@ -3617,6 +3670,7 @@ def _run_compile(args, stdlib) -> None:
         extlibs_paths=args.extlibs,
         use_cache=not args.no_cache,
         no_semantic_check=args.no_semantic_check,
+        run_args=getattr(args, "run_args", None),
     )
 
 
@@ -4163,6 +4217,9 @@ Subcommands:
   build      Compile (and optionally run) a .lam source file.
              Also the default when no subcommand is given, so
              ``lamc foo.lam`` is equivalent to ``lamc build foo.lam``.
+  dev        Build and run a program, then rebuild and restart it when
+             its sources change; a failed build keeps the previous one
+             running. Flags: ``--watch``, ``--ext``, ``--ignore``.
   fmt        Format a .lam source file. Use ``--check`` for CI or
              ``--stdout`` to print without writing.
   version    Print the Lammergeier compiler version.
@@ -4251,6 +4308,10 @@ def main():
                 "tidy", "verify", "init", "list", "tree", "why"):
         from compiler import install_cli
         sys.exit(install_cli.main(argv))
+
+    if verb == "dev":
+        from compiler import dev_cli
+        sys.exit(dev_cli.main(argv[1:]))
 
     if verb == "build":
         sys.exit(_cmd_build(argv[1:]))

@@ -1,0 +1,82 @@
+# expect: unset: true false
+# expect: empty: true false
+# expect: blank: true false
+# expect: truthy: 1=true true=true t=true yes=true y=true on=true TRUE=true Yes=true ON=true padded=true
+# expect: falsy: 0=false false=false f=false no=false n=false off=false FALSE=false No=false OFF=false padded=false
+# expect: other: 2=true 2=false maybe=true maybe=false enabled=true -1=false
+# expect: strict-get-unchanged: ParseError
+# expect: list-unset: 0
+# expect: list-empty: 0
+# expect: list-blank: 0
+# expect: list-basic: [a|b|c]
+# expect: list-trimmed: [api.example.com|cdn.example.com|x y]
+# expect: list-empty-parts: [a|b]
+# expect: list-single: [only]
+# expect: list-separator: [/usr/bin|/bin|/opt/x y]
+# expect: list-multi-char: [a|b,c|d]
+# expect: list-whitespace: [a|b|c]
+# expect: list-default-keeps-semicolon: [a;b|c]
+# expect: config: debug=true cache=false origins=2 first=https://a.example
+# Env.flag reads a lenient boolean with a fallback; Env.list splits a value
+# into trimmed, non-empty parts.
+from lamenv import Env
+from lamerrors import Result, Error
+
+func flagOf(value: str, fallback: bool) -> bool {
+    Env.set("_LAM_FLAG_TEST", value).unwrap()
+    return Env.flag("_LAM_FLAG_TEST", fallback)
+}
+
+func listOf(value: str, separator: str = ",") -> str {
+    Env.set("_LAM_LIST_TEST", value).unwrap()
+    parts: list[str] = Env.list("_LAM_LIST_TEST", separator)
+    return "[" + "|".join(parts) + "]"
+}
+
+func table(values: list[str], fallback: bool) -> str {
+    return " ".join([f"{v.trim() if v.trim() == v else 'padded'}={str(flagOf(v, fallback)).toLower()}" for v in values])
+}
+
+class Settings {
+    func init(self) {
+        self.debug: bool = Env.flag("_LAM_APP_DEBUG", false)
+        self.cache: bool = Env.flag("_LAM_APP_CACHE", true)
+        self.origins: list[str] = Env.list("_LAM_APP_ORIGINS")
+    }
+}
+
+func main() {
+    Env.unset("_LAM_FLAG_TEST").unwrap()
+    print(f"unset: {str(Env.flag('_LAM_FLAG_TEST', true)).toLower()} {str(Env.flag('_LAM_FLAG_TEST', false)).toLower()}")
+    print(f"empty: {str(flagOf('', true)).toLower()} {str(flagOf('', false)).toLower()}")
+    print(f"blank: {str(flagOf('  \t ', true)).toLower()} {str(flagOf(' ', false)).toLower()}")
+    print(f"truthy: {table(['1', 'true', 't', 'yes', 'y', 'on', 'TRUE', 'Yes', 'ON', ' on '], false)}")
+    print(f"falsy: {table(['0', 'false', 'f', 'no', 'n', 'off', 'FALSE', 'No', 'OFF', '\tno\n'], true)}")
+    print(f"other: 2={str(flagOf('2', true)).toLower()} 2={str(flagOf('2', false)).toLower()} maybe={str(flagOf('maybe', true)).toLower()} maybe={str(flagOf('maybe', false)).toLower()} enabled={str(flagOf('enabled', true)).toLower()} -1={str(flagOf('-1', false)).toLower()}")
+
+    Env.set("_LAM_FLAG_TEST", "yes").unwrap()
+    strict: Result[bool] = Env.get("_LAM_FLAG_TEST", false)
+    strictError: Error = strict.error
+    print(f"strict-get-unchanged: {strictError.kind}")
+
+    Env.unset("_LAM_LIST_TEST").unwrap()
+    print(f"list-unset: {len(Env.list('_LAM_LIST_TEST'))}")
+    Env.set("_LAM_LIST_TEST", "").unwrap()
+    print(f"list-empty: {len(Env.list('_LAM_LIST_TEST'))}")
+    Env.set("_LAM_LIST_TEST", " , ,  ").unwrap()
+    print(f"list-blank: {len(Env.list('_LAM_LIST_TEST'))}")
+    print(f"list-basic: {listOf('a,b,c')}")
+    print(f"list-trimmed: {listOf('  api.example.com , cdn.example.com,\tx y ')}")
+    print(f"list-empty-parts: {listOf(',a,,  ,b,')}")
+    print(f"list-single: {listOf(' only ')}")
+    print(f"list-separator: {listOf('/usr/bin: /bin ::/opt/x y', ':')}")
+    print(f"list-multi-char: {listOf('a :: b,c ::d', '::')}")
+    print(f"list-whitespace: {listOf('  a \t b\n  c ', '')}")
+    print(f"list-default-keeps-semicolon: {listOf('a;b, c')}")
+
+    Env.set("_LAM_APP_DEBUG", "On").unwrap()
+    Env.set("_LAM_APP_CACHE", "off").unwrap()
+    Env.set("_LAM_APP_ORIGINS", "https://a.example, https://b.example,").unwrap()
+    settings: Settings = Settings()
+    print(f"config: debug={str(settings.debug).toLower()} cache={str(settings.cache).toLower()} origins={len(settings.origins)} first={settings.origins[0]}")
+}

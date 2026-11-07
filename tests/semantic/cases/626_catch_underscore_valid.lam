@@ -1,0 +1,30 @@
+# expect-pass
+# expect-no-warning: unused
+# `catch _` (and `catch ValueError as _`) handles an error without
+# binding it, in `do/catch` and `try/catch`: no unused-variable warning.
+from lamerrors import Result, Error
+
+func fails() -> Result[int] {
+    return Result.Err(Error("Bad", "no"))
+}
+
+func value() -> int {
+    do {
+        return fails()?
+    } catch _ {
+        return -1
+    }
+}
+
+func main() {
+    try {
+        print(value())
+    } catch _ {
+        print("caught")
+    }
+    try {
+        raise ValueError("bad")
+    } catch ValueError as _ {
+        print("value")
+    }
+}

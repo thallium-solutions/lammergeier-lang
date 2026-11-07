@@ -1,0 +1,66 @@
+# expect-pass
+# expect-no-warning: `?` operator used outside a `-> Result` function
+# `?` in a lambda declared `-> Result[...]` returns the `Err` from the
+# lambda (block and expression bodies, nested lambdas, a lambda in a
+# method, a `?.` chain, a lambda passed to a generic function and a lambda
+# inside `do/catch`): no warning, even when the enclosing function does
+# not return `Result`.
+from lamerrors import Result, Error
+
+class Thing {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func size(self) -> int {
+        return self.n
+    }
+}
+
+func fails() -> Result[int] {
+    return Result.Err(Error("Bad", "no"))
+}
+
+func thing(n: int) -> Result[Thing] {
+    return Result.Ok(Thing(n))
+}
+
+func apply(fn: func() -> Result[int]) -> Result[int] {
+    return fn()
+}
+
+func applyTo[T, U](value: T, fn: func(T) -> Result[U]) -> Result[U] {
+    return fn(value)
+}
+
+class Runner {
+    func run(self) -> Result[int] {
+        return apply(lambda () -> Result[int] {
+            n: int = fails()?
+            return Result.Ok(n)
+        })
+    }
+}
+
+func main() {
+    a: Result[int] = apply(lambda () -> Result[int] {
+        n: int = fails()?
+        return Result.Ok(n)
+    })
+    b: Result[int] = apply(lambda () -> Result[int]: Result.Ok(fails()? + 1))
+    c: Result[int] = apply(lambda () -> Result[int] {
+        inner: Result[int] = apply(lambda () -> Result[int]: Result.Ok(fails()?))
+        return Result.Ok(inner? + 1)
+    })
+    d: Result[int] = apply(lambda () -> Result[int]: Result.Ok(thing(1)?.size()))
+    e: Result[str] = applyTo(3, lambda (n: int) -> Result[str]: Result.Ok(str(fails()? + n)))
+    do {
+        f: Result[int] = apply(lambda () -> Result[int] {
+            return Result.Ok(fails()?)
+        })
+        print(f.ok())
+    } catch err {
+        print(err)
+    }
+    print(a.ok(), b.ok(), c.ok(), d.ok(), e.ok(), Runner().run().ok())
+}

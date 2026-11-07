@@ -1,0 +1,26 @@
+# expect-error: argument `value` to `Registry.put` has type `str`, expected `int`
+# expect-error: argument `key` to `Registry.put` has type `int`, expected `str`
+# expect-error: argument `value` to `Registry.put` has type `int`, expected `str`
+# The subclass's type arguments bind the inherited generic method's
+# parameters, so a wrong value type is still reported (with the bound type
+# instead of the base's parameter name).
+class Registry[K: comparable, V] {
+    func init(self) {
+        self.items: dict[K, V] = {}
+    }
+
+    func put(self, key: K, value: V) {
+        self.items[key] = value
+    }
+}
+
+class Sub[V](Registry[str, V]) {
+}
+
+func main() {
+    s: Sub[int] = Sub[int]()
+    s.put("q", "two")
+    s.put(1, 2)
+    t: Sub[str] = Sub[str]()
+    t.put("a", 3)
+}

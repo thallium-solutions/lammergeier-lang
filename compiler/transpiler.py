@@ -29,6 +29,7 @@ from compiler.preprocessor import preprocess_go_blocks  # re-export
 from compiler.visitors.markup import MarkupTranspilerMixin
 from compiler import narrowing as _narrowing
 from compiler.index_bounds import mark_nonnegative_locals
+from compiler.comparable_params import comparable_type_params
 from compiler.safe_nav import rewrite_result_safe_nav
 from compiler.visitors.helpers import HelpersMixin
 from compiler.visitors.statements import StatementVisitorMixin
@@ -117,6 +118,11 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     "_propagate_cast_hint",
     "_expected_expr_go_type",
     "_expected_expr_type_key",
+    # ``(call_node, lam_type)`` while lowering the value of an annotated
+    # assignment that is a call; ``_expr_to_go`` turns it into
+    # ``_call_result_lam`` (the expected Lam type) for that call only.
+    "_expected_value_lam",
+    "_call_result_lam",
     "_generic_names",
     "_nested_generic_functions",
     # The Go return type of the *currently-being-emitted* Lam function.
@@ -448,6 +454,12 @@ func lamAsyncReportUnretrieved() {
         # ``_func_param_names``. Call sites use this as contextual type
         # information for anonymous collection literals.
         self._func_param_go_types: Dict[str, List[str]] = {}
+        self._func_param_lam_types: Dict[str, List[Any]] = {}
+        # Declared Lam return type per callable (``Result[T]``, kept where
+        # the Go spelling ``*Result`` loses ``T``): binds type parameters
+        # from function-typed arguments and from the expected type of a
+        # call (``_lam_generic_call_subst``).
+        self._func_return_lam_types: Dict[str, Any] = {}
         # Generic type-parameter names per callable. Call-site contextual
         # lowering uses these to replace list[T] with a literal's inferred
         # concrete slice type rather than leaking T into caller Go.
@@ -455,6 +467,7 @@ func lamAsyncReportUnretrieved() {
         # Declared order of a generic function's type parameters, to bind
         # explicit type arguments (``pair[int, str](...)``).
         self._func_generic_order: Dict[str, List[str]] = {}
+        self._method_generic_order: Dict[str, List[str]] = {}
         # ``Class.method`` -> the method's own type parameters, for instance
         # methods declaring them (``func map[U](self, ...)``). Go methods
         # cannot have type parameters, so these lower to package-level
@@ -513,6 +526,10 @@ func lamAsyncReportUnretrieved() {
         self._generic_classes: Dict[str, str] = {}
         self._generic_names: set = set()
         self._generic_constraints: Dict[str, str] = {}
+        # ``id(type_params node)`` -> type parameters used as a Go map key
+        # (a set element or a dict key), which ``_type_params_to_go``
+        # declares ``comparable`` (``compiler/comparable_params.py``).
+        self._comparable_type_params: Dict[int, Set[str]] = {}
         self._nested_generic_functions: Dict[str, Dict[str, Any]] = {}
         # Nested ``func`` name -> its parameter metadata key (defaults,
         # keyword order); scoped to the enclosing function's body.
@@ -543,6 +560,8 @@ func lamAsyncReportUnretrieved() {
         self._current_return_type_key: str = ""
         self._expected_expr_go_type: str = ""
         self._expected_expr_type_key: str = ""
+        self._expected_value_lam: Optional[Tuple[Any, Any]] = None
+        self._call_result_lam: Any = None
         self._func_return_go_types: Dict[str, str] = {}
         # Top-level ``async func`` names: their calls yield handles.
         self._async_functions: Set[str] = set()
@@ -656,6 +675,7 @@ func lamAsyncReportUnretrieved() {
         self._raw_go_top = []
         self._shadowed_function_aliases = {}
         self._generic_constraints = {}
+        self._comparable_type_params = comparable_type_params(tree)
         self._nested_generic_functions = {}
         self._nested_func_keys = {}
         self._nested_generator_elems = {}
@@ -730,8 +750,16 @@ func lamAsyncReportUnretrieved() {
             if "fmt." in raw:
                 self.needed_imports.add("fmt")
 
+        if self._hoisted_nested_generic_funcs:
+            body_lines = self._hoisted_nested_generic_funcs + [""] + body_lines
+        if self._shadowed_function_aliases:
+            body_lines = body_lines + [""] + [
+                f"var {alias} = {go_name}"
+                for go_name, alias in sorted(self._shadowed_function_aliases.items())
+            ]
+
         all_imports = set()
-        for pkg in self.needed_imports:
+        for pkg in self._used_compiler_imports(body_lines):
             all_imports.add(f'"{pkg}"')
         for pkg in self.user_go_imports:
             if '"' in pkg:
@@ -751,15 +779,23 @@ func lamAsyncReportUnretrieved() {
         if self._raw_go_top:
             header_lines.append("")
 
-        if self._hoisted_nested_generic_funcs:
-            body_lines = self._hoisted_nested_generic_funcs + [""] + body_lines
-        if self._shadowed_function_aliases:
-            body_lines = body_lines + [""] + [
-                f"var {alias} = {go_name}"
-                for go_name, alias in sorted(self._shadowed_function_aliases.items())
-            ]
-
         return "\n".join(header_lines + body_lines) + "\n"
+
+    def _used_compiler_imports(self, body_lines: List[str]) -> Set[str]:
+        """The standard-library packages the compiler asked for that the
+        emitted code references (``reflect.``, ``big.``): an expression
+        lowered twice (a list-method lambda, first without and then with
+        its parameter types) leaves the imports of the discarded lowering
+        behind, which Go rejects (``imported and not used``). Packages a
+        ``go!`` block imports itself are never dropped."""
+        user = {pkg.strip().strip('"') for pkg in self.user_go_imports}
+        text = "\n".join([*body_lines, *self._raw_go_top, *map(str, self.go_blocks.values())])
+        used = set()
+        for pkg in self.needed_imports:
+            name = pkg.rsplit("/", 1)[-1]
+            if pkg in user or re.search(rf"(?<![\w.]){re.escape(name)}\.", text):
+                used.add(pkg)
+        return used
 
     # ─── Top-level statements ──────────────────────────────────
     #
@@ -1183,6 +1219,8 @@ func lamAsyncReportUnretrieved() {
                 return_key = self._overload_return_key(return_type_node)
                 if return_type:
                     self._func_return_go_types.setdefault(name, return_type)
+                if return_type_node is not None:
+                    self._func_return_lam_types.setdefault(name, self._parsed_lam_type(return_type_node))
                 payload_type = self._result_payload_go_type(return_type_node)
                 if payload_type:
                     self._result_payload_go_types.setdefault(name, payload_type)
@@ -1212,6 +1250,8 @@ func lamAsyncReportUnretrieved() {
                         self._func_generic_order[meta_key] = list(type_param_names)
                     if params_node:
                         self._collect_param_defaults(meta_key, params_node)
+                    if return_type_node is not None:
+                        self._func_return_lam_types.setdefault(meta_key, self._parsed_lam_type(return_type_node))
                     required = arity - len(self._func_defaults.get(meta_key, []))
                     self._overload_variants.setdefault(name, []).append({
                         "arity": arity,
@@ -1281,6 +1321,12 @@ func lamAsyncReportUnretrieved() {
                     )
                     if declared_generic_names:
                         self._func_generic_params[method_key] = declared_generic_names
+                    if method_type_param_names:
+                        # Type parameters of the Go function a generic method
+                        # lowers to (``Class_Method[T, U]``), in order.
+                        self._method_generic_order[method_key] = (
+                            list(class_type_param_names) + list(method_type_param_names)
+                        )
                     if method_type_param_names and not is_stat and fn_name not in {"init", "__init__"}:
                         self._generic_instance_methods[method_key] = list(method_type_param_names)
                     callable_generic_names = self._generic_names | declared_generic_names
@@ -1308,6 +1354,8 @@ func lamAsyncReportUnretrieved() {
                         self._func_param_counts[method_key] = arity
                         if params_node:
                             self._collect_param_defaults(method_key, params_node, skip_self=skip_self)
+                        if return_type_node is not None:
+                            self._func_return_lam_types.setdefault(method_key, self._parsed_lam_type(return_type_node))
                         variadic = self._has_variadic(params_node) if params_node else False
                         if not variadic and fn_name not in {"init", "__init__", "__str__", "__repr__", "__len__", "__json__"} and fn_name not in DUNDER_OPS:
                             self._overloaded_functions.setdefault(method_key, set()).add(arity)
@@ -1876,6 +1924,10 @@ func lamAsyncReportUnretrieved() {
         # behaviour.
         names: List[str] = []
         go_types: List[str] = []
+        # Lam types of the parameters of a generic callable: Go erases a
+        # ``tuple[K, V]`` to ``[]interface{}``, so call sites bind ``K`` from
+        # these (``_lam_generic_call_subst``).
+        type_nodes: List[Any] = []
         for child in params_node.children:
             if child is None:
                 continue
@@ -1893,12 +1945,14 @@ func lamAsyncReportUnretrieved() {
                         go_types.append(self._type_expr_to_go(pnode.children[1]))
                     else:
                         go_types.append("interface{}")
+                    type_nodes.append(pnode.children[1] if len(pnode.children) > 1 else None)
                     param_idx += 1
                     total += 1
                 elif isinstance(pnode, Tree) and pnode.data == "tuple_typed_param":
                     type_node = pnode.children[-1]
                     names.append("")
                     go_types.append(self._type_expr_to_go(type_node))
+                    type_nodes.append(type_node)
                     param_idx += 1
                     total += 1
             elif isinstance(child, Tree) and child.data == "typed_param":
@@ -1910,6 +1964,7 @@ func lamAsyncReportUnretrieved() {
                     go_types.append(self._type_expr_to_go(child.children[1]))
                 else:
                     go_types.append("interface{}")
+                type_nodes.append(child.children[1] if len(child.children) > 1 else None)
                 param_idx += 1
                 total += 1
             elif isinstance(child, Tree) and child.data == "typed_starparams":
@@ -1923,6 +1978,7 @@ func lamAsyncReportUnretrieved() {
                     go_types.append("..." + self._type_expr_to_go(star_param.children[1]))
                 else:
                     go_types.append("...interface{}")
+                type_nodes.append(None)
                 param_idx += 1
                 total += 1
         if defaults:
@@ -1931,6 +1987,11 @@ func lamAsyncReportUnretrieved() {
         if names:
             self._func_param_names[func_name] = names
             self._func_param_go_types[func_name] = go_types
+            # Also kept for non-generic callables: a function passed by name
+            # to a generic one (``inTx(c, countRows)``) binds its ``T``.
+            self._func_param_lam_types[func_name] = [
+                self._parsed_lam_type(node) if node is not None else None for node in type_nodes
+            ]
 
     # ─── Pass 1: Collect class fields ──────────────────────────
 

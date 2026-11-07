@@ -32,8 +32,12 @@ func main() {
     print(firstOf())
     b = Box()
     print(ident(None))
-    ints: list[int] = merge([])
+    ints: list[int] = keep(merge([]))
     p = Pair()
     c: Box[int] = Box([])
     print(len(b.items), len(ints), p.key, len(c.items))
 }
+
+# The call is an argument: the annotation of `ints` binds only `keep`'s
+# result (`ints: list[int] = merge([])` alone infers `T = int`).
+func keep(xs: list[int]) -> list[int] { return xs }

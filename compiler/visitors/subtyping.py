@@ -704,6 +704,10 @@ class SubtypingMixin:
         key = f"{class_name}.init"
         names = self._func_param_names.get(key)
         types = self._func_param_go_types.get(key)
+        if names is None and types is None and self._func_param_counts.get(key) == 0:
+            # ``func init(self)``: no parameters are recorded, but the
+            # inherited ``init`` still has to run (``NewParent()``).
+            names, types = [], []
         if (
             names is None or types is None or len(names) != len(types)
             or any(not n for n in names) or key in self._variadic_functions

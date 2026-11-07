@@ -3,7 +3,7 @@
 Lammergeier keeps general-purpose building blocks in the standard library and
 ships service clients, fast-moving protocols, and vendor integrations as
 independently versioned packages. The official packages below target
-`lamc` 4.4; each uses a scoped `@lam/...` import and carries its own tests,
+`lamc` 4.5; each uses a scoped `@lam/...` import and carries its own tests,
 release notes, and pinned Go dependencies. The libraries that existed before
 3.0 declare `>=1.18, <5`; the five added in October 2026 declare `>=3.0, <5`;
 `@lam/vulture` 3.0.0 and its plugins declare `>=4.0, <5` (native `html` /
@@ -12,7 +12,8 @@ Current releases:
 
 | Release | Notes |
 |---|---|
-| `@lam/vulture@3.1.0` | `HEAD` answered by GET routes, `req.queryAll` (3.1.0); handlers may return `html`, `xml`, `json` or `str` (sent with the type's default Content-Type unless one is set); `res.send(html|xml)`, `res.html(html)`, `res.xml(...)`; requires lamc 4.0 |
+| `@lam/vulture@3.6.0` | `SseEmitter.wait` ends event streams when the client leaves or a graceful shutdown starts (3.6.0); `HEAD` answered by GET routes, `req.queryAll` (3.1.0); handlers may return `html`, `xml`, `json` or `str` (sent with the type's default Content-Type unless one is set); `res.send(html|xml)`, `res.html(html)`, `res.xml(...)`; requires lamc 4.0 |
+| `@lam/vulture/dev-plugin@1.0.0` | lamc 4.x compatible; pins `@lam/vulture` 3.6.0; browser live reload for `lamc dev` (4.5) |
 | `@lam/vulture/std-plugin@2.0.5` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0 |
 | `@lam/vulture/tus-plugin@3.0.4` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0; root `tag()` removed (3.0.0) |
 | `@lam/vulture/ws-plugin@2.0.4` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0 |
@@ -45,6 +46,7 @@ package name, capability, or keyword.
 | `@lam/vulture` | Fastify-style HTTP server with typed routes, hooks, native JSON/schema validation, contexts, streaming, OpenAPI, and in-process injection. | `Server`, `Request`, `Response`, `RouteOptions`, `InjectResponse`, `RequestBodyReader`, `SseEmitter`, `HttpError` | [thallium-solutions/lam-vulture](https://github.com/thallium-solutions/lam-vulture) |
 | `@lam/vulture/std-plugin` | Common Vulture plugins for logging, security, compression, metrics, tracing, authentication, sessions, CSRF, and resilience. | `CircuitBreaker`, `compress`, `helmet`, `metrics`, `rateLimit`, `requestLog` (plus other direct installers and `*Plugin` factories) | [thallium-solutions/lam-vulture-std-plugin](https://github.com/thallium-solutions/lam-vulture-std-plugin) |
 | `@lam/vulture/tus-plugin` | Result-returning tus.io resumable-upload route registration and garbage collection for Vulture. | `tusUploads`, `tusGc` | [thallium-solutions/lam-vulture-tus-plugin](https://github.com/thallium-solutions/lam-vulture-tus-plugin) |
+| `@lam/vulture/dev-plugin` | Browser live reload for `lamc dev`: pages reload when the server restarts, stylesheets swap in place; inert outside `lamc dev`. | `LiveReload`, `liveReload`, `liveReloadPlugin` | [thallium-solutions/lam-vulture-dev-plugin](https://github.com/thallium-solutions/lam-vulture-dev-plugin) |
 | `@lam/vulture/ws-plugin` | Result-returning WebSocket upgrades, frames, subprotocols, compression, and origin policy for Vulture. | `WebSocket`, `wsRoute`, `wsUpgrade` | [thallium-solutions/lam-vulture-ws-plugin](https://github.com/thallium-solutions/lam-vulture-ws-plugin) |
 | `@lam/stripe` | Stripe API client: customers, products, prices, checkout and portal sessions, subscriptions, invoices, billing meters and meter events, retries with idempotency keys, pagination, webhook signature verification. | `StripeClient`, `StripeConfig`, `StripeWebhook`, `StripeEvent`, `StripeError` | [thallium-solutions/lam-stripe](https://github.com/thallium-solutions/lam-stripe) |
 | `@lam/otel` | OpenTelemetry SDK: traces, metrics and logs exported as OTLP/HTTP JSON, W3C trace context and baggage, samplers, batch processors, in-memory and console exporters. | `Otel`, `OtelConfig`, `OtelTracer`, `OtelSpan`, `OtelMeter`, `OtelLogger` | [thallium-solutions/lam-otel](https://github.com/thallium-solutions/lam-otel) |
@@ -357,8 +359,20 @@ ownership. `@lam/ssh` uses the Lam `lamcrypto` and `lamcontext` standard
 libraries for key material and cancellation. `@lam/redis` also uses
 `lamcontext` internally for command and pub/sub cancellation.
 
-`@lam/vulture/std-plugin`, `@lam/vulture/tus-plugin`, and
-`@lam/vulture/ws-plugin` all depend on `@lam/vulture`. The core Vulture package
+`@lam/vulture/std-plugin`, `@lam/vulture/tus-plugin`, `@lam/vulture/ws-plugin`
+and `@lam/vulture/dev-plugin` all depend on `@lam/vulture`. The development
+plugin pairs with `lamc dev` and is inert outside it, so servers register it
+unconditionally:
+
+```lammergeier
+from @lam/vulture import Server
+from @lam/vulture/dev-plugin import liveReloadPlugin
+
+func installDevelopment(srv: Server) {
+    srv.register(liveReloadPlugin(["assets/build"]))
+}
+```
+ The core Vulture package
 links back to the Lammergeier language/compiler repository; every plugin links
 to both projects and keeps its own protocol-specific tests and Go dependencies.
 

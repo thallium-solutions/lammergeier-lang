@@ -1,0 +1,18 @@
+# Regression companion of `test_lambda_membership_imports.lam`: `in` on a
+# list element inside a list-method lambda compares with
+# `reflect.DeepEqual`; the untyped first lowering of the lambda also
+# asked for `strings`, which this file does not use otherwise
+# (`"strings" imported and not used`).
+#
+# expect: any=true all=false
+# expect: kept=[[3]]
+# expect: nested=[true false]
+# expect: lambda_membership_imports_lists_ok
+
+func main() {
+    ls: list[list[int]] = [[1, 2], [3]]
+    print(f"any={ls.any(lambda l: 2 in l)} all={ls.all(lambda l: 1 in l)}")
+    print(f"kept={ls.filter(lambda l: 1 not in l)}")
+    print(f"nested={ls.map(lambda l: [1, 2] == l or 2 in l)}")
+    print("lambda_membership_imports_lists_ok")
+}

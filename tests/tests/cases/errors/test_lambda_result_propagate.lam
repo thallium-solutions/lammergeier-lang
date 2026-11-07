@@ -1,0 +1,195 @@
+# Regression: `?` inside a lambda declared `-> Result[...]` panicked at run
+# time (the guard used the enclosing function's return target) and the
+# checker warned "`?` operator used outside a `-> Result` function". It
+# now returns the `Err` from the lambda, as in a function: block and
+# expression bodies, nested lambdas, lambdas in methods and static
+# methods, `?.` chains, lambdas passed to generic functions, lambdas
+# inside `do/catch` and `do/catch` inside lambdas. A lambda that does not
+# return `Result` still panics on `Err` (caught by `try`).
+#
+# expect: block=false Bad: no
+# expect: block_ok=42
+# expect: expr=false expr_ok=42
+# expect: nested=false Bad: no
+# expect: nested_ok=43
+# expect: method=false Bad: no
+# expect: static=false Bad: no
+# expect: chain=false Bad: no
+# expect: chain_ok=5
+# expect: generic=false Bad: no
+# expect: generic_ok=hi!
+# expect: in_do=false Bad: no
+# expect: do_in_lambda=-1
+# expect: do_in_lambda_ok=41
+# expect: loop=[1 Bad: no 3]
+# expect: panicked=true
+# expect: lambda_result_propagate_ok
+
+from lamerrors import Result, Error
+
+class Thing {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func size(self) -> int {
+        return self.n
+    }
+
+    func next(self) -> Result[Thing] {
+        if self.n < 0 {
+            return Result.Err(Error("Bad", "no"))
+        }
+        return Result.Ok(Thing(self.n + 1))
+    }
+}
+
+func fails() -> Result[int] {
+    return Result.Err(Error("Bad", "no"))
+}
+
+func good() -> Result[int] {
+    return Result.Ok(41)
+}
+
+func thing(n: int) -> Result[Thing] {
+    if n < 0 {
+        return Result.Err(Error("Bad", "no"))
+    }
+    return Result.Ok(Thing(n))
+}
+
+func apply(fn: func() -> Result[int]) -> Result[int] {
+    return fn()
+}
+
+func applyTo[T, U](value: T, fn: func(T) -> Result[U]) -> Result[U] {
+    return fn(value)
+}
+
+func describe(r: Result[int]) -> str {
+    if r.ok() {
+        return str(r.unwrap())
+    }
+    return str(r.error)
+}
+
+class Runner {
+    func init(self, base: int) {
+        self.base: int = base
+    }
+
+    func run(self) -> Result[int] {
+        return apply(lambda () -> Result[int] {
+            n: int = fails()?
+            return Result.Ok(n + self.base)
+        })
+    }
+
+    static func runStatic() -> Result[int] {
+        return apply(lambda () -> Result[int]: Result.Ok(fails()? * 2))
+    }
+}
+
+func inDo() -> str {
+    do {
+        r: Result[int] = apply(lambda () -> Result[int] {
+            n: int = fails()?
+            return Result.Ok(n)
+        })
+        return f"in_do={r.ok()} {r.error}"
+    } catch err {
+        return f"in_do caught {err}"
+    }
+}
+
+func doInLambda(n: int) -> int {
+    fn = lambda (x: int) -> int {
+        do {
+            v: int = (fails() if x < 0 else good())?
+            return v
+        } catch _err {
+            return -1
+        }
+    }
+    return fn(n)
+}
+
+func main() {
+    r: Result[int] = apply(lambda () -> Result[int] {
+        n: int = fails()?
+        return Result.Ok(n)
+    })
+    print(f"block={r.ok()} {r.error}")
+    ok: Result[int] = apply(lambda () -> Result[int] {
+        n: int = good()?
+        return Result.Ok(n + 1)
+    })
+    print(f"block_ok={ok.unwrap()}")
+
+    e1: Result[int] = apply(lambda () -> Result[int]: Result.Ok(fails()? + 1))
+    e2: Result[int] = apply(lambda () -> Result[int]: Result.Ok(good()? + 1))
+    print(f"expr={e1.ok()} expr_ok={e2.unwrap()}")
+
+    nested: Result[int] = apply(lambda () -> Result[int] {
+        inner: Result[int] = apply(lambda () -> Result[int]: Result.Ok(fails()? + 1))
+        n: int = inner?
+        return Result.Ok(n)
+    })
+    print(f"nested={nested.ok()} {nested.error}")
+    nestedOk: Result[int] = apply(lambda () -> Result[int] {
+        inner: Result[int] = apply(lambda () -> Result[int]: Result.Ok(good()? + 1))
+        return Result.Ok(inner? + 1)
+    })
+    print(f"nested_ok={nestedOk.unwrap()}")
+
+    m: Result[int] = Runner(1).run()
+    print(f"method={m.ok()} {m.error}")
+    s: Result[int] = Runner.runStatic()
+    print(f"static={s.ok()} {s.error}")
+
+    chain: Result[int] = apply(lambda () -> Result[int]: Result.Ok(thing(-1)?.size()))
+    print(f"chain={chain.ok()} {chain.error}")
+    chainOk: Result[int] = apply(lambda () -> Result[int] {
+        size: int = thing(3)?.next()?.next()?.size()
+        return Result.Ok(size)
+    })
+    print(f"chain_ok={chainOk.unwrap()}")
+
+    g: Result[str] = applyTo(-1, lambda (n: int) -> Result[str] {
+        t: Thing = thing(n)?
+        return Result.Ok(str(t.size()))
+    })
+    print(f"generic={g.ok()} {g.error}")
+    g2: Result[str] = applyTo("hi", lambda (w: str) -> Result[str]: Result.Ok(w + "!"))
+    print(f"generic_ok={g2.unwrap()}")
+
+    print(inDo())
+    print(f"do_in_lambda={doInLambda(-5)}")
+    print(f"do_in_lambda_ok={doInLambda(5)}")
+
+    outs: list[str] = []
+    for i in [1, 2, 3] {
+        out: Result[int] = applyTo(i, lambda (k: int) -> Result[int] {
+            if k == 2 {
+                n: int = fails()?
+                return Result.Ok(n)
+            }
+            return Result.Ok(k)
+        })
+        outs.append(describe(out))
+    }
+    print(f"loop=[{' '.join(outs)}]")
+
+    panicked = false
+    try {
+        plain = lambda () -> int {
+            return fails()?
+        }
+        print(plain())
+    } catch _ {
+        panicked = true
+    }
+    print(f"panicked={panicked}")
+    print("lambda_result_propagate_ok")
+}

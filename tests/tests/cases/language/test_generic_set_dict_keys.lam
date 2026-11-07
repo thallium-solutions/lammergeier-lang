@@ -1,0 +1,209 @@
+# Regression: a type parameter used as a set element or a dict key lowers
+# to a Go map key (`map[T]bool`, `map[K]V`), so `func count[T](s: set[T])`
+# failed in `go build` with `invalid map key type T (missing comparable
+# constraint)`. Such type parameters now get Go's `comparable` constraint
+# (explicit constraints that already allow only comparable types are
+# kept), in generic functions, classes (fields, methods, static methods,
+# method type parameters), nested functions and imported modules, with
+# explicit and inferred instantiation, including through a call to
+# another generic function. `sorted()` of a generic `set[T]` / `dict[K, V]`
+# sorts like `sorted()` of a generic `list[T]`.
+#
+# expect: count=3 1 explicit=2
+# expect: keys=[a b] values=3
+# expect: sorted=[1 2 3] [a b c] ordered=[x y]
+# expect: sortedKeys=[1 2] desc=[c b a]
+# expect: bag=2 true false items=[go lam]
+# expect: index=[1 3] missing=0
+# expect: static=2 mapped=[2 4]
+# expect: nested=2 groups=[a b]
+# expect: through=2 3
+# expect: constrained=2 number=3
+# expect: nestedFunc=2
+# expect: lib=3 inv=x tally=2 0
+# expect: mixed=4 pairs=2
+
+from generic_set_provider import uniqueCount, invert, Tally
+
+func count[T](s: set[T]) -> int {
+    return len(s)
+}
+
+func keysOf[K, V](d: dict[K, V]) -> list[K] {
+    out: list[K] = []
+    for k, _v in d {
+        out.append(k)
+    }
+    return sorted(out)
+}
+
+func total[K](d: dict[K, int]) -> int {
+    n: int = 0
+    for _k, v in d {
+        n += v
+    }
+    return n
+}
+
+func sortedSet[T](s: set[T]) -> list[T] {
+    return sorted(s)
+}
+
+func sortedOrdered[T: ordered](s: set[T]) -> list[T] {
+    return sorted(s)
+}
+
+func sortedKeys[K, V](d: dict[K, V]) -> list[K] {
+    return sorted(d)
+}
+
+func descending[T](s: set[T]) -> list[T] {
+    return sorted(s, reverse=true)
+}
+
+class Bag[T] {
+    func init(self) {
+        self.items: set[T] = set()
+    }
+
+    func add(self, x: T) -> Bag[T] {
+        self.items.add(x)
+        return self
+    }
+
+    func has(self, x: T) -> bool {
+        return x in self.items
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+
+    func listed(self) -> list[T] {
+        return sorted(self.items)
+    }
+
+    static func of(xs: list[T]) -> Bag[T] {
+        b: Bag[T] = Bag[T]()
+        for x in xs {
+            b.add(x)
+        }
+        return b
+    }
+
+    func mapped[U](self, fn: func(T) -> U) -> set[U] {
+        out: set[U] = set()
+        for x in self.items {
+            out.add(fn(x))
+        }
+        return out
+    }
+}
+
+class Index[K, V] {
+    func init(self) {
+        self.rows: dict[K, list[V]] = {}
+    }
+
+    func put(self, k: K, v: V) {
+        if k not in self.rows {
+            self.rows[k] = []
+        }
+        self.rows[k].append(v)
+    }
+
+    func keys(self) -> list[K] {
+        return sorted(self.rows)
+    }
+
+    func countOf(self, k: K) -> int {
+        if k in self.rows {
+            return len(self.rows[k])
+        }
+        return 0
+    }
+}
+
+func groups[K, V](keys: list[K], values: list[V]) -> dict[K, set[V]] {
+    out: dict[K, set[V]] = {}
+    for i, k in enumerate(keys) {
+        v: V = values[i]
+        if k not in out {
+            out[k] = set()
+        }
+        out[k].add(v)
+    }
+    return out
+}
+
+func distinct[T](xs: list[T]) -> int {
+    s: set[T] = set()
+    for x in xs {
+        s.add(x)
+    }
+    return count(s)
+}
+
+func throughCall[T](xs: list[T]) -> int {
+    return distinct(xs)
+}
+
+func throughExplicit[T](xs: list[T]) -> int {
+    return distinct[T](xs)
+}
+
+func constrained[T: number](xs: list[T]) -> int {
+    s: set[T] = set()
+    for x in xs {
+        s.add(x)
+    }
+    return len(s)
+}
+
+func outer[T](xs: list[T]) -> int {
+    func inner(ys: list[T]) -> int {
+        s: set[T] = set()
+        for y in ys {
+            s.add(y)
+        }
+        return len(s)
+    }
+    return inner(xs)
+}
+
+func mixed[T, U](xs: list[T], ys: list[U]) -> int {
+    a: set[T] = set()
+    for x in xs {
+        a.add(x)
+    }
+    return len(a) + len(ys)
+}
+
+func main() {
+    print(f"count={count({1, 2, 3})} {count({"a"})} explicit={count[str]({"p", "q"})}")
+    print(f"keys={keysOf({"b": 1, "a": 2})} values={total({"x": 1, "y": 2})}")
+    print(f"sorted={sortedSet({3, 1, 2})} {sortedSet({"c", "a", "b"})} ordered={sortedOrdered({"y", "x"})}")
+    print(f"sortedKeys={sortedKeys({2: "b", 1: "a"})} desc={descending({"a", "c", "b"})}")
+    b: Bag[str] = Bag[str]()
+    b.add("lam").add("go").add("lam")
+    print(f"bag={b.size()} {b.has("go")} {b.has("rust")} items={b.listed()}")
+    idx: Index[int, str] = Index[int, str]()
+    idx.put(3, "c")
+    idx.put(1, "a")
+    idx.put(3, "cc")
+    print(f"index={idx.keys()} missing={idx.countOf(9)}")
+    nums: Bag[int] = Bag.of([1, 2, 1])
+    doubled: set[int] = nums.mapped(lambda n: n * 2)
+    print(f"static={nums.size()} mapped={sorted(doubled)}")
+    g: dict[str, set[int]] = groups(["a", "b", "a", "a"], [1, 2, 1, 3])
+    print(f"nested={len(g["a"])} groups={sorted(g)}")
+    print(f"through={throughCall([1, 1, 2])} {throughExplicit(["x", "y", "z"])}")
+    print(f"constrained={constrained([1, 2, 2])} number={constrained([0.5, 1.5, 2.5])}")
+    print(f"nestedFunc={outer(["a", "b", "a"])}")
+    t: Tally[str] = Tally[str]()
+    t.add("x")
+    t.add("x")
+    inv: dict[int, str] = invert({"x": 1})
+    print(f"lib={uniqueCount([1, 2, 3, 3])} inv={inv[1]} tally={t.of("x")} {t.of("y")}")
+    print(f"mixed={mixed([1, 1, 2], [[1], [2]])} pairs={len(groups[int, str]([1, 2], ["a", "b"]))}")
+}

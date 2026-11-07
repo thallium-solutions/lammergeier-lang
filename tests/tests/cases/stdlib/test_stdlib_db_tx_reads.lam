@@ -1,0 +1,171 @@
+# expect: tx-first-row: a
+# expect: tx-first-empty: 0
+# expect: tx-first-error: DbQueryError
+# expect: tx-scalar: 1
+# expect: tx-scalar-empty: true
+# expect: tx-scalar-error: DbQueryError
+# expect: tx-firstJson: Ada admin
+# expect: tx-firstJson-empty: 0
+# expect: tx-firstJson-error: DbJsonError
+# expect: tx-firstJson-query-error: DbQueryError
+# expect: tx-queryJson: 1 object
+# expect: tx-scalarJson: object Ada
+# expect: tx-scalarJson-error: DbJsonError
+# expect: rollback-hides: 0 0 true
+# expect: closed-tx: DbQueryError DbQueryError DbQueryError
+# expect: commit-shows: 1 b
+# expect: either-handle: db=b tx=b,c
+# expect: observer-statements: BEGIN|SELECT name FROM items WHERE id = ?|SELECT COUNT(*) FROM items|SELECT payload FROM items WHERE id = ?|SELECT nope FROM missing_table|SELECT payload FROM items WHERE id = ?|SELECT payload FROM items WHERE id = ?|ROLLBACK
+# expect: observer-failures: ||||DbQueryError|||
+# expect: observer-context: true
+# expect: observer-tokens: true
+# expect: observer-private: true
+# Tx.first / scalar / firstJson (and queryJson / scalarJson) behave like
+# the Db versions and run through the transaction's own query path: the
+# transaction's connection (uncommitted writes visible, rolled back writes
+# gone), its context and its DbObserver.
+from lamdb import Db, Tx, DbObserver
+from lamcontext import Context
+from lamjson import Json
+from lamos import Os
+from lamerrors import Result, Error
+
+class RecordingObserver {
+    func init(self) {
+        self.statements: list[str] = []
+        self.failures: list[str] = []
+        self.contexts: list[Context] = []
+        self.tokens: list[any] = []
+        self.finishedTokens: list[any] = []
+    }
+
+    func start(self, ctx: Context, statement: str) -> any {
+        self.contexts.append(ctx)
+        self.statements.append(statement)
+        token: str = f"t{len(self.statements)}"
+        self.tokens.append(token)
+        return token
+    }
+
+    func finish(self, ctx: Context, token: any, failure: str) {
+        self.contexts.append(ctx)
+        self.finishedTokens.append(token)
+        self.failures.append(failure)
+    }
+}
+
+# Code written once for a Db or a Tx: both satisfy this interface.
+interface RowReader {
+    func first(self, query: str, params: list[any]) -> Result[dict[str, any]]
+    func scalar(self, query: str, params: list[any]) -> Result[any]
+}
+
+func nameOf(reader: RowReader, id: int) -> Result[str] {
+    row: dict[str, any] = reader.first("SELECT name FROM items WHERE id = ?", [id])?
+    if len(row) == 0 {
+        return Result.Ok("-")
+    }
+    name: str = str(row["name"])
+    return Result.Ok(name)
+}
+
+func names(reader: RowReader, ids: list[int]) -> Result[list[str]] {
+    out: list[str] = []
+    for id in ids {
+        out.append(nameOf(reader, id)?)
+    }
+    return Result.Ok(out)
+}
+
+func kind(result: Result) -> str {
+    if result.ok() {
+        return "ok"
+    }
+    error: Error = result.error
+    return error.kind
+}
+
+func main() {
+    path: str = Os.tempFile("lam-tx-reads-", ".db").unwrap()
+    db: Db = Db.connect("sqlite", path).unwrap()
+    db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, payload TEXT)").unwrap()
+
+    tx: Tx = db.begin().unwrap()
+    payload: json = {"name": "Ada", "roles": ["admin", "writer"]}
+    tx.exec("INSERT INTO items (id, name, payload) VALUES (?, ?, ?)", [1, "a", payload]).unwrap()
+    tx.exec("INSERT INTO items (id, name, payload) VALUES (?, ?, ?)", [2, "broken", "not-json"]).unwrap()
+
+    row: dict[str, any] = tx.first("SELECT name FROM items WHERE id = ?", [1]).unwrap()
+    print(f"tx-first-row: {row['name']}")
+    none_: dict[str, any] = tx.first("SELECT name FROM items WHERE id = ?", [99]).unwrap()
+    print(f"tx-first-empty: {len(none_)}")
+    print(f"tx-first-error: {kind(tx.first('SELECT * FROM missing_table'))}")
+
+    count: any = tx.scalar("SELECT COUNT(*) FROM items WHERE name = ?", ["a"]).unwrap()
+    print(f"tx-scalar: {count}")
+    noScalar: any = tx.scalar("SELECT name FROM items WHERE id = ?", [99]).unwrap()
+    print(f"tx-scalar-empty: {noScalar == None}")
+    print(f"tx-scalar-error: {kind(tx.scalar('SELECT nope FROM missing_table'))}")
+
+    jsonRow: dict[str, any] = tx.firstJson("SELECT payload FROM items WHERE id = ?", ["payload"], [1]).unwrap()
+    doc: json = Json.fromValue(jsonRow["payload"]).unwrap()
+    docName: str = doc.name
+    firstRole: str = doc.roles[0]
+    print(f"tx-firstJson: {docName} {firstRole}")
+    noJson: dict[str, any] = tx.firstJson("SELECT payload FROM items WHERE id = ?", ["payload"], [99]).unwrap()
+    print(f"tx-firstJson-empty: {len(noJson)}")
+    print(f"tx-firstJson-error: {kind(tx.firstJson('SELECT payload FROM items WHERE id = ?', ['payload'], [2]))}")
+    print(f"tx-firstJson-query-error: {kind(tx.firstJson('SELECT payload FROM missing_table', ['payload']))}")
+
+    jsonRows: list[dict[str, any]] = tx.queryJson("SELECT payload FROM items WHERE id = ?", ["payload"], [1]).unwrap()
+    rowDoc: json = Json.fromValue(jsonRows[0]["payload"]).unwrap()
+    print(f"tx-queryJson: {len(jsonRows)} {Json.kind(rowDoc)}")
+    scalarDoc: json = tx.scalarJson("SELECT payload FROM items WHERE id = ?", [1]).unwrap()
+    scalarName: str = scalarDoc.name
+    print(f"tx-scalarJson: {Json.kind(scalarDoc)} {scalarName}")
+    print(f"tx-scalarJson-error: {kind(tx.scalarJson('SELECT payload FROM items WHERE id = ?', [2]))}")
+
+    tx.rollback().unwrap()
+    after: any = db.scalar("SELECT COUNT(*) FROM items").unwrap()
+    gone: dict[str, any] = db.first("SELECT name FROM items WHERE id = ?", [1]).unwrap()
+    print(f"rollback-hides: {after} {len(gone)} {not tx.first('SELECT 1').ok()}")
+    print(f"closed-tx: {kind(tx.first('SELECT 1'))} {kind(tx.scalar('SELECT 1'))} {kind(tx.firstJson('SELECT 1 AS payload', ['payload']))}")
+
+    committed: Tx = db.begin().unwrap()
+    committed.exec("INSERT INTO items (id, name, payload) VALUES (?, ?, ?)", [3, "b", "{}"]).unwrap()
+    committed.commit().unwrap()
+    total: any = db.scalar("SELECT COUNT(*) FROM items").unwrap()
+    shown: dict[str, any] = db.first("SELECT name FROM items WHERE id = ?", [3]).unwrap()
+    print(f"commit-shows: {total} {shown['name']}")
+
+    either: Tx = db.begin().unwrap()
+    either.exec("INSERT INTO items (id, name, payload) VALUES (?, ?, ?)", [4, "c", "{}"]).unwrap()
+    viaTx: list[str] = names(either, [3, 4]).unwrap()
+    either.rollback().unwrap()
+    viaDb: str = nameOf(db, 3).unwrap()
+    print(f"either-handle: db={viaDb} tx={','.join(viaTx)}")
+
+    observer: RecordingObserver = RecordingObserver()
+    configured: DbObserver = observer
+    db.setObserver(configured)
+    ctx: Context = Context.simple().valued("request", "r-1")
+    scoped: Db = db.withContext(ctx)
+    observed: Tx = scoped.begin().unwrap()
+    observed.first("SELECT name FROM items WHERE id = ?", ["private-first"]).unwrap()
+    observed.scalar("SELECT COUNT(*) FROM items").unwrap()
+    observed.firstJson("SELECT payload FROM items WHERE id = ?", ["payload"], [3]).unwrap()
+    _ = observed.scalar("SELECT nope FROM missing_table")
+    observed.queryJson("SELECT payload FROM items WHERE id = ?", ["payload"], [3]).unwrap()
+    observed.scalarJson("SELECT payload FROM items WHERE id = ?", [3]).unwrap()
+    observed.rollback().unwrap()
+    print(f"observer-statements: {'|'.join(observer.statements)}")
+    print(f"observer-failures: {'|'.join(observer.failures)}")
+    sameContext: bool = len(observer.contexts) == 16 and observer.contexts.all(lambda c: c == ctx)
+    print(f"observer-context: {sameContext}")
+    print(f"observer-tokens: {len(observer.finishedTokens) == 8 and observer.finishedTokens[1] == 't2' and observer.finishedTokens[5] == 't6'}")
+    print(f"observer-private: {observer.statements.all(lambda s: not s.contains('private-first'))}")
+
+    db.setObserver(None)
+    db.close().unwrap()
+    Os.remove(path).unwrap()
+}

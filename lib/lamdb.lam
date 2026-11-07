@@ -301,6 +301,70 @@ go! {
         }
         return ""
     }
+
+    // lamDbDecodeJSONColumns replaces the ``jsonColumns`` of every row by
+    // native json values (a missing column or NULL becomes JSON null), in
+    // the order the columns are listed. It returns the failure message and
+    // its cause, or an empty message when every value decoded.
+    func lamDbDecodeJSONColumns(rows []map[string]interface{}, jsonColumns []string) (string, error) {
+        seen := map[string]bool{}
+        columns := []string{}
+        for _, column := range jsonColumns {
+            if !seen[column] {
+                seen[column] = true
+                columns = append(columns, column)
+            }
+        }
+        for _, row := range rows {
+            for _, column := range columns {
+                raw, ok := row[column]
+                if !ok || raw == nil {
+                    parsed, err := lamJSONFrom(nil)
+                    if err != nil {
+                        return err.Error(), err
+                    }
+                    row[column] = parsed
+                    continue
+                }
+                var text string
+                switch value := raw.(type) {
+                case []byte:
+                    text = string(value)
+                case string:
+                    text = value
+                case LamJSON:
+                    continue
+                default:
+                    parsed, err := lamJSONFrom(value)
+                    if err != nil {
+                        return err.Error(), err
+                    }
+                    row[column] = parsed
+                    continue
+                }
+                parsed, err := lamJSONParse(text)
+                if err != nil {
+                    return fmt.Sprintf("column %s contains invalid JSON: %v", column, err), nil
+                }
+                row[column] = parsed
+            }
+        }
+        return "", nil
+    }
+
+    // lamDbScalarJSON reads a scalar column value as native json: text and
+    // bytes are parsed, other driver values converted.
+    func lamDbScalarJSON(raw interface{}) (LamJSON, error) {
+        switch typed := raw.(type) {
+        case []byte:
+            return lamJSONParse(string(typed))
+        case string:
+            return lamJSONParse(typed)
+        case LamJSON:
+            return typed, nil
+        }
+        return lamJSONFrom(raw)
+    }
 }
 
 interface DbObserver {
@@ -687,93 +751,51 @@ class Db {
     }
 
     func queryJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> Result[list[dict[str, any]]] {
+        #- ``query`` with the ``jsonColumns`` of every row read as native
+           ``json`` (NULL is JSON null); invalid JSON is a ``DbJsonError``. -#
         rows: list[dict[str, any]] = self.query(query, params)?
-        go! {
-            selected := map[string]bool{}
-            for _, column := range jsonColumns { selected[column] = true }
-            for _, row := range rows {
-                for column := range selected {
-                    raw, ok := row[column]
-                    if !ok || raw == nil {
-                        parsed, err := lamJSONFrom(nil)
-                        if err != nil {
-                            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), err))
-                        }
-                        row[column] = parsed
-                        continue
-                    }
-                    var text string
-                    switch value := raw.(type) {
-                    case []byte: text = string(value)
-                    case string: text = value
-                    case LamJSON: row[column] = value; continue
-                    default:
-                        parsed, err := lamJSONFrom(value)
-                        if err != nil {
-                            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), err))
-                        }
-                        row[column] = parsed
-                        continue
-                    }
-                    parsed, err := lamJSONParse(text)
-                    if err != nil {
-                        return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
-                            "DbJsonError",
-                            fmt.Sprintf("column %s contains invalid JSON: %v", column, err),
-                            nil,
-                        ))
-                    }
-                    row[column] = parsed
-                }
-            }
-        }
-        return Result.Ok(rows)
+        return Db._jsonRows(rows, jsonColumns)
     }
 
     func firstJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> Result[dict[str, any]] {
+        #- The first row of ``queryJson`` (``{}`` if no rows were returned). -#
         rows: list[dict[str, any]] = self.queryJson(query, jsonColumns, params)?
-        if len(rows) == 0 {
-            empty: dict[str, any] = {}
-            return Result.Ok(empty)
-        }
-        return Result.Ok(rows[0])
+        return Result.Ok(Db._firstRow(rows))
     }
 
     func scalarJson(self, query: str, params: list[any] = []) -> Result[json] {
+        #- ``scalar`` read as native ``json``; invalid JSON is a
+           ``DbJsonError``. -#
         raw: any = self.scalar(query, params)?
-        go! {
-            var value LamJSON
-            var err error
-            switch typed := raw.(type) {
-            case []byte: value, err = lamJSONParse(string(typed))
-            case string: value, err = lamJSONParse(typed)
-            case LamJSON: value = typed
-            default: value, err = lamJSONFrom(typed)
-            }
-            if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), err))
-            }
-            return LAMMERGEIER.Result.Ok(value)
-        }
+        return Db._jsonValue(raw)
     }
 
     func first(self, query: str, params: list[any] = []) -> Result[dict[str, any]] {
         #- Run a SELECT and return only the first row (``{}`` if no rows
            were returned). Query failures remain visible as errors. -#
         rows: list[dict[str, any]] = self.query(query, params)?
-        if len(rows) == 0 {
-            empty: dict[str, any] = {}
-            return Result.Ok(empty)
-        }
-        return Result.Ok(rows[0])
+        return Result.Ok(Db._firstRow(rows))
     }
 
     func scalar(self, query: str, params: list[any] = []) -> Result[any] {
         #- Run a SELECT and return the first column of the first row.
            An empty result set is ``Ok(None)``; query failures are errors. -#
         rows: list[dict[str, any]] = self.query(query, params)?
+        return Result.Ok(Db._firstValue(rows))
+    }
+
+    # Shared by ``Db`` and ``Tx`` so both read rows the same way.
+    static func _firstRow(rows: list[dict[str, any]]) -> dict[str, any] {
         if len(rows) == 0 {
-            return Result.Ok(None)
+            empty: dict[str, any] = {}
+            return empty
+        }
+        return rows[0]
+    }
+
+    static func _firstValue(rows: list[dict[str, any]]) -> any {
+        if len(rows) == 0 {
+            return None
         }
         first_: dict[str, any] = rows[0]
         out: any = None
@@ -783,7 +805,26 @@ class Db {
                 break
             }
         }
-        return Result.Ok(out)
+        return out
+    }
+
+    static func _jsonRows(rows: list[dict[str, any]], jsonColumns: list[str]) -> Result[list[dict[str, any]]] {
+        go! {
+            if message, cause := lamDbDecodeJSONColumns(rows, jsonColumns); message != "" {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", message, cause))
+            }
+        }
+        return Result.Ok(rows)
+    }
+
+    static func _jsonValue(raw: any) -> Result[json] {
+        go! {
+            value, err := lamDbScalarJSON(raw)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbJsonError", err.Error(), err))
+            }
+            return LAMMERGEIER.Result.Ok(value)
+        }
     }
 
     # ── Transactions ───────────────────────────────────────────
@@ -1321,6 +1362,39 @@ class Tx {
             }
             return LAMMERGEIER.Result.Ok(out)
         }
+    }
+
+    func first(self, query: str, params: list[any] = []) -> Result[dict[str, any]] {
+        #- ``Db.first`` inside the transaction: the first row of
+           ``tx.query`` (``{}`` if no rows were returned), observed and run
+           with the transaction's context like ``tx.query``. -#
+        rows: list[dict[str, any]] = self.query(query, params)?
+        return Result.Ok(Db._firstRow(rows))
+    }
+
+    func scalar(self, query: str, params: list[any] = []) -> Result[any] {
+        #- ``Db.scalar`` inside the transaction: the first column of the
+           first row, ``Ok(None)`` for an empty result. -#
+        rows: list[dict[str, any]] = self.query(query, params)?
+        return Result.Ok(Db._firstValue(rows))
+    }
+
+    func queryJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> Result[list[dict[str, any]]] {
+        #- ``Db.queryJson`` inside the transaction. -#
+        rows: list[dict[str, any]] = self.query(query, params)?
+        return Db._jsonRows(rows, jsonColumns)
+    }
+
+    func firstJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> Result[dict[str, any]] {
+        #- ``Db.firstJson`` inside the transaction. -#
+        rows: list[dict[str, any]] = self.queryJson(query, jsonColumns, params)?
+        return Result.Ok(Db._firstRow(rows))
+    }
+
+    func scalarJson(self, query: str, params: list[any] = []) -> Result[json] {
+        #- ``Db.scalarJson`` inside the transaction. -#
+        raw: any = self.scalar(query, params)?
+        return Db._jsonValue(raw)
     }
 
     func rollback(self) -> Result[bool] {

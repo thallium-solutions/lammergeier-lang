@@ -8,7 +8,9 @@ lives in the independent
 WebSocket and resumable-upload support live in
 [`@lam/vulture/ws-plugin`](https://github.com/thallium-solutions/lam-vulture-ws-plugin)
 and
-[`@lam/vulture/tus-plugin`](https://github.com/thallium-solutions/lam-vulture-tus-plugin).
+[`@lam/vulture/tus-plugin`](https://github.com/thallium-solutions/lam-vulture-tus-plugin);
+browser live reload for `lamc dev` lives in
+[`@lam/vulture/dev-plugin`](https://github.com/thallium-solutions/lam-vulture-dev-plugin).
 
 If you've used Fastify before, the model is recognisable: a plugin attaches
 hooks to the request lifecycle and optionally registers routes. A plugin passed
@@ -27,6 +29,7 @@ lamc install @lam/vulture@2.0.2
 lamc install @lam/vulture/std-plugin@2.0.3
 lamc install @lam/vulture/ws-plugin@2.0.2
 lamc install @lam/vulture/tus-plugin@3.0.2
+lamc install @lam/vulture/dev-plugin@1.0.0
 ```
 
 Each plugin declares `@lam/vulture` as a dependency. These are independently
@@ -100,7 +103,7 @@ func installMyPlugin(srv: Server, label: str) {
 }
 
 func myPlugin(label: str = "default") -> func(Server) {
-    return lambda(srv: Server) -> None {
+    return lambda (srv: Server) -> None {
         installMyPlugin(srv, label)
     }
 }
@@ -253,7 +256,7 @@ func tokenAuthPlugin(
     verify: func(str) -> any,
     header: str = "Authorization",
 ) -> func(Server) {
-    return lambda(srv: Server) -> None {
+    return lambda (srv: Server) -> None {
         tokenAuth(srv, verify, header)
     }
 }
@@ -630,6 +633,40 @@ valid empty frames from closure and transport failures; `send`, `sendBytes`,
 and `ping` also return Results. Read the
 [`@lam/vulture/ws-plugin` repository](https://github.com/thallium-solutions/lam-vulture-ws-plugin)
 for upgrade and lifecycle details.
+
+### Long-lived event streams
+
+An SSE handler that keeps a stream open loops on `SseEmitter.wait(ms)`: it
+returns true, and closes the emitter, once the client disconnected or the server
+began `shutdown()` / `close()`, so open streams never hold a graceful shutdown
+for its drain timeout:
+
+```lammergeier
+func events(emitter: SseEmitter) {
+    while not emitter.wait(15000) {
+        emitter.comment("ping")
+    }
+}
+```
+
+### Browser live reload with `lamc dev`
+
+`lamc dev` rebuilds and restarts the server on source changes and runs it with
+`LAMC_DEV=1`. `@lam/vulture/dev-plugin` turns that into browser live reload and
+does nothing outside `lamc dev`, so it can be registered unconditionally:
+
+```lammergeier
+from @lam/vulture/dev-plugin import liveReloadPlugin
+
+srv.register(liveReloadPlugin(["assets/build", "assets/js"]))
+```
+
+It adds an event stream (`/__lam/live-reload`), its script, and an `onSend`
+hook placing the script before `</body>` of HTML documents (htmx-style
+fragments without `</body>` are untouched). Pages reload when the server that
+rendered them was replaced or a watched asset changed; changed stylesheets are
+swapped in place. Before reloading, the page dispatches a cancelable
+`lam:live-reload` window event.
 
 ### Composing the tus plugin
 
@@ -1077,4 +1114,5 @@ srv.register(helmet)
 - [`@lam/vulture/std-plugin`](https://github.com/thallium-solutions/lam-vulture-std-plugin) — standard plugin collection
 - [`@lam/vulture/ws-plugin`](https://github.com/thallium-solutions/lam-vulture-ws-plugin) — WebSocket plugin
 - [`@lam/vulture/tus-plugin`](https://github.com/thallium-solutions/lam-vulture-tus-plugin) — tus resumable-upload plugin
+- [`@lam/vulture/dev-plugin`](https://github.com/thallium-solutions/lam-vulture-dev-plugin) — browser live reload for `lamc dev`
 - [`docs/stdlib.md`](stdlib.md) — standard-library reference and clearly marked official-package companion sections

@@ -114,6 +114,15 @@ class HelpersMixin:
             pairs.append((tp_name, constraint))
         if not pairs:
             return "", [], []
+        map_keys = getattr(self, "_comparable_type_params", {}).get(id(node))
+        if map_keys:
+            # ``func count[T](s: set[T])``: a set element / dict key is a
+            # Go map key, which must be ``comparable``.
+            from compiler.comparable_params import comparable_constraint
+            pairs = [
+                (n, comparable_constraint(c) if n in map_keys else c)
+                for n, c in pairs
+            ]
         names = [n for n, _ in pairs]
         clause = "[" + ", ".join(f"{n} {c}" for n, c in pairs) + "]"
         return clause, names, pairs

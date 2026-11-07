@@ -1,0 +1,29 @@
+# Regression: the type parameter of an imported generic function or static
+# method that only appears inside a `Result[T]` (`inTx[T](conn, fn:
+# func(Conn) -> Result[T])`, `none[T]() -> Result[T]`) is bound at the
+# call from the lambda's or named function's annotations, or from the
+# annotated target, across the module boundary (`InTx[int](...)`); Go
+# reported `cannot infer T`.
+#
+# expect: lambda=4 named=4
+# expect: static=8
+# expect: target=false Empty: nothing
+# expect: generic_lambda_result_imported_ok
+
+from lamerrors import Result
+from generic_result_tx_provider import Conn, Pool, countRows, inTx, none
+
+func main() {
+    c = Conn("abcd")
+    a: Result[int] = inTx(c, lambda (tx: Conn) -> Result[int]: countRows(tx))
+    b: Result[int] = inTx(c, countRows)
+    print(f"lambda={a.unwrap()} named={b.unwrap()}")
+    s: Result[int] = Pool.inTx(c, lambda (tx: Conn) -> Result[int] {
+        n: int = countRows(tx)?
+        return Result.Ok(n * 2)
+    })
+    print(f"static={s.unwrap()}")
+    e: Result[str] = none()
+    print(f"target={e.ok()} {e.error}")
+    print("generic_lambda_result_imported_ok")
+}

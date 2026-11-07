@@ -5,6 +5,152 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.5.0 — 2026-11-07
+
+### Added
+
+- `lamc dev <file.lam> [-- ARGS]`: builds and runs a program, then rebuilds
+  and restarts it when a `.lam` file or `lamlib*.toml` under the project
+  changes, and restarts it without rebuilding on `--watch PATH` / `--ext`
+  files. A failed build keeps the previous build running; a program that
+  exits is restarted by the next change (or `rs` + Enter). The program runs
+  with `LAMC_DEV=1` in its own process group (`--signal`, `--kill-timeout`).
+  Polling makes it work on container bind mounts.
+- `lamc lib run <script> -- ARGS` appends the shell-quoted arguments to the
+  script command, and `lamc build <file.lam> --run -- ARGS` passes them to
+  the program (as `docs/stdlib.md` already showed).
+- Entry points below the project root resolve project modules from it: the
+  directory of the nearest `lamlib.toml` (within six levels), its `lib/` and
+  its `extlibs/` are searched after the source's own directory, as the
+  language server already did. `lamc cmd/serve.lam` and test programs in
+  `tests/` import the project's packages and installed libraries without
+  `--extlibs` flags.
+- New stdlib module `lami18n` (`Translations`): translated texts loaded from
+  `<dir>/<lang>/*.json` (nested objects as dotted keys, numbers and booleans
+  as text) with `TranslationError` results naming the file, line and key for
+  duplicate keys (across files or inside one object), malformed JSON, arrays
+  and `null`; a fallback language; `{name}` parameters inserted verbatim
+  (`text`), HTML-escaped into trusted markup (`markup -> html`) or as its
+  text content (`plain`); `add` / `merge`, `has`, `count`, `keys`,
+  `missing(lang, other)` for completeness checks, and `language` /
+  `negotiate` for `Accept-Language` headers.
+- `Tx.first`, `Tx.scalar`, `Tx.queryJson`, `Tx.firstJson` and
+  `Tx.scalarJson`, with the semantics of the `Db` methods, run through the
+  transaction's query path (its connection, context and `DbObserver`), so
+  code taking a `Db` or a `Tx` no longer wraps `query`.
+- `Env.flag(key, fallback)` reads a lenient switch (`1` / `true` / `t` /
+  `yes` / `y` / `on` and `0` / `false` / `f` / `no` / `n` / `off`, any case,
+  else the fallback) and `Env.list(key, separator = ",")` a list of trimmed,
+  non-empty parts.
+
+### Changed
+
+- `lamc lib run` starts the script in its own process group and forwards
+  `SIGINT`, `SIGTERM` and `SIGHUP` to it, so `docker stop` or Ctrl+C stops a
+  long-running script together with `lamc`; a script killed by a signal
+  exits with `128 + signal`.
+
+### Fixed
+
+- `Context.onSignals`: a signal arriving right after the context was cancelled,
+  before its watcher stopped listening, was swallowed instead of getting the
+  default handling (ending the process); it is now delivered again.
+- `sorted(s)` of a `set[T]` returns a new sorted `list[T]` (a typed Go
+  `[]T`), with `key=` / `reverse=`, for set variables, literals,
+  comprehensions, fields, function results and set operations; it was typed
+  as the set (`cannot assign set[str] to list[str]`) and generated Go that
+  did not build (`",".join(sorted(s))`). `sorted(d)` of a `dict[K, V]`
+  likewise returns its sorted keys as a `list[K]`, as in Python.
+- A type parameter used as a set element or a dict key (`func count[T](s:
+  set[T])`, `dict[K, V]` parameters, fields and locals of generic functions,
+  classes and methods) is emitted with Go's `comparable` constraint, also
+  when it is passed on to another generic definition that needs it
+  (`Bag[T]`, `distinct(xs)`); such code failed in `go build` with `invalid
+  map key type T (missing comparable constraint)`. `sorted()` of a generic
+  set or dict works like `sorted()` of a generic list.
+- Methods on a `byte` (indexing a `str` with one integer, `w[0].toUpper()`)
+  and on `int`, `float` and `bool` values are Lam errors instead of `go
+  build` failures (`cannot use w[0] (value of type byte) as string`); the
+  `byte` / `str` mismatches of a `str` index (`first: str = w[0]`,
+  `w[0] == "h"`, `str` arguments, `+`, returns) name the `string(w[0])`
+  conversion.
+- A lambda testing `in` / `not in` passed to a list method
+  (`xs.all(lambda s: "z" not in s)`, `.any`, `.filter`, `.map`, `.reduce`,
+  `.sort` over `str`, `dict`, `set` and `list` elements) no longer fails in
+  `go build` with `"reflect" imported and not used` / `"strings" imported
+  and not used`: the Go import block only lists the packages the emitted
+  code uses.
+- Dict methods on a dict field (`self.counts.get(x, 0)`,
+  `obj.inner.totals.keys()`, a generic `dict[K, V]` field, a static field)
+  are reported like on a dict local ("dicts have no `get()` method")
+  instead of failing in `go build`; methods a set does not have
+  (`ids.index(1)`, `self.names.append(x)`) are reported with the Lam
+  spelling (`` `set[str]` has no method `append` — did you mean `add`? ``,
+  ``use `len(s)` ``).
+- `lamc fmt` writes keyword arguments and keyword sub-patterns without
+  spaces around `=` (`sorted(words, reverse=true)`, `case Point(x=0)`, also
+  on the argument lines of a multi-line call) and type parameters as
+  `func top[T: ordered]` / `class Registry[K: comparable, V]`, as in the
+  docs; it wrote `reverse = true` and `[T:ordered]`.
+- `lamc fmt` keeps a `{}` / `{...}` operand of a conditional expression on
+  its line (`slots: json = schema if ok else {}`, also in a lambda body); it
+  laid it out as a block (`else {` / `}`). A keyword before `(` gets one
+  space (`if (a and b) or (c and d) {` was written `if  (a and b) ...`, also
+  `elif` / `while` / `match`; `not(x)` / `and(x)` become `not (x)` /
+  `and (x)`), a parenthesised lambda head is written `lambda (x: int)` as
+  in the docs (it was tightened to `lambda(x: int)`), and a keyword
+  argument's dict value follows `=` directly (`attrs={...}`, not
+  `attrs= {...}`).
+- A class without its own `init` runs an inherited parameterless `init`
+  (`class Sub(Registry)` with `func init(self)` in `Registry`); `Sub()`
+  only allocated the parent, so its fields kept Go zero values
+  (`assignment to entry in nil map`).
+- Methods inherited from a generic base that a generic subclass binds in
+  part (`class Sub[V](Registry[str, V])`) check their arguments and type
+  their results with the receiver's type arguments (`s: Sub[int]`,
+  `s.put("q", 2)`); they were rejected with ``has type `int`, expected
+  `V` ``.
+- A generic function or method whose type parameter only appears inside a
+  tuple type (`func toDict[K, V](pairs: list[tuple[K, V]])`) builds: the
+  call spells the type arguments bound from the arguments
+  (`ToDict[string, int](pairs)`) where Go reported `cannot infer K`.
+- `?` inside a lambda declared `-> Result` / `-> Result[T]` returns the
+  `Err` from the lambda, as in a function (block and expression bodies,
+  nested lambdas, lambdas in methods, `?.` chains, lambdas passed to generic
+  functions, inside `do/catch`); it panicked at run time and the checker
+  warned "`?` operator used outside a `-> Result` function". A lambda that
+  does not return `Result` keeps the warning (and the panic). `f()?.m()` in
+  an expression-bodied lambda is propagation then member access, as in a
+  statement (it was safe navigation, which did not build).
+- `f()?.method()` on a `Result` evaluated `f()` (and its `?` guard) twice;
+  it runs once.
+- `catch _ { ... }` in `do { } catch _` and `try { } catch _` (and
+  `catch ValueError as _`) handles the error without binding it; it
+  generated `_ := ...`, which failed `go build` (`no new variables on left
+  side of :=`).
+- A type parameter that only appears inside a `Result[T]` (the Go
+  `*Result` is not generic) is inferred from the Lam types of function-typed
+  arguments: `inTx(c, lambda (tx: Conn) -> Result[int]: count(tx))` with
+  `func inTx[T](conn: Conn, fn: func(Conn) -> Result[T]) -> Result[T]`
+  emits `InTx[int](...)` where Go reported `cannot infer T`. Lambda
+  parameter and result annotations and functions or static methods passed
+  by name bind type parameters through `Result[T]`, `optional[T]`,
+  `list[T]`, `dict[K, V]` and function types, for top-level functions,
+  static and instance generic methods, also imported from another module.
+  A type parameter only the result mentions is bound by the annotated
+  variable the call initializes (`r: Result[int] = make()`,
+  `xs: list[int] = make()`, `n: int = make()?`) instead of asking for type
+  arguments.
+- `max(a, b)` / `min(a, b)` of values of a type parameter (`T: ordered`)
+  use Go's builtin `max` / `min`; they converted the operands to `float64`,
+  which failed `go build` for `string` (`cannot convert string (in T) to
+  type float64`).
+- An unannotated local initialized with an explicit instantiation
+  (`b = Box[int](5)`) keeps its type arguments: `b.map(lambda x: x * 2)`
+  typed the lambda as `func(interface{}) interface{}` and `[b]` was a
+  `[]*Box`, which failed `go build`; assigning it to a `Box[str]` is now a
+  Lam error.
+
 ## 4.4.0 — 2026-11-07
 
 ### Added

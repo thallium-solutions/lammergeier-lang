@@ -80,6 +80,14 @@ go! {
                 // Default handling is back before anyone sees the
                 // cancellation, so a second signal ends the process.
                 signal.Stop(ch)
+                if lamContextDone(state) {
+                    // Cancelled before this goroutine stopped listening:
+                    // the signal belongs to the default handling again.
+                    if proc, err := os.FindProcess(os.Getpid()); err == nil {
+                        _ = proc.Signal(got)
+                    }
+                    return
+                }
                 name := got.String()
                 for i, sig := range sigs {
                     if sig == got {
@@ -90,6 +98,15 @@ go! {
                 lamContextCancel(state, name)
             case <-state.native.Done():
                 signal.Stop(ch)
+                // A signal delivered while it was cancelled waits in the
+                // buffer: it belongs to the default handling again.
+                select {
+                case got := <-ch:
+                    if proc, err := os.FindProcess(os.Getpid()); err == nil {
+                        _ = proc.Signal(got)
+                    }
+                default:
+                }
             }
         }()
     }

@@ -1,0 +1,24 @@
+# expect-error: cannot assign `list[str]` to `set[str]` variable `still`
+# expect-error: cannot assign `list[str]` to `list[int]` variable `wrongElem`
+# expect-error: cannot assign `list[int]` to `list[str]` variable `fromComp`
+# expect-error: cannot assign `list[str]` to `dict[str, int]` variable `notDict`
+# expect-error: cannot assign `list[int]` to `list[str]` variable `dictKeys`
+# expect-error: function `badReturn` returns `list[str]`, expected `set[str]`
+# `sorted()` of a set or a dict is a `list` of the element / key type, not
+# the collection itself.
+
+func badReturn(s: set[str]) -> set[str] {
+    return sorted(s)
+}
+
+func main() {
+    names: set[str] = {"b", "a"}
+    still: set[str] = sorted(names)
+    wrongElem: list[int] = sorted(names)
+    fromComp: list[str] = sorted({n * 2 for n in [1, 2]})
+    ages: dict[str, int] = {"a": 1}
+    notDict: dict[str, int] = sorted(ages)
+    byId: dict[int, str] = {1: "x"}
+    dictKeys: list[str] = sorted(byId)
+    print(still, wrongElem, fromComp, notDict, dictKeys, badReturn(names))
+}

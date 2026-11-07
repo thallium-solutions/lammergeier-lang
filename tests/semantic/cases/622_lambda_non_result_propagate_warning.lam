@@ -1,0 +1,20 @@
+# expect-warning: `?` operator used outside a `-> Result` function
+# A lambda that does not return `Result` has no target for a propagated
+# error, even inside a `-> Result` function: an `Err` panics, so the
+# warning stays.
+from lamerrors import Result, Error
+
+func fails() -> Result[int] {
+    return Result.Err(Error("Bad", "no"))
+}
+
+func outer() -> Result[int] {
+    plain = lambda () -> int {
+        return fails()?
+    }
+    return Result.Ok(plain())
+}
+
+func main() {
+    print(outer().ok())
+}

@@ -90,15 +90,15 @@ statement by walking three layers, in order:
 |---|-------|---------|---------|
 | 1 | **stdlib** | `<compiler>/lib/` | Modules shipped by the compiler itself (`lamhttp`, `lamdb`, `lamcrypto`, …). Always wins so users can't accidentally shadow a stdlib module by dropping a same-named file in their project. |
 | 2 | **extlibs** | see below | Third-party libraries, in one of four flavours. |
-| 3 | **project** | `<source-dir>/`, `<source-dir>/lib/` | The user's own source files and any project-local helpers. Lowest priority so it never overrides the stdlib or an installed dep. |
+| 3 | **project** | `<source-dir>/`, `<project-root>/`, `<project-root>/lib/` | The user's own source files and any project-local helpers. The project root is the directory of the nearest `lamlib.toml` (up to six levels above the source), else the source's directory, so entry points in subdirectories (`cmd/serve.lam`, `tests/unit/ut_x.lam`) import the project's packages without flags. Lowest priority so it never overrides the stdlib or an installed dep. |
 
 The extlibs layer itself is searched in this order:
 
 1. `--extlibs DIR` CLI flag (repeatable; first wins).
 2. `LAMC_EXTLIBS` env var — colon-separated list (on Windows
    semicolon-separated, matching `os.pathsep`).
-3. `<source-dir>/extlibs/` — the project-local install root,
-   where `lamc install` lands by default. Analogous to Go's
+3. `<source-dir>/extlibs/`, then `<project-root>/extlibs/` — the
+   project-local install root, where `lamc install` lands by default. Analogous to Go's
    `vendor/`; commit it (or don't, depending on whether you want
    reproducible-without-network builds).
 4. `~/.lammergeier/extlibs/` — user-global install directory,

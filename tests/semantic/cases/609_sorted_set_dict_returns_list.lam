@@ -1,0 +1,40 @@
+# expect-pass
+# `sorted()` of a `set[T]` (variable, literal, comprehension, field,
+# function result) returns a `list[T]`, and of a `dict[K, V]` its sorted
+# keys as a `list[K]`, like Python (it was typed as the set / dict itself:
+# `cannot assign set[str] to list[str] variable`).
+
+class Team {
+    func init(self) {
+        self.tags: set[str] = {"qa", "ops"}
+    }
+
+    func ordered(self) -> list[str] {
+        return sorted(self.tags)
+    }
+}
+
+func roles() -> set[str] {
+    return {"b", "a"}
+}
+
+func keysOf(d: dict[str, int]) -> list[str] {
+    return sorted(d, reverse=true)
+}
+
+func main() {
+    names: set[str] = {"b", "a", "c"}
+    ordered: list[str] = sorted(names)
+    desc: list[str] = sorted(names, reverse=true)
+    byLen: list[str] = sorted(names, key=lambda s: len(s))
+    nums: list[int] = sorted({3, 1, 2})
+    floats: list[float] = sorted({1.5, 0.5})
+    upper: list[str] = sorted({x.toUpper() for x in ["q", "p"]})
+    fromFunc: list[str] = sorted(roles())
+    ages: dict[str, int] = {"a": 1}
+    keys: list[str] = sorted(ages)
+    ids: list[int] = sorted({1: "x", 2: "y"})
+    xs: list[int] = sorted([3, 1, 2])
+    print(",".join(sorted(names)), len(sorted(names)), ordered, desc, byLen, nums, floats, upper, fromFunc, keys, ids, xs)
+    print(keysOf(ages), Team().ordered())
+}

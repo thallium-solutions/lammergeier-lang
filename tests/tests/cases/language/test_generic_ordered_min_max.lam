@@ -1,0 +1,78 @@
+# Regression: `max(a, b)` / `min(a, b)` on values of a type parameter
+# (`T: ordered`) lowered to the float comparison of unknown operands
+# (`max(float64(a), float64(b))`), which failed `go build` (`cannot convert
+# string (in T) to type float64`). They use Go's builtin `max` / `min`
+# (any ordered type) for strings, ints and floats, in functions, generic
+# class methods and lambdas, with three operands and nested; int / float /
+# string / list behaviour is unchanged.
+#
+# expect: str=b a
+# expect: int=3 2
+# expect: float=2.5 1.5
+# expect: three=9 1
+# expect: clamp=5 0 10 m
+# expect: best=pear
+# expect: lambda=7
+# expect: list=4 1
+# expect: plain=2 1.5 b 2.5
+# expect: generic_ordered_min_max_ok
+
+func biggest[T: ordered](a: T, b: T) -> T {
+    return max(a, b)
+}
+
+func smallest[T: ordered](a: T, b: T) -> T {
+    return min(a, b)
+}
+
+func biggest3[T: ordered](a: T, b: T, c: T) -> T {
+    return max(a, b, c)
+}
+
+func clamp[T: ordered](v: T, lo: T, hi: T) -> T {
+    return min(max(v, lo), hi)
+}
+
+func largestOf[T: ordered](xs: list[T]) -> T {
+    return max(xs)
+}
+
+func smallestOf[T: ordered](xs: list[T]) -> T {
+    return min(xs)
+}
+
+class Best[T: ordered] {
+    func init(self, first: T) {
+        self.top: T = first
+    }
+
+    func offer(self, v: T) {
+        self.top = max(self.top, v)
+    }
+}
+
+func applyPair[T: ordered](a: T, b: T, fn: func(T, T) -> T) -> T {
+    return fn(a, b)
+}
+
+func pickMax[T: ordered](a: T, b: T) -> T {
+    return applyPair(a, b, lambda (x: T, y: T) -> T: max(x, y))
+}
+
+func main() {
+    print(f"str={biggest("a", "b")} {smallest("a", "b")}")
+    print(f"int={biggest(3, 2)} {smallest(3, 2)}")
+    print(f"float={biggest(2.5, 1.5)} {smallest(2.5, 1.5)}")
+    print(f"three={biggest3(4, 9, 1)} {min(4, 9, 1)}")
+    print(f"clamp={clamp(5, 0, 10)} {clamp(-3, 0, 10)} {clamp(42, 0, 10)} {clamp("m", "a", "z")}")
+    b = Best[str]("apple")
+    b.offer("pear")
+    b.offer("fig")
+    print(f"best={b.top}")
+    print(f"lambda={pickMax(7, 3)}")
+    print(f"list={largestOf([3, 4, 1])} {smallestOf([3, 4, 1])}")
+    x: int = 1
+    y: float = 1.5
+    print(f"plain={max(x, 2)} {min(y, 2.0)} {max("a", "b")} {max(x, 2.5)}")
+    print("generic_ordered_min_max_ok")
+}

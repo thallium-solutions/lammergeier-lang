@@ -1,0 +1,189 @@
+# expect: languages en,it,de debug=true strict=false
+# expect: loaded en=6 it=5 de=0
+# expect: incomplete it: Mail.footer (Mail)
+# expect: incomplete de: Mail.digest.body,Mail.digest.subject,Mail.footer,Mail.welcome.body,Mail.welcome.subject,Nav.home (Mail,Nav)
+# expect: [it] Benvenuta Ada <3 | <p>Ciao <b>Ada &lt;3</b>, il tuo account è pronto.</p><small>Sent by Luxyt</small> | Ciao Ada <3, il tuo account è pronto.Sent by Luxyt
+# expect: [en] Welcome Bob & co | <p>Hi <b>Bob &amp; co</b>, your account is ready.</p><small>Sent by Luxyt</small> | Hi Bob & co, your account is ready.Sent by Luxyt
+# expect: [de] Welcome Carl | <p>Hi <b>Carl</b>, your account is ready.</p><small>Sent by Luxyt</small> | Hi Carl, your account is ready.Sent by Luxyt
+# expect: [it] 3 nuovi post per Ada <3 | <p>Ci sono <b>3</b> post da leggere.</p><small>Sent by Luxyt</small> | Ci sono 3 post da leggere.Sent by Luxyt
+# expect: skipped 99: no user 99
+# expect: outbox 4 (it=2 en=1 de=1), committed=4
+# expect: unknown kind: Notice.survey
+# expect: config error: TranslationError
+# A notification service composing the three additions: languages and
+# switches read with Env.list / Env.flag, translations loaded from JSON
+# files (nesting, fallback to English, {name} parameters as escaped markup,
+# plain text and subjects), recipients read through one interface by a
+# Db or a Tx (Tx.first / Tx.scalar inside a transaction that records an
+# outbox), plus classes, match, comprehensions, lambdas and Result `?`.
+from lami18n import Translations
+from lamenv import Env
+from lamdb import Db, Tx
+from lamos import Os
+from lampath import Path
+from lamerrors import Result, Error
+
+interface RowReader {
+    func first(self, query: str, params: list[any]) -> Result[dict[str, any]]
+    func scalar(self, query: str, params: list[any]) -> Result[any]
+}
+
+class Recipient {
+    func init(self, id: int, name: str, email: str, language: str) {
+        self.id: int = id
+        self.name: str = name
+        self.email: str = email
+        self.language: str = language
+    }
+}
+
+class Message {
+    func init(self, language: str, subject: str, body: html, plain: str) {
+        self.language: str = language
+        self.subject: str = subject
+        self.body: html = body
+        self.plain: str = plain
+    }
+
+    func line(self) -> str {
+        return f"[{self.language}] {self.subject} | {self.body} | {self.plain}"
+    }
+}
+
+class Notifier {
+    func init(self, texts: Translations) {
+        self.texts: Translations = texts
+    }
+
+    func recipient(self, reader: RowReader, id: int) -> Result[Recipient] {
+        row: dict[str, any] = reader.first("SELECT id, name, email, lang FROM users WHERE id = ?", [id])?
+        if len(row) == 0 {
+            return Result.Err(Error("NotFound", f"no user {id}"))
+        }
+        language: str = self.texts.negotiate(str(row["lang"]))
+        return Result.Ok(Recipient(id, str(row["name"]), str(row["email"]), language))
+    }
+
+    func compose(self, reader: RowReader, kind: str, id: int) -> Result[Message] {
+        who: Recipient = self.recipient(reader, id)?
+        params: dict[str, str] = {"name": who.name}
+        key: str = ""
+        match kind {
+            case "welcome" {
+                key = "Mail.welcome"
+            }
+            case "digest" {
+                unread: any = reader.scalar("SELECT COUNT(*) FROM posts WHERE user_id = ?", [id])?
+                params["count"] = str(unread)
+                key = "Mail.digest"
+            }
+            case _ {
+                return Result.Err(Error("UnknownKind", self.texts.raw(who.language, "Notice." + kind)))
+            }
+        }
+        lang: str = who.language
+        subject: str = self.texts.text(lang, key + ".subject", params)
+        footer: html = self.texts.markup(lang, "Mail.footer")
+        body: html = self.texts.markup(lang, key + ".body", params) + footer
+        plain: str = self.texts.plain(lang, key + ".body", params) + footer.text()
+        return Result.Ok(Message(lang, subject, body, plain))
+    }
+}
+
+func setup(root: str) -> Result[Db] {
+    files: dict[str, str] = {
+        "en/mail.json": "{\"Mail\": {\"welcome\": {\"subject\": \"Welcome {name}\", \"body\": \"<p>Hi <b>{name}</b>, your account is ready.</p>\"}, \"digest\": {\"subject\": \"{count} new posts for {name}\", \"body\": \"<p>There are <b>{count}</b> posts to read.</p>\"}, \"footer\": \"<small>Sent by Luxyt</small>\"}}",
+        "en/nav.json": "{\"Nav\": {\"home\": \"Home\"}}",
+        "it/mail.json": "{\"Mail\": {\"welcome\": {\"subject\": \"Benvenuta {name}\", \"body\": \"<p>Ciao <b>{name}</b>, il tuo account è pronto.</p>\"}, \"digest\": {\"subject\": \"{count} nuovi post per {name}\", \"body\": \"<p>Ci sono <b>{count}</b> post da leggere.</p>\"}}}",
+        "it/nav.json": "{\"Nav.home\": \"Home\"}",
+    }
+    for rel in sorted(files) {
+        full: str = Path.join(root, "i18n", rel)
+        _ = Os.mkdir(Path.dir(full))?
+        _ = Os.writeFile(full, files[rel])?
+    }
+    db: Db = Db.connect("sqlite", Path.join(root, "app.db"))?
+    _ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT, lang TEXT)")?
+    _ = db.exec("CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER)")?
+    _ = db.exec("CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, lang TEXT, subject TEXT)")?
+    users: list[list[any]] = [[1, "Ada <3", "ada@example.com", "it-IT,it;q=0.9"], [2, "Bob & co", "bob@example.com", "en-GB"], [3, "Carl", "carl@example.com", "de-CH, fr;q=0.2"]]
+    for user in users {
+        _ = db.exec("INSERT INTO users (id, name, email, lang) VALUES (?, ?, ?, ?)", user)?
+    }
+    for post in range(3) {
+        _ = db.exec("INSERT INTO posts (user_id) VALUES (?)", [1])?
+    }
+    return Result.Ok(db)
+}
+
+func run(root: str) -> Result[int] {
+    languages: list[str] = Env.list("_LAM_I18N_LANGUAGES")
+    debug: bool = Env.flag("_LAM_I18N_DEBUG", false)
+    strict: bool = Env.flag("_LAM_I18N_STRICT", true)
+    print(f"languages {','.join(languages)} debug={str(debug).toLower()} strict={str(strict).toLower()}")
+
+    db: Db = setup(root)?
+    texts: Translations = Translations.load(Path.join(root, "i18n"), languages, "en")?
+    print(f"loaded {' '.join([f'{l}={texts.count(l)}' for l in texts.languages()])}")
+    for other in texts.languages()[1:] {
+        gaps: list[str] = texts.missing("en", other)
+        if len(gaps) > 0 {
+            sections: list[str] = sorted({k.split(".")[0] for k in gaps})
+            print(f"incomplete {other}: {','.join(gaps)} ({','.join(sections)})")
+        }
+    }
+
+    notifier: Notifier = Notifier(texts)
+    jobs: list[list[any]] = [["welcome", 1], ["welcome", 2], ["welcome", 3], ["digest", 1], ["welcome", 99]]
+    tx: Tx = db.begin()?
+    sent: list[Message] = []
+    for job in jobs {
+        kind: str = ""
+        id: int = 0
+        match job {
+            case [k, n] {
+                kind = str(k)
+                id = int(n)
+            }
+        }
+        composed: Result[Message] = notifier.compose(tx, kind, id)
+        if not composed.ok() {
+            problem: Error = composed.error
+            print(f"skipped {id}: {problem.message}")
+            continue
+        }
+        message: Message = composed.unwrap()
+        print(message.line())
+        _ = tx.exec("INSERT INTO outbox (user_id, lang, subject) VALUES (?, ?, ?)", [id, message.language, message.subject])?
+        sent.append(message)
+    }
+    queued: any = tx.scalar("SELECT COUNT(*) FROM outbox")?
+    _ = tx.commit()?
+    perLanguage: dict[str, int] = {l: len([m for m in sent if m.language == l]) for l in texts.languages()}
+    committed: any = db.scalar("SELECT COUNT(*) FROM outbox")?
+    print(f"outbox {queued} (it={perLanguage['it']} en={perLanguage['en']} de={perLanguage['de']}), committed={committed}")
+
+    unknown: Result[Message] = notifier.compose(db, "survey", 2)
+    unknownError: Error = unknown.error
+    print(f"unknown kind: {unknownError.message}")
+    _ = db.close()?
+    return Result.Ok(len(sent))
+}
+
+func main() {
+    root: str = Os.tempFile("lam-i18n-int-", "").unwrap() + ".d"
+    Os.mkdir(root).unwrap()
+    Env.set("_LAM_I18N_LANGUAGES", " en, it ,, de ").unwrap()
+    Env.set("_LAM_I18N_DEBUG", "YES").unwrap()
+    Env.set("_LAM_I18N_STRICT", "off").unwrap()
+    do {
+        _ = run(root)?
+        Env.set("_LAM_I18N_LANGUAGES", "").unwrap()
+        _ = Translations.load(Path.join(root, "i18n"), Env.list("_LAM_I18N_LANGUAGES"))?
+        print("config error: none")
+    } catch err {
+        error: Error = err
+        print(f"config error: {error.kind}")
+    }
+    Os.removeAll(root).unwrap()
+}

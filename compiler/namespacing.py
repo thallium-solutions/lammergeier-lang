@@ -817,7 +817,9 @@ _FUNCTION_META_DICTS = (
     "_func_param_counts",
     "_func_param_names",
     "_func_param_go_types",
+    "_func_param_lam_types",
     "_func_return_go_types",
+    "_func_return_lam_types",
     "_func_generic_params",
 )
 _FUNCTION_META_SETS = (

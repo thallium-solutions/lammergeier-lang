@@ -222,6 +222,17 @@ def lam_simple_expr_text(node) -> str:
     return ""
 
 
+def str_index_byte_hint(index_text: str, method: str = "", has_args: bool = False) -> str:
+    """Suffix for a ``byte`` from indexing a ``str`` (``w[0]``) used as a
+    ``str``: the documented ``string(w[0])`` conversion to a one-character
+    ``str`` (with the method call for ``w[0].toUpper()``). Shared by the
+    semantic checker and the transpiler (imported modules)."""
+    converted = f"string({index_text or 's[i]'})"
+    if method:
+        converted += f".{method}({'...' if has_args else ''})"
+    return f"; indexing a `str` gives a `byte`: use `{converted}` for a one-character `str`"
+
+
 def str_method_idiom(method: str, receiver: str = "", args=None) -> str:
     """The Lam spelling of a string method other languages have
     (``label.substring(0, 2)`` -> slicing ``label[0:2]``), or ``""``."""

@@ -169,7 +169,7 @@ verifying the install, uninstalling): [`docs/installation.md`](#/docs/installati
 
 | Flag                 | Description                                                  |
 |----------------------|--------------------------------------------------------------|
-| `--run`              | Compile and immediately execute the program.                 |
+| `--run`              | Compile and immediately execute the program; arguments after `--` are passed to it (`lamc app.lam --run -- serve`). |
 | `-o PATH`            | Output path for the compiled binary. Defaults to the source file's path minus `.lam`, so `lamc src/foo.lam` writes `src/foo` (no CWD pollution). |
 | `--emit-go`          | Print the generated Go source and exit.                      |
 | `--emit-ast`         | Print the parsed Lark AST and exit.                          |
@@ -186,8 +186,12 @@ Useful subcommands:
 - **`lamc fmt`:** format a `.lam` file or every `.lam` file under a
   directory with the same parser-validated formatter used by the editor
   integration.
-- **`lamc lib run <script>`:** run a command declared in the nearest
-  `lamlib.toml` `[scripts]` table.
+- **`lamc dev <file.lam>`:** build and run a program, then rebuild and
+  restart it when its sources change (the nodemon workflow); a failed
+  build keeps the previous one running. `--watch PATH` and `--ext json,sql`
+  restart on other files without rebuilding.
+- **`lamc lib run <script> [-- ARGS]`:** run a command declared in the
+  nearest `lamlib.toml` `[scripts]` table, with extra arguments.
 
 ### Package manager
 

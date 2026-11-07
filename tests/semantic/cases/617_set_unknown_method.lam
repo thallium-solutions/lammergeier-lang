@@ -1,0 +1,26 @@
+# expect-error: `set[int]` has no method `index`; use `x in s`
+# expect-error: `set[str]` has no method `append` — did you mean `add`?
+# expect-error: `set[int]` has no method `length`; use `len(s)`
+# expect-error: `set[str]` has no method `has` — did you mean `contains`?
+# Sets have `add`, `remove`, `discard` and `contains` (plus `in`, `len` and
+# the `|` / `&` / `-` operators): any other method on a set local or field
+# used to pass `lamc` and fail only in `go build`
+# (`s.Index undefined (type map[int]bool has no field or method Index)`).
+class Tags {
+    func init(self) {
+        self.names: set[str] = set()
+    }
+
+    func tag(self, name: str) {
+        self.names.append(name)
+    }
+}
+
+func main() {
+    ids: set[int] = {1, 2}
+    print(ids.index(1))
+    print(ids.length())
+    t = Tags()
+    t.tag("a")
+    print(t.names.has("a"))
+}

@@ -1,0 +1,134 @@
+# Regression: a type parameter that only appears inside a `Result[T]`
+# (lowered to the non-generic Go `*Result`) of a function-typed parameter
+# could not be inferred: `inTx(c, lambda (tx: Conn) -> Result[int]: ...)`
+# failed `go build` with `in call to InTx, cannot infer T`. The call now
+# spells the type arguments bound from the Lam types of the function-typed
+# arguments (lambda annotations, named functions, static methods) and,
+# when nothing else determines them, from the annotated assignment target
+# (`r: Result[int] = make()`, `n: int = make()?`): `Result[T]`,
+# `optional[T]`, `list[T]` and `dict[K, V]` in parameter and result
+# positions; top-level functions, static and instance methods of a
+# non-generic class.
+#
+# expect: lambda=4
+# expect: named=4
+# expect: block=8
+# expect: str=abcd!
+# expect: static=4 static_lambda=5
+# expect: method=7
+# expect: empty=false Empty: nothing
+# expect: propagated=false
+# expect: list=[a b]
+# expect: dict=[k]
+# expect: optional=5 9
+# expect: params=12
+# expect: generic_caller=6
+# expect: explicit=3
+# expect: generic_lambda_result_inference_ok
+
+from lamerrors import Result, Error
+
+class Conn {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func countRows(c: Conn) -> Result[int] {
+    return Result.Ok(len(c.name))
+}
+
+func inTx[T](conn: Conn, fn: func(Conn) -> Result[T]) -> Result[T] {
+    return fn(conn)
+}
+
+class Db {
+    static func inTx[T](conn: Conn, fn: func(Conn) -> Result[T]) -> Result[T] {
+        return fn(conn)
+    }
+
+    func run[T](self, fn: func() -> Result[T]) -> Result[T] {
+        return fn()
+    }
+}
+
+func make[T]() -> Result[T] {
+    return Result.Err(Error("Empty", "nothing"))
+}
+
+func useMake() -> Result[int] {
+    n: int = make()?
+    return Result.Ok(n)
+}
+
+func collect[T](fn: func() -> list[T]) -> Result[list[T]] {
+    return Result.Ok(fn())
+}
+
+func keysOf[K, V](fn: func() -> dict[K, V]) -> list[K] {
+    out: list[K] = []
+    for k in fn() {
+        out.append(k)
+    }
+    return out
+}
+
+func firstOr[T](fn: func() -> optional[T], fallback: T) -> T {
+    v: optional[T] = fn()
+    if v == None {
+        return fallback
+    }
+    return v
+}
+
+func fold[T](fn: func(Result[T]) -> Result[T], start: int) -> Result[T] {
+    return fn(Result.Err(Error("Start", str(start))))
+}
+
+func twiceCount[T](conn: Conn, fn: func(Conn) -> Result[T]) -> Result[list[T]] {
+    a: T = inTx(conn, fn)?
+    b: T = inTx(conn, fn)?
+    return Result.Ok([a, b])
+}
+
+func main() {
+    c = Conn("abcd")
+    a: Result[int] = inTx(c, lambda (tx: Conn) -> Result[int]: countRows(tx))
+    print(f"lambda={a.unwrap()}")
+    b: Result[int] = inTx(c, countRows)
+    print(f"named={b.unwrap()}")
+    d: Result[int] = inTx(c, lambda (tx: Conn) -> Result[int] {
+        n: int = countRows(tx)?
+        return Result.Ok(n * 2)
+    })
+    print(f"block={d.unwrap()}")
+    s: Result[str] = inTx(c, lambda (tx: Conn) -> Result[str]: Result.Ok(tx.name + "!"))
+    print(f"str={s.unwrap()}")
+    st: Result[int] = Db.inTx(c, countRows)
+    sl: Result[int] = Db.inTx(c, lambda (tx: Conn) -> Result[int]: Result.Ok(countRows(tx)? + 1))
+    print(f"static={st.unwrap()} static_lambda={sl.unwrap()}")
+    db = Db()
+    m: Result[int] = db.run(lambda () -> Result[int]: Result.Ok(7))
+    print(f"method={m.unwrap()}")
+    e: Result[int] = make()
+    print(f"empty={e.ok()} {e.error}")
+    print(f"propagated={useMake().ok()}")
+    xs: Result[list[str]] = collect(lambda () -> list[str]: ["a", "b"])
+    print(f"list={xs.unwrap()}")
+    ks: list[str] = keysOf(lambda () -> dict[str, int]: {"k": 1})
+    print(f"dict={ks}")
+    o1: int = firstOr(lambda () -> optional[int]: None, 5)
+    o2: int = firstOr(lambda () -> optional[int]: 9, 5)
+    print(f"optional={o1} {o2}")
+    p: Result[int] = fold(lambda (r: Result[int]) -> Result[int]: Result.Ok(12) if not r.ok() else r, 0)
+    print(f"params={p.unwrap()}")
+    g: Result[list[int]] = twiceCount(Conn("abc"), countRows)
+    total: int = 0
+    for n in g.unwrap() {
+        total += n
+    }
+    print(f"generic_caller={total}")
+    x: Result[int] = inTx[int](Conn("xyz"), countRows)
+    print(f"explicit={x.unwrap()}")
+    print("generic_lambda_result_inference_ok")
+}

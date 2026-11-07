@@ -762,6 +762,33 @@ class ExpressionVisitorMixin:
         return "", ""
 
     @classmethod
+    def _sorted_map_key_go_type(cls, go_type: str) -> str:
+        """Key type ``K`` of a set's ``map[K]bool`` / a dict's ``map[K]V``:
+        ``sorted()`` of either is the sorted ``[]K`` of its keys."""
+        key_type, _value_type = cls._split_go_map_type((go_type or "").strip())
+        return key_type
+
+    def _sorted_source_go_type(self, node) -> str:
+        """Go type of ``sorted()``'s argument; a set comprehension
+        (``{x.toUpper() for x in xs}``, untyped otherwise) is typed by its
+        element (``map[string]bool``)."""
+        source = self._expr_go_type_hint(node) or self._infer_type_from_value(node) or ""
+        if (
+            isinstance(node, Tree) and node.data in {"or_expr", "and_expr", "arith_expr"}
+            and not source.startswith(("[]", "map["))
+        ):
+            # ``sorted(a | b)`` / ``sorted(a - b)``: a set operation.
+            source = self._set_operand_go_type(node) or source
+        if (
+            isinstance(node, Tree) and node.data == "set_comprehension"
+            and self._sorted_map_key_go_type(source) in {"", "interface{}"}
+        ):
+            elem = self._list_comp_static_elem_go_type(node)
+            if elem:
+                return f"map[{elem}]bool"
+        return source
+
+    @classmethod
     def _is_go_set_type(cls, go_type: str) -> bool:
         """Return True for the Go map representation used by Lam sets."""
         _key_type, value_type = cls._split_go_map_type((go_type or "").strip())
@@ -1064,9 +1091,13 @@ class ExpressionVisitorMixin:
                     args_node = node.children[1] if len(node.children) > 1 else None
                     raw_args = self._get_raw_call_args(args_node) if isinstance(args_node, Tree) else []
                     if raw_args:
-                        source = self._expr_go_type_hint(raw_args[0]) or self._infer_type_from_value(raw_args[0]) or ""
+                        source = self._sorted_source_go_type(raw_args[0])
                         if source.startswith("[]"):
                             return source
+                        map_key = self._sorted_map_key_go_type(source)
+                        if map_key:
+                            # A set's / dict's sorted keys (``[]K``).
+                            return f"[]{map_key}"
                 if name == "reversed" and name not in self._user_functions and name not in self._var_go_types:
                     args_node = node.children[1] if len(node.children) > 1 else None
                     raw_args = self._get_raw_call_args(args_node) if isinstance(args_node, Tree) else []
@@ -1395,7 +1426,15 @@ class ExpressionVisitorMixin:
             reused = self.__dict__.get("_reuse_lowering", {}).get(id(node))
             if reused is not None and reused[0] is node:
                 return reused[1]
-            call = self._funccall_to_go(node)
+            expected_value = self._expected_value_lam
+            if expected_value is not None or self._call_result_lam is not None:
+                # The expected Lam type applies to the assigned call only,
+                # not to the calls in its arguments or receiver.
+                expected = expected_value[1] if expected_value is not None and expected_value[0] is node else None
+                with self._scoped(_call_result_lam=expected, _expected_value_lam=None):
+                    call = self._funccall_to_go(node)
+            else:
+                call = self._funccall_to_go(node)
             payload = self._unwrap_payload_go_type(node)
             if payload and call.endswith(")"):
                 return self._result_payload_assert_go(call, payload)
@@ -1497,6 +1536,11 @@ class ExpressionVisitorMixin:
             )
 
         if d == "propagate":
+            reused = self.__dict__.get("_reuse_lowering", {}).get(id(node))
+            if reused is not None and reused[0] is node:
+                # ``make()?.value()``: the receiver was lowered (and its
+                # guard emitted) once already for the method call.
+                return reused[1]
             # ``expr?`` — Result-propagation operator. Lowers to:
             #
             #     __qN := <expr>
@@ -1998,7 +2042,8 @@ class ExpressionVisitorMixin:
         if type_args is not None:
             return f"{go_name}[{self._args_to_go(type_args)}]({self._args_to_go(call_args)})"
         go_name = self._unshadowed_function(go_name, call_key)
-        return f"{go_name}({self._args_to_go(call_args)})"
+        explicit = self._uninferable_type_args(call_key, args_node)
+        return f"{go_name}{explicit}({self._args_to_go(call_args)})"
 
     def _planned_call_args(
         self,
@@ -2045,6 +2090,11 @@ class ExpressionVisitorMixin:
             go_name = self._go_private_name(go_name)
         call_args = self._planned_call_args_inferred(call_key, args_node)
         explicit = self._static_generic_fallback_type_args(class_name, call_key, args_node)
+        if not explicit and not self._class_type_param_names_of(class_name):
+            # ``Tools.swap(pairs)`` with ``swap[K, V](pairs: list[tuple[K, V]])``.
+            explicit = self._uninferable_type_args(
+                call_key, args_node, self._method_generic_order.get(method_key, []),
+            )
         return f"{go_name}{explicit}({', '.join(call_args)})"
 
     def _static_generic_fallback_type_args(self, class_name: str, call_key: str, args_node) -> str:
@@ -2239,6 +2289,21 @@ class ExpressionVisitorMixin:
         receiver = func.children[0]
         if not isinstance(receiver, Tree):
             return
+        if (
+            receiver.data == "getitem" and len(receiver.children) == 2
+            and not (isinstance(receiver.children[1], Tree) and receiver.children[1].data == "slice")
+            and self._expr_go_type_hint(receiver.children[0]) == "string"
+        ):
+            # ``name[0].toUpper()``: indexing a ``str`` gives a ``byte``.
+            from compiler.constants import str_index_byte_hint
+            self._report_lam_error(
+                func, "member",
+                f"`byte` has no method `{method}`"
+                + str_index_byte_hint(
+                    lam_simple_expr_text(receiver), method, bool(self._get_raw_call_args(args_node)),
+                ),
+            )
+            return
         if receiver.data not in {"string", "fstring", "string_concat"} and self._expr_go_type_hint(receiver) != "string":
             return
         if method in STR_METHODS:
@@ -2409,11 +2474,14 @@ class ExpressionVisitorMixin:
         reuse = self.__dict__.setdefault("_reuse_lowering", {})
         receiver_node = func.children[0] if isinstance(func, Tree) and func.data == "getattr" else None
         reused = (
-            raw_obj is not None and isinstance(receiver_node, Tree) and receiver_node.data == "funccall"
+            raw_obj is not None and isinstance(receiver_node, Tree)
+            and receiver_node.data in {"funccall", "propagate"}
         )
         if reused:
             # ``a.f().g()``: the receiver call was lowered for ``raw_obj``;
             # lowering it again for the callee doubled the work per link.
+            # ``a()?.g()``: it also emitted the ``?`` guard (and evaluated
+            # ``a()``) a second time.
             reuse[id(receiver_node)] = (receiver_node, raw_obj)
         try:
             with self._scoped(_in_funccall_head=True):
@@ -2532,22 +2600,37 @@ class ExpressionVisitorMixin:
             if raw_args:
                 raw_kwargs = self._raw_call_kwargs(args_node)
                 expected_type = getattr(self, "_expected_expr_go_type", "") or ""
-                arg_type = self._expr_go_type_hint(raw_args[0]) or self._infer_type_from_value(raw_args[0]) or ""
-                slice_type = expected_type if expected_type.startswith("[]") else arg_type
-                if not slice_type.startswith("[]"):
-                    slice_type = "[]interface{}"
-                elem_type = self._slice_elem_go_type(slice_type) or "interface{}"
-                source = (
-                    self._typed_value_to_go(raw_args[0], slice_type)
-                    if slice_type != "[]interface{}" or isinstance(raw_args[0], Tree) and raw_args[0].data in {"list", "list_comprehension"}
-                    else args[0]
-                )
-                if arg_type and arg_type != slice_type and arg_type.startswith("[]") and not (
-                    isinstance(raw_args[0], Tree) and raw_args[0].data in {"list", "list_comprehension"}
-                ):
-                    source = args[0]
-                    slice_type = arg_type
+                arg_type = self._sorted_source_go_type(raw_args[0])
+                map_key_type = self._sorted_map_key_go_type(arg_type)
+                if map_key_type:
+                    # ``sorted(s)`` of a set (``map[T]bool``) / ``sorted(d)``
+                    # of a dict (``map[K]V``): a new sorted ``[]T`` of the keys.
+                    # The map is the closure's argument: evaluated once.
+                    slice_type = f"[]{map_key_type}"
+                    elem_type = map_key_type
+                    map_param = f"lamSrc {arg_type}"
+                    map_arg = self._typed_value_to_go(raw_args[0], arg_type)
+                    target_expr = f"make({slice_type}, 0, len(lamSrc))"
+                    collect = "for k := range lamSrc { tmp = append(tmp, k) }; "
+                else:
+                    map_param = map_arg = ""
+                    slice_type = expected_type if expected_type.startswith("[]") else arg_type
+                    if not slice_type.startswith("[]"):
+                        slice_type = "[]interface{}"
                     elem_type = self._slice_elem_go_type(slice_type) or "interface{}"
+                    source = (
+                        self._typed_value_to_go(raw_args[0], slice_type)
+                        if slice_type != "[]interface{}" or isinstance(raw_args[0], Tree) and raw_args[0].data in {"list", "list_comprehension"}
+                        else args[0]
+                    )
+                    if arg_type and arg_type != slice_type and arg_type.startswith("[]") and not (
+                        isinstance(raw_args[0], Tree) and raw_args[0].data in {"list", "list_comprehension"}
+                    ):
+                        source = args[0]
+                        slice_type = arg_type
+                        elem_type = self._slice_elem_go_type(slice_type) or "interface{}"
+                    target_expr = f"append({slice_type}{{}}, {source}...)"
+                    collect = ""
                 ordered = {
                     "int", "int8", "int16", "int32", "int64",
                     "uint", "uint8", "uint16", "uint32", "uint64",
@@ -2589,10 +2672,9 @@ class ExpressionVisitorMixin:
                     elif reverse_go != "false":
                         swapped = less_expr.replace(left, "\x00L").replace(right, left).replace("\x00L", right)
                         less_expr = f"(({reverse_go}) && {swapped}) || (!({reverse_go}) && {less_expr})"
-                target_expr = f"append({slice_type}{{}}, {source}...)"
                 return (
-                    f"func() {slice_type} {{ tmp := {target_expr}; {prologue}"
-                    f"sort.SliceStable(tmp, func(i, j int) bool {{ return {less_expr} }}); return tmp }}()"
+                    f"func({map_param}) {slice_type} {{ tmp := {target_expr}; {collect}{prologue}"
+                    f"sort.SliceStable(tmp, func(i, j int) bool {{ return {less_expr} }}); return tmp }}({map_arg})"
                 )
 
         if func_str == "reversed" and "reversed" not in self._user_functions and "reversed" not in self._var_go_types:
@@ -3830,6 +3912,11 @@ class ExpressionVisitorMixin:
                 self._note_result_payload(self._get_name(child.children[0]), child.children[1])
 
         is_block_body = isinstance(body_node, Tree) and body_node.data == "suite"
+        if not is_block_body and isinstance(body_node, Tree):
+            # ``f()?.size()`` in an expression body (no statement, so not
+            # rewritten by ``_visit``): propagation, then member access.
+            from compiler.safe_nav import rewrite_result_safe_nav
+            rewrite_result_safe_nav(body_node, lambda recv: self._expr_go_type_hint(recv) == "*Result")
 
         # The default return type stays ``interface{}`` for
         # compatibility: existing callers rely on the lambda result
@@ -3857,20 +3944,34 @@ class ExpressionVisitorMixin:
             resolved_return = "interface{}"
 
         void_body = resolved_return == ""
+        # ``?`` in the body returns the ``Err`` from the lambda when it
+        # returns a ``Result`` (and panics otherwise), never from the
+        # enclosing function or ``do`` block.
+        boundary = dict(self._callable_boundary_context(),
+                        _q_propagate_ok=(resolved_return == "*Result"),
+                        _guard_q_var="")
+        # The statements an expression body needs first (the guard of a
+        # ``?``) belong inside the lambda, which then gets a block body.
+        prelude: list = []
         try:
             if is_block_body:
                 with self._scoped(_current_return_type=resolved_return,
                                   _current_return_type_key=return_key or resolved_return,
-                                  **self._callable_boundary_context()):
+                                  **boundary):
                     body_src = self._lambda_block_body_to_go(body_node)
-            elif void_body:
-                # ``func()`` context: the body is evaluated for its effect.
-                body_src = self._expr_to_go(body_node)
-            elif return_key and return_key != resolved_return:
-                with self._scoped(_expected_expr_type_key=return_key):
-                    body_src = self._typed_value_to_go(body_node, resolved_return, return_key)
             else:
-                body_src = self._typed_value_to_go(body_node, resolved_return)
+                with self._capture_emits(prelude), self._scoped(
+                        _current_return_type=resolved_return,
+                        _current_return_type_key=return_key or resolved_return,
+                        **boundary):
+                    if void_body:
+                        # ``func()`` context: the body is evaluated for its effect.
+                        body_src = self._expr_to_go(body_node)
+                    elif return_key and return_key != resolved_return:
+                        with self._scoped(_expected_expr_type_key=return_key):
+                            body_src = self._typed_value_to_go(body_node, resolved_return, return_key)
+                    else:
+                        body_src = self._typed_value_to_go(body_node, resolved_return)
         finally:
             self._var_go_types = saved_vars
             self._var_result_payloads = saved_payloads
@@ -3881,6 +3982,13 @@ class ExpressionVisitorMixin:
         ret_part = f" {resolved_return}" if resolved_return else ""
         if is_block_body:
             return f"func({params_str}){ret_part} {{\n{body_src}\n}}"
+        if prelude:
+            lines = "\n".join("\t" + line for line in prelude)
+            if void_body:
+                tail = body_src if isinstance(body_node, Tree) and body_node.data in {"funccall", "await_expr"} else f"_ = {body_src}"
+            else:
+                tail = f"return {body_src}"
+            return f"func({params_str}){ret_part} {{\n{lines}\n\t{tail}\n}}"
         if void_body:
             if isinstance(body_node, Tree) and body_node.data in {"funccall", "await_expr"}:
                 return f"func({params_str}) {{ {body_src} }}"
@@ -5438,6 +5546,9 @@ class ExpressionVisitorMixin:
             return "float64"
         if all(t == "string" for t in types):
             return "string"
+        if name in {"min", "max"} and len(set(types)) == 1 and types[0] in self._generic_names:
+            # ``max(a, b)`` with ``a, b: T`` (``T: ordered``) is a ``T``.
+            return types[0]
         return ""
 
     def _numeric_builtin_to_go(self, name: str, args: List[str], raw: list) -> str:
@@ -5472,6 +5583,10 @@ class ExpressionVisitorMixin:
         if types and all(t in ints | {"float64", "float32"} for t in types):
             return f"{name}({', '.join(f'float64({a})' for a in args)})"
         if types and all(t == "string" for t in types):
+            return f"{name}({', '.join(args)})"
+        if len(args) >= 2 and len(set(types)) == 1 and types[0] in self._generic_names:
+            # ``max(a, b)`` with ``a, b: T`` and ``T: ordered``: Go's
+            # builtin ``max`` / ``min`` take any ``cmp.Ordered`` type.
             return f"{name}({', '.join(args)})"
         if len(args) >= 2:
             # Unknown operand types: compare as floats (previous behaviour).

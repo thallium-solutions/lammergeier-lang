@@ -1,0 +1,32 @@
+# Provider for test_generic_lambda_result_imported.lam: generic callables
+# whose type parameter only appears inside a `Result[T]` of a
+# function-typed parameter or of the result, used from another module.
+from lamerrors import Result, Error
+
+class Conn {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Pool {
+    static func inTx[T](conn: Conn, fn: func(Conn) -> Result[T]) -> Result[T] {
+        return fn(conn)
+    }
+}
+
+func countRows(c: Conn) -> Result[int] {
+    return Result.Ok(len(c.name))
+}
+
+func inTx[T](conn: Conn, fn: func(Conn) -> Result[T]) -> Result[T] {
+    return fn(conn)
+}
+
+func none[T]() -> Result[T] {
+    return Result.Err(Error("Empty", "nothing"))
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

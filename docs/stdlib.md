@@ -43,7 +43,7 @@ form regardless of tier.
 | Tier | Purpose | Modules |
 | --- | --- | --- |
 | core | Small, general-purpose modules expected to stay lightweight and broadly useful. | `lamstrings`, `lammath`, `lampath`, `lamjson`, `lamerrors`, `lamenv`, `lamtime`, `lamdatetime`, `lamconv`, `lamfmt`, `lamlog`, `lamtest` |
-| data | File formats, markup, tabular/numeric data, and data-shaping helpers. | `lamcsv`, `lamyaml`, `lamxml`, `lamhtml`, `lammarkup`, `lamdata`, `lamarray`, `lamstats`, `lamrandom` |
+| data | File formats, markup, translations, tabular/numeric data, and data-shaping helpers. | `lamcsv`, `lamyaml`, `lamxml`, `lamhtml`, `lammarkup`, `lami18n`, `lamdata`, `lamarray`, `lamstats`, `lamrandom` |
 | net | Network protocols and clients. | `lamhttp`, `lamsmtp`, `lamnet`, `lamurl` |
 | infra | Database and operational infrastructure. | `lamdb`, `lammigrate`, `lamcron`, `lamexec`, `lamcache` |
 | concurrency | Concurrency primitives, cancellation, async coordination, resilience, and collections. | `lamactor`, `lamconcurrency`, `lamcontext`, `lamretry`, `lamratelimit`, `lamdatastructures` (canonical), `lamqueue`, `lamdeque`, `lamheap`, `lamstack`, and `lamset` (compatibility re-exports), `lamiter`, `lamsort` |
@@ -753,6 +753,104 @@ raw: str = Bytes.hexDecode(hx)?
 The native `bytes` type needs no import: `bytes(text)` is the UTF-8 encoding,
 `str(data)` decodes it, `bytes(codes)` converts a `list[int]`, and indexing,
 slicing, `+`, `==` and `in` work on the value (see "Bytes" in `SYNTAX.md`).
+
+### `lami18n` — `Translations`
+
+Translated texts per language, read from JSON files and looked up by dotted
+key, with `{name}` parameters:
+
+```text
+i18n/
+  en/common.json   {"App": {"name": "Luxyt", "welcome": "Hello <b>{name}</b>!"},
+                    "Feed": {"title": "Feed", "empty": "No posts yet"}}
+  en/mail.json     {"Mail.subject": "Welcome {name}", "Feed.perPage": 20}
+  it/common.json   {"App": {"welcome": "Ciao <b>{name}</b>!"}, "Feed": {"title": "Bacheca"}}
+```
+
+```lammergeier
+from lami18n import Translations
+from lamerrors import Result
+
+func setup() -> Result[Translations] {
+    texts: Translations = Translations.load("i18n", ["en", "it"], "en")?
+    lang: str = texts.negotiate("it-IT,it;q=0.9,en;q=0.8")    # "it"
+    print(texts.raw(lang, "Feed.title"))                      # Bacheca
+    print(texts.raw(lang, "Feed.empty"))                      # No posts yet (English fallback)
+    print(texts.raw(lang, "Feed.nope"))                       # Feed.nope
+    params: dict[str, str] = {"name": "Ada <3"}
+    print(texts.text("en", "Mail.subject", params))           # Welcome Ada <3
+    page: html = <><header>${texts.markup(lang, "App.welcome", params)}</header></>
+    print(page)                                               # <header>Ciao <b>Ada &lt;3</b>!</header>
+    print(texts.plain(lang, "App.welcome", params))           # Ciao Ada <3!
+    print(texts.missing("en", "it"))                          # [App.name Feed.empty Feed.perPage Mail.subject]
+    return Result.Ok(texts)
+}
+```
+
+**Loading.** `Translations.load(dir, languages, fallback = "") ->
+Result[Translations]` reads, for each language, every `<dir>/<lang>/*.json`
+file in name order (other files, hidden files and subdirectories are
+ignored). A file is a JSON object; nested objects become dotted keys at any
+depth (`{"Feed": {"title": ...}}` and `{"Feed.title": ...}` are the same
+key), numbers and booleans become their JSON text (`20`, `2.50`, `true`).
+These are `TranslationError` results naming the file, and the line and key
+when known, so a broken translation stops the program at start-up:
+
+- a key defined twice for one language, in one file or in two (`en/b.json:
+  key "Feed.title" is already defined in en/a.json`), including a duplicate
+  member of one object, which JSON decoders usually drop silently;
+- malformed JSON, an empty file or data after the object (`en/a.json:3:
+  invalid JSON: ...`), a top level that is not an object;
+- arrays and `null` values (one key per text: plural forms are separate
+  keys such as `Feed.count.one` / `Feed.count.other`) and empty keys;
+- a missing, unreadable or non-directory `dir`, a `<dir>/<lang>` that is a
+  file, and
+  invalid `languages` (none, an empty, padded or duplicate code, a
+  `fallback` that is not listed).
+
+A missing `<dir>/<lang>` directory is not an error: that language has no
+texts yet and every lookup falls back, so a language can be listed before it
+is translated. A leading UTF-8 byte order mark is accepted.
+
+**Building in code.** `Translations(languages, fallback = "")` starts empty
+(invalid arguments are a `ValueError`); `add(lang, key, text) ->
+Result[bool]` adds one text and `merge(lang, texts: dict[str, str]) ->
+Result[int]` adds a map, all or nothing. An unsupported language, an empty
+key and a key already defined for that language are `TranslationError`s.
+
+**Languages.** `languages` are the supported codes in order; the first is
+the default. `fallback` is the language consulted when a key is missing in
+the requested one; `""` means the first language (pass it explicitly, e.g.
+`"en"`, when the default display language is not the most complete one).
+Lookups use the codes exactly as given: normalise user input with
+`language(candidate)` (the same code ignoring case and `_` versus `-`, else
+the language equal to its primary subtag, `en-US` -> `en`, else the first
+language sharing its primary subtag, `pt` -> `pt-BR`, else the first
+language) or `negotiate(header)` for an `Accept-Language` value (ranges in
+`q` order, header order breaking ties, each matched like `language`; `q=0`
+refuses a language, `*` is the first language not refused, a malformed `q`
+ignores its range, and with no match the result is the first language not
+refused).
+
+| Method | Result |
+| --- | --- |
+| `raw(lang, key) -> str` | the text in `lang`, else in the fallback language, else `key` itself: a missing text shows up but never fails |
+| `text(lang, key, params = {}) -> str` | `raw` with each `{name}` whose name is a key of `params` replaced by its value verbatim; plain text (mail subjects, log lines, values passed to markup slots, which escape them) |
+| `markup(lang, key, params = {}) -> html` | `raw` read as trusted markup (translations may contain tags and entities) with every parameter value HTML-escaped before it is inserted |
+| `plain(lang, key, params = {}) -> str` | the text content of `markup`: tags removed, entities decoded (plain-text mail bodies) |
+| `has(lang, key) -> bool` | `key` has a text in `lang` itself, without fallback |
+| `count(lang = "") -> int` | the texts of `lang`; `""` counts all languages |
+| `keys(lang) -> list[str]` | the keys of `lang`, sorted |
+| `missing(lang, other) -> list[str]` | the keys of `lang` that `other` lacks, sorted (a CI completeness check: `missing("en", "it")`) |
+| `languages() -> list[str]`, `fallback() -> str` | the supported languages, the fallback language |
+
+Placeholders other than the given parameter names stay as written
+(`{count}` without a `count` parameter, `{}`, `{ name }`), and an inserted
+value is not scanned again, so a parameter containing `{name}` stays
+literal. Unsupported languages behave as languages without texts. A loaded
+`Translations` is only read and can be shared by concurrent requests; `add`
+and `merge` are not synchronised and belong to set-up, before the value is
+shared.
 
 ---
 
@@ -1658,6 +1756,8 @@ portText: str = Env.getOr("PORT", "8080")
 port: int = Env.get("PORT", 8080)?
 debug: bool = Env.get("DEBUG", false)?
 ratio: float = Env.get("SAMPLE_RATE", 1.0)?
+verbose: bool = Env.flag("VERBOSE", false)       # yes/no, on/off, 1/0, true/false
+origins: list[str] = Env.list("CORS_ORIGINS")   # "https://a.example, https://b.example"
 
 # Dotenv — supports export, quoted values, escapes, and ${VAR}
 #          interpolation (both file-local and process env).
@@ -1680,6 +1780,13 @@ merged: dict[str, any] = Config.merge([
   key is absent (malformed present values remain parse errors). `set` and
   `unset` return `Result[any]`. `getOr(key, fallback: str)`, `has`, and `all`
   are the explicit direct-value operations.
+  `flag(key, fallback: bool) -> bool` is the lenient switch: the trimmed value
+  is `true` for `1`, `true`, `t`, `yes`, `y`, `on` and `false` for `0`,
+  `false`, `f`, `no`, `n`, `off` (any case); unset, empty or blank and any
+  other value give `fallback` (use `get(key, false)` to reject a malformed
+  value). `list(key, separator = ",") -> list[str]` splits the value, trims
+  each part and drops empty ones (`" a, ,b "` -> `["a", "b"]`); unset or
+  empty is `[]`, and an empty `separator` splits on runs of white space.
 - **Dotenv**: `parse` is in-memory and direct; `parseFile`, `load`,
   `loadOverride`, and `applyToEnv` return typed Results. The parser handles
   `export KEY=val`, quoted and triple-quoted values, escapes, inline comments,
@@ -2349,7 +2456,10 @@ request), `callNotFound()` (delegate to the registered
 `notFoundHandler` — Fastify's `reply.callNotFound()`).
 
 **`SseEmitter`** — `send(data)`, `sendEvent(event, data)`,
-`comment(text)`, `close()`.
+`comment(text)`, `close()`, `wait(timeoutMs) -> bool` (true once the
+client disconnected or the server began `shutdown()`/`close()`, so
+long-lived streams loop on `while not emitter.wait(15000) { ... }` and do
+not hold a graceful shutdown for its drain timeout).
 
 **`HttpError`** — typed HTTP error. `panic(HttpError(409, "dup",
 {"key": x}))` from a hook or handler short-circuits with a structured
@@ -3012,6 +3122,33 @@ _ = tx.commit()?
 for a builder bound to the transaction so chained writes stay
 atomic with the surrounding `tx.exec` calls.
 
+`Tx` reads rows like `Db`: `tx.first(query, params)` (the first row, `{}`
+when there is none), `tx.scalar` (the first column of the first row,
+`Ok(None)` for no rows) and the JSON-aware `tx.queryJson` / `tx.firstJson` /
+`tx.scalarJson` have the semantics of the `Db` methods of the same name,
+but run through `tx.query` on the transaction's connection: they see its
+uncommitted writes, use its context and are reported to its observer as one
+statement each. Code written against these methods (an interface with
+`first` / `scalar`, as below) accepts a `Db` or a `Tx` unchanged:
+
+```lammergeier
+interface RowReader {
+    func first(self, query: str, params: list[any]) -> Result[dict[str, any]]
+    func scalar(self, query: str, params: list[any]) -> Result[any]
+}
+
+func userName(reader: RowReader, id: int) -> Result[str] {
+    row: dict[str, any] = reader.first("SELECT name FROM users WHERE id = ?", [id])?
+    return Result.Ok(Row.str(row, "name", "unknown"))
+}
+
+name: str = userName(db, 7)?          # outside a transaction
+tx: Tx = db.begin()?
+_ = tx.exec("UPDATE users SET name = ? WHERE id = ?", ["Ada", 7])?
+renamed: str = userName(tx, 7)?       # "Ada": the transaction's own write
+_ = tx.rollback()?
+```
+
 Automatic retries on transient errors (closed connection, server gone away,
 bad conn…) are bounded by `setRetries` (negative settings become zero).
 A scoped context's cancellation or deadline interrupts retry backoff.
@@ -3026,7 +3163,8 @@ deadlines). Give each request its own context and scoped handle (for example,
 pass a Vulture handler's `req.ctx`); raw `exec` / `query`,
 `db.table(...).get()` and other builder terminals use that context.
 `begin()` and `transaction(fn)` create a `Tx` inheriting it, so `tx.exec`,
-`tx.query` and `tx.table(...)` use the same request context. Keep the owner
+`tx.query` (and `tx.first`, `tx.scalar` and the JSON reads built on it) and
+`tx.table(...)` use the same request context. Keep the owner
 open for the pool's lifetime; `close()` on a scoped handle returns an error
 instead of closing the pool. Configure `setRetries` before creating scoped
 handles: each view snapshots the owner's retry count and base delay, while
@@ -3367,6 +3505,7 @@ the runtime path is exactly the same as production code.
 | Talk to Redis (strings / native JSON / lists / hashes / sets / zsets / pub-sub / pipelines) | External [`@lam/redis`](libraries.md) package |
 | Talk to memcached over the binary protocol (incl. SASL PLAIN auth) | External [`@lam/memcached`](libraries.md) package |
 | Read / write files | `lamos`, `lampath` |
+| Read on/off switches and comma-separated lists from the environment | `Env.flag`, `Env.list` |
 | Encrypt, hash, sign, or store passwords safely | `lamcrypto`, `lamhash`, `lambase64`, `lamuuid` |
 | Verify existing bcrypt password hashes (`$2a$` / `$2b$` / `$2y$`) | `lamcrypto` (`Crypto.bcryptVerify`, `bcryptHash`, `bcryptCost`) |
 | Compute statistics or matrix algebra | `lamstats`, `lamarray` |
@@ -3376,6 +3515,7 @@ the runtime path is exactly the same as production code.
 | Cache lookup results | `lamcache` |
 | Iterate lazily | `lamiter` |
 | Render text / HTML templates | `lamtemplate` (`Template`, `HtmlTemplate`) |
+| Translate pages and mails (JSON files, fallback language, `{name}` parameters, `Accept-Language`) | `lami18n.Translations` |
 | Retry with exponential backoff + jitter | `lamretry.Retry` |
 | Throttle outbound calls (token bucket) | `lamratelimit.TokenBucket` |
 | Trip a circuit on downstream failure | `@lam/vulture/std-plugin.CircuitBreaker` |
@@ -3746,9 +3886,9 @@ index lists the public classes and top-level functions you can import.
 | `lamdata` | `from lamdata import DataFrame, DataFrameGroups, Series` | DataFrames and Series with overloaded typed columns, native JSON, joins, filters, and group-by aggregation. |
 | `lamdatastructures` | `from lamdatastructures import Queue, Deque, Stack, Set, Heap, PriorityHeap` | Canonical data-structure implementations. |
 | `lamdatetime` | `from lamdatetime import DateTime` | Timezone-aware instants, parsing (one layout, the first of several, common and database forms)/formatting, calendar and duration arithmetic. |
-| `lamdb` | `from lamdb import Db, Tx, QueryBuilder, Row, Where` | SQL connections, transactions, raw queries, query builder, typed row values, SQLSTATE checks, WHERE builder. |
+| `lamdb` | `from lamdb import Db, Tx, QueryBuilder, Row, Where` | SQL connections, transactions (with the same `first` / `scalar` / JSON reads as `Db`), raw queries, query builder, typed row values, SQLSTATE checks, WHERE builder. |
 | `lamdeque` | `from lamdeque import Deque` | Compatibility re-export of canonical `Deque`. |
-| `lamenv` | `from lamenv import Env, Dotenv, Config` | Overloaded typed/Result environment access, dotenv parsing/loading, and layered config. |
+| `lamenv` | `from lamenv import Env, Dotenv, Config` | Overloaded typed/Result environment access, lenient `flag` switches and `list` values, dotenv parsing/loading, and layered config. |
 | `lamerrors` | `from lamerrors import Error, Result` | Structured errors and success/error containers. |
 | `lamexec` | `from lamexec import Exec, ExecCommand, ExecResult` | Typed process execution with env/cwd/stdin, timeout, cancellation, and captured output. |
 | `lamfmt` | `from lamfmt import Fmt` | `sprintf`, printing, padding, integer bases, float formatting, thousands grouping. |
@@ -3756,6 +3896,7 @@ index lists the public classes and top-level functions you can import.
 | `lamheap` | `from lamheap import Heap, PriorityHeap` | Compatibility re-export of numeric heaps from `lamdatastructures`. |
 | `lamhtml` | `from lamhtml import Html, HtmlPolicy` | Native `html`: lenient parsing, escaping, allowlist sanitizing. |
 | `lamhttp` | `from lamhttp import Http, HttpClient, HttpRequest, HttpRequestOptions, HttpResponse, HttpCookie, HttpServer, Multipart` | Typed request options, fluent Result-returning requests, multipart bodies, repeated response headers, cookies, reusable client, tiny blocking server. |
+| `lami18n` | `from lami18n import Translations` | Translated texts from `<dir>/<lang>/*.json` (nested keys, duplicate/malformed-file errors), fallback language, `{name}` parameters as text or escaped markup, completeness checks, `Accept-Language` negotiation. |
 | `lamiter` | `from lamiter import Iter` | Lazy iterator pipelines: map/filter/take/drop/reduce/enumerate. |
 | `lamjson` | `from lamjson import Json` | Native `json`, wire encoding/decoding, safe Result-based collection conversion, kind inspection, typed member reads, key renaming. |
 | `lamlog` | `from lamlog import Log` | Leveled logging and formatted log helpers. |
@@ -3796,6 +3937,7 @@ These independently versioned packages are **not** standard-library modules:
 | `@lam/vulture/std-plugin` | `from @lam/vulture/std-plugin import requestId, requestIdPlugin, rateLimit, rateLimitPlugin, helmet, CircuitBreaker, ...` | Direct plugin installers, `func(Server)` factories, and a circuit breaker. |
 | `@lam/vulture/tus-plugin` | `from @lam/vulture/tus-plugin import tusUploads, tusGc` | Result-returning tus.io route registration and garbage collection. |
 | `@lam/vulture/ws-plugin` | `from @lam/vulture/ws-plugin import WebSocket, wsRoute, wsUpgrade` | Result-returning WebSocket routes, upgrades, and frame I/O. |
+| `@lam/vulture/dev-plugin` | `from @lam/vulture/dev-plugin import LiveReload, liveReload, liveReloadPlugin` | Browser live reload for `lamc dev`. |
 
 ### High-value signatures
 
@@ -3854,10 +3996,17 @@ DbObserver.start(ctx: Context, statement: str) -> any
 DbObserver.finish(ctx: Context, token: any, failure: str)
 db.exec(query: str, params: list[any] = []) -> Result[int]
 db.query(query: str, params: list[any] = []) -> Result[list[dict[str, any]]]
+db.first(query: str, params: list[any] = []) -> Result[dict[str, any]]
+db.scalar(query: str, params: list[any] = []) -> Result[any]
 db.transaction(fn: any) -> Result[bool]
 db.begin() -> Result[Tx]
 tx.exec(query: str, params: list[any] = []) -> Result[int]
 tx.query(query: str, params: list[any] = []) -> Result[list[dict[str, any]]]
+tx.first(query: str, params: list[any] = []) -> Result[dict[str, any]]
+tx.scalar(query: str, params: list[any] = []) -> Result[any]
+tx.queryJson(query: str, jsonColumns: list[str], params: list[any] = []) -> Result[list[dict[str, any]]]
+tx.firstJson(query: str, jsonColumns: list[str], params: list[any] = []) -> Result[dict[str, any]]
+tx.scalarJson(query: str, params: list[any] = []) -> Result[json]
 tx.table(name: str) -> QueryBuilder
 tx.savepoint(name: str) / tx.rollbackTo(name: str) / tx.releaseSavepoint(name: str) -> Result[bool]
 tx.commit() / tx.rollback() -> Result[bool]
@@ -3964,6 +4113,28 @@ HtmlPolicy.videoHosts() -> list[str]
 Crypto.bcryptHash(password: str, cost: int = 10) -> Result[str]
 Crypto.bcryptVerify(password: str, encoded: str) -> Result[bool]
 Crypto.bcryptCost(encoded: str) -> Result[int]
+
+# lamenv
+Env.flag(key: str, fallback: bool) -> bool
+Env.list(key: str, separator: str = ",") -> list[str]
+
+# lami18n
+Translations(languages: list[str], fallback: str = "")
+Translations.load(dir: str, languages: list[str], fallback: str = "") -> Result[Translations]
+t.add(lang: str, key: str, text: str) -> Result[bool]
+t.merge(lang: str, texts: dict[str, str]) -> Result[int]
+t.raw(lang: str, key: str) -> str
+t.text(lang: str, key: str, params: dict[str, str] = {}) -> str
+t.markup(lang: str, key: str, params: dict[str, str] = {}) -> html
+t.plain(lang: str, key: str, params: dict[str, str] = {}) -> str
+t.has(lang: str, key: str) -> bool
+t.count(lang: str = "") -> int
+t.keys(lang: str) -> list[str]
+t.missing(lang: str, other: str) -> list[str]
+t.languages() -> list[str]
+t.fallback() -> str
+t.language(candidate: str) -> str
+t.negotiate(header: str) -> str
 
 # lamos / lamcontext (signals)
 Os.waitForSignal(names: list[str] = ["SIGINT", "SIGTERM"]) -> str

@@ -203,6 +203,47 @@ def _unify(p, a, names, out, bind_any) -> None:
             _unify(p[2], a[2], names, out, bind_any)
 
 
+def render_lam_type(type_) -> str:
+    from compiler.typesys import render_type
+    return render_type(type_)
+
+
+def _unify_lam_types(pattern, actual, names, out: Dict[str, object]) -> None:
+    """Bind the type parameters ``names`` of the Lam type ``pattern``
+    against ``actual`` (``list[tuple[K, V]]`` / ``list[tuple[str, int]]``,
+    ``func(Conn) -> Result[T]`` / ``func(Conn) -> Result[int]``)."""
+    from compiler.typesys import DictType, FuncType, GenericType, ListType, NamedType, UnionType
+    if isinstance(pattern, NamedType) and pattern.name in names:
+        if not (isinstance(actual, NamedType) and actual.name in {"any", "object"}):
+            out.setdefault(pattern.name, actual)
+        return
+    if isinstance(pattern, FuncType) and isinstance(actual, FuncType):
+        if len(pattern.params) == len(actual.params):
+            for p, a in zip(pattern.params, actual.params):
+                _unify_lam_types(p, a, names, out)
+        _unify_lam_types(pattern.ret, actual.ret, names, out)
+    elif isinstance(pattern, UnionType):
+        # ``T | None`` against ``int | None`` (or ``int``).
+        def _some(type_):
+            options = type_.options if isinstance(type_, UnionType) else (type_,)
+            return [o for o in options if not (isinstance(o, NamedType) and o.name == "None")]
+        p_opts, a_opts = _some(pattern), _some(actual)
+        if len(p_opts) == len(a_opts):
+            for p, a in zip(p_opts, a_opts):
+                _unify_lam_types(p, a, names, out)
+    elif isinstance(pattern, ListType) and isinstance(actual, ListType):
+        _unify_lam_types(pattern.item, actual.item, names, out)
+    elif isinstance(pattern, DictType) and isinstance(actual, DictType):
+        _unify_lam_types(pattern.key, actual.key, names, out)
+        _unify_lam_types(pattern.value, actual.value, names, out)
+    elif (
+        isinstance(pattern, GenericType) and isinstance(actual, GenericType)
+        and pattern.base == actual.base and len(pattern.args) == len(actual.args)
+    ):
+        for p, a in zip(pattern.args, actual.args):
+            _unify_lam_types(p, a, names, out)
+
+
 def substitute_go_type(text: str, subst: Dict[str, str]) -> str:
     """Replace whole-word type parameter names in a Go type spelling."""
     if not subst or not text:
@@ -337,7 +378,210 @@ class GenericCallMixin:
                 actual = self._func_ref_go_type(node, param_types)
                 if actual:
                     unify_go_types(pattern, actual, names, subst)
+        if any(n not in subst for n in names):
+            self._lam_generic_call_subst(func_key, args_node, [n for n in names if n not in subst], subst)
         return subst
+
+    # ─── Type parameters Go cannot see ───────────────────────────
+    #
+    # A tuple lowers to ``[]interface{}``, so ``K`` / ``V`` of
+    # ``pairs: list[tuple[K, V]]`` are absent from the Go parameter types:
+    # the Go-level unification above cannot bind them, and Go itself
+    # reports ``cannot infer K``. They are bound from the Lam types of the
+    # parameters and arguments, and the call spells them explicitly
+    # (``_uninferable_type_args``).
+
+    @staticmethod
+    def _parsed_lam_type(node):
+        from compiler.typesys import parse_type
+        try:
+            return parse_type(node)
+        except Exception:
+            return None
+
+    def _arg_lam_type(self, node):
+        """The Lam type of a call argument: an annotated / inferred name or
+        a list / tuple literal of typed elements; ``None`` otherwise."""
+        from compiler.typesys import GenericType, ListType, parse_type
+        if isinstance(node, Tree) and node.data == "argvalue" and len(node.children) == 1:
+            node = node.children[0]
+        if not isinstance(node, Tree):
+            return None
+        if node.data == "var" and node.children:
+            name = self._get_name(node.children[0])
+            local = getattr(self, "_var_lam_types", {}).get(name)
+            if local is not None or name in self.declared_vars or name in self._var_go_types:
+                return local
+            return self._func_ref_lam_type(name)
+        if node.data == "lambdef":
+            return self._lambda_lam_type(node)
+        if node.data == "getattr" and len(node.children) == 2:
+            # ``Tools.countRows`` passed by name: a static method.
+            owner = node.children[0]
+            if isinstance(owner, Tree) and owner.data == "var" and owner.children:
+                class_name = self._get_name(owner.children[0])
+                method = self._get_name(node.children[1])
+                if (
+                    class_name not in self.declared_vars
+                    and method in self._static_methods.get(class_name, set())
+                ):
+                    return self._func_ref_lam_type(f"{class_name}.{method}")
+        if node.data == "tuple":
+            items = [self._arg_lam_type(c) or self._literal_elem_lam_type(c) for c in node.children if c is not None]
+            return GenericType("tuple", tuple(items)) if items and all(items) else None
+        if node.data == "list" and node.children:
+            items = [self._arg_lam_type(c) or self._literal_elem_lam_type(c) for c in node.children if c is not None]
+            if items and all(items) and all(item == items[0] for item in items):
+                return ListType(items[0])
+            return None
+        go_type = self._expr_go_type_hint(node) or ""
+        if go_type and "interface{}" not in go_type:
+            try:
+                return parse_type(self._go_type_lam_text(go_type))
+            except Exception:
+                return None
+        return None
+
+    def _func_ref_lam_type(self, key: str):
+        """``func(Conn) -> Result[int]`` for a function (or ``Class.method``
+        static method) passed by name; ``None`` when unknown or overloaded."""
+        from compiler.typesys import FuncType, NamedType
+        if key not in self._user_functions and key not in self._external_user_functions and "." not in key:
+            return None
+        if len(self._overload_variants.get(key, ())) > 1:
+            return None
+        params = self._func_param_lam_types.get(key)
+        if params is None:
+            if self._func_param_counts.get(key, -1) != 0:
+                return None
+            params = []
+        if any(p is None for p in params) or len(params) != self._func_param_counts.get(key, len(params)):
+            return None
+        ret = self._func_return_lam_types.get(key, NamedType("None"))
+        if ret is None:
+            return None
+        return FuncType(tuple(params), ret)
+
+    def _lambda_lam_type(self, node):
+        """The Lam type of a lambda from its annotations
+        (``lambda (tx: Conn) -> Result[int]: ...`` is
+        ``func(Conn) -> Result[int]``); unannotated parts are ``any``, which
+        binds nothing."""
+        from compiler.typesys import FuncType, NamedType
+        params = []
+        ret = None
+        params_node = None
+        for child in node.children:
+            if not isinstance(child, Tree):
+                continue
+            if child.data in ("paren_lambda_params", "inline_lambda_params"):
+                params_node = child
+                for param in child.children:
+                    if isinstance(param, Tree) and param.data == "typed_lambda_param" and len(param.children) > 1 \
+                            and param.children[1] is not None:
+                        params.append(self._parsed_lam_type(param.children[1]) or NamedType("any"))
+                    elif param is not None:
+                        params.append(NamedType("any"))
+            elif child.data == "lambda_return_anno" and child.children:
+                ret = self._parsed_lam_type(child.children[0])
+        if ret is None:
+            go_ret = ""
+            raw_params = self._collect_lambda_params(params_node)
+            if all(declared for _name, declared in raw_params):
+                go_ret = self._lambda_result_go_type(node, [declared for _name, declared in raw_params])
+            ret = NamedType("any")
+            if go_ret and "interface{}" not in go_ret:
+                try:
+                    from compiler.typesys import parse_type
+                    ret = parse_type(self._go_type_lam_text(go_ret))
+                except Exception:
+                    pass
+        return FuncType(tuple(params), ret)
+
+    def _expected_call_lam_type(self):
+        """The Lam type the value of the call being lowered must have
+        (``r: Result[int] = make()``), published by ``_expr_to_go`` for
+        the call that is the whole value of an annotated assignment or
+        ``return``; ``None`` elsewhere."""
+        return getattr(self, "_call_result_lam", None)
+
+    def _literal_elem_lam_type(self, node):
+        from compiler.typesys import parse_type
+        go_type = (self._infer_type_from_value(node) or "").strip()
+        if not go_type or "interface{}" in go_type:
+            return None
+        try:
+            return parse_type(self._go_type_lam_text(go_type))
+        except Exception:
+            return None
+
+    def _lam_generic_call_subst(self, func_key: str, args_node, names, subst: Dict[str, str]) -> None:
+        lam_params = self._func_param_lam_types.get(func_key) or []
+        bound: Dict[str, object] = {}
+        if lam_params and isinstance(args_node, Tree) and args_node.data == "arguments":
+            self._bind_lam_args(func_key, args_node, lam_params, names, bound)
+        expected = self._expected_call_lam_type()
+        returned = self._func_return_lam_types.get(func_key)
+        if expected is not None and returned is not None and any(n not in bound for n in names):
+            # ``r: Result[int] = make()`` with ``make[T]() -> Result[T]``:
+            # nothing else determines ``T``.
+            _unify_lam_types(returned, expected, set(names), bound)
+        for name, lam_type in bound.items():
+            if isinstance(lam_type, Tree) or lam_type is None:
+                continue
+            if self._mentions_lam_names(lam_type, set(names) - set(self._generic_names)):
+                # Bound to another unresolved parameter of the callee.
+                continue
+            type_node = self._lam_type_text_node(render_lam_type(lam_type))
+            go_type = self._type_expr_to_go(type_node) if type_node is not None else ""
+            if go_type and go_type != "interface{}":
+                subst.setdefault(name, go_type)
+
+    @staticmethod
+    def _mentions_lam_names(type_, names) -> bool:
+        from compiler.typesys import render_type
+        return bool(names) and mentions_names(render_type(type_), names)
+
+    def _bind_lam_args(self, func_key: str, args_node, lam_params, names, bound: Dict[str, object]) -> None:
+        param_names = self._func_param_names.get(func_key, [])
+        index = 0
+        for child in args_node.children:
+            if not isinstance(child, Tree) or child.data in {"starargs", "stararg", "kwargs"}:
+                continue
+            if child.data == "argvalue" and len(child.children) == 2:
+                name_node = child.children[0]
+                name = self._get_name(name_node.children[0]) if (
+                    isinstance(name_node, Tree) and name_node.data == "var" and name_node.children
+                ) else ""
+                pos = param_names.index(name) if name in param_names else -1
+                node = child.children[1]
+            else:
+                pos = index
+                index += 1
+                node = child.children[0] if child.data == "argvalue" and child.children else child
+            declared = lam_params[pos] if 0 <= pos < len(lam_params) else None
+            if declared is None:
+                continue
+            actual = self._arg_lam_type(node)
+            if actual is not None:
+                _unify_lam_types(declared, actual, set(names), bound)
+
+    def _uninferable_type_args(self, call_key: str, args_node, order: Optional[List[str]] = None,
+                               base: Optional[Dict[str, str]] = None) -> str:
+        """``[string, int]`` for a call Go cannot infer the type arguments
+        of (a type parameter appears in no Go parameter type), when this
+        call binds all of them; ``""`` otherwise. ``order`` defaults to the
+        function's type parameters, ``base`` holds the receiver's."""
+        order = order if order is not None else (self._func_generic_order.get(call_key) or [])
+        if not order:
+            return ""
+        signature = " ".join(self._func_param_go_types.get(call_key, []))
+        if all(base and name in base or mentions_names(signature, [name]) for name in order):
+            return ""
+        subst = self._generic_call_subst(call_key, args_node, order, base)
+        if not all(subst.get(name) for name in order):
+            return ""
+        return "[" + ", ".join(subst[name] for name in order) + "]"
 
     def _complete_generic_subst(self, subst: Dict[str, str], generic_names) -> Dict[str, str]:
         """Unresolved type parameters fall back to ``interface{}`` (Go then
@@ -453,8 +697,8 @@ class GenericCallMixin:
         if key not in self._generic_instance_methods:
             return None
         names = sorted(self._func_generic_params.get(key, set()))
-        subst = self._method_call_subst(obj_class, method, receiver_node, args_node)
-        subst = self._complete_generic_subst(subst, names)
+        bound = self._method_call_subst(obj_class, method, receiver_node, args_node)
+        subst = self._complete_generic_subst(bound, names)
         with self._scoped(_call_type_subst=subst):
             call_args = self._planned_call_args(key, args_node)
         receiver = raw_obj
@@ -464,7 +708,11 @@ class GenericCallMixin:
                     receiver = self._hier_receiver(raw_obj) + path[1:]
                     break
         go_name = self._generic_method_go_name(owner, method)
-        return f"{go_name}({', '.join([receiver] + call_args)})"
+        explicit = self._uninferable_type_args(
+            key, args_node, self._method_generic_order.get(key, []),
+            {k: v for k, v in bound.items() if k not in self._generic_instance_methods.get(key, [])},
+        )
+        return f"{go_name}{explicit}({', '.join([receiver] + call_args)})"
 
     def _builtin_func_ref_to_go(self, node, go_type: str) -> str:
         """``xs.map(len)`` / ``it.map(str)``: a builtin passed where a

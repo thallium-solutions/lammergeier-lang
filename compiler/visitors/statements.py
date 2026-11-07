@@ -209,6 +209,23 @@ class StatementVisitorMixin:
             return None
         return candidate, type_node if type_node is not None else node.children[1]
 
+    def _expected_value_lam_for(self, value, type_node):
+        """``(call_node, lam_type)``: the call that is the value of an
+        annotated assignment (``r: Result[int] = make()``, or the operand
+        of ``n: int = make()?``, expected to be a ``Result[int]``) and the
+        Lam type it must have; it binds type parameters nothing else
+        determines (``_lam_generic_call_subst``). ``None`` otherwise."""
+        from compiler.typesys import GenericType
+        lam_type = self._parsed_lam_type(type_node)
+        if lam_type is None or not isinstance(value, Tree):
+            return None
+        if value.data == "propagate" and value.children:
+            value = value.children[0]
+            lam_type = GenericType("Result", (lam_type,))
+        if value.data != "funccall":
+            return None
+        return (value, lam_type)
+
     def _visit_annassign(self, node: Tree):
         is_private = False
         is_static = False
@@ -294,6 +311,7 @@ class StatementVisitorMixin:
             with self._scoped(
                 _propagate_cast_hint=go_type,
                 _expected_expr_type_key=overload_type_key,
+                _expected_value_lam=self._expected_value_lam_for(value, type_node),
             ):
                 value_str = self._typed_value_to_go(value, go_type, overload_type_key)
             self._emit_decl_or_assign(target_str, go_type, value_str)
@@ -2290,6 +2308,9 @@ class StatementVisitorMixin:
         # The previous ``fmt.Sprintf("%v", r)`` bind flattened the
         # exception to a ``string`` at the catch site, which made
         # field access impossible without a manual type assertion.
+        if as_name == "_":
+            # ``catch _`` / ``catch ValueError as _``: nothing is bound.
+            as_name = None
         binding_class = self._catch_binding_class(exception_type) if as_name else ""
         if as_name and binding_class:
             # ``catch AppError as e``: the clause matched, so bind the
@@ -2431,7 +2452,11 @@ class StatementVisitorMixin:
         body_start, vars_at_start = self._scope_unused_tracking_start()
         try:
             error_class = self._do_catch_error_class()
-            if error_class:
+            if err_name == "_":
+                # ``catch _ { ... }``: the error is not bound (Go rejects
+                # ``_ := ...``, which declares no new variable).
+                pass
+            elif error_class:
                 # ``err`` is an ``Error`` (lamerrors): an ``Error`` (or a
                 # subclass, viewed as its ``Error``) as is, any other value
                 # wrapped with an empty kind and its text as the message.
@@ -2447,7 +2472,8 @@ class StatementVisitorMixin:
                 self._var_types[err_name] = error_class
             else:
                 self._emit(f"{err_name} := {rdo}.Error")
-            self._declare_var(err_name)
+            if err_name != "_":
+                self._declare_var(err_name)
             if isinstance(handler_suite, Tree) and handler_suite.data == "suite":
                 for stmt in handler_suite.children:
                     if isinstance(stmt, Tree):

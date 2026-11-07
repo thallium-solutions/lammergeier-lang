@@ -1,0 +1,112 @@
+# Regression: an unused catch variable written as `_` (`do { } catch _`,
+# `try { } catch _`, `catch ValueError as _`) generated `_ := ...`, which
+# Go rejects (`no new variables on left side of :=`). `_` binds nothing:
+# in a function returning from both branches, a loop, a lambda, a method,
+# nested blocks, next to a named catch and with `?.` chains.
+#
+# expect: f=0 -1
+# expect: loop=2
+# expect: lambda=-1 7
+# expect: method=fallback
+# expect: nested=inner outer
+# expect: try=caught
+# expect: typed=caught value
+# expect: named=Bad: no
+# expect: catch_underscore_ok
+
+from lamerrors import Result, Error
+from lamdatetime import DateTime
+
+func f(zone: str) -> int {
+    do {
+        return DateTime.fromUnix(0, zone)?.unix()
+    } catch _ {
+        return -1
+    }
+}
+
+func fails() -> Result[int] {
+    return Result.Err(Error("Bad", "no"))
+}
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err(Error("Empty", "empty"))
+    }
+    return Result.Ok(len(s))
+}
+
+func risky(n: int) -> int {
+    if n < 0 {
+        raise ValueError("negative")
+    }
+    return n
+}
+
+class Loader {
+    func load(self, s: str) -> str {
+        do {
+            n: int = parse(s)?
+            return str(n)
+        } catch _ {
+            return "fallback"
+        }
+    }
+}
+
+func main() {
+    print(f"f={f("UTC")} {f("Mars/Base")}")
+
+    ok = 0
+    for s in ["a", "", "bb"] {
+        do {
+            parse(s)?
+            ok += 1
+        } catch _ {
+            continue
+        }
+    }
+    print(f"loop={ok}")
+
+    pick = lambda (s: str) -> int {
+        do {
+            return parse(s)? * 7
+        } catch _ {
+            return -1
+        }
+    }
+    print(f"lambda={pick("")} {pick("x")}")
+
+    print(f"method={Loader().load("")}")
+
+    seen: list[str] = []
+    do {
+        do {
+            fails()?
+        } catch _ {
+            seen.append("inner")
+        }
+        fails()?
+    } catch _ {
+        seen.append("outer")
+    }
+    print(f"nested={' '.join(seen)}")
+
+    try {
+        print(risky(-1))
+    } catch _ {
+        print("try=caught")
+    }
+    try {
+        print(risky(-2))
+    } catch ValueError as _ {
+        print("typed=caught value")
+    }
+
+    do {
+        fails()?
+    } catch err {
+        print(f"named={err}")
+    }
+    print("catch_underscore_ok")
+}

@@ -1,0 +1,59 @@
+# Transpilation: `Result[T]` lowers to the non-generic Go `*Result`, so a
+# type parameter that only appears inside it is spelled at the call, bound
+# from the Lam annotations of function-typed arguments or from the
+# annotated target; Go reported `cannot infer T`. `max` / `min` of a type
+# parameter use Go's builtins, and `b = Box[int](5)` keeps its type.
+# expect-go: var a *Result = InTx[int](c, func(tx *Conn) *Result { return CountRows(tx) })
+# expect-go: var b *Result = InTx[int](c, CountRows)
+# expect-go: var e *Result = Make[string]()
+# expect-go: var n int = __q1.Value.(int)
+# expect-go: __q1 := Make[int]()
+# expect-go: return max(a, b)
+# expect-go: box := NewBox[int](5)
+# expect-go: boxes := []*Box[int]{box}
+
+from lamerrors import Result, Error
+
+class Conn {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+}
+
+func countRows(c: Conn) -> Result[int] {
+    return Result.Ok(len(c.name))
+}
+
+func inTx[T](conn: Conn, fn: func(Conn) -> Result[T]) -> Result[T] {
+    return fn(conn)
+}
+
+func make[T]() -> Result[T] {
+    return Result.Err(Error("Empty", "nothing"))
+}
+
+func load() -> Result[int] {
+    n: int = make()?
+    return Result.Ok(n)
+}
+
+func biggest[T: ordered](a: T, b: T) -> T {
+    return max(a, b)
+}
+
+func main() {
+    c = Conn("abcd")
+    a: Result[int] = inTx(c, lambda (tx: Conn) -> Result[int]: countRows(tx))
+    b: Result[int] = inTx(c, countRows)
+    e: Result[str] = make()
+    print(a.ok(), b.ok(), e.ok(), load().ok(), biggest("a", "b"))
+    box = Box[int](5)
+    boxes = [box]
+    print(len(boxes))
+}

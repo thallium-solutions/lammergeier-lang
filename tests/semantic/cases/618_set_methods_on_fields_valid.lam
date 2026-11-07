@@ -1,0 +1,44 @@
+# expect-pass
+# expect-no-warning: has no method
+# The set methods on set locals, fields and parameters are accepted next to
+# a field holding a class with its own `index` / `length`.
+class Seen {
+    func init(self) {
+        self.ids: set[int] = set()
+    }
+
+    func index(self, id: int) -> int {
+        return id if self.ids.contains(id) else -1
+    }
+
+    func length(self) -> int {
+        return len(self.ids)
+    }
+}
+
+class Tracker {
+    func init(self) {
+        self.names: set[str] = set()
+        self.seen: Seen = Seen()
+    }
+
+    func track(self, name: str, id: int) -> int {
+        self.names.add(name)
+        self.names.discard("old")
+        if self.names.contains(name) {
+            self.seen.ids.add(id)
+        }
+        self.names.remove(name)
+        return self.seen.index(id) + self.seen.length()
+    }
+}
+
+func merge(a: set[int], b: set[int]) -> int {
+    a.add(3)
+    return len(a | b)
+}
+
+func main() {
+    t = Tracker()
+    print(t.track("x", 4), merge({1}, {2}))
+}

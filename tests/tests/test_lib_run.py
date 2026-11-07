@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -32,6 +34,8 @@ def _write_manifest(root: Path) -> None:
             make_file = "printf root-ok > ran.txt"
             say = "printf hello"
             fail = "exit 7"
+            echo_args = "printf '%s|' first"
+            wait = "printf $$ > shell.pid; trap 'printf stopped > stopped.txt; exit 0' TERM; while true; do sleep 0.05; done"
             """
         ).strip()
         + "\n",
@@ -108,7 +112,7 @@ def test_missing_script_reports_available_scripts() -> None:
         proc = _run(["lib", "run", "missing"], cwd=project)
         assert proc.returncode == 2
         assert "script 'missing' is not declared" in proc.stderr
-        assert "available scripts: fail, make_file, say" in proc.stderr
+        assert "available scripts: echo_args, fail, make_file, say, wait" in proc.stderr
     print("PASS: lib run reports missing scripts clearly")
 
 
@@ -122,6 +126,39 @@ def test_script_exit_code_is_preserved() -> None:
     print("PASS: lib run preserves script exit codes")
 
 
+def test_arguments_after_double_dash_are_passed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp)
+        _write_manifest(project)
+
+        proc = _run(["lib", "run", "echo_args", "-q", "--", "--dry-run", "two words", "it's"], cwd=project)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == "first|--dry-run|two words|it's|", proc.stdout
+
+        dry = _run(["lib", "run", "echo_args", "--dry-run", "--", "--limit", "5"], cwd=project)
+        assert dry.returncode == 0, dry.stderr
+        assert dry.stdout.strip() == "printf '%s|' first --limit 5", dry.stdout
+    print("PASS: lib run passes the arguments after -- to the script")
+
+
+def test_termination_is_forwarded_to_the_script() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp)
+        _write_manifest(project)
+        env = dict(os.environ)
+        env.pop("LAMC_EXTLIBS", None)
+        proc = subprocess.Popen(LAMC + ["lib", "run", "wait", "-q"], cwd=str(project), env=env)
+        deadline = time.monotonic() + 30
+        while not (project / "shell.pid").exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert (project / "shell.pid").exists(), "the script did not start"
+        proc.send_signal(signal.SIGTERM)
+        code = proc.wait(timeout=20)
+        assert code == 0, code
+        assert (project / "stopped.txt").read_text(encoding="utf-8") == "stopped"
+    print("PASS: lib run forwards SIGTERM to the script")
+
+
 def main() -> int:
     tests = [
         test_run_executes_from_manifest_root,
@@ -129,6 +166,8 @@ def main() -> int:
         test_cwd_option_controls_manifest_discovery,
         test_missing_script_reports_available_scripts,
         test_script_exit_code_is_preserved,
+        test_arguments_after_double_dash_are_passed,
+        test_termination_is_forwarded_to_the_script,
     ]
     failures = 0
     for test in tests:

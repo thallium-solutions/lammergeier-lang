@@ -1,0 +1,74 @@
+# Regression: an unannotated local initialized with an explicit generic
+# instantiation (`b = Box[int](5)`) lost its type arguments (it was
+# tracked as the bare `*Box`), so a later generic method call typed its
+# lambda as `func(interface{}) interface{}` and failed `go build`, and a
+# list of such locals became `[]*Box`. The local keeps `Box[int]`: generic
+# methods with lambdas, lists, copies, generic functions, fields of the
+# payload, two type parameters and a `Result` payload.
+#
+# expect: map=10 x!
+# expect: chain=21
+# expect: list=12
+# expect: copy=10
+# expect: pair=a:1
+# expect: result=6
+# expect: generic_local_instantiation_ok
+
+from lamerrors import Result
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func get(self) -> T {
+        return self.value
+    }
+
+    func map[U](self, fn: func(T) -> U) -> Box[U] {
+        return Box[U](fn(self.value))
+    }
+}
+
+class Pair[K, V] {
+    func init(self, key: K, value: V) {
+        self.key: K = key
+        self.value: V = value
+    }
+
+    func show(self, fn: func(K, V) -> str) -> str {
+        return fn(self.key, self.value)
+    }
+}
+
+func unbox[T](b: Box[T]) -> T {
+    return b.get()
+}
+
+func wrap[T](b: Box[T]) -> Result[T] {
+    return Result.Ok(b.get())
+}
+
+func main() {
+    b = Box[int](5)
+    c = b.map(lambda x: x * 2)
+    d = Box[str]("x")
+    e = d.map(lambda s: s + "!")
+    print(f"map={c.get()} {e.get()}")
+    chained = b.map(lambda x: x * 4).map(lambda x: x + 1)
+    print(f"chain={chained.get()}")
+    items = [b, Box[int](7)]
+    total = 0
+    for it in items {
+        total += it.get()
+    }
+    print(f"list={total}")
+    f = b
+    print(f"copy={f.get() + unbox(f)}")
+    p = Pair[str, int]("a", 1)
+    print(f"pair={p.show(lambda k, v: f"{k}:{v}")}")
+    r = wrap(Box[int](3))
+    n: int = r.unwrap()
+    print(f"result={n * 2}")
+    print("generic_local_instantiation_ok")
+}

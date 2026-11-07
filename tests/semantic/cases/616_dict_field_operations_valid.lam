@@ -1,0 +1,44 @@
+# expect-pass
+# expect-no-warning: dicts have no
+# Dict fields used with the dict operations Lam has (`in`, indexing, `len`,
+# `del`, `for key, value in ...`), methods of a dict field's values, and a
+# field holding a class that has its own `get` / `keys` are all accepted.
+class Cache {
+    func init(self) {
+        self.store: dict[str, int] = {}
+    }
+
+    func get(self, key: str, fallback: int) -> int {
+        return self.store[key] if key in self.store else fallback
+    }
+
+    func keys(self) -> list[str] {
+        return [k for k, _v in self.store]
+    }
+}
+
+class Index {
+    func init(self) {
+        self.counts: dict[str, int] = {"a": 1}
+        self.labels: dict[str, str] = {"a": "x"}
+        self.cache: Cache = Cache()
+        self.caches: dict[str, Cache] = {"main": Cache()}
+    }
+
+    func summary(self, x: str) -> str {
+        n = self.counts[x] if x in self.counts else 0
+        total = 0
+        for key, value in self.counts {
+            total += value + len(key)
+        }
+        del self.counts["missing"]
+        label = self.labels["a"].toUpper()
+        hit = self.cache.get(x, 0) + len(self.cache.keys()) + self.caches["main"].get(x, 1)
+        return f"{n} {total} {len(self.counts)} {label} {hit}"
+    }
+}
+
+func main() {
+    idx = Index()
+    print(idx.summary("a"), idx.cache.get("b", 2), len(idx.counts))
+}

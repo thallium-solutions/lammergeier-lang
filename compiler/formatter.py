@@ -80,6 +80,9 @@ def _format_lines(source: str) -> str:
     # brackets, so ``take(\n    {...},\n)`` and ``print(f(\n    1\n))``
     # indent their continuation lines one level.
     open_lines: list[int] = []
+    # The bracket characters still open at the start of the line, so a
+    # continuation line knows it is inside a call (``reverse=true,``).
+    open_chars: list[str] = []
     prev_code: int | None = None  # the last code line laid out
     prev_dot_extra: int | None = None  # its extra level when it continued a chain
     i = 0
@@ -99,8 +102,10 @@ def _format_lines(source: str) -> str:
         for ch in _bracket_chars(text):
             if ch in "([{":
                 open_lines.append(line_id)
+                open_chars.append(ch)
             elif open_lines:
                 open_lines.pop()
+                open_chars.pop()
 
     while i < len(lines):
         raw = lines[i]
@@ -141,7 +146,7 @@ def _format_lines(source: str) -> str:
             # left a bracket open, which already indents it).
             dot_extra = prev_dot_extra if prev_dot_extra is not None else int(prev_code not in open_lines)
             line_depth += dot_extra
-        formatted = _format_code_line(stripped)
+        formatted = _format_code_line(stripped, open_chars[-1] if open_chars else "")
         if formatted == "}" and out and out[-1] == "":
             out.pop()
         if formatted in {"else {", "elif {", "finally {", "catch {"} and out and out[-1].strip() == "}":
@@ -383,6 +388,10 @@ def _layout_brace_kind(prev_meaningful: str, prefix: str) -> str:
     last_word = _last_layout_word(prefix)
     if last_word in _LAYOUT_LITERAL_KEYWORDS:
         return "literal"
+    if last_word == "else" and prefix.rstrip()[:-len("else")].strip() not in {"", "}"}:
+        # ``x if c else {}``: the ``else`` of a conditional expression (a
+        # statement ``else`` starts its line or follows a block's ``}``).
+        return "literal"
     if _LAYOUT_LAMBDA_HEAD_RE.search(prefix):
         return "lambda_block"
     return "block"
@@ -415,10 +424,10 @@ def _starts_following_clause(text: str) -> bool:
     return any(text.startswith(keyword) for keyword in ("else", "elif", "catch", "finally"))
 
 
-def _format_code_line(line: str) -> str:
+def _format_code_line(line: str, enclosing: str = "") -> str:
     code, comment = _split_inline_comment(line)
     protected, inline_go = _protect_inline_go(code.strip())
-    code = _format_code_fragment(protected)
+    code = _format_code_fragment(protected, enclosing)
     code = _restore_inline_go(code, inline_go)
     if comment:
         if code:
@@ -427,13 +436,18 @@ def _format_code_line(line: str) -> str:
     return code
 
 
-def _format_code_fragment(code: str) -> str:
+def _format_code_fragment(code: str, enclosing: str = "") -> str:
+    """``enclosing`` is the innermost bracket left open by the lines
+    before (``(`` for the argument lines of a multi-line call)."""
     out: list[str] = []
     i = 0
     quote = ""
     # Open brackets of this line: ``(index in out, char)``; a ``:`` directly
-    # inside ``[...]`` is a slice (``s[:3]``, ``x[0:7]``), not an annotation.
+    # inside ``[...]`` is a slice (``s[:3]``, ``x[0:7]``), not an annotation,
+    # unless the ``[`` opens type parameters (``func f[T: ordered]``,
+    # recorded as ``"<"``).
     brackets: list[tuple[int, str]] = []
+    keyword_eq_end = -1  # ``len(out)`` right after a keyword argument's ``=``
     while i < len(code):
         if quote:
             out.append(code[i])
@@ -469,6 +483,15 @@ def _format_code_fragment(code: str) -> str:
             i += 2
             continue
         op = _operator_at(code, i)
+        if op == "=" and _is_keyword_argument(out, brackets[-1][1] if brackets else enclosing):
+            # ``sorted(xs, reverse=true)`` / ``case Point(x=0)``.
+            _rstrip_spaces(out)
+            out.append("=")
+            keyword_eq_end = len(out)
+            i += 1
+            while i < len(code) and code[i].isspace():
+                i += 1
+            continue
         if op:
             _append_space(out)
             out.append(op)
@@ -507,16 +530,21 @@ def _format_code_fragment(code: str) -> str:
             if declared_name or not _space_before_opener_is_meaningful(out):
                 _rstrip_spaces(out)
             prefix = "".join(out).rstrip()
-            if (
-                ch == "(" and not declared_name
-                and prefix.rsplit(" ", 1)[-1] in {"if", "elif", "while", "for", "catch", "with", "match"}
-            ):
+            if ch == "(" and not declared_name and _keyword_before(out) in _SPACED_PAREN_KEYWORDS:
+                # ``if (a and b) or c`` / ``not (x)`` / ``lambda (x: int)``:
+                # exactly one space between the keyword and ``(``.
+                _rstrip_spaces(out)
                 out.append(" ")
-            if ch == "{" and out and not str(out[-1]).endswith(" ") and "".join(out).rstrip()[-1:] not in "([{":
-                # ``if x {`` / ``= {``, but ``take({...})`` / ``[{...}]``.
+            if (
+                ch == "{" and out and not str(out[-1]).endswith(" ") and "".join(out).rstrip()[-1:] not in "([{"
+                and len(out) != keyword_eq_end
+            ):
+                # ``if x {`` / ``= {``, but ``take({...})`` / ``[{...}]`` /
+                # ``f(attrs={...})``.
                 out.append(" ")
             out.append(ch)
-            brackets.append((len(out), ch))
+            # ``func top[T: ordered]`` / ``class Registry[K: comparable, V]``.
+            brackets.append((len(out), "<" if ch == "[" and declared_name else ch))
             i += 1
             while i < len(code) and code[i].isspace():
                 i += 1
@@ -535,6 +563,18 @@ def _format_code_fragment(code: str) -> str:
         out.append(ch)
         i += 1
     return "".join(out).strip()
+
+
+def _is_keyword_argument(out: list[str], bracket: str) -> bool:
+    """The ``=`` about to be written follows ``(name`` / ``, name`` (or a
+    bare ``name`` starting a continuation line) directly inside
+    parentheses: a keyword argument, written ``name=value``. A typed
+    default (``n: int = 3``) and an assignment are not."""
+    if bracket != "(":
+        return False
+    text = "".join(out).rstrip()
+    match = re.search(r"(?:^|[(,])\s*[A-Za-z_]\w*$", text)
+    return match is not None
 
 
 def _operator_at(code: str, index: int) -> str:
@@ -806,6 +846,14 @@ def _rstrip_spaces(out: list[str]) -> None:
         out.pop()
 
 
+def _keyword_before(out: list[str]) -> str:
+    """The keyword ending ``out`` (``if``, ``not``, ``lambda``; not a
+    member such as ``obj.match``), or ``""``."""
+    text = "".join(out).rstrip()
+    match = re.search(r"(?:^|[^\w.])([A-Za-z_]\w*)$", text)
+    return match.group(1) if match else ""
+
+
 def _space_before_opener_is_meaningful(out: list[str]) -> bool:
     text = "".join(out)
     i = len(text) - 1
@@ -822,6 +870,12 @@ def _space_before_opener_is_meaningful(out: list[str]) -> bool:
         return text[i + 1:end] in _OPENER_KEYWORDS and (i < 0 or text[i] != ".")
     return text[i] in "=,:+-*/%<>!&|^"
 
+
+# Keywords written with one space before a ``(`` that follows them.
+_SPACED_PAREN_KEYWORDS = frozenset({
+    "if", "elif", "while", "for", "catch", "with", "match", "case", "in", "return",
+    "yield", "and", "or", "not", "assert", "raise", "throw", "await", "is", "else", "lambda",
+})
 
 _OPENER_KEYWORDS = frozenset({
     "match", "case", "in", "return", "yield", "if", "elif", "while", "and", "or",

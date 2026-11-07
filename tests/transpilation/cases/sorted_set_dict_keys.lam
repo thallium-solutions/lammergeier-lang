@@ -1,0 +1,22 @@
+# Transpilation: `sorted()` of a set (`map[T]bool`) or a dict (`map[K]V`)
+# passes the map to a closure that collects its keys into a typed `[]T` /
+# `[]K` slice and sorts it (the map is evaluated once); it used to append
+# the map to a `[]interface{}`, which did not build. Lists are unchanged.
+# expect-go: var ordered []string = func(lamSrc map[string]bool) []string { tmp := make([]string, 0, len(lamSrc)); for k := range lamSrc { tmp = append(tmp, k) }; sort.SliceStable(tmp, func(i, j int) bool { return tmp[i] < tmp[j] }); return tmp }(names)
+# expect-go: Strings_join(func(lamSrc map[string]bool) []string { tmp := make([]string, 0, len(lamSrc)); for k := range lamSrc { tmp = append(tmp, k) }; sort.SliceStable(tmp, func(i, j int) bool { return tmp[i] < tmp[j] }); return tmp }(names), ",")
+# expect-go: var desc []int = func(lamSrc map[int]bool) []int { tmp := make([]int, 0, len(lamSrc)); for k := range lamSrc { tmp = append(tmp, k) }; sort.SliceStable(tmp, func(i, j int) bool { return tmp[j] < tmp[i] }); return tmp }(nums)
+# expect-go: var keys []string = func(lamSrc map[string]int) []string { tmp := make([]string, 0, len(lamSrc)); for k := range lamSrc { tmp = append(tmp, k) }; sort.SliceStable(tmp, func(i, j int) bool { return tmp[i] < tmp[j] }); return tmp }(ages)
+# expect-go: var xs []int = func() []int { tmp := append([]int{}, ys...); sort.SliceStable(tmp, func(i, j int) bool { return tmp[i] < tmp[j] }); return tmp }()
+
+func main() {
+    names: set[str] = {"b", "a"}
+    nums: set[int] = {2, 1}
+    ages: dict[str, int] = {"a": 1}
+    ys: list[int] = [2, 1]
+    ordered: list[str] = sorted(names)
+    print(",".join(sorted(names)))
+    desc: list[int] = sorted(nums, reverse=true)
+    keys: list[str] = sorted(ages)
+    xs: list[int] = sorted(ys)
+    print(ordered, desc, keys, xs)
+}

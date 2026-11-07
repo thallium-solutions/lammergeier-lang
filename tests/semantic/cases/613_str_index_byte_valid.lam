@@ -1,0 +1,36 @@
+# expect-pass
+# Regression neighbours of 611/612: a `str` index converted with
+# `string(...)`, a one-character slice, byte comparisons with ints and
+# `int(...)`, iteration (one-character strs) and `list[str]` / `dict` /
+# `tuple` indexing (a `str`, so methods work) stay valid.
+
+class Word {
+    func init(self, text: str) {
+        self.text: str = text
+    }
+
+    func initial(self) -> str {
+        return string(self.text[0]).toUpper()
+    }
+}
+
+func cap(s: str) -> str {
+    return string(s[0]).toUpper() + s[1:]
+}
+
+func main() {
+    w: str = "hello"
+    print(string(w[0]).toUpper(), w[0:1].toUpper(), w[-1:].toUpper())
+    print(w[0] == 104, int(w[-1]), string(w[1]) == "e")
+    print([string(x[0]).toUpper() for x in ["ab", "cd"]])
+    for ch in w {
+        print(ch.toUpper())
+    }
+    names: list[str] = ["amy", "bob"]
+    print(names[0].toUpper(), names[-1].title())
+    ages: dict[str, str] = {"a": "x"}
+    print(ages["a"].toUpper())
+    pair: tuple[str, int] = ("q", 1)
+    print(pair[0].toUpper())
+    print(cap("lam"), Word("zed").initial(), f"{string(w[0])}!")
+}

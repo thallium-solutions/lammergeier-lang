@@ -196,7 +196,26 @@ with its parameters), so chains such as
 link, `Result[T]` payloads (`it.first().unwrap()`) and inferred locals.
 The Go call itself still relies on Go's inference, except for a static
 method whose parameter no argument determines (`Iter.repeat(None, 2)`
-emits `Iter_repeat[interface{}](nil, 2)`). Parameter defaults are lowered
+emits `Iter_repeat[interface{}](nil, 2)`) and a type parameter that only
+appears inside a tuple type: tuples lower to `[]interface{}`, so `K` / `V`
+of `pairs: list[tuple[K, V]]` are absent from the Go signature. They are
+bound from the Lam types of the parameters and arguments
+(`_func_param_lam_types`, `_lam_generic_call_subst`) and spelled at the
+call (`toDict(pairs)` with `pairs: list[tuple[str, int]]` emits
+`ToDict[string, int](pairs)`; generic methods in the order of
+`_method_generic_order`). `Result[T]` lowers to the non-generic `*Result`,
+so a `T` that only appears inside it is bound the same way:
+`_func_param_lam_types` / `_func_return_lam_types` keep the Lam signatures
+of every callable (imported modules included), and a lambda argument
+contributes its annotations (`_lambda_lam_type`: `lambda (tx: Conn) ->
+Result[int]: ...` is `func(Conn) -> Result[int]`), a function or static
+method passed by name its signature (`_func_ref_lam_type`), unified through
+`Result`, `optional`, `list`, `dict`, unions and function types
+(`inTx(c, countRows)` emits `InTx[int](c, CountRows)`). When the arguments
+leave a parameter unbound, the annotated variable a call initializes binds
+it (`_expected_value_lam` → `_call_result_lam`, for that call only):
+`r: Result[int] = make()` emits `Make[int]()`, `n: int = make()?` expects
+a `Result[int]`. Parameter defaults are lowered
 with the same bindings, or with explicit type arguments bound in the
 declared order (`_func_generic_order`): `firstOf[str]()` with `xs: list[T]
 = []` emits `FirstOf[string]([]string{})`, `merge(xs)` with `extra:
@@ -813,7 +832,26 @@ the transpiler's `*Result` hint for modules the checker does not see) into
 `getattr(propagate(receiver), y)`, receivers first, so chains
 `load()?.next()?.next()?` work link by link. F-string slots, parsed when
 the f-string is lowered, get the same rewrite on a copy of the slot tree
-(`f"{word()?.toUpper()}"`). Lambda bodies keep `?.` as written.
+(`f"{word()?.toUpper()}"`), and so does an expression-bodied lambda's body
+when the lambda is lowered (block bodies are statements). The receiver of
+`f()?.m()` is lowered once (`_reuse_lowering`): the method call reuses the
+`__qN.Value` the receiver produced instead of evaluating `f()` and its
+guard a second time.
+
+A lambda is its own return target: `?` in its body returns the `*Result`
+from the lambda when it returns `*Result` (`-> Result[T]`) and panics
+otherwise, whatever the enclosing function or `do` block returns
+(`_q_propagate_ok` is set from the lambda's own result type). The guard of
+a `?` in an expression body is emitted inside the lambda, which then gets a
+block body:
+
+```go
+var r *Result = Apply(func() *Result {
+    __q1 := Fails()
+    if !__q1.Ok() { return __q1 }
+    return Result_Ok(__q1.Value.(int) + 1)
+})
+```
 
 A comprehension whose element or filter holds a `?` keeps the `?` inside
 its loop: the closure returns `([]T, *Result)`, each `?` guard returns
@@ -891,7 +929,9 @@ result (`func() (__lamDoErrN *Result)`), sets `__lamShouldReturn` and
 leaves the try IIFE, so the closure returns the error. The same `?` in a
 `try` of a `-> Result` function stores it in `retval`. `_visit_do_stmt` pushes a fresh
 `declared_vars` scope around both the body and the handler so locals
-don't leak between consecutive `do` blocks. The source must directly
+don't leak between consecutive `do` blocks. `catch _` binds nothing (no
+`_ := __rdoN.Error`, which Go rejects as `no new variables`); a
+`try`'s `catch _` / `catch E as _` likewise skip the `r` binding. The source must directly
 `from lamerrors import Result` for the emitted `*Result` /
 `Result_Ok` references to resolve; scoped imports are accepted, while a
 transitive import is deliberately insufficient.
@@ -1471,6 +1511,7 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `xs.sort(key=f)` / `xs.sort(f)` with a one-parameter `f` | `sort.SliceStable` comparing `f(x)` (ordered keys natively, `any` / `json` / type-parameter / `optional` keys by kind, others by `%v`) |
 | `sorted(xs, key=f, reverse=b)`     | `sort.SliceStable` copy preserving the receiver/context element type; `key` compares `f(x)` |
 | `sorted` / `xs.sort()` / `min(xs)` / `max(xs)` of `list[any]`, `list[json]`, `list[T]`, `list[optional[int]]` | an inline `func(a, b interface{}) int` comparing by kind (`reflect`): numbers numerically, strings by bytes, `false < true`, `None` < bool < number < str < other (by `%v`); `min` / `max` loop over the list (`slices.Min` needs `cmp.Ordered`) |
+| `min(a, b)` / `max(a, b, c)` | Go's builtin `min` / `max`: as is for same-typed ints, strings and operands of one type parameter (`T: ordered`), with `float64(...)` conversions when a float is mixed in |
 | `min(xs, key=fn)` / `max(a, b, key=fn)` | an inline `func(xs []T) T` keeping the first value with the smallest / largest `key(v)` (keys compared like `sorted`'s; an empty list panics with `ValueError`) |
 | `reversed(xs)` / `reversed(s)`     | `func(src []T) []T` filling a new slice back to front (same slice type); for a `str`, `[]rune(src)` read back to front into a `[]string` |
 | `enumerate(xs)`                    | IIFE materializing index/value pairs as `[]interface{}` tuples            |
@@ -1625,6 +1666,10 @@ from lamos import Os
   `lib_PascalCaseLib_lam.go`) rather than normalized during emission.
 - A module may opt into a Go import by writing `go! { import "pkg" }`.
   Imports from go blocks are consolidated into a single Go import group.
+  The standard-library packages the lowerings ask for are kept only when
+  the emitted code references them (`reflect.`): an expression lowered
+  twice (a list-method lambda, first untyped, then with its element type)
+  would otherwise leave `"reflect" imported and not used`.
 - Defaults, arities, parameter names, Go parameter types, variadic markers and
   static-method metadata from library modules are merged into the main
   transpiler before it walks the main file, so call sites in the user's program

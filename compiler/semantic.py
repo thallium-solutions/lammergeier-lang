@@ -252,7 +252,7 @@ STDLIB_MODULES: Set[str] = {
     "lamunicode", "lamurl", "lambase64", "lamcompress",
     "lamcrypto", "lamcontext", "lamdatetime", "lamarray", "lamdata",
     "lamiter", "lamuuid", "lamcache", "lambytes",
-    "lamtemplate", "lamratelimit", "lamretry", "lamexec",
+    "lamtemplate", "lamratelimit", "lamretry", "lamexec", "lami18n",
     # Collections / concurrency
     "lamset", "lamqueue", "lamstack", "lamheap", "lamdeque",
     "lamcollections", "lamfunctools", "lamitertools",
@@ -3038,6 +3038,16 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             for i, name in enumerate(names):
                 if i < len(context[1]) and context[1][i] is not None and (i >= len(declared) or declared[i] is None):
                     scope.var_types[name] = render_type(context[1][i])
+        if return_anno is not None and return_anno.children:
+            # ``lambda () -> Result[int] { n = f()? ... }``: ``?`` returns
+            # the ``Err`` from the lambda, as in a ``-> Result`` function.
+            return_type = parse_type(return_anno.children[0])
+            scope.returns_result = (
+                isinstance(return_type, NamedType) and return_type.name == "Result"
+            ) or (
+                isinstance(return_type, GenericType) and return_type.base == "Result"
+                and len(return_type.args) <= 1
+            )
         if isinstance(body, Tree) and body.data == "suite":
             self._collect_block_defs(body, scope)
         self._warn_loop_captures(node, body, scope.names, "lambda")
@@ -3049,6 +3059,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                     # so declarations + control flow check normally.
                     self._walk_suite_stmts(self._suite_stmts(body))
                 else:
+                    # ``lambda () -> Result[int]: Result.Ok(f()?.size())``:
+                    # an expression body is no statement, so its ``?.`` on
+                    # a ``Result`` is rewritten here, with the parameters
+                    # in scope.
+                    rewrite_result_safe_nav(body, self._is_result_receiver)
                     self._check_lambda_expression_return_type(return_anno, body)
                     self._visit_expr_subtree(body)
         finally:
@@ -4215,7 +4230,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         self._error(
             value_node,
             "type",
-            f"cannot assign `{render_type(actual)}` to `{render_type(expected)}` variable `{name}`",
+            f"cannot assign `{render_type(actual)}` to `{render_type(expected)}` variable `{name}`"
+            + self._byte_for_str_hint(expected, actual, value_node),
         )
 
     def _annassign_target_display(self, node: Tree) -> str:
@@ -5560,17 +5576,36 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         if not (isinstance(callee, Tree) and callee.data in {"getattr", "getattr_safe"} and callee.children):
             return {}
         receiver = callee.children[0]
+        receiver_type: Type | None = None
         if isinstance(receiver, Tree) and receiver.data == "var" and receiver.children:
             name = self._name_text(receiver.children[0])
-            class_name = (
-                self._current_class_stack[-1] if name == "self" and self._current_class_stack
-                else self._receiver_class_from_type_text(self._var_type(name))
-            )
+            if name == "self" and self._current_class_stack:
+                class_name = self._current_class_stack[-1]
+            else:
+                type_text = self._var_type(name)
+                class_name = self._receiver_class_from_type_text(type_text)
+                try:
+                    receiver_type = parse_type(type_text) if type_text else None
+                except Exception:
+                    receiver_type = None
         else:
-            class_name = self._receiver_class_from_type(self._expr_simple_type(receiver))
+            receiver_type = self._expr_simple_type(receiver)
+            if receiver_type is None and isinstance(receiver, Tree) and receiver.data in {"getattr", "getattr_safe"}:
+                receiver_type = self._member_target_type(receiver)
+            class_name = self._receiver_class_from_type(receiver_type)
         if not class_name or not self._class_base_type_args.get(class_name):
             return {}
-        return self._inherited_type_arg_mapping(class_name)
+        mapping = self._inherited_type_arg_mapping(class_name)
+        own_params = self._class_type_params.get(class_name, ())
+        if (
+            own_params and isinstance(receiver_type, GenericType) and receiver_type.base == class_name
+            and len(receiver_type.args) == len(own_params)
+        ):
+            # ``s: Sub[int]`` with ``class Sub[V](Registry[str, V])``: the
+            # base's ``V`` is the receiver's ``int``.
+            own = dict(zip(own_params, receiver_type.args))
+            mapping = {param: self._substitute_generic_type(arg, own) for param, arg in mapping.items()}
+        return mapping
 
     def _generic_type_mapping_for_sig(self, call: Tree, sig: _CallableSig) -> dict[str, Type]:
         explicit = self._explicit_generic_type_mapping(call, sig)
@@ -5671,7 +5706,43 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         for expected, actual in dynamic:
             # ``Iter.repeat(value, 3)`` with ``value: any``: ``T = any``.
             self._infer_generic_mapping(expected, actual, names, mapping)
+        pending = {n for n in sig.generic_names if n not in mapping}
+        if pending and sig.return_type_text:
+            # ``r: Result[int] = make()`` with ``make[T]() -> Result[T]``:
+            # the annotation binds what no argument does (the transpiler
+            # spells ``Make[int]()``).
+            expected_result = self._assigned_call_expected_type(call)
+            if expected_result is not None and not self._is_any_type(expected_result):
+                try:
+                    declared_result = parse_type(sig.return_type_text)
+                except Exception:  # noqa: BLE001
+                    declared_result = None
+                if declared_result is not None:
+                    self._infer_generic_mapping(declared_result, expected_result, pending, mapping)
         return mapping
+
+    def _assigned_call_expected_type(self, call: Tree) -> Type | None:
+        """The annotation of the variable a call initializes
+        (``r: Result[int] = make()``), or ``Result[<annotation>]`` for the
+        operand of ``n: int = make()?``; ``None`` elsewhere."""
+        parents = getattr(self, "_parents", None)
+        if not parents:
+            return None
+        node, parent = call, parents.get(id(call))
+        wrap = False
+        if isinstance(parent, Tree) and parent.data == "propagate":
+            node, parent, wrap = parent, parents.get(id(parent)), True
+        if not (isinstance(parent, Tree) and parent.data == "annassign" and parent.children
+                and parent.children[-1] is node):
+            return None
+        type_node = next((c for c in parent.children if isinstance(c, Tree) and c.data == "type_expr"), None)
+        if type_node is None:
+            return None
+        try:
+            expected = parse_type(type_node)
+        except Exception:  # noqa: BLE001
+            return None
+        return GenericType("Result", (expected,)) if wrap else expected
 
     def _receiver_type_arg_mapping(self, call: Tree, sig: _CallableSig) -> dict[str, Type]:
         """``{T: int}`` for a method of ``class Iter[T]`` called on a
@@ -6114,10 +6185,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         if receiver.data == "var" and receiver.children:
             if not self._var_type(self._name_text(receiver.children[0])).startswith("dict["):
                 return
-        elif receiver.data in {"funccall", "propagate", "getitem"}:
-            # ``table()?.keys()`` / ``load().keys()`` / ``rows[0].keys()``:
-            # a receiver typed ``dict[K, V]`` by its call or element type.
-            if not isinstance(self._expr_simple_type(receiver), DictType):
+        elif receiver.data in {"funccall", "propagate", "getitem", "getattr"}:
+            # ``table()?.keys()`` / ``load().keys()`` / ``rows[0].keys()`` /
+            # ``self.counts.get(x, 0)``: a receiver typed ``dict[K, V]`` by
+            # its call, element or field type.
+            if not isinstance(self._builtin_receiver_type(receiver), DictType):
                 return
         else:
             return
@@ -6127,6 +6199,60 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             "type",
             f"dicts have no `{method}()` method: use `for key, value in d`, `key in d`, "
             "`d[key]`, `del d[key]` and `len(d)`",
+        )
+
+    def _builtin_receiver_type(self, receiver: Tree) -> Type | None:
+        """The static type of a method receiver, a declared field
+        (``self.counts``, ``self.inner.totals``, ``c.ids``) included."""
+        receiver_type = self._expr_simple_type(receiver)
+        if receiver_type is None and receiver.data in {"getattr", "getattr_safe"}:
+            receiver_type = self._member_target_type(receiver)
+            obj = receiver.children[0] if receiver.children else None
+            if receiver_type is None and isinstance(obj, Tree) and obj.data == "var" and obj.children:
+                # ``Registry.defaults.get(k)``: a static field.
+                class_name = self._name_text(obj.children[0])
+                type_text = (
+                    "" if self._var_type(class_name)
+                    else self._class_field_types.get(class_name, {}).get(self._name_text(receiver.children[1]), "")
+                )
+                if type_text:
+                    try:
+                        receiver_type = parse_type(type_text)
+                    except Exception:
+                        receiver_type = None
+        return receiver_type
+
+    # Python / JavaScript spellings of the set methods, and set idioms.
+    _SET_METHOD_HINTS = {
+        "append": "add", "push": "add", "insert": "add", "has": "contains",
+        "includes": "contains", "delete": "discard",
+    }
+    _SET_METHOD_IDIOMS = {
+        "index": "`x in s`", "length": "`len(s)`", "size": "`len(s)`", "len": "`len(s)`",
+        "union": "`a | b`", "intersection": "`a & b`", "difference": "`a - b`",
+        "update": "`a |= b`", "copy": "`set(s)`", "clear": "`s = set()`",
+        "isEmpty": "`len(s) == 0`",
+    }
+
+    def _check_set_receiver_method(self, callee: Tree, receiver_type: Type, method: str) -> None:
+        """``ids.index(1)`` / ``self.names.append(x)``: a set has only
+        ``add`` / ``remove`` / ``discard`` / ``contains``; anything else
+        failed only in the Go build."""
+        if method in {"add", "remove", "discard", "contains"}:
+            return
+        idiom = self._SET_METHOD_IDIOMS.get(method)
+        hint = self._SET_METHOD_HINTS.get(method) or self._closest(
+            method, {"add", "remove", "discard", "contains"},
+        )
+        if idiom:
+            suffix = f"; use {idiom}"
+        elif hint:
+            suffix = f" — did you mean `{hint}`?"
+        else:
+            suffix = ""
+        self._error(
+            callee, "member",
+            f"`{render_type(receiver_type)}` has no method `{method}`{suffix}",
         )
 
     def _check_builtin_receiver_method(self, call: Tree) -> None:
@@ -6150,6 +6276,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             if self._is_named_type(field_type, "str") if field_type is not None else False:
                 receiver_type = field_type
         method = self._name_text(callee.children[1])
+        set_type = self._builtin_receiver_type(receiver)
+        if self._set_item_type(set_type) is not None:
+            self._check_set_receiver_method(callee, set_type, method)
+            return
         if self._check_markup_receiver_method(call, callee, receiver_type, method):
             return
         if self._is_named_type(receiver_type, "str") if receiver_type is not None else False:
@@ -6182,6 +6312,71 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 callee, "member",
                 f"`{render_type(receiver_type)}` has no method `{method}`{suffix}",
             )
+            return
+        if isinstance(receiver_type, NamedType) and receiver_type.name in self._METHODLESS_SCALAR_TYPES:
+            self._error(
+                callee, "member",
+                f"`{render_type(receiver_type)}` has no method `{method}`"
+                + self._scalar_receiver_hint(receiver, receiver_type, method, call),
+            )
+
+    # Scalar types with no Lam methods: ``n.toUpper()`` / ``w[0].toUpper()``
+    # otherwise failed only in the Go build.
+    _METHODLESS_SCALAR_TYPES = frozenset({
+        "int", "int8", "int16", "int32", "int64",
+        "uint", "uint8", "uint16", "uint32", "uint64",
+        "float", "float32", "float64", "bool", "byte", "rune",
+    })
+
+    def _str_index_byte_hint(self, node, method: str = "", call: Tree | None = None) -> str:
+        """``w[0]`` is a ``byte`` (indexing a ``str`` with one integer):
+        the suffix naming the one-character ``str`` conversion, or ``""``
+        when ``node`` is not such an index."""
+        if not (isinstance(node, Tree) and node.data == "getitem" and len(node.children) == 2):
+            return ""
+        receiver, index = node.children
+        if not isinstance(receiver, Tree) or (isinstance(index, Tree) and index.data == "slice"):
+            return ""
+        receiver_type = self._expr_simple_type(receiver)
+        if receiver_type is None and receiver.data == "getattr":
+            receiver_type = self._member_target_type(receiver)
+        if not (receiver_type is not None and self._is_named_type(receiver_type, "str")):
+            return ""
+        from compiler.constants import lam_simple_expr_text, str_index_byte_hint
+        has_args = call is not None and bool(self._call_positional_args(call))
+        return str_index_byte_hint(lam_simple_expr_text(node), method, has_args)
+
+    def _byte_for_str_hint(self, expected: Type | None, actual: Type | None, node) -> str:
+        """``first: str = w[0]``: the ``_str_index_byte_hint`` of a ``byte``
+        value where a ``str`` is expected."""
+        if (
+            expected is not None and actual is not None
+            and self._is_named_type(expected, "str") and self._is_named_type(actual, "byte")
+        ):
+            return self._str_index_byte_hint(node)
+        return ""
+
+    def _byte_str_operands_hint(self, operands: list, types: list) -> str:
+        """``w[0] == "h"`` / ``"x" + w[-1]``: the hint for the ``byte``
+        operand of a ``byte`` / ``str`` pair."""
+        if not any(t is not None and self._is_named_type(t, "str") for t in types):
+            return ""
+        for operand, operand_type in zip(operands, types):
+            if operand_type is not None and self._is_named_type(operand_type, "byte"):
+                hint = self._str_index_byte_hint(operand)
+                if hint:
+                    return hint
+        return ""
+
+    def _scalar_receiver_hint(self, receiver: Tree, receiver_type: Type, method: str, call: Tree) -> str:
+        if not self._is_named_type(receiver_type, "byte"):
+            return ""
+        hint = self._str_index_byte_hint(receiver, method, call)
+        if hint:
+            return hint
+        from compiler.constants import lam_simple_expr_text
+        text = lam_simple_expr_text(receiver) or "b"
+        return f"; convert it with `string({text})` or `int({text})`"
 
     def _list_join_idiom(self, call: Tree, receiver: Tree) -> str:
         """``seen.join(" ")`` -> ``" ".join(seen)`` (the separator owns
@@ -6435,7 +6630,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             node,
             "type",
             f"argument `{param_name}` to `{target}` has type `{render_type(actual)}`, expected `{render_type(expected)}`"
-            + self._defaults_hint(expected, node),
+            + self._defaults_hint(expected, node)
+            + self._byte_for_str_hint(expected, actual, node),
         )
 
     def _defaults_hint(self, expected: Type, node) -> str:
@@ -8828,6 +9024,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                     f" (a `None` test does not narrow a field: copy it to a local first, "
                     f"`{local} = {field_text}`, test and return `{local}`, or use `{field_text} ?? ...`)"
                 )
+            hint = hint or self._byte_for_str_hint(expected_model, actual_model, value_node)
             self._error(
                 ret, "return",
                 f"function `{name}` returns `{actual_type}`, expected `{expected_name}`{hint}",
@@ -9140,6 +9337,9 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             inferred_ctor = self._inferred_generic_constructor_type(node)
             if inferred_ctor is not None:
                 return inferred_ctor
+            explicit_ctor = self._explicit_generic_constructor_type(node)
+            if explicit_ctor is not None:
+                return explicit_ctor
             call_type = self._call_return_type_text(node) or self._call_return_type(node)
             if call_type:
                 return parse_type(call_type)
@@ -9177,6 +9377,18 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return parse_type(type_text)
         except Exception:  # noqa: BLE001 - an unparsable annotation stays unknown
             return None
+
+    def _explicit_generic_constructor_type(self, node: Tree) -> Type | None:
+        """``Box[int](5)`` is a ``Box[int]`` (so ``b = Box[int](5)`` keeps
+        its type arguments); ``None`` for anything else."""
+        target = self._explicit_generic_call_target(node)
+        params = self._class_type_params.get(target, ()) if target in self._class_method_shapes else ()
+        if not params:
+            return None
+        type_args = self._explicit_type_arg_types(node)
+        if not type_args or len(type_args) != len(params):
+            return None
+        return GenericType(target, tuple(type_args))
 
     def _inferred_generic_constructor_type(self, node: Tree) -> Type | None:
         """``Box([1, 2])`` of a generic ``class Box[T]`` is a ``Box[int]``:
@@ -9308,6 +9520,19 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return NamedType("str")
         return None
 
+    def _sorted_result_type(self, source: Tree) -> Type | None:
+        """``sorted(xs)``: a copy of a list's type; like Python, a new
+        ``list[T]`` of a ``set[T]`` (literal, comprehension, variable, field
+        or call) and the sorted keys (``list[K]``) of a ``dict[K, V]``."""
+        if source.data == "set_comprehension":
+            return self._list_comprehension_type(source)
+        source_type = self._iterable_type(source)
+        if isinstance(source_type, GenericType) and source_type.base == "set" and len(source_type.args) == 1:
+            return ListType(source_type.args[0])
+        if isinstance(source_type, DictType):
+            return ListType(source_type.key)
+        return source_type
+
     def _collection_call_result_type(self, call: Tree) -> Type | None:
         if not isinstance(call, Tree) or call.data != "funccall" or not call.children:
             return None
@@ -9316,7 +9541,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             name = self._name_text(callee.children[0])
             if name == "sorted":
                 args = [arg for arg in self._call_positional_args(call) if isinstance(arg, Tree)]
-                return self._expr_simple_type(args[0]) if args else None
+                return self._sorted_result_type(args[0]) if args else None
             if name == "reversed" and name not in self._func_return_types:
                 args = [arg for arg in self._call_positional_args(call) if isinstance(arg, Tree)]
                 source = self._iterable_type(args[0]) if args else None
@@ -9650,11 +9875,14 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 )
                 return
         left_type = self._expr_simple_type(operands[0])
-        for op, right in zip(ops, operands[1:]):
+        for index, (op, right) in enumerate(zip(ops, operands[1:])):
             right_type = self._expr_simple_type(right)
             if left_type is not None and right_type is not None:
                 if not self._binary_operator_allowed(op, left_type, right_type):
-                    self._report_binary_type_error(node, op, left_type, right_type)
+                    hint = self._byte_str_operands_hint(
+                        [operands[index], right], [left_type, right_type],
+                    ) if op == "+" else ""
+                    self._report_binary_type_error(node, op, left_type, right_type, hint)
                     return
                 left_type = self._binary_operator_result_type(op, left_type, right_type)
             else:
@@ -9709,11 +9937,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             )
             self._error(node, "type", f"`{op_text}` would make `{render_type(target_type)}` a `{render_type(result)}`{hint}")
 
-    def _report_binary_type_error(self, node: Tree, op: str, left: Type, right: Type) -> None:
+    def _report_binary_type_error(self, node: Tree, op: str, left: Type, right: Type, hint: str = "") -> None:
         left_text = render_type(left)
         right_text = render_type(right)
         if op == "+":
-            self._error(node, "type", f"cannot add `{left_text}` and `{right_text}`")
+            self._error(node, "type", f"cannot add `{left_text}` and `{right_text}`{hint}")
             return
         self._error(
             node,
@@ -9729,7 +9957,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         if len(operands) < 2:
             return
         left_type = self._expr_simple_type(operands[0])
-        for op, right in zip(ops, operands[1:]):
+        for index, (op, right) in enumerate(zip(ops, operands[1:])):
             right_type = self._expr_simple_type(right)
             if left_type is not None and right_type is not None:
                 if op in {"in", "not in"}:
@@ -9750,7 +9978,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                         self._error(
                             node,
                             "type",
-                            f"cannot compare `{render_type(left_type)}` and `{render_type(right_type)}`",
+                            f"cannot compare `{render_type(left_type)}` and `{render_type(right_type)}`"
+                            + self._byte_str_operands_hint([operands[index], right], [left_type, right_type]),
                         )
                         return
             left_type = right_type

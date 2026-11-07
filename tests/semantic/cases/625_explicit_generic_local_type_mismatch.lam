@@ -1,0 +1,14 @@
+# expect-error: cannot assign `Box[int]` to `Box[str]` variable `s`
+# `b = Box[int](5)` is a `Box[int]` (it keeps its type arguments), so
+# assigning it to a `Box[str]` is reported instead of failing `go build`.
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+}
+
+func main() {
+    b = Box[int](5)
+    s: Box[str] = b
+    print(s.value)
+}

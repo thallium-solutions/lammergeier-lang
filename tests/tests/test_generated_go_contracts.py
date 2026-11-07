@@ -315,6 +315,27 @@ def test_lammergeier_rejects_transitive_private_symbols() -> None:
     print("PASS: LAMMERGEIER rejects transitive private symbols")
 
 
+def test_lambda_membership_imports_match_emitted_code() -> None:
+    # A list-method lambda is lowered once untyped (its ``in`` test then
+    # asks for ``reflect`` and ``strings``) and again with the element
+    # type; the import block must only list packages the code uses.
+    go = _emit_go(
+        """
+        func main() {
+            xs: list[str] = ["a"]
+            print(xs.all(lambda s: "z" not in s))
+            sets: list[set[int]] = [{1}]
+            print(sets.any(lambda s: 1 in s))
+        }
+        """,
+        "lambda_membership_imports",
+    )
+    imports = go.split("import (", 1)[1].split(")", 1)[0].split()
+    assert imports == ['"fmt"', '"strings"'], go
+    _compile_go(go, "lambda_membership_imports")
+    print("PASS: lambda membership imports match the emitted code")
+
+
 def main() -> int:
     tests = [
         test_typed_anonymous_call_argument_emits_concrete_slice,
@@ -323,6 +344,7 @@ def main() -> int:
         test_inferred_imported_instance_uses_defaults_and_user_dispatch,
         test_imported_result_payload_infers_receiver_and_cast,
         test_lammergeier_rejects_transitive_private_symbols,
+        test_lambda_membership_imports_match_emitted_code,
     ]
     for test in tests:
         test()

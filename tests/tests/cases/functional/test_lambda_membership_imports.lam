@@ -1,0 +1,46 @@
+# Regression: a lambda passed to a built-in list method is lowered once
+# without parameter types (its `in` test then needs `reflect` and
+# `strings`) and again with the element type; only the second lowering
+# is emitted, so the first one's imports left `"reflect" imported and
+# not used` in the Go build. Each function below holds one shape in its
+# own Go file position, and the file has no other `reflect` user.
+#
+# expect: all=true any=true
+# expect: filter=[a b]
+# expect: map=[false true]
+# expect: reduce=1
+# expect: sort=[a b xz]
+# expect: dicts=true sets=[map[2:true]]
+# expect: comp=[a b] maps=[map[a:1]]
+# expect: count=2 chain=[A B]
+# expect: lambda_membership_imports_ok
+
+class Tags {
+    func init(self, names: list[str]) {
+        self.names: list[str] = names
+    }
+
+    func plain(self) -> list[str] {
+        return self.names.filter(lambda n: "z" not in n)
+    }
+}
+
+func countPlain(xs: list[str]) -> int {
+    return len(xs.filter(lambda s: not ("z" in s)))
+}
+
+func main() {
+    xs: list[str] = ["a", "xz", "b"]
+    print(f"all={xs.all(lambda s: "q" not in s)} any={xs.any(lambda s: "z" in s)}")
+    print(f"filter={xs.filter(lambda s: "z" not in s)}")
+    print(f"map={["a", "z"].map(lambda s: "z" in s)}")
+    print(f"reduce={xs.reduce(lambda acc, s: acc + (1 if "z" in s else 0), 0)}")
+    print(f"sort={xs.sort(lambda s: len(s) if "z" in s else 0)}")
+    ds: list[dict[str, int]] = [{"a": 1}]
+    ss: list[set[int]] = [{1}, {2}]
+    print(f"dicts={ds.all(lambda d: "a" in d)} sets={ss.filter(lambda s: 1 not in s)}")
+    print(f"comp={[s for s in xs if "z" not in s]} maps={[d for d in ds if "z" not in d]}")
+    tags: Tags = Tags(["A", "zB", "B"])
+    print(f"count={countPlain(xs)} chain={tags.plain().map(lambda t: t.replace("z", ""))}")
+    print("lambda_membership_imports_ok")
+}

@@ -819,7 +819,7 @@
 			<array>
 				<dict>
 					<key>match</key>
-					<string>\b(lamactor|lamarray|lambase64|lambytes|lamcache|lamcli|lamcompress|lamconcurrency|lamcontext|lamconv|lamcron|lamcrypto|lamcsv|lamdata|lamdatastructures|lamdatetime|lamdb|lamdeque|lamenv|lamerrors|lamexec|lamfmt|lamhash|lamheap|lamhtml|lamhttp|lamiter|lamjson|lamlog|lammarkup|lammath|lammigrate|lamnet|lamos|lampath|lamqueue|lamrandom|lamratelimit|lamre|lamretry|lamschema|lamset|lamsmtp|lamsort|lamstack|lamstats|lamstrings|lamtemplate|lamtest|lamtime|lamunicode|lamurl|lamuuid|lamxml|lamyaml)\b</string>
+					<string>\b(lamactor|lamarray|lambase64|lambytes|lamcache|lamcli|lamcompress|lamconcurrency|lamcontext|lamconv|lamcron|lamcrypto|lamcsv|lamdata|lamdatastructures|lamdatetime|lamdb|lamdeque|lamenv|lamerrors|lamexec|lamfmt|lamhash|lamheap|lamhtml|lamhttp|lami18n|lamiter|lamjson|lamlog|lammarkup|lammath|lammigrate|lamnet|lamos|lampath|lamqueue|lamrandom|lamratelimit|lamre|lamretry|lamschema|lamset|lamsmtp|lamsort|lamstack|lamstats|lamstrings|lamtemplate|lamtest|lamtime|lamunicode|lamurl|lamuuid|lamxml|lamyaml)\b</string>
 					<key>name</key>
 					<string>support.class.stdlib.module.lammergeier</string>
 				</dict>

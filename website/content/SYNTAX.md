@@ -1860,6 +1860,24 @@ mixed: list[any] = [10, "b", 9, None, 2.5]
 print(sorted(mixed))                                        # [<nil> 2.5 9 10 b]
 ```
 
+As in Python, `sorted(s)` of a `set[T]` (a variable, literal, set
+comprehension, field, function result or set operation such as `a | b`)
+returns a new sorted `list[T]`, and `sorted(d)` of a `dict[K, V]` returns
+its keys sorted, as a `list[K]`; `key=` and `reverse=` work as for lists
+and the set or dict is unchanged. Sets and dicts have no order, so
+elements with equal `key=` values come out in an unspecified order:
+
+```lammergeier
+tags: set[str] = {"web", "api", "db"}
+ordered: list[str] = sorted(tags)                          # [api db web]
+print(",".join(sorted({t.toUpper() for t in tags})))       # API,DB,WEB
+ages: dict[str, int] = {"bob": 31, "amy": 27}
+for name in sorted(ages) {                                 # amy, then bob
+    print(name, ages[name])
+}
+print(sorted(ages, key=lambda n: -ages[n]))                # [bob amy]
+```
+
 `reversed(xs)` returns a reversed copy of a list (the same list type; `xs`
 is not modified). As in Python, `reversed(s)` of a `str` gives its
 characters last first, as a `list[str]` (Python returns an iterator of
@@ -2861,6 +2879,29 @@ a function whose return type is bare `Result` or `Result[T]`. A known
 The semantic checker warns when `?` is used outside a `Result`-returning
 function or `do/catch` body.
 
+A lambda declared `-> Result` / `-> Result[T]` is such a function: `?` in
+its body (block or expression) returns the `Err` from the **lambda**, not
+from the function around it, so a callback can use `?` like any helper:
+
+```lammergeier
+func apply(fn: func() -> Result[int]) -> Result[int] {
+    return fn()
+}
+
+func main() {
+    r: Result[int] = apply(lambda () -> Result[int] {
+        n: int = parseInt("x")?        # Err: the lambda returns it
+        return Result.Ok(n)
+    })
+    print(r.ok())                      # false
+    s: Result[int] = apply(lambda () -> Result[int]: Result.Ok(parseInt("2")? + 1))
+}
+```
+
+A lambda that does not return `Result` has no target for the error: `?`
+there panics on `Err` (and is warned about), even inside a
+`Result`-returning function.
+
 Because `?` lowers to `Result` helpers, the file must directly import the
 helper class with `from lamerrors import Result`; otherwise the compiler
 emits a Lam-source `error[import]` before Go runs. A scoped import before
@@ -2897,7 +2938,9 @@ body does not contain `?`, so it also requires a direct
 
 Two consecutive `do` blocks are independent; locals declared inside
 one block don't leak into the next. The catch variable is mandatory
-and lives only inside the handler.
+and lives only inside the handler; write `catch _ { ... }` when the
+handler does not use the error (`try { } catch _ { }` and
+`catch ValueError as _` likewise bind nothing).
 
 The catch variable is an `Error` (from `lamerrors`): `err.kind`,
 `err.message` and `err.cause` work directly, and an `Error` subclass keeps
@@ -3289,6 +3332,18 @@ the divisor), and `i - k` when `i` is known to be at least `k`
 Indexing a string with a single integer follows Go's native behavior and
 returns the byte at that position. Use `string(s[i])` when you want a
 one-character string, or `int(s[i])` when you want the code value.
+A `byte` has no methods and is not a `str`, so `s[i].toUpper()`, passing
+`s[i]` to a `str` parameter, `s[i] == "h"` and `"x" + s[i]` are compile
+errors naming the conversion (`string(s[0]).toUpper()`; a one-character
+slice `s[0:1]` is a `str` too). Iterating a string (`for ch in s`,
+`enumerate(s)`) yields one-character `str` values instead.
+
+```lammergeier
+w: str = "hello"
+print(string(w[0]).toUpper() + w[1:])   # Hello
+print(w[0] == 104, int(w[-1]))          # true 111
+w[0].toUpper()   # error: `byte` has no method `toUpper`; indexing a `str` gives a `byte`: ...
+```
 
 The cheap `[a:b]` form (with non-negative bounds and no step) is
 lowered to Go's native slice syntax. Negative indices or a stride
@@ -3762,6 +3817,11 @@ func max_of[T: ordered](a: T, b: T) -> T {
 }
 ```
 
+`max(a, b)` / `min(a, b)` (any number of operands) of values of an
+`ordered` (or `number`) type parameter compare them as that type, strings
+included: `func clamp[T: ordered](v: T, lo: T, hi: T) -> T { return
+min(max(v, lo), hi) }`.
+
 Type arguments may be explicit (`identity[int](1)`) or inferred from bound
 arguments (`identity(1)`). Inference unifies repeated parameters recursively,
 so `same[T](left: T, right: T)` rejects `same(1, "two")`, and
@@ -3773,6 +3833,17 @@ the type parameters of a callback parameter (`mapList(names, len2)` with
 `.map(lambda p: p.name)` over a `list[Person]` types `p` as `Person`. If an
 argument is `any` or otherwise unknown, the checker keeps the conservative
 fallback instead of guessing.
+
+The annotations of a lambda argument bind type parameters too, also inside
+`Result[T]`, `optional[T]`, `list[T]` and `dict[K, V]`:
+`inTx(conn, lambda (tx: Conn) -> Result[int]: count(tx))` with `func
+inTx[T](conn: Conn, fn: func(Conn) -> Result[T]) -> Result[T]` gives
+`T = int` (as does `inTx(conn, count)` with `count(c: Conn) ->
+Result[int]`). A type parameter that only appears in the result is bound by
+the annotated variable the call initializes: `r: Result[int] = make()` with
+`func make[T]() -> Result[T]`, and `n: int = make()?` (a `Result[int]` is
+expected). An explicit instantiation keeps its type arguments in an
+unannotated local: `b = Box[int](5)` is a `Box[int]`.
 
 When no argument gives a type parameter its type, the call needs explicit
 type arguments: a parameter default (`firstOf()` with `xs: list[T] = []`),
@@ -3810,6 +3881,27 @@ Built-in constraints:
 | `ordered`    | `~int \| ~int64 \| ~float64 \| ~string`      |
 | `number`     | `float64 \| int`                             |
 | `int`, `str` | `int`, `string` — exact-type fast paths      |
+
+A type parameter used as a set element or a dict key (`set[T]`,
+`dict[K, V]`, `dict[str, set[T]]`) in a signature, a field or a body is a Go
+map key, so it is declared `comparable` (`func count[T](s: set[T])` lowers
+to `func Count[T comparable](s map[T]bool)`); so is a type parameter passed
+on to such a parameter, explicitly (`Bag[T]`, `distinct[T](xs)`) or by
+inference (`distinct(xs)` with `xs: list[T]`). An explicit constraint whose
+types are all comparable (`ordered`, `number`, `int`, `str`) is kept, and an
+interface constraint is combined with `comparable`. `sorted(s)` of a
+generic `set[T]` (or `sorted(d)` of a `dict[K, V]`) sorts like `sorted` of
+a generic `list[T]` (values compared by kind at run time).
+
+```lammergeier
+func count[T](s: set[T]) -> int { return len(s) }
+func distinct[T](xs: list[T]) -> list[T] {
+    seen: set[T] = set()
+    for x in xs { seen.add(x) }
+    return sorted(seen)
+}
+print(count({1, 2, 3}), count[str]({"a"}), distinct([3, 1, 3]))   # 3 1 [1 3]
+```
 
 Inside a generic body, values of a type parameter support the operators its
 Go constraint allows (`total + x` with `T: number`), and an untyped numeric
@@ -4168,6 +4260,7 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lamyaml`        | `Yaml`                             | Result-returning YAML encoding, decoding, and multi-document decoding |
 | `lamxml`         | `Xml`                              | Native `xml`: `Xml.parse` (well-formed check), escaping, dict/list encoding and shape-shifting decode |
 | `lamhtml`        | `Html`                             | Native `html`: lenient `Html.parse` and escaping |
+| `lami18n`        | `Translations`                     | Translated texts from `<dir>/<lang>/*.json` with a fallback language, `{name}` parameters as plain text or escaped `html`, `missing` keys and `Accept-Language` negotiation |
 | `lammarkup`      | `Markup`                           | Runtime of the native `html` / `xml` types (imported automatically) |
 | `lamrandom`      | `Random`                           | Pseudo-random values and secure bytes/tokens; UUID generation belongs to `lamuuid` |
 | `lamsort`        | `Sort`                             | Generic natural/comparator sorting, asc/desc checks, named algorithms, reverse, and lazy sorted generators |
@@ -4187,7 +4280,7 @@ All standard library modules use OOP-style static classes with camelCase naming:
 | `lambytes`       | `Bytes`                            | Byte/hex utilities (toBytes, fromBytes, hexEncode, hexDecode) |
 | `lamexec`        | `Exec`, `ExecCommand`, `ExecResult` | Typed execution with env/cwd/stdin, timeout, cancellation, and captured output |
 | `lamunicode`     | `Unicode`                          | Unicode/UTF-8 (runeCount, isValid, isLetter, isDigit, etc.) |
-| `lamenv`         | `Env`                              | String, typed, and Result-based environment access plus set/unset/all |
+| `lamenv`         | `Env`                              | String, typed, and Result-based environment access, lenient `flag` and `list` reads, plus set/unset/all |
 | `lamdatetime`    | `DateTime`                         | Date/time formatting and parsing in IANA zones (zone database compiled in) |
 | `lamdatastructures` | `Queue`, `Deque`, `Stack`, `Set`, `Heap`, `PriorityHeap` | Canonical collection implementations with Result-returning empty-state operations |
 | `lamstack`       | `Stack`                            | Compatibility re-export from `lamdatastructures` |
@@ -4884,7 +4977,14 @@ argument starting with `{` / `[` / markup follows `(` without a space
 (`res.json({"ok": true})`), a dict literal on its own line stays one
 literal, a lambda body's `}` keeps what follows it (`})`), and a method
 chain continued on the next lines (`.map(f)`) is indented one level under
-its statement. Slices keep `:` tight (`s[:3]`, `x[1:n]`). Raw Go inside `go! { }` is left byte for byte as written
+its statement. Slices keep `:` tight (`s[:3]`, `x[1:n]`), type parameters
+take a space after it (`func top[T: ordered]`), and keyword arguments and
+keyword sub-patterns are written without spaces around `=`
+(`sorted(words, reverse=true)`, `case Point(x=0)`) while typed parameter
+defaults keep them (`name: str = "world"`). A keyword before `(` takes one
+space (`if (a and b) or c {`, `not (x)`, `lambda (x: int) -> int: x`), and a
+`{` after a conditional expression's `else` (`x if ok else {}`) is a literal
+kept on its line. Raw Go inside `go! { }` is left byte for byte as written
 (comments, spacing and indentation); only the `go! {` line follows the Lam
 indentation. Formatting never changes the program: the test suite checks
 that every formatted test case generates the same Go and that formatting is

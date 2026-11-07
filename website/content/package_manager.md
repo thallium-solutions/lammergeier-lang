@@ -309,7 +309,62 @@ from the manifest's directory, not from the shell's current directory,
 so relative paths behave like project-root paths. The child process exit
 code is preserved, which makes manifest scripts suitable for CI.
 
-### 2.4 Where files actually go
+Arguments after `--` are appended to the command, shell-quoted:
+
+```toml
+[scripts]
+start = "lamc cmd/serve.lam --run --"
+migrate = "lamc cmd/migrate.lam --run --"
+```
+
+```bash
+lamc lib run migrate -- --dry-run --limit 50
+# runs: lamc cmd/migrate.lam --run -- --dry-run --limit 50
+```
+
+The script runs in its own process group; `SIGINT`, `SIGTERM` and
+`SIGHUP` received by `lamc` (Ctrl+C, `docker stop`) are forwarded to the
+whole group, so long-running scripts such as a server or `lamc dev` stop
+with it.
+
+### 2.4 Development loop: `lamc dev`
+
+`lamc dev <file.lam>` builds the program, runs it and watches the
+project; it is the nodemon workflow for compiled programs:
+
+```toml
+[scripts]
+dev = "lamc dev cmd/serve.lam --watch locales --ext json,sql --"
+```
+
+- A change to a `.lam` file or `lamlib*.toml` under the project root (the
+  directory of the nearest `lamlib.toml`, or `--root DIR`) rebuilds, then
+  restarts the program.
+- A change to any other watched file — files under `--watch PATH`
+  (repeatable) and files with an `--ext` extension under the project root —
+  restarts it without rebuilding.
+- A failed build prints the compiler errors and keeps the previous build
+  running; the next change retries.
+- A program that exits by itself is not restarted until the next change, or
+  `rs` + Enter on an interactive terminal.
+- The program runs with `LAMC_DEV=1` (development-only plugins can check
+  it), in its own process group; `--signal` (default `SIGTERM`) stops it,
+  `SIGKILL` follows after `--kill-timeout` ms (default 5000).
+- Arguments after `--` are passed to the program. `--extlibs`, `--stdlib`,
+  `--go-tags`, `--go-ldflags`, `--go-race`, `--no-cache` and
+  `--no-semantic-check` are passed to the build; `--extlibs` directories are
+  watched too.
+- `.git`, `node_modules`, `__pycache__`, `.venv` and `.lamc-dev` are never
+  watched; `--ignore PATTERN` adds globs, matched against the path relative
+  to the project root or against a file or directory name.
+
+Change detection polls modification times (`--poll`, default 250 ms; a
+`--delay` quiet period, default 300 ms, groups the files saved together),
+so it also works on container bind mounts, where file-system events are
+not delivered. The binary is built in a temporary directory unless `-o`
+is given.
+
+### 2.5 Where files actually go
 
 Project mode (the default) is reproducible-by-construction:
 
@@ -353,7 +408,7 @@ All three roots (`./extlibs/`, `~/.lammergeier/extlibs/`,
 so the library is usable immediately — no `import` path or
 `PATH` change required.
 
-### 2.5 Scoped names
+### 2.6 Scoped names
 
 ```bash
 lamc install @acme/lamcolor@0.2.0

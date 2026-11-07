@@ -1,0 +1,189 @@
+# Integration: a small ledger whose operations run as transactions
+# (`inTx[T](store, fn: func(Store) -> Result[T])`, a generic function, a
+# static and an instance generic method) written as lambdas declared
+# `-> Result[...]` that use `?` and `?.` chains; failures are contained
+# with `do { } catch _` and `try { } catch _`; generic repositories are
+# unannotated locals (`accounts = Repo[Account]()`) and rankings use
+# `max` / `min` over an ordered type parameter. Composes the fixes for
+# `?` in lambdas, `catch _`, generic inference from `Result[T]` /
+# `list[T]` / `optional[T]` annotations and the expected type, ordered
+# `max` / `min`, generic local instantiation and single evaluation of
+# `f()?.method()` receivers.
+#
+# expect: opened=3
+# expect: deposit=150 transfer=ok
+# expect: overdraft=Funds: alice has 150, needs 500
+# expect: unknown=Missing: no account zed
+# expect: balances=[150 75 0]
+# expect: richest=150 poorest=0 first=alice last=carol
+# expect: count=3 names=[alice bob carol]
+# expect: lookup=bob:75 fallback=-1
+# expect: audit=4 failed=2
+# expect: tx_calls=6
+# expect: result_lambda_ledger_ok
+
+from lamerrors import Result, Error
+
+class Account {
+    func init(self, name: str, balance: int) {
+        self.name: str = name
+        self.balance: int = balance
+    }
+
+    func credit(self, amount: int) -> Result[Account] {
+        if amount <= 0 {
+            return Result.Err(Error("Amount", f"invalid amount {amount}"))
+        }
+        self.balance += amount
+        return Result.Ok(self)
+    }
+
+    func debit(self, amount: int) -> Result[Account] {
+        if amount > self.balance {
+            return Result.Err(Error("Funds", f"{self.name} has {self.balance}, needs {amount}"))
+        }
+        self.balance -= amount
+        return Result.Ok(self)
+    }
+}
+
+class Repo[T] {
+    func init(self) {
+        self.items: list[T] = []
+    }
+
+    func add(self, item: T) {
+        self.items.append(item)
+    }
+
+    func each[U](self, fn: func(T) -> U) -> list[U] {
+        return [fn(item) for item in self.items]
+    }
+}
+
+class Store {
+    func init(self) {
+        self.accounts: dict[str, Account] = {}
+        self.calls: int = 0
+        self.log: list[str] = []
+    }
+
+    func find(self, name: str) -> Result[Account] {
+        if name in self.accounts {
+            return Result.Ok(self.accounts[name])
+        }
+        return Result.Err(Error("Missing", f"no account {name}"))
+    }
+
+    func run[T](self, fn: func(Store) -> Result[T]) -> Result[T] {
+        self.calls += 1
+        return fn(self)
+    }
+
+    static func audit[T](store: Store, fn: func(list[str]) -> Result[T]) -> Result[T] {
+        return fn(store.log)
+    }
+}
+
+func inTx[T](store: Store, fn: func(Store) -> Result[T]) -> Result[T] {
+    store.calls += 1
+    r: Result[T] = fn(store)
+    store.log.append("ok" if r.ok() else "failed")
+    return r
+}
+
+func best[T: ordered](values: list[T]) -> T {
+    top: T = values[0]
+    for v in values {
+        top = max(top, v)
+    }
+    return top
+}
+
+func worst[T: ordered](values: list[T]) -> T {
+    low: T = values[0]
+    for v in values {
+        low = min(low, v)
+    }
+    return low
+}
+
+func firstOr[T](fn: func() -> optional[T], fallback: T) -> T {
+    v: optional[T] = fn()
+    if v == None {
+        return fallback
+    }
+    return v
+}
+
+func balanceOf(store: Store, name: str) -> int {
+    do {
+        return store.find(name)?.balance
+    } catch _ {
+        return -1
+    }
+}
+
+func main() {
+    store = Store()
+    accounts = Repo[Account]()
+    for name in ["alice", "bob", "carol"] {
+        store.accounts[name] = Account(name, 0)
+        accounts.add(store.accounts[name])
+    }
+    print(f"opened={len(accounts.items)}")
+
+    deposited: Result[int] = inTx(store, lambda (s: Store) -> Result[int] {
+        a: Account = s.find("alice")?.credit(150)?
+        s.find("bob")?.credit(100)?
+        return Result.Ok(a.balance)
+    })
+    moved: Result[str] = store.run(lambda (s: Store) -> Result[str] {
+        s.find("bob")?.debit(25)?
+        return Result.Ok("ok")
+    })
+    print(f"deposit={deposited.unwrap()} transfer={moved.unwrap()}")
+
+    overdraft: Result[int] = inTx(store, lambda (s: Store) -> Result[int]: Result.Ok(s.find("alice")?.debit(500)?.balance))
+    print(f"overdraft={overdraft.error}")
+    unknown: Result[int] = inTx(store, lambda (s: Store) -> Result[int]: Result.Ok(s.find("zed")?.balance))
+    print(f"unknown={unknown.error}")
+
+    balances = accounts.each(lambda (a: Account) -> int: a.balance)
+    print(f"balances={balances}")
+    names = accounts.each(lambda (a: Account) -> str: a.name)
+    print(f"richest={best(balances)} poorest={worst(balances)} first={worst(names)} last={best(names)}")
+
+    listed: Result[list[str]] = inTx(store, lambda (s: Store) -> Result[list[str]] {
+        out: list[str] = []
+        for name in ["alice", "bob", "carol"] {
+            out.append(s.find(name)?.name)
+        }
+        return Result.Ok(out)
+    })
+    print(f"count={len(listed.unwrap())} names={listed.unwrap()}")
+
+    bob: int = firstOr(lambda () -> optional[int]: store.accounts["bob"].balance, -1)
+    print(f"lookup=bob:{bob} fallback={balanceOf(store, "nobody")}")
+
+    failed = 0
+    for entry in store.log {
+        if entry == "failed" {
+            failed += 1
+        }
+    }
+    audited: Result[int] = Store.audit(store, lambda (log: list[str]) -> Result[int] {
+        if len(log) == 0 {
+            return Result.Err(Error("Audit", "empty log"))
+        }
+        return Result.Ok(len(log))
+    })
+    try {
+        print(f"audit={audited.unwrap()} failed={failed}")
+    } catch _ {
+        print("audit=unavailable")
+    }
+    stray: Result[int] = inTx(store, lambda (s: Store) -> Result[int]: Result.Ok(s.calls))
+    print(f"tx_calls={stray.unwrap()}")
+    print("result_lambda_ledger_ok")
+}

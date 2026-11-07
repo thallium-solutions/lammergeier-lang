@@ -195,6 +195,72 @@ def test_project_local_fallback_still_works() -> None:
     print("PASS: project-local libraries still resolve without extlibs")
 
 
+def test_entry_point_in_project_subdirectory() -> None:
+    """An entry point below the project root (``cmd/serve.lam``) resolves
+    the project's own packages, its ``lib/`` and its installed
+    ``extlibs/`` from the directory of the nearest ``lamlib.toml``, like
+    the language server does, without ``--extlibs`` flags."""
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp) / "server"
+        _make_manifest(project, "demo_app", ">=1.0")
+        _write(project / "app" / "routes" / "web.lam",
+               'func web() -> str {\n    return "app"\n}\n')
+        _make_lib(project / "lib", "helpers", "lib")
+        _make_lib(project / "extlibs", "vendor", "ext")
+        _write(project / "extlibs" / "@lam" / "pkg" / "__init__.lam",
+               'func pkg() -> str {\n    return "pkg"\n}\n')
+        _write(project / "cmd" / "serve.lam", (
+            "from app.routes.web import web\n"
+            "from helpers import tag as helper\n"
+            "from vendor import tag as vendor\n"
+            "from @lam/pkg import pkg\n"
+            "\n"
+            "func main() {\n"
+            '    print(web() + "|" + helper() + "|" + vendor() + "|" + pkg())\n'
+            "}\n"
+        ))
+        _write(project / "tests" / "unit" / "ut_web.lam", (
+            "from app.routes.web import web\n"
+            "\n"
+            "func main() {\n"
+            '    print("test " + web())\n'
+            "}\n"
+        ))
+        proc = _run(["build", "cmd/serve.lam", "-o", str(Path(tmp) / "serve"), "--run"], cwd=project)
+        _assert_output(proc, "app|lib|ext|pkg", "entry point under cmd/")
+        nested = _run(["build", str(project / "tests" / "unit" / "ut_web.lam"),
+                       "-o", str(Path(tmp) / "ut"), "--run"], cwd=Path(tmp))
+        _assert_output(nested, "test app", "test two levels below the project root")
+    print("PASS: entry points below the project root resolve project, lib/ and extlibs/ modules")
+
+
+def test_entry_directory_wins_over_project_root() -> None:
+    """The entry point's own directory stays first among project paths."""
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp)
+        _make_manifest(project, "demo_app", ">=1.0")
+        _make_lib(project, "shared", "root")
+        _make_lib(project / "tools", "shared", "entry-dir")
+        main = _make_main(project / "tools", "shared")
+        proc = _run(["--run", str(main)])
+        _assert_output(proc, "entry-dir", "entry directory first")
+    print("PASS: the entry directory wins over the project root")
+
+
+def test_no_manifest_keeps_entry_directory_resolution() -> None:
+    """Without a ``lamlib.toml`` a parent directory is never adopted."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _make_lib(root, "outside", "parent")
+        main = _make_main(root / "script", "outside")
+        proc = _run(["--run", str(main)])
+        if proc.returncode == 0:
+            raise AssertionError(f"a parent directory without a manifest was searched: {proc.stdout}")
+        if "module `outside` could not be found" not in proc.stderr:
+            raise AssertionError(proc.stderr)
+    print("PASS: without a manifest only the entry directory is searched")
+
+
 def test_missing_extlib_fails_clearly() -> None:
     """A reference to a module that doesn't exist in any layer should
     fail the build; this keeps us from silently dropping unresolved
@@ -379,6 +445,9 @@ def main() -> int:
         test_cli_flag_beats_env_var,
         test_extlibs_beats_project_local,
         test_project_local_fallback_still_works,
+        test_entry_point_in_project_subdirectory,
+        test_entry_directory_wins_over_project_root,
+        test_no_manifest_keeps_entry_directory_resolution,
         test_missing_extlib_fails_clearly,
         test_extlib_in_unrelated_directory,
         test_extlib_with_stdlib_dependency,

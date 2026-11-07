@@ -433,16 +433,16 @@ def test_formatter_call_arguments_starting_with_literals() -> None:
         "        <><p>hi</p></>,\n"
         "        [3, 4]\n"
         "    )\n"
-        "    m = xs.map(lambda(x: int) -> int {\n"
+        "    m = xs.map(lambda (x: int) -> int {\n"
         "        return x\n"
         "    })\n"
-        "    n = xs.map(lambda(x: int) -> int {\n"
+        "    n = xs.map(lambda (x: int) -> int {\n"
         "        return x\n"
         "    })\n"
-        "    t = xs.reduce(lambda(a: int, b: int) -> int {\n"
+        "    t = xs.reduce(lambda (a: int, b: int) -> int {\n"
         "        return a + b\n"
         "    }, 0)\n"
-        "    pair = f(xs.map(lambda(x: int) -> int {\n"
+        "    pair = f(xs.map(lambda (x: int) -> int {\n"
         "        return x\n"
         "    }), {\"k\": 1})\n"
         "    print(injected, rows, page, m, n, t, pair)\n"
@@ -490,6 +490,238 @@ def test_formatter_indents_method_chains() -> None:
     print("PASS: formatter indents method chains continued on the next lines")
 
 
+def test_formatter_keyword_arguments_and_type_parameters() -> None:
+    """Keyword arguments (and keyword sub-patterns) are written without
+    spaces around ``=`` and type parameters as ``T: ordered``, as in
+    ``docs/SYNTAX.md`` (``sorted(words, reverse=true)``, ``func
+    f[T: ordered](...)``); the formatter wrote ``reverse = true`` and
+    ``[T:ordered]``. Typed parameter defaults keep ``name: str = "x"``,
+    assignments and slices are unchanged."""
+    source = (
+        "class Registry[K : comparable, V] {\n"
+        "    func init(self) {\n"
+        "        self.items: dict[K, V] = {}\n"
+        "    }\n"
+        "\n"
+        "    func pick[T:ordered](self, a: T, b: T) -> T {\n"
+        "        return a if a > b else b\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "class Point {\n"
+        "    func init(self, x: int, y: int) {\n"
+        "        self.x: int = x\n"
+        "        self.y: int = y\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "func top[T:ordered](xs: list[T], n: int=3, label: str  =  \"top\") -> list[T] {\n"
+        "    return sorted(xs, reverse = true)[0 : n]\n"
+        "}\n"
+        "\n"
+        "func greet(name: str = \"world\", times: int = 1) -> str {\n"
+        "    return name * times\n"
+        "}\n"
+        "\n"
+        "func where(p: Point) -> str {\n"
+        "    match p {\n"
+        "        case Point(x = 0, y = y) { return f\"y={y}\" }\n"
+        "        case _ { return \"other\" }\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "func main() {\n"
+        "    words: list[str] = [\"bb\", \"a\"]\n"
+        "    a, b = 1, 2\n"
+        "    d: dict[str, str] = {}\n"
+        "    d[\"k\"] = greet(name = \"x\", times=3)\n"
+        "    out = sorted(\n"
+        "        words,\n"
+        "        key = lambda w: len(greet(name = w)),\n"
+        "        reverse = true,\n"
+        "    )\n"
+        "    words.foreach(lambda (w: str) {\n"
+        "        n = len(w)\n"
+        "        print(n == a, n <= b, greet(times = n))\n"
+        "    })\n"
+        "    print(top(words, n = 1), out, Point(x = 0, y = 1).x, where(Point(0, 2)), d)\n"
+        "}\n"
+    )
+    expected = (
+        "class Registry[K: comparable, V] {\n"
+        "    func init(self) {\n"
+        "        self.items: dict[K, V] = {}\n"
+        "    }\n"
+        "\n"
+        "    func pick[T: ordered](self, a: T, b: T) -> T {\n"
+        "        return a if a > b else b\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "class Point {\n"
+        "    func init(self, x: int, y: int) {\n"
+        "        self.x: int = x\n"
+        "        self.y: int = y\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "func top[T: ordered](xs: list[T], n: int = 3, label: str = \"top\") -> list[T] {\n"
+        "    return sorted(xs, reverse=true)[0:n]\n"
+        "}\n"
+        "\n"
+        "func greet(name: str = \"world\", times: int = 1) -> str {\n"
+        "    return name * times\n"
+        "}\n"
+        "\n"
+        "func where(p: Point) -> str {\n"
+        "    match p {\n"
+        "        case Point(x=0, y=y) {\n"
+        "            return f\"y={y}\"\n"
+        "        }\n"
+        "        case _ {\n"
+        "            return \"other\"\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "func main() {\n"
+        "    words: list[str] = [\"bb\", \"a\"]\n"
+        "    a, b = 1, 2\n"
+        "    d: dict[str, str] = {}\n"
+        "    d[\"k\"] = greet(name=\"x\", times=3)\n"
+        "    out = sorted(\n"
+        "        words,\n"
+        "        key=lambda w: len(greet(name=w)),\n"
+        "        reverse=true,\n"
+        "    )\n"
+        "    words.foreach(lambda (w: str) {\n"
+        "        n = len(w)\n"
+        "        print(n == a, n <= b, greet(times=n))\n"
+        "    })\n"
+        "    print(top(words, n=1), out, Point(x=0, y=1).x, where(Point(0, 2)), d)\n"
+        "}\n"
+    )
+    result = format_lam_source(source)
+    assert result.text == expected, result.text
+    assert format_lam_source(expected).text == expected
+    assert not format_lam_source(expected).changed
+    print("PASS: formatter writes keyword arguments as `k=v` and type parameters as `T: ordered`")
+
+
+def test_formatter_inline_braces_keyword_parens_and_lambda_heads() -> None:
+    """A ``{}`` / ``{...}`` operand of a conditional expression (``x if c
+    else {}``, also in a lambda body) is a literal kept on its line; the
+    formatter split it as a block (``else {`` / ``}``). A ``(`` after
+    ``if`` / ``elif`` / ``while`` / ``match`` got two spaces (``if  (a
+    and b) or (c)``); keywords before ``(`` now get exactly one. A
+    parenthesised lambda head is written ``lambda (x: int)`` as in
+    docs/SYNTAX.md (it was tightened to ``lambda(x: int)``), and a keyword
+    argument's ``{...}`` value follows ``=`` directly (``attrs={...}``,
+    it was written ``attrs= {...}``)."""
+    source = (
+        "from lamjson import Json\n"
+        "\n"
+        "func opts(attrs: dict[str, str] = {}, xs: list[int] = []) -> int {\n"
+        "    return len(attrs) + len(xs)\n"
+        "}\n"
+        "\n"
+        "func f(schema: json, metas: dict[str, dict[str, any]], k: str, a: bool, b: bool) -> json {\n"
+        "    slots: json = schema if Json.kind(schema) == \"object\" else {}\n"
+        "    meta: dict[str, any] = metas[k] if k in metas else {}\n"
+        "    obj: dict[str, str] = {\"a\": \"b\"} if a else {\"type\": \"object\"}\n"
+        "    other: dict[str, str] = obj if a else {\n"
+        "        \"k\": \"v\"\n"
+        "    }\n"
+        "    if (a and b) or (b and a) {\n"
+        "        print(meta)\n"
+        "    } elif(a) {\n"
+        "        print(1)\n"
+        "    } else {\n"
+        "        print(2)\n"
+        "    }\n"
+        "    if a { print(3) }\n"
+        "    else { print(4) }\n"
+        "    while  (a and b) {\n"
+        "        break\n"
+        "    }\n"
+        "    x = not  (a or b)\n"
+        "    y = a and(b or a)\n"
+        "    for(i, j) in [(1, 2)] {\n"
+        "        print(i, j)\n"
+        "    }\n"
+        "    match  (a) {\n"
+        "        case _ { print(x, y) }\n"
+        "    }\n"
+        "    g = lambda(n: int) -> str { return str(n) }\n"
+        "    h = lambda  (n: int) -> int: n * 2\n"
+        "    w = lambda (n: int): {\"n\": n} if n > 0 else {}\n"
+        "    n = opts(attrs = {\"k\": \"v\"}, xs = [1])\n"
+        "    m = opts(\n"
+        "        attrs = {\"k\": \"v\"},\n"
+        "    )\n"
+        "    print(g(1), h(2), w(3), other, n, m)\n"
+        "    return (slots)\n"
+        "}\n"
+    )
+    expected = (
+        "from lamjson import Json\n"
+        "\n"
+        "func opts(attrs: dict[str, str] = {}, xs: list[int] = []) -> int {\n"
+        "    return len(attrs) + len(xs)\n"
+        "}\n"
+        "\n"
+        "func f(schema: json, metas: dict[str, dict[str, any]], k: str, a: bool, b: bool) -> json {\n"
+        "    slots: json = schema if Json.kind(schema) == \"object\" else {}\n"
+        "    meta: dict[str, any] = metas[k] if k in metas else {}\n"
+        "    obj: dict[str, str] = {\"a\": \"b\"} if a else {\"type\": \"object\"}\n"
+        "    other: dict[str, str] = obj if a else {\n"
+        "        \"k\": \"v\"\n"
+        "    }\n"
+        "    if (a and b) or (b and a) {\n"
+        "        print(meta)\n"
+        "    } elif (a) {\n"
+        "        print(1)\n"
+        "    } else {\n"
+        "        print(2)\n"
+        "    }\n"
+        "    if a {\n"
+        "        print(3)\n"
+        "    } else {\n"
+        "        print(4)\n"
+        "    }\n"
+        "    while (a and b) {\n"
+        "        break\n"
+        "    }\n"
+        "    x = not (a or b)\n"
+        "    y = a and (b or a)\n"
+        "    for (i, j) in [(1, 2)] {\n"
+        "        print(i, j)\n"
+        "    }\n"
+        "    match (a) {\n"
+        "        case _ {\n"
+        "            print(x, y)\n"
+        "        }\n"
+        "    }\n"
+        "    g = lambda (n: int) -> str {\n"
+        "        return str(n)\n"
+        "    }\n"
+        "    h = lambda (n: int) -> int: n * 2\n"
+        "    w = lambda (n: int): {\"n\": n} if n > 0 else {}\n"
+        "    n = opts(attrs={\"k\": \"v\"}, xs=[1])\n"
+        "    m = opts(\n"
+        "        attrs={\"k\": \"v\"},\n"
+        "    )\n"
+        "    print(g(1), h(2), w(3), other, n, m)\n"
+        "    return (slots)\n"
+        "}\n"
+    )
+    result = format_lam_source(source)
+    assert result.text == expected, result.text
+    assert format_lam_source(expected).text == expected
+    assert not format_lam_source(expected).changed
+    print("PASS: formatter keeps inline `{}` operands, single-spaces `keyword (` and writes `lambda (x: T)`")
+
+
 def main() -> int:
     tests = [
         test_formatter_snapshot,
@@ -507,6 +739,8 @@ def main() -> int:
         test_formatter_keeps_slices_compact,
         test_formatter_call_arguments_starting_with_literals,
         test_formatter_indents_method_chains,
+        test_formatter_keyword_arguments_and_type_parameters,
+        test_formatter_inline_braces_keyword_parens_and_lambda_heads,
     ]
     for test in tests:
         test()

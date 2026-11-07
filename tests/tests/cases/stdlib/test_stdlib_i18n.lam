@@ -1,0 +1,232 @@
+# expect: languages: en,it,de fallback=en
+# expect: counts: en=13 it=3 de=0 all=16
+# expect: keys-it: App.tagline,Feed.title,Only.it
+# expect: keys-en: App.name,App.tagline,Feed.count,Feed.deep.er.est,Feed.empty,Feed.enabled,Feed.price,Feed.title,Mail.body,Mail.subject,Only.en,Plain.braces,Plain.nested
+# expect: nested: deep
+# expect: scalars: 3 true 2.50
+# expect: has: true false false true
+# expect: raw: Bacheca|No posts|Feed|Missing.key|English only|Solo italiano|Only.it
+# expect: text: Hello <b>&!|Ciao <b>&!|Welcome Ada & Bob
+# expect: text-unknown: Hello {name}!|Hello {name}!|Hello {name}!
+# expect: text-no-rescan: Hello {other}!
+# expect: text-braces: {Ada} {} { name } x}
+# expect: markup: Hello &lt;b&gt;&amp;!
+# expect: markup-trusted: Hi <b>Ada &lt;3</b> &amp; welcome
+# expect: markup-tags: b
+# expect: markup-quote: <a href="/u?id=1&amp;x=&quot;y&quot;">link</a>
+# expect: plain: Hello <b>&!|Hi Ada <3 & welcome|Welcome Ada & Bob
+# expect: missing: App.name,Feed.count,Feed.deep.er.est,Feed.empty,Feed.enabled,Feed.price,Mail.body,Mail.subject,Only.en,Plain.braces,Plain.nested
+# expect: missing-reverse: Only.it
+# expect: missing-empty: 0 14
+# expect: dup-files: <root>/dup/en/b.json: key "X.y" is already defined in <root>/dup/en/a.json
+# expect: dup-same-file: <root>/same/en/a.json: key "k" is defined twice
+# expect: dup-dotted: <root>/dotted/en/a.json: key "a.b" is defined twice
+# expect: malformed: <root>/bad/en/a.json:3: invalid JSON
+# expect: truncated: <root>/short/en/a.json:1: invalid JSON
+# expect: array: <root>/array/en/a.json:2: key "Feed.tags": arrays are not supported
+# expect: null: <root>/null/en/a.json:1: key "a": null is not a text
+# expect: top-level: <root>/top/en/a.json: the top level must be a JSON object
+# expect: trailing: <root>/trail/en/a.json:1: unexpected data after the top-level object
+# expect: empty-key: <root>/emptykey/en/a.json:1: empty key in "Feed."
+# expect: missing-dir: TranslationError translations directory "<root>/nope" does not exist
+# expect: dir-is-file: translations directory "<root>/plainfile" is not a directory
+# expect: lang-file: TranslationError <root>/langfile/en is not a directory
+# expect: bad-languages: no languages|duplicate language "en"|invalid language " de"|fallback "fr" is not one of the languages
+# expect: bom: ok
+# expect: add: true en=1
+# expect: add-duplicate: TranslationError en: key "Nav.home" is already defined
+# expect: add-loaded-duplicate: en: key "App.name" is already defined in <root>/ok/en/a_common.json
+# expect: add-unsupported: unsupported language "fr"
+# expect: add-empty-key: en: empty key
+# expect: merge: 2 en=3 Casa|Home
+# expect: merge-duplicate: it: key "Nav.home" is already defined en=3 it=1
+# expect: merge-empty-key: it: empty key it=1
+# expect: constructor: ValueError: Translations: no languages|ValueError: Translations: duplicate language "it"|ValueError: Translations: fallback "fr" is not one of the languages
+# expect: default-fallback: About|Only
+# expect: explicit-fallback: Home|Gone|Home
+# expect: language: it it en en en de
+# expect: negotiate: it en en en en it it it en de de it it en it
+# Translations loaded from <dir>/<lang>/*.json: nesting, scalars, files
+# merged per language, duplicate and malformed-file errors, the fallback
+# chain, {name} parameters as plain text, escaped markup and stripped text,
+# missing(), add/merge and language negotiation.
+from lami18n import Translations
+from lamos import Os
+from lampath import Path
+from lamerrors import Result, Error
+
+func write(root: str, rel: str, content: str) {
+    full: str = Path.join(root, rel)
+    Os.mkdir(Path.dir(full)).unwrap()
+    Os.writeFile(full, content).unwrap()
+}
+
+func failure(result: Result, root: str) -> str {
+    if result.ok() {
+        return "unexpected success"
+    }
+    error: Error = result.error
+    return error.message.replace(root, "<root>")
+}
+
+func upTo(text: str, marker: str) -> str {
+    at: int = text.index(marker)
+    if at < 0 {
+        return text
+    }
+    return text[:at + len(marker)]
+}
+
+func loadOne(root: str, name: str) -> str {
+    return failure(Translations.load(Path.join(root, name), ["en"]), root)
+}
+
+func main() {
+    root: str = Os.tempFile("lam-i18n-", "").unwrap() + ".d"
+    Os.mkdir(root).unwrap()
+
+    write(root, "ok/en/a_common.json", """{
+  "App": {"name": "Luxyt", "tagline": "Hello {name}!"},
+  "Feed": {"title": "Feed", "count": 3, "enabled": true, "price": 2.50, "deep": {"er": {"est": "deep"}}},
+  "Mail": {"subject": "Welcome {first} & {second}", "body": "Hi <b>{name}</b> &amp; welcome"},
+  "Plain": {"braces": "{{name}} {} { name } x}", "nested": "Hello {other}!"}
+}""")
+    write(root, "ok/en/b_feed.json", "{\"Feed.empty\": \"No posts\", \"Only\": {\"en\": \"English only\"}}")
+    write(root, "ok/en/notes.txt", "not json at all {")
+    write(root, "ok/en/drafts/c.json", "{ broken")
+    write(root, "ok/it/a.json", "{\"App\": {\"tagline\": \"Ciao {name}!\"}, \"Feed\": {\"title\": \"Bacheca\"}, \"Only.it\": \"Solo italiano\"}")
+
+    t: Translations = Translations.load(Path.join(root, "ok"), ["en", "it", "de"], "en").unwrap()
+    print(f"languages: {','.join(t.languages())} fallback={t.fallback()}")
+    print(f"counts: en={t.count('en')} it={t.count('it')} de={t.count('de')} all={t.count()}")
+    print(f"keys-it: {','.join(t.keys('it'))}")
+    print(f"keys-en: {','.join(t.keys('en'))}")
+    print(f"nested: {t.raw('en', 'Feed.deep.er.est')}")
+    print(f"scalars: {t.raw('en', 'Feed.count')} {t.raw('en', 'Feed.enabled')} {t.raw('en', 'Feed.price')}")
+    print(f"has: {str(t.has('it', 'Feed.title')).toLower()} {str(t.has('it', 'Feed.empty')).toLower()} {str(t.has('fr', 'Feed.title')).toLower()} {str(t.has('en', 'Feed.empty')).toLower()}")
+    raws: list[str] = [
+        t.raw("it", "Feed.title"),
+        t.raw("it", "Feed.empty"),
+        t.raw("de", "Feed.title"),
+        t.raw("it", "Missing.key"),
+        t.raw("fr", "Only.en"),
+        t.raw("it", "Only.it"),
+        t.raw("en", "Only.it"),
+    ]
+    print(f"raw: {'|'.join(raws)}")
+
+    risky: dict[str, str] = {"name": "<b>&"}
+    print(f"text: {t.text('en', 'App.tagline', risky)}|{t.text('it', 'App.tagline', risky)}|{t.text('en', 'Mail.subject', {'first': 'Ada', 'second': 'Bob'})}")
+    print(f"text-unknown: {t.text('en', 'App.tagline')}|{t.text('en', 'App.tagline', {'other': 'x'})}|{t.text('en', 'App.tagline', {'Name': 'x'})}")
+    print(f"text-no-rescan: {t.text('en', 'App.tagline', {'name': '{other}', 'other': 'NO'})}")
+    print(f"text-braces: {t.text('en', 'Plain.braces', {'name': 'Ada'})}")
+
+    print(f"markup: {t.markup('en', 'App.tagline', risky)}")
+    body: html = t.markup("en", "Mail.body", {"name": "Ada <3"})
+    print(f"markup-trusted: {body}")
+    print(f"markup-tags: {body.first('b').tag()}")
+    t.add("en", "Link.profile", "<a href=\"/u?id={id}&amp;x={x}\">link</a>").unwrap()
+    quoted: dict[str, str] = {"id": "1", "x": "\"y\""}
+    print(f"markup-quote: {t.markup('en', 'Link.profile', quoted)}")
+    print(f"plain: {t.plain('en', 'App.tagline', risky)}|{t.plain('en', 'Mail.body', {'name': 'Ada <3'})}|{t.plain('en', 'Mail.subject', {'first': 'Ada', 'second': 'Bob'})}")
+    t.merge("en", {}).unwrap()
+
+    missingIt: list[str] = t.missing("en", "it")
+    print(f"missing: {','.join([k for k in missingIt if k != 'Link.profile'])}")
+    print(f"missing-reverse: {','.join(t.missing('it', 'en'))}")
+    print(f"missing-empty: {len(t.missing('de', 'en'))} {len(t.missing('en', 'de'))}")
+
+    write(root, "dup/en/a.json", "{\"X\": {\"y\": \"1\"}}")
+    write(root, "dup/en/b.json", "{\"X.y\": \"2\"}")
+    print(f"dup-files: {loadOne(root, 'dup')}")
+    write(root, "same/en/a.json", "{\"k\": \"1\", \"k\": \"2\"}")
+    print(f"dup-same-file: {loadOne(root, 'same')}")
+    write(root, "dotted/en/a.json", "{\"a\": {\"b\": \"1\"}, \"a.b\": \"2\"}")
+    print(f"dup-dotted: {loadOne(root, 'dotted')}")
+    write(root, "bad/en/a.json", "{\n  \"a\": \"1\",\n}\n")
+    print(f"malformed: {upTo(loadOne(root, 'bad'), 'invalid JSON')}")
+    write(root, "short/en/a.json", "{\"a\": \"1\"")
+    print(f"truncated: {upTo(loadOne(root, 'short'), 'invalid JSON')}")
+    write(root, "array/en/a.json", "{\"Feed\": {\n  \"tags\": [\"a\", \"b\"]}}")
+    print(f"array: {loadOne(root, 'array')}")
+    write(root, "null/en/a.json", "{\"a\": null}")
+    print(f"null: {loadOne(root, 'null')}")
+    write(root, "top/en/a.json", "[\"a\"]")
+    print(f"top-level: {loadOne(root, 'top')}")
+    write(root, "trail/en/a.json", "{\"a\": \"1\"} {\"b\": \"2\"}")
+    print(f"trailing: {loadOne(root, 'trail')}")
+    write(root, "emptykey/en/a.json", "{\"Feed\": {\"\": \"x\"}}")
+    print(f"empty-key: {loadOne(root, 'emptykey')}")
+
+    missingDir: Result[Translations] = Translations.load(Path.join(root, "nope"), ["en"])
+    missingError: Error = missingDir.error
+    print(f"missing-dir: {missingError.kind} {failure(missingDir, root)}")
+    write(root, "plainfile", "{}")
+    print(f"dir-is-file: {loadOne(root, 'plainfile')}")
+    write(root, "langfile/en", "{}")
+    langFile: Result[Translations] = Translations.load(Path.join(root, "langfile"), ["en"])
+    langError: Error = langFile.error
+    print(f"lang-file: {langError.kind} {failure(langFile, root)}")
+    okDir: str = Path.join(root, "ok")
+    print(f"bad-languages: {failure(Translations.load(okDir, []), root)}|{failure(Translations.load(okDir, ['en', 'it', 'en']), root)}|{failure(Translations.load(okDir, ['en', ' de']), root)}|{failure(Translations.load(okDir, ['en'], 'fr'), root)}")
+    write(root, "bom/en/a.json", "\ufeff{\"a\": \"1\"}")
+    bom: Translations = Translations.load(Path.join(root, "bom"), ["en"]).unwrap()
+    print(f"bom: {'ok' if bom.raw('en', 'a') == '1' else 'broken'}")
+
+    built: Translations = Translations(["en", "it"])
+    added: bool = built.add("en", "Nav.home", "Home").unwrap()
+    print(f"add: {str(added).toLower()} en={built.count('en')}")
+    again: Result[bool] = built.add("en", "Nav.home", "Start")
+    againError: Error = again.error
+    print(f"add-duplicate: {againError.kind} {againError.message}")
+    print(f"add-loaded-duplicate: {failure(t.add('en', 'App.name', 'Other'), root)}")
+    print(f"add-unsupported: {failure(built.add('fr', 'Nav.home', 'Accueil'), root)}")
+    print(f"add-empty-key: {failure(built.add('en', '', 'x'), root)}")
+    merged: int = built.merge("en", {"Nav.only": "Only", "Nav.about": "About"}).unwrap()
+    built.merge("it", {"Nav.home": "Casa"}).unwrap()
+    print(f"merge: {merged} en={built.count('en')} {built.raw('it', 'Nav.home')}|{built.raw('en', 'Nav.home')}")
+    clash: Result[int] = built.merge("it", {"Nav.about": "Chi siamo", "Nav.home": "Inizio"})
+    print(f"merge-duplicate: {failure(clash, root)} en={built.count('en')} it={built.count('it')}")
+    blank: Result[int] = built.merge("it", {"Nav.x": "x", "": "y"})
+    print(f"merge-empty-key: {failure(blank, root)} it={built.count('it')}")
+
+    problems: list[str] = []
+    for languages in [[], ["en", "it", "it"], ["en"]] {
+        try {
+            fallback: str = "fr" if len(languages) == 1 else ""
+            _ = Translations(languages, fallback)
+            problems.append("no error")
+        } catch ValueError as e {
+            problems.append(f"{e}")
+        }
+    }
+    print(f"constructor: {'|'.join(problems)}")
+
+    print(f"default-fallback: {built.raw('it', 'Nav.about')}|{built.raw('it', 'Nav.only')}")
+    itFirst: Translations = Translations(["it", "en"], "en")
+    itFirst.add("en", "Gone", "Gone").unwrap()
+    itFirst.add("it", "Home", "Casa").unwrap()
+    print(f"explicit-fallback: {itFirst.raw('en', 'Home')}|{itFirst.raw('it', 'Gone')}|{itFirst.raw('fr', 'Home')}")
+
+    print(f"language: {t.language('it')} {t.language('IT')} {t.language('en-US')} {t.language('fr')} {t.language('')} {t.language('de-AT')}")
+    headers: list[str] = [
+        "it-IT,it;q=0.9,en;q=0.8",
+        "fr-FR, de;q=0.5, en;q=0.7",
+        "",
+        "*",
+        "fr",
+        "de;q=0, it;q=0.1",
+        "en;q=abc, it",
+        "IT",
+        "pt-BR,pt;q=0.9",
+        "fr;q=1, de-CH;q=0.4, en;q=0.4",
+        "en;q=2, de;q=0.3",
+        "en;q=0, *",
+        "en;q=0",
+        "fr, *;q=0.5, it;q=0.3",
+        "it_IT",
+    ]
+    print(f"negotiate: {' '.join([t.negotiate(h) for h in headers])}")
+
+    Os.removeAll(root).unwrap()
+}

@@ -1,0 +1,13 @@
+# expect-error: cannot infer type parameter `T` of `make`
+# Only an annotated target binds a type parameter that no argument
+# determines: an unannotated local gives no type to infer it from.
+from lamerrors import Result, Error
+
+func make[T]() -> Result[T] {
+    return Result.Err(Error("Empty", "nothing"))
+}
+
+func main() {
+    r = make()
+    print(r.ok())
+}

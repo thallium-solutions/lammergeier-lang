@@ -114,7 +114,8 @@ After install, `lamc` is the single entry point for everything:
 | Verb | Purpose |
 |------|---------|
 | `lamc <file.lam>` | Compile a Lam program to a native binary. Output path defaults to the source path minus `.lam` (so `lamc src/foo.lam` writes `src/foo`). |
-| `lamc <file.lam> --run` | Compile and immediately execute. |
+| `lamc <file.lam> --run [-- ARGS]` | Compile and immediately execute, passing `ARGS` to the program. |
+| `lamc dev <file.lam> [-- ARGS]` | Build and run, then rebuild and restart on changes; see [`docs/package_manager.md`](package_manager.md#24-development-loop-lamc-dev). |
 | `lamc <file.lam> --emit-go` | Print the generated Go source and stop before `go build`. |
 | `lamc <file.lam> --emit-ast` | Print the parsed Lark AST and stop before transpilation. |
 | `lamc version` / `lamc --version` | Print the compiler version used by `compatibility.lamc` manifest ranges. |

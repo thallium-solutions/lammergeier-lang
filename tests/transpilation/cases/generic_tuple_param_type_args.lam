@@ -1,0 +1,35 @@
+# Transpilation: a type parameter that only appears inside a tuple type is
+# absent from the Go signature (tuples are `[]interface{}`), so the call
+# spells the type arguments bound from the arguments' Lam types; Go
+# reported `cannot infer K`. Calls whose type parameters Go can infer keep
+# the plain spelling.
+# expect-go: d := ToDict[string, int](pairs)
+# expect-go: fmt.Println(Tools_swap[string, int](pairs))
+# expect-go: fmt.Println(First(xs))
+
+func toDict[K: comparable, V](pairs: list[tuple[K, V]]) -> dict[K, V] {
+    out: dict[K, V] = {}
+    for k, v in pairs {
+        out[k] = v
+    }
+    return out
+}
+
+func first[T](xs: list[T]) -> T {
+    return xs[0]
+}
+
+class Tools {
+    static func swap[K, V](pairs: list[tuple[K, V]]) -> list[tuple[V, K]] {
+        return [(v, k) for k, v in pairs]
+    }
+}
+
+func main() {
+    pairs: list[tuple[str, int]] = [("a", 1)]
+    xs: list[int] = [3]
+    d = toDict(pairs)
+    print(len(d))
+    print(Tools.swap(pairs))
+    print(first(xs))
+}

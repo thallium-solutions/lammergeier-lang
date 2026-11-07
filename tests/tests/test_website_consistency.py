@@ -97,7 +97,7 @@ OFFICIAL_PACKAGES = (
             "Server",
             "SseEmitter",
         ),
-        "3.1.0",
+        "3.6.0",
     ),
     OfficialPackage(
         "@lam/vulture/std-plugin",
@@ -110,6 +110,12 @@ OFFICIAL_PACKAGES = (
         "lam-vulture-tus-plugin",
         ("tusGc", "tusUploads"),
         "3.0.4",
+    ),
+    OfficialPackage(
+        "@lam/vulture/dev-plugin",
+        "lam-vulture-dev-plugin",
+        ("LiveReload", "liveReload", "liveReloadPlugin"),
+        "1.0.0",
     ),
     OfficialPackage(
         "@lam/vulture/ws-plugin",
@@ -920,7 +926,7 @@ def check_official_packages(report: Report) -> None:
                 f"catalog needs a current canonical import example for {package.name}",
             )
 
-    if compiler_target is not None and compiler_target != "4.4":
+    if compiler_target is not None and compiler_target != "4.5":
         report.add(
             "official packages",
             ROOT / "compiler" / "version.py",

@@ -1,0 +1,42 @@
+# lamc 4.5.0 (ec15c6f+dirty), 2026-11-07T15:04:33Z
+# command: sh scripts/bench.sh runtime
+# host: Linux 6.12.10-76061203-generic x86_64; cpu: 13th Gen Intel(R) Core(TM) i9-13900HX; load: 3.72 7.40 6.22
+# go: go1.25.3
+
+  ran language/bench_dict_access.lam
+  ran language/bench_fib.lam
+  ran language/bench_fstring.lam
+  ran language/bench_list_append.lam
+  ran language/bench_list_index.lam
+  ran language/bench_method_dispatch.lam
+  ran language/bench_string_concat.lam
+  ran language/bench_sum_loop.lam
+  ran stdlib/bench_hash_sha256.lam
+  ran stdlib/bench_iter_pipeline.lam
+  ran stdlib/bench_json_decode.lam
+  ran stdlib/bench_json_encode.lam
+  ran stdlib/bench_regex_match.lam
+  ran stdlib/bench_sort_ints.lam
+  ran stdlib/bench_strings_split.lam
+
+benchmark                        ops      median      per op        best  spread   go per op  lam/go
+----------------------------------------------------------------------------------------------------
+[language]
+dict_access                   100000    23.16 ms    231.6 ns    19.81 ms    3.4%    223.7 ns   1.04x
+fib                                5     6.95 ms     1.39 ms     5.51 ms   13.2%     1.55 ms   0.90x
+fstring                       200000    33.32 ms    166.6 ns    31.45 ms    3.5%    203.4 ns   0.82x
+list_append                  1000000    12.59 ms     12.6 ns    10.76 ms    9.9%     12.3 ns   1.02x
+list_index                  50000000    26.95 ms      0.5 ns    26.50 ms    1.7%      0.7 ns   0.78x
+method_dispatch              2000000     1.16 ms      0.6 ns   489.39 us    3.3%      0.6 ns   1.04x
+string_concat                  10000     9.39 ms    939.3 ns     8.76 ms    6.2%    929.1 ns   1.01x
+sum_loop                    10000000     4.96 ms      0.5 ns     2.58 ms   19.3%      0.4 ns   1.25x
+[stdlib]
+hash_sha256                   100000    25.72 ms    257.2 ns    22.66 ms    2.6%
+iter_pipeline                1000000     4.26 ms      4.3 ns     4.25 ms    0.2%
+json_decode                    50000   120.75 ms     2.42 us   112.94 ms    6.4%
+json_encode                    50000   126.39 ms     2.53 us   117.35 ms    3.2%
+regex_match                    50000    76.19 ms     1.52 us    66.10 ms    9.2%
+sort_ints                     100000    41.70 ms    417.0 ns    38.68 ms    1.6%
+strings_split                 200000    20.73 ms    103.6 ns    20.34 ms    1.9%
+
+geometric mean lam/go over 8 baselines: 0.97x

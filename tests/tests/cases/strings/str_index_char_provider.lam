@@ -1,0 +1,14 @@
+# Helper module for test_str_index_one_char.lam: one-character `str`s from
+# a `str` index inside an imported library module.
+
+func initial(name: str) -> str {
+    return string(name[0]).toUpper()
+}
+
+func lastChar(s: str) -> str {
+    return string(s[-1])
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

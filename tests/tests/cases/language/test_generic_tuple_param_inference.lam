@@ -1,0 +1,71 @@
+# Regression: a type parameter that only appears inside a tuple type
+# (`pairs: list[tuple[K, V]]`) is invisible to Go, which lowers tuples to
+# `[]interface{}`: calls failed `go build` with `cannot infer K`. The call
+# now spells the type arguments bound from the Lam types of its arguments
+# (`ToDict[string, int](pairs)`): a typed local, a list literal of tuples,
+# a keyword argument, a call from another generic function, a static and
+# an instance generic method, and a generic class receiver.
+#
+# expect: dict=2 b=2
+# expect: literal=x
+# expect: keyword=1
+# expect: keys=[a b]
+# expect: swapped=2 first=1
+# expect: counted=2
+# expect: tagged=map[a:5]
+# expect: generic_tuple_param_inference_ok
+
+func toDict[K: comparable, V](pairs: list[tuple[K, V]]) -> dict[K, V] {
+    out: dict[K, V] = {}
+    for k, v in pairs {
+        out[k] = v
+    }
+    return out
+}
+
+func keysOf[K: comparable, V](pairs: list[tuple[K, V]]) -> list[K] {
+    lookup = toDict(pairs)
+    return [k for k, _v in pairs if k in lookup]
+}
+
+class Tools {
+    static func swap[K, V](pairs: list[tuple[K, V]]) -> list[tuple[V, K]] {
+        return [(v, k) for k, v in pairs]
+    }
+
+    func count[K, V](self, pairs: list[tuple[K, V]]) -> int {
+        return len(pairs)
+    }
+}
+
+class Box[T] {
+    func init(self, item: T) {
+        self.item: T = item
+    }
+
+    func tag[K: comparable, V](self, pairs: list[tuple[K, V]]) -> dict[K, T] {
+        out: dict[K, T] = {}
+        for k, _v in pairs {
+            out[k] = self.item
+        }
+        return out
+    }
+}
+
+func main() {
+    pairs: list[tuple[str, int]] = [("a", 1), ("b", 2)]
+    d = toDict(pairs)
+    print(f"dict={len(d)} b={d["b"]}")
+    print(f"literal={toDict([(1, "x")])[1]}")
+    print(f"keyword={len(toDict(pairs=[("k", 1.5)]))}")
+    print(f"keys={keysOf(pairs)}")
+    swapped = Tools.swap(pairs)
+    first: int = swapped[0][0]
+    print(f"swapped={len(swapped)} first={first}")
+    t = Tools()
+    print(f"counted={t.count(pairs)}")
+    box: Box[int] = Box[int](5)
+    flags: list[tuple[str, bool]] = [("a", true)]
+    print(f"tagged={box.tag(flags)}")
+    print("generic_tuple_param_inference_ok")
+}

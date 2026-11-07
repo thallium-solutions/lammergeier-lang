@@ -1,0 +1,68 @@
+# Indexing a `str` with one integer gives a `byte` (docs/SYNTAX.md); the
+# documented `string(s[i])` conversion gives a one-character `str` that
+# composes with str methods, `str` parameters, comparisons, `+`,
+# f-strings, comprehensions, lambdas, generics, classes and imported
+# modules, with constant, negative and computed indexes. `s[i].toUpper()`
+# itself is now a Lam error (611_str_index_byte_method) instead of a
+# `go build` failure.
+#
+# expect: upper=H last=O mid=L
+# expect: concat=hO cmp=true false
+# expect: byte=104 code=111 eq=true
+# expect: comp=[A C] lambda=[X Y]
+# expect: fstring=[h|o]
+# expect: param=HELLO
+# expect: class=Z digit=true
+# expect: generic=O
+# expect: lib=B o
+# expect: loop=H-E-L-L-O
+# expect: slice=H
+
+from str_index_char_provider import initial, lastChar
+
+class Card {
+    func init(self, code: str) {
+        self.code: str = code
+    }
+
+    func head(self) -> str {
+        return string(self.code[0]).toUpper()
+    }
+
+    func digit(self) -> bool {
+        return string(self.code[-1]).isDigit()
+    }
+}
+
+func shout(s: str) -> str {
+    return s.toUpper()
+}
+
+func pick[T](xs: list[T], i: int) -> T {
+    return xs[i]
+}
+
+func main() {
+    w: str = "hello"
+    i: int = len(w) // 2
+    print(f"upper={string(w[0]).toUpper()} last={string(w[-1]).toUpper()} mid={string(w[i]).toUpper()}")
+    first: str = string(w[0])
+    print(f"concat={first + string(w[-1]).toUpper()} cmp={string(w[0]) == "h"} {string(w[1]) == "h"}")
+    print(f"byte={w[0]} code={int(w[-1])} eq={w[0] == 104}")
+    initials: list[str] = [string(x[0]).toUpper() for x in ["ab", "cd"]]
+    words: list[str] = ["xa", "yb"]
+    ups: list[str] = words.map(lambda s: string(s[0]).toUpper())
+    print(f"comp={initials} lambda={ups}")
+    print(f"fstring=[{string(w[0])}|{string(w[-1])}]")
+    print(f"param={shout(string(w[0]) + w[1:])}")
+    c: Card = Card("z7")
+    print(f"class={c.head()} digit={c.digit()}")
+    print(f"generic={string(pick(["one", "two"], -1)[-1]).toUpper()}")
+    print(f"lib={initial("bob")} {lastChar(w)}")
+    parts: list[str] = []
+    for k in range(len(w)) {
+        parts.append(string(w[k]).toUpper())
+    }
+    print(f"loop={"-".join(parts)}")
+    print(f"slice={w[0:1].toUpper()}")
+}

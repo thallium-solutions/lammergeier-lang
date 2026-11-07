@@ -1,0 +1,52 @@
+# Transpilation: `?` in a lambda declared `-> Result[...]` returns the
+# error from the lambda (an expression body becomes a block holding the
+# guard); `catch _` binds nothing; `make()?.size()` evaluates `make()` once.
+# expect-go: var r *Result = Apply(func() *Result {
+# expect-go: if !__q4.Ok() { return __q4 }
+# expect-go: return Result_Ok(__q4.Value.(int) + 1)
+# expect-go: __lamDoRetV1 = __q1.Value.(int)
+# expect-go: if __rdo1.Error != nil {
+# expect-go: __q2 := Thing__lam2(n)
+# expect-go: if !__q2.Ok() { return __q2 }
+# expect-go: return Result_Ok(func(v interface{}) *Thing { if v == nil { return nil }; return v.(*Thing) }(__q2.Value).Size())
+
+from lamerrors import Result, Error
+
+class Thing {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func size(self) -> int {
+        return self.n
+    }
+}
+
+func fails() -> Result[int] {
+    return Result.Err(Error("Bad", "no"))
+}
+
+func thing(n: int) -> Result[Thing] {
+    return Result.Ok(Thing(n))
+}
+
+func apply(fn: func() -> Result[int]) -> Result[int] {
+    return fn()
+}
+
+func value() -> int {
+    do {
+        return fails()?
+    } catch _ {
+        return -1
+    }
+}
+
+func size(n: int) -> Result[int] {
+    return Result.Ok(thing(n)?.size())
+}
+
+func main() {
+    r: Result[int] = apply(lambda () -> Result[int]: Result.Ok(fails()? + 1))
+    print(r.ok(), value(), size(2).ok())
+}

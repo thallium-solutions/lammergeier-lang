@@ -1,0 +1,54 @@
+# expect-pass
+# A generic subclass that binds part of its generic base
+# (`class Sub[V](Registry[str, V])`) passes its own type arguments on:
+# `s.put("q", 2)` with `s: Sub[int]` checks `value` against `int`; it was
+# rejected with "argument `value` to `Registry.put` has type `int`,
+# expected `V`". Also through a renamed parameter, a parameter receiver,
+# a field receiver, two levels and the inherited method's result.
+class Registry[K: comparable, V] {
+    func init(self) {
+        self.items: dict[K, V] = {}
+    }
+
+    func put(self, key: K, value: V) {
+        self.items[key] = value
+    }
+
+    func get(self, key: K) -> V {
+        return self.items[key]
+    }
+}
+
+class Sub[V](Registry[str, V]) {
+}
+
+class Named[X](Registry[str, X]) {
+}
+
+class Deeper[W](Sub[W]) {
+}
+
+class Holder {
+    func init(self) {
+        self.reg: Sub[int] = Sub[int]()
+    }
+}
+
+func fill(s: Sub[int]) -> int {
+    s.put("q", 2)
+    return s.get("q") + 1
+}
+
+func main() {
+    s: Sub[int] = Sub[int]()
+    s.put("q", 2)
+    n: Named[str] = Named[str]()
+    n.put("a", "x")
+    d: Deeper[float] = Deeper[float]()
+    d.put("f", 1.5)
+    h = Holder()
+    h.reg.put("r", 3)
+    total: int = fill(s) + s.get("q") + h.reg.get("r")
+    label: str = n.get("a")
+    print(total, label, d.get("f"))
+}

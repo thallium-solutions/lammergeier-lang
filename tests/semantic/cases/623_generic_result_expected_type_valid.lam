@@ -1,0 +1,38 @@
+# expect-pass
+# A type parameter that only appears in the result (`make[T]() ->
+# Result[T]`) is bound by the annotated variable the call initializes
+# (`r: Result[int] = make()`) or, through `?`, by the annotation of the
+# payload (`n: int = make()?`); function-typed arguments bind it from
+# their annotations (`inTx(c, countRows)`).
+from lamerrors import Result, Error
+
+class Conn {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func make[T]() -> Result[T] {
+    return Result.Err(Error("Empty", "nothing"))
+}
+
+func countRows(c: Conn) -> Result[int] {
+    return Result.Ok(len(c.name))
+}
+
+func inTx[T](conn: Conn, fn: func(Conn) -> Result[T]) -> Result[T] {
+    return fn(conn)
+}
+
+func load() -> Result[int] {
+    n: int = make()?
+    return Result.Ok(n)
+}
+
+func main() {
+    r: Result[int] = make()
+    s: Result[list[str]] = make()
+    t: Result[int] = inTx(Conn("x"), countRows)
+    u: Result[str] = inTx(Conn("x"), lambda (c: Conn) -> Result[str]: Result.Ok(c.name))
+    print(r.ok(), s.ok(), t.ok(), u.ok(), load().ok())
+}

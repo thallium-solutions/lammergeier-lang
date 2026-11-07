@@ -1,0 +1,75 @@
+# Transpilation: a type parameter used as a set element or a dict key (a Go
+# map key) is declared `comparable`; one only used elsewhere stays `any`,
+# a constraint that already allows only comparable types is kept, and
+# another interface constraint is combined with `comparable`. A caller
+# passing its own type parameter to such a parameter (explicitly or by
+# inference) gets `comparable` too.
+# expect-go: func Count[T comparable](s map[T]bool) int {
+# expect-go: func Pairs[K comparable, V any](d map[K]V) int {
+# expect-go: func Nested[K comparable, V comparable](d map[K]map[V]bool) int {
+# expect-go: func Local[T comparable](xs []T) int {
+# expect-go: func Keep[T ~int | ~int64 | ~float64 | ~string](s map[T]bool) []T {
+# expect-go: func Named[T interface{ comparable; fmt.Stringer }](s map[T]bool) int {
+# expect-go: func Through[T comparable](xs []T) int {
+# expect-go: func Explicit[T comparable](xs []T) int {
+# expect-go: func Plain[T any](xs []T) int {
+# expect-go: type Bag[T comparable] struct {
+# expect-go: func NewBag[T comparable]() *Bag[T] {
+# expect-go: type Holder[T comparable] struct {
+
+func count[T](s: set[T]) -> int {
+    return len(s)
+}
+
+func pairs[K, V](d: dict[K, V]) -> int {
+    return len(d)
+}
+
+func nested[K, V](d: dict[K, set[V]]) -> int {
+    return len(d)
+}
+
+func local[T](xs: list[T]) -> int {
+    s: set[T] = set()
+    for x in xs {
+        s.add(x)
+    }
+    return len(s)
+}
+
+func keep[T: ordered](s: set[T]) -> list[T] {
+    return sorted(s)
+}
+
+func named[T: fmt.Stringer](s: set[T]) -> int {
+    return len(s)
+}
+
+func through[T](xs: list[T]) -> int {
+    return local(xs)
+}
+
+func explicit[T](xs: list[T]) -> int {
+    return local[T](xs)
+}
+
+func plain[T](xs: list[T]) -> int {
+    return len(xs)
+}
+
+class Bag[T] {
+    func init(self) {
+        self.items: set[T] = set()
+    }
+}
+
+class Holder[T] {
+    func init(self) {
+        self.bag: Bag[T] = Bag[T]()
+    }
+}
+
+func main() {
+    print(count({1}), pairs({"a": 1}), nested({"a": {1}}), local([1]), keep({1}))
+    print(through([1]), explicit([1]), plain([1]), len(Bag[int]().items), Holder[str]().bag)
+}

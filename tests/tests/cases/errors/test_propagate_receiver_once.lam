@@ -1,0 +1,88 @@
+# Regression: a method call on a propagated `Result` (`make(n)?.value()`,
+# written `?.` on a `Result`) evaluated the receiver twice: the call ran
+# two times (with its side effects) and emitted two `?` guards. It runs
+# once now: in a `-> Result` function, as an argument, in a `do` body, in
+# a lambda, along a chain and on an `Err`.
+#
+# expect: f=1 calls=1
+# expect: arg=2 calls=1
+# expect: do=3 calls=1
+# expect: lambda=4 calls=1
+# expect: chain=7 calls=1
+# expect: err=false calls=1
+# expect: propagate_receiver_once_ok
+
+from lamerrors import Result, Error
+
+class Counter {
+    func init(self) {
+        self.calls: int = 0
+    }
+}
+
+class Thing {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func value(self) -> int {
+        return self.n
+    }
+
+    func grow(self, by: int) -> Result[Thing] {
+        return Result.Ok(Thing(self.n + by))
+    }
+}
+
+func make(c: Counter, n: int) -> Result[Thing] {
+    c.calls += 1
+    if n < 0 {
+        return Result.Err(Error("Bad", "negative"))
+    }
+    return Result.Ok(Thing(n))
+}
+
+func f(c: Counter, n: int) -> Result[int] {
+    return Result.Ok(make(c, n)?.value())
+}
+
+func twice(n: int) -> int {
+    return n * 2
+}
+
+func asArg(c: Counter, n: int) -> Result[int] {
+    return Result.Ok(twice(make(c, n)?.value()))
+}
+
+func inDo(c: Counter, n: int) -> int {
+    do {
+        return make(c, n)?.value()
+    } catch _ {
+        return -1
+    }
+}
+
+func apply(fn: func() -> Result[int]) -> Result[int] {
+    return fn()
+}
+
+func chain(c: Counter) -> Result[int] {
+    return Result.Ok(make(c, 1)?.grow(2)?.grow(4)?.value())
+}
+
+func main() {
+    c1 = Counter()
+    print(f"f={f(c1, 1).unwrap()} calls={c1.calls}")
+    c2 = Counter()
+    print(f"arg={asArg(c2, 1).unwrap()} calls={c2.calls}")
+    c3 = Counter()
+    print(f"do={inDo(c3, 3)} calls={c3.calls}")
+    c4 = Counter()
+    r: Result[int] = apply(lambda () -> Result[int]: Result.Ok(make(c4, 4)?.value()))
+    print(f"lambda={r.unwrap()} calls={c4.calls}")
+    c5 = Counter()
+    print(f"chain={chain(c5).unwrap()} calls={c5.calls}")
+    c6 = Counter()
+    print(f"err={f(c6, -1).ok()} calls={c6.calls}")
+    print("propagate_receiver_once_ok")
+}

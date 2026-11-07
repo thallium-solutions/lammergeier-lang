@@ -4,7 +4,9 @@
 # Import with: ``from lamenv import Env, Dotenv, Config``.
 #
 # - ``Env`` wraps the ``os`` package for plain process-environment
-#   reads and writes.
+#   reads and writes, strict typed reads (``get(key, fallback)``) and
+#   lenient ones: ``flag`` for on/off switches, ``list`` for separated
+#   values.
 # - ``Dotenv`` parses ``.env`` files into a ``dict[str, str]`` and
 #   can apply them to ``os.Environ`` (with or without overriding
 #   existing values). It supports the modern feature set most
@@ -75,6 +77,38 @@ class Env {
         }
         value: str = raw.unwrap()
         return Conv.parse(value)
+    }
+
+    static func flag(key: str, fallback: bool) -> bool {
+        #- A lenient on/off switch. The value, trimmed and compared without
+           regard to case, is ``true`` for ``1``, ``true``, ``t``, ``yes``,
+           ``y``, ``on`` and ``false`` for ``0``, ``false``, ``f``, ``no``,
+           ``n``, ``off``; an unset, empty or blank variable and any other
+           value give ``fallback``. ``Env.get(key, false)`` stays the strict
+           reading that reports a malformed value as an error. -#
+        value: str = Env.getOr(key, "").trim().toLower()
+        if value in ["1", "true", "t", "yes", "y", "on"] {
+            return true
+        }
+        if value in ["0", "false", "f", "no", "n", "off"] {
+            return false
+        }
+        return fallback
+    }
+
+    static func list(key: str, separator: str = ",") -> list[str] {
+        #- The value split on ``separator``, each part trimmed, empty parts
+           dropped (``" a, ,b "`` -> ``["a", "b"]``); an unset or empty
+           variable is ``[]``. An empty ``separator`` splits on runs of
+           white space. -#
+        value: str = Env.getOr(key, "")
+        parts: list[str] = []
+        if separator == "" {
+            parts = value.fields()
+        } else {
+            parts = value.split(separator)
+        }
+        return [part.trim() for part in parts if part.trim() != ""]
     }
 
     static func set(key: str, val: str) -> Result[any] {

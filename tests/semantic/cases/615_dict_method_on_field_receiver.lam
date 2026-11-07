@@ -1,0 +1,45 @@
+# expect-error: dicts have no `get()` method
+# expect-error: dicts have no `keys()` method
+# expect-error: dicts have no `values()` method
+# expect-error: dicts have no `setdefault()` method
+# expect-error: dicts have no `items()` method
+# expect-error: dicts have no `update()` method
+# expect-error: dicts have no `pop()` method
+# A dict reached through a field (`self.counts`, `self.inner.totals`,
+# `c.counts`, a generic `self.data: dict[K, V]`, a static field) is checked
+# like a dict local: `self.counts.get(x, 0)` used to pass `lamc` and fail
+# only in `go build`.
+class Inner {
+    func init(self) {
+        self.totals: dict[str, int] = {}
+    }
+}
+
+class Counter[K: comparable, V] {
+    static defaults: dict[str, int] = {}
+
+    func init(self) {
+        self.counts: dict[str, int] = {}
+        self.inner: Inner = Inner()
+        self.data: dict[K, V] = {}
+    }
+
+    func bump(self, x: str) -> int {
+        n = self.counts.get(x, 0)
+        ks = self.inner.totals.keys()
+        vs = self.data.values()
+        return n + len(ks) + len(vs)
+    }
+}
+
+func other(c: Counter[str, int]) -> int {
+    c.counts.setdefault("a", 1)
+    pairs = [c][0].counts.items()
+    Counter.defaults.update({"b": 2})
+    return len(pairs) + c.inner.totals.pop("a")
+}
+
+func main() {
+    c = Counter[str, int]()
+    print(c.bump("a"), other(c))
+}

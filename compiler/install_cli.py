@@ -26,7 +26,9 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -1999,7 +2001,7 @@ _STDLIB_MODS = frozenset({
     "lamunicode", "lamurl", "lambase64", "lamcompress",
     "lamcrypto", "lamcontext", "lamdatetime", "lamarray", "lamdata",
     "lamiter", "lamuuid", "lamcache", "lambytes",
-    "lamtemplate", "lamratelimit", "lamretry", "lamexec",
+    "lamtemplate", "lamratelimit", "lamretry", "lamexec", "lami18n",
     "lamset", "lamqueue", "lamstack", "lamheap", "lamdeque",
     "lamcollections", "lamfunctools", "lamitertools",
     "lamthreading", "lamasync", "lamconcurrency", "lamactor",
@@ -2760,7 +2762,7 @@ def _cmd_lib_run(args) -> int:
 
     if not args.script:
         print("[lamc] lib run: missing script name.", file=sys.stderr)
-        print("usage: lamc lib run <script> [--cwd DIR] [--dry-run]",
+        print("usage: lamc lib run <script> [--cwd DIR] [--dry-run] [-- ARGS...]",
               file=sys.stderr)
         return 2
 
@@ -2778,6 +2780,9 @@ def _cmd_lib_run(args) -> int:
         return 2
 
     root = mf_path.parent
+    extra = list(getattr(args, "script_args", []) or [])
+    if extra:
+        command = command + " " + " ".join(shlex.quote(arg) for arg in extra)
     if args.dry_run:
         print(command)
         return 0
@@ -2785,12 +2790,40 @@ def _cmd_lib_run(args) -> int:
     if not args.quiet:
         print(f"[lamc] running {args.script}: {command}", file=sys.stderr)
     try:
-        proc = subprocess.run(command, cwd=str(root), shell=True)
+        proc = subprocess.Popen(command, cwd=str(root), shell=True,
+                                start_new_session=True)
     except OSError as e:
         print(f"[lamc] lib run: failed to start {args.script!r}: {e}",
               file=sys.stderr)
         return 1
-    return proc.returncode
+    return _wait_forwarding_signals(proc)
+
+
+def _wait_forwarding_signals(proc: "subprocess.Popen") -> int:
+    """Wait for a script started in its own session, forwarding the
+    termination signals ``lamc`` receives (Ctrl+C, ``docker stop``) to
+    the script's whole process group, so a long-running script stops
+    with ``lamc lib run``."""
+    forwarded = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+    def forward(signum, _frame):
+        try:
+            os.killpg(proc.pid, signum)
+        except ProcessLookupError:
+            pass
+
+    previous = {sig: signal.signal(sig, forward) for sig in forwarded}
+    try:
+        while True:
+            try:
+                code = proc.wait()
+                break
+            except InterruptedError:
+                continue
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    return 128 - code if code < 0 else code
 
 
 def main(argv: List[str]) -> int:
@@ -2853,6 +2886,10 @@ def main(argv: List[str]) -> int:
             return 0 if rest and rest[0] in ("-h", "--help") else 2
         subverb, subrest = rest[0], rest[1:]
         if subverb == "run":
+            script_args: List[str] = []
+            if "--" in subrest:
+                split = subrest.index("--")
+                subrest, script_args = subrest[:split], subrest[split + 1:]
             ap = argparse.ArgumentParser(prog="lamc lib run",
                 description="Run a command declared in the nearest "
                             "lamlib.toml [scripts] table.")
@@ -2867,7 +2904,12 @@ def main(argv: List[str]) -> int:
                 help="Print the resolved command without executing it.")
             ap.add_argument("-q", "--quiet", action="store_true",
                 help="Suppress the '[lamc] running ...' line.")
-            return _cmd_lib_run(ap.parse_args(subrest))
+            ap.epilog = ("Arguments after `--` are appended to the script "
+                         "command, shell-quoted: `lamc lib run migrate -- "
+                         "--dry-run`.")
+            parsed = ap.parse_args(subrest)
+            parsed.script_args = script_args
+            return _cmd_lib_run(parsed)
         print(f"[lamc] unknown lib subcommand: {subverb}", file=sys.stderr)
         return 2
 

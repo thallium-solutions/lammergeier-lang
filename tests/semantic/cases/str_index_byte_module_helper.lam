@@ -1,0 +1,6 @@
+# expect-error: `byte` has no method `toUpper`; indexing a `str` gives a `byte`: use `string(name[0]).toUpper()` for a one-character `str`
+# Imported by 614_str_index_byte_method_in_imported_module.lam.
+
+func initial(name: str) -> str {
+    return name[0].toUpper()
+}

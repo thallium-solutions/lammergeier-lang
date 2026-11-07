@@ -1,0 +1,120 @@
+# Regression: `sorted()` over a `set[T]` was typed as the set itself
+# (`cannot assign set[str] to list[str] variable`) and, where the check
+# passed, generated Go appending the `map[T]bool` to a `[]interface{}`
+# (`",".join(sorted(s))` did not build). Like Python, `sorted(s)` returns a
+# new sorted `list[T]` (a typed `[]T`) with `key=` / `reverse=`, for set
+# variables, literals, comprehensions, fields, function results and
+# parameters, also in an imported module. `sorted(d)` of a `dict[K, V]`
+# returns its sorted keys as a `list[K]` (it appended the map too).
+#
+# expect: var=a,b,c typed=3
+# expect: comp=P,Q
+# expect: ints=[1 2 3] floats=[0.5 1.25 2]
+# expect: desc=[c b a] asc=[a b c]
+# expect: key=[fig kiwi banana] key-desc=[banana kiwi fig]
+# expect: literal=[x y z] empty=0
+# expect: loop=a.b.c.
+# expect: len=3 first=a last=c
+# expect: fstring=a|b|c
+# expect: field=[ops qa] method=ops+qa
+# expect: result=admin,editor,viewer
+# expect: param=[2 4 8]
+# expect: lib=admin,editor,viewer desc=[viewer editor admin] upper=ANT,BEE,CAT
+# expect: dict=[a b c] dict-desc=[c b a] dict-join=x-y
+# expect: dict-int=[1 5 9] dict-key=[apple kiwi]
+# expect: lib-dict=[Accept Host]
+# expect: comp-src=[2 4 6]
+# expect: list=[1 2 3] list-desc=[c b a] list-orig=[3 1 2]
+# expect: mixed=[1 2 3 10]
+# expect: generic=[a b] named-key=[a bb ccc]
+# expect: unchanged=3 true
+
+from sorted_set_provider import roles, joinedRoles, rolesDesc, upperWords, headerNames
+
+class Team {
+    func init(self) {
+        self.tags: set[str] = {"qa", "ops"}
+    }
+
+    func label(self) -> str {
+        return "+".join(sorted(self.tags))
+    }
+}
+
+func evens() -> set[int] {
+    return {8, 2, 4}
+}
+
+func ascending(values: set[int]) -> list[int] {
+    return sorted(values)
+}
+
+func keysOf[V](d: dict[str, V]) -> list[str] {
+    return sorted(d)
+}
+
+func width(s: str) -> int {
+    return len(s)
+}
+
+func main() {
+    names: set[str] = {"b", "a", "c"}
+    ordered: list[str] = sorted(names)
+    print(f"var={",".join(ordered)} typed={len(ordered)}")
+
+    print("comp=" + ",".join(sorted({x.toUpper() for x in ["q", "p", "q"]})))
+
+    nums: set[int] = {3, 1, 2}
+    floats: set[float] = {2.0, 0.5, 1.25}
+    print("ints=" + str(sorted(nums)), "floats=" + str(sorted(floats)))
+
+    desc: list[str] = sorted(names, reverse=true)
+    asc: list[str] = sorted(names, reverse=false)
+    print(f"desc={desc} asc={asc}")
+
+    fruit: set[str] = {"banana", "kiwi", "fig"}
+    byLen: list[str] = sorted(fruit, key=lambda s: len(s))
+    print(f"key={byLen} key-desc={sorted(fruit, key=lambda s: len(s), reverse=true)}")
+
+    empty: set[str] = set()
+    print(f"literal={sorted({"z", "x", "y"})} empty={len(sorted(empty))}")
+
+    line: str = ""
+    for n in sorted(names) {
+        line += n + "."
+    }
+    print("loop=" + line)
+
+    s: list[str] = sorted(names)
+    print(f"len={len(sorted(names))} first={sorted(names)[0]} last={s[len(s) - 1]}")
+    print(f"fstring={"|".join(sorted(names))}")
+
+    team: Team = Team()
+    print(f"field={sorted(team.tags)} method={team.label()}")
+    print("result=" + ",".join(sorted(roles())))
+    print(f"param={ascending(evens())}")
+
+    print(f"lib={joinedRoles(roles())} desc={rolesDesc(roles())} upper={upperWords(["cat", "bee", "", "ant", "bee"])}")
+
+    ages: dict[str, int] = {"b": 2, "c": 3, "a": 1}
+    keys: list[str] = sorted(ages)
+    print(f"dict={keys} dict-desc={sorted(ages, reverse=true)} dict-join={"-".join(sorted({"y": 1, "x": 2}))}")
+    byId: dict[int, str] = {9: "z", 1: "x", 5: "y"}
+    stock: dict[str, int] = {"kiwi": 3, "apple": 7}
+    print(f"dict-int={sorted(byId)} dict-key={sorted(stock, key=lambda k: -stock[k])}")
+    print(f"lib-dict={headerNames({"Host": "x", "Accept": "y"})}")
+
+    doubled: list[int] = [n * 2 for n in sorted(nums)]
+    print(f"comp-src={doubled}")
+
+    xs: list[int] = [3, 1, 2]
+    words: list[str] = ["a", "c", "b"]
+    print(f"list={sorted(xs)} list-desc={sorted(words, reverse=true)} list-orig={xs}")
+
+    merged: list[int] = sorted(nums | {10})
+    print(f"mixed={merged}")
+
+    print(f"generic={keysOf({"b": 1.5, "a": 2.5})} named-key={sorted({"ccc", "a", "bb"}, key=width)}")
+
+    print(f"unchanged={len(names)}", names.contains("a"))
+}
