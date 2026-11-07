@@ -68,9 +68,11 @@
 
 from lamerrors import Result, Error
 from lamdatetime import DateTime
+from lamcontext import Context
 
 go! {
     import (
+        "context"
         "database/sql"
         "errors"
         "fmt"
@@ -85,6 +87,17 @@ go! {
         lamPq "github.com/lib/pq"
         lamSqlite "modernc.org/sqlite"
     )
+
+    func lamDbContext(ctx *Context) context.Context {
+        if ctx == nil {
+            return context.Background()
+        }
+        native, ok := ctx.Native().(context.Context)
+        if !ok || native == nil {
+            return context.Background()
+        }
+        return native
+    }
 
     // ─── Driver normalisation ─────────────────────────────────
     // Lam users pick a friendly driver name; we map it to the
@@ -172,7 +185,7 @@ go! {
     // ``driver.ErrBadConn`` (via ``database/sql/driver``) plus a
     // string-pattern fallback for vendor-specific messages.
     func lamDbIsTransient(err error) bool {
-        if err == nil {
+        if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
             return false
         }
         if errors.Is(err, sql.ErrConnDone) {
@@ -196,6 +209,17 @@ go! {
             }
         }
         return false
+    }
+
+    func lamDbRetryWait(ctx context.Context, delay time.Duration) error {
+        timer := time.NewTimer(delay)
+        defer timer.Stop()
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        case <-timer.C:
+            return ctx.Err()
+        }
     }
 
     // ─── Driver error codes (``Db.sqlState``) ─────────────────
@@ -279,6 +303,20 @@ go! {
     }
 }
 
+interface DbObserver {
+    #- ``failure`` is the stable Error.kind (or empty on success), never
+       a driver message or bound parameters. -#
+    func start(ctx: Context, statement: str) -> any
+    func finish(ctx: Context, token: any, failure: str)
+}
+
+class DbObservation {
+    func init(self, observer: DbObserver, token: any) {
+        self.observer: DbObserver = observer
+        self.token: any = token
+    }
+}
+
 class Db {
     #- Pooled connection handle around a ``*sql.DB``. Goroutine-safe
        (the underlying ``database/sql`` pool is). Expected driver failures
@@ -290,6 +328,66 @@ class Db {
         self.handle: any = None      # *sql.DB
         self.maxRetries: int = 3
         self.retryBaseMs: int = 50
+        self.context: Context = Context.simple()
+        self.observer: DbObserver = None
+        self.owner: Db = None         # set only on scoped handles; the pool owns close/observer.
+    }
+
+    func setObserver(self, observer: DbObserver) {
+        #- Configure observation once on the owning pool, before sharing
+           request handles. A nil observer disables observation. -#
+        if self.owner != None {
+            self.owner.setObserver(observer)
+            return
+        }
+        self.observer = observer
+    }
+
+    func withContext(self, ctx: Context) -> Db {
+        #- A request-scoped view of the same pool; closing it does not close
+           the owning connection. The returned handle may be used concurrently
+           with other views. -#
+        scoped: Db = Db()
+        scoped.driver = self.driver
+        scoped.dsn = self.dsn
+        scoped.handle = self.handle
+        scoped.maxRetries = self.maxRetries
+        scoped.retryBaseMs = self.retryBaseMs
+        scoped.context = ctx
+        if self.owner != None {
+            scoped.owner = self.owner
+        } else {
+            scoped.owner = self
+        }
+        return scoped
+    }
+
+    func _start(self, statement: str) -> DbObservation {
+        source: Db = self
+        if self.owner != None {
+            source = self.owner
+        }
+        observer: DbObserver = source.observer
+        if observer == None {
+            return None
+        }
+        token: any = observer.start(self.context, statement)
+        return DbObservation(observer, token)
+    }
+
+    func _finish(self, observation: DbObservation, result: Result) {
+        if observation == None {
+            return
+        }
+        observer: DbObserver = observation.observer
+        if observer != None {
+            failure: str = ""
+            if not result.ok() {
+                error: Error = result.error
+                failure = error.kind
+            }
+            observer.finish(self.context, observation.token, failure)
+        }
     }
 
     static func textArray(values: list[str]) -> str {
@@ -386,7 +484,7 @@ class Db {
                 handle.Close()
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbConnectError", err.Error(), err))
             }
-            db := &Db{Driver: d, Dsn: dsn, Handle: handle, MaxRetries: 3, RetryBaseMs: 50}
+            db := &Db{Driver: d, Dsn: dsn, Handle: handle, MaxRetries: 3, RetryBaseMs: 50, Context: lamContextCreate(context.Background(), &lamContextValueLayer{})}
             return LAMMERGEIER.Result.Ok(db)
         }
     }
@@ -418,12 +516,21 @@ class Db {
         #- Configure transient-error retry behaviour. ``maxRetries`` is
            the number of *retries* (not total attempts); ``baseMs`` is
            the starting backoff window which doubles on every
-           subsequent retry. -#
+           subsequent retry. Negative values are clamped to zero. -#
+        if maxRetries < 0 {
+            maxRetries = 0
+        }
+        if baseMs < 0 {
+            baseMs = 0
+        }
         self.maxRetries = maxRetries
         self.retryBaseMs = baseMs
     }
 
     func close(self) -> Result[bool] {
+        if self.owner != None {
+            return Result.Err(Error("DbCloseError", "scoped handle cannot close the pool"))
+        }
         go! {
             h, ok := self.Handle.(*sql.DB)
             if !ok || h == nil {
@@ -462,6 +569,13 @@ class Db {
 
     # ── Raw SQL ────────────────────────────────────────────────
     func exec(self, query: str, params: list[any] = []) -> Result[int] {
+        observation: DbObservation = self._start(query)
+        result: Result[int] = self._exec(query, params)
+        self._finish(observation, result)
+        return result
+    }
+
+    func _exec(self, query: str, params: list[any]) -> Result[int] {
         #- Execute an INSERT / UPDATE / DELETE / DDL statement and return
            the affected-row count. Transient failures are retried; the final
            driver failure is returned as ``DbExecError``. -#
@@ -474,10 +588,11 @@ class Db {
             args := make([]interface{}, len(params))
             for i, p := range params { args[i] = p }
             attempts := self.MaxRetries + 1
+            ctx := lamDbContext(self.Context)
             var lastErr error
             var affected int64
             for k := 0; k < attempts; k++ {
-                res, err := handle.Exec(q, args...)
+                res, err := handle.ExecContext(ctx, q, args...)
                 if err == nil {
                     affected, err = res.RowsAffected()
                     if err == nil {
@@ -486,8 +601,11 @@ class Db {
                     }
                 }
                 lastErr = err
-                if !lamDbIsTransient(err) { break }
-                time.Sleep(time.Duration(self.RetryBaseMs<<k) * time.Millisecond)
+                if !lamDbIsTransient(err) || k == attempts-1 { break }
+                if waitErr := lamDbRetryWait(ctx, time.Duration(self.RetryBaseMs<<k) * time.Millisecond); waitErr != nil {
+                    lastErr = waitErr
+                    break
+                }
             }
             if lastErr != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", lastErr.Error(), lastErr))
@@ -497,6 +615,13 @@ class Db {
     }
 
     func query(self, query: str, params: list[any] = []) -> Result[list[dict[str, any]]] {
+        observation: DbObservation = self._start(query)
+        result: Result[list[dict[str, any]]] = self._query(query, params)
+        self._finish(observation, result)
+        return result
+    }
+
+    func _query(self, query: str, params: list[any]) -> Result[list[dict[str, any]]] {
         #- Run a SELECT and return all rows as dictionaries keyed by column
            name. Query, metadata, scan, iteration, and connection failures
            are returned as ``DbQueryError``. -#
@@ -509,13 +634,17 @@ class Db {
             args := make([]interface{}, len(params))
             for i, p := range params { args[i] = p }
             attempts := self.MaxRetries + 1
+            ctx := lamDbContext(self.Context)
             var lastErr error
             for k := 0; k < attempts; k++ {
-                rows, err := handle.Query(q, args...)
+                rows, err := handle.QueryContext(ctx, q, args...)
                 if err != nil {
                     lastErr = err
-                    if lamDbIsTransient(err) {
-                        time.Sleep(time.Duration(self.RetryBaseMs<<k) * time.Millisecond)
+                    if lamDbIsTransient(err) && k < attempts-1 {
+                        if waitErr := lamDbRetryWait(ctx, time.Duration(self.RetryBaseMs<<k) * time.Millisecond); waitErr != nil {
+                            lastErr = waitErr
+                            break
+                        }
                         continue
                     }
                     break
@@ -664,18 +793,14 @@ class Db {
            rolled it back. Begin and commit failures are returned as errors.
            Unexpected callback panics are rolled back and re-raised. -#
         go! {
-            handle, ok := self.Handle.(*sql.DB)
-            if !ok || handle == nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "database is not connected", nil))
+            started := self.Begin()
+            if !started.Ok() {
+                return LAMMERGEIER.Result.Err(started.Error)
             }
-            tx, err := handle.Begin()
-            if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
-            }
-            txObj := &Tx{Conn: tx, Driver: self.Driver, RolledBack: false, Committed: false}
+            txObj := started.Value.(*Tx)
             defer func() {
                 if r := recover(); r != nil {
-                    _ = tx.Rollback()
+                    if !txObj.RolledBack && !txObj.Committed { _ = txObj.Rollback() }
                     panic(r)
                 }
             }()
@@ -683,20 +808,17 @@ class Db {
             case func(*Tx) *Result:
                 callbackResult := cb(txObj)
                 if callbackResult == nil {
-                    _ = tx.Rollback()
-                    txObj.RolledBack = true
+                    if !txObj.RolledBack && !txObj.Committed { _ = txObj.Rollback() }
                     return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "callback returned no Result", nil))
                 }
                 if !callbackResult.Ok() {
-                    _ = tx.Rollback()
-                    txObj.RolledBack = true
+                    if !txObj.RolledBack && !txObj.Committed { _ = txObj.Rollback() }
                     return LAMMERGEIER.Result.Err(callbackResult.Error)
                 }
             case func(*Tx):
                 cb(txObj)
             default:
-                _ = tx.Rollback()
-                txObj.RolledBack = true
+                _ = txObj.Rollback()
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "callback must accept a Tx", nil))
             }
             if txObj.RolledBack {
@@ -705,15 +827,18 @@ class Db {
             if txObj.Committed {
                 return LAMMERGEIER.Result.Ok(true)
             }
-            if err := tx.Commit(); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
-            }
-            txObj.Committed = true
-            return LAMMERGEIER.Result.Ok(true)
+            return txObj.Commit()
         }
     }
 
     func begin(self) -> Result[Tx] {
+        observation: DbObservation = self._start("BEGIN")
+        result: Result[Tx] = self._begin()
+        self._finish(observation, result)
+        return result
+    }
+
+    func _begin(self) -> Result[Tx] {
         #- Open an explicit transaction. The caller owns the lifecycle and
            must call ``commit`` or ``rollback`` exactly once. -#
         go! {
@@ -721,11 +846,13 @@ class Db {
             if !ok || handle == nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "database is not connected", nil))
             }
-            tx, err := handle.Begin()
+            tx, err := handle.BeginTx(lamDbContext(self.Context), nil)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
             }
-            txObj := &Tx{Conn: tx, Driver: self.Driver, RolledBack: false, Committed: false}
+            source := s
+            if s.Owner != nil { source = s.Owner }
+            txObj := &Tx{Conn: tx, Driver: self.Driver, RolledBack: false, Committed: false, Context: self.Context, Observer: source.Observer}
             return LAMMERGEIER.Result.Ok(txObj)
         }
     }
@@ -1090,9 +1217,42 @@ class Tx {
         self.driver: str = ""
         self.rolledBack: bool = false
         self.committed: bool = false
+        self.context: Context = Context.simple()
+        self.observer: DbObserver = None
+    }
+
+    func _start(self, statement: str) -> DbObservation {
+        observer: DbObserver = self.observer
+        if observer == None {
+            return None
+        }
+        token: any = observer.start(self.context, statement)
+        return DbObservation(observer, token)
+    }
+
+    func _finish(self, observation: DbObservation, result: Result) {
+        if observation == None {
+            return
+        }
+        observer: DbObserver = observation.observer
+        if observer != None {
+            failure: str = ""
+            if not result.ok() {
+                error: Error = result.error
+                failure = error.kind
+            }
+            observer.finish(self.context, observation.token, failure)
+        }
     }
 
     func exec(self, query: str, params: list[any] = []) -> Result[int] {
+        observation: DbObservation = self._start(query)
+        result: Result[int] = self._exec(query, params)
+        self._finish(observation, result)
+        return result
+    }
+
+    func _exec(self, query: str, params: list[any]) -> Result[int] {
         go! {
             tx, ok := self.Conn.(*sql.Tx)
             if !ok || tx == nil {
@@ -1101,7 +1261,7 @@ class Tx {
             q := lamDbRewritePlaceholders(query, self.Driver)
             args := make([]interface{}, len(params))
             for i, p := range params { args[i] = p }
-            res, err := tx.Exec(q, args...)
+            res, err := tx.ExecContext(lamDbContext(self.Context), q, args...)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", err.Error(), err))
             }
@@ -1114,6 +1274,13 @@ class Tx {
     }
 
     func query(self, query: str, params: list[any] = []) -> Result[list[dict[str, any]]] {
+        observation: DbObservation = self._start(query)
+        result: Result[list[dict[str, any]]] = self._query(query, params)
+        self._finish(observation, result)
+        return result
+    }
+
+    func _query(self, query: str, params: list[any]) -> Result[list[dict[str, any]]] {
         go! {
             tx, ok := self.Conn.(*sql.Tx)
             if !ok || tx == nil {
@@ -1122,7 +1289,7 @@ class Tx {
             q := lamDbRewritePlaceholders(query, self.Driver)
             args := make([]interface{}, len(params))
             for i, p := range params { args[i] = p }
-            rows, err := tx.Query(q, args...)
+            rows, err := tx.QueryContext(lamDbContext(self.Context), q, args...)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), err))
             }
@@ -1157,6 +1324,13 @@ class Tx {
     }
 
     func rollback(self) -> Result[bool] {
+        observation: DbObservation = self._start("ROLLBACK")
+        result: Result[bool] = self._rollback()
+        self._finish(observation, result)
+        return result
+    }
+
+    func _rollback(self) -> Result[bool] {
         go! {
             tx, ok := self.Conn.(*sql.Tx)
             if !ok || tx == nil {
@@ -1171,6 +1345,13 @@ class Tx {
     }
 
     func commit(self) -> Result[bool] {
+        observation: DbObservation = self._start("COMMIT")
+        result: Result[bool] = self._commit()
+        self._finish(observation, result)
+        return result
+    }
+
+    func _commit(self) -> Result[bool] {
         go! {
             tx, ok := self.Conn.(*sql.Tx)
             if !ok || tx == nil {
@@ -1185,51 +1366,36 @@ class Tx {
     }
 
     # ── Savepoints (SQLite, MySQL ≥5.6, Postgres) ──────────────
+    func _savepointExec(self, statement: str) -> Result[bool] {
+        observation: DbObservation = self._start(statement)
+        executed: Result[int] = self._exec(statement, [])
+        result: Result[bool] = Result.Ok(true)
+        if not executed.ok() {
+            error: Error = executed.error
+            result = Result.Err(Error("DbTransactionError", error.message, error.cause))
+        }
+        self._finish(observation, result)
+        return result
+    }
+
     func savepoint(self, savepointName: str) -> Result[bool] {
         #- Mark a point inside the transaction that can be rolled
            back to without aborting the whole transaction. ``name``
            must be a SQL identifier; we forward it verbatim. -#
-        go! {
-            tx, ok := self.Conn.(*sql.Tx)
-            if !ok || tx == nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
-            }
-            if _, err := tx.Exec("SAVEPOINT " + savepointName); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
-            }
-            return LAMMERGEIER.Result.Ok(true)
-        }
+        return self._savepointExec("SAVEPOINT " + savepointName)
     }
 
     func rollbackTo(self, savepointName: str) -> Result[bool] {
         #- Rewind state to the named savepoint. The transaction
            stays open afterwards — the caller can keep going,
            savepoint again, or commit/rollback normally. -#
-        go! {
-            tx, ok := self.Conn.(*sql.Tx)
-            if !ok || tx == nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
-            }
-            if _, err := tx.Exec("ROLLBACK TO SAVEPOINT " + savepointName); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
-            }
-            return LAMMERGEIER.Result.Ok(true)
-        }
+        return self._savepointExec("ROLLBACK TO SAVEPOINT " + savepointName)
     }
 
     func releaseSavepoint(self, savepointName: str) -> Result[bool] {
         #- Drop the named savepoint, locking in everything done
            since it was created. -#
-        go! {
-            tx, ok := self.Conn.(*sql.Tx)
-            if !ok || tx == nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "transaction is not active", nil))
-            }
-            if _, err := tx.Exec("RELEASE SAVEPOINT " + savepointName); err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", err.Error(), err))
-            }
-            return LAMMERGEIER.Result.Ok(true)
-        }
+        return self._savepointExec("RELEASE SAVEPOINT " + savepointName)
     }
 
     func table(self, name: str) -> QueryBuilder {

@@ -5,6 +5,29 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.4.0 — 2026-11-07
+
+### Added
+
+- `lamdb` request-scoped database contexts: `Db.withContext(ctx)` creates a
+  handle sharing the connection pool while using that `Context` for raw SQL,
+  query-builder execution, and transactions; `Tx` inherits the context.
+  Keep the owning `Db` open for the lifetime of the pool, and use a separate
+  scoped handle per request rather than a mutable global current context.
+- Optional `DbObserver` (`start(ctx, statement) -> any`,
+  `finish(ctx, token, failure)`) installed with `Db.setObserver(observer)`
+  observes raw and builder operations plus transaction begin, commit, and
+  rollback (including savepoints). The statement is SQL with placeholders,
+  never the separately bound parameter values; `failure` is empty on success
+  or the stable `Error.kind` on failure, not the driver's message or cause.
+  Do not interpolate secrets into SQL. Cancellation and deadlines interrupt
+  retry backoff, and negative retry settings are clamped to zero.
+
+### Fixed
+
+- The documentation-comment corpus treats intentionally invalid syntax fixtures
+  in sibling repositories the same way as this repository's fixtures.
+
 ## 4.3.0 — 2026-11-05
 
 ### Changed

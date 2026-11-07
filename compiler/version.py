@@ -1,3 +1,3 @@
 """Public Lammergeier compiler version."""
 
-LAMC_VERSION = "4.3.0"
+LAMC_VERSION = "4.4.0"

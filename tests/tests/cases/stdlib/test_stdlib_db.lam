@@ -5,11 +5,74 @@
 # expect: scalar-error: true
 # expect: connect-error: true
 # expect: transaction-error: true
+# expect: observer-scoped-context: true
+# expect: observer-query-builder: true
+# expect: observer-failure-and-privacy: true
+# expect: observer-transactions: true
+# expect: observer-callback: true
+# expect: observer-cancelled-context: true
+# expect: observer-builder-failure: true
+# expect: observer-callback-commit: true
+# expect: observer-transaction-failures: true
+# expect: observer-tx-builder: true
+# expect: observer-unique-failure-private: true
+# expect: observer-failure-kinds: true
+# expect: observer-savepoints: true
+# expect: observer-cancelled-savepoints: true
+# expect: observer-interruptible-retry: true
+# expect: observer-retry-clamp: true
+# expect: observer-swap-mid-flight: true
+# expect: observer-none-noop: true
+# expect: observer-scoped-close-safe: true
 # expect: begin-error: true
 # expect: db_test_ok
 
-from lamdb import Db, Tx
-from lamerrors import Result
+from lamdb import Db, Tx, DbObserver
+from lamcontext import Context
+from lamdatetime import DateTime
+from lamerrors import Result, Error
+
+class RecordingObserver {
+    func init(self) {
+        self.statements: list[str] = []
+        self.failures: list[str] = []
+        self.contexts: list[Context] = []
+        self.tokens: list[any] = []
+    }
+
+    func start(self, ctx: Context, statement: str) -> any {
+        self.contexts.append(ctx)
+        self.statements.append(statement)
+        return len(self.statements)
+    }
+
+    func finish(self, ctx: Context, token: any, failure: str) {
+        self.contexts.append(ctx)
+        self.tokens.append(token)
+        self.failures.append(failure)
+    }
+}
+
+class SwitchingObserver {
+    func init(self, pool: Db, replacement: RecordingObserver) {
+        self.pool: Db = pool
+        self.replacement: RecordingObserver = replacement
+        self.starts: int = 0
+        self.finishes: int = 0
+        self.finishedToken: any = None
+    }
+
+    func start(self, ctx: Context, statement: str) -> any {
+        self.starts += 1
+        self.pool.setObserver(self.replacement)
+        return "original-token"
+    }
+
+    func finish(self, ctx: Context, token: any, failure: str) {
+        self.finishes += 1
+        self.finishedToken = token
+    }
+}
 
 func resultDb(result: Result) -> Db {
     go! { return result.Value.(*Db) }
@@ -47,6 +110,151 @@ func main() {
     badTransaction: Result[bool] = db.transaction(badTransactionFn)
     print(f"transaction-error: {not badTransaction.ok()}")
 
+    observer: RecordingObserver = RecordingObserver()
+    configured: DbObserver = observer
+    db.setObserver(configured)
+    ctx: Context = Context.simple().valued("request", "one")
+    scoped: Db = db.withContext(ctx)
+    scoped.exec("INSERT INTO lam_test (name) VALUES (?)", ["secret-value"]).unwrap()
+    rows: list[dict[str, any]] = scoped.query("SELECT name FROM lam_test WHERE name = ?", ["secret-value"]).unwrap()
+    print(f"observer-scoped-context: {scoped.context == ctx and len(rows) == 1 and observer.contexts[0] == ctx and observer.contexts[1] == ctx and len(observer.statements) == 2}")
+
+    scoped.table("lam_test").whereEq("name", "secret-value").get().unwrap()
+    scoped.table("lam_test").whereEq("name", "secret-value").first().unwrap()
+    scoped.table("lam_test").count().unwrap()
+    scoped.table("lam_test").insert({"name": "builder"}).unwrap()
+    scoped.table("lam_test").whereEq("name", "builder").update({"name": "updated"}).unwrap()
+    scoped.table("lam_test").whereEq("name", "updated").delete().unwrap()
+    print(f"observer-query-builder: {len(observer.statements) == 8 and len(observer.failures) == 8 and observer.statements[7].startsWith('DELETE FROM lam_test')}")
+
+    failed: Result[int] = scoped.exec("INSERT INTO missing_table VALUES (?)", ["private-param"])
+    print(f"observer-failure-and-privacy: {not failed.ok() and len(observer.statements) == 9 and observer.failures[8] != '' and 'private-param' not in observer.statements[8] and observer.tokens[8] == 9}")
+
+    tx: Tx = scoped.begin().unwrap()
+    tx.exec("INSERT INTO lam_test (name) VALUES (?)", ["in-tx"]).unwrap()
+    tx.table("lam_test").count().unwrap()
+    tx.rollback().unwrap()
+    second: Tx = scoped.begin().unwrap()
+    badTx: Result[list[dict[str, any]]] = second.query("SELECT * FROM missing_table")
+    second.commit().unwrap()
+    print(f"observer-transactions: {tx.context == ctx and second.context == ctx and not badTx.ok() and len(observer.statements) == 16 and observer.statements[9] == 'BEGIN' and observer.statements[12] == 'ROLLBACK' and observer.statements[15] == 'COMMIT' and observer.failures[14] != ''}")
+
+    func callback(txn: Tx) -> Result[bool] {
+        _ = txn.exec("INSERT INTO missing_table VALUES (1)")?
+        return Result.Ok(true)
+    }
+    callbackResult: Result[bool] = scoped.transaction(callback)
+    print(f"observer-callback: {not callbackResult.ok() and len(observer.statements) == 19 and observer.statements[16] == 'BEGIN' and observer.statements[18] == 'ROLLBACK' and observer.failures[17] != ''}")
+
+    cancelled: Context = Context.cancelled("stop")
+    cancelledDb: Db = scoped.withContext(cancelled)
+    cancelledBegin: Result[Tx] = cancelledDb.begin()
+    cancelledExec: Result[int] = cancelledDb.exec("INSERT INTO lam_test (name) VALUES (?)", ["secret-param"])
+    print(f"observer-cancelled-context: {not cancelledBegin.ok() and not cancelledExec.ok() and observer.statements[19] == 'BEGIN' and observer.failures[19] != '' and observer.failures[20] != '' and observer.contexts[38] == cancelled and observer.contexts[41] == cancelled and scoped.query('SELECT 1').ok()}")
+
+    builderFailure: Result[list[dict[str, any]]] = scoped.table("missing_table").get()
+    print(f"observer-builder-failure: {not builderFailure.ok() and len(observer.statements) == 23 and observer.failures[22] != ''}")
+
+    func successful(txn: Tx) -> Result[bool] {
+        _ = txn.table("lam_test").insert({"name": "callback"})?
+        return Result.Ok(true)
+    }
+    _ = scoped.transaction(successful).unwrap()
+    print(f"observer-callback-commit: {len(observer.statements) == 26 and observer.statements[23] == 'BEGIN' and observer.statements[25] == 'COMMIT' and observer.failures[25] == ''}")
+
+    badCommit: Result[bool] = tx.commit()
+    badRollback: Result[bool] = second.rollback()
+    print(f"observer-transaction-failures: {not badCommit.ok() and not badRollback.ok() and len(observer.statements) == 28 and observer.statements[26] == 'COMMIT' and observer.statements[27] == 'ROLLBACK' and observer.failures[26] != '' and observer.failures[27] != '' and len(observer.tokens) == 28}")
+
+    before: int = len(observer.statements)
+    builderTx: Tx = scoped.begin().unwrap()
+    builderTx.table("lam_test").get().unwrap()
+    builderTx.table("lam_test").first().unwrap()
+    builderTx.table("lam_test").count().unwrap()
+    builderTx.table("lam_test").insert({"name": "tx-builder"}).unwrap()
+    builderTx.table("lam_test").whereEq("name", "tx-builder").update({"name": "tx-updated"}).unwrap()
+    builderTx.table("lam_test").whereEq("name", "tx-updated").delete().unwrap()
+    builderTx.commit().unwrap()
+    print(f"observer-tx-builder: {len(observer.statements) == before + 8 and len(observer.failures) == before + 8 and observer.statements[before] == 'BEGIN' and observer.statements[before + 7] == 'COMMIT' and builderTx.context == ctx}")
+
+    scoped.exec("CREATE TABLE private_unique (value TEXT UNIQUE)").unwrap()
+    secret: str = "private-unique-bound-value"
+    scoped.exec("INSERT INTO private_unique (value) VALUES (?)", [secret]).unwrap()
+    duplicateIndex: int = len(observer.failures)
+    duplicate: Result[int] = scoped.exec("INSERT INTO private_unique (value) VALUES (?)", [secret])
+    constraintError: Error = duplicate.error
+    print(f"observer-unique-failure-private: {not duplicate.ok() and Db.isUniqueViolation(duplicate) and constraintError.kind == 'DbExecError' and constraintError.cause != None and observer.failures[duplicateIndex] == 'DbExecError' and secret not in observer.statements[duplicateIndex] and secret not in observer.failures[duplicateIndex]}")
+
+    uniqueTx: Tx = scoped.begin().unwrap()
+    txDuplicateIndex: int = len(observer.failures)
+    txDuplicate: Result[int] = uniqueTx.exec("INSERT INTO private_unique (value) VALUES (?)", [secret])
+    uniqueTx.rollback().unwrap()
+    print(f"observer-failure-kinds: {not txDuplicate.ok() and observer.failures[txDuplicateIndex] == 'DbExecError' and secret not in observer.failures[txDuplicateIndex] and observer.failures[14] == 'DbQueryError' and observer.failures[19] == 'DbTransactionError' and observer.failures[26] == 'DbTransactionError' and observer.failures[27] == 'DbTransactionError'}")
+    scoped.exec("DROP TABLE private_unique").unwrap()
+
+    savepointStart: int = len(observer.statements)
+    saveTx: Tx = scoped.begin().unwrap()
+    saveTx.savepoint("keep").unwrap()
+    saveTx.rollbackTo("keep").unwrap()
+    saveTx.releaseSavepoint("keep").unwrap()
+    saveTx.rollback().unwrap()
+    print(f"observer-savepoints: {len(observer.statements) == savepointStart + 5 and observer.statements[savepointStart + 1] == 'SAVEPOINT keep' and observer.statements[savepointStart + 2] == 'ROLLBACK TO SAVEPOINT keep' and observer.statements[savepointStart + 3] == 'RELEASE SAVEPOINT keep' and observer.failures[savepointStart + 3] == ''}")
+
+    stopCtx: Context = Context.simple()
+    stoppedTx: Tx = scoped.withContext(stopCtx).begin().unwrap()
+    stopCtx.cancel("stop")
+    stoppedStart: int = len(observer.statements)
+    noSave: Result[bool] = stoppedTx.savepoint("blocked")
+    noRewind: Result[bool] = stoppedTx.rollbackTo("blocked")
+    noRelease: Result[bool] = stoppedTx.releaseSavepoint("blocked")
+    saveError: Error = noSave.error
+    rewindError: Error = noRewind.error
+    releaseError: Error = noRelease.error
+    print(f"observer-cancelled-savepoints: {not noSave.ok() and not noRewind.ok() and not noRelease.ok() and saveError.kind == 'DbTransactionError' and rewindError.kind == saveError.kind and releaseError.kind == saveError.kind and saveError.cause != None and rewindError.cause != None and releaseError.cause != None and len(observer.statements) == stoppedStart + 3 and observer.statements[stoppedStart] == 'SAVEPOINT blocked' and observer.statements[stoppedStart + 2] == 'RELEASE SAVEPOINT blocked' and observer.failures[stoppedStart] == saveError.kind and observer.failures[stoppedStart + 1] == rewindError.kind and observer.failures[stoppedStart + 2] == releaseError.kind}")
+    _ = stoppedTx.rollback()
+
+    scoped.setRetries(3, 2000)
+    retryCtx: Context = Context.simple().expirable(100, "milliseconds").unwrap()
+    retryDb: Db = scoped.withContext(retryCtx)
+    startTime: DateTime = DateTime.current().unwrap()
+    retryExec: Result[int] = retryDb.exec("INSERT INTO timeout_missing_table VALUES (1)")
+    execEnd: DateTime = DateTime.current().unwrap()
+    execElapsed: int = execEnd.unixMilli() - startTime.unixMilli()
+    queryCtx: Context = Context.simple().expirable(100, "milliseconds").unwrap()
+    queryDb: Db = scoped.withContext(queryCtx)
+    queryStart: DateTime = DateTime.current().unwrap()
+    retryQuery: Result[list[dict[str, any]]] = queryDb.query("SELECT * FROM timeout_missing_table")
+    queryEnd: DateTime = DateTime.current().unwrap()
+    queryElapsed: int = queryEnd.unixMilli() - queryStart.unixMilli()
+    retryExecError: Error = retryExec.error
+    retryQueryError: Error = retryQuery.error
+    print(f"observer-interruptible-retry: {not retryExec.ok() and not retryQuery.ok() and retryExecError.message == 'context deadline exceeded' and retryQueryError.message == 'context deadline exceeded' and execElapsed < 1200 and queryElapsed < 1200 and observer.failures[len(observer.failures) - 1] == 'DbQueryError'}")
+    scoped.setRetries(-1, -10)
+    invalidRetryExec: Result[int] = scoped.exec("INSERT INTO missing_table VALUES (1)")
+    invalidRetryQuery: Result[list[dict[str, any]]] = scoped.query("SELECT * FROM missing_table")
+    print(f"observer-retry-clamp: {scoped.maxRetries == 0 and scoped.retryBaseMs == 0 and not invalidRetryExec.ok() and not invalidRetryQuery.ok()}")
+    scoped.setRetries(3, 50)
+
+    replacement: RecordingObserver = RecordingObserver()
+    switcher: SwitchingObserver = SwitchingObserver(db, replacement)
+    db.setObserver(switcher)
+    scoped.query("SELECT 1").unwrap()
+    scoped.query("SELECT 1").unwrap()
+    print(f"observer-swap-mid-flight: {switcher.starts == 1 and switcher.finishes == 1 and switcher.finishedToken == 'original-token' and len(replacement.statements) == 1 and len(replacement.failures) == 1}")
+
+    db.setObserver(None)
+    previousStarts: int = len(replacement.statements)
+    previousFinishes: int = len(replacement.failures)
+    dbNoObserver: bool = scoped._start("SELECT 1") == None
+    scoped.query("SELECT 1").unwrap()
+    noObserverTx: Tx = scoped.begin().unwrap()
+    txNoObserver: bool = noObserverTx._start("SELECT 1") == None
+    noObserverTx.query("SELECT 1").unwrap()
+    noObserverTx.commit().unwrap()
+    print(f"observer-none-noop: {dbNoObserver and txNoObserver and switcher.starts == 1 and switcher.finishes == 1 and len(replacement.statements) == previousStarts and len(replacement.failures) == previousFinishes}")
+
+    closedScope: Result[bool] = scoped.close()
+    print(f"observer-scoped-close-safe: {not closedScope.ok() and db.ping().ok()}")
     db.exec("DROP TABLE lam_test").unwrap()
     db.close().unwrap()
     print(f"begin-error: {not db.begin().ok()}")

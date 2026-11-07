@@ -181,7 +181,7 @@ def scan_doc_comments(source: str) -> tuple[list[DocComment], list[ScanIssue]]:
     return comments, issues
 
 
-def _workspace_lam_files() -> list[Path]:
+def _workspace_lam_files() -> list[tuple[Path, Path]]:
     repositories = [ROOT]
     if WORKSPACE.is_dir():
         repositories.extend(
@@ -190,11 +190,11 @@ def _workspace_lam_files() -> list[Path]:
             if child.is_dir() and child != ROOT and (child / ".git").exists()
         )
 
-    files: set[Path] = set()
+    files: set[tuple[Path, Path]] = set()
     for repository in repositories:
         for path in repository.rglob("*.lam"):
             if not any(part in SKIP_DIRS for part in path.parts):
-                files.add(path.resolve())
+                files.add((path.resolve(), repository.resolve()))
     return sorted(files)
 
 
@@ -297,7 +297,7 @@ def test_complete_workspace_corpus() -> None:
     failures: list[str] = []
     parsed_bodies = 0
     parsed_files = 0
-    for path in files:
+    for path, repository in files:
         source = path.read_text(encoding="utf-8")
         comments, issues = scan_doc_comments(source)
         for issue in issues:
@@ -317,7 +317,7 @@ def test_complete_workspace_corpus() -> None:
                         f"{path}:{line}:{column}: comment body failed to parse: {exc}"
                     )
 
-        syntax_cases = ROOT / "tests" / "syntax" / "cases"
+        syntax_cases = repository / "tests" / "syntax" / "cases"
         if path.is_relative_to(syntax_cases):
             continue
         try:

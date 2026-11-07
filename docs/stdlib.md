@@ -298,7 +298,9 @@ func main() {
 
 The primary `connect`, execution, query, transaction, and query-builder
 terminal methods all return typed `Result[T]` values; propagate them with `?`
-or inspect `ok()` and `error` explicitly.
+or inspect `ok()` and `error` explicitly. For concurrent requests, derive a
+separate `Db.withContext(ctx)` handle from the shared pool; see
+[request-scoped database observation](#request-scoped-database-observation).
 
 ### Cache and retry downstream calls
 
@@ -3011,8 +3013,105 @@ for a builder bound to the transaction so chained writes stay
 atomic with the surrounding `tx.exec` calls.
 
 Automatic retries on transient errors (closed connection, server gone away,
-bad conn…) are bounded by `setRetries`. Exhausted transient and non-transient
-errors are returned by the same unsuffixed operation as `Result.Err`.
+bad conn…) are bounded by `setRetries` (negative settings become zero).
+A scoped context's cancellation or deadline interrupts retry backoff.
+Exhausted transient and non-transient errors are returned by the same
+unsuffixed operation as `Result.Err`.
+
+#### Request-scoped database observation
+
+`Db.withContext(ctx) -> Db` creates a handle sharing the owning pool, with
+`ctx` used for SQL execution and transactions (including cancellation and
+deadlines). Give each request its own context and scoped handle (for example,
+pass a Vulture handler's `req.ctx`); raw `exec` / `query`,
+`db.table(...).get()` and other builder terminals use that context.
+`begin()` and `transaction(fn)` create a `Tx` inheriting it, so `tx.exec`,
+`tx.query` and `tx.table(...)` use the same request context. Keep the owner
+open for the pool's lifetime; `close()` on a scoped handle returns an error
+instead of closing the pool. Configure `setRetries` before creating scoped
+handles: each view snapshots the owner's retry count and base delay, while
+`setPool` still configures the shared underlying pool. Do not store a mutable
+"current context" on the shared `Db` or swap one context between concurrent
+requests.
+
+An optional `DbObserver` receives `start(ctx: Context, statement: str) -> any`
+before an operation and `finish(ctx: Context, token: any, failure: str)`
+afterwards. The `token` is exactly what `start` returned; `failure` is `""`
+on success and the stable `Error.kind` (such as `DbQueryError`) for a failed
+operation, never a driver message or bound value. Configure
+`pool.setObserver(observer)` once before sharing the pool (omit it if no
+observation is needed). Raw SQL and builder terminals both reach the observer;
+transaction begin, commit and rollback are reported as `BEGIN`, `COMMIT` and
+`ROLLBACK`, including those performed by `transaction(fn)`. Savepoint,
+rollback-to-savepoint and release statements are also observed and respect the
+context. The observer should be safe for concurrent requests. A transaction
+captures the observer and context when it begins.
+
+For example, with a `users` table containing `id`, `name` and `visits`:
+
+```lammergeier
+from lamdb import Db, DbObserver, Tx
+from lamcontext import Context
+from lamerrors import Result
+
+class RequestObserver {
+    func start(self, ctx: Context, statement: str) -> any {
+        return ctx.get("requestId", "")
+    }
+
+    func finish(self, ctx: Context, token: any, failure: str) {
+        if failure != "" {
+            print(f"database operation failed for request {token}")
+        }
+    }
+}
+
+func handleRequest(pool: Db, ctx: Context, userId: int) -> Result[bool] {
+    scoped: Db = pool.withContext(ctx)
+    _ = scoped.query("SELECT id FROM users WHERE id = ?", [userId])?
+    _ = scoped.table("users").whereEq("id", userId).get()?
+
+    func updateUser(tx: Tx) -> Result[bool] {
+        _ = tx.exec("UPDATE users SET visits = visits + ? WHERE id = ?", [1, userId])?
+        _ = tx.table("users").whereEq("id", userId).update({"name": "Ada"})?
+        return Result.Ok(true)
+    }
+    _ = scoped.transaction(updateUser)?
+
+    tx: Tx = scoped.begin()?
+    checked: Result[list[dict[str, any]]] = tx.query("SELECT id FROM users WHERE id = ?", [userId])
+    if not checked.ok() {
+        _ = tx.rollback()
+        return Result.Err(checked.error)
+    }
+    _ = tx.commit()?
+    return Result.Ok(true)
+}
+
+func main() {
+    do {
+        pool: Db = Db.connect("sqlite", "file:app.db?cache=shared")?
+        defer pool.close()
+        observer: DbObserver = RequestObserver()
+        pool.setObserver(observer)
+        requestCtx: Context = Context.simple().valued("requestId", "req-42")
+        _ = handleRequest(pool, requestCtx, 7)?
+    } catch err {
+        print(f"database error: {err}")
+    }
+}
+```
+
+Remove `setObserver` when observation is not wanted; `withContext` still
+propagates cancellation and deadlines. The callback transaction rolls back
+on a returned `Result.Err`, while explicit transactions require you to call
+`rollback()` on an error before returning. SQL `statement` is the SQL text
+with placeholders, **not bound parameter values**; the observer has no
+`params` argument. Always bind values through `?` and `params` (including
+builder predicates), never interpolate private data into SQL text. A raw SQL
+string may itself contain sensitive literals even though the observer sees
+only an error kind, not a driver error message. Avoid putting secrets in
+request IDs or observer tokens.
 
 #### Constraint violations — `Db.sqlState`
 
@@ -3749,9 +3848,19 @@ res.streamFile(path: str, contentType: str = "") -> Response
 
 # lamdb
 Db.connect(driver: str, dsn: str) -> Result[Db]
+db.setObserver(observer: DbObserver)
+db.withContext(ctx: Context) -> Db
+DbObserver.start(ctx: Context, statement: str) -> any
+DbObserver.finish(ctx: Context, token: any, failure: str)
 db.exec(query: str, params: list[any] = []) -> Result[int]
 db.query(query: str, params: list[any] = []) -> Result[list[dict[str, any]]]
 db.transaction(fn: any) -> Result[bool]
+db.begin() -> Result[Tx]
+tx.exec(query: str, params: list[any] = []) -> Result[int]
+tx.query(query: str, params: list[any] = []) -> Result[list[dict[str, any]]]
+tx.table(name: str) -> QueryBuilder
+tx.savepoint(name: str) / tx.rollbackTo(name: str) / tx.releaseSavepoint(name: str) -> Result[bool]
+tx.commit() / tx.rollback() -> Result[bool]
 db.table(name: str) -> QueryBuilder
 qb.select(cols: list[any]) -> QueryBuilder
 qb.where(col: str, op: str, val: any) -> QueryBuilder
