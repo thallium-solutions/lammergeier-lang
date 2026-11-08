@@ -1,8 +1,8 @@
 # Regression (4.1.2): an `optional` payload (`Result[optional[int]]`) kept
 # its `*int` shape under `??` (`x: int = maybe(4)? ?? 0` asserted `int` and
-# the fallback closure stayed `interface{}`), and an unknown / `any` payload
-# still takes the type of its annotated target (`x: int = anyVal()? * 2`),
-# as before.
+# the fallback closure stayed `interface{}`), and an `any` payload used
+# with an operator takes the type of its inline cast
+# (`x: int = anyVal()? as int * 2`; the operator alone is a Lam error).
 #
 # expect: optional: 4 7 6 n3 anon! true 5
 # expect: any: 42 abc!
@@ -43,8 +43,8 @@ func optionals() -> Result[str] {
 }
 
 func anys() -> Result[str] {
-    x: int = anyVal()? * 2
-    t: str = anyText()? + "!"
+    x: int = anyVal()? as int * 2
+    t: str = anyText()? as str + "!"
     return Result.Ok(f"{x} {t}")
 }
 

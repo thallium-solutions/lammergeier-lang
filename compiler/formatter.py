@@ -560,6 +560,15 @@ def _format_code_fragment(code: str, enclosing: str = "") -> str:
             _append_space(out)
             i += 1
             continue
+        if ch == "a" and out and _is_word_at(code, i, "as"):
+            # ``row["n"]as int`` / ``(v as any)as int``: one space around
+            # the cast (and binding) keyword.
+            _rstrip_spaces(out)
+            out.append(" as ")
+            i += 2
+            while i < len(code) and code[i].isspace():
+                i += 1
+            continue
         if ch in "+-" and _is_unary_sign(code, i):
             # ``x = - 1`` / ``n ?? - 1``: a sign sticks to its operand.
             out.append(ch)
@@ -570,6 +579,15 @@ def _format_code_fragment(code: str, enclosing: str = "") -> str:
         out.append(ch)
         i += 1
     return "".join(out).strip()
+
+
+def _is_word_at(code: str, index: int, word: str) -> bool:
+    """``word`` starts at ``index`` as a whole identifier."""
+    if not code.startswith(word, index):
+        return False
+    before = code[index - 1] if index > 0 else ""
+    after = code[index + len(word)] if index + len(word) < len(code) else ""
+    return not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_")
 
 
 def _is_keyword_argument(out: list[str], bracket: str) -> bool:
@@ -895,7 +913,7 @@ def _space_before_opener_is_meaningful(out: list[str]) -> bool:
 
 # Keywords written with one space before a ``(`` that follows them.
 _SPACED_PAREN_KEYWORDS = frozenset({
-    "if", "elif", "while", "for", "catch", "with", "match", "case", "in", "return",
+    "if", "elif", "while", "for", "catch", "with", "match", "case", "in", "return", "as",
     "yield", "and", "or", "not", "assert", "raise", "throw", "await", "is", "else", "lambda",
 })
 

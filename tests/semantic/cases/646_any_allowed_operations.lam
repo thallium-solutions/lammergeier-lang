@@ -1,0 +1,58 @@
+# expect-pass
+# expect-no-warning: has type `any`
+# Operations that are well defined on an `any` value stay allowed: `==` /
+# `!=`, `is None`, `??`, `str()` / `repr()` / `print` / f-strings,
+# `isinstance` (and the narrowed name afterwards), `match`, passing it to
+# an `any` or a typed parameter (a run-time conversion), assigning it to an
+# `any` or a typed variable, `int()` / `float()` / `bool()` conversions, a
+# membership test of an `any` needle, `list[any]` / `dict[str, any]`
+# methods, and the inline cast `as`.
+
+from lamjson import Json
+
+class User {
+    func init(self, name: str) { self.name: str = name }
+}
+
+func lookup(key: str) -> any {
+    return User(key)
+}
+
+func takeAny(x: any) -> any { return x }
+func takeInt(n: int) -> int { return n }
+
+func describe(v: any) -> str {
+    if isinstance(v, int) {
+        return f"int {v + 1}"
+    }
+    if isinstance(v, User) {
+        return v.name.toUpper()
+    }
+    match v {
+        case str(s) { return s.toUpper() }
+        case [first, *_] { return str(first) }
+        case _ { return "other" }
+    }
+}
+
+func main() {
+    row: dict[str, any] = {"count": 41, "name": "ada", "items": ["a", "b"]}
+    v: any = row["count"]
+    print(v == 41, v != None, v is None, v is not None, row["name"] == "ada")
+    print(str(v), repr(v), f"{v} {row["name"]}", v ?? 0)
+    print(describe(v), describe(lookup("u")), takeAny(v), takeInt(row["count"]))
+    n: int = row["count"]
+    w: any = n
+    w = row["name"]
+    print(int(v), float(v), bool(v == 1), w)
+    print(v in [1, 41], "items" in row, len(row))
+    xs: list[any] = row["items"] as list[any]
+    xs.append(v)
+    print(len(xs), xs[0] == "a", row["count"] as int + 1, (lookup("u") as User).name)
+    for item in row["items"] as list[str] {
+        print(item.toUpper())
+    }
+    payload: json = Json.fromValue(row).unwrap()
+    print(payload.name, Json.fromValue(v).unwrap())
+    print(n, row["count"] as float / 2.0, isinstance(row["name"], str))
+}

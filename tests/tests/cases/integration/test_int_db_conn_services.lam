@@ -1,0 +1,211 @@
+# Cross-feature fixture for lamdb's DbConn / Db.atomic / pool(): services
+# written once against DbConn (an interface parameter, a field and a lambda
+# parameter), an inheritance chain of repositories, a generic unit-of-work
+# helper composing Db.atomic, nested savepoint levels, Result `?` chains,
+# do/catch and a custom exception class rolling a level back, list
+# comprehensions over outcomes, and concurrent async transfers through
+# request-scoped views of one pool.
+#
+# expect: opened: 3 total=300
+# expect: transfer: 2 alice=70 bob=130
+# expect: insufficient: InsufficientFunds alice=70 audit=1
+# expect: frozen: caught carol frozen total=300
+# expect: batch: [true false true] alice=50 bob=140 carol=110
+# expect: audit-survives: 6 [move:alice->bob move:alice->bob move:alice->carol]
+# expect: helper: 3 labels=[sum count]
+# expect: pool-handoff: 3 3
+# expect: concurrent: 20 ok total=300
+# expect: services_ok
+from lamdb import Db, DbConn, Row, Tx
+from lamcontext import Context
+from lamerrors import Result, Error
+from lamos import Os
+
+class FrozenAccount {
+    func init(self, owner: str) {
+        self.owner: str = owner
+    }
+
+    func __str__(self) -> str {
+        return f"{self.owner} frozen"
+    }
+}
+
+interface Audit {
+    func record(conn: DbConn, event: str) -> Result[int]
+}
+
+class SqlAudit {
+    func record(self, conn: DbConn, event: str) -> Result[int] {
+        return conn.exec("INSERT INTO audit (event) VALUES (?)", [event])
+    }
+}
+
+class Repository {
+    func init(self, table: str) {
+        self.table: str = table
+    }
+
+    func count(self, conn: DbConn) -> Result[int] {
+        return conn.table(self.table).count()
+    }
+}
+
+class Accounts(Repository) {
+    func init(self) {
+        base.init("accounts")
+    }
+
+    func open(self, conn: DbConn, owner: str, balance: int) -> Result[int] {
+        return conn.table(self.table).insert({"owner": owner, "balance": balance})
+    }
+
+    func balance(self, conn: DbConn, owner: str) -> Result[int] {
+        row: dict[str, any] = conn.first("SELECT balance FROM accounts WHERE owner = ?", [owner])?
+        if len(row) == 0 {
+            return Result.Err(Error("UnknownAccount", owner))
+        }
+        return Result.Ok(Row.int(row, "balance"))
+    }
+
+    func adjust(self, conn: DbConn, owner: str, delta: int) -> Result[int] {
+        if owner == "carol" and delta < 0 and Row.bool(conn.first("SELECT frozen FROM accounts WHERE owner = ?", [owner])?, "frozen") {
+            throw FrozenAccount(owner)
+        }
+        current: int = self.balance(conn, owner)?
+        if current + delta < 0 {
+            return Result.Err(Error("InsufficientFunds", f"{owner} has {current}"))
+        }
+        return conn.exec("UPDATE accounts SET balance = balance + ? WHERE owner = ?", [delta, owner])
+    }
+
+    func total(self, conn: DbConn) -> int {
+        return int(conn.scalar("SELECT SUM(balance) FROM accounts").unwrap())
+    }
+}
+
+class Transfers {
+    func init(self, accounts: Accounts, audit: Audit) {
+        self.accounts: Accounts = accounts
+        self.audit: Audit = audit
+    }
+
+    func move(self, conn: DbConn, source: str, target: str, amount: int) -> Result[int] {
+        #- Debit and credit atomically; the audit row is its own nested
+           level and is only kept when the transfer commits. -#
+        func work(tx: Tx) -> Result[int] {
+            _ = self.accounts.adjust(tx, source, -amount)?
+            _ = self.accounts.adjust(tx, target, amount)?
+            _ = Db.atomic(tx, lambda (inner: Tx) -> Result[int]: self.audit.record(inner, f"move:{source}->{target}"))?
+            return Result.Ok(tx.depth() + 2)
+        }
+        return Db.atomic(conn, work)
+    }
+}
+
+class Journal {
+    func init(self) {
+        self.labels: list[str] = []
+    }
+}
+
+class Unit {
+    static func run[T](conn: DbConn, label: str, journal: Journal, fn: func(Tx) -> Result[T]) -> Result[T] {
+        #- A generic helper over Db.atomic: whatever ``fn`` returns, typed. -#
+        journal.labels.append(label)
+        return Db.atomic(conn, fn)
+    }
+}
+
+func balances(accounts: Accounts, conn: DbConn, owners: list[str]) -> str {
+    return " ".join([f"{o}={accounts.balance(conn, o).unwrap()}" for o in owners])
+}
+
+func countFrom(pool: Db, table: str) -> int {
+    # A "library" that needs a Db, not a connection.
+    return pool.table(table).count().unwrap()
+}
+
+async func transferAsync(service: Transfers, pool: Db, n: int) -> bool {
+    scoped: Db = pool.withContext(Context.simple().valued("worker", n))
+    source: str = "alice" if n % 2 == 0 else "bob"
+    target: str = "bob" if n % 2 == 0 else "alice"
+    return service.move(scoped, source, target, 1).ok()
+}
+
+func main() {
+    path: str = Os.tempFile("lam-int-db-conn-", ".db").unwrap()
+    db: Db = Db.connect("sqlite", f"file:{path}?_pragma=busy_timeout(10000)&_txlock=immediate").unwrap()
+    db.exec("CREATE TABLE accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT UNIQUE, balance INTEGER, frozen INTEGER DEFAULT 0)").unwrap()
+    db.exec("CREATE TABLE audit (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT)").unwrap()
+
+    accounts: Accounts = Accounts()
+    sqlAudit: Audit = SqlAudit()
+    transfers: Transfers = Transfers(accounts, sqlAudit)
+
+    func openAll(tx: Tx) -> Result[int] {
+        for owner in ["alice", "bob", "carol"] {
+            _ = accounts.open(tx, owner, 100)?
+            _ = sqlAudit.record(tx, f"open:{owner}")?
+        }
+        return accounts.count(tx)
+    }
+    opened: int = Db.atomic(db, openAll).unwrap()
+    print(f"opened: {opened} total={accounts.total(db)}")
+
+    print(f"transfer: {transfers.move(db, 'alice', 'bob', 30).unwrap()} {balances(accounts, db, ['alice', 'bob'])}")
+
+    short: Result[int] = transfers.move(db, "alice", "bob", 500)
+    shortError: Error = short.error
+    auditMoves: int = int(db.scalar("SELECT COUNT(*) FROM audit WHERE event LIKE 'move:%'").unwrap())
+    print(f"insufficient: {shortError.kind} alice={accounts.balance(db, 'alice').unwrap()} audit={auditMoves}")
+
+    db.exec("UPDATE accounts SET frozen = 1 WHERE owner = ?", ["carol"]).unwrap()
+    caught: str = ""
+    try {
+        _ = transfers.move(db, "carol", "alice", 10)
+    } catch FrozenAccount as frozen {
+        caught = f"caught {frozen}"
+    }
+    db.exec("UPDATE accounts SET frozen = 0 WHERE owner = ?", ["carol"]).unwrap()
+    print(f"frozen: {caught} total={accounts.total(db)}")
+
+    # One outer transaction, each transfer in its own nested level.
+    plan: list[tuple[str, str, int]] = [("alice", "bob", 10), ("bob", "carol", 999), ("alice", "carol", 10)]
+    func batch(tx: Tx) -> Result[list[bool]] {
+        outcomes: list[Result[int]] = [transfers.move(tx, source, target, amount) for source, target, amount in plan]
+        return Result.Ok([o.ok() for o in outcomes])
+    }
+    batchOk: list[bool] = Db.atomic(db, batch).unwrap()
+    print(f"batch: {batchOk} {balances(accounts, db, ['alice', 'bob', 'carol'])}")
+
+    events: list[dict[str, any]] = db.query("SELECT event FROM audit ORDER BY id").unwrap()
+    names: list[str] = [Row.str(e, "event") for e in events]
+    print(f"audit-survives: {len(names)} {names[3:]}")
+
+    journal: Journal = Journal()
+    func sumBalances(tx: Tx) -> Result[int] {
+        rows: list[dict[str, any]] = tx.query("SELECT balance FROM accounts").unwrap()
+        return Result.Ok([Row.int(r, "balance") for r in rows].reduce(lambda a, b: a + b, 0) // 100)
+    }
+    summed: int = Unit.run(db, "sum", journal, sumBalances).unwrap()
+    counted: int = Unit.run(db, "count", journal, lambda tx: accounts.count(tx)).unwrap()
+    print(f"helper: {summed if summed == counted else -1} labels={journal.labels}")
+
+    func handOff(tx: Tx) -> Result[str] {
+        conn: DbConn = tx
+        return Result.Ok(f"{countFrom(conn.pool(), 'accounts')} {countFrom(tx.pool(), 'accounts')}")
+    }
+    print(f"pool-handoff: {Db.atomic(db.withContext(Context.simple()), handOff).unwrap()}")
+
+    tasks = [transferAsync(transfers, db, i) for i in range(20)]
+    done: list[bool] = []
+    for t in tasks {
+        done.append(await t)
+    }
+    print(f"concurrent: {len([d for d in done if d])} {'ok' if done.all(lambda b: b) else 'failed'} total={accounts.total(db)}")
+
+    db.close().unwrap()
+    _ = Os.remove(path)
+    print("services_ok")
+}

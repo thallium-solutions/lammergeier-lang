@@ -183,7 +183,7 @@ class DefinitionVisitorMixin:
         # generic ``_go_public_name`` rewrite and emit ``Inner(...)``,
         # which is undefined).
         self._declare_var(func_name)
-        self._register_nested_func_params(func_name, params_node)
+        self._register_nested_func_params(func_name, params_node, return_type_node)
         # ``words.map(loud)``: the closure's type, like a typed lambda local.
         param_types = [t for t in self._param_types_sig(params_node) if t != "..."]
         if len(param_types) == len(self._param_types_sig(params_node)):
@@ -247,16 +247,21 @@ class DefinitionVisitorMixin:
         # it. The semantic checker doesn't currently track this, so we
         # leave it to the Go compiler to surface unused closures.
 
-    def _register_nested_func_params(self, func_name: str, params_node) -> None:
+    def _register_nested_func_params(self, func_name: str, params_node, return_type_node=None) -> None:
         """Parameter names, types and defaults of a nested ``func`` under a
         key of its own (``<nested>.<name>``), so calls fill defaults and
         order keywords like calls of top-level functions (the closure's Go
-        signature has every parameter). The enclosing function's
+        signature has every parameter), and its Lam signature, so passing
+        it by name binds a generic callee's ``T`` (``Db.atomic(db, work)``
+        with ``work`` returning ``Result[int]``). The enclosing function's
         ``_visit_funcdef`` drops the entry when its body ends."""
         key = f"<nested>.{func_name}#{id(params_node)}"
-        for table in (self._func_defaults, self._func_param_names, self._func_param_go_types):
+        for table in (self._func_defaults, self._func_param_names, self._func_param_go_types,
+                      self._func_param_lam_types, self._func_return_lam_types):
             table.pop(key, None)
         self._collect_param_defaults(key, params_node)
+        if return_type_node is not None:
+            self._func_return_lam_types[key] = self._parsed_lam_type(return_type_node)
         self._func_param_counts[key] = self._count_params(params_node) if params_node else 0
         if params_node and self._has_variadic(params_node):
             self._variadic_functions.add(key)
@@ -279,7 +284,8 @@ class DefinitionVisitorMixin:
         created = self.__dict__.pop("_nested_func_created_keys", set())
         for key in created:
             for table in (self._func_defaults, self._func_param_names,
-                          self._func_param_go_types, self._func_param_counts):
+                          self._func_param_go_types, self._func_param_counts,
+                          self._func_param_lam_types, self._func_return_lam_types):
                 table.pop(key, None)
             self._variadic_functions.discard(key)
 

@@ -212,7 +212,12 @@ so a `T` that only appears inside it is bound the same way:
 `_func_param_lam_types` / `_func_return_lam_types` keep the Lam signatures
 of every callable (imported modules included), and a lambda argument
 contributes its annotations (`_lambda_lam_type`: `lambda (tx: Conn) ->
-Result[int]: ...` is `func(Conn) -> Result[int]`), a function or static
+Result[int]: ...` is `func(Conn) -> Result[int]`; an expression lambda
+without a result annotation takes the declared result of the
+non-generic function, nested function, static method or receiver method its
+body calls, `_lambda_body_call_lam_type`: `lambda tx: addItem(tx, "d")` is
+`func(any) -> Result[int]`), a function, nested function (its signature is
+kept under its `<nested>.<name>` key while it is in scope) or static
 method passed by name its signature (`_func_ref_lam_type`), unified through
 `Result`, `optional`, `list`, `dict`, unions and function types
 (`inTx(c, countRows)` emits `InTx[int](c, CountRows)`). When the arguments
@@ -396,6 +401,45 @@ small converter for a `float64` (an `int` widens), a class with subclasses
 (`nil` passes) and typed slices / string-keyed maps (element by element).
 A failed assertion is a Go runtime `interface conversion` panic, which
 `catch` classifies as `TypeError`.
+
+### Inline casts (`expr as T`)
+
+The grammar's `cast_expr` sits between `term` and `factor` (`?term:
+cast_expr (_mul_op cast_expr)*`, `?cast_expr: factor | cast_expr "as"
+cast_type`), so `as` binds tighter than the binary operators and looser
+than unary operators, `**` and postfix forms; the target is aliased to a
+regular `type_expr` / `type_union` node. `catch_clause` and `with_item`
+take an `atom_expr` before their binding `as`, so the LALR shift reads
+`catch E as e` as a binding (the one added shift/reduce resolution, on
+`AS` after `atom_expr`).
+
+`_cast_expr_to_go` lowers a cast through `_typed_value_to_go(value,
+T_go)`, the choke point of annotated assignments, so every conversion is
+the one `value: T = expr` performs: `interface{}(row["n"]).(int)` from an
+`any`, the int-widening converter for `float64`, the element-by-element
+conversion for typed slices / maps, `float64(n)` for a static int,
+`sq._lamUp_Shape()` for an upcast, the `_lamDyn()` view for `as any` of a
+subclassed class. Two cases are added: a value whose Go type the lowering
+cannot see (a comprehension variable over a `list[any]`; the semantic
+checker accepted the cast) goes through `_dynamic_to_go`, and a downcast of
+a base-class or interface value to a class (`_cast_downcast_to_go`) asserts
+the most-derived object to the `_lamIs_<C>` interface:
+
+```go
+func(v interface{}) *Square { if v == nil { return nil }; return v.(interface{ _lamIs_Square() *Square })._lamIs_Square() }(s._lamDyn())
+```
+
+(a plain `v.(*C)` for a class nobody subclasses). Every form is a Go
+primary expression; an identity cast of an operator expression is
+parenthesised, so `row["n"] as int + 1` and `(n + 1) as int * 2` need no
+further grouping. `_expr_go_type_hint`, `_infer_type_from_value` and
+`_infer_receiver_class` return the cast's type, so `(v as User).greet()`
+dispatches like a typed receiver.
+
+The semantic checker (`compiler/semantic_any.py`) types `cast_expr` as
+`T`, rejects statically impossible casts, and reports operations that need
+a concrete type on declared `any` operands (kind `any`) before emission;
+they used to reach `go build` as `interface{}` errors.
 
 ### Typed collection contexts
 
@@ -1588,6 +1632,7 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `xs += ys` (list)                  | `xs = append(xs, ys...)`                                                  |
 | `a ** b`                           | `math.Pow(float64(a), float64(b))` (a `float64` operand: `a + b ** c` converts `a`); typed non-`float64` numeric contexts cast the result |
 | `a in xs`, `a not in xs`           | Container-aware membership test for strings, lists, dicts, and sets          |
+| `expr as T`                        | The conversion of an annotated assignment to `T` (`_typed_value_to_go`), or a checked `_lamIs_<C>` downcast; see [Inline casts](#inline-casts-expr-as-t) |
 | `xs == ys`, `d == {...}` (lists, dicts, sets) | `slices.Equal` / `maps.Equal` for comparable element types (a literal side typed by the other side), `slices.EqualFunc` through an element class's `__eq__`, `reflect.DeepEqual` otherwise (nested collections, `any` elements, different element types); `!=` negates |
 | `not x`                            | `!x`                                                                      |
 | `x and y`, `x or y`                | `x && y`, `x \|\| y`                                                      |

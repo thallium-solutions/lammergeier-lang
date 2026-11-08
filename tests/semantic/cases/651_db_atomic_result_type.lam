@@ -1,0 +1,22 @@
+# expect-error: cannot assign `int` to `str` variable `fromFunction`
+# expect-error: cannot assign `int` to `str` variable `fromLambda`
+# expect-error: cannot assign `int` to `str` variable `fromCall`
+# expect-error: cannot assign `Result[int]` to `Result[str]` variable `wrapped`
+# Db.atomic returns the callback's own Result[T]: its payload type is
+# checked like any generic result (a function reference, an annotated
+# lambda, an unannotated lambda calling a typed function).
+from lamdb import Db, Tx
+from lamerrors import Result
+
+func addOne(_tx: Tx) -> Result[int] {
+    return Result.Ok(1)
+}
+
+func main() {
+    db: Db = Db.connect("sqlite", ":memory:").unwrap()
+    fromFunction: str = Db.atomic(db, addOne).unwrap()
+    fromLambda: str = Db.atomic(db, lambda (tx: Tx) -> Result[int]: Result.Ok(2)).unwrap()
+    fromCall: str = Db.atomic(db, lambda tx: addOne(tx)).unwrap()
+    wrapped: Result[str] = Db.atomic(db, addOne)
+    print(fromFunction, fromLambda, fromCall, wrapped)
+}

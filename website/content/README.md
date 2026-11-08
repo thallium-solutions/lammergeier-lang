@@ -189,7 +189,8 @@ Useful subcommands:
 - **`lamc dev <file.lam>`:** build and run a program, then rebuild and
   restart it when its sources change (the nodemon workflow); a failed
   build keeps the previous one running. `--watch PATH` and `--ext json,sql`
-  restart on other files without rebuilding.
+  restart on other files without rebuilding; an unchanged program starts
+  its cached last good build without building (`--rebuild` to build).
 - **`lamc lib run <script> [-- ARGS]`:** run a command declared in the
   nearest `lamlib.toml` `[scripts]` table, with extra arguments.
 

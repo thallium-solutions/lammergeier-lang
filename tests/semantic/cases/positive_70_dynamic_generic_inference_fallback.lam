@@ -1,4 +1,9 @@
 # expect-pass
+# A generic call whose type argument is inferred from `any` arguments
+# gives an `any` (no type is pinned): it converts where a concrete type is
+# expected and a cast gives it one for a member call. (A member read
+# directly on it is an error since the `any` operand checks:
+# 649_any_dynamic_sources_member.lam.)
 
 func same[T](left: T, right: T) -> T {
     return left
@@ -6,5 +11,7 @@ func same[T](left: T, right: T) -> T {
 
 func use(left: any, right: any) {
     value = same(left, right)
-    print(value.dynamicMember())
+    text: str = value
+    count: int = same(left, right)
+    print(text, count, (value as str).toUpper())
 }

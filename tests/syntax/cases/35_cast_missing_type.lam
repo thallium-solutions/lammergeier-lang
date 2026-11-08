@@ -1,0 +1,9 @@
+# expect-error: syntax check failed
+# expect-error: expected: a type
+# expect-error: help: An inline cast needs a type after `as`: `value as int`, `value as list[str]`, `value as User`.
+
+func main() {
+    v: any = 1
+    n = v as
+    print(n)
+}

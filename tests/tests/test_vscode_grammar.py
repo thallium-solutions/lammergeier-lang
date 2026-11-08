@@ -264,6 +264,27 @@ def test_operators(repository: dict[str, Any]) -> None:
     )
 
 
+def test_casts(grammar: dict[str, Any], repository: dict[str, Any]) -> None:
+    """``expr as T``: ``as`` is the cast operator and a type-looking target
+    (a builtin type or a capitalised class name) is a type; the bindings of
+    ``catch E as e`` / ``with r as f`` stay plain names."""
+    includes = [pattern["include"] for pattern in grammar["patterns"]]
+    assert includes.index("#casts") < includes.index("#keywords"), includes
+    pattern = repository["casts"]["patterns"][0]
+    assert pattern["captures"]["1"]["name"] == "keyword.operator.cast.lammergeier"
+    assert pattern["captures"]["2"]["name"] == "entity.name.type.cast.lammergeier"
+    for sample, target in (
+        ('row["n"] as int + 1', "int"),
+        ("(lookup(k) as User).name", "User"),
+        ("data as list[str]", "list"),
+        ("v as optional[Order]", "optional"),
+        ("v as any", "any"),
+    ):
+        assert assert_search(pattern["match"], sample).group(2) == target, sample
+    for sample in ("catch TypeError as e {", "with open(p) as fh {", "case [1, *_] as xs {"):
+        assert_no_search(pattern["match"], sample)
+
+
 def test_numbers_constants_and_builtins(repository: dict[str, Any]) -> None:
     number_patterns = repository["numbers"]["patterns"]
     for number in (
@@ -384,6 +405,7 @@ def main() -> int:
     test_contextual_keywords_and_generics(repository)
     test_strings(repository)
     test_operators(repository)
+    test_casts(grammar, repository)
     test_numbers_constants_and_builtins(repository)
     test_stdlib_modules(repository)
     test_markup_literals(grammar, repository)

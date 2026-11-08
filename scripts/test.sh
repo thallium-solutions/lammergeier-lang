@@ -82,6 +82,7 @@ run_suite() {
             "$PYTHON" tests/tests/test_typed_ir.py
             "$PYTHON" tests/tests/test_lowering_contracts.py
             "$PYTHON" tests/tests/test_operator_precedence.py
+            "$PYTHON" tests/tests/test_cast_expr.py
             "$PYTHON" tests/tests/test_async_unretrieved.py
             "$PYTHON" tests/tests/test_formatter.py
             "$PYTHON" tests/tests/test_formatter_roundtrip.py

@@ -1,0 +1,34 @@
+# expect-pass
+# expect-no-warning: cannot cast
+# Casts that are statically fine: identity, int as float (widening), an
+# upcast, a downcast (checked at run time, like an `isinstance`
+# narrowing), `as any`, `as optional[T]`, `None as` a class, a typed list
+# as `list[any]`, and casts chained or combined with other operators.
+
+class Shape {
+    func area(self) -> int { return 0 }
+}
+
+class Square(Shape) {
+    func init(self, side: int) { self.side: int = side }
+    func area(self) -> int { return self.side * self.side }
+}
+
+func main() {
+    n: int = 3
+    s: Shape = Square(2)
+    sq: Square = Square(3)
+    xs: list[int] = [1, 2]
+    a: int = n as int
+    b: float = n as float
+    c: Shape = sq as Shape
+    d: int = (s as Square).side
+    e: any = n as any
+    f: optional[int] = n as optional[int]
+    g: optional[Square] = None as Square
+    h: list[any] = xs as list[any]
+    i: int = n as any as int
+    j: float = -n as float * 2.0
+    k: bool = n as int == 3 and xs as list[any] != []
+    print(a, b, c.area(), d, e, f, g, h, i, j, k)
+}

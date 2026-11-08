@@ -1476,6 +1476,8 @@ class HelpersMixin:
         if not isinstance(node, Tree):
             return "interface{}"
         d = node.data
+        if d == "cast_expr" and len(node.children) == 2:
+            return self._type_expr_to_go(node.children[1])
         if d == "number":
             tok = node.children[0]
             # ``1e21`` is a float literal without a ``.``.

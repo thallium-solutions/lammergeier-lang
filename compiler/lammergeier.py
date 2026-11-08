@@ -1842,14 +1842,16 @@ def _effective_extlibs_dirs(
     source_dir: Path,
     extlibs_paths: list[str] | None,
     project_root: Path | None = None,
+    include_missing: bool = False,
 ) -> list[Path]:
-    """Return the Lam library search path for installed third-party libs."""
+    """Return the Lam library search path for installed third-party libs.
+    ``include_missing`` keeps the directories that do not exist (yet)."""
     extlibs_dirs: list[Path] = []
     seen_extlibs: set[Path] = set()
 
     def _push_extlibs(path: Path) -> None:
         resolved = path.resolve()
-        if resolved in seen_extlibs or not resolved.is_dir():
+        if resolved in seen_extlibs or not (include_missing or resolved.is_dir()):
             return
         seen_extlibs.add(resolved)
         extlibs_dirs.append(resolved)
@@ -1890,6 +1892,75 @@ def _inject_go_requires(go_mod_path: Path,
                            encoding="utf-8")
 
 
+class BuildInputsRecorder:
+    """The files a build read and the module paths it found missing, for
+    ``lamc dev``'s build cache (``lamc build --record-inputs FILE``).
+
+    Every module resolution of the build (transpile and semantic check)
+    goes through the ``WorkspaceIndex``; the recorder notes the file each
+    one picked (``files``) and every candidate path searched before it that
+    does not exist (``absent``): a file appearing there later would be
+    picked instead, so it invalidates the cached build like a changed file.
+    The candidates cover the search roots that do not exist yet too (an
+    ``extlibs/`` created after the build)."""
+
+    def __init__(self) -> None:
+        self.files: set[str] = set()
+        self.absent: set[str] = set()
+        self._seen: set[tuple[str, str]] = set()
+
+    def attach(self, module_index: WorkspaceIndex, source_file: Path, project_root: Path,
+               lead_roots: list[Path]) -> None:
+        self.files.add(str(source_file.resolve()))
+        manifest = _find_project_manifest(source_file.parent)
+        if manifest is not None:
+            for name in ("lamlib.toml", "lamlib.lock.toml"):
+                self._note_file(manifest.parent / name)
+        resolve = module_index.resolve_module
+
+        def recording_resolve(from_path: Path, module: str) -> Path | None:
+            found = resolve(from_path, module)
+            self._note(module_index, Path(from_path), module, found, project_root, lead_roots)
+            return found
+
+        module_index.resolve_module = recording_resolve  # type: ignore[method-assign]
+
+    def _note_file(self, path: Path) -> None:
+        if path.exists():
+            self.files.add(str(path.resolve()))
+        else:
+            self.absent.add(str(path))
+
+    def _note(self, module_index: WorkspaceIndex, from_path: Path, module: str,
+              found: Path | None, project_root: Path, lead_roots: list[Path]) -> None:
+        from_dir = from_path.resolve().parent
+        if (str(from_dir), module) in self._seen:
+            return
+        self._seen.add((str(from_dir), module))
+        if found is not None:
+            self.files.add(str(found.resolve()))
+        if module.startswith("."):
+            candidates = module_index.module_search_paths(from_path, module)
+        else:
+            roots: list[Path] = []
+            for root in [*lead_roots, from_dir, project_root, project_root / "lib"]:
+                root = root.resolve()
+                if root not in roots:
+                    roots.append(root)
+            relatives = module_index.module_relative_candidates(module)
+            candidates = [root / relative for root in roots for relative in relatives]
+        winner = found.resolve() if found is not None else None
+        for candidate in candidates:
+            if winner is not None and candidate.resolve() == winner:
+                break
+            if not candidate.exists():
+                self.absent.add(str(candidate))
+
+    def write(self, path: str) -> None:
+        payload = {"version": 1, "files": sorted(self.files), "absent": sorted(self.absent - self.files)}
+        Path(path).write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
+
+
 def compile_lam(
     source_path: str,
     output_path: str | None = None,
@@ -1911,6 +1982,7 @@ def compile_lam(
     use_cache: bool = True,
     no_semantic_check: bool = False,
     run_args: list[str] | None = None,
+    inputs_recorder: BuildInputsRecorder | None = None,
 ):
     """Full compilation pipeline.
 
@@ -1947,6 +2019,9 @@ def compile_lam(
         stdlib_dir=stdlib_dir,
         extlibs_dirs=extlibs_dirs,
     )
+    if inputs_recorder is not None:
+        all_extlibs = _effective_extlibs_dirs(source_dir, extlibs_paths, project_root, include_missing=True)
+        inputs_recorder.attach(module_index, source_file, project_root, [stdlib_dir, *all_extlibs])
 
     source = source_file.read_text(encoding="utf-8")
 
@@ -3644,6 +3719,9 @@ def _build_build_parser() -> "argparse.ArgumentParser":
                     help="Skip the pre-emission semantic checker")
     ap.add_argument("--timings", action="store_true",
                     help="Print per-phase compile times as a JSON line (LAMC_TIMINGS ...) on stderr")
+    # Used by ``lamc dev``: after a successful build, write the module
+    # files the build read (and the paths it found missing) as JSON.
+    ap.add_argument("--record-inputs", metavar="FILE", help=argparse.SUPPRESS)
     return ap
 
 
@@ -3681,6 +3759,8 @@ def _cmd_build(argv: list) -> int:
 
 
 def _run_compile(args, stdlib) -> None:
+    record_to = getattr(args, "record_inputs", None)
+    recorder = BuildInputsRecorder() if record_to else None
     compile_lam(
         source_path=args.source,
         output_path=args.output,
@@ -3702,7 +3782,10 @@ def _run_compile(args, stdlib) -> None:
         use_cache=not args.no_cache,
         no_semantic_check=args.no_semantic_check,
         run_args=getattr(args, "run_args", None),
+        inputs_recorder=recorder,
     )
+    if recorder is not None:
+        recorder.write(record_to)
 
 
 def _build_fmt_parser() -> "argparse.ArgumentParser":

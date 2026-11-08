@@ -1,0 +1,145 @@
+# Needs a disposable PostgreSQL (it creates and drops lam_conn_* tables):
+#   docker run -d --rm --name lam-test-pg -e POSTGRES_PASSWORD=test -p 127.0.0.1:55470:5432 postgres:16-alpine
+#   LAM_TEST_POSTGRES_DSN='postgres://postgres:test@127.0.0.1:55470/postgres?sslmode=disable'
+# Skipped when the variable is unset: never a default address.
+# requires-env: LAM_TEST_POSTGRES_DSN
+# expect: atomic: 7 rows=1
+# expect: failed-statement-in-savepoint: DbExecError 42P01 outer=ok rows=3 [a b]
+# expect: unique-in-savepoint: true rows=4
+# expect: nested-throw: caught rows=5
+# expect: outer-error: OuterError rows=5
+# expect: deferred-fk-commit: DbTransactionError true
+# expect: scoped-pool: true true
+# expect: observer: BEGIN|INSERT INTO lam_conn_items (name) VALUES (?)|SAVEPOINT lam_sp_1|SELECT * FROM lam_conn_missing|ROLLBACK TO SAVEPOINT lam_sp_1|RELEASE SAVEPOINT lam_sp_1|SAVEPOINT lam_sp_1|INSERT INTO lam_conn_items (name) VALUES (?)|RELEASE SAVEPOINT lam_sp_1|COMMIT
+# expect: observer-failures: |||DbQueryError||||||
+# expect: observer-context: true
+# PostgreSQL aborts a transaction at its first failing statement until a
+# ROLLBACK TO SAVEPOINT: Db.atomic on a Tx runs the callback in a
+# savepoint, so a failing statement (or a unique violation) inside it is
+# rolled back alone and the outer transaction goes on and commits.
+from lamdb import Db, DbConn, DbObserver, Tx
+from lamcontext import Context
+from lamenv import Env
+from lamerrors import Result, Error
+
+class RecordingObserver {
+    func init(self) {
+        self.statements: list[str] = []
+        self.failures: list[str] = []
+        self.contexts: list[Context] = []
+    }
+
+    func start(self, ctx: Context, statement: str) -> any {
+        self.contexts.append(ctx)
+        self.statements.append(statement)
+        return None
+    }
+
+    func finish(self, ctx: Context, _token: any, failure: str) {
+        self.contexts.append(ctx)
+        self.failures.append(failure)
+    }
+}
+
+func addItem(conn: DbConn, name: str) -> Result[int] {
+    _ = conn.exec("INSERT INTO lam_conn_items (name) VALUES (?)", [name])?
+    return Result.Ok(conn.table("lam_conn_items").count()?)
+}
+
+func names(conn: DbConn) -> list[str] {
+    rows: list[dict[str, any]] = conn.query("SELECT name FROM lam_conn_items ORDER BY id").unwrap()
+    return [str(r["name"]) for r in rows]
+}
+
+func kindOf(result: Result) -> str {
+    if result.ok() {
+        return "ok"
+    }
+    error: Error = result.error
+    return error.kind
+}
+
+func main() {
+    db: Db = Db.connect("postgres", Env.get("LAM_TEST_POSTGRES_DSN").unwrap()).unwrap()
+    db.exec("DROP TABLE IF EXISTS lam_conn_children, lam_conn_parents, lam_conn_items").unwrap()
+    db.exec("CREATE TABLE lam_conn_items (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL)").unwrap()
+    db.exec("CREATE TABLE lam_conn_parents (id INTEGER PRIMARY KEY)").unwrap()
+    db.exec("CREATE TABLE lam_conn_children (id SERIAL PRIMARY KEY, parent_id INTEGER REFERENCES lam_conn_parents(id) DEFERRABLE INITIALLY DEFERRED)").unwrap()
+
+    func seven(tx: Tx) -> Result[int] {
+        _ = addItem(tx, "seed")?
+        return Result.Ok(7)
+    }
+    print(f"atomic: {Db.atomic(db, seven).unwrap()} rows={db.table('lam_conn_items').count().unwrap()}")
+
+    # A failing statement inside the savepoint: without the savepoint the
+    # whole transaction would be aborted ("current transaction is aborted").
+    func withFailingStatement(tx: Tx) -> Result[str] {
+        _ = addItem(tx, "a")?
+        missing: Result[int] = Db.atomic(tx, lambda (inner: Tx) -> Result[int]: inner.exec("SELECT * FROM lam_conn_missing"))
+        _ = addItem(tx, "b")?
+        return Result.Ok(f"{kindOf(missing)} {Db.sqlState(missing)} outer=ok")
+    }
+    report: str = Db.atomic(db, withFailingStatement).unwrap()
+    print(f"failed-statement-in-savepoint: {report} rows={db.table('lam_conn_items').count().unwrap()} {[n for n in names(db) if len(n) == 1]}")
+
+    func withDuplicate(tx: Tx) -> Result[bool] {
+        dup: Result[int] = Db.atomic(tx, lambda (inner: Tx) -> Result[int]: addItem(inner, "a"))
+        _ = addItem(tx, "c")?
+        return Result.Ok(Db.isUniqueViolation(dup))
+    }
+    print(f"unique-in-savepoint: {Db.atomic(db, withDuplicate).unwrap()} rows={db.table('lam_conn_items').count().unwrap()}")
+
+    func throwsInside(inner: Tx) -> Result[int] {
+        _ = addItem(inner, "thrown")?
+        throw ValueError("boom")
+    }
+    func catchesNested(tx: Tx) -> Result[str] {
+        outcome: str = ""
+        try {
+            _ = Db.atomic(tx, throwsInside)
+        } catch ValueError as _e {
+            outcome = "caught"
+        }
+        _ = addItem(tx, "d")?
+        return Result.Ok(outcome)
+    }
+    print(f"nested-throw: {Db.atomic(db, catchesNested).unwrap()} rows={db.table('lam_conn_items').count().unwrap()}")
+
+    func outerFails(tx: Tx) -> Result[int] {
+        _ = Db.atomic(tx, lambda (inner: Tx) -> Result[int]: addItem(inner, "released"))?
+        return Result.Err(Error("OuterError", "undo everything"))
+    }
+    print(f"outer-error: {kindOf(Db.atomic(db, outerFails))} rows={db.table('lam_conn_items').count().unwrap()}")
+
+    func orphan(tx: Tx) -> Result[int] {
+        return Db.atomic(tx, lambda (inner: Tx) -> Result[int]: inner.exec("INSERT INTO lam_conn_children (parent_id) VALUES (?)", [404]))
+    }
+    deferred: Result[int] = Db.atomic(db, orphan)
+    print(f"deferred-fk-commit: {kindOf(deferred)} {Db.isForeignKeyViolation(deferred)}")
+
+    observer: RecordingObserver = RecordingObserver()
+    configured: DbObserver = observer
+    db.setObserver(configured)
+    ctx: Context = Context.simple().valued("request", "pg")
+    scoped: Db = db.withContext(ctx)
+    func observed(tx: Tx) -> Result[int] {
+        _ = tx.exec("INSERT INTO lam_conn_items (name) VALUES (?)", ["o1"])?
+        _ = Db.atomic(tx, lambda (inner: Tx) -> Result[list[dict[str, any]]]: inner.query("SELECT * FROM lam_conn_missing"))
+        return Db.atomic(tx, lambda (inner: Tx) -> Result[int]: inner.exec("INSERT INTO lam_conn_items (name) VALUES (?)", ["o2"]))
+    }
+    scopedTx: Tx = scoped.begin().unwrap()
+    print(f"scoped-pool: {scoped.pool() == db} {scopedTx.pool() == db}")
+    scopedTx.rollback().unwrap()
+    observer.statements = []
+    observer.failures = []
+    observer.contexts = []
+    _ = Db.atomic(scoped, observed).unwrap()
+    db.setObserver(None)
+    print(f"observer: {'|'.join(observer.statements)}")
+    print(f"observer-failures: {'|'.join(observer.failures)}")
+    print(f"observer-context: {len(observer.contexts) == 20 and observer.contexts.all(lambda c: c == ctx)}")
+
+    db.exec("DROP TABLE lam_conn_children, lam_conn_parents, lam_conn_items").unwrap()
+    db.close().unwrap()
+}

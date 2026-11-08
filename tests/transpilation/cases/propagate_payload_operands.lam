@@ -2,8 +2,8 @@
 # even when the enclosing context publishes another one: `Result.Ok(...)`
 # takes `interface{}` and `x: float = ...` takes `float64`, but `parse(s)?`
 # is a `Result[int]`, so it reads `__qN.Value.(int)` (and is widened to
-# `float64` where the expression needs it). An `any` payload still takes
-# the annotated target's type.
+# `float64` where the expression needs it). An `any` payload is cast
+# explicitly (an operator on it is a Lam error) and takes the cast's type.
 
 # expect-go: return Result_Ok(__q1.Value.(int) * 2)
 # expect-go: var x float64 = float64(__q2.Value.(int) * 2)
@@ -38,7 +38,7 @@ func mixed(s: str) -> Result[float] {
 }
 
 func fromAny() -> Result[int] {
-    y: int = anyVal()? * 2
+    y: int = anyVal()? as int * 2
     return Result.Ok(y)
 }
 

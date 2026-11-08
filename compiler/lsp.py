@@ -278,6 +278,25 @@ def _get_parser() -> Lark:
         return _PARSER
 
 
+def _cast_receiver_type(row: str, end: int) -> Optional[str]:
+    """``(expr as T)`` ending right before ``row[end]``: ``T`` (its class
+    name), else ``None``."""
+    if end <= 0 or row[end - 1] != ")":
+        return None
+    depth = 0
+    for index in range(end - 1, -1, -1):
+        ch = row[index]
+        if ch == ")":
+            depth += 1
+        elif ch == "(":
+            depth -= 1
+            if depth == 0:
+                inner = row[index + 1:end - 1]
+                match = re.search(r"\bas\s+([A-Za-z_][\w.]*)\s*(?:\[[^\]]*\])?\s*$", inner)
+                return _class_name_from_type(match.group(1)) if match else None
+    return None
+
+
 @dataclass
 class Symbol:
     """A function, class, method, or top-level variable."""
@@ -3134,6 +3153,10 @@ class LspServer:
         recv_end = start - 1
         if recv_end > 0 and row[recv_end - 1] == "?":
             recv_end -= 1
+        cast = _cast_receiver_type(row, recv_end)
+        if cast:
+            # ``(lookup(k) as User).name``: the cast's type.
+            return cast
         recv_start = recv_end
         while recv_start > 0 and (row[recv_start - 1].isalnum() or row[recv_start - 1] == "_"):
             recv_start -= 1
@@ -3267,6 +3290,10 @@ class LspServer:
                 raw,
             ):
                 out.setdefault(match.group(1), _class_name_from_type(match.group(2)))
+            cast = re.match(r"\s*([A-Za-z_]\w*)\s*=(?!=).*\bas\s+([A-Za-z_][\w.]*)\s*(?:#.*)?$", raw)
+            if cast:
+                # ``u = row["user"] as User``: the cast's type.
+                out[cast.group(1)] = _class_name_from_type(cast.group(2))
         return out
 
     def _class_at(self, doc: Document, line: int) -> Optional[str]:

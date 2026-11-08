@@ -5,6 +5,124 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.6.0 — 2026-11-08
+
+### Added
+
+- `lamc dev` caches its good builds in `$LAMC_CACHE/dev/<project>/<entry>/`
+  (default `~/.lammergeier/cache/dev`) and, at start, runs the last good
+  build of unchanged inputs instead of building again: `[lamc dev] starting
+  serve (cached build of 2026-11-08 09:12:40)`. A container whose home is a
+  persistent volume no longer waits for a full build at every `docker
+  compose up`. The inputs are the `.lam` and `lamlib*.toml` files under the
+  watched roots, every module the build read elsewhere (stdlib, `extlibs/`,
+  `LAMC_EXTLIBS`, recorded by the compiler with the search paths that must
+  stay missing, so a new file shadowing a module builds again), the compiler
+  (version, location, sources), `go version`, the build flags and the Go
+  build environment (`GOFLAGS`, `GOOS`, `GOARCH`, `CGO_ENABLED`, ...). The
+  last three builds per entry point are kept; entries are written atomically
+  and checked (size, SHA-256) before running, so a damaged one is rebuilt;
+  two `lamc dev` processes of the same entry point take turns at start
+  (the second starts the first one's build).
+- `lamc dev --rebuild` builds at start even when a cached build matches
+  (`--no-cache` implies it).
+- `lamdb.DbConn`: the query surface a `Db` (the pool or a `withContext`
+  view) and a `Tx` share — `exec`, `query`, `first`, `scalar`, `queryJson`,
+  `firstJson`, `scalarJson`, `table`, `transaction` and `pool` — so a service
+  taking a `DbConn` runs inside or outside a transaction unchanged.
+- `Db.atomic(conn, fn: func(Tx) -> Result[T]) -> Result[T]`: typed
+  transactions returning the callback's own `Result`. On a `Db` it commits on
+  `Ok`, rolls back on `Err` (returned unchanged) or a throw (re-thrown), and
+  returns a begin or commit failure as a `DbTransactionError`; on a `Tx` it
+  runs the callback in a savepoint (`SAVEPOINT lam_sp_<depth>`, released on
+  `Ok`, rolled back to on `Err` or a throw), so units nest and compose — on
+  PostgreSQL a failing statement inside one no longer aborts the outer
+  transaction. Inside a nested level `tx.commit()` / `tx.rollback()` end that
+  level only; `tx.depth()` counts the open levels. The savepoint statements
+  are observed like the others, with the transaction's context.
+- `tx.transaction(fn)`: `Db.transaction` nested in a savepoint (`Ok(false)`
+  when the callback rolled its level back).
+- `pool()` on `Db` and `Tx`: the owning pool of a `withContext` view (itself
+  for a pool) and of the `Db` that began a transaction, to hand a `Db` to
+  libraries that need one (`@lam/jobs`).
+- `Db.transaction(fn: any) -> Result[bool]` keeps its signature and
+  behaviour (`Ok(false)` still means the callback rolled back itself, and a
+  callback without a result is still accepted); `Db.atomic` is the typed
+  form.
+- Inline casts `expr as T`: the run-time conversion of an annotated
+  assignment `value: T = expr` (same helper, same `TypeError` on a
+  mismatch: int to float widening, a subclass instance as its base, `None`
+  as a class, typed lists / dicts from `list[any]` / `dict[str, any]`,
+  `optional[T]`, `any`), usable in place with the static type `T`:
+  `row["count"] as int + 1`, `(lookup("user") as User).name`,
+  `for x in data["items"] as list[str] { ... }`, `take(v as float)`. `as`
+  binds tighter than every binary operator and looser than unary operators,
+  `**`, calls, indexing and member access (`a + b as int` is
+  `a + (b as int)`, `-x as float` is `(-x) as float`); a union target needs
+  parentheses (`v as (int | str)`). From a concrete type a cast is the
+  identity, a widening or an upcast, a downcast of a base-class or interface
+  value checked at run time like an `isinstance` narrowing (`TypeError` for
+  another class, `None` stays `None`), and otherwise a compile error that
+  points to the conversions (``cannot cast `str` to `int` with `as`: ... use
+  `int(...)` ``). `import x as y`, `from m import a as b`, `catch E as e`,
+  `with r as f` and `case p as name` keep their meaning.
+- Operations that need a concrete type on an `any` value are Lam errors
+  (kind `any`) at the operand, instead of `interface{}` errors from
+  `go build`: members and method calls (`row["name"].toUpper()`,
+  `lookup("user").name`), arithmetic, bitwise, unary and ordering operators,
+  augmented assignments, indexing and slicing (and an `any` index into a
+  typed list or dict), iteration, unpacking, item and member writes, calls,
+  the right operand of `in`, conditions (`if`, `while`, ternary, `not`,
+  `and` / `or`) and `len`, `reversed`, `sorted`, `enumerate`, `zip`,
+  `list`, `set`, `dict`, `tuple`, `range`, `abs`, `min`, `max`. The message
+  names the expression and the fixes: an inline cast with a suggested type
+  (`row["count"] as int`), an annotation, a conversion (`int(x)`) or an
+  `isinstance` / `match` narrowing. `==` / `!=`, `is None`, `??`, `str()`,
+  `print`, f-strings, `isinstance`, `match`, an `any` needle of `in`, and
+  passing / assigning it where an `any` or a typed value is expected stay
+  allowed; `json` values and `r.error` of a `Result` are unchanged.
+- Syntax diagnostics for a cast without a type (`v as`, `v as 3`), `lamc fmt`
+  spacing around `as`, language-server hover and completion for members of
+  `(expr as T).` and of locals assigned `expr as T`, and VS Code / Linguist
+  highlighting of `as` with its target type (extension 1.5.0).
+
+### Changed
+
+- `lamc dev` says why the start takes time: `[lamc dev] building serve.lam
+  (no cached build; the first build can take a minute or two)`.
+- Constructs that used to compile on an `any` value by an implicit
+  assumption are now `any` errors with the cast fix-it: `reversed(v)` (a
+  reflection copy; `reversed` was documented for lists and strs only),
+  `min(v, 2)` / `max(v, ...)` (a run-time `float` conversion of the
+  operand), `x in v` with an `any` container (a reflection lookup), and an
+  operator on the payload of `?` on a `Result[any]` in a typed context
+  (`x: int = anyVal()? * 2` asserted the payload to the target's type, so
+  `x: float = anyVal()? * 2` failed on an int): write
+  `anyVal()? as int * 2`.
+
+### Fixed
+
+- A call through an interface-typed receiver lost its declared result type
+  (`unknown`): `conn.scalarJson(q).unwrap()` or `src.doc(k)?` assigned to a
+  `json` local was rejected ("value of type `unknown` is not JSON-compatible")
+  and a wrong annotation (`s: str = src.count(k).unwrap()` with `count`
+  returning `Result[int]`) went unnoticed. Interface methods now give their
+  declared result, also for imported interfaces.
+- A type parameter that appears only inside `Result[T]` (Go cannot infer
+  it) was not bound from a nested function passed by name or from an
+  unannotated lambda (`Db.atomic(db, work)` with a nested `work`,
+  `Runner.run(ctx, lambda c: add(c, 5))`): the build failed with `cannot
+  infer T`. Nested functions now carry their Lam signature, and an
+  expression lambda takes the declared result of the function, static
+  method or receiver method its body calls.
+- `value = load()?` on a `Result[any]` and `v = same(a, b)` with a type
+  parameter bound to `any`, followed by `t: str = value`, did not build
+  (`cannot use value (variable of type interface{}) as string`): such locals
+  are now `any` locals converted like the others.
+- A list or dict literal with an empty `[]` / `{}` item next to typed ones
+  (`for m in [{"k": 1}, {}]`) is typed by its other items in the semantic
+  checker too (`list[dict[str, int]]`), as the lowering already built it.
+
 ## 4.5.2 — 2026-11-08
 
 ### Fixed

@@ -425,6 +425,11 @@ class GenericCallMixin:
             return None
         if node.data == "var" and node.children:
             name = self._get_name(node.children[0])
+            nested_key = self._nested_func_keys.get(name)
+            if isinstance(nested_key, str):
+                # A nested ``func`` passed by name (in scope: its key ends
+                # with the enclosing body).
+                return self._func_ref_lam_type(nested_key)
             local = getattr(self, "_var_lam_types", {}).get(name)
             if local is not None or name in self.declared_vars or name in self._var_go_types:
                 return local
@@ -512,7 +517,62 @@ class GenericCallMixin:
                     ret = parse_type(self._go_type_lam_text(go_ret))
                 except Exception:
                     pass
+            if isinstance(ret, NamedType) and ret.name in {"any", "Result"}:
+                # ``lambda tx: addItem(tx, "d")``: the declared result of
+                # the function the body calls (``Result[int]``), which the
+                # erased Go ``*Result`` does not carry.
+                called = self._lambda_body_call_lam_type(node)
+                if called is not None:
+                    ret = called
         return FuncType(tuple(params), ret)
+
+    def _lambda_body_call_lam_type(self, node):
+        """The declared Lam result of the non-generic, non-overloaded
+        function (top-level, nested or ``Class.static``) an expression-bodied
+        lambda calls; ``None`` otherwise."""
+        body = None
+        for child in node.children:
+            if isinstance(child, Tree) and child.data in (
+                "paren_lambda_params", "inline_lambda_params", "lambda_return_anno",
+            ):
+                continue
+            if child is not None:
+                body = child
+        if not isinstance(body, Tree) or body.data != "funccall" or not body.children:
+            return None
+        callee = body.children[0]
+        key = ""
+        if isinstance(callee, Tree) and callee.data == "var" and callee.children:
+            name = self._get_name(callee.children[0])
+            nested_key = self._nested_func_keys.get(name)
+            if isinstance(nested_key, str):
+                key = nested_key
+            elif name not in self.declared_vars and name not in self._var_go_types:
+                key = name
+        elif isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) == 2:
+            owner = callee.children[0]
+            if isinstance(owner, Tree) and owner.data == "var" and owner.children:
+                owner_name = self._get_name(owner.children[0])
+                method = self._get_name(callee.children[1])
+                if owner_name not in self.declared_vars and method in self._static_methods.get(owner_name, set()):
+                    key = f"{owner_name}.{method}"
+                elif owner_name in self._var_types:
+                    # ``accounts.count(tx)``: a method of the receiver's
+                    # class or of the first base declaring it.
+                    pending = [self._var_types[owner_name]]
+                    seen: set = set()
+                    while pending and not key:
+                        class_name = pending.pop(0)
+                        if class_name in seen or class_name in self._generic_classes:
+                            continue
+                        seen.add(class_name)
+                        if f"{class_name}.{method}" in self._func_return_lam_types:
+                            key = f"{class_name}.{method}"
+                        pending.extend(self.class_bases.get(class_name, []))
+        if not key or key in self._func_generic_order or key in self._generic_instance_methods:
+            return None
+        ref = self._func_ref_lam_type(key)
+        return ref.ret if ref is not None else None
 
     def _expected_call_lam_type(self):
         """The Lam type the value of the call being lowered must have

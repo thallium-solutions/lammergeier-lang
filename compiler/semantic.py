@@ -71,6 +71,7 @@ from compiler.safe_nav import rewrite_result_safe_nav
 from compiler.fstrings import decode_placeholders, fstring_body, fstring_source_position, fstring_spec_to_go, parse_slot, split_fstring
 from compiler.semantic_narrowing import NarrowingCheckMixin
 from compiler.semantic_markup import MarkupSemanticMixin
+from compiler.semantic_any import AnyCastSemanticMixin
 from compiler.typesys import (
     DictType,
     FuncType,
@@ -422,7 +423,7 @@ class _ImportedCallMetadata:
     var_types: dict[str, str] = field(default_factory=dict)
 
 
-class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
+class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticMixin):
     """Walks a parsed Lam tree and accumulates :class:`SemanticError`."""
 
     def __init__(
@@ -900,6 +901,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                     self._interface_methods[name] = {
                         method: shapes[-1] for method, shapes in overloads.items() if shapes
                     }
+                    self._record_interface_return_types(name, overloads)
         elif d in ("import_from", "import_name"):
             self._record_support_import(node)
         elif d == "decorated":
@@ -1020,6 +1022,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 self._interface_methods[n] = {
                     method: shapes[-1] for method, shapes in overloads.items() if shapes
                 }
+                self._record_interface_return_types(n, overloads)
         elif d == "decorated":
             for c in node.children:
                 if isinstance(c, Tree) and c.data in ("classdef", "funcdef"):
@@ -1900,6 +1903,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         bodies = [c for c in node.children[2:] if isinstance(c, Tree) and c.data == "suite"]
         if iterable is not None:
             self._visit_expr_subtree(iterable)
+            self._check_any_iterable(iterable)
         incoming = self._definite_snapshot()
         incoming_types = self._type_snapshot()
         guaranteed = bool(bodies) and self._iterable_statically_nonempty(iterable) and not self._suite_contains_loop_exit(bodies[0])
@@ -2951,9 +2955,15 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             self._visit_lambda(node)
             return
 
+        if d == "cast_expr" and len(node.children) == 2:
+            self._check_cast_expr(node)
+
         if d == "funccall":
             if node.children and isinstance(node.children[0], Tree) and node.children[0].data == "var":
                 self.__dict__.setdefault("_callee_var_ids", set()).add(id(node.children[0]))
+            if node.children and isinstance(node.children[0], Tree) and node.children[0].data in {"getattr", "getattr_safe"}:
+                # ``v.name()`` on an ``any`` receiver is reported as a method.
+                self.__dict__.setdefault("_callee_getattr_ids", set()).add(id(node.children[0]))
             if self._mark_go_marker_uses(node):
                 return
             if self._is_markup_marker(node):
@@ -2970,6 +2980,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             if self._check_method_kind_call(node):
                 self._visit_call_args(node)
                 return
+            self._check_any_call(node)
             self._check_call_shape(node)
             self._check_generic_type_args(node)
             self._check_generic_inference(node)
@@ -3090,6 +3101,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             for i, name in enumerate(names):
                 if i < len(context[1]) and context[1][i] is not None and (i >= len(declared) or declared[i] is None):
                     scope.var_types[name] = render_type(context[1][i])
+                    if self._is_any_type(context[1][i]):
+                        scope.__dict__.setdefault("lambda_any_params", set()).add(name)
         if return_anno is not None and return_anno.children:
             # ``lambda () -> Result[int] { n = f()? ... }``: ``?`` returns
             # the ``Err`` from the lambda, as in a ``-> Result`` function.
@@ -3278,6 +3291,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                     continue
                 target, iterable = cf.children[0], cf.children[1]
                 self._visit_expr_subtree(iterable)
+                self._check_any_iterable(iterable)
                 iterable_type = self._expr_simple_type(iterable)
                 yielded = self._generator_call_element_types(
                     iterable, iterable_type, len(self._for_target_names(target)),
@@ -3396,6 +3410,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         if not attr:
             return
         if self._check_mixed_item_member(node, obj, attr):
+            return
+        if self._check_any_member(node, obj, attr):
             return
         if isinstance(obj, Tree) and obj.data == "var" and obj.children:
             receiver = self._name_text(obj.children[0])
@@ -4600,6 +4616,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return
         target = self._destructuring_target(node)
         if target is None:
+            return
+        if self._check_any_unpacking(self._assign_value(node)):
             return
         names = self._for_target_names(target)
         self._check_duplicate_destructuring_targets(node, names)
@@ -8983,6 +9001,16 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 methods[shape.name] = shape
         self._class_method_shapes[class_name] = methods
 
+    def _record_interface_return_types(self, name: str, overloads: dict[str, list[_MethodShape]]) -> None:
+        """Declared results of an interface's methods, so a call through an
+        interface-typed receiver (``conn.scalarJson(q).unwrap()``) has the
+        method's result type, as for a class receiver."""
+        for method, shapes in overloads.items():
+            for shape in shapes:
+                text = shape.return_type_text or shape.return_type
+                if text:
+                    self._method_return_type_texts.setdefault(f"{name}.{method}", set()).add(text)
+
     def _interface_method_shape(self, node: Tree) -> Optional[_MethodShape]:
         name = ""
         params_node = None
@@ -9650,6 +9678,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 return NamedType("None")
             type_name = self._var_type(name)
             return parse_type(type_name) if type_name else None
+        if node.data == "cast_expr" and len(node.children) == 2:
+            # ``expr as T`` is a ``T`` (checked at run time when ``expr`` is
+            # an ``any``).
+            return self._cast_target_type(node)
         if node.data == "list":
             return self._list_expr_type(node)
         if node.data == "dict":
@@ -10091,7 +10123,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         if node.data in {"arith_expr", "term"}:
             self._check_binary_expr_types(node)
         elif node.data in {"or_expr", "and_expr"}:
-            self._check_set_bitwise_types(node)
+            if not self._check_any_binary(node):
+                self._check_set_bitwise_types(node)
+        elif node.data in {"xor_expr", "shift_expr"}:
+            self._check_any_binary(node)
+        elif node.data == "power":
+            self._check_any_power(node)
         elif node.data == "factor":
             self._check_factor_type(node)
         elif node.data == "not_test":
@@ -10107,6 +10144,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
 
     def _check_factor_type(self, node: Tree) -> None:
         if len(node.children) != 2:
+            return
+        if self._check_any_unary(node):
             return
         op = str(node.children[0])
         operand = node.children[1]
@@ -10147,6 +10186,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
     def _check_not_type(self, node: Tree) -> None:
         if not node.children or not isinstance(node.children[0], Tree):
             return
+        if self._check_any_condition(node.children[0], "operator `not`"):
+            return
         operand_type = self._expr_simple_type(node.children[0])
         if operand_type is None or self._is_any_type(operand_type) or self._is_open_type(operand_type):
             return
@@ -10162,6 +10203,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         """``if xs { }``: a condition must be a ``bool`` (Lam has no
         truthiness; Go rejects the non-boolean condition)."""
         if not isinstance(cond, Tree):
+            return
+        if self._check_any_condition(cond, f"the `{keyword}` condition"):
             return
         cond_type = self._expr_simple_type(cond)
         if self._is_named_type(cond_type, "json") if cond_type is not None else False:
@@ -10194,6 +10237,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         op = "and" if node.data == "and_test" else "or"
         for index, child in enumerate(c for c in node.children if isinstance(c, Tree)):
             with self._narrowed(_narrowing.operand_facts(node, index), [child]):
+                if self._check_any_condition(child, f"operator `{op}`"):
+                    return
                 child_type = self._expr_simple_type(child)
             if child_type is None or self._is_any_type(child_type) or self._is_open_type(child_type):
                 continue
@@ -10211,6 +10256,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         if len(node.children) != 3:
             return
         true_expr, cond_expr, false_expr = node.children
+        if self._check_any_condition(cond_expr, "the ternary condition"):
+            return
         if isinstance(cond_expr, Tree):
             cond_type = self._expr_simple_type(cond_expr)
             if (cond_type is not None
@@ -10263,6 +10310,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         ops = [str(child) for child in node.children if isinstance(child, Token)]
         if len(operands) < 2:
             return
+        if self._check_any_binary(node):
+            return
         for op, right in zip(ops, operands[1:]):
             if op in {"/", "//", "%"} and self._is_zero_literal(right):
                 self._error(
@@ -10297,10 +10346,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         op_node = node.children[1]
         op_text = str(op_node.children[0]) if isinstance(op_node, Tree) and op_node.children else str(op_node)
         op = op_text[:-1] if op_text.endswith("=") else op_text
+        value = node.children[2]
+        if op in {"+", "-", "*", "/", "//", "%", "**", "&", "|", "^", "<<", ">>"} and self._check_any_augassign(node, op, value):
+            return
         if op not in {"+", "-", "*", "/", "//", "%"}:
             return
         target_type = self._expr_simple_type(node.children[0])
-        value = node.children[2]
         if isinstance(value, Token):
             if value.type in {"STRING", "LONG_STRING"}:
                 value_type = NamedType("str")
@@ -10351,6 +10402,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         ops = [self._comp_op_text(child) for child in node.children
                if isinstance(child, Tree) and child.data == "comp_op"]
         if len(operands) < 2:
+            return
+        if self._check_any_comparison(operands, ops):
             return
         left_type = self._expr_simple_type(operands[0])
         for index, (op, right) in enumerate(zip(ops, operands[1:])):
@@ -10482,6 +10535,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         index = node.children[1]
         if not isinstance(receiver, Tree) or not isinstance(index, Tree):
             return
+        if self._check_any_getitem(node, receiver, index):
+            return
         receiver_type = self._expr_simple_type(receiver)
         if receiver_type is None:
             return
@@ -10583,10 +10638,24 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             for item in items
         )
 
+    @staticmethod
+    def _is_empty_collection_literal(node) -> bool:
+        return (
+            isinstance(node, Tree) and node.data in {"list", "dict"}
+            and not any(c is not None for c in node.children)
+        )
+
+    def _sibling_typed_items(self, items: list) -> list:
+        """The items deciding a literal's item type: an empty ``[]`` / ``{}``
+        takes its siblings' type (``[{"k": 1}, {}]`` is a
+        ``list[dict[str, int]]``, as the lowering builds it)."""
+        trees = [item for item in items if isinstance(item, Tree)]
+        filled = [item for item in trees if not self._is_empty_collection_literal(item)]
+        return filled or trees
+
     def _list_expr_type(self, node: Tree) -> Type | None:
         item_types = [
-            item_type for child in node.children
-            if isinstance(child, Tree)
+            item_type for child in self._sibling_typed_items(node.children)
             for item_type in [self._expr_simple_type(child)]
             if item_type is not None
         ]
@@ -10598,7 +10667,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         first = item_types[0]
         if all(render_type(item_type) == render_type(first) for item_type in item_types):
             return ListType(first)
-        if len(item_types) == len([c for c in node.children if isinstance(c, Tree)]):
+        if len(item_types) == len(self._sibling_typed_items(node.children)):
             common = self._common_class_base(item_types)
             if common is not None:
                 return ListType(common)
@@ -10641,6 +10710,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
     def _dict_expr_type(self, node: Tree) -> Type:
         key_types: list[Type] = []
         value_types: list[Type] = []
+        typed_values = {
+            id(v) for v in self._sibling_typed_items(
+                c.children[1] for c in node.children
+                if isinstance(c, Tree) and c.data == "key_value" and len(c.children) >= 2
+            )
+        }
         for child in node.children:
             if not isinstance(child, Tree) or child.data != "key_value" or len(child.children) < 2:
                 continue
@@ -10650,7 +10725,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 key_type = self._expr_simple_type(key)
                 if key_type is not None:
                     key_types.append(key_type)
-            if isinstance(value, Tree):
+            if isinstance(value, Tree) and id(value) in typed_values:
                 value_type = self._expr_simple_type(value)
                 if value_type is not None:
                     value_types.append(value_type)
@@ -12782,6 +12857,13 @@ def _imported_call_metadata(
 
     def collect_imported_interface(interfacedef: Tree, local: str) -> None:
         metadata.interface_methods[local] = helper._collect_interface_methods(interfacedef)
+        # Every overload's result (``interface_methods`` keeps one shape per
+        # name), so a call through the interface has its declared result.
+        for method, shapes in helper._collect_interface_method_overloads(interfacedef).items():
+            for shape in shapes:
+                text = shape.return_type_text or shape.return_type
+                if text:
+                    metadata.method_return_type_texts.setdefault(f"{local}.{method}", set()).add(text)
 
     value_type_cache: dict[tuple[int, str], str] = {}
 

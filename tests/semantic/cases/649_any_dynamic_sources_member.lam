@@ -1,0 +1,35 @@
+# A member read on the `any` payload of `?` on a `Result[any]` and on the
+# result of a generic call bound to `any` is a Lam error (both used to pass
+# the checker and fail in `go build`), and so is an operator on the payload
+# (it used to be asserted to the annotated target's type: write
+# `loadValue()? as int * 2`).
+# expect-error: line 22: error[any]: `value` has type `any`, so method `unknownMember()` needs a concrete type
+# expect-error: line 29: error[any]: `other` has type `any`, so method `dynamicMember()` needs a concrete type
+# expect-error: line 33: error[any]: `loadValue()?` has type `any`, so operator `*` needs a concrete type; cast it inline (`loadValue()? as int`)
+
+from lamerrors import Result
+
+func loadValue() -> Result[any] {
+    return Result.Ok("dynamic")
+}
+
+func same[T](left: T, right: T) -> T {
+    return left
+}
+
+func inspect() -> Result {
+    value = loadValue()?
+    print(value.unknownMember())
+    return Result.Ok(None)
+}
+
+func use(left: any, right: any) {
+    other = same(left, right)
+    print(right)
+    print(other.dynamicMember())
+}
+
+func doubled() -> Result[int] {
+    n: int = loadValue()? * 2
+    return Result.Ok(n)
+}

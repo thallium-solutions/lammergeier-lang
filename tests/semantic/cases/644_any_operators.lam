@@ -1,0 +1,38 @@
+# Arithmetic, bitwise, unary and ordering operators on an `any` value are
+# Lam errors (Go rejected `interface{} + int`); the suggested cast takes
+# the type of the other operand.
+# expect-error: line 24: error[any]: `row["count"]` has type `any`, so operator `+` needs a concrete type; cast it inline (`row["count"] as int`)
+# expect-error: line 25: error[any]: `row["ratio"]` has type `any`, so operator `*` needs a concrete type; cast it inline (`row["ratio"] as float`)
+# expect-error: line 26: error[any]: `row["name"]` has type `any`, so operator `+` needs a concrete type; cast it inline (`row["name"] as str`)
+# expect-error: line 27: error[any]: `v` has type `any`, so operator `-` needs a concrete type
+# expect-error: line 28: error[any]: `v` has type `any`, so operator `<` needs a concrete type
+# expect-error: line 29: error[any]: `v` has type `any`, so operator `>=` needs a concrete type
+# expect-error: line 30: error[any]: `v` has type `any`, so operator `**` needs a concrete type
+# expect-error: line 31: error[any]: `v` has type `any`, so operator `|` needs a concrete type
+# expect-error: line 32: error[any]: `v` has type `any`, so operator `~` needs a concrete type
+# expect-error: line 34: error[any]: `row["count"]` has type `any`, so operator `+=` needs a concrete type; cast it inline (`row["count"] as int`)
+# expect-error: line 35: error[any]: `v` has type `any`, so operator `+=` needs a concrete type
+# expect-error: line 36: error[any]: `anyv(2)` has type `any`, so operator `//` needs a concrete type
+
+func anyv(x: any) -> any {
+    return x
+}
+
+func main() {
+    row: dict[str, any] = {"count": 41, "ratio": 0.5, "name": "ada"}
+    v: any = 3
+    a = row["count"] + 1
+    b = 2.0 * row["ratio"]
+    c = "hi " + row["name"]
+    d = -v
+    e = v < 3
+    f = 10 >= v
+    g = v ** 2
+    h = v | 1
+    i = ~v
+    n: int = 0
+    n += row["count"]
+    v += 1
+    j = 7 // anyv(2)
+    print(a, b, c, d, e, f, g, h, i, n, j)
+}

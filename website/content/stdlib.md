@@ -260,14 +260,14 @@ operations that depend on external data or column names.
 `lamdb` provides raw SQL, transactions, savepoints, retries, and a
 chainable query builder. Placeholder dialects are normalized, so write
 `?` in Lam code and let the driver adapter translate where needed.
+Functions taking a `DbConn` run on a `Db` or inside a `Tx`.
 
 ```lammergeier
-from lamdb import Db, QueryBuilder, Tx
+from lamdb import Db, DbConn, QueryBuilder, Tx
 from lamerrors import Result
 
-func bumpAda(tx: Tx) -> Result[bool] {
-    _ = tx.table("users").whereEq("name", "Ada").increment("age", 1)?
-    return Result.Ok(true)
+func bump(conn: DbConn, name: str) -> Result[int] {
+    return conn.table("users").whereEq("name", name).increment("age", 1)
 }
 
 func main() {
@@ -288,8 +288,8 @@ func main() {
         )
         print(adults)
 
-        ok: bool = db.transaction(bumpAda)?
-        print(ok)
+        bumped: int = Db.atomic(db, lambda (tx: Tx) -> Result[int]: bump(tx, "Ada"))?
+        print(bumped)
     } catch err {
         print(f"database error: {err}")
     }
@@ -3027,7 +3027,7 @@ direct.
 
 ## Database
 
-### `lamdb` — `Db`, `Tx`, `QueryBuilder`, `Row`, `Where`
+### `lamdb` — `Db`, `DbConn`, `Tx`, `QueryBuilder`, `Row`, `Where`
 
 Driver-agnostic SQL access. Drivers ship with the runtime — SQLite
 (`modernc.org/sqlite`, pure-Go so no C toolchain needed), MySQL
@@ -3078,10 +3078,13 @@ restored: json = Json.fromValue(jsonRows[0]["payload"])?
 `Db.connect(driver, dsn) -> Result[Db]`. `setPool`, `ping`, `close`, `exec`,
 `query`, `first`, `scalar`, JSON-aware `queryJson` / `firstJson` /
 `scalarJson`, `transaction`, and `begin` all return typed Results.
-`setRetries(maxRetries, baseMs)`, `driverName`, `raw`, and `table(name)` are
-direct configuration/introspection helpers. Scoped transactions commit after
-a successful callback, roll back and return callback `Result.Err` values, and
-roll back then re-raise unexpected callback panics.
+`setRetries(maxRetries, baseMs)`, `driverName`, `raw`, `table(name)` and
+`pool()` are direct configuration/introspection helpers. Scoped transactions
+commit after a successful callback, roll back and return callback
+`Result.Err` values, and roll back then re-raise unexpected callback panics;
+`Db.atomic(conn, fn)` does the same and returns the callback's own typed
+`Result` (see [connections and typed
+transactions](#connections-and-typed-transactions--dbconn-dbatomic-pool)).
 
 `QueryBuilder` predicates (chainable, AND-joined by default):
 
@@ -3106,16 +3109,24 @@ roll back then re-raise unexpected callback panics.
   `insertReturning` return typed Results. `insertReturning` is Postgres-only;
   pair it with `returning(cols)` to select columns.
 
-Transactions give you two patterns:
+Transactions give you three patterns:
 
 ```lammergeier
-# Scoped — auto-commits on success, auto-rolls-back on panic.
-func work(tx: Tx) -> Result[bool] {
+# Typed — Db.atomic returns the callback's own Result: commits on Ok, rolls
+# back on Err or a throw (re-thrown); on a Tx it is a nested savepoint.
+func work(tx: Tx) -> Result[int] {
     _ = tx.exec("INSERT INTO users (name, age) VALUES (?, ?)", ["bob", 20])?
-    _ = tx.table("users").whereEq("name", "alice").update({"age": 31})?
+    return tx.table("users").whereEq("name", "alice").update({"age": 31})
+}
+updated: int = Db.atomic(db, work)?
+
+# Scoped (Result[bool]) — Ok(true) committed, Ok(false) when the callback
+# called tx.rollback() itself.
+func legacyWork(tx: Tx) -> Result[bool] {
+    _ = tx.exec("INSERT INTO users (name, age) VALUES (?, ?)", ["dan", 22])?
     return Result.Ok(true)
 }
-ok: bool = db.transaction(work)?
+ok: bool = db.transaction(legacyWork)?
 
 # Explicit — you own commit()/rollback().
 tx: Tx = db.begin()?
@@ -3134,17 +3145,14 @@ when there is none), `tx.scalar` (the first column of the first row,
 `tx.scalarJson` have the semantics of the `Db` methods of the same name,
 but run through `tx.query` on the transaction's connection: they see its
 uncommitted writes, use its context and are reported to its observer as one
-statement each. Code written against these methods (an interface with
-`first` / `scalar`, as below) accepts a `Db` or a `Tx` unchanged:
+statement each. Code written against `DbConn` (the interface `Db` and `Tx`
+share, below) accepts a `Db` or a `Tx` unchanged:
 
 ```lammergeier
-interface RowReader {
-    func first(self, query: str, params: list[any]) -> Result[dict[str, any]]
-    func scalar(self, query: str, params: list[any]) -> Result[any]
-}
+from lamdb import Db, DbConn, Row, Tx
 
-func userName(reader: RowReader, id: int) -> Result[str] {
-    row: dict[str, any] = reader.first("SELECT name FROM users WHERE id = ?", [id])?
+func userName(conn: DbConn, id: int) -> Result[str] {
+    row: dict[str, any] = conn.first("SELECT name FROM users WHERE id = ?", [id])?
     return Result.Ok(Row.str(row, "name", "unknown"))
 }
 
@@ -3153,6 +3161,124 @@ tx: Tx = db.begin()?
 _ = tx.exec("UPDATE users SET name = ? WHERE id = ?", ["Ada", 7])?
 renamed: str = userName(tx, 7)?       # "Ada": the transaction's own write
 _ = tx.rollback()?
+```
+
+#### Connections and typed transactions — `DbConn`, `Db.atomic`, `pool()`
+
+`DbConn` is the type services should take. A `Db` (the pool), a
+`db.withContext(ctx)` view and a `Tx` all satisfy it structurally:
+
+```lammergeier
+interface DbConn {
+    func exec(query: str, params: list[any] = []) -> Result[int]
+    func query(query: str, params: list[any] = []) -> Result[list[dict[str, any]]]
+    func first(query: str, params: list[any] = []) -> Result[dict[str, any]]
+    func scalar(query: str, params: list[any] = []) -> Result[any]
+    func queryJson(query: str, jsonColumns: list[str], params: list[any] = []) -> Result[list[dict[str, any]]]
+    func firstJson(query: str, jsonColumns: list[str], params: list[any] = []) -> Result[dict[str, any]]
+    func scalarJson(query: str, params: list[any] = []) -> Result[json]
+    func table(name: str) -> QueryBuilder
+    func transaction(fn: any) -> Result[bool]
+    func pool() -> Db
+}
+```
+
+`Db.atomic(conn: DbConn, fn: func(Tx) -> Result[T]) -> Result[T]` runs `fn`
+as one unit of work and returns **its** `Result`:
+
+- on a `Db` (plain or scoped) it begins a transaction (`BEGIN`), runs `fn`
+  with the new `Tx`, commits when `fn` returns `Ok` and rolls back when it
+  returns an `Err` (returned unchanged, the same `Error`) or throws (the
+  exception is re-thrown after the rollback). A begin failure is returned
+  without running `fn`; a commit failure (a deferred constraint, a lost
+  connection) is returned as a `DbTransactionError`, its driver cause kept
+  (`Db.isForeignKeyViolation(result)` works);
+- on a `Tx` it runs `fn` in a savepoint of that transaction (`SAVEPOINT
+  lam_sp_<depth>`): `Ok` releases it (`RELEASE SAVEPOINT`), `Err` or a throw
+  rolls back to it and releases it (`ROLLBACK TO SAVEPOINT`, `RELEASE
+  SAVEPOINT`), and the outer transaction goes on. On PostgreSQL this is also
+  how a failing statement (a unique violation you handle, a missing table)
+  is recovered from: inside the savepoint it does not abort the outer
+  transaction. A savepoint failure (the transaction already ended, a
+  cancelled context) is returned without running `fn`.
+
+Units therefore compose: a service that calls `Db.atomic(conn, ...)` is a
+transaction when called with a `Db` and a nested savepoint of the caller's
+transaction when called with a `Tx`. `T` is bound from the callback (a
+function passed by name — top-level or nested —, an annotated lambda, or a
+lambda whose body calls a typed function or method), and checked:
+`n: str = Db.atomic(db, returnsInt).unwrap()` is a compile error.
+
+Inside a nested level the callback receives the **same** `Tx` handle;
+`tx.depth()` is the number of open levels (`0` in the transaction itself).
+While a level is open, `tx.commit()` releases its savepoint and
+`tx.rollback()` rolls back to it and releases it — never the outer
+transaction — and a second `commit()` / `rollback()` of the same level is a
+`DbTransactionError`; statements after them run in the enclosing level.
+`Db.atomic` returns the callback's result even when the callback ended its
+level itself. `begin()` stays on `Db` only: open nested levels with
+`Db.atomic(tx, fn)` (or `tx.transaction(fn)`). A `Tx` is not safe for
+concurrent use; give each goroutine its own `Db.atomic` on the pool or a
+scoped view.
+
+`conn.pool()` is the owning pool: the `Db` itself for a pool, the pool a
+`withContext` view was derived from (also through nested views), and for a
+`Tx` the pool of the `Db` that began it (`None` for a `Tx()` built by hand).
+Use it to hand a `Db` to a library that needs one (`Jobs.migrate(conn.pool())`);
+the pool runs outside the transaction and without the view's context (scope it
+again with `conn.pool().withContext(ctx)` if needed).
+
+`db.transaction(fn: any) -> Result[bool]` is kept as it was: `fn` takes the
+`Tx` and returns a `Result` (or nothing); `Ok(true)` means committed and
+`Ok(false)` that the callback called `tx.rollback()` itself; callback errors,
+begin and commit failures are returned as errors. `tx.transaction(fn)` is the
+same on a `Tx`, in a savepoint (`Ok(false)` when the callback rolled its level
+back). Prefer `Db.atomic` for new code: it returns the callback's typed value
+and works on any `DbConn`.
+
+A service taking a `DbConn` and composing units:
+
+```lammergeier
+from lamdb import Db, DbConn, Row, Tx
+from lamerrors import Result, Error
+
+func debit(conn: DbConn, account: int, amount: int) -> Result[int] {
+    row: dict[str, any] = conn.first("SELECT balance FROM accounts WHERE id = ?", [account])?
+    if Row.int(row, "balance") < amount {
+        return Result.Err(Error("InsufficientFunds", f"account {account}"))
+    }
+    return conn.exec("UPDATE accounts SET balance = balance - ? WHERE id = ?", [amount, account])
+}
+
+func credit(conn: DbConn, account: int, amount: int) -> Result[int] {
+    return conn.exec("UPDATE accounts SET balance = balance + ? WHERE id = ?", [amount, account])
+}
+
+func transfer(conn: DbConn, source: int, target: int, amount: int) -> Result[int] {
+    # A transaction on a Db, a savepoint inside the caller's Tx.
+    func move(tx: Tx) -> Result[int] {
+        _ = debit(tx, source, amount)?
+        _ = credit(tx, target, amount)?
+        return tx.exec("INSERT INTO ledger (source, target, amount) VALUES (?, ?, ?)", [source, target, amount])
+    }
+    return Db.atomic(conn, move)
+}
+
+func payroll(conn: DbConn, payer: int, payees: list[int]) -> Result[int] {
+    # All or nothing; a payee that fails is skipped (its savepoint rolled back).
+    func run(tx: Tx) -> Result[int] {
+        paid: int = 0
+        for payee in payees {
+            if transfer(tx, payer, payee, 100).ok() {
+                paid += 1
+            }
+        }
+        return Result.Ok(paid)
+    }
+    return Db.atomic(conn, run)
+}
+
+paid: int = payroll(db.withContext(req.ctx), 1, [2, 3, 4])?
 ```
 
 Automatic retries on transient errors (closed connection, server gone away,
@@ -3498,7 +3624,7 @@ the runtime path is exactly the same as production code.
 | Receive multipart form uploads | `Request.formField` / `formFile` (in `@lam/vulture`) |
 | Make HTTP calls (one-shot) | Result-returning `lamhttp.Http.get` / overloaded `.post` |
 | Make HTTP calls (reusable client w/ baseUrl, headers, timeout) | `lamhttp.HttpClient` (`get`/`head`/`delete`/`post(Json)`/`put(Json)`/`patch(Json)`) |
-| Talk to a SQL database | `lamdb` (raw SQL, native JSON/JSONB values, `QueryBuilder`, transactions + savepoints) |
+| Talk to a SQL database | `lamdb` (raw SQL, native JSON/JSONB values, `QueryBuilder`, transactions + savepoints, `DbConn` services with typed nested `Db.atomic` units) |
 | Read typed values from database rows (NUMERIC, timestamps, `text[]`) | `lamdb.Row` (`Row.int` / `str` / `float` / `bool` / `time` / `timeText` / `strList`), `Db.textArray` |
 | Tell a duplicate key from other database failures | `Db.isUniqueViolation`, `Db.isForeignKeyViolation`, `Db.sqlState` |
 | Build WHERE clauses for hand-written SQL (filters, ILIKE search) | `lamdb.Where` |
@@ -3892,7 +4018,7 @@ index lists the public classes and top-level functions you can import.
 | `lamdata` | `from lamdata import DataFrame, DataFrameGroups, Series` | DataFrames and Series with overloaded typed columns, native JSON, joins, filters, and group-by aggregation. |
 | `lamdatastructures` | `from lamdatastructures import Queue, Deque, Stack, Set, Heap, PriorityHeap` | Canonical data-structure implementations. |
 | `lamdatetime` | `from lamdatetime import DateTime` | Timezone-aware instants, parsing (one layout, the first of several, common and database forms)/formatting, calendar and duration arithmetic. |
-| `lamdb` | `from lamdb import Db, Tx, QueryBuilder, Row, Where` | SQL connections, transactions (with the same `first` / `scalar` / JSON reads as `Db`), raw queries, query builder, typed row values, SQLSTATE checks, WHERE builder. |
+| `lamdb` | `from lamdb import Db, DbConn, Tx, QueryBuilder, Row, Where` | SQL connections, the `DbConn` interface shared by `Db` and `Tx`, typed and nested transactions (`Db.atomic`), raw queries, query builder, typed row values, SQLSTATE checks, WHERE builder. |
 | `lamdeque` | `from lamdeque import Deque` | Compatibility re-export of canonical `Deque`. |
 | `lamenv` | `from lamenv import Env, Dotenv, Config` | Overloaded typed/Result environment access, lenient `flag` switches and `list` values, dotenv parsing/loading, and layered config. |
 | `lamerrors` | `from lamerrors import Error, Result` | Structured errors and success/error containers. |
@@ -4006,6 +4132,9 @@ db.first(query: str, params: list[any] = []) -> Result[dict[str, any]]
 db.scalar(query: str, params: list[any] = []) -> Result[any]
 db.transaction(fn: any) -> Result[bool]
 db.begin() -> Result[Tx]
+db.pool() -> Db
+Db.atomic[T](conn: DbConn, fn: func(Tx) -> Result[T]) -> Result[T]
+DbConn: exec / query / first / scalar / queryJson / firstJson / scalarJson / table / transaction / pool (Db and Tx)
 tx.exec(query: str, params: list[any] = []) -> Result[int]
 tx.query(query: str, params: list[any] = []) -> Result[list[dict[str, any]]]
 tx.first(query: str, params: list[any] = []) -> Result[dict[str, any]]
@@ -4016,6 +4145,9 @@ tx.scalarJson(query: str, params: list[any] = []) -> Result[json]
 tx.table(name: str) -> QueryBuilder
 tx.savepoint(name: str) / tx.rollbackTo(name: str) / tx.releaseSavepoint(name: str) -> Result[bool]
 tx.commit() / tx.rollback() -> Result[bool]
+tx.transaction(fn: any) -> Result[bool]
+tx.depth() -> int
+tx.pool() -> Db
 db.table(name: str) -> QueryBuilder
 qb.select(cols: list[any]) -> QueryBuilder
 qb.where(col: str, op: str, val: any) -> QueryBuilder

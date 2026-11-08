@@ -1,0 +1,142 @@
+# Cross-feature fixture for inline casts on dynamic data: rows decoded as
+# `dict[str, any]` (like database or plugin payloads) become typed objects
+# through `as` inside comprehensions, lambdas, generic helpers, `Result`
+# functions with `?` and `do/catch`, `match`, `isinstance` narrowing,
+# interfaces, inheritance (upcast and checked downcast), overloads,
+# f-strings, `??` and native `json`.
+# expect: loaded 3 orders total=72.5
+# expect: ids [1 2 3]
+# expect: big [order#2 order#3]
+# expect: tags A,B,C
+# expect: first=order#1 kind=Express
+# expect: express fee=5
+# expect: sum 10 max 3.5
+# expect: describe int 41|str ADA|list 2|order order#9|other
+# expect: invalid row: TypeError
+# expect: do caught missing id
+# expect: json 2 Express
+# expect: done
+
+from lamerrors import Result
+from lamjson import Json
+
+interface Priced {
+    func price(self) -> float;
+}
+
+class Order {
+    func init(self, id: int, amount: float, tags: list[str]) {
+        self.id: int = id
+        self.amount: float = amount
+        self.tags: list[str] = tags
+    }
+    func price(self) -> float { return self.amount }
+    func label(self) -> str { return f"order#{self.id}" }
+    func kind(self) -> str { return "Standard" }
+}
+
+class ExpressOrder(Order) {
+    func init(self, id: int, amount: float, tags: list[str], fee: int) {
+        base.init(id, amount, tags)
+        self.fee: int = fee
+    }
+    func kind(self) -> str { return "Express" }
+}
+
+func field[T](row: dict[str, any], key: str, fallback: T) -> T {
+    if key in row {
+        return row[key] as T
+    }
+    return fallback
+}
+
+func decode(row: dict[str, any]) -> Result[Order] {
+    if not ("id" in row) {
+        return Result.Err("missing id")
+    }
+    id: int = row["id"] as int
+    amount: float = row["amount"] as float
+    tags: list[str] = [(t as str).toUpper() for t in row["tags"] as list[any]]
+    if "fee" in row {
+        return Result.Ok(ExpressOrder(id, amount, tags, row["fee"] as int) as Order)
+    }
+    return Result.Ok(Order(id, amount, tags))
+}
+
+func loadAll(rows: list[dict[str, any]]) -> Result[list[Order]] {
+    out: list[Order] = []
+    for row in rows {
+        out.append(decode(row)?)
+    }
+    return Result.Ok(out)
+}
+
+func describe(v: any) -> str {
+    if isinstance(v, int) {
+        return f"int {v}"
+    }
+    match v {
+        case str(s) { return f"str {s.toUpper()}" }
+        case Order() { return f"order {(v as Order).label()}" }
+        case _ { }
+    }
+    if isinstance(v, list) {
+        return f"list {len(v as list[any])}"
+    }
+    return "other"
+}
+
+func total(items: list[Priced]) -> float {
+    acc: float = 0.0
+    for item in items {
+        acc += item.price()
+    }
+    return acc
+}
+
+func scale(x: int) -> int { return x * 2 }
+func scale(x: float) -> float { return x * 2.0 }
+
+func main() {
+    rows: list[dict[str, any]] = [
+        {"id": 1, "amount": 10, "tags": ["a"]},
+        {"id": 2, "amount": 25.5, "tags": ["b"], "fee": 5},
+        {"id": 3, "amount": 37, "tags": ["c"]},
+    ]
+    orders: list[Order] = loadAll(rows).unwrap()
+    priced: list[Priced] = [o as Priced for o in orders]
+    print(f"loaded {len(orders)} orders total={total(priced)}")
+    print("ids", [field(r, "id", 0) as int for r in rows])
+    print("big", [o.label() for o in orders if o.amount > 20.0])
+    print("tags", ",".join([t for o in orders for t in o.tags]))
+    first: Order = orders[0]
+    print(f"first={first.label()} kind={(orders[1] as Order).kind()}")
+    express: ExpressOrder = orders[1] as ExpressOrder
+    print(f"express fee={express.fee}")
+
+    metrics: dict[str, any] = {"count": 5, "peak": 1.75}
+    pick = lambda (key: str) -> any: metrics[key]
+    print("sum", scale(pick("count") as int), "max", scale(pick("peak") as float))
+
+    parts: list[str] = [describe(41), describe("ada"), describe([1, 2]),
+        describe(Order(9, 1.0, [])), describe(3.5)]
+    print("describe", "|".join(parts))
+
+    try {
+        bad: Order = decode({"id": "x", "amount": 1, "tags": []}).unwrap()
+        print("unreachable", bad.label())
+    } catch TypeError as _ {
+        print("invalid row: TypeError")
+    }
+    do {
+        loaded: Order = decode({"amount": 1, "tags": []})?
+        print("unreachable", loaded.label())
+    } catch err {
+        print(f"do caught {err.message}")
+    }
+
+    doc: json = Json.decode("{\"id\": 2, \"kind\": \"Express\"}").unwrap()
+    raw: any = Json.toDict(doc).unwrap()["id"]
+    print("json", raw as int, doc.kind as str)
+    print("done")
+}

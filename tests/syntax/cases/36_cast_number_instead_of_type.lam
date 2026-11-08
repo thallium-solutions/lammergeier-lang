@@ -1,0 +1,10 @@
+# expect-error: syntax check failed
+# expect-error: Unexpected number literal `3`
+# expect-error: expected: a type
+# expect-error: help: An inline cast needs a type after `as`
+
+func main() {
+    v: any = 1
+    n = v as 3
+    print(n)
+}

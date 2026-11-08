@@ -342,6 +342,29 @@ func main() {
 }
 """
 
+CAST_DOC = """class Member {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func greet(self) -> str {
+        return "hi " + self.name
+    }
+}
+
+func lookup(key: str) -> any {
+    return Member(key)
+}
+
+func main() {
+    row: dict[str, any] = {"n": 1}
+    print((lookup("ada") as Member).greet())
+    found = lookup("bob") as Member
+    print(found.name)
+    print(row["n"] + 1)
+}
+"""
+
 # Intentionally mixes both constructor spellings to cover LSP alias handling.
 NAMED_BASE_DOC = """class Account {
     func __init__(self, owner: str) {
@@ -1287,6 +1310,54 @@ def run_tests() -> int:
             print("PASS: signatureHelp resolves instance methods and hides self")
         except AssertionError as e:
             failures.append(f"method signatureHelp: {e}")
+
+        # ── inline casts: members after `(expr as T).`, `x = expr as T` ──
+        cast_uri = "file:///tmp/lsp_inline_cast.lam"
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": cast_uri, "languageId": "lammergeier",
+                "version": 1, "text": CAST_DOC,
+            },
+        })
+        cast_notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=4)
+        cast_lines = CAST_DOC.splitlines()
+        try:
+            diags = cast_notes[0].get("params", {}).get("diagnostics", []) if cast_notes else []
+            any_line = next(i for i, l in enumerate(cast_lines) if 'row["n"] + 1' in l)
+            matching = [d for d in diags if "has type `any`" in d.get("message", "")]
+            assert_true("any operand diagnostic published", matching)
+            assert_eq("any operand diagnostic line", matching[0]["range"]["start"]["line"], any_line)
+            assert_true("any operand diagnostic suggests a cast", "as int" in matching[0]["message"])
+            print("PASS: diagnostics report operators on `any` values with a cast fix-it")
+        except (AssertionError, StopIteration, IndexError) as e:
+            failures.append(f"any operand diagnostic: {e}")
+        greet_line = next(i for i, l in enumerate(cast_lines) if "as Member).greet()" in l)
+        greet_dot = cast_lines[greet_line].index("as Member).") + len("as Member).")
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": cast_uri},
+            "position": {"line": greet_line, "character": greet_dot},
+        })
+        cast_labels = {it.get("label") for it in (resp.get("result") or {}).get("items", [])}
+        resp = client.request("textDocument/hover", {
+            "textDocument": {"uri": cast_uri},
+            "position": {"line": greet_line, "character": greet_dot + 1},
+        })
+        cast_hover = ((resp.get("result") or {}).get("contents") or {}).get("value", "")
+        found_line = next(i for i, l in enumerate(cast_lines) if "print(found.name)" in l)
+        found_dot = cast_lines[found_line].index("found.") + len("found.")
+        resp = client.request("textDocument/completion", {
+            "textDocument": {"uri": cast_uri},
+            "position": {"line": found_line, "character": found_dot},
+        })
+        found_labels = {it.get("label") for it in (resp.get("result") or {}).get("items", [])}
+        try:
+            assert_true("completion after `(expr as T).` lists methods", "greet" in cast_labels)
+            assert_true("completion after `(expr as T).` lists fields", "name" in cast_labels)
+            assert_true("hover after `(expr as T).` shows the method", "func greet(self) -> str" in cast_hover)
+            assert_true("completion on `x = expr as T` lists members", "greet" in found_labels)
+            print("PASS: completion and hover resolve members of a cast value")
+        except AssertionError as e:
+            failures.append(f"inline cast members: {e}")
 
         overload_uri = "file:///tmp/lsp_method_overloads.lam"
         client.notify("textDocument/didOpen", {

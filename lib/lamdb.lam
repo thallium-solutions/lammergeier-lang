@@ -36,6 +36,20 @@
 #     n2: int = db.table("users").whereEq("id", 1).update({"age": 31})?
 #     n3: int = db.table("users").whereEq("id", 1).delete()?
 #
+# Services take a ``DbConn``: the query surface (``exec``, ``query``,
+# ``first``, ``scalar``, the JSON reads, ``table``, ``transaction``,
+# ``pool``) that a ``Db``, a ``withContext`` view and a ``Tx`` all have, so
+# one function runs inside or outside a transaction. ``Db.atomic(conn,
+# fn)`` runs ``fn(tx) -> Result[T]`` as one unit and returns its typed
+# Result: a transaction on a ``Db`` (commit on ``Ok``, rollback on ``Err``
+# or a throw), a savepoint on a ``Tx`` (release / rollback to it), so units
+# compose. ``conn.pool()`` is the owning pool, for libraries needing a
+# ``Db``.
+#
+#     func move(conn: DbConn, id: int) -> Result[int] {
+#         return Db.atomic(conn, lambda (tx: Tx) -> Result[int]: tx.exec("UPDATE ...", [id]))
+#     }
+#
 # Driver compatibility notes:
 #   * SQLite uses ``?`` placeholders and ``[INTEGER PRIMARY KEY
 #     AUTOINCREMENT]``.
@@ -381,6 +395,24 @@ class DbObservation {
     }
 }
 
+#- The query surface shared by a ``Db`` (the pool or a ``withContext``
+   view) and a ``Tx``: the type services take, so the same code runs inside
+   or outside a transaction. ``Db.atomic(conn, fn)`` runs ``fn`` in a
+   transaction on a ``Db`` and in a savepoint on a ``Tx``; ``pool()`` is
+   the owning pool, for libraries that need a ``Db``. -#
+interface DbConn {
+    func exec(query: str, params: list[any] = []) -> Result[int]
+    func query(query: str, params: list[any] = []) -> Result[list[dict[str, any]]]
+    func first(query: str, params: list[any] = []) -> Result[dict[str, any]]
+    func scalar(query: str, params: list[any] = []) -> Result[any]
+    func queryJson(query: str, jsonColumns: list[str], params: list[any] = []) -> Result[list[dict[str, any]]]
+    func firstJson(query: str, jsonColumns: list[str], params: list[any] = []) -> Result[dict[str, any]]
+    func scalarJson(query: str, params: list[any] = []) -> Result[json]
+    func table(name: str) -> QueryBuilder
+    func transaction(fn: any) -> Result[bool]
+    func pool() -> Db
+}
+
 class Db {
     #- Pooled connection handle around a ``*sql.DB``. Goroutine-safe
        (the underlying ``database/sql`` pool is). Expected driver failures
@@ -424,6 +456,15 @@ class Db {
             scoped.owner = self
         }
         return scoped
+    }
+
+    func pool(self) -> Db {
+        #- The owning pool: this ``Db`` itself, or the pool a ``withContext``
+           view was derived from (also through nested views). -#
+        if self.owner != None {
+            return self.owner
+        }
+        return self
     }
 
     func _start(self, statement: str) -> DbObservation {
@@ -828,11 +869,40 @@ class Db {
     }
 
     # ── Transactions ───────────────────────────────────────────
+    static func atomic[T](conn: DbConn, fn: func(Tx) -> Result[T]) -> Result[T] {
+        #- Run ``fn`` as one unit of work on ``conn`` and return its
+           ``Result``: on a ``Db`` in a new transaction (BEGIN ... COMMIT), on
+           a ``Tx`` in a savepoint of it (``tx.transaction``). An ``Ok``
+           commits (releases the savepoint); an ``Err`` rolls back (to the
+           savepoint) and is returned unchanged; a throw rolls back and is
+           re-thrown. A begin, commit or release failure is returned as a
+           ``DbTransactionError`` (``fn`` does not run when begin fails). -#
+        ran: bool = false
+        outcome: Result[T] = Result.Err(Error("DbTransactionError", "the transaction callback did not run"))
+        func step(tx: Tx) -> Result[bool] {
+            ran = true
+            outcome = fn(tx)
+            if not outcome.ok() {
+                return Result.Err(outcome.error)
+            }
+            return Result.Ok(true)
+        }
+        finished: Result[bool] = conn.transaction(step)
+        if ran and not outcome.ok() {
+            return outcome
+        }
+        if not finished.ok() {
+            return Result.Err(finished.error)
+        }
+        return outcome
+    }
+
     func transaction(self, fn: any) -> Result[bool] {
         #- Run ``fn(tx: Tx)`` in a transaction. ``Ok(true)`` means the
            transaction committed and ``Ok(false)`` means user code explicitly
            rolled it back. Begin and commit failures are returned as errors.
-           Unexpected callback panics are rolled back and re-raised. -#
+           Unexpected callback panics are rolled back and re-raised. For the
+           callback's own typed ``Result`` use ``Db.atomic(db, fn)``. -#
         go! {
             started := self.Begin()
             if !started.Ok() {
@@ -893,7 +963,7 @@ class Db {
             }
             source := s
             if s.Owner != nil { source = s.Owner }
-            txObj := &Tx{Conn: tx, Driver: self.Driver, RolledBack: false, Committed: false, Context: self.Context, Observer: source.Observer}
+            txObj := &Tx{Conn: tx, Driver: self.Driver, RolledBack: false, Committed: false, Context: self.Context, Observer: source.Observer, Db: s}
             return LAMMERGEIER.Result.Ok(txObj)
         }
     }
@@ -1251,7 +1321,11 @@ class Where {
 }
 
 class Tx {
-    #- Active transaction handle yielded by ``Db.transaction``. -#
+    #- Active transaction handle yielded by ``Db.begin`` and
+       ``Db.transaction``. ``tx.transaction(fn)`` / ``Db.atomic(tx, fn)``
+       open a nested level (a savepoint) on the same handle; while one is
+       open, ``commit`` / ``rollback`` end that level only. Not safe for
+       concurrent use. -#
 
     func init(self) {
         self.conn: any = None       # *sql.Tx
@@ -1260,6 +1334,108 @@ class Tx {
         self.committed: bool = false
         self.context: Context = Context.simple()
         self.observer: DbObserver = None
+        self.db: Db = None                # the handle that began it (``pool()``).
+        self.nested: list[str] = []       # savepoint names of the open nested levels.
+        self.nestedEnd: list[str] = []    # per level: "", "commit" or "rollback".
+    }
+
+    func pool(self) -> Db {
+        #- The owning pool of the ``Db`` that began this transaction
+           (``None`` for a ``Tx`` not created by ``begin``). -#
+        if self.db == None {
+            return None
+        }
+        return self.db.pool()
+    }
+
+    func depth(self) -> int {
+        #- The number of open nested levels: ``0`` in the transaction itself,
+           ``1`` inside a ``tx.transaction`` / ``Db.atomic(tx, ...)`` callback,
+           and so on. -#
+        return len(self.nested)
+    }
+
+    func transaction(self, fn: any) -> Result[bool] {
+        #- ``Db.transaction`` nested in this transaction: run ``fn(tx)`` with
+           this same ``Tx`` inside ``SAVEPOINT lam_sp_<depth>``. ``Ok`` releases
+           the savepoint (``Ok(true)``); ``Err`` rolls back to it, releases it
+           and is returned; a throw does the same and is re-thrown. Inside
+           ``fn``, ``commit()`` releases and ``rollback()`` rolls back the
+           savepoint only (then ``Ok(false)`` is returned), never the outer
+           transaction. The savepoint statements are observed with the
+           transaction's context; a failing SAVEPOINT is returned without
+           running ``fn``. -#
+        name: str = f"lam_sp_{len(self.nested) + 1}"
+        _ = self.savepoint(name)?
+        self.nested.append(name)
+        self.nestedEnd.append("")
+        go! {
+            level := len(s.Nested) - 1
+            pop := func() {
+                s.Nested = s.Nested[:level]
+                s.NestedEnd = s.NestedEnd[:level]
+            }
+            undo := func() {
+                if s.NestedEnd[level] == "" {
+                    if rewound := s.RollbackTo(name); rewound.Ok() {
+                        _ = s.ReleaseSavepoint(name)
+                    }
+                }
+                pop()
+            }
+            defer func() {
+                if r := recover(); r != nil {
+                    if len(s.Nested) > level {
+                        undo()
+                    }
+                    panic(r)
+                }
+            }()
+            switch cb := fn.(type) {
+            case func(*Tx) *Result:
+                callbackResult := cb(s)
+                if callbackResult == nil {
+                    undo()
+                    return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "callback returned no Result", nil))
+                }
+                if !callbackResult.Ok() {
+                    undo()
+                    return LAMMERGEIER.Result.Err(callbackResult.Error)
+                }
+            case func(*Tx):
+                cb(s)
+            default:
+                undo()
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbTransactionError", "callback must accept a Tx", nil))
+            }
+            ended := s.NestedEnd[level]
+            pop()
+            if ended == "rollback" {
+                return LAMMERGEIER.Result.Ok(false)
+            }
+            if ended == "commit" {
+                return LAMMERGEIER.Result.Ok(true)
+            }
+            return s.ReleaseSavepoint(name)
+        }
+    }
+
+    func _endLevel(self, keep: bool) -> Result[bool] {
+        # ``commit`` / ``rollback`` while a nested level is open.
+        level: int = len(self.nested) - 1
+        if self.nestedEnd[level] != "" {
+            return Result.Err(Error("DbTransactionError", "the nested transaction has already ended"))
+        }
+        name: str = self.nested[level]
+        if keep {
+            _ = self.releaseSavepoint(name)?
+            self.nestedEnd[level] = "commit"
+            return Result.Ok(true)
+        }
+        _ = self.rollbackTo(name)?
+        _ = self.releaseSavepoint(name)?
+        self.nestedEnd[level] = "rollback"
+        return Result.Ok(true)
     }
 
     func _start(self, statement: str) -> DbObservation {
@@ -1398,6 +1574,11 @@ class Tx {
     }
 
     func rollback(self) -> Result[bool] {
+        #- Roll the transaction back; inside a nested level (``depth() > 0``)
+           roll back to its savepoint and release it instead. -#
+        if len(self.nested) > 0 {
+            return self._endLevel(false)
+        }
         observation: DbObservation = self._start("ROLLBACK")
         result: Result[bool] = self._rollback()
         self._finish(observation, result)
@@ -1419,6 +1600,11 @@ class Tx {
     }
 
     func commit(self) -> Result[bool] {
+        #- Commit the transaction; inside a nested level (``depth() > 0``)
+           release its savepoint instead. -#
+        if len(self.nested) > 0 {
+            return self._endLevel(true)
+        }
         observation: DbObservation = self._start("COMMIT")
         result: Result[bool] = self._commit()
         self._finish(observation, result)

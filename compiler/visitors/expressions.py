@@ -125,6 +125,7 @@ class ExpressionVisitorMixin:
         "getattr", "getattr_safe", "getitem", "funccall", "list", "dict", "set", "tuple",
         "list_comprehension", "dict_comprehension", "set_comprehension", "tuple_comprehension",
         "comparison", "not_test", "and_test", "or_test", "lambdef", "fstring", "string_concat",
+        "cast_expr",
     })
 
     _NUMERIC_GO_TYPES = {
@@ -1000,6 +1001,9 @@ class ExpressionVisitorMixin:
             return markup_type
         if node.data == "lambdef":
             return self._lambda_go_func_type(node)
+        if node.data == "cast_expr" and len(node.children) == 2:
+            # ``expr as T`` is a ``T``.
+            return self._type_expr_to_go(node.children[1])
         if node.data == "propagate" and node.children:
             # ``parse(s)?``: the lowering asserts a known payload type, so
             # operators around it (``n()? * 2.5``, ``word()? + "!"``,
@@ -1442,6 +1446,9 @@ class ExpressionVisitorMixin:
             return "false"
         if d == "ellipsis":
             return "nil"
+
+        if d == "cast_expr" and len(node.children) == 2:
+            return self._cast_expr_to_go(node)
 
         if d == "funccall":
             reused = self.__dict__.get("_reuse_lowering", {}).get(id(node))
@@ -4462,6 +4469,9 @@ class ExpressionVisitorMixin:
         result bound to ``any``)."""
         if not isinstance(node, Tree) or not node.children:
             return False
+        if node.data == "cast_expr" and len(node.children) == 2:
+            # ``v as any`` where a concrete type is expected.
+            return self._type_expr_to_go(node.children[1]) == "interface{}"
         if node.data == "var":
             return self._var_go_types.get(self._get_name(node.children[0])) == "interface{}"
         if node.data == "getitem":
@@ -4521,6 +4531,86 @@ class ExpressionVisitorMixin:
                 return False
             return self._method_return_types.get(key, "") in {"any", "object"}
         return False
+
+    _CAST_PRIMARY_NODES = frozenset({
+        "var", "getattr", "getattr_safe", "getitem", "funccall", "number", "string",
+        "const_none", "const_true", "const_false", "list", "dict", "set", "tuple", "cast_expr", "propagate",
+    })
+
+    def _cast_expr_to_go(self, node: Tree) -> str:
+        """``expr as T``: the conversion an annotated assignment to ``T``
+        performs (``_typed_value_to_go``), plus the checked downcast of a
+        base-class or interface value to a class. The result is a Go
+        primary expression, so operators around the cast need no
+        parentheses."""
+        value, type_node = node.children[0], node.children[1]
+        target = self._type_expr_to_go(type_node)
+        downcast = self._cast_downcast_to_go(value, target)
+        if downcast:
+            return downcast
+        if (
+            target not in {"", "interface{}"}
+            and isinstance(value, Tree)
+            and value.data not in {"const_none", "list", "dict", "set", "tuple", "propagate"}
+            and not self._is_dynamic_any_value(value)
+            and (self._expr_go_type_hint(value) or self._infer_type_from_value(value) or "").strip()
+            in {"", "interface{}"}
+        ):
+            # A value the lowering cannot type (a comprehension variable over
+            # a ``list[any]``, ...): the semantic checker accepted the cast,
+            # so convert it at run time like any other ``any`` value.
+            with self._scoped(_propagate_cast_hint=""):
+                return self._dynamic_to_go(self._expr_to_go(value), target)
+        raw = self._typed_value_to_go(value, target)
+        if isinstance(value, Tree) and value.data not in self._CAST_PRIMARY_NODES and not (
+            raw.startswith("(") and raw.endswith(")")
+        ):
+            raw = f"({raw})"
+        return raw
+
+    def _cast_downcast_to_go(self, value, target: str) -> str:
+        """``base as Square`` / ``priced as Order``: the most-derived object
+        behind a base-class (or interface) value viewed as ``target``; a
+        value of another class throws ``TypeError``, ``None`` stays nil."""
+        if not isinstance(value, Tree) or self._is_dynamic_any_value(value):
+            return ""
+        source = (self._hier_expr_go_type(value) or "").strip()
+        if not source or source == target or source == "interface{}":
+            return ""
+        target_class = self._hier_class_from_go_type(target) if target.startswith("*") else ""
+        target_iface = self._interface_from_go_type(target)
+        source_class = self._hier_class_from_go_type(source) if source.startswith("*") else ""
+        source_iface = self._interface_from_go_type(source)
+        raw = self._expr_to_go(value)
+        if source_class and target_class:
+            if target_class == source_class or not self._hier_is_subclass(target_class, source_class):
+                return ""
+            dyn = (
+                f"{self._hier_receiver(raw)}._lamDyn()"
+                if self._hier_member(source_class) and not self._generic_classes.get(source_class)
+                else self._hier_dyn_value_go(raw)
+            )
+            return self._cast_class_assert_go(dyn, target_class, target)
+        if source_iface and target_class:
+            return self._cast_class_assert_go(f"interface{{}}({raw})", target_class, target)
+        if source_iface and target_iface and source_iface != target_iface:
+            return (
+                f"func(v interface{{}}) {target} {{ if v == nil {{ return nil }}; "
+                f"return v.({target}) }}({raw})"
+            )
+        return ""
+
+    def _cast_class_assert_go(self, dyn: str, target_class: str, target: str) -> str:
+        if self._hier_dynamic_target(target_class):
+            go_cls = self._go_class_name(target_class)
+            return (
+                f"func(v interface{{}}) {target} {{ if v == nil {{ return nil }}; "
+                f"return v.({self._hier_is_iface(target_class)})._lamIs_{go_cls}() }}({dyn})"
+            )
+        return (
+            f"func(v interface{{}}) {target} {{ if v == nil {{ return nil }}; "
+            f"return v.({target}) }}({dyn})"
+        )
 
     def _dynamic_to_go(self, raw: str, go_type: str) -> str:
         """The checked conversion of the ``interface{}`` value ``raw`` to
@@ -5117,6 +5207,10 @@ class ExpressionVisitorMixin:
         """
         if not isinstance(obj_node, Tree):
             return ""
+        if obj_node.data == "cast_expr" and len(obj_node.children) == 2:
+            # ``(lookup(k) as User).greet()``: the cast's class.
+            class_name = self._hier_class_from_go_type(self._type_expr_to_go(obj_node.children[1]))
+            return class_name if class_name in self._class_names else ""
         if obj_node.data == "var":
             name = self._get_name(obj_node.children[0])
             known = self._var_types.get(name, "")

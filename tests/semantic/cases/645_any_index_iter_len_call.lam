@@ -1,0 +1,55 @@
+# Indexing, slicing, iteration, `len()`, calls, unpacking, item / member
+# writes, conditions and other operations that need a concrete type are
+# Lam errors on an `any` value, with the fix-it.
+# expect-error: line 29: error[any]: `v` has type `any`, so indexing needs a concrete type; cast it inline (`v as list[any]`)
+# expect-error: line 30: error[any]: `v` has type `any`, so indexing needs a concrete type; cast it inline (`v as dict[str, any]`)
+# expect-error: line 31: error[any]: `v` has type `any`, so slicing needs a concrete type
+# expect-error: line 32: error[any]: `data["items"]` has type `any`, so iteration needs a concrete type; cast it inline (`data["items"] as list[any]`)
+# expect-error: line 35: error[any]: `v` has type `any`, so iteration needs a concrete type
+# expect-error: line 36: error[any]: `v` has type `any`, so `len()` needs a concrete type
+# expect-error: line 37: error[any]: `v` has type `any`, so a call needs a concrete type; cast it inline (`v as func(...) -> T`)
+# expect-error: line 38: error[any]: `v` has type `any`, so unpacking needs a concrete type
+# expect-error: line 39: error[any]: `v` has type `any`, so indexing needs a concrete type
+# expect-error: line 40: error[any]: `v` has type `any`, so member `name` needs a concrete type
+# expect-error: line 41: error[any]: `v` has type `any`, so the `if` condition needs a concrete type; cast it inline (`v as bool`)
+# expect-error: line 44: error[any]: `v` has type `any`, so the `while` condition needs a concrete type
+# expect-error: line 47: error[any]: `v` has type `any`, so operator `not` needs a concrete type
+# expect-error: line 48: error[any]: `v` has type `any`, so operator `and` needs a concrete type
+# expect-error: line 49: error[any]: `v` has type `any`, so the ternary condition needs a concrete type
+# expect-error: line 50: error[any]: `v` has type `any`, so `reversed()` needs a concrete type
+# expect-error: line 51: error[any]: `v` has type `any`, so `min()` needs a concrete type
+# expect-error: line 52: error[any]: `v` has type `any`, so the right operand of `in` needs a concrete type
+# expect-error: line 53: error[any]: `v` has type `any`, so indexing needs a concrete type
+# expect-error: line 54: error[any]: `v` has type `any`, so an index needs a concrete type; cast it inline (`v as int`)
+
+func main() {
+    v: any = [1, 2]
+    data: dict[str, any] = {"items": ["a", "b"]}
+    xs: list[int] = [1, 2]
+    print(v[0])
+    print(v["k"])
+    print(v[1:])
+    for item in data["items"] {
+        print(item)
+    }
+    print([x for x in v])
+    print(len(v))
+    print(v(1))
+    a, b = v
+    v[0] = 1
+    v.name = 2
+    if v {
+        print(a, b)
+    }
+    while v {
+        break
+    }
+    print(not v)
+    print(v and true)
+    print(1 if v else 2)
+    print(reversed(v))
+    print(min(v, 2))
+    print(1 in v)
+    del v[0]
+    print(xs[v])
+}

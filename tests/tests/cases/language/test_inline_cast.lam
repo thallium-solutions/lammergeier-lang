@@ -1,0 +1,130 @@
+# The inline cast `expr as T` converts with the run-time check of an
+# annotated assignment to `T` and has the static type `T`: scalars,
+# int-to-float widening, classes (a subclass instance becomes the base
+# view, `None` stays `None`), typed lists / dicts from `list[any]` /
+# `dict[str, any]`, optionals and `any`. A mismatch throws the same
+# catchable `TypeError`. From a concrete type: identity, widening, upcast,
+# and a downcast checked at run time (like an `isinstance` narrowing).
+# `as` binds tighter than the binary operators and looser than unary
+# operators, calls, indexing and member access.
+# expect: scalars 42 ADA 0.5 true
+# expect: widen 3.0 1.5
+# expect: classes ada Sq 4 none
+# expect: lists X,Y 3 map[a:1 b:2]
+# expect: optional 7 none
+# expect: precedence 43 -6 true 7 3
+# expect: chain 5 5
+# expect: identity 3 3 Sq
+# expect: downcast 9 Sq
+# expect: mismatch int TypeError
+# expect: mismatch class TypeError
+# expect: mismatch list TypeError
+# expect: mismatch downcast TypeError
+# expect: args 2 Sq
+# expect: done
+
+class User {
+    func init(self, name: str) { self.name: str = name }
+}
+
+class Shape {
+    func name(self) -> str { return "Shape" }
+}
+
+class Square(Shape) {
+    func init(self, side: int) { self.side: int = side }
+    func name(self) -> str { return "Sq" }
+}
+
+class Circle(Shape) {
+    func name(self) -> str { return "Circle" }
+}
+
+func lookup(key: str) -> any {
+    if key == "user" {
+        return User("ada")
+    }
+    if key == "square" {
+        return Square(2)
+    }
+    if key == "none" {
+        return None
+    }
+    return key
+}
+
+func half(x: float) -> float {
+    return x / 2.0
+}
+
+func label(s: Shape) -> str {
+    return s.name()
+}
+
+func main() {
+    row: dict[str, any] = {"count": 41, "name": "ada", "ratio": 0.5, "flag": true, "n": 3,
+        "items": ["x", "y"], "nums": [1, 2], "counts": {"a": 1, "b": 2}}
+    print("scalars", row["count"] as int + 1, (row["name"] as str).toUpper(), row["ratio"] as float,
+        row["flag"] as bool)
+    print("widen", f"{row["n"] as float:.1f}", half(row["n"] as float))
+
+    sq: Shape = lookup("square") as Shape
+    missing: optional[User] = lookup("none") as User
+    print("classes", (lookup("user") as User).name, sq.name(), (lookup("square") as Square).side * 2,
+        "none" if missing == None else "set")
+
+    words: list[str] = []
+    for item in row["items"] as list[str] {
+        words.append(item.toUpper())
+    }
+    total: int = 0
+    for k in row["nums"] as list[int] {
+        total += k
+    }
+    print("lists", ",".join(words), total, row["counts"] as dict[str, int])
+
+    maybe: optional[int] = row["count"] as optional[int]
+    gone: optional[int] = None
+    if maybe != None {
+        print("optional", maybe - 34, "none" if gone == None else "set")
+    }
+
+    n: int = 3
+    print("precedence", row["count"] as int + 2, -n as float * 2.0, row["count"] as int > 40,
+        2 * row["n"] as int + 1, 9 - row["n"] as int * 2)
+    v: any = 5
+    print("chain", v as any as int, (v as int) as int)
+
+    s: Square = Square(3)
+    print("identity", n as int, n as float, (s as Shape).name())
+    base: Shape = s
+    print("downcast", (base as Square).side * 3, (base as Square).name())
+
+    try {
+        bad: int = row["name"] as int
+        print("unreachable", bad)
+    } catch TypeError as _ {
+        print("mismatch int TypeError")
+    }
+    try {
+        u: User = lookup("square") as User
+        print("unreachable", u.name)
+    } catch TypeError as _ {
+        print("mismatch class TypeError")
+    }
+    try {
+        xs: list[int] = row["items"] as list[int]
+        print("unreachable", xs)
+    } catch TypeError as _ {
+        print("mismatch list TypeError")
+    }
+    try {
+        other: Shape = Circle()
+        print("unreachable", (other as Square).side)
+    } catch TypeError as _ {
+        print("mismatch downcast TypeError")
+    }
+
+    print("args", half(row["count"] as float) - 18.5, label(lookup("square") as Shape))
+    print("done")
+}

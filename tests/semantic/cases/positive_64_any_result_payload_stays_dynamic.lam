@@ -1,4 +1,8 @@
 # expect-pass
+# The payload of `?` on a `Result[any]` stays `any`: it converts where any
+# concrete type is expected (no type is pinned from the `Ok` literal) and a
+# cast gives it one for a member call. (A member read directly on it is an
+# error since the `any` operand checks: 649_any_dynamic_sources_member.lam.)
 
 from lamerrors import Result
 
@@ -8,6 +12,8 @@ func loadValue() -> Result[any] {
 
 func inspect() -> Result {
     value = loadValue()?
-    print(value.unknownMember())
+    text: str = value
+    count: int = loadValue()?
+    print(text, count, (value as str).toUpper())
     return Result.Ok(None)
 }

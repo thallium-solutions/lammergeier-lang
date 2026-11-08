@@ -324,6 +324,8 @@ def _refine_expected(
         return ("an identifier",)
     if _looks_like_missing_return_type(src_line, column):
         return ("a return type",)
+    if _looks_like_missing_cast_type(src_line, column):
+        return ("a type",)
     if _looks_like_missing_lambda_body(stripped, token_type):
         return ("`:`", "`{`")
     if _looks_like_missing_for_in(stripped, token_type):
@@ -382,6 +384,8 @@ def _hint_for(
         return f"`{keyword}` declarations need a name before the block."
     if _looks_like_missing_return_type(src_line, column):
         return "Add a return type after `->`, or remove `->` if the function returns nothing."
+    if _looks_like_missing_cast_type(src_line, column):
+        return "An inline cast needs a type after `as`: `value as int`, `value as list[str]`, `value as User`."
     if _looks_like_missing_lambda_body(stripped, token_type):
         return "Lambda expressions need a body: write `lambda x: expr` or `lambda x { ... }`."
     if _looks_like_missing_for_in(stripped, token_type):
@@ -492,6 +496,15 @@ def _looks_like_missing_function_name(stripped: str) -> bool:
 
 def _looks_like_missing_return_type(src_line: str, column: int) -> bool:
     return src_line[:max(0, column - 1)].rstrip().endswith("->")
+
+
+def _looks_like_missing_cast_type(src_line: str, column: int) -> bool:
+    """``n = v as`` / ``n = v as 3``: an inline cast without a type (not the
+    ``as`` of an import, ``catch`` or ``with`` binding)."""
+    before = src_line[: max(column - 1, 0)]
+    if not re.search(r"\bas\s*$", before):
+        return False
+    return not re.match(r"(?:\}\s*)?(?:import|from|catch|with)\b", before.strip())
 
 
 def _looks_like_missing_lambda_body(stripped: str, token_type: str) -> bool:

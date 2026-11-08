@@ -1,0 +1,51 @@
+# A member (field or method) of a value whose type is `any` is a Lam error
+# at the member's line (it used to fail at `go build` with
+# "interface{} has no field or method"), whatever produces the value: a
+# `dict[str, any]` / `list[any]` element, a `-> any` result, an `any`
+# local, parameter or field, `unwrap()` of an untyped `Result`. The
+# message names the expression and the fixes (an inline cast, an
+# annotation, a conversion, a narrowing).
+# expect-error: line 39: error[any]: `row["name"]` has type `any`, so method `toUpper()` needs a concrete type
+# expect-error: cast it inline (`row["name"] as str`)
+# expect-error: annotate a variable (`value: str = row["name"]`)
+# expect-error: convert between kinds (`int(x)`, `float(x)`, `str(x)`)
+# expect-error: narrow it with `isinstance` / `match`
+# expect-error: line 40: error[any]: `lookup("user")` has type `any`, so member `name` needs a concrete type; cast it inline (`lookup("user") as User`)
+# expect-error: line 41: error[any]: `items[0]` has type `any`, so member `name` needs a concrete type
+# expect-error: line 42: error[any]: `v` has type `any`, so member `name` needs a concrete type
+# expect-error: line 43: error[any]: `box.raw` has type `any`, so method `area()` needs a concrete type
+# expect-error: line 44: error[any]: `r.unwrap()` has type `any`, so member `name` needs a concrete type
+# expect-error: line 45: error[any]: `v` has type `any`, so member `name` needs a concrete type
+# expect-error: line 46: error[any]: `items[1]` has type `any`, so method `append()` needs a concrete type; cast it inline (`items[1] as list[any]`)
+
+from lamerrors import Result
+
+class User {
+    func init(self, name: str) { self.name: str = name }
+}
+
+class Box {
+    func init(self) { self.raw: any = 1 }
+}
+
+func lookup(key: str) -> any {
+    return User(key)
+}
+
+func show(v: any, r: Result) {
+    row: dict[str, any] = {"count": 41, "name": "ada"}
+    items: list[any] = [User("a"), [1]]
+    box: Box = Box()
+    print(row["name"].toUpper())
+    print(lookup("user").name)
+    print(items[0].name)
+    print(v.name)
+    print(box.raw.area())
+    print(r.unwrap().name)
+    print(v?.name)
+    items[1].append(2)
+}
+
+func main() {
+    show(User("b"), Result.Ok(User("c")))
+}

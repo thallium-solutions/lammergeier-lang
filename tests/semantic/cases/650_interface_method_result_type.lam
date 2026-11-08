@@ -1,0 +1,32 @@
+# expect-error: cannot assign `int` to `str` variable `wrong`
+# expect-error: cannot assign `Result[json]` to `Result[int]` variable `mismatch`
+# A call through an interface-typed receiver has the interface method's
+# declared result type, as a call on a class receiver: its payload reaches
+# `.unwrap()` and `?` (it was `unknown`, so a json payload was rejected and
+# a wrong annotation went unnoticed).
+from lamerrors import Result
+
+interface Source {
+    func doc(key: str) -> Result[json]
+    func count(key: str) -> Result[int]
+}
+
+class Memory {
+    func doc(self, key: str) -> Result[json] {
+        return Result.Ok({"key": key})
+    }
+
+    func count(self, key: str) -> Result[int] {
+        return Result.Ok(len(key))
+    }
+}
+
+func read(source: Source) -> Result[int] {
+    wrong: str = source.count("a").unwrap()
+    mismatch: Result[int] = source.doc("b")
+    return Result.Ok(len(wrong))
+}
+
+func main() {
+    print(read(Memory()).ok())
+}

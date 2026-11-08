@@ -354,6 +354,13 @@ dev = "lamc dev cmd/serve.lam --watch locales --ext json,sql --"
   `--go-tags`, `--go-ldflags`, `--go-race`, `--no-cache` and
   `--no-semantic-check` are passed to the build; `--extlibs` directories are
   watched too.
+- At start, when nothing changed since a previous run, the last good build
+  starts at once instead of building again (below, "Cached builds"):
+  `[lamc dev] starting serve (cached build of 2026-11-08 09:12:40)`.
+  Otherwise the start says it builds and that the first build can take a
+  minute or two:
+  `[lamc dev] building serve.lam (no cached build; the first build can take a minute or two)`.
+  `--rebuild` (and `--no-cache`) builds at start anyway.
 - `.git`, `node_modules`, `__pycache__`, `.venv` and `.lamc-dev` are never
   watched; `--ignore PATTERN` adds globs, matched against the path relative
   to the project root or against a file or directory name.
@@ -370,6 +377,42 @@ modification time or size changed are read, so large trees stay cheap to
 watch. New and deleted
 files are changes. The binary is built in a temporary directory unless
 `-o` is given.
+
+**Cached builds.** Every good build (at start and after a change) is stored
+in `$LAMC_CACHE/dev/<project>/<entry>/` (`LAMC_CACHE` defaults to
+`~/.lammergeier/cache`, the package cache's root), one directory per entry
+point of a project, so a container whose home directory is a persistent
+volume starts the server without building after `docker compose up`. A cached
+build is used only when its inputs are unchanged:
+
+- the content of every `.lam` file and `lamlib*.toml` under the watched
+  roots (an edited, new or deleted source, `lamlib.lock.toml` included);
+- the content of every module the build read outside them — stdlib
+  modules the program imports, `extlibs/` and `LAMC_EXTLIBS` packages, files
+  in `--ignore`d directories — as recorded by the compiler, and the absence
+  of every path searched before the module picked for an import, so a new
+  file that would now be picked (an extlib shadowing a project module, a
+  `lib/` created later) builds again;
+- the compiler (its version, its location and its sources: another or an
+  edited checkout builds again), the Go toolchain (`go version`), the build
+  flags (`--extlibs`, `--stdlib`, `--go-tags`, `--go-ldflags`, `--go-race`,
+  `--no-semantic-check`) and the build environment (`LAMC_EXTLIBS`,
+  `GOFLAGS`, `GOOS`, `GOARCH`, `GOAMD64`, `GOARM`, `GOARM64`, `GO386`,
+  `GOEXPERIMENT`, `GOTOOLCHAIN`, `CGO_ENABLED`, `CC`, `CXX` and the
+  `CGO_*FLAGS`).
+
+The program arguments, `--watch`, `--ext`, `--ignore` and `-o` do not
+matter: with `-o PATH` the cached build is copied to `PATH`. The last three
+builds of each entry point are kept (the least recently used goes first),
+so switching back to a branch built recently starts at once too. A build
+is written to a temporary file renamed into place, its size and SHA-256
+recorded and checked before it runs: a damaged or truncated cached binary
+is removed and rebuilt, and several `lamc dev` processes sharing the cache
+(`app` and `jobs` containers mounting the same home volume) never see a
+partial file. Two processes of the same entry point take turns at start:
+the second waits for the first one's build and starts it. Go modules that
+neither the stdlib, the manifest nor the lockfile pins are resolved by
+`go mod tidy` when building; `--rebuild` picks up a newer release of one.
 
 ### 2.5 Where files actually go
 

@@ -599,6 +599,17 @@ class StatementVisitorMixin:
                         # call's ``any`` result converts where a type is
                         # expected.
                         value_hint = self._func_literal_go_type(value_str)
+                    if not value_hint and isinstance(value_node, Tree) and (
+                        self._is_dynamic_any_value(value_node)
+                        or (
+                            value_node.data == "propagate" and value_node.children
+                            and self._propagated_payload_go_type(value_node.children[0]) == "interface{}"
+                        )
+                    ):
+                        # ``value = load()?`` on a ``Result[any]``, ``v =
+                        # same(a, b)`` bound to ``any``: an ``interface{}``
+                        # local, converted where a concrete type is expected.
+                        value_hint = "interface{}"
                     if value_hint:
                         self._var_go_types[target_str] = value_hint
                 self._emit(f"{target_str} := {value_str}")

@@ -1,0 +1,33 @@
+# lamc 4.6.0 (0bf7fa5+dirty), 2026-11-08T11:07:38Z
+# command: sh scripts/bench.sh compiler
+# host: Linux 6.12.10-76061203-generic x86_64; cpu: 13th Gen Intel(R) Core(TM) i9-13900HX; load: 29.01 16.94 10.38
+# go: go1.25.3
+
+  cold  generated-small
+  cold  generated-medium
+  cold  generated-large
+  cold  adapter_decorator_chain
+  cold  hello_world
+  cold  resilient_service_pipeline
+  warm  generated-small
+  warm  generated-medium
+  warm  generated-large
+  warm  adapter_decorator_chain
+  warm  hello_world
+  warm  resilient_service_pipeline
+
+median milliseconds per phase (front-end = preprocess + parse + semantic + transpile)
+program                     mode    lines preprocess      parse   semantic  transpile     go_mod   go_build      other      total   lines/s
+-------------------------------------------------------------------------------------------------------------------------------------------
+generated-small             cold      262       88.1      138.2      143.7       71.9       22.6      188.3      115.3      768.3       593
+generated-medium            cold     2557     1324.7      612.9      619.2      446.3       23.8      399.4      254.1     3680.5       851
+generated-large             cold    10207    18490.1     2650.9     2449.1     2054.7       22.7     1129.2      543.8    27340.5       398
+adapter_decorator_chain     cold      124      209.0      322.9      279.8       95.2       24.6      247.9        0.0     1179.0       137
+hello_world                 cold        3        0.4       15.5        0.6        0.4       21.6      146.5       56.2      241.2       177
+resilient_service_pipeline  cold      225     3258.8     2440.6     1614.6     1129.6       42.7     1135.3        0.0     7154.1        27
+generated-small             warm      262       51.4       98.7      130.2       67.6       22.9      175.3       98.7      644.6       753
+generated-medium            warm     2557     1325.7      576.7      623.5      527.8       23.0      380.9      205.9     3663.5       837
+generated-large             warm    10207    17834.3     2625.7     2462.3     1947.5       22.4     1065.7      697.1    26655.0       410
+adapter_decorator_chain     warm      124      110.1      177.6      224.2       20.7       24.4      258.2      152.3      967.5       233
+hello_world                 warm        3        0.4       17.7        0.7        0.4       23.8      146.1       56.2      245.2       157
+resilient_service_pipeline  warm      225     1074.8     1011.0     1213.2       47.0       40.2     1090.2      605.9     5082.4        67

@@ -52,6 +52,10 @@
 		</dict>
 		<dict>
 			<key>include</key>
+			<string>#casts</string>
+		</dict>
+		<dict>
+			<key>include</key>
 			<string>#keywords</string>
 		</dict>
 		<dict>
@@ -106,6 +110,29 @@
 					<string>\b(print|input|open|exit|len|range|enumerate|sorted|reversed|append|format|type|isinstance|repr|abs|max|min|panic|recover|make|new|cap|copy|delete|close)\b(?=[\t ]*\()</string>
 					<key>name</key>
 					<string>support.function.builtin.lammergeier</string>
+				</dict>
+			</array>
+		</dict>
+		<key>casts</key>
+		<dict>
+			<key>patterns</key>
+			<array>
+				<dict>
+					<key>captures</key>
+					<dict>
+						<key>1</key>
+						<dict>
+							<key>name</key>
+							<string>keyword.operator.cast.lammergeier</string>
+						</dict>
+						<key>2</key>
+						<dict>
+							<key>name</key>
+							<string>entity.name.type.cast.lammergeier</string>
+						</dict>
+					</dict>
+					<key>match</key>
+					<string>\b(as)[\t ]+\(?[\t ]*((?:[A-Z][A-Za-z0-9_]*|int|float|str|bool|bytes|any|list|dict|set|tuple|json|html|xml|optional|func|None)\b)</string>
 				</dict>
 			</array>
 		</dict>

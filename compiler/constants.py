@@ -202,6 +202,9 @@ def lam_simple_expr_text(node) -> str:
     if data == "getitem" and len(children) == 2:
         receiver, index = lam_simple_expr_text(children[0]), lam_simple_expr_text(children[1])
         return f"{receiver}[{index}]" if receiver and index else ""
+    if data == "propagate" and children:
+        inner = lam_simple_expr_text(children[0])
+        return f"{inner}?" if inner else ""
     if data == "factor" and len(children) == 2 and getattr(children[0], "data", None) is None:
         inner = lam_simple_expr_text(children[1])
         return f"{children[0]}{inner}" if inner else ""
@@ -298,6 +301,21 @@ def await_any_message(operand: str) -> str:
         f"`await` needs the handle returned by an async call, but {subject} is `any`; "
         "keep the handles in an unannotated local or list (`tasks = [load(1), load(2)]`) "
         "so their type is known, or await the call directly"
+    )
+
+
+def any_operand_message(subject: str, action: str, target: str) -> str:
+    """Diagnostic for an operation that needs a concrete type applied to a
+    value whose static type is ``any`` (``row["n"] + 1``, ``v.name``,
+    ``for x in v``): Go rejects it on ``interface{}``. ``target`` is the
+    suggested type for the fix-its (``int``, ``list[any]``, a class)."""
+    expr = subject or "value"
+    shown = f"`{subject}`" if subject else "this value"
+    return (
+        f"{shown} has type `any`, so {action} needs a concrete type; "
+        f"cast it inline (`{expr} as {target}`), annotate a variable (`value: {target} = {expr}`), "
+        "convert between kinds (`int(x)`, `float(x)`, `str(x)`) "
+        "or narrow it with `isinstance` / `match`"
     )
 
 

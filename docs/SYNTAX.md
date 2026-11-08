@@ -653,8 +653,100 @@ try {
 
 Use `isinstance` / `match` (`case int(n)`) when the dynamic type decides what
 to do, and `int(x)` / `float(x)` / `str(x)` to convert between kinds (a
-`str` holding `"41"` is not an `int`). Member access on an `any` value still
-needs a narrowed or annotated name first (`u: User = lookup("user")`).
+`str` holding `"41"` is not an `int`). An operation that needs a concrete
+type (a member, an operator, indexing, iteration, ...) is a compile error on
+an `any` value: give it a type first with an inline cast
+(`(lookup("user") as User).name`, below), an annotation
+(`u: User = lookup("user")`) or a narrowing.
+
+### Casts: `as`
+
+`expr as T` converts `expr` to `T` with exactly the run-time check of an
+annotated assignment `value: T = expr` (the same conversion, the same
+`TypeError` on a mismatch) and its static type is `T`, so it can be used
+in place, without a temporary variable:
+
+```lammergeier
+func lookup(key: str) -> any { ... }
+
+row: dict[str, any] = {"count": 41, "name": "ada", "items": ["a", "b"]}
+next: int = row["count"] as int + 1           # (row["count"] as int) + 1
+print((row["name"] as str).toUpper())         # ADA
+print((lookup("user") as User).name)
+for item in row["items"] as list[str] {       # a typed list, item by item
+    print(item.toUpper())
+}
+take(row["count"] as float)                   # 41 -> 41.0
+```
+
+From an `any` value every conversion of
+[From `any` to a concrete type](#from-any-to-a-concrete-type) applies: an
+`int` is accepted (and widened) as a `float`, a subclass instance as its
+base class, `None` as a class (and as an `optional[T]`), a `list[any]` /
+`dict[str, any]` holding values of the item type as a typed list / dict;
+anything else throws a catchable `TypeError`. From a value whose type is
+already concrete the cast is checked statically:
+
+| Cast | Result |
+|---|---|
+| same type (`n as int` with `n: int`) | the value itself |
+| widening (`n as float`, `xs as list[any]`), upcast (`square as Shape`), `x as optional[T]`, `x as any` | the conversion an annotated assignment does |
+| downcast: a base class or an interface as a subclass / implementing class (`shape as Square`, `priced as Order`) | checked at run time, like an `isinstance` narrowing: another class throws `TypeError`, `None` stays `None` (an annotated assignment never downcasts implicitly) |
+| `json` as `int` / `float` / `str` / `bool` | the run-time extraction of an annotated `json` assignment (`doc.name as str`) |
+| impossible (`"a" as int`, `2.5 as int`, `xs as str`, unrelated classes) | compile error: ``cannot cast `str` to `int` with `as`: `as` checks the type, it does not convert between kinds; use `int(...)` to parse or convert`` |
+
+`as` checks and views a value; it never parses or converts between kinds:
+use `int(x)`, `float(x)`, `str(x)`, `bool(x)` for that.
+
+**Precedence.** `as` binds tighter than every binary operator (arithmetic,
+bitwise, comparisons, `??`, `and` / `or`) and looser than unary operators,
+`**`, calls, indexing and member access (like Kotlin's `as`):
+
+| Source | Means |
+|---|---|
+| `row["n"] as int + 1` | `(row["n"] as int) + 1` |
+| `a + b as int` | `a + (b as int)` |
+| `2 * v as int` | `2 * (v as int)` |
+| `-x as float` | `(-x) as float` |
+| `v as int < 3`, `not v as bool` | `(v as int) < 3`, `not (v as bool)` |
+| `v as any as int` | `(v as any) as int` |
+| `(v as User).name`, `(v as list[int])[0]` | a member or an index of the cast value needs parentheses |
+
+The target is one type, possibly generic (`list[str]`, `dict[str, int]`,
+`optional[User]`) or dotted (`pkg.User`); a union needs parentheses
+(`v as (int | str)`), since a bare `|` after the type is the bitwise
+operator. The other uses of `as` keep their meaning: `import x as y`,
+`from m import a as b`, `catch E as e`, `with open(p) as f` and
+`case pattern as name` bind names (in `catch` and `with` the value before
+`as` is a name, a dotted name, a call or a parenthesised expression).
+
+**Operations on `any`.** These need a concrete type and are compile errors
+(kind `any`) on a value whose type is `any` — an element of a `list[any]` /
+`dict[K, any]`, an `any` local, parameter or field, the result of a
+`-> any` callable, `?` on a `Result[any]`, a generic result bound to `any`:
+member access and method calls (`row["name"].toUpper()`), arithmetic,
+bitwise and unary operators, `<` / `<=` / `>` / `>=`, indexing and slicing,
+an `any` index into a typed list or dict, iteration (`for`, comprehensions),
+unpacking, item and member writes, calls (`f(1)` with `f: any`), the
+right operand of `in`, conditions (`if` / `while` / ternary, `not`, `and` /
+`or`) and the builtins `len`, `reversed`, `sorted`, `enumerate`, `zip`,
+`list`, `set`, `dict`, `tuple`, `range`, `abs`, `min`, `max`. The message
+names the expression and the fixes:
+
+```text
+line 3: error[any]: `row["count"]` has type `any`, so operator `+` needs a concrete type;
+cast it inline (`row["count"] as int`), annotate a variable (`value: int = row["count"]`),
+convert between kinds (`int(x)`, `float(x)`, `str(x)`) or narrow it with `isinstance` / `match`
+```
+
+Well-defined operations stay allowed on `any`: `==` / `!=`, `is None` /
+`is not None`, `x ?? fallback`, `str(x)`, `repr(x)`, `print(x)`,
+f-string slots, `isinstance`, `match`, `x in xs` (an `any` needle),
+assignment to an `any` or a typed target, passing it as an `any` or a
+typed argument (both convert as above), `int(x)` / `float(x)` / `bool(x)`
+(checked at run time, with a warning), `Json.fromValue(x)`, and the cast.
+`json` values are not `any`: their documented accessors and conversions are
+unchanged; `r.error` of a `Result` keeps the members of lamerrors' `Error`.
 
 ### Bytes
 
@@ -5246,6 +5338,10 @@ The pipeline runs in three layers:
      inner block, and untyped lambda parameters that nothing types (a
      stand-alone `sq = lambda x: x * x`, or `any` parameters of a
      `func(any) -> ...` callback) when the body needs a concrete type.
+     Operations that need a concrete type on an `any` value (kind `any`,
+     with the `as` / annotation / conversion / narrowing fix-its, see
+     [Casts: `as`](#casts-as)) and statically impossible casts
+     (`"a" as int`).
    - **Warnings:** unused top-level imports
      (`from lamX import Y` where `Y` is never referenced),
      unused function parameters

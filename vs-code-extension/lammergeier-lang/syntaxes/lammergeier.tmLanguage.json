@@ -36,6 +36,9 @@
       "include": "#contextual-keywords"
     },
     {
+      "include": "#casts"
+    },
+    {
       "include": "#keywords"
     },
     {
@@ -567,6 +570,21 @@
           "captures": {
             "1": {
               "name": "keyword.control.case.lammergeier"
+            }
+          }
+        }
+      ]
+    },
+    "casts": {
+      "patterns": [
+        {
+          "match": "\\b(as)[\\t ]+\\(?[\\t ]*((?:[A-Z][A-Za-z0-9_]*|int|float|str|bool|bytes|any|list|dict|set|tuple|json|html|xml|optional|func|None)\\b)",
+          "captures": {
+            "1": {
+              "name": "keyword.operator.cast.lammergeier"
+            },
+            "2": {
+              "name": "entity.name.type.cast.lammergeier"
             }
           }
         }

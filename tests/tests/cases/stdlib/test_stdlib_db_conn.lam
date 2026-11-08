@@ -1,0 +1,406 @@
+# expect: conn-db: 0 1 a
+# expect: conn-scoped: 2 b
+# expect: conn-tx: 3 c json=Ada scalar=Ada rows=1
+# expect: conn-tx-rolled-back: 2
+# expect: pool: true true true true true true
+# expect: pool-unbound-tx: true
+# expect: atomic-ok: 3 rows=3
+# expect: atomic-err: DbExecError rows=3
+# expect: atomic-own-err: AppError nope rows=3
+# expect: atomic-throw: caught boom rows=3
+# expect: atomic-types: x [1 2] Box(7) 2
+# expect: atomic-lambda: 4 rows=4
+# expect: nested-ok: 6 rows=6
+# expect: nested-inner-err: InnerError rows=7 [outer-keep]
+# expect: nested-outer-err: OuterError rows=7
+# expect: nested-throw: inner-boom rows=8 [after-throw]
+# expect: nested-deep: 3 rows=11
+# expect: nested-siblings: rows=13 [s1 s3]
+# expect: nested-explicit: false true DbTransactionError rows=14 [explicit-release]
+# expect: nested-legacy: true false rows=15 [legacy-kept]
+# expect: legacy: true false true no-result=true
+# expect: legacy-nested-rollback: true rows=16
+# expect: managed-depth: 0 1 2 1 0
+# expect: closed-tx: DbTransactionError false
+# expect: closed-db: DbTransactionError ran=false
+# expect: commit-failure: DbTransactionError true ran=true
+# expect: observer: BEGIN|INSERT INTO items (name) VALUES (?)|SAVEPOINT lam_sp_1|INSERT INTO items (name) VALUES (?)|ROLLBACK TO SAVEPOINT lam_sp_1|RELEASE SAVEPOINT lam_sp_1|SAVEPOINT lam_sp_1|INSERT INTO items (name) VALUES (?)|RELEASE SAVEPOINT lam_sp_1|COMMIT
+# expect: observer-failures: |||||||||
+# expect: observer-context: true 20
+# expect: observer-throw: BEGIN|SAVEPOINT lam_sp_1|ROLLBACK TO SAVEPOINT lam_sp_1|RELEASE SAVEPOINT lam_sp_1|ROLLBACK
+# expect: conn_ok
+#
+# DbConn (the query surface shared by Db, scoped Db views and Tx), pool()
+# and the typed Db.atomic: a transaction on a Db, a savepoint level on a Tx,
+# commit / release on Ok, rollback on Err or throw, the callback's own
+# Result returned; the legacy Db.transaction keeps its Result[bool]
+# semantics and Tx.transaction nests it in a savepoint.
+from lamdb import Db, DbConn, DbObserver, Tx
+from lamcontext import Context
+from lamerrors import Result, Error
+from lamos import Os
+from lamjson import Json
+
+class RecordingObserver {
+    func init(self) {
+        self.statements: list[str] = []
+        self.failures: list[str] = []
+        self.contexts: list[Context] = []
+    }
+
+    func start(self, ctx: Context, statement: str) -> any {
+        self.contexts.append(ctx)
+        self.statements.append(statement)
+        return len(self.statements)
+    }
+
+    func finish(self, ctx: Context, token: any, failure: str) {
+        self.contexts.append(ctx)
+        self.failures.append(failure)
+    }
+}
+
+class Box {
+    func init(self, value: int) {
+        self.value: int = value
+    }
+
+    func __str__(self) -> str {
+        return f"Box({self.value})"
+    }
+}
+
+# A service written once against DbConn.
+func addItem(conn: DbConn, name: str) -> Result[int] {
+    _ = conn.exec("INSERT INTO items (name) VALUES (?)", [name])?
+    count: any = conn.scalar("SELECT COUNT(*) FROM items")?
+    return Result.Ok(int(count))
+}
+
+func lastName(conn: DbConn) -> Result[str] {
+    row: dict[str, any] = conn.first("SELECT name FROM items ORDER BY id DESC LIMIT 1")?
+    return Result.Ok(str(row["name"]) if len(row) > 0 else "-")
+}
+
+func countRows(conn: DbConn) -> int {
+    return conn.table("items").count().unwrap()
+}
+
+func names(conn: DbConn) -> list[str] {
+    rows: list[dict[str, any]] = conn.query("SELECT name FROM items ORDER BY id").unwrap()
+    return [str(r["name"]) for r in rows]
+}
+
+func failWith(kind: str) -> Result[int] {
+    return Result.Err(Error(kind, "nope"))
+}
+
+func kindOf(result: Result) -> str {
+    if result.ok() {
+        return "ok"
+    }
+    error: Error = result.error
+    return error.kind
+}
+
+func depthOf(tx: Tx) -> int {
+    return tx.depth()
+}
+
+func main() {
+    path: str = Os.tempFile("lam-db-conn-", ".db").unwrap()
+    db: Db = Db.connect("sqlite", path).unwrap()
+    db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, payload TEXT)").unwrap()
+
+    # ── DbConn over a Db, a scoped Db and a Tx ──────────────────
+    plain: DbConn = db
+    print(f"conn-db: {countRows(plain)} {addItem(plain, 'a').unwrap()} {lastName(plain).unwrap()}")
+    scoped: Db = db.withContext(Context.simple().valued("request", "r-1"))
+    viaScoped: DbConn = scoped
+    print(f"conn-scoped: {addItem(viaScoped, 'b').unwrap()} {lastName(viaScoped).unwrap()}")
+    tx: Tx = scoped.begin().unwrap()
+    viaTx: DbConn = tx
+    added: int = addItem(viaTx, "c").unwrap()
+    viaTx.exec("UPDATE items SET payload = ? WHERE name = ?", ["{\"name\": \"Ada\"}", "c"]).unwrap()
+    doc: dict[str, any] = viaTx.firstJson("SELECT payload FROM items WHERE name = ?", ["payload"], ["c"]).unwrap()
+    docs: list[dict[str, any]] = viaTx.queryJson("SELECT payload FROM items WHERE name = ?", ["payload"], ["c"]).unwrap()
+    scalarDoc: json = viaTx.scalarJson("SELECT payload FROM items WHERE name = ?", ["c"]).unwrap()
+    payloadDoc: json = Json.fromValue(doc["payload"]).unwrap()
+    jsonName: str = payloadDoc.name
+    scalarName: str = scalarDoc.name
+    print(f"conn-tx: {added} {lastName(viaTx).unwrap()} json={jsonName} scalar={scalarName} rows={len(docs)}")
+    tx.rollback().unwrap()
+    print(f"conn-tx-rolled-back: {countRows(plain)}")
+
+    # ── pool(): the owning pool of every handle ─────────────────
+    deeper: Db = scoped.withContext(Context.simple())
+    poolTx: Tx = db.begin().unwrap()
+    scopedTx: Tx = scoped.begin().unwrap()
+    viaConn: DbConn = scopedTx
+    print(f"pool: {db.pool() == db} {scoped.pool() == db} {deeper.pool() == db} {poolTx.pool() == db} {scopedTx.pool() == db} {viaConn.pool() == db}")
+    poolTx.rollback().unwrap()
+    scopedTx.rollback().unwrap()
+    print(f"pool-unbound-tx: {Tx().pool() == None}")
+
+    # ── Db.atomic on a Db ───────────────────────────────────────
+    func insertC(t: Tx) -> Result[int] {
+        return addItem(t, "c")
+    }
+    n: int = Db.atomic(db, insertC).unwrap()
+    print(f"atomic-ok: {n} rows={countRows(db)}")
+
+    func insertThenFail(t: Tx) -> Result[int] {
+        _ = addItem(t, "doomed")?
+        _ = t.exec("INSERT INTO missing_table VALUES (1)")?
+        return Result.Ok(1)
+    }
+    failed: Result[int] = Db.atomic(db, insertThenFail)
+    print(f"atomic-err: {kindOf(failed)} rows={countRows(db)}")
+
+    func ownError(t: Tx) -> Result[int] {
+        _ = addItem(t, "doomed")?
+        return failWith("AppError")
+    }
+    own: Result[int] = Db.atomic(scoped, ownError)
+    ownErr: Error = own.error
+    print(f"atomic-own-err: {ownErr.kind} {ownErr.message} rows={countRows(db)}")
+
+    func throwing(t: Tx) -> Result[int] {
+        _ = addItem(t, "doomed")?
+        throw ValueError("boom")
+    }
+    caught: str = ""
+    try {
+        _ = Db.atomic(db, throwing)
+    } catch ValueError as e {
+        caught = "caught boom"
+    }
+    print(f"atomic-throw: {caught} rows={countRows(db)}")
+
+    s: str = Db.atomic(db, lambda (t: Tx) -> Result[str]: Result.Ok("x")).unwrap()
+    ints: list[int] = Db.atomic(db, lambda (t: Tx) -> Result[list[int]]: Result.Ok([1, 2])).unwrap()
+    box: Box = Db.atomic(db, lambda (t: Tx) -> Result[Box]: Result.Ok(Box(7))).unwrap()
+    mapped: dict[str, int] = Db.atomic(db, lambda (t: Tx) -> Result[dict[str, int]]: Result.Ok({"a": 1, "b": 2})).unwrap()
+    print(f"atomic-types: {s} {ints} {box} {len(mapped)}")
+
+    inferred: int = Db.atomic(db, lambda t: addItem(t, "d")).unwrap()
+    print(f"atomic-lambda: {inferred} rows={countRows(db)}")
+
+    # ── Db.atomic on a Tx: a savepoint level ────────────────────
+    func nestedOk(t: Tx) -> Result[int] {
+        _ = addItem(t, "e")?
+        return Db.atomic(t, lambda (inner: Tx) -> Result[int]: addItem(inner, "f"))
+    }
+    print(f"nested-ok: {Db.atomic(db, nestedOk).unwrap()} rows={countRows(db)}")
+
+    func innerFails(t: Tx) -> Result[str] {
+        _ = addItem(t, "outer-keep")?
+        func inner(it: Tx) -> Result[int] {
+            _ = addItem(it, "inner-drop")?
+            return failWith("InnerError")
+        }
+        innerResult: Result[int] = Db.atomic(t, inner)
+        return Result.Ok(kindOf(innerResult))
+    }
+    innerKind: str = Db.atomic(db, innerFails).unwrap()
+    print(f"nested-inner-err: {innerKind} rows={countRows(db)} {[x for x in names(db) if x.contains('keep') or x.contains('drop')]}")
+
+    func outerFails(t: Tx) -> Result[int] {
+        _ = Db.atomic(t, lambda (it: Tx) -> Result[int]: addItem(it, "released-then-dropped"))?
+        return failWith("OuterError")
+    }
+    print(f"nested-outer-err: {kindOf(Db.atomic(db, outerFails))} rows={countRows(db)}")
+
+    func throwAfterInsert(it: Tx) -> Result[int] {
+        _ = addItem(it, "thrown-away")?
+        throw ValueError("inner-boom")
+    }
+    func innerThrows(t: Tx) -> Result[str] {
+        message: str = ""
+        try {
+            _ = Db.atomic(t, throwAfterInsert)
+        } catch ValueError as e {
+            message = "inner-boom"
+        }
+        _ = addItem(t, "after-throw")?
+        return Result.Ok(message)
+    }
+    thrown: str = Db.atomic(db, innerThrows).unwrap()
+    print(f"nested-throw: {thrown} rows={countRows(db)} {[x for x in names(db) if x.contains('throw')]}")
+
+    func level3(t: Tx) -> Result[int] {
+        return addItem(t, "l3")
+    }
+    func level2(t: Tx) -> Result[int] {
+        _ = addItem(t, "l2")?
+        return Db.atomic(t, level3)
+    }
+    func level1(t: Tx) -> Result[int] {
+        _ = addItem(t, "l1")?
+        _ = Db.atomic(t, level2)?
+        return Result.Ok(t.depth() + 3)
+    }
+    print(f"nested-deep: {Db.atomic(db, level1).unwrap()} rows={countRows(db)}")
+
+    func siblings(t: Tx) -> Result[int] {
+        _ = Db.atomic(t, lambda (a: Tx) -> Result[int]: addItem(a, "s1"))?
+        _ = Db.atomic(t, lambda (b: Tx) -> Result[int]: failWith("S2"))
+        return Db.atomic(t, lambda (c: Tx) -> Result[int]: addItem(c, "s3"))
+    }
+    _ = Db.atomic(db, siblings).unwrap()
+    print(f"nested-siblings: rows={countRows(db)} {[x for x in names(db) if x.startsWith('s')]}")
+
+    # commit() / rollback() inside a nested level end only that level.
+    func explicitLevels(t: Tx) -> Result[str] {
+        func rolledBack(it: Tx) -> Result[bool] {
+            _ = addItem(it, "explicit-drop")?
+            return it.rollback()
+        }
+        func released(it: Tx) -> Result[bool] {
+            _ = addItem(it, "explicit-release")?
+            first: bool = it.commit()?
+            second: Result[bool] = it.commit()
+            return Result.Ok(first and kindOf(second) == "DbTransactionError")
+        }
+        a: bool = t.transaction(rolledBack)?
+        b: bool = t.transaction(released)?
+        func twice(it: Tx) -> Result[bool] {
+            _ = it.rollback()?
+            return it.rollback()
+        }
+        again: Result[bool] = t.transaction(twice)
+        return Result.Ok(f"{a} {b} {kindOf(again)}")
+    }
+    print(f"nested-explicit: {Db.atomic(db, explicitLevels).unwrap()} rows={countRows(db)} {[x for x in names(db) if x.startsWith('explicit')]}")
+
+    # The legacy Result[bool] Tx.transaction: Ok(true) released, Ok(false)
+    # when the callback rolled its level back.
+    func legacyNested(t: Tx) -> Result[str] {
+        func keep(it: Tx) -> Result[bool] {
+            _ = addItem(it, "legacy-kept")?
+            return Result.Ok(true)
+        }
+        func drop(it: Tx) -> Result[bool] {
+            _ = addItem(it, "legacy-drop")?
+            return it.rollback()
+        }
+        kept: bool = t.transaction(keep)?
+        dropped: bool = t.transaction(drop)?
+        return Result.Ok(f"{kept} {dropped}")
+    }
+    print(f"nested-legacy: {Db.atomic(db, legacyNested).unwrap()} rows={countRows(db)} {[x for x in names(db) if x.startsWith('legacy')]}")
+
+    # ── Legacy Db.transaction semantics are unchanged ───────────
+    func legacyCommit(t: Tx) -> Result[bool] {
+        _ = addItem(t, "legacy-commit")?
+        _ = t.exec("DELETE FROM items WHERE name = ?", ["legacy-commit"])?
+        return Result.Ok(true)
+    }
+    func legacyRollback(t: Tx) -> Result[bool] {
+        _ = addItem(t, "legacy-vanish")?
+        _ = t.rollback()?
+        return Result.Ok(true)
+    }
+    func legacyNoResult(t: Tx) {
+        _ = t.exec("DELETE FROM items WHERE name = ?", ["never-there"])
+    }
+    committedOk: bool = db.transaction(legacyCommit).unwrap()
+    rolledOk: bool = db.transaction(legacyRollback).unwrap()
+    noResult: Result[bool] = db.transaction(legacyNoResult)
+    print(f"legacy: {committedOk} {rolledOk} {noResult.ok()} no-result={noResult.unwrap()}")
+
+    func legacyNestedRollback(t: Tx) -> Result[bool] {
+        _ = addItem(t, "legacy-outer")?
+        return t.transaction(lambda (it: Tx) -> Result[bool]: it.rollback())
+    }
+    print(f"legacy-nested-rollback: {db.transaction(legacyNestedRollback).unwrap()} rows={countRows(db)}")
+
+    func depths(t: Tx) -> Result[str] {
+        d0: int = t.depth()
+        func two(it: Tx) -> Result[int] {
+            return Result.Ok(it.depth())
+        }
+        func one(it: Tx) -> Result[str] {
+            d1: int = it.depth()
+            d2: int = Db.atomic(it, two)?
+            return Result.Ok(f"{d1} {d2} {it.depth()}")
+        }
+        mid: str = Db.atomic(t, one)?
+        return Result.Ok(f"{d0} {mid} {depthOf(t)}")
+    }
+    print(f"managed-depth: {Db.atomic(db, depths).unwrap()}")
+
+    # ── Failures ────────────────────────────────────────────────
+    done: Tx = db.begin().unwrap()
+    done.commit().unwrap()
+    ranClosedTx: bool = false
+    func markClosedTx(t: Tx) -> Result[int] {
+        ranClosedTx = true
+        return Result.Ok(1)
+    }
+    print(f"closed-tx: {kindOf(Db.atomic(done, markClosedTx))} {ranClosedTx}")
+
+    # A deferred foreign key fails at COMMIT: the commit error is returned.
+    fkPath: str = Os.tempFile("lam-db-conn-fk-", ".db").unwrap()
+    fkDb: Db = Db.connect("sqlite", fkPath).unwrap()
+    fkDb.setPool(1, 1, 0, 0).unwrap()
+    fkDb.exec("PRAGMA foreign_keys = ON").unwrap()
+    fkDb.exec("CREATE TABLE parents (id INTEGER PRIMARY KEY)").unwrap()
+    fkDb.exec("CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED)").unwrap()
+    ranCommit: bool = false
+    func orphan(t: Tx) -> Result[int] {
+        ranCommit = true
+        return t.exec("INSERT INTO children (parent_id) VALUES (?)", [404])
+    }
+    commitFailure: Result[int] = Db.atomic(fkDb, orphan)
+    fkDb.close().unwrap()
+    _ = Os.remove(fkPath)
+
+    closedPath: str = Os.tempFile("lam-db-conn-closed-", ".db").unwrap()
+    closed: Db = Db.connect("sqlite", closedPath).unwrap()
+    closed.close().unwrap()
+    ranClosed: bool = false
+    func markClosed(t: Tx) -> Result[int] {
+        ranClosed = true
+        return Result.Ok(1)
+    }
+    print(f"closed-db: {kindOf(Db.atomic(closed, markClosed))} ran={ranClosed}")
+    _ = Os.remove(closedPath)
+    print(f"commit-failure: {kindOf(commitFailure)} {Db.isForeignKeyViolation(commitFailure)} ran={ranCommit}")
+
+    # ── Observation: BEGIN / SAVEPOINT / RELEASE / ROLLBACK TO / COMMIT ──
+    observer: RecordingObserver = RecordingObserver()
+    configured: DbObserver = observer
+    db.setObserver(configured)
+    ctx: Context = Context.simple().valued("request", "observed")
+    observedDb: Db = db.withContext(ctx)
+    func observed(t: Tx) -> Result[int] {
+        _ = t.exec("INSERT INTO items (name) VALUES (?)", ["o1"])?
+        func dropped(it: Tx) -> Result[int] {
+            _ = it.exec("INSERT INTO items (name) VALUES (?)", ["o2"])?
+            return failWith("Dropped")
+        }
+        _ = Db.atomic(t, dropped)
+        return Db.atomic(t, lambda (it: Tx) -> Result[int]: it.exec("INSERT INTO items (name) VALUES (?)", ["o3"]))
+    }
+    _ = Db.atomic(observedDb, observed).unwrap()
+    print(f"observer: {'|'.join(observer.statements)}")
+    print(f"observer-failures: {'|'.join(observer.failures)}")
+    print(f"observer-context: {observer.contexts.all(lambda c: c == ctx)} {len(observer.contexts)}")
+
+    throwObserver: RecordingObserver = RecordingObserver()
+    db.setObserver(throwObserver)
+    func observedThrow(t: Tx) -> Result[int] {
+        return Db.atomic(t, lambda (it: Tx) -> Result[int]: Result.Ok(int("not-a-number")))
+    }
+    try {
+        _ = Db.atomic(observedDb, observedThrow)
+    } catch e {
+        print(f"observer-throw: {'|'.join(throwObserver.statements)}")
+    }
+    db.setObserver(None)
+
+    db.close().unwrap()
+    _ = Os.remove(path)
+    print("conn_ok")
+}

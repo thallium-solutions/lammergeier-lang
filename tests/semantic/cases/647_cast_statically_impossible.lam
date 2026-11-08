@@ -1,0 +1,44 @@
+# A cast whose source type is concrete is checked statically: the same
+# type is the identity, an upcast (subclass as base), `x as any` and
+# `x as optional[T]` are allowed, a downcast (base as subclass) is checked
+# at run time; a conversion between kinds or unrelated classes is a Lam
+# error that points to the conversion functions.
+# expect-error: line 33: error[type]: cannot cast `str` to `int` with `as`: `as` checks the type, it does not convert between kinds; use `int(...)` to parse or convert
+# expect-error: line 34: error[type]: cannot cast `User` to `Invoice` with `as`: the classes are unrelated
+# expect-error: line 35: error[type]: cannot cast `list[int]` to `str` with `as`; use `str(...)` to format a value
+# expect-error: line 36: error[type]: cannot cast `int` to `bool` with `as`; use `bool(...)` to convert
+# expect-error: line 37: error[type]: cannot cast `list[int]` to `list[str]` with `as`
+# expect-error: line 38: error[type]: cannot cast `float` to `int` with `as`; use `int(...)` to convert
+# expect-error: line 39: error[type]: cannot assign `int` to `str` variable `s`
+# expect-error: line 40: error[member]
+# expect-error: line 41: error[type]: cannot cast `optional[int]` to `int` with `as`: the value may be `None`; test `x != None` first (it narrows `x`) or use `x ?? fallback`
+# expect-error: line 42: error[type]: unknown type `Usr`
+
+class User {
+    func init(self, name: str) { self.name: str = name }
+}
+
+class Admin(User) {
+    func init(self, name: str) { base.init(name) }
+}
+
+class Invoice {
+    func init(self, id: int) { self.id: int = id }
+}
+
+func main() {
+    u: User = User("a")
+    xs: list[int] = [1]
+    maybe: optional[int] = None
+    a = "a" as int
+    b = u as Invoice
+    c = xs as str
+    d = 1 as bool
+    e = xs as list[str]
+    f = 2.5 as int
+    s: str = 3 as int
+    g = (u as Admin).missing
+    h = maybe as int
+    i = u as Usr
+    print(a, b, c, d, e, f, s, g, h, i)
+}

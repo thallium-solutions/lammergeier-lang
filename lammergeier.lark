@@ -235,7 +235,12 @@ try_stmt: "try" suite catch_clauses ["else" suite] [finally]
         | "try" suite finally   -> try_finally
 finally: "finally" suite
 catch_clauses: catch_clause+
-catch_clause: "catch" [test ["as" name]] suite
+// ``catch E as e``: the caught type is an ``atom_expr`` (a name, a dotted
+// name, a tuple) so the parser shifts ``as`` into the binding instead of
+// reading ``E as e`` as an inline cast (the LALR shift wins over the
+// ``atom_expr`` reduction a cast needs).
+catch_clause: "catch" atom_expr "as" name suite
+            | "catch" [test] suite
 
 // ========================= DO / CATCH (Result-aware) =========================
 // ``do { body } catch err { handler }`` — sibling of try/catch that
@@ -250,7 +255,10 @@ do_stmt: "do" suite "catch" name suite
 
 with_stmt: "with" with_items suite
 with_items: with_item ("," with_item)*
-with_item: test ["as" name]
+// ``with open(p) as f``: like ``catch``, the resource bound with ``as`` is an
+// ``atom_expr`` so ``as`` is the binding, not an inline cast.
+with_item: atom_expr "as" name
+         | test
 
 // ========================= MATCH =========================
 
@@ -373,7 +381,23 @@ star_expr: "*" expr
 ?and_expr: shift_expr ("&" shift_expr)*
 ?shift_expr: arith_expr (_shift_op arith_expr)*
 ?arith_expr: term (_add_op term)*
-?term: factor (_mul_op factor)*
+?term: cast_expr (_mul_op cast_expr)*
+
+// Inline cast ``expr as T``: the run-time conversion of an annotated
+// assignment (``n: T = expr``), with static type ``T``. It binds tighter
+// than every binary operator and looser than unary operators, ``**``,
+// calls, indexing and member access (like Kotlin): ``row["n"] as int + 1``
+// is ``(row["n"] as int) + 1``, ``a + b as int`` is ``a + (b as int)``,
+// ``-x as float`` is ``(-x) as float``. The target is one type, a generic
+// (``list[str]``) or a parenthesised union (``x as (int | str)``): a bare
+// ``|`` after it is the bitwise operator. Casts chain left to right
+// (``x as any as int``). The tree alias makes the target a regular
+// ``type_expr`` / ``type_union`` node.
+?cast_expr: factor
+          | cast_expr "as" cast_type -> cast_expr
+cast_type: cast_type_union -> type_expr
+cast_type_union: _type_union_item -> type_union
+
 ?factor: _unary_op factor | power
 
 !_unary_op: "+" | "-" | "~"

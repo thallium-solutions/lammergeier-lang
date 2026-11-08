@@ -1,0 +1,144 @@
+# A type parameter that only appears inside `Result[T]` (erased to Go's
+# `*Result`, so Go cannot infer it) is bound from the callback's Lam type:
+# a top-level or nested function passed by name, an annotated lambda, or an
+# unannotated lambda whose body calls a typed function (top-level, nested
+# or static, or a method of the receiver's class or of a base). Static
+# generic methods, generic functions and generic instance methods alike.
+#
+# expect: top=1 nested=2 clash=3
+# expect: lambda=4 body-top=5 body-nested=6 body-static=7
+# expect: fn-nested=8 method-nested=9 method-body=10
+# expect: list=[1 2] box=Box(11) str=s12
+# expect: body-method=13 body-inherited=14
+# expect: result_only_ok
+from lamerrors import Result, Error
+
+class Ctx {
+    func init(self, base: int) {
+        self.base: int = base
+    }
+}
+
+class Box {
+    func init(self, value: int) {
+        self.value: int = value
+    }
+
+    func __str__(self) -> str {
+        return f"Box({self.value})"
+    }
+}
+
+class Runner {
+    static func run[T](ctx: Ctx, fn: func(Ctx) -> Result[T]) -> Result[T] {
+        outcome: Result[T] = fn(ctx)
+        if not outcome.ok() {
+            return Result.Err(Error("RunError", "failed"))
+        }
+        return outcome
+    }
+
+    static func plus(ctx: Ctx, n: int) -> Result[int] {
+        return Result.Ok(ctx.base + n)
+    }
+}
+
+class Scope {
+    func init(self, ctx: Ctx) {
+        self.ctx: Ctx = ctx
+    }
+
+    func within[T](self, fn: func(Ctx) -> Result[T]) -> Result[T] {
+        return fn(self.ctx)
+    }
+}
+
+class Adder {
+    func init(self, step: int) {
+        self.step: int = step
+    }
+
+    func apply(self, ctx: Ctx) -> Result[int] {
+        return Result.Ok(ctx.base + self.step)
+    }
+}
+
+class TwiceAdder(Adder) {
+    func twice(self, ctx: Ctx) -> Result[int] {
+        return Result.Ok(ctx.base + self.step * 2)
+    }
+}
+
+func runFn[T](ctx: Ctx, fn: func(Ctx) -> Result[T]) -> Result[T] {
+    return fn(ctx)
+}
+
+func one(ctx: Ctx) -> Result[int] {
+    return Result.Ok(ctx.base + 1)
+}
+
+func add(ctx: Ctx, n: int) -> Result[int] {
+    return Result.Ok(ctx.base + n)
+}
+
+func shadowing() -> str {
+    # A local of another function with the name of a nested function below.
+    picked: bool = true
+    return f"{picked}"
+}
+
+func main() {
+    ctx: Ctx = Ctx(0)
+    _ = shadowing()
+    top: int = Runner.run(ctx, one).unwrap()
+    func two(c: Ctx) -> Result[int] {
+        return Result.Ok(c.base + 2)
+    }
+    nested: int = Runner.run(ctx, two).unwrap()
+    func picked(c: Ctx) -> Result[int] {
+        return add(c, 3)
+    }
+    clash: int = Runner.run(ctx, picked).unwrap()
+    print(f"top={top} nested={nested} clash={clash}")
+
+    lam: int = Runner.run(ctx, lambda (c: Ctx) -> Result[int]: add(c, 4)).unwrap()
+    bodyTop: int = Runner.run(ctx, lambda c: add(c, 5)).unwrap()
+    func six(c: Ctx, n: int) -> Result[int] {
+        return Result.Ok(c.base + n)
+    }
+    bodyNested: int = Runner.run(ctx, lambda c: six(c, 6)).unwrap()
+    bodyStatic: int = Runner.run(ctx, lambda c: Runner.plus(c, 7)).unwrap()
+    print(f"lambda={lam} body-top={bodyTop} body-nested={bodyNested} body-static={bodyStatic}")
+
+    func eight(c: Ctx) -> Result[int] {
+        return add(c, 8)
+    }
+    fnNested: int = runFn(ctx, eight).unwrap()
+    scope: Scope = Scope(ctx)
+    func nine(c: Ctx) -> Result[int] {
+        return add(c, 9)
+    }
+    methodNested: int = scope.within(nine).unwrap()
+    methodBody: int = scope.within(lambda c: add(c, 10)).unwrap()
+    print(f"fn-nested={fnNested} method-nested={methodNested} method-body={methodBody}")
+
+    func pair(c: Ctx) -> Result[list[int]] {
+        return Result.Ok([c.base + 1, c.base + 2])
+    }
+    func boxed(c: Ctx) -> Result[Box] {
+        return Result.Ok(Box(c.base + 11))
+    }
+    func text(c: Ctx) -> Result[str] {
+        return Result.Ok(f"s{c.base + 12}")
+    }
+    items: list[int] = Runner.run(ctx, pair).unwrap()
+    box: Box = Runner.run(ctx, boxed).unwrap()
+    s: str = Runner.run(ctx, text).unwrap()
+    print(f"list={items} box={box} str={s}")
+    adder: Adder = Adder(13)
+    twice: TwiceAdder = TwiceAdder(7)
+    bodyMethod: int = Runner.run(ctx, lambda c: adder.apply(c)).unwrap()
+    bodyInherited: int = Runner.run(ctx, lambda c: twice.apply(c)).unwrap() + Runner.run(ctx, lambda c: twice.twice(c)).unwrap() - 7
+    print(f"body-method={bodyMethod} body-inherited={bodyInherited}")
+    print("result_only_ok")
+}

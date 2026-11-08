@@ -1,0 +1,40 @@
+# expect-pass
+# expect-no-warning: value of type `unknown`
+# Results of interface methods keep their payload through `.unwrap()`, `?`,
+# a typed local and arithmetic, including json and list payloads.
+from lamerrors import Result
+
+interface Source {
+    func doc(key: str) -> Result[json]
+    func count(key: str) -> Result[int]
+    func names() -> Result[list[str]]
+}
+
+class Memory {
+    func doc(self, key: str) -> Result[json] {
+        return Result.Ok({"key": key})
+    }
+
+    func count(self, key: str) -> Result[int] {
+        return Result.Ok(len(key))
+    }
+
+    func names(self) -> Result[list[str]] {
+        return Result.Ok(["a", "b"])
+    }
+}
+
+func read(source: Source) -> Result[str] {
+    first: json = source.doc("a")?
+    second: json = source.doc("b").unwrap()
+    held: Result[json] = source.doc("c")
+    third: json = held.unwrap()
+    n: int = source.count("abc")? + source.count("d").unwrap()
+    names: list[str] = source.names()?
+    key: str = first.key
+    return Result.Ok(f"{key} {second} {third} {n} {len(names)} {names[0].toUpper()}")
+}
+
+func main() {
+    print(read(Memory()).unwrap())
+}
