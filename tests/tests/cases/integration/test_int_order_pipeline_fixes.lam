@@ -1,0 +1,186 @@
+# Integration: an order-import pipeline composing the fixes of this batch —
+# loop jumps out of try / catch / finally and do / catch, a literal mixing
+# subclasses of one base (least common base class), a nested generic helper
+# called with literals, generic constructors typed by the collections they
+# are stored in, multi-value returns from a `try`, and an interface used
+# structurally (not as a base).
+#
+# expect: import digital:ebook ok
+# expect: import physical:lamp ok
+# expect: skip bad line 2
+# expect: stop at line 4
+# expect: closed 5
+# expect: buckets digital=1 physical=1
+# expect: priced 12.5 30
+# expect: first-expensive lamp
+# expect: summary 2 orders, 1 skipped, total 42.5
+# expect: labels ebook|lamp|gift
+# expect: audit ok:ebook ok:lamp fail:gift closed=3
+# expect: raw [ebook lamp 12.5]
+
+from lamerrors import Result, Error
+
+interface Labeled {
+    func label(self) -> str
+}
+
+class Order {
+    func init(self, name: str, price: float) {
+        self.name: str = name
+        self.price: float = price
+    }
+
+    func kind(self) -> str {
+        return "order"
+    }
+
+    func label(self) -> str {
+        return self.name
+    }
+}
+
+class Digital(Order) {
+    func kind(self) -> str {
+        return "digital"
+    }
+}
+
+class Physical(Order) {
+    func kind(self) -> str {
+        return "physical"
+    }
+}
+
+class Gift {
+    func label(self) -> str {
+        return "gift"
+    }
+}
+
+class Bucket[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+
+    func put(self, item: T) {
+        self.items.append(item)
+    }
+}
+
+func parsePrice(text: str) -> Result[float] {
+    if text == "" {
+        return Result.Err(Error("Parse", "empty price"))
+    }
+    return Result.Ok(float(text))
+}
+
+func split(line: str) -> (str, str) {
+    try {
+        parts: list[str] = line.split(";")
+        return parts[0], parts[1] + ";" + parts[2]
+    } catch _ {
+        return "", ""
+    }
+}
+
+func main() {
+    lines: list[str] = ["d;ebook;12.5", "p;lamp;30", "x;broken", "d;;", "STOP", "p;never;1"]
+    orders: list[Order] = []
+    skipped: int = 0
+    closed: int = 0
+    for i in range(len(lines)) {
+        line: str = lines[i]
+        try {
+            if line == "STOP" {
+                print(f"stop at line {i}")
+                break
+            }
+            kind, rest = split(line)
+            fields: list[str] = rest.split(";")
+            if len(fields) < 2 {
+                throw ValueError("short line")
+            }
+            do {
+                price: float = parsePrice(fields[1])?
+                item = Digital(fields[0], price) if kind == "d" else Physical(fields[0], price)
+                orders.append(item)
+                print(f"import {item.kind()}:{item.name} ok")
+            } catch _err {
+                skipped += 1
+                continue
+            }
+        } catch ValueError as _ {
+            print(f"skip bad line {i}")
+            continue
+        } finally {
+            closed += 1
+        }
+    }
+    print(f"closed {closed}")
+
+    buckets: dict[str, Bucket[Order]] = {"digital": Bucket([])}
+    buckets["physical"] = Bucket([])
+    for o in orders {
+        buckets[o.kind()].put(o)
+    }
+    print(f"buckets digital={len(buckets["digital"].items)} physical={len(buckets["physical"].items)}")
+
+    func pick[T](xs: list[T], i: int) -> T {
+        return xs[i]
+    }
+    mixed = [Digital("ebook", 12.5), Physical("lamp", 30.0)]
+    print(f"priced {pick(mixed, 0).price} {int(pick([mixed[1]], 0).price)}")
+
+    expensive: str = "none"
+    for o in mixed {
+        do {
+            if o.price < 20.0 {
+                continue
+            }
+            expensive = o.name
+            break
+        } catch _ {
+            break
+        }
+    }
+    print(f"first-expensive {expensive}")
+
+    total: float = 0.0
+    for o in orders {
+        total += o.price
+    }
+    print(f"summary {len(orders)} orders, {skipped} skipped, total {total}")
+
+    tags: list[Labeled] = [mixed[0], mixed[1], Gift()]
+    print("labels", "|".join([t.label() for t in tags]))
+
+    # try / catch / else / finally in Python order inside a loop; a
+    # `continue` in `finally` cancels the exception an `else` raised.
+    audit: list[str] = []
+    finished: int = 0
+    for t in tags {
+        try {
+            name: str = t.label()
+            if name == "gift" {
+                throw ValueError("no price")
+            }
+        } catch ValueError as _ {
+            audit.append(f"fail:{t.label()}")
+        } else {
+            audit.append(f"ok:{t.label()}")
+            if t.label() == "lamp" {
+                throw KeyError("cancelled by finally")
+            }
+        } finally {
+            finished += 1
+            continue
+        }
+    }
+    print("audit", " ".join(audit), f"closed={finished}")
+
+    # An `any` item keeps the literal's items `any`.
+    ident = lambda x: x
+    raw = [ident(mixed[0].name), pick(["lamp"], 0)]
+    raw.append(mixed[0].price)
+    print("raw", raw)
+}

@@ -1,0 +1,29 @@
+# Transpilation: a call through a function value (a field, a parameter, a
+# list element) whose declared type returns `Result[T]` asserts the payload
+# of `unwrap()` / `?` like a declared function's call.
+# expect-go: (s.Loader(2).Unwrap()))
+# expect-go: }(fn(2).Unwrap())) + xs[0])
+# expect-go: Strings_toUpper(fns[0]().Unwrap().(string))
+# expect-go: }(__q1.Value)
+
+from lamerrors import Result
+
+class Holder {
+    func init(self, loader: func(int) -> Result[list[int]]) {
+        self.loader: func(int) -> Result[list[int]] = loader
+    }
+
+    func count(self) -> int {
+        return len(self.loader(2).unwrap())
+    }
+}
+
+func viaParam(fn: func(int) -> Result[list[int]]) -> Result[int] {
+    xs: list[int] = fn(1)?
+    return Result.Ok(len(fn(2).unwrap()) + xs[0])
+}
+
+func main() {
+    fns: list[func() -> Result[str]] = [lambda () -> Result[str]: Result.Ok("a")]
+    print(fns[0]().unwrap().toUpper(), viaParam(lambda (n: int) -> Result[list[int]]: Result.Ok([n])).unwrap(), Holder(lambda (n: int) -> Result[list[int]]: Result.Ok([n])).count())
+}

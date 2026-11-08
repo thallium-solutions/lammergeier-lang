@@ -1262,7 +1262,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return
 
         if d in ("break_stmt", "continue_stmt"):
-            if not any(s.is_loop for s in self._scopes):
+            if not self._inside_own_loop():
                 kw = "break" if d == "break_stmt" else "continue"
                 self._error(
                     node, "flow",
@@ -1954,6 +1954,16 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             for name, type_ in zip(ordered_names, yielded or []):
                 if name != "_":
                     scope.var_types[name] = render_type(type_)
+        # ``for x in [A(1), C(2)]`` (classes without a common base): ``x``
+        # is an ``any`` whose members cannot be used without narrowing.
+        mixed = self._mixed_collection_classes(iterable)
+        item_name = ""
+        if mixed and isinstance(iterable_type, DictType) and len(ordered_names) == 2:
+            item_name = ordered_names[1]
+        elif mixed and not isinstance(iterable_type, DictType) and len(ordered_names) == 1:
+            item_name = ordered_names[0]
+        if item_name and item_name != "_":
+            scope.__dict__.setdefault("mixed_classes", {})[item_name] = ("item", mixed)
         if bodies:
             self._collect_block_defs(bodies[0], scope)
         self._scopes.append(scope)
@@ -2667,7 +2677,39 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         self._restore_definite(merged)
         self._restore_types(self._intersect_type_snapshots(type_exits, incoming_types))
         if finally_suite is not None:
+            self._warn_finally_exits(finally_suite)
             self._enter_block_and_visit(finally_suite)
+
+    def _warn_finally_exits(self, finally_suite: Tree) -> None:
+        """Warn about a ``return`` / ``break`` / ``continue`` leaving a
+        ``finally`` block (as Python linters and PEP 765 do): it silently
+        cancels an exception propagating from the ``try`` and replaces a
+        pending ``return`` of the body."""
+
+        def walk(node, in_loop: bool) -> None:
+            if not isinstance(node, Tree):
+                return
+            if node.data in {"funcdef", "classdef", "lambdef"}:
+                return
+            kw = {"return_stmt": "return", "break_stmt": "break", "continue_stmt": "continue"}.get(node.data)
+            if kw and not (in_loop and kw != "return"):
+                self._warning(
+                    node,
+                    "flow",
+                    f"`{kw}` in `finally` cancels an exception propagating from the `try` "
+                    f"and replaces a pending `return` of the body; move it after the "
+                    f"`try` statement if that is not intended",
+                )
+                return
+            if node.data in {"for_stmt", "while_stmt"}:
+                suites = [c for c in node.children if isinstance(c, Tree) and c.data == "suite"]
+                for i, sub in enumerate(suites):
+                    walk(sub, in_loop or i == 0)
+                return
+            for child in node.children:
+                walk(child, in_loop)
+
+        walk(finally_suite, False)
 
     @staticmethod
     def _try_parts(node: Tree) -> tuple[Tree | None, list[Tree], Tree | None, Tree | None]:
@@ -2979,6 +3021,16 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 types.append(p)
         if any(t is not None for t in types):
             self.__dict__.setdefault("_lambda_param_context", {})[id(lam)] = (lam, types)
+
+    def _inside_own_loop(self) -> bool:
+        """A loop encloses the current statement in the same function (a
+        loop around a lambda or nested function does not count)."""
+        for scope in reversed(self._scopes):
+            if scope.is_loop:
+                return True
+            if scope.kind in ("function", "class", "module"):
+                return False
+        return False
 
     def _visit_lambda(self, node: Tree) -> None:
         scope = _Scope(kind="function")
@@ -3343,6 +3395,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         attr = self._name_text(attr_node)
         if not attr:
             return
+        if self._check_mixed_item_member(node, obj, attr):
+            return
         if isinstance(obj, Tree) and obj.data == "var" and obj.children:
             receiver = self._name_text(obj.children[0])
             if receiver == "self" and self._current_class_stack:
@@ -3378,6 +3432,84 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return
         display = self._expr_dotted_name(obj) or receiver_type
         self._check_class_member_access(node, display, receiver_type, attr)
+
+    def _mixed_literal_classes(self, node) -> tuple | None:
+        """The classes of a list / dict / set literal mixing instances of
+        classes without a common base class (``None`` otherwise)."""
+        if not isinstance(node, Tree) or node.data not in {"list", "dict", "set"}:
+            return None
+        self._expr_simple_type(node)
+        return getattr(self, "_mixed_class_literals", {}).get(id(node))
+
+    def _mixed_var_entry(self, name: str) -> tuple | None:
+        for scope in reversed(self._scopes):
+            entry = scope.__dict__.get("mixed_classes", {}).get(name)
+            if entry is not None:
+                return entry
+            if name in scope.var_types or name in scope.names:
+                return None
+        return None
+
+    def _mixed_collection_classes(self, node) -> tuple | None:
+        """Classes of a mixed-class collection literal, or of a variable
+        that still holds one (its item type is still ``any``)."""
+        classes = self._mixed_literal_classes(node)
+        if classes:
+            return classes
+        if isinstance(node, Tree) and node.data == "var" and node.children:
+            name = self._name_text(node.children[0])
+            entry = self._mixed_var_entry(name)
+            if entry is None or entry[0] != "collection":
+                return None
+            type_text = self._var_type(name)
+            current = parse_type(type_text) if type_text else None
+            item = None
+            if isinstance(current, ListType):
+                item = current.item
+            elif isinstance(current, DictType):
+                item = current.value
+            elif isinstance(current, GenericType) and current.base == "set" and current.args:
+                item = current.args[0]
+            if item is not None and self._is_any_type(item):
+                return entry[1]
+        return None
+
+    def _mixed_item_classes(self, obj) -> tuple | None:
+        """Classes behind an ``any`` value taken from a mixed-class
+        collection literal: a loop variable over it or an index into it."""
+        if not isinstance(obj, Tree):
+            return None
+        if obj.data == "var" and obj.children:
+            name = self._name_text(obj.children[0])
+            entry = self._mixed_var_entry(name)
+            if entry is not None and entry[0] == "item" and self._var_type(name) in {"", "any", "object"}:
+                return entry[1]
+            return None
+        if obj.data == "getitem" and obj.children:
+            index = obj.children[1] if len(obj.children) > 1 else None
+            if isinstance(index, Tree) and index.data == "slice":
+                return None
+            return self._mixed_collection_classes(obj.children[0])
+        return None
+
+    def _check_mixed_item_member(self, node: Tree, obj, attr: str) -> bool:
+        classes = self._mixed_item_classes(obj)
+        if not classes:
+            return False
+        display = self._assignment_target_display(obj)
+        if "<target>" in display:
+            display = "the element"
+        else:
+            display = f"`{display}`"
+        names = ", ".join(f"`{c}`" for c in classes[:-1]) + f" and `{classes[-1]}`"
+        self._error(
+            node,
+            "member",
+            f"member `{attr}` of {display}, whose type is `any`: the collection literal mixes "
+            f"{names}, which share no base class; annotate the collection with a common base "
+            f"class or interface (`xs: list[Base] = [...]`) or narrow with `isinstance` / `match` first",
+        )
+        return True
 
     def _result_error_member_class(self, obj) -> str:
         """``Error`` for ``r.error`` on a ``Result`` (``r.error.kind``): its
@@ -3652,6 +3784,36 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             hint = f" — did you mean `{suggestion}`?" if suggestion else ": declare or import it"
             self._error(node, "inheritance", f"unknown base class `{base}` of `{class_name}`{hint}")
         if unknown:
+            return
+
+        interfaces = [
+            base for base in bases
+            if base in self._interface_methods and base not in self._class_method_shapes
+        ]
+        for base in interfaces:
+            # Interfaces are satisfied structurally (docs/SYNTAX.md
+            # "Interfaces"); as a base the Go struct would embed an interface
+            # pointer, which Go rejects.
+            methods = sorted(self._interface_methods.get(base, {}))
+            missing = [
+                m for m in methods
+                if m not in self._class_instance_methods.get(class_name, set())
+            ]
+            listed = ", ".join(f"`{m}`" for m in methods)
+            if not methods:
+                need = "every class conforms to it"
+            elif missing:
+                need = f"define its method{'s' if len(methods) > 1 else ''} {listed} on `{class_name}`"
+            else:
+                need = f"`{class_name}` already has its method{'s' if len(methods) > 1 else ''} {listed}"
+            self._error(
+                node,
+                "inheritance",
+                f"`{base}` is an interface, not a class: `{class_name}` cannot inherit from it. "
+                f"Interfaces are satisfied structurally — remove `{base}` from the bases of "
+                f"`{class_name}` ({need}) and pass `{class_name}` values where a `{base}` is expected",
+            )
+        if interfaces:
             return
 
         unique_bases: list[str] = []
@@ -5054,6 +5216,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                     continue
                 annotated[(name, block)] = type_name
             storage.var_types[name] = type_name
+            mixed = storage.__dict__.setdefault("mixed_classes", {})
+            classes = self._mixed_literal_classes(self._assign_value(node)) if node.data == "assign" else None
+            if classes:
+                mixed[name] = ("collection", classes)
+            else:
+                mixed.pop(name, None)
 
     def _enclosing_blocks(self, node: Tree) -> list[int]:
         """Ids of the blocks around ``node``, innermost first, up to the
@@ -5508,6 +5676,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                     if len(found) == 1:
                         text = found.pop()
                         return parse_type(text) if text else None
+            if parent.data in {"list", "set", "key_value", "assign"}:
+                # A collection item (``[Box([])]``, ``{"a": Box([])}``,
+                # ``d[k] = Box([])``) of a collection with a declared type.
+                return self._value_position_expected_type(node, parent)
         except Exception:  # noqa: BLE001 - an unusual shape: no context
             return None
         return None
@@ -5707,24 +5879,39 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             # ``Iter.repeat(value, 3)`` with ``value: any``: ``T = any``.
             self._infer_generic_mapping(expected, actual, names, mapping)
         pending = {n for n in sig.generic_names if n not in mapping}
+        declared_result = None
         if pending and sig.return_type_text:
-            # ``r: Result[int] = make()`` with ``make[T]() -> Result[T]``:
-            # the annotation binds what no argument does (the transpiler
-            # spells ``Make[int]()``).
+            try:
+                declared_result = parse_type(sig.return_type_text)
+            except Exception:  # noqa: BLE001
+                declared_result = None
+        elif pending:
+            # ``c: Box[int] = Box([])``: a generic class's constructor
+            # yields ``Box[T]``.
+            class_name = self._constructor_value_type(call)
+            params = tuple(self._class_type_params.get(class_name, ())) if class_name else ()
+            if params and params == tuple(sig.generic_names):
+                declared_result = GenericType(class_name, tuple(NamedType(p) for p in params))
+        if declared_result is not None:
+            # ``r: Result[int] = make()`` / ``return make()`` /
+            # ``take(make())`` with ``make[T]() -> Result[T]``: the expected
+            # type binds what no argument does (the transpiler spells
+            # ``Make[int]()``).
             expected_result = self._assigned_call_expected_type(call)
             if expected_result is not None and not self._is_any_type(expected_result):
-                try:
-                    declared_result = parse_type(sig.return_type_text)
-                except Exception:  # noqa: BLE001
-                    declared_result = None
-                if declared_result is not None:
-                    self._infer_generic_mapping(declared_result, expected_result, pending, mapping)
+                self._infer_generic_mapping(declared_result, expected_result, pending, mapping)
         return mapping
 
     def _assigned_call_expected_type(self, call: Tree) -> Type | None:
-        """The annotation of the variable a call initializes
-        (``r: Result[int] = make()``), or ``Result[<annotation>]`` for the
-        operand of ``n: int = make()?``; ``None`` elsewhere."""
+        """The type the value of a call must have from where it is written:
+        the annotation of the variable it initializes (``r: Result[int] =
+        make()``), the declared result of the function or lambda it is
+        returned from (also an expression-bodied lambda's body), the
+        declared type of the field it is assigned to (``self.items =
+        make()``) or of the parameter it is passed to (``take(make())``,
+        keyword arguments too), or ``Result[<that type>]`` for the operand
+        of ``?`` (``n: int = make()?``); ``None`` elsewhere or when that
+        type mentions a type parameter the outer call has yet to bind."""
         parents = getattr(self, "_parents", None)
         if not parents:
             return None
@@ -5732,17 +5919,164 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         wrap = False
         if isinstance(parent, Tree) and parent.data == "propagate":
             node, parent, wrap = parent, parents.get(id(parent)), True
-        if not (isinstance(parent, Tree) and parent.data == "annassign" and parent.children
-                and parent.children[-1] is node):
-            return None
-        type_node = next((c for c in parent.children if isinstance(c, Tree) and c.data == "type_expr"), None)
-        if type_node is None:
-            return None
         try:
-            expected = parse_type(type_node)
-        except Exception:  # noqa: BLE001
+            expected = self._value_position_expected_type(node, parent)
+        except Exception:  # noqa: BLE001 - an unusual shape: no context
+            return None
+        if expected is None:
             return None
         return GenericType("Result", (expected,)) if wrap else expected
+
+    def _value_position_expected_type(self, node: Tree, parent) -> Type | None:
+        if not isinstance(parent, Tree):
+            return None
+        if parent.data == "annassign":
+            if not (parent.children and parent.children[-1] is node):
+                return None
+            type_node = next((c for c in parent.children if isinstance(c, Tree) and c.data == "type_expr"), None)
+            return parse_type(type_node) if type_node is not None else None
+        if parent.data == "return_stmt":
+            if not (parent.children and parent.children[0] is node):
+                return None
+            current = self._parents.get(id(parent))
+            while current is not None and not (isinstance(current, Tree) and current.data in {"funcdef", "lambdef"}):
+                current = self._parents.get(id(current))
+            if not isinstance(current, Tree):
+                return None
+            if current.data == "lambdef":
+                return self._lambda_declared_return_type(current)
+            type_node = self._funcdef_return_type_node(current)
+            if type_node is None or type_node.data != "type_expr":
+                return None
+            declared = parse_type(type_node)
+            if isinstance(declared, GenericType) and declared.base in {"generator", "Generator", "Iterator", "iterator"}:
+                return None
+            return declared
+        if parent.data == "lambdef":
+            # ``lambda () -> Result[int]: make()``: the expression body.
+            if parent.children and parent.children[-1] is node:
+                return self._lambda_declared_return_type(parent)
+            return None
+        if parent.data == "assign":
+            parts = [c for c in parent.children if c is not None]
+            target = parts[0] if len(parts) == 2 and parts[-1] is node else None
+            if isinstance(target, Tree) and target.data == "getattr":
+                # ``self.items = make()``: the field's declared type.
+                return self._member_target_type(target)
+            if isinstance(target, Tree) and target.data == "getitem" and target.children:
+                # ``d[k] = make()`` / ``xs[i] = make()``: the item type.
+                return self._collection_item_type(self._expr_simple_type(target.children[0]), "dict_value")
+            return None
+        if parent.data in {"list", "set"}:
+            # ``xs: list[Box[int]] = [Box([])]``: the item type of the
+            # literal's own expected type.
+            outer = self._value_position_expected_type(parent, self._parents.get(id(parent)))
+            return self._collection_item_type(outer, parent.data)
+        if parent.data == "key_value" and len(parent.children) >= 2 and parent.children[1] is node:
+            literal = self._parents.get(id(parent))
+            if isinstance(literal, Tree) and literal.data == "dict":
+                outer = self._value_position_expected_type(literal, self._parents.get(id(literal)))
+                return self._collection_item_type(outer, "dict_value")
+            return None
+        if parent.data == "argvalue" and len(parent.children) == 2 and parent.children[1] is node:
+            parent = self._parents.get(id(parent))
+        if isinstance(parent, Tree) and parent.data == "arguments":
+            item = self._collection_method_arg_expected_type(node, parent)
+            if item is not None:
+                return item
+            return self._argument_expected_type(node, parent)
+        return None
+
+    @staticmethod
+    def _collection_item_type(collection: Type | None, kind: str) -> Type | None:
+        """The item type a ``list`` / ``set`` literal element or a dict
+        value (``dict_value``) has in a ``collection`` of that type."""
+        if isinstance(collection, ListType) and kind in {"list", "dict_value"}:
+            return collection.item
+        if isinstance(collection, DictType) and kind == "dict_value":
+            return collection.value
+        if isinstance(collection, GenericType) and collection.base == "set" and kind == "set" and collection.args:
+            return collection.args[0]
+        return None
+
+    # Collection methods whose argument at the given position is an item.
+    _LIST_ITEM_ARG_METHODS = {"append": 0, "insert": 1, "extend": 0}
+
+    def _collection_method_arg_expected_type(self, node: Tree, args_node: Tree) -> Type | None:
+        """``xs.append(make())`` / ``xs.insert(0, make())`` /
+        ``xs.extend([make()])`` on a typed list and ``s.add(make())`` on a
+        typed set: the item type (the list type for ``extend``)."""
+        call = self._parents.get(id(args_node))
+        if not (isinstance(call, Tree) and call.data == "funccall" and call.children):
+            return None
+        callee = call.children[0]
+        if not (isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2):
+            return None
+        method = self._name_text(callee.children[1])
+        receiver = callee.children[0]
+        receiver_type = self._expr_simple_type(receiver)
+        if receiver_type is None and isinstance(receiver, Tree) and receiver.data == "getattr":
+            receiver_type = self._member_target_type(receiver)
+        positional = [
+            c for c in args_node.children
+            if isinstance(c, Tree) and not (c.data == "argvalue" and len(c.children) == 2)
+        ]
+        index = next(
+            (i for i, c in enumerate(positional) if c is node or self._unwrap_argvalue(c) is node),
+            -1,
+        )
+        if isinstance(receiver_type, ListType) and self._LIST_ITEM_ARG_METHODS.get(method, -2) == index:
+            return receiver_type if method == "extend" else receiver_type.item
+        if (
+            isinstance(receiver_type, GenericType) and receiver_type.base == "set"
+            and receiver_type.args and method == "add" and index == 0
+        ):
+            return receiver_type.args[0]
+        return None
+
+    def _lambda_declared_return_type(self, lambdef: Tree) -> Type | None:
+        anno = next(
+            (c for c in lambdef.children if isinstance(c, Tree) and c.data == "lambda_return_anno"),
+            None,
+        )
+        if anno is None or not anno.children:
+            return None
+        return parse_type(anno.children[0])
+
+    def _argument_expected_type(self, node: Tree, args_node: Tree) -> Type | None:
+        """The declared type of the parameter ``node`` is passed to (the
+        call's receiver type arguments applied); ``None`` when overloads
+        disagree or the type still mentions a type parameter of the
+        callee."""
+        call = self._parents.get(id(args_node))
+        if not (isinstance(call, Tree) and call.data == "funccall"):
+            return None
+        target, sigs = self._call_target_sigs(call)
+        found: dict[str, Type] = {}
+        for sig in sigs or []:
+            if not isinstance(sig, _CallableSig):
+                continue
+            for _param, expected_text, arg in self._call_arg_bindings(call, sig):
+                if not (arg is node or self._unwrap_argvalue(arg) is node) or not expected_text:
+                    continue
+                expected = parse_type(expected_text)
+                # ``b.put(make())`` with ``b: Box[int]`` / ``Box[int](make())``.
+                receiver = {
+                    **self._receiver_type_arg_mapping(call, sig),
+                    **self._explicit_generic_type_mapping(call, sig),
+                }
+                if receiver:
+                    expected = self._substitute_generic_type(expected, receiver)
+                owner = target.rsplit(".", 1)[0] if "." in target else target
+                open_names = tuple(sig.generic_names) + tuple(self._class_type_params.get(owner, ()))
+                if receiver:
+                    open_names = tuple(n for n in open_names if n not in receiver)
+                if self._type_mentions_generic(expected, open_names):
+                    return None
+                found[render_type(expected)] = expected
+        if len(found) != 1:
+            return None
+        return next(iter(found.values()))
 
     def _receiver_type_arg_mapping(self, call: Tree, sig: _CallableSig) -> dict[str, Type]:
         """``{T: int}`` for a method of ``class Iter[T]`` called on a
@@ -7171,9 +7505,18 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         static = self._static_method_reference(node)
         if static is not None:
             shape = static
-            if any(not t for t in shape.param_types):
+            # The full parameter types (``list[Item]``, not the root
+            # ``list``), so the value fits a ``func(str, list[Item])``.
+            param_types = shape.param_type_texts
+            if len(param_types) != len(shape.param_types) or any(not t for t in param_types):
+                param_types = shape.param_types
+            if any(not t for t in param_types):
                 return None
-            return FuncType(tuple(parse_type(t) for t in shape.param_types), parse_type(shape.return_type_text or shape.return_type or "None"))
+            try:
+                params = tuple(parse_type(t) for t in param_types)
+            except Exception:  # noqa: BLE001 - an unusual annotation stays unchecked
+                return None
+            return FuncType(params, parse_type(shape.return_type_text or shape.return_type or "None"))
         if not (isinstance(node, Tree) and node.data == "var" and node.children):
             return None
         name = self._name_text(node.children[0])
@@ -7439,12 +7782,42 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                             "use `xs = xs.sort()` or `xs.sort(inplace=true)`",
                         )
                     return
-            if key in self._nonvoid_methods and not self._is_builder_step(key):
+            if (
+                key in self._nonvoid_methods
+                and not self._is_builder_step(key)
+                and not self._is_statement_result_method(key)
+            ):
                 self._warning(
                     expr_stmt,
                     "unused",
                     self._dropped_return_warning_message(display or key, self._method_return_type(key)),
                 )
+
+    # Stdlib methods meant to be called as statements whose result is only a
+    # convenience (``Test.assertTrue(...)`` reports and counts the check, and
+    # also returns whether it passed): ``{declaring file::class: methods}``.
+    _STATEMENT_RESULT_METHODS: dict[str, frozenset[str]] = {
+        "lamtest.lam::Test": frozenset({
+            "assertTrue", "assertFalse", "assertEqual", "assertNotEqual",
+            "assertNil", "assertNotNil", "assertLen", "assertContains",
+            "assertAlmostEqual", "summary",
+        }),
+    }
+
+    def _is_statement_result_method(self, key: str) -> bool:
+        """``Test.assertEqual(a, b)`` as a statement: a ``lamtest`` assertion
+        (or ``Test.summary()``) is not a dropped value, however the class is
+        imported (``Test``, ``from lamtest import Test as T``, ``import
+        lamtest`` then ``lamtest.Test``). A user class named ``Test`` still
+        warns."""
+        class_name, _, method = key.rpartition(".")
+        identity = self._class_identity.get(class_name, "").replace("\\", "/")
+        if not identity:
+            return False
+        for suffix, methods in self._STATEMENT_RESULT_METHODS.items():
+            if method in methods and (identity == suffix or identity.endswith("/" + suffix)):
+                return True
+        return False
 
     def _is_builder_step(self, key: str) -> bool:
         """``w.addIf(...)`` / ``form.file(...)`` as a statement: an instance
@@ -7564,6 +7937,14 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 self._check_fstring_slot_names(node, raw, decoded, part.start, slot)
                 continue
             self._place_fstring_slot_tree(tree, node.children[0], decoded, part.start, prefix)
+            parents = getattr(self, "_parents", None)
+            if parents is not None:
+                # Parent links inside the slot: ``f"{take(make())}"`` finds
+                # the parameter ``make()`` is passed to.
+                for sub in tree.iter_subtrees():
+                    for child in sub.children:
+                        if isinstance(child, Tree):
+                            parents[id(child)] = sub
             with self._fstring_slot_scope():
                 self._visit_expr_subtree(tree)
 
@@ -9052,8 +9433,23 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return cls._if_stmt_definitely_terminates(node)
         if node.data == "match_stmt":
             return cls._match_stmt_definitely_terminates(node)
+        if node.data in {"try_stmt", "try_finally"}:
+            finally_suite = next(
+                (sub for c in node.children if isinstance(c, Tree) and c.data == "finally"
+                 for sub in c.children if isinstance(sub, Tree) and sub.data == "suite"),
+                None,
+            )
+            if finally_suite is not None and cls._suite_definitely_terminates(finally_suite):
+                # ``finally { return x }`` ends the statement whatever the
+                # body did (a propagating exception is cancelled).
+                return True
         if node.data == "try_stmt":
             return cls._try_stmt_definitely_terminates(node)
+        if node.data == "try_finally":
+            # ``try { ...; return x } finally { ... }``: the body returns
+            # or raises; ``finally`` runs on the way out.
+            suites = [c for c in node.children if isinstance(c, Tree) and c.data == "suite"]
+            return bool(suites) and cls._suite_definitely_terminates(suites[0])
         if node.data == "do_stmt":
             # ``do { ... return a } catch err { ... return b }``: the body
             # either returns / raises or a ``?`` jumps to the handler.
@@ -10175,6 +10571,18 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             or self._is_unknown_open_assignment_type(receiver_type)
         )
 
+    def _has_untyped_item(self, items) -> bool:
+
+        """An item (other than an empty ``[]`` / ``{}``, which takes its
+        siblings' type) whose type the checker cannot determine: the
+        literal's item type is then ``any``, not the other items' type."""
+        return any(
+            isinstance(item, Tree)
+            and not (item.data in {"list", "dict"} and not any(c is not None for c in item.children))
+            and self._expr_simple_type(item) is None
+            for item in items
+        )
+
     def _list_expr_type(self, node: Tree) -> Type | None:
         item_types = [
             item_type for child in node.children
@@ -10184,10 +10592,51 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         ]
         if not item_types:
             return None
+        if self._has_untyped_item(node.children):
+            # ``[f(1), 2]`` with an untyped ``f``: ``list[any]``.
+            return ListType(NamedType("any"))
         first = item_types[0]
         if all(render_type(item_type) == render_type(first) for item_type in item_types):
             return ListType(first)
+        if len(item_types) == len([c for c in node.children if isinstance(c, Tree)]):
+            common = self._common_class_base(item_types)
+            if common is not None:
+                return ListType(common)
+            self._note_mixed_class_literal(node, item_types)
         return ListType(NamedType("any"))
+
+    def _common_class_base(self, types: list[Type]) -> Type | None:
+        """``Base`` when every type is a (non-generic) class and ``Base``
+        is their least common ancestor class (``[Square(), Shape()]``)."""
+        names: list[str] = []
+        for type_ in types:
+            if not isinstance(type_, NamedType) or type_.name not in self._class_members:
+                return None
+            if type_.name in self._interface_methods or self._class_type_params.get(type_.name):
+                return None
+            names.append(type_.name)
+        if len(set(names)) < 2:
+            return None
+        common: list[str] | None = None
+        for name in names:
+            line = [name] + self._all_base_names(name)
+            common = line if common is None else [c for c in common if c in line]
+        if not common:
+            return None
+        lowest = [
+            c for c in common
+            if not any(o != c and c in self._all_base_names(o) for o in common)
+        ]
+        if len(lowest) != 1 or self._class_type_params.get(lowest[0]):
+            return None
+        return NamedType(lowest[0])
+
+    def _note_mixed_class_literal(self, node: Tree, types: list[Type]) -> None:
+        """Remember a collection literal whose items are instances of
+        classes without a common base class (its item type is ``any``)."""
+        names = sorted({t.name for t in types if isinstance(t, NamedType) and t.name in self._class_members})
+        if len(names) >= 2:
+            self.__dict__.setdefault("_mixed_class_literals", {})[id(node)] = tuple(names)
 
     def _dict_expr_type(self, node: Tree) -> Type:
         key_types: list[Type] = []
@@ -10205,9 +10654,20 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
                 value_type = self._expr_simple_type(value)
                 if value_type is not None:
                     value_types.append(value_type)
+        value_type = self._homogeneous_type_or_any(value_types, NamedType("any"))
+        if value_types and self._has_untyped_item(
+            c.children[1] for c in node.children
+            if isinstance(c, Tree) and c.data == "key_value" and len(c.children) >= 2
+        ):
+            # ``{"a": f(1), "b": 2}`` with an untyped ``f``: ``any`` values.
+            value_type = NamedType("any")
+        elif self._is_any_type(value_type) and value_types:
+            value_type = self._common_class_base(value_types) or value_type
+            if self._is_any_type(value_type):
+                self._note_mixed_class_literal(node, value_types)
         return DictType(
             self._homogeneous_type_or_any(key_types, NamedType("str")),
-            self._homogeneous_type_or_any(value_types, NamedType("any")),
+            value_type,
         )
 
     def _set_expr_type(self, node: Tree) -> Type | None:
@@ -10219,7 +10679,14 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
         ]
         if not item_types:
             return None
-        return GenericType("set", (self._homogeneous_type_or_any(item_types, NamedType("any")),))
+        item_type = self._homogeneous_type_or_any(item_types, NamedType("any"))
+        if self._has_untyped_item(node.children):
+            item_type = NamedType("any")
+        elif self._is_any_type(item_type):
+            item_type = self._common_class_base(item_types) or item_type
+            if self._is_any_type(item_type):
+                self._note_mixed_class_literal(node, item_types)
+        return GenericType("set", (item_type,))
 
     def _list_comprehension_type(self, node: Tree) -> Type | None:
         comp = node.children[0] if node.children else None
@@ -10383,6 +10850,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin):
             return false_type
         if self._is_any_type(false_type):
             return true_type
+        common = self._common_class_base([true_type, false_type])
+        if common is not None:
+            # ``Square() if c else Circle()``: the least common base class.
+            return common
         if self._is_open_type(true_type) or self._is_open_type(false_type):
             return None
         if render_type(true_type) == render_type(false_type):
@@ -12578,6 +13049,14 @@ def _imported_call_metadata(
                 continue
             local = locals_[name]
             metadata.class_identity[local] = f"{origin_path}::{export.name}"
+            if Path(origin_path).resolve() == own_path:
+                # An import cycle (``b`` imports ``c``, which imports
+                # ``b.Scope``) reaches this module's own class: the checker
+                # collects it from the module itself, and collecting it
+                # again would double its signatures (a single-variant call
+                # with an ``any`` argument then looked overloaded).
+                collected_classes.add(local)
+                continue
             for classdef in collect_classdefs(origin_tree, export.name):
                 collect_imported_class(classdef, local, aliases_for(origin_path, entries, explicit))
                 collected_classes.add(local)
@@ -12598,7 +13077,10 @@ def _imported_call_metadata(
                             remap_sig(sig, local, aliases)
                         )
                     record_func_return_type(funcdef, local, aliases)
-            elif export.kind == "class" and local not in collected_classes:
+            elif (
+                export.kind == "class" and local not in collected_classes
+                and Path(origin_path).resolve() != own_path
+            ):
                 for classdef in collect_classdefs(origin_tree, export.name):
                     collect_imported_class(classdef, local, aliases)
             elif export.kind == "interface":

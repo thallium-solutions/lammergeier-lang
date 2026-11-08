@@ -1,0 +1,19 @@
+# expect-warning: dropped return value of `Test.assertTrue()`
+# expect-warning: dropped return value of `Test.summary()`
+# Only `lamtest`'s assertions are statement calls: a program's own class
+# named `Test` keeps the dropped-return warning.
+
+class Test {
+    static func assertTrue(cond: bool) -> bool {
+        return cond
+    }
+
+    static func summary() -> int {
+        return 0
+    }
+}
+
+func main() {
+    Test.assertTrue(true)
+    Test.summary()
+}

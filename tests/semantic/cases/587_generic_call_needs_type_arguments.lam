@@ -1,15 +1,19 @@
-# expect-error: line 32: error[type]: cannot infer type parameter `T` of `firstOf`
-# expect-error: line 33: error[type]: cannot infer type parameter `T` of `Box`
-# expect-error: line 34: error[type]: cannot infer type parameter `T` of `ident`
-# expect-error: line 35: error[type]: cannot infer type parameter `T` of `merge`
-# expect-error: line 36: error[type]: cannot infer type parameters `K`, `V` of `Pair`
+# expect-error: line 36: error[type]: cannot infer type parameter `T` of `firstOf`
 # expect-error: line 37: error[type]: cannot infer type parameter `T` of `Box`
+# expect-error: line 38: error[type]: cannot infer type parameter `T` of `ident`
+# expect-error: line 39: error[type]: cannot infer type parameter `T` of `merge`
+# expect-error: line 40: error[type]: cannot infer type parameters `K`, `V` of `Pair`
+# expect-error: line 41: error[type]: cannot infer type parameter `T` of `Box`
 # expect-error: write the type arguments, e.g. `firstOf[int](...)`
 # 4.3.0: a generic call no argument gives a type parameter to (a default
 # `xs: list[T] = []`, `None`, an empty literal where the result must be
 # another instantiation) was lowered with a Go `[]T{}` / `nil` and failed in
 # `go build` ("undefined: T", "cannot infer T", "cannot use *Box[interface
 # {}] as *Box[int]"). It is a Lam error asking for the type arguments.
+# A parameter or annotation that fixes the type parameter binds it
+# (`keep(merge([]))` with `keep(xs: list[int])`, `c: Box[int] =
+# Box([])`); one that is itself generic (`keepAll[U](xs: list[U])`,
+# `boxed[U](b: Box[U])`) still does not.
 
 class Box[T] {
     func init(self, items: list[T] = []) {
@@ -32,12 +36,13 @@ func main() {
     print(firstOf())
     b = Box()
     print(ident(None))
-    ints: list[int] = keep(merge([]))
+    ints: list[int] = keepAll(merge([]))
     p = Pair()
-    c: Box[int] = Box([])
+    c: Box[int] = boxed(Box([]))
     print(len(b.items), len(ints), p.key, len(c.items))
 }
 
-# The call is an argument: the annotation of `ints` binds only `keep`'s
-# result (`ints: list[int] = merge([])` alone infers `T = int`).
-func keep(xs: list[int]) -> list[int] { return xs }
+# The call is an argument of a generic parameter: neither the annotation
+# of `ints` nor `keepAll`'s `list[U]` gives `merge`'s `T`.
+func keepAll[U](xs: list[U]) -> list[U] { return xs }
+func boxed[U](b: Box[U]) -> Box[U] { return b }

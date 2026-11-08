@@ -219,6 +219,11 @@ class StatementVisitorMixin:
         lam_type = self._parsed_lam_type(type_node)
         if lam_type is None or not isinstance(value, Tree):
             return None
+        if value.data in {"list", "set", "dict"}:
+            # ``xs: list[Box[int]] = [Box([])]``: the items' calls expect
+            # the item type.
+            self._note_expected_call_lam(value, lam_type)
+            return None
         if value.data == "propagate" and value.children:
             value = value.children[0]
             lam_type = GenericType("Result", (lam_type,))
@@ -403,12 +408,22 @@ class StatementVisitorMixin:
                     self._emit(f"{self._expr_to_go(obj_node)}.{method}({key_str}, {value_str})")
                     return
             if isinstance(target_node, Tree) and target_node.data == "getattr":
+                if len(parts) == 2:
+                    # ``self.items = make()``: the field's declared type
+                    # binds ``make``'s ``T``.
+                    self._note_expected_call_lam(value_node, self._field_expected_lam(target_node))
                 obj_node = target_node.children[0]
                 if self._expr_go_type_hint(obj_node) == "LamJSON":
                     attr = self._get_name(target_node.children[1])
                     value_str = self._typed_value_to_go(value_node, "LamJSON")
                     self._emit(f'lamJSONSet({self._expr_to_go(obj_node)}, "{attr}", {value_str})')
                     return
+            if isinstance(target_node, Tree) and target_node.data == "getitem" and len(parts) == 2 and target_node.children:
+                # ``d[k] = Box([])`` / ``xs[i] = make()``: the item type of
+                # the collection binds the call's type parameters.
+                self._note_expected_go_item(
+                    value_node, self._expr_go_type_hint(target_node) or "", target_node.children[0],
+                )
             with self._scoped(_index_target=True):
                 target_str = self._assign_target_to_go(target_node)
             self._record_inferred_target_type(target_str, value_node)
@@ -421,6 +436,19 @@ class StatementVisitorMixin:
                 and not self._nr_ternary_narrows(value_node)
                 and not (self._holds_propagate(value_node.children[0]) or self._holds_propagate(value_node.children[2]))
             ):
+                if not target_go_type and target_str not in self.declared_vars:
+                    # ``s = Square() if c else Shape()``: the least common
+                    # base class, so calls on ``s`` dispatch virtually.
+                    common = self._ternary_common_go_type(value_node)
+                    common_class = self._hier_class_from_go_type(common)
+                    branch_types = {
+                        self._expr_go_type_hint(b) or self._infer_type_from_value(b) or ""
+                        for b in (value_node.children[0], value_node.children[2])
+                    }
+                    if common_class and len(branch_types) > 1:
+                        target_go_type = common
+                        self._var_go_types[target_str] = common
+                        self._var_types[target_str] = common_class
                 if target_go_type:
                     true_val = self._typed_value_to_go(value_node.children[0], target_go_type)
                     false_val = self._typed_value_to_go(value_node.children[2], target_go_type)
@@ -565,10 +593,37 @@ class StatementVisitorMixin:
                     value_hint = self._expr_go_type_hint(value_node) or ""
                     if not value_hint and isinstance(value_node, Tree) and value_node.data in {"dict", "list"}:
                         value_hint = self._infer_type_from_value(value_node) or ""
+                    if not value_hint and isinstance(value_node, Tree) and value_node.data == "lambdef":
+                        # ``f = lambda x: x``: the signature of the emitted
+                        # literal (``func(interface{}) interface{}``), so a
+                        # call's ``any`` result converts where a type is
+                        # expected.
+                        value_hint = self._func_literal_go_type(value_str)
                     if value_hint:
                         self._var_go_types[target_str] = value_hint
                 self._emit(f"{target_str} := {value_str}")
                 self._declare_var(target_str)
+
+    @staticmethod
+    def _func_literal_go_type(go_src: str) -> str:
+        """``func(interface{}) interface{}`` for the Go function literal
+        ``func(x interface{}) interface{} { ... }``; ``""`` when its header
+        is not a plain parameter list."""
+        # The result type may contain ``{}`` (``interface{}``); the body's
+        # brace is the first ``{`` not closed right away.
+        match = re.match(r"func\(([^()]*)\)\s*((?:[^{]|\{\})*?)\s*\{(?!\})", go_src or "")
+        if not match:
+            return ""
+        params = []
+        for part in [p.strip() for p in match.group(1).split(",") if p.strip()]:
+            pieces = part.split(None, 1)
+            if len(pieces) != 2:
+                return ""
+            params.append(pieces[1])
+        ret = match.group(2).strip()
+        if ret.startswith("("):
+            return ""
+        return f"func({', '.join(params)}) {ret}".rstrip()
 
     def _emit_semantic_typed_assign(self, node: Tree, target_node, target_str: str, value_node) -> bool:
         """``name = value`` declaring ``name``: when the semantic checker
@@ -990,14 +1045,18 @@ class StatementVisitorMixin:
             # The post-IIFE check forwards the signal to the
             # outer function.
             if self._in_try_func:
-                self._emit(f"retval = {val}")
+                self._emit(f"{self._try_result_targets()} = {val}")
             self._emit("__lamShouldReturn = true")
             self._emit("return")
         elif self._in_except_handler and self._in_try_func:
-            self._emit(f"retval = {val}")
+            self._emit(f"{self._try_result_targets()} = {val}")
             self._emit("return")
         else:
             self._emit(f"return {val}")
+
+    def _try_result_targets(self) -> str:
+        """The named results a ``return`` inside a try IIFE assigns."""
+        return ", ".join(self._try_result_names(self._current_return_type or ""))
 
     def _emit_async_result(self, val: Optional[str]) -> None:
         """Publish an async callable's outcome on its one-slot handle.
@@ -1026,7 +1085,79 @@ class StatementVisitorMixin:
     def _visit_break_stmt(self, _):
         if self._loop_break_flag:
             self._emit(f"{self._loop_break_flag} = true")
-        self._emit("break")
+        self._emit_loop_jump("break")
+
+    # Values of a ``_loop_jump`` flag: the jump a closure left with.
+    _LOOP_JUMP_CODES = {"break": 1, "continue": 2}
+
+    def _emit_loop_jump(self, kind: str) -> None:
+        """Emit ``break`` / ``continue``; inside a closure between the jump
+        and its loop (``_loop_jump``), record it and leave the closure."""
+        if self._loop_jump:
+            flag, leave = self._loop_jump
+            self._emit(f"{flag} = {self._LOOP_JUMP_CODES[kind]}")
+            self._emit(leave)
+            return
+        self._emit(kind)
+
+    @staticmethod
+    def _own_loop_jumps(node) -> set:
+        """Kinds (``"break"`` / ``"continue"``) of the jumps in ``node``
+        that target a loop enclosing ``node`` (not a nested loop or
+        function)."""
+        found: set = set()
+
+        def walk(n) -> None:
+            if not isinstance(n, Tree):
+                return
+            if n.data == "break_stmt":
+                found.add("break")
+                return
+            if n.data == "continue_stmt":
+                found.add("continue")
+                return
+            if n.data in {"funcdef", "classdef", "lambdef"}:
+                return
+            children = n.children
+            if n.data in {"for_stmt", "while_stmt"}:
+                # Only a nested loop's ``else`` block jumps in the outer loop.
+                children = [c for c in n.children if isinstance(c, Tree) and c.data == "suite"][1:]
+            for child in children:
+                walk(child)
+
+        walk(node)
+        return found
+
+    def _declare_loop_jump(self, suites) -> Optional[tuple]:
+        """Declare a fresh jump flag for a closure lowering ``suites`` when
+        they hold a ``break`` / ``continue`` of an enclosing loop; return
+        ``(flag, kinds)``."""
+        kinds: set = set()
+        for suite in suites:
+            kinds |= self._own_loop_jumps(suite)
+        if not kinds:
+            return None
+        self._loop_jump_counter = getattr(self, "_loop_jump_counter", 0) + 1
+        flag = f"__lamJump{self._loop_jump_counter}"
+        self._emit(f"{flag} := 0")
+        return flag, kinds
+
+    def _emit_loop_jump_dispatch(self, jump: Optional[tuple]) -> None:
+        """After the closure: perform the jump it recorded in its flag."""
+        if not jump:
+            return
+        flag, kinds = jump
+        for kind, code in self._LOOP_JUMP_CODES.items():
+            if kind not in kinds:
+                continue
+            self._emit(f"if {flag} == {code} {{")
+            self.indent += 1
+            if kind == "break":
+                self._visit_break_stmt(None)
+            else:
+                self._visit_continue_stmt(None)
+            self.indent -= 1
+            self._emit("}")
 
     def _new_loop_break_flag(self) -> str:
         """Fresh per-loop flag recording a ``break`` for ``for``/``while``-``else``.
@@ -1038,7 +1169,7 @@ class StatementVisitorMixin:
         return f"_lamLoopBreak{self._loop_break_counter}"
 
     def _visit_continue_stmt(self, _):
-        self._emit("continue")
+        self._emit_loop_jump("continue")
 
     def _visit_yield_stmt(self, node: Tree):
         if node.children:
@@ -1337,7 +1468,7 @@ class StatementVisitorMixin:
             self.indent += 1
         self._push_scope()
         body_start, vars_at_start = self._scope_unused_tracking_start()
-        with self._scoped(_loop_break_flag=break_flag):
+        with self._scoped(_loop_break_flag=break_flag, _loop_jump=None):
             # ``while isinstance(x, T)``: the body sees ``x`` as a ``T``.
             self._nr_emit_region(
                 _narrowing.condition_facts(node.children[0], True),
@@ -1415,7 +1546,9 @@ class StatementVisitorMixin:
                 return ""
             value_types.add(self._expr_go_type_hint(child.children[1]) or self._infer_type_from_value(child.children[1]) or "")
         if len(value_types) != 1:
-            return ""
+            # ``{"a": Square(), "b": Shape()}``: the least common base class.
+            common = self._hier_common_base_go_type(value_types)
+            return f"map[string]{common}" if common else ""
         value_type = value_types.pop()
         if not value_type or value_type == "interface{}":
             return ""
@@ -1560,7 +1693,7 @@ class StatementVisitorMixin:
             # silenced in the loop body (``for i, x in enumerate(xs)``).
             for loop_name in loop_names:
                 self._declare_var(loop_name)
-            with self._scoped(_loop_break_flag=break_flag):
+            with self._scoped(_loop_break_flag=break_flag, _loop_jump=None):
                 self._visit_suite(suite_node)
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
@@ -1645,7 +1778,7 @@ class StatementVisitorMixin:
                     self._declare_var(target)
                     if elem_type:
                         self._var_go_types[target] = elem_type
-                with self._scoped(_loop_break_flag=break_flag):
+                with self._scoped(_loop_break_flag=break_flag, _loop_jump=None):
                     self._visit_suite(suite_node)
                 self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
                 self.indent -= 1
@@ -1701,7 +1834,7 @@ class StatementVisitorMixin:
             self._declare_var(val_name)
         else:
             self._declare_var(var_name)
-        with self._scoped(_loop_break_flag=break_flag):
+        with self._scoped(_loop_break_flag=break_flag, _loop_jump=None):
             self._visit_suite(suite_node)
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
@@ -1762,7 +1895,9 @@ class StatementVisitorMixin:
                 types.add("[]interface{}")
         known = {t for t in types if t not in {"", "interface{}", "any"}}
         if len(known) > 1:
-            return "[]interface{}"
+            # ``for s in [Square(), Shape()]``: the least common base class.
+            common = self._hier_common_base_go_type(known) if known == types else ""
+            return "[]" + common if common else "[]interface{}"
         if len(known) == 1 and len(types) == 1:
             return "[]" + known.pop()
         return inferred
@@ -1941,20 +2076,31 @@ class StatementVisitorMixin:
                 elif child.data == "suite":
                     else_suite = child
 
-        # Catch-less try (try/finally only) keeps the legacy
-        # function-scoped defer pattern: there's no recovery to
-        # short-circuit, so wrapping in an IIFE would only complicate
-        # variable scoping for no behavioural gain.
-        if catch_clauses_node is None:
-            if finally_node is not None:
-                self._emit("defer func() {")
-                self.indent += 1
-                self._push_scope()
-                body_start, vars_at_start = self._scope_unused_tracking_start()
-                self._visit_suite(finally_node.children[0])
-                self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
-                self.indent -= 1
-                self._emit("}()")
+        self._emit_try(try_suite, catch_clauses_node, else_suite, finally_node)
+
+    def _visit_try_finally(self, node: Tree):
+        try_suite = node.children[0]
+        finally_node = node.children[1] if len(node.children) > 1 else None
+        if isinstance(finally_node, Tree) and finally_node.data != "finally":
+            finally_node = Tree("finally", [finally_node])
+        self._emit_try(try_suite, None, None, finally_node if isinstance(finally_node, Tree) else None)
+
+    def _emit_try(self, try_suite, catch_clauses_node, else_suite, finally_node) -> None:
+        """Lower ``try`` / ``catch`` / ``else`` / ``finally``.
+
+        The try body runs in an IIFE whose deferred functions are the
+        ``finally`` block and (with catch clauses) the recover dispatch, so
+        ``finally`` runs when the ``try`` statement ends (also once per loop
+        iteration) and a recovered exception continues after the statement.
+        ``return`` / ``break`` / ``continue`` inside the closures record
+        themselves and leave the IIFE; the code after it performs them.
+        """
+        clauses = [
+            clause for clause in (catch_clauses_node.children if catch_clauses_node is not None else [])
+            if isinstance(clause, Tree) and clause.data == "catch_clause"
+        ]
+        finally_suite = finally_node.children[0] if finally_node is not None else None
+        if not clauses and finally_suite is None:
             self._emit("// try")
             self._push_scope()
             body_start, vars_at_start = self._scope_unused_tracking_start()
@@ -1967,12 +2113,28 @@ class StatementVisitorMixin:
         # (``try { v: int = f() } catch e { v: int = -1 }; return v``).
         catch_suites = [
             sub
-            for clause in catch_clauses_node.children
-            if isinstance(clause, Tree) and clause.data == "catch_clause"
+            for clause in clauses
             for sub in clause.children
             if isinstance(sub, Tree) and sub.data == "suite"
         ]
         self._hoist_flow_locals([try_suite] + catch_suites)
+        # With both ``else`` and ``finally``, ``else`` runs inside the IIFE
+        # holding the ``finally`` defer (Python order: body, else, finally)
+        # but outside the recover dispatch (its exceptions are not handled by
+        # the statement's own clauses).
+        nested_else = else_suite is not None and finally_suite is not None
+        jump = self._declare_loop_jump(
+            [try_suite, finally_suite] + catch_suites + ([else_suite] if nested_else else [])
+        )
+        loop_jump = (jump[0], "return") if jump else None
+        # ``else`` runs only when no exception was caught: a flag of this
+        # statement (a nested ``try`` in the body catching its own exception
+        # must not skip it).
+        caught = ""
+        if else_suite is not None and clauses:
+            self._try_counter = getattr(self, "_try_counter", 0) + 1
+            caught = f"__lamCaught{self._try_counter}"
+            self._emit(f"{caught} := false")
 
         # Try-with-catch: wrap the try body + catch dispatch in an
         # IIFE so a successful recover unwinds *into the IIFE*, the
@@ -2009,65 +2171,62 @@ class StatementVisitorMixin:
         # the correct semantics. If the catch re-panics (no clause
         # matched, etc.) the finally still runs because of the
         # second defer.
-        if finally_node is not None:
-            self._emit("defer func() {")
+        if finally_suite is not None:
+            self._emit_finally_defer(finally_suite, jump)
+
+        if nested_else:
+            # The body and its recover dispatch get an IIFE of their own.
+            self._emit("func() {")
             self.indent += 1
             self._push_scope()
-            finally_body_start, finally_vars_at_start = self._scope_unused_tracking_start()
-            self._visit_suite(finally_node.children[0])
-            self._pop_scope_with_unused_local_silencers(finally_body_start, finally_vars_at_start)
+            inner_body_start, inner_vars_at_start = self._scope_unused_tracking_start()
+
+        if clauses:
+            self._emit("defer func() {")
+            self.indent += 1
+            self._emit("if r := recover(); r != nil {")
+            self.indent += 1
+            self._emit("__lamPanicked = true")
+            if caught:
+                self._emit(f"{caught} = true")
+            self._push_scope()
+            self._declare_var("r")
+            recover_body_start, recover_vars_at_start = self._scope_unused_tracking_start()
+            # Catch bodies are also inside the IIFE: flip ``_in_try_iife``
+            # so ``return X`` from a catch handler also funnels through
+            # ``__lamShouldReturn`` and propagates to the outer function.
+            # ``_in_recover_block`` is flipped too so a bare ``raise``
+            # inside the catch re-panics the live ``r`` value instead of
+            # emitting a placeholder string.
+            with self._scoped(_in_try_iife=True, _in_recover_block=True, _loop_jump=loop_jump):
+                self._emit_catch_dispatch(clauses)
+            self._pop_scope_with_unused_local_silencers(recover_body_start, recover_vars_at_start)
+            self.indent -= 1
+            self._emit("}")
             self.indent -= 1
             self._emit("}()")
-
-        self._emit("defer func() {")
-        self.indent += 1
-        self._emit("if r := recover(); r != nil {")
-        self.indent += 1
-        self._emit("__lamPanicked = true")
-        self._push_scope()
-        self._declare_var("r")
-        recover_body_start, recover_vars_at_start = self._scope_unused_tracking_start()
-        # Catch bodies are also inside the IIFE: flip ``_in_try_iife``
-        # so ``return X`` from a catch handler also funnels through
-        # ``__lamShouldReturn`` and propagates to the outer function.
-        # ``_in_recover_block`` is flipped too so a bare ``raise``
-        # inside the catch re-panics the live ``r`` value instead of
-        # emitting a placeholder string.
-        with self._scoped(_in_try_iife=True, _in_recover_block=True):
-            self._emit_catch_dispatch([
-                clause for clause in catch_clauses_node.children
-                if isinstance(clause, Tree) and clause.data == "catch_clause"
-            ])
-        self._pop_scope_with_unused_local_silencers(recover_body_start, recover_vars_at_start)
-        self.indent -= 1
-        self._emit("}")
-        self.indent -= 1
-        self._emit("}()")
 
         # Try body — inside the IIFE, with ``_in_try_iife`` flipped
         # so ``return X`` rewrites to (``retval = X;``)
         # ``__lamShouldReturn = true; return``. The bare return
         # exits this IIFE only; the post-IIFE check forwards the
         # signal to the outer function.
-        with self._scoped(_in_try_iife=True):
+        with self._scoped(_in_try_iife=True, _loop_jump=loop_jump):
             self._visit_suite(try_suite)
+
+        if nested_else:
+            self._pop_scope_with_unused_local_silencers(inner_body_start, inner_vars_at_start)
+            self.indent -= 1
+            self._emit("}()")
+            # A return / loop jump out of the body or a handler skips
+            # ``else``: leave the outer IIFE (``finally`` runs).
+            leave_cond = "__lamShouldReturn" + (f" || {jump[0]} != 0" if jump else "")
+            self._emit(f"if {leave_cond} {{ return }}")
+            self._emit_else_suite(else_suite, caught, in_iife=True, loop_jump=loop_jump)
 
         self._pop_scope_with_unused_local_silencers(iife_body_start, iife_vars_at_start)
         self.indent -= 1
         self._emit("}()")
-
-        # ``else`` runs only when no panic was caught — Python
-        # semantics. Catch handlers that re-panic skip the else
-        # branch because the IIFE's recover sets ``__lamPanicked``.
-        if else_suite is not None:
-            self._emit("if !__lamPanicked {")
-            self.indent += 1
-            self._push_scope()
-            body_start, vars_at_start = self._scope_unused_tracking_start()
-            self._visit_suite(else_suite)
-            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
-            self.indent -= 1
-            self._emit("}")
 
         # Propagate any return signalled from inside the IIFE.
         # When the function has a typed return value the named
@@ -2080,27 +2239,81 @@ class StatementVisitorMixin:
             self._emit(f"if __lamShouldReturn {{ return {self._do_q_target or 'nil'} }}")
         else:
             self._emit("if __lamShouldReturn { return }")
+        self._emit_loop_jump_dispatch(jump)
 
-    def _visit_try_finally(self, node: Tree):
-        try_suite = node.children[0]
-        finally_node = node.children[1] if len(node.children) > 1 else None
+        # Without ``finally``, ``else`` follows the IIFE: it runs only when
+        # the body completed (no exception caught, no return or loop jump),
+        # and its exceptions are not handled by the statement's clauses.
+        if else_suite is not None and not nested_else:
+            self._emit_else_suite(else_suite, caught, in_iife=False, loop_jump=self._loop_jump)
 
-        if finally_node and isinstance(finally_node, Tree):
-            self._emit("defer func() {")
-            self.indent += 1
-            self._push_scope()
-            fin_suite = finally_node.children[0] if finally_node.data == "finally" else finally_node
-            body_start, vars_at_start = self._scope_unused_tracking_start()
-            self._visit_suite(fin_suite)
-            self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
-            self.indent -= 1
-            self._emit("}()")
-
-        self._emit("// try")
+    def _emit_else_suite(self, else_suite, caught: str, *, in_iife: bool, loop_jump) -> None:
+        if caught:
+            self._emit(f"if !{caught} {{")
+        else:
+            self._emit("{")
+        self.indent += 1
         self._push_scope()
         body_start, vars_at_start = self._scope_unused_tracking_start()
-        self._visit_suite(try_suite)
+        if in_iife:
+            with self._scoped(_in_try_iife=True, _loop_jump=loop_jump):
+                self._visit_suite(else_suite)
+        else:
+            self._visit_suite(else_suite)
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
+        self.indent -= 1
+        self._emit("}")
+
+    @staticmethod
+    def _suite_has_own_return(node) -> bool:
+        """A ``return`` (or a ``?``, which returns) in ``node`` that leaves
+        the enclosing function (not one of a nested function or lambda)."""
+        if not isinstance(node, Tree):
+            return False
+        if node.data in {"return_stmt", "propagate"}:
+            return True
+        if node.data in {"funcdef", "classdef", "lambdef"}:
+            return False
+        return any(StatementVisitorMixin._suite_has_own_return(c) for c in node.children)
+
+    def _emit_finally_defer(self, finally_suite, jump) -> None:
+        """The ``defer`` running a ``finally`` block.
+
+        A ``return`` / ``break`` / ``continue`` in ``finally`` (Python
+        semantics) cancels an exception that is propagating — the defer
+        recovers it first and re-raises it only when the block completes
+        normally — and replaces a pending ``return`` or loop jump of the
+        body (a jump clears ``__lamShouldReturn``; a ``return`` overwrites
+        the named result). A ``try`` inside the block keeps a pending
+        ``return`` of the body (it resets the shared flag).
+        """
+        exits = bool(self._own_loop_jumps(finally_suite)) or self._suite_has_own_return(finally_suite)
+        nested_try = any(True for _ in finally_suite.find_pred(
+            lambda t: t.data in {"try_stmt", "try_finally"}
+        ))
+        self._try_counter = getattr(self, "_try_counter", 0) + 1
+        n = self._try_counter
+        self._emit("defer func() {")
+        self.indent += 1
+        self._push_scope()
+        finally_body_start, finally_vars_at_start = self._scope_unused_tracking_start()
+        if exits:
+            self._emit(f"__lamFinExc{n} := recover()")
+        if nested_try:
+            self._emit(f"__lamFinRet{n} := __lamShouldReturn")
+        leave = "__lamShouldReturn = false; return"
+        fin_jump = (jump[0], leave) if jump else None
+        # A ``return`` / loop jump in ``finally`` leaves the deferred
+        # function and is performed after the IIFE, like one in the body.
+        with self._scoped(_in_try_iife=True, _loop_jump=fin_jump):
+            self._visit_suite(finally_suite)
+        if nested_try:
+            self._emit(f"__lamShouldReturn = __lamShouldReturn || __lamFinRet{n}")
+        if exits:
+            self._emit(f"if __lamFinExc{n} != nil {{ panic(__lamFinExc{n}) }}")
+        self._pop_scope_with_unused_local_silencers(finally_body_start, finally_vars_at_start)
+        self.indent -= 1
+        self._emit("}()")
 
     # Builtin exception families: ``catch Parent`` also catches every
     # name listed for it (Python's hierarchy, restricted to the names Lam
@@ -2394,11 +2607,14 @@ class StatementVisitorMixin:
 
         # A ``?`` inside a ``try`` of the body leaves the try IIFE first: it
         # stores its error in the closure's named result.
+        # ``break`` / ``continue`` of an enclosing loop in the body leave
+        # the closure (``return nil``) and are performed after it.
+        jump = self._declare_loop_jump([body_suite])
         do_q_target = ""
         if any(
             self._tree_contains(t, "propagate")
             for t in (body_suite.iter_subtrees() if isinstance(body_suite, Tree) else [])
-            if t.data == "try_stmt"
+            if t.data in ("try_stmt", "try_finally")
         ):
             do_q_target = f"__lamDoErr{self._do_counter}"
             self._emit(f"{rdo} := func() ({do_q_target} *Result) {{")
@@ -2421,6 +2637,7 @@ class StatementVisitorMixin:
             boundary["_do_return_target"] = do_return_target
             boundary["_in_do_body"] = True
             boundary["_do_q_target"] = do_q_target
+            boundary["_loop_jump"] = (jump[0], "return nil") if jump else None
             # A ``return`` in the body returns from the enclosing function.
             boundary["_in_nested_callable"] = self._in_nested_callable
             with self._scoped(_q_propagate_ok=True, **boundary):
@@ -2443,6 +2660,7 @@ class StatementVisitorMixin:
             self._emit_return_value(ret_var or None)
             self.indent -= 1
             self._emit("}")
+        self._emit_loop_jump_dispatch(jump)
 
         self._emit(f"if {rdo}.Error != nil {{")
         self.indent += 1

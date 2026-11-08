@@ -1,0 +1,27 @@
+# A loop around a lambda or a nested function does not make `break` /
+# `continue` in its body legal: they would leave the closure, not the
+# loop (this used to fail only at `go build`).
+# expect-error: `break` can only be used inside a loop
+# expect-error: `continue` can only be used inside a loop
+
+func main() {
+    for i in range(3) {
+        f = lambda (n: int) -> int {
+            if n > 1 {
+                break
+            }
+            return n
+        }
+        print(f(i))
+    }
+    for j in range(3) {
+        func g() {
+            try {
+                continue
+            } catch _ {
+                print("never")
+            }
+        }
+        g()
+    }
+}

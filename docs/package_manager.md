@@ -358,11 +358,18 @@ dev = "lamc dev cmd/serve.lam --watch locales --ext json,sql --"
   watched; `--ignore PATTERN` adds globs, matched against the path relative
   to the project root or against a file or directory name.
 
-Change detection polls modification times (`--poll`, default 250 ms; a
-`--delay` quiet period, default 300 ms, groups the files saved together),
-so it also works on container bind mounts, where file-system events are
-not delivered. The binary is built in a temporary directory unless `-o`
-is given.
+Change detection polls modification times and sizes (`--poll`, default
+250 ms; a `--delay` quiet period, default 300 ms, groups the files saved
+together), so it also works on container bind mounts, where file-system
+events are not delivered. Only content changes count: a file whose
+modification time or size changed is hashed and compared with the content
+seen before, so `touch`, an editor saving an unchanged buffer or
+`lamc install --frozen` rewriting `extlibs/` with the same packages
+neither rebuilds nor restarts. After the first scan only files whose
+modification time or size changed are read, so large trees stay cheap to
+watch. New and deleted
+files are changes. The binary is built in a temporary directory unless
+`-o` is given.
 
 ### 2.5 Where files actually go
 
@@ -640,9 +647,17 @@ Properties:
   a `tree_sha256` content hash so drift detection works without
   re-fetching from upstream (see `lamc verify`, Phase 3).
 - **Provenance for every dep.** `requested_by` is a TOML array
-  of trail strings: `"root"` for direct deps, `<lib>@<ver>` for
-  transitive ones. Both Lam pins (`[pins.*]`) and Go-module pins
-  (`[go_pins.*]`) carry the same array shape.
+  of trail strings, sorted and deduplicated: `"root"` for direct deps,
+  `<lib>@<ver>` for transitive ones. It lists every requester — a
+  dependency declared in `lamlib.toml` that another dependency also
+  requires carries both, e.g.
+  `requested_by = ["@lam/vulture/dev-plugin@1.0.0", "root"]`.
+  Re-running `lamc install` keeps the requesters already recorded and
+  drops the ones no longer pinned at that version. Both Lam pins
+  (`[pins.*]`) and Go-module pins (`[go_pins.*]`) carry the same array
+  shape; a Go pin lists every library (and `"root"` for the project's
+  own `[go-deps]`) that declares the module, not only the one whose
+  version won.
 - **Cross-surface.** Lammergeier libraries land under `[pins.*]`,
   Go modules under `[go_pins.*]`. Same file, same resolution
   pass.
@@ -745,7 +760,11 @@ Removes:
    `~/.lammergeier/extlibs/<name>/` with `--global`).
 2. The library's `[pins.<name>]` block from the lockfile (in
    project mode).
-3. Any `[go_pins.*]` entry whose `requested_by` set drops to empty.
+3. The library from the `requested_by` of the other pins, and any
+   `[go_pins.*]` entry whose `requested_by` set drops to empty. The
+   other Go pins stay at their pinned version (removing a requester
+   never downgrades a module); a Go pin with no recorded requester
+   (a hand edit) is kept.
 
 Transitive deps are **not** removed automatically. If a dependency
 is no longer needed, remove it explicitly with `lamc uninstall
@@ -970,8 +989,10 @@ lamcodec@1.4.2
 ```
 
 When a pin has multiple parents (a transitive shared between
-two libs), every chain shows up so the full dependent set is
-visible at a glance. `--check` knobs are deliberately absent —
+two libs, or a direct dependency another library also requires),
+every chain shows up so the full dependent set is visible at a
+glance; `lamc tree` likewise renders a shared pin under each of its
+requesters, and marks only a real cycle as `(cycle)`. `--check` knobs are deliberately absent —
 these verbs are diagnostic, never mutating.
 
 ---

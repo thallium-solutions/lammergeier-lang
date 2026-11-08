@@ -1,0 +1,69 @@
+# Cross-feature fixture: an application refactored to static methods, split
+# over a package whose modules import each other (each of them also builds
+# as the program entry). It composes the
+# import cycle (`any`-argument statics), a generic static transaction
+# with `try`/rethrowing `catch` driven by lambdas and `Result`, private
+# statics as function values, statics and instance methods returning
+# `html` / `str` into optionals, static methods as typed callbacks over
+# `list[Row]` / `dict[int, Row]` (also through generics and interfaces),
+# and `lamtest` assertions called as statements.
+# expect: commit total=7
+# expect: rollback caught IndexError
+# expect: log commit,rollback
+# expect: kinds text/text@3 other/other@3
+# expect: doubled [2 4 6]
+# expect: banner <h1>scope</h1> none true title scope-3
+# expect: counts a=2 b=1 indexed=3
+# expect: generic 2
+# expect: PASS cycle classify
+# expect: PASS static value
+# expect: PASS optional html
+# expect: 3 passed, 0 failed, 3 total
+
+from lamerrors import Result, Error
+from lamtest import Test
+from static_refactor_pkg.scope import Scope
+from static_refactor_pkg.conn import Box, Row, Handlers, Sq
+
+func countWith(fn: func(str, list[Row]) -> int, tag: str, rows: list[Row]) -> int {
+    return fn(tag, rows)
+}
+
+func indexWith(fn: func(list[Row]) -> dict[int, Row], rows: list[Row]) -> int {
+    return len(fn(rows))
+}
+
+func viaGeneric[T](fn: func(str, list[T]) -> int, items: list[T]) -> int {
+    return fn("a", items)
+}
+
+func sizeOf(conn: Sq) -> int {
+    return conn.size()
+}
+
+func main() {
+    rows: list[Row] = [Row(1, "a"), Row(2, "b"), Row(3, "a")]
+    box: Box = Box(3)
+    scope: Scope = box.scope()
+
+    ok: Result[int] = Scope.transaction(scope, lambda (s: Scope) -> Result[int]: Result.Ok(s.n + sizeOf(box) + 1))
+    print(f"commit total={ok.unwrap()}")
+    try {
+        _ = Scope.transaction(scope, lambda (s: Scope) -> Result[int]: Result.Err(Error("E", "x")) if s.n < 0 else Result.Ok([r.id for r in rows][5]))
+    } catch IndexError as _e {
+        print("rollback caught IndexError")
+    }
+    print("log " + ",".join(scope.log))
+
+    print("kinds", box.classify("x"), box.classify(4))
+    print("doubled", Scope.doubledAll([1, 2, 3]))
+    shown: str = str(Scope.maybeBanner(true) ?? <></>)
+    print("banner", shown, "none", Scope.maybeBanner(false) == None, "title", scope.maybeTitle() ?? "-")
+    print(f"counts a={countWith(Handlers.count, "a", rows)} b={countWith(Handlers.count, "b", rows)} indexed={indexWith(Handlers.index, rows)}")
+    print("generic", viaGeneric(Handlers.count, rows))
+
+    Test.assertEqual(box.classify("y"), "text/text@3", "cycle classify")
+    Test.assertTrue(countWith(Handlers.count, "a", rows) == 2, "static value")
+    Test.assertNotNil(Scope.maybeBanner(true), "optional html")
+    Test.summary()
+}

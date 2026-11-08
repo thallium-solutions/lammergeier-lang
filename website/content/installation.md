@@ -68,7 +68,7 @@ matrix:
 | *(none)* | **Auto.** Tries `/usr/local/bin` if it's writable, otherwise drops to `$HOME/.local/bin`. |
 | `--user` | Force `$HOME/.local/bin`. Never elevates with sudo. |
 | `--system` | Force `/usr/local/bin`. May prompt for sudo. |
-| `--prefix DIR` | Symlinks land in `DIR/bin`. Useful for Homebrew-style staging or NixOS-on-the-side checkouts. |
+| `--prefix DIR` | Symlinks land in `DIR/bin`. Useful for Homebrew-style staging or NixOS-on-the-side checkouts. `DIR` need not exist: missing directories are created without sudo when their nearest existing parent is writable. |
 
 If the chosen directory isn't on your `PATH`, the installer
 prints the exact line you need to append to `~/.bashrc` /

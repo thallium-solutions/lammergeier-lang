@@ -1,0 +1,39 @@
+# expect-error: argument `fn` to `apply` has type `func(str, list[Other]) -> int`, expected `func(str, list[Item]) -> int`
+# expect-error: argument `fn` to `applyDict` has type `func(dict[str, int]) -> list[Item]`, expected `func(dict[str, Item]) -> list[Item]`
+# A static method value whose element types differ from the callback's
+# is still rejected, now naming the full types.
+
+class Item {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+}
+
+class Other {
+    func init(self, s: str) {
+        self.s: str = s
+    }
+}
+
+func apply(fn: func(str, list[Item]) -> int) -> int {
+    return fn("x", [Item(2)])
+}
+
+func applyDict(fn: func(dict[str, Item]) -> list[Item]) -> int {
+    return len(fn({"a": Item(1)}))
+}
+
+class Handlers {
+    static func count(_where: str, items: list[Other]) -> int {
+        return len(items)
+    }
+
+    static func values(_m: dict[str, int]) -> list[Item] {
+        return []
+    }
+}
+
+func main() {
+    print(apply(Handlers.count))
+    print(applyDict(Handlers.values))
+}

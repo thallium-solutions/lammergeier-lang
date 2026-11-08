@@ -1,0 +1,65 @@
+# expect-pass
+# expect-no-warning: unreachable
+# `break` / `continue` in try / catch / finally and do / catch parts
+# inside a loop (also in a lambda's own loop) are legal, and a
+# `try { return } finally { }` body ends the function.
+
+from lamerrors import Result
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err("empty")
+    }
+    return Result.Ok(len(s))
+}
+
+func lengths(xs: list[str]) -> int {
+    total: int = 0
+    for x in xs {
+        try {
+            if x == "stop" {
+                break
+            }
+            total += parse(x).unwrap()
+        } catch _ {
+            continue
+        } finally {
+            total += 0
+        }
+        do {
+            n: int = parse(x)?
+            if n > 3 {
+                continue
+            }
+        } catch _ {
+            break
+        }
+    }
+    return total
+}
+
+func cleanup(n: int) -> int {
+    try {
+        return n * 2
+    } finally {
+        print("cleanup")
+    }
+}
+
+func main() {
+    count = lambda (xs: list[str]) -> int {
+        n: int = 0
+        for x in xs {
+            try {
+                if x == "" {
+                    continue
+                }
+                n += 1
+            } catch _ {
+                break
+            }
+        }
+        return n
+    }
+    print(lengths(["ab", "", "stop"]), cleanup(2), count(["a", ""]))
+}

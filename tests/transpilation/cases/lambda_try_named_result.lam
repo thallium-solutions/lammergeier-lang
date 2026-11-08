@@ -1,0 +1,36 @@
+# Transpilation: a block lambda (or nested function) containing a `try`
+# gets the named result `retval`, as a function does: a `return` or the
+# guard of a `?` inside the `try` IIFE sets it and leaves the IIFE, and
+# the closure returns it.
+# expect-go: a := func(s string) (retval *Result) {
+# expect-go: if !__q1.Ok() { retval = __q1; __lamShouldReturn = true; return }
+# expect-go: retval = Result_Ok(n * 2)
+# expect-go: local := func(s string) (retval int) {
+
+from lamerrors import Result, Error
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err(Error("Empty", "empty"))
+    }
+    return Result.Ok(len(s))
+}
+
+func main() {
+    a = lambda (s: str) -> Result[int] {
+        try {
+            n: int = parse(s)?
+            return Result.Ok(n * 2)
+        } catch ValueError as _ {
+            return Result.Ok(-1)
+        }
+    }
+    func local(s: str) -> int {
+        try {
+            return len(s)
+        } catch _ {
+            return 0
+        }
+    }
+    print(a("ab").unwrap(), local("abc"))
+}

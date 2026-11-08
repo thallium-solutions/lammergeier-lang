@@ -1,0 +1,51 @@
+# expect-warning: `return` in `finally` cancels an exception propagating from the `try` and replaces a pending `return` of the body
+# expect-warning: `break` in `finally` cancels an exception
+# expect-warning: `continue` in `finally` cancels an exception
+# expect-no-warning: line 39:
+# expect-no-warning: line 41:
+# expect-no-warning: line 43:
+# A `return` / `break` / `continue` leaving a `finally` block is legal
+# (Python semantics: it cancels a propagating exception) but warned about,
+# as Python linters and PEP 765 do. Jumps of a loop inside the `finally`
+# block, and returns of a lambda or nested function there, are not.
+
+func first() -> int {
+    try {
+        return 1
+    } finally {
+        return 2
+    }
+}
+
+func loops() -> int {
+    n: int = 0
+    for i in range(3) {
+        try {
+            n += i
+        } finally {
+            if i == 1 {
+                continue
+            }
+            if i == 2 {
+                break
+            }
+        }
+    }
+    try {
+        n += 1
+    } finally {
+        for j in range(2) {
+            if j == 1 {
+                break
+            }
+            continue
+        }
+        f = lambda (x: int) -> int { return x }
+        n += f(0)
+    }
+    return n
+}
+
+func main() {
+    print(first(), loops())
+}

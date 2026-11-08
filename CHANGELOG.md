@@ -5,6 +5,209 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.5.2 — 2026-11-08
+
+### Fixed
+
+- A module of an import cycle could not be built as the program entry
+  (`lamc pkg/scope.lam` with `pkg/conn.lam` importing `.scope`): the entry
+  was bundled again as a library (`Scope redeclared in this block`), and the
+  modules importing it back did not know its classes and statics
+  (`Scope.Of undefined`). The entry is now emitted once and its declarations
+  are harvested for the modules importing it back.
+- The result of a call through a function value — a function-typed
+  parameter, local or field (also of an imported class), a collection
+  element or a returned function — lost its declared type when the value
+  returns `Result[T]`: `len(fn(x).unwrap())`, `fn(x)?[0]`, `for v in
+  fn(x)?`, `fn(x).unwrap().name` did not build (`interface{}`). The payload
+  is now asserted like a declared function's, and calls through fields and
+  collection elements have the value's declared result type.
+- `lamc fmt` wrote `n ?? -1` as `n ?? - 1` and `xs ?? []` as `xs ??[]`
+  (also `n ??(a)`): the `?` ending `??` was not seen as an operator. A sign
+  after an operator or keyword now sticks to its operand (a spaced `x = - 1`
+  becomes `x = -1`), a literal or `(` after `??` keeps its space, and the
+  postfix `?` (`r? - 1`, `f()?[0]`) is unchanged.
+- In an import cycle (`pkg/b.lam` importing `.c`, which imports `.b`), a
+  module collected its own classes a second time through the other module,
+  doubling their method signatures: a single-variant call with an `any`
+  argument (`Scope.kind(err)` with `err: any`, also instance methods) was
+  reported as an `ambiguous call ... for dynamic argument types`. A module's
+  own classes are now only collected from the module itself; a real
+  overload called with an `any` argument stays ambiguous.
+- A static method (generic or not, of a plain or generic class) with a
+  result and a `try` in its body did not build (`not enough return
+  values`): unlike functions and instance methods it lacked the named
+  `retval` result(s) the `try` closure stores a `return` in, so a `throw`
+  in the `catch`, a `return` inside the `try` and multi-value returns
+  failed. Static methods now lower their `try` like functions.
+- A `private static func` used as a function value (`Hooks.run(Hooks.double)`)
+  did not build (`undefined: Hooks_double`): the value named the exported
+  Go function while the definition is unexported (`hooks_double`). The
+  value now uses the name its calls use.
+- A static or instance method call whose declared result is a value type
+  was not boxed where an `optional` of it is expected (`return
+  Hooks.page()` in a `-> optional[html]`: `cannot use ... LamHTML as
+  *LamHTML`): `html` / `xml` results of static and instance methods and
+  every value result of a method called on `self` (`return self.name()` in
+  a `-> optional[str]`) are now boxed like module function calls.
+  `optional[json]` did not work at all (a `json` value or JSON literal
+  returned or assigned there panicked or did not build, and `opt ?? {...}`
+  produced a Go map): it is now a boxed `*LamJSON` like other value types.
+- A static method used as a function value had only the root of each
+  parameter type (`apply(Handlers.count)` with `count(where: str, items:
+  list[Item])` was a `func(str, list) -> int`), so it was rejected where a
+  `func(str, list[Item]) -> int` (or a `dict[str, Item]`, `set[int]`,
+  `optional[Item]` parameter) is expected. It now has the declared types in
+  full. Calling a function value read from a collection element
+  (`fns[0]("a", [Item(1)])`) also types its literal arguments by the
+  value's parameter types (it passed a `[]interface{}`).
+- `lamtest` assertions called as statements (`Test.assertTrue(...)`,
+  `Test.assertEqual(...)`, ..., `Test.summary()`) were warned about as
+  dropped return values, so test suites wrote `_ = Test.assertTrue(...)`.
+  They are statements by design: their result (whether the check passed,
+  the failure count) stays available but no longer warns when unused,
+  however `Test` is imported; a program's own `Test` class still warns.
+- `lamc dev` rebuilt and restarted the program when a watched file was
+  touched or rewritten with the same content (`lamc install --frozen`
+  re-copying `extlibs/`, an editor saving an unchanged buffer): changes were
+  detected by modification time and size only. A file whose modification
+  time or size changed is now hashed and compared with its previous
+  content; after the first scan only files whose stat changed are read.
+- `lamlib.lock.toml` recorded a dependency declared in `lamlib.toml` and
+  also required by another dependency with only one of its requesters
+  (`requested_by = ["@lam/vulture/dev-plugin@1.0.0"]` without `"root"`, or
+  `["root"]` alone, depending on the declaration order). `requested_by` now
+  lists every requester, re-installs keep them, and requesters no longer
+  pinned are dropped (also by `lamc uninstall`). `lamc tree` renders such a
+  shared pin under each requester instead of marking it `(cycle)`, and
+  `lamc why` follows scoped requesters (`@lam/vulture@1.0.0`) instead of
+  printing `(no requester recorded)`.
+- `lamc uninstall` rewrote `lamlib.lock.toml` without its `[go_pins]`
+  table, dropping every Go-module pin of the project. It now keeps them,
+  pruning only the Go pins left without a requester. `[go_pins.*]`
+  `requested_by` also listed only the library whose version won; it now
+  lists every requester (libraries declaring the module and `"root"` for
+  the project's `[go-deps]`), sorted and deduplicated.
+- `install.sh --prefix DIR` with a missing `DIR` (and `--user` without
+  `~/.local`) fell back to `sudo mkdir`, failing without a terminal: only
+  the immediate parent of the bin directory was checked for write access.
+  Missing directories are now created without sudo when the nearest
+  existing ancestor is writable.
+- A type parameter only the result of a generic call mentions
+  (`make[T]() -> Result[T]`, `none[T]() -> list[T]`) was bound only by an
+  annotated assignment (`r: Result[int] = make()`); elsewhere the checker
+  asked for explicit type arguments. It is now also bound by the declared
+  result of the function, method, nested function or lambda the call is
+  returned from (`return make()`, `return make()?` in a `-> int`, an
+  expression lambda's body), by the declared type of the parameter it is
+  passed to (functions, methods, constructors, static methods, keyword
+  arguments, `?` operands, imported callables) and by the declared type of
+  the field it is assigned to (`self.items = none()`, `ledger.status =
+  fail("x")` on an imported class); the Go call spells the type arguments
+  (`Make[int]()`), where Go reported `cannot infer T`.
+- A generic class constructor whose type parameter only an empty literal
+  (or no argument) mentions takes the type arguments of the expected type:
+  `c: Box[int] = Box([])`, `d: Bag[str] = Bag({})`, `return Box([])` in a
+  `-> Box[int]` function, `take(Box([]))`, `r: Registry[str, int] =
+  Registry()` (`NewBox([]int{})`, `NewRegistry[string, int]()`). These
+  were errors asking for `Box[int]([])`; a context whose type is itself
+  generic (`boxed[U](b: Box[U])`) still is.
+- A `try { } catch ... { }` inside a block lambda or a nested function
+  that returns a value did not build (`too many return values`, `missing
+  return`): its `return` and the guard of a `?` returned from the closure
+  the `try` lowers to. Such a lambda gets a named result as a function
+  does, so `return` there returns from the lambda and a `?` in the `try`
+  body or a handler propagates the `Err` out of a `-> Result` lambda (to
+  the `catch` of a `do` block around it, also for a `try` inside the `do`
+  body and a `do` inside the `try`).
+- Importing a module that is also a runnable program (a non-empty `func
+  main()`) failed in `go build` with `"fmt" imported and not used` (and
+  `"os"` / `"strings"` for packages a top-level `go! { import ... }` added
+  for `go!` blocks in that `main`): the module's `main` was cut out of the
+  generated Go after its imports were computed. It is now left out before,
+  with the imports only it needs. Library modules need no `func main()`
+  at all (docs/SYNTAX.md said to keep an empty one).
+- `break` / `continue` inside a `try` body, a `catch` clause or a
+  `finally` block, or inside a `do` body, failed in `go build` (`continue is
+  not in a loop`): those parts are Go closures. They now leave or continue
+  the enclosing loop (also through nested `try` / `do` statements, in
+  methods, lambdas and module-level loops, with loop `else` blocks), after
+  `finally` has run. A `break` / `continue` in a lambda or nested function
+  whose loop is outside it is now a compile error instead of a Go error.
+- A catch-less `try { } finally { }` ran its `finally` when the enclosing
+  function returned (once per loop iteration, all at the end) instead of
+  when the statement ended, and a `try { return x } finally { }` body was
+  reported as not returning. `finally` now runs at the end of the
+  statement and such a body ends the function.
+- `return a, b` inside a `try` / `catch` (functions, methods, nested
+  functions) did not build: the named result the `try` lowering stores into
+  had a single value. A multi-value result now gets one named result per
+  value. An `else` block of a `try` also ran when the body returned.
+- A list or set literal (or the values of a dict literal) mixing a subclass
+  and its base, or sibling subclasses (`for x in [B(1), A(2)]`), was a
+  `list[any]` / `[]interface{}`: method calls and field reads failed in
+  `go build`. Its item type is now the least common base class (calls run
+  the overrides), also for `[B(7), A(8)][0].show()` and for a ternary of two
+  such classes (`s = B(0) if c else A(1)` declared `s` with the first
+  branch's class). Without a common base the items stay `any` and using a
+  member of one is a compile error naming the classes and the fixes
+  (annotate the collection, or narrow with `isinstance` / `match`).
+- Calling a generic function declared inside another function with a list
+  literal (`pick(["a"], 0)`) emitted `[]T{...}` (`undefined: T`): the
+  arguments of a nested generic function are now lowered with its type
+  parameters bound from them (or from explicit type arguments), like a
+  top-level generic's.
+- The expected type that binds a type parameter only the result or an
+  empty literal mentions now also comes from typed collections: elements of
+  a list / set literal and values of a dict literal with a declared type
+  (annotations, returns, arguments, fields, nested literals), the argument
+  of `append` / `insert` / `extend` / set `add` and `d[k] = ...` /
+  `xs[i] = ...` (`xs: list[Box[int]] = [Box([])]`, `xs.append(Box([]))`,
+  `rs: list[Result[int]] = [fail("x")]`), where the checker asked for
+  explicit type arguments or Go rejected `*Box[interface{}]`.
+- An interface written as a class base (`class Item(Priced)`) failed in `go
+  build` (`embedded field type cannot be a pointer to an interface`). It is
+  now a compile error explaining that interfaces are satisfied structurally
+  and which of the interface's methods the class still lacks.
+- A `try`'s `else` block ran after `finally` (Python runs it before) and was
+  skipped when a `try` nested in the body had caught its own exception. The
+  order is now
+  body → `else` (only when the body completed: no exception, `return`,
+  `break` or `continue`) → `finally`; an exception raised in `else` is not
+  handled by the statement's own `catch` clauses and propagates after
+  `finally`, and a `return` in `else` runs `finally` first.
+- A `return` / `break` / `continue` in `finally` did not cancel an
+  exception propagating through the `try` (the program still crashed), a
+  `break` / `continue` there did not discard a pending `return` of the body,
+  and a `try` inside `finally` lost such a pending `return`. They now follow
+  Python: the exception is cancelled, a `return` in `finally` replaces the
+  body's return value and a jump discards it. A `finally` that always
+  returns now ends the function for the "not all paths return" check. Such
+  jumps are warned about (`` `return` in `finally` cancels an exception ``),
+  as Python linters and PEP 765 do.
+- A list / set literal (or the values of a dict literal) with an item of
+  type `any` or of a type the compiler could not determine took its item
+  type from the other items: `[anyv(1), 2]` lowered to `[]int{Anyv(1), 2}`
+  (rejected by Go) and `[f(1), 2]` with an untyped lambda `f` was a
+  `list[int]` that refused `append("y")`. Such literals now have `any`
+  items unless an annotation says otherwise.
+- The result of a function, method, static method or lambda declared `->
+  any` (also imported, nested, or a generic result bound to `any`) did not
+  build where a concrete type is expected (`n: int = anyv(3)`, `return
+  anyv(x)`, `take(anyv(x))`, `[anyv(1)]` in a `list[int]`): Go reported
+  `need type assertion`. Neither did an `any` field (`self.raw`,
+  `r.value`) or an element of a `dict[int, any]`. These now convert like an
+  element of a `list[any]` / `dict[str, any]` or an `any` local did. All
+  sources also share one conversion now, the one `unwrap()` of an untyped
+  `Result` already used: an int held in `any` is accepted where a `float`
+  is expected and a subclass instance where its base class is expected
+  (both used to panic for `list[any]` / `dict[str, any]` elements and `any`
+  locals), and `None` where a class is expected; a mismatch still throws a
+  `TypeError`.
+- `tests/tests/test_doc_comments.py` aborted the unit suite with
+  `PermissionError` when the repository sits next to a directory the user
+  cannot read (a worktree in `/tmp`); unreadable siblings are now skipped.
+
 ## 4.5.1 — 2026-11-07
 
 ### Fixed

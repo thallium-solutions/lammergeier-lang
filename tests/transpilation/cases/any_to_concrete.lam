@@ -1,0 +1,42 @@
+# Transpilation: an `any` value where a concrete type is expected goes
+# through one checked conversion, whatever produces it (here the results
+# of `-> any` callables, an `any` field and a `dict[int, any]` element): a
+# plain assertion for scalars, the int-widening converter for `float`.
+# expect-go: var n int = interface{}(Anyv(3)).(int)
+# expect-go: return interface{}(Anyv(x)).(string)
+# expect-go: Take(interface{}(s.Get(1)).(int))
+# expect-go: var f float64 = func(v interface{}) float64 { if n, ok := v.(int); ok { return float64(n) }; return v.(float64) }(Store_make(2))
+# expect-go: var r int = interface{}(s.Raw).(int)
+# expect-go: var k string = interface{}(byId[1]).(string)
+# expect-go: []int{interface{}(Anyv(4)).(int)}
+
+class Store {
+    func init(self) {
+        self.raw: any = 5
+    }
+
+    func get(self, x: any) -> any { return x }
+
+    static func make(x: any) -> any { return x }
+}
+
+func anyv(x: any) -> any {
+    return x
+}
+
+func label(x: any) -> str {
+    return anyv(x)
+}
+
+func take(n: int) -> int { return n }
+
+func main() {
+    s: Store = Store()
+    n: int = anyv(3)
+    f: float = Store.make(2)
+    r: int = s.raw
+    byId: dict[int, any] = {1: "a"}
+    k: str = byId[1]
+    xs: list[int] = [anyv(4)]
+    print(n, f, r, k, xs, take(s.get(1)), label("z"))
+}

@@ -1,0 +1,104 @@
+# Private static methods used as function values (passed, stored in a
+# local, a list and a field, returned) name the generated unexported
+# function, like a call of them; private instance methods are bound
+# values. Imported public statics may hand out the private ones.
+# expect: usePrivate 4
+# expect: local 10
+# expect: list 6 2
+# expect: field 8
+# expect: returned 12
+# expect: generic 7
+# expect: bound 15
+# expect: bound list 3 6
+# expect: imported 9
+# expect: imported steps 5
+
+from private_method_values_provider import Pipeline
+
+class Hooks {
+    func init(self, k: int) {
+        self.k: int = k
+        self.op: func(int) -> int = Hooks.double
+    }
+
+    static func run(fn: func(int) -> int) -> int {
+        return fn(2)
+    }
+
+    static func usePrivate() -> int {
+        return Hooks.run(Hooks.double)
+    }
+
+    static func local() -> int {
+        f: func(int) -> int = Hooks.double
+        return f(5)
+    }
+
+    static func listed() -> list[int] {
+        fns: list[func(int) -> int] = [Hooks.double, Hooks.half]
+        return [fn(3) for fn in fns]
+    }
+
+    static func pick() -> func(int) -> int {
+        return Hooks.double
+    }
+
+    private static func double(n: int) -> int {
+        return n * 2
+    }
+
+    private static func half(n: int) -> int {
+        return n // 2 * 2
+    }
+
+    private func scale(self, n: int) -> int {
+        return n * self.k
+    }
+
+    private func shift(self, n: int) -> int {
+        return n + self.k
+    }
+
+    func useBound(self) -> int {
+        return Hooks.run(self.scale) + self.scale(1)
+    }
+
+    func boundList(self) -> list[int] {
+        fns: list[func(int) -> int] = [self.shift, self.scale]
+        return [fn(1) for fn in fns]
+    }
+}
+
+class Mapper[T] {
+    static func applyTo(value: T, fn: func(T) -> T) -> T {
+        return fn(value)
+    }
+
+    static func viaPrivate(n: int) -> int {
+        return Mapper.applyTo(n, Mapper.bump)
+    }
+
+    private static func bump(n: int) -> int {
+        return n + 4
+    }
+}
+
+func main() {
+    print("usePrivate", Hooks.usePrivate())
+    print("local", Hooks.local())
+    xs: list[int] = Hooks.listed()
+    print("list", xs[0], xs[1])
+    h: Hooks = Hooks(5)
+    print("field", h.op(4))
+    print("returned", Hooks.pick()(6))
+    print("generic", Mapper.viaPrivate(3))
+    print("bound", h.useBound())
+    ys: list[int] = Hooks(2).boundList()
+    print("bound list", ys[0] + 0, ys[1] * 3)
+    print("imported", Pipeline.viaPrivate(3))
+    total: int = 0
+    for step in Pipeline.steps() {
+        total += step(1)
+    }
+    print("imported steps", total)
+}

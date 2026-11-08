@@ -560,6 +560,13 @@ def _format_code_fragment(code: str, enclosing: str = "") -> str:
             _append_space(out)
             i += 1
             continue
+        if ch in "+-" and _is_unary_sign(code, i):
+            # ``x = - 1`` / ``n ?? - 1``: a sign sticks to its operand.
+            out.append(ch)
+            i += 1
+            while i < len(code) and code[i].isspace():
+                i += 1
+            continue
         out.append(ch)
         i += 1
     return "".join(out).strip()
@@ -588,7 +595,9 @@ def _operator_at(code: str, index: int) -> str:
                 continue
             if op == "-" and index + 1 < len(code) and code[index + 1] == ">":
                 continue
-            if op in {"+", "-"} and index > 0 and code[index - 1] in "([{=,:+-*/%<>!&|^":
+            if op in {"+", "-"} and index > 0 and (
+                code[index - 1] in "([{=,:+-*/%<>!&|^" or code[max(0, index - 2):index] == "??"
+            ):
                 return ""
             if op in {"+", "-"} and _is_unary_sign(code, index):
                 return ""
@@ -612,12 +621,17 @@ _UNARY_AFTER_WORDS = {"return", "if", "elif", "while", "in", "and", "or", "not",
 def _is_unary_sign(code: str, index: int) -> bool:
     """``i - -1`` / ``return -1``: a sign after an operator or keyword
     (separated by spaces) is unary."""
-    if index + 1 >= len(code) or code[index + 1].isspace():
+    if index + 1 >= len(code) or not code[index + 1:].strip():
         return False
     prev = _previous_nonspace(code, index)
     if not prev:
-        return True
+        # A line starting with ``- b`` continues a binary expression of the
+        # line before; ``-1`` starts with a negative number.
+        return not code[index + 1].isspace()
     if prev in "([{=,:+-*/%<>!&|^":
+        return True
+    if prev == "?" and _ends_with_coalesce(code[:index]):
+        # ``n ?? -1`` (a postfix ``?`` is not an operator: ``r? - 1``).
         return True
     if prev.isalnum() or prev == "_":
         j = index - 1
@@ -628,6 +642,12 @@ def _is_unary_sign(code: str, index: int) -> bool:
             j -= 1
         return code[j + 1:end] in _UNARY_AFTER_WORDS
     return False
+
+
+def _ends_with_coalesce(text: str) -> bool:
+    """``text`` (spaces aside) ends with the ``??`` operator, not with the
+    postfix ``?`` of a propagation (``r?``)."""
+    return text.rstrip().endswith("??")
 
 
 def _previous_nonspace(code: str, index: int) -> str:
@@ -868,7 +888,9 @@ def _space_before_opener_is_meaningful(out: list[str]) -> bool:
         while i >= 0 and (text[i].isalnum() or text[i] == "_"):
             i -= 1
         return text[i + 1:end] in _OPENER_KEYWORDS and (i < 0 or text[i] != ".")
-    return text[i] in "=,:+-*/%<>!&|^"
+    # ``xs ?? []`` / ``n ?? (a + b)``: an operand after ``??`` (but
+    # ``f()?[0]`` indexes the propagated value).
+    return text[i] in "=,:+-*/%<>!&|^" or _ends_with_coalesce(text[:i + 1])
 
 
 # Keywords written with one space before a ``(`` that follows them.

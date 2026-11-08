@@ -1,0 +1,24 @@
+# Provider for test_any_sources_aligned.lam: callables and a field declared
+# `any` in another module.
+
+func dynamic(x: any) -> any {
+    return x
+}
+
+class Bag {
+    func init(self, value: any) {
+        self.value: any = value
+    }
+
+    func peek(self) -> any {
+        return self.value
+    }
+
+    static func wrap(x: any) -> any {
+        return x
+    }
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

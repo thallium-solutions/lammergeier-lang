@@ -1,0 +1,49 @@
+# Helper package for test_int_static_refactor.lam: the other half of the
+# `scope` <-> `conn` cycle; `Box` reaches `Scope`'s statics with `any`
+# arguments and hands its static `Handlers.count` out as a typed callback.
+
+from .scope import Scope
+
+interface Sq {
+    func size() -> int
+}
+
+class Row {
+    func init(self, id: int, tag: str) {
+        self.id: int = id
+        self.tag: str = tag
+    }
+}
+
+class Box {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func size(self) -> int {
+        return self.n
+    }
+
+    func scope(self) -> Scope {
+        return Scope.of(self)
+    }
+
+    func classify(self, value: any) -> str {
+        return Scope.kind(value) + "/" + self.scope().report(value)
+    }
+}
+
+class Handlers {
+    static func count(tag: str, rows: list[Row]) -> int {
+        return len([r for r in rows if r.tag == tag])
+    }
+
+    static func index(rows: list[Row]) -> dict[int, Row] {
+        return {r.id: r for r in rows}
+    }
+}
+
+# Built standalone by the test runner (as the entry of the cycle); dropped
+# when imported.
+func main() {
+}

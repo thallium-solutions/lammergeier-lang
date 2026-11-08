@@ -1,0 +1,14 @@
+# expect-error: ambiguous call to `Pick.label` for dynamic argument types
+# Checking this half of the cycle checks `overloads` too.
+
+from .overloads import Pick
+
+class Peer {
+    func name(self) -> str {
+        return "peer"
+    }
+
+    func pick(self) -> str {
+        return Pick.label("x")
+    }
+}

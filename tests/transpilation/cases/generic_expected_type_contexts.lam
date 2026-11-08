@@ -1,0 +1,105 @@
+# Transpilation: a type parameter only the result mentions is spelled at
+# the call from the type the call's value must have: the declared result
+# of the function or lambda returning it, the parameter it is passed to,
+# the field it is assigned to (Go infers no type argument from a result).
+# A generic constructor given an empty literal takes the expected type's
+# arguments, so the literal gets the element type (`NewBox([]int{})`),
+# and one whose parameters do not mention `T` spells it (`NewReg[int]()`).
+# expect-go: return Fail[int]("load")
+# expect-go: return None[string]()
+# expect-go: __q1 := OkOf[int](8)
+# expect-go: return IsOk(Fail[int]("x")) && Count(None[string]())
+# expect-go: s.Items = None[int]()
+# expect-go: s.Last = Fail[string]("reset")
+# expect-go: f := func() *Result { return Fail[int]("lambda") }
+# expect-go: return NewBox([]int{})
+# expect-go: var r *Reg[string] = NewReg[string]()
+# expect-go: BoxSize(NewBox([]string{}))
+# expect-go: var d *Bag[string] = NewBag(map[string]int{})
+
+from lamerrors import Result, Error
+
+func fail[T](msg: str) -> Result[T] {
+    return Result.Err(Error("Fail", msg))
+}
+
+func okOf[T](value: any) -> Result[T] {
+    return Result.Ok(value)
+}
+
+func none[T]() -> list[T] {
+    return []
+}
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+}
+
+class Bag[T] {
+    func init(self, counts: dict[T, int]) {
+        self.counts: dict[T, int] = counts
+    }
+}
+
+class Reg[T] {
+    func init(self) {
+        self.items: list[T] = []
+    }
+}
+
+class Store {
+    func init(self) {
+        self.items: list[int] = []
+        self.last: Result[str] = Result.Ok("x")
+    }
+
+    func reset(self) {
+        self.items = none()
+        self.last = fail("reset")
+    }
+}
+
+func load() -> Result[int] {
+    return fail("load")
+}
+
+func names() -> list[str] {
+    return none()
+}
+
+func payload() -> Result[int] {
+    n: int = okOf(8)?
+    return Result.Ok(n)
+}
+
+func isOk(r: Result[int]) -> bool {
+    return r.ok()
+}
+
+func count(xs: list[str]) -> bool {
+    return len(xs) == 0
+}
+
+func both() -> bool {
+    return isOk(fail("x")) and count(none())
+}
+
+func emptyBox() -> Box[int] {
+    return Box([])
+}
+
+func boxSize(b: Box[str]) -> int {
+    return len(b.items)
+}
+
+func main() {
+    s = Store()
+    s.reset()
+    f = lambda () -> Result[int]: fail("lambda")
+    r: Reg[str] = Reg()
+    d: Bag[str] = Bag({})
+    print(load().ok(), len(names()), payload().ok(), both(), f().ok(), len(emptyBox().items))
+    print(len(r.items), boxSize(Box([])), len(d.counts), len(s.items))
+}

@@ -1350,6 +1350,12 @@ func main() {
 `assertAlmostEqual`, `pass`, `fail`, `describe`, `passed()`,
 `failed()`, `reset()`, `summary()`.
 
+Assertions are statements: each prints `PASS` / `FAIL` and updates the
+totals. The `assert*` helpers also return whether the check passed (`if
+Test.assertEqual(a, b) { ... }`) and `summary()` the failure count, but an
+unused result is not a dropped value: `Test.assertTrue(...)` and
+`Test.summary()` as statements raise no `unused` warning (no `_ =` needed).
+
 `assertEqual`, `assertNotEqual` and `assertContains` compare values:
 numbers by value whatever their type (`2.0` equals `2`), lists and dicts
 element by element, so `Test.assertEqual(scores(), [80, 90, 100])` passes

@@ -1,0 +1,320 @@
+# Python order and semantics of try / catch / else / finally:
+# body -> else (only when the body completed: no exception, no return, no
+# loop jump) -> finally. An exception raised in `else` is not handled by the
+# statement's own `catch` clauses and propagates after `finally`; a `return`
+# in `else` runs `finally` first. A `return` / `break` / `continue` in
+# `finally` cancels an exception that is propagating, and a `return` there
+# overrides the body's return value (a jump there cancels it).
+# expect: order: body else finally after
+# expect: caught: body catch finally
+# expect: else-raises: body else finally outer:ValueError: from else
+# expect: else-returns: 5 [body else finally]
+# expect: body-returns: 1 [body finally]
+# expect: else-jumps: 0ef 1ef 2ef!
+# expect: nested-inner-catch: inner-caught else finally
+# expect: no-finally: else not caught here, outer got it
+# expect: finally-return-cancels: 7
+# expect: finally-break-cancels: 0 1 broke
+# expect: finally-continue-cancels: 3 rounds
+# expect: finally-return-overrides: 2
+# expect: finally-break-overrides-return: -1
+# expect: finally-plain-reraises: fin outer:KeyError: k
+# expect: finally-conditional: fin kept:ValueError: v / fin cancelled
+# expect: catch-raises-finally-returns: 9
+# expect: try-in-finally-keeps-return: 4
+# expect: return-in-finally-of-loop-body: 3
+
+class Trace {
+    func init(self) {
+        self.items: list[str] = []
+    }
+
+    func add(self, item: str) {
+        self.items.append(item)
+    }
+}
+
+func boom(msg: str) {
+    throw ValueError(msg)
+}
+
+func order() -> str {
+    out: str = "order:"
+    try {
+        out += " body"
+    } catch _ {
+        out += " catch"
+    } else {
+        out += " else"
+    } finally {
+        out += " finally"
+    }
+    return out + " after"
+}
+
+func caught() -> str {
+    out: str = "caught:"
+    try {
+        out += " body"
+        boom("x")
+    } catch _ {
+        out += " catch"
+    } else {
+        out += " else"
+    } finally {
+        out += " finally"
+    }
+    return out
+}
+
+func elseRaises() -> str {
+    out: str = "else-raises:"
+    try {
+        try {
+            out += " body"
+        } catch _ {
+            out += " own-catch"
+        } else {
+            out += " else"
+            boom("from else")
+        } finally {
+            out += " finally"
+        }
+    } catch e {
+        out += f" outer:{e}"
+    }
+    return out
+}
+
+func elseReturns(trace: Trace) -> int {
+    try {
+        trace.add("body")
+    } catch _ {
+        trace.add("catch")
+    } else {
+        trace.add("else")
+        return 5
+    } finally {
+        trace.add("finally")
+    }
+    return 0
+}
+
+func bodyReturns(trace: Trace) -> int {
+    try {
+        trace.add("body")
+        return 1
+    } catch _ {
+        trace.add("catch")
+    } else {
+        trace.add("else")
+    } finally {
+        trace.add("finally")
+    }
+    return 0
+}
+
+func elseJumps() -> str {
+    out: str = "else-jumps: "
+    for i in range(5) {
+        try {
+            out += f"{i}"
+        } catch _ {
+            out += "c"
+        } else {
+            out += "e"
+            if i == 2 {
+                break
+            }
+            continue
+        } finally {
+            out += "f "
+        }
+        out += "never"
+    }
+    return out.trim() + "!"
+}
+
+func nestedInnerCatch() -> str {
+    out: str = "nested-inner-catch:"
+    try {
+        try {
+            boom("inner")
+        } catch _ {
+            out += " inner-caught"
+        }
+    } catch _ {
+        out += " outer-caught"
+    } else {
+        out += " else"
+    } finally {
+        out += " finally"
+    }
+    return out
+}
+
+func noFinally() -> str {
+    out: str = "no-finally:"
+    try {
+        try {
+            out += " else"
+        } catch _ {
+            out += " wrong"
+        } else {
+            boom("e")
+        }
+    } catch _ {
+        out += " not caught here, outer got it"
+    }
+    return out
+}
+
+func finallyReturnCancels() -> int {
+    try {
+        boom("lost")
+    } finally {
+        return 7
+    }
+}
+
+func finallyBreakCancels() -> str {
+    out: str = "finally-break-cancels:"
+    for i in range(5) {
+        try {
+            if i == 2 {
+                boom("stop")
+            }
+            out += f" {i}"
+        } finally {
+            if i == 2 {
+                break
+            }
+        }
+    }
+    return out + " broke"
+}
+
+func finallyContinueCancels() -> str {
+    rounds: int = 0
+    for i in range(3) {
+        try {
+            rounds += 1
+            boom(f"round {i}")
+        } finally {
+            continue
+        }
+    }
+    return f"finally-continue-cancels: {rounds} rounds"
+}
+
+func finallyReturnOverrides() -> int {
+    try {
+        return 1
+    } finally {
+        return 2
+    }
+}
+
+func finallyBreakOverridesReturn() -> int {
+    for i in range(3) {
+        try {
+            return i + 100
+        } finally {
+            break
+        }
+    }
+    return -1
+}
+
+func finallyPlainReraises() -> str {
+    out: str = "finally-plain-reraises:"
+    try {
+        try {
+            throw KeyError("k")
+        } finally {
+            out += " fin"
+        }
+    } catch e {
+        out += f" outer:{e}"
+    }
+    return out
+}
+
+func conditional(cancel: bool) -> str {
+    out: str = ""
+    try {
+        try {
+            boom("v")
+        } finally {
+            out += "fin"
+            if cancel {
+                return out + " cancelled"
+            }
+        }
+    } catch e {
+        out += f" kept:{e}"
+    }
+    return out
+}
+
+func catchRaisesFinallyReturns() -> int {
+    try {
+        boom("a")
+    } catch _ {
+        boom("b")
+    } finally {
+        return 9
+    }
+}
+
+func tryInFinallyKeepsReturn() -> int {
+    try {
+        return 4
+    } finally {
+        try {
+            boom("inside finally")
+        } catch _ {
+            _ = 0
+        }
+    }
+}
+
+func returnInFinallyOfLoopBody() -> int {
+    for i in range(10) {
+        try {
+            if i < 3 {
+                continue
+            }
+        } finally {
+            if i == 3 {
+                return i
+            }
+        }
+    }
+    return -1
+}
+
+func main() {
+    print(order())
+    print(caught())
+    print(elseRaises())
+    t1: Trace = Trace()
+    r1: int = elseReturns(t1)
+    print(f"else-returns: {r1} {t1.items}")
+    t2: Trace = Trace()
+    r2: int = bodyReturns(t2)
+    print(f"body-returns: {r2} {t2.items}")
+    print(elseJumps())
+    print(nestedInnerCatch())
+    print(noFinally())
+    print(f"finally-return-cancels: {finallyReturnCancels()}")
+    print(finallyBreakCancels())
+    print(finallyContinueCancels())
+    print(f"finally-return-overrides: {finallyReturnOverrides()}")
+    print(f"finally-break-overrides-return: {finallyBreakOverridesReturn()}")
+    print(finallyPlainReraises())
+    print(f"finally-conditional: {conditional(false)} / {conditional(true)}")
+    print(f"catch-raises-finally-returns: {catchRaisesFinallyReturns()}")
+    print(f"try-in-finally-keeps-return: {tryInFinallyKeepsReturn()}")
+    print(f"return-in-finally-of-loop-body: {returnInFinallyOfLoopBody()}")
+}

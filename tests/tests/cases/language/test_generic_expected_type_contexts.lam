@@ -1,0 +1,209 @@
+# Regression: a type parameter that only the result of a generic call
+# mentions (`fail[T]() -> Result[T]`, `none[T]() -> list[T]`) was bound
+# only by an annotated assignment (`r: Result[int] = fail()`); everywhere
+# else the checker asked for explicit type arguments and the Go call
+# (`Fail()`) did not build (`cannot infer T`). The expected type now also
+# comes from the declared result of the function or lambda the call is
+# returned from (`return fail()`, `return okOf(1)?`), from the parameter
+# it is passed to (functions, methods, constructors, static methods,
+# keyword arguments), and from the declared type of the field it is
+# assigned to (`self.items = none()`). A generic class constructor whose
+# type parameter only an empty literal mentions (`Box([])`, `Bag({})`)
+# takes the type arguments of the same expected types.
+#
+# expect: returns=false 0 7 true
+# expect: propagate=8 -1
+# expect: args=false 0 true 2
+# expect: methods=false 0
+# expect: ctor=false 0
+# expect: keyword=false 0
+# expect: fields=0 1 2
+# expect: lambdas=false false 0 9
+# expect: boxes=1 1 0 0 2
+# expect: bags=1 0 1
+# expect: generic_caller=0 false
+# expect: nested=3 true
+# expect: generic_expected_type_contexts_ok
+
+from lamerrors import Result, Error
+
+func fail[T](msg: str) -> Result[T] {
+    return Result.Err(Error("Fail", msg))
+}
+
+func okOf[T](value: any) -> Result[T] {
+    return Result.Ok(value)
+}
+
+func none[T]() -> list[T] {
+    return []
+}
+
+func noKeys[K, V]() -> dict[K, V] {
+    return {}
+}
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+
+    func add(self, item: T) -> Box[T] {
+        self.items.append(item)
+        return self
+    }
+}
+
+class Bag[T] {
+    func init(self, counts: dict[T, int]) {
+        self.counts: dict[T, int] = counts
+    }
+}
+
+# ── return ──────────────────────────────────────────────────────
+
+func loadCount() -> Result[int] {
+    return fail("no count")
+}
+
+func names() -> list[str] {
+    return none()
+}
+
+func seven() -> Result[int] {
+    if false {
+        return fail("never")
+    }
+    return okOf(7)
+}
+
+func index() -> dict[str, int] {
+    return noKeys()
+}
+
+func payload() -> int {
+    return okOf(8)?
+}
+
+func nested() -> Result[Result[int]] {
+    return okOf(Result.Err(Error("Inner", "x")))
+}
+
+func viaPropagate() -> Result[int] {
+    return nested()?
+}
+
+# ── arguments ───────────────────────────────────────────────────
+
+func isOk(r: Result[int]) -> bool {
+    return r.ok()
+}
+
+func count(xs: list[str]) -> int {
+    return len(xs)
+}
+
+func sizes(d: dict[str, int], label: str = "") -> int {
+    return len(d) + len(label)
+}
+
+class Checker {
+    func init(self, r: Result[str]) {
+        self.ok: bool = r.ok()
+    }
+
+    func check(self, r: Result[int]) -> bool {
+        return r.ok()
+    }
+
+    func total(self, xs: list[int]) -> int {
+        return len(xs)
+    }
+
+    static func size(xs: list[float]) -> int {
+        return len(xs)
+    }
+}
+
+# ── fields ──────────────────────────────────────────────────────
+
+class Store {
+    func init(self) {
+        self.items: list[int] = [1]
+        self.index: dict[str, int] = {"a": 1}
+        self.last: Result[str] = Result.Ok("x")
+    }
+
+    func reset(self) {
+        self.items = none()
+        self.index = noKeys()
+        self.last = fail("reset")
+    }
+}
+
+# ── generic constructors with empty literals ────────────────────
+
+func emptyBox() -> Box[int] {
+    return Box([])
+}
+
+func boxSize(b: Box[str]) -> int {
+    return len(b.items)
+}
+
+# ── generic callers ─────────────────────────────────────────────
+
+func wrap[T]() -> Result[T] {
+    return fail("wrapped")
+}
+
+func gather[T](xs: list[T]) -> list[T] {
+    out: list[T] = none()
+    for x in xs {
+        out.append(x)
+    }
+    return out
+}
+
+func main() {
+    print(f"returns={loadCount().ok()} {len(names())} {seven().unwrap()} {len(index()) == 0}")
+    r = viaPropagate()
+    print(f"propagate={payload()} {-1 if not r.ok() else 1}")
+
+    print(f"args={isOk(fail('x'))} {count(none())} {isOk(okOf(1))} {sizes(noKeys(), 'ab')}")
+    ch = Checker(fail("ctor"))
+    print(f"methods={ch.check(fail('m'))} {ch.total(none())}")
+    print(f"ctor={ch.ok} {Checker.size(none())}")
+    print(f"keyword={isOk(r=fail('kw'))} {sizes(label='', d=noKeys())}")
+
+    s = Store()
+    s.reset()
+    print(f"fields={len(s.items)} {len(s.index) + 1} {2 if not s.last.ok() else 0}")
+
+    f = lambda () -> Result[int]: fail("lambda")
+    g = lambda (n: int) -> Result[int] {
+        if n > 0 {
+            return fail("block")
+        }
+        return okOf(n)
+    }
+    h = lambda () -> list[str]: none()
+    k = lambda () -> int {
+        return okOf(9)?
+    }
+    print(f"lambdas={f().ok()} {g(1).ok()} {len(h())} {k()}")
+
+    c: Box[int] = Box([])
+    c.add(1)
+    e = emptyBox().add(5)
+    print(f"boxes={len(c.items)} {len(e.items)} {boxSize(Box([]))} {len(emptyBox().items)} {len(Box[int]([]).add(1).add(2).items)}")
+
+    d: Bag[str] = Bag({})
+    d.counts["a"] = 1
+    print(f"bags={len(d.counts)} {len(Bag[int]({}).counts)} {d.counts['a']}")
+
+    print(f"generic_caller={len(gather([1, 2])) - 2} {wrap[int]().ok()}")
+    nestedBoxes: list[Box[int]] = [emptyBox(), Box([3]), Box[int]([])]
+    print(f"nested={len(nestedBoxes)} {isOk(seven()) and not isOk(wrap())}")
+    print("generic_expected_type_contexts_ok")
+}

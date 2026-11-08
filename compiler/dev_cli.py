@@ -12,14 +12,18 @@ its files change (the nodemon workflow for compiled Lam programs).
   process group, stopped with ``--signal`` (SIGTERM) and killed after
   ``--kill-timeout``.
 
-Change detection polls modification times, so it also works on bind
-mounts inside containers, where file-system events are not delivered.
+Change detection polls modification times and sizes, so it also works on
+bind mounts inside containers, where file-system events are not delivered.
+A file whose modification time or size changed is then hashed and compared
+with the content seen before: touching a file, or rewriting it with the same
+bytes (``lamc install --frozen`` re-copying ``extlibs/``), is not a change.
 """
 
 from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import os
 import shutil
 import signal
@@ -36,7 +40,20 @@ DEFAULT_IGNORES = (".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv"
 BUILD_FILES = ("lamlib.toml", "lamlib.lock.toml")
 PREFIX = "[lamc dev]"
 
-Snapshot = Dict[str, Tuple[int, int]]
+# path -> content digest of the file when the snapshot was taken
+Snapshot = Dict[str, str]
+
+
+def _content_digest(path: Path) -> Optional[str]:
+    """BLAKE2b digest of a file's bytes, or None when it can't be read."""
+    digest = hashlib.blake2b(digest_size=16)
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 16), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -109,13 +126,19 @@ def _extensions(values: List[str]) -> Tuple[str, ...]:
 
 
 class Watcher:
-    """Polls file modification times under the watched roots."""
+    """Polls the files under the watched roots.
+
+    The (mtime_ns, size) pair is the cheap first check; only a file whose
+    pair changed since the previous snapshot is read and hashed, so a
+    snapshot records content digests while costing one ``stat`` per
+    unchanged file."""
 
     def __init__(self, root: Path, exts: Tuple[str, ...], paths: List[Path], ignores: List[str]):
         self.root = root
         self.exts = exts
         self.paths = paths
         self.ignores = list(DEFAULT_IGNORES) + ignores
+        self._digests: Dict[str, Tuple[Tuple[int, int], str]] = {}
 
     def ignored(self, path: Path) -> bool:
         try:
@@ -142,13 +165,24 @@ class Watcher:
                 if not self.ignored(path) and keep(path):
                     self._stat(path, out)
 
-    @staticmethod
-    def _stat(path: Path, out: Snapshot) -> None:
+    def _stat(self, path: Path, out: Snapshot) -> None:
+        key = str(path)
+        if key in out:
+            return
         try:
             st = path.stat()
         except OSError:
             return
-        out[str(path)] = (st.st_mtime_ns, st.st_size)
+        sig = (st.st_mtime_ns, st.st_size)
+        cached = self._digests.get(key)
+        if cached is not None and cached[0] == sig:
+            out[key] = cached[1]
+            return
+        digest = _content_digest(path)
+        if digest is None:
+            return
+        self._digests[key] = (sig, digest)
+        out[key] = digest
 
     def snapshot(self) -> Snapshot:
         out: Snapshot = {}
@@ -156,6 +190,8 @@ class Watcher:
         for path in self.paths:
             if path.exists():
                 self._walk(path, lambda p: True, out)
+        for key in [k for k in self._digests if k not in out]:
+            del self._digests[key]
         return out
 
 
@@ -299,7 +335,12 @@ class DevRunner:
                     current = settled
                 if self.stopping.is_set():
                     break
+                # A file rewritten in steps (deleted, then re-created by
+                # an install) may end up with the content it started with.
+                changes = changed_paths(state, current)
                 state = current
+                if not changes:
+                    continue
                 shown = ", ".join(os.path.relpath(p, self.root) for p in changes[:3])
                 if len(changes) > 3:
                     shown += f" (+{len(changes) - 3})"

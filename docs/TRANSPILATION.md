@@ -157,7 +157,11 @@ func __lam_nested_1_addOffset[T int](offset int, x T) int {
 ```
 
 Calls with explicit type arguments (`addOffset[int](7)`) and calls where
-Go can infer type arguments (`id(7)`) are both supported.
+Go can infer type arguments (`id(7)`) are both supported. The arguments of a
+call are lowered with the helper's own type parameters bound from them
+(`_generic_call_subst` over the nested function's parameter key, or the
+explicit type arguments), so `pick(["a"], 0)` passes `[]string{"a"}`
+rather than a `[]T{...}` that does not exist at the call site.
 
 ### Methods with their own type parameters
 
@@ -212,10 +216,29 @@ Result[int]: ...` is `func(Conn) -> Result[int]`), a function or static
 method passed by name its signature (`_func_ref_lam_type`), unified through
 `Result`, `optional`, `list`, `dict`, unions and function types
 (`inTx(c, countRows)` emits `InTx[int](c, CountRows)`). When the arguments
-leave a parameter unbound, the annotated variable a call initializes binds
-it (`_expected_value_lam` → `_call_result_lam`, for that call only):
-`r: Result[int] = make()` emits `Make[int]()`, `n: int = make()?` expects
-a `Result[int]`. Parameter defaults are lowered
+leave a parameter unbound, the type the call's value must have binds it
+(`_call_result_lam`, for that call only): the annotated variable it
+initializes (`_expected_value_lam`), and, recorded per call node in
+`_expected_call_lams`, the declared result of the function or lambda
+returning it (`_collect_expected_return_calls`, also an expression
+lambda's body), the declared Lam type of the parameter it is passed to
+(`_note_arg_expected_lams`, with the call's own type arguments applied)
+and of the field it is assigned to (`_field_lam_types`, imported classes'
+in `_external_field_lam_types`). A list / set / dict literal in one of those
+positions passes its item type on to the calls among its elements / values,
+recursively (`_note_expected_item_lams`), and the item argument of `append`,
+`insert`, `extend` (the list type) and set `add`, like the value of
+`d[k] = v` / `xs[i] = v`, expects the receiver's item type
+(`_note_expected_go_item`, from the receiver's recorded Lam type or its Go
+item type): `xs: list[Box[int]] = [Box([])]` and `xs.append(Box([]))` emit
+`NewBox([]int{})`. `r: Result[int] = make()` and `return
+make()` in a `-> Result[int]` function emit `Make[int]()`, `n: int =
+make()?` expects a `Result[int]`, `take(none())` with `take(xs:
+list[str])` emits `Take(None[string]())`. A generic constructor's result
+is `Box[T]`: an empty `[]` / `{}` argument binds nothing before the
+expected type does (`c: Box[int] = Box([])` emits `NewBox([]int{})`), and
+type parameters no constructor parameter mentions are spelled
+(`NewReg[int]()`). Parameter defaults are lowered
 with the same bindings, or with explicit type arguments bound in the
 declared order (`_func_generic_order`): `firstOf[str]()` with `xs: list[T]
 = []` emits `FirstOf[string]([]string{})`, `merge(xs)` with `extra:
@@ -324,6 +347,55 @@ The per-name type tables store both spellings of a renamed binding.
 `list`, `dict` and `set` without type arguments default to
 `[]interface{}`, `map[string]interface{}` and `map[interface{}]bool`
 respectively. See `TYPE_MAP` in `compiler/constants.py`.
+
+A `T` value where an `optional[T]` of a value type is expected (assigned,
+returned, passed) is boxed into a pointer to a fresh copy
+(`_optional_value_to_go`: `func() *string { __lamV := string(x); return
+&__lamV }()`), whatever produces it: a literal, a local, a function call,
+or a static or instance method call (also on `self`) whose declared result
+is that type — `html` (`LamHTML`), `xml` (`LamXML`), `str`, numbers, `bool`,
+lists and dicts. `optional[json]` is a `*LamJSON`: a `json` value or a JSON
+literal is boxed (`__lamV := lamJSONMust(...)`), and `??` on it takes any
+JSON fallback (`maybeDoc() ?? {}`). Class references are their own
+optional (no boxing).
+
+An item of type `any` or whose type is unknown makes an unannotated
+literal's items `any` (`[anyv(1), 2]` is `[]interface{}{...}`, `{"a":
+anyv(1), "b": 2}` a `map[string]interface{}`): the semantic checker gives
+it `list[any]` (`_has_untyped_item`) and the lowering does not take the
+other items' type (`_literal_item_go_type` consults the item's value type,
+then its expression type). An annotation still decides the type.
+
+An unannotated literal whose items are instances of different non-generic
+classes takes their least common ancestor (`_hier_common_base_go_type`,
+over the program-wide hierarchy) as its item type, both in the semantic
+checker (`_common_class_base`, which also types the ternary of two such
+classes) and in the lowering: `for s in [Square(), Shape()]` ranges over
+`[]*Shape{NewSquare()._lamUp_Shape(), NewShape()}`, `{"a": Square(), "b":
+Shape()}` is a `map[string]*Shape`, and `s = Square() if c else Shape()`
+declares `s` as a `*Shape`. Without a common base the items stay
+`interface{}` and the checker rejects member access on them (it records the
+literal in `_mixed_class_literals` and the loop variables / locals taken
+from it).
+
+### `any` to a concrete type
+
+`_typed_value_to_go` converts every statically `interface{}` value where a
+concrete Go type is expected through one helper, `_dynamic_to_go` (the
+conversion `unwrap()` of an untyped `Result` uses,
+`_result_payload_assert_go`). `_is_dynamic_any_value` recognises an `any`
+name, an element of a `[]interface{}` / `map[K]interface{}`, a field whose
+Go type is `interface{}` (`r.Value`) and a call of a callable declared
+`-> any` (`_call_returns_any`: functions and nested functions, function-typed
+locals including an untyped lambda's `func(interface{}) interface{}`,
+methods and static methods (inherited ones too), and generic results whose
+type parameter is bound to `interface{}`). The lowering is a plain checked
+assertion for scalars and interfaces (`interface{}(Anyv(3)).(int)`), and a
+small converter for a `float64` (an `int` widens), a class with subclasses
+(`_lamUp_<Base>()` on a subclass instance; `nil` passes), a pointer
+(`nil` passes) and typed slices / string-keyed maps (element by element).
+A failed assertion is a Go runtime `interface conversion` panic, which
+`catch` classifies as `TypeError`.
 
 ### Typed collection contexts
 
@@ -525,7 +597,9 @@ A call to a function value held by a local or parameter
 (`_func_value_call_args`) lowers an inline list / dict / set literal or
 comprehension argument with the matching parameter type of the value's
 `func(...)` Go type: `size(["a"])` with `size: func(list[str]) -> int` emits
-`size([]string{"a"})`.
+`size([]string{"a"})`. A function value read from a collection element
+(`fns[0]("a", [Item(1)])` with `fns: list[func(str, list[Item]) -> int]`)
+and one a call returned (`maker()(x)`) shape their arguments the same way.
 
 The grammar rule is `type_func: "func" "(" [type_func_params] ")" ["->" type_expr]`,
 so the parameter list is wrapped in its own AST node and the return is
@@ -556,8 +630,11 @@ return, call argument, or collection element needs one, including values read
 through `unwrap()` or `unwrapOr(...)`. Inline `unwrap()` / `unwrapOr(...)` on
 a receiver whose payload is statically known — a local or parameter annotated
 `Result[T]` (tracked in `_var_result_payloads`), or a call whose declared
-payload is in `_result_payload_go_types` (per overload variant) — lowers to
-`x.Unwrap().(T)`; as a bare statement the assertion is omitted. With a target
+payload is in `_result_payload_go_types` (per overload variant), or a call of
+a function value whose declared Lam type returns `Result[T]`
+(`_func_value_lam_type`: a function-typed local or parameter, a field, also of
+an imported class, a collection element or a returned function) — lowers to
+`x.Unwrap().(T)` (`?` and the `Result[T]` items of a returned list alike); as a bare statement the assertion is omitted. With a target
 of `Result[T]`, `Result.Ok(<collection literal | comprehension | ternary>)`
 lowers its argument through `_typed_value_to_go` with `T`, so the stored value
 has the concrete Go type later assertions expect; an int argument for a
@@ -731,13 +808,49 @@ func() {
 
 Because the body runs inside that closure, a `return X` in the `try` body
 or in a handler stores `X` in the enclosing function's named result
-`retval` (functions and methods whose body contains a `try` anywhere —
-also inside a loop, a branch or a `match` case — get `(retval T)`), sets
+`retval` (functions, methods, static methods — generic or not — nested
+functions and block lambdas whose body
+contains a `try` anywhere — also inside a loop, a branch or a `match` case
+— get `(retval T)`, and a closure ends with a bare `return`), sets
 `__lamShouldReturn` and leaves the closure; `if __lamShouldReturn { return }`
 after it leaves the function. Inside a `do { }` body the value goes to the
 `do` block's return slot instead and the check becomes
 `if __lamShouldReturn { return nil }` (leaving the `do` closure, after which
-the function returns the recorded value).
+the function returns the recorded value). A multi-value result gets one
+named result per value (`(retval0 int, retval1 string)`, assigned with
+`retval0, retval1 = n, "ok"`).
+
+A catch-less `try { } finally { }` lowers the same way (the IIFE without the
+recover `defer`), so `finally` runs when the statement ends, not when the
+function returns. The `finally` `defer` is emitted with the same
+`return` handling as the body (`_emit_finally_defer`). When the block holds
+a `return` / `?` / loop jump of its own, the defer starts with
+`__lamFinExcN := recover()` and ends with `if __lamFinExcN != nil {
+panic(__lamFinExcN) }`: leaving the block early skips the re-raise, which
+cancels the exception (Python semantics). A loop jump there also clears
+`__lamShouldReturn` (it discards a pending `return`), and a `return`
+overwrites the named result. A `try` inside the block saves
+`__lamShouldReturn` (`__lamFinRetN`) and restores it at the end, since that
+`try` resets the shared flag.
+
+A `try` with both `else` and `finally` nests a second IIFE for the body and
+its recover dispatch inside the one holding the `finally` defer; between
+them `if __lamShouldReturn || __lamJumpN != 0 { return }` skips `else`, and
+`else` runs in the outer IIFE (`if !__lamCaughtN { ... }`, a per-statement
+flag the recover sets), so it runs before `finally` and its exceptions
+escape the statement's clauses. Without `finally`, `else` follows the IIFE.
+
+`break` / `continue` inside one of these closures (the try body, a catch
+clause, `finally`, or a `do` body) whose loop encloses the closure use a
+per-statement flag `__lamJumpN := 0`, declared before the closure only when
+the statement holds such a jump (`_own_loop_jumps` skips nested loops,
+functions and lambdas): the jump sets it (`1` break, `2` continue) and
+leaves the closure (`return`, or `return nil` from a `do` body), and
+`if __lamJumpN == 1 { break }` / `if __lamJumpN == 2 { continue }` after the
+closure perform it (through the next enclosing closure's flag when the
+statement is itself nested in one; a loop-`else` flag is set as for a plain
+`break`). Every loop body and every callable boundary resets the context
+(`_loop_jump`), so a jump in an inner loop stays a plain Go `break`.
 
 `raise` and `throw` (its alias) both become `panic(...)`; Python
 exception types (`ValueError`, `TypeError`, …) are formatted as
@@ -1187,7 +1300,11 @@ func Point_origin() *Point {
 - `self` in method bodies is rewritten to `s`.
 - Static methods are emitted as plain functions named
   `<Class>_<method>`. Callers who write `Class.method(...)` or
-  `Class.method()` via the transpiler are mapped onto that.
+  `Class.method()` via the transpiler are mapped onto that. A `private
+  static func` is the unexported `<class>_<method>` (first character
+  lowercased); `Class.method` used as a value (`Hooks.run(Hooks.double)`,
+  a `func`-typed local, list element or field) names the same Go function
+  its calls use, so a private one is `hooks_double`.
 - Static variables are emitted as package-level `var` declarations named
   `<Class>_<field>`. `private static` variables lower to an unexported
   package variable by lowercasing the first character of that generated
@@ -1652,7 +1769,11 @@ from lamos import Os
   `from lamwebp.io.files import readWebp` resolves
   `lamwebp/io/files.lam` or `lamwebp/io/files/__init__.lam`. Only that
   module and its transitive imports are bundled; sibling package files do
-  not become implicit dependencies.
+  not become implicit dependencies. When an import cycle leads back to the
+  entry file (`lamc pkg/scope.lam` with `pkg/conn.lam` importing `.scope`),
+  the entry is not bundled again (it is `main.go`); its declarations are
+  harvested like a library's, from a copy of its tree, so the modules
+  importing it back lower its classes, statics and signatures.
 - Classes, static methods, and top-level defaults are exposed under
   `<ModuleName>_symbol` names. For the common case
   (`from mod import Class`), the transpiler rewrites `Class.method(...)`
@@ -1670,6 +1791,12 @@ from lamos import Os
   the emitted code references them (`reflect.`): an expression lowered
   twice (a list-method lambda, first untyped, then with its element type)
   would otherwise leave `"reflect" imported and not used`.
+- An imported module's `func main()` is not emitted (`_omit_main`): the
+  program's entry point is the compiled file's. Its body's imports go with
+  it: `print` there asks for no `"fmt"`, and a `go! { import "os" }`
+  package only `go!` blocks inside that `main` spell is left out of the
+  import group (a package the code never names, such as a `_` import, is
+  kept). A module without any `main` is a library module like any other.
 - Defaults, arities, parameter names, Go parameter types, variadic markers and
   static-method metadata from library modules are merged into the main
   transpiler before it walks the main file, so call sites in the user's program

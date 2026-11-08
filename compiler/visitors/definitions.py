@@ -150,6 +150,7 @@ class DefinitionVisitorMixin:
             "_in_try_func": False,
             "_in_except_handler": False,
             "_loop_break_flag": "",
+            "_loop_jump": None,
             # ``_current_return_type_key`` may still name the enclosing
             # function's result inside the nested body.
             "_in_nested_callable": True,
@@ -188,13 +189,20 @@ class DefinitionVisitorMixin:
         if len(param_types) == len(self._param_types_sig(params_node)):
             self.__dict__["_nested_func_go_type"] = (func_name, f"func({', '.join(param_types)}){ret_str}")
 
+        # A ``try`` in the body: ``return`` inside its IIFE sets the named
+        # result, as in a top-level function.
+        try_result = bool(
+            not is_generator and return_type
+            and self._suite_contains_try(suite_node)
+        )
+        body_ret_str = f" {self._try_result_sig(return_type)}" if try_result else ret_str
         if self._mentions_names([suite_node], {func_name}):
             # A recursive nested function: Go closures cannot name
             # themselves, so the variable is declared first.
             self._emit(f"var {func_name} func({params_str}){ret_str}")
-            self._emit(f"{func_name} = func({params_str}){ret_str} {{")
+            self._emit(f"{func_name} = func({params_str}){body_ret_str} {{")
         else:
-            self._emit(f"{func_name} := func({params_str}){ret_str} {{")
+            self._emit(f"{func_name} := func({params_str}){body_ret_str} {{")
         if is_generator:
             self._nested_generator_elems[func_name] = elem_type
             self.indent += 1
@@ -217,12 +225,17 @@ class DefinitionVisitorMixin:
         else:
             self._nested_generator_elems.pop(func_name, None)
             body_start, params_at_start = self._begin_scoped_body(params_node)
-            with self._scoped(
-                _current_return_type=return_type,
-                _q_propagate_ok=(return_type == "*Result"),
+            if try_result:
+                self._declare_try_results(return_type)
+            with self._scoped(**{
                 **self._callable_boundary_context(),
-            ):
+                "_current_return_type": return_type,
+                "_q_propagate_ok": return_type == "*Result",
+                "_in_try_func": try_result,
+            }):
                 self._visit_suite(suite_node)
+            if try_result:
+                self._emit("return")
             self._finish_scoped_body(body_start, params_at_start)
         self._emit("}")
         self.__dict__["_nested_func_key_new"] = (func_name, self._nested_func_keys.get(func_name))
@@ -296,7 +309,8 @@ class DefinitionVisitorMixin:
         params_str = self._typed_params_to_go(params_node)
         all_params = capture_params + ([params_str] if params_str else [])
         return_type = self._resolve_return_type(return_type_node)
-        ret_str = f" {return_type}" if return_type else ""
+        try_result = bool(return_type and self._suite_contains_try(suite_node))
+        ret_str = f" {self._try_result_sig(return_type)}" if try_result else (f" {return_type}" if return_type else "")
         type_clause = self._nested_generic_type_clause(tp_clause, outer_type_names)
 
         old_lines = self.output_lines
@@ -318,14 +332,19 @@ class DefinitionVisitorMixin:
                 self._declare_var(name)
                 self._var_go_types[name] = go_type
             self._emit_params_prologue(params_node)
+            if try_result:
+                self._declare_try_results(return_type)
             body_start = len(self.output_lines)
             params_at_start = set(self.declared_vars)
-            with self._scoped(
-                _current_return_type=return_type,
-                _q_propagate_ok=(return_type == "*Result"),
+            with self._scoped(**{
                 **self._callable_boundary_context(),
-            ):
+                "_current_return_type": return_type,
+                "_q_propagate_ok": return_type == "*Result",
+                "_in_try_func": try_result,
+            }):
                 self._visit_suite(suite_node)
+            if try_result:
+                self._emit("return")
             self._finish_scoped_body(body_start, params_at_start)
             self._emit("}")
             self._hoisted_nested_generic_funcs.extend(self.output_lines)
@@ -646,15 +665,31 @@ class DefinitionVisitorMixin:
                         return_type, return_type_key, params_node, suite_node,
                     )
                 else:
+                    # Like functions and instance methods: a ``try`` lowers
+                    # to an IIFE whose ``return X`` / rethrow paths need
+                    # the named ``retval`` result(s).
+                    has_try = bool(return_type) and self._suite_contains_try(suite_node)
+                    if has_try:
+                        ret_str = f" {self._try_result_sig(return_type)}"
                     self._emit(f"func {go_name}{static_clause}({params_str}){ret_str} {{")
-                    body_start, params_at_start = self._begin_scoped_body(params_node)
+                    self.indent += 1
+                    self._push_scope()
+                    if has_try:
+                        self._declare_try_results(return_type)
+                    self._emit_params_prologue(params_node)
+                    body_start, params_at_start = self._scope_unused_tracking_start()
                     with self._scoped(
+                        _in_try_func=has_try,
                         _current_return_type=return_type or "",
                         _current_return_type_key=return_type_key,
                         _q_propagate_ok=(return_type == "*Result"),
                     ):
                         self._visit_suite(suite_node)
-                    self._finish_scoped_body(body_start, params_at_start)
+                    self._emit_unused_local_silencers(body_start, params_at_start)
+                    if has_try:
+                        self._emit("return")
+                    self._pop_scope()
+                    self.indent -= 1
                     self._emit("}")
                     self._emit("")
             elif func_name == "__init__" or func_name == "init":
@@ -737,18 +772,19 @@ class DefinitionVisitorMixin:
             )
             return
 
+        multi_ret = ""
         if is_multi_return:
-            types = self._resolve_multi_return_types(return_type_node)
-            ret_str = f" ({', '.join(types)})"
-            current_ret = f"({', '.join(types)})"
-            self._emit(f"func {go_name}{tp_clause}({params_str}){ret_str} {{")
-        elif return_type and has_try:
-            ret_str = f" (retval {return_type})"
+            multi_ret = f"({', '.join(self._resolve_multi_return_types(return_type_node))})"
+        if (multi_ret or return_type) and has_try:
+            # ``return X`` inside the try IIFE stores ``X`` in the named
+            # results (``retval0, retval1`` for a multi-value return).
+            return_type = multi_ret or return_type
+            ret_str = f" {self._try_result_sig(return_type)}"
             current_ret = return_type
             self._emit(f"func {go_name}{tp_clause}({params_str}){ret_str} {{")
             self.indent += 1
             self._push_scope()
-            self._declare_var("retval")
+            self._declare_try_results(return_type)
             self._emit_params_prologue(params_node)
             body_start = len(self.output_lines)
             params_at_start = set(self.declared_vars)
@@ -770,6 +806,10 @@ class DefinitionVisitorMixin:
             self._emit("}")
             self._emit("")
             return
+        elif multi_ret:
+            ret_str = f" {multi_ret}"
+            current_ret = multi_ret
+            self._emit(f"func {go_name}{tp_clause}({params_str}){ret_str} {{")
         elif return_type:
             current_ret = return_type
             self._emit(f"func {go_name}{tp_clause}({params_str}) {return_type} {{")
@@ -1105,9 +1145,9 @@ class DefinitionVisitorMixin:
         class_args = self._class_type_args(cls)
         # Like functions: a ``try`` with ``catch`` lowers to an IIFE, so a
         # ``return X`` inside it stores ``X`` in the named ``retval`` result.
-        has_try = bool(return_type) and not return_type.startswith("(") and self._suite_contains_try(suite_node)
+        has_try = bool(return_type) and self._suite_contains_try(suite_node)
         if has_try:
-            ret_str = f" (retval {return_type})"
+            ret_str = f" {self._try_result_sig(return_type)}"
         recv = self._receiver_name_for(params_node, suite_node)
         if as_function:
             clause = self._merge_generic_clauses(self._generic_classes.get(cls, ""), tp_clause)
@@ -1119,7 +1159,7 @@ class DefinitionVisitorMixin:
         self.indent += 1
         self._push_scope()
         if has_try:
-            self._declare_var("retval")
+            self._declare_try_results(return_type)
         self._emit_params_prologue(params_node, skip_self=True)
         self._declare_var(recv)
         body_start = len(self.output_lines)
@@ -1216,6 +1256,16 @@ class DefinitionVisitorMixin:
             self._emit(f"type {go_cls}{tp_clause} struct {{")
             self.indent += 1
             for base in self.class_bases.get(class_name, []):
+                if base in self._interfaces and base not in self._class_names:
+                    # Also for imported modules, which the semantic checker
+                    # does not see (Go rejects an embedded interface pointer).
+                    self._report_lam_error(
+                        node, "inheritance",
+                        f"`{base}` is an interface, not a class: `{class_name}` cannot inherit from it. "
+                        f"Interfaces are satisfied structurally — remove `{base}` from the bases of "
+                        f"`{class_name}` and give it the interface's methods",
+                    )
+                    continue
                 go_base = self._go_class_name(base)
                 self._emit(f"*{go_base}{self._base_type_args(class_name, base)}")
             for field_name, go_type in fields:

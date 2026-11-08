@@ -1,0 +1,49 @@
+# expect-error: line 31: error[type]: cannot infer type parameter `T` of `fail`
+# expect-error: line 35: error[type]: cannot infer type parameter `T` of `fail`
+# expect-error: line 39: error[type]: cannot infer type parameter `T` of `none`
+# expect-error: line 44: error[type]: cannot infer type parameter `T` of `fail`
+# expect-error: line 45: error[type]: cannot infer type parameter `T` of `fail`
+# expect-error: line 46: error[type]: cannot assign `Box[str]` to `Box[int]` variable `b`
+# expect-error: line 48: error[type]: cannot infer type parameter `T` of `fail`
+# A position whose type does not fix the type parameter still asks for the
+# type arguments: a parameter that is itself generic (`check[U](r:
+# Result[U])`), a `-> any` result, a result of another shape (`-> int` for
+# a `list[T]`), a lambda without a declared result, a plain local. A
+# constructor argument that gives `T` keeps it (the expected `Box[int]`
+# does not override `Box(["a"])`).
+from lamerrors import Result, Error
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+}
+
+func fail[T](msg: str) -> Result[T] {
+    return Result.Err(Error("Fail", msg))
+}
+
+func none[T]() -> list[T] {
+    return []
+}
+
+func check[U](r: Result[U]) -> bool {
+    return r.ok() and fail("x").ok()
+}
+
+func dynamic() -> any {
+    return fail("dynamic")
+}
+
+func wrongShape() -> int {
+    return len(none())
+}
+
+func main() {
+    print(check(Result.Ok(1)), dynamic())
+    f = lambda (): fail("lambda")
+    r = fail("local")
+    b: Box[int] = Box(["a"])
+    print(f(), r.ok(), len(b.items), wrongShape())
+    print(check(fail("passed to a generic parameter")))
+}

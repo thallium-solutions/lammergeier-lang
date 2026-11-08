@@ -1,0 +1,21 @@
+# expect-pass
+# expect-no-warning: ambiguous call
+# The other half of the `scope` <-> `conn` cycle: its calls of `Scope`'s
+# methods with `any` arguments are not ambiguous either.
+
+from .scope import Scope
+
+interface Sq {
+    func size() -> int
+}
+
+class Box {
+    func size(self) -> int {
+        return 4
+    }
+
+    func describe(self, err: any) -> str {
+        s: Scope = Scope.of(self)
+        return Scope.kind(err) + s.report(err) + s.label(err)
+    }
+}

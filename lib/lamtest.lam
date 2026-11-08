@@ -15,6 +15,11 @@
 # and track running totals in module-level state. `Test.summary()` prints
 # a one-line recap and calls `os.Exit(1)` if any assertion failed, which
 # makes the framework usable both interactively and as a test runner.
+#
+# Assertions are meant to be called as statements: the `bool` an
+# `assert*` helper returns (whether the check passed) and the failure count
+# `summary()` returns are conveniences, so the semantic checker does not
+# report them as dropped return values (no `_ = Test.assertTrue(...)`).
 
 go! {
     import (

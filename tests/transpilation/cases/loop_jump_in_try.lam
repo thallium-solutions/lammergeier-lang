@@ -1,0 +1,53 @@
+# Transpilation: a `break` / `continue` inside a closure the try / catch /
+# finally or do / catch lowering creates records itself in a per-statement
+# flag and leaves the closure; the loop performs it after the closure. A
+# multi-value return inside a try gets one named result per value.
+# expect-go: __lamJump1 := 0
+# expect-go: __lamJump1 = 2
+# expect-go: if __lamJump1 == 2 {
+# expect-go: __lamJump2 = 1
+# expect-go: return nil
+# expect-go: if __lamJump2 == 1 {
+# expect-go: func Pair(n int) (retval0 int, retval1 string) {
+# expect-go: retval0, retval1 = n, "ok"
+from lamerrors import Result
+
+func parse(s: str) -> Result[int] {
+    return Result.Ok(len(s))
+}
+
+func scan(xs: list[str]) -> int {
+    n: int = 0
+    for x in xs {
+        try {
+            n += parse(x).unwrap()
+        } catch _ {
+            continue
+        } finally {
+            n += 1
+        }
+        do {
+            v: int = parse(x)?
+            if v > 3 {
+                break
+            }
+        } catch _ {
+            n -= 1
+        }
+    }
+    return n
+}
+
+func pair(n: int) -> (int, str) {
+    try {
+        return n, "ok"
+    } finally {
+        print("pair")
+    }
+}
+
+func main() {
+    print(scan(["a", "bcde"]))
+    a, b = pair(1)
+    print(a, b)
+}

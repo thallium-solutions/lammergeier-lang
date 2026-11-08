@@ -1,0 +1,151 @@
+# Static methods (generic or not, of a plain or generic class) whose body
+# has a `try` with a rethrowing `catch` and a value-returning `return`
+# build like module functions: a `throw` in the catch, a `return` inside
+# the try body and the fallback after it all reach the caller.
+# expect: Runner.run ok=3
+# expect: rollback 9
+# expect: caught ValueError: bad 9
+# expect: plain 14 2
+# expect: plain rethrown ValueError: neg
+# expect: pair 3 a
+# expect: pair 0 b
+# expect: box 5
+# expect: box fallback -1
+# expect: inst 4
+# expect: inst rethrown ValueError: bad 9
+# expect: finally 7 cleanup
+# expect: nested 2
+# expect: lambda 12
+
+from lamerrors import Result, Error
+
+class Runner {
+    static func run[T](n: int, fn: func(int) -> Result[T]) -> Result[T] {
+        result: Result[T] = Result.Err(Error("E", "did not run"))
+        try {
+            result = fn(n)
+        } catch err {
+            print(f"rollback {n}")
+            throw err
+        }
+        return result
+    }
+
+    static func plain(n: int) -> int {
+        try {
+            if n < 0 {
+                throw ValueError("neg")
+            }
+            if n > 5 {
+                return n * 2
+            }
+        } catch err {
+            throw err
+        }
+        return n
+    }
+
+    static func pair(n: int) -> (int, str) {
+        try {
+            if n > 0 {
+                return n, "a"
+            }
+        } catch err {
+            throw err
+        }
+        return 0, "b"
+    }
+
+    static func withFinally(n: int) -> str {
+        note: str = ""
+        try {
+            return f"{n}"
+        } finally {
+            note = "cleanup"
+            print(f"finally {n} {note}")
+        }
+    }
+
+    static func nested(xs: list[int]) -> int {
+        total: int = 0
+        for x in xs {
+            try {
+                if x == 2 {
+                    return x
+                }
+                total += x
+            } catch err {
+                throw err
+            }
+        }
+        return total
+    }
+
+    func inst[T](self, n: int, fn: func(int) -> Result[T]) -> Result[T] {
+        try {
+            return fn(n)
+        } catch err {
+            throw err
+        }
+        return Result.Err(Error("E", "unreachable"))
+    }
+}
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    static func guarded(value: T, ok: bool) -> Box[T] {
+        try {
+            if not ok {
+                throw ValueError("not ok")
+            }
+            return Box(value)
+        } catch _err {
+            print("box fallback -1")
+        }
+        return Box(value)
+    }
+}
+
+func boom(n: int) -> Result[int] {
+    if n == 9 {
+        throw ValueError("bad 9")
+    }
+    return Result.Ok(n)
+}
+
+func main() {
+    r: Result[str] = Runner.run(3, lambda (n: int) -> Result[str]: Result.Ok(str(n)))
+    print(f"Runner.run ok={r.unwrap()}")
+    try {
+        _ = Runner.run(9, boom)
+    } catch ValueError as e {
+        print(f"caught {e}")
+    }
+    print("plain", Runner.plain(7), Runner.plain(2))
+    try {
+        _ = Runner.plain(-1)
+    } catch ValueError as e {
+        print(f"plain rethrown {e}")
+    }
+    a, b = Runner.pair(3)
+    print("pair", a, b)
+    c, d = Runner.pair(0)
+    print("pair", c, d)
+    box: Box[int] = Box.guarded(5, true)
+    print("box", box.value)
+    _ = Box.guarded(-1, false)
+    i: Result[int] = Runner().inst(4, boom)
+    print("inst", i.unwrap())
+    try {
+        _ = Runner().inst(9, boom)
+    } catch ValueError as e {
+        print(f"inst rethrown {e}")
+    }
+    _ = Runner.withFinally(7)
+    print("nested", Runner.nested([1, 2, 3]))
+    twice: func(int) -> Result[int] = lambda (n: int) -> Result[int]: Runner.run(n, lambda (m: int) -> Result[int]: Result.Ok(m * 2))
+    print("lambda", twice(6).unwrap())
+}

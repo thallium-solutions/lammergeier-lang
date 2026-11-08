@@ -1,0 +1,45 @@
+# expect-pass
+# expect-no-warning: has type `func(
+# A static method used as a function value keeps its full parameter and
+# result types (`list[Item]`, `dict[str, Item]`, `set[int]`,
+# `optional[Item]`, `Result[list[int]]`), so it fits callbacks typed
+# with element types.
+
+from lamerrors import Result
+
+class Item {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+}
+
+func apply(fn: func(str, list[Item]) -> int) -> int {
+    return fn("x", [Item(2)])
+}
+
+func applyDict(fn: func(dict[str, Item]) -> list[Item]) -> int {
+    return len(fn({"a": Item(1)}))
+}
+
+func applySet(fn: func(set[int], optional[Item]) -> Result[list[int]]) -> bool {
+    return fn({1}, None).ok()
+}
+
+class Handlers {
+    static func count(_where: str, items: list[Item]) -> int {
+        return len(items)
+    }
+
+    static func values(m: dict[str, Item]) -> list[Item] {
+        return [v for _k, v in m]
+    }
+
+    static func ids(s: set[int], _it: optional[Item]) -> Result[list[int]] {
+        return Result.Ok([x for x in s])
+    }
+}
+
+func main() {
+    f: func(str, list[Item]) -> int = Handlers.count
+    print(apply(Handlers.count), applyDict(Handlers.values), applySet(Handlers.ids), f("y", []))
+}

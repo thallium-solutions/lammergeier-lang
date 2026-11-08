@@ -1,0 +1,35 @@
+# A collection literal mixing classes without a common base class has
+# `any` items: using a member of such an item is a compile error (it used
+# to fail at `go build`) that names the classes and the fixes.
+# expect-error: member `show` of `x`, whose type is `any`: the collection literal mixes `A` and `C`, which share no base class
+# expect-error: member `n` of `ys[...]`, whose type is `any`
+# expect-error: member `show` of `v`, whose type is `any`
+# expect-error: member `n` of the element, whose type is `any`
+# expect-error: member `show` of `s`, whose type is `any`
+# expect-error: annotate the collection with a common base class or interface
+
+class A {
+    func init(self, n: int) { self.n: int = n }
+    func show(self) -> str { return f"A{self.n}" }
+}
+
+class C {
+    func init(self, n: int) { self.n: int = n }
+    func show(self) -> str { return f"C{self.n}" }
+}
+
+func main() {
+    for x in [A(1), C(2)] {
+        print(x.show())
+    }
+    ys = [A(1), C(2)]
+    print(ys[0].n)
+    d = {"a": A(1), "c": C(2)}
+    for k, v in d {
+        print(k, v.show())
+    }
+    print([A(3), C(4)][1].n)
+    for s in {A(5), C(6)} {
+        print(s.show())
+    }
+}

@@ -1,0 +1,78 @@
+# Helper package for test_int_static_refactor.lam: `scope` and `conn`
+# import each other (a cycle). `Scope` groups its helpers as static
+# methods: `any`-argument statics called from instance methods, a generic
+# static transaction whose `catch` rethrows, a private static passed as a
+# value and statics returning `html` / `str` into optionals.
+
+from lamerrors import Result, Error
+from .conn import Sq
+
+class Scope {
+    func init(self, n: int) {
+        self.n: int = n
+        self.log: list[str] = []
+    }
+
+    static func of(conn: Sq) -> Scope {
+        return Scope(conn.size())
+    }
+
+    static func kind(err: any) -> str {
+        if isinstance(err, str) {
+            return "text"
+        }
+        return "other"
+    }
+
+    func report(self, err: any) -> str {
+        return f"{Scope.kind(err)}@{self.n}"
+    }
+
+    static func transaction[T](scope: Scope, fn: func(Scope) -> Result[T]) -> Result[T] {
+        result: Result[T] = Result.Err(Error("E", "did not run"))
+        try {
+            result = fn(scope)
+            scope.log.append("commit")
+        } catch err {
+            scope.log.append("rollback")
+            throw err
+        }
+        return result
+    }
+
+    static func mapAll(items: list[int], fn: func(int) -> int) -> list[int] {
+        return [fn(x) for x in items]
+    }
+
+    static func doubledAll(items: list[int]) -> list[int] {
+        return Scope.mapAll(items, Scope.double)
+    }
+
+    private static func double(n: int) -> int {
+        return n * 2
+    }
+
+    private static func banner() -> html {
+        return <><h1>scope</h1></>
+    }
+
+    static func maybeBanner(show: bool) -> optional[html] {
+        if show {
+            return Scope.banner()
+        }
+        return None
+    }
+
+    func maybeTitle(self) -> optional[str] {
+        return self.title()
+    }
+
+    func title(self) -> str {
+        return f"scope-{self.n}"
+    }
+}
+
+# Built standalone by the test runner (as the entry of the cycle); dropped
+# when imported.
+func main() {
+}

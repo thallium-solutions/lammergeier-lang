@@ -1,0 +1,52 @@
+# expect-pass
+# expect-no-warning: `?` operator used outside a `-> Result` function
+# `?` inside a `try` body or `catch` handler of a lambda declared
+# `-> Result[...]` (also in a `do` body there, and a `do` inside the
+# `try`) propagates to the lambda, as in a function: no warning.
+from lamerrors import Result, Error
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err(Error("Empty", "empty"))
+    }
+    return Result.Ok(len(s))
+}
+
+func main() {
+    a = lambda (s: str) -> Result[int] {
+        try {
+            n: int = parse(s)?
+            return Result.Ok(n)
+        } catch ValueError as _ {
+            m: int = parse("x")?
+            return Result.Ok(m)
+        }
+    }
+    b = lambda (s: str) -> Result[int] {
+        do {
+            try {
+                n: int = parse(s)?
+                return Result.Ok(n)
+            } catch _ {
+                return Result.Ok(0)
+            }
+        } catch _ {
+            return Result.Ok(-1)
+        }
+        return Result.Ok(1)
+    }
+    c = lambda (s: str) -> Result[int] {
+        try {
+            do {
+                n: int = parse(s)?
+                return Result.Ok(n)
+            } catch _ {
+                return Result.Ok(-2)
+            }
+        } catch _ {
+            return Result.Ok(-3)
+        }
+        return Result.Ok(2)
+    }
+    print(a("a").ok(), b("").ok(), c("").ok())
+}

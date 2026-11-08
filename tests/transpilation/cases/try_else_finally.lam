@@ -1,0 +1,39 @@
+# Transpilation: with `else` and `finally`, the body and its recover run in
+# an inner IIFE; `else` runs in the outer one (before the `finally` defer,
+# outside the recover), gated by the statement's own caught flag. A
+# `finally` that can return or jump recovers a propagating exception and
+# re-raises it only when it completes normally.
+# expect-go: __lamCaught1 := false
+# expect-go: __lamCaught1 = true
+# expect-go: if __lamShouldReturn { return }
+# expect-go: if !__lamCaught1 {
+# expect-go: __lamFinExc3 := recover()
+# expect-go: if __lamFinExc3 != nil { panic(__lamFinExc3) }
+
+func work(n: int) -> int {
+    out: int = 0
+    try {
+        out = 10 // n
+    } catch _ {
+        out = -1
+    } else {
+        out += 1
+    } finally {
+        out += 100
+    }
+    return out
+}
+
+func guarded(n: int) -> int {
+    try {
+        return 10 // n
+    } finally {
+        if n == 0 {
+            return -1
+        }
+    }
+}
+
+func main() {
+    print(work(2), work(0), guarded(5), guarded(0))
+}

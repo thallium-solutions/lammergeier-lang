@@ -503,6 +503,117 @@ def test_go_dep_project_vs_lib_overlap() -> None:
     print("PASS: project vs lib Go-dep overlap refused")
 
 
+def _go_pins(proj: Path) -> dict:
+    from compiler.install_cli import _load_lockfile
+    return _load_lockfile(proj / "lamlib.lock.toml").get("go_pins") or {}
+
+
+def test_go_pins_record_every_requester_and_survive_uninstall() -> None:
+    """Regression: ``[go_pins.*]`` recorded only the requester of the
+    highest version, and ``lamc uninstall`` rewrote the lockfile without
+    the ``[go_pins]`` table at all. Every requester is now recorded
+    (sorted, deduplicated) and uninstall prunes only the Go pins left
+    without a requester."""
+    from compiler.lammergeier import _collect_go_pins
+
+    with tempfile.TemporaryDirectory() as tmp, registry() as url:
+        tmp_p = Path(tmp)
+        a = _make_lib(tmp_p, "lamgoreqa", "1.0.0",
+                      body='func reqA() -> str { return "a" }',
+                      go_deps={"github.com/foo/bar": "v1.2.3",
+                               "github.com/only/a": "v1.0.0"})
+        b = _make_lib(tmp_p, "lamgoreqb", "1.0.0",
+                      body='func reqB() -> str { return "b" }',
+                      go_deps={"github.com/foo/bar": "v1.5.0",
+                               "github.com/only/b": "v0.3.0"})
+        for lib in (a, b):
+            assert _publish(url, lib).returncode == 0
+
+        proj = tmp_p / "proj"; proj.mkdir()
+        (proj / "lamlib.toml").write_text(textwrap.dedent("""
+            [library]
+            name    = "myapp"
+            version = "0.1.0"
+
+            [go-deps]
+            "github.com/foo/bar"  = "v1.0.0"
+            "github.com/proj/own" = "v0.1.0"
+        """).lstrip(), encoding="utf-8")
+        for spec in ("lamgoreqa", "lamgoreqb"):
+            ok = subprocess.run(LAMC + ["install", "--registry", url, spec],
+                                cwd=str(proj), capture_output=True, text=True)
+            assert ok.returncode == 0, ok.stderr
+
+        expected = {
+            "github.com/foo/bar":  ("v1.5.0", ["lamgoreqa@1.0.0", "lamgoreqb@1.0.0", "root"]),
+            "github.com/only/a":   ("v1.0.0", ["lamgoreqa@1.0.0"]),
+            "github.com/only/b":   ("v0.3.0", ["lamgoreqb@1.0.0"]),
+            "github.com/proj/own": ("v0.1.0", ["root"]),
+        }
+
+        def check(want: dict, what: str) -> None:
+            got = {p: (e.get("version"), e.get("requested_by")) for p, e in _go_pins(proj).items()}
+            assert got == want, (what, (proj / "lamlib.lock.toml").read_text())
+
+        check(expected, "after installing both libraries")
+        again = subprocess.run(LAMC + ["install", "--registry", url],
+                               cwd=str(proj), capture_output=True, text=True)
+        assert again.returncode == 0, again.stderr
+        check(expected, "after a bare re-install")
+
+        rm_b = subprocess.run(LAMC + ["uninstall", "lamgoreqb"],
+                              cwd=str(proj), capture_output=True, text=True)
+        assert rm_b.returncode == 0, rm_b.stderr
+        # The pinned version is kept (no silent downgrade); only the
+        # requester and the Go pin nobody else needs go away.
+        check({
+            "github.com/foo/bar":  ("v1.5.0", ["lamgoreqa@1.0.0", "root"]),
+            "github.com/only/a":   ("v1.0.0", ["lamgoreqa@1.0.0"]),
+            "github.com/proj/own": ("v0.1.0", ["root"]),
+        }, "after uninstalling lamgoreqb")
+        assert _collect_go_pins(proj, stdlib_modules=set())["github.com/foo/bar"] == "v1.5.0"
+
+        rm_a = subprocess.run(LAMC + ["uninstall", "lamgoreqa"],
+                              cwd=str(proj), capture_output=True, text=True)
+        assert rm_a.returncode == 0, rm_a.stderr
+        check({
+            "github.com/foo/bar":  ("v1.5.0", ["root"]),
+            "github.com/proj/own": ("v0.1.0", ["root"]),
+        }, "after uninstalling lamgoreqa")
+    print("PASS: go pins record every requester and survive uninstall")
+
+
+def test_uninstall_keeps_go_pins_without_recorded_requester() -> None:
+    """A Go pin with no recorded requester (hand-edited or v0 lockfile)
+    has unknown provenance: uninstalling an unrelated library keeps it,
+    and a v0 scalar ``requested_by`` is read and rewritten as an array."""
+    with tempfile.TemporaryDirectory() as tmp, registry() as url:
+        tmp_p = Path(tmp)
+        assert _publish(url, _make_lib(tmp_p, "lamgoplain", "1.0.0")).returncode == 0
+        proj = tmp_p / "proj"; proj.mkdir()
+        (proj / "lamlib.toml").write_text(
+            '[library]\nname    = "myapp"\nversion = "0.1.0"\n', encoding="utf-8")
+        ok = subprocess.run(LAMC + ["install", "--registry", url, "lamgoplain"],
+                            cwd=str(proj), capture_output=True, text=True)
+        assert ok.returncode == 0, ok.stderr
+        with open(proj / "lamlib.lock.toml", "a", encoding="utf-8") as fh:
+            fh.write('\n[go_pins."github.com/hand/edited"]\npath    = "github.com/hand/edited"\n'
+                     'version = "v1.0.0"\n\n'
+                     '[go_pins."github.com/legacy/scalar"]\npath    = "github.com/legacy/scalar"\n'
+                     'version = "v2.1.0"\nrequested_by = "<project>:myapp"\n')
+        (proj / "lamlib.toml").write_text(
+            '[library]\nname    = "myapp"\nversion = "0.1.0"\n\n'
+            '[go-deps]\n"github.com/legacy/scalar" = "v2.1.0"\n', encoding="utf-8")
+        rm = subprocess.run(LAMC + ["uninstall", "lamgoplain"],
+                            cwd=str(proj), capture_output=True, text=True)
+        assert rm.returncode == 0, rm.stderr
+        pins = _go_pins(proj)
+        assert pins.get("github.com/hand/edited", {}).get("version") == "v1.0.0", pins
+        assert pins.get("github.com/legacy/scalar", {}).get("requested_by") == ["root"], pins
+        assert 'requested_by = ["root"]' in (proj / "lamlib.lock.toml").read_text()
+    print("PASS: uninstall keeps Go pins of unknown provenance and upgrades v0 scalars")
+
+
 # ── Driver ──────────────────────────────────────────────────
 
 def main() -> int:
@@ -516,6 +627,8 @@ def main() -> int:
         test_go_dep_incompatible_majors_refused,
         test_go_pins_materialise_in_synthesised_go_mod,
         test_go_dep_project_vs_lib_overlap,
+        test_go_pins_record_every_requester_and_survive_uninstall,
+        test_uninstall_keeps_go_pins_without_recorded_requester,
     ]
     failures = 0
     for t in tests:

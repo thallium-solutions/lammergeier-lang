@@ -113,6 +113,12 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     "_comp_q_return",
     "_ternary_go_type",
     "_loop_break_flag",
+    # ``(flag, leave)`` while emitting a Go closure (try IIFE, ``finally``
+    # defer, ``do`` body) that sits between a ``break`` / ``continue`` and
+    # its loop: the jump records itself in ``flag`` and leaves the closure
+    # with ``leave``; the code after the closure performs it. ``None``
+    # where ``break`` / ``continue`` are plain Go.
+    "_loop_jump",
     "_in_generator",
     "_generator_chan",
     "_propagate_cast_hint",
@@ -338,6 +344,9 @@ func lamAsyncReportUnretrieved() {
         # ``else``. Every loop body rebinds it, so an inner loop never
         # writes an outer loop's flag.
         self._loop_break_flag: str = ""
+        # See ``SCOPED_CONTEXT_ATTRS``: ``(flag, leave)`` inside a closure
+        # between a loop jump and its loop.
+        self._loop_jump: Optional[tuple] = None
 
         # Go blocks (preprocessed raw Go code, keyed by id)
         self.go_blocks: Dict[str, str] = go_blocks or {}
@@ -379,6 +388,8 @@ func lamAsyncReportUnretrieved() {
         self._external_instance_methods: Dict[str, Set[str]] = {}
         self._external_field_names: Dict[str, Set[str]] = {}
         self._external_field_types: Dict[str, Dict[str, str]] = {}
+        # ``Class.field`` -> declared Lam type, for imported classes.
+        self._external_field_lam_types: Dict[str, Any] = {}
 
         # Top-level go! raw lines
         self._raw_go_top: List[str] = []
@@ -512,6 +523,11 @@ func lamAsyncReportUnretrieved() {
         # statements (``_emit_top_level``); the driver assigns a unique
         # name per module and calls it from ``func init()``.
         self._module_init_name: str = "lamModuleInit_main"
+        # An imported module: its ``func main()`` is not emitted (the
+        # program has one entry point), so neither are the imports only it
+        # needs (``_omitted_go_block_ids``: its ``go!`` blocks).
+        self._omit_main: bool = False
+        self._omitted_go_block_ids: Set[str] = set()
         self._has_module_init: bool = False
 
         # Generic type parameters.
@@ -562,6 +578,14 @@ func lamAsyncReportUnretrieved() {
         self._expected_expr_type_key: str = ""
         self._expected_value_lam: Optional[Tuple[Any, Any]] = None
         self._call_result_lam: Any = None
+        # ``id(call node) -> Lam type`` the call's value must have where it
+        # is returned, passed or assigned to a field (``return make()``,
+        # ``take(make())``, ``self.items = make()``); see
+        # ``_note_expected_call_lam``.
+        self._expected_call_lams: Dict[int, Any] = {}
+        # Declared Lam type per ``Class.field`` (``list[int]``, also
+        # ``Result[T]``, which the Go ``*Result`` loses).
+        self._field_lam_types: Dict[str, Any] = {}
         self._func_return_go_types: Dict[str, str] = {}
         # Top-level ``async func`` names: their calls yield handles.
         self._async_functions: Set[str] = set()
@@ -645,6 +669,9 @@ func lamAsyncReportUnretrieved() {
         self.user_go_imports = set()
         self.current_class = None
         self.class_fields = {}
+        self._field_lam_types = {}
+        self._expected_call_lams = {}
+        self._omitted_go_block_ids = set()
         self.class_field_defaults = {}
         self.class_static_fields = {}
         self.class_bases = {}
@@ -726,6 +753,11 @@ func lamAsyncReportUnretrieved() {
         self._nonneg_shadowed = self._user_functions & {"len", "range", "enumerate", "abs", "min", "max"}
         self._nr_nonlocal_names = mark_nonnegative_locals(tree, self._nonneg_shadowed)
 
+        # Calls whose expected type is the declared result of the function
+        # or lambda returning them (binds type parameters only the result
+        # mentions).
+        self._collect_expected_return_calls(tree)
+
         # Pass 2: generate code
         body_lines: List[str] = []
         old_lines = self.output_lines
@@ -747,7 +779,7 @@ func lamAsyncReportUnretrieved() {
         header_lines = ["package main", ""]
 
         for bid, raw in self.go_blocks.items():
-            if "fmt." in raw:
+            if "fmt." in raw and bid not in self._omitted_go_block_ids:
                 self.needed_imports.add("fmt")
 
         if self._hoisted_nested_generic_funcs:
@@ -761,7 +793,7 @@ func lamAsyncReportUnretrieved() {
         all_imports = set()
         for pkg in self._used_compiler_imports(body_lines):
             all_imports.add(f'"{pkg}"')
-        for pkg in self.user_go_imports:
+        for pkg in self._user_go_imports_without_main(body_lines):
             if '"' in pkg:
                 all_imports.add(pkg)
             else:
@@ -789,13 +821,49 @@ func lamAsyncReportUnretrieved() {
         behind, which Go rejects (``imported and not used``). Packages a
         ``go!`` block imports itself are never dropped."""
         user = {pkg.strip().strip('"') for pkg in self.user_go_imports}
-        text = "\n".join([*body_lines, *self._raw_go_top, *map(str, self.go_blocks.values())])
+        text = self._emitted_go_text(body_lines)
         used = set()
         for pkg in self.needed_imports:
             name = pkg.rsplit("/", 1)[-1]
             if pkg in user or re.search(rf"(?<![\w.]){re.escape(name)}\.", text):
                 used.add(pkg)
         return used
+
+    def _emitted_go_text(self, body_lines: List[str]) -> str:
+        """The Go text of this file: the body, the raw top-level code and
+        the ``go!`` blocks (except those of an omitted ``main``)."""
+        blocks = [str(raw) for bid, raw in self.go_blocks.items() if bid not in self._omitted_go_block_ids]
+        return "\n".join([*body_lines, *self._raw_go_top, *blocks])
+
+    def _user_go_imports_without_main(self, body_lines: List[str]) -> List[str]:
+        """The packages ``go!`` blocks import, without those only the
+        ``go!`` blocks of an omitted ``main`` use (``import "os"`` at top
+        level for ``go! { os.Exit(2) }`` in ``main``): Go rejects an unused
+        import. A package whose name the code never spells (a side-effect
+        ``_`` import, a ``yaml.v3`` path) is kept."""
+        if not self._omitted_go_block_ids:
+            return list(self.user_go_imports)
+        omitted = "\n".join(str(self.go_blocks.get(bid, "")) for bid in self._omitted_go_block_ids)
+        kept = self._emitted_go_text(body_lines)
+        out: List[str] = []
+        for spec in self.user_go_imports:
+            text = spec.strip()
+            alias = ""
+            if not text.startswith('"') and not text.startswith("`"):
+                alias, _sep, text = text.partition(" ")
+                text = text.strip()
+            path = text.strip('"`')
+            name = alias or path.rsplit("/", 1)[-1]
+            if not alias and re.fullmatch(r"v\d+", name) and "/" in path:
+                name = path.rsplit("/", 2)[-2]
+            if name in {"_", "."} or not re.fullmatch(r"[A-Za-z_]\w*", name):
+                out.append(spec)
+                continue
+            used = re.compile(rf"(?<![\w.]){re.escape(name)}\.")
+            if used.search(omitted) and not used.search(kept):
+                continue
+            out.append(spec)
+        return out
 
     # ─── Top-level statements ──────────────────────────────────
     #
@@ -852,6 +920,12 @@ func lamAsyncReportUnretrieved() {
                     return (name, None, value, False)
         return None
 
+    def _is_main_funcdef(self, stmt: Tree) -> bool:
+        if stmt.data != "funcdef":
+            return False
+        name_node = self._parse_funcdef(stmt)[3]
+        return name_node is not None and self._get_name(name_node) == "main"
+
     def _is_go_block_marker(self, stmt: Tree) -> bool:
         """``go! { ... }`` at top level (the ``__go_block__("id")`` marker)."""
         if stmt.data != "expr_stmt" or not stmt.children:
@@ -878,6 +952,14 @@ func lamAsyncReportUnretrieved() {
         init_declared: Set[str] = set()
         seen_statement = False
         for stmt in self._flatten_top_level(tree):
+            if self._omit_main and self._is_main_funcdef(stmt):
+                # An imported module's ``main``: the program's entry point
+                # is the compiled file's.
+                self._omitted_go_block_ids.update(
+                    str(token).strip("\"'") for token in stmt.scan_values(lambda v: isinstance(v, Token))
+                    if str(token).strip("\"'") in self.go_blocks
+                )
+                continue
             if stmt.data in self._TOPLEVEL_DECL_NODES or self._is_go_block_marker(stmt):
                 self._visit(stmt)
                 continue
@@ -2116,9 +2198,11 @@ func lamAsyncReportUnretrieved() {
                         if field_name not in existing:
                             self.class_fields[class_name].append((field_name, go_type))
                         self._note_field_elem_payload(class_name, field_name, type_node)
+                        self._note_field_lam_type(class_name, field_name, type_node)
             elif isinstance(target, Tree) and target.data == "var":
                 field_name = self._get_name(target.children[0])
                 self._note_field_elem_payload(class_name, field_name, type_node)
+                self._note_field_lam_type(class_name, field_name, type_node)
                 go_type = self._type_expr_to_go(type_node) if type_node else "interface{}"
                 existing = [f for f, _ in self.class_fields.get(class_name, [])]
                 if field_name not in existing:
@@ -2143,6 +2227,13 @@ func lamAsyncReportUnretrieved() {
                         existing = [f for f, _ in self.class_fields.get(class_name, [])]
                         if field_name not in existing:
                             self.class_fields[class_name].append((field_name, go_type))
+
+    def _note_field_lam_type(self, class_name: str, field_name: str, type_node) -> None:
+        if type_node is None:
+            return
+        lam_type = self._parsed_lam_type(type_node)
+        if lam_type is not None:
+            self._field_lam_types.setdefault(f"{class_name}.{field_name}", lam_type)
 
     def _note_field_elem_payload(self, class_name: str, field_name: str, type_node) -> None:
         """``self.cached: list[Result[int]]``: ``for r in self.cached`` binds

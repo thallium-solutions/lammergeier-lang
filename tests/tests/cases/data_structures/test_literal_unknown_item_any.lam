@@ -1,0 +1,61 @@
+# A list / set literal (or the values of a dict literal) with an item of
+# type `any` or of a type the checker cannot determine (an untyped lambda's
+# result) has `any` items unless an annotation says otherwise: the other
+# items no longer decide its type (that built `[]int{anyv(1), 2}`, which Go
+# rejected, or asserted the wrong type at run time).
+# expect: [1 2 x]
+# expect: [1 2 y]
+# expect: dict 3
+# expect: set 3
+# expect: annotated 7
+# expect: loop 5
+# expect: loop 6
+# expect: narrowed 3
+# expect: nested [[1 2] [a]]
+# expect: typed-still [3 4]
+
+func anyv(n: int) -> any {
+    return n
+}
+
+func main() {
+    a = [anyv(1), 2]
+    a.append("x")
+    print(a)
+
+    f = lambda x: x
+    b = [f(1), 2]
+    b.append("y")
+    print(b)
+
+    d = {"a": anyv(1), "b": 2}
+    d["c"] = "z"
+    print("dict", len(d))
+
+    s = {anyv(0), 2}
+    s.add("w")
+    print("set", len(s))
+
+    xs: list[any] = [anyv(3), 4]
+    xs.append(0.5)
+    print("annotated", len(xs) + 4)
+
+    for v in [anyv(5), 6] {
+        print("loop", v)
+    }
+
+    t: int = 0
+    for w in [anyv(1), 2] {
+        if isinstance(w, int) {
+            t += w
+        }
+    }
+    print("narrowed", t)
+
+    grid = [[anyv(1), 2], ["a"]]
+    print("nested", grid)
+
+    g = lambda (x: int) -> int: x
+    typed = [g(3), 4]
+    print("typed-still", typed)
+}

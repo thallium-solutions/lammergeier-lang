@@ -1,0 +1,46 @@
+# Provider for test_generic_expected_type_imported.lam: generic callables
+# whose type parameter only the result mentions, a generic class built
+# from an empty literal, and parameters and fields whose declared types
+# bind them in another module.
+from lamerrors import Result, Error
+
+func fail[T](msg: str) -> Result[T] {
+    return Result.Err(Error("Fail", msg))
+}
+
+func none[T]() -> list[T] {
+    return []
+}
+
+func isOk(r: Result[int]) -> bool {
+    return r.ok()
+}
+
+func count(xs: list[str]) -> int {
+    return len(xs)
+}
+
+class Bin[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+}
+
+class Ledger {
+    func init(self) {
+        self.amounts: list[int] = [1, 2]
+        self.status: Result[str] = Result.Ok("open")
+    }
+
+    func check(self, r: Result[str]) -> bool {
+        return r.ok()
+    }
+}
+
+func emptyBin() -> Bin[str] {
+    return Bin([])
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

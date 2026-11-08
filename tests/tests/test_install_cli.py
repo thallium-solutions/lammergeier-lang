@@ -856,6 +856,146 @@ def test_lockfile_v0_loads_and_upgrades_on_write() -> None:
     print("PASS: v0 lockfile upgrades silently to v1 on next write")
 
 
+def _lock_requested_by(proj: Path, name: str) -> list[str] | None:
+    sys.path.insert(0, str(ROOT))
+    from compiler.install_cli import _load_lockfile
+    pins = _load_lockfile(proj / "lamlib.lock.toml")["pins"]
+    assert name in pins, (name, sorted(pins))
+    return pins[name].get("requested_by")
+
+
+def _vulture_plugin_repos(tmp_p: Path) -> tuple[str, str]:
+    """``@lam/vulture`` plus ``@lam/vulture/dev-plugin`` (which depends
+    on ``@lam/vulture`` through git), as the real packages are laid out."""
+    parent = _make_git_lib(tmp_p, "@lam/vulture", "1.0.0", tag="1.0.0",
+                           body='func vultureTag() -> str { return "vulture" }')
+    parent_url = parent.as_uri()
+    plugin = _make_lib(tmp_p, "@lam/vulture/dev-plugin", "1.0.0",
+                       body='func devTag() -> str { return "dev" }')
+    with open(plugin / "lamlib.toml", "a", encoding="utf-8") as fh:
+        fh.write(f'\n[dependencies]\n"@lam/vulture" = {{ git = "{parent_url}", ref = "1.0.0" }}\n')
+    for cmd in (["git", "init", "--quiet"],
+                ["git", "config", "user.email", "tests@example.invalid"],
+                ["git", "config", "user.name", "Lam Tests"],
+                ["git", "add", "."],
+                ["git", "commit", "--quiet", "-m", "initial"],
+                ["git", "tag", "1.0.0"]):
+        subprocess.run(cmd, cwd=str(plugin), check=True)
+    return parent_url, plugin.as_uri()
+
+
+def test_requested_by_keeps_root_for_direct_and_transitive_dep() -> None:
+    """Regression: a dependency declared in lamlib.toml and also required by
+    another dependency was pinned with only the transitive requester
+    (``requested_by = ["@lam/vulture/dev-plugin@1.0.0"]``, no ``"root"``),
+    or, in the other declaration order, with only ``"root"``. Every requester
+    is recorded, re-installs keep them, and tree/why/tidy/--frozen/verify
+    work on the result."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_p = Path(tmp)
+        parent_url, plugin_url = _vulture_plugin_repos(tmp_p)
+        deps = {
+            "@lam/vulture": f'"@lam/vulture" = {{ git = "{parent_url}", ref = "1.0.0" }}',
+            "@lam/vulture/dev-plugin":
+                f'"@lam/vulture/dev-plugin" = {{ git = "{plugin_url}", ref = "1.0.0" }}',
+        }
+        expected = ["@lam/vulture/dev-plugin@1.0.0", "root"]
+        for order in (["@lam/vulture", "@lam/vulture/dev-plugin"],
+                      ["@lam/vulture/dev-plugin", "@lam/vulture"]):
+            proj = tmp_p / ("proj-" + str(len(list(tmp_p.glob("proj-*")))))
+            proj.mkdir()
+            (proj / "lamlib.toml").write_text(
+                '[library]\nname    = "myapp"\nversion = "0.1.0"\n\n[dependencies]\n'
+                + "\n".join(deps[n] for n in order) + "\n", encoding="utf-8")
+            (proj / "main.lam").write_text(
+                "from @lam/vulture import vultureTag\n"
+                "from @lam/vulture/dev-plugin import devTag\n\n"
+                "func main() {\n    print(vultureTag() + devTag())\n}\n", encoding="utf-8")
+
+            first = subprocess.run(LAMC + ["install"], cwd=str(proj), capture_output=True, text=True)
+            assert first.returncode == 0, first.stderr
+            assert _lock_requested_by(proj, "@lam/vulture") == expected, \
+                (order, (proj / "lamlib.lock.toml").read_text())
+            assert _lock_requested_by(proj, "@lam/vulture/dev-plugin") == ["root"], order
+
+            again = subprocess.run(LAMC + ["install", "--force"], cwd=str(proj),
+                                   capture_output=True, text=True)
+            assert again.returncode == 0, again.stderr
+            assert _lock_requested_by(proj, "@lam/vulture") == expected, \
+                ("re-install", order, (proj / "lamlib.lock.toml").read_text())
+            single = subprocess.run(LAMC + ["install", f"{parent_url}@1.0.0"], cwd=str(proj),
+                                    capture_output=True, text=True)
+            assert single.returncode == 0, single.stderr
+            assert _lock_requested_by(proj, "@lam/vulture") == expected, \
+                ("installing the parent alone", order, (proj / "lamlib.lock.toml").read_text())
+
+            tree = subprocess.run(LAMC + ["tree"], cwd=str(proj), capture_output=True, text=True)
+            assert tree.returncode == 0, tree.stderr
+            assert "(cycle)" not in tree.stdout, tree.stdout
+            lines = tree.stdout.splitlines()
+            assert lines[0] == "myapp@0.1.0", lines
+            assert sum("@lam/vulture@1.0.0" in ln for ln in lines) == 2, tree.stdout
+            plugin_line = next(i for i, ln in enumerate(lines) if "@lam/vulture/dev-plugin@1.0.0" in ln)
+            assert "@lam/vulture@1.0.0" in lines[plugin_line + 1], tree.stdout
+
+            why = subprocess.run(LAMC + ["why", "@lam/vulture"], cwd=str(proj),
+                                 capture_output=True, text=True)
+            assert why.returncode == 0, why.stderr
+            assert "requested by root" in why.stdout, why.stdout
+            assert "requested by @lam/vulture/dev-plugin@1.0.0" in why.stdout, why.stdout
+            assert "no requester recorded" not in why.stdout, why.stdout
+
+            tidy = subprocess.run(LAMC + ["tidy", "--check"], cwd=str(proj),
+                                  capture_output=True, text=True)
+            assert tidy.returncode == 0, tidy.stdout + tidy.stderr
+
+            shutil.rmtree(proj / "extlibs")
+            frozen = subprocess.run(LAMC + ["install", "--frozen"], cwd=str(proj),
+                                    capture_output=True, text=True)
+            assert frozen.returncode == 0, frozen.stderr
+            assert (proj / "extlibs" / "@lam" / "vulture" / "dev-plugin" / "__init__.lam").exists()
+            verify = subprocess.run(LAMC + ["verify"], cwd=str(proj), capture_output=True, text=True)
+            assert verify.returncode == 0, verify.stdout + verify.stderr
+            assert _lock_requested_by(proj, "@lam/vulture") == expected
+
+            removed = subprocess.run(LAMC + ["uninstall", "@lam/vulture/dev-plugin"], cwd=str(proj),
+                                     capture_output=True, text=True)
+            assert removed.returncode == 0, removed.stderr
+            assert _lock_requested_by(proj, "@lam/vulture") == ["root"], \
+                ("an uninstalled requester is dropped", (proj / "lamlib.lock.toml").read_text())
+    print("PASS: requested_by lists root and transitive requesters of a direct dependency")
+
+
+def test_requested_by_registry_dependent_declared_first() -> None:
+    """Range dependencies: the project declares the dependent before the
+    shared library; installing the shared library last must not reset its
+    requesters to ``["root"]``."""
+    with tempfile.TemporaryDirectory() as tmp, registry() as url:
+        tmp_p = Path(tmp)
+        assert _publish(url, _make_lib(tmp_p, "lamshared_rb", "1.0.0")).returncode == 0
+        user = _make_lib(tmp_p, "lamuser_rb", "1.0.0")
+        with open(user / "lamlib.toml", "a", encoding="utf-8") as fh:
+            fh.write('\n[dependencies]\nlamshared_rb = "^1.0"\n')
+        assert _publish(url, user).returncode == 0
+        proj = tmp_p / "proj"; proj.mkdir()
+        (proj / "lamlib.toml").write_text(textwrap.dedent("""
+            [library]
+            name    = "myapp"
+            version = "0.1.0"
+
+            [dependencies]
+            lamuser_rb   = "^1.0"
+            lamshared_rb = "^1.0"
+        """).lstrip(), encoding="utf-8")
+        ok = subprocess.run(LAMC + ["install", "--registry", url], cwd=str(proj),
+                            capture_output=True, text=True)
+        assert ok.returncode == 0, ok.stderr
+        assert _lock_requested_by(proj, "lamshared_rb") == ["lamuser_rb@1.0.0", "root"], \
+            (proj / "lamlib.lock.toml").read_text()
+        assert _lock_requested_by(proj, "lamuser_rb") == ["root"]
+    print("PASS: requested_by survives the install order of a registry project")
+
+
 # ── Driver ───────────────────────────────────────────────────
 
 def main() -> int:
@@ -882,6 +1022,8 @@ def main() -> int:
         test_global_flag_skips_project_state,
         test_cache_populates_and_satisfies_repeat_install,
         test_lockfile_v0_loads_and_upgrades_on_write,
+        test_requested_by_keeps_root_for_direct_and_transitive_dep,
+        test_requested_by_registry_dependent_declared_first,
     ]
     failures = 0
     for t in tests:

@@ -31,6 +31,7 @@ from lamdb import Db, Tx, DbObserver
 from lamcontext import Context
 from lamdatetime import DateTime
 from lamerrors import Result, Error
+from lamos import Os
 
 class RecordingObserver {
     func init(self) {
@@ -83,7 +84,8 @@ func resultInt(result: Result) -> int {
 }
 
 func main() {
-    db: Db = resultDb(Db.connect("sqlite", ":memory:"))
+    dbPath: str = Os.tempFile("lam-db-test-", ".sqlite").unwrap()
+    db: Db = resultDb(Db.connect("sqlite", dbPath))
 
     db.exec("DROP TABLE IF EXISTS lam_test").unwrap()
     db.exec("CREATE TABLE lam_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)").unwrap()
@@ -258,5 +260,6 @@ func main() {
     db.exec("DROP TABLE lam_test").unwrap()
     db.close().unwrap()
     print(f"begin-error: {not db.begin().ok()}")
+    _ = Os.remove(dbPath)
     print("db_test_ok")
 }

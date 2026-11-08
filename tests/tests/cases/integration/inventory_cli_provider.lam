@@ -1,0 +1,20 @@
+# Provider for test_int_generic_expected_inventory.lam: a module that is
+# also a runnable program. Its `main` (printing with `fmt`, using a stdlib
+# module and a `go!` block importing `os`) is not part of the importing
+# program; importing it built with `"fmt" imported and not used`.
+from lamstrings import Strings
+
+go! {
+    import "os"
+}
+
+func banner(n: int) -> str {
+    return f"{Strings.toUpper('inventory')} {n}"
+}
+
+func main() {
+    print(banner(0))
+    go! {
+        fmt.Fprintln(os.Stderr, "inventory cli")
+    }
+}

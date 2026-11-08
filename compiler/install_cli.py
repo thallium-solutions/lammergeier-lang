@@ -653,6 +653,111 @@ def _normalize_requestor(s: str) -> str:
     return s
 
 
+def _requesters(pin: Dict) -> List[str]:
+    """A pin's ``requested_by`` as a list (v0 lockfiles stored a string)."""
+    rb = pin.get("requested_by") or []
+    if isinstance(rb, str):
+        rb = [rb]
+    return [str(s) for s in rb]
+
+
+def _split_label(label: str) -> Tuple[str, str]:
+    """``"@scope/name@1.2.3"`` → ``("@scope/name", "1.2.3")``; a label
+    without a version (``"root"``) gives ``(label, "")``."""
+    name, sep, version = label.rpartition("@")
+    if not sep or not name:
+        return label, ""
+    return name, version
+
+
+def _reconcile_requesters(pins: Dict[str, Dict],
+                          project_mf: Optional[Manifest],
+                          extlibs: Path) -> None:
+    """Make every pin's ``requested_by`` list all of its requesters.
+
+    An install run only knows the edges of the graph it resolved, so the
+    lists it computes are merged with the ones already in the lockfile,
+    plus:
+
+    - ``"root"`` for every dependency the project's ``lamlib.toml``
+      declares (a direct dependency that another library also requires
+      keeps ``"root"``);
+    - ``"<name>@<version>"`` for every installed library, pinned at that
+      version, whose manifest declares the dependency.
+
+    Requesters ``"<name>@<version>"`` that are no longer pinned at that
+    version (an upgraded or removed library) are dropped."""
+    edges: Dict[str, set] = {}
+    for mf in _installed_manifests(extlibs):
+        pin = pins.get(mf.name)
+        if pin is None or pin.get("version") != mf.version:
+            continue
+        for dep in mf.dependencies:
+            edges.setdefault(dep, set()).add(f"{mf.name}@{mf.version}")
+    direct = set(project_mf.dependencies) if project_mf is not None else set()
+
+    for name, pin in pins.items():
+        merged = {_normalize_requestor(s) for s in _requesters(pin)}
+        merged |= edges.get(name, set())
+        if name in direct:
+            merged.add("root")
+        merged.discard(f"{name}@{pin.get('version')}")
+        pin["requested_by"] = sorted(r for r in merged if _requester_pinned(r, pins))
+
+
+def _requester_pinned(label: str, pins: Dict[str, Dict]) -> bool:
+    """``"<name>@<version>"`` requesters are current while ``name`` is
+    pinned at ``version``; labels without a version (``"root"``) are."""
+    name, version = _split_label(label)
+    if not version:
+        return True
+    pin = pins.get(name)
+    return pin is not None and pin.get("version") == version
+
+
+def _reconcile_go_requesters(go_pins: Dict[str, Dict],
+                             pins: Dict[str, Dict],
+                             project_mf: Optional[Manifest],
+                             extlibs: Path) -> None:
+    """Make every Go pin's ``requested_by`` list all of its requesters,
+    then drop the Go pins left without one.
+
+    Requesters are the recorded ones plus ``"root"`` for the project's
+    ``[go-deps]`` and ``"<name>@<version>"`` for every installed, pinned
+    library declaring the module. ``"<name>@<version>"`` requesters no
+    longer pinned at that version are dropped, and so is ``"root"`` once
+    the project stops declaring the module. A Go pin that recorded no
+    requester at all (a hand edit) has unknown provenance and is kept.
+    Versions are not changed: removing a requester never downgrades."""
+    edges: Dict[str, set] = {}
+    for mf in _installed_manifests(extlibs):
+        pin = pins.get(mf.name)
+        if pin is None or pin.get("version") != mf.version:
+            continue
+        for path in mf.go_deps:
+            edges.setdefault(path, set()).add(f"{mf.name}@{mf.version}")
+    project_go = set(project_mf.go_deps) if project_mf is not None else None
+    for path in list(go_pins):
+        entry = dict(go_pins[path])
+        entry.setdefault("path", path)
+        merged = {_normalize_requestor(s) for s in _requesters(entry)}
+        merged |= edges.get(path, set())
+        if project_go is not None and path in project_go:
+            merged.add("root")
+        if not merged:
+            go_pins[path] = entry
+            continue
+        kept = sorted(r for r in merged
+                      if _requester_pinned(r, pins)
+                      and not (r == "root" and project_go is not None
+                               and path not in project_go))
+        if kept:
+            entry["requested_by"] = kept
+            go_pins[path] = entry
+        else:
+            del go_pins[path]
+
+
 def _toml_str_array(values: List[str]) -> str:
     """Emit a TOML array of strings on a single line. Values must
     not contain a literal ``"`` — the resolver-produced strings
@@ -1012,7 +1117,7 @@ def _walk_dependencies(root_plan: InstallPlan,
                        project_mf: Optional[Manifest],
                        installed: Optional[List[Manifest]],
                        quiet: bool) -> Tuple[List[ResolvedDep],
-                                             Dict[str, Tuple[str, str]]]:
+                                             Dict[str, Tuple[str, List[str]]]]:
     """Breadth-first walk over the transitive dependency graph
     rooted at ``root_plan``.
 
@@ -1023,7 +1128,9 @@ def _walk_dependencies(root_plan: InstallPlan,
       lets the caller install in one pass without a second
       topological sort.
     - ``go_deps`` is a flat ``{module: (version, requested_by)}``
-      map of merged Go-module requirements across the whole tree.
+      map of merged Go-module requirements across the whole tree;
+      ``requested_by`` lists every demand's label, not only the one
+      that set the version.
       Conflicts (different majors) raise before we return.
 
     Project-level ``[dependencies]`` and ``[go-deps]`` are folded
@@ -1195,14 +1302,15 @@ def _walk_dependencies(root_plan: InstallPlan,
     # genuinely irreconcilable (Go treats each major as a different
     # package). Within the same major, pick the highest-pinned
     # version (Go's MVS rule).
-    go_resolved: Dict[str, Tuple[str, str]] = {}
+    go_resolved: Dict[str, Tuple[str, List[str]]] = {}
     for path, demands in go_demands.items():
         majors = {go_major(v) for v, _ in demands}
         if len(majors) > 1:
             raise DependencyConflict(path, demands, kind="go")
-        # Pick the highest pinned version (MVS).
+        # Pick the highest pinned version (MVS); every demand is a
+        # requester of the pin.
         chosen = max(demands, key=lambda d: go_version_tuple(d[0]))
-        go_resolved[path] = chosen
+        go_resolved[path] = (chosen[0], [who for _, who in demands])
 
     if not quiet and (install_order or go_resolved):
         if install_order:
@@ -1293,6 +1401,7 @@ def install_one(spec: str,
     proj_lock = (Path.cwd() / LOCKFILE_NAME) if project else None
     if proj_lock is not None:
         lock = _load_lockfile(proj_lock)
+        previous = {n: _requesters(p) for n, p in lock["pins"].items()}
         lock["pins"][plan.name] = {
             "version":      plan.version,
             "source":       plan.source,
@@ -1301,7 +1410,7 @@ def install_one(spec: str,
             "ref":          plan.ref,
             "requested_ref": plan.requested_ref,
             "tree_sha256":  plan.tree_sha256,
-            "requested_by": ["root"],
+            "requested_by": previous.get(plan.name, []) + ["root"],
         }
         for dep in deps:
             lock["pins"][dep.name] = {
@@ -1312,23 +1421,24 @@ def install_one(spec: str,
                 "ref":          dep.plan.ref,
                 "requested_ref": dep.plan.requested_ref,
                 "tree_sha256":  dep.plan.tree_sha256,
-                "requested_by": list(dep.requested_by),
+                "requested_by": previous.get(dep.name, []) + list(dep.requested_by),
             }
+        _reconcile_requesters(lock["pins"], project_mf, extlibs)
         # Go-module requirements live under their own table so the
         # compile-time go.mod synthesiser can read them out without
         # walking each lib's ``[go-deps]`` independently.
-        if go_resolved:
-            lock["go_pins"] = {
-                path: {"version":      ver,
-                       "requested_by": [who]}
-                for path, (ver, who) in go_resolved.items()
-            }
-        elif "go_pins" in lock:
-            # Empty go-deps removes the table entirely, so the
-            # lockfile stays minimal when nobody uses Go modules.
-            lock.pop("go_pins")
-        _write_lockfile(proj_lock, lock["pins"],
-                        go_pins=lock.get("go_pins"))
+        # Previous requesters are merged in like for the Lam pins; a
+        # Go pin this run did not resolve keeps its version and is
+        # pruned by the reconciliation once nobody requests it.
+        go_pins: Dict[str, Dict] = dict(lock.get("go_pins") or {})
+        for path, (ver, whos) in go_resolved.items():
+            old = go_pins.get(path) or {}
+            go_pins[path] = {"path": path, "version": ver,
+                             "requested_by": _requesters(old) + list(whos)}
+        _reconcile_go_requesters(go_pins, lock["pins"], project_mf, extlibs)
+        # Empty go-deps removes the table entirely, so the lockfile
+        # stays minimal when nobody uses Go modules.
+        _write_lockfile(proj_lock, lock["pins"], go_pins=go_pins or None)
 
     return plan
 
@@ -1421,7 +1531,13 @@ def uninstall_one(name: str, project: bool = True,
         lock = _load_lockfile(proj_lock)
         if name in lock["pins"]:
             lock["pins"].pop(name, None)
-            _write_lockfile(proj_lock, lock["pins"])
+            # Drop the removed library from its dependencies' requesters,
+            # Lam and Go alike; a Go pin left without a requester goes.
+            project_mf = _project_manifest(Path.cwd())
+            _reconcile_requesters(lock["pins"], project_mf, extlibs)
+            go_pins: Dict[str, Dict] = dict(lock.get("go_pins") or {})
+            _reconcile_go_requesters(go_pins, lock["pins"], project_mf, extlibs)
+            _write_lockfile(proj_lock, lock["pins"], go_pins=go_pins or None)
     return True
 
 
@@ -2617,30 +2733,28 @@ def _cmd_list(args) -> int:
 
 
 def _render_tree(parent_label: str, pins: Dict[str, Dict],
-                 prefix: str = "", visited: Optional[set] = None) -> None:
+                 prefix: str = "", ancestors: Tuple[str, ...] = ()) -> None:
     """Recursively render the dep tree below ``parent_label``.
 
-    ``visited`` guards against the (rare but legal) cycle case
-    where a library transitively requests an ancestor — the
-    resolver would normally collapse that, but the protective
-    guard keeps the renderer honest if it ever happens.
+    ``ancestors`` (the pins on the path from the root) guards against
+    the (rare but legal) cycle case where a library transitively
+    requests an ancestor. A pin shared by several requesters (a direct
+    dependency that another dependency also requires) is not a cycle:
+    it is rendered under each of them.
     """
-    if visited is None:
-        visited = set()
     children = _children_of(parent_label, pins)
     for i, name in enumerate(children):
         is_last = i == len(children) - 1
         connector = "└── " if is_last else "├── "
         label = _pin_label(name, pins)
         print(f"{prefix}{connector}{label}")
-        if name in visited:
+        if name in ancestors:
             # Cycle break — show the recurrence but don't recurse.
             print(f"{prefix}{'    ' if is_last else '│   '}└── (cycle)")
             continue
-        visited.add(name)
         _render_tree(label, pins,
                      prefix + ("    " if is_last else "│   "),
-                     visited)
+                     ancestors + (name,))
 
 
 def _cmd_tree(args) -> int:
@@ -2693,13 +2807,11 @@ def _cmd_why(args) -> int:
     label = _pin_label(target, pins)
     print(label)
 
-    def walk(current: str, indent: int) -> None:
-        pin = pins.get(current.split("@", 1)[0]) or {}
-        rb = pin.get("requested_by")
-        if isinstance(rb, str):
-            rb = [rb]
-        elif rb is None:
-            rb = []
+    def walk(current: str, indent: int, seen: Tuple[str, ...]) -> None:
+        # ``rpartition``: scoped labels (``@lam/vulture@1.0.0``) start
+        # with an ``@`` too.
+        name = _split_label(current)[0]
+        rb = _requesters(pins.get(name) or {})
         if not rb:
             print(f"{'  ' * indent}└── (no requester recorded)")
             return
@@ -2707,10 +2819,13 @@ def _cmd_why(args) -> int:
             print(f"{'  ' * indent}└── requested by {parent}")
             if parent == "root":
                 continue
+            if _split_label(parent)[0] in seen:
+                print(f"{'  ' * (indent + 1)}└── (cycle)")
+                continue
             # Recurse: the parent is itself a pin; show what asked for it.
-            walk(parent, indent + 1)
+            walk(parent, indent + 1, seen + (_split_label(parent)[0],))
 
-    walk(label, 1)
+    walk(label, 1, (target,))
     return 0
 
 

@@ -1,0 +1,44 @@
+# Regression: the expected type of a call binds a type parameter only its
+# result mentions across the module boundary: `return fail()` in a
+# function of this module, `isOk(fail("x"))` with an imported parameter
+# type, `ledger.status = fail("x")` with an imported field type,
+# `Bin([])` returned as a `Bin[int]` and passed as an imported
+# `Bin[str]`.
+#
+# expect: returns=false 0
+# expect: args=false 0 false
+# expect: fields=0 false
+# expect: bins=0 0 1
+# expect: generic_expected_type_imported_ok
+
+from lamerrors import Result
+from generic_expected_type_provider import fail, none, isOk, count, Bin, Ledger, emptyBin
+
+func load() -> Result[int] {
+    return fail("load")
+}
+
+func names() -> list[str] {
+    return none()
+}
+
+func intBin() -> Bin[int] {
+    return Bin([])
+}
+
+func binSize(b: Bin[str]) -> int {
+    return len(b.items)
+}
+
+func main() {
+    print(f"returns={load().ok()} {len(names())}")
+    ledger = Ledger()
+    print(f"args={isOk(fail('x'))} {count(none())} {ledger.check(fail('y'))}")
+    ledger.amounts = none()
+    ledger.status = fail("closed")
+    print(f"fields={len(ledger.amounts)} {ledger.status.ok()}")
+    b: Bin[int] = Bin([])
+    b.items.append(3)
+    print(f"bins={len(intBin().items)} {binSize(Bin([])) + len(emptyBin().items)} {len(b.items)}")
+    print("generic_expected_type_imported_ok")
+}

@@ -181,14 +181,23 @@ def scan_doc_comments(source: str) -> tuple[list[DocComment], list[ScanIssue]]:
     return comments, issues
 
 
+def _is_sibling_repository(child: Path) -> bool:
+    """A readable git checkout next to ROOT; a directory the user may not
+    read (``/tmp/snap-private-tmp`` when ROOT is a worktree in ``/tmp``)
+    is skipped instead of aborting the corpus scan."""
+    try:
+        return child.is_dir() and child != ROOT and (child / ".git").exists()
+    except OSError:
+        return False
+
+
 def _workspace_lam_files() -> list[tuple[Path, Path]]:
     repositories = [ROOT]
-    if WORKSPACE.is_dir():
-        repositories.extend(
-            child
-            for child in sorted(WORKSPACE.iterdir())
-            if child.is_dir() and child != ROOT and (child / ".git").exists()
-        )
+    try:
+        siblings = sorted(WORKSPACE.iterdir()) if WORKSPACE.is_dir() else []
+    except OSError:
+        siblings = []
+    repositories.extend(child for child in siblings if _is_sibling_repository(child))
 
     files: set[tuple[Path, Path]] = set()
     for repository in repositories:

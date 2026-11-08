@@ -1,0 +1,135 @@
+# An `any` value where a concrete type is expected (annotated assignment,
+# re-assignment, field assignment, return, argument, list / dict / set
+# item) is converted with one checked runtime conversion, whatever produces
+# it: an element of a `list[any]` / `dict[str, any]`, an `any` local,
+# parameter or field, `Result.value` / `unwrap()` of an untyped `Result`,
+# the result of a function, method, static method or lambda declared
+# `-> any`, a generic result bound to `any`, and `?` on a `Result[any]`.
+# As everywhere a `float` is expected, an int is accepted (widened), and a
+# class-typed target accepts an instance of a subclass (viewed as the base)
+# or `None`; any other mismatch throws a catchable `TypeError`.
+# expect: assign 1 2 3 4 5 6 7 8 9 10 11 12 13
+# expect: floats 2.0 3.5 2.0 1.0
+# expect: classes Sq Sq none
+# expect: reassign 21 x
+# expect: field 31 1.0
+# expect: returns 41 hi 2.0 Sq
+# expect: args 51 52 53.0 Sq
+# expect: items [61 62 63] map[a:64 b:65] 2
+# expect: nested [[1 2] [3]]
+# expect: propagate 71 2.0
+# expect: mismatch caught TypeError
+
+from lamerrors import Result
+
+class Shape {
+    func name(self) -> str { return "Shape" }
+}
+
+class Square(Shape) {
+    func name(self) -> str { return "Sq" }
+}
+
+class Store {
+    func init(self) {
+        self.raw: any = 31
+        self.count: int = 0
+        self.ratio: float = 0.0
+    }
+
+    func get(self, x: any) -> any { return x }
+
+    static func make(x: any) -> any { return x }
+}
+
+func anyv(x: any) -> any {
+    return x
+}
+
+func ident[T](x: T) -> T {
+    return x
+}
+
+func loadAny(x: any) -> Result[any] {
+    return Result.Ok(x)
+}
+
+func takeInt(n: int) -> int { return n }
+func takeFloat(f: float) -> float { return f }
+func takeShape(s: Shape) -> str { return s.name() }
+
+func retInt() -> int { return anyv(41) }
+func retStr() -> str { return Store().get("hi") }
+func retFloat() -> float { return Store.make(2) }
+func retShape() -> Shape { return anyv(Square()) }
+
+func propagate() -> Result[str] {
+    n: int = loadAny(71)?
+    f: float = loadAny(2)?
+    return Result.Ok(f"{n} {f:.1f}")
+}
+
+func main() {
+    st: Store = Store()
+    row: dict[str, any] = {"a": 1}
+    items: list[any] = [2]
+    v: any = 3
+    r: Result = Result.Ok(5)
+    bare: Result = Result.Ok(6)
+    typedLam = lambda (x: int) -> any: x
+    untyped = lambda x: x
+    a1: int = row["a"]
+    a2: int = items[0]
+    a3: int = v
+    a4: int = st.get(4)
+    a5: int = r.value
+    a6: int = bare.unwrap()
+    a7: int = anyv(7)
+    a8: int = st.get(8)
+    a9: int = Store.make(9)
+    a10: int = typedLam(10)
+    a11: int = untyped(11)
+    a12: int = ident(anyv(12))
+    a13: int = anyv(anyv(13))
+    print("assign", a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13)
+
+    f1: float = anyv(2)
+    f2: float = anyv(3.5)
+    f3: float = items[0]
+    f4: float = row["a"]
+    print("floats", f"{f1:.1f}", f"{f2:.1f}", f"{f3:.1f}", f"{f4:.1f}")
+
+    s1: Shape = anyv(Square())
+    s2: Shape = st.get(Square())
+    s3: Shape = anyv(None)
+    print("classes", s1.name(), s2.name(), "none" if s3 == None else "set")
+
+    n: int = 0
+    n = anyv(21)
+    t: str = ""
+    t = st.get("x")
+    print("reassign", n, t)
+
+    st.count = st.raw
+    st.ratio = anyv(1)
+    print("field", st.count, f"{st.ratio:.1f}")
+
+    print("returns", retInt(), retStr(), f"{retFloat():.1f}", retShape().name())
+    print("args", takeInt(anyv(51)), takeInt(st.get(52)), f"{takeFloat(Store.make(53)):.1f}", takeShape(anyv(Square())))
+
+    xs: list[int] = [anyv(61), st.get(62), Store.make(63)]
+    d: dict[str, int] = {"a": anyv(64), "b": typedLam(65)}
+    tags: set[str] = {anyv("p"), st.get("q")}
+    print("items", xs, d, len(tags))
+    grid: list[list[int]] = [[anyv(1), 2], [st.get(3)]]
+    print("nested", grid)
+
+    print("propagate", propagate().unwrap())
+
+    try {
+        bad: int = anyv("not a number")
+        print("unreachable", bad)
+    } catch TypeError as _ {
+        print("mismatch caught TypeError")
+    }
+}

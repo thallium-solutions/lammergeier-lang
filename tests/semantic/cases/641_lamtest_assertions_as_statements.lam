@@ -1,0 +1,32 @@
+# expect-pass
+# expect-no-warning: dropped return value of `Test.
+# expect-no-warning: dropped return value of `T.
+# expect-no-warning: dropped return value of `lamtest.Test.
+# `lamtest` assertions (and `Test.summary()`) are meant to be called as
+# statements: their `bool` / `int` result is a convenience, not a dropped
+# value, however `Test` is imported. Assigning or testing the result
+# still works.
+
+from lamtest import Test
+from lamtest import Test as T
+import lamtest
+
+func main() {
+    Test.describe("statements")
+    Test.assertTrue(1 == 1, "true")
+    Test.assertFalse(1 == 2, "false")
+    Test.assertEqual(2, 2, "equal")
+    Test.assertNotEqual(2, 3, "not equal")
+    Test.assertNil(None, "nil")
+    Test.assertNotNil("x", "not nil")
+    Test.assertLen([1, 2], 2, "len")
+    Test.assertContains([1, 2], 2, "contains")
+    Test.assertAlmostEqual(0.1 + 0.2, 0.3)
+    T.assertTrue(true, "alias")
+    lamtest.Test.assertEqual("a", "a", "module")
+    _ = Test.assertTrue(true, "discarded explicitly")
+    if Test.assertEqual(1, 1, "as condition") {
+        print("passed")
+    }
+    Test.summary()
+}

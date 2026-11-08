@@ -1,0 +1,31 @@
+# Transpilation: a generic constructor / call that is an item of a typed
+# collection (literal element, dict value, `append` / `insert` argument,
+# `d[k] = ...`) takes the collection's item type as its type arguments.
+# expect-go: var xs []*Box[int] = []*Box[int]{NewBox([]int{})}
+# expect-go: xs = append(xs, NewBox([]int{}))
+# expect-go: append([]*Box[int]{NewBox([]int{})}
+# expect-go: map[string]*Box[int]{"a": NewBox([]int{})}
+# expect-go: d["b"] = NewBox([]int{})
+# expect-go: Fail[int]("x")
+
+from lamerrors import Result, Error
+
+func fail[T](msg: str) -> Result[T] {
+    return Result.Err(Error("Fail", msg))
+}
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+}
+
+func main() {
+    xs: list[Box[int]] = [Box([])]
+    xs.append(Box([]))
+    xs.insert(0, Box([]))
+    d: dict[str, Box[int]] = {"a": Box([])}
+    d["b"] = Box([])
+    rs: list[Result[int]] = [fail("x")]
+    print(len(xs), len(d), len(rs))
+}

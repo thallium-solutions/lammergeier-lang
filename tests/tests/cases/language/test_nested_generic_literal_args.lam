@@ -1,0 +1,107 @@
+# A generic function declared inside another function binds its type
+# parameters from the arguments of a call like a top-level generic does,
+# so list / dict / set literals, lambdas and class instances type it.
+# expect: pick a 2
+# expect: first 1.5 x
+# expect: lookup 3 none
+# expect: mapped [2 4 6]
+# expect: pair k=7
+# expect: size 3
+# expect: shapes B1 A2
+# expect: method [x y z]
+# expect: outer [1 1]
+# expect: kw 9 default
+# expect: nested-chain c
+
+class A {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func show(self) -> str {
+        return f"A{self.n}"
+    }
+}
+
+class B(A) {
+    func show(self) -> str {
+        return f"B{self.n}"
+    }
+}
+
+class Tool {
+    func init(self, names: list[str]) {
+        self.names: list[str] = names
+    }
+
+    func run(self) -> str {
+        func copyOf[T](xs: list[T]) -> list[T] {
+            out: list[T] = []
+            for x in xs {
+                out.append(x)
+            }
+            return out
+        }
+        return f"method {copyOf(["x", "y", "z"])}"
+    }
+}
+
+func repeatOuter[T](x: T) -> list[T] {
+    func twice[U](a: U, b: U) -> list[U] {
+        return [a, b]
+    }
+    return twice(x, x)
+}
+
+func main() {
+    func pick[T](xs: list[T], i: int) -> T {
+        return xs[i]
+    }
+    print("pick", pick(["a"], 0), pick([1, 2], 1))
+    print("first", pick([1.5, 2.5], 0), pick([["x"], ["y"]], 0)[0])
+
+    func lookup[V](d: dict[str, V], k: str, fallback: V) -> V {
+        if k in d {
+            return d[k]
+        }
+        return fallback
+    }
+    print("lookup", lookup({"a": 3}, "a", 0), lookup({"a": "x"}, "b", "none"))
+
+    func mapAll[T, R](xs: list[T], fn: func(T) -> R) -> list[R] {
+        out: list[R] = []
+        for x in xs {
+            out.append(fn(x))
+        }
+        return out
+    }
+    print("mapped", mapAll([1, 2, 3], lambda x: x * 2))
+
+    func pairOf[K, V](k: K, v: V) -> str {
+        return f"{k}={v}"
+    }
+    print("pair", pairOf("k", 7))
+
+    func size[T](items: set[T]) -> int {
+        return len(items)
+    }
+    print("size", size({1, 2, 3}))
+
+    func shows[T](xs: list[A]) -> str {
+        return " ".join([x.show() for x in xs])
+    }
+    print("shapes", shows[int]([B(1), A(2)]))
+
+    print(Tool(["q"]).run())
+    print("outer", repeatOuter(1))
+
+    func withDefault[T](x: T, label: str = "default") -> str {
+        return f"{x} {label}"
+    }
+    print("kw", withDefault(x=9))
+
+    func last[T](xs: list[T]) -> T {
+        return pick(xs, len(xs) - 1)
+    }
+    print("nested-chain", last(["a", "b", "c"]))
+}

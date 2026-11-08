@@ -1,0 +1,46 @@
+# An interface written as a class base is a Lam error (it used to fail at
+# `go build` with "embedded field type cannot be a pointer to an
+# interface"): conformance is structural, so the class just defines the
+# interface's methods. The message says which methods are still missing.
+# expect-error: `Priced` is an interface, not a class: `Item` cannot inherit from it
+# expect-error: Interfaces are satisfied structurally — remove `Priced` from the bases of `Item` (`Item` already has its method `price`)
+# expect-error: `Named` is an interface, not a class: `Tag` cannot inherit from it
+# expect-error: (define its methods `label`, `name` on `Tag`)
+# expect-error: `Marker` is an interface, not a class: `Flag` cannot inherit from it
+# expect-error: `Priced` is an interface, not a class: `Book` cannot inherit from it
+
+interface Priced {
+    func price(self) -> int
+}
+
+interface Named {
+    func name(self) -> str
+    func label(self) -> str
+}
+
+interface Marker {
+}
+
+class Base {
+    func init(self) { }
+}
+
+class Item(Priced) {
+    func price(self) -> int { return 3 }
+}
+
+class Tag(Named) {
+    func name(self) -> str { return "t" }
+}
+
+class Flag(Marker) {
+}
+
+class Book(Base, Priced) {
+    func price(self) -> int { return 9 }
+}
+
+func main() {
+    print(Item().price(), Tag().name(), Book().price())
+    _ = Flag()
+}

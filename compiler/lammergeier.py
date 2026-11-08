@@ -2420,6 +2420,9 @@ def compile_lam(
     lib_pre_private_classes: set[str] = set()
     lib_pre_field_names: dict[str, set[str]] = {}
     lib_pre_field_types: dict[str, dict[str, str]] = {}
+    # Declared Lam field types (``Class.field`` -> ``list[int]``): a call
+    # assigned to an imported class's field binds its type parameters.
+    lib_pre_field_lam_types: dict = {}
     # Program-wide class hierarchy (see compiler/visitors/subtyping.py).
     lib_pre_class_bases: dict[str, list[str]] = {}
     lib_pre_method_sigkeys: dict[str, dict] = {}
@@ -2434,6 +2437,8 @@ def compile_lam(
     ns_meta_sources: dict[Path, object] = {}
     seen: set[str] = set()
     seen_module_files: set[Path] = set()
+    entry_module_path = source_file.resolve()
+    entry_imported_back = False
     worklist: list[tuple[str, Path]] = [(mod, source_file) for mod in _pre_transpiler._lam_imports]
     # Import graph (module file -> imported module files, in source order)
     # for the top-level statement initialization order.
@@ -2450,6 +2455,14 @@ def compile_lam(
         if mod_file in seen_module_files:
             continue
         seen_module_files.add(mod_file)
+        if mod_file == entry_module_path:
+            # An import cycle leads back to the entry module: its
+            # declarations are already in the main package (emitting it as
+            # a library too would redeclare them); its imports are the
+            # entry's own, and its metadata is harvested for the libraries
+            # importing it below.
+            entry_imported_back = True
+            continue
         if not mod_name.startswith("."):
             seen.add(mod_name)
         canonical_name = module_index.module_name_for_path(source_file, mod_file) or mod_name
@@ -2569,9 +2582,16 @@ def compile_lam(
     harvest_modules: list[tuple[Path, object]] = []
     harvest_plans: dict[Path, object] = {}
     for mod_file, ns_info in list(ns_modules.items()):
-        if mod_file == main_module_path:
-            continue
         sub_tree = ns_info.tree
+        if mod_file == main_module_path:
+            if not entry_imported_back:
+                continue
+            # A library imports the entry back (an import cycle): it needs
+            # the entry's classes, statics and signatures like another
+            # library's. Harvested from a copy (the namespace rewrite below
+            # edits the tree; the main transpile gets its own plan later).
+            import copy as _copy
+            sub_tree = _copy.deepcopy(sub_tree)
         harvest_plan = ns_plans.get(mod_file)
         harvest_plans[mod_file] = harvest_plan
         if harvest_plan is not None:
@@ -2664,6 +2684,8 @@ def compile_lam(
             for cls, fields in sub_collector.class_fields.items():
                 lib_pre_field_names.setdefault(cls, set()).update(name for name, _go_type in fields)
                 lib_pre_field_types.setdefault(cls, {}).update(dict(fields))
+            for key, lam_type in sub_collector._field_lam_types.items():
+                lib_pre_field_lam_types.setdefault(key, lam_type)
             for cls, bases in sub_collector.class_bases.items():
                 lib_pre_class_bases[cls] = [base for base in bases if base]
             for cls, sigkeys in sub_collector._class_method_sigkeys.items():
@@ -2898,6 +2920,10 @@ def compile_lam(
         + [f"methods:{cls}:{','.join(sorted(names))}" for cls, names in sorted(lib_pre_instance_methods.items())]
         + [f"fields:{cls}:{','.join(sorted(names))}" for cls, names in sorted(lib_pre_field_names.items())]
         + [f"field-types:{cls}:{','.join(f'{name}={go_type}' for name, go_type in sorted(fields.items()))}" for cls, fields in sorted(lib_pre_field_types.items())]
+        # Lam types bind type parameters the Go types lose (``Result[T]``).
+        + [f"field-lam:{key}:{lam_type}" for key, lam_type in sorted(lib_pre_field_lam_types.items())]
+        + [f"param-lam:{name}:{types}" for name, types in sorted(lib_pre_func_param_lam_types.items())]
+        + [f"return-lam:{name}:{type_}" for name, type_ in sorted(lib_pre_func_return_lam_types.items())]
         + [f"bases:{cls}:{','.join(bases)}" for cls, bases in sorted(lib_pre_class_bases.items()) if bases]
         + [f"generic-class:{cls}:{clause}" for cls, clause in sorted(lib_pre_generic_classes.items())]
         + [f"sigkeys:{cls}:{','.join(f'{m}={k}' for m, k in sorted(keys.items(), key=lambda kv: kv[0]))}" for cls, keys in sorted(lib_pre_method_sigkeys.items())]
@@ -3016,14 +3042,18 @@ def compile_lam(
             lib_transpiler._external_field_names.setdefault(cls, set()).update(fields)
         for cls, fields in lib_pre_field_types.items():
             lib_transpiler._external_field_types.setdefault(cls, {}).update(fields)
+        lib_transpiler._external_field_lam_types.update(lib_pre_field_lam_types)
         _apply_namespace_plan(lib_transpiler, ns_plan, ns_meta_sources)
         _inject_program_hierarchy(lib_transpiler)
         lib_transpiler._module_init_name = lib_init_name
+        # The module's ``func main()`` is not emitted, nor the imports only
+        # it uses (``print`` / ``fmt``, ``go!`` blocks).
+        lib_transpiler._omit_main = True
         lib_go = lib_transpiler.transpile(lib_tree)
-        # Remove func main() block from library — but also drop any
-        # `//line` directive immediately preceding it so the stripped
-        # region doesn't leave a dangling pragma pointing at the
-        # removed body.
+        # Remove any func main() block left in the library (the transpiler
+        # omits it) — but also drop any `//line` directive immediately
+        # preceding it so the stripped region doesn't leave a dangling
+        # pragma pointing at the removed body.
         lines = lib_go.split("\n")
         filtered = []
         skip_main = False
@@ -3236,6 +3266,7 @@ def compile_lam(
         transpiler._external_field_names.setdefault(cls_name, set()).update(fields)
     for cls_name, fields in lib_pre_field_types.items():
         transpiler._external_field_types.setdefault(cls_name, {}).update(fields)
+    transpiler._external_field_lam_types.update(lib_pre_field_lam_types)
     for cls_name, methods in lib_static_methods.items():
         if cls_name not in transpiler._static_methods:
             transpiler._static_methods[cls_name] = set()

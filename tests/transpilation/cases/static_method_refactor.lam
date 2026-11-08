@@ -1,0 +1,81 @@
+# Transpilation: a static method whose body has a `try` declares the named
+# `retval` result(s) like a function (its catch can rethrow, its try body
+# can return); a private static used as a value is the unexported Go
+# function its calls use; a method call's `html` / `str` result is boxed
+# into an `optional`; `optional[json]` boxes a JSON value.
+# expect-go: func Runner_run[T any](n int, fn func(int) *Result) (retval *Result) {
+# expect-go: func Runner_pair(n int) (retval0 int, retval1 string) {
+# expect-go: return Hooks_run(hooks_double)
+# expect-go: return func() *LamHTML { __lamV := LamHTML(hooks_page()); return &__lamV }()
+# expect-go: return func() *string { __lamV := string(s.Name()); return &__lamV }()
+# expect-go: return func() *LamJSON { __lamV := Hooks_doc(); return &__lamV }()
+
+from lamerrors import Result
+
+class Runner {
+    static func run[T](n: int, fn: func(int) -> Result[T]) -> Result[T] {
+        try {
+            return fn(n)
+        } catch err {
+            throw err
+        }
+        return fn(0)
+    }
+
+    static func pair(n: int) -> (int, str) {
+        try {
+            return n, "a"
+        } catch err {
+            throw err
+        }
+        return 0, "b"
+    }
+}
+
+class Hooks {
+    func init(self) {
+        self.k: int = 1
+    }
+
+    static func run(fn: func(int) -> int) -> int {
+        return fn(2)
+    }
+
+    static func usePrivate() -> int {
+        return Hooks.run(Hooks.double)
+    }
+
+    private static func double(n: int) -> int {
+        return n * 2
+    }
+
+    private static func page() -> html {
+        return <><p>x</p></>
+    }
+
+    static func maybePage() -> optional[html] {
+        return Hooks.page()
+    }
+
+    func name(self) -> str {
+        return "n"
+    }
+
+    func maybeName(self) -> optional[str] {
+        return self.name()
+    }
+
+    static func doc() -> json {
+        return {"a": 1}
+    }
+
+    static func maybeDoc() -> optional[json] {
+        return Hooks.doc()
+    }
+}
+
+func main() {
+    r: Result[int] = Runner.run(1, lambda (n: int) -> Result[int]: Result.Ok(n))
+    a, b = Runner.pair(1)
+    print(r.unwrap(), a, b, Hooks.usePrivate(), str(Hooks.maybePage() ?? <></>), Hooks().maybeName() ?? "-", Hooks.maybeDoc() ?? {})
+}

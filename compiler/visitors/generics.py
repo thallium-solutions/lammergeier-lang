@@ -341,11 +341,15 @@ class GenericCallMixin:
         if not names:
             return subst
         pairs = self._generic_call_arg_pairs(func_key, args_node)
-        typed, literals, callables = [], [], []
+        typed, literals, callables, empties = [], [], [], []
         for declared, node in pairs:
             if not declared or not mentions_names(declared, names):
                 continue
-            if isinstance(node, Tree) and node.data == "lambdef":
+            if isinstance(node, Tree) and node.data in {"list", "dict"} and not node.children:
+                # ``Box([])``: an empty literal gives no element type; the
+                # expected type of the call binds ``T`` first.
+                empties.append((declared, node))
+            elif isinstance(node, Tree) and node.data == "lambdef":
                 callables.append((declared, node))
             elif self._func_ref_go_type(node, ["interface{}"]) and declared.startswith("func("):
                 callables.append((declared, node))
@@ -354,13 +358,25 @@ class GenericCallMixin:
             else:
                 typed.append((declared, node))
         for declared, node in typed:
-            actual = self._expr_go_type_hint(node) or self._infer_type_from_value(node)
+            # ``pick([orders[0]], 0)``: a list literal is typed by its
+            # elements' expression types too (indexes, fields, calls).
+            literal = self._list_literal_index_type(node) if isinstance(node, Tree) and node.data == "list" else ""
+            actual = literal or self._expr_go_type_hint(node) or self._infer_type_from_value(node)
             if actual:
                 unify_go_types(declared, actual, names, subst)
         for declared, node in literals:
             actual = self._infer_type_from_value(node)
             if actual and actual != "interface{}":
                 unify_go_types(declared, actual, names, subst)
+        if empties and any(n not in subst for n in names) and self._expected_call_lam_type() is not None:
+            # ``c: Box[int] = Box([])``: the expected type binds ``T``.
+            self._lam_generic_call_subst(func_key, args_node, [n for n in names if n not in subst], subst)
+        for declared, node in empties:
+            # Otherwise the empty literal's ``[]interface{}`` makes it ``any``.
+            if any(n not in subst for n in names):
+                actual = self._expr_go_type_hint(node) or self._infer_type_from_value(node)
+                if actual:
+                    unify_go_types(declared, actual, [n for n in names if n not in subst], subst)
         for declared, node in callables:
             pattern = substitute_go_type(declared, subst)
             parsed = parse_go_type(pattern)
@@ -501,9 +517,211 @@ class GenericCallMixin:
     def _expected_call_lam_type(self):
         """The Lam type the value of the call being lowered must have
         (``r: Result[int] = make()``), published by ``_expr_to_go`` for
-        the call that is the whole value of an annotated assignment or
-        ``return``; ``None`` elsewhere."""
+        the call that is the whole value of an annotated assignment, a
+        ``return``, an argument or a field assignment; ``None``
+        elsewhere."""
         return getattr(self, "_call_result_lam", None)
+
+    # ─── Expected types of calls ─────────────────────────────────
+    #
+    # A type parameter only the result mentions (``make[T]() ->
+    # Result[T]``) is bound by the type the call's value must have. The
+    # annotated assignment publishes it through ``_expected_value_lam``;
+    # the other positions record it per call node in
+    # ``_expected_call_lams`` (``_expr_to_go`` reads both).
+
+    def _note_expected_call_lam(self, value, lam_type) -> None:
+        """Record that the call ``value`` (or the operand of ``value?``,
+        then a ``Result[lam_type]``) must have the Lam type ``lam_type``."""
+        from compiler.typesys import GenericType, NamedType
+        if lam_type is None or isinstance(value, Token) or not isinstance(value, Tree):
+            return
+        if isinstance(lam_type, NamedType) and lam_type.name in {"any", "object", "json"}:
+            return
+        if value.data == "argvalue" and len(value.children) == 1:
+            value = value.children[0]
+        if isinstance(value, Tree) and value.data == "propagate" and value.children:
+            value = value.children[0]
+            lam_type = GenericType("Result", (lam_type,))
+        if isinstance(value, Tree) and value.data == "funccall":
+            self._expected_call_lams[id(value)] = lam_type
+        elif isinstance(value, Tree) and value.data in {"list", "set", "dict"}:
+            # ``xs: list[Box[int]] = [Box([])]``: the items of a literal
+            # with an expected collection type expect its item type.
+            self._note_expected_item_lams(value, lam_type)
+
+    def _note_expected_item_lams(self, literal, lam_type) -> None:
+        from compiler.typesys import DictType, GenericType, ListType
+        if literal.data == "list" and isinstance(lam_type, ListType):
+            items = [c for c in literal.children if isinstance(c, Tree)]
+            item_type = lam_type.item
+        elif literal.data == "set" and isinstance(lam_type, GenericType) and lam_type.base == "set" and lam_type.args:
+            items = [c for c in literal.children if isinstance(c, Tree)]
+            item_type = lam_type.args[0]
+        elif literal.data == "dict" and isinstance(lam_type, DictType):
+            items = [
+                c.children[1] for c in literal.children
+                if isinstance(c, Tree) and c.data == "key_value" and len(c.children) >= 2
+            ]
+            item_type = lam_type.value
+        else:
+            return
+        for item in items:
+            self._note_expected_call_lam(item, item_type)
+
+    def _note_expected_go_item(self, value, go_type: str, collection=None, extend: bool = False) -> None:
+        """``xs.append(Box([]))`` on a ``list[Box[int]]``: the item expects
+        the item type of the collection ``collection`` (an expression: its
+        recorded Lam type, else the Lam type of the Go item type
+        ``go_type``)."""
+        from compiler.typesys import DictType, GenericType, ListType, parse_type
+        lam_type = None
+        if isinstance(collection, Tree) and collection.data == "var" and collection.children:
+            known = self._var_lam_types.get(self._get_name(collection.children[0]))
+            if isinstance(known, ListType):
+                lam_type = known if extend else known.item
+            elif isinstance(known, DictType):
+                lam_type = known.value
+            elif isinstance(known, GenericType) and known.base == "set" and known.args:
+                lam_type = known.args[0]
+        elif isinstance(collection, Tree) and collection.data == "getattr":
+            known = self._field_expected_lam(collection)
+            if isinstance(known, ListType):
+                lam_type = known if extend else known.item
+            elif isinstance(known, DictType):
+                lam_type = known.value
+        if lam_type is None:
+            if not go_type or "interface{}" in go_type:
+                return
+            try:
+                lam_type = parse_type(self._go_type_lam_text(go_type))
+            except Exception:
+                return
+        self._note_expected_call_lam(value, lam_type)
+
+    def _collect_expected_return_calls(self, tree) -> None:
+        """Record the declared result of the enclosing function or lambda
+        for every call that is the value of a ``return`` (and for the body
+        of an expression lambda): ``return make()`` in a ``-> Result[int]``
+        function binds ``make``'s ``T``."""
+        from compiler.typesys import GenericType
+        stack = [(tree, None)]
+        while stack:
+            node, ret = stack.pop()
+            for child in node.children:
+                if not isinstance(child, Tree):
+                    continue
+                child_ret = ret
+                if child.data == "funcdef":
+                    return_node = self._parse_funcdef(child)[5]
+                    child_ret = None
+                    if isinstance(return_node, Tree) and return_node.data == "single_return_type":
+                        child_ret = self._parsed_lam_type(return_node)
+                        if isinstance(child_ret, GenericType) and child_ret.base in {"generator", "Generator", "Iterator", "iterator"}:
+                            child_ret = None
+                elif child.data == "lambdef":
+                    child_ret = None
+                    for part in child.children:
+                        if isinstance(part, Tree) and part.data == "lambda_return_anno" and part.children:
+                            child_ret = self._parsed_lam_type(part.children[0])
+                    body = child.children[-1] if child.children else None
+                    if isinstance(body, Tree) and body.data != "suite":
+                        self._note_expected_call_lam(body, child_ret)
+                elif child.data == "return_stmt":
+                    if child.children and child.children[0] is not None:
+                        self._note_expected_call_lam(child.children[0], ret)
+                stack.append((child, child_ret))
+
+    def _note_arg_expected_lams(self, func_key: str, args_node) -> None:
+        """The declared Lam parameter types of ``func_key`` for the calls
+        passed to it (``take(make())``, ``take(r=make())``); a parameter
+        type mentioning a type parameter of the callee the call does not
+        bind gives none."""
+        lam_params = self._func_param_lam_types.get(func_key) or []
+        if not lam_params or not isinstance(args_node, Tree) or args_node.data != "arguments":
+            return
+        param_names = self._func_param_names.get(func_key, [])
+        owner = func_key.rsplit(".", 1)[0] if "." in func_key else ""
+        open_names = set(self._func_generic_params.get(func_key, set()) or ())
+        if owner:
+            open_names.update(self._class_type_param_names_of(owner) or ())
+        index = 0
+        for child in args_node.children:
+            if not isinstance(child, Tree) or child.data in {"starargs", "stararg", "kwargs"}:
+                continue
+            if child.data == "argvalue" and len(child.children) == 2:
+                name_node = child.children[0]
+                name = self._get_name(name_node.children[0]) if (
+                    isinstance(name_node, Tree) and name_node.data == "var" and name_node.children
+                ) else ""
+                pos = param_names.index(name) if name in param_names else -1
+                node = child.children[1]
+            else:
+                pos = index
+                index += 1
+                node = child.children[0] if child.data == "argvalue" and child.children else child
+            declared = lam_params[pos] if 0 <= pos < len(lam_params) else None
+            if declared is None or not isinstance(node, Tree) or node.data not in {
+                "funccall", "propagate", "list", "set", "dict",
+            }:
+                continue
+            declared = self._bound_lam_type(declared, open_names)
+            if declared is not None:
+                self._note_expected_call_lam(node, declared)
+
+    def _bound_lam_type(self, lam_type, open_names):
+        """``lam_type`` with the type parameters in ``open_names`` replaced
+        by the current call's type arguments (``_call_type_subst``);
+        ``None`` when one stays unbound."""
+        from compiler.typesys import parse_type
+        if not open_names:
+            return lam_type
+        text = render_lam_type(lam_type)
+        mentioned = [n for n in open_names if mentions_names(text, [n])]
+        if not mentioned:
+            return lam_type
+        subst = {}
+        for name in mentioned:
+            go_type = (self._call_type_subst or {}).get(name, "")
+            if not go_type or go_type == name or "interface{}" in go_type:
+                return None
+            subst[name] = self._go_type_lam_text(go_type)
+        try:
+            return parse_type(substitute_go_type(text, subst))
+        except Exception:
+            return None
+
+    def _field_expected_lam(self, target_node):
+        """The declared Lam type of the field ``target_node``
+        (``self.items``, ``store.items``) is assigned to; ``None`` when
+        unknown or when it mentions the type parameters of a generic
+        class seen from outside."""
+        if not (isinstance(target_node, Tree) and target_node.data == "getattr" and len(target_node.children) == 2):
+            return None
+        obj_node = target_node.children[0]
+        field = self._get_name(target_node.children[1])
+        own = (
+            isinstance(obj_node, Tree) and obj_node.data == "var" and obj_node.children
+            and self._get_name(obj_node.children[0]) == "self" and bool(self.current_class)
+        )
+        class_name = self.current_class if own else self._infer_expr_class(obj_node)
+        if not class_name or not field:
+            return None
+        for owner in [class_name, *self._hier_ancestors(class_name)]:
+            lam_type = self._field_lam_types.get(f"{owner}.{field}") or self._external_field_lam_types.get(f"{owner}.{field}")
+            if lam_type is None:
+                continue
+            params = self._class_type_param_names_of(owner) or []
+            if params and not (own and owner == class_name) and self._mentions_lam_names(lam_type, set(params)):
+                # ``q.items = none()`` with ``q: Reg[str]``: the receiver's
+                # type arguments.
+                receiver = self._receiver_type_subst(owner, obj_node, class_name)
+                if not receiver:
+                    return None
+                with self._scoped(_call_type_subst=receiver):
+                    return self._bound_lam_type(lam_type, set(params))
+            return lam_type
+        return None
 
     def _literal_elem_lam_type(self, node):
         from compiler.typesys import parse_type
@@ -522,6 +740,14 @@ class GenericCallMixin:
             self._bind_lam_args(func_key, args_node, lam_params, names, bound)
         expected = self._expected_call_lam_type()
         returned = self._func_return_lam_types.get(func_key)
+        if returned is None and expected is not None and func_key.endswith(".init"):
+            # ``c: Box[int] = Box([])``: a generic constructor yields
+            # ``Box[T]``.
+            from compiler.typesys import GenericType, NamedType
+            class_name = func_key[: -len(".init")]
+            params = self._class_type_param_names_of(class_name) or []
+            if params:
+                returned = GenericType(class_name, tuple(NamedType(p) for p in params))
         if expected is not None and returned is not None and any(n not in bound for n in names):
             # ``r: Result[int] = make()`` with ``make[T]() -> Result[T]``:
             # nothing else determines ``T``.

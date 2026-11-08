@@ -1,0 +1,198 @@
+# `finally` runs when its `try` statement ends (not when the function
+# returns), `return` works from every try / catch / finally part, also for
+# multi-value returns, and `else` is skipped when the body returns.
+# expect: body
+# expect: finally
+# expect: after
+# expect: total 3 cleanups 3
+# expect: value 42
+# expect: early-fin
+# expect: early 5
+# expect: pair 7 ok
+# expect: pair 0 bad
+# expect: pair-finally 3 yes
+# expect: pair-finally 0 no
+# expect: method 2 even
+# expect: method -1 odd
+# expect: nested 9 nine
+# expect: lambda 4 cleaned 1
+# expect: else-skipped ret
+# expect: else-ran done
+# expect: propagate-fin
+# expect: propagate err bad input
+# expect: propagate-fin
+# expect: propagate ok 8
+
+from lamerrors import Result
+
+func check(n: int) -> int {
+    if n < 0 {
+        throw ValueError("negative")
+    }
+    return n
+}
+
+func order() {
+    try {
+        print("body")
+    } finally {
+        print("finally")
+    }
+    print("after")
+}
+
+func loopCleanups() -> str {
+    cleanups: int = 0
+    total: int = 0
+    for i in range(3) {
+        try {
+            total += 1
+        } finally {
+            cleanups += 1
+        }
+    }
+    return f"total {total} cleanups {cleanups}"
+}
+
+func bodyLocal() -> int {
+    try {
+        value: int = 40
+        value += 2
+    } finally {
+        _ = 0
+    }
+    return value
+}
+
+func early(n: int) -> int {
+    try {
+        if n > 0 {
+            return n
+        }
+    } finally {
+        print("early-fin")
+    }
+    return 0
+}
+
+func pair(n: int) -> (int, str) {
+    try {
+        return check(n), "ok"
+    } catch _ {
+        return 0, "bad"
+    }
+}
+
+func pairFinally(n: int) -> (int, str) {
+    try {
+        if n > 0 {
+            return n, "yes"
+        }
+    } finally {
+        _ = n
+    }
+    return 0, "no"
+}
+
+class Parity {
+    func classify(self, n: int) -> (int, str) {
+        try {
+            if n % 2 == 1 {
+                throw ValueError("odd")
+            }
+            return n, "even"
+        } catch ValueError as _ {
+            return -1, "odd"
+        }
+    }
+}
+
+func nested() -> str {
+    func inner(n: int) -> (int, str) {
+        try {
+            return n, "nine"
+        } finally {
+            _ = n
+        }
+    }
+    a, b = inner(9)
+    return f"nested {a} {b}"
+}
+
+func elseSkipped() -> str {
+    out: str = "none"
+    try {
+        return "else-skipped ret"
+    } catch _ {
+        out = "caught"
+    } else {
+        print("else must not run")
+        out = "else"
+    }
+    return out
+}
+
+func elseRan() -> str {
+    out: str = "none"
+    try {
+        out = "body"
+    } catch _ {
+        out = "caught"
+    } else {
+        out = "else-ran done"
+    }
+    return out
+}
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err("bad input")
+    }
+    return Result.Ok(len(s))
+}
+
+func propagate(s: str) -> Result[int] {
+    try {
+        n: int = parse(s)?
+        return Result.Ok(n * 2)
+    } finally {
+        print("propagate-fin")
+    }
+}
+
+func main() {
+    order()
+    print(loopCleanups())
+    print(f"value {bodyLocal()}")
+    print(f"early {early(5)}")
+    a, b = pair(7)
+    print(f"pair {a} {b}")
+    c, d = pair(-1)
+    print(f"pair {c} {d}")
+    e, f = pairFinally(3)
+    print(f"pair-finally {e} {f}")
+    g, h = pairFinally(0)
+    print(f"pair-finally {g} {h}")
+    p: Parity = Parity()
+    i, j = p.classify(2)
+    print(f"method {i} {j}")
+    k, l = p.classify(3)
+    print(f"method {k} {l}")
+    print(nested())
+    cleaned: list[int] = []
+    twice = lambda (n: int) -> int {
+        try {
+            return n * 2
+        } finally {
+            cleaned.append(n)
+        }
+    }
+    print(f"lambda {twice(2)} cleaned {len(cleaned)}")
+    print(elseSkipped())
+    print(elseRan())
+    r: Result[int] = propagate("")
+    if not r.ok() {
+        print(f"propagate err {r.error}")
+    }
+    print(f"propagate ok {propagate("abcd").unwrap()}")
+}

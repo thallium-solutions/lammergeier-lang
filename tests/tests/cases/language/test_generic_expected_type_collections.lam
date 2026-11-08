@@ -1,0 +1,114 @@
+# The expected type of a generic call whose type parameter only the
+# result (or an empty literal) mentions also comes from the collection it
+# is an item of: an element of a list / set literal or a value of a dict
+# literal with a declared type (annotations, returns, arguments, fields,
+# nested literals), an argument of `append` / `insert` / `extend` on a
+# typed list, `add` on a typed set, and `d[k] = ...` / `xs[i] = ...`.
+#
+# expect: literal=1 0
+# expect: methods=4 4 0
+# expect: dict=2 0 5
+# expect: set=2 0
+# expect: nested=1 0
+# expect: returned=2 0 1
+# expect: argument=2
+# expect: field=1 0
+# expect: results=false 0 true 4
+# expect: lists=2 a
+# expect: dict-results=false true 6
+# expect: index=1 8
+
+from lamerrors import Result, Error
+
+func fail[T](msg: str) -> Result[T] {
+    return Result.Err(Error("Fail", msg))
+}
+
+func okOf[T](value: any) -> Result[T] {
+    return Result.Ok(value)
+}
+
+func none[T]() -> list[T] {
+    return []
+}
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+
+    func add(self, item: T) -> Box[T] {
+        self.items.append(item)
+        return self
+    }
+
+    func size(self) -> int {
+        return len(self.items)
+    }
+}
+
+class Shelf {
+    func init(self) {
+        self.boxes: list[Box[int]] = []
+    }
+
+    func fill(self) {
+        self.boxes = [Box([]), Box([1, 2])]
+    }
+}
+
+func boxes() -> list[Box[int]] {
+    return [Box([]), Box([4])]
+}
+
+func countAll(xs: list[Box[int]]) -> int {
+    return len(xs)
+}
+
+func main() {
+    xs: list[Box[int]] = [Box([])]
+    xs[0].add(3)
+    print(f"literal={len(xs)} {xs[0].items[0] - 3}")
+
+    xs.append(Box([]))
+    xs.insert(0, Box([]))
+    xs.extend([Box([])])
+    xs[1].add(7)
+    print(f"methods={len(xs)} {xs[1].size() + 2} {xs[0].size()}")
+
+    d: dict[str, Box[int]] = {"a": Box([])}
+    d["b"] = Box([])
+    d["b"].add(5)
+    print(f"dict={len(d)} {d["a"].size()} {d["b"].items[0]}")
+
+    s: set[Box[int]] = {Box([])}
+    s.add(Box([]))
+    print(f"set={len(s)} {len([b for b in s if b.size() > 0])}")
+
+    grid: list[list[Box[int]]] = [[Box([])]]
+    print(f"nested={len(grid[0])} {grid[0][0].size()}")
+
+    got: list[Box[int]] = boxes()
+    print(f"returned={len(got)} {got[0].size()} {got[1].size()}")
+    print(f"argument={countAll([Box([]), Box([1])])}")
+
+    shelf: Shelf = Shelf()
+    shelf.fill()
+    shelf.boxes[0].add(1)
+    print(f"field={shelf.boxes[0].size()} {shelf.boxes[0].items[0] - 1}")
+
+    rs: list[Result[int]] = [fail("x"), okOf(0)]
+    rs.append(okOf(4))
+    print(f"results={rs[0].ok()} {rs[1].unwrap()} {rs[2].ok()} {rs[2].unwrap()}")
+
+    ls: list[list[str]] = [none(), ["a"]]
+    print(f"lists={len(ls)} {ls[1][0]}")
+
+    m: dict[str, Result[int]] = {"bad": fail("no"), "good": okOf(6)}
+    print(f"dict-results={m["bad"].ok()} {m["good"].ok()} {m["good"].unwrap()}")
+
+    ys: list[Box[int]] = [Box([1])]
+    ys[0] = Box([])
+    ys[0].add(8)
+    print(f"index={len(ys)} {ys[0].items[0]}")
+}

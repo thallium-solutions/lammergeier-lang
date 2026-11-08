@@ -1,0 +1,39 @@
+# expect-pass
+# expect-no-warning: cannot infer type parameter
+# A typed collection gives its item type to the generic calls that are its
+# items: list / set literal elements, dict literal values (nested too),
+# `append` / `insert` / `extend` / `add` arguments and `d[k] = ...`.
+
+from lamerrors import Result, Error
+
+func fail[T](msg: str) -> Result[T] {
+    return Result.Err(Error("Fail", msg))
+}
+
+func none[T]() -> list[T] {
+    return []
+}
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+}
+
+func results() -> list[Result[int]] {
+    return [fail("a"), fail("b")]
+}
+
+func main() {
+    rs: list[Result[int]] = [fail("x")]
+    rs.append(fail("y"))
+    rs.insert(0, fail("z"))
+    rs.extend([fail("w")])
+    m: dict[str, Result[str]] = {"a": fail("no")}
+    m["b"] = fail("no")
+    grid: list[list[list[str]]] = [[none()]]
+    s: set[Box[int]] = {Box([])}
+    s.add(Box([]))
+    boxes: dict[str, list[Box[int]]] = {"k": [Box([])]}
+    print(len(rs), len(m), len(grid), len(s), len(boxes), len(results()))
+}

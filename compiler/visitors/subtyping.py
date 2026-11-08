@@ -317,6 +317,41 @@ class SubtypingMixin:
             data["by_go"] = by_go
         return by_go.get(base, "")
 
+    def _hier_common_base(self, class_names) -> str:
+        """The least common ancestor of ``class_names``: the most derived
+        class every one of them is or derives from (``""`` when there is
+        none or several equally derived ones)."""
+        common: Optional[List[str]] = None
+        for name in class_names:
+            line = [name] + self._hier_ancestors(name)
+            common = line if common is None else [c for c in common if c in line]
+            if not common:
+                return ""
+        if not common:
+            return ""
+        lowest = [c for c in common if not any(o != c and c in self._hier_ancestors(o) for o in common)]
+        return lowest[0] if len(lowest) == 1 else ""
+
+    def _hier_common_base_go_type(self, go_types) -> str:
+        """``*Base`` for the Go types of instances of several classes
+        (``*Square``, ``*Shape``) whose least common ancestor is the
+        non-generic class ``Base``; ``""`` otherwise."""
+        classes: List[str] = []
+        for go_type in go_types:
+            go_type = (go_type or "").strip()
+            if "[" in go_type:
+                return ""
+            name = self._hier_class_from_go_type(go_type)
+            if not name or name in self._interfaces or self._generic_classes.get(name):
+                return ""
+            classes.append(name)
+        if len(set(classes)) < 2:
+            return ""
+        base = self._hier_common_base(classes)
+        if not base or self._generic_classes.get(base) or self._class_type_param_names_of(base):
+            return ""
+        return f"*{self._go_class_name(base)}"
+
     def _interface_from_go_type(self, go_type: str) -> str:
         """``Sql`` (the Go type of an interface value) -> the Lam interface
         name (or ``""``)."""

@@ -1,0 +1,17 @@
+# A collection literal with an item the checker cannot type (an untyped
+# lambda's result) has `any` items: the other items no longer decide its
+# type (`[f(1), 2]` was a `list[int]`, so `append("y")` was rejected and
+# the generated Go asserted the wrong type).
+# expect-error: cannot assign `list[any]` to `str` variable `zl`
+# expect-error: cannot assign `dict[str, any]` to `str` variable `zd`
+# expect-error: cannot assign `set[any]` to `str` variable `zs`
+# expect-error: cannot assign `list[list[str]]` to `str` variable `zn`
+
+func main() {
+    f = lambda x: x
+    zl: str = [f(1), 2]
+    zd: str = {"a": f(1), "b": 2}
+    zs: str = {f(1), 2}
+    zn: str = [["a"], []]
+    print(zl, zd, zs, zn)
+}

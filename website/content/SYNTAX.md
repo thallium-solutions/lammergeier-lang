@@ -39,8 +39,11 @@ lamc app.lam --run
 
 Source files contain imports, raw Go blocks, constants, functions,
 classes, interfaces, and top-level statements. Application entry is
-`func main()`. Library modules usually expose classes or functions and
-keep `main` empty with `pass`.
+`func main()`. Library modules expose classes or functions and need no
+`func main()` (an empty one is allowed). The `main` of an imported module
+is not part of the importing program, so a module can also be a runnable
+program: its `main` (and the Go imports only it uses) is left out when it
+is imported.
 
 ```lammergeier
 from lamstrings import Strings
@@ -458,7 +461,9 @@ func main() {
 Prefer Lam syntax for application logic. Use `go!` when you need:
 
 - a Go import or package not wrapped by the stdlib;
-- a type assertion from `any`;
+- a two-value (`, ok`) type assertion on a Go interface value (Lam
+  converts `any` to a concrete type on its own, see
+  [From `any` to a concrete type](#from-any-to-a-concrete-type));
 - a goroutine, select statement, mutex, or channel pattern not covered
   by `lamconcurrency`;
 - exact access to generated Go names via `LAMMERGEIER.*`;
@@ -614,6 +619,43 @@ counts: dict[str, int] = {"a": 1}
 meta: dict[str, any] = counts
 ```
 
+### From `any` to a concrete type
+
+The other direction is a run-time check. An `any` value is accepted where a
+concrete type is expected — an annotated variable, a re-assignment of a
+typed variable or field, a `return` from a function with a declared result,
+an argument for a typed parameter, an item of a typed list / dict / set —
+whatever produces it: an element of a `list[any]` or `dict[K, any]`, an
+`any` local, parameter or field (`Result.value` too), `unwrap()` of an
+untyped `Result`, the result of a function, method, static method or lambda
+declared `-> any` (also imported), a generic result bound to `any`, and `?`
+on a `Result[any]`. The value is checked when it is converted, the same way
+for every source: an `int` is accepted (and widened) where a `float` is
+expected, a subclass instance where its base class is expected (it becomes
+the base-class view), `None` where a class is expected, and a `list[any]` /
+`dict[str, any]` holding values of the item type where a typed list / dict
+is expected; anything else throws a `TypeError` (catchable like any
+exception):
+
+```lammergeier
+func lookup(key: str) -> any { ... }
+
+row: dict[str, any] = {"name": "Ann", "age": 41}
+name: str = row["name"]
+age: float = lookup("age")        # 41 -> 41.0
+take(lookup("count"))             # func take(n: int)
+try {
+    bad: int = lookup("name")
+} catch TypeError as e {
+    print(e)
+}
+```
+
+Use `isinstance` / `match` (`case int(n)`) when the dynamic type decides what
+to do, and `int(x)` / `float(x)` / `str(x)` to convert between kinds (a
+`str` holding `"41"` is not an `int`). Member access on an `any` value still
+needs a narrowed or annotated name first (`u: User = lookup("user")`).
+
 ### Bytes
 
 `bytes` is a sequence of byte values (Go `[]byte`): file contents, hashes,
@@ -755,11 +797,18 @@ takes its declared parameter type (`size(["a"])` with
 `size: func(list[str]) -> int` passes a `list[str]`), and a subclass
 instance is accepted where the function value expects its base class
 (`rate(book)` with `rate: func(Item) -> float` and `book: Featured`,
-`class Featured(Item)`), for function-typed locals, parameters and fields
-alike, exactly as for a declared function; the callee still sees the
-`Featured` object, so its overrides run. `None` is a valid function value
-(the unset callback, as a Go `nil` func): `self.onDone: func(int) = None`,
-tested with `if self.onDone != None { self.onDone(code) }`.
+`class Featured(Item)`), for function-typed locals, parameters, fields and
+collection elements (`fns[0]("a", [Item(1)])`) alike, exactly as for a
+declared function; the callee still sees the `Featured` object, so its
+overrides run. A call through a function value has its declared result type,
+whatever holds the value (a parameter, local, field, also of an imported
+class, a collection element, a returned function): with `fn: func(int) ->
+Result[list[int]]`, `fn(1).unwrap()`, `fn(1)?` and `fn(1).unwrapOr([])` are
+a `list[int]` (`len(...)`, `[0]`, `for x in ...`), and
+`loader(3).unwrap().name` reads a field of the payload class. `None` is a
+valid function value (the unset callback, as a Go `nil` func):
+`self.onDone: func(int) = None`, tested with `if self.onDone != None {
+self.onDone(code) }`.
 
 A module function passed by name to a parameter of function type may have
 more parameters when the extra ones have defaults, and may return a value
@@ -1101,6 +1150,26 @@ Collections are invariant: an existing `list[Square]` cannot be assigned to
 a `list[Shape]` (the alias could then receive a `Circle`); build the
 `list[Shape]` from the elements instead.
 
+Without an annotation, a list or set literal (or the values of a dict
+literal) mixing instances of several classes has their least common base
+class as its item type, and a ternary choosing between them has that class
+as its type: `for s in [Square(), Circle(2), Shape()]` gives `s` the type
+`Shape` (calls run the overrides), `shapes = [Square(), Shape()]` is a
+`list[Shape]`, `{"a": Square(), "b": Circle(1)}` a `dict[str, Shape]` and
+`Square() if big else Shape()` a `Shape`. Classes that share no base class
+(nor a single most derived one) leave the item type `any`: using a member
+of such an item (`for x in [User(), Order()] { x.save() }`) is a compile
+error until it is narrowed with `isinstance` / `match`, or the collection is
+annotated with a common base class or interface (`items: list[Saveable] =
+[User(), Order()]`). Interfaces are never inferred: conformance is
+structural, so a class satisfies many of them.
+
+Likewise, an item of type `any`, or one whose type the compiler cannot
+determine (the result of an untyped lambda), makes the items of an
+unannotated literal `any`: `[anyv(1), 2]` is a `list[any]` (it may receive
+`append("x")`), not a `list[int]` decided by the other items. Annotate the
+variable to choose another type.
+
 ### Inherited constructors
 
 A class without its own `init` inherits the `init` of its nearest ancestor
@@ -1281,6 +1350,19 @@ class Config {
 }
 ```
 
+Static methods behave like module functions in every other respect: they
+may be generic (`static func run[T](fn: func(int) -> Result[T]) ->
+Result[T]`), use `try` / `catch` with a `throw` in the handler and a
+`return` inside the body, and return a value where an `optional` of its
+type is expected (`return Hooks.page()` in a `-> optional[html]`; the same
+holds for instance-method calls such as `return self.title()`).
+`Class.method` without a call is the method as a function value, private
+statics included (`Hooks.run(Hooks.double)` inside the module declaring
+`private static func double`); its type has the declared parameter and
+result types in full, so `Handlers.count` with `count(where: str, items:
+list[Item]) -> int` fits a `func(str, list[Item]) -> int` parameter. A
+private static is visible only in its module, as a value too.
+
 ---
 
 ## Interfaces
@@ -1304,7 +1386,9 @@ class Circle {
 ```
 
 Conformance is structural: a class with the required method set can be passed to
-an interface-typed parameter without an explicit declaration. Interface methods
+an interface-typed parameter without an explicit declaration. An interface
+is not a class and cannot be listed as a base (`class Circle(Drawable)` is a
+compile error saying so); the class simply defines the interface's methods. Interface methods
 may spell the receiver (`func draw(self) -> str`) or omit it (`func draw() ->
 str`); either way `self` is not counted as a parameter. An interface may
 be empty (`interface Marker { }`); every value conforms to it. An interface
@@ -2669,6 +2753,65 @@ propagates out of the enclosing function — only execution that *would
 have fallen off the end of the catch* continues with the post-block
 statements.
 
+`finally` runs when its `try` statement ends — after the body, or after the
+matching `catch` — also once per iteration when the `try` sits in a loop,
+and before a `return`, `break` or `continue` leaves the statement. `return`
+(also of several values, `return n, "ok"`), `break` and `continue` work in
+the body, in every `catch` clause and in `finally`, and target the enclosing
+function and loop as usual, also in nested loops and `try` statements and in
+a lambda's or nested function's own loops.
+
+The parts run in Python's order: the body; then, when it raised, the first
+matching `catch` clause; otherwise `else`, which runs only when the body
+completed (no exception, no `return`, `break` or `continue` left it); and
+`finally` last, whichever way the statement is left. An exception raised in
+`else` (or in a `catch` clause) is not handled by the same statement's
+`catch` clauses: `finally` runs, then it propagates. A `return` in `else`
+also runs `finally` before the function returns.
+
+A `return`, `break` or `continue` that leaves a `finally` block replaces
+whatever was leaving the statement: it cancels an exception that is
+propagating (unmatched by the clauses, or raised in a `catch` or `else`),
+a `return` there replaces the body's return value, and a `break` /
+`continue` there discards a pending `return`. When `finally` completes
+normally, the pending exception, `return` or jump goes on. The compiler
+warns about such a jump (Python linters and PEP 765 do too): write it after
+the `try` statement when the cancellation is not intended.
+
+```lammergeier
+func load(path: str) -> int {
+    try {
+        return parse(path)          # 1. returns n (finally still runs)
+    } finally {
+        if cache.closed {
+            return -1               # 2. warning: replaces n, cancels an exception
+        }
+    }
+}
+```
+
+```lammergeier
+for path in paths {
+    try {
+        if path == "" {
+            continue                # finally still runs first
+        }
+        load(path)
+    } catch IOError as e {
+        print(f"skipping {path}: {e}")
+        continue
+    } catch FatalError as _ {
+        break
+    } finally {
+        print(f"done with {path}")
+    }
+    loaded += 1
+}
+```
+
+A `break` / `continue` must be in a loop of the same function: a loop around
+a lambda or nested function does not count (a compile error).
+
 > **Exceptions vs. errors.** `raise`/`throw` are for *exceptional*
 > situations that should unwind the call stack (programmer mistakes,
 > impossible states, OS-level failures). For *expected* failure modes
@@ -2898,6 +3041,12 @@ func main() {
 }
 ```
 
+As in a function, a `?` inside a `try` body or `catch` handler of such a
+lambda returns the `Err` from the lambda (the `catch` clause never sees
+it), and a `return` there returns from the lambda; inside a `do` block in
+the lambda (also in a `try` within the `do` body) the `do`'s `catch`
+receives it. Nested functions behave the same.
+
 A lambda that does not return `Result` has no target for the error: `?`
 there panics on `Err` (and is warned about), even inside a
 `Result`-returning function.
@@ -2950,7 +3099,8 @@ with an empty `kind`, its text as `message` and the original value as
 `cause`; it prints exactly as the value did.
 
 A `return` inside the `do` body (or inside the handler) returns from the
-enclosing function, exactly as it would outside the block. When both the body
+enclosing function, exactly as it would outside the block, and `break` /
+`continue` there leave or continue the enclosing loop. When both the body
 and the handler end in `return` / `raise`, the `do/catch` block ends the
 function (no trailing `return` is needed):
 
@@ -3245,7 +3395,11 @@ A nested `func` is only visible inside the enclosing body; it is
 not callable from anywhere else. To expose a helper widely, lift
 it to module scope. Nested funcs may carry their own generic type
 parameters (see "Functions, Defaults, Lambdas, and Nested Helpers")
-and can be declared inside `if` / `else` blocks too.
+and can be declared inside `if` / `else` blocks too. A call binds them from
+its arguments like a call of a top-level generic function: with `func
+pick[T](xs: list[T], i: int) -> T` nested in `main`, `pick(["a"], 0)` passes
+a `list[str]` and returns a `str` (list, dict and set literals, lambdas and
+class instances type `T`; `pick[str](...)` spells it explicitly).
 
 Parameters of a nested `func` take defaults and keyword arguments like
 those of a top-level function, and calls are checked against them
@@ -3676,6 +3830,12 @@ class type (class-typed variables already hold `None`). A value payload
 `optional[dict[str, int]]` a `*map[string]int`) is boxed automatically when
 an `int` (a list, a dict) is assigned or returned, and `opt ?? fallback`
 unwraps it to an `int`; it does not convert to a plain `int` implicitly.
+The `int` may come from a literal, a local, a function call or a static or
+instance method call declared `-> int` (`return Hooks.page()` in a `->
+optional[html]`, `n: optional[str] = self.name()`). `optional[json]` holds
+a `json` value or `None`: `json` calls and JSON literals are boxed
+(`return {"a": 1}` in a `-> optional[json]`) and `doc ?? {}` takes any
+JSON fallback.
 
 ```lammergeier
 class Node {
@@ -3840,19 +4000,49 @@ The annotations of a lambda argument bind type parameters too, also inside
 inTx[T](conn: Conn, fn: func(Conn) -> Result[T]) -> Result[T]` gives
 `T = int` (as does `inTx(conn, count)` with `count(c: Conn) ->
 Result[int]`). A type parameter that only appears in the result is bound by
-the annotated variable the call initializes: `r: Result[int] = make()` with
-`func make[T]() -> Result[T]`, and `n: int = make()?` (a `Result[int]` is
-expected). An explicit instantiation keeps its type arguments in an
-unannotated local: `b = Box[int](5)` is a `Box[int]`.
+the type the call's value must have where it is written, with `func
+make[T]() -> Result[T]`:
 
-When no argument gives a type parameter its type, the call needs explicit
+```lammergeier
+r: Result[int] = make()          # the annotated variable it initializes
+n: int = make()?                 # through `?`: a `Result[int]` is expected
+
+func load() -> Result[int] {
+    return make()                # the declared result of the function
+}
+
+take(make())                     # the parameter: func take(r: Result[int])
+take(r=make())                   # keyword arguments, methods, constructors
+self.items = none()              # the field: self.items: list[int]
+f = lambda () -> Result[int]: make()   # a lambda's declared result
+
+rs: list[Result[int]] = [make()]       # an item of a typed collection literal
+m: dict[str, Result[int]] = {"a": make()}   # (list / set elements, dict values,
+rs.append(make())                       #  nested literals too), `append` /
+rs.insert(0, make())                    #  `insert` / `extend` / set `add`
+m["b"] = make()                         #  arguments and `d[k] = ...`
+```
+
+A generic constructor whose type parameter only an empty literal (or no
+argument) mentions takes the type arguments of the same expected types, and
+the literal gets the element type: `c: Box[int] = Box([])`, `return
+Box([])` in a `-> Box[int]` function, `take(Box([]))`, `d: Bag[str] =
+Bag({})`, `r: Registry[str, int] = Registry()`, `xs: list[Box[int]] =
+[Box([])]`, `xs.append(Box([]))`. A parameter type that
+mentions the callee's own type parameters (`check[U](r: Result[U])`), `any`
+and a result of another shape give none. An explicit instantiation keeps
+its type arguments in an unannotated local: `b = Box[int](5)` is a
+`Box[int]`.
+
+When nothing gives a type parameter its type, the call needs explicit
 type arguments: a parameter default (`firstOf()` with `xs: list[T] = []`),
-`None` (`ident(None)`), or an empty `[]` / `{}` where the result must be a
-given instantiation (`b: Box[int] = Box([])`) is a compile error suggesting
-`firstOf[int]()` / `Box[int]([])`. Explicit type arguments also type the
-defaults (`firstOf[str]()` passes an empty `list[str]`). An empty literal
-whose result may be anything (`count([])`, `b = Box([])`) makes the type
-parameter `any`.
+`None` (`ident(None)`), an unannotated local (`r = make()`), or an empty
+`[]` / `{}` where the result must be an instantiation the context does not
+fix (`boxed(Box([]))` with `boxed[U](b: Box[U])`) is a compile error
+suggesting `firstOf[int]()` / `Box[int]([])`. Explicit type arguments also
+type the defaults (`firstOf[str]()` passes an empty `list[str]`). An empty
+literal whose result may be anything (`count([])`, `b = Box([])`) makes
+the type parameter `any`.
 
 Lambdas passed to a generic function or method take their parameter types
 from the type arguments known at the call, and their result binds the
@@ -4135,6 +4325,11 @@ module does not declare is an `import resolution failed` error, and so is
 a relative import of a module that does not exist (`from .missing import
 Thing`, `import ..gone as g`), reported with its line and the paths
 searched. Raw `go!` code is not checked.
+
+Modules may import each other (`pkg/scope.lam` importing `.conn`, which
+imports `.scope`): each sees the other's names, and any module of such a
+cycle can be built as the program entry (`lamc pkg/scope.lam`), its own
+declarations then reaching the modules that import it back.
 
 Every module of the program gets the **full semantic check**, not only the
 compiled file: project modules, `extlibs` packages and the stdlib, each
@@ -4984,7 +5179,11 @@ keyword sub-patterns are written without spaces around `=`
 defaults keep them (`name: str = "world"`). A keyword before `(` takes one
 space (`if (a and b) or c {`, `not (x)`, `lambda (x: int) -> int: x`), and a
 `{` after a conditional expression's `else` (`x if ok else {}`) is a literal
-kept on its line. Raw Go inside `go! { }` is left byte for byte as written
+kept on its line. A sign after an operator (`??` included) or a keyword is
+unary and sticks to its operand (`n ?? -1`, `x == -1`, `return -1`, `[-1]`,
+`f(-1)`, `a if b else -1`; `n ?? - 1` is rewritten `n ?? -1`), a literal or
+`(` after `??` keeps its space (`xs ?? []`, `n ?? (a + b)`), and the
+postfix `?` stays a postfix (`r? - 1`, `f()?[0]`, `y?.name`). Raw Go inside `go! { }` is left byte for byte as written
 (comments, spacing and indentation); only the `go! {` line follows the Lam
 indentation. Formatting never changes the program: the test suite checks
 that every formatted test case generates the same Go and that formatting is
@@ -5082,9 +5281,14 @@ The pipeline runs in three layers:
    method whose declared return type is the receiver's class or one of its
    bases (type arguments aside, not `optional` / `Result`), such as
    `w.addIf(...)` or `form.file(...)`, may stand alone as a statement; static
-   factories and other results still warn. A `?` outside a compatible
-   Result-returning target remains a warning because the documented dynamic
-   fallback converts `Err` to panic.
+   factories and other results still warn. `lamtest` assertions are meant
+   to be statements too: `Test.assertTrue(...)`, `Test.assertEqual(...)`
+   and the other `assert*` helpers (their `bool` says whether the check
+   passed) and `Test.summary()` do not warn when their result is unused,
+   however `Test` is imported (`from lamtest import Test as T`, `import
+   lamtest`); a program's own class named `Test` still does. A `?` outside
+   a compatible Result-returning target remains a warning because the
+   documented dynamic fallback converts `Err` to panic.
 
    Skip with `--no-semantic-check` when chasing a transpiler bug,
    but it's on by default because it's cheap (&lt;50 ms) and catches

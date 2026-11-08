@@ -1437,7 +1437,15 @@ def run_tests() -> int:
                 "version": 1, "text": USER_HELPER_DOC,
             },
         })
-        client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        notes = client.collect_notifications("textDocument/publishDiagnostics", n=1, timeout=2)
+        try:
+            # A library module needs no ``func main()``.
+            assert_true("got helper diagnostics notification", notes)
+            assert_eq("main-less module has no diagnostics",
+                      notes[0].get("params", {}).get("diagnostics", []), [])
+            print("PASS: a library module without main publishes no diagnostics")
+        except AssertionError as e:
+            failures.append(f"main-less module diagnostics: {e}")
         cross_uri = "file:///tmp/lsp_cross.lam"
         client.notify("textDocument/didOpen", {
             "textDocument": {

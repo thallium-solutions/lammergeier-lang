@@ -1,0 +1,241 @@
+# Regression: a `try { } catch ... { }` inside a block lambda did not
+# build: a `return` (and the guard of a `?`) inside the `try` body or a
+# handler returned from the IIFE the `try` lowers to, which Go rejected
+# ("too many return values", "missing return"). A lambda containing a
+# `try` keeps its result like a function does, so `return` there returns
+# from the lambda and, as in a function, a `?` inside the `try` body or a
+# handler propagates the `Err` out of the lambda (a `catch` clause never
+# sees it); inside a `do` block it goes to that block's `catch` instead,
+# also when the `try` is in the `do` body. Nested functions (also generic
+# ones) had the same defect.
+#
+# expect: try_ok=6 try_err=false Empty: empty
+# expect: handler=-1 handler_err=false Empty: empty
+# expect: do_in_lambda=-2 4
+# expect: try_in_do=-4 103
+# expect: do_in_try=-5 8
+# expect: finally=done:3 done:false
+# expect: loop=[2 Empty: empty 4]
+# expect: passed=false 0
+# expect: method=false 10
+# expect: nested=false 7
+# expect: untyped=5 none
+# expect: void=[ran:ab]
+# expect: nested_func=false 3 b a
+# expect: lambda_try_propagate_ok
+
+from lamerrors import Result, Error
+
+func parse(s: str) -> Result[int] {
+    if s == "" {
+        return Result.Err(Error("Empty", "empty"))
+    }
+    return Result.Ok(len(s))
+}
+
+func apply(fn: func(str) -> Result[int], s: str) -> Result[int] {
+    return fn(s)
+}
+
+class Runner {
+    func init(self, base: int) {
+        self.base: int = base
+    }
+
+    func run(self, s: str) -> Result[int] {
+        step = lambda (x: str) -> Result[int] {
+            try {
+                n: int = parse(x)?
+                return Result.Ok(n + self.base)
+            } catch ValueError as _ {
+                return Result.Ok(-1)
+            }
+        }
+        return step(s)
+    }
+}
+
+func main() {
+    a = lambda (s: str) -> Result[int] {
+        try {
+            n: int = parse(s)?
+            return Result.Ok(n * 2)
+        } catch ValueError as _ {
+            return Result.Ok(-1)
+        }
+    }
+    print(f"try_ok={a('abc').unwrap()} try_err={a('').ok()} {a('').error}")
+
+    h = lambda (s: str) -> Result[int] {
+        try {
+            if s == "boom" {
+                raise ValueError("boom")
+            }
+            return Result.Ok(len(s))
+        } catch ValueError as _ {
+            m: int = parse(s[:0])?
+            return Result.Ok(m)
+        }
+    }
+    print(f"handler={-1 if not h('boom').ok() else 0} handler_err={h('boom').ok()} {h('boom').error}")
+
+    b = lambda (s: str) -> Result[int] {
+        total: int = 0
+        do {
+            total = parse(s)?
+        } catch _ {
+            return Result.Ok(-2)
+        }
+        return Result.Ok(total * 2)
+    }
+    print(f"do_in_lambda={b('').unwrap()} {b('ab').unwrap()}")
+
+    c = lambda (s: str) -> Result[int] {
+        do {
+            try {
+                n: int = parse(s)?
+                return Result.Ok(n + 100)
+            } catch ValueError as _ {
+                return Result.Ok(-3)
+            }
+        } catch _ {
+            return Result.Ok(-4)
+        }
+        return Result.Ok(0)
+    }
+    print(f"try_in_do={c('').unwrap()} {c('xyz').unwrap()}")
+
+    d = lambda (s: str) -> Result[int] {
+        try {
+            do {
+                n: int = parse(s)?
+                return Result.Ok(n * 4)
+            } catch _ {
+                return Result.Ok(-5)
+            }
+        } catch ValueError as _ {
+            return Result.Ok(-6)
+        }
+        return Result.Ok(0)
+    }
+    print(f"do_in_try={d('').unwrap()} {d('xy').unwrap()}")
+
+    log: list[str] = []
+    e = lambda (s: str) -> Result[int] {
+        try {
+            n: int = parse(s)?
+            return Result.Ok(n)
+        } finally {
+            log.append("done")
+        }
+    }
+    first = e("abc").unwrap()
+    second = e("").ok()
+    print(f"finally={log[0]}:{first} {log[1]}:{second}")
+
+    out: list[str] = []
+    loop = lambda (s: str) -> Result[int] {
+        for ch in [s, "x"] {
+            try {
+                n: int = parse(ch)?
+                return Result.Ok(n * 2)
+            } catch ValueError as _ {
+                pass
+            }
+        }
+        return Result.Ok(0)
+    }
+    for s in ["a", "", "ab"] {
+        r = loop(s)
+        out.append(str(r.unwrap()) if r.ok() else str(r.error))
+    }
+    print(f"loop={out}")
+
+    r: Result[int] = apply(lambda (s: str) -> Result[int] {
+        try {
+            m: int = parse(s)?
+            return Result.Ok(m)
+        } catch _ {
+            return Result.Ok(0)
+        }
+    }, "")
+    q: Result[int] = apply(lambda (s: str) -> Result[int] {
+        try {
+            raise ValueError("x")
+        } catch _ {
+            return Result.Ok(0)
+        }
+    }, "")
+    print(f"passed={r.ok()} {q.unwrap()}")
+
+    runner = Runner(7)
+    print(f"method={runner.run('').ok()} {runner.run('abc').unwrap()}")
+
+    outer = lambda (s: str) -> Result[int] {
+        inner = lambda (t: str) -> Result[int] {
+            try {
+                k: int = parse(t)?
+                return Result.Ok(k + 4)
+            } catch ValueError as _ {
+                return Result.Ok(-7)
+            }
+        }
+        try {
+            v: int = inner(s)?
+            return Result.Ok(v)
+        } catch ValueError as _ {
+            return Result.Ok(-8)
+        }
+    }
+    print(f"nested={outer('').ok()} {outer('abc').unwrap()}")
+
+    untyped = lambda (s: str) {
+        try {
+            return len(s)
+        } catch ValueError as _ {
+            return 0
+        }
+    }
+    none_seen = lambda () {
+        try {
+            raise ValueError("x")
+        } catch _ {
+            return "none"
+        }
+    }
+    print(f"untyped={untyped('abcde')} {none_seen()}")
+
+    ran: list[str] = []
+    v = lambda (s: str) {
+        try {
+            if s == "" {
+                return
+            }
+            ran.append(f"ran:{s}")
+        } catch _ {
+            ran.append("caught")
+        }
+    }
+    v("")
+    v("ab")
+    print(f"void={ran}")
+
+    func local(s: str) -> Result[int] {
+        try {
+            n: int = parse(s)?
+            return Result.Ok(n + 1)
+        } catch ValueError as _ {
+            return Result.Ok(-9)
+        }
+    }
+    func pick[T](xs: list[T], i: int) -> T {
+        try {
+            return xs[i]
+        } catch IndexError as _ {
+            return xs[0]
+        }
+    }
+    letters: list[str] = ["a", "b"]
+    print(f"nested_func={local('').ok()} {local('ab').unwrap()} {pick(letters, 1)} {pick(letters, 5)}")
+    print("lambda_try_propagate_ok")
+}

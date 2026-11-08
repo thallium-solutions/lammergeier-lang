@@ -1,0 +1,139 @@
+# The result of a call through a function value — a function-typed
+# parameter, local, field (also of an imported class), collection element,
+# returned function or nested function — keeps its declared Lam type:
+# `unwrap()` / `unwrapOr()` / `?` of a `Result[T]` give a `T` (lists,
+# classes, type parameters), so `len`, indexing, iteration and member
+# access work, like for a declared function.
+# expect: param 2
+# expect: question 6
+# expect: local 3 5 3
+# expect: members item34item5
+# expect: list 6
+# expect: dict 4
+# expect: optional 9
+# expect: field 1
+# expect: q-members item5:6
+# expect: generic 42
+# expect: returned 2 4
+# expect: elements 2 8 item2
+# expect: list of results 3
+# expect: safe nav 3 -1
+# expect: imported field 3 4 33
+# expect: bound field 3
+# expect: nested 3 A0
+
+from lamerrors import Result
+from func_value_results_provider import Loader, makeLoader
+
+class Item {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func label(self) -> str {
+        return f"item{self.n}"
+    }
+}
+
+func viaParam(fn: func(set[int]) -> Result[list[int]]) -> int {
+    return len(fn({1, 2}).unwrap())
+}
+
+func viaParamQ(fn: func() -> Result[list[int]]) -> Result[int] {
+    xs = fn()?
+    total: int = 0
+    for x in fn()? {
+        total += x
+    }
+    return Result.Ok(len(xs) + total + fn()?[0])
+}
+
+func viaItem(fn: func(int) -> Result[Item]) -> str {
+    return fn(3).unwrap().label() + str(fn(4).unwrap().n) + fn(5).unwrapOr(Item(0)).label()
+}
+
+func viaQ(fn: func(int) -> Result[Item]) -> Result[str] {
+    first: str = fn(5)?.label()
+    return Result.Ok(first + ":" + str(fn(6)?.n))
+}
+
+func listParam(fn: func() -> list[Item]) -> int {
+    total: int = 0
+    for it in fn() {
+        total += it.n
+    }
+    return total + fn()[0].n + len(fn())
+}
+
+func dictParam(fn: func() -> dict[str, int]) -> int {
+    return fn()["a"] + len(fn())
+}
+
+func optParam(fn: func() -> optional[Item]) -> int {
+    return (fn() ?? Item(0)).n
+}
+
+func generic[T](fn: func() -> Result[T]) -> T {
+    return fn().unwrap()
+}
+
+func maker() -> func(int) -> Result[list[int]] {
+    return lambda (n: int) -> Result[list[int]]: Result.Ok([n, n])
+}
+
+func results(fn: func() -> list[Result[int]]) -> int {
+    total: int = 0
+    for r in fn() {
+        total += r.unwrap()
+    }
+    return total
+}
+
+func maybe(fn: func() -> optional[Item]) -> int {
+    return fn()?.n ?? -1
+}
+
+class Holder {
+    func init(self, loader: func(int) -> Result[list[int]]) {
+        self.loader: func(int) -> Result[list[int]] = loader
+    }
+
+    func count(self) -> int {
+        return len(self.loader(2).unwrap()) + self.loader(1).unwrap()[0] - 2
+    }
+}
+
+func main() {
+    print("param", viaParam(lambda (s: set[int]) -> Result[list[int]]: Result.Ok([x for x in s])))
+    print("question", viaParamQ(lambda () -> Result[list[int]]: Result.Ok([1, 2])).unwrap())
+    f: func() -> Result[list[int]] = lambda () -> Result[list[int]]: Result.Ok([4, 5, 6])
+    print("local", len(f().unwrap()), f().unwrap()[1], f().unwrapOr([]).length())
+    print("members", viaItem(lambda (n: int) -> Result[Item]: Result.Ok(Item(n))))
+    print("list", listParam(lambda () -> list[Item]: [Item(1), Item(2)]))
+    print("dict", dictParam(lambda () -> dict[str, int]: {"a": 3}))
+    print("optional", optParam(lambda () -> optional[Item]: Item(9)))
+    h: Holder = Holder(lambda (n: int) -> Result[list[int]]: Result.Ok([n, n]))
+    print("field", h.count())
+    print("q-members", viaQ(lambda (n: int) -> Result[Item]: Result.Ok(Item(n))).unwrap())
+    n: int = generic(lambda () -> Result[int]: Result.Ok(41)) + 1
+    print("generic", n)
+    print("returned", len(maker()(3).unwrap()), maker()(4).unwrap()[0])
+    fns: list[func() -> Result[list[int]]] = [lambda () -> Result[list[int]]: Result.Ok([7, 8])]
+    table: dict[str, func() -> Result[Item]] = {"a": lambda () -> Result[Item]: Result.Ok(Item(2))}
+    print("elements", len(fns[0]().unwrap()), fns[0]().unwrap()[1], table["a"]().unwrap().label())
+    print("list of results", results(lambda () -> list[Result[int]]: [Result.Ok(1), Result.Ok(2)]))
+    print("safe nav", maybe(lambda () -> optional[Item]: Item(3)), maybe(lambda () -> optional[Item]: None))
+    loader: Loader = makeLoader()
+    total: int = 0
+    for x in loader.fetch(10).unwrap() {
+        total += x
+    }
+    print("imported field", len(loader.fetch(1).unwrap()), loader.fetch(2).unwrap()[2], total)
+    bound: func(int) -> Result[list[int]] = loader.fetch
+    print("bound field", len(bound(0).unwrap()))
+    func nested(k: int) -> Result[list[str]] {
+        return Result.Ok([f"a{i}" for i in range(k)])
+    }
+    view: func(int) -> Result[list[str]] = nested
+    print("nested", len(view(3).unwrap()), view(2).unwrap()[0].toUpper())
+}

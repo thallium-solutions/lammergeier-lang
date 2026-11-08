@@ -1,0 +1,60 @@
+# Every source of an `any` value converts to a concrete type the same way:
+# an element of a `list[any]` / `dict[K, any]` (any key type), an `any`
+# local and the results of `-> any` callables (also imported). An int
+# widens where a `float` is expected, a subclass instance becomes its
+# base-class view and `None` fits a class (these used to panic or not
+# build for some of the sources).
+# expect: floats 3.0 7.0 2.0 4.0
+# expect: shapes Sq Sq Sq Sq
+# expect: none true true
+# expect: int-keys a 5
+# expect: imported 6 7 8.0 Sq
+# expect: lists [1 2] map[k:3]
+
+from any_values_provider import dynamic, Bag
+
+class Shape {
+    func name(self) -> str { return "Shape" }
+}
+
+class Square(Shape) {
+    func name(self) -> str { return "Sq" }
+}
+
+func main() {
+    row: dict[str, any] = {"age": 3, "sq": Square(), "none": None, "xs": [1, 2], "m": {"k": 3}}
+    items: list[any] = [7, Square()]
+    v: any = 2
+    f1: float = row["age"]
+    f2: float = items[0]
+    f3: float = v
+    f4: float = dynamic(4)
+    print("floats", f"{f1:.1f}", f"{f2:.1f}", f"{f3:.1f}", f"{f4:.1f}")
+
+    w: any = Square()
+    s1: Shape = row["sq"]
+    s2: Shape = items[1]
+    s3: Shape = w
+    s4: Shape = dynamic(Square())
+    print("shapes", s1.name(), s2.name(), s3.name(), s4.name())
+
+    n1: Shape = row["none"]
+    n2: Shape = dynamic(None)
+    print("none", n1 == None, n2 == None)
+
+    byId: dict[int, any] = {1: "a", 2: 5}
+    t: str = byId[1]
+    k: int = byId[2]
+    print("int-keys", t, k)
+
+    bag: Bag = Bag(7)
+    i1: int = Bag(6).peek()
+    i2: int = bag.value
+    i3: float = Bag.wrap(8)
+    i4: Shape = Bag(Square()).peek()
+    print("imported", i1, i2, f"{i3:.1f}", i4.name())
+
+    xs: list[int] = row["xs"]
+    m: dict[str, int] = row["m"]
+    print("lists", xs, m)
+}

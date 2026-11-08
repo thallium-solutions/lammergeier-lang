@@ -1355,6 +1355,26 @@ class HelpersMixin:
 
     # ─── Tree inspection ───────────────────────────────────────
 
+    def _try_result_names(self, return_type: str) -> List[str]:
+        """Named results of a function whose body has a ``try`` (its IIFE
+        stores ``return X`` there): ``retval``, or ``retval0``, ``retval1``,
+        ... for a multi-value return type ``(A, B)``."""
+        parts = self._split_go_tuple_type(return_type)
+        if len(parts) > 1:
+            return [f"retval{i}" for i in range(len(parts))]
+        return ["retval"]
+
+    def _try_result_sig(self, return_type: str) -> str:
+        """The Go result list declaring ``_try_result_names``."""
+        parts = self._split_go_tuple_type(return_type)
+        if len(parts) > 1:
+            return "(" + ", ".join(f"retval{i} {t}" for i, t in enumerate(parts)) + ")"
+        return f"(retval {return_type})"
+
+    def _declare_try_results(self, return_type: str) -> None:
+        for name in self._try_result_names(return_type):
+            self._declare_var(name)
+
     def _suite_contains_try(self, node) -> bool:
         """A ``try`` anywhere in this function body (not in nested functions,
         lambdas or classes): ``return`` inside its IIFE needs the named
@@ -1440,6 +1460,15 @@ class HelpersMixin:
             return go_type.startswith("[]")
         return go_type.startswith("map[")
 
+    def _literal_item_go_type(self, node) -> str:
+        """Go type of an item of a collection literal: its value type or,
+        failing that, its expression type; ``""`` when it is ``any`` or
+        unknown (the literal's items are then ``interface{}``)."""
+        go_type = self._infer_type_from_value(node)
+        if not go_type or go_type in {"interface{}", "any"}:
+            go_type = self._expr_go_type_hint(node) or ""
+        return "" if go_type in {"interface{}", "any"} else go_type
+
     def _infer_type_from_value(self, node) -> str:
         from compiler.constants import PYTHON_EXCEPTIONS
         if isinstance(node, Token):
@@ -1471,11 +1500,18 @@ class HelpersMixin:
             # ``[["a"], []]``: an empty list / dict literal takes the type
             # of its sibling lists / dicts (``[][]string``).
             elem_types = [
-                self._infer_type_from_value(c)
+                self._literal_item_go_type(c)
                 for c in children
                 if not self._is_empty_collection_literal(c)
             ]
-            elem_types = [t for t in elem_types if t and t != "interface{}"]
+            if "" in elem_types:
+                # ``[anyv(1), 2]``: an ``any`` / untyped item makes the
+                # items ``any`` (not the other items' type).
+                return "[]interface{}"
+            common = self._hier_common_base_go_type(elem_types) if len(elem_types) == len(children) else ""
+            if common:
+                # ``[Square(), Shape()]``: the least common base class.
+                return "[]" + common
             if elem_types and all(t == elem_types[0] for t in elem_types):
                 if len(elem_types) < len(children) and any(
                     self._is_empty_collection_literal(c)
@@ -1491,27 +1527,31 @@ class HelpersMixin:
             for child in node.children:
                 if isinstance(child, Tree) and child.data == "key_value":
                     key_types.append(self._infer_type_from_value(child.children[0]))
-                    value_types.append(self._infer_type_from_value(child.children[1]))
+                    value_types.append(self._literal_item_go_type(child.children[1]))
             key_types = [t for t in key_types if t and t != "interface{}"]
-            value_types = [t for t in value_types if t and t != "interface{}"]
+            if "" in value_types:
+                # ``{"a": anyv(1), "b": 2}``: ``any`` values.
+                value_types = []
             key_type = key_types[0] if key_types and all(t == key_types[0] for t in key_types) else "string"
             value_type = (
                 value_types[0]
                 if value_types and all(t == value_types[0] for t in value_types)
-                else "interface{}"
+                else self._hier_common_base_go_type(value_types) or "interface{}"
             )
             return f"map[{key_type}]{value_type}"
         if d == "set":
             elem_types = [
-                self._infer_type_from_value(c)
+                self._literal_item_go_type(c)
                 for c in node.children
                 if c is not None
             ]
-            elem_types = [t for t in elem_types if t and t != "interface{}"]
+            if "" in elem_types:
+                # ``{anyv(1), 2}``: ``any`` items.
+                elem_types = []
             elem_type = (
                 elem_types[0]
                 if elem_types and all(t == elem_types[0] for t in elem_types)
-                else "interface{}"
+                else self._hier_common_base_go_type(elem_types) or "interface{}"
             )
             return f"map[{elem_type}]bool"
         if d == "var":
@@ -1734,6 +1774,8 @@ class HelpersMixin:
         param_names = self._func_param_names.get(func_key, [])
         if not param_types and not param_names:
             return self._collect_call_args(args_node)
+        # ``take(make())``: the parameter's type binds ``make``'s ``T``.
+        self._note_arg_expected_lams(func_key, args_node)
         if self._call_type_subst and param_types:
             pattern = _re.compile(r"\b(" + "|".join(_re.escape(k) for k in self._call_type_subst) + r")\b")
             param_types = [pattern.sub(lambda m: self._call_type_subst[m.group(1)], t) for t in param_types]

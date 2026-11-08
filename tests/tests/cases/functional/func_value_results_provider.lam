@@ -1,0 +1,18 @@
+# Provider for test_func_value_result_types.lam: a class whose fields are
+# function values returning `Result` payloads, seen from another module.
+
+from lamerrors import Result
+
+class Loader {
+    func init(self, fetch: func(int) -> Result[list[int]]) {
+        self.fetch: func(int) -> Result[list[int]] = fetch
+    }
+}
+
+func makeLoader() -> Loader {
+    return Loader(lambda (n: int) -> Result[list[int]]: Result.Ok([n, n + 1, n + 2]))
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

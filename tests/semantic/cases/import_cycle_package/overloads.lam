@@ -1,0 +1,19 @@
+# expect-error: ambiguous call to `Pick.label` for dynamic argument types
+# A real overload (two variants of `Pick.label`) called with an `any`
+# argument stays ambiguous inside the `overloads` <-> `overloads_peer` cycle.
+
+from .overloads_peer import Peer
+
+class Pick {
+    static func label(v: str) -> str {
+        return v
+    }
+
+    static func label(v: int) -> str {
+        return str(v)
+    }
+
+    static func use(v: any, p: Peer) -> str {
+        return Pick.label(v) + p.name()
+    }
+}

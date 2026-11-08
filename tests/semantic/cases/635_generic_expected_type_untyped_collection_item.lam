@@ -1,0 +1,21 @@
+# An untyped collection gives its items no expected type: a type parameter
+# only the result mentions stays uninferable there.
+# expect-error: cannot infer type parameter `T` of `fail`
+# expect-error: cannot infer type parameter `T` of `none`
+
+from lamerrors import Result, Error
+
+func fail[T](msg: str) -> Result[T] {
+    return Result.Err(Error("Fail", msg))
+}
+
+func none[T]() -> list[T] {
+    return []
+}
+
+func main() {
+    rs = [fail("x")]
+    ls: list[any] = []
+    ls.append(none())
+    print(len(rs), len(ls))
+}

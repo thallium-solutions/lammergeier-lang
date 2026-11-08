@@ -1,0 +1,29 @@
+# expect-pass
+# expect-no-warning: ambiguous call
+# `scope` and `conn` import each other: the cycle reaches this module's own
+# `Scope` through `conn`, and its single-variant methods called with `any`
+# arguments are not ambiguous overloads.
+
+from .conn import Sq
+
+class Scope {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    static func of(conn: Sq) -> Scope {
+        return Scope(conn.size())
+    }
+
+    static func kind(_err: any) -> str {
+        return "k"
+    }
+
+    func label(self, _err: any, prefix: str = "") -> str {
+        return prefix + "l"
+    }
+
+    func report(self, err: any) -> str {
+        return Scope.kind(err) + self.label(err) + self.label(err, "p")
+    }
+}

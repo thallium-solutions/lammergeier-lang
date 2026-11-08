@@ -1,0 +1,360 @@
+# `break` / `continue` inside try / catch / finally and do / catch
+# bodies and handlers leave the enclosing loop, though the try body, the
+# catch handlers, the finally block and the do body are lowered into Go
+# closures. `finally` runs once per try (before the loop moves on), and
+# `return` keeps leaving the function.
+# expect: top 0 2
+# expect: catch-continue 0 2 3
+# expect: catch-break 0 1
+# expect: body 0 2
+# expect: fin 0
+# expect: fin 1
+# expect: fin 2
+# expect: fin 3
+# expect: finally-order 0 2
+# expect: plain-finally a b c
+# expect: while 1 3 5
+# expect: inner 0:0 0:1 1:0 1:1 2:0 2:1
+# expect: nested-try 0 1 2
+# expect: do-body 0 2
+# expect: do-handler 0 2
+# expect: for-else broken
+# expect: for-else done
+# expect: lambda 1 3
+# expect: method 0 2 4
+# expect: typed 1 3
+# expect: return 7
+# expect: finally-continue 0 1 2
+# expect: match 0 2
+
+from lamerrors import Result
+
+func check(n: int) -> int {
+    if n % 2 == 1 {
+        throw ValueError(f"odd {n}")
+    }
+    return n
+}
+
+func parseEven(n: int) -> Result[int] {
+    if n % 2 == 1 {
+        return Result.Err(f"odd {n}")
+    }
+    return Result.Ok(n)
+}
+
+func catchContinue() -> str {
+    out: str = "catch-continue"
+    for i in range(4) {
+        try {
+            if i == 1 {
+                throw ValueError("skip")
+            }
+        } catch _e {
+            continue
+        }
+        out += f" {i}"
+    }
+    return out
+}
+
+func catchBreak() -> str {
+    out: str = "catch-break"
+    for i in range(5) {
+        try {
+            if i == 2 {
+                throw ValueError("stop")
+            }
+            out += f" {i}"
+        } catch ValueError as _ {
+            break
+        }
+    }
+    return out
+}
+
+func bodyJumps() -> str {
+    out: str = "body"
+    for i in range(10) {
+        try {
+            if i == 1 {
+                continue
+            }
+            if i == 3 {
+                break
+            }
+            out += f" {i}"
+        } catch _ {
+            out += " never"
+        }
+    }
+    return out
+}
+
+func finallyOrder() -> str {
+    out: str = "finally-order"
+    for i in range(5) {
+        try {
+            if i == 1 {
+                throw ValueError("one")
+            }
+            if i == 3 {
+                break
+            }
+            out += f" {i}"
+        } catch _ {
+            continue
+        } finally {
+            print(f"fin {i}")
+        }
+    }
+    return out
+}
+
+func plainFinally() -> str {
+    out: str = "plain-finally"
+    try {
+        out += " a"
+    } finally {
+        out += " b"
+    }
+    out += " c"
+    return out
+}
+
+func whileLoop() -> str {
+    out: str = "while"
+    i: int = 0
+    while true {
+        i += 1
+        try {
+            _ = check(i)
+            if i > 5 {
+                break
+            }
+            continue
+        } catch _ {
+            out += f" {i}"
+        }
+    }
+    return out
+}
+
+func innerLoops() -> str {
+    out: str = "inner"
+    for i in range(3) {
+        try {
+            for j in range(5) {
+                try {
+                    if j == 2 {
+                        break
+                    }
+                    out += f" {i}:{j}"
+                } catch _ {
+                    continue
+                }
+            }
+        } catch _ {
+            break
+        }
+    }
+    return out
+}
+
+func nestedTry() -> str {
+    out: str = "nested-try"
+    for i in range(6) {
+        try {
+            try {
+                if i == 3 {
+                    throw ValueError("three")
+                }
+            } catch ValueError as _ {
+                break
+            } finally {
+                out += ""
+            }
+            out += f" {i}"
+        } catch _ {
+            out += " outer"
+        }
+    }
+    return out
+}
+
+func doBody() -> str {
+    out: str = "do-body"
+    for i in range(6) {
+        do {
+            if i == 1 {
+                continue
+            }
+            if i == 3 {
+                break
+            }
+            v: int = parseEven(i)?
+            out += f" {v}"
+        } catch _ {
+            out += " err"
+        }
+    }
+    return out
+}
+
+func doHandler() -> str {
+    out: str = "do-handler"
+    for i in range(4) {
+        do {
+            v: int = parseEven(i)?
+            out += f" {v}"
+        } catch _ {
+            if i == 3 {
+                break
+            }
+            continue
+        }
+    }
+    return out
+}
+
+func forElse(limit: int) -> str {
+    for i in range(3) {
+        try {
+            if i == limit {
+                throw ValueError("hit")
+            }
+        } catch _ {
+            break
+        }
+    } else {
+        return "for-else done"
+    }
+    return "for-else broken"
+}
+
+class Scanner {
+    func init(self, limit: int) {
+        self.limit: int = limit
+    }
+
+    func evens(self) -> str {
+        out: str = "method"
+        for i in range(self.limit) {
+            try {
+                _ = check(i)
+            } catch _ {
+                continue
+            }
+            out += f" {i}"
+        }
+        return out
+    }
+}
+
+func typedCatch() -> str {
+    out: str = "typed"
+    for i in range(1, 10) {
+        try {
+            if i % 5 == 0 {
+                throw KeyError(f"k{i}")
+            }
+            _ = check(i)
+        } catch KeyError as _ {
+            break
+        } catch ValueError as _ {
+            out += f" {i}"
+            continue
+        }
+    }
+    return out
+}
+
+func firstFrom(xs: list[int]) -> int {
+    for x in xs {
+        try {
+            _ = check(x)
+            continue
+        } catch _ {
+            return x
+        }
+    }
+    return -1
+}
+
+func finallyContinue() -> str {
+    out: str = "finally-continue"
+    for i in range(3) {
+        try {
+            out += f" {i}"
+        } finally {
+            continue
+        }
+    }
+    return out
+}
+
+func matchInTry() -> str {
+    out: str = "match"
+    for i in range(5) {
+        try {
+            match i {
+                case 1 {
+                    continue
+                }
+                case 3 {
+                    break
+                }
+                case _ {
+                    out += f" {i}"
+                }
+            }
+        } catch _ {
+            out += " never"
+        }
+    }
+    return out
+}
+
+func main() {
+    print(catchContinue())
+    print(catchBreak())
+    print(bodyJumps())
+    print(finallyOrder())
+    print(plainFinally())
+    print(whileLoop())
+    print(innerLoops())
+    print(nestedTry())
+    print(doBody())
+    print(doHandler())
+    print(forElse(1))
+    print(forElse(9))
+    odds = lambda (xs: list[int]) -> str {
+        out: str = "lambda"
+        for x in xs {
+            try {
+                _ = check(x)
+                continue
+            } catch _ {
+                out += f" {x}"
+            }
+        }
+        return out
+    }
+    print(odds([0, 1, 2, 3]))
+    print(Scanner(5).evens())
+    print(typedCatch())
+    print(f"return {firstFrom([2, 4, 7, 9])}")
+    print(finallyContinue())
+    print(matchInTry())
+}
+
+top: str = "top"
+for k in range(3) {
+    try {
+        _ = check(k)
+    } catch _ {
+        continue
+    }
+    top += f" {k}"
+}
+print(top)

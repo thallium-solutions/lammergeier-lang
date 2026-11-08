@@ -34,6 +34,7 @@ This document captures project conventions for AI assistants working on `lammerg
 - Run syntax diagnostics tests with `/usr/bin/python3 tests/syntax/run_syntax_tests.py --verbose` because the project-local `.venv` Python currently lacks `lark`, while `/usr/bin/python3` has `lark 1.3.1`.
 - Benchmarks: run them through `sh scripts/bench.sh compiler|runtime`, which also writes the output to `benchmarks/results/`; commit that file (never run a benchmark without keeping its output).
 - Common verification commands: `git diff --check` and `PYTHON=/usr/bin/python3 sh scripts/test.sh <suites>`.
+- Never run the test gate under `nohup`: it starts the suite with SIGHUP ignored, which Go keeps after `signal.Stop`, so the `lamcontext` signal tests fail. Detach with `setsid sh -c '...' < /dev/null` instead.
 - Service-backed core tests (`# requires-env:`) are skipped unless their variable is set; set
   `LAM_TEST_POSTGRES_DSN` only to a disposable database you started (CONTRIBUTING.md
   "End-to-end tests"), never to the local development database on port 5432.

@@ -1,0 +1,181 @@
+# Integration: an inventory service whose generic helpers have type
+# parameters only their results mention (`missing[T]() -> Result[T]`,
+# `noneOf[T]() -> list[T]`) and whose generic containers start empty
+# (`Shelf([])`, `Index({})`). The type arguments come from where the
+# calls are written: returns of functions, methods and lambdas, arguments
+# of functions, methods, constructors and keyword arguments, field
+# assignments, annotated locals. Lookups run as lambdas declared
+# `-> Result[...]` whose `try` blocks use `?` (propagating out of the
+# lambda) inside `do/catch`, over an interface, a subclass and a
+# comprehension; the importable `inventory_cli_provider` module is also a
+# runnable program with its own `main`.
+#
+# expect: stocked=3 skus=[apple pear plum]
+# expect: find=pear:4 missing=false Missing: kiwi
+# expect: reserve=ok left=2
+# expect: reserve_fail=Short: plum has 1, needs 5
+# expect: guarded=-1 -2 3
+# expect: reset=0 0 false
+# expect: total=60
+# expect: audit=[apple:3 pear:2 plum:1]
+# expect: cli=INVENTORY 3
+# expect: generic_expected_inventory_ok
+
+from lamerrors import Result, Error
+from inventory_cli_provider import banner
+
+interface Priced {
+    func price(self) -> int
+}
+
+class Item {
+    func init(self, sku: str, qty: int) {
+        self.sku: str = sku
+        self.qty: int = qty
+    }
+
+    func price(self) -> int {
+        return self.qty * 10
+    }
+}
+
+class Fruit(Item) {
+    func price(self) -> int {
+        return self.qty * 10
+    }
+}
+
+class Shelf[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+
+    func put(self, item: T) -> Shelf[T] {
+        self.items.append(item)
+        return self
+    }
+}
+
+class Index[K] {
+    func init(self, slots: dict[K, int]) {
+        self.slots: dict[K, int] = slots
+    }
+}
+
+func missing[T](what: str) -> Result[T] {
+    return Result.Err(Error("Missing", what))
+}
+
+func short[T](sku: str, have: int, need: int) -> Result[T] {
+    return Result.Err(Error("Short", f"{sku} has {have}, needs {need}"))
+}
+
+func noneOf[T]() -> list[T] {
+    return []
+}
+
+class Inventory {
+    func init(self) {
+        self.shelf: Shelf[Item] = Shelf([])
+        self.index: Index[str] = Index({})
+        self.log: list[str] = ["boot"]
+        self.last: Result[Item] = missing("nothing yet")
+    }
+
+    func stock(self, item: Item) {
+        self.index.slots[item.sku] = len(self.shelf.items)
+        self.shelf.put(item)
+    }
+
+    func find(self, sku: str) -> Result[Item] {
+        if sku in self.index.slots {
+            return Result.Ok(self.shelf.items[self.index.slots[sku]])
+        }
+        return missing(sku)
+    }
+
+    func reserve(self, sku: str, n: int) -> Result[int] {
+        item: Item = self.find(sku)?
+        if item.qty < n {
+            return short(item.sku, item.qty, n)
+        }
+        item.qty -= n
+        return Result.Ok(item.qty)
+    }
+
+    func reset(self) {
+        self.log = noneOf()
+        self.last = missing("reset")
+    }
+
+    func skus(self) -> list[str] {
+        return sorted([i.sku for i in self.shelf.items])
+    }
+}
+
+func emptyShelf() -> Shelf[Item] {
+    return Shelf([])
+}
+
+func describe(r: Result[Item]) -> str {
+    if r.ok() {
+        item: Item = r.unwrap()
+        return f"{item.sku}:{item.qty}"
+    }
+    return f"{r.ok()} {r.error}"
+}
+
+func total(items: list[Priced], extra: list[int] = []) -> int {
+    sum: int = 0
+    for p in items {
+        sum += p.price()
+    }
+    return sum + len(extra)
+}
+
+func main() {
+    inv = Inventory()
+    stock: list[Item] = [Fruit("apple", 5), Fruit("pear", 4), Item("plum", 1)]
+    for item in stock {
+        inv.stock(item)
+    }
+    print(f"stocked={len(inv.shelf.items)} skus={inv.skus()}")
+    print(f"find={describe(inv.find('pear'))} missing={describe(inv.find('kiwi'))}")
+
+    r: Result[int] = inv.reserve("pear", 2)
+    print(f"reserve={'ok' if r.ok() else 'no'} left={r.unwrap()}")
+    print(f"reserve_fail={inv.reserve('plum', 5).error}")
+
+    guarded = lambda (sku: str, n: int) -> Result[int] {
+        do {
+            try {
+                left: int = inv.reserve(sku, n)?
+                return Result.Ok(left)
+            } catch ValueError as _ {
+                return Result.Ok(-3)
+            }
+        } catch err {
+            if err.kind == "Missing" {
+                return Result.Ok(-1)
+            }
+            return Result.Ok(-2)
+        }
+        return missing("unreachable")
+    }
+    print(f"guarded={guarded('kiwi', 1).unwrap()} {guarded('plum', 9).unwrap()} {guarded('apple', 2).unwrap()}")
+
+    spare: Shelf[Item] = emptyShelf()
+    counts: Index[str] = Index({})
+    inv.reset()
+    print(f"reset={len(inv.log)} {len(spare.items) + len(counts.slots)} {inv.last.ok()}")
+
+    priced: list[Priced] = []
+    for i in inv.shelf.items {
+        priced.append(i)
+    }
+    print(f"total={total(priced, extra=noneOf())}")
+    audit: list[str] = [f"{i.sku}:{i.qty}" for i in inv.shelf.items]
+    print(f"audit={audit}")
+    print(f"cli={banner(len(inv.skus()))}")
+    print("generic_expected_inventory_ok")
+}

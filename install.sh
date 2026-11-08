@@ -121,10 +121,26 @@ choose_bin_dir() {
 BIN_DIR="$(choose_bin_dir)"
 log "bin prefix: $BIN_DIR"
 
-# Decide whether we need sudo to write there.
+# Nearest ancestor of $1 that exists ($1 itself when it exists).
+existing_ancestor() {
+    local dir="$1" parent
+    while [[ ! -e "$dir" && ! -L "$dir" ]]; do
+        parent="$(dirname "$dir")"
+        [[ "$parent" == "$dir" ]] && break
+        dir="$parent"
+    done
+    printf '%s\n' "$dir"
+}
+
+# Decide whether we need sudo to write there. A missing BIN_DIR (and
+# any missing parents, e.g. a fresh --prefix) is created without sudo
+# when the nearest existing ancestor is writable.
 SUDO=""
 if [[ ! -d "$BIN_DIR" ]]; then
-    if [[ -w "$(dirname "$BIN_DIR")" ]]; then
+    ANCESTOR="$(existing_ancestor "$BIN_DIR")"
+    if [[ -e "$ANCESTOR" && ! -d "$ANCESTOR" ]]; then
+        die "cannot create $BIN_DIR: $ANCESTOR is not a directory"
+    elif [[ -w "$ANCESTOR" && -x "$ANCESTOR" ]]; then
         run "mkdir -p '$BIN_DIR'"
     elif command -v sudo >/dev/null 2>&1; then
         SUDO="sudo"

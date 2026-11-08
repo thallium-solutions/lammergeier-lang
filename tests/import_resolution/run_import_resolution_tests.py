@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1425,6 +1426,256 @@ def test_package_stress_412_regressions() -> None:
     )
 
 
+# Imported modules that are also runnable programs: their ``func main()``
+# is not part of the importing program, and neither are the Go imports
+# only that ``main`` used ("fmt" / "os" imported and not used).
+_RUNNABLE_TOOL = (
+    "func double(x: int) -> int {\n    return x * 2\n}\n\n"
+    "func main() {\n    print(\"tool main\", double(2))\n    print(f\"{double(3)}\")\n}\n"
+)
+_RUNNABLE_STD = (
+    "from lamstrings import Strings\nfrom lamjson import Json\n\n"
+    "func shout(s: str) -> str {\n    return s.toUpper() + \"!\"\n}\n\n"
+    "func main() {\n    print(Strings.trim(\"  std  \"), Json.encode({\"a\": 1}))\n}\n"
+)
+_RUNNABLE_GO = (
+    "go! {\n    import (\n        \"os\"\n        \"strings\"\n        \"sort\"\n    )\n}\n\n"
+    "func sortedWords(words: list[str]) -> list[str] {\n    out: list[str] = words\n"
+    "    go! {\n        sort.Strings(out)\n    }\n    return out\n}\n\n"
+    "func main() {\n    code: int = 0\n    go! {\n"
+    "        fmt.Fprintln(os.Stderr, strings.Repeat(\"-\", 3))\n        code = 2\n    }\n"
+    "    print(code)\n}\n"
+)
+
+
+def test_imported_module_with_runnable_main() -> None:
+    _expect_output(
+        {"tool.lam": _RUNNABLE_TOOL},
+        "from tool import double\n\nfunc main() {\n    n: int = double(21)\n    if n < 0 {\n        print(\"neg\")\n    }\n}\n",
+        "",
+        "an imported module whose main prints (fmt used only there)",
+    )
+    _expect_output(
+        {"tool.lam": _RUNNABLE_TOOL, "stdtool.lam": _RUNNABLE_STD, "gotool.lam": _RUNNABLE_GO},
+        "from tool import double\nfrom stdtool import shout\nfrom gotool import sortedWords\n\n"
+        "func main() {\n    print(double(2), shout(\"hi\"), sortedWords([\"b\", \"a\"]))\n}\n",
+        "4 HI! [a b]",
+        "imported mains using print, stdlib modules and go! blocks are left out",
+    )
+    _expect_output(
+        {
+            "kit/__init__.lam": "from .cli import double, shout\n",
+            "kit/cli.lam": (
+                "from tool import double\nfrom stdtool import shout\n\n"
+                "func main() {\n    print(f\"cli {double(1)} {shout('x')}\")\n}\n"
+            ),
+            "tool.lam": _RUNNABLE_TOOL,
+            "stdtool.lam": _RUNNABLE_STD,
+        },
+        "from kit import double, shout\nfrom kit.cli import double as twice\n\n"
+        "func main() {\n    print(twice(double(1)), shout(\"ok\"))\n}\n",
+        "4 OK!",
+        "a runnable package module re-exported by __init__.lam",
+    )
+    # The module still builds and runs as a program of its own.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write(root / "gotool.lam", _RUNNABLE_GO)
+        proc = _build(root / "gotool.lam")
+        if proc.returncode != 0:
+            raise AssertionError(f"runnable module build failed:\n{proc.stderr}{proc.stdout}")
+        run = subprocess.run([str(root / "app")], capture_output=True, text=True, timeout=30)
+        if run.stdout.strip() != "2" or run.stderr.strip() != "---":
+            raise AssertionError(f"runnable module output {run.stdout!r} / {run.stderr!r}")
+    print("PASS: a runnable module still builds standalone")
+
+
+_NO_MAIN_AREA = (
+    "from lamerrors import Result, Error\n\n"
+    "const Unit: str = \"cm\"\n\n"
+    "class Square {\n    func init(self, side: int) {\n        self.side: int = side\n    }\n\n"
+    "    func area(self) -> int {\n        return self.side * self.side\n    }\n}\n\n"
+    "func checked(x: int) -> Result[int] {\n    if x < 0 {\n"
+    "        return Result.Err(Error(\"Negative\", \"negative side\"))\n    }\n"
+    "    return Result.Ok(Square(x).area())\n}\n"
+)
+
+
+def test_library_modules_without_main() -> None:
+    """A library module needs no ``func main()``: plain modules, package
+    submodules, ``__init__.lam`` re-exports, semantic checks of the module
+    and of its importer, and ``lamc fmt``."""
+    files = {
+        "shapes/__init__.lam": "from .area import Square, checked, Unit\n",
+        "shapes/area.lam": _NO_MAIN_AREA,
+        "helpers.lam": "func label(n: int) -> str {\n    return f\"n={n}\"\n}\n",
+    }
+    _expect_output(
+        files,
+        "from lamerrors import Result\nfrom shapes import Square, checked, Unit\n"
+        "from shapes.area import checked as direct\nfrom helpers import label\n\n"
+        "func main() {\n    r: Result[int] = checked(-1)\n"
+        "    print(Square(3).area(), r.ok(), direct(2).unwrap(), Unit, label(5))\n}\n",
+        "9 false 4 cm n=5",
+        "library modules and packages without func main",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for rel, text in files.items():
+            _write(root / rel, text)
+        for rel in files:
+            check = subprocess.run(
+                [PYTHON, str(COMPILER), str(root / rel), "--transpile-only"],
+                cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=60,
+            )
+            combined = (check.stderr or "") + (check.stdout or "")
+            if check.returncode != 0 or "warning" in combined or "error" in combined:
+                raise AssertionError(f"{rel}: semantic check / transpile of a main-less module:\n{combined}")
+            fmt = subprocess.run(
+                [PYTHON, str(COMPILER), "fmt", "--check", str(root / rel)],
+                cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=60,
+            )
+            if fmt.returncode != 0:
+                raise AssertionError(f"{rel}: lamc fmt --check of a main-less module:\n{fmt.stderr}{fmt.stdout}")
+    print("PASS: main-less modules pass the semantic check and lamc fmt")
+
+
+_CYCLE_SCOPE = (
+    "from .conn import Sq\n\n"
+    "class Scope {\n    func init(self, n: int) {\n        self.n: int = n\n    }\n\n"
+    "    static func of(conn: Sq) -> Scope {\n        return Scope(conn.size())\n    }\n\n"
+    "    static func kind(_err: any) -> str {\n        return \"k\"\n    }\n\n"
+    "    func label(self, _err: any) -> str {\n        return \"l\"\n    }\n\n"
+    "    func report(self, err: any) -> str {\n        return Scope.kind(err) + self.label(err)\n    }\n}\n"
+)
+_CYCLE_CONN = (
+    "from .scope import Scope\n\n"
+    "interface Sq {\n    func size() -> int\n}\n\n"
+    "class Box {\n    func size(self) -> int {\n        return 4\n    }\n\n"
+    "    func describe(self, err: any) -> str {\n        return Scope.kind(err) + Scope.of(self).report(err)\n    }\n}\n"
+)
+
+
+def test_import_cycle_any_argument_calls() -> None:
+    """Regression: with ``pkg/scope.lam`` importing ``.conn`` and
+    ``pkg/conn.lam`` importing ``.scope``, ``scope`` collected its own
+    ``Scope`` again through ``conn``, so ``Scope.kind(err)`` with ``err:
+    any`` was reported as an ambiguous call to an overload."""
+    files = {"pkg/__init__.lam": "", "pkg/scope.lam": _CYCLE_SCOPE, "pkg/conn.lam": _CYCLE_CONN}
+    _expect_output(
+        files,
+        "from pkg.scope import Scope\nfrom pkg.conn import Box\n\n"
+        "func main() {\n    print(Scope.of(Box()).n, Scope(1).report(None), Box().describe(\"x\"))\n}\n",
+        "4 kl kkl",
+        "import cycle: single-variant calls with any arguments are not ambiguous",
+    )
+    # A real overload reached through the cycle stays ambiguous.
+    overloaded = _CYCLE_SCOPE.replace(
+        "    static func kind(_err: any) -> str {\n        return \"k\"\n    }\n",
+        "    static func kind(_err: any) -> str {\n        return \"k\"\n    }\n\n"
+        "    static func pick(v: str) -> str {\n        return v\n    }\n\n"
+        "    static func pick(v: int) -> str {\n        return str(v)\n    }\n\n"
+        "    static func use(v: any) -> str {\n        return Scope.pick(v)\n    }\n",
+    )
+    _expect_build_error(
+        {"pkg/__init__.lam": "", "pkg/scope.lam": overloaded, "pkg/conn.lam": _CYCLE_CONN},
+        "from pkg.conn import Box\n\nfunc main() {\n    print(Box().size())\n}\n",
+        ["ambiguous call to `Scope.pick` for dynamic argument types"],
+        "import cycle: a real overload called with an any argument stays ambiguous",
+    )
+
+
+def test_import_cycle_module_as_entry() -> None:
+    """Regression: a module of an import cycle built as the program entry
+    (``app.lam`` imports ``helpers``, which imports ``app`` back) was also
+    emitted as a library, so every declaration was ``redeclared``; the
+    library importing it back now sees the entry's classes, statics,
+    interfaces, functions and constants (it lacked them: ``Scope.Of
+    undefined``) and the entry is emitted once, top-level statements
+    included."""
+    app = (
+        "from helpers import Box, describe, double\n\n"
+        "const Label: str = \"app\"\n\n"
+        "interface Sized {\n    func size() -> int\n}\n\n"
+        "class Scope {\n    func init(self, n: int) {\n        self.n: int = n\n    }\n\n"
+        "    static func of(s: Sized) -> Scope {\n        return Scope(s.size())\n    }\n\n"
+        "    static func kind(_err: any) -> str {\n        return \"k\"\n    }\n\n"
+        "    private static func secret() -> int {\n        return 7\n    }\n\n"
+        "    static func reveal() -> int {\n        return Scope.secret()\n    }\n}\n\n"
+        "func tag(n: int) -> str {\n    return f\"{Label}-{n}\"\n}\n\n"
+        "private func local() -> int {\n    return 1\n}\n\n"
+        "print(\"top-level\", Label)\n\n"
+        "func main() {\n"
+        "    print(describe(Box(3)), double(local()), Scope.reveal())\n"
+        "}\n"
+    )
+    helpers = (
+        "from app import Scope, Sized, tag, Label\n\n"
+        "class Box {\n    func init(self, n: int) {\n        self.n: int = n\n    }\n\n"
+        "    func size(self) -> int {\n        return self.n\n    }\n}\n\n"
+        "func describe(b: Box) -> str {\n"
+        "    s: Sized = b\n"
+        "    return Scope.kind(None) + \":\" + tag(Scope.of(s).n) + \":\" + Label\n"
+        "}\n\n"
+        "func double(n: int) -> int {\n    return n * 2\n}\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write(root / "app.lam", app)
+        _write(root / "helpers.lam", helpers)
+        proc = _build(root / "app.lam")
+        combined = (proc.stderr or "") + (proc.stdout or "")
+        if proc.returncode != 0:
+            raise AssertionError(f"import cycle entry: build failed:\n{combined}")
+        if "warning" in combined or "error" in combined:
+            raise AssertionError(f"import cycle entry: unexpected diagnostics:\n{combined}")
+        out = subprocess.run([str(root / "app")], capture_output=True, text=True, timeout=60).stdout.strip()
+        if out != "top-level app\nk:app-3:app 2 7":
+            raise AssertionError(f"import cycle entry: unexpected output: {out!r}")
+        # The other module of the cycle builds as the entry too.
+        _write(root / "helpers.lam", helpers + "\nfunc main() {\n    print(describe(Box(5)))\n}\n")
+        proc = _build(root / "helpers.lam")
+        if proc.returncode != 0:
+            raise AssertionError(f"import cycle entry (helpers): build failed:\n{proc.stderr}{proc.stdout}")
+        out = subprocess.run([str(root / "app")], capture_output=True, text=True, timeout=60).stdout.strip()
+        if out != "top-level app\nk:app-5:app":
+            raise AssertionError(f"import cycle entry (helpers): unexpected output: {out!r}")
+    print("PASS: a module of an import cycle builds as the program entry")
+
+
+def test_static_refactor_cross_feature_fixture() -> None:
+    """The core fixture ``integration/test_int_static_refactor.lam``: statics
+    across an import cycle composed with generics, ``try``/rethrow, lambdas,
+    ``Result``, private statics as values, optional ``html`` results, typed
+    callbacks and ``lamtest`` assertions as statements, built here to check
+    that it raises no warning (the core runner checks only its output)."""
+    cases = PROJECT_ROOT / "tests" / "tests" / "cases" / "integration"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "static_refactor"
+        shutil.copytree(cases / "static_refactor_pkg", root / "static_refactor_pkg")
+        main = root / "main.lam"
+        shutil.copy(cases / "test_int_static_refactor.lam", main)
+        proc = _build(main)
+        combined = (proc.stderr or "") + (proc.stdout or "")
+        if proc.returncode != 0:
+            raise AssertionError(f"static_refactor fixture: build failed:\n{combined}")
+        for unwanted in ("dropped return value", "ambiguous call", "warning["):
+            if unwanted in combined:
+                raise AssertionError(f"static_refactor fixture: unexpected diagnostic {unwanted!r}:\n{combined}")
+        run = subprocess.run([str(root / "app")], capture_output=True, text=True, timeout=60)
+        expected = [
+            line.split("# expect:", 1)[1].strip()
+            for line in main.read_text(encoding="utf-8").splitlines()
+            if line.startswith("# expect:")
+        ]
+        actual = run.stdout.strip().splitlines()
+        if run.returncode != 0 or actual != expected:
+            raise AssertionError(
+                f"static_refactor fixture: expected {expected!r}, got {actual!r}\n{run.stderr}"
+            )
+    print("PASS: static-method refactor cross-feature fixture")
+
+
 def main() -> None:
     tests = [
         test_module_undefined_function_is_reported,
@@ -1462,6 +1713,9 @@ def main() -> None:
         test_link_same_method_names_build,
         test_link_go_init_functions_build,
         test_repeated_imports_do_not_duplicate_signatures,
+        test_import_cycle_any_argument_calls,
+        test_import_cycle_module_as_entry,
+        test_static_refactor_cross_feature_fixture,
         test_imported_class_conversion_dunders,
         test_from_import_aliases,
         test_module_imports,
@@ -1491,6 +1745,8 @@ def main() -> None:
         test_relative_module_import_with_alias,
         test_imported_module_missing_relative_module,
         test_package_stress_412_regressions,
+        test_imported_module_with_runnable_main,
+        test_library_modules_without_main,
     ]
     for test in tests:
         test()

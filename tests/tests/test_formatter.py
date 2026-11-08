@@ -722,6 +722,49 @@ def test_formatter_inline_braces_keyword_parens_and_lambda_heads() -> None:
     print("PASS: formatter keeps inline `{}` operands, single-spaces `keyword (` and writes `lambda (x: T)`")
 
 
+def test_formatter_unary_minus_and_literals_after_operators() -> None:
+    """``n ?? -1`` was written ``n ?? - 1`` and ``xs ?? []`` ``xs ??[]``: the
+    ``?`` ending ``??`` was not seen as an operator. A sign or a literal
+    after any binary operator or keyword keeps its spacing, while the
+    postfix ``?`` (``r? - 1``, ``f()?[0]``) and ``?.`` stay as they are."""
+    expected = (
+        "func pick(n: optional[int], xs: optional[list[int]], r: Result[int]) -> Result[int] {\n"
+        "    a: int = n ?? -1\n"
+        "    b: list[int] = xs ?? []\n"
+        "    c: dict[str, int] = {\"k\": n ?? -2} ?? {}\n"
+        "    d: list[int] = xs ?? [-1, +2]\n"
+        "    e: int = n ?? (-3)\n"
+        "    f: float = n ?? -1.5\n"
+        "    g: bool = n == -1 or n != -1 and n < -1 and n >= -1\n"
+        "    h: int = -1\n"
+        "    i: list[int] = [-1, -2]\n"
+        "    j: int = abs(-1) + max(-1, -2)\n"
+        "    k: int = 1 if n == None else -1\n"
+        "    m: int = r? - 1\n"
+        "    p: int = xs?[0] ?? -1\n"
+        "    q: int = a - -1 + b[0] * -1 // -2 % -3\n"
+        "    s: str = \"x\" ?? \"\"\n"
+        "    t: bool = n ?? true\n"
+        "    u: int = n ?? h ?? -4\n"
+        "    v: dict[str, int] = {\"a\": -1}\n"
+        "    x: list[int] = [i[0] ?? -1 for _z in (xs ?? [])]\n"
+        "    y: optional[str] = None\n"
+        "    w: int = len(y?.upper() ?? \"\") + (y?.length() ?? -1)\n"
+        "    print(a, b, c, d, e, f, g, i, j, k, m, p, q, s, t, u, v, x, w)\n"
+        "    return Result.Ok(-1)\n"
+        "}\n"
+    )
+    messy = (
+        expected.replace("n ?? -1", "n ?? - 1").replace("xs ?? []", "xs ??[]")
+        .replace("} ?? {}", "} ??{}").replace("n ?? (-3)", "n ??(-3)")
+    )
+    for source in (expected, messy):
+        result = format_lam_source(source)
+        assert result.text == expected, result.text
+    assert not format_lam_source(expected).changed
+    print("PASS: formatter keeps unary signs and literals after `??` and other operators")
+
+
 def main() -> int:
     tests = [
         test_formatter_snapshot,
@@ -741,6 +784,7 @@ def main() -> int:
         test_formatter_indents_method_chains,
         test_formatter_keyword_arguments_and_type_parameters,
         test_formatter_inline_braces_keyword_parens_and_lambda_heads,
+        test_formatter_unary_minus_and_literals_after_operators,
     ]
     for test in tests:
         test()

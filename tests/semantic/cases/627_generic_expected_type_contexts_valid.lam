@@ -1,0 +1,128 @@
+# expect-pass
+# A type parameter only the result of a generic call mentions is bound by
+# the type the call's value must have: the declared result of the
+# function, method or lambda it is returned from (also through `?`), the
+# declared type of the parameter it is passed to (functions, methods,
+# constructors, static methods, keyword arguments, `?` operands, the
+# receiver's type arguments), and the declared type of the field it is
+# assigned to. A generic constructor whose type parameter only an empty
+# literal or nothing mentions takes the expected type's arguments.
+from lamerrors import Result, Error
+
+func fail[T](msg: str) -> Result[T] {
+    return Result.Err(Error("Fail", msg))
+}
+
+func okOf[T](value: any) -> Result[T] {
+    return Result.Ok(value)
+}
+
+func none[T]() -> list[T] {
+    return []
+}
+
+class Box[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+    }
+
+    func put(self, items: list[T]) -> int {
+        return len(items)
+    }
+
+    func cleared(self) -> list[T] {
+        return none()
+    }
+
+    static func ints() -> Box[int] {
+        return Box([])
+    }
+}
+
+class Registry[K, V] {
+    func init(self) {
+        self.entries: dict[K, V] = {}
+    }
+}
+
+class Store {
+    func init(self) {
+        self.items: list[int] = [1]
+        self.last: Result[str] = Result.Ok("x")
+    }
+
+    func reset(self) {
+        self.items = none()
+        self.last = fail("reset")
+    }
+
+    func take(self, r: Result[int]) -> bool {
+        return r.ok()
+    }
+}
+
+func load() -> Result[int] {
+    return fail("load")
+}
+
+func loadNames() -> Result[list[str]] {
+    return okOf(["a"])
+}
+
+func countAll() -> Result[int] {
+    n: int = count(loadNames()?)
+    return okOf(n)
+}
+
+func payload() -> Result[Result[int]] {
+    return okOf(load())
+}
+
+func unwrapped() -> Result[int] {
+    return payload()?
+}
+
+func outer() -> list[str] {
+    func inner() -> list[str] {
+        return none()
+    }
+    return inner()
+}
+
+async func later() -> list[int] {
+    return none()
+}
+
+func count(xs: list[str], label: str = "") -> int {
+    return len(xs) + len(label)
+}
+
+func isOk(r: Result[int]) -> bool {
+    return r.ok()
+}
+
+func boxSize(b: Box[str]) -> int {
+    return len(b.items)
+}
+
+func registry() -> Registry[str, int] {
+    return Registry()
+}
+
+func main() {
+    s = Store()
+    s.reset()
+    b: Box[int] = Box([])
+    print(isOk(fail("x")), count(none()), count(label="", xs=none()), s.take(okOf(1)))
+    print(b.put(none()), len(b.cleared()), len(Box.ints().items), boxSize(Box([])))
+    print(load().ok(), countAll().ok(), unwrapped().ok(), len(outer()), len(await later()))
+    f = lambda () -> Result[int]: fail("f")
+    g = lambda (n: int) -> list[int] {
+        if n > 0 {
+            return none()
+        }
+        return [n]
+    }
+    r: Registry[str, int] = Registry()
+    print(f().ok(), len(g(1)), len(r.entries), len(registry().entries), len(s.items), s.last.ok())
+}
