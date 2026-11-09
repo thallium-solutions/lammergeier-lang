@@ -12660,11 +12660,18 @@ class ProgramCheckCache:
 
     def __init__(self) -> None:
         self.trees: dict[Path, Tree | None] = {}
+        # The source each tree was parsed from (the build's worker
+        # processes parse the same text again from the front-end cache).
+        self.texts: dict[Path, str] = {}
         self.class_helpers: dict[tuple[int, str], "SemanticChecker"] = {}
         self.remapped: dict[tuple, str] = {}
 
-    def add_tree(self, path: Path, tree: Tree) -> None:
-        self.trees.setdefault(Path(path).resolve(), tree)
+    def add_tree(self, path: Path, tree: Tree, text: str | None = None) -> None:
+        path = Path(path).resolve()
+        if path not in self.trees:
+            self.trees[path] = tree
+            if text is not None:
+                self.texts[path] = text
 
 
 def _imported_call_metadata(
@@ -12688,9 +12695,11 @@ def _imported_call_metadata(
             source = module_index.source_by_path.get(path)
             if source is None:
                 source = path.read_text(encoding="utf-8")
-            from compiler.lammergeier import create_parser, preprocess_for_parse
-            parse_input = preprocess_for_parse(source)
-            parsed_cache[path] = create_parser().parse(parse_input.source)
+            # The build's front end (one parse per module and build, cached
+            # by content) when one is active, else a plain parse.
+            from compiler.frontend import parsed_module_tree
+            shared.texts[path] = source
+            parsed_cache[path] = parsed_module_tree(path, source)
         except Exception:
             parsed_cache[path] = None
         return parsed_cache[path]

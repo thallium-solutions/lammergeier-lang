@@ -1,27 +1,38 @@
-"""On-disk cache for transpiled library modules.
+"""On-disk compiler cache: transpiled library modules, parse trees, harvested
+module metadata, clean semantic checks and the Go work directories.
 
 Transpiling ``.lam`` libraries (parse, AST walk, emit Go, strip ``main``,
 collect metadata) is the most expensive phase of a cold build. When the
-library file and the compiler itself are unchanged, the Go source the
-transpiler would emit is byte-for-byte identical, so re-running the
-pipeline is wasted work.
+library file, the metadata of the program it is compiled against and the
+compiler itself are unchanged, the Go source the transpiler would emit is
+byte-for-byte identical, so re-running the pipeline is wasted work.
 
-This module provides a small content-addressed cache:
+This module provides the content-addressed store under :func:`cache_dir`:
 
-- **Key** is ``sha256(compiler_version || lib_content)``. The
+- **Library entries** (``<xx>/<key>.json``): the key is
+  ``sha256(compiler_version || lib_content || extra)``. The
   ``compiler_version`` digest rolls in every ``.py`` file under
   ``compiler/`` plus ``lammergeier.lark``, so any change to the compiler
-  or grammar transparently invalidates every cached library.
-- **Value** is a JSON blob with the emitted Go source and the handful of
-  metadata sets (``_class_names``, ``_static_methods``, ``_static_vars`` …) that the
-  caller needs to re-inject into the main transpiler.
+  or grammar transparently invalidates every cached library; ``extra``
+  digests the program context (``compiler/lib_transpile.py``). The value
+  is the emitted Go source and the module's metadata tables as deltas
+  (``compiler/lib_results.py``).
+- **Front-end entries** (``frontend/``, ``compiler/frontend.py``): the
+  preprocessed source and parse tree of a module.
+- **Pickled per-module results** (``<namespace>/<key>.lamc``:
+  :func:`load_blob` / :func:`save_blob`), e.g. the metadata harvest
+  (``compiler/harvest.py``).
+- **Semantic-check markers** (``checks/``) and the persisted Lark parser
+  (``parsers/``); the Go work directories (``gobuild/``,
+  ``compiler/gobuild.py``).
 
 The cache lives under ``$XDG_CACHE_HOME/lammergeier/libs/`` (or
-``~/.cache/lammergeier/libs/`` when XDG is unset). A corrupt or
-unreadable cache file is treated as a miss — the transpile pipeline
-re-runs and overwrites the bad entry. Cache files are written
-atomically via a ``.tmp`` rename so a crashed build can't leave a
-half-written entry behind.
+``~/.cache/lammergeier/libs/`` when XDG is unset; ``LAMC_CACHE_DIR``
+overrides it). A corrupt or unreadable entry is treated as a miss — the
+pipeline re-runs and overwrites the bad entry. Entries are written
+atomically (a unique temporary file, then a rename), so a crashed build
+cannot leave a half-written entry behind and concurrent ``lamc``
+processes only ever read whole entries.
 """
 
 from __future__ import annotations
@@ -31,7 +42,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 # ─── Paths ────────────────────────────────────────────────────
@@ -133,6 +144,16 @@ def cache_key(lib_content: bytes, extra: bytes = b"") -> str:
     return h.hexdigest()
 
 
+def touch(path: Path) -> bool:
+    """Mark a cache entry used now (the size cap evicts the entries used
+    least recently, ``compiler/cache_prune.py``). ``False``: no such entry."""
+    try:
+        os.utime(path)
+        return True
+    except OSError:
+        return False
+
+
 def _entry_path(key: str) -> Path:
     """Return the path for a given cache key.
 
@@ -165,6 +186,7 @@ def load(lib_content: bytes, extra: bytes = b"") -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(entry, dict):
         return None
+    touch(path)
     return entry
 
 
@@ -194,6 +216,39 @@ def save(lib_content: bytes, entry: Dict[str, Any], extra: bytes = b"") -> None:
         return
 
 
+# ─── Pickled per-module results ───────────────────────────────
+
+
+def _blob_path(namespace: str, key: str) -> Path:
+    return cache_dir() / namespace / key[:2] / f"{key[2:]}.lamc"
+
+
+def load_blob(namespace: str, key: str) -> Optional[bytes]:
+    """The bytes stored under ``key`` in ``namespace`` (e.g. ``harvest``),
+    else ``None``. ``key`` must already digest every input of the value."""
+    path = _blob_path(namespace, key)
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    touch(path)
+    return data
+
+
+def save_blob(namespace: str, key: str, data: bytes) -> None:
+    """Store ``data`` atomically (tmp file + rename: concurrent ``lamc``
+    processes see the old entry or the new one, never half of one)."""
+    path = _blob_path(namespace, key)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=".lamc-blob-", suffix=".tmp", dir=str(path.parent))
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp_name, path)
+    except OSError:
+        return
+
+
 # ─── Semantic-check markers ───────────────────────────────────
 
 
@@ -205,8 +260,9 @@ def has_clean_check(module_content: bytes, extra: bytes) -> bool:
     """Whether an imported module with ``module_content`` passed the semantic
     check with no diagnostics, against the imports ``extra`` digests (see
     ``lammergeier._imported_check_cache_extra``). An empty marker file per
-    clean check; a module with diagnostics is never recorded."""
-    return _check_marker_path(cache_key(module_content, extra)).is_file()
+    clean check; a module with diagnostics is never recorded. A hit marks
+    the marker used."""
+    return touch(_check_marker_path(cache_key(module_content, extra)))
 
 
 def mark_clean_check(module_content: bytes, extra: bytes) -> None:
@@ -216,126 +272,6 @@ def mark_clean_check(module_content: bytes, extra: bytes) -> None:
         path.touch()
     except OSError:
         return
-
-
-# ─── Serialisation helpers ────────────────────────────────────
-
-
-def serialise_transpile_result(
-    go_src: str,
-    class_names: set,
-    static_methods: Dict[str, set],
-    static_vars: Optional[Dict[str, Dict[str, bool]]],
-    func_defaults: Dict[str, List[Tuple[int, Any]]],
-    func_param_counts: Dict[str, int],
-    variadic_functions: set,
-    user_functions: Optional[set] = None,
-    private_functions: Optional[set] = None,
-    method_return_types: Optional[Dict[str, str]] = None,
-    result_payload_go_types: Optional[Dict[str, str]] = None,
-    overload_variants: Optional[Dict[str, List[Dict[str, Any]]]] = None,
-    func_param_names: Optional[Dict[str, List[str]]] = None,
-    func_param_go_types: Optional[Dict[str, List[str]]] = None,
-) -> Dict[str, Any]:
-    """Convert the tuple returned by ``_transpile_lib`` into a plain
-    JSON-serialisable dict.
-
-    Sets become sorted lists and ``func_defaults`` tuples become lists;
-    ``deserialise_transpile_result`` is the inverse operation.
-
-    ``user_functions`` and ``private_functions`` are needed by the
-    caller so cross-library default-arg filling and ``_go_public_name``
-    rewriting work for imported functions just like locally-defined
-    ones. ``method_return_types`` powers chained-call class inference
-    (e.g. ``db.table(name).where(...)``), while ``result_payload_go_types``
-    preserves erased ``Result[T]`` payloads. ``func_param_names`` carries
-    ordered parameter names so keyword-arg call sites can reorder
-    cross-library calls; ``func_param_go_types`` carries the matching
-    Go types for contextual literal lowering.
-    """
-    return {
-        # Bumped from 8 → 9 when native json signatures began lowering to
-        # LamJSON instead of interface{}.
-        # Older entries are silently ignored on load and re-transpiled.
-        "version": 9,
-        "go_src": go_src,
-        "class_names": sorted(class_names),
-        "static_methods": {k: sorted(v) for k, v in static_methods.items()},
-        "static_vars": {
-            cls: {name: bool(is_private) for name, is_private in fields.items()}
-            for cls, fields in (static_vars or {}).items()
-        },
-        "func_defaults": {
-            k: [[idx, val] for idx, val in pairs]
-            for k, pairs in func_defaults.items()
-        },
-        "func_param_counts": dict(func_param_counts),
-        "variadic_functions": sorted(variadic_functions),
-        "user_functions": sorted(user_functions or set()),
-        "private_functions": sorted(private_functions or set()),
-        "method_return_types": dict(method_return_types or {}),
-        "result_payload_go_types": dict(result_payload_go_types or {}),
-        "overload_variants": {
-            name: [dict(variant, sig=list(variant.get("sig", ()))) for variant in variants]
-            for name, variants in (overload_variants or {}).items()
-        },
-        "func_param_names": {k: list(v) for k, v in (func_param_names or {}).items()},
-        "func_param_go_types": {k: list(v) for k, v in (func_param_go_types or {}).items()},
-    }
-
-
-def deserialise_transpile_result(
-    entry: Dict[str, Any],
-) -> Optional[Tuple[str, set, Dict[str, set], Dict[str, Dict[str, bool]], Dict[str, List[Tuple[int, Any]]], Dict[str, int], set, set, set, Dict[str, str], Dict[str, str], Dict[str, List[Dict[str, Any]]], Dict[str, List[str]], Dict[str, List[str]]]]:
-    """Inverse of :func:`serialise_transpile_result`.
-
-    Returns ``None`` if ``entry`` is missing required keys or has the
-    wrong schema version; the caller should treat that as a miss.
-    """
-    if entry.get("version") != 9:
-        return None
-    try:
-        go_src = entry["go_src"]
-        class_names = set(entry["class_names"])
-        static_methods = {k: set(v) for k, v in entry["static_methods"].items()}
-        static_vars = {
-            k: {str(name): bool(is_private) for name, is_private in v.items()}
-            for k, v in entry.get("static_vars", {}).items()
-        }
-        func_defaults = {
-            k: [(int(idx), val) for idx, val in pairs]
-            for k, pairs in entry["func_defaults"].items()
-        }
-        func_param_counts = dict(entry["func_param_counts"])
-        variadic_functions = set(entry["variadic_functions"])
-        user_functions = set(entry.get("user_functions", []))
-        private_functions = set(entry.get("private_functions", []))
-        method_return_types = dict(entry.get("method_return_types", {}))
-        result_payload_go_types = dict(entry.get("result_payload_go_types", {}))
-        overload_variants = {
-            name: [dict(variant, sig=tuple(variant.get("sig", ()))) for variant in variants]
-            for name, variants in entry.get("overload_variants", {}).items()
-        }
-        func_param_names = {k: list(v) for k, v in entry.get("func_param_names", {}).items()}
-        func_param_go_types = {k: list(v) for k, v in entry.get("func_param_go_types", {}).items()}
-    except (KeyError, TypeError, ValueError):
-        return None
-    return (
-        go_src,
-        class_names,
-        static_methods,
-        static_vars,
-        func_defaults,
-        func_param_counts,
-        variadic_functions,
-        user_functions,
-        private_functions,
-        method_return_types,
-        result_payload_go_types,
-        overload_variants,
-        func_param_names,
-        func_param_go_types,
-    )
 
 
 # ─── Maintenance ──────────────────────────────────────────────
@@ -352,7 +288,20 @@ def clear() -> int:
     if not d.is_dir():
         return 0
     removed = 0
-    for pattern in ("*.json", "*.bin", "*.check"):
+    # Go work directories of the builds (compiler/gobuild.py).
+    gobuild = d / "gobuild"
+    if gobuild.is_dir():
+        import shutil
+        for entry in gobuild.iterdir():
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+                removed += 1
+            elif entry.suffix == ".lock":
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+    for pattern in ("*.json", "*.bin", "*.check", "*.lamfe", "*.lamc"):
         for entry in d.rglob(pattern):
             try:
                 entry.unlink()

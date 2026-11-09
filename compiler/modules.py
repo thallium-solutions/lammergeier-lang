@@ -347,6 +347,30 @@ class WorkspaceIndex:
         self.extlibs_dirs = [p.resolve() for p in (extlibs_dirs or []) if p.exists()]
         self.facts_by_path: dict[Path, ModuleFacts] = {}
         self.source_by_path: dict[Path, str] = {}
+        # Per-build memo of filesystem lookups (``memoize_filesystem``).
+        self._memo: dict | None = None
+        # ``(resolved path, text) -> ModuleFacts | None``: facts already
+        # computed elsewhere (the build's front-end cache), else ``None``.
+        self.facts_provider = None
+
+    def memoize_filesystem(self) -> None:
+        """Remember path resolutions and module lookups for the life of
+        this index. A build does it (the files it compiles do not move while
+        it runs, and the same few hundred lookups recur tens of thousands of
+        times); the language server, whose workspace changes, does not.
+        Lookups that find nothing are not remembered."""
+        if self._memo is None:
+            self._memo = {"resolve": {}, "roots": {}, "module": {}}
+
+    def _resolved(self, path: Path) -> Path:
+        memo = self._memo
+        if memo is None:
+            return path.resolve()
+        table = memo["resolve"]
+        found = table.get(path)
+        if found is None:
+            found = table[path] = path.resolve()
+        return found
 
     @classmethod
     def for_source(
@@ -367,9 +391,19 @@ class WorkspaceIndex:
     def update_file(self, path: Path, text: str | None = None) -> ModuleFacts:
         path = path.resolve()
         source = text if text is not None else path.read_text(encoding="utf-8")
-        facts = module_facts_from_source(path, source)
+        facts = self.facts_provider(path, source) if self.facts_provider is not None else None
+        if facts is None:
+            facts = module_facts_from_source(path, source)
         self.facts_by_path[path] = facts
         self.source_by_path[path] = source
+        return facts
+
+    def set_file(self, path: Path, text: str, facts: ModuleFacts) -> ModuleFacts:
+        """``update_file`` with the facts already computed (by the build's
+        front-end cache: ``module_facts_from_source(path.resolve(), text)``)."""
+        path = path.resolve()
+        self.facts_by_path[path] = facts
+        self.source_by_path[path] = text
         return facts
 
     def remove_file(self, path: Path) -> None:
@@ -378,6 +412,18 @@ class WorkspaceIndex:
         self.source_by_path.pop(path, None)
 
     def resolve_module(self, from_path: Path, module: str) -> Path | None:
+        memo = self._memo
+        if memo is not None:
+            key = (Path(from_path), module)
+            found = memo["module"].get(key)
+            if found is None:
+                found = self._resolve_module(from_path, module)
+                if found is not None:
+                    memo["module"][key] = found
+            return found
+        return self._resolve_module(from_path, module)
+
+    def _resolve_module(self, from_path: Path, module: str) -> Path | None:
         if module.startswith("."):
             return self._resolve_relative_module(from_path, module)
 
@@ -420,7 +466,7 @@ class WorkspaceIndex:
         return facts.exports.get(name)
 
     def facts_for(self, path: Path) -> ModuleFacts | None:
-        path = path.resolve()
+        path = self._resolved(path)
         facts = self.facts_by_path.get(path)
         if facts is None:
             try:
@@ -505,6 +551,16 @@ class WorkspaceIndex:
         return self.module_name_under(root, module_path)
 
     def _search_roots(self, from_path: Path) -> list[Path]:
+        memo = self._memo
+        if memo is not None:
+            key = Path(from_path)
+            roots = memo["roots"].get(key)
+            if roots is None:
+                roots = memo["roots"][key] = self._compute_search_roots(from_path)
+            return list(roots)
+        return self._compute_search_roots(from_path)
+
+    def _compute_search_roots(self, from_path: Path) -> list[Path]:
         from_dir = from_path.resolve().parent
         candidates = [self.stdlib_dir, *self.extlibs_dirs, from_dir, self.root, self.root / "lib"]
         roots: list[Path] = []

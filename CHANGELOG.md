@@ -5,6 +5,74 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.7.0 — 2026-11-09
+
+### Added
+
+- `lamc build --workers N` (also `lamc <file>`, `--run`, `lamc dev
+  --workers N`, `LAMC_WORKERS`): the per-module work of a build — parse
+  preprocessing and parsing, the semantic check of the imported modules,
+  the library transpiles — runs in `N` worker processes. Default: the CPUs
+  the process may use, at most 16; `--workers 1` keeps everything in the
+  `lamc` process. Results are used in module order, so the generated Go,
+  the warnings and the errors (the first syntax error in module order) are
+  the same for every `N`, under `fork` and `spawn`. Pools start only for
+  enough work (a small program stays in-process). `--timings` adds
+  `cache_load`, `workers` (waiting for them) and `workers_ms` (their time per
+  phase).
+- The compiler cache keeps every module's front end (preprocessed source,
+  parse tree, import facts) and metadata harvest by content, next to the
+  library transpiles and clean checks; a tree is loaded only when a pass
+  needs it. A rebuild after editing one module parses only that module,
+  re-checks it and its importers and transpiles it (every library when its
+  signatures changed). `--no-cache` skips all of it.
+- The compiler cache has a size cap: `LAMC_CACHE_MAX_SIZE` (`500MB`,
+  `5GB`, `2GiB`; `0` = unlimited; default `2GB`). After a build, at most
+  once every 10 minutes per cache directory, the entries used least
+  recently (every cache hit marks an entry used) are removed down to 80% of
+  the cap: library entries, parse trees, module metadata, check markers,
+  the parser and the Go work directories. Only the compiler's own entries
+  under the cache directory are removed; entries a build is writing and Go
+  work directories in use are skipped. Pruning 50,000 entries takes under a
+  second; a build that does not prune is not slower. The 4.6.0 cache was
+  never pruned (169 GB on one machine).
+- `lamc cache info` (size per kind of entry), `lamc cache prune
+  [--max-size SIZE]` and `lamc cache clear` (as `--clear-cache`); `lamc
+  doctor` shows the cap.
+- Each program builds in a Go work directory of its own under the cache
+  (`gobuild/`, locked while a build uses it), so `go build` reuses its build
+  cache (an unchanged program links from Go's cache), and `go mod init/tidy`
+  run again only when the Go imports, pins or Go environment changed.
+
+### Changed
+
+- Faster builds. A 230-module application (170 project modules, the stdlib
+  and 7 installed packages; 32 CPUs) builds in 18 s from an empty cache
+  (4.6.0: 96 s), 3.6 s unchanged (34 s), 7.4 s after editing one module's
+  body (36 s; 4 s of it `go build`) and 11 s after changing its signatures
+  (133 s). The large generated benchmark program's preprocessing drops
+  from 18 s to under 1 s.
+- A library's cache entry stores its metadata tables as a delta against the
+  program metadata injected into every library (every entry used to repeat
+  the whole program's, megabytes each, decoded and merged once per library
+  at every build), merged in the same order and with the same values.
+
+### Fixed
+
+- The parse preprocessing classified every `{` against the whole text
+  before it (quadratic: 18 s for a 10,000-line file); braces are classified
+  only for empty blocks, with the same result.
+- The library cache keys depended on whether the Lark parser had just been
+  built or was loaded from its cache (tree labels print differently), so the
+  build after a cold one transpiled every library again and the entries of
+  cold builds were never reused.
+- Module lookups and path resolution are memoized for a build (they ran
+  hundreds of thousands of `realpath` calls), the namespace metadata view
+  scans each table once instead of once per name, and the content digests
+  of the semantic-check keys are computed once per module.
+- The persisted Lark parser is written under a unique temporary name, so
+  concurrent `lamc` processes cannot clobber each other's write.
+
 ## 4.6.0 — 2026-11-08
 
 ### Added

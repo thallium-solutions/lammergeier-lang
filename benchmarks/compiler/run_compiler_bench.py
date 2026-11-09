@@ -11,7 +11,8 @@ plus front-end throughput in lines per second. The corpus is:
 * any project given with ``--project main.lam`` (with ``--extlibs`` for
   its libraries), e.g. a real application.
 
-Modes: ``cold`` (``--no-cache``: libraries transpiled again) and ``warm``
+Modes: ``cold`` (``--no-cache``: every module parsed, checked and transpiled
+again, in a fresh Go work directory) and ``warm``
 (after a priming build, the library cache is used). ``--front-end`` stops
 after transpiling (no ``go build``), which isolates the Python compiler.
 
@@ -38,9 +39,12 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 LAMC = [sys.executable, str(ROOT / "compiler" / "lammergeier.py")]
 SIZES = {"small": 5, "medium": 50, "large": 200}
-PHASES = ["preprocess", "parse", "semantic", "transpile", "go_mod", "go_build", "total"]
-COLUMNS = ["preprocess", "parse", "semantic", "transpile", "go_mod", "go_build", "other", "total"]
-FRONT_END = ["preprocess", "parse", "semantic", "transpile"]
+# ``cache_load``: reading cached parse trees; ``workers``: waiting for the
+# worker processes (``--workers``), whose own phase times overlap and are
+# not counted.
+PHASES = ["preprocess", "parse", "semantic", "transpile", "cache_load", "workers", "go_mod", "go_build", "total"]
+COLUMNS = ["preprocess", "parse", "semantic", "transpile", "cache_load", "workers", "go_mod", "go_build", "other", "total"]
+FRONT_END = ["preprocess", "parse", "semantic", "transpile", "cache_load", "workers"]
 
 
 def effective_lines(path: Path) -> int:
@@ -52,8 +56,11 @@ def effective_lines(path: Path) -> int:
     return count
 
 
+WORKERS: list[str] = []
+
+
 def compile_once(source: Path, out: Path, extlibs: list[str], cold: bool, front_end: bool) -> dict:
-    cmd = [*LAMC, str(source), "-o", str(out), "--timings"]
+    cmd = [*LAMC, str(source), "-o", str(out), "--timings", *WORKERS]
     if cold:
         cmd.append("--no-cache")
     if front_end:
@@ -91,7 +98,11 @@ def main() -> int:
     ap.add_argument("--extlibs", action="append", default=[], help="extlibs directory for --project programs")
     ap.add_argument("-f", "--filter", default="", help="only programs whose name contains this text")
     ap.add_argument("--json", help="write the results to this file")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="passed to lamc build (default: lamc's, the CPU count)")
     args = ap.parse_args()
+    if args.workers is not None:
+        WORKERS[:] = ["--workers", str(args.workers)]
 
     with tempfile.TemporaryDirectory(prefix="lam-compiler-bench-") as tmp_name:
         tmp = Path(tmp_name)

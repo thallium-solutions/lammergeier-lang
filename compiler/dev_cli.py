@@ -121,6 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Passed to `lamc build`; also implies --rebuild")
     ap.add_argument("--no-semantic-check", action="store_true",
                     help="Passed to `lamc build`")
+    ap.add_argument("--workers", type=int, default=None, metavar="N",
+                    help="Passed to `lamc build` (worker processes; the binary does not depend on it)")
     return ap
 
 
@@ -537,6 +539,8 @@ class DevRunner:
         for flag in ("go_race", "no_cache", "no_semantic_check"):
             if getattr(self.args, flag):
                 cmd.append("--" + flag.replace("_", "-"))
+        if getattr(self.args, "workers", None) is not None:
+            cmd += ["--workers", str(self.args.workers)]
         return cmd
 
     def build(self, note: str = "") -> bool:

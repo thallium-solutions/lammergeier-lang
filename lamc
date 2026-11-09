@@ -15,4 +15,8 @@ ROOT = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, ROOT)
 
 from compiler.lammergeier import main
-main()
+
+# Guarded: a build's worker processes started with ``spawn`` import this
+# file again (as ``__mp_main__``) and must not run the compiler.
+if __name__ == "__main__":
+    main()

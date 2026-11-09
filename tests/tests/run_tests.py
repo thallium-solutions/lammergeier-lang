@@ -244,6 +244,9 @@ def main():
 
     workers = args.jobs or os.cpu_count() or 4
     print(f"Running {len(all_files)} tests with {workers} workers...\n")
+    # The tests already run in parallel, one ``lamc`` per CPU: each keeps its
+    # per-module work in-process (``lamc build --workers``) unless asked.
+    os.environ.setdefault("LAMC_WORKERS", "1")
 
     results = []
     with ProcessPoolExecutor(max_workers=workers) as executor:

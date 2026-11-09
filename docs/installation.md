@@ -119,6 +119,7 @@ After install, `lamc` is the single entry point for everything:
 | `lamc <file.lam> --emit-go` | Print the generated Go source and stop before `go build`. |
 | `lamc <file.lam> --emit-ast` | Print the parsed Lark AST and stop before transpilation. |
 | `lamc version` / `lamc --version` | Print the compiler version used by `compatibility.lamc` manifest ranges. |
+| `lamc cache info` / `prune [--max-size SIZE]` / `clear` | Show the compiler cache's size per kind of entry, trim it to a size (least recently used entries first), or delete it. |
 | `lamc doctor` / `lamc --doctor` | Report compiler, Python, Go, `lark`, stdlib, cache, PATH, Go environment, dependency, manifest, and editor-extension diagnostics. Supports `--json` and `--strict`. |
 | `lamc init` | Scaffold a fresh project (manifest + entry-point + `.gitignore`). |
 | `lamc install <spec>` | Install a third-party library — see [`docs/package_manager.md`](package_manager.md). |
@@ -149,7 +150,12 @@ and `lamc doctor --strict` when CI should fail on missing required pieces.
 | `-o PATH` | Override the output binary path. |
 | `--go-ldflags FLAGS` | Forward `FLAGS` straight to `go build` (`-X main.version=...` etc.). |
 | `--extlibs DIR` | Add an extra search root for third-party libraries (repeatable; first wins). |
-| `LAMC_CACHE_DIR=/path` | Override the on-disk transpilation cache (defaults to `~/.cache/lammergeier`). |
+| `--workers N` | Worker processes for the per-module work (parsing, checking and transpiling the imported modules). Default: `LAMC_WORKERS`, else the number of CPUs, at most 16; `1` keeps everything in the `lamc` process. The generated Go is the same for every `N`. |
+| `--timings` | Print one `LAMC_TIMINGS {...}` JSON line with the milliseconds of every compile phase. |
+| `--no-cache` / `--clear-cache` | Build without the compiler cache (every module parsed, checked and transpiled again) / delete it. |
+| `LAMC_CACHE_DIR=/path` | Override the on-disk compiler cache (defaults to `~/.cache/lammergeier/libs`): parse trees, module metadata, transpiled libraries, clean checks and the Go work directories. |
+| `LAMC_WORKERS=N` | Default for `--workers` (also for the builds of `lamc dev`). |
+| `LAMC_CACHE_MAX_SIZE=SIZE` | Size cap of the compiler cache (`500MB`, `5GB`, `2GiB`; `0` = unlimited; default `2GB`). Builds keep it under the cap automatically, removing the entries used least recently, at most once every 10 minutes; `lamc cache prune` does it on demand. Go's own build cache (`GOCACHE`) and `lamc dev`'s cached builds are not part of it. |
 
 The full set is in [`SYNTAX.md`](SYNTAX.md) and the `lamc --help`
 output.

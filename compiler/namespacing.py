@@ -538,9 +538,19 @@ def module_tag(module_name: str) -> str:
 class ModuleInfo:
     path: Path
     name: str
+    # The module's tree, or a ``frontend.LazyTree`` (``module_tree``).
     tree: Tree
     symbols: dict[str, str] = field(default_factory=dict)
     bindings: list[ImportBinding] = field(default_factory=list)
+    # Computed from the tree when not given (the build's front end caches
+    # them with the module): ``locally_bound_names`` and
+    # ``module_member_accesses`` per ``import module [as alias]``.
+    locally_bound: Optional[set] = None
+    member_accesses: Optional[dict] = None
+
+    def module_tree(self) -> Tree:
+        from compiler.frontend import resolve_tree
+        return resolve_tree(self.tree)
 
 
 def build_plans(
@@ -701,7 +711,10 @@ def build_plans(
             if target_path is None or target_path not in modules:
                 continue
             if binding.imported is None:
-                members = module_member_accesses(info.tree, binding.local)
+                if info.member_accesses is not None and binding.local in info.member_accesses:
+                    members = info.member_accesses[binding.local]
+                else:
+                    members = module_member_accesses(info.module_tree(), binding.local)
                 access: dict[str, str] = {}
                 for member in sorted(members):
                     symbol = resolve_symbol(target_path, member)
@@ -758,7 +771,7 @@ def build_plans(
         # does not import (``one: Server = ...`` next to ``db.one(...)``) is
         # just a local: hide that function's metadata here, or the local's
         # declaration and its uses would be lowered with different names.
-        local_names = _locally_bound_names(info.tree)
+        local_names = info.locally_bound if info.locally_bound is not None else _locally_bound_names(info.module_tree())
         for name in local_names & function_names:
             if name not in claimed:
                 plan.hidden.add(name)
@@ -771,6 +784,9 @@ def _locally_bound_names(tree: Tree) -> set[str]:
     from compiler.narrowing import assigned_names
 
     return assigned_names([tree])
+
+
+locally_bound_names = _locally_bound_names
 
 
 def qualify_default_values(func_defaults: dict, plan: Optional[NamespacePlan]) -> None:
@@ -835,6 +851,24 @@ def _meta_keys(mapping: dict, name: str) -> list:
     return [key for key in mapping if key == name or (isinstance(key, str) and key.startswith(prefix))]
 
 
+def _meta_key_name(key) -> object:
+    """The function name a metadata key is filed under (``name`` or
+    ``name#<signature>``): ``key`` is one of ``_meta_keys(mapping, n)`` iff
+    this is ``n`` (names have no ``#``)."""
+    return key.split("#", 1)[0] if isinstance(key, str) else key
+
+
+def _meta_keys_for(mapping: dict, names: set) -> dict:
+    """``{name: _meta_keys(mapping, name)}`` for every name of ``names`` with
+    keys, in one pass over ``mapping`` (one pass per name was quadratic)."""
+    out: dict = {}
+    for key in mapping:
+        owner = _meta_key_name(key)
+        if owner in names:
+            out.setdefault(owner, []).append(key)
+    return out
+
+
 def apply_metadata_view(transpiler, plan: NamespacePlan, sources: dict[Path, object]) -> None:
     """Make imported-function metadata reflect this module's namespace.
 
@@ -842,18 +876,23 @@ def apply_metadata_view(transpiler, plan: NamespacePlan, sources: dict[Path, obj
     metadata attributes (a collector or transpiler for that module).
     """
     names = set(plan.hidden) | set(plan.metadata_from)
-    for name in names:
-        for attr in _FUNCTION_META_DICTS:
-            mapping = getattr(transpiler, attr, None)
-            if isinstance(mapping, dict):
-                for key in _meta_keys(mapping, name):
+    for attr in _FUNCTION_META_DICTS:
+        mapping = getattr(transpiler, attr, None)
+        if isinstance(mapping, dict) and names:
+            for keys in _meta_keys_for(mapping, names).values():
+                for key in keys:
                     del mapping[key]
+    for name in names:
         for attr in _FUNCTION_META_SETS:
             values = getattr(transpiler, attr, None)
             if isinstance(values, set):
                 values.discard(name)
         transpiler._overload_variants.pop(name, None)
         transpiler._overloaded_functions.pop(name, None)
+    needed: dict = {}
+    for _local, (def_path, def_name) in plan.metadata_from.items():
+        needed.setdefault(def_path, set()).add(def_name)
+    key_index: dict = {}
     for local, (def_path, def_name) in plan.metadata_from.items():
         source = sources.get(def_path)
         if source is None:
@@ -863,7 +902,10 @@ def apply_metadata_view(transpiler, plan: NamespacePlan, sources: dict[Path, obj
             dst_map = getattr(transpiler, attr, None)
             if not isinstance(src_map, dict) or not isinstance(dst_map, dict):
                 continue
-            for key in _meta_keys(src_map, def_name):
+            index = key_index.get((def_path, attr))
+            if index is None:
+                index = key_index[(def_path, attr)] = _meta_keys_for(src_map, needed[def_path])
+            for key in index.get(def_name, ()):
                 new_key = local + key[len(def_name):]
                 dst_map[new_key] = copy.deepcopy(src_map[key])
         if def_name in getattr(source, "_user_functions", set()) or def_name in getattr(source, "_external_user_functions", set()):

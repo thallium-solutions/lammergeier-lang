@@ -351,9 +351,17 @@ dev = "lamc dev cmd/serve.lam --watch locales --ext json,sql --"
   it), in its own process group; `--signal` (default `SIGTERM`) stops it,
   `SIGKILL` follows after `--kill-timeout` ms (default 5000).
 - Arguments after `--` are passed to the program. `--extlibs`, `--stdlib`,
-  `--go-tags`, `--go-ldflags`, `--go-race`, `--no-cache` and
-  `--no-semantic-check` are passed to the build; `--extlibs` directories are
-  watched too.
+  `--go-tags`, `--go-ldflags`, `--go-race`, `--no-cache`,
+  `--no-semantic-check` and `--workers N` are passed to the build;
+  `--extlibs` directories are watched too.
+- A rebuild redoes only the work of what changed: every module's parse
+  tree, metadata, semantic check and transpiled Go is cached by content
+  (the compiler cache, `LAMC_CACHE_DIR`), and the program builds in a Go
+  work directory of its own, so `go build` reuses its build cache. After
+  editing one module of a large application, the rebuild parses that
+  module, re-checks it and the modules importing it, transpiles it (all
+  libraries when its signatures changed, in parallel: `--workers`) and
+  recompiles the Go package.
 - At start, when nothing changed since a previous run, the last good build
   starts at once instead of building again (below, "Cached builds"):
   `[lamc dev] starting serve (cached build of 2026-11-08 09:12:40)`.

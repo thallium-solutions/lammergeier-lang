@@ -692,6 +692,15 @@ def test_cache_key_inputs() -> None:
                         ("CGO_ENABLED", "0"), ("LAMC_EXTLIBS", "/x")):
         assert key(["main.lam"], {name: value}) != base, name
     assert key(["main.lam"], {}, go="go version go1.26.0 linux/amd64") != base, "the Go version"
+    # The worker count does not change the binary: same key, passed to the build.
+    assert key(["main.lam", "--workers", "3"], {}) == base, "--workers does not matter"
+    assert key(["main.lam"], {"LAMC_WORKERS": "2"}) == base, "LAMC_WORKERS does not matter"
+    runner = dev_cli.DevRunner(dev_cli.build_parser().parse_args(["main.lam", "--workers", "3"]), [])
+    try:
+        command = runner.build_command()
+    finally:
+        shutil.rmtree(runner.tmpdir, ignore_errors=True)
+    assert command[-2:] == ["--workers", "3"], command
     print("PASS: lamc dev's cache key covers flags, environment and the Go toolchain")
 
 

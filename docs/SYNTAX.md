@@ -5044,33 +5044,72 @@ complete signature duplicates are rejected.
 # Verbose output
 ./lamc source.lam -v
 
-# Skip the disk caches (libraries + serialised parser)
+# Skip the disk caches (parse trees, libraries, checks, Go work directory)
 ./lamc source.lam --no-cache
 
-# Wipe every cached artefact
+# Worker processes for the per-module work (default: the CPU count, at
+# most 16; 1 = everything in the lamc process; same output for every N)
+./lamc source.lam --workers 8
+
+# Per-phase compile times as one JSON line on stderr
+./lamc source.lam --timings
+
+# Wipe every cached artefact (also `lamc cache clear`)
 ./lamc source.lam --clear-cache
+
+# Cache size per kind of entry; trim it to a size now
+lamc cache info
+lamc cache prune --max-size 500MB
 
 # Skip the pre-emission semantic checker (rare; prefer `--verbose`)
 ./lamc source.lam --no-semantic-check
 ```
 
-The build pipeline caches two artefacts on disk under
-`$XDG_CACHE_HOME/lammergeier/` (or `~/.cache/lammergeier/`):
+The build pipeline caches its per-module work on disk under
+`$XDG_CACHE_HOME/lammergeier/libs/` (or `~/.cache/lammergeier/libs/`,
+`LAMC_CACHE_DIR` overrides it), every entry keyed by content and by a
+digest of the compiler sources and grammar, so an edit to a `.lam` file or
+to the compiler invalidates exactly what depends on it:
 
-1. **Library transpile results** — keyed on
-   `sha256(compiler-source || lib-content)`, so any edit to a `.lam`
-   library or to the compiler/grammar invalidates entries
-   automatically. Cold builds populate the cache; subsequent builds
-   reuse the emitted Go source and the metadata sets the main
-   transpiler needs (class names, method return types, default
-   args, …).
-2. **Lark parser** — pickled via `Lark.save()` and keyed on
+1. **Front end** — each module's preprocessed source and parse tree (and
+   the import facts read off it), keyed on the module's path and text.
+2. **Module metadata** — the classes, signatures, defaults and overloads
+   harvested from each module, keyed on its text, its namespace plan and
+   the program's interfaces and generic classes.
+3. **Semantic checks** — a module that checked clean, keyed on its text and
+   the text of every module it imports.
+4. **Library transpile results** — the emitted Go source and metadata of
+   each library, keyed on its text and the metadata of the whole program
+   it is compiled against.
+5. **Lark parser** — pickled via `Lark.save()` and keyed on
    `sha256(lark_version || python_minor || grammar)`. A typical
    parser build is ~150–300 ms; loading the cached blob is &lt;10 ms.
+6. **Go work directory** — each program builds in a directory of its
+   own (`gobuild/`), so `go build` reuses its build cache; `go mod tidy`
+   runs again only when the Go imports or pins changed.
 
-Both caches are best-effort: a corrupt or unreadable file is treated
-as a miss and silently overwritten by the next build. `--clear-cache`
-removes both.
+A rebuild after editing one module therefore parses only that module,
+re-checks it and its importers and transpiles it (every library when its
+signatures changed). The caches are best-effort: a corrupt or unreadable
+file is treated as a miss and silently overwritten by the next build;
+entries are written atomically, so concurrent builds can share the
+cache. `--clear-cache` removes them all.
+
+Edits write new entries rather than replace old ones, so the cache has a
+size cap: `LAMC_CACHE_MAX_SIZE` (`500MB`, `5GB`, `2GiB`; `0` = unlimited;
+default `2GB`). A build that used the cache trims it, at most once every
+10 minutes, removing the entries used least recently (every hit marks an
+entry used) down to 80% of the cap; `lamc cache prune [--max-size SIZE]`
+trims it now and `lamc cache info` shows its size per kind. Only the
+compiler's own entries under the cache directory are ever removed;
+entries a running build is writing and Go work directories in use are
+skipped, and an entry removed under a build is simply computed again.
+
+The per-module work (parsing, checking the imported modules, transpiling
+the libraries) runs in `--workers N` processes (default: the CPU count, at
+most 16; `LAMC_WORKERS` sets the default). Results are always used in
+module order, so the generated Go, the warnings and the errors are the same
+for every `N` and with or without the cache.
 
 ---
 

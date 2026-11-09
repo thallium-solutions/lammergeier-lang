@@ -11,7 +11,13 @@ are off. Phases:
 ``transpile``   Lam AST to Go (main program and libraries not in the cache)
 ``go_mod``      ``go mod init`` / ``go mod tidy``
 ``go_build``    ``go build`` of the generated program
+``cache_load``  reading cached front-end results (preprocessed source + tree)
+``workers``     waiting for the build's worker processes (``--workers``)
 ``total``       the whole ``compile_lam`` call
+
+``preprocess`` / ``parse`` / ``semantic`` / ``transpile`` count the work done
+in the ``lamc`` process; the same work done by worker processes is reported
+separately under ``workers_ms`` (summed over the workers: it overlaps).
 """
 from __future__ import annotations
 
@@ -21,14 +27,39 @@ import time
 from contextlib import contextmanager
 
 
+_ACTIVE: "PhaseTimer | None" = None
+
+
+def record(phase: str, seconds: float) -> None:
+    """Add main-process time to ``phase`` when timings are on."""
+    if _ACTIVE is not None:
+        _ACTIVE.add(phase, seconds)
+
+
+def record_worker(phase: str, seconds: float) -> None:
+    """Add time a worker process spent in ``phase``."""
+    if _ACTIVE is not None:
+        _ACTIVE.add_worker(phase, seconds)
+
+
+def active() -> bool:
+    return _ACTIVE is not None
+
+
 class PhaseTimer:
     def __init__(self) -> None:
         self.phases: dict[str, float] = {}
         self.counts: dict[str, int] = {}
+        self.worker_phases: dict[str, float] = {}
+        self.worker_counts: dict[str, int] = {}
 
     def add(self, phase: str, seconds: float) -> None:
         self.phases[phase] = self.phases.get(phase, 0.0) + seconds
         self.counts[phase] = self.counts.get(phase, 0) + 1
+
+    def add_worker(self, phase: str, seconds: float) -> None:
+        self.worker_phases[phase] = self.worker_phases.get(phase, 0.0) + seconds
+        self.worker_counts[phase] = self.worker_counts.get(phase, 0) + 1
 
     def wrap(self, phase: str, fn):
         def timed(*args, **kwargs):
@@ -40,10 +71,14 @@ class PhaseTimer:
         return timed
 
     def report(self) -> dict:
-        return {
+        out = {
             "phases_ms": {k: round(v * 1000, 3) for k, v in self.phases.items()},
             "calls": dict(self.counts),
         }
+        if self.worker_phases:
+            out["workers_ms"] = {k: round(v * 1000, 3) for k, v in self.worker_phases.items()}
+            out["worker_calls"] = dict(self.worker_counts)
+        return out
 
 
 @contextmanager
@@ -100,11 +135,15 @@ def phase_timings(enabled: bool, driver=None):
     S.check_source = timer.wrap("semantic", saved["check_source"])
     GoTranspiler.transpile = timer.wrap("transpile", saved["transpile"])
     L.subprocess.run = timed_run
+    global _ACTIVE
+    previous = _ACTIVE
+    _ACTIVE = timer
     start = time.perf_counter()
     try:
         yield timer
     finally:
         timer.add("total", time.perf_counter() - start)
+        _ACTIVE = previous
         L.preprocess_for_parse = saved["preprocess"]
         L.create_parser = saved["create_parser"]
         S.check_source = saved["check_source"]

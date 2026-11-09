@@ -31,6 +31,37 @@ The compiler lives under `compiler/`, with the transpiler entry-point in
 4. **Formatter + compiler** (`go fmt` + `go build`) produce the final
    binary.
 
+Around these steps the driver (`compile_lam` in `compiler/lammergeier.py`)
+walks the import graph from the compiled file, then: semantic checks of the
+imported modules, namespace plans (`compiler/namespacing.py`), the metadata
+harvest of every library (two passes: declared types, then signatures), the
+library transpiles with the program metadata injected, the main transpile,
+the link check, `go mod` and `go build`. The per-module steps are cached by
+content and, with `--workers N`, run in worker processes:
+
+| Step | Cache (under `LAMC_CACHE_DIR`) | Workers |
+|------|------|---------|
+| preprocess + parse (`compiler/frontend.py`) | `frontend/`: preprocessed source, tree, import facts | yes, while the import walk continues |
+| semantic check of an imported module | `checks/`: clean checks | yes (enough modules to check) |
+| metadata harvest (`compiler/harvest.py`) | `harvest/` | no (cheap once cached) |
+| library transpile (`compiler/lib_transpile.py`) | `<xx>/<key>.json` | yes |
+| `go build` (`compiler/gobuild.py`) | `gobuild/`: the program's Go work directory | Go's own |
+
+Results are consumed in module order whatever finishes first: the generated
+Go, warnings and errors (the first syntax error in module order) are the
+same for `--workers 1` and `--workers N` and with or without the cache
+(`tests/tests/test_parallel_build.py`). A tree is loaded from the front-end
+cache only when a pass needs it, so a rebuild in which most modules are
+cached touches few trees. `--timings` reports the phases of the `lamc`
+process (`cache_load`: reading cached trees, `workers`: waiting for the
+workers) and, under `workers_ms`, the time the workers spent per phase.
+
+Worker pools use the platform's `multiprocessing` start method (`fork` on
+Linux before Python 3.14; `LAMC_MP_START` overrides it; a process with
+other threads uses `spawn`), and start only when there is enough work for
+them: a worker that has to load the trees and class tables first costs about
+as much as a dozen semantic checks.
+
 ## Source maps
 
 Every statement the transpiler visits emits a Go `//line` pragma pointing
@@ -68,16 +99,31 @@ collect metadata) is the most expensive phase of a cold build. The
 compiler caches that work on disk in a content-addressed store so
 warm builds skip the whole pipeline for every unchanged library.
 
-- **Key** is `sha256(compiler_version || lib_content)`. The
+- **Key** is `sha256(compiler_version || lib_content || context)`. The
   `compiler_version` component is itself a digest over every `.py`
   under `compiler/` plus `lammergeier.lark`, so any compiler or
-  grammar change transparently busts every cached entry.
+  grammar change transparently busts every cached entry. The context is
+  a digest of the program metadata injected into the library's
+  transpiler (every library's classes, signatures, defaults, overloads,
+  field types, the class hierarchy), its namespace plan, its module-init
+  name, the base tables below, the Go module name and the stdlib path.
 - **Value** is a JSON blob with the emitted Go source plus the
-  metadata sets (`_class_names`, `_static_methods`, `_static_vars`,
-  `_func_defaults`, `_func_param_counts`, `_variadic_functions`) that the main-file
-  transpiler re-injects before walking the user's code.
+  metadata tables (`_class_names`, `_static_methods`, `_static_vars`,
+  `_func_defaults`, `_func_param_counts`, `_overload_variants`, …) that the
+  main-file transpiler re-injects before walking the user's code. A table
+  is stored as a delta (`compiler/lib_results.py`) against the *base*: the
+  program metadata injected into every library's transpiler. Stored whole,
+  every entry repeated the whole program's metadata (megabytes each for a
+  large application), which every warm build decoded and merged once per
+  library; the deltas are merged into the same tables, in the same key
+  order, in time proportional to their size.
 - **Location** is `$XDG_CACHE_HOME/lammergeier/libs/` by default,
   overridable with `LAMC_CACHE_DIR`.
+
+The tree nodes Lark builds are labelled the same way however the parser was
+obtained: `create_parser()` always uses the parser as it loads from its
+cache, so the first build after a grammar change produces the cache keys
+later builds look up.
 
 Default parameter values are lowered to their Go source strings before
 caching — the in-memory representation uses Lark `Tree` nodes which
@@ -98,8 +144,27 @@ errors and diagnostics always point at the current copy.
 CLI flags:
 
 - `--no-cache` bypasses the cache for a single build (useful when
-  debugging a library the compiler just miscompiled into the cache).
-- `--clear-cache` deletes every cached entry and exits.
+  debugging a library the compiler just miscompiled into the cache);
+  it also builds in a temporary Go work directory.
+- `--clear-cache` (or `lamc cache clear`) deletes every cached entry
+  (and the Go work directories) and exits.
+- `lamc cache info` prints the size per kind of entry; `lamc cache prune
+  [--max-size SIZE]` trims the cache now.
+
+Size cap (`compiler/cache_prune.py`): content-addressed entries are never
+rewritten in place, so the cache directory is capped at
+`LAMC_CACHE_MAX_SIZE` (default `2GB`, `0` = unlimited). An entry's
+modification time is its last use (set when written and again on every
+hit; a Go work directory when a build takes it). After a build that used
+the cache, at most once per 10 minutes per cache directory (the
+`.lamc-prune-stamp` file; one pruning process at a time), entries are
+removed oldest use first down to 80% of the cap. The pruner only removes
+files and directories of the compiler's own kinds and name shapes (hex
+keys) under the cache directory, never follows symbolic links, skips
+temporary files younger than 10 minutes (a build is writing them; older
+ones are removed) and Go work directories whose lock another build holds.
+Scanning 50,000 entries takes about 0.3 s; a build that does not prune
+pays only the touches of its hits (about 2 ms for 700 entries).
 
 ## Generics
 

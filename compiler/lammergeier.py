@@ -67,6 +67,7 @@ from compiler.diagnostics import TranspileDiagnosticError
 from compiler.visitors.subtyping import resolve_inherited_init_metadata as _resolve_inherited_init_metadata
 from compiler.link_symbols import find_symbol_clashes, render_symbol_clashes
 from compiler import namespacing as _namespacing
+from compiler import lib_transpile as _lib_transpile_mod
 from compiler.modules import WorkspaceIndex
 from compiler.source_map import SourceMap
 from compiler.fstrings import SOURCE_NEWLINE, protect_fstring_quotes
@@ -511,9 +512,14 @@ def _fill_empty_blocks(source: str) -> str:
     """
     out: list[str] = []
     in_str: str | None = None
-    # Stack of (open_offset_in_out, kind, has_content). When the
-    # closing ``}`` arrives we look at ``has_content`` to decide
-    # whether to inject ``pass;``.
+    # Stack of (open_offset_in_out, prev_meaningful_at_open, has_content).
+    # When the closing ``}`` arrives we look at ``has_content`` to decide
+    # whether to inject ``pass;``. The brace is classified (block or
+    # literal) only then, for an empty body: classifying every ``{`` against
+    # the whole text before it made this pass quadratic. ``out`` before the
+    # ``{`` is unchanged at that point (the ``pass;`` insertions since then
+    # all went into blocks nested inside this one), so the result is the
+    # same as classifying at the ``{``.
     stack: list[list] = []
     prev_meaningful = ""
     i = 0
@@ -561,18 +567,20 @@ def _fill_empty_blocks(source: str) -> str:
             continue
 
         if ch == '{':
-            prefix = "".join(out)
-            kind = _classify_brace_open(prev_meaningful, prefix)
-            if kind == "block" and _INTERFACE_HEAD_RE.search(prefix):
-                # ``interface Marker { }`` declares no methods; its body is
-                # not a statement suite, so it must stay empty.
-                kind = "interface"
             out.append(ch)
             # Record the buffer index right after this `{`.
-            stack.append([len(out), kind, False])
+            stack.append([len(out), prev_meaningful, False])
         elif ch == '}':
             if stack:
-                open_index, kind, has_content = stack.pop()
+                open_index, prev_at_open, has_content = stack.pop()
+                kind = ""
+                if not has_content:
+                    prefix = "".join(out[:open_index - 1])
+                    kind = _classify_brace_open(prev_at_open, prefix)
+                    if kind == "block" and _INTERFACE_HEAD_RE.search(prefix):
+                        # ``interface Marker { }`` declares no methods; its body is
+                        # not a statement suite, so it must stay empty.
+                        kind = "interface"
                 if kind == "block" and not has_content:
                     # Inject ``pass;`` right after the opening ``{`` so it
                     # stays on that line and can't land inside a trailing
@@ -970,15 +978,8 @@ def _canonicalize_doc_comment_terminators(source: str) -> str:
     return "".join(pieces)
 
 
-@dataclass(frozen=True)
-class ParsePreprocessResult:
-    source: str
-    go_blocks: dict[str, str]
-    source_map: SourceMap
-    diagnostics: tuple[tuple[int, int, str], ...] = ()
-    # Errors that stop parsing (an unterminated markup literal), reported
-    # as syntax errors: (line, column, message).
-    syntax_errors: tuple[tuple[int, int, str], ...] = ()
+# The result type lives in its own module (the front-end cache pickles it).
+from compiler.parse_input import ParsePreprocessResult  # noqa: E402
 
 
 def render_preprocess_syntax_error(error: tuple[int, int, str], source: str, path) -> str:
@@ -1102,7 +1103,8 @@ def create_parser() -> Lark:
         try:
             with cache_path.open("rb") as f:
                 _PARSER_CACHE = Lark.load(f)
-                return _PARSER_CACHE
+            _lamcache.touch(cache_path)
+            return _PARSER_CACHE
         except Exception:
             # Stale or unreadable cache → fall through and rebuild.
             try:
@@ -1121,14 +1123,27 @@ def create_parser() -> Lark:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write so a crash mid-save can't leave a half-written
         # blob that would later fail Lark.load() and trip the
-        # exception path above on every subsequent build.
-        tmp_path = cache_path.with_suffix(".tmp")
-        with tmp_path.open("wb") as f:
+        # exception path above on every subsequent build. A unique
+        # temporary name: concurrent ``lamc`` processes may save at once.
+        fd, tmp_name = tempfile.mkstemp(prefix=".lamc-parser-", suffix=".tmp", dir=str(cache_path.parent))
+        with os.fdopen(fd, "wb") as f:
             parser.save(f)
-        os.replace(tmp_path, cache_path)
+        os.replace(tmp_name, cache_path)
     except Exception:
         # Disk caching is best-effort — never fail the build because
         # the parser cache couldn't be written.
+        pass
+    # Use the parser as it loads from the cache, even on this first build:
+    # a freshly built Lark parser labels tree nodes with ``Token`` rule
+    # names where a loaded one uses plain strings, which ``repr`` (cache
+    # keys, debug output) tells apart. Every build sees the same trees.
+    try:
+        import io as _io
+        buffer = _io.BytesIO()
+        parser.save(buffer)
+        buffer.seek(0)
+        parser = Lark.load(buffer)
+    except Exception:
         pass
 
     _PARSER_CACHE = parser
@@ -1736,7 +1751,8 @@ def _render_transpile_diagnostics(err, display_path: str, source: str | None = N
     return _semantic.render_errors(diags, source, display_path)
 
 
-def _imported_check_cache_extra(mod_file: Path, import_graph, sources: dict) -> bytes | None:
+def _imported_check_cache_extra(mod_file: Path, import_graph, sources: dict,
+                                digests: dict | None = None) -> bytes | None:
     """Cache discriminator of an imported module's semantic check: its path
     and the path and content of every module it imports, directly or not
     (the signatures, classes and values it is checked against). ``None``
@@ -1757,7 +1773,12 @@ def _imported_check_cache_extra(mod_file: Path, import_graph, sources: dict) -> 
         if source is None:
             return None
         digest.update(str(path).encode("utf-8") + b"\0")
-        digest.update(hashlib.sha256(source.encode("utf-8")).digest())
+        source_digest = digests.get(path) if digests is not None else None
+        if source_digest is None:
+            source_digest = hashlib.sha256(source.encode("utf-8")).digest()
+            if digests is not None:
+                digests[path] = source_digest
+        digest.update(source_digest)
     return digest.hexdigest().encode("ascii")
 
 
@@ -1768,6 +1789,9 @@ def _check_imported_modules(
     *,
     import_graph=None,
     use_cache: bool = False,
+    workers: int = 1,
+    frontend=None,
+    inputs_recorder=None,
 ) -> None:
     """Full semantic check of every imported module of the program
     (``modules``: ``(path, source, go_blocks, tree)``: project modules,
@@ -1791,20 +1815,40 @@ def _check_imported_modules(
 
     if shared is None:
         shared = _semantic.ProgramCheckCache()
+    from compiler.frontend import LazyTree, resolve_tree
+    from compiler.imported_checks import _MISSING, LazyTrees
+
     sources = {Path(mod_file).resolve(): mod_source for mod_file, mod_source, _b, _t in modules}
-    for mod_file, _mod_source, _mod_go_blocks, mod_tree in modules:
-        shared.add_tree(mod_file, mod_tree)
-    blocks: list[str] = []
+    # Trees not loaded yet are loaded when a check reads them.
+    lazy_trees: dict[Path, LazyTree] = {}
+    for mod_file, mod_source, _mod_go_blocks, mod_tree in modules:
+        path = Path(mod_file).resolve()
+        if isinstance(mod_tree, LazyTree):
+            if path not in shared.trees and path not in lazy_trees:
+                lazy_trees[path] = mod_tree
+                shared.texts[path] = mod_source
+        else:
+            shared.add_tree(mod_file, mod_tree, mod_source)
+    if lazy_trees:
+        loaded_trees = LazyTrees(lambda p: lazy_trees[p].load_tree() if p in lazy_trees else _MISSING)
+        loaded_trees.update(shared.trees)
+        shared.trees = loaded_trees
+    todo = []
+    source_digests: dict = {}
     for mod_file, mod_source, mod_go_blocks, mod_tree in modules:
         cache_extra = (
-            _imported_check_cache_extra(Path(mod_file).resolve(), import_graph or {}, sources)
+            _imported_check_cache_extra(Path(mod_file).resolve(), import_graph or {}, sources, source_digests)
             if use_cache else None
         )
         if cache_extra is not None and _cache.has_clean_check(mod_source.encode("utf-8"), cache_extra):
             continue
+        todo.append((mod_file, mod_source, mod_go_blocks, mod_tree, cache_extra))
+
+    def check_here(item):
+        mod_file, _mod_source, mod_go_blocks, mod_tree, _extra = item
         try:
-            diags = _semantic.check_source(
-                mod_tree,
+            return _semantic.check_source(
+                resolve_tree(mod_tree),
                 go_blocks=mod_go_blocks,
                 module_index=module_index,
                 source_path=mod_file,
@@ -1812,21 +1856,105 @@ def _check_imported_modules(
                 imported_module=True,
             )
         except Exception:  # noqa: BLE001 - a checker crash must not block the build
-            continue
-        diags = [d for d in diags if not d.is_warning or d.kind == "import"]
-        if not diags:
-            if cache_extra is not None:
-                _cache.mark_clean_check(mod_source.encode("utf-8"), cache_extra)
-            continue
-        diags.sort(key=lambda d: (d.line, d.col))
-        warnings_text = _semantic.render_warnings(diags, mod_source, str(mod_file))
-        if warnings_text:
-            print(warnings_text, file=sys.stderr)
-        if _semantic.has_errors(diags):
-            blocks.append(_semantic.render_errors(diags, mod_source, str(mod_file)))
+            return None
+
+    # The checks are independent (each module against its imports): with
+    # workers, every module is checked in a worker process, and the
+    # results are reported here in module order.
+    from compiler import imported_checks as _imported_checks
+    from compiler import workers as _workers
+    pool = None
+    # A worker first loads the trees and class tables its checks read,
+    # which costs about as much as checking a dozen modules here.
+    per_worker = 16
+    if frontend is not None and _workers.pool_size(workers, len(todo), per_worker) >= 2:
+        from compiler import frontend as _frontend_mod
+        blobs = {}
+        for path, text in shared.texts.items():
+            found = frontend.blobs(path, text)
+            if found is not None:
+                blobs[_frontend_mod.module_key(path, text, True)] = found
+        for mod_file, mod_source, _b, _t, _e in todo:
+            found = frontend.blobs(Path(mod_file), mod_source)
+            if found is not None:
+                blobs[_frontend_mod.module_key(Path(mod_file), mod_source, True)] = found
+        stage = _imported_checks.CheckStage(
+            module_index=_imported_checks.picklable_index(module_index),
+            tree_texts=dict(shared.texts),
+            blobs=blobs,
+            use_disk=frontend.use_disk,
+            record=inputs_recorder is not None,
+        )
+        pool = _workers.make_pool(
+            workers, len(todo), initializer=_imported_checks._init_worker, initargs=(stage,),
+            per_worker=per_worker,
+        )
+
+    def check_task(item):
+        mod_file, mod_source, mod_go_blocks, _tree, _extra = item
+        return (str(mod_file), mod_source, mod_go_blocks)
+
+    from compiler import timings as _timings
+    blocks: list[str] = []
+    try:
+        if pool is not None:
+            chunks = _imported_checks.chunked(
+                [check_task(item) for item in todo], _workers.pool_size(workers, len(todo), per_worker),
+            )
+            futures = [pool.submit(_imported_checks._worker_check_chunk, chunk) for chunk in chunks]
+            chunk_of = [i for i, chunk in enumerate(chunks) for _task in chunk]
+            offset_of = [j for chunk in chunks for j in range(len(chunk))]
+            chunk_results: dict[int, list] = {}
+        for index, item in enumerate(todo):
+            mod_file, mod_source, _mod_go_blocks, _mod_tree, cache_extra = item
+            if pool is None:
+                diags = check_here(item)
+            else:
+                clock = _workers.StageClock("workers")
+                ci = chunk_of[index]
+                if ci not in chunk_results:
+                    try:
+                        chunk_results[ci] = futures[ci].result()
+                    except Exception:  # noqa: BLE001 - a broken worker: check here
+                        chunk_results[ci] = None
+                results = chunk_results[ci]
+                if results is None:
+                    diags, lookups, cpu_seconds = check_here(item), [], 0.0
+                else:
+                    diags, lookups, cpu_seconds = results[offset_of[index]]
+                clock.stop()
+                _timings.record_worker("semantic", cpu_seconds)
+                if inputs_recorder is not None:
+                    for from_path, module, found in lookups:
+                        inputs_recorder.replay(module_index, Path(from_path), module, Path(found) if found else None)
+            if diags is None:
+                continue
+            _report_imported_check(diags, mod_source, mod_file, cache_extra, blocks)
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)
     if blocks:
         print("\n".join(blocks), file=sys.stderr)
         sys.exit(1)
+
+
+def _report_imported_check(diags, mod_source, mod_file, cache_extra, blocks) -> None:
+    """Print an imported module's warnings, collect its errors in ``blocks``
+    and remember a clean check."""
+    from compiler import cache as _cache
+    from compiler import semantic as _semantic
+
+    diags = [d for d in diags if not d.is_warning or d.kind == "import"]
+    if not diags:
+        if cache_extra is not None:
+            _cache.mark_clean_check(mod_source.encode("utf-8"), cache_extra)
+        return
+    diags.sort(key=lambda d: (d.line, d.col))
+    warnings_text = _semantic.render_warnings(diags, mod_source, str(mod_file))
+    if warnings_text:
+        print(warnings_text, file=sys.stderr)
+    if _semantic.has_errors(diags):
+        blocks.append(_semantic.render_errors(diags, mod_source, str(mod_file)))
 
 
 def _project_root_for(source_dir: Path) -> Path:
@@ -1912,6 +2040,8 @@ class BuildInputsRecorder:
     def attach(self, module_index: WorkspaceIndex, source_file: Path, project_root: Path,
                lead_roots: list[Path]) -> None:
         self.files.add(str(source_file.resolve()))
+        self._project_root = project_root
+        self._lead_roots = lead_roots
         manifest = _find_project_manifest(source_file.parent)
         if manifest is not None:
             for name in ("lamlib.toml", "lamlib.lock.toml"):
@@ -1924,6 +2054,10 @@ class BuildInputsRecorder:
             return found
 
         module_index.resolve_module = recording_resolve  # type: ignore[method-assign]
+
+    def replay(self, module_index: WorkspaceIndex, from_path: Path, module: str, found: Path | None) -> None:
+        """Record a module lookup a worker process made."""
+        self._note(module_index, from_path, module, found, self._project_root, self._lead_roots)
 
     def _note_file(self, path: Path) -> None:
         if path.exists():
@@ -1961,7 +2095,176 @@ class BuildInputsRecorder:
         Path(path).write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
 
 
-def compile_lam(
+def _go_env_fingerprint() -> str:
+    """What ``go mod tidy`` depends on besides the sources: the Go version
+    and the module-related environment."""
+    try:
+        version = subprocess.run(
+            ["go", "env", "GOVERSION", "GOFLAGS", "GOPROXY", "GOPRIVATE", "GONOSUMDB", "GOSUMDB", "GOTOOLCHAIN", "GOWORK"],
+            capture_output=True, text=True,
+        ).stdout
+    except OSError:
+        version = ""
+    return version
+
+
+# ── Import scan of a parsed module (shared with compiler.frontend) ──
+
+
+def extract_import_sites(node) -> list[tuple[str, Tree]]:
+    """Walk ``node`` and return every imported module with its AST node.
+
+    Used both for the user's main file and for transitive
+    resolution: a library that does ``from lamerrors import ...``
+    triggers a second pass on ``lamerrors`` itself.
+    """
+    out: list[tuple[str, Tree]] = []
+
+    def _walk(n):
+        if not isinstance(n, Tree):
+            return
+        if n.data == "import_from":
+            relative_prefix = ""
+            for child in n.children:
+                if isinstance(child, Tree) and child.data == "dots":
+                    relative_prefix = "".join(str(token) for token in child.children)
+                    continue
+                if isinstance(child, Tree) and child.data == "dotted_name":
+                    parts: list[str] = []
+                    for c in child.children:
+                        if isinstance(c, Tree):
+                            parts.append(str(c.children[0]))
+                        else:
+                            parts.append(str(c))
+                    out.append((relative_prefix + ".".join(parts), n))
+                    break
+                # ``scoped_name`` — ``from @alice/lamwebp import ...``.
+                # One child, a single SCOPED_NAME token.
+                if isinstance(child, Tree) and child.data == "scoped_name":
+                    if child.children:
+                        out.append((str(child.children[0]), n))
+                    break
+        elif n.data == "import_name":
+            for child in n.children:
+                if isinstance(child, Tree) and child.data == "dotted_as_names":
+                    for das in child.children:
+                        if isinstance(das, Tree) and das.data == "dotted_as_name":
+                            dn = das.children[0]
+                            if isinstance(dn, Tree) and dn.data == "scoped_name":
+                                if dn.children:
+                                    out.append((str(dn.children[0]), n))
+                                continue
+                            parts = []
+                            for c in dn.children:
+                                if isinstance(c, Tree):
+                                    parts.append(str(c.children[0]))
+                                else:
+                                    parts.append(str(c))
+                            out.append((".".join(parts), n))
+        for child in n.children:
+            if isinstance(child, Tree):
+                _walk(child)
+
+    _walk(node)
+    return out
+
+def extract_imports(node) -> list[str]:
+    return [mod for mod, _ in extract_import_sites(node)]
+
+def uses_native_json(node) -> bool:
+    if not isinstance(node, Tree):
+        return False
+    if node.data == "type_name":
+        return any(
+            str(token) == "json"
+            for token in node.scan_values(lambda value: isinstance(value, Token))
+        )
+    if node.data == "funccall" and node.children:
+        callee = node.children[0]
+        if isinstance(callee, Tree) and callee.data == "var":
+            return any(
+                str(token) == "json"
+                for token in callee.scan_values(lambda value: isinstance(value, Token))
+            )
+    if node.data == "class_pattern" and node.children:
+        # ``case json(j)`` asserts the LamJSON runtime type.
+        callee = node.children[0]
+        if isinstance(callee, Tree) and [str(c) for c in callee.children] == ["json"]:
+            return True
+    return any(uses_native_json(child) for child in node.children if isinstance(child, Tree))
+
+def uses_native_markup(node) -> bool:
+    """html / xml types, markup literals or ``html(...)`` / ``xml(...)``."""
+    if not isinstance(node, Tree):
+        return False
+    if node.data == "type_name":
+        return any(
+            str(token) in {"html", "xml"}
+            for token in node.scan_values(lambda value: isinstance(value, Token))
+        )
+    if node.data == "funccall" and node.children:
+        callee = node.children[0]
+        if isinstance(callee, Tree) and callee.data == "var" and [
+            str(token) for token in callee.scan_values(lambda value: isinstance(value, Token))
+        ] in (["__markup__"], ["html"], ["xml"]):
+            return True
+    return any(uses_native_markup(child) for child in node.children if isinstance(child, Tree))
+
+
+_STRING_METHOD_DISPATCH_NAMES = (
+    "repeat", "contains", "hasPrefix", "hasSuffix",
+    "toUpper", "toLower", "trim", "length", "trimLeft", "trimRight",
+    "replace", "split", "join", "count", "index", "lastIndex",
+    "title", "equalFold", "fields", "capitalize", "isAlpha",
+    "isDigit", "isAlnum", "isSpace", "reverse", "center",
+    "zfill", "padLeft", "padRight", "splitLines", "splitN",
+    "replaceFirst", "startsWith", "endsWith", "containsAny",
+    "isEmpty", "isBlank", "indent", "dedent", "format",
+    "camelCase", "pascalCase", "snakeCase", "kebabCase",
+)
+STRING_METHOD_RE = _re.compile(
+    r"\.(?:" + "|".join(_STRING_METHOD_DISPATCH_NAMES) + r")\s*\("
+)
+
+
+def compile_lam(source_path: str, output_path: str | None = None, *args,
+                workers: int | None = None, **kwargs):
+    """Full compilation pipeline (see :func:`_compile_lam`).
+
+    ``workers`` is the number of processes for the per-module work
+    (``--workers``; ``None``: ``LAMC_WORKERS`` or the CPU count, capped, see
+    ``compiler/workers.py``; ``1``: everything in this process). The
+    generated Go does not depend on it.
+    """
+    from compiler import frontend as _frontend
+    from compiler import workers as _workers
+
+    worker_count = _workers.resolve_workers(workers)
+    frontend = _frontend.FrontEnd(
+        use_disk=kwargs.get("use_cache", True),
+        workers=worker_count,
+        driver=sys.modules[__name__],
+    )
+    import gc as _gc
+    with _frontend.activated(frontend):
+        try:
+            return _compile_lam(
+                source_path, output_path, *args,
+                worker_count=worker_count, frontend=frontend, **kwargs,
+            )
+        finally:
+            frontend.close()
+            # Trees loaded by the front end were frozen out of the cyclic
+            # collector for the build (compiler/frontend.py).
+            _gc.unfreeze()
+            if kwargs.get("use_cache", True):
+                # Keep the cache under its size cap (at most once every few
+                # minutes per cache root: compiler/cache_prune.py).
+                from compiler import cache_prune as _cache_prune
+                _cache_prune.after_build()
+
+
+def _compile_lam(
     source_path: str,
     output_path: str | None = None,
     emit_go: bool = False,
@@ -1983,6 +2286,9 @@ def compile_lam(
     no_semantic_check: bool = False,
     run_args: list[str] | None = None,
     inputs_recorder: BuildInputsRecorder | None = None,
+    *,
+    worker_count: int = 1,
+    frontend=None,
 ):
     """Full compilation pipeline.
 
@@ -2019,6 +2325,15 @@ def compile_lam(
         stdlib_dir=stdlib_dir,
         extlibs_dirs=extlibs_dirs,
     )
+    module_index.memoize_filesystem()
+    if frontend is not None:
+        def _cached_facts(path: Path, text: str):
+            try:
+                meta = frontend.cached_meta(path, text)
+            except Exception:
+                return None
+            return meta.facts if meta is not None else None
+        module_index.facts_provider = _cached_facts
     if inputs_recorder is not None:
         all_extlibs = _effective_extlibs_dirs(source_dir, extlibs_paths, project_root, include_missing=True)
         inputs_recorder.attach(module_index, source_file, project_root, [stdlib_dir, *all_extlibs])
@@ -2039,7 +2354,14 @@ def compile_lam(
     # ``_collect_function_names`` below.
     source = apply_lammergeier_aliases(source)
 
-    parse_input = preprocess_for_parse(source)
+    # Preprocess + parse through the build's front end (cached by content;
+    # see compiler/frontend.py).
+    if frontend is None:
+        from compiler import frontend as _frontend_new
+        frontend = _frontend_new.FrontEnd(use_disk=use_cache, workers=1, driver=sys.modules[__name__])
+    from compiler import frontend as _frontend_mod
+    main_meta, tree = frontend.module(source_file, source, trailing_newline=False)
+    parse_input = main_meta.parse_input
     preprocessed = parse_input.source
     go_blocks = parse_input.go_blocks
     if parse_input.syntax_errors:
@@ -2050,12 +2372,26 @@ def compile_lam(
         print(f"[lamc] go! blocks found: {len(go_blocks)}", file=sys.stderr)
 
     # ── Parse ──
-    parser = create_parser()
-    try:
-        tree = parser.parse(preprocessed)
-    except UnexpectedInput as e:
-        print(render_syntax_error(e, source, source_path), file=sys.stderr)
-        sys.exit(1)
+    if tree is None:
+        try:
+            frontend.raise_parse_error(parse_input, trailing_newline=False)
+        except UnexpectedInput as e:
+            print(render_syntax_error(e, source, source_path), file=sys.stderr)
+            sys.exit(1)
+        # Parsed this time (cannot happen: the parse is deterministic).
+        tree = create_parser().parse(preprocessed)
+
+    # The direct imports start parsing in the workers while this process
+    # checks the compiled file.
+    _prefetch_items = []
+    for _mod in extract_imports(tree):
+        _found = module_index.resolve_module(source_file, _mod)
+        if _found is not None:
+            try:
+                _prefetch_items.append((_found.resolve(), _found.read_bytes().decode("utf-8")))
+            except (OSError, UnicodeDecodeError):
+                pass
+    frontend.prefetch(_prefetch_items)
 
     if emit_ast:
         print(tree.pretty())
@@ -2105,104 +2441,10 @@ def compile_lam(
     _pre_transpiler._collect_class_fields(tree)
 
 
-    def _extract_import_sites(node) -> list[tuple[str, Tree]]:
-        """Walk ``node`` and return every imported module with its AST node.
-
-        Used both for the user's main file and for transitive
-        resolution: a library that does ``from lamerrors import ...``
-        triggers a second pass on ``lamerrors`` itself.
-        """
-        out: list[tuple[str, Tree]] = []
-
-        def _walk(n):
-            if not isinstance(n, Tree):
-                return
-            if n.data == "import_from":
-                relative_prefix = ""
-                for child in n.children:
-                    if isinstance(child, Tree) and child.data == "dots":
-                        relative_prefix = "".join(str(token) for token in child.children)
-                        continue
-                    if isinstance(child, Tree) and child.data == "dotted_name":
-                        parts: list[str] = []
-                        for c in child.children:
-                            if isinstance(c, Tree):
-                                parts.append(str(c.children[0]))
-                            else:
-                                parts.append(str(c))
-                        out.append((relative_prefix + ".".join(parts), n))
-                        break
-                    # ``scoped_name`` — ``from @alice/lamwebp import ...``.
-                    # One child, a single SCOPED_NAME token.
-                    if isinstance(child, Tree) and child.data == "scoped_name":
-                        if child.children:
-                            out.append((str(child.children[0]), n))
-                        break
-            elif n.data == "import_name":
-                for child in n.children:
-                    if isinstance(child, Tree) and child.data == "dotted_as_names":
-                        for das in child.children:
-                            if isinstance(das, Tree) and das.data == "dotted_as_name":
-                                dn = das.children[0]
-                                if isinstance(dn, Tree) and dn.data == "scoped_name":
-                                    if dn.children:
-                                        out.append((str(dn.children[0]), n))
-                                    continue
-                                parts = []
-                                for c in dn.children:
-                                    if isinstance(c, Tree):
-                                        parts.append(str(c.children[0]))
-                                    else:
-                                        parts.append(str(c))
-                                out.append((".".join(parts), n))
-            for child in n.children:
-                if isinstance(child, Tree):
-                    _walk(child)
-
-        _walk(node)
-        return out
-
-    def _extract_imports(node) -> list[str]:
-        return [mod for mod, _ in _extract_import_sites(node)]
-
-    def _uses_native_json(node) -> bool:
-        if not isinstance(node, Tree):
-            return False
-        if node.data == "type_name":
-            return any(
-                str(token) == "json"
-                for token in node.scan_values(lambda value: isinstance(value, Token))
-            )
-        if node.data == "funccall" and node.children:
-            callee = node.children[0]
-            if isinstance(callee, Tree) and callee.data == "var":
-                return any(
-                    str(token) == "json"
-                    for token in callee.scan_values(lambda value: isinstance(value, Token))
-                )
-        if node.data == "class_pattern" and node.children:
-            # ``case json(j)`` asserts the LamJSON runtime type.
-            callee = node.children[0]
-            if isinstance(callee, Tree) and [str(c) for c in callee.children] == ["json"]:
-                return True
-        return any(_uses_native_json(child) for child in node.children if isinstance(child, Tree))
-
-    def _uses_native_markup(node) -> bool:
-        """html / xml types, markup literals or ``html(...)`` / ``xml(...)``."""
-        if not isinstance(node, Tree):
-            return False
-        if node.data == "type_name":
-            return any(
-                str(token) in {"html", "xml"}
-                for token in node.scan_values(lambda value: isinstance(value, Token))
-            )
-        if node.data == "funccall" and node.children:
-            callee = node.children[0]
-            if isinstance(callee, Tree) and callee.data == "var" and [
-                str(token) for token in callee.scan_values(lambda value: isinstance(value, Token))
-            ] in (["__markup__"], ["html"], ["xml"]):
-                return True
-        return any(_uses_native_markup(child) for child in node.children if isinstance(child, Tree))
+    _extract_import_sites = extract_import_sites
+    _extract_imports = extract_imports
+    _uses_native_json = uses_native_json
+    _uses_native_markup = uses_native_markup
 
     _direct_import_sites = _extract_import_sites(tree)
     _pre_transpiler._lam_imports.extend(mod for mod, _ in _direct_import_sites)
@@ -2240,20 +2482,7 @@ def compile_lam(
     # discards. The point of the auto-inject is to avoid forcing
     # users to write ``from lamstrings import Strings`` for the
     # syntactic sugar they expect to "just work".
-    _STRING_METHOD_DISPATCH_NAMES = (
-        "repeat", "contains", "hasPrefix", "hasSuffix",
-        "toUpper", "toLower", "trim", "length", "trimLeft", "trimRight",
-        "replace", "split", "join", "count", "index", "lastIndex",
-        "title", "equalFold", "fields", "capitalize", "isAlpha",
-        "isDigit", "isAlnum", "isSpace", "reverse", "center",
-        "zfill", "padLeft", "padRight", "splitLines", "splitN",
-        "replaceFirst", "startsWith", "endsWith", "containsAny",
-        "isEmpty", "isBlank", "indent", "dedent", "format",
-        "camelCase", "pascalCase", "snakeCase", "kebabCase",
-    )
-    _lam_string_method_re = _re.compile(
-        r"\.(?:" + "|".join(_STRING_METHOD_DISPATCH_NAMES) + r")\s*\("
-    )
+    _lam_string_method_re = STRING_METHOD_RE
     if (
         "lamstrings" not in _pre_transpiler._lam_imports
         and _lam_string_method_re.search(preprocessed)
@@ -2332,12 +2561,11 @@ def compile_lam(
                         out.append((requested, local, item))
         return out
 
-    def _parse_lam_module(mod_file: Path):
+    def _index_lam_module(mod_file: Path) -> None:
+        # The export table checked below comes from the module's facts
+        # (the module is parsed once, by the import walk).
         try:
-            sub_source = mod_file.read_bytes().decode("utf-8")
-            module_index.update_file(mod_file, sub_source)
-            sub_pre = preprocess_for_parse(sub_source).source
-            return create_parser().parse(sub_pre + "\n")
+            module_index.update_file(mod_file, mod_file.read_bytes().decode("utf-8"))
         except Exception:
             return None
 
@@ -2427,7 +2655,7 @@ def compile_lam(
             direct_module_files[mod_name] = mod_file
             _warn_if_lamc_incompatible(mod_name, mod_file)
         if _from_import_symbols(import_node):
-            _parse_lam_module(mod_file)
+            _index_lam_module(mod_file)
 
     for mod_name, import_node in _direct_import_sites:
         symbols = _from_import_symbols(import_node)
@@ -2549,21 +2777,38 @@ def compile_lam(
         # diagnostics).
         try:
             sub_source = mod_file.read_bytes().decode("utf-8")
-            module_facts = module_index.update_file(mod_file, sub_source)
-            lib_pre_private_classes.update(
-                export.name
-                for export in module_facts.exports.values()
-                if export.kind == "class" and export.detail.lstrip().startswith("private ")
-            )
-            sub_parse_input = preprocess_for_parse(sub_source)
-            sub_pre = sub_parse_input.source
-            sub_parser = create_parser()
-            sub_tree = sub_parser.parse(sub_pre + "\n")
         except Exception:
             continue
+        try:
+            # The tree is loaded when a pass needs it (most do not, for a
+            # module whose results are cached).
+            sub_meta = frontend.meta(mod_file, sub_source)
+            sub_tree = _frontend_mod.LazyTree(frontend, mod_file, sub_source) if sub_meta.parsed else None
+        except Exception:
+            # Preprocessing failed: the module is still indexed.
+            sub_meta, sub_tree = None, None
+        if sub_meta is not None:
+            module_facts = sub_meta.facts
+            module_index.set_file(mod_file, sub_source, module_facts)
+        else:
+            try:
+                module_facts = module_index.update_file(mod_file, sub_source)
+            except Exception:
+                continue
+        lib_pre_private_classes.update(
+            export.name
+            for export in module_facts.exports.values()
+            if export.kind == "class" and export.detail.lstrip().startswith("private ")
+        )
+        if sub_tree is None or sub_meta is None or sub_meta.scan is None:
+            continue
+        sub_parse_input = sub_meta.parse_input
+        sub_pre = sub_parse_input.source
+        sub_scan = sub_meta.scan
         name_check_modules.append((mod_file, sub_source, sub_parse_input.go_blocks, sub_tree))
         module_import_files[mod_file] = []
-        for imp in _extract_imports(sub_tree):
+        _prefetch_items = []
+        for imp in sub_scan.imports:
             # Relative names are meaningful only together with ``mod_file``;
             # two packages may both have a ``.impl`` without referring to the
             # same source. Physical-path de-duplication happens at the top of
@@ -2571,17 +2816,24 @@ def compile_lam(
             worklist.append((imp, mod_file))
             resolved_import = _resolve_lib_path(imp, mod_file)
             if resolved_import is not None:
-                module_import_files[mod_file].append(resolved_import.resolve())
+                resolved_import = resolved_import.resolve()
+                module_import_files[mod_file].append(resolved_import)
+                if resolved_import not in seen_module_files:
+                    try:
+                        _prefetch_items.append((resolved_import, resolved_import.read_bytes().decode("utf-8")))
+                    except (OSError, UnicodeDecodeError):
+                        pass
+        frontend.prefetch(_prefetch_items)
         if (
             mod_name != "lamjson"
-            and _uses_native_json(sub_tree)
+            and sub_scan.uses_json
             and "lamjson" not in seen
             and all(mod != "lamjson" for mod, _ in worklist)
         ):
             worklist.append(("lamjson", mod_file))
         if (
             mod_name != "lammarkup"
-            and _uses_native_markup(sub_tree)
+            and sub_scan.uses_markup
             and "lammarkup" not in seen
             and all(mod != "lammarkup" for mod, _ in worklist)
         ):
@@ -2596,7 +2848,7 @@ def compile_lam(
             mod_name != "lamstrings"
             and "lamstrings" not in seen
             and all(mod != "lamstrings" for mod, _ in worklist)
-            and _lam_string_method_re.search(sub_pre)
+            and sub_scan.uses_string_methods
         ):
             worklist.append(("lamstrings", mod_file))
         # Record the module for namespacing; its metadata is harvested after
@@ -2605,15 +2857,21 @@ def compile_lam(
             path=mod_file,
             name=canonical_name,
             tree=sub_tree,
-            symbols=_namespacing.top_level_symbols(sub_tree),
-            bindings=_namespacing.import_bindings(sub_tree),
+            symbols=sub_scan.symbols,
+            bindings=sub_scan.bindings,
+            locally_bound=sub_scan.locally_bound,
+            member_accesses=sub_scan.member_accesses,
         )
+
+    # Every module is parsed: no more front-end work for the workers.
+    frontend.close()
 
     if not no_semantic_check:
         # Before namespacing rewrites the module trees.
         _check_imported_modules(
             name_check_modules, module_index, program_check_cache,
             import_graph=module_import_files, use_cache=use_cache,
+            workers=worker_count, frontend=frontend, inputs_recorder=inputs_recorder,
         )
 
     main_module_path = source_file.resolve()
@@ -2639,7 +2897,7 @@ def compile_lam(
         if path not in _ns_value_types:
             info = ns_modules.get(path)
             _ns_value_types[path] = (
-                _namespacing.top_level_value_go_types(info.tree, _pre_transpiler) if info is not None else {}
+                _namespacing.top_level_value_go_types(info.module_tree(), _pre_transpiler) if info is not None else {}
             )
         return _ns_value_types[path].get(name, "")
 
@@ -2654,10 +2912,16 @@ def compile_lam(
     # Harvest each library's class names and static members so cross-library
     # static-member access can be lowered correctly. Runs on the namespaced
     # trees, so renamed classes are recorded under their unique names.
-    harvest_modules: list[tuple[Path, object]] = []
+    # The harvest of a module is cached (compiler/harvest.py): a module
+    # whose results are cached is not loaded, nor rewritten.
+    from compiler import harvest as _harvest
+    harvest_cache = _harvest.HarvestCache(use_cache, stdlib_path, go_module)
     harvest_plans: dict[Path, object] = {}
+    harvest_texts: dict[Path, str | None] = {}
+    harvest_trees: dict[Path, object] = {}
+    harvest_order: list[Path] = []
     for mod_file, ns_info in list(ns_modules.items()):
-        sub_tree = ns_info.tree
+        harvest_plans[mod_file] = ns_plans.get(mod_file)
         if mod_file == main_module_path:
             if not entry_imported_back:
                 continue
@@ -2666,15 +2930,32 @@ def compile_lam(
             # library's. Harvested from a copy (the namespace rewrite below
             # edits the tree; the main transpile gets its own plan later).
             import copy as _copy
-            sub_tree = _copy.deepcopy(sub_tree)
-        harvest_plan = ns_plans.get(mod_file)
-        harvest_plans[mod_file] = harvest_plan
-        if harvest_plan is not None:
-            _namespacing.rewrite_tree(
-                sub_tree, harvest_plan.rewrites, harvest_plan.module_access,
-                harvest_plan.declaration_renames,
-            )
-        harvest_modules.append((mod_file, sub_tree))
+            sub_tree = _copy.deepcopy(ns_info.module_tree())
+            harvest_plan = harvest_plans[mod_file]
+            if harvest_plan is not None:
+                _namespacing.rewrite_tree(
+                    sub_tree, harvest_plan.rewrites, harvest_plan.module_access,
+                    harvest_plan.declaration_renames,
+                )
+            harvest_trees[mod_file] = sub_tree
+            harvest_texts[mod_file] = None  # never cached
+        else:
+            harvest_texts[mod_file] = module_index.source_by_path.get(mod_file)
+        harvest_order.append(mod_file)
+
+    def _harvest_tree(mod_file: Path):
+        """The module's namespaced tree (rewritten on first use)."""
+        if mod_file not in harvest_trees:
+            sub_tree = ns_modules[mod_file].module_tree()
+            harvest_plan = harvest_plans.get(mod_file)
+            if harvest_plan is not None:
+                _namespacing.rewrite_tree(
+                    sub_tree, harvest_plan.rewrites, harvest_plan.module_access,
+                    harvest_plan.declaration_renames,
+                )
+            harvest_trees[mod_file] = sub_tree
+        return harvest_trees[mod_file]
+
     # Every module's interfaces are known before any signature is collected:
     # ``func requestDb() -> Sql`` with ``Sql`` an interface of another module
     # lowers to ``Sql`` (not the class pointer ``*Sql``), exactly as the
@@ -2686,35 +2967,64 @@ def compile_lam(
     # agree on one variant and ``load`` is not mangled as an overload.
     program_interfaces: set[str] = set()
     program_generic_classes: dict[str, str] = {}
-    for _mod_file, sub_tree in harvest_modules:
+    for mod_file in harvest_order:
+        text = harvest_texts[mod_file]
+        types_key = harvest_cache.key("types", text, harvest_plans.get(mod_file)) if text is not None else None
+        declared = harvest_cache.load(types_key) if types_key is not None else None
+        if declared is None:
+            sub_tree = _harvest_tree(mod_file)
+            try:
+                type_collector = GoTranspiler(
+                    go_blocks=[], stdlib_path=stdlib_path,
+                    go_module_name=go_module,
+                )
+                type_collector._collect_declared_type_names(sub_tree)
+                declared = (type_collector._interfaces, type_collector._generic_classes)
+            except Exception:
+                continue
+            if types_key is not None:
+                harvest_cache.save(types_key, declared)
         try:
-            type_collector = GoTranspiler(
-                go_blocks=[], stdlib_path=stdlib_path,
-                go_module_name=go_module,
-            )
-            type_collector._collect_declared_type_names(sub_tree)
-            program_interfaces.update(type_collector._interfaces)
-            for cls, clause in type_collector._generic_classes.items():
+            declared_interfaces, declared_generic = declared
+            program_interfaces.update(declared_interfaces)
+            for cls, clause in declared_generic.items():
                 if clause:
                     program_generic_classes.setdefault(cls, clause)
         except Exception:
             pass
-    for mod_file, sub_tree in harvest_modules:
+    program_types_digest = _harvest.program_types_digest(program_interfaces, program_generic_classes)
+    for mod_file in harvest_order:
+        text = harvest_texts[mod_file]
+        meta_key = (
+            harvest_cache.key("meta", text, harvest_plans.get(mod_file), program_types_digest)
+            if text is not None else None
+        )
+        sub_collector = harvest_cache.load(meta_key) if meta_key is not None else None
+        if sub_collector is None:
+            sub_tree = _harvest_tree(mod_file)
+            try:
+                collector = GoTranspiler(
+                    go_blocks=[], stdlib_path=stdlib_path,
+                    go_module_name=go_module,
+                )
+                collector._interfaces.update(program_interfaces)
+                for cls, clause in program_generic_classes.items():
+                    collector._generic_classes.setdefault(cls, clause)
+                collector._collect_declared_type_names(sub_tree)
+                collector._collect_function_names(sub_tree)
+                collector._collect_class_fields(sub_tree)
+                # Defaults are lowered at call sites in other modules: they
+                # name this module's (possibly renamed) values by Go name.
+                _namespacing.qualify_default_values(collector._func_defaults, harvest_plans.get(mod_file))
+            except Exception:
+                # Pre-scan is best-effort; downstream transpile will
+                # surface real errors with full positional diagnostics.
+                continue
+            sub_collector = _harvest.snapshot(collector)
+            if meta_key is not None:
+                harvest_cache.save(meta_key, sub_collector)
         try:
-            sub_collector = GoTranspiler(
-                go_blocks=[], stdlib_path=stdlib_path,
-                go_module_name=go_module,
-            )
-            sub_collector._interfaces.update(program_interfaces)
-            for cls, clause in program_generic_classes.items():
-                sub_collector._generic_classes.setdefault(cls, clause)
-            sub_collector._collect_declared_type_names(sub_tree)
-            sub_collector._collect_function_names(sub_tree)
-            sub_collector._collect_class_fields(sub_tree)
-            # Defaults are lowered at call sites in other modules: they
-            # name this module's (possibly renamed) values by Go name.
-            _namespacing.qualify_default_values(sub_collector._func_defaults, harvest_plans.get(mod_file))
-            ns_meta_sources[mod_file] = sub_collector
+            ns_meta_sources[mod_file] = _lib_transpile_mod.meta_source_view(sub_collector)
             lib_pre_class_names.update(sub_collector._class_names)
             lib_pre_interfaces.update(sub_collector._interfaces)
             for cls, meths in sub_collector._static_methods.items():
@@ -2775,8 +3085,6 @@ def compile_lam(
                     lib_pre_generic_classes.setdefault(cls, clause)
             lib_module_classes[mod_file] = set(sub_collector.class_bases)
         except Exception:
-            # Pre-scan is best-effort; downstream transpile will
-            # surface real errors with full positional diagnostics.
             pass
 
     # The whole program's class hierarchy: library classes plus the main
@@ -2833,49 +3141,9 @@ def compile_lam(
         lib_pre_func_param_go_types, set(),
     )
 
-    def _inject_program_hierarchy(target_transpiler) -> None:
-        target_transpiler._program_class_bases = program_class_bases
-        target_transpiler._program_method_sigkeys = program_method_sigkeys
-        target_transpiler._program_own_init = program_own_init
-        target_transpiler._program_field_default_classes = lib_pre_field_default_classes
-        target_transpiler._program_class_type_params = program_class_type_params
-
-    def _hierarchy_cache_key(mod_file: Path) -> bytes:
-        """The parts of the hierarchy a library's output depends on beyond
-        its own source: which of its classes other modules (the main file
-        included) subclass, and with which methods."""
-        own = lib_module_classes.get(mod_file, set())
-        if not own:
-            return b""
-        parents: dict[str, list[str]] = program_class_bases
-        entries = []
-        for cls in sorted(parents):
-            if cls in own:
-                continue
-            todo, seen = list(parents.get(cls, [])), set()
-            while todo:
-                base = todo.pop()
-                if base in seen:
-                    continue
-                seen.add(base)
-                todo.extend(parents.get(base, []))
-            if seen & own:
-                sig = ",".join(f"{m}={k}" for m, k in sorted(program_method_sigkeys.get(cls, {}).items(), key=lambda kv: kv[0]))
-                entries.append(f"{cls}<{','.join(parents.get(cls, []))}#{sig}#{int(cls in program_own_init)}")
-        return ("|hier:" + ";".join(entries)).encode("utf-8") if entries else b""
-
-    def _apply_namespace_plan(target_transpiler, plan, sources) -> None:
-        if plan is None or plan.is_empty():
-            return
-        target_transpiler._link_function_go_names.update(plan.function_go_names)
-        target_transpiler._link_function_aliases.update(plan.function_aliases)
-        target_transpiler._link_const_go_names.update(plan.const_go_names)
-        target_transpiler._namespace_rewrites.update(plan.rewrites)
-        target_transpiler._namespace_module_access.update(plan.module_access)
-        target_transpiler._namespace_declarations.update(plan.declaration_renames)
-        for value_name, value_type in plan.imported_value_types.items():
-            target_transpiler._var_go_types.setdefault(value_name, value_type)
-        _namespacing.apply_metadata_view(target_transpiler, plan, sources)
+    from compiler import lib_transpile as _lib_transpile
+    from compiler import lib_results as _lib_results
+    _apply_namespace_plan = _lib_transpile.apply_namespace_plan
 
     interface_type_names = {
         f"*{name}": name
@@ -3006,311 +3274,163 @@ def compile_lam(
         + [f"field-defaults:{cls}" for cls in sorted(lib_pre_field_default_classes)]
     )).encode("utf-8")
 
-    def _transpile_lib(mod_name, mod_file):
-        """Transpile a single library module. Thread-safe (own parser+transpiler).
+    # ── Transpile the libraries ──
+    # Every library is transpiled with the program metadata above injected
+    # (``LibStage``); a cache hit skips the transpile. Misses run in the
+    # build's worker processes (``--workers``) or here; results are merged
+    # in module order either way. A result is a delta against the injected
+    # base tables (compiler/lib_results.py).
+    lib_stage = _lib_transpile.LibStage(
+        stdlib_path=stdlib_path,
+        go_module=go_module,
+        use_cache=use_cache,
+        pre=_SimpleNamespace(
+            class_names=lib_pre_class_names,
+            interfaces=lib_pre_interfaces,
+            static_methods=lib_pre_static_methods,
+            static_vars=lib_pre_static_vars,
+            result_payload_go_types=lib_pre_result_payload_go_types,
+            func_defaults=lib_pre_func_defaults,
+            func_param_counts=lib_pre_func_param_counts,
+            func_param_names=lib_pre_func_param_names,
+            func_param_go_types=lib_pre_func_param_go_types,
+            func_return_go_types=lib_pre_func_return_go_types,
+            method_return_types=lib_pre_method_return_types,
+            func_generic_params=lib_pre_func_generic_params,
+            func_generic_order=lib_pre_func_generic_order,
+            func_param_lam_types=lib_pre_func_param_lam_types,
+            func_return_lam_types=lib_pre_func_return_lam_types,
+            method_generic_order=lib_pre_method_generic_order,
+            generic_instance_methods=lib_pre_generic_instance_methods,
+            generic_method_returns=lib_pre_generic_method_returns,
+            generator_functions=lib_pre_generator_functions,
+            generic_classes=lib_pre_generic_classes,
+            overload_variants=lib_pre_overload_variants,
+            user_functions=lib_pre_user_functions,
+            private_functions=lib_pre_private_functions,
+            instance_methods=lib_pre_instance_methods,
+            field_names=lib_pre_field_names,
+            field_types=lib_pre_field_types,
+            field_lam_types=lib_pre_field_lam_types,
+        ),
+        ns_plans=ns_plans,
+        ns_meta_sources=ns_meta_sources,
+        program_class_bases=program_class_bases,
+        program_method_sigkeys=program_method_sigkeys,
+        program_own_init=program_own_init,
+        program_field_default_classes=lib_pre_field_default_classes,
+        program_class_type_params=program_class_type_params,
+        lib_module_classes=lib_module_classes,
+        cross_lib_extra=_cross_lib_extra,
+    ).finish()
 
-        Consults the on-disk cache first — a hit skips parsing and the
-        whole visitor pipeline and returns the previously-emitted Go
-        source plus the re-injectable metadata sets. On a miss, runs
-        the full pipeline and writes the result back to the cache.
-        """
-        lib_source_bytes = mod_file.read_bytes()
-        lib_source = lib_source_bytes.decode("utf-8")
-        ns_plan = ns_plans.get(mod_file.resolve())
-        lib_cache_extra = _cross_lib_extra
-        if ns_plan is not None and not ns_plan.is_empty():
-            lib_cache_extra = _cross_lib_extra + b"|ns:" + ns_plan.cache_key().encode("utf-8")
-        lib_init_name = _module_init_name(mod_name)
-        lib_cache_extra += b"|init:" + lib_init_name.encode("utf-8")
-        lib_cache_extra += _hierarchy_cache_key(mod_file.resolve())
+    def _inject_program_hierarchy(target_transpiler) -> None:
+        _lib_transpile.inject_program_hierarchy(lib_stage, target_transpiler)
 
-        # ── Cache lookup ─────────────────────────────────────
-        cache_hit = None
-        if use_cache:
-            entry = _lamcache.load(lib_source_bytes, extra=lib_cache_extra)
-            if entry is not None:
-                cache_hit = _lamcache.deserialise_transpile_result(entry)
-        if cache_hit is not None:
-            (go_src, cls, stat, svars, defs, counts, var, ufns, pfns,
-             mret, rpayloads, overloads, pnames, ptypes) = cache_hit
-            # The cache is keyed on content, so the entry may come from an
-            # identical copy of this library at another path. Re-point its
-            # ``//line`` directives at the file actually being compiled.
-            go_src = _retarget_line_directives(go_src, str(mod_file.resolve()))
-            return (mod_name, go_src, cls, stat, svars, defs, counts, var,
-                    ufns, pfns, mret, rpayloads, overloads, pnames, ptypes)
+    lib_results_by_name: dict[str, tuple] = {}
+    lib_misses: list[tuple[str, Path]] = []
+    for name, path in lib_mod_files.items():
+        hit = _lib_transpile.lookup_cached(lib_stage, name, path.resolve())
+        if hit is not None:
+            lib_results_by_name[name] = (hit, None)
+        else:
+            lib_misses.append((name, path.resolve()))
 
-        # Apply the same parse preprocessing pipeline used for main
-        # files, including LAMMERGEIER.* aliases and go! extraction.
-        lib_parse_input = preprocess_for_parse(lib_source)
-        lib_source = apply_lammergeier_aliases(lib_source)
-        lib_preprocessed = lib_parse_input.source
-        lib_go_blocks = lib_parse_input.go_blocks
-        if ns_plan is not None and ns_plan.go_renames:
-            lib_go_blocks = {
-                key: _namespacing.rename_go_identifiers(code, ns_plan.go_renames)
-                for key, code in lib_go_blocks.items()
-            }
-        lib_parser = create_parser()
+    def _transpile_lib_here(task):
+        name, path, _text, _blobs = task
         try:
-            lib_tree = lib_parser.parse(lib_preprocessed + "\n")
-        except UnexpectedInput as e:
-            rendered = render_syntax_error(e, lib_source, mod_file)
-            raise SyntaxDiagnosticError(rendered) from None
-        lib_transpiler = GoTranspiler(
-            go_blocks=lib_go_blocks,
-            stdlib_path=stdlib_path,
-            go_module_name=go_module,
-            source_file=str(mod_file.resolve()),
-        )
-        # Inject the union of class names + static members seen across
-        # *all* libraries so a custom library that imports another
-        # library (e.g. user code importing ``Strings`` from
-        # ``lamstrings``) can lower static-method calls correctly even
-        # though the called class is defined in a different file.
-        lib_transpiler._class_names.update(lib_pre_class_names)
-        lib_transpiler._interfaces.update(lib_pre_interfaces)
-        for cls, meths in lib_pre_static_methods.items():
-            lib_transpiler._static_methods.setdefault(cls, set()).update(meths)
-        for cls, fields in lib_pre_static_vars.items():
-            lib_transpiler._static_vars.setdefault(cls, {}).update(fields)
-        lib_transpiler._result_payload_go_types.update(lib_pre_result_payload_go_types)
-        for key, defaults in lib_pre_func_defaults.items():
-            lib_transpiler._func_defaults.setdefault(key, defaults)
-        for key, count in lib_pre_func_param_counts.items():
-            lib_transpiler._func_param_counts.setdefault(key, count)
-        for key, names in lib_pre_func_param_names.items():
-            lib_transpiler._func_param_names.setdefault(key, names)
-        for key, types in lib_pre_func_param_go_types.items():
-            lib_transpiler._func_param_go_types.setdefault(key, types)
-        for key, type_ in lib_pre_func_return_go_types.items():
-            lib_transpiler._func_return_go_types.setdefault(key, type_)
-        for key, ret in lib_pre_method_return_types.items():
-            lib_transpiler._method_return_types.setdefault(key, ret)
-        for key, names in lib_pre_func_generic_params.items():
-            lib_transpiler._func_generic_params.setdefault(key, set()).update(names)
-        for key, order in lib_pre_func_generic_order.items():
-            lib_transpiler._func_generic_order.setdefault(key, list(order))
-        for key, types in lib_pre_func_param_lam_types.items():
-            lib_transpiler._func_param_lam_types.setdefault(key, types)
-        for key, type_ in lib_pre_func_return_lam_types.items():
-            lib_transpiler._func_return_lam_types.setdefault(key, type_)
-        for key, order in lib_pre_method_generic_order.items():
-            lib_transpiler._method_generic_order.setdefault(key, list(order))
-        for key, names in lib_pre_generic_instance_methods.items():
-            lib_transpiler._generic_instance_methods.setdefault(key, list(names))
-        for key, ret in lib_pre_generic_method_returns.items():
-            lib_transpiler._generic_method_returns.setdefault(key, ret)
-        lib_transpiler._generator_functions.update(lib_pre_generator_functions)
-        for cls, clause in lib_pre_generic_classes.items():
-            lib_transpiler._generic_classes.setdefault(cls, clause)
-        for key, variants in lib_pre_overload_variants.items():
-            lib_transpiler._overload_variants.setdefault(key, []).extend(variants)
-            lib_transpiler._overloaded_functions.setdefault(key, set()).update(
-                int(variant.get("arity", 0)) for variant in variants
-            )
-        lib_transpiler._external_user_functions.update(lib_pre_user_functions)
-        lib_transpiler._external_private_functions.update(lib_pre_private_functions)
-        for cls, methods in lib_pre_instance_methods.items():
-            lib_transpiler._external_instance_methods.setdefault(cls, set()).update(methods)
-        for cls, fields in lib_pre_field_names.items():
-            lib_transpiler._external_field_names.setdefault(cls, set()).update(fields)
-        for cls, fields in lib_pre_field_types.items():
-            lib_transpiler._external_field_types.setdefault(cls, {}).update(fields)
-        lib_transpiler._external_field_lam_types.update(lib_pre_field_lam_types)
-        _apply_namespace_plan(lib_transpiler, ns_plan, ns_meta_sources)
-        _inject_program_hierarchy(lib_transpiler)
-        lib_transpiler._module_init_name = lib_init_name
-        # The module's ``func main()`` is not emitted, nor the imports only
-        # it uses (``print`` / ``fmt``, ``go!`` blocks).
-        lib_transpiler._omit_main = True
-        lib_go = lib_transpiler.transpile(lib_tree)
-        # Remove any func main() block left in the library (the transpiler
-        # omits it) — but also drop any `//line` directive immediately
-        # preceding it so the stripped region doesn't leave a dangling
-        # pragma pointing at the removed body.
-        lines = lib_go.split("\n")
-        filtered = []
-        skip_main = False
-        for line in lines:
-            if line.strip().startswith("func main()"):
-                # Drop any //line pragma that was sitting right above
-                # ``func main()``; it's now attached to nothing useful.
-                if filtered and filtered[-1].lstrip().startswith("//line "):
-                    filtered.pop()
-                skip_main = True
-                continue
-            if skip_main:
-                # ``main``'s body ends at the first column-0 ``}``; keep
-                # what follows (the module's top-level statement function).
-                if line == "}":
-                    skip_main = False
-                continue
-            filtered.append(line)
-        go_src = "\n".join(filtered)
+            return _lib_transpile.transpile_library(lib_stage, frontend, name, Path(path)), None, 0.0
+        except SyntaxDiagnosticError as exc:
+            return None, ("syntax", str(exc)), 0.0
+        except TranspileDiagnosticError as exc:
+            return None, ("transpile", (list(exc.errors), exc.source_file)), 0.0
 
-        # ── Cache store ──────────────────────────────────────
-        # ``go! { ... }`` blocks were initially assumed to be
-        # uncacheable because their placeholder ids (``__go_block__``
-        # identifiers) are build-local. In practice the transpiler
-        # inlines each block's raw Go source at emit time, so by the
-        # point we get here ``go_src`` is already self-contained and
-        # doesn't reference the placeholder table.
-        #
-        # Default-parameter values are stored as Lark ``Tree`` nodes
-        # internally — lower each one to its Go source before handing
-        # the dict to the cache so JSON can serialise it. The reload
-        # side unwraps strings directly in ``_fill_default_args``.
-        if use_cache:
-            lowered_defaults: dict = {}
-            for fn, pairs in lib_transpiler._func_defaults.items():
-                lowered_pairs = []
-                for idx, node in pairs:
-                    if isinstance(node, str):
-                        lowered_pairs.append((idx, node))
-                    else:
-                        try:
-                            target_type = lib_transpiler._param_go_type_at(
-                                lib_transpiler._func_param_go_types.get(fn, []),
-                                idx,
-                            )
-                            lowered_pairs.append((
-                                idx,
-                                lib_transpiler._typed_value_to_go(node, target_type),
-                            ))
-                        except Exception:
-                            # If a default can't be lowered ahead of
-                            # call-site context (e.g. it references a
-                            # caller-scoped binding) skip caching the
-                            # entry rather than crashing the build.
-                            lowered_pairs = None
-                            break
-                if lowered_pairs is not None:
-                    lowered_defaults[fn] = lowered_pairs
-            _lamcache.save(
-                lib_source_bytes,
-                _lamcache.serialise_transpile_result(
-                    go_src,
-                    lib_transpiler._class_names,
-                    lib_transpiler._static_methods,
-                    lib_transpiler._static_vars,
-                    lowered_defaults,
-                    lib_transpiler._func_param_counts,
-                    lib_transpiler._variadic_functions,
-                    lib_transpiler._user_functions,
-                    lib_transpiler._private_functions,
-                    lib_transpiler._method_return_types,
-                    lib_transpiler._result_payload_go_types,
-                    lib_transpiler._overload_variants,
-                    lib_transpiler._func_param_names,
-                    lib_transpiler._func_param_go_types,
-                ),
-                extra=lib_cache_extra,
-            )
+    lib_tasks = []
+    for name, path in lib_misses:
+        text = path.read_bytes().decode("utf-8")
+        lib_tasks.append((name, str(path), text, frontend.blobs(path, text)))
+    from compiler import workers as _workers
+    lib_pool = _workers.make_pool(
+        worker_count, len(lib_tasks),
+        initializer=_lib_transpile._init_worker, initargs=(lib_stage,),
+        per_worker=2,
+    )
+    lib_task_results = _workers.run_ordered(lib_pool, _lib_transpile._worker_task, lib_tasks, local=_transpile_lib_here)
+    pending_names = [name for name, _ in lib_misses]
 
-        # The module's own defaults are lowered at call sites in other
-        # modules: name its (possibly renamed) values by Go name, as the
-        # cached form (lowered above, in this module) does.
-        own_defaults = {
-            key: pairs for key, pairs in lib_transpiler._func_defaults.items()
-            if str(key).split("#", 1)[0] in lib_transpiler._module_function_names
-            or str(key).split("#", 1)[0].split(".", 1)[0] in lib_transpiler.class_bases
-        }
-        _namespacing.qualify_default_values(own_defaults, ns_plan)
-        lib_transpiler._func_defaults.update(own_defaults)
-
-        return (
-            mod_name,
-            go_src,
-            lib_transpiler._class_names,
-            lib_transpiler._static_methods,
-            lib_transpiler._static_vars,
-            lib_transpiler._func_defaults,
-            lib_transpiler._func_param_counts,
-            lib_transpiler._variadic_functions,
-            lib_transpiler._user_functions,
-            lib_transpiler._private_functions,
-            lib_transpiler._method_return_types,
-            lib_transpiler._result_payload_go_types,
-            lib_transpiler._overload_variants,
-            lib_transpiler._func_param_names,
-            lib_transpiler._func_param_go_types,
-        )
-
-    # Transpile libraries in parallel
-    lib_func_defaults: dict = {}
-    lib_func_param_counts: dict = {}
-    lib_func_param_names: dict = {}
-    lib_func_param_go_types: dict = {}
-    lib_variadic_functions: set = set()
-    lib_user_functions: set = set()
-    lib_private_functions: set = set()
-    lib_method_return_types: dict = {}
-    lib_result_payload_go_types: dict = {}
-    lib_overload_variants: dict[str, list[dict]] = {}
+    lib_merger = _lib_results.Merger(lib_stage.base)
     ns_lib_results: dict[Path, object] = {}
-    from concurrent.futures import ThreadPoolExecutor
-    if lib_mod_files:
-        with ThreadPoolExecutor(max_workers=min(8, len(lib_mod_files))) as pool:
-            futures = {pool.submit(_transpile_lib, name, path): name
-                       for name, path in lib_mod_files.items()}
-            lib_lam_errors: list[str] = []
-            for fut in futures:
-                try:
-                    (mod_name, go_src, cls_names, static_meths, static_vars,
-                     fn_defaults, fn_param_counts, variadic_set,
-                     user_fns, priv_fns, method_returns, result_payloads,
-                     overload_variants, fn_param_names, fn_param_go_types) = fut.result()
-                except SyntaxDiagnosticError as e:
-                    print(str(e), file=sys.stderr)
+    lib_lam_errors: list[str] = []
+    try:
+        for name in lib_mod_files:
+            if name in lib_results_by_name:
+                result, error = lib_results_by_name[name]
+            else:
+                # Misses complete in module order.
+                assert pending_names and pending_names[0] == name
+                pending_names.pop(0)
+                _clock = _workers.StageClock("workers") if lib_pool is not None else None
+                _task, exc, value = next(lib_task_results)
+                if _clock is not None:
+                    _clock.stop()
+                if exc is not None:
+                    raise exc
+                result, error, cpu_seconds = value
+                if lib_pool is not None:
+                    from compiler import timings as _timings
+                    _timings.record_worker("transpile", cpu_seconds)
+            if error is not None:
+                kind, payload = error
+                if kind == "syntax":
+                    print(payload, file=sys.stderr)
                     sys.exit(1)
-                except TranspileDiagnosticError as e:
-                    # Lam errors in an imported module (which the semantic
-                    # checker does not run on): report every module's.
-                    lib_lam_errors.append(_render_transpile_diagnostics(
-                        e, str(lib_mod_files[futures[fut]]),
-                    ))
-                    continue
-                lib_sources[mod_name] = go_src
-                if mod_name in lib_mod_files:
-                    _lib_path = lib_mod_files[mod_name].resolve()
-                    _collector = ns_meta_sources.get(_lib_path)
-                    ns_lib_results[_lib_path] = _SimpleNamespace(
-                        _result_payload_go_types=result_payloads,
-                        _func_defaults=fn_defaults,
-                        _func_param_counts=fn_param_counts,
-                        _func_param_names=fn_param_names,
-                        _func_param_go_types=fn_param_go_types,
-                        _func_generic_params=getattr(_collector, "_func_generic_params", {}),
-                        _func_param_lam_types=getattr(_collector, "_func_param_lam_types", {}),
-                        _func_return_lam_types=getattr(_collector, "_func_return_lam_types", {}),
-                        _overload_variants=overload_variants,
-                        _user_functions=user_fns,
-                        _private_functions=priv_fns,
-                        _variadic_functions=variadic_set,
-                        _generator_functions=getattr(_collector, "_generator_functions", set()),
-                    )
-                lib_class_names.update(cls_names)
-                for cls_name, methods in static_meths.items():
-                    if cls_name not in lib_static_methods:
-                        lib_static_methods[cls_name] = set()
-                    lib_static_methods[cls_name].update(methods)
-                for cls_name, fields in static_vars.items():
-                    lib_static_vars.setdefault(cls_name, {}).update(fields)
-                lib_func_defaults.update(fn_defaults)
-                lib_func_param_counts.update(fn_param_counts)
-                lib_func_param_names.update(fn_param_names)
-                lib_func_param_go_types.update(fn_param_go_types)
-                lib_variadic_functions.update(variadic_set)
-                lib_user_functions.update(user_fns)
-                lib_private_functions.update(priv_fns)
-                lib_method_return_types.update(method_returns)
-                lib_result_payload_go_types.update(result_payloads)
-                for name, variants in overload_variants.items():
-                    lib_overload_variants.setdefault(name, []).extend(variants)
-            if lib_lam_errors:
-                print("\n".join(lib_lam_errors), file=sys.stderr)
-                sys.exit(1)
+                # Lam errors in an imported module: report every module's.
+                errors, err_source = payload
+                lib_lam_errors.append(_render_transpile_diagnostics(
+                    TranspileDiagnosticError(errors, err_source), str(lib_mod_files[name]),
+                ))
+                continue
+            mod_name, go_src, delta = result
+            lib_sources[mod_name] = go_src
+            lib_merger.add(delta)
+            _lib_path = lib_mod_files[mod_name].resolve()
+            _collector = ns_meta_sources.get(_lib_path)
+            ns_lib_results[_lib_path] = _lib_results.LibView(
+                delta, lib_stage.base,
+                fields=(
+                    "result_payload_go_types", "func_defaults", "func_param_counts",
+                    "func_param_names", "func_param_go_types", "overload_variants",
+                    "user_functions", "private_functions", "variadic_functions",
+                ),
+                extra={
+                    "_func_generic_params": getattr(_collector, "_func_generic_params", {}),
+                    "_func_param_lam_types": getattr(_collector, "_func_param_lam_types", {}),
+                    "_func_return_lam_types": getattr(_collector, "_func_return_lam_types", {}),
+                    "_generator_functions": getattr(_collector, "_generator_functions", set()),
+                },
+            )
+    finally:
+        if lib_pool is not None:
+            lib_pool.shutdown(wait=True, cancel_futures=True)
+    if lib_lam_errors:
+        print("\n".join(lib_lam_errors), file=sys.stderr)
+        sys.exit(1)
+    _lib_tables = lib_merger.tables()
+    lib_class_names.update(_lib_tables["class_names"])
+    for cls_name, methods in _lib_tables["static_methods"].items():
+        lib_static_methods.setdefault(cls_name, set()).update(methods)
+    for cls_name, fields in _lib_tables["static_vars"].items():
+        lib_static_vars.setdefault(cls_name, {}).update(fields)
+    lib_func_defaults: dict = _lib_tables["func_defaults"]
+    lib_func_param_counts: dict = _lib_tables["func_param_counts"]
+    lib_func_param_names: dict = _lib_tables["func_param_names"]
+    lib_func_param_go_types: dict = _lib_tables["func_param_go_types"]
+    lib_variadic_functions: set = _lib_tables["variadic_functions"]
+    lib_user_functions: set = _lib_tables["user_functions"]
+    lib_private_functions: set = _lib_tables["private_functions"]
+    lib_method_return_types: dict = _lib_tables["method_return_types"]
+    lib_result_payload_go_types: dict = _lib_tables["result_payload_go_types"]
+    lib_overload_variants: dict[str, list[dict]] = _lib_tables["overload_variants"]
 
     # Now transpile main with lib class/static info injected
     _main_plan = ns_plans.get(main_module_path)
@@ -3475,68 +3595,75 @@ def compile_lam(
 
     output_abs = str(Path(output_path).resolve())
 
-    tmpdir = tempfile.mkdtemp(prefix="lammergeier_")
+    # A work directory of its own per program (Go caches compiled packages
+    # by directory too): see compiler/gobuild.py.
+    from compiler import gobuild as _gobuild
+    work = _gobuild.work_dir(source_file, go_module, use_cache)
+    tmpdir = str(work.path)
     try:
-        # Write Go source
+        # Go sources: the main file, the libraries (scoped package names
+        # flattened into filesystem-safe names, never Go's reserved
+        # ``*_test.go`` suffix, so Lam modules named ``test`` still build
+        # normally) and the stdlib's Go files when present.
         go_file = os.path.join(tmpdir, "main.go")
-        with open(go_file, "w") as f:
-            f.write(go_source)
-
-        # Write library Go sources. Flatten scoped package names into
-        # filesystem-safe files and avoid Go's reserved ``*_test.go``
-        # suffix so Lam modules named ``test`` still build normally.
+        go_files: dict[str, str] = {"main.go": go_source}
         for mod_name, lib_src in lib_sources.items():
-            lib_file = os.path.join(tmpdir, _library_go_filename(mod_name))
-            with open(lib_file, "w") as f:
-                f.write(lib_src)
+            go_files[_library_go_filename(mod_name)] = lib_src
+        if stdlib_path and os.path.isdir(stdlib_path):
+            for fname in os.listdir(stdlib_path):
+                if fname.endswith(".go"):
+                    go_files[fname] = Path(stdlib_path, fname).read_text(encoding="utf-8")
+        _gobuild.sync_files(work.path, go_files)
 
         if verbose:
             print(f"[lamc] Go source written to {go_file}", file=sys.stderr)
             print(go_source, file=sys.stderr)
 
-        # Copy stdlib if present
-        if stdlib_path and os.path.isdir(stdlib_path):
-            for fname in os.listdir(stdlib_path):
-                if fname.endswith(".go"):
-                    shutil.copy2(os.path.join(stdlib_path, fname),
-                                 os.path.join(tmpdir, fname))
-
-        # go mod init
-        subprocess.run(
-            ["go", "mod", "init", go_module],
-            cwd=tmpdir, capture_output=True, text=True,
-        )
-
-        # Inject Go-module pins from the project's lamlib.toml +
-        # lamlib.lock.toml. The lockfile wins when both are present
-        # (it's the resolved, post-conflict-detection view); the raw
-        # manifest is only consulted when no lockfile exists yet.
-        # Without this step, ``go mod tidy`` would simply pick the
-        # newest tag for each unknown import — silently undoing the
-        # version conflict resolution the install CLI just did.
+        # Go-module pins from the project's lamlib.toml + lamlib.lock.toml.
+        # The lockfile wins when both are present (it's the resolved,
+        # post-conflict-detection view); the raw manifest is only consulted
+        # when no lockfile exists yet. Without them, ``go mod tidy`` would
+        # simply pick the newest tag for each unknown import — silently
+        # undoing the version conflict resolution the install CLI just did.
         go_pins = _collect_go_pins(source_dir, stdlib_modules=seen)
-        if go_pins:
-            try:
-                _inject_go_requires(Path(tmpdir) / "go.mod", go_pins)
-            except OSError as e:
-                if verbose:
-                    print(f"[lamc] go.mod pin injection skipped: {e}",
-                          file=sys.stderr)
 
-        # go mod tidy (download external dependencies if needed)
-        tidy_result = subprocess.run(
-            ["go", "mod", "tidy"],
-            cwd=tmpdir, capture_output=True, text=True,
-        )
-        if tidy_result.returncode != 0:
-            print(f"error: Go module resolution failed for {source_path}", file=sys.stderr)
-            details = (tidy_result.stderr or tidy_result.stdout or "").strip()
-            if details:
-                for line in details.splitlines():
-                    print(f"  {line}", file=sys.stderr)
-            else:
-                print("  go mod tidy failed without diagnostic output.", file=sys.stderr)
-            sys.exit(1)
+        def _go_mod_setup() -> None:
+            _gobuild.reset_gomod(work.path)
+            # go mod init
+            subprocess.run(
+                ["go", "mod", "init", go_module],
+                cwd=tmpdir, capture_output=True, text=True,
+            )
+            if go_pins:
+                try:
+                    _inject_go_requires(Path(tmpdir) / "go.mod", go_pins)
+                except OSError as e:
+                    if verbose:
+                        print(f"[lamc] go.mod pin injection skipped: {e}",
+                              file=sys.stderr)
+            # go mod tidy (download external dependencies if needed)
+            tidy_result = subprocess.run(
+                ["go", "mod", "tidy"],
+                cwd=tmpdir, capture_output=True, text=True,
+            )
+            if tidy_result.returncode != 0:
+                print(f"error: Go module resolution failed for {source_path}", file=sys.stderr)
+                details = (tidy_result.stderr or tidy_result.stdout or "").strip()
+                if details:
+                    for line in details.splitlines():
+                        print(f"  {line}", file=sys.stderr)
+                else:
+                    print("  go mod tidy failed without diagnostic output.", file=sys.stderr)
+                sys.exit(1)
+
+        # ``go mod init`` + ``tidy`` again only when their inputs changed.
+        gomod_stamp = None
+        if not work.temporary:
+            gomod_stamp = _gobuild.gomod_stamp(go_module, _go_env_fingerprint(), go_pins, go_files)
+        gomod_reused = gomod_stamp is not None and _gobuild.gomod_is_current(work.path, gomod_stamp)
+        if not gomod_reused:
+            _go_mod_setup()
+            _gobuild.write_gomod_stamp(work.path, gomod_stamp)
 
         # Build command
         build_cmd = ["go", "build", "-buildvcs=false"]
@@ -3562,6 +3689,14 @@ def compile_lam(
         result = subprocess.run(
             build_cmd, cwd=tmpdir, capture_output=True, text=True,
         )
+        if result.returncode != 0 and gomod_reused and _gobuild.looks_like_module_error(result.stderr):
+            # The reused go.mod / go.sum is out of date after all: resolve
+            # the modules again and retry once.
+            _go_mod_setup()
+            _gobuild.write_gomod_stamp(work.path, gomod_stamp)
+            result = subprocess.run(
+                build_cmd, cwd=tmpdir, capture_output=True, text=True,
+            )
 
         if result.returncode != 0:
             print(f"error: Go build failed for {source_path}", file=sys.stderr)
@@ -3639,15 +3774,14 @@ def compile_lam(
             sys.exit(proc.returncode)
 
     finally:
-        if not keep_go:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+        work.release(keep=keep_go)
 
 
 # Set of known top-level subcommand verbs. Anything in this list
 # is routed to its dedicated handler; anything else is treated as
 # the legacy ``lamc <source.lam>`` invocation — so existing scripts,
 # docs, and tests keep working verbatim.
-_LAMC_SUBCOMMANDS = ("build", "dev", "fmt", "doctor", "migrate", "version", "lib")
+_LAMC_SUBCOMMANDS = ("build", "dev", "fmt", "doctor", "migrate", "version", "lib", "cache")
 
 
 def _build_build_parser() -> "argparse.ArgumentParser":
@@ -3717,6 +3851,25 @@ def _build_build_parser() -> "argparse.ArgumentParser":
                     help="Delete all cached library entries, then exit")
     ap.add_argument("--no-semantic-check", action="store_true",
                     help="Skip the pre-emission semantic checker")
+    def _workers_count(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"invalid worker count: {text!r}") from None
+        if value < 0:
+            raise argparse.ArgumentTypeError("the worker count must be 0 (default) or more")
+        return value
+
+    ap.add_argument(
+        "--workers", type=_workers_count, default=None, metavar="N",
+        help=(
+            "Worker processes for the per-module work (parsing, checking and "
+            "transpiling imported modules). Default: LAMC_WORKERS, else the "
+            "number of CPUs (at most 16); 0 means that default; 1 keeps "
+            "everything in the lamc process. The generated Go is the same "
+            "for every N."
+        ),
+    )
     ap.add_argument("--timings", action="store_true",
                     help="Print per-phase compile times as a JSON line (LAMC_TIMINGS ...) on stderr")
     # Used by ``lamc dev``: after a successful build, write the module
@@ -3783,9 +3936,80 @@ def _run_compile(args, stdlib) -> None:
         no_semantic_check=args.no_semantic_check,
         run_args=getattr(args, "run_args", None),
         inputs_recorder=recorder,
+        workers=getattr(args, "workers", None),
     )
     if recorder is not None:
         recorder.write(record_to)
+
+
+_CACHE_KINDS = (
+    ("library", "transpiled library modules"),
+    ("frontend", "parse trees"),
+    ("harvest", "module metadata"),
+    ("checks", "clean semantic checks"),
+    ("parsers", "Lark parser"),
+    ("gobuild", "Go work directories"),
+    ("temp", "temporary files"),
+)
+
+
+def _cmd_cache(argv: list) -> int:
+    """``lamc cache info | prune [--max-size SIZE] | clear``."""
+    from compiler import cache_prune as _cache_prune
+
+    ap = argparse.ArgumentParser(
+        prog="lamc cache",
+        description=(
+            "Inspect and trim the compiler cache (LAMC_CACHE_DIR, default "
+            "~/.cache/lammergeier/libs). Builds prune it automatically to "
+            "LAMC_CACHE_MAX_SIZE (default 2GB; 0 = unlimited), least "
+            "recently used entries first."
+        ),
+    )
+    sub = ap.add_subparsers(dest="action", required=True)
+    sub.add_parser("info", help="Size of the cache per kind of entry")
+    prune = sub.add_parser("prune", help="Remove least recently used entries down to the size cap")
+
+    def size_arg(text: str) -> int:
+        try:
+            return _cache_prune.parse_size(text)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from None
+
+    prune.add_argument("--max-size", type=size_arg, default=None, metavar="SIZE",
+                       help="Cap (500MB, 5GB, 2GiB, 0 = unlimited); default LAMC_CACHE_MAX_SIZE or 2GB")
+    sub.add_parser("clear", help="Delete every cached entry (same as --clear-cache)")
+    args = ap.parse_args(argv)
+    root = _lamcache.cache_dir()
+    if args.action == "clear":
+        removed = _lamcache.clear()
+        print(f"[lamc] removed {removed} cached entries from {root}")
+        return 0
+    cap = _cache_prune.max_size_from_env()
+    if args.action == "info":
+        stats = _cache_prune.info(root)
+        print(f"compiler cache: {root}")
+        total = 0
+        for kind, label in _CACHE_KINDS:
+            count, size = stats.pop(kind, (0, 0))
+            total += size
+            print(f"  {kind:<9} {count:>8} entries {_cache_prune.format_size(size):>10}  {label}")
+        for kind, (count, size) in sorted(stats.items()):
+            total += size
+            print(f"  {kind:<9} {count:>8} entries {_cache_prune.format_size(size):>10}")
+        print(f"  {'total':<9} {'':>8}         {_cache_prune.format_size(total):>10}")
+        print(f"  max size: {_cache_prune.format_size(cap) if cap else 'unlimited'}"
+              " (LAMC_CACHE_MAX_SIZE)")
+        return 0
+    if args.max_size is not None:
+        cap = args.max_size
+    result = _cache_prune.prune(root, cap)
+    print(
+        f"[lamc] removed {result.removed} entries ({_cache_prune.format_size(result.removed_bytes)}); "
+        f"cache now {_cache_prune.format_size(result.total_after)}"
+        + (f", {result.skipped} in use skipped" if result.skipped else "")
+    )
+    return 0
 
 
 def _build_fmt_parser() -> "argparse.ArgumentParser":
@@ -4036,10 +4260,12 @@ def _doctor_cache_report() -> dict:
         if package_override
         else Path.home() / ".lammergeier" / "cache"
     )
+    from compiler import cache_prune as _cache_prune
     return {
         "library": _dir_stats(lib_root),
         "parser": _dir_stats(lib_root / "parsers", suffix=".bin"),
         "package": _dir_stats(package_root),
+        "max_size_bytes": _cache_prune.max_size_from_env(),
     }
 
 
@@ -4259,6 +4485,8 @@ def _print_doctor_human(report: dict, strict_failures: list[str]) -> None:
             f"{_fmt_size(item['size_bytes'])}, unreadable={item['unreadable']} "
             f"({item['path']})"
         )
+    cap = report["cache"].get("max_size_bytes", 0)
+    print(f"cache max size: {_fmt_size(cap) if cap else 'unlimited'} (LAMC_CACHE_MAX_SIZE; `lamc cache info`)")
     print(f"lammergeier-lsp: {_fmt_check(report['lsp'])}")
     path_entries = os.pathsep.join(report["path"]["entries"]) or "<empty>"
     print("path entries: " + path_entries)
@@ -4337,6 +4565,9 @@ Subcommands:
   fmt        Format a .lam source file. Use ``--check`` for CI or
              ``--stdout`` to print without writing.
   version    Print the Lammergeier compiler version.
+  cache      The compiler cache: ``info`` (size per kind), ``prune
+             [--max-size SIZE]`` (least recently used first; default
+             ``LAMC_CACHE_MAX_SIZE``, 2GB), ``clear``.
   doctor     Report Python, Go, lark, project, stdlib, cache, and
              language-server availability.
   init       Scaffold a fresh project (``lamlib.toml`` + entry-point
@@ -4438,6 +4669,9 @@ def main():
 
     if verb == "version":
         sys.exit(_cmd_version(argv[1:]))
+
+    if verb == "cache":
+        sys.exit(_cmd_cache(argv[1:]))
 
     # Legacy: ``lamc <source.lam> [flags]`` — inject the ``build``
     # verb invisibly so existing scripts keep working.
