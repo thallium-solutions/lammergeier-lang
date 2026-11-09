@@ -1,0 +1,143 @@
+# expect-warning: generator `Feed.produce` is stored in its own object and its `finally` uses `self`: if the object is dropped before the generator ends, that `finally` does not run
+# expect-warning: call `self.items.close()` before dropping the object (for example in the object's own `close()`)
+# expect-warning: generator `Pump.produce` is stored in its own object and its `finally` uses `self`
+# expect-warning: call `p.items.close()` before dropping the object
+# expect-warning: generator `Stream.produce` is stored in its own object and its `finally` uses `self`
+# expect-warning: generator `Reader.read` is stored in its own object and its `with` uses `self`: if the object is dropped before the generator ends, neither is ever collected
+# expect-warning: call `self.lines.close()` before dropping the object
+# expect-warning: generator `Nested.walk` is stored in its own object and its `finally` uses `self`
+# A method generator stored in a field of the object whose method created
+# it, suspended where a pending `finally` (or a `with` resource) uses
+# `self`: dropping the object before the generator ends loses that code.
+
+class Feed {
+    func init(self, n: int) {
+        self.n: int = n
+        self.items: generator[int] = self.produce()
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            while True {
+                yield self.n
+            }
+        } finally {
+            self.release()
+        }
+    }
+
+    func release(self) {
+        print("released")
+    }
+}
+
+class Pump {
+    func init(self) {
+        self.items: generator[int] = Pump.empty()
+    }
+
+    static func empty() -> generator[int] {
+        for i in range(0) {
+            yield i
+        }
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            yield 1
+        } finally {
+            print(self)
+        }
+    }
+}
+
+class Stream {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            yield self.n
+        } finally {
+            print(f"stream {self.n}")
+        }
+    }
+}
+
+class Tap(Stream) {
+    func init(self, n: int) {
+        self.n: int = n
+        self.items: generator[int] = self.produce()
+    }
+}
+
+class Lease {
+    func init(self, owner: Reader) {
+        self.owner: Reader = owner
+    }
+
+    func Close(self) {
+        print("lease closed")
+    }
+}
+
+class Reader {
+    func init(self) {
+        self.lines: generator[int] = self.read()
+    }
+
+    func read(self) -> generator[int] {
+        with Lease(self) as lease {
+            yield 1
+        }
+    }
+}
+
+class Nested {
+    func init(self) {
+        self.count: int = 0
+        self.items: generator[int] = Nested.empty()
+    }
+
+    static func empty() -> generator[int] {
+        for i in range(0) {
+            yield i
+        }
+    }
+
+    func walk(self) -> generator[int] {
+        try {
+            for i in range(3) {
+                try {
+                    yield i
+                } finally {
+                    print(i)
+                }
+            }
+        } finally {
+            self.count += 1
+        }
+    }
+
+    func restart(self) {
+        self.items = self.walk()
+    }
+}
+
+func main() {
+    f: Feed = Feed(1)
+    p: Pump = Pump()
+    p.items = p.produce()
+    t: Tap = Tap(2)
+    r: Reader = Reader()
+    n: Nested = Nested()
+    n.restart()
+    print(f.n, t.n)
+    for v in p.items {
+        print(v)
+    }
+    for v in r.lines {
+        print(v)
+    }
+}

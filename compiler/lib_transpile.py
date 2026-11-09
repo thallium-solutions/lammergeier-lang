@@ -147,6 +147,8 @@ def apply_namespace_plan(target, plan, sources) -> None:
     target._namespace_declarations.update(plan.declaration_renames)
     for value_name, value_type in plan.imported_value_types.items():
         target._var_go_types.setdefault(value_name, value_type)
+        # The defining module declares it ``var Name T``.
+        target._typed_decls.setdefault(value_name, value_type)
     _namespacing.apply_metadata_view(target, plan, sources)
 
 

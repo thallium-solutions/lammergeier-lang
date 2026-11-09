@@ -1,0 +1,80 @@
+# f-strings whose slots are all str / int / bool without format specs are
+# a string concatenation. A slot of a declared type (parameter, annotated
+# local, global, field, static field, call declared ``-> str``, ``str``
+# method, slice, ``+``, ternary, ``str()``) is used as is (an int / bool
+# through strconv); a slot hinted str whose type is only inferred (an
+# unannotated local, a lambda parameter) goes through ``lamSlotText`` (a
+# string as is, fmt's %v of anything else), defined once in the main file;
+# any other slot (float, optional, ``?.`` call, generic, ``any``) keeps
+# fmt.Sprintf. ``x = obj?.name()`` is an interface{} local (its type hint
+# used to be the method's declared result), the receiver evaluated once.
+#
+# expect-go: return entry + "_" + size + ".avif"
+# expect-go: return ImageKeys_base + "/" + ImageKeys_key(entry, size)
+# expect-go: return "{" + s.Name + "} 100% " + strconv.Itoa(s.Age) + " " + strconv.FormatBool(s.Active)
+# expect-go: var greeting string = PREFIX + ": " + Strings_toUpper(name) + Strings_join(words, ",") + name + "!"
+# expect-go: var picked string = func() string { if len(name) > 2 { return name }; return "x" }() + "|" + Label(true)
+# expect-go: var fallback string = lamSlotText(inferred) + "/" + name
+# expect-go: var mixed string = fmt.Sprintf("%v %v", name, ratio)
+# expect-go: var unicode string = "Zoë 🙂 " + name + " \"q\" \\ 50%"
+# expect-go: var plain string = "100% done"
+# expect-go: var empty string = ""
+# expect-go: var alone string = name
+# expect-go: var converted string = strconv.Itoa(len(words)) + name
+# expect-go: got := func() interface{} { if __lamR := svc; __lamR != nil { return __lamR.Title() }; return nil }()
+# expect-go: var shown string = fmt.Sprintf("%v!", got)
+# expect-go: func lamSlotText[T any](v T) string {
+
+const PREFIX: str = "lam"
+
+class ImageKeys {
+    static base: str = "https://media.example"
+
+    static func key(entry: str, size: str) -> str {
+        return f"{entry}_{size}.avif"
+    }
+
+    static func url(entry: str, size: str) -> str {
+        return f"{ImageKeys.base}/{ImageKeys.key(entry, size)}"
+    }
+}
+
+class Person {
+    func init(self, name: str, age: int, active: bool) {
+        self.name: str = name
+        self.age: int = age
+        self.active: bool = active
+    }
+
+    func describe(self) -> str {
+        return f"{{{self.name}}} 100% {self.age} {self.active}"
+    }
+
+    func title(self) -> str {
+        return self.name
+    }
+}
+
+func label(flag: bool) -> str {
+    return "on" if flag else "off"
+}
+
+func main() {
+    name: str = "Ada"
+    words: list[str] = ["a", "b"]
+    ratio: float = 0.5
+    inferred = name + "?"
+    greeting: str = f"{PREFIX}: {name.toUpper()}{','.join(words)}{name + '!'}"
+    picked: str = f"{name if len(name) > 2 else 'x'}|{label(true)}"
+    fallback: str = f"{inferred}/{name}"
+    mixed: str = f"{name} {ratio}"
+    unicode: str = f"Zoë 🙂 {name} \"q\" \\ 50%"
+    plain: str = f"100% done"
+    empty: str = f""
+    alone: str = f"{name}"
+    converted: str = f"{str(len(words))}{str(name)}"
+    svc: Person = Person("Bob", 3, true)
+    got = svc?.title()
+    shown: str = f"{got}!"
+    print(ImageKeys.url("e", "s"), svc.describe(), greeting, picked, fallback, mixed, unicode, plain, empty, alone, converted, shown)
+}

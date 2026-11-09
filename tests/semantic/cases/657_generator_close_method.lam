@@ -1,0 +1,43 @@
+# expect-pass
+# `close()` is a method of every generator value: a variable, a field, a
+# parameter, an `iterator[T]`, a call result.
+
+func count(n: int) -> generator[int] {
+    for i in range(n) {
+        yield i
+    }
+}
+
+class Box {
+    func init(self) {
+        self.items: generator[int] = count(3)
+    }
+
+    func close(self) {
+        self.items.close()
+    }
+}
+
+func finish(g: generator[int]) {
+    g.close()
+}
+
+func finishIter(it: iterator[str]) {
+    it.close()
+}
+
+func words() -> iterator[str] {
+    yield "a"
+}
+
+func main() {
+    g: generator[int] = count(5)
+    g.close()
+    b: Box = Box()
+    b.items.close()
+    b.close()
+    finish(count(2))
+    finishIter(words())
+    count(4).close()
+    words().close()
+}

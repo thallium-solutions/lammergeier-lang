@@ -1,0 +1,21 @@
+# Helper module for test_fstring_concat_modules.lam: f-strings of declared
+# and inferred str slots in an imported module (its ``lamSlotText`` calls
+# are served by the helper the main file defines), and a const the
+# importing module reads as a declared str.
+
+const MediaBase: str = "https://media.example"
+
+class Keys {
+    static func key(entry: str, size: str) -> str {
+        return f"{entry}_{size}.avif"
+    }
+
+    static func url(entry: str, size: str) -> str {
+        joined = Keys.key(entry, size)
+        return f"{MediaBase}/{joined}"
+    }
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

@@ -513,7 +513,7 @@ class DefinitionVisitorMixin:
 
     def _emit_generator_method(
         self, go_method, return_type, params_node, suite_node,
-        tp_clause: str = "", elem_type: str = "",
+        tp_clause: str = "", elem_type: str = "", lam_name: str = "",
     ):
         """An instance-method generator: the method returns a generator
         handle on the body, with ``self`` bound to the receiver (as
@@ -531,6 +531,7 @@ class DefinitionVisitorMixin:
         self._emit_generator_handle(
             chan_type, suite_node, params_node, skip_self=True, recv=recv,
             overrides={"_self_replacement": recv}, value_type=elem_type,
+            recv_type=f"{go_cls}{class_args}", name=f"{cls}.{lam_name or go_method}",
         )
         self.indent -= 1
         self._emit("}")
@@ -728,7 +729,7 @@ class DefinitionVisitorMixin:
                 method_name = self._go_method_name(self.current_class, func_name) + method_suffix
                 self._emit_generator_method(
                     method_name, return_type, params_node, suite_node, tp_clause=tp_clause,
-                    elem_type=self._generator_elem_go_type(return_type_node),
+                    elem_type=self._generator_elem_go_type(return_type_node), lam_name=func_name,
                 )
             else:
                 method_name = self._go_method_name(self.current_class, func_name) + method_suffix

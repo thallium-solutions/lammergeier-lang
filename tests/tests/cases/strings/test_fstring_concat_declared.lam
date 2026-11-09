@@ -1,0 +1,130 @@
+# f-strings whose slots are all declared ``str`` / ``int`` / ``bool``
+# (parameters, annotated locals and globals, consts, fields, static fields,
+# calls declared ``-> str``, ``str`` methods, slices, ``+``, ternaries,
+# ``str()``, ``len()``) are a string concatenation: the text is the one
+# fmt's ``%v`` gave (unicode, ``%`` in text and values, braces, quotes,
+# backslashes, newlines, empty parts).
+# expect: 0192f1a2.jpg_thumb.avif
+# expect: https://media.example/0192f1a2.jpg_thumb.avif
+# expect: 0192f1a2_card.jpg
+# expect: https://media.example/public/ref-1
+# expect: 100% done
+# expect: {x} 50% {}
+# expect: [] []
+# expect: <x>
+# expect: 5% of 20%d = %v%s
+# expect: Zoë 漢字🙂 ü
+# expect: say "hi" \ to Zoë
+# expect: line1
+# expect: line2 Zoë
+# expect: -42 0 true false
+# expect: n=3 ok=true
+# expect: Ada/ADA/ada/ad/Ada!
+# expect: a,b,c|a-b
+# expect: yes no
+# expect: v1 Ada
+# expect: lam:Ada:7
+# expect: pre-Ada-post
+# expect: Ada:3
+# expect: [Ada|Ada]
+# expect: dflt-x
+# expect: 3 true Ada
+
+const PREFIX: str = "lam"
+VERSION: int = 7
+
+class ImageKeys {
+    static base: str = "https://media.example"
+
+    static func key(entry: str, size: str) -> str {
+        return f"{entry}_{size}.avif"
+    }
+
+    static func url(entry: str, size: str) -> str {
+        return f"{ImageKeys.base}/{ImageKeys.key(entry, size)}"
+    }
+
+    static func variant(entry: str, size: str) -> str {
+        dot: int = entry.lastIndex(".")
+        return f"{entry[:dot]}_{size}{entry[dot:]}"
+    }
+}
+
+class Config {
+    func init(self, publicMediaUrl: str) {
+        self.publicMediaUrl: str = publicMediaUrl
+    }
+
+    static func current() -> Config {
+        return Config("https://media.example/public")
+    }
+}
+
+class Person {
+    func init(self, name: str, age: int) {
+        self.name: str = name
+        self.age: int = age
+    }
+
+    func tag(self) -> str {
+        return f"{PREFIX}:{self.name}:{VERSION}"
+    }
+
+    func wrap(self, before: str, after: str) -> str {
+        return f"{before}-{self.name}-{after}"
+    }
+}
+
+func label(flag: bool) -> str {
+    return "yes" if flag else "no"
+}
+
+func count(xs: list[str]) -> int {
+    return len(xs)
+}
+
+func publicUrl(ref: str) -> str {
+    c: Config = Config.current()
+    return f"{c.publicMediaUrl}/{ref}"
+}
+
+func greet(name: str, greeting: str = f"dflt") -> str {
+    return f"{greeting}-{name}"
+}
+
+func main() {
+    entry: str = "0192f1a2.jpg"
+    size: str = "thumb"
+    print(ImageKeys.key(entry, size))
+    print(ImageKeys.url(entry, size))
+    print(ImageKeys.variant(entry, "card"))
+    print(publicUrl("ref-1"))
+    print(f"100% done")
+    print(f"{{x}} 50% {{}}")
+    empty: str = ""
+    print(f"[{empty}] [{empty}{empty}]")
+    print(f"<{'x'}>")
+    pct: str = "20%d"
+    print(f"5% of {pct} = %v%s")
+    name: str = "Zoë"
+    print(f"{name} 漢字🙂 {'ü'}")
+    print(f"say \"hi\" \\ to {name}")
+    print(f"line1\nline2 {name}")
+    neg: int = -42
+    zero: int = 0
+    yes: bool = true
+    print(f"{neg} {zero} {yes} {not yes}")
+    words: list[str] = ["a", "b", "c"]
+    print(f"n={len(words)} ok={yes}")
+    p: Person = Person("Ada", 36)
+    print(f"{p.name}/{p.name.toUpper()}/{p.name.toLower()}/{p.name[:2].toLower()}/{p.name + '!'}")
+    print(f"{','.join(words)}|{words[0] + '-' + words[1]}")
+    print(f"{label(true)} {label(false)}")
+    print(f"v1 {p.name if p.age > 18 else 'minor'}")
+    print(p.tag())
+    print(p.wrap("pre", "post"))
+    print(f"{str(p.name)}:{str(count(words))}")
+    print(f"[{p.name}|{f'{p.name}'}]")
+    print(greet("x"))
+    print(f"{str(len(words))} {str(yes)} {str(p.name)}")
+}

@@ -1,0 +1,97 @@
+# Differential check of the f-string lowerings: an f-string of declared
+# str / int / bool slots is a concatenation, the same f-string with an
+# empty format spec on its first slot (``{x:}``) goes through fmt.Sprintf.
+# Both must give the same text for awkward values (``%`` verbs, unicode,
+# braces, quotes, backslashes, newlines, empty strings, negative and
+# extreme ints) reached through parameters, fields, static methods, str
+# methods, slices, ternaries, generators, lambdas and inferred locals.
+# expect: checked=2304 mismatches=0
+# expect: generated=48 mismatches=0
+
+class Row {
+    func init(self, text: str, n: int, flag: bool) {
+        self.text: str = text
+        self.n: int = n
+        self.flag: bool = flag
+    }
+
+    func render(self) -> str {
+        return f"{self.text}|{self.n}|{self.flag}|{self.text.toUpper()}"
+    }
+
+    func renderFmt(self) -> str {
+        return f"{self.text:}|{self.n}|{self.flag}|{self.text.toUpper()}"
+    }
+}
+
+class Keys {
+    static func key(entry: str, size: str) -> str {
+        return f"{entry}_{size}.avif"
+    }
+
+    static func keyFmt(entry: str, size: str) -> str {
+        return f"{entry:}_{size}.avif"
+    }
+}
+
+func pair(a: str, b: str, n: int) -> list[str] {
+    inferred = a + b
+    concat: str = f"{a}{{{b}}}%{n}%v{a[:1]}{b if n > 0 else a}{Keys.key(a, b)}{inferred}"
+    viaFmt: str = f"{a:}{{{b}}}%{n}%v{a[:1]}{b if n > 0 else a}{Keys.key(a, b)}{inferred}"
+    return [concat, viaFmt]
+}
+
+func cases(texts: list[str], nums: list[int], prefix: str, viaFmt: bool) -> generator[str] {
+    for t in texts {
+        for n in nums {
+            yield f"{prefix:}{t}/{prefix.toUpper()}{n}" if viaFmt else f"{prefix}{t}/{prefix.toUpper()}{str(n)}"
+        }
+    }
+}
+
+func main() {
+    texts: list[str] = ["", "a", "%", "%v", "%%d", "100%", "Zoë", "漢字🙂", "{x}", "\"q\"", "back\\slash", "line\nbreak"]
+    nums: list[int] = [0, -1, 42, 9223372036854775807]
+    checked: int = 0
+    mismatches: int = 0
+    for a in texts {
+        for b in texts {
+            for n in nums {
+                both: list[str] = pair(a, b, n)
+                checked += 1
+                if both[0] != both[1] {
+                    mismatches += 1
+                    print(f"mismatch: {both[0]} != {both[1]}")
+                }
+                row: Row = Row(a + b, n, n > 0)
+                checked += 1
+                if row.render() != row.renderFmt() {
+                    mismatches += 1
+                }
+                checked += 1
+                if Keys.key(a, b) != Keys.keyFmt(a, b) {
+                    mismatches += 1
+                }
+                label = lambda (x: str) -> str { return f"<{x}>" }
+                checked += 1
+                if label(a) != f"<{a:}>" {
+                    mismatches += 1
+                }
+            }
+        }
+    }
+    print(f"checked={checked} mismatches={mismatches}")
+    generated: list[str] = []
+    for item in cases(texts, nums, "%p", false) {
+        generated.append(item)
+    }
+    genMismatches: int = 0
+    i: int = 0
+    for item in cases(texts, nums, "%p", true) {
+        if generated[i] != item {
+            genMismatches += 1
+        }
+        i += 1
+    }
+    print(f"generated={len(generated)} mismatches={genMismatches}")
+}

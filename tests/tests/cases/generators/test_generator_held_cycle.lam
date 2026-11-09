@@ -1,0 +1,361 @@
+# A method generator stored in a field of its own object while suspended
+# in a `try` whose `finally` uses `self` (`self.items = self.produce()`
+# with `finally { self.release() }`) is a cycle the collector can free:
+# while the generator is stored in its object, its cleanup holds the
+# object only weakly. Dropping the object collects the object and the
+# generator; the `finally` cannot run (the object it needs is gone), and
+# one line per generator reports it on stderr. Closing the generator
+# before dropping the object runs the `finally` exactly once and reports
+# nothing. Covers a generator stored by the object's `init`, by code
+# outside the class (`p.items = p.produce()`), through a local
+# (`g = self.produce(); self.items = g`), a generator of a base class
+# method stored in a subclass instance, and a `finally` using `self`
+# inside a `with` (none of the pending closes runs: neither the `finally`
+# nor the `with` close). The goroutine count goes back to where it started. Run
+# under the race detector by `tests/tests/test_generator_race.py`.
+#
+# expect: total 405450
+# expect: goroutines back true
+# expect: feeds collected true
+# expect: pumps collected true
+# expect: relays collected true
+# expect: taps collected true
+# expect: readers collected true
+# expect: closed feeds collected true
+# expect: finally runs 100
+# expect: reported Feed.produce 500
+# expect: reported Pump.produce 100
+# expect: reported Relay.produce 100
+# expect: reported Stream.produce 100
+# expect: reported Reader.read 100
+# expect: reported lines 900
+
+go! {
+    import (
+        "os"
+        "runtime"
+        "strings"
+        "sync/atomic"
+        "time"
+    )
+
+    var lamTestCollected [6]atomic.Int64
+    var lamTestFinallies atomic.Int64
+    var lamTestStderrFile *os.File
+    var lamTestRealStderr *os.File
+}
+
+func finallyRan() {
+    go! {
+        lamTestFinallies.Add(1)
+    }
+}
+
+class Feed {
+    func init(self, n: int) {
+        self.n: int = n
+        self.released: bool = False
+        self.items: generator[int] = self.produce()
+        me: Feed = self
+        go! {
+            runtime.AddCleanup(me, func(int) { lamTestCollected[0].Add(1) }, 0)
+        }
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            i: int = 0
+            while True {
+                yield self.n + i
+                i += 1
+            }
+        } finally {
+            self.release()
+        }
+    }
+
+    func release(self) {
+        self.released = True
+        finallyRan()
+    }
+}
+
+class Pump {
+    func init(self, n: int) {
+        self.n: int = n
+        self.items: generator[int] = Pump.empty()
+        me: Pump = self
+        go! {
+            runtime.AddCleanup(me, func(int) { lamTestCollected[1].Add(1) }, 0)
+        }
+    }
+
+    static func empty() -> generator[int] {
+        for i in range(0) {
+            yield i
+        }
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            yield self.n
+            yield self.n + 1
+        } finally {
+            print(f"pump finally {self.n}")
+        }
+    }
+}
+
+class Relay {
+    func init(self, n: int) {
+        self.n: int = n
+        g: generator[int] = self.produce()
+        self.items: generator[int] = g
+        me: Relay = self
+        go! {
+            runtime.AddCleanup(me, func(int) { lamTestCollected[2].Add(1) }, 0)
+        }
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            while True {
+                yield self.n
+            }
+        } finally {
+            print(f"relay finally {self.n}")
+        }
+    }
+}
+
+class Stream {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            while True {
+                yield self.n * 2
+            }
+        } finally {
+            print(f"stream finally {self.n}")
+        }
+    }
+}
+
+class Tap(Stream) {
+    func init(self, n: int) {
+        self.n: int = n
+        self.items: generator[int] = self.produce()
+        me: Tap = self
+        go! {
+            runtime.AddCleanup(me, func(int) { lamTestCollected[3].Add(1) }, 0)
+        }
+    }
+}
+
+class Plain {
+    func Close(self) {
+        print("plain closed")
+    }
+}
+
+class Reader {
+    func init(self, n: int) {
+        self.n: int = n
+        self.lines: generator[int] = self.read()
+        me: Reader = self
+        go! {
+            runtime.AddCleanup(me, func(int) { lamTestCollected[4].Add(1) }, 0)
+        }
+    }
+
+    func read(self) -> generator[int] {
+        with Plain() as p {
+            try {
+                while True {
+                    yield self.n
+                }
+            } finally {
+                print(f"reader finally {self.n}")
+            }
+        }
+    }
+}
+
+class Closed {
+    func init(self, n: int) {
+        self.n: int = n
+        self.released: bool = False
+        self.items: generator[int] = self.produce()
+        me: Closed = self
+        go! {
+            runtime.AddCleanup(me, func(int) { lamTestCollected[5].Add(1) }, 0)
+        }
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            while True {
+                yield self.n
+            }
+        } finally {
+            self.released = True
+            finallyRan()
+        }
+    }
+}
+
+func captureStderr() {
+    go! {
+        lamTestRealStderr = os.Stderr
+        f, err := os.CreateTemp("", "lam-held-cycle-*.log")
+        if err != nil {
+            panic(err)
+        }
+        lamTestStderrFile = f
+        os.Stderr = f
+    }
+}
+
+# Lines of the captured stderr containing `needle`.
+func reported(needle: str) -> int {
+    n: int = 0
+    go! {
+        data, err := os.ReadFile(lamTestStderrFile.Name())
+        if err != nil {
+            panic(err)
+        }
+        for _, line := range strings.Split(string(data), "\n") {
+            if strings.Contains(line, needle) {
+                n++
+            }
+        }
+    }
+    return n
+}
+
+func restoreStderr() {
+    go! {
+        os.Stderr = lamTestRealStderr
+        name := lamTestStderrFile.Name()
+        lamTestStderrFile.Close()
+        os.Remove(name)
+    }
+}
+
+func collected(kind: int) -> int {
+    n: int = 0
+    go! {
+        n = int(lamTestCollected[kind].Load())
+    }
+    return n
+}
+
+func finallies() -> int {
+    n: int = 0
+    go! {
+        n = int(lamTestFinallies.Load())
+    }
+    return n
+}
+
+# Collects until the goroutine count is back to `base` and every object
+# was collected (cleanups run in the background after a collection).
+func settle(base: int, targets: list[int]) -> int {
+    n: int = 0
+    go! {
+        for i := 0; i < 800; i++ {
+            runtime.GC()
+            done := runtime.NumGoroutine() <= base
+            for k, t := range targets {
+                if lamTestCollected[k].Load() < int64(t) {
+                    done = false
+                }
+            }
+            if done {
+                break
+            }
+            time.Sleep(5 * time.Millisecond)
+        }
+        // The generators' cleanups run after their objects' ones.
+        for i := 0; i < 5; i++ {
+            runtime.GC()
+            time.Sleep(5 * time.Millisecond)
+        }
+        n = runtime.NumGoroutine()
+    }
+    return n
+}
+
+func main() {
+    captureStderr()
+    base: int = settle(1, [0, 0, 0, 0, 0, 0])
+    total: int = 0
+    for k in range(500) {
+        f: Feed = Feed(k)
+        for x in f.items {
+            total += x
+            if x >= k + 2 {
+                break
+            }
+        }
+    }
+    for k in range(100) {
+        p: Pump = Pump(k)
+        p.items = p.produce()
+        for x in p.items {
+            total += x
+            break
+        }
+        r: Relay = Relay(k)
+        for x in r.items {
+            total += x
+            break
+        }
+        t: Tap = Tap(k)
+        for x in t.items {
+            total += x
+            break
+        }
+        rd: Reader = Reader(k)
+        for x in rd.lines {
+            total += x
+            break
+        }
+        c: Closed = Closed(k)
+        for x in c.items {
+            total += x
+            break
+        }
+        c.items.close()
+        if not c.released {
+            print("closed generator did not run its finally")
+        }
+        c.items.close()
+    }
+    now: int = settle(base, [500, 100, 100, 100, 100, 100])
+    lines: int = reported("Exception ignored in generator")
+    feeds: int = reported("generator Feed.produce: its finally uses the object holding it")
+    pumps: int = reported("generator Pump.produce: its finally uses the object holding it")
+    relays: int = reported("generator Relay.produce: its finally uses the object holding it")
+    streams: int = reported("generator Stream.produce: its finally uses the object holding it")
+    readers: int = reported("generator Reader.read: its finally uses the object holding it")
+    restoreStderr()
+    print("total", total)
+    print("goroutines back", now <= base)
+    print("feeds collected", collected(0) == 500)
+    print("pumps collected", collected(1) == 100)
+    print("relays collected", collected(2) == 100)
+    print("taps collected", collected(3) == 100)
+    print("readers collected", collected(4) == 100)
+    print("closed feeds collected", collected(5) == 100)
+    print("finally runs", finallies())
+    print("reported Feed.produce", feeds)
+    print("reported Pump.produce", pumps)
+    print("reported Relay.produce", relays)
+    print("reported Stream.produce", streams)
+    print("reported Reader.read", readers)
+    print("reported lines", lines)
+}

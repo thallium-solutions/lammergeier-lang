@@ -1,0 +1,467 @@
+# Nested loops holding several `yield`s in a state machine generator: the
+# code after each `yield` of an inner loop keeps seeing the variables of
+# the inner and outer loops and the locals of the loop body, also when they
+# are only used in f-string slots or in a `go!` block. Covers for-in-for,
+# while-in-for, for-in-while and three levels, loops over dicts
+# (`for k, v in d`), `enumerate`, ranges with steps and strings, `yield`s in
+# `if` branches of an inner loop, and `break` / `continue` of the inner and
+# outer loops after a `yield`, and an unused local before the loop ending
+# a continuation. Each generator has a twin whose `defer`
+# keeps it on the coroutine lowering: both give the same values.
+#
+# expect: pairs a/1 a/1 a/2 a/2 b/1 b/1 b/2 b/2
+# expect: pairs same true
+# expect: three a1 a1 2-a a2 a2 4-a b1 b1 2-b b2 b2 4-b
+# expect: three same true
+# expect: while x0 0 x1 1 y0 0
+# expect: while same true
+# expect: forwhile 0a a0 0b b0 1a a1 1b b1
+# expect: forwhile same true
+# expect: levels 12
+# expect: levels same true
+# expect: dict 8
+# expect: dict same true
+# expect: enumerate 0:p:0 p0 1:q:0 q0 1:q:1 q1
+# expect: enumerate same true
+# expect: chars ab.a a ab.b b c.c c
+# expect: chars same true
+# expect: ranges 0/3 3 0/1 1 4/3 7 4/1 5
+# expect: ranges same true
+# expect: branches even a0 after 0 odd 1 a after 1 even b0 after 0 odd 1 b after 1
+# expect: branches same true
+# expect: jumps a1 a1 a2 skip a3 stop b1 b1 b2 skip b3 stop z1 z1 z2 skip z3 stop end
+# expect: jumps same true
+# expect: locals 1 2 2 4 2 4 4 8
+# expect: locals same true
+# expect: raw 10 a1 20 a2 10 b1 20 b2
+# expect: raw same true
+# expect: silenced a1 b1 c c1 a2 b2 c c2
+# expect: silenced same true
+# expect: rawonly a + a + b + b + 6
+# expect: rawonly same true
+
+func nothing() {
+}
+
+func pairs(texts: list[str], nums: list[int]) -> generator[str] {
+    for t in texts {
+        for n in nums {
+            yield f"{t}/{n}"
+            yield f"{t:}/{n}"
+        }
+    }
+}
+
+func pairsCo(texts: list[str], nums: list[int]) -> generator[str] {
+    defer nothing()
+    for t in texts {
+        for n in nums {
+            yield f"{t}/{n}"
+            yield f"{t:}/{n}"
+        }
+    }
+}
+
+func three(texts: list[str], nums: list[int]) -> generator[str] {
+    for t in texts {
+        for n in nums {
+            yield f"{t}{n}"
+            yield t + str(n)
+            yield f"{n * 2}-{t}"
+        }
+    }
+}
+
+func threeCo(texts: list[str], nums: list[int]) -> generator[str] {
+    defer nothing()
+    for t in texts {
+        for n in nums {
+            yield f"{t}{n}"
+            yield t + str(n)
+            yield f"{n * 2}-{t}"
+        }
+    }
+}
+
+func whileInFor(texts: list[str]) -> generator[str] {
+    for t in texts {
+        i: int = 0
+        while i < len(t) {
+            yield f"{t[:1]}{i}"
+            yield f"{i}"
+            i += 1
+        }
+    }
+}
+
+func whileInForCo(texts: list[str]) -> generator[str] {
+    defer nothing()
+    for t in texts {
+        i: int = 0
+        while i < len(t) {
+            yield f"{t[:1]}{i}"
+            yield f"{i}"
+            i += 1
+        }
+    }
+}
+
+func forInWhile(n: int) -> generator[str] {
+    j: int = 0
+    while j < n {
+        for c in "ab" {
+            yield f"{j}{c}"
+            yield f"{c}{j}"
+        }
+        j += 1
+    }
+}
+
+func forInWhileCo(n: int) -> generator[str] {
+    defer nothing()
+    j: int = 0
+    while j < n {
+        for c in "ab" {
+            yield f"{j}{c}"
+            yield f"{c}{j}"
+        }
+        j += 1
+    }
+}
+
+func levels(xs: list[int]) -> generator[str] {
+    for a in range(1) {
+        for b in xs {
+            for c in "xy" {
+                k: int = 0
+                while k < 1 {
+                    yield f"{a}{b}{c}{k}"
+                    yield f"{c}{b}{a}{k}"
+                    k += 1
+                }
+                yield f"{b}{c}"
+            }
+        }
+    }
+}
+
+func levelsCo(xs: list[int]) -> generator[str] {
+    defer nothing()
+    for a in range(1) {
+        for b in xs {
+            for c in "xy" {
+                k: int = 0
+                while k < 1 {
+                    yield f"{a}{b}{c}{k}"
+                    yield f"{c}{b}{a}{k}"
+                    k += 1
+                }
+                yield f"{b}{c}"
+            }
+        }
+    }
+}
+
+func dicts(d: dict[str, int], nums: list[int]) -> generator[str] {
+    for k, v in d {
+        for n in nums {
+            yield f"{k}={v}/{n}"
+            yield f"{n}:{k}:{v}"
+        }
+    }
+}
+
+func dictsCo(d: dict[str, int], nums: list[int]) -> generator[str] {
+    defer nothing()
+    for k, v in d {
+        for n in nums {
+            yield f"{k}={v}/{n}"
+            yield f"{n}:{k}:{v}"
+        }
+    }
+}
+
+func enumerated(words: list[str]) -> generator[str] {
+    for i, w in enumerate(words) {
+        for n in range(i + 1) {
+            yield f"{i}:{w}:{n}"
+            yield f"{w}{n}"
+        }
+    }
+}
+
+func enumeratedCo(words: list[str]) -> generator[str] {
+    defer nothing()
+    for i, w in enumerate(words) {
+        for n in range(i + 1) {
+            yield f"{i}:{w}:{n}"
+            yield f"{w}{n}"
+        }
+    }
+}
+
+func chars(words: list[str]) -> generator[str] {
+    for w in words {
+        for ch in w {
+            yield f"{w}.{ch}"
+            yield f"{ch}"
+        }
+    }
+}
+
+func charsCo(words: list[str]) -> generator[str] {
+    defer nothing()
+    for w in words {
+        for ch in w {
+            yield f"{w}.{ch}"
+            yield f"{ch}"
+        }
+    }
+}
+
+func ranges() -> generator[str] {
+    for a in range(0, 6, 4) {
+        for b in range(3, 0, -2) {
+            yield f"{a}/{b}"
+            yield f"{a + b}"
+        }
+    }
+}
+
+func rangesCo() -> generator[str] {
+    defer nothing()
+    for a in range(0, 6, 4) {
+        for b in range(3, 0, -2) {
+            yield f"{a}/{b}"
+            yield f"{a + b}"
+        }
+    }
+}
+
+func branches(texts: list[str]) -> generator[str] {
+    for t in texts {
+        for n in range(2) {
+            if n % 2 == 0 {
+                yield f"even {t}{n}"
+            } else {
+                yield f"odd {n}"
+                yield f"{t}"
+            }
+            yield f"after {n}"
+        }
+    }
+}
+
+func branchesCo(texts: list[str]) -> generator[str] {
+    defer nothing()
+    for t in texts {
+        for n in range(2) {
+            if n % 2 == 0 {
+                yield f"even {t}{n}"
+            } else {
+                yield f"odd {n}"
+                yield f"{t}"
+            }
+            yield f"after {n}"
+        }
+    }
+}
+
+func jumps(texts: list[str]) -> generator[str] {
+    for t in texts {
+        stop: bool = False
+        for n in [1, 2, 3, 4] {
+            yield f"{t}{n}"
+            if n == 2 {
+                yield "skip"
+                continue
+            }
+            if n == 3 {
+                yield "stop"
+                stop = True
+                break
+            }
+            yield f"{t}{n}"
+        }
+        if stop and t == "z" {
+            break
+        }
+        if stop {
+            continue
+        }
+        yield f"unreached {t}"
+    }
+    yield "end"
+}
+
+func jumpsCo(texts: list[str]) -> generator[str] {
+    defer nothing()
+    for t in texts {
+        stop: bool = False
+        for n in [1, 2, 3, 4] {
+            yield f"{t}{n}"
+            if n == 2 {
+                yield "skip"
+                continue
+            }
+            if n == 3 {
+                yield "stop"
+                stop = True
+                break
+            }
+            yield f"{t}{n}"
+        }
+        if stop and t == "z" {
+            break
+        }
+        if stop {
+            continue
+        }
+        yield f"unreached {t}"
+    }
+    yield "end"
+}
+
+func locals(nums: list[int]) -> generator[str] {
+    for n in nums {
+        for m in [n, n * 2] {
+            twice: int = m * 2
+            yield f"{m}"
+            yield f"{twice}"
+        }
+    }
+}
+
+func localsCo(nums: list[int]) -> generator[str] {
+    defer nothing()
+    for n in nums {
+        for m in [n, n * 2] {
+            twice: int = m * 2
+            yield f"{m}"
+            yield f"{twice}"
+        }
+    }
+}
+
+func raw(texts: list[str]) -> generator[str] {
+    for t in texts {
+        for n in [1, 2] {
+            seen: int = 0
+            yield f"{n * 10}"
+            go! {
+                seen = n
+            }
+            yield f"{t}{seen}"
+        }
+    }
+}
+
+func rawCo(texts: list[str]) -> generator[str] {
+    defer nothing()
+    for t in texts {
+        for n in [1, 2] {
+            seen: int = 0
+            yield f"{n * 10}"
+            go! {
+                seen = n
+            }
+            yield f"{t}{seen}"
+        }
+    }
+}
+
+func rawOnly(texts: list[str]) -> generator[str] {
+    total: int = 0
+    for t in texts {
+        for n in [1, 2] {
+            yield t
+            go! {
+                total += n
+            }
+            yield "+"
+        }
+    }
+    yield f"{total}"
+}
+
+func rawOnlyCo(texts: list[str]) -> generator[str] {
+    defer nothing()
+    total: int = 0
+    for t in texts {
+        for n in [1, 2] {
+            yield t
+            go! {
+                total += n
+            }
+            yield "+"
+        }
+    }
+    yield f"{total}"
+}
+
+# A local the rest never reads, before a loop ending the continuation
+# after a `yield` (its unused-local silencer goes before that loop).
+func silenced(nums: list[int], words: list[str]) -> generator[str] {
+    for n in nums {
+        for w in words {
+            if len(w) > 1 {
+                pass
+            } else {
+                yield f"{w}"
+            }
+            unused: int = n + 0
+            for ch in w {
+                yield f"{ch}{n}"
+            }
+        }
+    }
+}
+
+func silencedCo(nums: list[int], words: list[str]) -> generator[str] {
+    defer nothing()
+    for n in nums {
+        for w in words {
+            if len(w) > 1 {
+                pass
+            } else {
+                yield f"{w}"
+            }
+            unused: int = n + 0
+            for ch in w {
+                yield f"{ch}{n}"
+            }
+        }
+    }
+}
+
+func collect(g: generator[str]) -> list[str] {
+    return [v for v in g]
+}
+
+func report(name: str, got: list[str], twin: list[str]) {
+    print(name, " ".join(got))
+    print(name, "same", got == twin)
+}
+
+func main() {
+    report("pairs", collect(pairs(["a", "b"], [1, 2])), collect(pairsCo(["a", "b"], [1, 2])))
+    report("three", collect(three(["a", "b"], [1, 2])), collect(threeCo(["a", "b"], [1, 2])))
+    report("while", collect(whileInFor(["x1", "y"])), collect(whileInForCo(["x1", "y"])))
+    report("forwhile", collect(forInWhile(2)), collect(forInWhileCo(2)))
+    lv: list[str] = collect(levels([1, 2]))
+    print("levels", len(lv))
+    print("levels same", lv == collect(levelsCo([1, 2])))
+    d: dict[str, int] = {"a": 1, "b": 2}
+    dv: list[str] = sorted(collect(dicts(d, [5, 6])))
+    print("dict", len(dv))
+    print("dict same", dv == sorted(collect(dictsCo(d, [5, 6]))))
+    report("enumerate", collect(enumerated(["p", "q"])), collect(enumeratedCo(["p", "q"])))
+    report("chars", collect(chars(["ab", "c"])), collect(charsCo(["ab", "c"])))
+    report("ranges", collect(ranges()), collect(rangesCo()))
+    report("branches", collect(branches(["a", "b"])), collect(branchesCo(["a", "b"])))
+    report("jumps", collect(jumps(["a", "b", "z"])), collect(jumpsCo(["a", "b", "z"])))
+    report("locals", collect(locals([1, 2])), collect(localsCo([1, 2])))
+    report("raw", collect(raw(["a", "b"])), collect(rawCo(["a", "b"])))
+    report("silenced", collect(silenced([1, 2], ["ab", "c"])), collect(silencedCo([1, 2], ["ab", "c"])))
+    report("rawonly", collect(rawOnly(["a", "b"])), collect(rawOnlyCo(["a", "b"])))
+}

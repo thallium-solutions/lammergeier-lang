@@ -40,10 +40,16 @@ Structured control flow becomes continuations:
 The *close path* of the state a generator is suspended in (``return`` from
 the ``yield``: its pending ``finally`` blocks and ``with`` closes, Python's
 ``GeneratorExit``) is the continuation ``__lamCloseN`` of the innermost
-``finally`` region, stored in ``__lamF.c`` at each ``yield``; ``Stop`` and
-the cleanup of a collected handle run it. It references only what those
-blocks use, so the cleanup does not keep a collected generator alive unless
-the ``finally`` code itself uses an object holding the generator.
+``finally`` region, stored in ``__lamF.c`` at each ``yield``; ``Stop`` /
+``Close`` and the cleanup of a collected handle run it. It references only
+what those blocks use, so the cleanup does not keep a collected generator
+alive unless the ``finally`` code itself uses an object holding the
+generator. A method generator whose close path reads ``self``
+(``close_path_reads_self``) reads its receiver from the frame in every
+continuation (``lamNewMethodGenerator``, ``_sm_emit_recv_shadow``), so the
+cleanup reaches the receiver only through ``lamGenRecv``, which the runtime
+makes weak while the generator is stored in a field of the receiver's
+object.
 
 Bodies the state machine does not lower (``defer`` in the body, ``yield``
 used as a value, a ``do`` body holding a ``yield`` and a ``?`` inside a
@@ -53,6 +59,7 @@ nested ``try`` / ``with``) keep the coroutine lowering
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 
 from lark import Token, Tree
@@ -124,6 +131,9 @@ class _SMContext:
         # The loop whose Go ``for`` body is being emitted directly (a
         # ``continue`` there is Go's); ``None`` inside a continuation.
         self.native_loop: Optional[_Loop] = None
+        # ``(go_name, go_type)`` of the receiver every continuation reads
+        # from the frame (``lamNewMethodGenerator``), ``None`` otherwise.
+        self.recv: Optional[tuple] = None
         # ``(err_var, handler, depth)`` of the innermost ``do`` holding a
         # ``yield``: a ``?`` failing there runs its handler.
         self.do_targets: list = []
@@ -182,6 +192,126 @@ def coroutine_construct(suite_node):
     return None
 
 
+_IDENT_RE = re.compile(r"[^\W\d]\w*")
+
+
+def _fstring_slot_names(raw: str) -> list:
+    """Identifiers of the slots of an f-string token (its whole text when
+    the slots cannot be split)."""
+    from compiler.fstrings import Slot, fstring_body, split_fstring
+    found = fstring_body(raw)
+    parts = split_fstring(found[0], found[1]) if found else None
+    if parts is None:
+        return _IDENT_RE.findall(raw)
+    out: list = []
+    for part in parts:
+        if isinstance(part, Slot):
+            out.extend(_IDENT_RE.findall(part.expr))
+            out.extend(_IDENT_RE.findall(part.spec))
+    return out
+
+
+def _uses_name(node, name: str) -> bool:
+    """Whether ``node`` reads the variable ``name`` (nested functions and
+    lambdas included: they capture it)."""
+    if not isinstance(node, Tree):
+        return False
+    word = re.compile(rf"\b{re.escape(name)}\b")
+    for sub in node.iter_subtrees():
+        for child in sub.children:
+            # ``f"{self.n}"``: the slots of an f-string are still text.
+            if isinstance(child, Token) and "FSTRING" in child.type.upper() and word.search(str(child)):
+                return True
+        if sub.data == "var" and sub.children and isinstance(sub.children[0], Tree):
+            inner = sub.children[0]
+            if inner.children and str(inner.children[0]) == name:
+                return True
+        elif sub.data == "var" and sub.children and str(sub.children[0]) == name:
+            return True
+    return False
+
+
+def _finally_suite(node):
+    """The ``finally`` block of a ``try`` statement (``None`` without one)."""
+    if node.data == "try_stmt":
+        for child in node.children[1:]:
+            if isinstance(child, Tree) and child.data == "finally":
+                return child.children[0] if child.children else None
+        return None
+    if node.data == "try_finally" and len(node.children) > 1:
+        fin = node.children[1]
+        if isinstance(fin, Tree) and fin.data == "finally":
+            fin = fin.children[0] if fin.children else None
+        return fin if isinstance(fin, Tree) else None
+    return None
+
+
+def _close_regions(suite_node) -> list:
+    """``(node, finally_suite)`` of the ``try`` / ``with`` statements of a
+    generator body holding a ``yield`` (the ``finally`` regions its close
+    path runs; ``finally_suite`` is ``None`` for a ``with``)."""
+    out = []
+    for node in _own_nodes(suite_node):
+        if node.data in ("try_stmt", "try_finally"):
+            fin = _finally_suite(node)
+            if fin is not None and _has_own_yield(node.children[0]):
+                out.append((node, fin))
+            elif fin is not None and node.data == "try_stmt" and any(
+                isinstance(c, Tree) and c.data in ("catch_clauses", "suite") and _has_own_yield(c)
+                for c in node.children[1:]
+            ):
+                out.append((node, fin))
+        elif node.data == "with_stmt" and len(node.children) > 1 and _has_own_yield(node.children[1]):
+            out.append((node, None))
+    return out
+
+
+def close_path_self_use(suite_node, self_name: str = "self"):
+    """What of the close path of the generator body ``suite_node`` uses
+    ``self``: ``"finally"`` (a ``finally`` block of a ``try`` holding a
+    ``yield``), ``"with"`` (the resource of a ``with`` holding a
+    ``yield``), ``""`` when none does."""
+    regions = _close_regions(suite_node)
+    for _node, fin in regions:
+        if fin is not None and _uses_name(fin, self_name):
+            return "finally"
+    for node, fin in regions:
+        if fin is None and _uses_name(node.children[0], self_name):
+            return "with"
+    return ""
+
+
+def close_path_reads_self(suite_node, self_name: str = "self") -> bool:
+    """Whether the close path of the generator body ``suite_node`` (the
+    code ``Stop`` runs) may read ``self``: a ``finally`` block of a region
+    using it, or — when an exception or a jump out of a ``finally`` can
+    resume the body (a ``catch`` / ``do`` around a region, a ``break`` /
+    ``continue`` in a ``finally``) — any use of ``self`` in the body."""
+    regions = _close_regions(suite_node)
+    if not regions:
+        return False
+    if any(fin is not None and _uses_name(fin, self_name) for _n, fin in regions):
+        return True
+    resumable = False
+    region_ids = {id(node) for node, _f in regions}
+    for node in _own_nodes(suite_node):
+        if node.data == "try_stmt" and any(
+            isinstance(c, Tree) and c.data == "catch_clauses" and c.children for c in node.children[1:]
+        ) or node.data == "do_stmt":
+            body = node.children[0]
+            if any(id(n) in region_ids for n in _own_nodes(body)):
+                resumable = True
+                break
+    if not resumable:
+        for _n, fin in regions:
+            if fin is not None and any(
+                n.data in ("break_stmt", "continue_stmt") for n in _own_nodes(fin)
+            ):
+                resumable = True
+                break
+    return resumable and _uses_name(suite_node, self_name)
+
+
 class GeneratorStateMachineMixin:
     """Lowering of generator bodies to state machines (see module doc)."""
 
@@ -196,11 +326,17 @@ class GeneratorStateMachineMixin:
 
     def _emit_generator_handle(self, elem_type: str, suite_node, params_node, *,
                                skip_self: bool = False, recv: str = "", overrides=None,
-                               value_type=None) -> None:
+                               value_type=None, recv_type: str = "", name: str = "") -> None:
         """``return <generator handle>`` on the body ``suite_node`` (at the
         current indent, inside the function returning it): a generator of
         Go ``elem_type`` values, each ``yield`` shaping its value as
-        ``value_type`` (the declared element type, ``""`` when unknown)."""
+        ``value_type`` (the declared element type, ``""`` when unknown).
+
+        A method generator (receiver ``recv`` of Go type ``*recv_type``)
+        whose close path reads ``self`` is a ``lamNewMethodGenerator``
+        named ``name``: every continuation reads the receiver from the
+        frame instead of capturing it, so the cleanup of a collected handle
+        reaches it only through ``lamGenRecv`` (``GENERATOR_RUNTIME_GO``)."""
         from compiler.constants import GENERATOR_YIELD_NAME
         overrides = dict(overrides or {})
         unsupported = self._generator_sm_unsupported(suite_node)
@@ -215,12 +351,21 @@ class GeneratorStateMachineMixin:
             self._emit(f"return {ctor}[{elem_type}](func({GENERATOR_YIELD_NAME} func({elem_type}) bool) {{")
             scoped["_sm"] = None
         else:
-            self._emit(f"return lamNewStateGenerator[{elem_type}](func(__lamF *lamGenFrame[{elem_type}]) int {{")
-            scoped["_sm"] = _SMContext(elem_type, self._sm_body_has_regions(suite_node))
+            sm = _SMContext(elem_type, self._sm_body_has_regions(suite_node))
+            if recv and recv_type and close_path_reads_self(suite_node):
+                sm.recv = (recv, recv_type)
+                self._emit(
+                    f"return lamNewMethodGenerator[{elem_type}, {recv_type}]({recv}, \"{name}\", "
+                    f"func(__lamF *lamGenFrame[{elem_type}]) int {{"
+                )
+            else:
+                self._emit(f"return lamNewStateGenerator[{elem_type}](func(__lamF *lamGenFrame[{elem_type}]) int {{")
+            scoped["_sm"] = sm
             scoped["_sm_leaf_loop"] = False
             scoped["_sm_case_k"] = None
         self.indent += 1
         self._push_scope()
+        shadow = self._sm_emit_recv_shadow(scoped["_sm"]) if not unsupported else -1
         self._emit_params_prologue(params_node, skip_self=skip_self)
         if recv:
             self._declare_var(recv)
@@ -233,8 +378,46 @@ class GeneratorStateMachineMixin:
                 self._sm_stmts(self._sm_suite_stmts(suite_node), _K("done"))
         self._emit_unused_local_silencers(body_start, params_at_start)
         self._pop_scope()
+        if not unsupported:
+            self._sm_prune_recv_shadow(scoped["_sm"], shadow)
         self.indent -= 1
         self._emit("})")
+
+    def _sm_emit_recv_shadow(self, sm) -> int:
+        """The receiver read from the frame at the start of a continuation
+        of a ``lamNewMethodGenerator`` (shadowing the method's receiver);
+        the index of that line (``-1`` when there is none)."""
+        if sm is None or sm.recv is None:
+            return -1
+        recv, recv_type = sm.recv
+        self._emit(f"{recv}, _ := __lamF.r.(*{recv_type})")
+        self._emit(f"_ = {recv}")
+        return len(self.output_lines) - 2
+
+    def _sm_prune_recv_shadow(self, sm, index: int) -> None:
+        """Drop the receiver line ``index`` of a continuation that does not
+        use the receiver (the continuation's lines follow it)."""
+        if index < 0 or sm is None or sm.recv is None:
+            return
+        recv, recv_type = sm.recv
+        shadow = f"{recv}, _ := __lamF.r.(*{recv_type})"
+        pattern = re.compile(rf"\b{re.escape(recv)}\b")
+        nested_indent = None
+        for line in self.output_lines[index + 2:]:
+            if line.startswith("//line "):
+                continue
+            indent = len(line) - len(line.lstrip("\t"))
+            if nested_indent is not None:
+                if indent >= nested_indent:
+                    continue
+                nested_indent = None
+            if line.strip() == shadow:
+                # A nested continuation reads the receiver itself.
+                nested_indent = indent
+                continue
+            if pattern.search(line):
+                return
+        del self.output_lines[index:index + 2]
 
     def _sm_body_has_regions(self, suite_node) -> bool:
         """Whether the body has a ``try`` / ``with`` / loop over a call
@@ -312,12 +495,14 @@ class GeneratorStateMachineMixin:
         self._push_scope()
         saved_native = sm.native_loop
         sm.native_loop = None
+        shadow = self._sm_emit_recv_shadow(sm)
         self._sm_set_handler()
-        return saved_native, self._scope_unused_tracking_start()
+        return saved_native, self._scope_unused_tracking_start(), shadow
 
     def _sm_close_closure(self, token, suffix: str = "") -> None:
-        saved_native, (body_start, vars_at_start) = token
+        saved_native, (body_start, vars_at_start), shadow = token
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
+        self._sm_prune_recv_shadow(self._sm, shadow)
         self.indent -= 1
         self._emit("}" + suffix)
         self._sm.native_loop = saved_native
@@ -693,10 +878,7 @@ class GeneratorStateMachineMixin:
         if len(sm.do_targets) != loop.do_depth or len(sm.regions) != loop.depth:
             return ""
         for stmt in rest:
-            for node in stmt.iter_subtrees():
-                if node.data != "var" or not node.children:
-                    continue
-                go_name = self._go_binding_name(self._get_name(node.children[0]))
+            for go_name in self._sm_go_names_read(stmt):
                 if go_name not in self.declared_vars:
                     continue
                 if go_name not in loop.declared or self._var_go_types.get(go_name) != loop.types.get(go_name):
@@ -704,6 +886,30 @@ class GeneratorStateMachineMixin:
         name = self._sm_new("Resume")
         loop.deferred.append((name, rest))
         return name
+
+    def _sm_go_names_read(self, node) -> set:
+        """Go names of the variables ``node`` may read: its ``var`` nodes,
+        the identifiers of its f-string slots (text until the f-string is
+        lowered) and of its ``go!`` blocks (Go code naming Go locals) —
+        over-approximated, which only keeps a continuation per iteration."""
+        names: set = set()
+        if not isinstance(node, Tree):
+            return names
+        for sub in node.iter_subtrees():
+            if sub.data == "var" and sub.children:
+                name = self._get_name(sub.children[0])
+                names.add(self._go_binding_name(name))
+            for child in sub.children:
+                if isinstance(child, Token) and "FSTRING" in child.type.upper():
+                    names.update(self._go_binding_name(n) for n in _fstring_slot_names(str(child)))
+            if sub.data == "funccall" and sub.children and isinstance(sub.children[0], Tree) \
+                    and sub.children[0].data == "var" and sub.children[0].children \
+                    and self._get_name(sub.children[0].children[0]) in ("__go_block__", "__go_inline__"):
+                for token in sub.scan_values(lambda v: isinstance(v, Token)):
+                    text = str(token)
+                    if len(text) >= 2 and text[0] in "\"'" and text[-1] == text[0]:
+                        names.update(_IDENT_RE.findall(self.go_blocks.get(text[1:-1], "")))
+        return names
 
     def _sm_loop_body(self, loop: _Loop, body_suite, facts=None, region=None) -> None:
         """The statements of a loop body inside its Go ``for`` (at the

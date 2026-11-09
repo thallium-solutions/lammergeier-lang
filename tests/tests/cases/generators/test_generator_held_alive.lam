@@ -1,0 +1,295 @@
+# A method generator whose `finally` uses `self` keeps running that
+# `finally` when it is collected while its object is alive, whether or not
+# it was stored in the object: replacing the field (`self.items =
+# self.produce()` again, `o.items = other`) or keeping the generator
+# elsewhere, then dropping it, closes it with the object. A generator
+# taken out of its object (`it = o.items`) keeps the object usable while
+# it is iterated after the object is dropped (`self` is read in the body);
+# dropping it then frees the cycle it still forms with the object (its
+# `finally` cannot run: reported on stderr), unless the field was cleared
+# first (`o.items = other`), in which case the generator holds the object
+# again and closing it on collection runs the `finally`. Two fields
+# holding the generator count as two: clearing one keeps it weak.
+#
+# expect: reset finally 1
+# expect: reset finally 2
+# expect: replaced finally ok
+# expect: elsewhere finally ok
+# expect: detached sum 13560
+# expect: detached collected true
+# expect: detached reported 10
+# expect: cleared sum 13560
+# expect: cleared finally 10
+# expect: twice reported 1
+# expect: twice finally 0
+# expect: total finally 14
+# expect: lines 11
+
+go! {
+    import (
+        "os"
+        "runtime"
+        "strings"
+        "sync/atomic"
+        "time"
+    )
+
+    var lamTestFinallies atomic.Int64
+    var lamTestClosings [1000]atomic.Int64
+    var lamTestDetached atomic.Int64
+    var lamTestStderrFile *os.File
+    var lamTestRealStderr *os.File
+}
+
+func finallyRan() {
+    go! {
+        lamTestFinallies.Add(1)
+    }
+}
+
+# The `finally` of a collected generator runs on another goroutine: the
+# counters are atomic.
+func closedFeed(n: int) {
+    go! {
+        lamTestClosings[n].Add(1)
+    }
+}
+
+func closings(n: int) -> int {
+    c: int = 0
+    go! {
+        c = int(lamTestClosings[n].Load())
+    }
+    return c
+}
+
+class Feed {
+    func init(self, n: int) {
+        self.n: int = n
+        self.other: generator[int] = Feed.none()
+        self.items: generator[int] = self.produce()
+    }
+
+    static func none() -> generator[int] {
+        for i in range(0) {
+            yield i
+        }
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            i: int = 0
+            while True {
+                yield self.n + i
+                i += 1
+            }
+        } finally {
+            closedFeed(self.n)
+            finallyRan()
+        }
+    }
+
+    func reset(self) {
+        self.items = self.produce()
+    }
+}
+
+class Watched {
+    func init(self, n: int) {
+        self.n: int = n
+        self.items: generator[int] = self.produce()
+        me: Watched = self
+        go! {
+            runtime.AddCleanup(me, func(int) { lamTestDetached.Add(1) }, 0)
+        }
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            i: int = 0
+            while True {
+                yield self.n + i
+                i += 1
+            }
+        } finally {
+            if self.n >= 0 {
+                finallyRan()
+            }
+        }
+    }
+}
+
+func captureStderr() {
+    go! {
+        lamTestRealStderr = os.Stderr
+        f, err := os.CreateTemp("", "lam-held-alive-*.log")
+        if err != nil {
+            panic(err)
+        }
+        lamTestStderrFile = f
+        os.Stderr = f
+    }
+}
+
+func reported(needle: str) -> int {
+    n: int = 0
+    go! {
+        data, err := os.ReadFile(lamTestStderrFile.Name())
+        if err != nil {
+            panic(err)
+        }
+        for _, line := range strings.Split(string(data), "\n") {
+            if strings.Contains(line, needle) {
+                n++
+            }
+        }
+    }
+    return n
+}
+
+func restoreStderr() {
+    go! {
+        os.Stderr = lamTestRealStderr
+        name := lamTestStderrFile.Name()
+        lamTestStderrFile.Close()
+        os.Remove(name)
+    }
+}
+
+func finallies() -> int {
+    n: int = 0
+    go! {
+        n = int(lamTestFinallies.Load())
+    }
+    return n
+}
+
+func detachedCollected() -> int {
+    n: int = 0
+    go! {
+        n = int(lamTestDetached.Load())
+    }
+    return n
+}
+
+# Collects until `check` holds (cleanups run in the background).
+func settle(check: func() -> bool) {
+    for i in range(400) {
+        go! {
+            runtime.GC()
+            time.Sleep(3 * time.Millisecond)
+        }
+        if check() {
+            break
+        }
+    }
+    go! {
+        for i := 0; i < 3; i++ {
+            runtime.GC()
+            time.Sleep(3 * time.Millisecond)
+        }
+    }
+}
+
+# Resumes `g` once.
+func step(g: generator[int]) {
+    for v in g {
+        _ = v
+        break
+    }
+}
+
+func detach(k: int) -> generator[int] {
+    w: Watched = Watched(k)
+    step(w.items)
+    return w.items
+}
+
+func detachCleared(k: int) -> generator[int] {
+    f: Feed = Feed(k)
+    step(f.items)
+    it: generator[int] = f.items
+    f.items = Feed.none()
+    return it
+}
+
+func twice(f: Feed) {
+    g: generator[int] = f.produce()
+    f.items = g
+    f.other = g
+    step(f.items)
+    f.items = Feed.none()
+}
+
+func main() {
+    captureStderr()
+
+    # The object stays alive; its old generators are collected and closed.
+    keep: Feed = Feed(1)
+    step(keep.items)
+    keep.reset()
+    settle(lambda: closings(1) >= 1)
+    print("reset finally", closings(1))
+    step(keep.items)
+    keep.reset()
+    settle(lambda: closings(1) >= 2)
+    print("reset finally", closings(1))
+
+    replaced: Feed = Feed(2)
+    step(replaced.items)
+    replaced.items = Feed.none()
+    settle(lambda: closings(2) >= 1)
+    print("replaced finally", "ok" if closings(2) == 1 else "missing")
+
+    holder: list[generator[int]] = []
+    other: Feed = Feed(3)
+    holder.append(other.produce())
+    step(holder[0])
+    holder = []
+    settle(lambda: closings(3) >= 1)
+    print("elsewhere finally", "ok" if closings(3) == 1 else "missing")
+
+    # Taken out of the object, the generator keeps it usable.
+    before: int = finallies()
+    acc: int = 0
+    for k in range(10) {
+        it: generator[int] = detach(k * 100)
+        for v in it {
+            acc += v
+            if v >= k * 100 + 3 {
+                break
+            }
+        }
+    }
+    settle(lambda: detachedCollected() >= 10 and reported("generator Watched.produce") >= 10)
+    print("detached sum", acc)
+    print("detached collected", detachedCollected() == 10)
+    print("detached reported", reported("generator Watched.produce: its finally uses the object holding it"))
+
+    acc = 0
+    for k in range(10) {
+        it: generator[int] = detachCleared(k * 100)
+        for v in it {
+            acc += v
+            if v >= k * 100 + 3 {
+                break
+            }
+        }
+    }
+    settle(lambda: finallies() >= before + 10)
+    print("cleared sum", acc)
+    print("cleared finally", finallies() - before)
+
+    before = finallies()
+    lines: int = reported("Exception ignored in generator")
+    for k in range(1) {
+        t: Feed = Feed(9)
+        twice(t)
+    }
+    settle(lambda: reported("Exception ignored in generator") > lines)
+    print("twice reported", reported("Exception ignored in generator") - lines)
+    print("twice finally", finallies() - before)
+    print("total finally", finallies())
+    print("lines", reported("Exception ignored in generator"))
+    restoreStderr()
+}

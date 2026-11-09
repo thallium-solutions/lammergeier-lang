@@ -246,6 +246,7 @@ class HelpersMixin:
         self.scope_stack.append((
             set(self.declared_vars),
             dict(getattr(self, "_nested_generic_functions", {})),
+            dict(self._typed_decls),
         ))
 
     def _pop_scope(self):
@@ -254,6 +255,7 @@ class HelpersMixin:
             if isinstance(snapshot, tuple):
                 self.declared_vars = snapshot[0]
                 self._nested_generic_functions = snapshot[1]
+                self._typed_decls = snapshot[2]
             else:
                 self.declared_vars = snapshot
 
@@ -290,6 +292,18 @@ class HelpersMixin:
 
     def _declare_var(self, name: str):
         self.declared_vars.add(name)
+        # A new Go variable: its type is explicit only if the caller says
+        # so (``_declare_typed_var``).
+        self._typed_decls.pop(name, None)
+
+    def _declare_typed_var(self, name: str, go_type: str) -> None:
+        """Declare ``name``, emitted with the explicit Go type ``go_type``
+        (``var name T``, a parameter ``name T``, a ``for name := 0`` loop
+        counter): its type is certain, not inferred from a type hint
+        (``_typed_decls``, read by ``_certain_go_type``)."""
+        self._declare_var(name)
+        if go_type:
+            self._typed_decls[name] = go_type
 
     def _need_import(self, pkg: str):
         self.needed_imports.add(pkg)
@@ -365,7 +379,10 @@ class HelpersMixin:
 
     def _trailing_terminator_line(self, body_start_line: int):
         """Index of a trailing ``return`` / ``panic`` statement of the block
-        being closed (at the current indent), else ``None``."""
+        being closed (at the current indent), or of the first line of a
+        trailing compound statement (a bare block, ``if``, ``for``,
+        ``switch``, ``select``), which may be terminating through its own
+        last statements (``{ ...; return k(f) }``); else ``None``."""
         indent = self._indent_str()
         for index in range(len(self.output_lines) - 1, body_start_line - 1, -1):
             line = self.output_lines[index]
@@ -377,6 +394,10 @@ class HelpersMixin:
             if text.startswith(("}", ")")):
                 continue
             if _re.match(r"(return\b|panic\()", text):
+                return index
+            if text.rstrip() == "{" or _re.match(r"(if|for|switch|select)\b", text):
+                # The silencers go in front of it: the locals they name
+                # were declared before it.
                 return index
             return None
         return None
@@ -2283,6 +2304,8 @@ class HelpersMixin:
                             go_type = self._type_expr_to_go(param.children[1])
                             if go_type:
                                 self._var_go_types[name] = go_type
+                                # Emitted ``name T`` in the signature.
+                                self._typed_decls[self._go_binding_name(name)] = go_type
                             self._record_lam_type(name, param.children[1])
                             self._note_result_payload(name, param.children[1])
                             tuple_types = self._list_tuple_element_types(param.children[1])

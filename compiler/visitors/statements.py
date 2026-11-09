@@ -113,7 +113,7 @@ class StatementVisitorMixin:
             self._emit(f"{target_str} = {value_str}")
         else:
             self._emit(f"var {target_str} {go_type} = {value_str}")
-            self._declare_var(target_str)
+            self._declare_typed_var(target_str, go_type)
 
     def _record_inferred_target_type(self, target_str: str, value_node) -> None:
         if not target_str or target_str == "_" or "." in target_str or "[" in target_str:
@@ -288,6 +288,13 @@ class StatementVisitorMixin:
             # Module-level variable namespaced by ``compiler/namespacing.py``.
             target_str = self._link_const_go_names[target_str]
 
+        if (
+            value is not None and "." in target_str and isinstance(target, Tree) and target.data == "getattr"
+            and self._emit_generator_field_store(
+                target, value, go_type, expected=self._expected_value_lam_for(value, type_node),
+            )
+        ):
+            return
         if value is not None:
             if (
                 isinstance(value, Tree) and value.data == "test" and len(value.children) == 3
@@ -300,7 +307,7 @@ class StatementVisitorMixin:
                     false_val = self._typed_value_to_go(value.children[2], go_type, overload_type_key)
                 if not self._is_declared_or_nonlocal_target(target_str):
                     self._emit(f"var {target_str} {go_type}")
-                    self._declare_var(target_str)
+                    self._declare_typed_var(target_str, go_type)
                 self._emit(f"if {cond} {{")
                 self.indent += 1
                 self._emit(f"{target_str} = {true_val}")
@@ -326,7 +333,7 @@ class StatementVisitorMixin:
                 and not self._is_static_var_go_name(target_str)
             ):
                 self._emit(f"var {target_str} {go_type}")
-                self._declare_var(target_str)
+                self._declare_typed_var(target_str, go_type)
 
     def _visit_const_stmt(self, node: Tree):
         """``const NAME [: TYPE] = EXPR`` — immutable binding.
@@ -366,10 +373,40 @@ class StatementVisitorMixin:
         value_str = self._typed_value_to_go(value_node, go_type) if value_node is not None else ""
         if go_type:
             self._emit(f"var {target_str} {go_type} = {value_str}")
+            self._declare_typed_var(target_str, go_type)
         else:
             # No type info anywhere — let Go infer.
             self._emit(f"{target_str} := {value_str}")
-        self._declare_var(target_str)
+            self._declare_var(target_str)
+
+    _GO_SELECTOR_RE = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*")
+
+    def _emit_generator_field_store(self, target_node, value_node, go_type: str = "", expected=None) -> bool:
+        """``obj.f = <generator>`` into a field of a class instance:
+        ``lamGenStore`` (``GENERATOR_RUNTIME_GO``), which tells the stored
+        generator and the replaced one whether a field of their receiver's
+        object holds them (the cleanup then holds that object weakly).
+        ``False`` (a plain assignment) for another target."""
+        from compiler.constants import generator_go_elem
+        go_type = go_type or self._expr_go_type_hint(target_node) or ""
+        if generator_go_elem(go_type) is None:
+            return False
+        obj_node = target_node.children[0]
+        owner = self._expr_to_go(obj_node)
+        is_self = (
+            isinstance(obj_node, Tree) and obj_node.data == "var" and obj_node.children
+            and self._get_name(obj_node.children[0]) == "self" and bool(self.current_class)
+        )
+        if not self._GO_SELECTOR_RE.fullmatch(owner) or not (is_self or self._infer_receiver_class(obj_node)):
+            return False
+        with self._scoped(_index_target=True):
+            target_str = self._assign_target_to_go(target_node)
+        if not self._GO_SELECTOR_RE.fullmatch(target_str):
+            return False
+        with self._scoped(_propagate_cast_hint=go_type, _expected_value_lam=expected):
+            value_str = self._typed_value_to_go(value_node, go_type)
+        self._emit(f"lamGenStore(&{target_str}, {value_str}, {owner})")
+        return True
 
     def _assign_target_to_go(self, target) -> str:
         """Go name of an assignment target. A plain name is a variable even
@@ -417,6 +454,8 @@ class StatementVisitorMixin:
                     attr = self._get_name(target_node.children[1])
                     value_str = self._typed_value_to_go(value_node, "LamJSON")
                     self._emit(f'lamJSONSet({self._expr_to_go(obj_node)}, "{attr}", {value_str})')
+                    return
+                if len(parts) == 2 and self._emit_generator_field_store(target_node, value_node):
                     return
             if isinstance(target_node, Tree) and target_node.data == "getitem" and len(parts) == 2 and target_node.children:
                 # ``d[k] = Box([])`` / ``xs[i] = make()``: the item type of
@@ -670,6 +709,14 @@ class StatementVisitorMixin:
             return False
         if self._contains_async_handle_call(value_node):
             return False
+        if (
+            isinstance(value_node, Tree) and value_node.data == "funccall" and value_node.children
+            and isinstance(value_node.children[0], Tree) and value_node.children[0].data == "getattr_safe"
+        ):
+            # ``x = obj?.name()``: an ``interface{}`` holding the result or
+            # ``None`` (``_expr_go_type_hint``); declaring it with the
+            # payload type would assert ``None`` to it.
+            return False
         type_node, go_type = inferred
         own = self._expr_go_type_hint(value_node) or self._infer_type_from_value(value_node) or ""
         raw_type = self._get_raw_type_name(type_node)
@@ -694,7 +741,10 @@ class StatementVisitorMixin:
         if tuple_types:
             self._tuple_iterable_element_types[target_str] = tuple_types
         self._emit(decl)
-        self._declare_var(target_str)
+        if decl.startswith("var "):
+            self._declare_typed_var(target_str, go_type)
+        else:
+            self._declare_var(target_str)
         return True
 
     def _tuple_value_element_go_types(self, value_node, count: int) -> list:
@@ -1411,7 +1461,7 @@ class StatementVisitorMixin:
             if go_type == "interface{}":
                 continue
             self._emit(f"var {name} {go_type}")
-            self._declare_var(name)
+            self._declare_typed_var(name, go_type)
             self._var_go_types[name] = go_type
             if go_type.startswith("*"):
                 class_name = go_type[1:].split("[", 1)[0]

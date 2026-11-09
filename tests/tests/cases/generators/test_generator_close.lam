@@ -1,0 +1,440 @@
+# `g.close()` ends a generator like Python's `generator.close()`: a body
+# suspended in a `try` / `with` runs its pending `finally` blocks and
+# `with` closes (innermost first, through the generators it delegates
+# to), an exception raised there reaches the caller of `close()`, closing
+# a generator that is exhausted, never started or already closed does
+# nothing, and iterating a closed generator yields nothing more. Works on
+# variables, fields, parameters, `iterator[T]` values, call results,
+# generic and inherited method generators and generators kept on the
+# coroutine lowering (`defer` in the body); a generator whose `finally`
+# closes its own object (which closes the generator) does not deadlock,
+# whether it ends by `close()` or by being exhausted; a closed generator
+# is not closed again when it is collected.
+#
+# expect: s 0
+# expect: s 1
+# expect: s finally
+# expect: after close []
+# expect: second close nothing
+# expect: e 0
+# expect: e 1
+# expect: e finally
+# expect: exhausted close nothing
+# expect: unstarted close nothing 0
+# expect: raised ValueError: in finally
+# expect: after raise []
+# expect: r res
+# expect: close handle
+# expect: nested 0
+# expect: inner finally
+# expect: outer finally
+# expect: call result closed
+# expect: field 10
+# expect: s finally
+# expect: param 0
+# expect: s finally
+# expect: iter 0
+# expect: s finally
+# expect: loop 0
+# expect: loop 1
+# expect: s finally
+# expect: loop left
+# expect: co 0
+# expect: co finally
+# expect: co deferred
+# expect: co after []
+# expect: co raising deferred
+# expect: co raised ValueError: co boom
+# expect: generic hi
+# expect: generic finally hi
+# expect: inherited 7
+# expect: base finally 7
+# expect: feed 0
+# expect: feed closing 1
+# expect: feed closed true
+# expect: feed2 0
+# expect: feed2 1
+# expect: feed closing 1
+# expect: feed2 closed true
+# expect: raised then nothing []
+# expect: collected finally runs 50
+# expect: done
+
+go! {
+    import (
+        "runtime"
+        "sync/atomic"
+        "time"
+    )
+
+    var lamTestCloseFinally atomic.Int64
+}
+
+class Res {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func Close(self) {
+        print("close " + self.name)
+    }
+}
+
+func simple(tag: str) -> generator[int] {
+    try {
+        i: int = 0
+        while True {
+            yield i
+            i += 1
+        }
+    } finally {
+        print(tag + " finally")
+    }
+}
+
+func short() -> generator[int] {
+    try {
+        yield 0
+        yield 1
+    } finally {
+        print("e finally")
+    }
+}
+
+func noisy() -> generator[int] {
+    print("unstarted body ran")
+    try {
+        yield 1
+    } finally {
+        print("unstarted finally ran")
+    }
+}
+
+func raising() -> generator[int] {
+    try {
+        yield 1
+        yield 2
+    } finally {
+        raise ValueError("in finally")
+    }
+}
+
+func withRes() -> generator[str] {
+    with Res("handle") as r {
+        yield "res"
+        yield "more"
+    }
+}
+
+func inner() -> generator[int] {
+    try {
+        yield 0
+        yield 1
+    } finally {
+        print("inner finally")
+    }
+}
+
+func outer() -> generator[int] {
+    try {
+        for v in inner() {
+            yield v
+        }
+    } finally {
+        print("outer finally")
+    }
+}
+
+func coroutine() -> generator[int] {
+    defer print("co deferred")
+    try {
+        yield 0
+        yield 1
+    } finally {
+        print("co finally")
+    }
+}
+
+func coroutineRaising() -> generator[int] {
+    defer print("co raising deferred")
+    try {
+        yield 0
+        yield 1
+    } finally {
+        raise ValueError("co boom")
+    }
+}
+
+func counted() -> generator[int] {
+    try {
+        yield 1
+        yield 2
+    } finally {
+        go! {
+            lamTestCloseFinally.Add(1)
+        }
+    }
+}
+
+func failing() -> generator[int] {
+    yield 1
+    raise ValueError("body")
+}
+
+class Holder {
+    func init(self) {
+        self.g: generator[int] = simple("s")
+    }
+}
+
+class Echo[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func repeat(self) -> generator[T] {
+        try {
+            while True {
+                yield self.value
+            }
+        } finally {
+            print(f"generic finally {self.value}")
+        }
+    }
+}
+
+class Base {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func numbers(self) -> generator[int] {
+        try {
+            while True {
+                yield self.n
+            }
+        } finally {
+            print(f"base finally {self.n}")
+        }
+    }
+}
+
+class Derived(Base) {
+    func label(self) -> str {
+        return "derived"
+    }
+}
+
+# The generator's `finally` closes the object, whose `close()` closes the
+# generator: the nested `close()` of the generator being closed (or
+# being exhausted) does nothing.
+class Feed {
+    func init(self, n: int) {
+        self.n: int = n
+        self.closings: int = 0
+        self.items: generator[int] = self.produce()
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            i: int = 0
+            while i < self.n {
+                yield i
+                i += 1
+            }
+        } finally {
+            self.close()
+        }
+    }
+
+    func close(self) {
+        if self.closings > 0 {
+            return
+        }
+        self.closings += 1
+        print(f"feed closing {self.closings}")
+        self.items.close()
+    }
+}
+
+func take(g: generator[int]) {
+    for v in g {
+        print(f"param {v}")
+        break
+    }
+    g.close()
+}
+
+func rest(g: generator[int]) -> list[int] {
+    return [v for v in g]
+}
+
+func settle(target: int) {
+    go! {
+        for i := 0; i < 600 && lamTestCloseFinally.Load() < int64(target); i++ {
+            runtime.GC()
+            time.Sleep(2 * time.Millisecond)
+        }
+        // A closed generator must not be closed again by its cleanup.
+        for i := 0; i < 5; i++ {
+            runtime.GC()
+            time.Sleep(2 * time.Millisecond)
+        }
+    }
+}
+
+func finallyRuns() -> int {
+    n: int = 0
+    go! {
+        n = int(lamTestCloseFinally.Load())
+    }
+    return n
+}
+
+func main() {
+    g: generator[int] = simple("s")
+    for v in g {
+        print(f"s {v}")
+        if v == 1 {
+            break
+        }
+    }
+    g.close()
+    print("after close", rest(g))
+    g.close()
+    print("second close nothing")
+
+    e: generator[int] = short()
+    for v in e {
+        print(f"e {v}")
+    }
+    e.close()
+    print("exhausted close nothing")
+
+    u: generator[int] = noisy()
+    u.close()
+    u.close()
+    print("unstarted close nothing", len(rest(u)))
+
+    r: generator[int] = raising()
+    for v in r {
+        break
+    }
+    try {
+        r.close()
+    } catch ValueError as err {
+        print(f"raised {err}")
+    }
+    print("after raise", rest(r))
+
+    w: generator[str] = withRes()
+    for s in w {
+        print(f"r {s}")
+        break
+    }
+    w.close()
+
+    o: generator[int] = outer()
+    for v in o {
+        print(f"nested {v}")
+        break
+    }
+    o.close()
+
+    noisy().close()
+    print("call result closed")
+
+    h: Holder = Holder()
+    for v in h.g {
+        print(f"field {v + 10}")
+        break
+    }
+    h.g.close()
+
+    take(simple("s"))
+
+    it: iterator[int] = simple("s")
+    for v in it {
+        print(f"iter {v}")
+        break
+    }
+    it.close()
+
+    lp: generator[int] = simple("s")
+    for v in lp {
+        print(f"loop {v}")
+        if v == 1 {
+            lp.close()
+        }
+    }
+    print("loop left")
+
+    co: generator[int] = coroutine()
+    for v in co {
+        print(f"co {v}")
+        break
+    }
+    co.close()
+    print("co after", rest(co))
+    cr: generator[int] = coroutineRaising()
+    for v in cr {
+        break
+    }
+    try {
+        cr.close()
+    } catch ValueError as err {
+        print(f"co raised {err}")
+    }
+
+    echo: Echo[str] = Echo[str]("hi")
+    eg: generator[str] = echo.repeat()
+    for v in eg {
+        print(f"generic {v}")
+        break
+    }
+    eg.close()
+
+    d: Derived = Derived(7)
+    dg: generator[int] = d.numbers()
+    for v in dg {
+        print(f"inherited {v}")
+        break
+    }
+    dg.close()
+
+    f: Feed = Feed(5)
+    for v in f.items {
+        print(f"feed {v}")
+        break
+    }
+    f.close()
+    print("feed closed", f.closings == 1)
+    f2: Feed = Feed(2)
+    for v in f2.items {
+        print(f"feed2 {v}")
+    }
+    print("feed2 closed", f2.closings == 1)
+
+    fl: generator[int] = failing()
+    try {
+        for v in fl {
+            _ = v
+        }
+    } catch ValueError {
+        fl.close()
+    }
+    print("raised then nothing", rest(fl))
+
+    for k in range(50) {
+        c: generator[int] = counted()
+        for v in c {
+            break
+        }
+        if k == 0 {
+            c.close()
+        }
+    }
+    settle(50)
+    print("collected finally runs", finallyRuns())
+    print("done")
+}

@@ -1,8 +1,9 @@
 # ``str()`` and f-string slots of html / xml / json are the value's own
 # text (``lamValueText``: its String(), rendered or encoded once) instead of
-# fmt.Sprintf("%v", ...); an f-string made of str and such values (no
-# format spec, at least one of them not a str) is a concatenation, an
-# f-string of str slots only stays fmt.Sprintf. json literals
+# fmt.Sprintf("%v", ...); an f-string made of str, int and such values
+# (no format spec) is a concatenation, a declared str slot used as is, an
+# int through strconv (f-strings of declared str slots only too, see
+# fstring_concat.lam). json literals
 # are normalized in place (``lamJSONLiteral``), nested ones too, and ``in``
 # on a list of comparable elements compares with ``==``.
 #
@@ -11,11 +12,11 @@
 # expect-go: var docText string = lamValueText(doc)
 # expect-go: var size int = len(lamValueText(page))
 # expect-go: var full string = "<!doctype html>" + lamValueText(page)
-# expect-go: var mixed string = lamValueText(title) + ": " + lamValueText(page) + " " + lamValueText(feed) + " " + lamValueText(doc)
-# expect-go: var url string = fmt.Sprintf("%v/%v", base, key)
-# expect-go: var only string = fmt.Sprintf("%v", base)
+# expect-go: var mixed string = title + ": " + lamValueText(page) + " " + lamValueText(feed) + " " + lamValueText(doc)
+# expect-go: var url string = base + "/" + key
+# expect-go: var only string = base
 # expect-go: var padded string = fmt.Sprintf("%10v", base)
-# expect-go: var counted string = fmt.Sprintf("%v %v", page, len(title))
+# expect-go: var counted string = lamValueText(page) + " " + strconv.Itoa(len(title))
 # expect-go: var rendered string = lamValueText(Layout(page))
 # expect-go: var doc LamJSON = lamJSONLiteral(map[string]interface{}{"title": title, "tags": tags, "nested": lamJSONLiteral(map[string]interface{}{"ok": true, "list": lamJSONLiteral([]interface{}{1, 2})})})
 # expect-go: var items LamJSON = lamJSONLiteral([]interface{}{lamJSONLiteral(map[string]interface{}{"a": 1}), doc})

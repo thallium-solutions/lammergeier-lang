@@ -3456,6 +3456,9 @@ def _compile_lam(
     transpiler._lib_uses_generators = any(
         _re.search(r"\blam(?:New(?:Isolated)?)?Generator\[", src) for src in lib_sources.values()
     )
+    # Some library has an f-string slot through ``lamSlotText``: the main
+    # file defines it.
+    transpiler._lib_uses_slot_text = any("lamSlotText(" in src for src in lib_sources.values())
     # Inject library class/static info
     transpiler._class_names.update(lib_class_names)
     transpiler._interfaces.update(lib_pre_interfaces)

@@ -1,0 +1,69 @@
+# F-strings whose slots are all ``str`` — media keys and URLs the way a web
+# application builds them per request (an image key from an entry and a
+# size, a public URL from a base and that key, a variant name from slices
+# of the entry). Stresses the lowering of str-only f-strings: four of them
+# per iteration, one nested in another.
+#
+# Also prints the bytes allocated per iteration (``runtime.ReadMemStats``)
+# as the fifth field of the BENCH line.
+#
+# ops: 200000
+
+from lamtime import Time
+
+go! {
+    import "runtime"
+}
+
+class Keys {
+    static func key(entry: str, size: str) -> str {
+        return f"{entry}_{size}.avif"
+    }
+
+    static func url(base: str, entry: str, size: str) -> str {
+        return f"{base}/{Keys.key(entry, size)}"
+    }
+
+    static func variant(entry: str, size: str) -> str {
+        dot: int = entry.lastIndex(".")
+        return f"{entry[:dot]}_{size}{entry[dot:]}"
+    }
+}
+
+func allocated() -> int {
+    total: int = 0
+    go! {
+        var ms runtime.MemStats
+        runtime.ReadMemStats(&ms)
+        total = int(ms.TotalAlloc)
+    }
+    return total
+}
+
+func work(entries: list[str], sizes: list[str], base: str) -> int {
+    total: int = 0
+    for i in range(200000) {
+        entry: str = entries[i % len(entries)]
+        size: str = sizes[i % len(sizes)]
+        total += len(Keys.url(base, entry, size))
+        total += len(Keys.variant(entry, size))
+        total += len(f"{size}:{entry}")
+    }
+    return total
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    entries: list[str] = ["0192f1a2-7c3b-7d4e-9f00-1a2b3c4d5e6f.jpg", "0192f1a2-7c3b-7d4e-9f00-6f5e4d3c2b1a.png"]
+    sizes: list[str] = ["thumb", "card", "full"]
+    base: str = "https://media.example.com/public"
+    expected: int = work(entries, sizes, base)
+    before: int = allocated()
+    start: int = Time.nowUnixNano()
+    if work(entries, sizes, base) != expected {
+        print("unreachable")
+    }
+    elapsed: int = Time.nowUnixNano() - start
+    perOp: int = (allocated() - before) // 200000
+    print(f"BENCH fstring_str 200000 {elapsed} {perOp}")
+}

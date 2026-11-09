@@ -478,6 +478,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         # methods. Covers both kinds uniformly; we only need the flag,
         # not the dispatch kind.
         self._nonvoid_methods: Set[str] = set()
+        # ``"Class.method"`` -> ``"finally"`` / ``"with"``: a method
+        # generator whose close path uses ``self`` (``close_path_self_use``).
+        self._self_closing_generators: dict[str, str] = {}
+        # ``"Class.field"`` for each ``self.field.close()`` in a method.
+        self._closed_self_fields: Set[str] = set()
         self._func_sigs: dict[str, list[_CallableSig]] = {
             name: list(sigs)
             for name, sigs in (imported_func_sigs or {}).items()
@@ -1206,6 +1211,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         # so the same line ``x = x + 1`` is accepted (forward use of
         # ``x`` from an enclosing scope).
         if d in ("assign_stmt", "annassign", "assign", "augassign"):
+            self._check_generator_stored_in_own_object(node)
             self._check_assignment_interface_conformance(node)
             self._check_type_annotations(node)
             self._check_assignment_value_types(node)
@@ -4304,6 +4310,98 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 yield from walk(child)
         yield from walk(node)
 
+    def _self_field_close_call(self, node) -> str:
+        """``field`` of a ``self.field.close()`` call (``""`` otherwise)."""
+        if not (isinstance(node, Tree) and node.data == "funccall" and node.children):
+            return ""
+        callee = node.children[0]
+        if not (isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2):
+            return ""
+        if self._name_text(callee.children[1]) != "close":
+            return ""
+        target = callee.children[0]
+        if not (isinstance(target, Tree) and target.data == "getattr" and len(target.children) >= 2):
+            return ""
+        obj = target.children[0]
+        if not (isinstance(obj, Tree) and obj.data == "var" and obj.children and self._name_text(obj.children[0]) == "self"):
+            return ""
+        return self._name_text(target.children[1])
+
+    def _check_generator_stored_in_own_object(self, node: Tree) -> None:
+        """``self.items = self.produce()`` / ``o.items = o.produce()``: a
+        method generator stored in a field of its own object while its
+        close path uses ``self`` loses that code when the object is dropped
+        before the generator ends (it cannot run once the object is
+        collected with the generator)."""
+        if node.data == "assign_stmt":
+            for child in node.children:
+                if isinstance(child, Tree):
+                    self._check_generator_stored_in_own_object(child)
+            return
+        if node.data == "assign":
+            targets = [c for c in node.children[:-1] if isinstance(c, Tree)]
+        elif node.data == "annassign":
+            targets = [next((c for c in node.children if isinstance(c, Tree)), None)]
+        else:
+            return
+        value = self._assign_value(node)
+        if not (isinstance(value, Tree) and value.data == "funccall" and value.children):
+            return
+        callee = value.children[0]
+        if not (isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2):
+            return
+        owner = callee.children[0]
+        if not (isinstance(owner, Tree) and owner.data == "var" and owner.children):
+            return
+        owner_name = self._name_text(owner.children[0])
+        for target in targets:
+            if not (isinstance(target, Tree) and target.data == "getattr" and len(target.children) >= 2):
+                continue
+            obj = target.children[0]
+            if not (isinstance(obj, Tree) and obj.data == "var" and obj.children):
+                continue
+            if self._name_text(obj.children[0]) != owner_name:
+                continue
+            if owner_name == "self":
+                class_name = self._current_class_stack[-1] if self._current_class_stack else ""
+            else:
+                owner_type = self._expr_simple_type(owner)
+                class_name = owner_type.name if isinstance(owner_type, NamedType) else ""
+            if not class_name:
+                continue
+            method = self._name_text(callee.children[1])
+            found = ""
+            for cls in [class_name, *self._all_base_names(class_name)]:
+                if f"{cls}.{method}" in self._self_closing_generators:
+                    found = cls
+                    break
+                if method in self._class_method_shapes.get(cls, {}):
+                    break
+            if not found:
+                continue
+            use = self._self_closing_generators[f"{found}.{method}"]
+            field_name = self._name_text(target.children[1])
+            if any(
+                f"{cls}.{field_name}" in self._closed_self_fields
+                for cls in [class_name, *self._all_base_names(class_name)]
+            ):
+                # A method of the object closes the generator (``close()``).
+                continue
+            field = f"{owner_name}.{field_name}"
+            if use == "finally":
+                consequence = (
+                    "if the object is dropped before the generator ends, that `finally` does not run "
+                    "(the object is collected with the generator)"
+                )
+            else:
+                consequence = "if the object is dropped before the generator ends, neither is ever collected"
+            self._warning(
+                value, "flow",
+                f"generator `{found}.{method}` is stored in its own object and its `{use}` uses `self`: "
+                f"{consequence}; call `{field}.close()` before dropping the object "
+                f"(for example in the object's own `close()`)",
+            )
+
     def _check_assignment_interface_conformance(self, node: Tree) -> None:
         if node.data == "assign_stmt":
             for child in node.children:
@@ -6632,6 +6730,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         if self._set_item_type(set_type) is not None:
             self._check_set_receiver_method(callee, set_type, method)
             return
+        generator_type = receiver_type
+        if generator_type is None and receiver.data == "getattr":
+            generator_type = self._member_target_type(receiver)
+        if isinstance(generator_type, GenericType) and generator_type.base in self._GENERATOR_TYPE_NAMES:
+            self._check_generator_receiver_method(call, callee, generator_type, method)
+            return
         if self._check_markup_receiver_method(call, callee, receiver_type, method):
             return
         if self._is_named_type(receiver_type, "str") if receiver_type is not None else False:
@@ -6671,6 +6775,28 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 f"`{render_type(receiver_type)}` has no method `{method}`"
                 + self._scalar_receiver_hint(receiver, receiver_type, method, call),
             )
+
+    # Methods of a generator value (``g.close()``) and the spellings of other
+    # languages for them.
+    GENERATOR_METHODS = frozenset({"close"})
+    _GENERATOR_METHOD_HINTS = {
+        "stop": "close", "end": "close", "finish": "close", "cancel": "close",
+        "dispose": "close", "Close": "close", "shutdown": "close", "return_": "close",
+    }
+
+    def _check_generator_receiver_method(self, call: Tree, callee: Tree, receiver_type: Type, method: str) -> None:
+        """``g.close()`` is the one method of a generator; ``g.stop()``
+        failed only in the Go build."""
+        if method in self.GENERATOR_METHODS:
+            args_node = call.children[1] if len(call.children) > 1 else None
+            if isinstance(args_node, Tree) and any(c is not None for c in args_node.children):
+                self._error(callee, "call", "`close()` of a generator takes no arguments")
+            return
+        hint = self._GENERATOR_METHOD_HINTS.get(method) or self._closest(method, self.GENERATOR_METHODS)
+        self._error(
+            callee, "member",
+            f"`{render_type(receiver_type)}` has no method `{method}`" + (f" — did you mean `{hint}`?" if hint else ""),
+        )
 
     # Scalar types with no Lam methods: ``n.toUpper()`` / ``w[0].toUpper()``
     # otherwise failed only in the Go build.
@@ -9173,6 +9299,17 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 continue
             if self._funcdef_has_nonvoid_return(fn_node):
                 self._nonvoid_methods.add(f"{class_name}.{name}")
+            fn_suite = self._suite_node(fn_node)
+            if fn_suite is not None and not self._funcdef_is_static(fn_node):
+                for sub in fn_suite.iter_subtrees():
+                    field = self._self_field_close_call(sub)
+                    if field:
+                        self._closed_self_fields.add(f"{class_name}.{field}")
+            if fn_suite is not None and not self._funcdef_is_static(fn_node) and self._suite_has_yield(fn_suite):
+                from compiler.visitors.generators import close_path_self_use
+                use = close_path_self_use(fn_suite)
+                if use:
+                    self._self_closing_generators[f"{class_name}.{name}"] = use
             return_type_text = self._funcdef_return_type_text(fn_node)
             if return_type_text:
                 self._method_return_type_texts.setdefault(f"{class_name}.{name}", set()).add(return_type_text)

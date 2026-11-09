@@ -1,0 +1,108 @@
+# expect-pass
+# expect-no-warning: is stored in its own object
+# No warning when the generator's pending `finally` does not use `self`,
+# when the generator is stored somewhere other than a field of the object
+# whose method created it, when its `yield` is outside the `try`, or when
+# the method is not a generator, or when a method of the object closes
+# that field (`self.items.close()`, here in `close()`).
+
+class Feed {
+    func init(self, n: int) {
+        self.n: int = n
+        self.items: generator[int] = self.plain()
+        self.counted: generator[int] = self.counting()
+        self.after: generator[int] = self.tail()
+        self.made: generator[int] = self.make()
+    }
+
+    func plain(self) -> generator[int] {
+        try {
+            while True {
+                yield self.n
+            }
+        } finally {
+            print("plain finally")
+        }
+    }
+
+    func counting(self) -> generator[int] {
+        yield self.n
+        yield self.n + 1
+    }
+
+    func tail(self) -> generator[int] {
+        for i in range(self.n) {
+            yield i
+        }
+        try {
+            print("no yield here")
+        } finally {
+            print(self.n)
+        }
+    }
+
+    func make(self) -> generator[int] {
+        return self.plain()
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            yield self.n
+        } finally {
+            print(self.n)
+        }
+    }
+}
+
+class Closing {
+    func init(self, n: int) {
+        self.n: int = n
+        self.items: generator[int] = self.produce()
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            while True {
+                yield self.n
+            }
+        } finally {
+            print(self.n)
+        }
+    }
+
+    func close(self) {
+        self.items.close()
+    }
+}
+
+class Sink {
+    func init(self) {
+        self.items: generator[int] = Sink.empty()
+    }
+
+    static func empty() -> generator[int] {
+        for i in range(0) {
+            yield i
+        }
+    }
+}
+
+func main() {
+    f: Feed = Feed(2)
+    other: Feed = Feed(3)
+    c: Closing = Closing(1)
+    c.items = c.produce()
+    c.close()
+    s: Sink = Sink()
+    s.items = f.produce()
+    other.items = f.produce()
+    local: generator[int] = f.produce()
+    keep: list[generator[int]] = [f.produce()]
+    for v in local {
+        print(v)
+    }
+    print(len(keep), other.n)
+    for v in s.items {
+        print(v)
+    }
+}

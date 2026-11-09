@@ -1518,7 +1518,7 @@ func (s *Shape) _lamIs_Shape() *Shape { return s }
 func (s *Shape) Format(f fmt.State, verb rune) { ... }  // see below
 
 func (s *Shape) Describe() string {
-    return fmt.Sprintf("area %v", s._lamVirt_Area())
+    return "area " + strconv.Itoa(s._lamVirt_Area())
 }
 
 func (s *Square) _lamUp_Shape() *Shape { if s == nil { return nil }; return s.Shape }
@@ -1713,7 +1713,7 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `x and y`, `x or y`                | `x && y`, `x \|\| y`                                                      |
 | `a if c else b`                    | Go ternary via IIFE typed by its branches (`func() string { ... }()`); joined with `+` to a `str`, it is a `string` closure even when one branch's type is not tracked |
 | `name := expr`                     | IIFE binding `name` locally and returning it (binding does *not* escape)  |
-| f-strings `f"x={x}"`               | `fmt.Sprintf("x=%v", x)` with method-call translation; when every slot is a `str`, `html`, `xml` or `json` without a format spec and one is not a `str`, a string concatenation of the slots' `lamValueText` (`f"<!doctype html>{page}"` → `"<!doctype html>" + lamValueText(page)`) |
+| f-strings `f"x={x}"`               | `fmt.Sprintf("x=%v", x)` with method-call translation; when every slot is a `str`, `int`, `bool`, `html`, `xml` or `json` without a format spec, a string concatenation (see [F-string concatenation](#f-string-concatenation)): `f"{entry}_{size}.avif"` with declared `str` slots → `entry + "_" + size + ".avif"`, an `int` of a declared type → `strconv.Itoa(n)`, a slot hinted `str` without a declared type → `lamSlotText(x)`, html / xml / json → `lamValueText(page)`; an f-string without slots is a Go string literal |
 | `s[i]` / `s[a:b]`                  | Go string byte indexing / string slicing                                 |
 | `xs[-1]` (constant negative index) | `xs[len(xs)-1]` (an IIFE for a non-trivial receiver); still an `IndexError` when out of range |
 | `xs[i]` on a list / string / tuple, `i` not provably non-negative | `xs[i+len(xs)&(i>>63)]` (see "Runtime negative indexes") |
@@ -1731,7 +1731,7 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `[expr for a, b in pairs]`         | IIFE loop with typed positional unpacking; map targets lower directly to `for a, b := range` |
 | `{a, b, c}` (set literal)          | IIFE that inserts each element into a `map[K]bool` in typed contexts (deduplicates) |
 | `len(x)`                           | `len(x)`                                                                  |
-| `str(x)` / `repr(x)`               | `fmt.Sprintf("%v", x)` / `fmt.Sprintf("%#v", x)`; `str(x)` of an `html`, `xml` or `json` value is `lamValueText(x)` (lamjson: the value's own `String()`, rendered or encoded once, not copied again by fmt; a string as is, any other value through fmt, so a value the compiler typed wrongly still formats as before) |
+| `str(x)` / `repr(x)`               | `fmt.Sprintf("%v", x)` / `fmt.Sprintf("%#v", x)`; `str(x)` of an `html`, `xml` or `json` value is `lamValueText(x)` (lamjson: the value's own `String()`, rendered or encoded once, not copied again by fmt; a string as is, any other value through fmt, so a value the compiler typed wrongly still formats as before); of a declared `str` the value itself, of a declared `int` / `bool` `strconv.Itoa(x)` / `strconv.FormatBool(x)`, of a value hinted `str` without a declared type `lamSlotText(x)` |
 | `x in xs` on a list of strings, numbers or booleans | an IIFE comparing the elements with `==` (no `reflect.DeepEqual` boxing) |
 | `int(x)` / `float(x)`              | `int(x)` / `float64(x)`                                                   |
 | `print(...)`                       | `fmt.Println(...)`                                                        |
@@ -2144,7 +2144,8 @@ the generator. Structured statements holding a `yield`:
   continuation after the loop, `continue` is Go's `continue` in the loop's
   `for` or re-enters the loop closure from a continuation. A continuation
   in a loop body that uses no local of the body is created once with the
-  loop (`__lamGResume<n>`), not once per iteration;
+  loop (`__lamGResume<n>`), not once per iteration (the locals it uses
+  include the names in its f-string slots and in its `go!` blocks);
 - `if` / `elif` / `else`, `match`: each branch (case body) ends with the
   statement's continuation;
 - `try` / `catch` / `else` / `finally`: Go's `defer` / `recover` cannot
@@ -2171,15 +2172,54 @@ the generator. Structured statements holding a `yield`:
 (`__lamGClose<n>`: its `finally` with `lamGenEnd` as what comes next, then
 the enclosing regions'), else returns `lamGenDone`. In a body with such
 regions each `yield` stores the close path of its state in `__lamF.c`; `Stop` (a loop over a generator call
-left early, `Consume`'s deferred call) runs it with `__lamF.closing` set — a
-`yield` reached meanwhile takes the close path again (Python's
-`GeneratorExit`). A generator value suspended in a region registers a
+left early, `Consume`'s deferred call) and `Close` (`g.close()`, the same
+code) run it with `__lamF.closing` set — a `yield` reached meanwhile takes
+the close path again (Python's `GeneratorExit`); an exception raised there
+propagates to the caller, and the generator is ended either way
+(`finish`, which also stops its cleanup). A `Close` finding the handle's
+mutex taken (`TryLock`) — a step of `Next` running, whose body may itself be
+calling it (typically a `finally` closing its object, which closes the
+generator), another consumer, or the close path running — does not wait
+(that would deadlock the body): it sets `closeReq`, and whoever holds the
+mutex ends the generator when it releases it (`unlock`, once the step has
+produced its value), or at once if it was released meanwhile; a `Next`
+that was waiting for the mutex ends it before running a step. The hot path
+of `Next` pays one plain atomic load for it. A generator value suspended in a region registers a
 `runtime.AddCleanup` on its handle whose argument (`lamGenClose`) holds only
 that close path, which runs on a fresh frame when the handle is collected
 (`lamCloseCollectedGenerator`; an exception there is printed, `Exception
 ignored in generator cleanup`). The close path captures what its `finally`
 blocks use: if they use an object holding the generator, that object keeps
-the cleanup's argument reachable and neither is collected.
+the cleanup's argument reachable and neither is collected — except for the
+receiver of a method generator, below.
+
+An instance-method generator whose close path may read `self`
+(`close_path_reads_self`: a `finally` of a region holding a `yield` uses
+it, or a `catch` / `do` around such a region or a `break` in its `finally`
+can resume a body using it) is a `lamNewMethodGenerator[T, R](recv, "Class.method", k)`:
+the receiver lives in the frame (`__lamF.r`) and every continuation using
+it starts with `s, _ := __lamF.r.(*R)`, shadowing the method's receiver, so
+no continuation captures it. The handle keeps it through the frame (the
+body uses it strongly while the generator is iterated); the cleanup's
+argument reaches it only through `lamGenRecv[R]` (`lamGenClose.self`),
+which holds it strongly — or weakly (`weak.Pointer[R]`) while the generator
+is stored in fields of the receiver's object. Every assignment of a
+generator to a field of a class instance (`obj.f = v`, `self.f: generator[T] = v`)
+is `lamGenStore(&obj.F, v, obj)`: it counts the store on `v` and the removal
+on the generator it replaces, when `obj` is their receiver's object
+(compared through `_lamDyn()`, so a generator of a base class method stored
+in a subclass instance counts; a cheap pointer comparison otherwise, and
+nothing for other generators). Dropping such an object then makes the
+object and the handle unreachable together: the cleanup runs, finds the
+weak receiver gone and prints `Exception ignored in generator
+Class.method: its finally uses the object holding it, collected with it, so
+it did not run; call close() before dropping the object` instead of
+running the close path. Collected while the object is alive (the field
+reassigned), the receiver resolves and the close path runs normally; once
+no field of the object holds it any more, the generator holds its receiver
+strongly again. Other values the close path uses that reference the object
+(`o := self` before the `try`, a `with` resource holding `self`, a
+generator of the object the body loops over) are still captured strongly.
 
 - `for x in gen()` / `[f(x) for x in gen()]` (a generator call: the loop
   owns it) ranges over `gen().Consume`, which resumes the fresh handle
@@ -2382,6 +2422,65 @@ Updating a pin: bump the entry in `STDLIB_GO_PINS`, update the
 stdlib library's `go!` block if the new module API changed, and
 run the regression suite. The file's docstring carries the
 checklist.
+
+## F-string concatenation
+
+`_fstring_concat_to_go` (`compiler/visitors/expressions.py`) lowers an
+f-string to a Go string concatenation when every slot is free of format
+specs and of one of these kinds, chosen per slot:
+
+| Slot                                                      | Go                    |
+|-----------------------------------------------------------|-----------------------|
+| certain `str` (see below)                                 | the value             |
+| certain `int` / `bool`                                    | `strconv.Itoa(x)` / `strconv.FormatBool(x)` |
+| type hint `string` (`_expr_go_type_hint`), not certain    | `lamSlotText(x)`      |
+| `html` / `xml` / `json`                                   | `lamValueText(x)` (lamjson) |
+
+Any other slot (float, `optional[...]`, `?.` call, generic `T`, `any`,
+collections, objects, a format spec) keeps `fmt.Sprintf` for the whole
+f-string. The literal parts are copied as they are in the `fmt.Sprintf`
+format string, without the `%%` escaping (an f-string without slots is a
+plain Go string literal).
+
+"Certain" (`_certain_go_type`) is decided from declarations only, never from
+a type hint (hints are best effort and an unannotated variable's hint can
+be wrong; a wrong `string` hint in `"a" + x` is a Go build error, where
+`fmt.Sprintf("%v")` accepted anything): a string literal or nested
+f-string; a variable emitted with an explicit Go type — a parameter, an
+annotated local (`var x string = ...`), a global, a const, a static field,
+a local hoisted before a branch or loop — tracked in `_typed_decls`, which
+`_declare_var` clears for every new declaration and `_push_scope` /
+`_pop_scope` scope like `declared_vars`; a field of `self` or of such a
+variable (the struct field's type); a call of a function, static method or
+method (of `self` or such a variable) declared `-> str` / `int` / `bool` in
+every overload (not async, not generic, not `optional`); `str(x)` and
+`len(x)`; a `str` method on a certain `str` (`lamstrings`); a slice of a
+certain `str`; `+` of certain `str` values; a ternary of two certain values
+of one type. `str(x)` uses the same rule.
+
+`lamSlotText` is defined once, in the main file, when the program or one of
+its libraries uses it (`_SLOT_TEXT_RUNTIME_GO`, `_lib_uses_slot_text`):
+
+```go
+func lamSlotText[T any](v T) string {
+    if s, ok := any(v).(string); ok {
+        return s
+    }
+    return fmt.Sprint(v)
+}
+```
+
+Generic, so a `string` argument is not converted to an `interface{}` that
+escapes: the string case allocates nothing (a `func(v interface{})` like
+`lamValueText` boxes a string argument on the heap, 16 bytes, because the
+fallback passes it to fmt). Any other value is formatted as `%v` formats it
+(`fmt.Sprint` of one operand), so a hint that was wrong still gives the
+same text.
+
+Go evaluates the calls of an expression left to right, so each slot is
+evaluated once and the calls run in source order, as with `fmt.Sprintf`'s
+arguments. (When a call changes a variable that another slot reads, Go
+leaves the order of that read unspecified, in both lowerings.)
 
 ## Built-in string methods → `lamstrings`
 

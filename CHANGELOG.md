@@ -5,6 +5,86 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.10.0 — 2026-11-09
+
+### Added
+
+- `g.close()` on any generator value (`generator[T]` / `iterator[T]`: a
+  variable, a field, a parameter, a call result), like Python's
+  `generator.close()`: a body suspended in a `try` / `with` runs its pending
+  `finally` blocks and `with` closes, an exception raised there reaches the
+  caller of `close()`, the generator then yields nothing more and is not
+  closed again when collected; closing an exhausted, unstarted or closed
+  generator does nothing. Also for generators kept on the coroutine
+  lowering. `close()` arriving while the body computes a value (from the
+  body itself — a `finally` closing its object, which closes the generator —
+  or from another task) ends the generator once that value is produced
+  instead of deadlocking. Any other method of a generator is a compile error
+  (`` `generator[int]` has no method `stop` — did you mean `close`? ``).
+- Warning at `self.items = self.produce()` / `o.items = o.produce()` when
+  the method generator's `finally` (or a `with` resource) uses `self`:
+  dropping the object before the generator ends loses that code; call
+  `self.items.close()` first (no warning when a method of the class closes
+  that field, typically the object's own `close()`).
+
+### Changed
+
+- An f-string whose slots are all `str`, `int` or `bool` values (and
+  `html` / `xml` / `json`, as in 4.9.0) without format specs is a string
+  concatenation instead of `fmt.Sprintf`, which boxed every value into an
+  `interface{}` and copied the text through fmt's buffer:
+  `f"{entry}_{size}.avif"` with `entry: str, size: str` is
+  `entry + "_" + size + ".avif"`, one allocation of the exact size. A slot
+  whose type is declared (a parameter, an annotated local or global, a
+  const, a field, a static field, a call of a function or method declared
+  `-> str`, `str(x)`, `str` methods, slices, `+`, ternaries) is used as is;
+  an `int` / `bool` one goes through `strconv`; a slot that is a `str` only
+  by inference goes through `lamSlotText`, a generic helper that returns a
+  string without allocating and formats anything else as `%v` did. Other
+  slots (floats, optionals, `?.` calls, generics, `any`) keep
+  `fmt.Sprintf`. The text is the same (a differential test compares both
+  lowerings over awkward values). `str(x)` of a declared `str` / `int` /
+  `bool` follows the same rule. A str-only f-string benchmark: 499 to
+  146 ns, 400 to 256 bytes per iteration (Go's concatenation: 150-165 ns).
+  Luxyt: the generated Go has 404 `fmt.Sprintf` calls instead of 928, a
+  JSON API products request allocates 772 kB instead of 799 kB (a feed
+  fragment 511 kB instead of 522 kB), with no `fmt.Sprintf` left on that
+  path.
+
+### Fixed
+
+- A generator whose loop body uses a variable of that loop (or a local of
+  its body) only in an f-string slot or a `go!` block after a `yield` no
+  longer fails to build with `undefined: n` (4.9.0): the continuation after
+  that `yield` was created once per loop, outside the scope of the loop
+  variable, because the check deciding it skipped f-string slots and `go!`
+  blocks. And a continuation ending with a loop no longer fails with
+  `missing return` when a local before that loop is unused (its silencer
+  went after the loop instead of before it). A differential fuzz test
+  (`tests/tests/test_generator_lowering_fuzz.py`) compares random generator
+  bodies with their coroutine lowering.
+- A method generator stored in a field of its own object, suspended in a
+  `try` whose `finally` uses `self` (`self.items = self.produce()` with
+  `finally { self.release() }`), is no longer leaked with its object when the
+  object is dropped: such generators read their receiver from the frame
+  (`lamNewMethodGenerator`), and while a field of the receiver's object holds
+  the generator (`lamGenStore`, at every store of a generator into a field)
+  its collection cleanup holds the object only weakly. Both are collected;
+  the `finally`, which needs the object, cannot run and is reported on
+  stderr (`Exception ignored in generator Feed.produce: its finally uses the
+  object holding it, collected with it, so it did not run; call close()
+  before dropping the object`). Collected while its object is alive (the
+  field reassigned) such a generator still runs its `finally`.
+
+- `x = obj?.method()` declared `x` with the method's declared result type
+  (the type hint ignored that `?.` calls give an `interface{}`): a `str`
+  result was then asserted (`x.(string)`), which panicked when `obj` was
+  `None`, and `x ?? "default"` returned `x` (`<nil>`) instead of the
+  fallback. `x` is now an `any` holding the result or `None`, `??` falls
+  back, and `obj` is evaluated once (`make()?.name()` called `make` twice).
+- An f-string without slots doubled its `%` signs (`f"100%"` printed
+  `100%%`).
+
 ## 4.9.0 — 2026-11-09
 
 ### Changed

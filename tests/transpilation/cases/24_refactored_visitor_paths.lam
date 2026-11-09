@@ -4,7 +4,7 @@
 # expect-go: b := _tup0[1].(int)
 # expect-go: var x int = 1
 # expect-go: x = 2
-# expect-go: func() interface{} { if s != nil { return s.internal_compute() }; return nil }()
+# expect-go: func() interface{} { if __lamR := s; __lamR != nil { return __lamR.internal_compute() }; return nil }()
 # expect-go: return s.Pop()
 
 class Acc {

@@ -77,12 +77,24 @@ def generator_go_elem(go_type: str) -> str | None:
 # handle's mutex (concurrent consumers share the values); an exception the
 # body raises outside its ``try`` regions ends the generator and reaches
 # the consumer, one inside a region goes to the region's handler (``h``).
-# Ending a generator before it is exhausted (``Stop``: a loop over a
-# generator call left early; the cleanup of a collected handle) runs the
-# close continuation ``c`` of the state it is suspended in: its pending
-# ``finally`` blocks and ``with`` closes, like Python's ``GeneratorExit`` (a
-# ``yield`` reached meanwhile ends the body). The cleanup holds only that
-# continuation (``lamGenClose``), never the handle.
+# Ending a generator before it is exhausted (``Stop`` / ``Close``: a loop
+# over a generator call left early, ``g.close()``; the cleanup of a
+# collected handle) runs the close continuation ``c`` of the state it is
+# suspended in: its pending ``finally`` blocks and ``with`` closes, like
+# Python's ``GeneratorExit`` (a ``yield`` reached meanwhile ends the body).
+# The cleanup holds only that continuation (``lamGenClose``), never the
+# handle. A ``close()`` finding the generator busy (a step of the body
+# running — the body itself may be calling it — or its close path) does
+# not wait: whoever holds the mutex ends it when it unlocks (``closeReq``).
+#
+# A method generator whose close path uses its receiver
+# (``lamNewMethodGenerator``) reads the receiver from the frame (``r``) in
+# every continuation, so no continuation captures it: the cleanup reaches
+# it only through ``lamGenRecv``, which holds it strongly, or weakly while
+# the generator is stored in a field of that object (``lamGenStore``, at
+# every store of a generator into a field). A dropped object and the
+# generator it holds are then collected together, and the cleanup, which
+# finds the receiver gone, reports the ``finally`` it cannot run.
 #
 # A body the state machine does not lower (see
 # ``_generator_sm_unsupported``) keeps the coroutine lowering: a
@@ -101,18 +113,96 @@ const (
 
 // lamGenFrame holds the registers of a state machine generator: the
 // continuation to run next, the close continuation of the state it is
-// suspended in, the handler of the try region running, the value yielded.
+// suspended in, the handler of the try region running, the value yielded,
+// the receiver of a method generator reading it from the frame.
 type lamGenFrame[T any] struct {
 \tk       func(*lamGenFrame[T]) int
 \tc       func(*lamGenFrame[T]) int
 \th       func(*lamGenFrame[T], any)
 \tv       T
+\tr       any
 \tclosing bool
 }
 
 // lamGenClose is what the cleanup of a collected generator runs.
 type lamGenClose[T any] struct {
-\tc func(*lamGenFrame[T]) int
+\tc    func(*lamGenFrame[T]) int
+\tself lamGenSelf
+}
+
+// lamGenSelf is the receiver of a method generator whose close path uses
+// it, as the cleanup sees it (``lamGenRecv``).
+type lamGenSelf interface {
+\trecv() any
+\thold(owner any, delta int)
+\tname() string
+}
+
+// lamGenRecv holds the receiver strongly, or weakly while the generator is
+// stored in fields of the receiver's object (``held`` of them).
+type lamGenRecv[R any] struct {
+\tmu   sync.Mutex
+\tn    string
+\tp    *R
+\tw    weak.Pointer[R]
+\theld int
+}
+
+func (r *lamGenRecv[R]) recv() any {
+\tr.mu.Lock()
+\tdefer r.mu.Unlock()
+\tif r.p != nil {
+\t\treturn r.p
+\t}
+\tif p := r.w.Value(); p != nil {
+\t\treturn p
+\t}
+\treturn nil
+}
+
+func (r *lamGenRecv[R]) name() string { return r.n }
+
+// hold counts a store (``delta`` 1) or a removal (-1) of the generator in
+// a field of ``owner``; it only counts when ``owner`` is the receiver's object.
+func (r *lamGenRecv[R]) hold(owner any, delta int) {
+\tr.mu.Lock()
+\tdefer r.mu.Unlock()
+\tcur := r.p
+\tif cur == nil {
+\t\tcur = r.w.Value()
+\t}
+\tif cur == nil || (delta < 0 && r.held == 0) || lamGenDyn(cur) != lamGenDyn(owner) {
+\t\treturn
+\t}
+\tr.held += delta
+\tif r.held > 0 && r.p != nil {
+\t\tr.w, r.p = weak.Make(r.p), nil
+\t} else if r.held == 0 {
+\t\tr.p, r.w = cur, weak.Pointer[R]{}
+\t}
+}
+
+// lamGenDyn is the most-derived object of a class instance.
+func lamGenDyn(v any) any {
+\tif d, ok := v.(interface{ _lamDyn() interface{} }); ok {
+\t\treturn d._lamDyn()
+\t}
+\treturn v
+}
+
+// lamGenStore stores a generator in a field (``*slot``) of ``owner``.
+func lamGenStore[T any](slot **lamGenerator[T], v *lamGenerator[T], owner any) {
+\told := *slot
+\t*slot = v
+\tif old == v {
+\t\treturn
+\t}
+\tif old != nil && old.self != nil {
+\t\told.self.hold(owner, -1)
+\t}
+\tif v != nil && v.self != nil {
+\t\tv.self.hold(owner, 1)
+\t}
 }
 
 type lamGenerator[T any] struct {
@@ -120,11 +210,15 @@ type lamGenerator[T any] struct {
 \tf        lamGenFrame[T]
 \tsm       bool
 \tpending  *lamGenClose[T]
+\tself     lamGenSelf
 \tbody     func(yield func(T) bool)
 \tisolated bool
 \tnext     func() (T, bool)
 \tstop     func()
 \tcleanup  runtime.Cleanup
+\t// closeReq: a close() found the generator busy (a step of its body, or
+\t// its close path, maybe calling it): whoever holds mu ends it on unlock.
+\tcloseReq atomic.Bool
 \tdone     bool
 \t// owned: a loop owns the generator and ends it however it is left (no
 \t// cleanup needed); claimed: a loop over the call resumes it without the mutex.
@@ -134,6 +228,12 @@ type lamGenerator[T any] struct {
 
 func lamNewStateGenerator[T any](k func(*lamGenFrame[T]) int) *lamGenerator[T] {
 \treturn &lamGenerator[T]{f: lamGenFrame[T]{k: k}, sm: true}
+}
+
+// lamNewMethodGenerator is a method generator whose close path uses its
+// receiver: the continuations read it from the frame.
+func lamNewMethodGenerator[T, R any](recv *R, name string, k func(*lamGenFrame[T]) int) *lamGenerator[T] {
+\treturn &lamGenerator[T]{f: lamGenFrame[T]{k: k, r: recv}, sm: true, self: &lamGenRecv[R]{n: name, p: recv}}
 }
 
 func lamNewGenerator[T any](body func(yield func(T) bool)) *lamGenerator[T] {
@@ -204,13 +304,8 @@ func (g *lamGenerator[T]) Next() (v T, more bool) {
 \t\treturn v, false
 \t}
 \tg.mu.Lock()
-\tif g.done {
-\t\tg.mu.Unlock()
-\t\treturn v, false
-\t}
-\tif !g.sm {
-\t\tdefer g.mu.Unlock()
-\t\treturn g.pull()
+\tif g.done || !g.sm || g.closeReq.Load() {
+\t\treturn g.nextSlow()
 \t}
 \tstepped := false
 \tdefer func() {
@@ -218,11 +313,43 @@ func (g *lamGenerator[T]) Next() (v T, more bool) {
 \t\t\t// The body raised: the exception reaches the consumer.
 \t\t\tg.finish()
 \t\t}
-\t\tg.mu.Unlock()
+\t\tg.unlock()
 \t}()
 \tv, more = g.step()
 \tstepped = true
 \treturn v, more
+}
+
+// nextSlow is Next of an ended generator, of a coroutine generator, or
+// after a close() arrived while this consumer waited (with g.mu held).
+func (g *lamGenerator[T]) nextSlow() (v T, more bool) {
+\tdefer g.unlock()
+\tif g.closeReq.Swap(false) {
+\t\tg.end()
+\t}
+\tif g.done || g.sm {
+\t\treturn v, false
+\t}
+\treturn g.pull()
+}
+
+// unlock releases g.mu, then ends the generator if a close() found it busy.
+func (g *lamGenerator[T]) unlock() {
+\tg.mu.Unlock()
+\tif g.closeReq.Load() {
+\t\tg.closeRequested()
+\t}
+}
+
+func (g *lamGenerator[T]) closeRequested() {
+\tif !g.mu.TryLock() {
+\t\t// The goroutine now holding mu ends it when it unlocks.
+\t\treturn
+\t}
+\tdefer g.unlock()
+\tif g.closeReq.Swap(false) {
+\t\tg.end()
+\t}
 }
 
 // pull resumes a coroutine generator (with g.mu held).
@@ -260,7 +387,7 @@ func (g *lamGenerator[T]) step() (v T, more bool) {
 \tif c := g.f.c; c != nil {
 \t\tif g.pending == nil {
 \t\t\t// Dropped while suspended in a try region: closed once collected.
-\t\t\tg.pending = &lamGenClose[T]{}
+\t\t\tg.pending = &lamGenClose[T]{self: g.self}
 \t\t\tg.cleanup = runtime.AddCleanup(g, lamCloseCollectedGenerator[T], g.pending)
 \t\t}
 \t\tg.pending.c = c
@@ -290,13 +417,34 @@ func (g *lamGenerator[T]) finish() {
 \t}
 }
 
-// Stop ends the generator: a suspended body runs its pending finally blocks and with closes.
+// Close ends the generator (``g.close()``): a suspended body runs its
+// pending finally blocks and with closes, whose exception reaches the
+// caller; an ended generator is left as is.
+func (g *lamGenerator[T]) Close() { g.Stop() }
+
+// Stop ends the generator: a suspended body runs its pending finally
+// blocks and with closes. Called while the generator is busy — a step of
+// its body runs (the body itself may be calling it) or its close path does
+// — it does not wait: the step ends the generator once its value is
+// produced (``unlock``), and a close already running finishes the job.
 func (g *lamGenerator[T]) Stop() {
 \tif g == nil {
 \t\treturn
 \t}
-\tg.mu.Lock()
-\tdefer g.mu.Unlock()
+\tif !g.mu.TryLock() {
+\t\tg.closeReq.Store(true)
+\t\tif !g.mu.TryLock() {
+\t\t\treturn
+\t\t}
+\t\tg.closeReq.Store(false)
+\t}
+\tdefer g.unlock()
+\tg.end()
+}
+
+// end runs the close path of the state the generator is suspended in and
+// ends it (with g.mu held).
+func (g *lamGenerator[T]) end() {
 \tif g.done {
 \t\treturn
 \t}
@@ -331,14 +479,14 @@ func (g *lamGenerator[T]) Consume(yield func(T) bool) {
 \tg.mu.Lock()
 \tbody := g.body
 \tif body == nil || g.isolated || g.next != nil || g.done {
-\t\tg.mu.Unlock()
+\t\tg.unlock()
 \t\tdefer g.Stop()
 \t\tg.Resume(yield)
 \t\treturn
 \t}
 \t// Not started: the body runs in place, to its end.
 \tg.body, g.done = nil, true
-\tg.mu.Unlock()
+\tg.unlock()
 \tstopped := false
 \tbody(func(v T) bool {
 \t\tif stopped {
@@ -358,7 +506,7 @@ func (g *lamGenerator[T]) Consume(yield func(T) bool) {
 func (g *lamGenerator[T]) own() *lamGenerator[T] {
 \tg.mu.Lock()
 \tg.owned = true
-\tg.mu.Unlock()
+\tg.unlock()
 \treturn g
 }
 
@@ -368,7 +516,7 @@ func (g *lamGenerator[T]) consume(yield func(T) bool) {
 \tg.mu.Lock()
 \towned := !g.done && !g.claimed
 \tg.claimed, g.owned = true, true
-\tg.mu.Unlock()
+\tg.unlock()
 \tif !owned {
 \t\tdefer g.Stop()
 \t\tg.Resume(yield)
@@ -404,19 +552,29 @@ func lamStopCollectedGenerator(stop func()) {
 }
 
 // lamCloseCollectedGenerator ends a generator collected while suspended in
-// a try region, on a fresh frame (the handle is gone).
+// a try region, on a fresh frame (the handle is gone). A method generator
+// collected with the object it was stored in cannot run its close path,
+// which needs that object: it is reported.
 func lamCloseCollectedGenerator[T any](p *lamGenClose[T]) {
 \tc := p.c
 \tif c == nil {
 \t\treturn
 \t}
 \tp.c = nil
+\tvar r any
+\tif p.self != nil {
+\t\tif r = p.self.recv(); r == nil {
+\t\t\tfmt.Fprintf(os.Stderr, "Exception ignored in generator %s: its finally uses the object holding it, "+
+\t\t\t\t"collected with it, so it did not run; call close() before dropping the object\\n", p.self.name())
+\t\t\treturn
+\t\t}
+\t}
 \tdefer func() {
 \t\tif r := recover(); r != nil {
 \t\t\tfmt.Fprintf(os.Stderr, "Exception ignored in generator cleanup: %v\\n", r)
 \t\t}
 \t}()
-\tlamGenRun(&lamGenFrame[T]{k: c, closing: true})
+\tlamGenRun(&lamGenFrame[T]{k: c, closing: true, r: r})
 }
 """
 
@@ -479,7 +637,7 @@ LOWER_PKGS = frozenset({
 # cannot hide the package the lowering relies on.
 COMPILER_GO_PACKAGES = frozenset({
     "fmt", "reflect", "strings", "math", "slices", "os", "strconv", "sort",
-    "runtime", "maps", "bufio",
+    "runtime", "maps", "bufio", "weak",
 })
 
 # Go builtins that should not be CamelCased

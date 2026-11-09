@@ -24,7 +24,7 @@ from compiler.constants import (
 )
 
 # Generated Go using the generator runtime (``GENERATOR_RUNTIME_GO``).
-_GENERATOR_USE_RE = re.compile(r"\blam(?:New(?:Isolated|State)?)?Generator\[")
+_GENERATOR_USE_RE = re.compile(r"\blam(?:New(?:Isolated|State|Method)?)?Generator\[")
 
 # Names ``_go_binding_name`` gives a ``__lam`` suffix (besides ``__lam*`` /
 # ``__q*`` temps).
@@ -271,6 +271,20 @@ func lamAsyncReportUnretrieved() {
 }
 """
 
+    # An f-string slot the compiler hints as a ``str`` without a declared
+    # type (``_fstring_concat_to_go``): the string itself, or fmt's ``%v``
+    # of whatever the value really is. Generic, so a ``string`` argument is
+    # not boxed into an ``interface{}`` (no allocation; the fallback boxes
+    # only on its own path).
+    _SLOT_TEXT_RUNTIME_GO = """
+func lamSlotText[T any](v T) string {
+\tif s, ok := any(v).(string); ok {
+\t\treturn s
+\t}
+\treturn fmt.Sprint(v)
+}
+"""
+
     _var_go_types = _binding_table_property("_var_go_types")
     _var_types = _binding_table_property("_var_types")
 
@@ -376,6 +390,8 @@ func lamAsyncReportUnretrieved() {
         self._emit_async_runtime: bool = False
         # A library of the program uses generators (``GENERATOR_RUNTIME_GO``).
         self._lib_uses_generators: bool = False
+        # A library calls ``lamSlotText`` (``_SLOT_TEXT_RUNTIME_GO``).
+        self._lib_uses_slot_text: bool = False
         self._class_member_level: bool = False
         self._do_q_target: str = ""
         self._comp_q_return: str = ""
@@ -568,6 +584,12 @@ func lamAsyncReportUnretrieved() {
         # Lam types of annotated locals/parameters (``typesys`` objects);
         # ``match`` lowering uses them for tuple element types.
         self._var_lam_types: Dict[str, Any] = {}
+        # Variables in scope declared with an explicit Go type (parameters,
+        # ``var x T = ...`` of annotated locals and globals, static fields):
+        # ``name -> Go type``, scoped like ``declared_vars``. Unlike
+        # ``_var_go_types`` (also fed by type hints of ``x := value``), an
+        # entry is the variable's real Go type (``_certain_go_type``).
+        self._typed_decls = _BindingTable()
         # Name of the Go function running this module's top-level
         # statements (``_emit_top_level``); the driver assigns a unique
         # name per module and calls it from ``func init()``.
@@ -818,6 +840,14 @@ func lamAsyncReportUnretrieved() {
             body_lines.extend(self._ASYNC_RUNTIME_GO.splitlines())
             for pkg in ("fmt", "os", "runtime", "sync", "sync/atomic"):
                 self._need_import(pkg)
+        # Some module has an f-string slot hinted ``str`` without a declared
+        # type: the main file defines ``lamSlotText`` (libraries' Go joins
+        # the same package).
+        if not self._omit_main and (
+            self._lib_uses_slot_text or any("lamSlotText(" in line for line in body_lines)
+        ):
+            body_lines.extend(self._SLOT_TEXT_RUNTIME_GO.splitlines())
+            self._need_import("fmt")
         # Some module uses a generator: the main file (not a library, whose
         # Go joins the same package) defines the generator runtime.
         if not self._omit_main and (
@@ -825,7 +855,7 @@ func lamAsyncReportUnretrieved() {
             or any(_GENERATOR_USE_RE.search(line) for line in body_lines)
         ):
             body_lines.extend(GENERATOR_RUNTIME_GO.splitlines())
-            for pkg in ("fmt", "iter", "os", "runtime", "sync"):
+            for pkg in ("fmt", "iter", "os", "runtime", "sync", "sync/atomic", "weak"):
                 self._need_import(pkg)
 
         self.output_lines = old_lines
@@ -1058,6 +1088,8 @@ func lamAsyncReportUnretrieved() {
     def _register_global_type(self, go_name: str, go_type: str, type_node=None) -> None:
         if go_type:
             self._var_go_types[go_name] = go_type
+            # Globals are emitted ``var name T``.
+            self._typed_decls[go_name] = go_type
         if type_node is not None:
             self._record_lam_type(go_name, type_node)
             raw = self._get_raw_type_name(type_node)
@@ -2341,6 +2373,9 @@ func lamAsyncReportUnretrieved() {
         self._static_vars.setdefault(class_name, {})[var_name] = bool(is_private)
         go_name = self._static_var_go_name(class_name, var_name)
         self._static_var_go_names.add(go_name)
+        if go_type:
+            # Emitted ``var Cls_name T``.
+            self._typed_decls[go_name] = go_type
         raw_type = self._get_raw_type_name(type_node)
         if raw_type and raw_type in self._class_names:
             self._var_types[go_name] = raw_type

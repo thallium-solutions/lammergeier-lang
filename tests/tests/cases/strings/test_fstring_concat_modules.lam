@@ -1,0 +1,15 @@
+# f-strings across modules: a library's f-string slots that are str only by
+# inference call ``lamSlotText``, defined once by the main file even when the
+# main module itself has no such slot; an imported const declared ``str`` is
+# a declared slot of the importing module.
+# expect: e_s.avif
+# expect: https://media.example/e_s.avif
+# expect: https://media.example/raw 50%
+
+from fstring_concat_provider import Keys, MediaBase
+
+func main() {
+    print(Keys.key("e", "s"))
+    print(Keys.url("e", "s"))
+    print(f"{MediaBase}/raw 50%")
+}

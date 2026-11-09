@@ -1,0 +1,35 @@
+# expect-error: `generator[int]` has no method `stop` — did you mean `close`?
+# expect-error: `generator[str]` has no method `send`
+# expect-error: `close()` of a generator takes no arguments
+# expect-error: `generator[int]` has no method `rewind`
+# A generator value (`iterator[T]` is another name of `generator[T]`) has
+# one method, `close()`.
+
+func count(n: int) -> generator[int] {
+    for i in range(n) {
+        yield i
+    }
+}
+
+func words() -> iterator[str] {
+    yield "a"
+}
+
+class Box {
+    func init(self) {
+        self.items: generator[int] = count(1)
+    }
+
+    func reset(self) {
+        self.items.rewind()
+    }
+}
+
+func main() {
+    g: generator[int] = count(5)
+    g.stop()
+    w: iterator[str] = words()
+    w.send("x")
+    g.close(1)
+    Box().reset()
+}

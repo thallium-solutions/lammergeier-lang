@@ -1100,6 +1100,12 @@ class ExpressionVisitorMixin:
             return found
         if node.data == "funccall" and node.children:
             callee = node.children[0]
+            if isinstance(callee, Tree) and callee.data == "getattr_safe":
+                # ``obj?.method(args)`` lowers to a nil-guarded call returning
+                # ``interface{}`` (``None`` when ``obj`` is ``None``), not to
+                # the method's declared result: ``x = obj?.name()`` is an
+                # ``interface{}`` local, ``x ?? "d"`` a dynamic coalesce.
+                return "interface{}"
             if (
                 isinstance(callee, Tree) and callee.data in {"getattr", "getattr_safe", "getitem"}
                 and self._func_value_lam_type(callee) is not None
@@ -2462,9 +2468,10 @@ class ExpressionVisitorMixin:
             else:
                 method = self._go_public_name(attr)
             args_str = ", ".join(args)
+            # The receiver is evaluated once (``make()?.name()``).
             return (
-                f"func() interface{{}} {{ if {obj} != nil {{ "
-                f"return {obj}.{method}({args_str}) }}; return nil }}()"
+                f"func() interface{{}} {{ if __lamR := {obj}; __lamR != nil {{ "
+                f"return __lamR.{method}({args_str}) }}; return nil }}()"
             )
 
         if isinstance(func, Tree) and func.data == "getitem":
@@ -2604,6 +2611,18 @@ class ExpressionVisitorMixin:
                 # rendered once, not copied again by fmt (``lamValueText``,
                 # lamjson, also right if the value is an ``interface{}``).
                 return f"lamValueText({args[0]})"
+            if args and len(raw_args) == 1:
+                # ``str(name)`` of a declared str is the string; of a declared
+                # int / bool ``strconv``'s text (the same as ``%v``); of a
+                # value hinted str without a declared type ``lamSlotText``.
+                certain = self._certain_go_type(raw_args[0])
+                if certain == "string":
+                    return args[0]
+                if certain in {"int", "bool"}:
+                    self._need_import("strconv")
+                    return f"strconv.{'Itoa' if certain == 'int' else 'FormatBool'}({args[0]})"
+                if certain not in {"string", "int", "bool"} and self._expr_go_type_hint(raw_args[0]) == "string":
+                    return f"lamSlotText({args[0]})"
             self._need_import("fmt")
             return f'fmt.Sprintf("%v", {args[0]})' if args else '""'
 
@@ -3691,15 +3710,212 @@ class ExpressionVisitorMixin:
     # ``LamXML`` render, ``LamJSON`` encodes).
     _TEXT_VALUE_GO_TYPES = frozenset({"LamHTML", "LamXML", "LamJSON"})
 
+    # Lam scalar results of declared signatures, by Go type.
+    _CERTAIN_LAM_SCALARS = {"str": "string", "int": "int", "bool": "bool"}
+
+    def _certain_class(self, node) -> str:
+        """The class (or interface) of a receiver whose type is declared:
+        ``self`` in a method, a variable emitted with an explicit class
+        type (a parameter, ``u: User = ...``), a field or a call declared
+        with one (``AppConfig.current()``). ``""`` otherwise."""
+        if not isinstance(node, Tree):
+            return ""
+        if node.data == "var" and node.children and self._get_name(node.children[0]) == "self":
+            return self.current_class or ""
+        go_type = self._certain_go_type(node)
+        if not go_type or "[" in go_type:
+            return ""
+        for cls in self._class_names:
+            if go_type == f"*{self._go_class_name(cls)}" and not self._generic_classes.get(cls):
+                return cls
+        for iface in self._interfaces:
+            if go_type == self._go_class_name(iface):
+                return iface
+        return ""
+
+    def _certain_var_go_type(self, name: str) -> str:
+        """Go type of the variable ``name`` when it was declared with an
+        explicit type (``_typed_decls``) the type tables still agree with."""
+        if not name or name == "_":
+            return ""
+        go_name = self._link_const_go_names.get(name, name) if name not in self.declared_vars else name
+        declared = self._typed_decls.get(go_name) or self._typed_decls.get(self._go_binding_name(name))
+        if not declared:
+            return ""
+        if self._var_go_types.get(go_name, self._var_go_types.get(name)) != declared:
+            return ""
+        return declared
+
+    def _certain_method_go_type(self, cls: str, method: str) -> str:
+        """Go result of the method ``cls.method`` (or an ancestor's) declared
+        ``-> str`` / ``int`` / ``bool`` (``string`` / ``int`` / ``bool``) or
+        ``-> SomeClass`` (``*SomeClass``) in every overload; ``""`` otherwise
+        (async, generic, ``Result``, ``optional`` scalar, containers,
+        unknown)."""
+        for owner in [cls, *self._hier_ancestors(cls)]:
+            key = f"{owner}.{method}"
+            raw = self._method_return_types.get(key, "")
+            if not raw:
+                continue
+            go_type = self._CERTAIN_LAM_SCALARS.get(raw, "")
+            if not go_type and raw in self._class_names and not self._generic_classes.get(raw):
+                # ``AppConfig.current() -> AppConfig``: a ``*AppConfig`` (an
+                # ``optional[AppConfig]`` too).
+                go_type = f"*{self._go_class_name(raw)}"
+                if self._method_return_types.get(f"go:{key}", go_type) != go_type:
+                    return ""
+            elif self._method_return_types.get(f"go:{key}"):
+                return ""
+            if (
+                not go_type
+                or self._method_return_types.get(f"async:{key}")
+                or key in self._generic_method_returns
+                or key in self._result_payload_go_types
+            ):
+                return ""
+            variants = self._overload_variants.get(key, ())
+            if any(v.get("return") != go_type for v in variants):
+                return ""
+            return go_type
+        return ""
+
+    def _certain_go_type(self, node) -> str:
+        """The Go type of ``node`` when the declarations alone determine it,
+        else ``""``. Unlike ``_expr_go_type_hint`` (best effort: the type a
+        value probably has), this never guesses: a string literal or
+        f-string (``string``); a variable emitted with an explicit type
+        (``_typed_decls``: a parameter, an annotated local, a global, a
+        const, an imported const; any type); a static field of a scalar
+        type; a field of a receiver of certain class (``self``, such a
+        variable, field or call; the struct field's type); a call of a
+        function declared with a result type, of a static or instance method
+        declared ``-> str`` / ``int`` / ``bool`` / ``-> SomeClass``, of
+        ``str()`` / ``len()``, of a ``str`` method on a certain ``str``; a
+        slice of a certain ``str``; ``+`` of certain ``str`` values; a
+        ternary of two certain values of one type. An unannotated local
+        (``x = f()``, declared with ``:=``) is never certain: its type comes
+        from a hint."""
+        if not isinstance(node, Tree):
+            return ""
+        d = node.data
+        if d in {"string", "string_concat", "fstring"}:
+            return "string"
+        if d == "var" and node.children:
+            name = self._get_name(node.children[0])
+            if name == "self" or self._parent_alias_expr(name):
+                return ""
+            return self._certain_var_go_type(name)
+        if d == "getattr" and len(node.children) >= 2:
+            obj = node.children[0]
+            attr = self._get_name(node.children[1])
+            if isinstance(obj, Tree) and obj.data == "var" and obj.children:
+                obj_name = self._get_name(obj.children[0])
+                if (
+                    obj_name in self._class_names and obj_name not in self.declared_vars
+                    and obj_name not in self._var_go_types and attr in self._static_vars.get(obj_name, {})
+                ):
+                    # ``Config.prefix``: a static field (``var Config_prefix T``).
+                    go_name = self._static_var_go_name(obj_name, attr)
+                    go_type = self._typed_decls.get(go_name, "")
+                    return go_type if go_type in self._CERTAIN_LAM_SCALARS.values() else ""
+            cls = self._certain_class(obj)
+            if not cls or cls in self._interfaces:
+                return ""
+            for owner in [cls, *self._hier_ancestors(cls)]:
+                if self._generic_classes.get(owner):
+                    return ""
+                # The struct field's declared Go type.
+                for field_name, field_type in self.class_fields.get(owner, []):
+                    if field_name == attr:
+                        return field_type
+                field_type = self._external_field_types.get(owner, {}).get(attr)
+                if field_type:
+                    return field_type
+            return ""
+        if d == "getitem" and len(node.children) >= 2:
+            index = node.children[1]
+            if isinstance(index, Tree) and index.data == "slice" and self._certain_go_type(node.children[0]) == "string":
+                return "string"
+            return ""
+        if d == "arith_expr" and len(node.children) >= 3:
+            if {str(c) for c in node.children[1::2]} == {"+"} and all(
+                self._certain_go_type(c) == "string" for c in node.children[0::2]
+            ):
+                return "string"
+            return ""
+        if d == "test" and len(node.children) == 3:
+            first = self._certain_go_type(node.children[0])
+            return first if first and first == self._certain_go_type(node.children[2]) else ""
+        if d == "funccall" and node.children:
+            return self._certain_call_go_type(node)
+        return ""
+
+    def _certain_call_go_type(self, node: Tree) -> str:
+        callee = node.children[0]
+        args_node = node.children[1] if len(node.children) > 1 else None
+        raw_args = self._get_raw_call_args(args_node) if isinstance(args_node, Tree) else []
+        positional = all(not (isinstance(a, Tree) and a.data in {"argvalue", "starargs", "kwargs"}) for a in raw_args)
+        if isinstance(callee, Tree) and callee.data == "var" and callee.children:
+            name = self._get_name(callee.children[0])
+            if (
+                name in self.declared_vars or name in self._var_go_types
+                or self._go_binding_name(name) in self.declared_vars
+            ):
+                return ""  # a local holding a function value
+            if name in {"str", "len"} and name not in self._user_functions and name not in self._function_go_names:
+                return ("string" if name == "str" else "int") if len(raw_args) == 1 and positional else ""
+            if (
+                name in self._user_functions and name not in self._class_names
+                and name not in self._async_functions and name not in self._result_payload_go_types
+                and len(self._overload_variants.get(name, ())) <= 1
+                and name not in getattr(self, "_nested_generic_functions", {})
+            ):
+                if self._func_generic_params.get(name):
+                    return ""
+                # The emitted function's declared result.
+                return self._func_return_go_types.get(name, "")
+            return ""
+        if isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2:
+            receiver = callee.children[0]
+            method = self._get_name(callee.children[1])
+            if self._certain_go_type(receiver) == "string":
+                from compiler.constants import STR_METHODS, STR_METHOD_RESULT_TYPES
+                if method in STR_METHODS:
+                    # ``s.toLower()``, ``sep.join(parts)``: ``lamstrings``.
+                    return self._CERTAIN_LAM_SCALARS.get(STR_METHOD_RESULT_TYPES.get(method, "str"), "")
+                return ""
+            if isinstance(receiver, Tree) and receiver.data == "var" and receiver.children:
+                obj_name = self._get_name(receiver.children[0])
+                if (
+                    obj_name in self._class_names and obj_name not in self.declared_vars
+                    and obj_name not in self._var_go_types
+                    and method in self._static_methods.get(obj_name, set())
+                ):
+                    # ``ImageKeys.key(entry, size)``: a static method.
+                    return self._certain_method_go_type(obj_name, method)
+            cls = self._certain_class(receiver)
+            if cls and not any(
+                field_name == method
+                for owner in [cls, *self._hier_ancestors(cls)]
+                for field_name, _type in self.class_fields.get(owner, [])
+            ):
+                # ``user.displayName()`` (not a field holding a function).
+                return self._certain_method_go_type(cls, method)
+        return ""
+
     def _fstring_concat_to_go(self, parts) -> "Optional[str]":
-        """An f-string whose slots are all ``str`` / ``html`` / ``xml`` /
-        ``json`` without format specs, at least one of them markup or json
-        (``f"<!doctype html>{page}"``), as a string concatenation of the
-        slots' ``lamValueText`` (lamjson: the value's own text, a page
-        rendered once and copied once, instead of through fmt's buffer).
-        ``None`` otherwise."""
+        """An f-string whose slots are all ``str`` / ``int`` / ``bool`` /
+        ``html`` / ``xml`` / ``json`` without format specs, as a string
+        concatenation (one exact-size allocation instead of fmt's boxing,
+        buffer and copy). A slot whose type is certain
+        (``_certain_go_type``) is used as is (a ``str``) or converted with
+        ``strconv`` (an ``int`` / ``bool``, the text ``%v`` gives); a slot
+        hinted ``str`` but not certain (an unannotated local, ...) goes
+        through ``lamSlotText`` (the string itself, or fmt's ``%v`` of
+        whatever it really holds); html / xml / json through
+        ``lamValueText`` (lamjson: the value's own text). Any other slot
+        keeps ``fmt.Sprintf`` (``None``)."""
         pieces = []
-        has_text_value = False
         for part in parts:
             if isinstance(part, str):
                 if part:
@@ -3710,26 +3926,39 @@ class ExpressionVisitorMixin:
             slot = self._fstring_slot_tree(part.expr.strip())
             if slot is None:
                 return None
-            hint = self._expr_go_type_hint(self._fstring_slot_result_nav(slot))
+            nav = self._fstring_slot_result_nav(slot)
+            certain = self._certain_go_type(nav)
+            if certain in {"string", "int", "bool"}:
+                pieces.append((part, certain))
+                continue
+            hint = self._expr_go_type_hint(nav)
             if hint in self._TEXT_VALUE_GO_TYPES:
-                has_text_value = True
-            elif hint != "string":
+                pieces.append((part, "text"))
+            elif hint == "string":
+                pieces.append((part, "slot"))
+            else:
                 return None
-            pieces.append((part, hint))
-        if not has_text_value:
-            return None
-        # Every slot qualifies: lower each one once.
+        # Every slot qualifies: lower each one once, left to right.
         out = []
         for piece in pieces:
             if isinstance(piece, str):
                 out.append(piece)
                 continue
-            part, _hint = piece
-            # Through lamValueText also for ``str`` slots: a type hint the
-            # lowering does not match (an ``interface{}`` local) still
-            # builds and formats as fmt would.
-            out.append(f"lamValueText({self._transform_fstring_expr(part.expr)})")
-        return " + ".join(out)
+            part, kind = piece
+            value = self._transform_fstring_expr(part.expr)
+            if kind == "string":
+                out.append(value)
+            elif kind == "int":
+                self._need_import("strconv")
+                out.append(f"strconv.Itoa({value})")
+            elif kind == "bool":
+                self._need_import("strconv")
+                out.append(f"strconv.FormatBool({value})")
+            elif kind == "slot":
+                out.append(f"lamSlotText({value})")
+            else:
+                out.append(f"lamValueText({value})")
+        return " + ".join(out) if out else '""'
 
     def _fstring_to_go(self, node: Tree) -> str:
         raw = str(node.children[0])

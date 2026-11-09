@@ -1,0 +1,114 @@
+# f-string slots whose ``str`` type is only inferred (unannotated locals,
+# ``?.`` results, ``optional[str]``, generic ``T``, lambda results,
+# ``any`` values) and slots with side effects: the text is the one fmt's
+# ``%v`` gave, each slot evaluated once, calls left to right. Covers
+# f-strings in defaults, consts, class fields, lambdas, generators and
+# async functions.
+# expect: a-b | a-b!
+# expect: n1 <nil> | n1 <nil>
+# expect: dflt n1
+# expect: Ada <nil>
+# expect: 7 x true
+# expect: call1 call2 call3 | 3
+# expect: [outer [inner Ada] 2]
+# expect: hello-Bob hi-Ann
+# expect: pre:lam field:lam static:lam
+# expect: L:Ada L:Bob
+# expect: g0:Ada g1:Bob
+# expect: async Ada 2
+# expect: any=5 str=x
+# expect: 1.5 -0.25 [a b] {'k': 1}
+# expect: n=2 %d%%
+
+const GREETING: str = f"hello"
+
+class Svc {
+    func init(self, v: int) {
+        self.v: int = v
+    }
+
+    func name(self) -> str {
+        return f"n{self.v}"
+    }
+}
+
+class Labelled {
+    label: str = f"field:{GREETING[:0]}lam"
+    static tagline: str = f"static:{'lam'}"
+}
+
+class Counter {
+    func init(self) {
+        self.calls: int = 0
+    }
+
+    func next(self) -> str {
+        self.calls += 1
+        return f"call{self.calls}"
+    }
+}
+
+class Person {
+    func init(self, name: str, nick: optional[str]) {
+        self.name: str = name
+        self.nick: optional[str] = nick
+    }
+}
+
+func show[T](value: T) -> str {
+    return f"{value}"
+}
+
+func greet(name: str, greeting: str = f"{GREETING}") -> str {
+    return f"{greeting}-{name}"
+}
+
+func names() -> generator[str] {
+    people: list[str] = ["Ada", "Bob"]
+    for i in range(2) {
+        who = people[i]
+        yield f"g{i}:{who}"
+    }
+}
+
+async func describe(name: str, n: int) -> str {
+    label = f"async {name}"
+    return f"{label} {n}"
+}
+
+func main() {
+    a = "a"
+    b = a + "-b"
+    joined = f"{a}-b"
+    print(f"{b} | {joined}{'!'}")
+    s: Svc = Svc(1)
+    m: optional[Svc] = None
+    got = s?.name()
+    missing = m?.name()
+    print(f"{got} {missing} | {s?.name()} {m?.name()}")
+    print(f"{missing ?? 'dflt'} {got ?? 'dflt'}")
+    p: Person = Person("Ada", None)
+    print(f"{p.name} {p.nick}")
+    print(f"{show(7)} {show('x')} {show(true)}")
+    c: Counter = Counter()
+    print(f"{c.next()} {c.next()} {c.next()} | {c.calls}")
+    inner = "Ada"
+    print(f"[outer {f'[inner {inner}]'} {len(inner) - 1}]")
+    print(f"{greet('Bob')} {greet('Ann', 'hi')}")
+    print(f"pre:{GREETING[:0]}lam {Labelled().label} {Labelled.tagline}")
+    label = lambda (who: str) -> str { return f"L:{who}" }
+    print(f"{label('Ada')} {label('Bob')}")
+    out: list[str] = []
+    for item in names() {
+        out.append(item)
+    }
+    print(" ".join(out))
+    print(await describe("Ada", 2))
+    anything: any = 5
+    text: any = "x"
+    print(f"any={anything} str={text}")
+    ratio: float = 1.5
+    print(f"{ratio} {-0.25} {['a', 'b']} {{'k': 1}}")
+    count = 2
+    print(f"n={count} %d%%")
+}

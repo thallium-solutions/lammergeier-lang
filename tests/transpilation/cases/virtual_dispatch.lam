@@ -5,7 +5,7 @@
 # expect-go: func (s *Shape) _lamBindSelf(v interface{}) {
 # expect-go: func (_lamRecv *Shape) _lamVirt_Area() int {
 # expect-go: if _lamRecv._lamSelf != nil { return _lamRecv._lamSelf.Area() }
-# expect-go: return fmt.Sprintf("area %v", s._lamVirt_Area())
+# expect-go: return "area " + strconv.Itoa(s._lamVirt_Area())
 # expect-go: s.Shape._lamBindSelf(s)
 # expect-go: return s.Shape.Describe()
 

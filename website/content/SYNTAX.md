@@ -2119,6 +2119,24 @@ alignment, digit grouping (`{n:,}`: use `Fmt.grouped(n)`), `z`, `n` and
 self-documenting `{x=}` (write `x={x}`), an empty slot `{}` (`{{}}` is a
 literal brace) and a slot that is not an expression.
 
+An f-string whose slots are all `str`, `int`, `bool`, `html`, `xml` or
+`json` values without a format spec costs one string concatenation (one
+allocation of the exact size), not a `fmt.Sprintf` call (which boxes every
+value and copies the text through a buffer): `f"{entry}_{size}.avif"` with
+`entry: str, size: str` is `entry + "_" + size + ".avif"`. The text is the
+same either way. The concatenation uses a slot as is when its type is
+declared: a parameter, an annotated local, global or const, a field, a
+static field, a call of a function or method declared `-> str` (also
+`str(x)`, `str` methods, slices of a `str`, `+` of `str` values, a ternary
+of two of them); an `int` / `bool` slot of a declared type is converted
+with `strconv` (the text `%v` gives). A slot that is a `str` only by
+inference (`x = a + b`, a lambda parameter) goes through a small generic
+helper that returns a string without allocating and formats any other
+value as `%v` would. Slots of other types (`float`, `optional[...]`, a
+`?.` call, a generic `T`, `any`, lists, objects) and slots with a format
+spec keep `fmt.Sprintf`. Each slot is evaluated once, calls left to right.
+An f-string without slots is a plain string (`f"100%"` is `100%`).
+
 > **Quoting.** A slot may contain string literals in either quote,
 > including the f-string's own (``f"{d["k"]}"``, ``f"{",".join(xs)}"``,
 > ``f"x={a ?? 'fallback'}"``), with any characters inside them (commas,
@@ -3775,7 +3793,8 @@ Generators follow Python's semantics:
   it — also when it is part of a cycle, such as an object keeping a
   generator of its own method in a field (`self.items = self.produce()`):
   a suspended generator is plain data (its body is compiled to a state
-  machine), so dropping the object reclaims both.
+  machine), so dropping the object reclaims both (see below for a
+  `finally` using `self`).
 - **Every construct can suspend.** A `yield` may sit in any statement of
   the body — nested loops (`break`, `continue`, loop `else`), `if` /
   `elif`, `match`, `try` / `catch` / `else` / `finally`, `with`, `do` /
@@ -3787,20 +3806,79 @@ Generators follow Python's semantics:
 - **Concurrent consumers** (async tasks or Go goroutines sharing one
   generator value) each receive different values; the body runs for one of
   them at a time.
+- **`close()` ends a generator**, like Python's `generator.close()`:
+  `g.close()` on any generator value (a variable, a field, a parameter, an
+  `iterator[T]`, a call result) runs the pending `finally` blocks and `with`
+  closes of the `yield` it is suspended at (Python's `GeneratorExit`), and
+  the generator yields nothing more. An exception raised there reaches the
+  caller of `close()`. Closing a generator that is exhausted, never started
+  or already closed does nothing; a generator closed by `close()` is not
+  closed again when it is collected. `close()` called while the body is
+  computing a value — by the body itself (a `finally` calling the object's
+  own `close()`, which closes the generator) or by another task — does not
+  wait for it: the generator ends as soon as that value is produced. Called
+  from the `finally` that `close()` is running, it does nothing.
 
-Two limits come from Go's collector. The `finally` blocks of a dropped
-generator run with what they use: when that code itself uses an object
-holding the generator (`finally { self.close() }` in a method generator
-stored in a field of `self`), Go cannot run it once the object is
-unreachable, and the object and the generator stay alive — exhaust such
-a generator before dropping it, or keep its `finally` independent of
-`self`. And a body using `defer`, a `yield` as a
+```lammergeier
+class Feed {
+    func init(self, path: str) {
+        self.path: str = path
+        self.lines: generator[str] = self.read()
+    }
+
+    func read(self) -> generator[str] {
+        try {
+            yield "first line of " + self.path
+            yield "second line of " + self.path
+        } finally {
+            print("closed " + self.path)
+        }
+    }
+
+    func close(self) {
+        self.lines.close()
+    }
+}
+
+feed: Feed = Feed("a.txt")
+for line in feed.lines {
+    print(line)               # first line of a.txt
+    break
+}
+feed.close()                  # closed a.txt
+```
+
+A dropped generator's `finally` blocks run with what they use. A method
+generator stored in a field of its own object whose `finally` uses `self`
+(`self.lines = self.read()` above, or `o.lines = o.read()`) forms a cycle
+with that object: Go collects the two together when the object is dropped
+before the generator ends, and the `finally` cannot run any more — the
+object it needs is gone. The program then prints one line on stderr,
+`Exception ignored in generator Feed.read: its finally uses the object
+holding it, collected with it, so it did not run; call close() before
+dropping the object`. Close such a generator (or exhaust it) before
+dropping its object, as `Feed.close` does; the compiler warns at the
+assignment when no method of the class closes that field ("generator
+`Feed.read` is stored in its own object and its `finally` uses `self`: ...
+call `self.lines.close()` before dropping the object (for example in the
+object's own `close()`)"). A generator
+collected while its object is still alive — the field reassigned
+(`self.lines = self.read()` again), or stored somewhere else — runs its
+`finally` normally. A generator taken out of its object (`it = feed.lines`)
+keeps the object usable while it is iterated after the object is dropped;
+dropping it then collects both (and reports the `finally`), unless the
+field no longer holds it. Other values a `finally` uses that reference the
+object (a local `me = self` read in the `finally`, a `with` resource
+holding `self`) keep it reachable: neither is ever collected (the compiler
+warns for a `with` using `self`).
+
+A body using `defer`, a `yield` as a
 value (`more = yield v`) or a `?` inside a `try` / `with` / `do` nested in a
 `do` block holding a `yield` is not compiled to a state machine: a
 suspended generator of that kind is held by a goroutine, so one dropped
 while an object it uses holds it is never collected (the compiler warns:
 "generator `name` uses `defer`, so it runs on a coroutine while
-suspended").
+suspended"); `close()` it, or exhaust it, before dropping it.
 
 `yield from src` yields every value of `src` in turn (another generator, a
 list, any iterable), like `for v in src { yield v }`; ending the outer
@@ -3983,7 +4061,10 @@ Two operators make working with nullable values less noisy:
 
 - `obj?.field` — if `obj` is `nil`, the whole expression evaluates to
   `nil` without dereferencing; otherwise it returns `obj.field`.
-  Method calls use the same syntax (`obj?.method(args)`).
+  Method calls use the same syntax (`obj?.method(args)`): `obj` is
+  evaluated once, and the call is an `any` holding the result or `None`
+  (`x = obj?.name()` makes `x` an `any`; `x ?? "default"` falls back when
+  it is `None`).
 - `a ?? b` — returns `a` if it is non-`nil`, otherwise `b`. Chains
   fold left-to-right, e.g. `a ?? b ?? c`.
 

@@ -98,6 +98,7 @@ run_suite() {
             "$PYTHON" tests/tests/test_html_sanitize_fuzz.py
             "$PYTHON" tests/tests/test_markup_race.py
             "$PYTHON" tests/tests/test_generator_race.py
+            "$PYTHON" tests/tests/test_generator_lowering_fuzz.py
             "$PYTHON" tests/tests/test_go_library_filenames.py
             "$PYTHON" tests/tests/test_link_symbols.py
             "$PYTHON" tests/tests/test_apidiff.py

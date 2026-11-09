@@ -1,0 +1,129 @@
+# `close()` of a generator shared by concurrent consumers (async tasks)
+# follows the generator's mutex: the pending `finally` runs exactly once,
+# every value reaches one consumer, and the consumers then see the
+# generator end. A `close()` arriving while a value is being computed —
+# from another consumer, or from the body itself (its object's `close()`
+# called from the body) — does not wait for it: the generator ends as
+# soon as that value is produced.
+# Run under the race detector by `tests/tests/test_generator_race.py`.
+#
+# expect: closed finally runs 1
+# expect: closed distinct true
+# expect: closed below limit true
+# expect: closed then nothing 0
+# expect: self closed values 501 distinct 501
+# expect: self closed finally runs 1
+# expect: self closed then nothing 0
+
+class Pool {
+    func init(self) {
+        self.finallyRuns: int = 0
+    }
+
+    func numbers(self, n: int) -> generator[int] {
+        try {
+            i: int = 0
+            while i < n {
+                yield i
+                i += 1
+            }
+        } finally {
+            self.finallyRuns += 1
+        }
+    }
+}
+
+class Ticker {
+    func init(self, stopAt: int) {
+        self.stopAt: int = stopAt
+        self.finallyRuns: int = 0
+        self.items: generator[int] = self.ticks()
+    }
+
+    func ticks(self) -> generator[int] {
+        try {
+            i: int = 0
+            while True {
+                if i == self.stopAt {
+                    self.close()
+                }
+                yield i
+                i += 1
+            }
+        } finally {
+            self.finallyRuns += 1
+        }
+    }
+
+    func close(self) {
+        self.items.close()
+    }
+}
+
+async func drain(g: generator[int]) -> list[int] {
+    got: list[int] = []
+    for v in g {
+        got.append(v)
+    }
+    return got
+}
+
+async func closeAfter(g: generator[int], limit: int) -> list[int] {
+    got: list[int] = []
+    for v in g {
+        got.append(v)
+        if v >= limit {
+            g.close()
+        }
+    }
+    return got
+}
+
+func gather(parts: list[list[int]]) -> dict[int, bool] {
+    seen: dict[int, bool] = {}
+    for part in parts {
+        for v in part {
+            seen[v] = True
+        }
+    }
+    return seen
+}
+
+func count(parts: list[list[int]]) -> int {
+    n: int = 0
+    for part in parts {
+        n += len(part)
+    }
+    return n
+}
+
+func main() {
+    pool: Pool = Pool()
+    g: generator[int] = pool.numbers(1000000)
+    h1 = drain(g)
+    h2 = closeAfter(g, 2000)
+    h3 = drain(g)
+    h4 = closeAfter(g, 3000)
+    parts: list[list[int]] = []
+    parts.append(await h1)
+    parts.append(await h2)
+    parts.append(await h3)
+    parts.append(await h4)
+    seen: dict[int, bool] = gather(parts)
+    print("closed finally runs", pool.finallyRuns)
+    print("closed distinct", len(seen) == count(parts))
+    print("closed below limit", count(parts) < 1000000)
+    print("closed then nothing", len(await drain(g)))
+
+    t: Ticker = Ticker(500)
+    t1 = drain(t.items)
+    t2 = drain(t.items)
+    t3 = drain(t.items)
+    tparts: list[list[int]] = []
+    tparts.append(await t1)
+    tparts.append(await t2)
+    tparts.append(await t3)
+    print("self closed values", count(tparts), "distinct", len(gather(tparts)))
+    print("self closed finally runs", t.finallyRuns)
+    print("self closed then nothing", len(await drain(t.items)))
+}

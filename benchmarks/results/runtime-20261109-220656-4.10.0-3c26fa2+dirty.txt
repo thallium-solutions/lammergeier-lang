@@ -1,0 +1,56 @@
+# lamc 4.10.0 (3c26fa2+dirty), 2026-11-09T22:06:56Z
+# command: sh scripts/bench.sh runtime
+# host: Linux 6.12.10-76061203-generic x86_64; cpu: 13th Gen Intel(R) Core(TM) i9-13900HX; load: 17.95 11.84 8.84
+# go: go1.25.3
+
+  ran language/bench_dict_access.lam
+  ran language/bench_fib.lam
+  ran language/bench_fstring.lam
+  ran language/bench_fstring_str.lam
+  ran language/bench_generator.lam
+  ran language/bench_generator_break.lam
+  ran language/bench_generator_resume.lam
+  ran language/bench_list_append.lam
+  ran language/bench_list_index.lam
+  ran language/bench_method_dispatch.lam
+  ran language/bench_string_concat.lam
+  ran language/bench_sum_loop.lam
+  ran stdlib/bench_hash_sha256.lam
+  ran stdlib/bench_iter_pipeline.lam
+  ran stdlib/bench_json_decode.lam
+  ran stdlib/bench_json_encode.lam
+  ran stdlib/bench_json_encode_api.lam
+  ran stdlib/bench_markup_compose.lam
+  ran stdlib/bench_markup_compose_xml.lam
+  ran stdlib/bench_regex_match.lam
+  ran stdlib/bench_sort_ints.lam
+  ran stdlib/bench_strings_split.lam
+
+benchmark                        ops      median      per op        best  spread   go per op  lam/go
+----------------------------------------------------------------------------------------------------
+[language]
+dict_access                   100000    22.97 ms    229.7 ns    21.26 ms    4.5%    246.4 ns   0.93x
+fib                                5     8.27 ms     1.65 ms     6.63 ms    2.8%     1.60 ms   1.03x
+fstring                       200000    36.72 ms    183.6 ns    35.33 ms    3.8%    221.6 ns   0.83x
+fstring_str                   200000    27.06 ms    135.3 ns    25.57 ms    5.5%    157.7 ns   0.86x  alloc/op 256 B
+generator                    1000000    13.32 ms     13.3 ns    11.89 ms    4.4%     26.1 ns   0.51x
+generator_break                10000     3.18 ms    318.3 ns     2.08 ms   13.4%      8.2 ns  38.63x
+generator_resume             1000000    19.11 ms     19.1 ns    17.44 ms    8.7%     73.1 ns   0.26x
+list_append                  1000000    14.89 ms     14.9 ns    14.03 ms    5.8%     14.1 ns   1.06x
+list_index                  50000000    33.64 ms      0.7 ns    29.93 ms    4.3%      0.8 ns   0.82x
+method_dispatch              2000000     1.22 ms      0.6 ns     1.18 ms    0.1%      0.6 ns   1.09x
+string_concat                  10000     9.83 ms    982.7 ns     8.30 ms    8.8%    904.5 ns   1.09x
+sum_loop                    10000000     5.21 ms      0.5 ns     3.03 ms   15.5%      0.5 ns   1.13x
+[stdlib]
+hash_sha256                   100000    25.53 ms    255.3 ns    24.06 ms    5.8%
+iter_pipeline                1000000     4.10 ms      4.1 ns     3.92 ms    2.8%
+json_decode                    50000   108.79 ms     2.18 us    98.90 ms    6.6%
+json_encode                    50000    39.32 ms    786.4 ns    37.72 ms    4.1%
+json_encode_api                 2000   526.70 ms   263.35 us   466.53 ms    2.2%                      alloc/op 217.5 kB
+markup_compose                  2000   291.21 ms   145.61 us   284.18 ms    1.4%                      alloc/op 173.5 kB
+markup_compose_xml               200   379.10 ms     1.90 ms   364.51 ms    2.2%                      alloc/op 2.64 MB
+regex_match                    50000     7.99 ms    159.8 ns     7.59 ms    5.0%
+sort_ints                     100000    44.12 ms    441.2 ns    40.55 ms    3.2%
+strings_split                 200000    23.93 ms    119.7 ns    20.39 ms    2.9%
+
+geometric mean lam/go over 12 baselines: 1.12x

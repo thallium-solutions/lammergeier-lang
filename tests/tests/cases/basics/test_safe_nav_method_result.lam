@@ -1,0 +1,64 @@
+# ``obj?.method()`` is an ``interface{}`` holding the result, or ``None``
+# when ``obj`` is ``None`` (the type hint used to claim the method's declared
+# result, so an unannotated local assigned from it got a wrong type):
+# ``??`` falls back on ``None``, f-strings and ``print`` show ``<nil>``, a
+# ``str`` argument takes the result, and the receiver is evaluated once.
+# expect: n1 <nil>
+# expect: n1|<nil>
+# expect: n1 dflt
+# expect: n1! n2!
+# expect: made=1 n7
+# expect: made=2 <nil>
+# expect: n3 3
+
+class Svc {
+    func init(self, v: int) {
+        self.v: int = v
+    }
+
+    func name(self) -> str {
+        return f"n{self.v}"
+    }
+
+    func num(self) -> int {
+        return self.v
+    }
+}
+
+class Factory {
+    func init(self) {
+        self.made: int = 0
+    }
+
+    func make(self, v: int) -> optional[Svc] {
+        self.made += 1
+        if v < 0 {
+            return None
+        }
+        return Svc(v)
+    }
+}
+
+func takes(x: str) -> str {
+    return x + "!"
+}
+
+func main() {
+    s: Svc = Svc(1)
+    m: optional[Svc] = None
+    got = s?.name()
+    missing = m?.name()
+    print(got, missing)
+    print(f"{got}|{missing}")
+    print(got ?? "dflt", missing ?? "dflt")
+    other: Svc = Svc(2)
+    print(takes(got), takes(other?.name()))
+    f: Factory = Factory()
+    made = f.make(7)?.name()
+    print(f"made={f.made} {made}")
+    none = f.make(-1)?.name()
+    print(f"made={f.made} {none}")
+    three: Svc = Svc(3)
+    n = three?.num()
+    print(three?.name(), n)
+}

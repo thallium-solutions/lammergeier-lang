@@ -1,11 +1,15 @@
-# Transpilation: f-strings compile to fmt.Sprintf with %v placeholders.
+# Transpilation: f-strings compile to a string concatenation when every
+# slot is a declared str / int / bool (``strconv`` for the int), else to
+# fmt.Sprintf with %v placeholders (a float slot here).
 # Both the single-quoted (``f"..."``) and triple-quoted
-# (``f"""..."""``) shapes must emit a valid ``fmt.Sprintf(...)``
-# call. The triple-quoted check protects against a regression
+# (``f"""..."""``) shapes must emit valid Go in either lowering.
+# The triple-quoted checks protect against a regression
 # where the shorter-prefix branch matched first and left two
 # dangling quote characters at each end of the format string.
-# expect-go: fmt.Sprintf("%v years old", age)
-# expect-go: fmt.Sprintf("hello, %v!\nage: %v", name, age)
+# expect-go: var msg string = strconv.Itoa(age) + " years old"
+# expect-go: var greeting string = "hello, " + name + "!\nage: " + strconv.Itoa(age)
+# expect-go: fmt.Sprintf("%v years old", years)
+# expect-go: fmt.Sprintf("hello, %v!\nyears: %v", name, years)
 
 func main() {
     age: int = 30
@@ -13,6 +17,12 @@ func main() {
     msg: str = f"{age} years old"
     greeting: str = f"""hello, {name}!
 age: {age}"""
+    years: float = 30.5
+    exact: str = f"{years} years old"
+    detailed: str = f"""hello, {name}!
+years: {years}"""
     print(msg)
     print(greeting)
+    print(exact)
+    print(detailed)
 }
