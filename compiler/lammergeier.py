@@ -3452,6 +3452,10 @@ def _compile_lam(
         _re.search(r"\basync\s+func\b", preprocessed)
         or any("lamAsyncTaskFailed(" in src for src in lib_sources.values())
     )
+    # Some library uses a generator: the main file defines its runtime.
+    transpiler._lib_uses_generators = any(
+        _re.search(r"\blam(?:New(?:Isolated)?)?Generator\[", src) for src in lib_sources.values()
+    )
     # Inject library class/static info
     transpiler._class_names.update(lib_class_names)
     transpiler._interfaces.update(lib_pre_interfaces)
@@ -4072,7 +4076,7 @@ def _cmd_fmt(argv: list) -> int:
 
 _DOCTOR_REQUIRED = {
     "python": ">=3.10",
-    "go": ">=1.21",
+    "go": ">=1.24",
     "lark": "installed",
     "stdlib": "present",
     "lsp": "present",
@@ -4141,7 +4145,7 @@ def _doctor_go_check() -> dict:
             "message": f"error ({detail})", "searched": searched,
         }
     version = output.split()[2] if len(output.split()) >= 3 else output
-    ok = _meets_min_version(version, "1.21")
+    ok = _meets_min_version(version, "1.24")
     message = output if ok else f"{output} below required {_DOCTOR_REQUIRED['go']}"
     return {
         "ok": ok,

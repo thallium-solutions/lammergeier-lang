@@ -1,0 +1,39 @@
+# Generators left early — 10,000 `for` loops each taking 10 values from an
+# endless generator and breaking out: the cost of starting a generator and
+# of stopping it when the loop ends (with 4.7.0 every broken loop also
+# leaked the generator's goroutine).
+#
+# ops: 10000
+
+from lamtime import Time
+
+func naturals() -> generator[int] {
+    i: int = 0
+    while True {
+        yield i
+        i += 1
+    }
+}
+
+func work() {
+    total: int = 0
+    for k in range(10000) {
+        for x in naturals() {
+            if x == 10 {
+                break
+            }
+            total += x
+        }
+    }
+    if total != 450000 {
+        print(f"unexpected {total}")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH generator_break 10000 {elapsed}")
+}

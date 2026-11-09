@@ -56,7 +56,14 @@ sh scripts/bench.sh runtime -f json --runs 9 --json out/runtime.json
 ```
 
 Groups: `language/` (calls, loops, lists, list indexing with a runtime
-index, dicts, strings, dispatch, f-strings) and `stdlib/` (JSON, regex, hashing, sorting, splitting).
+index, dicts, strings, dispatch, f-strings, generators: full and early-left
+loops) and `stdlib/` (JSON, regex, hashing, sorting, splitting, composing and
+rendering `html`).
+
+A program may add the bytes it allocates per operation as a fifth field
+(`BENCH <name> <ops> <elapsed_ns> <bytes_per_op>`, measured with
+`runtime.ReadMemStats` in a `go!` block, as `bench_markup_compose.lam` does);
+the report shows it as `alloc/op`.
 
 ## Results
 

@@ -24,6 +24,8 @@ go! {
         "strconv"
         "strings"
         "sync"
+        "sync/atomic"
+        "unsafe"
     )
 
     // ── Nodes ──────────────────────────────────────────────────────────
@@ -34,6 +36,7 @@ go! {
         lamMComment
         lamMDoctype
         lamMProcInst
+        lamMRef
     )
 
     type lamMAttr struct {
@@ -42,15 +45,204 @@ go! {
         hasValue bool
     }
 
+    // Inserting a value into another one (a slot, ``append``...) does not
+    // copy its elements: the new parent gets a ``lamMRef`` node standing
+    // for the element, which is shared (copy on write):
+    //
+    //   - an element has at most one ref (``share``), reused by every
+    //     insertion, so inserting costs no copy and nesting no repeated copy;
+    //   - before a node changes (``lamMUnshare``) every ref of it or of an
+    //     ancestor is pointed at a copy of the node as it was, so what was
+    //     inserted never changes; the node itself keeps its identity (views
+    //     and ``+`` keep working on it);
+    //   - readers hold the ref's read lock while they walk its node, and
+    //     ``lamMUnshare`` takes the write lock to swap it, so a value being
+    //     rendered by another goroutine is never changed under it;
+    //   - DOM queries need real parent links: ``materialize`` replaces the
+    //     refs of the queried tree with real copies first.
+    //
+    // A ref is never a top-level node of a value, and the node of a ref is
+    // always an element. ``frozen`` nodes (the parts of a template without
+    // slots) never change and are shared as they are.
     type lamMNode struct {
-        kind        int
+        kind        uint8
+        selfClosing bool
+        frozen      bool
         name        string
         attrs       []lamMAttr
         children    []*lamMNode
         data        string
-        selfClosing bool
         parent      *lamMNode
         owner       *lamFrag
+        share       atomic.Pointer[lamMNode]
+        ref         *lamMShare
+    }
+
+    type lamMShare struct {
+        mu     sync.RWMutex
+        node   *lamMNode
+        frozen bool // the node never changes: no locking
+    }
+
+    type lamMRefNode struct {
+        lamMNode
+        sh lamMShare
+    }
+
+    func lamMNewRef(target *lamMNode, frozen bool) *lamMNode {
+        r := &lamMRefNode{}
+        r.kind = lamMRef
+        r.sh.node = target
+        r.sh.frozen = frozen
+        r.ref = &r.sh
+        return &r.lamMNode
+    }
+
+    // The node of a ref, read-locked until ``release``.
+    func (r *lamMNode) acquire() *lamMNode {
+        if r.ref.frozen {
+            return r.ref.node
+        }
+        r.ref.mu.RLock()
+        return r.ref.node
+    }
+
+    func (r *lamMNode) release() {
+        if !r.ref.frozen {
+            r.ref.mu.RUnlock()
+        }
+    }
+
+    // The ref standing for element ``n`` (created on first use).
+    func lamMRefTo(n *lamMNode) *lamMNode {
+        for {
+            if r := n.share.Load(); r != nil {
+                return r
+            }
+            r := lamMNewRef(n, false)
+            if n.share.CompareAndSwap(nil, r) {
+                return r
+            }
+        }
+    }
+
+    func lamMLeaf(n *lamMNode, parent *lamMNode) *lamMNode {
+        return &lamMNode{kind: n.kind, name: n.name, data: n.data, selfClosing: n.selfClosing, parent: parent}
+    }
+
+    // A child of ``n`` as a child of a copy of ``n``: refs and frozen nodes
+    // as they are, elements through their ref, other nodes copied.
+    func lamMShareChild(ch *lamMNode, parent *lamMNode) *lamMNode {
+        switch {
+        case ch.kind == lamMRef || ch.frozen:
+            return ch
+        case ch.kind == lamMElement:
+            return lamMRefTo(ch)
+        }
+        return lamMLeaf(ch, parent)
+    }
+
+    // A private copy of ``n``: its own attributes and child list, the
+    // children shared.
+    func lamMOwnCopy(n *lamMNode, parent *lamMNode) *lamMNode {
+        if n.kind != lamMElement {
+            return lamMLeaf(n, parent)
+        }
+        c := &lamMNode{kind: n.kind, name: n.name, selfClosing: n.selfClosing, parent: parent}
+        if len(n.attrs) > 0 {
+            c.attrs = append([]lamMAttr(nil), n.attrs...)
+        }
+        if len(n.children) > 0 {
+            c.children = make([]*lamMNode, len(n.children))
+            for i, ch := range n.children {
+                c.children[i] = lamMShareChild(ch, c)
+            }
+        }
+        return c
+    }
+
+    // A full copy of ``n`` made of real nodes (refs replaced by copies).
+    func lamMDeepCopy(n *lamMNode, parent *lamMNode) *lamMNode {
+        if n.kind == lamMRef {
+            t := n.acquire()
+            c := lamMDeepCopy(t, parent)
+            n.release()
+            return c
+        }
+        if n.frozen && n.kind != lamMElement {
+            return n
+        }
+        c := &lamMNode{kind: n.kind, name: n.name, data: n.data, selfClosing: n.selfClosing, parent: parent}
+        if len(n.attrs) > 0 {
+            c.attrs = append([]lamMAttr(nil), n.attrs...)
+        }
+        if len(n.children) > 0 {
+            c.children = make([]*lamMNode, len(n.children))
+            for i, ch := range n.children {
+                c.children[i] = lamMDeepCopy(ch, c)
+            }
+        }
+        return c
+    }
+
+    // Called before ``x`` changes: every ref of ``x`` or of an ancestor
+    // gets a copy of its node as it is now. Top-down, so refs created by
+    // readers of an ancestor (``lamMOwnCopy`` of it) are seen.
+    func lamMUnshare(x *lamMNode) {
+        var buf [32]*lamMNode
+        chain := buf[:0]
+        for p := x; p != nil; p = p.parent {
+            chain = append(chain, p)
+        }
+        for i := len(chain) - 1; i >= 0; i-- {
+            p := chain[i]
+            r := p.share.Load()
+            if r == nil {
+                continue
+            }
+            snapshot := lamMOwnCopy(p, nil)
+            r.ref.mu.Lock()
+            r.ref.node = snapshot
+            r.ref.mu.Unlock()
+            p.share.CompareAndSwap(r, nil)
+        }
+    }
+
+    func lamMHasRefs(n *lamMNode) bool {
+        for _, ch := range n.children {
+            if ch.kind == lamMRef || (ch.kind == lamMElement && lamMHasRefs(ch)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    // Replaces the refs below ``n`` with real copies (``n`` is unshared).
+    func lamMExpand(n *lamMNode) {
+        for i, ch := range n.children {
+            switch {
+            case ch.kind == lamMRef:
+                n.children[i] = lamMDeepCopy(ch, n)
+            case ch.kind == lamMElement && lamMHasRefs(ch):
+                lamMUnshare(ch)
+                lamMExpand(ch)
+            }
+        }
+    }
+
+    // Makes the trees holding the value's nodes real, for queries and
+    // navigation (parent links, siblings).
+    func (f *lamFrag) materialize() {
+        for _, n := range f.all() {
+            root := n
+            for root.parent != nil {
+                root = root.parent
+            }
+            if lamMHasRefs(root) {
+                lamMUnshare(root)
+                lamMExpand(root)
+            }
+        }
     }
 
     // A markup value: top-level nodes (a fragment). ``view`` values are
@@ -82,25 +274,6 @@ go! {
             return a == b
         }
         return strings.EqualFold(a, b)
-    }
-
-    func (n *lamMNode) clone(parent *lamMNode) *lamMNode {
-        c := &lamMNode{kind: n.kind, name: n.name, data: n.data, selfClosing: n.selfClosing, parent: parent}
-        if len(n.attrs) > 0 {
-            c.attrs = append([]lamMAttr(nil), n.attrs...)
-        }
-        for _, ch := range n.children {
-            c.children = append(c.children, ch.clone(c))
-        }
-        return c
-    }
-
-    func lamMCloneAll(nodes []*lamMNode, parent *lamMNode) []*lamMNode {
-        out := make([]*lamMNode, 0, len(nodes))
-        for _, n := range nodes {
-            out = append(out, n.clone(parent))
-        }
-        return out
     }
 
     func lamMNewFrag(xmlMode bool, nodes []*lamMNode) *lamFrag {
@@ -148,91 +321,207 @@ go! {
         return l == "svg" || l == "math"
     }
 
-    func lamMWriteAttrs(sb *strings.Builder, n *lamMNode, xmlMode bool) {
-        for _, a := range n.attrs {
-            sb.WriteByte(' ')
-            sb.WriteString(a.name)
-            if a.hasValue || xmlMode {
-                sb.WriteString("=\"")
-                sb.WriteString(lamMAttrEscaper.Replace(a.value))
-                sb.WriteByte('"')
+    // Appends ``s`` escaped for element content (``attr``: for a quoted
+    // attribute value); the same replacements as the escapers above.
+    func lamMAppendEscaped(b []byte, s string, attr bool) []byte {
+        last := 0
+        for i := 0; i < len(s); i++ {
+            var rep string
+            switch s[i] {
+            case '&':
+                rep = "&amp;"
+            case '<':
+                rep = "&lt;"
+            case '>':
+                rep = "&gt;"
+            case '"':
+                if !attr {
+                    continue
+                }
+                rep = "&quot;"
+            default:
+                continue
             }
+            b = append(b, s[last:i]...)
+            b = append(b, rep...)
+            last = i + 1
         }
+        return append(b, s[last:]...)
     }
 
-    func lamMWrite(sb *strings.Builder, nodes []*lamMNode, xmlMode bool, foreign bool) {
-        for _, n := range nodes {
-            switch n.kind {
-            case lamMText:
-                sb.WriteString(lamMTextEscaper.Replace(n.data))
-            case lamMComment:
-                sb.WriteString("<!--")
-                sb.WriteString(n.data)
-                sb.WriteString("-->")
-            case lamMDoctype:
-                sb.WriteString("<!")
-                sb.WriteString(n.data)
-                sb.WriteByte('>')
-            case lamMProcInst:
-                sb.WriteString("<?")
-                sb.WriteString(n.data)
-                if xmlMode {
-                    sb.WriteString("?>")
-                } else {
-                    sb.WriteByte('>')
-                }
-            case lamMElement:
-                sb.WriteByte('<')
-                sb.WriteString(n.name)
-                lamMWriteAttrs(sb, n, xmlMode)
-                if xmlMode {
-                    if len(n.children) == 0 && n.selfClosing {
-                        sb.WriteString("/>")
-                        continue
-                    }
-                    sb.WriteByte('>')
-                    lamMWrite(sb, n.children, true, false)
-                    sb.WriteString("</")
-                    sb.WriteString(n.name)
-                    sb.WriteByte('>')
-                    continue
-                }
-                isForeign := foreign || lamMIsForeign(n.name)
-                lname := lamMLower(n.name)
-                if isForeign && n.selfClosing && len(n.children) == 0 {
-                    sb.WriteString("/>")
-                    continue
-                }
-                if !isForeign && lamHTMLVoid[lname] {
-                    if n.selfClosing {
-                        sb.WriteString("/>")
-                    } else {
-                        sb.WriteByte('>')
-                    }
-                    continue
-                }
-                sb.WriteByte('>')
-                if !isForeign && lamHTMLRawText[lname] {
-                    for _, ch := range n.children {
-                        if ch.kind == lamMText {
-                            sb.WriteString(ch.data)
-                        }
-                    }
-                } else {
-                    lamMWrite(sb, n.children, false, isForeign)
-                }
-                sb.WriteString("</")
-                sb.WriteString(n.name)
-                sb.WriteByte('>')
+    func lamMWriteAttrs(b []byte, n *lamMNode, xmlMode bool) []byte {
+        for _, a := range n.attrs {
+            b = append(b, ' ')
+            b = append(b, a.name...)
+            if a.hasValue || xmlMode {
+                b = append(b, '=', '"')
+                b = lamMAppendEscaped(b, a.value, true)
+                b = append(b, '"')
             }
         }
+        return b
+    }
+
+    func lamMWrite(b []byte, nodes []*lamMNode, xmlMode bool, foreign bool) []byte {
+        for _, n := range nodes {
+            b = lamMWriteNode(b, n, xmlMode, foreign)
+        }
+        return b
+    }
+
+    func lamMWriteNode(b []byte, n *lamMNode, xmlMode bool, foreign bool) []byte {
+        switch n.kind {
+        case lamMRef:
+            t := n.acquire()
+            b = lamMWriteNode(b, t, xmlMode, foreign)
+            n.release()
+        case lamMText:
+            b = lamMAppendEscaped(b, n.data, false)
+        case lamMComment:
+            b = append(b, "<!--"...)
+            b = append(b, n.data...)
+            b = append(b, "-->"...)
+        case lamMDoctype:
+            b = append(b, "<!"...)
+            b = append(b, n.data...)
+            b = append(b, '>')
+        case lamMProcInst:
+            b = append(b, "<?"...)
+            b = append(b, n.data...)
+            if xmlMode {
+                b = append(b, "?>"...)
+            } else {
+                b = append(b, '>')
+            }
+        case lamMElement:
+            b = append(b, '<')
+            b = append(b, n.name...)
+            b = lamMWriteAttrs(b, n, xmlMode)
+            if xmlMode {
+                if len(n.children) == 0 && n.selfClosing {
+                    return append(b, "/>"...)
+                }
+                b = append(b, '>')
+                b = lamMWrite(b, n.children, true, false)
+                b = append(b, "</"...)
+                b = append(b, n.name...)
+                return append(b, '>')
+            }
+            isForeign := foreign || lamMIsForeign(n.name)
+            lname := lamMLower(n.name)
+            if isForeign && n.selfClosing && len(n.children) == 0 {
+                return append(b, "/>"...)
+            }
+            if !isForeign && lamHTMLVoid[lname] {
+                if n.selfClosing {
+                    return append(b, "/>"...)
+                }
+                return append(b, '>')
+            }
+            b = append(b, '>')
+            if !isForeign && lamHTMLRawText[lname] {
+                // Only text is written (refs always stand for elements).
+                for _, ch := range n.children {
+                    if ch.kind == lamMText {
+                        b = append(b, ch.data...)
+                    }
+                }
+            } else {
+                b = lamMWrite(b, n.children, false, isForeign)
+            }
+            b = append(b, "</"...)
+            b = append(b, n.name...)
+            b = append(b, '>')
+        }
+        return b
+    }
+
+    // The length of ``s`` escaped by lamMAppendEscaped.
+    func lamMEscapedLen(s string, attr bool) int {
+        n := len(s)
+        for i := 0; i < len(s); i++ {
+            switch s[i] {
+            case '&':
+                n += 4
+            case '<', '>':
+                n += 3
+            case '"':
+                if attr {
+                    n += 5
+                }
+            }
+        }
+        return n
+    }
+
+    // The length lamMWriteNode writes for ``n`` (it sizes the result once).
+    func lamMSize(n *lamMNode, xmlMode bool, foreign bool) int {
+        switch n.kind {
+        case lamMRef:
+            t := n.acquire()
+            size := lamMSize(t, xmlMode, foreign)
+            n.release()
+            return size
+        case lamMText:
+            return lamMEscapedLen(n.data, false)
+        case lamMComment:
+            return len(n.data) + 7
+        case lamMDoctype:
+            return len(n.data) + 3
+        case lamMProcInst:
+            if xmlMode {
+                return len(n.data) + 4
+            }
+            return len(n.data) + 3
+        case lamMElement:
+            size := 1 + len(n.name)
+            for _, a := range n.attrs {
+                size += 1 + len(a.name)
+                if a.hasValue || xmlMode {
+                    size += 3 + lamMEscapedLen(a.value, true)
+                }
+            }
+            if xmlMode {
+                if len(n.children) == 0 && n.selfClosing {
+                    return size + 2
+                }
+                for _, ch := range n.children {
+                    size += lamMSize(ch, true, false)
+                }
+                return size + 4 + len(n.name)
+            }
+            isForeign := foreign || lamMIsForeign(n.name)
+            lname := lamMLower(n.name)
+            if isForeign && n.selfClosing && len(n.children) == 0 {
+                return size + 2
+            }
+            if !isForeign && lamHTMLVoid[lname] {
+                if n.selfClosing {
+                    return size + 2
+                }
+                return size + 1
+            }
+            size += 4 + len(n.name)
+            if !isForeign && lamHTMLRawText[lname] {
+                for _, ch := range n.children {
+                    if ch.kind == lamMText {
+                        size += len(ch.data)
+                    }
+                }
+            } else {
+                for _, ch := range n.children {
+                    size += lamMSize(ch, false, isForeign)
+                }
+            }
+            return size
+        }
+        return 0
     }
 
     func (f *lamFrag) String() string {
-        if f == nil {
+        if f == nil || len(f.nodes) == 0 {
             return ""
         }
-        var sb strings.Builder
         foreign := false
         if f.view && len(f.nodes) == 1 {
             for p := f.nodes[0].parent; p != nil; p = p.parent {
@@ -241,8 +530,17 @@ go! {
                 }
             }
         }
-        lamMWrite(&sb, f.nodes, f.xml, foreign)
-        return sb.String()
+        // One allocation of the exact size; the bytes are never written
+        // again, so the string can use them.
+        size := 0
+        for _, n := range f.nodes {
+            size += lamMSize(n, f.xml, foreign)
+        }
+        if size == 0 {
+            return ""
+        }
+        b := lamMWrite(make([]byte, 0, size), f.nodes, f.xml, foreign)
+        return unsafe.String(unsafe.SliceData(b), len(b))
     }
 
     func lamMTextOf(nodes []*lamMNode, sb *strings.Builder) {
@@ -617,29 +915,124 @@ go! {
     const lamMSlotOpen = '\uE000'
     const lamMSlotClose = '\uE001'
 
+    // A parsed literal, compiled once: the placeholders of every text and
+    // attribute split out, and every element without a slot frozen behind
+    // a ref shared by all the values built from the literal.
     type lamMTemplate struct {
-        nodes []*lamMNode
+        nodes []*lamMTplNode
         err   error
     }
 
-    var lamMTemplates sync.Map
+    type lamMTplNode struct {
+        src      *lamMNode
+        pieces   []lamMPiece // text with slots
+        attrs    []lamMTplAttr
+        children []*lamMTplNode
+        raw      bool      // element whose content is raw text (script, style)
+        dynamic  bool      // a slot in it or below
+        ref      *lamMNode // element without slots: its frozen ref
+    }
+
+    type lamMTplAttr struct {
+        attr   lamMAttr
+        pieces []lamMPiece // nil: no slot
+        whole  int         // the slot that is the whole value, or -1
+    }
+
+    func lamMFreeze(n *lamMNode) {
+        n.frozen = true
+        for _, ch := range n.children {
+            lamMFreeze(ch)
+        }
+    }
+
+    func lamMCompile(n *lamMNode, xmlMode bool) *lamMTplNode {
+        t := &lamMTplNode{src: n}
+        switch n.kind {
+        case lamMText:
+            if strings.ContainsRune(n.data, lamMSlotOpen) {
+                t.dynamic = true
+                t.pieces = lamMPieces(n.data)
+                for i := range t.pieces {
+                    if t.pieces[i].slot < 0 {
+                        t.pieces[i].node = &lamMNode{kind: lamMText, data: t.pieces[i].text, frozen: true}
+                    }
+                }
+            } else {
+                n.frozen = true
+            }
+        case lamMElement:
+            for _, a := range n.attrs {
+                ta := lamMTplAttr{attr: a, whole: -1}
+                if strings.ContainsRune(a.value, lamMSlotOpen) {
+                    t.dynamic = true
+                    ta.pieces = lamMPieces(a.value)
+                    if len(ta.pieces) == 1 && ta.pieces[0].slot >= 0 {
+                        ta.whole = ta.pieces[0].slot
+                    }
+                }
+                t.attrs = append(t.attrs, ta)
+            }
+            t.raw = !xmlMode && lamHTMLRawText[lamMLower(n.name)]
+            for _, ch := range n.children {
+                c := lamMCompile(ch, xmlMode)
+                t.dynamic = t.dynamic || c.dynamic
+                t.children = append(t.children, c)
+            }
+            if !t.dynamic {
+                lamMFreeze(n)
+                t.ref = lamMNewRef(n, true)
+            }
+        default:
+            n.frozen = true
+        }
+        return t
+    }
+
+    // Compiled literals by text, one map per kind; a map is never changed
+    // once published (a new one replaces it), so lookups take no lock and
+    // allocate nothing.
+    var lamMTemplatesHTML, lamMTemplatesXML atomic.Pointer[map[string]*lamMTemplate]
+    var lamMTemplatesMu sync.Mutex
 
     func lamMTemplateFor(xmlMode bool, tpl string) *lamMTemplate {
-        key := "h" + tpl
+        cache := &lamMTemplatesHTML
         if xmlMode {
-            key = "x" + tpl
+            cache = &lamMTemplatesXML
         }
-        if cached, ok := lamMTemplates.Load(key); ok {
-            return cached.(*lamMTemplate)
+        if m := cache.Load(); m != nil {
+            if t, ok := (*m)[tpl]; ok {
+                return t
+            }
+        }
+        lamMTemplatesMu.Lock()
+        defer lamMTemplatesMu.Unlock()
+        old := cache.Load()
+        if old != nil {
+            if t, ok := (*old)[tpl]; ok {
+                return t
+            }
         }
         t := &lamMTemplate{}
+        var nodes []*lamMNode
         if xmlMode {
-            t.nodes, t.err = lamXMLParse(tpl)
+            nodes, t.err = lamXMLParse(tpl)
         } else {
-            t.nodes = lamHTMLParse(tpl)
+            nodes = lamHTMLParse(tpl)
         }
-        actual, _ := lamMTemplates.LoadOrStore(key, t)
-        return actual.(*lamMTemplate)
+        for _, n := range nodes {
+            t.nodes = append(t.nodes, lamMCompile(n, xmlMode))
+        }
+        next := map[string]*lamMTemplate{}
+        if old != nil {
+            next = make(map[string]*lamMTemplate, len(*old)+1)
+            for k, v := range *old {
+                next[k] = v
+            }
+        }
+        next[tpl] = t
+        cache.Store(&next)
+        return t
     }
 
     // Splits text around placeholders: static parts and slot indexes (-1
@@ -647,6 +1040,7 @@ go! {
     type lamMPiece struct {
         text string
         slot int
+        node *lamMNode // compiled templates: the static text as a frozen node
     }
 
     func lamMPieces(s string) []lamMPiece {
@@ -737,7 +1131,25 @@ go! {
         return fmt.Sprintf("%v", v)
     }
 
-    // Appends the nodes a value stands for in element content.
+    // Appends the nodes of a value inserted under ``parent``: elements
+    // through their shared ref, other nodes copied. At the top level of a
+    // value (no parent) the nodes must be its own: private copies.
+    func lamMInsertNodes(out []*lamMNode, nodes []*lamMNode, parent *lamMNode) []*lamMNode {
+        for _, n := range nodes {
+            switch {
+            case n.kind != lamMElement:
+                out = append(out, lamMLeaf(n, parent))
+            case parent == nil:
+                out = append(out, lamMOwnCopy(n, nil))
+            default:
+                out = append(out, lamMRefTo(n))
+            }
+        }
+        return out
+    }
+
+    // Appends the nodes a value stands for in element content (a copy:
+    // markup is shared copy-on-write, see lamMNode).
     func lamMAppendValue(out []*lamMNode, v interface{}, xmlMode bool, parent *lamMNode) []*lamMNode {
         v = lamMDeref(v)
         switch x := v.(type) {
@@ -749,12 +1161,12 @@ go! {
             if xmlMode {
                 panic("cannot insert html into xml")
             }
-            return append(out, lamMCloneAll(x.f.all(), parent)...)
+            return lamMInsertNodes(out, x.f.all(), parent)
         case LamXML:
             if !xmlMode {
                 panic("cannot insert xml into html")
             }
-            return append(out, lamMCloneAll(x.f.all(), parent)...)
+            return lamMInsertNodes(out, x.f.all(), parent)
         case LamJSON:
             return append(out, &lamMNode{kind: lamMText, data: lamMScalarText(x, false), parent: parent})
         }
@@ -780,15 +1192,23 @@ go! {
 
     var lamMRawGuard = strings.NewReplacer("</", "<\\/", "<!--", "<\\!--")
 
-    func lamMInstantiate(nodes []*lamMNode, vals []interface{}, xmlMode bool, parent *lamMNode, rawParent bool) []*lamMNode {
-        var out []*lamMNode
-        for _, n := range nodes {
+    func lamMInstantiate(nodes []*lamMTplNode, vals []interface{}, xmlMode bool, parent *lamMNode, rawParent bool) []*lamMNode {
+        out := make([]*lamMNode, 0, len(nodes))
+        for _, t := range nodes {
+            n := t.src
             switch n.kind {
             case lamMText:
-                pieces := lamMPieces(n.data)
+                if t.pieces == nil {
+                    if parent != nil {
+                        out = append(out, n)
+                    } else {
+                        out = append(out, &lamMNode{kind: lamMText, data: n.data})
+                    }
+                    continue
+                }
                 if rawParent {
                     var sb strings.Builder
-                    for _, p := range pieces {
+                    for _, p := range t.pieces {
                         if p.slot < 0 {
                             sb.WriteString(p.text)
                         } else {
@@ -798,23 +1218,33 @@ go! {
                     out = append(out, &lamMNode{kind: lamMText, data: sb.String(), parent: parent})
                     continue
                 }
-                for _, p := range pieces {
-                    if p.slot < 0 {
-                        out = append(out, &lamMNode{kind: lamMText, data: p.text, parent: parent})
-                    } else {
+                for _, p := range t.pieces {
+                    switch {
+                    case p.slot >= 0:
                         out = lamMAppendValue(out, lamMSlotValue(vals, p.slot), xmlMode, parent)
+                    case parent != nil:
+                        out = append(out, p.node)
+                    default:
+                        out = append(out, &lamMNode{kind: lamMText, data: p.text})
                     }
                 }
             case lamMElement:
+                if t.ref != nil && parent != nil {
+                    out = append(out, t.ref)
+                    continue
+                }
                 el := &lamMNode{kind: lamMElement, name: n.name, selfClosing: n.selfClosing, parent: parent}
-                for _, a := range n.attrs {
-                    if !strings.ContainsRune(a.value, lamMSlotOpen) {
+                if len(t.attrs) > 0 {
+                    el.attrs = make([]lamMAttr, 0, len(t.attrs))
+                }
+                for _, ta := range t.attrs {
+                    a := ta.attr
+                    if ta.pieces == nil {
                         el.attrs = append(el.attrs, a)
                         continue
                     }
-                    pieces := lamMPieces(a.value)
-                    if len(pieces) == 1 && pieces[0].slot >= 0 {
-                        v := lamMDeref(lamMSlotValue(vals, pieces[0].slot))
+                    if ta.whole >= 0 {
+                        v := lamMDeref(lamMSlotValue(vals, ta.whole))
                         switch b := v.(type) {
                         case nil:
                             continue
@@ -833,7 +1263,7 @@ go! {
                         continue
                     }
                     var sb strings.Builder
-                    for _, p := range pieces {
+                    for _, p := range ta.pieces {
                         if p.slot < 0 {
                             sb.WriteString(p.text)
                         } else {
@@ -842,12 +1272,16 @@ go! {
                     }
                     el.attrs = append(el.attrs, lamMAttr{name: a.name, value: sb.String(), hasValue: true})
                 }
-                raw := !xmlMode && lamHTMLRawText[lamMLower(n.name)]
-                el.children = lamMInstantiate(n.children, vals, xmlMode, el, raw)
+                if len(t.children) > 0 {
+                    el.children = lamMInstantiate(t.children, vals, xmlMode, el, t.raw)
+                }
                 out = append(out, el)
             default:
-                c := n.clone(parent)
-                out = append(out, c)
+                if parent != nil {
+                    out = append(out, n)
+                } else {
+                    out = append(out, lamMLeaf(n, nil))
+                }
             }
         }
         return out
@@ -1295,6 +1729,7 @@ go! {
         if sel.err != nil {
             panic(sel.err.Error())
         }
+        f.materialize()
         var out []*lamMNode
         var walk func(n *lamMNode, self bool) bool
         walk = func(n *lamMNode, self bool) bool {
@@ -1388,12 +1823,14 @@ go! {
 
     func (f *lamFrag) setAttr(name, value string) {
         for _, el := range f.elements() {
+            lamMUnshare(el)
             lamMSetAttr(el, name, value, f.xml)
         }
     }
 
     func (f *lamFrag) removeAttr(name string) {
         for _, el := range f.elements() {
+            lamMUnshare(el)
             kept := el.attrs[:0]
             for _, a := range el.attrs {
                 if !lamMNameEq(f.xml, a.name, name) {
@@ -1434,6 +1871,7 @@ go! {
             default:
                 continue
             }
+            lamMUnshare(el)
             lamMSetAttr(el, "class", strings.Join(classes, " "), f.xml)
         }
     }
@@ -1444,19 +1882,23 @@ go! {
 
     func (f *lamFrag) setText(s string) {
         for _, el := range f.elements() {
+            lamMUnshare(el)
             el.children = []*lamMNode{{kind: lamMText, data: s, parent: el}}
         }
     }
 
     func (f *lamFrag) setInner(v interface{}) {
         for _, el := range f.elements() {
-            el.children = lamMContent(v, f.xml, el)
+            content := lamMContent(v, f.xml, el)
+            lamMUnshare(el)
+            el.children = content
         }
     }
 
     func (f *lamFrag) appendChild(v interface{}, front bool) {
         for _, el := range f.elements() {
             add := lamMContent(v, f.xml, el)
+            lamMUnshare(el)
             if front {
                 el.children = append(add, el.children...)
             } else {
@@ -1487,6 +1929,9 @@ go! {
             if list == nil || k < 0 {
                 continue
             }
+            if n.parent != nil {
+                lamMUnshare(n.parent)
+            }
             *list = append((*list)[:k], (*list)[k+1:]...)
             n.parent = nil
             n.owner = nil
@@ -1507,6 +1952,8 @@ go! {
                 for _, r := range repl {
                     r.owner = n.owner
                 }
+            } else {
+                lamMUnshare(n.parent)
             }
             tail := append([]*lamMNode(nil), (*list)[k+1:]...)
             *list = append(append((*list)[:k], repl...), tail...)
@@ -1516,6 +1963,7 @@ go! {
     }
 
     func (f *lamFrag) childViews() []*lamMNode {
+        f.materialize()
         var out []*lamMNode
         for _, el := range f.elements() {
             for _, ch := range el.children {
@@ -1535,7 +1983,7 @@ go! {
     }
 
     func (f *lamFrag) cloneFrag() *lamFrag {
-        return lamMNewFrag(f.xml, lamMCloneAll(f.all(), nil))
+        return lamMNewFrag(f.xml, lamMInsertNodes(nil, f.all(), nil))
     }
 
     // ── LamHTML / LamXML ───────────────────────────────────────────────

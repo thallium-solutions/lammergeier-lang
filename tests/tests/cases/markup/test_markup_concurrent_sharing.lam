@@ -1,0 +1,73 @@
+# expect: built 8 x 150 pages: ok
+# expect: rendered while changing: ok
+# expect: <nav><a href="/">Home</a><a href="/shop">Shop</a></nav>
+# expect: <nav class="v99"><a href="/">Home</a><a href="/shop">Shop</a></nav>
+
+# One fragment shared by concurrent tasks (async functions run as
+# goroutines), the way a web server shares a navigation bar between
+# requests: every task builds pages that insert it, renders, queries and
+# changes its own pages; the shared fragment never changes. Then tasks keep
+# rendering a page while the fragment inserted in it is being changed: the
+# page keeps the content it was built with.
+
+func card(i: int) -> html {
+    return <><article><h2>Item ${i}</h2><p>${i * 2}</p></article></>
+}
+
+func layout(nav: html, content: html) -> html {
+    return <><html><body><header>${nav}</header><main>${content}</main></body></html></>
+}
+
+func expected(nav: html, worker: int, i: int) -> str {
+    return f"<html><body><header>{nav}</header><main><section class=\"w{worker}\"><article class=\"seen\"><h2>Item {i}</h2><p>{i * 2}</p></article><article><h2>Item {i + 1}</h2><p>{(i + 1) * 2}</p></article></section></main></body></html>"
+}
+
+async func build(nav: html, worker: int, pages: int) -> int {
+    good: int = 0
+    for i in range(pages) {
+        feed: html = <><section>${card(i)}${card(i + 1)}</section></>
+        page: html = layout(nav, feed)
+        page.first("section").addClass(f"w{worker}")
+        page.first("article").addClass("seen")
+        page.first("header nav a").setAttr("data-w", str(worker))
+        page.first("header nav a").removeAttr("data-w")
+        if str(page) == expected(nav, worker, i) and page.first("header a + a").text() == "Shop" {
+            good += 1
+        }
+    }
+    return good
+}
+
+async func render(page: html, want: str, times: int) -> int {
+    good: int = 0
+    for __i in range(times) {
+        if str(page) == want {
+            good += 1
+        }
+    }
+    return good
+}
+
+func main() {
+    nav: html = <><nav><a href="/">Home</a><a href="/shop">Shop</a></nav></>
+    tasks = [build(nav, w, 150) for w in range(8)]
+    total: int = 0
+    for t in tasks {
+        total += await t
+    }
+    print(f"built 8 x 150 pages: {'ok' if total == 8 * 150 else str(total)}")
+
+    page: html = layout(nav, card(1))
+    want: str = str(page)
+    readers = [render(page, want, 300) for __w in range(4)]
+    for v in range(100) {
+        nav.setAttr("class", f"v{v}")
+    }
+    seen: int = 0
+    for r in readers {
+        seen += await r
+    }
+    print(f"rendered while changing: {'ok' if seen == 4 * 300 and str(page) == want else str(seen)}")
+    print(page.first("nav"))
+    print(nav)
+}

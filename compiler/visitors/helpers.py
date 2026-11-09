@@ -5,7 +5,7 @@ from __future__ import annotations
 import re as _re
 from lark import Tree, Token
 from typing import Dict, List, Optional, Tuple
-from compiler.constants import COMPILER_GO_PACKAGES, DUNDER_OPS, GENERATOR_TYPE_NAMES, GO_BINDING_KEYWORDS, TYPE_MAP
+from compiler.constants import COMPILER_GO_PACKAGES, DUNDER_OPS, GENERATOR_TYPE_NAMES, GO_BINDING_KEYWORDS, TYPE_MAP, generator_go_elem, generator_go_type
 from compiler.link_symbols import mask_go_literals
 
 
@@ -453,6 +453,8 @@ class HelpersMixin:
             return inner.split("[", 1)[0] in {self._go_class_name(c) for c in self._class_names}
         if go_type in self._GO_SCALAR_LAM_NAMES or go_type.startswith(("func(", "chan ")):
             return True
+        if generator_go_elem(go_type) is not None:
+            return True
         return go_type in {self._go_class_name(i) for i in self._interfaces}
 
     def _go_type_lam_text(self, go_type: str) -> str:
@@ -473,7 +475,9 @@ class HelpersMixin:
             if key and value:
                 return f"dict[{self._go_type_lam_text(key)}, {self._go_type_lam_text(value)}]"
         if go_type.startswith("chan "):
-            return f"generator[{self._go_type_lam_text(go_type[5:])}]"
+            return f"chan[{self._go_type_lam_text(go_type[5:])}]"
+        if generator_go_elem(go_type) is not None:
+            return f"generator[{self._go_type_lam_text(generator_go_elem(go_type))}]"
         if go_type.startswith("*"):
             inner = go_type[1:]
             base, _, args = inner.partition("[")
@@ -1065,9 +1069,9 @@ class HelpersMixin:
             if base == "chan":
                 return f"chan {type_args[0]}" if type_args else "chan interface{}"
             if base in GENERATOR_TYPE_NAMES:
-                # ``generator[Circle]``: generators lower to a channel of
-                # their element type.
-                return f"chan {type_args[0] or 'interface{}'}" if len(type_args) == 1 else "chan interface{}"
+                # ``generator[Circle]``: a generator handle of the element
+                # type (``*lamGenerator[*Circle]``).
+                return generator_go_type(type_args[0] if len(type_args) == 1 else "")
             if base == "Result" and len(type_args) <= 1:
                 return "*Result"
             # Instantiation of a user-defined generic class:
@@ -1381,7 +1385,8 @@ class HelpersMixin:
         ``retval`` result, also when the ``try`` sits in a loop or branch."""
         if not isinstance(node, Tree):
             return False
-        if node.data in ("try_stmt", "try_finally"):
+        if node.data in ("try_stmt", "try_finally", "with_stmt"):
+            # ``with`` lowers like ``try { body } finally { close }``.
             return True
         if node.data in ("funcdef", "lambdef", "classdef"):
             return False
@@ -1404,7 +1409,7 @@ class HelpersMixin:
         function one)."""
         if not isinstance(node, Tree):
             return False
-        if node.data == "yield_expr":
+        if node.data in ("yield_expr", "yield_from"):
             return True
         if node.data in ("funcdef", "lambdef", "classdef"):
             return False

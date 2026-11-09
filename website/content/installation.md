@@ -46,7 +46,7 @@ The compiler keeps reading `lib/`, `compiler/`, and
 | Tool | Minimum | Why |
 |------|---------|-----|
 | **Python** | 3.10 | The compiler is written in Python and uses pattern-matching, `typing.Optional`, structural-pattern-match, and `tomllib`-equivalent helpers. |
-| **Go** | 1.21 | The transpiler emits Go source and shells out to `go build`. Earlier Go versions miss generics features the stdlib uses. |
+| **Go** | 1.24 | The transpiler emits Go source and shells out to `go build`. Generated code uses range-over-func loops and `iter.Pull` (generators, Go 1.23) and `runtime.AddCleanup` (generators, async task failures, Go 1.24); several stdlib dependencies need 1.24 as well. |
 | **`lark`** | latest | The parser. Installed automatically by `install.sh` unless you pass `--no-pip`. |
 
 The installer surface-checks both Python (hard fail if absent /

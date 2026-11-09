@@ -128,7 +128,7 @@ mapping used by the compiler.
 ## Requirements
 
 - **Python 3.10+**
-- **Go 1.21+**
+- **Go 1.24+**
 - **`lark` parser** — `pip install lark`
 
 ## Quick start

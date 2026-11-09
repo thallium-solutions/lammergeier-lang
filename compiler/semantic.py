@@ -9478,6 +9478,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             # or raises; ``finally`` runs on the way out.
             suites = [c for c in node.children if isinstance(c, Tree) and c.data == "suite"]
             return bool(suites) and cls._suite_definitely_terminates(suites[0])
+        if node.data == "with_stmt":
+            # ``with r as x { return x.read() }``: the resource is closed on
+            # the way out (Lam has no ``__exit__`` swallowing exceptions).
+            suites = [c for c in node.children if isinstance(c, Tree) and c.data == "suite"]
+            return bool(suites) and cls._suite_definitely_terminates(suites[0])
         if node.data == "do_stmt":
             # ``do { ... return a } catch err { ... return b }``: the body
             # either returns / raises or a ``?`` jumps to the handler.
@@ -11429,7 +11434,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
     def _suite_has_yield(self, node) -> bool:
         if not isinstance(node, Tree):
             return False
-        if node.data == "yield_expr":
+        if node.data in {"yield_expr", "yield_from"}:
             return True
         if node.data in {"funcdef", "classdef", "lambdef"}:
             return False

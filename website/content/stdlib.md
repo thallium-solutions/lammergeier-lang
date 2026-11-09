@@ -565,6 +565,9 @@ for rowResult in Csv.rows("large.csv") {
 | `Csv.formatRow(fields, delimiter = ",")` | `str` (no trailing newline) |
 | `Csv.formatAll(rows, delimiter = ",")` | `str` (every record ends with `\n`) |
 
+The file stays open only while a loop reads it: leaving a loop over `Csv.rows`
+/ `Csv.batches` early (`break`, `return`, `?`, an exception) closes it at once.
+
 Every reader and writer takes a `delimiter`: `";"` for the spreadsheets of
 locales that write decimal commas, `"\t"` for TSV, any single character other
 than `"`, `\r`, `\n` and the Unicode replacement character (another value
@@ -1707,7 +1710,10 @@ close failures rather than hiding them. `Os.getenv`, `setenv`, `getcwd`, filesys
 mutation and inspection, directory listing/walking, `tempFile`, stdin reads,
 `user`, and `hostname` likewise return the payload-specific `Result[T]` shown
 by their signatures. Only `tempDir`, `args`, and the terminating `exit` remain
-direct among these helpers.
+direct among these helpers. `Os.fileSize(path) -> Result[int]` and
+`Os.modTime(path) -> Result[int]` (the last modification time in Unix
+nanoseconds, comparable with `Time.nowUnixNano()`) read a file's metadata
+without reading the file: a watcher compares them before reading anything.
 
 `Os.waitForSignal(names = ["SIGINT", "SIGTERM"]) -> str` blocks until one of
 the signals arrives and returns its name (`"SIGTERM"`). Names are `SIGINT`,

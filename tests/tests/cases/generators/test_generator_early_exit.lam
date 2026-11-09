@@ -1,0 +1,340 @@
+# A generator left before it is exhausted ends right away, like Python
+# closing a generator: its `finally` blocks run when the loop is left by
+# `break`, `return`, an exception or a `?` propagation, before the code
+# after the loop; an exception raised inside the generator reaches the
+# consumer (a `try` around the loop catches it). A generator held in a
+# variable is resumable: a second loop continues where the first stopped.
+# An exception of the loop body never reaches a `catch` (or a `finally`
+# returning) around the generator's `yield`. Covers functions, methods,
+# generic and nested generators, comprehensions, generators consuming
+# generators, `yield from` and `with` inside a generator.
+#
+# expect: got 1
+# expect: got 2
+# expect: brk finally
+# expect: after break
+# expect: ret finally
+# expect: first over 1: 2
+# expect: exc finally
+# expect: caught ValueError: stop
+# expect: q finally
+# expect: parsed error: not a number: x
+# expect: q finally
+# expect: parsed 6
+# expect: caught gen ValueError: bad gen
+# expect: comp finally
+# expect: caught comp ValueError: no 2
+# expect: resumed 2 3 4
+# expect: shelf b
+# expect: shelf finally
+# expect: generic 20
+# expect: nested 1
+# expect: inner finally
+# expect: outer finally
+# expect: chained 10 20
+# expect: res body 1
+# expect: close res
+# expect: after res
+# expect: lazy start
+# expect: lazy 0
+# expect: consumer caught ValueError: consumer
+# expect: stubborn finally
+# expect: caught stubborn ValueError: x
+# expect: from finally
+# expect: delegate finally
+# expect: from 0 1 2 5 6
+# expect: done
+
+from lamerrors import Result
+
+class Res {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func Close(self) {
+        print("close " + self.name)
+    }
+}
+
+func guarded(tag: str) -> generator[int] {
+    try {
+        yield 1
+        yield 2
+        yield 3
+    } finally {
+        print(f"{tag} finally")
+    }
+}
+
+func naturals() -> generator[int] {
+    i: int = 0
+    while True {
+        yield i
+        i += 1
+    }
+}
+
+func firstOver(n: int) -> int {
+    for x in guarded("ret") {
+        if x > n {
+            return x
+        }
+    }
+    return -1
+}
+
+func words(items: list[str]) -> generator[str] {
+    try {
+        for w in items {
+            yield w
+        }
+    } finally {
+        print("q finally")
+    }
+}
+
+func parse(w: str) -> Result[int] {
+    if w == "x" {
+        return Result.Err("not a number: x")
+    }
+    return Result.Ok(int(w))
+}
+
+func parsedSum(items: list[str]) -> Result[int] {
+    total: int = 0
+    for w in words(items) {
+        total += parse(w)?
+    }
+    return Result.Ok(total)
+}
+
+func boom() -> generator[int] {
+    yield 1
+    raise ValueError("bad gen")
+}
+
+func notTwo(x: int) -> int {
+    if x == 2 {
+        raise ValueError("no 2")
+    }
+    return x
+}
+
+func count(n: int) -> generator[int] {
+    i: int = 0
+    while i < n {
+        yield i
+        i += 1
+    }
+}
+
+class Shelf {
+    func init(self, names: list[str]) {
+        self.names: list[str] = names
+    }
+
+    func each(self) -> generator[str] {
+        try {
+            for n in self.names {
+                yield n
+            }
+        } finally {
+            print("shelf finally")
+        }
+    }
+}
+
+func each[T](items: list[T]) -> generator[T] {
+    for it in items {
+        yield it
+    }
+}
+
+func scaled(src: generator[int], k: int) -> generator[int] {
+    for n in src {
+        yield n * k
+    }
+}
+
+func resources() -> generator[int] {
+    with Res("res") as r {
+        yield 1
+        yield 2
+    }
+}
+
+func lazy() -> generator[int] {
+    print("lazy start")
+    yield 0
+}
+
+func tolerant() -> generator[int] {
+    for i in range(3) {
+        try {
+            yield i
+        } catch ValueError as e {
+            print("generator caught", e)
+        }
+    }
+}
+
+func stubborn() -> generator[int] {
+    try {
+        yield 1
+        yield 2
+    } finally {
+        print("stubborn finally")
+        return
+    }
+}
+
+func delegate() -> generator[int] {
+    try {
+        yield from count(3)
+        yield from [5, 6]
+        yield from guarded("from")
+    } finally {
+        print("delegate finally")
+    }
+}
+
+func main() {
+    for x in guarded("brk") {
+        print("got", x)
+        if x == 2 {
+            break
+        }
+    }
+    print("after break")
+
+    print("first over 1:", firstOver(1))
+
+    try {
+        for x in guarded("exc") {
+            raise ValueError("stop")
+        }
+    } catch e {
+        print("caught", e)
+    }
+
+    bad: Result[int] = parsedSum(["1", "x", "3"])
+    if not bad.ok() {
+        print("parsed error:", bad.error.message)
+    }
+    print("parsed", parsedSum(["1", "2", "3"]).unwrap())
+
+    try {
+        for x in boom() {
+            _ = x
+        }
+    } catch ValueError as e {
+        print("caught gen", e)
+    }
+
+    try {
+        vals: list[int] = [notTwo(x) for x in guarded("comp")]
+        print(vals)
+    } catch ValueError as e {
+        print("caught comp", e)
+    }
+
+    g: generator[int] = count(5)
+    for x in g {
+        if x == 1 {
+            break
+        }
+    }
+    rest: list[str] = []
+    for x in g {
+        rest.append(str(x))
+    }
+    print("resumed", " ".join(rest))
+
+    for n in Shelf(["a", "b", "c"]).each() {
+        if n == "b" {
+            print("shelf", n)
+            break
+        }
+    }
+
+    for v in each([10, 20, 30]) {
+        if v == 20 {
+            print("generic", v)
+            break
+        }
+    }
+
+    func outer() -> generator[int] {
+        func inner() -> generator[int] {
+            try {
+                yield 1
+                yield 2
+            } finally {
+                print("inner finally")
+            }
+        }
+        try {
+            for v in inner() {
+                yield v
+            }
+        } finally {
+            print("outer finally")
+        }
+    }
+    for v in outer() {
+        print("nested", v)
+        break
+    }
+
+    chained: list[str] = []
+    for v in scaled(naturals(), 10) {
+        if v > 20 {
+            break
+        }
+        if v > 0 {
+            chained.append(str(v))
+        }
+    }
+    print("chained", " ".join(chained))
+
+    for v in resources() {
+        print("res body", v)
+        break
+    }
+    print("after res")
+
+    unused: generator[int] = lazy()
+    _ = unused
+    for v in lazy() {
+        print("lazy", v)
+    }
+
+    try {
+        for v in tolerant() {
+            if v == 1 {
+                raise ValueError("consumer")
+            }
+        }
+    } catch ValueError as e {
+        print("consumer caught", e)
+    }
+
+    try {
+        for v in stubborn() {
+            raise ValueError("x")
+        }
+    } catch ValueError as e {
+        print("caught stubborn", e)
+    }
+
+    got: list[str] = []
+    for v in delegate() {
+        if v == 1 and len(got) > 3 {
+            break
+        }
+        got.append(str(v))
+    }
+    print("from", " ".join(got))
+    print("done")
+}

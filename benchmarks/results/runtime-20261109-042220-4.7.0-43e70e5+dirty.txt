@@ -1,0 +1,12 @@
+# baseline: lib/lammarkup.lam and lib/lamhtml.lam of 43e70e5 (before copy-on-write markup), with the new benchmark
+# lamc 4.7.0 (43e70e5+dirty), 2026-11-09T04:22:20Z
+# command: sh scripts/bench.sh runtime -f markup
+# host: Linux 6.12.10-76061203-generic x86_64; cpu: 13th Gen Intel(R) Core(TM) i9-13900HX; load: 2.51 2.91 2.59
+# go: go1.25.3
+
+  ran stdlib/bench_markup_compose.lam
+
+benchmark                        ops      median      per op        best  spread   go per op  lam/go
+----------------------------------------------------------------------------------------------------
+[stdlib]
+markup_compose                  2000  1827.55 ms   913.77 us  1793.54 ms    1.5%                      alloc/op 1.66 MB

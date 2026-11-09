@@ -41,8 +41,165 @@ PYTHON_EXCEPTIONS: Set[str] = {
     "ArithmeticError", "LookupError", "NameError",
 }
 
-# ``generator[T]`` spellings: a generator of ``T`` (a Go ``chan T``).
+# ``generator[T]`` spellings: a generator of ``T`` (a Go ``*lamGenerator[T]``,
+# see ``GENERATOR_RUNTIME_GO``).
 GENERATOR_TYPE_NAMES = frozenset({"generator", "iterator", "Generator", "Iterator"})
+
+_GENERATOR_GO_PREFIX = "*lamGenerator["
+
+# The parameter of a generator body a ``yield`` hands its value to.
+GENERATOR_YIELD_NAME = "__lamYield"
+
+
+def generator_go_type(elem: str) -> str:
+    """Go type of a generator of ``elem`` values."""
+    return f"{_GENERATOR_GO_PREFIX}{elem or 'interface{}'}]"
+
+
+def generator_go_elem(go_type: str) -> str | None:
+    """``T`` of a generator's Go type ``*lamGenerator[T]`` (``None`` for
+    another type)."""
+    go_type = (go_type or "").strip()
+    if go_type.startswith(_GENERATOR_GO_PREFIX) and go_type.endswith("]"):
+        return go_type[len(_GENERATOR_GO_PREFIX):-1].strip()
+    return None
+
+
+# The generator runtime, emitted once in the main file when some module uses
+# a generator. A generator is a handle on the body of a function using
+# ``yield``, lowered to a range-over-func body ``func(yield func(T) bool)``
+# whose every ``yield`` returns when ``yield`` reports that the consumer
+# stopped (running the body's ``finally`` blocks and ``with`` closes, like
+# Python's ``GeneratorExit``). Nothing runs before the first value is asked
+# for. ``for x in gen()`` (a generator the loop owns) runs the body in place,
+# in the loop's goroutine (``Consume``), unless a ``catch`` (or a ``finally``
+# that returns or jumps) around a ``yield`` could intercept an exception of
+# the loop body (``lamNewIsolatedGenerator``); every other use (a generator
+# held in a variable, a field or a parameter, resumable across loops) pulls
+# values from a coroutine (``iter.Pull``) started on the first ``Next``,
+# stopped when the generator is exhausted, raised an exception, a loop owning
+# it ends, or the handle is collected. An exception raised by the body
+# reaches the consumer.
+GENERATOR_RUNTIME_GO = """
+type lamGenerator[T any] struct {
+\tmu       sync.Mutex
+\tbody     func(yield func(T) bool)
+\tisolated bool
+\tnext     func() (T, bool)
+\tstop     func()
+\tcleanup  runtime.Cleanup
+\tdone     bool
+}
+
+func lamNewGenerator[T any](body func(yield func(T) bool)) *lamGenerator[T] {
+\treturn &lamGenerator[T]{body: body}
+}
+
+func lamNewIsolatedGenerator[T any](body func(yield func(T) bool)) *lamGenerator[T] {
+\treturn &lamGenerator[T]{body: body, isolated: true}
+}
+
+// Next resumes the generator up to its next value.
+func (g *lamGenerator[T]) Next() (T, bool) {
+\tvar zero T
+\tif g == nil {
+\t\treturn zero, false
+\t}
+\tg.mu.Lock()
+\tdefer g.mu.Unlock()
+\tif g.done {
+\t\treturn zero, false
+\t}
+\tif g.next == nil {
+\t\tg.next, g.stop = iter.Pull(g.body)
+\t\tg.body = nil
+\t\t// Dropped before it is exhausted: stopped once collected.
+\t\tg.cleanup = runtime.AddCleanup(g, lamStopCollectedGenerator, g.stop)
+\t}
+\tmore := false
+\tdefer func() {
+\t\tif !more {
+\t\t\tg.finish()
+\t\t}
+\t}()
+\tv, more := g.next()
+\treturn v, more
+}
+
+// finish ends the generator (with g.mu held); a suspended body leaves its yield.
+func (g *lamGenerator[T]) finish() {
+\tg.done = true
+\tg.body = nil
+\tif stop := g.stop; stop != nil {
+\t\tg.cleanup.Stop()
+\t\tg.next, g.stop = nil, nil
+\t\tstop()
+\t}
+}
+
+// Stop ends the generator: a suspended body returns from its yield, running its finally blocks.
+func (g *lamGenerator[T]) Stop() {
+\tif g == nil {
+\t\treturn
+\t}
+\tg.mu.Lock()
+\tdefer g.mu.Unlock()
+\tif !g.done {
+\t\tg.finish()
+\t}
+}
+
+// Resume ranges over a generator held in a variable: from where the last
+// loop stopped, leaving it resumable.
+func (g *lamGenerator[T]) Resume(yield func(T) bool) {
+\tfor {
+\t\tv, ok := g.Next()
+\t\tif !ok || !yield(v) {
+\t\t\treturn
+\t\t}
+\t}
+}
+
+// Consume ranges over a generator the loop owns (``for x in gen()``):
+// leaving the loop in any way ends it.
+func (g *lamGenerator[T]) Consume(yield func(T) bool) {
+\tif g == nil {
+\t\treturn
+\t}
+\tg.mu.Lock()
+\tbody := g.body
+\tif body == nil || g.isolated || g.next != nil || g.done {
+\t\tg.mu.Unlock()
+\t\tdefer g.Stop()
+\t\tg.Resume(yield)
+\t\treturn
+\t}
+\t// Not started: the body runs in place, to its end.
+\tg.body, g.done = nil, true
+\tg.mu.Unlock()
+\tstopped := false
+\tbody(func(v T) bool {
+\t\tif stopped {
+\t\t\treturn false
+\t\t}
+\t\t// Stays stopped when the loop body breaks, returns or raises.
+\t\tstopped = true
+\t\tif yield(v) {
+\t\t\tstopped = false
+\t\t}
+\t\treturn !stopped
+\t})
+}
+
+func lamStopCollectedGenerator(stop func()) {
+\tdefer func() {
+\t\tif r := recover(); r != nil {
+\t\t\tfmt.Fprintf(os.Stderr, "Exception ignored in generator cleanup: %v\\n", r)
+\t\t}
+\t}()
+\tstop()
+}
+"""
 
 # Statement-level AST node names (used for source-line mapping)
 STMT_NODES = frozenset({

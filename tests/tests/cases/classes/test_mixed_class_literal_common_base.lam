@@ -108,7 +108,7 @@ func main() {
     for k, v in d {
         parts.append(f"{k}={v.show()}")
     }
-    parts.sort()
+    parts.sort(inplace=true)
     print("dict", " ".join(parts))
     print("dict-index", d["x"].show())
 

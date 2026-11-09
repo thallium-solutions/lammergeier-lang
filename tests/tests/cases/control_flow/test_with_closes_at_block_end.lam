@@ -1,0 +1,193 @@
+# `with` closes its resource when its block ends, on every path (like
+# Python): at the end of the block, before the code after it (also once
+# per loop iteration), on `return` (the function still returns the
+# value), on `break` / `continue` of an enclosing loop, when an exception
+# leaves the block (a `catch` around it sees the resource closed) and on
+# `?` propagation. Several items close in reverse order, nested `with`
+# blocks close inside out, and an item without `as` is closed too.
+#
+# expect: open loop0
+# expect: body loop0
+# expect: close loop0
+# expect: after 0
+# expect: open loop1
+# expect: close loop1
+# expect: open loop2
+# expect: close loop2
+# expect: loop done
+# expect: open ret
+# expect: close ret
+# expect: returned value ret
+# expect: open exc
+# expect: close exc
+# expect: caught ValueError: boom
+# expect: open q
+# expect: close q
+# expect: load error: not a number: x
+# expect: open q
+# expect: close q
+# expect: load 7
+# expect: open a
+# expect: open b
+# expect: both a b
+# expect: close b
+# expect: close a
+# expect: open outer
+# expect: open inner
+# expect: close inner
+# expect: between
+# expect: close outer
+# expect: open anon1
+# expect: open anon2
+# expect: anon body
+# expect: close anon2
+# expect: close anon1
+# expect: open w
+# expect: close w
+# expect: while 3
+# expect: open m
+# expect: close m
+# expect: method m!
+# expect: open inner-exc
+# expect: close inner-exc
+# expect: open finally
+# expect: close finally
+# expect: finally ran
+# expect: caught RuntimeError: inner
+# expect: open lam
+# expect: close lam
+# expect: lambda lam
+# expect: done
+
+from lamerrors import Result
+
+class Res {
+    func init(self, name: str) {
+        self.name: str = name
+        print("open " + name)
+    }
+
+    func close(self) {
+        print("close " + self.name)
+    }
+}
+
+func useReturn() -> str {
+    with Res("ret") as r {
+        return "value " + r.name
+    }
+}
+
+func parse(w: str) -> Result[int] {
+    if w == "x" {
+        return Result.Err("not a number: x")
+    }
+    return Result.Ok(int(w))
+}
+
+func load(w: str) -> Result[int] {
+    with Res("q") as r {
+        v: int = parse(w)?
+        return Result.Ok(v + len(r.name) - 1)
+    }
+}
+
+class Shop {
+    func init(self, suffix: str) {
+        self.suffix: str = suffix
+    }
+
+    func label(self, name: str) -> str {
+        with Res(name) as r {
+            return r.name + self.suffix
+        }
+    }
+}
+
+func whileCount() -> int {
+    n: int = 0
+    while True {
+        with Res("w") as r {
+            n += 3
+            if n >= 3 {
+                break
+            }
+        }
+    }
+    return n
+}
+
+func main() {
+    for i in range(3) {
+        with Res(f"loop{i}") as r {
+            if i == 1 {
+                continue
+            }
+            if i == 2 {
+                break
+            }
+            print("body " + r.name)
+        }
+        print("after", i)
+    }
+    print("loop done")
+
+    print("returned", useReturn())
+
+    try {
+        with Res("exc") as r {
+            raise ValueError("boom")
+        }
+    } catch e {
+        print("caught", e)
+    }
+
+    bad: Result[int] = load("x")
+    if not bad.ok() {
+        print("load error:", bad.error.message)
+    }
+    print("load", load("7").unwrap())
+
+    with Res("a") as a, Res("b") as b {
+        print("both", a.name, b.name)
+    }
+
+    with Res("outer") as o {
+        with Res("inner") as i {
+            _ = i
+        }
+        print("between")
+        _ = o
+    }
+
+    with Res("anon1"), Res("anon2") {
+        print("anon body")
+    }
+
+    print("while", whileCount())
+
+    print("method", Shop("!").label("m"))
+
+    try {
+        try {
+            with Res("inner-exc") as r {
+                raise RuntimeError("inner")
+            }
+        } finally {
+            with Res("finally") as f {
+                _ = f
+            }
+            print("finally ran")
+        }
+    } catch RuntimeError as e {
+        print("caught", e)
+    }
+
+    describe = lambda (name: str) -> str {
+        with Res(name) as r {
+            return "lambda " + r.name
+        }
+    }
+    print(describe("lam"))
+    print("done")
+}

@@ -1,0 +1,139 @@
+# expect: <p><b>x</b></p>
+# expect: <b class="inner">x</b>
+# expect: <p><b>changed</b></p>
+# expect: <b class="inner">x</b>
+# expect: <div><i>a</i><i>a</i></div>
+# expect: <div><i class="first">a</i><i>a</i></div>
+# expect: <i>a</i>
+# expect: <section><i>a</i></section> <aside><i>z</i></aside>
+# expect: <i>a</i> <i>a</i>
+# expect: <ul><li><a href="/1">one</a></li></ul>
+# expect: <li><a href="/2" rel="next">two</a><em>new</em></li>
+# expect: <main><ul><li><a href="/1">one</a></li></ul><ul><li><a href="/1">one</a></li></ul></main>
+# expect: <div>a<div>a</div></div>
+# expect: <div>a<div>a</div><div>a<div>a</div></div></div>
+# expect: <ul><li>1</li><li>2</li><li>1</li></ul>
+# expect: <ul><li class="x">1</li><li>2</li><li>1</li></ul>
+# expect: <table><tr><td>r0</td></tr><tr><td>r1</td></tr></table>
+# expect: <tr class="hot"><td>r0</td></tr>|<tr><td>r1</td></tr>
+# expect: <p><b>a</b><b>b</b></p>
+# expect: <b class="a">a</b><b>b</b> <b class="a">a</b><b>b</b>
+# expect: <p><b>a</b><b>b</b></p>
+# expect: <p><b>x</b></p>|<b>x</b>
+# expect: <section><p><b>x</b></p></section>
+# expect: <section><p><b>x</b></p></section>|<p><b>y</b></p>
+# expect: <style>a{color:red}</style>
+# expect: <feed><entry id="1"><title>t</title></entry></feed>
+# expect: <entry id="1" kind="k"><title>t</title><link/></entry>
+# expect: <feed><entry id="1"><title>t</title></entry></feed>
+
+# Inserting a markup value into another one copies it: whatever happens to
+# either value afterwards, through its own methods or through views
+# (select / first), the other one does not change. Covers both directions,
+# a value inserted twice, inserted in two different values, views created
+# before the insertion, inserting a value into itself and nested inserts.
+
+from lamhtml import Html
+
+func bold() -> html {
+    return <><b>x</b></>
+}
+
+func link(n: int, label: str) -> html {
+    return <><li><a href="/${n}">${label}</a></li></>
+}
+
+func main() {
+    # inner changed after the insertion: the outer keeps the old content
+    inner: html = bold()
+    outer: html = <><p>${inner}</p></>
+    inner.setAttr("class", "inner")
+    print(outer)
+    print(inner)
+    # outer changed through a view: the inner keeps its content
+    outer.first("b").setText("changed")
+    print(outer)
+    print(inner)
+
+    # the same value inserted twice in one value: each copy is separate
+    item: html = <><i>a</i></>
+    twice: html = <><div>${item}${item}</div></>
+    print(twice)
+    twice.select("i")[0].addClass("first")
+    print(twice)
+    print(item)
+
+    # one value inserted into two values: changing one leaves the other
+    left: html = <><section>${item}</section></>
+    right: html = <><aside>${item}</aside></>
+    right.first("i").setText("z")
+    print(f"{left} {right}")
+    print(f"{item} {left.first('i')}")
+
+    # a view taken before the insertion still changes only its own value
+    list1: html = link(1, "one")
+    anchor: html = list1.first("a")
+    menu: html = <><ul>${list1}</ul></>
+    anchor.setAttr("href", "/2")
+    anchor.setText("two")
+    anchor.setAttr("rel", "next")
+    list1.first("li").append(<><em>new</em></>)
+    first: html = <><ul>${link(1, "one")}</ul></>
+    print(first)
+    print(list1)
+    # menu was built before the changes; inserted twice into a bigger value
+    print(<><main>${menu}${menu}</main></>)
+
+    # a value inserted into itself (append copies the value as it was)
+    box: html = <><div>a</div></>
+    box.append(box)
+    print(box)
+    box.append(box)
+    print(box)
+
+    # an element of a value appended to its own parent is a copy
+    nums: html = <><ul><li>1</li><li>2</li></ul></>
+    nums.first("ul").append(nums.first("li"))
+    print(nums)
+    nums.first("li").addClass("x")
+    print(nums)
+
+    # list items inserted, then changed
+    rows: list[html] = [<><tr><td>r${i}</td></tr></> for i in range(2)]
+    table: html = <><table>${rows}</table></>
+    rows[0].addClass("hot")
+    print(table)
+    print("|".join([str(r) for r in rows]))
+
+    # ``+`` keeps the operands' nodes; inserting the sum copies them
+    a: html = <><b>a</b></>
+    b: html = <><b>b</b></>
+    both: html = a + b
+    para: html = <><p>${both}</p></>
+    print(para)
+    a.addClass("a")
+    print(f"{both} {a + b}")
+    print(para)
+
+    # nested inserts: changing a middle level copies nothing back
+    p: html = <><p>${bold()}</p></>
+    q: html = <><section>${p}</section></>
+    print(f"{p}|{p.first('b')}")
+    print(q)
+    p.first("b").setText("y")
+    print(f"{q}|{p}")
+
+    # markup appended to a style element is written as its text
+    css: html = <><style></style></>
+    css.first("style").append(Html.parse("a{color:red}"))
+    print(css)
+
+    # xml behaves the same way
+    entry: xml = <><entry id="1"><title>t</title></entry></>
+    feed: xml = <><feed>${entry}</feed></>
+    entry.setAttr("kind", "k")
+    entry.first("entry").append(<><link/></>)
+    print(feed)
+    print(entry)
+    print(feed)
+}

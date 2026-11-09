@@ -1,0 +1,57 @@
+# expect: inserted 100 times: ok
+# expect: nested 20 levels: ok
+# expect: rendered: ok
+
+# Regression check: inserting a value into a literal shares its nodes
+# (copy on write) instead of copying the whole tree, so the cost of an
+# insertion does not grow with the size of the inserted value, and a page
+# nested in many levels of layout does not copy its content at every level.
+
+go! {
+    import "runtime"
+}
+
+func allocated() -> int {
+    total: int = 0
+    go! {
+        var ms runtime.MemStats
+        runtime.ReadMemStats(&ms)
+        total = int(ms.TotalAlloc)
+    }
+    return total
+}
+
+func big() -> html {
+    rows: list[html] = [<><li class="row"><a href="/${i}">Item ${i}</a> <span>${i * 2}</span></li></> for i in range(400)]
+    return <><ul>${rows}</ul></>
+}
+
+func level(n: int, content: html) -> html {
+    return <><div class="l${n}"><main>${content}</main></div></>
+}
+
+func main() {
+    content: html = big()
+    size: int = len(str(content))
+
+    # 100 insertions of a value of about 1,600 nodes
+    before: int = allocated()
+    copies: list[html] = [content for __i in range(100)]
+    page: html = <><section>${copies}</section></>
+    perInsert: int = (allocated() - before) // 100
+    print(f"inserted 100 times: {'ok' if perInsert < 2048 else str(perInsert) + ' bytes per insertion'}")
+
+    # 20 levels of layout around it
+    before = allocated()
+    nested: html = content
+    for n in range(20) {
+        nested = level(n, nested)
+    }
+    perLevel: int = (allocated() - before) // 20
+    print(f"nested 20 levels: {'ok' if perLevel < 4096 else str(perLevel) + ' bytes per level'}")
+
+    text: str = str(page)
+    deep: str = str(nested)
+    good: bool = len(text) == len("<section></section>") + 100 * size and deep.count("<main>") == 20 and deep.count("class=\"row\"") == 400
+    print(f"rendered: {'ok' if good else 'wrong'}")
+}

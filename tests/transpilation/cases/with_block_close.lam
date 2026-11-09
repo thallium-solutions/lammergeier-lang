@@ -1,0 +1,44 @@
+# Transpilation: `with` is `try { body } finally { close }`: an IIFE opening
+# each resource followed by the `defer` closing it (reverse order, an item
+# without `as` too), with the try lowering's `return` / loop-jump plumbing,
+# so resources close when the block ends, not when the function returns.
+# expect-go: func Label(name string) (retval string) {
+# expect-go:
+#   // with
+#   r := NewRes(name)
+#   defer r.Close()
+#   __lamWith1 := NewRes("b")
+#   defer __lamWith1.Close()
+#   retval = r.Name
+#   __lamShouldReturn = true
+#   if __lamShouldReturn { return }
+#   __lamJump1 = 2
+#   if __lamJump1 == 2 {
+
+class Res {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func close(self) {
+        pass
+    }
+}
+
+func label(name: str) -> str {
+    with Res(name) as r, Res("b") {
+        return r.name
+    }
+}
+
+func main() {
+    for i in range(2) {
+        with Res("loop") as r {
+            if i == 0 {
+                continue
+            }
+            print(r.name)
+        }
+    }
+    print(label("a"))
+}

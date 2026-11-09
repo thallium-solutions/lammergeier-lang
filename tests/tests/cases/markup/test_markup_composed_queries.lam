@@ -1,0 +1,103 @@
+# expect: 3
+# expect: Bag,Shoes,Hat
+# expect: Shoes
+# expect: Hat
+# expect: grid
+# expect: article section
+# expect: 3 3
+# expect: true
+# expect: Bag
+# expect: 2
+# expect: <section class="feed"><h1>Feed</h1><div class="grid"><article class="card sale"><h2>Bag</h2><p>10</p></article><article class="card"><h2>Shoes</h2><p>20</p></article><article class="card new"><h2>Hat</h2><p>30</p><em>!</em></article></div></section>
+# expect: <article class="card"><h2>Bag</h2><p>10</p></article>
+# expect: <div class="grid"><article class="card"><h2>Shoes</h2><p>20</p></article><article class="card new"><h2>Hat</h2><p>30</p><em>!</em></article><p>end</p></div>
+# expect: true
+# expect: FeedShoes20Hat30!end
+# expect: 1
+# expect: {"page":"\u003cbody\u003e\u003cdiv class=\"grid\"\u003e\u003ca\u003e1\u003c/a\u003e\u003ca\u003e2\u003c/a\u003e\u003c/div\u003e\u003c/body\u003e"}
+# expect: <body><div class="grid"><a>1</a><a>2</a></div></body>
+# expect: <svg><circle r="1"/></svg>
+# expect: <div><svg><circle r="1"/></svg></div>
+# expect: <div><b>ok</b></div>
+# expect: <Root><Item n="1"/><Item n="2"/></Root>
+# expect: 2 1
+# expect: <Root><Item n="1" seen="yes"/><Item n="2"/></Root>
+# expect: <Item n="1"/>
+
+# Queries and changes on values composed of inserted components: selectors
+# see through the inserted parts (descendant, child, sibling combinators and
+# position pseudo-classes across component boundaries), parent() climbs out
+# of a component into the value it was inserted in, and text, equality,
+# len, JSON and sanitizing see the whole composed value.
+
+from lamhtml import Html, HtmlPolicy
+from lamjson import Json
+
+class Product {
+    func init(self, name: str, price: int) {
+        self.name: str = name
+        self.price: int = price
+    }
+
+    func __html__(self) -> html {
+        return <><article class="card"><h2>${self.name}</h2><p>${self.price}</p></article></>
+    }
+}
+
+func feed(products: list[Product]) -> html {
+    return <><section class="feed"><h1>Feed</h1><div class="grid">${products}</div></section></>
+}
+
+func main() {
+    products: list[Product] = [Product("Bag", 10), Product("Shoes", 20), Product("Hat", 30)]
+    card: html = html(products[0])
+    page: html = feed(products)
+    print(len(page.select("section .grid > article")))
+    print(",".join([h.text() for h in page.select("article h2")]))
+    print(page.first("article + article h2").text())
+    print(page.first("article:last-child h2").text())
+    print(page.first("h2").parent().parent().attr("class"))
+    print(f"{page.first('h2').parent().tag()} {page.first('h2').parent().parent().parent().tag()}")
+    print(f"{len(page.first('.grid').children())} {len(page.select('article ~ article')) + 1}")
+    print(page.first("article:first-child").hasClass("card"))
+    print(page.first("article:nth-child(1) h2").text())
+    print(len(page.select("article:not(:first-child)")))
+
+    # changes through views of the composed value stay in it
+    page.first("article").addClass("sale")
+    page.first("article:last-child").addClass("new")
+    page.first("article:last-child").append(<><em>!</em></>)
+    print(page)
+    print(card)
+    page.first("article").remove()
+    page.first(".grid").append(<><p>end</p></>)
+    print(page.first(".grid"))
+    print(page.first(".grid").children()[0].parent() == page.first(".grid"))
+    print(page.text())
+    print(len(page.nodes()))
+
+    # equality, JSON and str of composed values
+    links: list[html] = [<><a>${i}</a></> for i in [1, 2]]
+    body: html = <><body><div class="grid">${links}</div></body></>
+    print(Json.encode({"page": str(body)}).unwrap())
+    print(body)
+
+    # an svg component keeps its self-closing tags wherever it is inserted
+    icon: html = <><svg><circle r="1"/></svg></>
+    print(icon)
+    print(<><div>${icon}</div></>)
+
+    # sanitizing a composed value sees the inserted parts
+    unsafe: html = <><b onclick="x()">ok</b><script>alert(1)</script></>
+    print(Html.sanitize(<><div>${unsafe}</div></>, HtmlPolicy.basic().allowTags(["div"])))
+
+    # xml composition (names are case-sensitive)
+    item1: xml = <><Item n="1"/></>
+    item2: xml = <><Item n="2"/></>
+    root: xml = <><Root>${item1}${item2}</Root></>
+    print(root)
+    print(f"{len(root.select('Root > Item'))} {len(root.select('Item:first-child'))}")
+    root.first("Item").setAttr("seen", "yes")
+    print(root)
+    print(item1)
+}

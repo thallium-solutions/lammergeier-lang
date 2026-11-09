@@ -507,6 +507,11 @@ go! {
         out := []*lamMNode{}
         for _, n := range nodes {
             switch n.kind {
+            case lamMRef:
+                // An inserted element, shared (see lammarkup).
+                t := n.acquire()
+                out = append(out, lamSanNodes([]*lamMNode{t}, p, depth)...)
+                n.release()
             case lamMText:
                 if n.data != "" {
                     out = append(out, &lamMNode{kind: lamMText, data: n.data})

@@ -95,7 +95,7 @@ esac
 log "using Python $PY_VER ($PYTHON)"
 
 if ! command -v go >/dev/null 2>&1; then
-    warn "Go toolchain not found. Install Go 1.21+ (https://go.dev/dl/) before running lamc."
+    warn "Go toolchain not found. Install Go 1.24+ (https://go.dev/dl/) before running lamc."
 else
     GO_VER="$(go version | awk '{print $3}' | sed 's/^go//')"
     log "found Go $GO_VER"

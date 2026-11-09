@@ -3,7 +3,7 @@
 Lammergeier keeps general-purpose building blocks in the standard library and
 ships service clients, fast-moving protocols, and vendor integrations as
 independently versioned packages. The official packages below target
-`lamc` 4.7; each uses a scoped `@lam/...` import and carries its own tests,
+`lamc` 4.8; each uses a scoped `@lam/...` import and carries its own tests,
 release notes, and pinned Go dependencies. The libraries that existed before
 3.0 declare `>=1.18, <5`; the five added in October 2026 declare `>=3.0, <5`;
 `@lam/vulture` 3.0.0 and its plugins declare `>=4.0, <5` (native `html` /
@@ -13,7 +13,7 @@ Current releases:
 | Release | Notes |
 |---|---|
 | `@lam/vulture@3.6.0` | `SseEmitter.wait` ends event streams when the client leaves or a graceful shutdown starts (3.6.0); `HEAD` answered by GET routes, `req.queryAll` (3.1.0); handlers may return `html`, `xml`, `json` or `str` (sent with the type's default Content-Type unless one is set); `res.send(html|xml)`, `res.html(html)`, `res.xml(...)`; requires lamc 4.0 |
-| `@lam/vulture/dev-plugin@1.1.0` | lamc 4.x compatible; pins `@lam/vulture` 3.6.0; browser live reload for `lamc dev` (4.5); every tab of a browser shares one live-reload stream (1.1.0: plain HTTP/1.1 allows 6 connections per host) |
+| `@lam/vulture/dev-plugin@1.2.0` | requires lamc 4.8 (`Os.modTime`); pins `@lam/vulture` 3.6.0; browser live reload for `lamc dev` (4.5); every tab of a browser shares one live-reload stream (1.1.0: plain HTTP/1.1 allows 6 connections per host); a watched asset is read again only when its size or modification time changed (1.2.0) |
 | `@lam/vulture/std-plugin@2.0.5` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0 |
 | `@lam/vulture/tus-plugin@3.0.4` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0; root `tag()` removed (3.0.0) |
 | `@lam/vulture/ws-plugin@2.0.4` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0 |

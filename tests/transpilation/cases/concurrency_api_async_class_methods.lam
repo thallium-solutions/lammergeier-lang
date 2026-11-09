@@ -2,7 +2,7 @@
 # expect-go: func (s *AsyncBox[T]) Get() chan func() T {
 # expect-go: __lam_async_ch := make(chan func() T, 1)
 # expect-go: __lamTask := lamAsyncTaskFailed(r)
-# expect-go: select { case __lam_async_ch <- func() T { lamAsyncTaskRetrieved(__lamTask); panic(r) }: default: }
+# expect-go: select { case __lam_async_ch <- func() T { lamAsyncTaskRetrieved(__lamTask); panic(r) }: default: lamAsyncTaskUnpublished(__lamTask) }
 # expect-go: var __lamAsyncV T = s.Value
 # expect-go: __lam_async_ch <- func() T { return __lamAsyncV }
 # expect-go: func AsyncBox_echo[T any](value T) chan func() T {

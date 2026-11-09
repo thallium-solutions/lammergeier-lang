@@ -7,7 +7,7 @@ from lark import Tree, Token
 
 from compiler import narrowing as _narrowing
 from typing import Optional, Tuple, List
-from compiler.constants import PYTHON_EXCEPTIONS
+from compiler.constants import PYTHON_EXCEPTIONS, generator_go_elem
 from compiler.typesys import render_type as render_type_text
 
 
@@ -1183,10 +1183,41 @@ class StatementVisitorMixin:
         self._emit_loop_jump("continue")
 
     def _visit_yield_stmt(self, node: Tree):
-        if node.children:
-            val = self._expr_to_go(node.children[0])
+        """``yield v`` hands ``v`` to the consumer; when the consumer has
+        stopped (a loop left early, a generator stopped or collected) the
+        body returns from there, running its ``finally`` blocks and
+        ``with`` closes on the way out (Python's ``GeneratorExit``)."""
+        if not node.children:
+            return
+        expr = node.children[0]
+        if not (self._in_generator and self._generator_chan):
+            val = self._expr_to_go(expr)
             if val:
                 self._emit(val)
+            return
+        if isinstance(expr, Tree) and expr.data == "yield_from":
+            self._emit_yield_from(expr)
+            return
+        self._emit(f"if !{self._expr_to_go(expr)} {{")
+        self.indent += 1
+        self._emit_return_value(None)
+        self.indent -= 1
+        self._emit("}")
+
+    def _emit_yield_from(self, node: Tree) -> None:
+        """``yield from src``: every value of ``src`` (a generator, a list,
+        any iterable) in turn, as ``for v in src { yield v }``; stopping
+        the outer generator stops one ``src`` call it is running."""
+        self._q_temp_counter += 1
+        item = f"__lamYieldFrom{self._q_temp_counter}"
+        item_var = Tree("var", [Tree("name", [Token("NAME", item)])])
+        loop = Tree("for_stmt", [
+            Tree("untyped_for_target", [item_var]),
+            node.children[0],
+            Tree("suite", [Tree("yield_stmt", [Tree("yield_expr", [item_var])])]),
+            None,
+        ])
+        self._visit_for_stmt(loop)
 
     def _visit_del_stmt(self, node: Tree):
         if node.children:
@@ -1757,6 +1788,8 @@ class StatementVisitorMixin:
             else:
                 iter_str = self._expr_to_go(iterable_node)
             is_chan = self._is_generator_call(iterable_node) or self._is_chan_iterable(iterable_node)
+            if is_chan:
+                iter_str += self._generator_range_method(iterable_node)
             # ``for k, v in mapping`` — when the for-target is a
             # 2-tuple, range over the map directly so both names bind
             # idiomatically. Without this, the catch-all branch below
@@ -2003,6 +2036,8 @@ class StatementVisitorMixin:
         elem = (self._expr_go_type_hint(iterable_node) or "").strip()
         if elem.startswith("chan "):
             elem = elem[5:].strip()
+        elif generator_go_elem(elem) is not None:
+            elem = generator_go_elem(elem)
         if elem and elem != "interface{}":
             self._var_go_types[var_name] = elem
             if elem.startswith("*"):
@@ -2020,9 +2055,23 @@ class StatementVisitorMixin:
                 self._var_result_payloads[var_name] = payload
 
     def _is_chan_iterable(self, node) -> bool:
-        """``for c in g`` with ``g: generator[Circle]`` (a ``chan *Circle``
-        parameter, local or field): one value per receive."""
-        return (self._expr_go_type_hint(node) or "").strip().startswith("chan ")
+        """``for c in g`` with ``g: generator[Circle]`` (a
+        ``*lamGenerator[*Circle]`` parameter, local or field) or a channel:
+        one value per resume / receive."""
+        hint = (self._expr_go_type_hint(node) or "").strip()
+        return hint.startswith("chan ") or generator_go_elem(hint) is not None
+
+    def _generator_range_method(self, node) -> str:
+        """What a ``for`` loop or a comprehension ranges over for the
+        generator ``node``: a generator call the loop owns ends when the
+        loop is left (``F().Consume``); a generator value (variable, field,
+        parameter) stays resumable (``g.Resume``). A channel is ranged
+        over directly."""
+        if self._is_generator_call(node):
+            return ".Consume"
+        if generator_go_elem(self._expr_go_type_hint(node) or "") is not None:
+            return ".Resume"
+        return ""
 
     def _generator_iter_elem_go_type(self, node) -> str:
         """Go type of the values received from the generator ``node`` (a
@@ -2030,6 +2079,8 @@ class StatementVisitorMixin:
         hint = (self._expr_go_type_hint(node) or "").strip()
         if hint.startswith("chan "):
             hint = hint[5:].strip()
+        elif generator_go_elem(hint) is not None:
+            hint = generator_go_elem(hint)
         return "" if hint in {"", "interface{}"} else hint
 
     def _is_generator_call(self, node) -> bool:
@@ -2096,7 +2147,7 @@ class StatementVisitorMixin:
             finally_node = Tree("finally", [finally_node])
         self._emit_try(try_suite, None, None, finally_node if isinstance(finally_node, Tree) else None)
 
-    def _emit_try(self, try_suite, catch_clauses_node, else_suite, finally_node) -> None:
+    def _emit_try(self, try_suite, catch_clauses_node, else_suite, finally_node, with_items=None) -> None:
         """Lower ``try`` / ``catch`` / ``else`` / ``finally``.
 
         The try body runs in an IIFE whose deferred functions are the
@@ -2105,13 +2156,18 @@ class StatementVisitorMixin:
         iteration) and a recovered exception continues after the statement.
         ``return`` / ``break`` / ``continue`` inside the closures record
         themselves and leave the IIFE; the code after it performs them.
+
+        ``with_items`` (a ``with`` statement, ``try { body } finally {
+        close }``): the resources are opened at the start of the IIFE, each
+        followed by the ``defer`` closing it, so they close when the block
+        ends, in reverse order, whichever way it is left.
         """
         clauses = [
             clause for clause in (catch_clauses_node.children if catch_clauses_node is not None else [])
             if isinstance(clause, Tree) and clause.data == "catch_clause"
         ]
         finally_suite = finally_node.children[0] if finally_node is not None else None
-        if not clauses and finally_suite is None:
+        if not clauses and finally_suite is None and with_items is None:
             self._emit("// try")
             self._push_scope()
             body_start, vars_at_start = self._scope_unused_tracking_start()
@@ -2128,7 +2184,9 @@ class StatementVisitorMixin:
             for sub in clause.children
             if isinstance(sub, Tree) and sub.data == "suite"
         ]
-        self._hoist_flow_locals([try_suite] + catch_suites)
+        if with_items is None:
+            # (The locals of a ``with`` block stay in the block.)
+            self._hoist_flow_locals([try_suite] + catch_suites)
         # With both ``else`` and ``finally``, ``else`` runs inside the IIFE
         # holding the ``finally`` defer (Python order: body, else, finally)
         # but outside the recover dispatch (its exceptions are not handled by
@@ -2163,7 +2221,7 @@ class StatementVisitorMixin:
         # local. Without this gate, writing two independent
         # ``try/catch`` blocks one after the other produced
         # ``no new variables on left side of :=``.
-        self._emit("// try")
+        self._emit("// with" if with_items is not None else "// try")
         first_try = "__lamShouldReturn" not in self.declared_vars
         op = ":=" if first_try else "="
         self._emit(f"__lamShouldReturn {op} false")
@@ -2223,6 +2281,8 @@ class StatementVisitorMixin:
         # exits this IIFE only; the post-IIFE check forwards the
         # signal to the outer function.
         with self._scoped(_in_try_iife=True, _loop_jump=loop_jump):
+            if with_items is not None:
+                self._emit_with_items(with_items)
             self._visit_suite(try_suite)
 
         if nested_else:
@@ -2300,7 +2360,7 @@ class StatementVisitorMixin:
         """
         exits = bool(self._own_loop_jumps(finally_suite)) or self._suite_has_own_return(finally_suite)
         nested_try = any(True for _ in finally_suite.find_pred(
-            lambda t: t.data in {"try_stmt", "try_finally"}
+            lambda t: t.data in {"try_stmt", "try_finally", "with_stmt"}
         ))
         self._try_counter = getattr(self, "_try_counter", 0) + 1
         n = self._try_counter
@@ -2625,7 +2685,7 @@ class StatementVisitorMixin:
         if any(
             self._tree_contains(t, "propagate")
             for t in (body_suite.iter_subtrees() if isinstance(body_suite, Tree) else [])
-            if t.data in ("try_stmt", "try_finally")
+            if t.data in ("try_stmt", "try_finally", "with_stmt")
         ):
             do_q_target = f"__lamDoErr{self._do_counter}"
             self._emit(f"{rdo} := func() ({do_q_target} *Result) {{")
@@ -2720,44 +2780,45 @@ class StatementVisitorMixin:
     # ─── With ──────────────────────────────────────────────────
 
     def _visit_with_stmt(self, node: Tree):
-        with_items = node.children[0]
-        suite = node.children[1]
+        """``with a as x, b { body }`` is ``try { body } finally { close }``
+        (Python's semantics without ``__exit__``): each resource is closed
+        (``.Close()``, Lam's ``close``) when the block ends — normally, by
+        ``return`` (the function still returns the value), by ``break`` /
+        ``continue`` of an enclosing loop, by an exception or a ``?`` —
+        before the code after the block, in reverse order."""
+        self._emit_try(node.children[1], None, None, None, with_items=node.children[0])
 
-        self._emit("{")
-        self.indent += 1
-        self._push_scope()
-        body_start, vars_at_start = self._scope_unused_tracking_start()
-
-        if isinstance(with_items, Tree) and with_items.data == "with_items":
-            for item in with_items.children:
-                if isinstance(item, Tree) and item.data == "with_item":
-                    expr = item.children[0]
-                    as_name = item.children[1] if len(item.children) > 1 and item.children[1] is not None else None
-                    expr_str = self._expr_to_go(expr)
-                    if as_name:
-                        name_str = self._go_binding_name(self._get_name(as_name))
-                        # ``with file as f``: ``f`` has the resource's type.
-                        resource_class = self._infer_receiver_class(expr)
-                        if resource_class:
-                            self._var_types[name_str] = resource_class
-                        else:
-                            self._var_types.pop(name_str, None)
-                        resource_type = self._expr_go_type_hint(expr)
-                        if resource_type:
-                            self._var_go_types[name_str] = resource_type
-                        else:
-                            self._var_go_types.pop(name_str, None)
-                        self._declare_var(name_str)
-                        self._emit(f"{name_str} := {expr_str}")
-                        self._emit(f"defer {name_str}.Close()")
-                    else:
-                        self._emit(f"_withRes := {expr_str}")
-                        self._emit(f"defer _withRes.Close()")
-
-        self._visit_suite(suite)
-        self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
-        self.indent -= 1
-        self._emit("}")
+    def _emit_with_items(self, with_items) -> None:
+        """Open the resources of a ``with`` (inside its IIFE), each followed
+        by the ``defer`` closing it; an ``as`` name has the resource's type
+        and lives in the block."""
+        if not (isinstance(with_items, Tree) and with_items.data == "with_items"):
+            return
+        for item in with_items.children:
+            if not (isinstance(item, Tree) and item.data == "with_item"):
+                continue
+            expr = item.children[0]
+            as_name = item.children[1] if len(item.children) > 1 and item.children[1] is not None else None
+            expr_str = self._expr_to_go(expr)
+            if as_name:
+                name_str = self._go_binding_name(self._get_name(as_name))
+                # ``with file as f``: ``f`` has the resource's type.
+                resource_class = self._infer_receiver_class(expr)
+                if resource_class:
+                    self._var_types[name_str] = resource_class
+                else:
+                    self._var_types.pop(name_str, None)
+                resource_type = self._expr_go_type_hint(expr)
+                if resource_type:
+                    self._var_go_types[name_str] = resource_type
+                else:
+                    self._var_go_types.pop(name_str, None)
+            else:
+                self._with_counter = getattr(self, "_with_counter", 0) + 1
+                name_str = f"__lamWith{self._with_counter}"
+            self._declare_var(name_str)
+            self._emit(f"{name_str} := {expr_str}")
+            self._emit(f"defer {name_str}.Close()")
 
     # ─── Decorated ─────────────────────────────────────────────
 

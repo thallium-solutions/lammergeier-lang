@@ -1,0 +1,82 @@
+# Transpilation: generators are handles on their body (`*lamGenerator[T]`,
+# the runtime emitted once in the main file). Each `yield` returns from the
+# body when the consumer stopped; a loop over a generator call owns it
+# (`.Consume`: ended when the loop is left), a loop over a generator value
+# resumes it (`.Resume`); a `catch` around a `yield` makes the generator run
+# apart from the loop body (`lamNewIsolatedGenerator`); `yield from` loops
+# over its source; methods and nested generators share the lowering.
+# expect-go: func (s *Shelf) Each() *lamGenerator[string] {
+# expect-go: return lamNewGenerator[int](func(__lamYield func(int) bool) {
+# expect-go: if !__lamYield(i) {
+# expect-go: return lamNewIsolatedGenerator[int](func(__lamYield func(int) bool) {
+# expect-go: for x := range Count(3).Consume {
+# expect-go: var g *lamGenerator[int] = Count(4)
+# expect-go: for x := range g.Resume {
+# expect-go: for n := range NewShelf([]string{"a"}).Each().Consume {
+# expect-go: inner := func() *lamGenerator[string] {
+# expect-go: range Count(2).Consume {
+# expect-go: range []int{7, 8} {
+# expect-go: type lamGenerator[T any] struct {
+# expect-go: func (g *lamGenerator[T]) Consume(yield func(T) bool) {
+# expect-go: g.cleanup = runtime.AddCleanup(g, lamStopCollectedGenerator, g.stop)
+
+class Shelf {
+    func init(self, names: list[str]) {
+        self.names: list[str] = names
+    }
+
+    func each(self) -> generator[str] {
+        for n in self.names {
+            yield n
+        }
+    }
+}
+
+func count(n: int) -> generator[int] {
+    i: int = 0
+    while i < n {
+        yield i
+        i += 1
+    }
+}
+
+func tolerant() -> generator[int] {
+    try {
+        yield 1
+    } catch ValueError {
+        pass
+    }
+}
+
+func both() -> generator[int] {
+    yield from count(2)
+    yield from [7, 8]
+}
+
+func main() {
+    for x in count(3) {
+        print(x)
+    }
+    g: generator[int] = count(4)
+    for x in g {
+        if x == 1 {
+            break
+        }
+    }
+    print([x * 2 for x in g])
+    for n in Shelf(["a"]).each() {
+        print(n)
+    }
+    func inner() -> generator[str] {
+        yield "in"
+    }
+    for s in inner() {
+        print(s)
+    }
+    for v in tolerant() {
+        print(v)
+    }
+    for v in both() {
+        print(v)
+    }
+}

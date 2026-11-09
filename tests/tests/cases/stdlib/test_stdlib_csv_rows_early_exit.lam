@@ -1,0 +1,90 @@
+# `Csv.rows` / `Csv.batches` / `streamRows` left before the end of the file
+# (`break`, `return`, an exception in the loop body, a `with`-managed
+# lookup) close the file right away: 300 abandoned loops leave no file
+# descriptor open, and the rows read are the expected ones.
+#
+# expect: caught ValueError: bad row
+# expect: first a
+# expect: found 2
+# expect: batch 2
+# expect: stream b
+# expect: open fds unchanged
+
+go! {
+    import "os"
+}
+
+from lamcsv import Csv
+from lamos import Os
+
+func openFds() -> int {
+    n: int = 0
+    go! {
+        entries, err := os.ReadDir("/proc/self/fd")
+        if err == nil {
+            n = len(entries)
+        }
+    }
+    return n
+}
+
+func firstWith(path: str, key: str) -> int {
+    for row in Csv.rows(path) {
+        cells: list[str] = row.unwrap()
+        if cells[0] == key {
+            return int(cells[1])
+        }
+    }
+    return -1
+}
+
+func main() {
+    path: str = Os.tempFile("lam_csv_early_", ".csv").unwrap()
+    Os.writeFile(path, "a,1\nb,2\nc,3\n").unwrap()
+    before: int = openFds()
+    first: str = ""
+    found: int = 0
+    batchLen: int = 0
+    stream: str = ""
+    for k in range(300) {
+        for row in Csv.rows(path) {
+            first = row.unwrap()[0]
+            break
+        }
+        found = firstWith(path, "b")
+        for batch in Csv.batches(path, 2) {
+            batchLen = len(batch.unwrap())
+            break
+        }
+        try {
+            for row in Csv.rows(path) {
+                if row.unwrap()[0] == "b" {
+                    raise ValueError("bad row")
+                }
+            }
+        } catch ValueError as e {
+            if k == 0 {
+                print("caught", e)
+            }
+        }
+        for row in Csv.streamRows(path) {
+            if row.unwrap()[0] == "b" {
+                stream = row.unwrap()[0]
+                break
+            }
+        }
+        if k == 0 {
+            print("first", first)
+            print("found", found)
+            print("batch", batchLen)
+            print("stream", stream)
+        }
+    }
+    after: int = openFds()
+    if after <= before {
+        print("open fds unchanged")
+    } else {
+        print(f"leaked {after - before} file descriptors")
+    }
+    Os.remove(path).unwrap()
+}

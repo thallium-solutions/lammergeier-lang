@@ -5,6 +5,76 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.8.0 — 2026-11-09
+
+### Added
+
+- `Os.modTime(path) -> Result[int]`: a file's last modification time in
+  Unix nanoseconds, to tell a changed file without reading it.
+
+### Fixed
+
+- Generators leaked: a loop leaving a generator early (`break`, `return`,
+  `?`, an exception), a generator never iterated or one dropped after a
+  partial loop left its goroutine blocked forever with everything it
+  captured (1,000 broken loops: 1,000 goroutines), its `finally` blocks
+  never ran, and an exception raised in a generator crashed the program
+  instead of reaching the consumer's `try`. Generators now follow Python:
+  the body runs lazily, in step with the consumer; a loop over a generator
+  call ends it when the loop is left (its `finally` blocks and `with`
+  closes run before the code after the loop); a generator in a variable is
+  resumable and is ended when collected; its exceptions are raised in the
+  consumer. `generator[T]` lowers to a generator handle (`*lamGenerator[T]`)
+  instead of `chan T`; a loop over a generator call runs the body in place
+  (no goroutine: the generator benchmark is about 3.5x faster, a broken loop
+  over an endless generator about 15x). `yield from src` (in the grammar,
+  but rejected or mis-lowered) yields each value of `src`.
+- `with` closed its resources when the enclosing function returned (a Go
+  `defer`), not when its block ended: in a loop every resource stayed open
+  until the function ended, closing in reverse after all the later code. It
+  now closes at the end of the block on every path (`return` with its
+  value, `break` / `continue`, `?`, exceptions), several items in reverse
+  order; two items without `as` in one block no longer fail to build, and a
+  `with` block returning on every path ends the function (no "not all
+  paths return a value" error).
+- Async task failures accumulated: the exception of a task never awaited
+  stayed registered until `main` returned (never, in a server), and one
+  raised after the task had published its result was registered and never
+  removed. A failure is now reported (`Task exception was never retrieved`)
+  when its task handle is collected, or at the end of `main` for the
+  handles still alive, and a late one is reported at once.
+- `Csv.rows` / `Csv.batches` / `streamRows` / `streamBatches` close the file
+  when the consumer leaves its loop early.
+
+### Changed
+
+- Go 1.24 or newer is required (range-over-func loops, `iter.Pull`,
+  `runtime.AddCleanup`); `lamc doctor` checks it.
+
+- Composing `html` / `xml` is much cheaper: inserting a value (a slot,
+  `append`, `setInner`, `replaceWith`, `html(x)`, `clone()`) shares its
+  elements copy-on-write instead of copying the whole tree, so a page built
+  from nested components no longer copies every card once per level of
+  layout; the parts of a literal without slots are built once and shared;
+  rendering sizes its result once and writes it in one allocation; the
+  compiled-literal cache no longer builds a key string per call. Behaviour
+  is unchanged: output byte for byte, value semantics in both directions
+  (changing the inserted value or the value it was inserted in never shows
+  in the other), live views, queries over composed values, and values
+  shared between concurrent tasks (rendering takes a read lock on shared
+  parts, a change swaps them for a copy first). A 50-card page in four
+  layout levels (`bench_markup_compose`): 914 µs and 1.66 MB allocated per
+  page before, about 160 µs and 197 kB after; a real server's product page
+  went from 2.1 MB to 0.57 MB allocated per request.
+
+### Tests
+
+- `markup/test_markup_embed_isolation.lam`, `test_markup_composed_queries.lam`,
+  `test_markup_concurrent_sharing.lam` and the allocation regression check
+  `test_markup_embed_alloc.lam`; `tests/tests/test_markup_race.py` runs the
+  composition cases under the Go race detector. The runtime benchmarks accept
+  an optional bytes-per-operation field (`alloc/op` column).
+
 ## 4.7.0 — 2026-11-09
 
 ### Added

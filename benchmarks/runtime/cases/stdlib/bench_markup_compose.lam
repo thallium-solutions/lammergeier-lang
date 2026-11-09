@@ -1,0 +1,70 @@
+# Native ``html`` composition — a page built the way a web application
+# builds it: 50 product cards of 10 elements each, a feed holding them and
+# four levels of layout around the feed, rendered to text. Stresses
+# template instantiation, inserting fragments into fragments (every level
+# of nesting embeds the levels below it) and serialization.
+#
+# Also prints the bytes allocated per page (``runtime.ReadMemStats``) as the
+# fifth field of the BENCH line.
+#
+# ops: 2000
+
+from lamtime import Time
+
+go! {
+    import "runtime"
+}
+
+func card(i: int) -> html {
+    return <><article class="card" data-id="${i}">
+        <a href="/p/${i}" class="link"><img src="/img/${i}.jpg" alt="Product ${i}"></a>
+        <div class="body">
+            <h2 class="title">Product &amp; ${i}</h2>
+            <p class="brand">Brand ${i % 7}</p>
+            <p class="price"><span class="now">${i * 3} EUR</span> <s class="was">${i * 4} EUR</s></p>
+            <button type="button" class="buy" disabled=${i % 5 == 0}>Buy</button>
+        </div>
+    </article></>
+}
+
+func feed(n: int) -> html {
+    cards: list[html] = [card(i) for i in range(n)]
+    return <><section class="feed"><h1>Feed</h1><div class="grid">${cards}</div></section></>
+}
+
+func frame(level: int, content: html) -> html {
+    return <><div class="level-${level}"><nav><a href="/">Home</a> <a href="/about">About</a></nav><main>${content}</main><footer>Level ${level}</footer></div></>
+}
+
+func page() -> str {
+    content: html = feed(50)
+    for level in range(4) {
+        content = frame(level, content)
+    }
+    doc: html = <><!DOCTYPE html><html><head><title>Shop</title></head><body>${content}</body></html></>
+    return str(doc)
+}
+
+func allocated() -> int {
+    total: int = 0
+    go! {
+        var ms runtime.MemStats
+        runtime.ReadMemStats(&ms)
+        total = int(ms.TotalAlloc)
+    }
+    return total
+}
+
+func main() {
+    size: int = len(page())
+    before: int = allocated()
+    start: int = Time.nowUnixNano()
+    for __i in range(2000) {
+        if len(page()) != size {
+            print("unreachable")
+        }
+    }
+    elapsed: int = Time.nowUnixNano() - start
+    perPage: int = (allocated() - before) // 2000
+    print(f"BENCH markup_compose 2000 {elapsed} {perPage}")
+}

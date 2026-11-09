@@ -1593,10 +1593,14 @@ func main() {
 }
 ```
 
-An exception in a task that is never awaited is not lost: when `main`
-returns, each such exception is printed to stderr (`Task exception was never
-retrieved: ValueError: bad id -1`, like Python's asyncio) and the exit status
-is unchanged. A task still running when `main` returns is abandoned silently.
+An exception in a task that is never awaited is not lost: it is printed to
+stderr (`Task exception was never retrieved: ValueError: bad id -1`, like
+Python's asyncio) when the task's handle is garbage-collected without an
+`await` (a fire-and-forget task in a long-running server is reported while it
+runs), or when `main` returns for the handles still alive then; the exit
+status is unchanged. An exception raised after the task already returned its
+result (by a `defer`) cannot reach an `await`: it is reported at once. A task
+still running when `main` returns is abandoned silently.
 
 `await` needs the handle returned by an async call. Keep handles in an
 unannotated local or list (`tasks = [load(1), load(2)]`, or with async
@@ -2258,6 +2262,14 @@ case-insensitively in html and exactly in xml (`ns|tag` for a prefixed
 name). Inserting a value (a slot, `append`, `setInner`...) copies it, so a
 component can be reused; `+` keeps the operands' nodes.
 
+The copy is made lazily (copy on write): the inserted elements are shared
+until one of the values changes, and only what changes is copied then. A
+page built from nested components (page, layout, feed, cards) therefore
+does not copy each card once per level, and a fragment can be inserted into
+pages built and rendered by concurrent tasks; changing either value later
+never shows in the other. A query (`select`, `first`, `children`) on a
+composed value makes its tree its own first, as a deep copy would.
+
 ```lammergeier
 for a in page.select("a[href^=\"https://\"]") {
     a.setAttr("rel", "noopener")
@@ -2308,7 +2320,11 @@ balanced `(...)`, `[...]`, or literal `{...}` are treated as whitespace.
 ## Defer Statements
 
 `defer expr` mirrors Go: the expression is scheduled to run when the
-enclosing function returns, and multiple `defer`s run in LIFO order.
+enclosing **function** returns (not when the enclosing block or loop
+iteration ends), and multiple `defer`s run in LIFO order. A `defer` in a
+loop therefore runs once per iteration only when the function returns; use
+[`with`](#with-statement) or `try` / `finally` for cleanup at the end of a
+block.
 
 ```lammergeier
 from lamerrors import Result
@@ -3248,6 +3264,32 @@ with file as f {
 }
 ```
 
+`with r as x { ... }` is `try { ... } finally { x.close() }`: the resource's
+`close()` method runs when the block ends, before the code after it (once per
+iteration in a loop), whichever way the block is left — at its end, by
+`return` (the function still returns the value), by `break` / `continue` of
+an enclosing loop, by `?` propagation or by an exception (a `catch` around
+the `with` sees the resource already closed). Several items open left to
+right and close in reverse order; an item without `as` is closed too, and
+the `as` name lives in the block:
+
+```lammergeier
+func firstLine(path: str) -> str {
+    with File.open(path).unwrap() as f {
+        return f.readline().unwrap()   # f is closed, then the line returned
+    }
+}
+
+with Lock("a") as a, Lock("b") as b {
+    work(a, b)
+}                                      # b.close(), then a.close()
+```
+
+A `with` whose block returns or raises on every path ends the function (no
+`return` is needed after it). Lam has no `__enter__` / `__exit__`: a
+resource is any value with a `close()` method, and an exception is never
+swallowed by it.
+
 ---
 
 ## Del Statement
@@ -3624,7 +3666,8 @@ literals are lowered to that type recursively, so nested replacements such as
 
 ## Generators / Yield
 
-Generator functions using `yield` (compiled to goroutine + channel):
+Generator functions using `yield` (compiled to a generator handle on the
+function body, see [TRANSPILATION.md](#/docs/transpilation?h=generators)):
 
 ```lammergeier
 func fibonacci(n: int) -> int {
@@ -3645,7 +3688,7 @@ func main() {
 
 Generators may also be generic static methods, including methods imported from
 another module. The compiler infers concrete element types for inline list
-literals and ranges directly over the returned channel:
+literals and ranges directly over the returned generator:
 
 ```lammergeier
 from lamsort import Sort
@@ -3703,6 +3746,62 @@ func titles(g: generator[Circle]) -> list[str] {
 }
 
 print(titles(circles()))      # [north]
+```
+
+Generators follow Python's semantics:
+
+- **Lazy.** Calling a generator runs nothing; the body runs up to its next
+  `yield` each time a value is asked for, in step with the consumer (it
+  never runs ahead), and a generator that is never iterated costs nothing.
+- **Ending early ends the generator.** A loop (or comprehension) over a
+  generator call — `for x in gen()` — owns the generator: when the loop is
+  left before the generator is exhausted, by `break`, `return`, `?`
+  propagation or an exception of the loop body, the generator ends at the
+  `yield` it is suspended at, running its `finally` blocks and closing its
+  `with` resources (Python's `GeneratorExit`), before the code after the
+  loop. The exception of a loop body never reaches a `catch` of the
+  generator around its `yield`.
+- **A generator value is resumable.** A generator kept in a variable, a
+  field or a parameter (`g: generator[int] = count(5)`) is iterated where
+  the previous loop stopped: `for x in g { break }` leaves it suspended, and
+  the next `for x in g` continues with the next value. Such a generator,
+  dropped before it is exhausted, is ended (its `finally` blocks run) when
+  the garbage collector reclaims it.
+- **Exceptions reach the consumer.** An exception raised in a generator
+  body is raised where the next value was asked for: a `try` around the
+  loop catches it.
+- **Concurrent consumers** (async tasks or Go goroutines sharing one
+  generator value) each receive different values; the body runs for one of
+  them at a time.
+
+`yield from src` yields every value of `src` in turn (another generator, a
+list, any iterable), like `for v in src { yield v }`; ending the outer
+generator ends a generator call it is delegating to:
+
+```lammergeier
+func both() -> generator[int] {
+    yield from count(2)       # 0 1
+    yield from [7, 8]         # 7 8
+}
+```
+
+```lammergeier
+func lines(path: str) -> generator[str] {
+    f: File = File.open(path).unwrap()
+    try {
+        for line in f.readlines().unwrap() {
+            yield line
+        }
+    } finally {
+        f.close()             # also when the consumer stops early
+    }
+}
+
+for line in lines("big.txt") {
+    if line == "" {
+        break                 # the file is closed here
+    }
+}
 ```
 
 ---

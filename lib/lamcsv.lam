@@ -4,6 +4,8 @@
 # Parsing and file operations return Result values. Csv.rows and Csv.batches
 # are lazy generators: each yielded row or batch is itself a Result, allowing
 # an open/read/parse failure to be reported without loading the whole file.
+# Leaving a loop over them early (``break``, ``return``, ``?``, an exception)
+# closes the file at once.
 #
 # Every reader and writer takes a ``delimiter`` (default ``","``; ``";"``
 # for the spreadsheets of locales that write decimal commas, ``"\t"`` for
@@ -160,21 +162,27 @@ class Csv {
         }
 
         reader: CsvReader = opened.unwrap()
-        while not reader.eof {
-            rowResult: Result[list[str]] = reader.readRow()
-            if not rowResult.ok() {
-                reader.close()
-                yield rowResult
-                return
+        try {
+            while not reader.eof {
+                rowResult: Result[list[str]] = reader.readRow()
+                if not rowResult.ok() {
+                    reader.close()
+                    yield rowResult
+                    return
+                }
+                if not reader.eof {
+                    yield rowResult
+                }
             }
-            if not reader.eof {
-                yield rowResult
-            }
-        }
 
-        closed: Result[bool] = reader.close()
-        if not closed.ok() {
-            yield Result.Err(closed.error)
+            closed: Result[bool] = reader.close()
+            if not closed.ok() {
+                yield Result.Err(closed.error)
+            }
+        } finally {
+            # A consumer leaving its loop early ends the generator at its
+            # ``yield``: the file is closed then (``close`` is idempotent).
+            reader.close()
         }
     }
 

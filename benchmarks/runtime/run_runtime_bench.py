@@ -4,8 +4,10 @@
 Each ``cases/**/bench_<name>.lam`` program times its own workload (so
 process start, Go runtime init and imports are excluded) and prints::
 
-    BENCH <name> <ops> <elapsed_ns>
+    BENCH <name> <ops> <elapsed_ns> [<bytes_per_op>]
 
+(the optional last field: bytes allocated per operation, measured by the
+program with ``runtime.ReadMemStats``; shown in the ``alloc/op`` column).
 The runner compiles every program once, runs it ``--runs`` times and reports
 the median (and best) time per operation. When a hand-written Go program
 ``bench_<name>.go`` sits next to it, the same is done for the baseline and
@@ -35,7 +37,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 CASES = HERE / "cases"
 LAMC = [sys.executable, str(ROOT / "compiler" / "lammergeier.py")]
-BENCH_LINE = re.compile(r"^BENCH\s+(\S+)\s+(\d+)\s+(\d+)\s*$", re.M)
+BENCH_LINE = re.compile(r"^BENCH\s+(\S+)\s+(\d+)\s+(\d+)(?:\s+(\d+))?\s*$", re.M)
 
 
 @dataclass
@@ -43,6 +45,7 @@ class Sample:
     name: str
     ops: int
     runs_ns: list[int] = field(default_factory=list)
+    alloc_bytes: list[int] = field(default_factory=list)
 
     @property
     def median_ns(self) -> float:
@@ -93,6 +96,8 @@ def run(binary: Path, runs: int, timeout: int) -> tuple[Sample | None, str]:
         if sample is None:
             sample = Sample(m.group(1), int(m.group(2)))
         sample.runs_ns.append(int(m.group(3)))
+        if m.group(4) is not None:
+            sample.alloc_bytes.append(int(m.group(4)))
     return sample, ""
 
 
@@ -102,6 +107,14 @@ def fmt_ns(ns: float) -> str:
     if ns >= 1e3:
         return f"{ns / 1e3:.2f} us"
     return f"{ns:.1f} ns"
+
+
+def fmt_bytes(n: float) -> str:
+    if n >= 1 << 20:
+        return f"{n / (1 << 20):.2f} MB"
+    if n >= 1 << 10:
+        return f"{n / (1 << 10):.1f} kB"
+    return f"{n:.0f} B"
 
 
 def main() -> int:
@@ -153,7 +166,8 @@ def main() -> int:
             if r.go is not None:
                 go_per_op = r.go.median_ns / r.go.ops
                 go_cols = f"{fmt_ns(go_per_op):>12}{r.lam.median_ns / r.go.median_ns:>7.2f}x"
-            print(f"{r.name:<26}{r.ops:>10}{fmt_ns(r.lam.median_ns):>12}{fmt_ns(per_op):>12}{fmt_ns(r.lam.best_ns):>12}{r.lam.spread_pct:>7.1f}%{go_cols}")
+            alloc = f"  alloc/op {fmt_bytes(statistics.median(r.lam.alloc_bytes))}" if r.lam.alloc_bytes else ""
+            print(f"{r.name:<26}{r.ops:>10}{fmt_ns(r.lam.median_ns):>12}{fmt_ns(per_op):>12}{fmt_ns(r.lam.best_ns):>12}{r.lam.spread_pct:>7.1f}%{go_cols}{alloc}")
     ratios = [r.lam.median_ns / r.go.median_ns for r in results if r.go is not None and not r.error]
     if ratios:
         geo = statistics.geometric_mean(ratios)
@@ -168,6 +182,7 @@ def main() -> int:
             "results": [
                 {"group": r.group, "name": r.name, "ops": r.ops, "error": r.error,
                  "lam_ns": r.lam.runs_ns, "lam_median_ns": r.lam.median_ns if r.lam.runs_ns else None,
+                 "lam_alloc_bytes_per_op": r.lam.alloc_bytes or None,
                  "go_ns": r.go.runs_ns if r.go else None,
                  "go_median_ns": r.go.median_ns if r.go else None}
                 for r in results

@@ -1,0 +1,25 @@
+# expect-error: not all paths in `label` return a value
+# A `with` block that can finish without returning still needs a return
+# after it.
+
+class Res {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func close(self) {
+        pass
+    }
+}
+
+func label(name: str) -> str {
+    with Res(name) as r {
+        if r.name != "" {
+            return r.name
+        }
+    }
+}
+
+func main() {
+    print(label("a"))
+}

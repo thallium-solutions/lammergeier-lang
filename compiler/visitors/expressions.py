@@ -8,7 +8,7 @@ import re
 from contextlib import contextmanager
 from compiler.constants import (
     PYTHON_EXCEPTIONS, LOWER_PKGS, GO_BUILTINS,
-    OP_TO_DUNDER, CMP_TO_DUNDER,
+    OP_TO_DUNDER, CMP_TO_DUNDER, generator_go_elem,
 )
 from compiler.typesys import DictType, GenericType
 from compiler.visitors.generics import mentions_names, substitute_go_type
@@ -1165,13 +1165,13 @@ class ExpressionVisitorMixin:
                 if ret.startswith("func(") and name not in self._class_names:
                     return ret
                 if (
-                    ret.startswith("chan ")
+                    (ret.startswith("chan ") or generator_go_elem(ret) is not None)
                     and name in self._user_functions
                     and len(self._overload_variants.get(name, ())) <= 1
                     and name not in self._var_go_types
                     and name not in self._async_functions
                 ):
-                    # ``circles()`` with ``-> generator[Circle]``: a ``chan *Circle``.
+                    # ``circles()`` with ``-> generator[Circle]``: a ``*lamGenerator[*Circle]``.
                     return ret
                 if (
                     (ret in {"string", "int", "float64", "bool", "LamHTML", "LamXML", "LamJSON"} or ret.startswith(("[]", "map[")))
@@ -1967,21 +1967,15 @@ class ExpressionVisitorMixin:
         if d == "lambdef":
             return self._lambda_to_go(node)
 
-        if d == "yield_expr" or d == "yield_from":
+        if d == "yield_expr":
+            # A ``yield`` statement is ``if !__lamYield(v) { return }``
+            # (``_visit_yield_stmt``); as a value, the call reports whether
+            # the consumer wants more.
             if self._in_generator and self._generator_chan:
-                if node.children and node.children[0] is not None:
-                    value_node = node.children[0]
-                    if isinstance(value_node, Tree) and value_node.data == "tuple":
-                        # ``yield ("a", 1)``: one tuple value per receive.
-                        val = self._typed_value_to_go(value_node, "[]interface{}")
-                    elif self._generator_elem_type:
-                        # ``yield [1, 2]`` in a ``-> generator[list[int]]``.
-                        val = self._typed_value_to_go(value_node, self._generator_elem_type)
-                    else:
-                        val = self._expr_to_go(value_node)
-                    return f"{self._generator_chan} <- {val}"
-                return f"{self._generator_chan} <- nil"
+                return f"{self._generator_chan}({self._yield_value_go(node)})"
             return "/* yield not supported */"
+        if d == "yield_from":
+            return "/* yield from is a statement */"
 
         if d == "await_call":
             # The handle yields a thunk returning the result or re-raising
@@ -5516,6 +5510,19 @@ class ExpressionVisitorMixin:
             return [self._expr_to_go(child) for child in target.children if child is not None]
         return []
 
+    def _yield_value_go(self, node) -> str:
+        """Go value a ``yield`` (``yield_expr``) hands to the consumer."""
+        if not node.children or node.children[0] is None:
+            return "nil"
+        value_node = node.children[0]
+        if isinstance(value_node, Tree) and value_node.data == "tuple":
+            # ``yield ("a", 1)``: one tuple value per resume.
+            return self._typed_value_to_go(value_node, "[]interface{}")
+        if self._generator_elem_type:
+            # ``yield [1, 2]`` in a ``-> generator[list[int]]``.
+            return self._typed_value_to_go(value_node, self._generator_elem_type)
+        return self._expr_to_go(value_node)
+
     def _generator_call_elem_go_type(self, node) -> str:
         if isinstance(node, Tree) and node.data == "funccall" and node.children:
             callee = node.children[0]
@@ -5709,7 +5716,8 @@ class ExpressionVisitorMixin:
         with self._scoped(_propagate_cast_hint=""):
             iter_str = self._expr_to_go(iter_expr)
         if self._is_generator_call(iter_expr) or self._is_chan_iterable(iter_expr):
-            # A generator is a channel: one value per receive.
+            # A generator (or a channel): one value per resume.
+            iter_str += self._generator_range_method(iter_expr)
             chan_elem = self._generator_iter_elem_go_type(iter_expr)
             if targets:
                 pair_name = f"_lamCompPair{depth}"

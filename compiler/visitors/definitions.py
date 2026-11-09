@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from lark import Tree, Token
 from typing import List
-from compiler.constants import DUNDER_OPS
+from compiler.constants import DUNDER_OPS, GENERATOR_YIELD_NAME, generator_go_type
 
 
 class DefinitionVisitorMixin:
@@ -172,9 +172,9 @@ class DefinitionVisitorMixin:
         is_generator = self._suite_has_own_yield(suite_node)
         elem_type = ""
         if is_generator:
-            # A nested generator is a closure returning its channel.
+            # A nested generator is a closure returning its handle.
             elem_type = self._generator_chan_elem(return_type, self._generator_elem_go_type(return_type_node))
-            return_type = f"chan {elem_type}"
+            return_type = generator_go_type(elem_type)
         ret_str = f" {return_type}" if return_type else ""
 
         # Register the closure name in the *outer* scope so the
@@ -206,21 +206,17 @@ class DefinitionVisitorMixin:
         if is_generator:
             self._nested_generator_elems[func_name] = elem_type
             self.indent += 1
-            self._emit(f"_ch := make(chan {elem_type})")
-            self._emit("go func() {")
-            self.indent += 1
-            self._emit("defer close(_ch)")
+            self._emit_generator_body_open(elem_type, suite_node)
             self.indent -= 1
             body_start, params_at_start = self._begin_scoped_body(params_node)
             with self._scoped(**{
                 **self._callable_boundary_context(),
-                "_in_generator": True, "_generator_chan": "_ch",
+                "_in_generator": True, "_generator_chan": GENERATOR_YIELD_NAME,
                 "_generator_elem_type": elem_type if elem_type != "interface{}" else "",
             }):
                 self._visit_suite(suite_node)
             self._finish_scoped_body(body_start, params_at_start)
-            self._emit("}()")
-            self._emit("return _ch")
+            self._emit("})")
             self.indent -= 1
         else:
             self._nested_generator_elems.pop(func_name, None)
@@ -473,28 +469,58 @@ class DefinitionVisitorMixin:
         self, go_name, type_clause, params_str, return_type,
         params_node, suite_node, elem_type: str = "",
     ):
-        """Emit a top-level or static generator as an unbuffered channel."""
+        """Emit a top-level or static generator: a function returning a
+        generator handle on its body (``GENERATOR_RUNTIME_GO``)."""
         chan_type = self._generator_chan_elem(return_type, elem_type)
-        self._emit(f"func {go_name}{type_clause}({params_str}) chan {chan_type} {{")
+        self._emit(f"func {go_name}{type_clause}({params_str}) {generator_go_type(chan_type)} {{")
         self.indent += 1
-        self._emit(f"_ch := make(chan {chan_type})")
-        self._emit("go func() {")
-        self.indent += 1
-        self._emit("defer close(_ch)")
+        self._emit_generator_body_open(chan_type, suite_node)
         self._push_scope()
         self._emit_params_prologue(params_node)
         body_start = len(self.output_lines)
         params_at_start = set(self.declared_vars)
-        with self._scoped(_in_generator=True, _generator_chan="_ch", _generator_elem_type=elem_type):
+        with self._scoped(_in_generator=True, _generator_chan=GENERATOR_YIELD_NAME, _generator_elem_type=elem_type):
             self._visit_suite(suite_node)
         self._emit_unused_local_silencers(body_start, params_at_start)
         self._pop_scope()
         self.indent -= 1
-        self._emit("}()")
-        self._emit("return _ch")
+        self._emit("})")
         self.indent -= 1
         self._emit("}")
         self._emit("")
+
+    def _emit_generator_body_open(self, elem_type: str, suite_node) -> None:
+        """``return lamNewGenerator[T](func(__lamYield func(T) bool) {``:
+        the generator handle on the body that follows (indented). A
+        ``catch`` around a ``yield`` could intercept an exception of a loop
+        body running the generator in place: such a generator always runs
+        apart (``lamNewIsolatedGenerator``)."""
+        ctor = "lamNewIsolatedGenerator" if self._generator_needs_isolation(suite_node) else "lamNewGenerator"
+        self._emit(f"return {ctor}[{elem_type}](func({GENERATOR_YIELD_NAME} func({elem_type}) bool) {{")
+        self.indent += 1
+
+    def _generator_needs_isolation(self, suite_node) -> bool:
+        """A ``yield`` inside a ``try`` with ``catch`` clauses, or with a
+        ``finally`` that returns or jumps (which cancels a propagating
+        exception), of this generator body."""
+        stack = [suite_node]
+        while stack:
+            node = stack.pop()
+            if not isinstance(node, Tree) or node.data in {"funcdef", "classdef", "lambdef"}:
+                continue
+            if node.data in {"try_stmt", "try_finally"} and self._suite_has_own_yield(node):
+                for child in node.children:
+                    if not isinstance(child, Tree):
+                        continue
+                    if child.data == "catch_clauses" and any(
+                        isinstance(c, Tree) and c.data == "catch_clause" for c in child.children
+                    ):
+                        return True
+                    if child.data == "finally" or (node.data == "try_finally" and child is not node.children[0]):
+                        if self._own_loop_jumps(child) or self._suite_has_own_return(child):
+                            return True
+            stack.extend(c for c in node.children if isinstance(c, Tree))
+        return False
 
     @staticmethod
     def _generator_chan_elem(return_type: str, elem_type: str) -> str:
@@ -510,34 +536,32 @@ class DefinitionVisitorMixin:
         self, go_method, return_type, params_node, suite_node,
         tp_clause: str = "", elem_type: str = "",
     ):
-        """An instance-method generator: the method returns an unbuffered
-        channel fed by a goroutine running the body with ``self`` bound to
-        the receiver (as ``_emit_generator_func`` for functions)."""
+        """An instance-method generator: the method returns a generator
+        handle on the body, with ``self`` bound to the receiver (as
+        ``_emit_generator_func`` for functions)."""
         cls = self.current_class
         go_cls = self._go_class_name(cls)
         class_args = self._class_type_args(cls)
         params_str = self._typed_params_to_go(params_node, skip_self=True)
         chan_type = self._generator_chan_elem(return_type, elem_type)
         recv = self._receiver_name_for(params_node, suite_node)
-        self._emit(f"func ({recv} *{go_cls}{class_args}) {go_method}{tp_clause}({params_str}) chan {chan_type} {{")
+        self._emit(
+            f"func ({recv} *{go_cls}{class_args}) {go_method}{tp_clause}({params_str}) {generator_go_type(chan_type)} {{"
+        )
         self.indent += 1
-        self._emit(f"_ch := make(chan {chan_type})")
-        self._emit("go func() {")
-        self.indent += 1
-        self._emit("defer close(_ch)")
+        self._emit_generator_body_open(chan_type, suite_node)
         self._push_scope()
         self._emit_params_prologue(params_node, skip_self=True)
         self._declare_var(recv)
         body_start = len(self.output_lines)
         params_at_start = set(self.declared_vars)
-        with self._scoped(_self_replacement=recv, _in_generator=True, _generator_chan="_ch",
+        with self._scoped(_self_replacement=recv, _in_generator=True, _generator_chan=GENERATOR_YIELD_NAME,
                           _generator_elem_type=elem_type):
             self._visit_suite(suite_node)
         self._emit_unused_local_silencers(body_start, params_at_start)
         self._pop_scope()
         self.indent -= 1
-        self._emit("}()")
-        self._emit("return _ch")
+        self._emit("})")
         self.indent -= 1
         self._emit("}")
         self._emit("")
@@ -563,14 +587,16 @@ class DefinitionVisitorMixin:
         self.indent += 1
         # An exception escaping the body is handed to ``await`` as a
         # thunk that re-raises it. ``select`` guards against a second
-        # publish (a deferred panic after the result was already sent).
-        # The failure is registered until an ``await`` runs the thunk, so an
-        # exception of a task never awaited is reported when ``main`` ends.
+        # publish (a deferred panic after the result was already sent):
+        # that exception is reported at once. The failure is registered
+        # until an ``await`` runs the thunk; one never awaited is reported
+        # when its handle is collected or when ``main`` ends.
         self._emit("defer func() {")
         self._emit("\tif r := recover(); r != nil {")
         self._emit("\t\t__lamTask := lamAsyncTaskFailed(r)")
         self._emit(
-            f"\t\tselect {{ case {async_ch} <- {thunk_type} {{ lamAsyncTaskRetrieved(__lamTask); panic(r) }}: default: }}"
+            f"\t\tselect {{ case {async_ch} <- {thunk_type} {{ lamAsyncTaskRetrieved(__lamTask); panic(r) }}: "
+            "default: lamAsyncTaskUnpublished(__lamTask) }"
         )
         self._emit("\t}")
         self._emit("}()")

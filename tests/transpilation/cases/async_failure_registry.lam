@@ -1,0 +1,19 @@
+# Transpilation: a failed async task registers its exception until an
+# `await` retrieves it; the registry entry is reported when the handle is
+# collected (`runtime.AddCleanup`) or at the end of `main`, and an exception
+# raised after the result was published is reported at once, never kept.
+# expect-go: default: lamAsyncTaskUnpublished(__lamTask) }
+# expect-go: defer lamAsyncReportUnretrieved()
+# expect-go: f.cleanup = runtime.AddCleanup(f, lamAsyncReportFailure, f.id)
+# expect-go: if r, ok := lamAsyncFailures.LoadAndDelete(id); ok {
+
+async func load(id: int) -> str {
+    if id < 0 {
+        raise ValueError("bad")
+    }
+    return "ok"
+}
+
+func main() {
+    print(await load(1))
+}

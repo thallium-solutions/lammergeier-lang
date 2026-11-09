@@ -1,0 +1,40 @@
+# Generators — a million ints pulled one at a time from a `yield` loop by
+# a `for` loop, a comprehension and a generator stored in a variable (the
+# generator protocol's per-value cost: resume the body, hand the value
+# over, stop at the end).
+#
+# ops: 1000000
+
+from lamtime import Time
+
+func numbers(n: int) -> generator[int] {
+    i: int = 0
+    while i < n {
+        yield i
+        i += 1
+    }
+}
+
+func work() {
+    total: int = 0
+    for x in numbers(400000) {
+        total += x
+    }
+    evens: list[int] = [x for x in numbers(300000) if x % 2 == 0]
+    total += len(evens)
+    g: generator[int] = numbers(300000)
+    for x in g {
+        total += x
+    }
+    if total != 124999800000 {
+        print(f"unexpected {total}")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH generator 1000000 {elapsed}")
+}

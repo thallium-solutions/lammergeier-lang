@@ -1,0 +1,42 @@
+# expect-pass
+# A `with` whose block returns (or raises) ends the function: the
+# resource is closed on the way out, so no return is missing after it.
+
+from lamerrors import Result
+
+class Res {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func close(self) {
+        pass
+    }
+}
+
+func label(name: str) -> str {
+    with Res(name) as r {
+        return r.name
+    }
+}
+
+func checked(name: str) -> Result[str] {
+    with Res(name) as r {
+        if r.name == "" {
+            return Result.Err("empty")
+        }
+        return Result.Ok(r.name)
+    }
+}
+
+func failing() -> int {
+    with Res("x") as r {
+        _ = r
+        raise ValueError("no value")
+    }
+}
+
+func main() {
+    print(label("a"), checked("b").unwrap())
+    _ = failing
+}

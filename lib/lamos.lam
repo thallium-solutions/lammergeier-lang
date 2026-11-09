@@ -530,6 +530,20 @@ class Os {
         }
     }
 
+    static func modTime(path: str) -> Result[int] {
+        #- Last modification time of ``path`` in Unix nanoseconds (symbolic
+        links followed). -#
+        go! {
+            info, err := os.Stat(path)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
+                    "IOError", fmt.Sprintf("modTime %q: %v", path, err), nil,
+                ))
+            }
+            return LAMMERGEIER.Result.Ok(int(info.ModTime().UnixNano()))
+        }
+    }
+
     static func copyFile(src: str, dst: str) -> Result[any] {
         go! {
             data, err := os.ReadFile(src)

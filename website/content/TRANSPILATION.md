@@ -2046,12 +2046,77 @@ User-facing examples and a good/bad cheatsheet live in
 | `del xs[i]` (list)    | `xs = func(s []T, i int) []T { if i < 0 { i += len(s) }; _ = s[i]; return append(append(make([]T, 0, len(s)-1), s[:i]...), s[i+1:]...) }(xs, i)` (the bounds check raises `IndexError`; the kept items go to a new slice, so a view such as `ys = xs[:]` is not shifted) |
 | `del xs[a:b]` / `del xs[a:b:k]` | a closure clamping the bounds like Python and copying the kept items to a new slice (a step marks the removed positions) |
 | `pass`                | emits nothing; the empty block is legal Go                                 |
-| `with f as x: body`   | Go defer pattern (`defer x.Close()`) + inline body                         |
-| `yield expr`          | `chan <- expr`; generators compile to a goroutine + channel pair           |
+| `with f as x: body`   | `try { body } finally { x.close() }`: an IIFE opening `x` then `defer x.Close()`, see [With](#with) |
+| `yield expr`          | `if !__lamYield(expr) { return }`; generators compile to a generator handle on their body, see [Generators](#generators) |
+
+### With
+
+`with a as x, b { body }` is lowered like `try { body } finally { ... }`
+(`_emit_try`): the block runs in an IIFE that opens each resource in order,
+each followed by the `defer` closing it, so the resources close when the
+block ends — in reverse order, before the code after it, once per loop
+iteration — and not when the enclosing function returns (Go's `defer`
+scope, which a bare `{ x := a; defer x.Close() ... }` block had). `return`,
+`break` / `continue` of an enclosing loop and `?` inside the block use the
+try lowering's plumbing (`__lamShouldReturn`, the named `retval` results, a
+`__lamJumpN` flag performed after the IIFE); an exception unwinds through
+the defers. An item without `as` is bound to `__lamWithN`.
+
+```go
+// with Res(name) as r, Res("b") { return r.name }
+__lamShouldReturn := false
+func() {
+    r := NewRes(name)
+    defer r.Close()
+    __lamWith1 := NewRes("b")
+    defer __lamWith1.Close()
+    retval = r.Name
+    __lamShouldReturn = true
+    return
+}()
+if __lamShouldReturn { return }
+```
+
+A user `defer` statement keeps Go's function scope.
+
+### Generators
+
+A generator function returns a generator handle, `*lamGenerator[T]`, on its
+body lowered to a range-over-func body `func(__lamYield func(T) bool)`.
+`yield v` is `if !__lamYield(v) { return }` (through the `try` / `with`
+IIFE plumbing when inside one): when the consumer has stopped, the body
+returns from the `yield` it is suspended at, running its `finally` defers
+and `with` closes on the way out (Python's `GeneratorExit`). The runtime
+(`lamGenerator`, `lamNewGenerator`, `lamNewIsolatedGenerator`; generic, in
+`compiler/constants.py`) is emitted once, in the main file, when a module of
+the program uses a generator.
+
+- `for x in gen()` / `[f(x) for x in gen()]` (a generator call: the loop
+  owns it) ranges over `gen().Consume`: a generator not started yet runs its
+  body in place, in the loop's goroutine — a `yield` is a function call, a
+  `break` / `return` / `?` / exception of the loop body ends the body at its
+  `yield`, and an exception of the body propagates to the loop unchanged.
+- `for x in g` with `g` a generator value (variable, field, parameter)
+  ranges over `g.Resume`: values come from `Next`, which starts the body on
+  a coroutine (`iter.Pull`) the first time and leaves it suspended when the
+  loop is left, so the next loop over `g` continues. The coroutine ends when
+  the body is exhausted, raises (the exception is re-raised in the
+  consumer), is stopped, or — for a handle dropped before that — when the
+  handle is collected (`runtime.AddCleanup` stopping it). `Next` holds a
+  mutex, so concurrent consumers share the values.
+- A generator with a `catch` around a `yield` (or a `finally` that returns
+  or jumps, cancelling an exception) is created with
+  `lamNewIsolatedGenerator`: it always runs on its coroutine, so an
+  exception of a consumer's loop body cannot reach that `catch`.
+- `yield from src` lowers to the loop `for v in src { yield v }`.
+
+Nothing runs before the first value is asked for and no goroutine exists
+for a generator that is never iterated or that a loop owns; a generator held
+in a value has a coroutine only while it is suspended.
 
 Top-level, instance, and static generator functions share this lowering.
 Generic static generators preserve their type parameter and return a typed
-channel:
+handle:
 
 ```lammergeier
 class Streams {
@@ -2063,15 +2128,16 @@ class Streams {
 for value in Streams.values([3, 1, 2]) { print(value) }
 ```
 
-The generated signature is `func Streams_values[T any]([]T) chan T`, and the
-loop becomes `for value := range Streams_values([]int{3, 1, 2})`. The type
-`generator[T]` (and its other name `iterator[T]`) lowers to `chan T` (`-> generator[Circle]` returns a
-`chan *Circle`, a `g: generator[int]` parameter is a `chan int`), and a
-generator nested in a function is a closure returning its channel
-(`inner := func() chan *Circle { _ch := make(chan *Circle); go func() { ...
-}(); return _ch }`). An
-instance-method generator is a method returning the channel, with the body's
-goroutine using the receiver as `self`. The loop variable takes the
+The generated signature is `func Streams_values[T any]([]T) *lamGenerator[T]`
+(its body `return lamNewGenerator[T](func(__lamYield func(T) bool) { ... })`),
+and the loop becomes `for value := range Streams_values([]int{3, 1, 2}).Consume`.
+The type `generator[T]` (and its other name `iterator[T]`) lowers to
+`*lamGenerator[T]` (`-> generator[Circle]` returns a `*lamGenerator[*Circle]`,
+a `g: generator[int]` parameter is a `*lamGenerator[int]`), and a generator
+nested in a function is a closure returning its handle
+(`inner := func() *lamGenerator[*Circle] { return lamNewGenerator[*Circle](func(__lamYield func(*Circle) bool) { ... }) }`).
+An instance-method generator is a method returning the handle, with the
+body using the receiver as `self`. The loop variable takes the
 generator's element type for the rest of the lowering: its Go type (a class
 pointer keeps method calls typed) and, for `Result[T]`, the payload `T`, so
 `batch.unwrap()` asserts `[][]string` for `Csv.batches`. Imported
@@ -2110,7 +2176,7 @@ func Double(n int) chan func() int {
         defer func() {
             if r := recover(); r != nil {
                 __lamTask := lamAsyncTaskFailed(r)
-                select { case __lam_async_ch <- func() int { lamAsyncTaskRetrieved(__lamTask); panic(r) }: default: }
+                select { case __lam_async_ch <- func() int { lamAsyncTaskRetrieved(__lamTask); panic(r) }: default: lamAsyncTaskUnpublished(__lamTask) }
             }
         }()
         {
@@ -2124,12 +2190,19 @@ func Double(n int) chan func() int {
 
 var x int = (<-Double(21))()
 ```
-- A recovered exception is registered (`lamAsyncTaskFailed`, a `sync.Map`
-  keyed by a fresh token) until the thunk runs at an `await`
-  (`lamAsyncTaskRetrieved`). When some module of the program has an async
-  callable, the main file defines the registry and `main` starts with
-  `defer lamAsyncReportUnretrieved()`, which prints every exception left in it
-  to stderr (`Task exception was never retrieved: ...`) when `main` returns.
+- A recovered exception is registered (`lamAsyncTaskFailed`: a `sync.Map`
+  keyed by a fresh id, and a `*lamAsyncFailure` the thunk holds) until the
+  thunk runs at an `await` (`lamAsyncTaskRetrieved`). When the thunk — so the
+  handle — becomes unreachable first, a `runtime.AddCleanup` on the
+  `lamAsyncFailure` prints the exception to stderr (`Task exception was never
+  retrieved: ...`) and removes it, so a long-running program reports (and
+  forgets) fire-and-forget failures as it goes. An exception raised after the
+  result was published (the `default:` branch: the one-slot handle is full)
+  is reported at once (`lamAsyncTaskUnpublished`), never registered. When
+  some module of the program has an async callable, the main file defines
+  the registry and `main` starts with `defer lamAsyncReportUnretrieved()`,
+  which reports the failures still registered when `main` returns (exactly
+  once each: `LoadAndDelete`).
 - `await` on an operand typed `interface{}` (an element of a `list[any]`) is
   a Lam error (semantic checker, and transpiler for imported modules).
 - User-facing channel operations belong in `lamconcurrency.Channel`; actor queues

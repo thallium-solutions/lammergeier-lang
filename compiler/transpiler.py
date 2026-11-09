@@ -20,7 +20,11 @@ from contextlib import contextmanager
 
 from compiler.constants import (
     COMPILER_GO_PACKAGES, DUNDER_OPS, GO_BINDING_KEYWORDS, STMT_NODES, PYTHON_EXCEPTIONS,
+    GENERATOR_RUNTIME_GO,
 )
+
+# Generated Go using the generator runtime (``GENERATOR_RUNTIME_GO``).
+_GENERATOR_USE_RE = re.compile(r"\blam(?:New(?:Isolated)?)?Generator\[")
 
 # Names ``_go_binding_name`` gives a ``__lam`` suffix (besides ``__lam*`` /
 # ``__q*`` temps).
@@ -205,24 +209,50 @@ class GoTranspiler(
     """Walk a Lark tree and produce Go source code."""
 
     # Exceptions of async tasks that nobody awaited are printed to stderr
-    # when ``main`` returns (like Python's "Task exception was never
-    # retrieved"); an ``await`` that re-raises the exception retrieves it.
+    # (like Python's "Task exception was never retrieved"): when the task's
+    # handle is collected without an ``await`` retrieving the exception
+    # (``runtime.AddCleanup`` on the failure the handle's thunk holds), or
+    # for the failures still pending when ``main`` returns. An exception
+    # raised after the task published its result (nothing can retrieve it)
+    # is reported at once. An ``await`` re-raising the exception retrieves
+    # it. The registry only holds failures whose handle is still reachable.
     _ASYNC_RUNTIME_GO = """
 var lamAsyncFailures sync.Map
+var lamAsyncFailureIDs atomic.Uint64
 
-func lamAsyncTaskFailed(r interface{}) *int {
-\ttoken := new(int)
-\tlamAsyncFailures.Store(token, r)
-\treturn token
+type lamAsyncFailure struct {
+\tid      uint64
+\tcleanup runtime.Cleanup
 }
 
-func lamAsyncTaskRetrieved(token *int) {
-\tlamAsyncFailures.Delete(token)
+func lamAsyncTaskFailed(r interface{}) *lamAsyncFailure {
+\tf := &lamAsyncFailure{id: lamAsyncFailureIDs.Add(1)}
+\tlamAsyncFailures.Store(f.id, r)
+\tf.cleanup = runtime.AddCleanup(f, lamAsyncReportFailure, f.id)
+\treturn f
+}
+
+func lamAsyncTaskRetrieved(f *lamAsyncFailure) {
+\tf.cleanup.Stop()
+\tlamAsyncFailures.Delete(f.id)
+}
+
+// lamAsyncTaskUnpublished reports a failure no handle can carry (the task
+// already published its result).
+func lamAsyncTaskUnpublished(f *lamAsyncFailure) {
+\tf.cleanup.Stop()
+\tlamAsyncReportFailure(f.id)
+}
+
+func lamAsyncReportFailure(id uint64) {
+\tif r, ok := lamAsyncFailures.LoadAndDelete(id); ok {
+\t\tfmt.Fprintf(os.Stderr, "Task exception was never retrieved: %v\\n", r)
+\t}
 }
 
 func lamAsyncReportUnretrieved() {
-\tlamAsyncFailures.Range(func(_, r interface{}) bool {
-\t\tfmt.Fprintf(os.Stderr, "Task exception was never retrieved: %v\\n", r)
+\tlamAsyncFailures.Range(func(id, _ interface{}) bool {
+\t\tlamAsyncReportFailure(id.(uint64))
 \t\treturn true
 \t})
 }
@@ -331,6 +361,8 @@ func lamAsyncReportUnretrieved() {
         # of the program has an async callable: the file defines the task
         # failure registry and ``main`` reports unretrieved exceptions.
         self._emit_async_runtime: bool = False
+        # A library of the program uses generators (``GENERATOR_RUNTIME_GO``).
+        self._lib_uses_generators: bool = False
         self._class_member_level: bool = False
         self._do_q_target: str = ""
         self._comp_q_return: str = ""
@@ -767,7 +799,16 @@ func lamAsyncReportUnretrieved() {
         self._emit_top_level(tree)
         if self._emit_async_runtime:
             body_lines.extend(self._ASYNC_RUNTIME_GO.splitlines())
-            for pkg in ("fmt", "os", "sync"):
+            for pkg in ("fmt", "os", "runtime", "sync", "sync/atomic"):
+                self._need_import(pkg)
+        # Some module uses a generator: the main file (not a library, whose
+        # Go joins the same package) defines the generator runtime.
+        if not self._omit_main and (
+            self._lib_uses_generators
+            or any(_GENERATOR_USE_RE.search(line) for line in body_lines)
+        ):
+            body_lines.extend(GENERATOR_RUNTIME_GO.splitlines())
+            for pkg in ("fmt", "iter", "os", "runtime", "sync"):
                 self._need_import(pkg)
 
         self.output_lines = old_lines

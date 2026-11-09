@@ -346,7 +346,8 @@ def _type_to_go(
         if type_.base == "chan":
             return f"chan {args[0]}" if args else "chan interface{}"
         if type_.base in {"generator", "iterator", "Generator", "Iterator"}:
-            return f"chan {args[0]}" if len(args) == 1 else "chan interface{}"
+            from compiler.constants import generator_go_type
+            return generator_go_type(args[0] if len(args) == 1 else "")
         if type_.base == "Result" and len(args) <= 1:
             return "*Result"
         if type_.base in generic_classes:
@@ -418,7 +419,7 @@ def _generic_type(base: str, args: Sequence[Type]) -> Type:
         value = args[1] if len(args) >= 2 else NamedType("any")
         return DictType(key, value)
     if base == "iterator" and len(args) == 1:
-        # ``iterator[T]`` is another name of ``generator[T]`` (a ``chan T``).
+        # ``iterator[T]`` is another name of ``generator[T]``.
         base = "generator"
     return GenericType(base, tuple(args))
 

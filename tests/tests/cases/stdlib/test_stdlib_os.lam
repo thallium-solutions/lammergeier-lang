@@ -18,7 +18,9 @@
 # expect: PASS 17 missing lines is error
 # expect: PASS 18 empty environment value is success
 # expect: PASS 19 unset environment value is error
-# expect: 19 passed, 0 failed, 19 total
+# expect: PASS 20 modTime in Unix nanoseconds
+# expect: PASS 21 modTime of a missing file is error
+# expect: 21 passed, 0 failed, 21 total
 
 from lamos import Os
 from lamtest import Test
@@ -26,7 +28,10 @@ from lampath import Path
 from lamerrors import Result
 
 go! {
-    import "os"
+    import (
+        "os"
+        "time"
+    )
 }
 
 func resultStr(r: Result) -> str {
@@ -120,6 +125,11 @@ func main() {
     go! { os.Unsetenv("LAM_TEST_EMPTY_RESULT_VALUE") }
     missingEnv: Result[str] = Os.getenv("LAM_TEST_EMPTY_RESULT_VALUE")
     Test.assertFalse(missingEnv.ok(), "19 unset environment value is error")
+
+    stamp: int = 1700000000123456789
+    go! { os.Chtimes(tmp, time.Unix(0, int64(stamp)), time.Unix(0, int64(stamp))) }
+    Test.assertEqual(Os.modTime(tmp).unwrapOr(0), stamp, "20 modTime in Unix nanoseconds")
+    Test.assertFalse(Os.modTime(tmp + ".missing").ok(), "21 modTime of a missing file is error")
 
     # cleanup
     Os.remove(tmp).unwrap()
