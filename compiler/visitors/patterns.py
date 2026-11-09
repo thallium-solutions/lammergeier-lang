@@ -951,7 +951,7 @@ class PatternMatchMixin:
                 self.indent += 1
                 self._push_scope()
                 body_start, vars_at_start = self._scope_unused_tracking_start()
-                self._visit_suite(suite)
+                self._visit_case_suite(suite)
                 self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
                 self.indent -= 1
             self._emit("}")
@@ -1007,7 +1007,7 @@ class PatternMatchMixin:
                 self._emit(stmt)
             saved = self._pm_register_bindings(bind_binds)
             try:
-                self._visit_suite(suite)
+                self._visit_case_suite(suite)
                 self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             finally:
                 self._pm_restore_bindings(saved)

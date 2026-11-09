@@ -24,7 +24,7 @@ from compiler.constants import (
 )
 
 # Generated Go using the generator runtime (``GENERATOR_RUNTIME_GO``).
-_GENERATOR_USE_RE = re.compile(r"\blam(?:New(?:Isolated)?)?Generator\[")
+_GENERATOR_USE_RE = re.compile(r"\blam(?:New(?:Isolated|State)?)?Generator\[")
 
 # Names ``_go_binding_name`` gives a ``__lam`` suffix (besides ``__lam*`` /
 # ``__q*`` temps).
@@ -43,6 +43,7 @@ from compiler.visitors.patterns import PatternMatchMixin
 from compiler.visitors.subtyping import SubtypingMixin
 from compiler.visitors.generics import GenericCallMixin
 from compiler.visitors.narrowing import NarrowingLowerMixin
+from compiler.visitors.generators import GeneratorStateMachineMixin
 
 
 # Names of scoped context attributes kept on GoTranspiler. The `_scoped`
@@ -125,6 +126,17 @@ SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     "_loop_jump",
     "_in_generator",
     "_generator_chan",
+    # The state machine a generator body is lowered to
+    # (``compiler/visitors/generators.py``), ``None`` elsewhere; inside it,
+    # ``_sm_leaf_loop`` is set in a Go loop of the body (its ``break`` /
+    # ``continue`` are Go's), ``_sm_q_target`` in a ``do`` body holding a
+    # ``yield`` (a failing ``?`` runs its handler), ``_sm_case_k`` while a
+    # ``match`` holding a ``yield`` is lowered (its case bodies continue with
+    # that continuation).
+    "_sm",
+    "_sm_leaf_loop",
+    "_sm_q_target",
+    "_sm_case_k",
     "_propagate_cast_hint",
     "_expected_expr_go_type",
     "_expected_expr_type_key",
@@ -202,6 +214,7 @@ class GoTranspiler(
     SubtypingMixin,
     GenericCallMixin,
     NarrowingLowerMixin,
+    GeneratorStateMachineMixin,
     StatementVisitorMixin,
     ExpressionVisitorMixin,
     DefinitionVisitorMixin,
@@ -452,6 +465,10 @@ func lamAsyncReportUnretrieved() {
         # Generator state
         self._in_generator = False
         self._generator_chan = None
+        self._sm = None
+        self._sm_leaf_loop = False
+        self._sm_q_target = False
+        self._sm_case_k = None
 
         # Known interface / class names
         self._interfaces: set = set()

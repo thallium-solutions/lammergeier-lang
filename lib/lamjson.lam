@@ -15,6 +15,18 @@
 # tells a member set to null from a missing one, ``Json.at(doc, ["user",
 # "tags", 0])`` follows a path, and ``Json.mapKeys(doc, Strings.camelCase)``
 # renames object keys.
+#
+# Like Python objects, json values are shared, not copied: a json value put
+# into a json literal (``{"user": user}``), returned by ``__json__`` and
+# converted with ``json(x)``, or assigned to a member (``doc.user = user``)
+# is the same value in both places, so nesting json values costs nothing
+# per level; ``Json.copy(doc)`` makes an independent copy. Lam collections
+# (``dict``, ``list``) are converted, which copies them.
+#
+# ``Json.encode``, ``str(doc)``, f-strings and the Go marshaler write the
+# encoding/json bytes (sorted keys, ``<`` ``>`` ``&`` escaped as
+# ``\u003c``...) directly into one pooled buffer; values encoding/json would
+# treat specially go through it unchanged.
 
 from lamerrors import Result, Error
 
@@ -26,9 +38,12 @@ go! {
         "io"
         "math"
         "reflect"
+        "slices"
         "sort"
         "strconv"
         "strings"
+        "unicode/utf8"
+        "unsafe"
     )
 
     type LamJSON struct {
@@ -51,19 +66,67 @@ go! {
         return value
     }
 
+    // lamJSONNormalize converts a Lam value to the tree a ``json`` value
+    // holds: nil, bool, string, integers, finite floats,
+    // ``map[string]interface{}`` and ``[]interface{}`` (never nil, never
+    // a ``json.Number``). Lam containers are converted (copied); a
+    // ``json`` value, also the result of a ``__json__`` method, already
+    // holds such a tree and is shared, not copied again, so nesting json
+    // values costs nothing per level.
     func lamJSONNormalize(value interface{}, depth int) (interface{}, error) {
         if depth > 256 {
             return nil, fmt.Errorf("json nesting exceeds 256 levels or contains a cycle")
         }
-        value = lamDynamicValue(value)
+        // The shapes the compiler emits first, without reflection.
         switch v := value.(type) {
+        case nil, bool, string, int, int64:
+            return v, nil
         case LamJSON:
-            return lamJSONNormalize(v.value, depth+1)
+            return v.value, nil
         case *LamJSON:
             if v == nil { return nil, nil }
-            return lamJSONNormalize(v.value, depth+1)
+            return v.value, nil
+        case map[string]interface{}:
+            out := make(map[string]interface{}, len(v))
+            for key, item := range v {
+                normalized, err := lamJSONNormalize(item, depth+1)
+                if err != nil { return nil, err }
+                out[key] = normalized
+            }
+            return out, nil
+        case []interface{}:
+            out := make([]interface{}, len(v))
+            for i, item := range v {
+                normalized, err := lamJSONNormalize(item, depth+1)
+                if err != nil { return nil, err }
+                out[i] = normalized
+            }
+            return out, nil
+        case []LamJSON:
+            out := make([]interface{}, len(v))
+            for i, item := range v { out[i] = item.value }
+            return out, nil
+        case []string:
+            out := make([]interface{}, len(v))
+            for i, item := range v { out[i] = item }
+            return out, nil
+        case []int:
+            out := make([]interface{}, len(v))
+            for i, item := range v { out[i] = item }
+            return out, nil
+        case map[string]LamJSON:
+            out := make(map[string]interface{}, len(v))
+            for key, item := range v { out[key] = item.value }
+            return out, nil
+        case map[string]string:
+            out := make(map[string]interface{}, len(v))
+            for key, item := range v { out[key] = item }
+            return out, nil
+        }
+        value = lamDynamicValue(value)
+        switch v := value.(type) {
         case lamJSONMarshaler:
-            return lamJSONNormalize(v.LamJSON(), depth+1)
+            return v.LamJSON().value, nil
         case nil, bool, string,
              int, int8, int16, int32, int64,
              uint, uint8, uint16, uint32, uint64:
@@ -120,10 +183,612 @@ go! {
         return LamJSON{value: normalized}, nil
     }
 
+    // lamValueText is ``str(v)`` / an f-string slot of an html, xml or json
+    // value: the value's own text (rendered or encoded once), not copied
+    // again through fmt. A string is itself; anything else (the compiler
+    // expected one of those types but holds an ``interface{}``) is fmt's
+    // ``%v``, as before.
+    type lamTexter interface{ lamText() string }
+
+    func (value LamJSON) lamText() string { return value.String() }
+
+    func lamValueText(v interface{}) string {
+        switch x := v.(type) {
+        case string:
+            return x
+        case lamTexter:
+            return x.lamText()
+        }
+        return fmt.Sprintf("%v", v)
+    }
+
     func lamJSONMust(value interface{}) LamJSON {
         result, err := lamJSONFrom(value)
         if err != nil { panic(fmt.Sprintf("json value error: %v", err)) }
         return result
+    }
+
+    // lamJSONLiteral is ``lamJSONMust`` for a json literal (``{...}``,
+    // ``[...]``, a comprehension): its outer object or array was just
+    // built by the generated code and is referenced nowhere else, so its
+    // members are normalized in place instead of into a copy.
+    func lamJSONLiteral(value interface{}) LamJSON {
+        switch v := value.(type) {
+        case map[string]interface{}:
+            for key, item := range v {
+                normalized, err := lamJSONNormalize(item, 1)
+                if err != nil { panic(fmt.Sprintf("json value error: %v", err)) }
+                v[key] = normalized
+            }
+            return LamJSON{value: v}
+        case []interface{}:
+            for i, item := range v {
+                normalized, err := lamJSONNormalize(item, 1)
+                if err != nil { panic(fmt.Sprintf("json value error: %v", err)) }
+                v[i] = normalized
+            }
+            return LamJSON{value: v}
+        }
+        return lamJSONMust(value)
+    }
+
+    // ── Encoding ──────────────────────────────────────────────────────
+    //
+    // lamJSONMarshal(value) is ``json.Marshal(value)``, byte for byte and
+    // error for error, without its reflection and intermediate buffers:
+    // the shapes json values and Lam collections have (objects with
+    // sorted keys, arrays, strings with the same escaping, HTML-sensitive
+    // ``<`` ``>`` ``&`` included, numbers formatted as encoding/json does)
+    // are measured (lamJSONSize), then written into one allocation of that
+    // size, which is the result; anything else (structs, []byte,
+    // json.Number, values nested deeper than 128 levels, a non-finite
+    // float) makes the whole value go through encoding/json instead, so
+    // the result and the error never differ.
+
+    // Bytes encoding/json writes as they are inside a string (HTML escaping on).
+    var lamJSONSafe = func() (safe [utf8.RuneSelf]bool) {
+        for c := 0x20; c < utf8.RuneSelf; c++ {
+            safe[c] = c != '"' && c != '\\' && c != '<' && c != '>' && c != '&'
+        }
+        return
+    }()
+
+    const lamJSONHex = "0123456789abcdef"
+
+    // lamJSONAppendString is encoding/json's appendString with escapeHTML.
+    func lamJSONAppendString(dst []byte, src string) []byte {
+        dst = append(dst, '"')
+        start := 0
+        for i := 0; i < len(src); {
+            if b := src[i]; b < utf8.RuneSelf {
+                if lamJSONSafe[b] {
+                    i++
+                    continue
+                }
+                dst = append(dst, src[start:i]...)
+                switch b {
+                case '\\', '"':
+                    dst = append(dst, '\\', b)
+                case '\b':
+                    dst = append(dst, '\\', 'b')
+                case '\f':
+                    dst = append(dst, '\\', 'f')
+                case '\n':
+                    dst = append(dst, '\\', 'n')
+                case '\r':
+                    dst = append(dst, '\\', 'r')
+                case '\t':
+                    dst = append(dst, '\\', 't')
+                default:
+                    dst = append(dst, '\\', 'u', '0', '0', lamJSONHex[b>>4], lamJSONHex[b&0xF])
+                }
+                i++
+                start = i
+                continue
+            }
+            c, size := utf8.DecodeRuneInString(src[i:])
+            if c == utf8.RuneError && size == 1 {
+                dst = append(dst, src[start:i]...)
+                dst = append(dst, `\ufffd`...)
+                i += size
+                start = i
+                continue
+            }
+            if c == '\u2028' || c == '\u2029' {
+                dst = append(dst, src[start:i]...)
+                dst = append(dst, '\\', 'u', '2', '0', '2', lamJSONHex[c&0xF])
+                i += size
+                start = i
+                continue
+            }
+            i += size
+        }
+        dst = append(dst, src[start:]...)
+        return append(dst, '"')
+    }
+
+    // lamJSONAppendFloat is encoding/json's float encoder (finite values).
+    func lamJSONAppendFloat(b []byte, f float64, bits int) []byte {
+        abs := math.Abs(f)
+        format := byte('f')
+        if abs != 0 {
+            if bits == 64 && (abs < 1e-6 || abs >= 1e21) || bits == 32 && (float32(abs) < 1e-6 || float32(abs) >= 1e21) {
+                format = 'e'
+            }
+        }
+        b = strconv.AppendFloat(b, f, format, -1, bits)
+        if format == 'e' {
+            n := len(b)
+            if n >= 4 && b[n-4] == 'e' && b[n-3] == '-' && b[n-2] == '0' {
+                b[n-2] = b[n-1]
+                b = b[:n-1]
+            }
+        }
+        return b
+    }
+
+    // lamJSONSortKeys sorts object keys as encoding/json does (bytewise).
+    func lamJSONSortKeys(keys []string) {
+        if len(keys) > 24 {
+            slices.Sort(keys)
+            return
+        }
+        for i := 1; i < len(keys); i++ {
+            for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
+                keys[j], keys[j-1] = keys[j-1], keys[j]
+            }
+        }
+    }
+
+    // lamJSONAppendKey writes ``"key":``.
+    func lamJSONAppendKey(b []byte, key string, first bool) []byte {
+        if !first {
+            b = append(b, ',')
+        }
+        b = lamJSONAppendString(b, key)
+        return append(b, ':')
+    }
+
+    // lamJSONAppend writes ``value`` as json.Marshal would; false when it
+    // cannot (the caller then uses encoding/json for the whole value).
+    func lamJSONAppend(b []byte, value interface{}, depth int) ([]byte, bool) {
+        if depth > 128 {
+            return b, false
+        }
+        switch v := value.(type) {
+        case nil:
+            return append(b, "null"...), true
+        case string:
+            return lamJSONAppendString(b, v), true
+        case bool:
+            if v {
+                return append(b, "true"...), true
+            }
+            return append(b, "false"...), true
+        case int:
+            return strconv.AppendInt(b, int64(v), 10), true
+        case int64:
+            return strconv.AppendInt(b, v, 10), true
+        case int8:
+            return strconv.AppendInt(b, int64(v), 10), true
+        case int16:
+            return strconv.AppendInt(b, int64(v), 10), true
+        case int32:
+            return strconv.AppendInt(b, int64(v), 10), true
+        case uint:
+            return strconv.AppendUint(b, uint64(v), 10), true
+        case uint8:
+            return strconv.AppendUint(b, uint64(v), 10), true
+        case uint16:
+            return strconv.AppendUint(b, uint64(v), 10), true
+        case uint32:
+            return strconv.AppendUint(b, uint64(v), 10), true
+        case uint64:
+            return strconv.AppendUint(b, v, 10), true
+        case float64:
+            if math.IsNaN(v) || math.IsInf(v, 0) {
+                return b, false
+            }
+            return lamJSONAppendFloat(b, v, 64), true
+        case float32:
+            if f := float64(v); math.IsNaN(f) || math.IsInf(f, 0) {
+                return b, false
+            }
+            return lamJSONAppendFloat(b, float64(v), 32), true
+        case LamJSON:
+            return lamJSONAppend(b, v.value, depth+1)
+        case *LamJSON:
+            if v == nil {
+                return append(b, "null"...), true
+            }
+            return lamJSONAppend(b, v.value, depth+1)
+        case map[string]interface{}:
+            if v == nil {
+                return append(b, "null"...), true
+            }
+            var stack [24]string
+            keys := stack[:0]
+            if len(v) > len(stack) {
+                keys = make([]string, 0, len(v))
+            }
+            for key := range v {
+                keys = append(keys, key)
+            }
+            lamJSONSortKeys(keys)
+            b = append(b, '{')
+            ok := true
+            for i, key := range keys {
+                b = lamJSONAppendKey(b, key, i == 0)
+                if b, ok = lamJSONAppend(b, v[key], depth+1); !ok {
+                    return b, false
+                }
+            }
+            return append(b, '}'), true
+        case []interface{}:
+            if v == nil {
+                return append(b, "null"...), true
+            }
+            b = append(b, '[')
+            ok := true
+            for i, item := range v {
+                if i > 0 {
+                    b = append(b, ',')
+                }
+                if b, ok = lamJSONAppend(b, item, depth+1); !ok {
+                    return b, false
+                }
+            }
+            return append(b, ']'), true
+        case []LamJSON:
+            if v == nil {
+                return append(b, "null"...), true
+            }
+            b = append(b, '[')
+            ok := true
+            for i, item := range v {
+                if i > 0 {
+                    b = append(b, ',')
+                }
+                if b, ok = lamJSONAppend(b, item.value, depth+1); !ok {
+                    return b, false
+                }
+            }
+            return append(b, ']'), true
+        case []string:
+            if v == nil {
+                return append(b, "null"...), true
+            }
+            b = append(b, '[')
+            for i, item := range v {
+                if i > 0 {
+                    b = append(b, ',')
+                }
+                b = lamJSONAppendString(b, item)
+            }
+            return append(b, ']'), true
+        case []int:
+            if v == nil {
+                return append(b, "null"...), true
+            }
+            b = append(b, '[')
+            for i, item := range v {
+                if i > 0 {
+                    b = append(b, ',')
+                }
+                b = strconv.AppendInt(b, int64(item), 10)
+            }
+            return append(b, ']'), true
+        case []map[string]interface{}:
+            if v == nil {
+                return append(b, "null"...), true
+            }
+            b = append(b, '[')
+            ok := true
+            for i, item := range v {
+                if i > 0 {
+                    b = append(b, ',')
+                }
+                if b, ok = lamJSONAppend(b, item, depth+1); !ok {
+                    return b, false
+                }
+            }
+            return append(b, ']'), true
+        case map[string]string:
+            if v == nil {
+                return append(b, "null"...), true
+            }
+            var stack [24]string
+            keys := stack[:0]
+            if len(v) > len(stack) {
+                keys = make([]string, 0, len(v))
+            }
+            for key := range v {
+                keys = append(keys, key)
+            }
+            lamJSONSortKeys(keys)
+            b = append(b, '{')
+            for i, key := range keys {
+                b = lamJSONAppendKey(b, key, i == 0)
+                b = lamJSONAppendString(b, v[key])
+            }
+            return append(b, '}'), true
+        case map[string]LamJSON:
+            if v == nil {
+                return append(b, "null"...), true
+            }
+            var stack [24]string
+            keys := stack[:0]
+            if len(v) > len(stack) {
+                keys = make([]string, 0, len(v))
+            }
+            for key := range v {
+                keys = append(keys, key)
+            }
+            lamJSONSortKeys(keys)
+            b = append(b, '{')
+            ok := true
+            for i, key := range keys {
+                b = lamJSONAppendKey(b, key, i == 0)
+                if b, ok = lamJSONAppend(b, v[key].value, depth+1); !ok {
+                    return b, false
+                }
+            }
+            return append(b, '}'), true
+        }
+        return b, false
+    }
+
+    // lamJSONStringSize is the length lamJSONAppendString writes for src.
+    func lamJSONStringSize(src string) int {
+        n := 2
+        for i := 0; i < len(src); {
+            b := src[i]
+            if b < utf8.RuneSelf {
+                switch {
+                case lamJSONSafe[b]:
+                    n++
+                case b == '\\' || b == '"' || b == '\b' || b == '\f' || b == '\n' || b == '\r' || b == '\t':
+                    n += 2
+                default:
+                    n += 6
+                }
+                i++
+                continue
+            }
+            c, size := utf8.DecodeRuneInString(src[i:])
+            if (c == utf8.RuneError && size == 1) || c == '\u2028' || c == '\u2029' {
+                n += 6
+            } else {
+                n += size
+            }
+            i += size
+        }
+        return n
+    }
+
+    func lamJSONIntSize(v int64) int {
+        n := 1
+        if v < 0 {
+            n++
+            if v == math.MinInt64 {
+                return 20
+            }
+            v = -v
+        }
+        for v >= 10 {
+            v /= 10
+            n++
+        }
+        return n
+    }
+
+    func lamJSONUintSize(v uint64) int {
+        n := 1
+        for v >= 10 {
+            v /= 10
+            n++
+        }
+        return n
+    }
+
+    func lamJSONFloatSize(f float64, bits int) int {
+        var tmp [40]byte
+        return len(lamJSONAppendFloat(tmp[:0], f, bits))
+    }
+
+    // lamJSONObjectSize: braces, commas and the ``"key":`` of n members.
+    func lamJSONMembersSize(n int) int {
+        if n == 0 {
+            return 2
+        }
+        return 2 + (n - 1) + n
+    }
+
+    func lamJSONItemsSize(n int) int {
+        if n == 0 {
+            return 2
+        }
+        return 2 + (n - 1)
+    }
+
+    // lamJSONSize is the length lamJSONAppend writes for value; false
+    // exactly when lamJSONAppend would return false.
+    func lamJSONSize(value interface{}, depth int) (int, bool) {
+        if depth > 128 {
+            return 0, false
+        }
+        switch v := value.(type) {
+        case nil:
+            return 4, true
+        case string:
+            return lamJSONStringSize(v), true
+        case bool:
+            if v {
+                return 4, true
+            }
+            return 5, true
+        case int:
+            return lamJSONIntSize(int64(v)), true
+        case int64:
+            return lamJSONIntSize(v), true
+        case int8:
+            return lamJSONIntSize(int64(v)), true
+        case int16:
+            return lamJSONIntSize(int64(v)), true
+        case int32:
+            return lamJSONIntSize(int64(v)), true
+        case uint:
+            return lamJSONUintSize(uint64(v)), true
+        case uint8:
+            return lamJSONUintSize(uint64(v)), true
+        case uint16:
+            return lamJSONUintSize(uint64(v)), true
+        case uint32:
+            return lamJSONUintSize(uint64(v)), true
+        case uint64:
+            return lamJSONUintSize(v), true
+        case float64:
+            if math.IsNaN(v) || math.IsInf(v, 0) {
+                return 0, false
+            }
+            return lamJSONFloatSize(v, 64), true
+        case float32:
+            if f := float64(v); math.IsNaN(f) || math.IsInf(f, 0) {
+                return 0, false
+            }
+            return lamJSONFloatSize(float64(v), 32), true
+        case LamJSON:
+            return lamJSONSize(v.value, depth+1)
+        case *LamJSON:
+            if v == nil {
+                return 4, true
+            }
+            return lamJSONSize(v.value, depth+1)
+        case map[string]interface{}:
+            if v == nil {
+                return 4, true
+            }
+            n := lamJSONMembersSize(len(v))
+            for key, item := range v {
+                size, ok := lamJSONSize(item, depth+1)
+                if !ok {
+                    return 0, false
+                }
+                n += lamJSONStringSize(key) + size
+            }
+            return n, true
+        case []interface{}:
+            if v == nil {
+                return 4, true
+            }
+            n := lamJSONItemsSize(len(v))
+            for _, item := range v {
+                size, ok := lamJSONSize(item, depth+1)
+                if !ok {
+                    return 0, false
+                }
+                n += size
+            }
+            return n, true
+        case []LamJSON:
+            if v == nil {
+                return 4, true
+            }
+            n := lamJSONItemsSize(len(v))
+            for _, item := range v {
+                size, ok := lamJSONSize(item.value, depth+1)
+                if !ok {
+                    return 0, false
+                }
+                n += size
+            }
+            return n, true
+        case []string:
+            if v == nil {
+                return 4, true
+            }
+            n := lamJSONItemsSize(len(v))
+            for _, item := range v {
+                n += lamJSONStringSize(item)
+            }
+            return n, true
+        case []int:
+            if v == nil {
+                return 4, true
+            }
+            n := lamJSONItemsSize(len(v))
+            for _, item := range v {
+                n += lamJSONIntSize(int64(item))
+            }
+            return n, true
+        case []map[string]interface{}:
+            if v == nil {
+                return 4, true
+            }
+            n := lamJSONItemsSize(len(v))
+            for _, item := range v {
+                size, ok := lamJSONSize(item, depth+1)
+                if !ok {
+                    return 0, false
+                }
+                n += size
+            }
+            return n, true
+        case map[string]string:
+            if v == nil {
+                return 4, true
+            }
+            n := lamJSONMembersSize(len(v))
+            for key, item := range v {
+                n += lamJSONStringSize(key) + lamJSONStringSize(item)
+            }
+            return n, true
+        case map[string]LamJSON:
+            if v == nil {
+                return 4, true
+            }
+            n := lamJSONMembersSize(len(v))
+            for key, item := range v {
+                size, ok := lamJSONSize(item.value, depth+1)
+                if !ok {
+                    return 0, false
+                }
+                n += lamJSONStringSize(key) + size
+            }
+            return n, true
+        }
+        return 0, false
+    }
+
+    // lamJSONEncodeExact is the encoding of value in a new slice of its
+    // exact length (false: encoding/json has to be used).
+    func lamJSONEncodeExact(value interface{}) ([]byte, bool) {
+        size, ok := lamJSONSize(value, 0)
+        if !ok {
+            return nil, false
+        }
+        return lamJSONAppend(make([]byte, 0, size), value, 0)
+    }
+
+    // lamJSONMarshal is json.Marshal(value): see Encoding above.
+    func lamJSONMarshal(value interface{}) ([]byte, error) {
+        if b, ok := lamJSONEncodeExact(value); ok {
+            return b, nil
+        }
+        return json.Marshal(value)
+    }
+
+    // lamJSONMarshalString is string(json.Marshal(value)) with one
+    // allocation, the text's own bytes (never written again).
+    func lamJSONMarshalString(value interface{}) (string, error) {
+        if b, ok := lamJSONEncodeExact(value); ok {
+            return unsafe.String(unsafe.SliceData(b), len(b)), nil
+        }
+        data, err := json.Marshal(value)
+        if err != nil {
+            return "", err
+        }
+        return unsafe.String(unsafe.SliceData(data), len(data)), nil
     }
 
     func lamJSONParse(text string) (LamJSON, error) {
@@ -338,7 +1003,7 @@ go! {
     }
 
     func (value LamJSON) MarshalJSON() ([]byte, error) {
-        return json.Marshal(value.value)
+        return lamJSONMarshal(value.value)
     }
 
     func (value *LamJSON) UnmarshalJSON(data []byte) error {
@@ -349,9 +1014,9 @@ go! {
     }
 
     func (value LamJSON) Value() (driver.Value, error) {
-        data, err := json.Marshal(value)
+        text, err := lamJSONMarshalString(value)
         if err != nil { return nil, err }
-        return string(data), nil
+        return text, nil
     }
 
     func (value *LamJSON) Scan(source interface{}) error {
@@ -375,9 +1040,9 @@ go! {
     }
 
     func (value LamJSON) String() string {
-        data, err := json.Marshal(value)
+        text, err := lamJSONMarshalString(value)
         if err != nil { return "null" }
-        return string(data)
+        return text
     }
 
     // ── Typed member reads (Json.has / getStr / getInt / ...) ─────────
@@ -509,13 +1174,13 @@ go! {
 class Json {
     static func encode(data: json) -> Result[str] {
         go! {
-            b, err := json.Marshal(data)
+            text, err := lamJSONMarshalString(data)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
                     "JsonEncodeError", fmt.Sprintf("encode failed: %v", err), nil,
                 ))
             }
-            return LAMMERGEIER.Result.Ok(string(b))
+            return LAMMERGEIER.Result.Ok(text)
         }
     }
 
@@ -722,6 +1387,17 @@ class Json {
         out: json = None
         go! {
             out = lamJSONAt(doc, path)
+        }
+        return out
+    }
+
+    static func copy(doc: json) -> json {
+        #- A deep copy of ``doc``: changing the copy (or ``doc``) never
+           changes the other. Putting a json value into a json literal or
+           assigning it to a member shares it, like Python objects. -#
+        out: json = None
+        go! {
+            out = LamJSON{value: lamJSONCopy(doc.value)}
         }
         return out
     }

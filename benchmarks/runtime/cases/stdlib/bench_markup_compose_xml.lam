@@ -1,0 +1,73 @@
+# Native ``xml`` composition — the xml twin of ``bench_markup_compose``: an
+# RSS feed of 500 entries, each built by nested components (an author, a
+# category list, an enclosure), held by a channel and two levels of
+# wrapping, rendered to text. Stresses xml template instantiation,
+# inserting fragments into fragments and serialization.
+#
+# Also prints the bytes allocated per feed (``runtime.ReadMemStats``) as the
+# fifth field of the BENCH line.
+#
+# ops: 200
+
+from lamtime import Time
+
+go! {
+    import "runtime"
+}
+
+func author(i: int) -> xml {
+    return <><author><name>Writer ${i % 13}</name><email>w${i % 13}@example.test</email></author></>
+}
+
+func categories(i: int) -> xml {
+    names: list[xml] = [<><category domain="/c/${c}">Topic &amp; ${c}</category></> for c in range(i % 3 + 1)]
+    return <><categories>${names}</categories></>
+}
+
+func entry(i: int) -> xml {
+    return <><item id="${i}">
+        <title>Product ${i} &lt;new&gt;</title>
+        <link>https://shop.example/p/${i}</link>
+        <guid isPermaLink="false">urn:product:${i}</guid>
+        ${author(i)}
+        ${categories(i)}
+        <enclosure url="https://cdn.example/${i}.jpg" length="${i * 100}" type="image/jpeg"/>
+        <description>Price ${i * 3} EUR, was ${i * 4} EUR</description>
+    </item></>
+}
+
+func channel(n: int) -> xml {
+    items: list[xml] = [entry(i) for i in range(n)]
+    return <><channel><title>Shop</title><link>https://shop.example/</link>${items}</channel></>
+}
+
+func feed() -> str {
+    content: xml = channel(500)
+    wrapped: xml = <><rss version="2.0"><meta><generator>bench</generator></meta>${content}</rss></>
+    doc: xml = <><?xml version="1.0" encoding="UTF-8"?>${wrapped}</>
+    return str(doc)
+}
+
+func allocated() -> int {
+    total: int = 0
+    go! {
+        var ms runtime.MemStats
+        runtime.ReadMemStats(&ms)
+        total = int(ms.TotalAlloc)
+    }
+    return total
+}
+
+func main() {
+    size: int = len(feed())
+    before: int = allocated()
+    start: int = Time.nowUnixNano()
+    for __i in range(200) {
+        if len(feed()) != size {
+            print("unreachable")
+        }
+    }
+    elapsed: int = Time.nowUnixNano() - start
+    perFeed: int = (allocated() - before) // 200
+    print(f"BENCH markup_compose_xml 200 {elapsed} {perFeed}")
+}

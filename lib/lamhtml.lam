@@ -45,13 +45,23 @@
 # browser parses is what the policy checked. ``id`` and ``name`` (DOM
 # clobbering) and ``class`` are not allowed by ``HtmlPolicy.basic()``.
 #
+# A policy is compiled (its lookup tables) once: the policy object keeps
+# its compiled form and a small process-wide cache serves a policy built
+# again with the same content, so building ``HtmlPolicy.basic()`` per call
+# costs no recompilation. A policy that is no longer changed can be shared
+# by goroutines (``sanitize`` never changes it); changing a field after a
+# ``sanitize`` call takes effect on the next call.
+#
 # Import with: ``from lamhtml import Html, HtmlPolicy``.
 
 from lammarkup import Markup
 
 go! {
     import (
+        "hash/maphash"
         "strings"
+        "sync"
+        "sync/atomic"
     )
 
     type lamSanPolicy struct {
@@ -166,6 +176,175 @@ go! {
         return p
     }
 
+    // ── Compiled policies ─────────────────────────────────────────────
+    //
+    // ``Html.sanitize`` works with a lamSanPolicy compiled from the fields
+    // of an HtmlPolicy. Compiling is done once per policy content: the
+    // policy object keeps its last compiled form (lamSanCache, read and
+    // replaced atomically, so a policy shared by goroutines is fine), and
+    // a small process-wide cache keyed by content serves policies built
+    // again for every call (``HtmlPolicy.basic()`` in a handler). A
+    // compiled policy is never changed, so concurrent sanitizers read it
+    // freely; it is used only while the fields still hold what it was
+    // compiled from (compared element by element, without allocating), so
+    // changing a field after a sanitize call takes effect on the next one.
+
+    type lamSanSource struct {
+        tags       []string
+        attrs      map[string][]string
+        schemes    []string
+        relative   bool
+        dataImages bool
+        styles     []string
+        noopener   bool
+        frameHosts []string
+    }
+
+    type lamSanCompiled struct {
+        src    lamSanSource
+        policy *lamSanPolicy
+    }
+
+    type lamSanCache struct {
+        last atomic.Pointer[lamSanCompiled]
+    }
+
+    func lamSanSameList(a, b []string) bool {
+        if len(a) != len(b) {
+            return false
+        }
+        for i := range a {
+            if a[i] != b[i] {
+                return false
+            }
+        }
+        return true
+    }
+
+    func (src *lamSanSource) same(other *lamSanSource) bool {
+        if src.relative != other.relative || src.dataImages != other.dataImages || src.noopener != other.noopener ||
+            !lamSanSameList(src.tags, other.tags) || !lamSanSameList(src.schemes, other.schemes) ||
+            !lamSanSameList(src.styles, other.styles) || !lamSanSameList(src.frameHosts, other.frameHosts) ||
+            len(src.attrs) != len(other.attrs) {
+            return false
+        }
+        for tag, names := range src.attrs {
+            theirs, ok := other.attrs[tag]
+            if !ok || !lamSanSameList(names, theirs) {
+                return false
+            }
+        }
+        return true
+    }
+
+    // copy: the source a compiled policy keeps (the fields may change later).
+    func (src *lamSanSource) copy() lamSanSource {
+        out := *src
+        out.tags = append([]string(nil), src.tags...)
+        out.schemes = append([]string(nil), src.schemes...)
+        out.styles = append([]string(nil), src.styles...)
+        out.frameHosts = append([]string(nil), src.frameHosts...)
+        out.attrs = make(map[string][]string, len(src.attrs))
+        for tag, names := range src.attrs {
+            out.attrs[tag] = append([]string(nil), names...)
+        }
+        return out
+    }
+
+    var lamSanSeed = maphash.MakeSeed()
+
+    func (src *lamSanSource) hash() uint64 {
+        var h maphash.Hash
+        h.SetSeed(lamSanSeed)
+        list := func(values []string) {
+            for _, v := range values {
+                h.WriteString(v)
+                h.WriteByte(0)
+            }
+            h.WriteByte(1)
+        }
+        list(src.tags)
+        list(src.schemes)
+        list(src.styles)
+        list(src.frameHosts)
+        flags := byte(0)
+        if src.relative {
+            flags |= 1
+        }
+        if src.dataImages {
+            flags |= 2
+        }
+        if src.noopener {
+            flags |= 4
+        }
+        h.WriteByte(flags)
+        // Map order is random: combine the members commutatively.
+        var members uint64
+        for tag, names := range src.attrs {
+            var m maphash.Hash
+            m.SetSeed(lamSanSeed)
+            m.WriteString(tag)
+            m.WriteByte(0)
+            for _, name := range names {
+                m.WriteString(name)
+                m.WriteByte(0)
+            }
+            members += m.Sum64()
+        }
+        var tail [8]byte
+        for i := range tail {
+            tail[i] = byte(members >> (8 * i))
+        }
+        h.Write(tail[:])
+        return h.Sum64()
+    }
+
+    const lamSanSharedLimit = 64
+
+    var (
+        lamSanSharedMu sync.RWMutex
+        lamSanShared   = map[uint64][]*lamSanCompiled{}
+        lamSanSharedN  int
+    )
+
+    // lamSanRules is the compiled form of the policy fields ``src``;
+    // ``cache`` (the policy object's, may be nil) remembers it.
+    func lamSanRules(cache *lamSanCache, src lamSanSource) *lamSanPolicy {
+        if cache != nil {
+            if last := cache.last.Load(); last != nil && last.src.same(&src) {
+                return last.policy
+            }
+        }
+        key := src.hash()
+        var found *lamSanCompiled
+        lamSanSharedMu.RLock()
+        for _, entry := range lamSanShared[key] {
+            if entry.src.same(&src) {
+                found = entry
+                break
+            }
+        }
+        lamSanSharedMu.RUnlock()
+        if found == nil {
+            found = &lamSanCompiled{
+                src:    src.copy(),
+                policy: lamSanNewPolicy(src.tags, src.attrs, src.schemes, src.relative, src.dataImages, src.styles, src.noopener, src.frameHosts),
+            }
+            lamSanSharedMu.Lock()
+            if lamSanSharedN >= lamSanSharedLimit {
+                lamSanShared = map[uint64][]*lamSanCompiled{}
+                lamSanSharedN = 0
+            }
+            lamSanShared[key] = append(lamSanShared[key], found)
+            lamSanSharedN++
+            lamSanSharedMu.Unlock()
+        }
+        if cache != nil {
+            cache.last.Store(found)
+        }
+        return found.policy
+    }
+
     func (p *lamSanPolicy) allowsAttr(tag string, attr string) bool {
         return p.attrs[tag][attr] || p.attrs["*"][attr]
     }
@@ -187,6 +366,16 @@ go! {
     // its scheme (tab, LF and CR anywhere, C0 controls and spaces at the
     // ends); dropping every C0 control and space anywhere is stricter.
     func lamSanCompactURL(value string) string {
+        plain := true
+        for i := 0; i < len(value); i++ {
+            if c := value[i]; c <= 0x20 || c >= 0x7f {
+                plain = false
+                break
+            }
+        }
+        if plain {
+            return value
+        }
         var sb strings.Builder
         for _, r := range value {
             if r > 0x20 && r != 0x7f {
@@ -277,15 +466,23 @@ go! {
 
     func lamSanAttrs(n *lamMNode, tag string, p *lamSanPolicy) []lamMAttr {
         var out []lamMAttr
-        seen := map[string]bool{}
+        var seenNames [16]string
+        seen := seenNames[:0]
         opensWindow := false
         for _, a := range n.attrs {
             name := strings.ToLower(a.name)
-            if seen[name] {
+            duplicate := false
+            for _, previous := range seen {
+                if previous == name {
+                    duplicate = true
+                    break
+                }
+            }
+            if duplicate {
                 // Browsers keep the first of duplicated attributes.
                 continue
             }
-            seen[name] = true
+            seen = append(seen, name)
             if (strings.HasPrefix(name, "on") && name != "open") || name == "srcdoc" {
                 continue
             }
@@ -504,13 +701,17 @@ go! {
     }
 
     func lamSanNodes(nodes []*lamMNode, p *lamSanPolicy, depth int) []*lamMNode {
-        out := []*lamMNode{}
+        return lamSanAppendNodes([]*lamMNode{}, nodes, p, depth)
+    }
+
+    // lamSanAppendNodes appends the sanitized ``nodes`` to ``out``.
+    func lamSanAppendNodes(out []*lamMNode, nodes []*lamMNode, p *lamSanPolicy, depth int) []*lamMNode {
         for _, n := range nodes {
             switch n.kind {
             case lamMRef:
                 // An inserted element, shared (see lammarkup).
                 t := n.acquire()
-                out = append(out, lamSanNodes([]*lamMNode{t}, p, depth)...)
+                out = lamSanAppendNodes(out, []*lamMNode{t}, p, depth)
                 n.release()
             case lamMText:
                 if n.data != "" {
@@ -526,7 +727,7 @@ go! {
                 } else if lamSanDropWithContent[name] {
                     // Removed with everything inside.
                 } else if !p.tags[name] || depth >= 256 {
-                    out = append(out, lamSanNodes(n.children, p, depth+1)...)
+                    out = lamSanAppendNodes(out, n.children, p, depth+1)
                 } else {
                     el := &lamMNode{kind: lamMElement, name: name, attrs: lamSanAttrs(n, name, p)}
                     if !lamHTMLVoid[name] {
@@ -554,6 +755,10 @@ class HtmlPolicy {
 
        Names are matched case-insensitively; tag and attribute names that
        are not plain names are ignored. The fields can also be set directly.
+
+       Build a policy once and reuse it (a constant, a field): it is
+       compiled on first use and the compiled form is kept; a policy that
+       is no longer changed is safe to share between goroutines.
     -#
 
     func init(self) {
@@ -576,6 +781,11 @@ class HtmlPolicy {
         self.noopener: bool = true
         #- Hosts ``iframe`` elements may load from (see ``allowFrames``). -#
         self.frameHosts: list[str] = []
+        # The compiled form ``Html.sanitize`` last used (lamSanCache).
+        self._compiled: any = None
+        go! {
+            s._compiled = &lamSanCache{}
+        }
     }
 
     static func basic() -> HtmlPolicy {
@@ -751,17 +961,14 @@ class Html {
     static func sanitize(markup: html, policy: HtmlPolicy) -> html {
         #- A clean copy of ``markup`` that keeps only what ``policy``
            allows; ``markup`` itself is not changed. -#
-        tags: list[str] = policy.tags
-        attributes: dict[str, list[str]] = policy.attributes
-        schemes: list[str] = policy.urlSchemes
-        relative: bool = policy.relativeUrls
-        dataImages: bool = policy.dataImages
-        styles: list[str] = policy.styleProperties
-        noopener: bool = policy.noopener
-        frameHosts: list[str] = policy.frameHosts
         out: html = <></>
         go! {
-            rules := lamSanNewPolicy(tags, attributes, schemes, relative, dataImages, styles, noopener, frameHosts)
+            cache, _ := policy._compiled.(*lamSanCache)
+            rules := lamSanRules(cache, lamSanSource{
+                tags: policy.Tags, attrs: policy.Attributes, schemes: policy.UrlSchemes,
+                relative: policy.RelativeUrls, dataImages: policy.DataImages, styles: policy.StyleProperties,
+                noopener: policy.Noopener, frameHosts: policy.FrameHosts,
+            })
             out = LamHTML{lamMNewFrag(false, lamSanNodes(markup.frag().all(), rules, 0))}
         }
         return out

@@ -41,6 +41,15 @@ go! {
     )
 
     func lamSchemaCompileText(source string) (*gojsonschema.Schema, *lamSchemaFailure) {
+        // A cached schema compiled, so it is valid JSON: no need to parse
+        // the text again on every validation.
+        lamSchemaMu.RLock()
+        entry := lamSchemaByText[source]
+        lamSchemaMu.RUnlock()
+        if entry != nil {
+            return entry.schema, nil
+        }
+
         var parsed interface{}
         if err := json.Unmarshal([]byte(source), &parsed); err != nil {
             return nil, &lamSchemaFailure{
@@ -48,13 +57,6 @@ go! {
                 message: "schema is not valid JSON: " + err.Error(),
                 cause: map[string]interface{}{"backend": "json", "target": "schema"},
             }
-        }
-
-        lamSchemaMu.RLock()
-        entry := lamSchemaByText[source]
-        lamSchemaMu.RUnlock()
-        if entry != nil {
-            return entry.schema, nil
         }
 
         compiled, err := gojsonschema.NewSchema(gojsonschema.NewStringLoader(source))
@@ -76,7 +78,7 @@ go! {
     }
 
     func lamSchemaText(value LamJSON) (string, *lamSchemaFailure) {
-        encoded, err := json.Marshal(lamJSONRaw(value))
+        encoded, err := lamJSONMarshalString(lamJSONRaw(value))
         if err != nil {
             return "", &lamSchemaFailure{
                 kind: "SchemaCompileError",
@@ -84,7 +86,7 @@ go! {
                 cause: map[string]interface{}{"backend": "json", "target": "schema"},
             }
         }
-        return string(encoded), nil
+        return encoded, nil
     }
 
     func lamSchemaIssues(result *gojsonschema.Result) []interface{} {

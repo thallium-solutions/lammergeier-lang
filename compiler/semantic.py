@@ -9216,6 +9216,16 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
 
     def _check_function_returns(self, funcdef: Tree, suite_node: Tree) -> None:
         name = self._funcdef_name(funcdef) or "<anonymous>"
+        if self._suite_has_yield(suite_node):
+            from compiler.visitors.generators import coroutine_construct
+            found = coroutine_construct(suite_node)
+            if found is not None:
+                self._warning(
+                    found[0], "flow",
+                    f"generator `{name}` uses {found[1]}, so it runs on a coroutine while "
+                    f"suspended: dropped before it ends while an object it uses holds it, "
+                    f"neither is ever collected",
+                )
         returns = list(self._return_stmts_in(suite_node))
         expected_type = self._funcdef_return_type_root(funcdef)
         expected_type_node = self._funcdef_return_type_node(funcdef)

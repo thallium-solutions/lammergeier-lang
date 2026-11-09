@@ -233,6 +233,9 @@ class ExpressionVisitorMixin:
             return self._markup_call_to_go(node, "html" if go_type == "LamHTML" else "xml")
         if go_type == "LamJSON":
             raw = self._json_value_to_go(node)
+            if self._is_json_literal_node(node):
+                # A fresh object/array: normalized in place, not copied.
+                return f"lamJSONLiteral({raw})"
             return raw if self._expr_go_type_hint(node) == "LamJSON" else f"lamJSONMust({raw})"
         if go_type not in {"", "interface{}", "any"} and self._is_dynamic_any_value(node):
             # An ``any`` value where a concrete type is expected — an element
@@ -650,17 +653,30 @@ class ExpressionVisitorMixin:
         value = self._typed_value_to_go(node, inner)
         return f"func() {go_type} {{ __lamV := {inner}({value}); return &__lamV }}()"
 
+    _JSON_LITERAL_NODES = frozenset({"dict", "list", "list_comprehension", "tuple_comprehension", "dict_comprehension"})
+
+    def _is_json_literal_node(self, node) -> bool:
+        """``node`` builds a new object or array (a literal or a
+        comprehension) when lowered by ``_json_value_to_go``."""
+        return isinstance(node, Tree) and node.data in self._JSON_LITERAL_NODES
+
+    def _json_member_to_go(self, node) -> str:
+        """A member of a json literal; a nested literal is a json value of
+        its own (``lamJSONLiteral``), which the outer one then shares."""
+        value = self._json_value_to_go(node)
+        return f"lamJSONLiteral({value})" if self._is_json_literal_node(node) else value
+
     def _json_value_to_go(self, node) -> str:
         if isinstance(node, Tree) and node.data == "dict":
             entries = []
             for child in node.children:
                 if isinstance(child, Tree) and child.data == "key_value" and len(child.children) >= 2:
                     key = self._typed_value_to_go(child.children[0], "string")
-                    value = self._json_value_to_go(child.children[1])
+                    value = self._json_member_to_go(child.children[1])
                     entries.append(f"{key}: {value}")
             return f"map[string]interface{{}}{{{', '.join(entries)}}}"
         if isinstance(node, Tree) and node.data == "list":
-            values = [self._json_value_to_go(child) for child in node.children if child is not None]
+            values = [self._json_member_to_go(child) for child in node.children if child is not None]
             return f"[]interface{{}}{{{', '.join(values)}}}"
         if isinstance(node, Tree) and node.data in {"list_comprehension", "tuple_comprehension"}:
             return self._list_comp_to_go(node, elem_type="[]interface{}")
@@ -2583,6 +2599,11 @@ class ExpressionVisitorMixin:
             if args and raw_args and self._expr_go_type_hint(raw_args[0]) == "[]byte":
                 # ``str(data)``: the UTF-8 text of the bytes.
                 return f"string({args[0]})"
+            if args and raw_args and self._expr_go_type_hint(raw_args[0]) in self._TEXT_VALUE_GO_TYPES:
+                # ``str(page)`` of html / xml / json: the value's own text,
+                # rendered once, not copied again by fmt (``lamValueText``,
+                # lamjson, also right if the value is an ``interface{}``).
+                return f"lamValueText({args[0]})"
             self._need_import("fmt")
             return f'fmt.Sprintf("%v", {args[0]})' if args else '""'
 
@@ -3494,28 +3515,12 @@ class ExpressionVisitorMixin:
 
     # ─── f-string ──────────────────────────────────────────────
 
-    def _lower_fstring_expr_via_ast(self, expr: str) -> "Optional[str]":
-        """Parse a single f-string interpolation slot and lower it
-        through the normal expression pipeline.
-
-        Wraps the slot in a tiny synthetic statement (``_x = (<expr>);``)
-        so the existing parser can handle it without needing a second
-        start rule. The wrapper unwraps to find the RHS and returns
-        ``self._expr_to_go(rhs)``. Returns ``None`` on any parse
-        failure so the caller can fall back to the legacy regex path
-        (and on rare expressions the regex is still correct, e.g.
-        bare identifiers that were already valid Go).
-        """
-        # Cache parses to avoid re-running Lark for repeated slots
-        # (a typical log line has the same identifier multiple times).
-        cache = self.__dict__.setdefault("_fstring_expr_cache", {})
+    def _fstring_slot_tree(self, expr: str):
+        """The parsed expression of an f-string slot (cached; ``None`` when
+        it does not parse), without lowering it."""
+        cache = self.__dict__.setdefault("_fstring_tree_cache", {})
         if expr in cache:
-            cached = cache[expr]
-            if cached is None:
-                return None
-            cached = self._fstring_slot_result_nav(cached)
-            with self._scoped(_synthetic_positions=True):
-                return self._optional_display_go(self._expr_to_go(cached), cached)
+            return cache[expr]
         # A lambda with a block body needs the statement preprocessing
         # (``compiler/fstrings.py``: ``parse_slot``).
         tree = parse_slot("_lamFstrTmp = (", expr)
@@ -3542,6 +3547,32 @@ class ExpressionVisitorMixin:
         from lark import Tree as _Tree
         while isinstance(rhs, _Tree) and rhs.data == "test" and len(rhs.children) == 1:
             rhs = rhs.children[0]
+        cache[expr] = rhs
+        return rhs
+
+    def _lower_fstring_expr_via_ast(self, expr: str) -> "Optional[str]":
+        """Parse a single f-string interpolation slot and lower it
+        through the normal expression pipeline.
+
+        Wraps the slot in a tiny synthetic statement (``_x = (<expr>);``)
+        so the existing parser can handle it without needing a second
+        start rule. The wrapper unwraps to find the RHS and returns
+        ``self._expr_to_go(rhs)``. Returns ``None`` on any parse
+        failure so the caller can fall back to the legacy regex path
+        (and on rare expressions the regex is still correct, e.g.
+        bare identifiers that were already valid Go).
+        """
+        cache = self.__dict__.setdefault("_fstring_expr_cache", {})
+        if expr in cache:
+            cached = cache[expr]
+            if cached is None:
+                return None
+            cached = self._fstring_slot_result_nav(cached)
+            with self._scoped(_synthetic_positions=True):
+                return self._optional_display_go(self._expr_to_go(cached), cached)
+        rhs = self._fstring_slot_tree(expr)
+        if rhs is None:
+            return None
         cache[expr] = rhs
         try:
             rhs = self._fstring_slot_result_nav(rhs)
@@ -3656,11 +3687,59 @@ class ExpressionVisitorMixin:
             cache[expr] = parse_slot("_lamFstrTmp = (", expr) is not None
         return cache[expr]
 
+    # Values whose text is their ``String()`` method (``LamHTML`` and
+    # ``LamXML`` render, ``LamJSON`` encodes).
+    _TEXT_VALUE_GO_TYPES = frozenset({"LamHTML", "LamXML", "LamJSON"})
+
+    def _fstring_concat_to_go(self, parts) -> "Optional[str]":
+        """An f-string whose slots are all ``str`` / ``html`` / ``xml`` /
+        ``json`` without format specs, at least one of them markup or json
+        (``f"<!doctype html>{page}"``), as a string concatenation of the
+        slots' ``lamValueText`` (lamjson: the value's own text, a page
+        rendered once and copied once, instead of through fmt's buffer).
+        ``None`` otherwise."""
+        pieces = []
+        has_text_value = False
+        for part in parts:
+            if isinstance(part, str):
+                if part:
+                    pieces.append(f'"{part}"')
+                continue
+            if part.has_spec:
+                return None
+            slot = self._fstring_slot_tree(part.expr.strip())
+            if slot is None:
+                return None
+            hint = self._expr_go_type_hint(self._fstring_slot_result_nav(slot))
+            if hint in self._TEXT_VALUE_GO_TYPES:
+                has_text_value = True
+            elif hint != "string":
+                return None
+            pieces.append((part, hint))
+        if not has_text_value:
+            return None
+        # Every slot qualifies: lower each one once.
+        out = []
+        for piece in pieces:
+            if isinstance(piece, str):
+                out.append(piece)
+                continue
+            part, _hint = piece
+            # Through lamValueText also for ``str`` slots: a type hint the
+            # lowering does not match (an ``interface{}`` local) still
+            # builds and formats as fmt would.
+            out.append(f"lamValueText({self._transform_fstring_expr(part.expr)})")
+        return " + ".join(out)
+
     def _fstring_to_go(self, node: Tree) -> str:
-        self._need_import("fmt")
         raw = str(node.children[0])
         split = fstring_body(raw)
         parts = split_fstring(split[0], split[1]) if split else None
+        if parts is not None:
+            concat = self._fstring_concat_to_go(parts)
+            if concat is not None:
+                return concat
+        self._need_import("fmt")
         if parts is not None:
             # Slots may hold strings in the f-string's own quote, commas,
             # brackets (``compiler/fstrings.py``).
@@ -6005,6 +6084,9 @@ class ExpressionVisitorMixin:
             # Inside a match guard's condition closure: record the error
             # and select the case, whose body propagates it.
             self._emit(f"if !{tmp}.Ok() {{ {self._guard_q_var} = {tmp}; return true }}")
+        elif self._q_propagate_ok and self._sm_emit_q_guard(tmp):
+            # In a ``do`` body holding a ``yield``: the ``do`` handler runs.
+            return
         elif self._q_propagate_ok:
             if self._in_async_func and self._async_chan_name:
                 self._emit(
@@ -6981,8 +7063,19 @@ class ExpressionVisitorMixin:
             )
 
         if container_type.startswith("[]"):
+            elem_type = self._slice_elem_go_type(container_type) or "interface{}"
+            item_go = self._typed_value_to_go(item_node, elem_type)
+            if elem_type in self._COMPARABLE_ELEM_GO_TYPES:
+                # ``name in tags`` with ``tags: list[str]``: ``==`` on the
+                # elements, what DeepEqual does for them, without boxing
+                # (also right when the list was lowered as ``[]interface{}``:
+                # an interface equals the item when it holds that value).
+                return (
+                    f"func() bool {{ for _, _v := range {container_go} {{ "
+                    f"if _v == {item_go} {{ return true }} }}; "
+                    f"return false }}()"
+                )
             self._need_import("reflect")
-            item_go = self._typed_value_to_go(item_node, self._slice_elem_go_type(container_type) or "interface{}")
             return (
                 f"func() bool {{ for _, _v := range {container_go} {{ "
                 f"if reflect.DeepEqual(_v, {item_go}) {{ return true }} }}; "

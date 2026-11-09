@@ -1,0 +1,53 @@
+# expect-pass
+# expect-no-warning: runs on a coroutine
+# Generator bodies holding `yield` in loops, `try` / `catch` / `finally`,
+# `with`, `match`, `do` / `catch` and `yield from` are state machines: no
+# coroutine warning.
+
+from lamerrors import Result
+
+class Res {
+    func init(self) {
+        self.open: bool = True
+    }
+
+    func Close(self) {
+        self.open = False
+    }
+}
+
+func parse(s: str) -> Result[int] {
+    return Result.Ok(int(s))
+}
+
+func values(items: list[str]) -> generator[int] {
+    with Res() as r {
+        for s in items {
+            try {
+                do {
+                    yield parse(s)?
+                } catch _err {
+                    yield -1
+                }
+            } catch ValueError {
+                yield -2
+            } finally {
+                print(r.open)
+            }
+        }
+    }
+    match len(items) {
+        case 0 {
+            yield 0
+        }
+        case n {
+            yield from [n]
+        }
+    }
+}
+
+func main() {
+    for v in values(["1"]) {
+        print(v)
+    }
+}

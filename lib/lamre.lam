@@ -3,6 +3,11 @@
 #
 # Pattern operations return ``Result`` so malformed patterns remain
 # distinguishable from valid false, empty-string, and empty-list results.
+#
+# A pattern is compiled once and reused: compiled patterns are kept in a
+# cache shared by every goroutine (bounded: it starts over after 512
+# distinct patterns), so ``Re.match(pattern, text)`` in a request handler
+# costs no compilation. Invalid patterns are not cached.
 
 from lamerrors import Result, Error
 
@@ -10,7 +15,37 @@ go! {
     import (
         "fmt"
         "regexp"
+        "sync"
     )
+
+    const lamReCacheLimit = 512
+
+    var (
+        lamReMu    sync.RWMutex
+        lamReCache = map[string]*regexp.Regexp{}
+    )
+
+    // lamReCompile is regexp.Compile with the shared cache (a compiled
+    // Regexp is safe for concurrent use).
+    func lamReCompile(pattern string) (*regexp.Regexp, error) {
+        lamReMu.RLock()
+        re := lamReCache[pattern]
+        lamReMu.RUnlock()
+        if re != nil {
+            return re, nil
+        }
+        re, err := regexp.Compile(pattern)
+        if err != nil {
+            return nil, err
+        }
+        lamReMu.Lock()
+        if len(lamReCache) >= lamReCacheLimit {
+            lamReCache = map[string]*regexp.Regexp{}
+        }
+        lamReCache[pattern] = re
+        lamReMu.Unlock()
+        return re, nil
+    }
 }
 
 class Re {
@@ -20,7 +55,7 @@ class Re {
            match) or ``Result.Err(Error("RegexError", ...))`` if the
            pattern can't be compiled. -#
         go! {
-            matched, err := regexp.MatchString(pattern, s)
+            re, err := lamReCompile(pattern)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
                     "RegexError",
@@ -28,7 +63,7 @@ class Re {
                     nil,
                 ))
             }
-            return LAMMERGEIER.Result.Ok(matched)
+            return LAMMERGEIER.Result.Ok(re.MatchString(s))
         }
     }
 
@@ -37,7 +72,7 @@ class Re {
            still means a valid pattern with no match; ``Err(...)``
            means the pattern itself was malformed. -#
         go! {
-            re, err := regexp.Compile(pattern)
+            re, err := lamReCompile(pattern)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
                     "RegexError",
@@ -53,7 +88,7 @@ class Re {
         #- Find every match. ``Ok([])`` means a valid pattern with no
            matches; ``Err(...)`` means the pattern was malformed. -#
         go! {
-            re, err := regexp.Compile(pattern)
+            re, err := lamReCompile(pattern)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
                     "RegexError",
@@ -69,7 +104,7 @@ class Re {
         #- Replace every match of ``pattern`` in ``s`` with ``repl``.
            ``Err(...)`` only fires for invalid patterns. -#
         go! {
-            re, err := regexp.Compile(pattern)
+            re, err := lamReCompile(pattern)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
                     "RegexError",
@@ -84,7 +119,7 @@ class Re {
     static func split(pattern: str, s: str) -> Result[list[str]] {
         #- Split ``s`` by every match of ``pattern``. -#
         go! {
-            re, err := regexp.Compile(pattern)
+            re, err := lamReCompile(pattern)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
                     "RegexError",
@@ -98,7 +133,7 @@ class Re {
 
     static func matchGroups(pattern: str, s: str) -> Result[list[str]] {
         go! {
-            re, err := regexp.Compile(pattern)
+            re, err := lamReCompile(pattern)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error(
                     "RegexError",

@@ -1,0 +1,96 @@
+# expect: reused: <p>Hi <a href="https://x.test" target="_blank" rel="noopener noreferrer">there</a></p>
+# expect: same as fresh: true
+# expect: reused policy allocation: ok
+# expect: rebuilt policy allocation: ok
+# expect: after allowTags: <h2>Title</h2>
+# expect: after field set: Title
+# expect: after in-place append: <p data-k="1">x</p>
+# expect: after flag change: <img src="data:image/png;base64,AAAA">
+# expect: two policies: <h2>a</h2> | a
+# expect: concurrent: 8 workers, 8 identical
+# expect: basic default: <b>ok</b><i>alert(1)</i>
+
+# A built HtmlPolicy is compiled once and reused by Html.sanitize: reusing a
+# policy object (also from several goroutines), or building the same policy
+# again for every call, costs no new compilation, and changing the policy's
+# fields (through allow* or directly) after a sanitize call takes effect on
+# the next one.
+
+from lamhtml import Html, HtmlPolicy
+
+go! {
+    import "runtime"
+}
+
+func allocated() -> int {
+    total: int = 0
+    go! {
+        var ms runtime.MemStats
+        runtime.ReadMemStats(&ms)
+        total = int(ms.TotalAlloc)
+    }
+    return total
+}
+
+func markupPolicy() -> HtmlPolicy {
+    return HtmlPolicy.rich().allowStyles(["color", "text-align"]).allowAttributes("a", ["target"])
+}
+
+const Input: str = "<p onclick='x()'>Hi <a href='https://x.test' target='_blank'>there</a><script>bad()</script></p>"
+
+async func worker(policy: HtmlPolicy, n: int) -> str {
+    last: str = ""
+    for i in range(n) {
+        last = str(Html.sanitize(Input, policy))
+    }
+    return last
+}
+
+func main() {
+    policy: HtmlPolicy = markupPolicy()
+    first: str = str(Html.sanitize(Input, policy))
+    print(f"reused: {first}")
+    print(f"same as fresh: {str(Html.sanitize(Input, policy)) == str(Html.sanitize(Input, markupPolicy()))}")
+
+    # The reference: what sanitizing alone costs with a compiled policy.
+    before: int = allocated()
+    for __i in range(200) {
+        _ = Html.sanitize(Input, policy)
+    }
+    reused: int = (allocated() - before) // 200
+    print(f"reused policy allocation: {'ok' if reused < 4000 else str(reused) + ' bytes per call'}")
+
+    before = allocated()
+    for __i in range(200) {
+        _ = Html.sanitize(Input, markupPolicy())
+    }
+    rebuilt: int = (allocated() - before) // 200
+    print(f"rebuilt policy allocation: {'ok' if rebuilt < reused + 8000 else str(rebuilt) + ' bytes per call'}")
+
+    edited: HtmlPolicy = HtmlPolicy.basic()
+    _ = Html.sanitize("<h2>Title</h2>", edited)
+    edited.allowTags(["h2"])
+    print(f"after allowTags: {Html.sanitize('<h2>Title</h2>', edited)}")
+    edited.tags = ["p"]
+    print(f"after field set: {Html.sanitize('<h2>Title</h2>', edited)}")
+    edited.attributes["p"] = []
+    _ = Html.sanitize("<p data-k='1'>x</p>", edited)
+    edited.attributes["p"].append("data-k")
+    print(f"after in-place append: {Html.sanitize('<p data-k=1>x</p>', edited)}")
+    images: HtmlPolicy = HtmlPolicy().allowTags(["img"]).allowAttributes("img", ["src"])
+    _ = Html.sanitize("<img src='data:image/png;base64,AAAA'>", images)
+    images.dataImages = true
+    print(f"after flag change: {Html.sanitize('<img src=\"data:image/png;base64,AAAA\">', images)}")
+
+    withH2: HtmlPolicy = HtmlPolicy().allowTags(["h2"])
+    without: HtmlPolicy = HtmlPolicy()
+    print(f"two policies: {Html.sanitize('<h2>a</h2>', withH2)} | {Html.sanitize('<h2>a</h2>', without)}")
+
+    shared: HtmlPolicy = markupPolicy()
+    tasks = [worker(shared, 200) for __w in range(8)]
+    results: list[str] = [await t for t in tasks]
+    identical: int = len([r for r in results if r == first])
+    print(f"concurrent: {len(results)} workers, {identical} identical")
+
+    print(f"basic default: {Html.sanitize('<b>ok</b><script>x</script><i onclick=1>alert(1)</i>')}")
+}

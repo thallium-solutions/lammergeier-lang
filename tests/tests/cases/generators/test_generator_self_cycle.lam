@@ -1,0 +1,228 @@
+# A suspended generator is not held by a goroutine: an object keeping a
+# partially iterated generator of its own method in a field (a cycle
+# `self -> generator -> self`) is collected once dropped, and the pending
+# `finally` blocks and `with` closes of the state the generator is
+# suspended in run when it is collected. Covers a method generator
+# suspended in a `while` inside `try` / `finally`, one suspended in a
+# `with` inside a loop over another generator (both stopped), one
+# suspended in a `catch`, and a nested generator closure capturing the
+# object that holds it. The goroutine count goes back to where it started.
+#
+# expect: total 756000
+# expect: goroutines back true
+# expect: feeds collected true
+# expect: feeds closed true
+# expect: readers collected true
+# expect: resources closed true
+# expect: inner closed true
+# expect: retries closed true
+# expect: holders collected true
+
+go! {
+    import (
+        "runtime"
+        "sync/atomic"
+        "time"
+    )
+
+    var lamTestFeedsCollected atomic.Int64
+    var lamTestFeedsClosed atomic.Int64
+    var lamTestReadersCollected atomic.Int64
+    var lamTestResourcesClosed atomic.Int64
+    var lamTestInnerClosed atomic.Int64
+    var lamTestRetriesClosed atomic.Int64
+    var lamTestHoldersCollected atomic.Int64
+}
+
+class Res {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func Close(self) {
+        go! {
+            lamTestResourcesClosed.Add(1)
+        }
+    }
+}
+
+func numbersFrom(start: int) -> generator[int] {
+    try {
+        i: int = start
+        while True {
+            yield i
+            i += 1
+        }
+    } finally {
+        go! {
+            lamTestInnerClosed.Add(1)
+        }
+    }
+}
+
+class Feed {
+    func init(self, n: int) {
+        self.n: int = n
+        self.items: generator[int] = self.produce()
+        me: Feed = self
+        go! {
+            runtime.AddCleanup(me, func(int) { lamTestFeedsCollected.Add(1) }, 0)
+        }
+    }
+
+    func produce(self) -> generator[int] {
+        try {
+            i: int = 0
+            while True {
+                yield self.n + i
+                i += 1
+            }
+        } finally {
+            go! {
+                lamTestFeedsClosed.Add(1)
+            }
+        }
+    }
+}
+
+class Reader {
+    func init(self, n: int) {
+        self.n: int = n
+        self.lines: generator[int] = self.read()
+        self.retries: generator[int] = self.retry()
+        me: Reader = self
+        go! {
+            runtime.AddCleanup(me, func(int) { lamTestReadersCollected.Add(1) }, 0)
+        }
+    }
+
+    func read(self) -> generator[int] {
+        for v in numbersFrom(self.n) {
+            with Res("line") as r {
+                yield v + len(r.name)
+            }
+        }
+    }
+
+    func retry(self) -> generator[int] {
+        try {
+            raise ValueError("first try")
+        } catch ValueError {
+            yield self.n
+            yield self.n + 1
+        } finally {
+            go! {
+                lamTestRetriesClosed.Add(1)
+            }
+        }
+    }
+}
+
+class Holder {
+    func init(self) {
+        self.seen: int = 0
+        self.gen: generator[int] = numbersFrom(0)
+        me: Holder = self
+        go! {
+            runtime.AddCleanup(me, func(int) { lamTestHoldersCollected.Add(1) }, 0)
+        }
+    }
+}
+
+func attach(h: Holder) {
+    func ticks() -> generator[int] {
+        while True {
+            h.seen += 1
+            yield h.seen
+        }
+    }
+    h.gen = ticks()
+}
+
+# Collects until the goroutine count is back to `base` and every counter
+# reached its target (cleanups run in the background after a collection).
+func settle(base: int, target: int) -> int {
+    n: int = 0
+    go! {
+        for i := 0; i < 600; i++ {
+            runtime.GC()
+            if runtime.NumGoroutine() <= base &&
+                lamTestFeedsCollected.Load() >= int64(target) && lamTestFeedsClosed.Load() >= int64(target) &&
+                lamTestReadersCollected.Load() >= int64(target) && lamTestResourcesClosed.Load() >= int64(2*target) &&
+                lamTestInnerClosed.Load() >= int64(target) && lamTestRetriesClosed.Load() >= int64(target) &&
+                lamTestHoldersCollected.Load() >= int64(target) {
+                break
+            }
+            time.Sleep(5 * time.Millisecond)
+        }
+        n = runtime.NumGoroutine()
+    }
+    return n
+}
+
+func counter(name: str) -> int {
+    n: int = 0
+    go! {
+        switch name {
+        case "feedsCollected":
+            n = int(lamTestFeedsCollected.Load())
+        case "feedsClosed":
+            n = int(lamTestFeedsClosed.Load())
+        case "readersCollected":
+            n = int(lamTestReadersCollected.Load())
+        case "resourcesClosed":
+            n = int(lamTestResourcesClosed.Load())
+        case "innerClosed":
+            n = int(lamTestInnerClosed.Load())
+        case "retriesClosed":
+            n = int(lamTestRetriesClosed.Load())
+        case "holdersCollected":
+            n = int(lamTestHoldersCollected.Load())
+        }
+    }
+    return n
+}
+
+func main() {
+    count: int = 500
+    base: int = settle(1, 0)
+    total: int = 0
+    for k in range(count) {
+        f: Feed = Feed(k)
+        for x in f.items {
+            total += x
+            if x >= k + 2 {
+                break
+            }
+        }
+        r: Reader = Reader(k)
+        for v in r.lines {
+            total += v
+            if v == k + 5 {
+                break
+            }
+        }
+        for v in r.retries {
+            total += v
+            break
+        }
+        h: Holder = Holder()
+        attach(h)
+        for v in h.gen {
+            total += v
+            if v == 2 {
+                break
+            }
+        }
+    }
+    now: int = settle(base, count)
+    print("total", total)
+    print("goroutines back", now <= base)
+    print("feeds collected", counter("feedsCollected") == count)
+    print("feeds closed", counter("feedsClosed") == count)
+    print("readers collected", counter("readersCollected") == count)
+    print("resources closed", counter("resourcesClosed") == 2 * count)
+    print("inner closed", counter("innerClosed") == count)
+    print("retries closed", counter("retriesClosed") == count)
+    print("holders collected", counter("holdersCollected") == count)
+}

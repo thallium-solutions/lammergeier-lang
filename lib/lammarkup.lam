@@ -1115,12 +1115,13 @@ go! {
                 return "true"
             }
             return "false"
+        case int:
+            return strconv.Itoa(x)
+        case int64:
+            return strconv.FormatInt(x, 10)
         case LamJSON:
-            b, err := json.Marshal(x)
-            if err != nil {
-                return "null"
-            }
-            return string(b)
+            // Encoded once into the text (as json.Marshal, "null" on error).
+            return x.String()
         case LamHTML:
             return x.String()
         case LamXML:
@@ -2018,6 +2019,8 @@ go! {
         return out
     }
 
+    func (h LamHTML) lamText() string                    { return h.frag().String() }
+    func (x LamXML) lamText() string                     { return x.frag().String() }
     func (h LamHTML) String() string                     { return h.frag().String() }
     func (h LamHTML) Select(selector string) []LamHTML   { return lamHTMLViews(h.frag(), h.frag().query(selector, false)) }
     func (h LamHTML) First(selector string) LamHTML {

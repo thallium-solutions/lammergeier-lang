@@ -1,0 +1,124 @@
+# One generator value shared by concurrent consumers (async tasks): each
+# value reaches exactly one consumer, the body runs for one of them at a
+# time (its locals, its `try` / `catch` state and a nested generator it
+# loops over are never touched by two consumers at once), its `finally`
+# runs once when it is exhausted, and an exception it raises reaches the
+# consumer that asked for the value. Run under the race detector by
+# `tests/tests/test_generator_race.py`.
+#
+# expect: sum 49995000 count 10000 distinct 10000
+# expect: finally runs 1
+# expect: caught 1 left 0
+# expect: mixed 4950
+
+class Tally {
+    func init(self) {
+        self.finallyRuns: int = 0
+    }
+
+    func numbers(self, n: int) -> generator[int] {
+        try {
+            i: int = 0
+            while i < n {
+                try {
+                    if i < 0 {
+                        raise ValueError("never")
+                    }
+                    yield i
+                } catch ValueError {
+                    yield -1
+                }
+                i += 1
+            }
+        } finally {
+            self.finallyRuns += 1
+        }
+    }
+}
+
+func inner(n: int) -> generator[int] {
+    for i in range(n) {
+        yield i
+    }
+}
+
+func outer(n: int) -> generator[int] {
+    for v in inner(n) {
+        yield v
+    }
+}
+
+func failing(n: int) -> generator[int] {
+    for i in range(n) {
+        yield i
+    }
+    raise ValueError("end")
+}
+
+async func drain(g: generator[int]) -> list[int] {
+    got: list[int] = []
+    for v in g {
+        got.append(v)
+    }
+    return got
+}
+
+async func drainCatching(g: generator[int]) -> int {
+    try {
+        for v in g {
+            _ = v
+        }
+    } catch ValueError {
+        return 1
+    }
+    return 0
+}
+
+func main() {
+    tally: Tally = Tally()
+    g: generator[int] = tally.numbers(10000)
+    results: list[list[int]] = []
+    h1 = drain(g)
+    h2 = drain(g)
+    h3 = drain(g)
+    h4 = drain(g)
+    results.append(await h1)
+    results.append(await h2)
+    results.append(await h3)
+    results.append(await h4)
+    total: int = 0
+    count: int = 0
+    seen: dict[int, bool] = {}
+    for part in results {
+        for v in part {
+            total += v
+            count += 1
+            seen[v] = True
+        }
+    }
+    print("sum", total, "count", count, "distinct", len(seen))
+    print("finally runs", tally.finallyRuns)
+
+    bad: generator[int] = failing(1000)
+    c1 = drainCatching(bad)
+    c2 = drainCatching(bad)
+    caught: int = await c1
+    caught2: int = await c2
+    print("caught", caught + caught2, "left", len(await drain(bad)))
+
+    mixed: generator[int] = outer(100)
+    m1 = drain(mixed)
+    m2 = drain(mixed)
+    m3 = drain(mixed)
+    mparts: list[list[int]] = []
+    mparts.append(await m1)
+    mparts.append(await m2)
+    mparts.append(await m3)
+    msum: int = 0
+    for part in mparts {
+        for v in part {
+            msum += v
+        }
+    }
+    print("mixed", msum)
+}

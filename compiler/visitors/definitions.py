@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from lark import Tree, Token
 from typing import List
-from compiler.constants import DUNDER_OPS, GENERATOR_YIELD_NAME, generator_go_type
+from compiler.constants import DUNDER_OPS, generator_go_type
 
 
 class DefinitionVisitorMixin:
@@ -151,6 +151,11 @@ class DefinitionVisitorMixin:
             "_in_except_handler": False,
             "_loop_break_flag": "",
             "_loop_jump": None,
+            # A state machine generator's continuations end at the body.
+            "_sm": None,
+            "_sm_q_target": False,
+            "_sm_leaf_loop": False,
+            "_sm_case_k": None,
             # ``_current_return_type_key`` may still name the enclosing
             # function's result inside the nested body.
             "_in_nested_callable": True,
@@ -206,17 +211,11 @@ class DefinitionVisitorMixin:
         if is_generator:
             self._nested_generator_elems[func_name] = elem_type
             self.indent += 1
-            self._emit_generator_body_open(elem_type, suite_node)
-            self.indent -= 1
-            body_start, params_at_start = self._begin_scoped_body(params_node)
-            with self._scoped(**{
-                **self._callable_boundary_context(),
-                "_in_generator": True, "_generator_chan": GENERATOR_YIELD_NAME,
-                "_generator_elem_type": elem_type if elem_type != "interface{}" else "",
-            }):
-                self._visit_suite(suite_node)
-            self._finish_scoped_body(body_start, params_at_start)
-            self._emit("})")
+            self._emit_generator_handle(
+                elem_type, suite_node, params_node,
+                overrides=self._callable_boundary_context(),
+                value_type=elem_type if elem_type != "interface{}" else "",
+            )
             self.indent -= 1
         else:
             self._nested_generator_elems.pop(func_name, None)
@@ -474,30 +473,10 @@ class DefinitionVisitorMixin:
         chan_type = self._generator_chan_elem(return_type, elem_type)
         self._emit(f"func {go_name}{type_clause}({params_str}) {generator_go_type(chan_type)} {{")
         self.indent += 1
-        self._emit_generator_body_open(chan_type, suite_node)
-        self._push_scope()
-        self._emit_params_prologue(params_node)
-        body_start = len(self.output_lines)
-        params_at_start = set(self.declared_vars)
-        with self._scoped(_in_generator=True, _generator_chan=GENERATOR_YIELD_NAME, _generator_elem_type=elem_type):
-            self._visit_suite(suite_node)
-        self._emit_unused_local_silencers(body_start, params_at_start)
-        self._pop_scope()
-        self.indent -= 1
-        self._emit("})")
+        self._emit_generator_handle(chan_type, suite_node, params_node, value_type=elem_type)
         self.indent -= 1
         self._emit("}")
         self._emit("")
-
-    def _emit_generator_body_open(self, elem_type: str, suite_node) -> None:
-        """``return lamNewGenerator[T](func(__lamYield func(T) bool) {``:
-        the generator handle on the body that follows (indented). A
-        ``catch`` around a ``yield`` could intercept an exception of a loop
-        body running the generator in place: such a generator always runs
-        apart (``lamNewIsolatedGenerator``)."""
-        ctor = "lamNewIsolatedGenerator" if self._generator_needs_isolation(suite_node) else "lamNewGenerator"
-        self._emit(f"return {ctor}[{elem_type}](func({GENERATOR_YIELD_NAME} func({elem_type}) bool) {{")
-        self.indent += 1
 
     def _generator_needs_isolation(self, suite_node) -> bool:
         """A ``yield`` inside a ``try`` with ``catch`` clauses, or with a
@@ -549,19 +528,10 @@ class DefinitionVisitorMixin:
             f"func ({recv} *{go_cls}{class_args}) {go_method}{tp_clause}({params_str}) {generator_go_type(chan_type)} {{"
         )
         self.indent += 1
-        self._emit_generator_body_open(chan_type, suite_node)
-        self._push_scope()
-        self._emit_params_prologue(params_node, skip_self=True)
-        self._declare_var(recv)
-        body_start = len(self.output_lines)
-        params_at_start = set(self.declared_vars)
-        with self._scoped(_self_replacement=recv, _in_generator=True, _generator_chan=GENERATOR_YIELD_NAME,
-                          _generator_elem_type=elem_type):
-            self._visit_suite(suite_node)
-        self._emit_unused_local_silencers(body_start, params_at_start)
-        self._pop_scope()
-        self.indent -= 1
-        self._emit("})")
+        self._emit_generator_handle(
+            chan_type, suite_node, params_node, skip_self=True, recv=recv,
+            overrides={"_self_replacement": recv}, value_type=elem_type,
+        )
         self.indent -= 1
         self._emit("}")
         self._emit("")

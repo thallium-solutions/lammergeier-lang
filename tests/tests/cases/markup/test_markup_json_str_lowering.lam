@@ -1,0 +1,98 @@
+# expect: <!doctype html><html><body><div class="card">a&lt;b</div><div class="card">é &amp; 漢</div><div class="card">100%</div></body></html>
+# expect: <?xml version="1.0"?><rss><channel><item><title>one</title></item><item><title>&lt;two&gt;</title></item><item><title>three &amp; four</title></item></channel></rss>
+# expect: {"big":12345678901234567,"cards":[{"title":"a\u003cb"},{"title":"é \u0026 漢"},{"title":"100%"}],"html":"\u003cscript\u003e","n":1.5e-7,"none":null,"u":"\u2028"}
+# expect: [][][null]
+# expect: 100% <!doctype html><html><body><div class="card">a&lt;b</div><div class="card">é &amp; 漢</div><div class="card">100%</div></body></html> {literal} <?xml version="1.0"?><rss><channel><item><title>one</title></item><item><title>&lt;two&gt;</title></item><item><title>three &amp; four</title></item></channel></rss> {"big":12345678901234567,"cards":[{"title":"a\u003cb"},{"title":"é \u0026 漢"},{"title":"100%"}],"html":"\u003cscript\u003e","n":1.5e-7,"none":null,"u":"\u2028"}
+# expect: <!doctype html><html><body><div class="card">a&lt;b</div><div class="card">é &amp; 漢</div><div class="card">100%</div></body></html>
+# expect: <!doctype html><html><body><div class="card">a&lt;b</div><div class="card">é &amp; 漢</div><div class="card">100%</div></body></html>|
+# expect: <!doctype html><html><body><div class="card">a&lt;b</div><div class="card">é &amp; 漢</div><div class="card">100%</div></body></html>
+# expect: <?xml version="1.0"?><rss><channel><item><title>one</title></item><item><title>&lt;two&gt;</title></item><item><title>three &amp; four</title></item></channel></rss>
+# expect: {"big":12345678901234567,"cards":[{"title":"a\u003cb"},{"title":"é \u0026 漢"},{"title":"100%"}],"html":"\u003cscript\u003e","n":1.5e-7,"none":null,"u":"\u2028"}
+# expect: e:||null
+# expect: <!-- <!doctype html><html><body><div class="card">a&lt;b</div><div class="card">é &amp; 漢</div><div class="card">100%</div></body></html> --><?xml version="1.0"?><rss><channel><item><title>one</title></item><item><title>&lt;two&gt;</title></item><item><title>three &amp; four</title></item></channel></rss>{"big":12345678901234567,"cards":[{"title":"a\u003cb"},{"title":"é \u0026 漢"},{"title":"100%"}],"html":"\u003cscript\u003e","n":1.5e-7,"none":null,"u":"\u2028"}
+# expect: 135 165 163 463
+# expect: <div class="card">a&lt;b</div>|{"title":"é \u0026 漢"}
+# expect: true true true
+# expect: safe: <b>&lt;w&gt;</b> | <nil> | <b>&lt;w&gt;</b> | <nil> | <w><b>&lt;w&gt;</b>
+# expect: t:<div class="card">a&lt;b</div>:{"title":"a\u003cb"}:<item><title>one</title></item>
+
+# ``str()``, f-strings, ``print`` and string concatenation of html, xml and
+# json values give the same text as before they were lowered to the
+# values' own String() (no fmt formatting).
+
+from lamjson import Json
+
+class Card {
+    func init(self, title: str) {
+        self.title: str = title
+    }
+
+    func __html__(self) -> html {
+        return <><div class="card">${self.title}</div></>
+    }
+
+    func __json__(self) -> json {
+        return {"title": self.title}
+    }
+}
+
+func page(cards: list[Card]) -> html {
+    return <><!doctype html><html><body>${[html(c) for c in cards]}</body></html></>
+}
+
+func feed(titles: list[str]) -> xml {
+    items: list[xml] = [<><item><title>${t}</title></item></> for t in titles]
+    return <><?xml version="1.0"?><rss><channel>${items}</channel></rss></>
+}
+
+class Widget {
+    func init(self, label: str) {
+        self.label: str = label
+    }
+
+    func render(self) -> html {
+        return <><b>${self.label}</b></>
+    }
+
+    func name(self) -> str {
+        return self.label
+    }
+}
+
+func pick(flag: bool, a: html, b: html) -> html {
+    return a if flag else b
+}
+
+func main() {
+    cards: list[Card] = [Card("a<b"), Card("é & 漢"), Card("100%")]
+    h: html = page(cards)
+    x: xml = feed(["one", "<two>", "three & four"])
+    j: json = {"cards": [json(c) for c in cards], "html": "<script>", "n": 1.5e-7, "big": 12345678901234567, "none": None, "u": "\u2028"}
+    empty: html = <></>
+    emptyX: xml = <></>
+    nothing: json = None
+    print(str(h))
+    print(str(x))
+    print(str(j))
+    print(f"[{empty}][{emptyX}][{nothing}]")
+    print(f"100% {h} {{literal}} {x} {j}")
+    print(f"{h}")
+    print(f"{pick(true, h, empty)}|{pick(false, h, empty)}")
+    print(h)
+    print(x)
+    print(j)
+    print("e:" + str(empty) + "|" + str(emptyX) + "|" + str(nothing))
+    joined: str = "<!-- " + str(h) + " -->" + str(x) + str(j)
+    print(joined)
+    print(len(str(h)), len(str(x)), len(str(j)), len(f"{h}{x}{j}"))
+    print(str(html(cards[0])) + "|" + str(json(cards[1])))
+    print(f"{str(h) == f'{h}'} {str(j) == Json.encode(j).unwrap()} {str(x) == f'{x}'}")
+    w: Widget = Widget("<w>")
+    none: Widget = None
+    safe = w?.render()
+    missing = none?.render()
+    safeName = w?.name()
+    print(f"safe: {safe} | {missing} | {str(safe)} | {str(missing)} | {safeName}{safe}")
+    title: str = "t"
+    print(f"{title}:{h.first('div')}:{j.cards[0]}:{x.first('item')}")
+}

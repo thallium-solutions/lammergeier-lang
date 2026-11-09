@@ -1,0 +1,49 @@
+# expect: true false true true true
+# expect: true false true false
+# expect: true true false true false
+# expect: false true
+# expect: false
+# expect: true
+# expect: 2
+# expect: true true
+# expect: true false
+# expect: 5
+
+# ``x in xs`` on a list of strings, numbers or booleans compares the
+# elements with ``==`` (no reflection): the same answers as before, NaN and
+# list literals (lowered as ``[]interface{}``) included.
+
+from lammath import Math
+
+class Tag {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+func main() {
+    tags: list[str] = ["a", "b c", "", "é"]
+    print("a" in tags, "b" in tags, "" in tags, "é" in tags, "x" not in tags)
+    ints: list[int] = [1, -2, 300]
+    print(1 in ints, 2 in ints, -2 in ints, 300 not in ints)
+    nan: float = Math.sqrt(-1.0)
+    big: float = 1e308
+    inf: float = big * 10.0
+    floats: list[float] = [0.0, 1.5, nan, inf]
+    print(-0.0 in floats, 1.5 in floats, nan in floats, inf in floats, 2 in floats)
+    flags: list[bool] = [False]
+    print(True in flags, False in flags)
+    empty: list[str] = []
+    print("a" in empty)
+    name: any = "b c"
+    print(name in tags)
+    words: list[str] = "the quick brown fox".split(" ")
+    print(len([w for w in ["fox", "dog", "the"] if w in words]))
+    t: Tag = Tag("a")
+    objs: list[Tag] = [t, Tag("b")]
+    print(t in objs, Tag("a") in objs)
+    nested: list[list[int]] = [[1, 2], [3]]
+    print([3] in nested, [2] in nested)
+    statuses: list[int] = [200, 404, 500, 201, 302, 422]
+    print(len([s for s in statuses if s in [200, 201, 404, 422, 500]]))
+}

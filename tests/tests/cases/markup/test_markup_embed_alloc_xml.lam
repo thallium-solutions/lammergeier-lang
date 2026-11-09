@@ -1,0 +1,72 @@
+# expect: inserted 100 times: ok
+# expect: nested 20 levels: ok
+# expect: rendered: ok
+# expect: render allocation: ok
+# expect: str and f-string: ok
+
+# The xml twin of test_markup_embed_alloc: inserting an xml value into a
+# literal shares its nodes (copy on write) instead of copying the tree, a
+# feed nested in many levels of wrapping does not copy its entries at every
+# level, and rendering (``str``, f-strings) allocates the text once.
+
+go! {
+    import "runtime"
+}
+
+func allocated() -> int {
+    total: int = 0
+    go! {
+        var ms runtime.MemStats
+        runtime.ReadMemStats(&ms)
+        total = int(ms.TotalAlloc)
+    }
+    return total
+}
+
+func big() -> xml {
+    entries: list[xml] = [<><entry id="${i}"><title>Item ${i} &amp; more</title><link href="/e/${i}"/><updated>${i * 2}</updated></entry></> for i in range(400)]
+    return <><feed xmlns="http://www.w3.org/2005/Atom">${entries}</feed></>
+}
+
+func level(n: int, content: xml) -> xml {
+    return <><wrap level="${n}"><body>${content}</body></wrap></>
+}
+
+func main() {
+    content: xml = big()
+    size: int = len(str(content))
+
+    # 100 insertions of a value of about 2,000 nodes
+    before: int = allocated()
+    copies: list[xml] = [content for __i in range(100)]
+    doc: xml = <><feeds>${copies}</feeds></>
+    perInsert: int = (allocated() - before) // 100
+    print(f"inserted 100 times: {'ok' if perInsert < 2048 else str(perInsert) + ' bytes per insertion'}")
+
+    # 20 levels of wrapping around it
+    before = allocated()
+    nested: xml = content
+    for n in range(20) {
+        nested = level(n, nested)
+    }
+    perLevel: int = (allocated() - before) // 20
+    print(f"nested 20 levels: {'ok' if perLevel < 4096 else str(perLevel) + ' bytes per level'}")
+
+    text: str = str(doc)
+    deep: str = str(nested)
+    good: bool = len(text) == len("<feeds></feeds>") + 100 * size and deep.count("<body>") == 20 and deep.count("<entry id=") == 400
+    print(f"rendered: {'ok' if good else 'wrong'}")
+
+    # Rendering allocates the text once (plus a little): no fmt copies.
+    before = allocated()
+    for __i in range(10) {
+        _ = str(nested)
+    }
+    perRender: int = (allocated() - before) // 10
+    print(f"render allocation: {'ok' if perRender < len(deep) + len(deep) // 8 + 1024 else str(perRender) + ' bytes for ' + str(len(deep))}")
+
+    before = allocated()
+    framed: str = f"<?xml version=\"1.0\"?>{nested}"
+    perFormat: int = allocated() - before
+    print(f"str and f-string: {'ok' if framed.length() == len(deep) + 21 and perFormat < 2 * len(deep) + 2048 else str(perFormat) + ' bytes'}")
+}

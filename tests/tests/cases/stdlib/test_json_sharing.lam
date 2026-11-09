@@ -1,0 +1,85 @@
+# expect: literal member shared: 2
+# expect: literal list shared: 3
+# expect: assignment shared: 4
+# expect: json() of json shared: 5
+# expect: __json__ result shared: 6 6
+# expect: dict converted: 1 2
+# expect: list converted: 2 3
+# expect: copy independent: 1 9 {"a":[1,2],"n":1}
+# expect: copy deep: [1,2] [1,2,3]
+# expect: copy scalars: "x" 1.5 null true
+# expect: nested 3 levels: {"l":{"l":{"l":{"n":7}}}}
+# expect: equality after sharing: true true
+
+# json values are shared like Python objects: putting one into a json
+# literal, converting it again with json(...), returning it from __json__ or
+# assigning it to a member keeps the same value (no copy); Lam dicts and
+# lists are converted (copied); Json.copy makes an independent deep copy.
+
+from lamjson import Json
+
+class Holder {
+    func init(self) {
+        self.meta: json = {"n": 1}
+    }
+
+    func __json__(self) -> json {
+        return self.meta
+    }
+}
+
+func main() {
+    inner: json = {"n": 1}
+    outer: json = {"inner": inner}
+    outer.inner.n = 2
+    print(f"literal member shared: {inner.n}")
+
+    listed: json = [inner, {"other": inner}]
+    listed[1].other.n = 3
+    print(f"literal list shared: {inner.n}")
+
+    doc: json = {}
+    doc.child = inner
+    doc.child.n = 4
+    print(f"assignment shared: {inner.n}")
+
+    again: json = json(inner)
+    again.n = 5
+    print(f"json() of json shared: {inner.n}")
+
+    h: Holder = Holder()
+    converted: json = json(h)
+    converted.n = 6
+    print(f"__json__ result shared: {h.meta.n} {converted.n}")
+
+    source: dict[str, any] = {"n": 1}
+    fromDict: json = Json.fromValue(source).unwrap()
+    fromDict.n = 2
+    print(f"dict converted: {source['n']} {fromDict.n}")
+
+    items: list[int] = [1, 2]
+    fromList: json = json(items)
+    fromList[0] = 9
+    items.append(3)
+    print(f"list converted: {len(fromList)} {len(items)}")
+
+    original: json = {"n": 1, "a": [1, 2]}
+    copied: json = Json.copy(original)
+    copied.n = 9
+    print(f"copy independent: {original.n} {copied.n} {original}")
+    copied.a[0] = 1
+    deep: json = Json.copy(original)
+    deep.a = [1, 2, 3]
+    print(f"copy deep: {original.a} {deep.a}")
+    print(f"copy scalars: {Json.copy('x')} {Json.copy(1.5)} {Json.copy(None)} {Json.copy(true)}")
+
+    level: json = {"n": 7}
+    for __i in range(3) {
+        level = {"l": level}
+    }
+    print(f"nested 3 levels: {level}")
+
+    a: json = {"x": [1, {"y": 2}]}
+    b: json = {"wrap": a}
+    print(f"equality after sharing: {b.wrap == a} {Json.copy(b) == b}")
+}

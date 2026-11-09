@@ -1,0 +1,796 @@
+# Generators are resumable state machines: every construct of a body can
+# hold a `yield` and the body continues from it on the next value — nested
+# `while` / `for` loops over ranges, lists, dicts, strings, `enumerate`,
+# tuples and other generators, `break` / `continue` / loop `else`, `if` /
+# `elif` / `else`, `match`, `try` / `catch` / `else` / `finally` (an
+# exception raised after a resume is caught by the generator's own
+# `catch`, a `finally` that returns ends it), `with`, `do` / `catch`, `?`,
+# `isinstance` narrowing, generic generators, methods, nested generators
+# capturing outer variables changed between resumes, recursion through
+# `yield from`, generators of tuples. A generator stopped early (a loop
+# leaving it, `break` from a generator value then dropped) runs the
+# `finally` blocks and `with` closes of the state it is suspended in: in a
+# loop, a `try` body, a `catch`, an `else`, a `finally`, a `with`, a loop
+# over another generator (which is stopped too), a `do` body, a `match`
+# case. Statements without a `yield` inside such a body keep their
+# lowering (a `try`, `with` or `do` there, with `break` / `continue` /
+# `return` crossing it); an exception re-raised from a `catch` after a
+# resume, one raised in an `else`, and one a `finally` raises while the
+# generator is stopped reach the right handler.
+#
+# expect: nested 0:0 0:1 1:0 1:1 2:0 2:1
+# expect: skip 1 3 5 7
+# expect: else 0 1 2 exhausted
+# expect: broke 0 1
+# expect: branches neg zero small big
+# expect: dict a=1 b=2 c=3
+# expect: chars h-i
+# expect: enum 0a 1b
+# expect: pairs x1 y2
+# expect: delegated 1 2 3
+# expect: resumed catch: caught ValueError: bad 2
+# expect: resumed 1 -1 3
+# expect: catch-yield 10 caught 20
+# expect: try-else 1 else 2 finally
+# expect: finally-yield 1 f1 f2
+# expect: finally-return 1 2
+# expect: consumer ValueError: from body
+# expect: raised then 1
+# expect: match one two many:5
+# expect: narrow circle:2 square:3
+# expect: generic 3 2 1
+# expect: method a! b!
+# expect: closure 1 11 111
+# expect: tree 1 2 3 4 5
+# expect: tuples a:1 b:2
+# expect: q 1 2
+# expect: q stopped bad q
+# expect: do 1 2 handled: bad q
+# expect: stop loop:
+# expect: finally loop
+# expect: stop try:
+# expect: finally try
+# expect: stop catch:
+# expect: finally catch
+# expect: stop else:
+# expect: finally else
+# expect: in finally a
+# expect: stop finally:
+# expect: in finally b
+# expect: stop with:
+# expect: close w
+# expect: stop inner:
+# expect: finally inner
+# expect: finally outer
+# expect: stop do:
+# expect: finally do
+# expect: stop match:
+# expect: finally match
+# expect: value 1
+# expect: value finally
+# expect: value rest 2 3
+# expect: return-in-try 1
+# expect: cleanup
+# expect: close r0
+# expect: with r2
+# expect: close r2
+# expect: leaf caught ValueError: three
+# expect: leaf finally
+# expect: outer finally
+# expect: leafs v0 v2 after
+# expect: early e0
+# expect: reraise caught fin1 outer ValueError: inner end
+# expect: body
+# expect: else
+# expect: fin
+# expect: consumer ValueError: from else
+# expect: stop raised ValueError: from finally
+# expect: inner fin 0
+# expect: outer fin 0
+# expect: inner fin 1
+# expect: caught KeyError: k
+# expect: outer fin 1
+# expect: nested finally a0 a1 handled
+# expect: done
+
+from lamerrors import Result
+
+class Res {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func Close(self) {
+        print("close " + self.name)
+    }
+}
+
+class Shape {
+    func init(self, size: int) {
+        self.size: int = size
+    }
+}
+
+class Circle(Shape) {
+    func init(self, size: int) {
+        base.init(size)
+    }
+}
+
+class Square(Shape) {
+    func init(self, size: int) {
+        base.init(size)
+    }
+}
+
+class Node {
+    func init(self, value: int, kids: list[Node]) {
+        self.value: int = value
+        self.kids: list[Node] = kids
+    }
+}
+
+class Bag {
+    func init(self, items: list[str]) {
+        self.items: list[str] = items
+    }
+
+    func loud(self) -> generator[str] {
+        for it in self.items {
+            yield it + "!"
+        }
+    }
+}
+
+func nested() -> generator[str] {
+    for i in range(3) {
+        j: int = 0
+        while j < 2 {
+            yield f"{i}:{j}"
+            j += 1
+        }
+    }
+}
+
+func odds(n: int) -> generator[int] {
+    for i in range(n) {
+        if i % 2 == 0 {
+            continue
+        }
+        yield i
+    }
+}
+
+func withElse(n: int, stopAt: int) -> generator[str] {
+    for i in range(n) {
+        if i == stopAt {
+            break
+        }
+        yield str(i)
+    } else {
+        yield "exhausted"
+    }
+}
+
+func classify(xs: list[int]) -> generator[str] {
+    for x in xs {
+        if x < 0 {
+            yield "neg"
+        } elif x == 0 {
+            yield "zero"
+        } elif x < 10 {
+            yield "small"
+        } else {
+            yield "big"
+        }
+    }
+}
+
+func entries(d: dict[str, int]) -> generator[str] {
+    keys: list[str] = []
+    for k, v in d {
+        keys.append(f"{k}={v}")
+    }
+    keys = keys.sort()
+    for e in keys {
+        yield e
+    }
+}
+
+func chars(s: str) -> generator[str] {
+    for c in s {
+        yield c
+    }
+}
+
+func numbered(items: list[str]) -> generator[str] {
+    for i, s in enumerate(items) {
+        yield f"{i}{s}"
+    }
+}
+
+func pairsOf(items: list[tuple[str, int]]) -> generator[str] {
+    for name, n in items {
+        yield f"{name}{n}"
+    }
+}
+
+func upTo(n: int) -> generator[int] {
+    i: int = 1
+    while i <= n {
+        yield i
+        i += 1
+    }
+}
+
+func delegated() -> generator[int] {
+    for v in upTo(3) {
+        yield v
+    }
+}
+
+func check(x: int) -> int {
+    if x == 2 {
+        raise ValueError("bad 2")
+    }
+    return x
+}
+
+func resumedCatch(xs: list[int]) -> generator[int] {
+    for x in xs {
+        try {
+            yield check(x)
+        } catch ValueError as e {
+            print("resumed catch: caught", e)
+            yield -1
+        }
+    }
+}
+
+func catchYield() -> generator[str] {
+    try {
+        yield "10"
+        raise ValueError("x")
+    } catch ValueError {
+        yield "caught"
+        yield "20"
+    }
+}
+
+func tryElse() -> generator[str] {
+    try {
+        yield "1"
+    } catch ValueError {
+        yield "never"
+    } else {
+        yield "else"
+        yield "2"
+    } finally {
+        yield "finally"
+    }
+}
+
+func finallyYield() -> generator[str] {
+    try {
+        yield "1"
+    } finally {
+        yield "f1"
+        yield "f2"
+    }
+}
+
+func finallyReturn() -> generator[int] {
+    i: int = 0
+    while True {
+        try {
+            i += 1
+            yield i
+            if i == 2 {
+                raise ValueError("swallowed")
+            }
+        } finally {
+            if i == 2 {
+                return
+            }
+        }
+    }
+}
+
+func failing() -> generator[int] {
+    yield 1
+    raise ValueError("from body")
+}
+
+func raisedThen() -> generator[str] {
+    try {
+        raise ValueError("first")
+    } catch ValueError {
+        yield "raised"
+    }
+    yield "then"
+    yield "1"
+}
+
+func matcher(xs: list[int]) -> generator[str] {
+    for x in xs {
+        match x {
+            case 1 {
+                yield "one"
+            }
+            case 2 {
+                yield "two"
+            }
+            case n {
+                yield f"many:{n}"
+            }
+        }
+    }
+}
+
+func shapes(items: list[Shape]) -> generator[str] {
+    for s in items {
+        if isinstance(s, Circle) {
+            yield f"circle:{s.size}"
+        } elif isinstance(s, Square) {
+            yield f"square:{s.size}"
+        }
+    }
+}
+
+func backwards[T](items: list[T]) -> generator[T] {
+    i: int = len(items) - 1
+    while i >= 0 {
+        yield items[i]
+        i -= 1
+    }
+}
+
+func walk(n: Node) -> generator[int] {
+    yield n.value
+    for k in n.kids {
+        yield from walk(k)
+    }
+}
+
+func tuples() -> generator[tuple[str, int]] {
+    yield ("a", 1)
+    yield ("b", 2)
+}
+
+func parseNum(s: str) -> Result[int] {
+    if s == "bad" {
+        return Result.Err("bad q")
+    }
+    return Result.Ok(int(s))
+}
+
+func qGen(items: list[str]) -> generator[int] {
+    for s in items {
+        n: int = parseNum(s)?
+        yield n
+    }
+}
+
+func doGen(items: list[str]) -> generator[str] {
+    do {
+        for s in items {
+            n: int = parseNum(s)?
+            yield str(n)
+        }
+    } catch err {
+        yield f"handled: {err.message}"
+    }
+}
+
+func stopLoop() -> generator[int] {
+    try {
+        for i in range(10) {
+            yield i
+        }
+    } finally {
+        print("finally loop")
+    }
+}
+
+func stopTry() -> generator[int] {
+    try {
+        yield 1
+        yield 2
+    } finally {
+        print("finally try")
+    }
+}
+
+func stopCatch() -> generator[int] {
+    try {
+        try {
+            raise ValueError("c")
+        } catch ValueError {
+            yield 1
+            yield 2
+        }
+    } finally {
+        print("finally catch")
+    }
+}
+
+func stopElse() -> generator[int] {
+    try {
+        yield 0
+    } catch ValueError {
+        print("never")
+    } else {
+        yield 1
+        yield 2
+    } finally {
+        print("finally else")
+    }
+}
+
+func stopFinally() -> generator[int] {
+    try {
+        try {
+            yield 0
+        } finally {
+            print("in finally a")
+            yield 1
+            print("never after yield in finally")
+        }
+    } finally {
+        print("in finally b")
+    }
+}
+
+func stopWith() -> generator[int] {
+    with Res("w") as r {
+        yield 1
+        yield 2
+    }
+}
+
+func innerGen() -> generator[int] {
+    try {
+        yield 1
+        yield 2
+    } finally {
+        print("finally inner")
+    }
+}
+
+func stopInner() -> generator[int] {
+    try {
+        for v in innerGen() {
+            yield v
+        }
+    } finally {
+        print("finally outer")
+    }
+}
+
+func stopDo() -> generator[int] {
+    try {
+        do {
+            n: int = parseNum("1")?
+            yield n
+            yield n + 1
+        } catch _ {
+            print("never")
+        }
+    } finally {
+        print("finally do")
+    }
+}
+
+func stopMatch(x: int) -> generator[int] {
+    try {
+        match x {
+            case 1 {
+                yield 1
+                yield 2
+            }
+            case _ {
+                yield 0
+            }
+        }
+    } finally {
+        print("finally match")
+    }
+}
+
+func counted() -> generator[int] {
+    try {
+        for i in range(4) {
+            yield i
+        }
+    } finally {
+        print("value finally")
+    }
+}
+
+func returnInTry() -> generator[int] {
+    try {
+        for i in range(5) {
+            if i == 1 {
+                return
+            }
+            yield 1
+        }
+    } finally {
+        print("cleanup")
+    }
+}
+
+func risky(x: int) -> int {
+    if x == 3 {
+        raise ValueError("three")
+    }
+    return x
+}
+
+func parseLeaf(s: str) -> Result[int] {
+    if s == "x" {
+        return Result.Err("bad")
+    }
+    return Result.Ok(int(s))
+}
+
+func leafs(n: int) -> generator[str] {
+    try {
+        for i in range(n) {
+            try {
+                if i == 1 {
+                    continue
+                }
+                v: int = risky(i)
+                if v == 4 {
+                    break
+                }
+            } catch ValueError as e {
+                print("leaf caught", e)
+                continue
+            }
+            with Res(f"r{i}") as r {
+                if i == 2 {
+                    print("with", r.name)
+                }
+            }
+            do {
+                k: int = parseLeaf(str(i))?
+                if k == 5 {
+                    return
+                }
+            } catch err {
+                print(err)
+            }
+            yield f"v{i}"
+        }
+        yield "after"
+        try {
+            return
+        } finally {
+            print("leaf finally")
+        }
+    } finally {
+        print("outer finally")
+    }
+}
+
+func early(n: int) -> generator[str] {
+    for i in range(n) {
+        do {
+            k: int = parseLeaf(str(i))?
+            if k == 1 {
+                return
+            }
+        } catch err {
+            print(err)
+        }
+        yield f"e{i}"
+    }
+}
+
+func elseRaises() -> generator[str] {
+    try {
+        yield "body"
+    } catch ValueError {
+        yield "not here"
+    } else {
+        yield "else"
+        raise ValueError("from else")
+    } finally {
+        yield "fin"
+    }
+}
+
+func stopRaises() -> generator[int] {
+    try {
+        yield 1
+        yield 2
+    } finally {
+        raise ValueError("from finally")
+    }
+}
+
+func nestedFinally() -> generator[str] {
+    for i in range(2) {
+        try {
+            try {
+                yield f"a{i}"
+                if i == 1 {
+                    raise KeyError("k")
+                }
+            } finally {
+                print("inner fin", i)
+            }
+        } catch KeyError as e {
+            print("caught", e)
+            yield "handled"
+        } finally {
+            print("outer fin", i)
+        }
+    }
+}
+
+func reraise() -> generator[str] {
+    try {
+        try {
+            raise ValueError("inner")
+        } catch ValueError as e {
+            yield "caught"
+            raise
+        } finally {
+            yield "fin1"
+        }
+    } catch ValueError as e2 {
+        yield f"outer {e2}"
+    }
+    yield "end"
+}
+
+func join(xs: list[str]) -> str {
+    return " ".join(xs)
+}
+
+func main() {
+    print("nested", join([s for s in nested()]))
+    print("skip", join([str(x) for x in odds(9)]))
+    print("else", join([s for s in withElse(3, 99)]))
+    print("broke", join([s for s in withElse(5, 2)]))
+    print("branches", join([s for s in classify([-3, 0, 4, 40])]))
+    print("dict", join([s for s in entries({"b": 2, "a": 1, "c": 3})]))
+    print("chars", "-".join([c for c in chars("hi")]))
+    print("enum", join([s for s in numbered(["a", "b"])]))
+    print("pairs", join([s for s in pairsOf([("x", 1), ("y", 2)])]))
+    print("delegated", join([str(v) for v in delegated()]))
+    print("resumed", join([str(v) for v in resumedCatch([1, 2, 3])]))
+    print("catch-yield", join([s for s in catchYield()]))
+    print("try-else", join([s for s in tryElse()]))
+    print("finally-yield", join([s for s in finallyYield()]))
+    print("finally-return", join([str(v) for v in finallyReturn()]))
+    try {
+        for v in failing() {
+            _ = v
+        }
+    } catch ValueError as e {
+        print("consumer", e)
+    }
+    print(join([s for s in raisedThen()]))
+    print("match", join([s for s in matcher([1, 2, 5])]))
+    print("narrow", join([s for s in shapes([Circle(2), Shape(9), Square(3)])]))
+    print("generic", join([str(v) for v in backwards([1, 2, 3])]))
+    print("method", join([s for s in Bag(["a", "b"]).loud()]))
+
+    base: int = 1
+    func scaled() -> generator[int] {
+        for i in range(3) {
+            yield base
+        }
+    }
+    got: list[str] = []
+    for v in scaled() {
+        got.append(str(v))
+        base = base * 10 + 1
+    }
+    print("closure", join(got))
+
+    tree: Node = Node(1, [Node(2, [Node(3, [])]), Node(4, [Node(5, [])])])
+    print("tree", join([str(v) for v in walk(tree)]))
+    tparts: list[str] = []
+    for name, n in tuples() {
+        tparts.append(f"{name}:{n}")
+    }
+    print("tuples", join(tparts))
+    print("q", join([str(v) for v in qGen(["1", "2"])]))
+    try {
+        for v in qGen(["1", "bad", "3"]) {
+            _ = v
+        }
+    } catch e {
+        print("q stopped", e)
+    }
+    print("do", join([s for s in doGen(["1", "2", "bad", "4"])]))
+
+    for v in stopLoop() {
+        print("stop loop:")
+        break
+    }
+    for v in stopTry() {
+        print("stop try:")
+        break
+    }
+    for v in stopCatch() {
+        print("stop catch:")
+        break
+    }
+    for v in stopElse() {
+        if v == 1 {
+            print("stop else:")
+            break
+        }
+    }
+    for v in stopFinally() {
+        if v == 1 {
+            print("stop finally:")
+            break
+        }
+    }
+    for v in stopWith() {
+        print("stop with:")
+        break
+    }
+    for v in stopInner() {
+        print("stop inner:")
+        break
+    }
+    for v in stopDo() {
+        print("stop do:")
+        break
+    }
+    for v in stopMatch(1) {
+        print("stop match:")
+        break
+    }
+
+    g: generator[int] = upTo(9)
+    seen: list[str] = []
+    for v in g {
+        seen.append(str(v))
+        if v == 1 {
+            break
+        }
+    }
+    print("value", join(seen))
+    g2: generator[int] = counted()
+    rest: list[str] = []
+    for v in g2 {
+        if v == 1 {
+            break
+        }
+    }
+    for v in g2 {
+        rest.append(str(v))
+    }
+    print("value rest", join(rest))
+    for v in returnInTry() {
+        print("return-in-try", v)
+    }
+    print("leafs", join([s for s in leafs(6)]))
+    print("early", join([s for s in early(5)]))
+    print("reraise", join([s for s in reraise()]))
+    try {
+        for s in elseRaises() {
+            print(s)
+        }
+    } catch ValueError as e {
+        print("consumer", e)
+    }
+    try {
+        for v in stopRaises() {
+            break
+        }
+    } catch ValueError as e {
+        print("stop raised", e)
+    }
+    print("nested finally", join([s for s in nestedFinally()]))
+    print("done")
+}

@@ -72,6 +72,10 @@
 # timestamp in a Go layout (whole seconds by default) — and
 # ``Db.textArray(values)`` writes a ``text[]`` parameter (``?::text[]``).
 #
+# ``first`` / ``scalar`` / ``firstJson`` / ``scalarJson`` stop reading at the
+# first row (the rest of the result set is not read, no ``LIMIT`` needed);
+# ``scalar`` is the first column in select order.
+#
 # Failures keep the driver's error as their ``Error.cause``:
 # ``Db.sqlState(result)`` reads its SQLSTATE (SQLite and MySQL constraint
 # codes mapped to the standard ones) and ``Db.isUniqueViolation`` /
@@ -101,6 +105,9 @@ go! {
         lamPq "github.com/lib/pq"
         lamSqlite "modernc.org/sqlite"
     )
+
+    // ``"`` and ``\`` inside a quoted array element (``Db.textArray``).
+    var lamDbTextArrayEscaper = strings.NewReplacer("\\", "\\\\", "\"", "\\\"")
 
     func lamDbContext(ctx *Context) context.Context {
         if ctx == nil {
@@ -134,10 +141,11 @@ go! {
     // ``$1``, ``$2``, … so when the dialect is postgres we rewrite
     // every unquoted ``?`` to ``$N`` (where N is its 1-based index).
     func lamDbRewritePlaceholders(query, dialect string) string {
-        if dialect != "postgres" {
+        if dialect != "postgres" || strings.IndexByte(query, '?') < 0 {
             return query
         }
         var b strings.Builder
+        b.Grow(len(query) + 16)
         n := 0
         inSingle := false
         inDouble := false
@@ -190,6 +198,99 @@ go! {
             rendered++
         }
         return b.String(), params
+    }
+
+    // ─── Reading rows ─────────────────────────────────────────
+    // ``lamDbQuery`` runs a SELECT (retrying transient failures ``attempts``
+    // times) and reads up to ``limit`` rows (every row when ``limit`` is
+    // 0) as maps keyed by column name, text and bytes as ``str``; it also
+    // returns the column names in select order. With a limit the rows are
+    // closed as soon as it is reached, so ``first`` / ``scalar`` never read
+    // (or keep) the rest of the result set.
+    type lamDbQueryer interface {
+        QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+    }
+
+    func lamDbQuery(ctx context.Context, conn lamDbQueryer, q string, args []interface{}, attempts int, retryBaseMs int, limit int) ([]map[string]interface{}, []string, error) {
+        var lastErr error
+        for k := 0; k < attempts; k++ {
+            rows, err := conn.QueryContext(ctx, q, args...)
+            if err != nil {
+                lastErr = err
+                if lamDbIsTransient(err) && k < attempts-1 {
+                    if waitErr := lamDbRetryWait(ctx, time.Duration(retryBaseMs<<k) * time.Millisecond); waitErr != nil {
+                        lastErr = waitErr
+                        break
+                    }
+                    continue
+                }
+                break
+            }
+            out, cols, err := lamDbReadRows(rows, limit)
+            if err != nil {
+                lastErr = err
+                break
+            }
+            return out, cols, nil
+        }
+        if lastErr == nil {
+            lastErr = fmt.Errorf("query failed without a driver error")
+        }
+        return nil, nil, lastErr
+    }
+
+    func lamDbReadRows(rows *sql.Rows, limit int) ([]map[string]interface{}, []string, error) {
+        cols, err := rows.Columns()
+        if err != nil {
+            rows.Close()
+            return nil, nil, err
+        }
+        out := []map[string]interface{}{}
+        // One scan buffer for every row: each row map gets its own values.
+        vals := make([]interface{}, len(cols))
+        ptrs := make([]interface{}, len(cols))
+        for i := range vals {
+            ptrs[i] = &vals[i]
+        }
+        for rows.Next() {
+            if err = rows.Scan(ptrs...); err != nil {
+                break
+            }
+            row := make(map[string]interface{}, len(cols))
+            for i, c := range cols {
+                if b, ok := vals[i].([]byte); ok {
+                    row[c] = string(b)
+                } else {
+                    row[c] = vals[i]
+                }
+            }
+            out = append(out, row)
+            if limit > 0 && len(out) >= limit {
+                break
+            }
+        }
+        if err == nil {
+            err = rows.Err()
+        }
+        closeErr := rows.Close()
+        if err == nil && limit > 0 {
+            // Stopping early: closing reads what the driver still has to
+            // read of the result, and reports a failure found there.
+            err = closeErr
+        }
+        if err != nil {
+            return nil, nil, err
+        }
+        return out, cols, nil
+    }
+
+    // lamDbFirstColumn is the first column (in select order) of the first
+    // row, nil without rows.
+    func lamDbFirstColumn(rows []map[string]interface{}, cols []string) interface{} {
+        if len(rows) == 0 || len(cols) == 0 {
+            return nil
+        }
+        return rows[0][cols[0]]
     }
 
     // ─── Transient error detection ────────────────────────────
@@ -502,13 +603,18 @@ class Db {
         out: str = ""
         go! {
             var sb strings.Builder
+            size := 2
+            for _, value := range values {
+                size += len(value) + 3
+            }
+            sb.Grow(size)
             sb.WriteByte('{')
             for i, value := range values {
                 if i > 0 {
                     sb.WriteByte(',')
                 }
                 sb.WriteByte('"')
-                sb.WriteString(strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(value))
+                lamDbTextArrayEscaper.WriteString(&sb, value)
                 sb.WriteByte('"')
             }
             sb.WriteByte('}')
@@ -690,8 +796,8 @@ class Db {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", "database is not connected", nil))
             }
             q := lamDbRewritePlaceholders(query, self.Driver)
-            args := make([]interface{}, len(params))
-            for i, p := range params { args[i] = p }
+            // database/sql copies the arguments; ``params`` is passed as is.
+            args := params
             attempts := self.MaxRetries + 1
             ctx := lamDbContext(self.Context)
             var lastErr error
@@ -726,68 +832,37 @@ class Db {
         return result
     }
 
-    func _query(self, query: str, params: list[any]) -> Result[list[dict[str, any]]] {
-        #- Run a SELECT and return all rows as dictionaries keyed by column
-           name. Query, metadata, scan, iteration, and connection failures
-           are returned as ``DbQueryError``. -#
+    func _query(self, query: str, params: list[any], limit: int = 0) -> Result[list[dict[str, any]]] {
+        #- Run a SELECT and return its rows (at most ``limit`` when it is
+           not 0) as dictionaries keyed by column name. Query, metadata,
+           scan, iteration, and connection failures are returned as
+           ``DbQueryError``. -#
         go! {
             handle, ok := self.Handle.(*sql.DB)
             if !ok || handle == nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", "database is not connected", nil))
             }
             q := lamDbRewritePlaceholders(query, self.Driver)
-            args := make([]interface{}, len(params))
-            for i, p := range params { args[i] = p }
-            attempts := self.MaxRetries + 1
-            ctx := lamDbContext(self.Context)
-            var lastErr error
-            for k := 0; k < attempts; k++ {
-                rows, err := handle.QueryContext(ctx, q, args...)
-                if err != nil {
-                    lastErr = err
-                    if lamDbIsTransient(err) && k < attempts-1 {
-                        if waitErr := lamDbRetryWait(ctx, time.Duration(self.RetryBaseMs<<k) * time.Millisecond); waitErr != nil {
-                            lastErr = waitErr
-                            break
-                        }
-                        continue
-                    }
-                    break
-                }
-                cols, err := rows.Columns()
-                if err != nil {
-                    rows.Close()
-                    lastErr = err
-                    break
-                }
-                out := []map[string]interface{}{}
-                for rows.Next() {
-                    vals := make([]interface{}, len(cols))
-                    ptrs := make([]interface{}, len(cols))
-                    for i := range vals { ptrs[i] = &vals[i] }
-                    if err = rows.Scan(ptrs...); err != nil { break }
-                    row := map[string]interface{}{}
-                    for i, c := range cols {
-                        if b, ok := vals[i].([]byte); ok {
-                            row[c] = string(b)
-                        } else {
-                            row[c] = vals[i]
-                        }
-                    }
-                    out = append(out, row)
-                }
-                if err == nil { err = rows.Err() }
-                rows.Close()
-                if err != nil {
-                    lastErr = err
-                    break
-                }
-                return LAMMERGEIER.Result.Ok(out)
+            out, _, err := lamDbQuery(lamDbContext(self.Context), handle, q, params, self.MaxRetries+1, self.RetryBaseMs, limit)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), err))
             }
-            if lastErr == nil {
-                lastErr = fmt.Errorf("query failed without a driver error")
+            return LAMMERGEIER.Result.Ok(out)
+        }
+    }
+
+    func _scalar(self, query: str, params: list[any]) -> Result[any] {
+        go! {
+            handle, ok := self.Handle.(*sql.DB)
+            if !ok || handle == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", "database is not connected", nil))
             }
-            return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", lastErr.Error(), lastErr))
+            q := lamDbRewritePlaceholders(query, self.Driver)
+            out, cols, err := lamDbQuery(lamDbContext(self.Context), handle, q, params, self.MaxRetries+1, self.RetryBaseMs, 1)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), err))
+            }
+            return LAMMERGEIER.Result.Ok(lamDbFirstColumn(out, cols))
         }
     }
 
@@ -799,8 +874,10 @@ class Db {
     }
 
     func firstJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> Result[dict[str, any]] {
-        #- The first row of ``queryJson`` (``{}`` if no rows were returned). -#
-        rows: list[dict[str, any]] = self.queryJson(query, jsonColumns, params)?
+        #- The first row of ``queryJson`` (``{}`` if no rows were returned);
+           like ``first``, only that row is read and decoded. -#
+        rows: list[dict[str, any]] = self._firstRows(query, params)?
+        rows = Db._jsonRows(rows, jsonColumns)?
         return Result.Ok(Db._firstRow(rows))
     }
 
@@ -813,16 +890,27 @@ class Db {
 
     func first(self, query: str, params: list[any] = []) -> Result[dict[str, any]] {
         #- Run a SELECT and return only the first row (``{}`` if no rows
-           were returned). Query failures remain visible as errors. -#
-        rows: list[dict[str, any]] = self.query(query, params)?
+           were returned); the rest of the result set is not read. Query
+           failures remain visible as errors. -#
+        rows: list[dict[str, any]] = self._firstRows(query, params)?
         return Result.Ok(Db._firstRow(rows))
     }
 
+    func _firstRows(self, query: str, params: list[any]) -> Result[list[dict[str, any]]] {
+        observation: DbObservation = self._start(query)
+        result: Result[list[dict[str, any]]] = self._query(query, params, 1)
+        self._finish(observation, result)
+        return result
+    }
+
     func scalar(self, query: str, params: list[any] = []) -> Result[any] {
-        #- Run a SELECT and return the first column of the first row.
-           An empty result set is ``Ok(None)``; query failures are errors. -#
-        rows: list[dict[str, any]] = self.query(query, params)?
-        return Result.Ok(Db._firstValue(rows))
+        #- Run a SELECT and return the first column (in select order) of
+           the first row; the rest of the result set is not read. An empty
+           result set is ``Ok(None)``; query failures are errors. -#
+        observation: DbObservation = self._start(query)
+        result: Result[any] = self._scalar(query, params)
+        self._finish(observation, result)
+        return result
     }
 
     # Shared by ``Db`` and ``Tx`` so both read rows the same way.
@@ -832,21 +920,6 @@ class Db {
             return empty
         }
         return rows[0]
-    }
-
-    static func _firstValue(rows: list[dict[str, any]]) -> any {
-        if len(rows) == 0 {
-            return None
-        }
-        first_: dict[str, any] = rows[0]
-        out: any = None
-        go! {
-            for _, v := range first_ {
-                out = v
-                break
-            }
-        }
-        return out
     }
 
     static func _jsonRows(rows: list[dict[str, any]], jsonColumns: list[str]) -> Result[list[dict[str, any]]] {
@@ -1476,8 +1549,8 @@ class Tx {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", "transaction is not active", nil))
             }
             q := lamDbRewritePlaceholders(query, self.Driver)
-            args := make([]interface{}, len(params))
-            for i, p := range params { args[i] = p }
+            // database/sql copies the arguments; ``params`` is passed as is.
+            args := params
             res, err := tx.ExecContext(lamDbContext(self.Context), q, args...)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbExecError", err.Error(), err))
@@ -1497,42 +1570,14 @@ class Tx {
         return result
     }
 
-    func _query(self, query: str, params: list[any]) -> Result[list[dict[str, any]]] {
+    func _query(self, query: str, params: list[any], limit: int = 0) -> Result[list[dict[str, any]]] {
         go! {
             tx, ok := self.Conn.(*sql.Tx)
             if !ok || tx == nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", "transaction is not active", nil))
             }
             q := lamDbRewritePlaceholders(query, self.Driver)
-            args := make([]interface{}, len(params))
-            for i, p := range params { args[i] = p }
-            rows, err := tx.QueryContext(lamDbContext(self.Context), q, args...)
-            if err != nil {
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), err))
-            }
-            cols, err := rows.Columns()
-            if err != nil {
-                rows.Close()
-                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), err))
-            }
-            out := []map[string]interface{}{}
-            for rows.Next() {
-                vals := make([]interface{}, len(cols))
-                ptrs := make([]interface{}, len(cols))
-                for i := range vals { ptrs[i] = &vals[i] }
-                if err = rows.Scan(ptrs...); err != nil { break }
-                row := map[string]interface{}{}
-                for i, c := range cols {
-                    if b, ok := vals[i].([]byte); ok {
-                        row[c] = string(b)
-                    } else {
-                        row[c] = vals[i]
-                    }
-                }
-                out = append(out, row)
-            }
-            if err == nil { err = rows.Err() }
-            rows.Close()
+            out, _, err := lamDbQuery(lamDbContext(self.Context), tx, q, params, 1, 0, limit)
             if err != nil {
                 return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), err))
             }
@@ -1540,19 +1585,43 @@ class Tx {
         }
     }
 
+    func _scalar(self, query: str, params: list[any]) -> Result[any] {
+        go! {
+            tx, ok := self.Conn.(*sql.Tx)
+            if !ok || tx == nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", "transaction is not active", nil))
+            }
+            q := lamDbRewritePlaceholders(query, self.Driver)
+            out, cols, err := lamDbQuery(lamDbContext(self.Context), tx, q, params, 1, 0, 1)
+            if err != nil {
+                return LAMMERGEIER.Result.Err(LAMMERGEIER.Error("DbQueryError", err.Error(), err))
+            }
+            return LAMMERGEIER.Result.Ok(lamDbFirstColumn(out, cols))
+        }
+    }
+
+    func _firstRows(self, query: str, params: list[any]) -> Result[list[dict[str, any]]] {
+        observation: DbObservation = self._start(query)
+        result: Result[list[dict[str, any]]] = self._query(query, params, 1)
+        self._finish(observation, result)
+        return result
+    }
+
     func first(self, query: str, params: list[any] = []) -> Result[dict[str, any]] {
         #- ``Db.first`` inside the transaction: the first row of
            ``tx.query`` (``{}`` if no rows were returned), observed and run
            with the transaction's context like ``tx.query``. -#
-        rows: list[dict[str, any]] = self.query(query, params)?
+        rows: list[dict[str, any]] = self._firstRows(query, params)?
         return Result.Ok(Db._firstRow(rows))
     }
 
     func scalar(self, query: str, params: list[any] = []) -> Result[any] {
         #- ``Db.scalar`` inside the transaction: the first column of the
            first row, ``Ok(None)`` for an empty result. -#
-        rows: list[dict[str, any]] = self.query(query, params)?
-        return Result.Ok(Db._firstValue(rows))
+        observation: DbObservation = self._start(query)
+        result: Result[any] = self._scalar(query, params)
+        self._finish(observation, result)
+        return result
     }
 
     func queryJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> Result[list[dict[str, any]]] {
@@ -1563,7 +1632,8 @@ class Tx {
 
     func firstJson(self, query: str, jsonColumns: list[str], params: list[any] = []) -> Result[dict[str, any]] {
         #- ``Db.firstJson`` inside the transaction. -#
-        rows: list[dict[str, any]] = self.queryJson(query, jsonColumns, params)?
+        rows: list[dict[str, any]] = self._firstRows(query, params)?
+        rows = Db._jsonRows(rows, jsonColumns)?
         return Result.Ok(Db._firstRow(rows))
     }
 

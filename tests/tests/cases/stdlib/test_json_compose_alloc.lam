@@ -1,0 +1,94 @@
+# expect: nested 20 levels: ok
+# expect: inserted 100 times: ok
+# expect: encoded: ok
+# expect: encode allocation: ok
+# expect: literal allocation: ok
+# expect: shared: 2 2
+
+# Composing json values does not copy them: a json value put into a json
+# literal (or returned by ``__json__`` and converted with ``json(x)``) is
+# shared, as ``doc.key = value`` already shares it, so a document nested in
+# many levels costs the same per level whatever its size, and encoding
+# writes the text once.
+
+from lamjson import Json
+
+go! {
+    import "runtime"
+}
+
+func allocated() -> int {
+    total: int = 0
+    go! {
+        var ms runtime.MemStats
+        runtime.ReadMemStats(&ms)
+        total = int(ms.TotalAlloc)
+    }
+    return total
+}
+
+class Product {
+    func init(self, i: int) {
+        self.id: int = i
+        self.name: str = f"Product {i}"
+        self.tags: list[str] = ["new", f"t{i % 5}"]
+    }
+
+    func __json__(self) -> json {
+        return {"id": self.id, "name": self.name, "tags": self.tags, "price": {"now": self.id * 3, "was": self.id * 4}}
+    }
+}
+
+func catalog() -> json {
+    products: list[json] = [json(Product(i)) for i in range(400)]
+    return {"products": products, "count": len(products)}
+}
+
+func main() {
+    content: json = catalog()
+    size: int = len(str(content))
+
+    before: int = allocated()
+    nested: json = content
+    for n in range(20) {
+        nested = {"level": n, "content": nested}
+    }
+    perLevel: int = (allocated() - before) // 20
+    print(f"nested 20 levels: {'ok' if perLevel < 1024 else str(perLevel) + ' bytes per level'}")
+
+    before = allocated()
+    copies: list[json] = [content for __i in range(100)]
+    many: json = {"pages": copies}
+    perInsert: int = (allocated() - before) // 100
+    print(f"inserted 100 times: {'ok' if perInsert < 256 else str(perInsert) + ' bytes per insertion'}")
+
+    text: str = Json.encode(many).unwrap()
+    deep: str = str(nested)
+    print(f"encoded: {'ok' if len(text) == len('{\"pages\":[]}') + 100 * size + 99 and deep.count('\"level\"') == 20 else 'wrong'}")
+
+    before = allocated()
+    for __i in range(10) {
+        _ = str(content)
+    }
+    perEncode: int = (allocated() - before) // 10
+    print(f"encode allocation: {'ok' if perEncode < size + size // 8 + 1024 else str(perEncode) + ' bytes for ' + str(size)}")
+
+    # A literal of 20 members is normalized in place: no copy of the map.
+    last: json = None
+    before = allocated()
+    for i in range(1000) {
+        last = {"a": i, "b": "x", "c": True, "d": None, "e": 1.5, "f": "y", "g": i, "h": "z", "i": False, "j": 2,
+             "k": i, "l": "x", "m": True, "n": None, "o": 1.5, "p": "y", "q": i, "r": "z", "s": False, "t": 2}
+    }
+    perLiteral: int = (allocated() - before) // 1000
+    if len(last) != 20 {
+        print("wrong literal")
+    }
+    print(f"literal allocation: {'ok' if perLiteral < 1600 else str(perLiteral) + ' bytes per literal'}")
+
+    # Sharing: the json value inside the literal is the same value.
+    inner: json = {"n": 1}
+    outer: json = {"inner": inner, "list": [inner]}
+    outer.inner.n = 2
+    print(f"shared: {inner.n} {outer.list[0].n}")
+}

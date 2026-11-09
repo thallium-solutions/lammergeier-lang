@@ -1,23 +1,34 @@
 # Transpilation: generators are handles on their body (`*lamGenerator[T]`,
-# the runtime emitted once in the main file). Each `yield` returns from the
-# body when the consumer stopped; a loop over a generator call owns it
-# (`.Consume`: ended when the loop is left), a loop over a generator value
-# resumes it (`.Resume`); a `catch` around a `yield` makes the generator run
-# apart from the loop body (`lamNewIsolatedGenerator`); `yield from` loops
-# over its source; methods and nested generators share the lowering.
+# the runtime emitted once in the main file) compiled to a state machine:
+# the body is a continuation `func(__lamF *lamGenFrame[T]) int`; a `yield`
+# stores its value and the continuation of the rest and returns; a loop
+# holding a `yield` is a closure re-entered after each value; a `try`
+# region holding a `yield` gets a handler the trampoline calls with its
+# exception; a loop over a generator call in the body owns it (`.own()`,
+# stopped by the loop's `finally` region). A loop over a generator call
+# owns it (`.Consume`: ended when the loop is left), a loop over a
+# generator value resumes it (`.Resume`); `yield from` loops over its
+# source; methods and nested generators share the lowering; a body with a
+# `defer` keeps the coroutine lowering (`lamNewGenerator`).
 # expect-go: func (s *Shelf) Each() *lamGenerator[string] {
-# expect-go: return lamNewGenerator[int](func(__lamYield func(int) bool) {
-# expect-go: if !__lamYield(i) {
-# expect-go: return lamNewIsolatedGenerator[int](func(__lamYield func(int) bool) {
+# expect-go: return lamNewStateGenerator[int](func(__lamF *lamGenFrame[int]) int {
+# expect-go: __lamF.v = i
+# expect-go: return lamGenYield
+# expect-go: __lamExcKind == "ValueError"
+# expect-go: __lamF.h = __lamGHCatch
 # expect-go: for x := range Count(3).Consume {
 # expect-go: var g *lamGenerator[int] = Count(4)
 # expect-go: for x := range g.Resume {
 # expect-go: for n := range NewShelf([]string{"a"}).Each().Consume {
 # expect-go: inner := func() *lamGenerator[string] {
-# expect-go: range Count(2).Consume {
-# expect-go: range []int{7, 8} {
+# expect-go: := Count(2).own()
+# expect-go: .Stop()
+# expect-go: := []int{7, 8}
+# expect-go: return lamNewGenerator[int](func(__lamYield func(int) bool) {
+# expect-go: if !__lamYield(1) {
 # expect-go: type lamGenerator[T any] struct {
 # expect-go: func (g *lamGenerator[T]) Consume(yield func(T) bool) {
+# expect-go: g.cleanup = runtime.AddCleanup(g, lamCloseCollectedGenerator[T], g.pending)
 # expect-go: g.cleanup = runtime.AddCleanup(g, lamStopCollectedGenerator, g.stop)
 
 class Shelf {
@@ -46,6 +57,11 @@ func tolerant() -> generator[int] {
     } catch ValueError {
         pass
     }
+}
+
+func logged() -> generator[int] {
+    defer print("logged")
+    yield 1
 }
 
 func both() -> generator[int] {
@@ -77,6 +93,9 @@ func main() {
         print(v)
     }
     for v in both() {
+        print(v)
+    }
+    for v in logged() {
         print(v)
     }
 }

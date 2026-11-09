@@ -499,6 +499,10 @@ words: Result[list[str]] = Re.findAll("\\w+", "two words")
 | `Re.split(pattern, s)` | `Result[list[str]]` |
 | `Re.matchGroups(pattern, s)` | `Result[list[str]]` |
 
+A pattern is compiled once and reused (a cache shared by goroutines, starting
+over after 512 distinct patterns; invalid patterns are not cached), so
+`Re.match(pattern, text)` in a request handler costs no compilation.
+
 ### `lamfmt` — `Fmt`
 
 Sprintf-style formatting (wraps `fmt`).
@@ -633,6 +637,7 @@ back: json = Json.fromValue(asDict)?
 | `Json.getObject(doc, key)` | `json` (a new `{}` when not an object) |
 | `Json.at(doc, path)` | `json` at a path of keys / indexes, null when missing |
 | `Json.mapKeys(doc, rename, deep = true)` | `json` copy with renamed object keys |
+| `Json.copy(doc)` | an independent deep copy of `doc` |
 
 Typed member reads are tolerant, for request bodies and stored documents:
 the member comes back when it has the requested kind, `fallback` otherwise
@@ -659,6 +664,20 @@ api: json = Json.mapKeys(row, Strings.camelCase)       # slots_total -> slotsTot
   objects, also inside arrays, are renamed too, with `deep=false` only the
   keys of `doc` itself. Keys are renamed in sorted order: when two keys get
   the same name, the later key's value wins.
+
+json values are shared like Python objects, never copied behind your back: a
+json value put into a json literal (`{"user": user, "items": items}`),
+returned by `__json__` and converted with `json(x)`, or assigned to a member
+(`doc.user = user`) is the same value in both places (a change through one is
+seen through the other), so documents nest at no cost per level. Lam
+collections (`dict`, `list`, `list[json]`) are converted, which copies them.
+`Json.copy(doc)` gives an independent copy.
+
+`Json.encode`, `str(doc)`, f-strings, markup slots and the Go marshaler
+(`encoding/json`, HTTP responses, database parameters) write the same bytes as
+`encoding/json` (sorted keys, `<` `>` `&` escaped as `\u003c` `\u003e`
+`\u0026`, U+2028/U+2029 escaped, invalid UTF-8 as `\ufffd`, its number
+format), directly into one pooled buffer: one allocation for the text.
 
 `Json.fromValue` is the runtime boundary for dynamic `any`; `fromDict` and
 `fromList` remain compatibility aliases that delegate to it. The conversion
@@ -3084,6 +3103,10 @@ restored: json = Json.fromValue(jsonRows[0]["payload"])?
 `Db.connect(driver, dsn) -> Result[Db]`. `setPool`, `ping`, `close`, `exec`,
 `query`, `first`, `scalar`, JSON-aware `queryJson` / `firstJson` /
 `scalarJson`, `transaction`, and `begin` all return typed Results.
+`first`, `scalar`, `firstJson` and `scalarJson` stop reading at the first row
+(the rest of the result set is neither read nor kept, no `LIMIT` needed;
+`firstJson` decodes only that row) and `scalar` is the first column in select
+order.
 `setRetries(maxRetries, baseMs)`, `driverName`, `raw`, `table(name)` and
 `pool()` are direct configuration/introspection helpers. Scoped transactions
 commit after a successful callback, roll back and return callback
@@ -3745,7 +3768,14 @@ policy: HtmlPolicy = HtmlPolicy().allowTags(["p", "a", "b"]).allowAttributes("a"
 
 The policy methods return the policy, so they chain; its fields (`tags`,
 `attributes`, `urlSchemes`, `relativeUrls`, `dataImages`, `styleProperties`,
-`noopener`, `frameHosts`) can also be set directly. The sanitizer works on the parsed tree
+`noopener`, `frameHosts`) can also be set directly. `Html.sanitize` compiles a
+policy (its lookup tables) once and reuses it: the policy object keeps its
+compiled form, and a small process-wide cache serves a policy built again with
+the same content (`HtmlPolicy.basic()` in a handler). Build the policy once
+(a constant or a field) and share it: a policy that is not changed any more
+is safe to use from many goroutines at once, and sanitizing never changes it.
+Changing a field after a `sanitize` call takes effect on the next call (the
+fields are compared with what was compiled). The sanitizer works on the parsed tree
 and builds a new one, default-deny — what it covers:
 
 - **Elements**: an element the policy does not allow is removed and its
@@ -4204,6 +4234,7 @@ Json.getList(doc: json, key: str) -> list[json]
 Json.getObject(doc: json, key: str) -> json
 Json.at(doc: json, path: list[any]) -> json
 Json.mapKeys(doc: json, rename: func(str) -> str, deep: bool = true) -> json
+Json.copy(doc: json) -> json
 
 # lamstrings (also str methods: s.camelCase())
 Strings.camelCase(s: str) -> str

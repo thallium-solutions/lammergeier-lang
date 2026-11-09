@@ -250,6 +250,11 @@ implement `__json__` and still be passed explicitly to `json(instance)` (also
 object: `json(p)` with `p: Problem` holding a subclass instance runs the
 subclass's override (as do `html(p)`, `xml(p)`, markup slots, `str(p)` and
 explicit `p.__json__()` calls for `__html__` / `__xml__` / `__str__`).
+Like Python objects, json values are shared, not copied: a json value put
+into a json literal (`{"user": user}`), returned by `__json__`, converted again
+with `json(x)` or assigned to a member (`doc.user = user`) is the same value
+in both places; `Json.copy(doc)` makes an independent copy. Lam collections
+(`dict`, `list`) are converted, which copies them.
 `Json.fromDict`, `Json.fromList`, and `Json.fromValue` validate dynamic Lam
 values and convert them to `json`. `Json.toDict` / `Json.toList` convert an
 object/array back for algorithms where ordinary collections are more useful.
@@ -3765,14 +3770,37 @@ Generators follow Python's semantics:
   field or a parameter (`g: generator[int] = count(5)`) is iterated where
   the previous loop stopped: `for x in g { break }` leaves it suspended, and
   the next `for x in g` continues with the next value. Such a generator,
-  dropped before it is exhausted, is ended (its `finally` blocks run) when
-  the garbage collector reclaims it.
+  dropped before it is exhausted, is ended (its pending `finally` blocks
+  run and its `with` resources close) when the garbage collector reclaims
+  it — also when it is part of a cycle, such as an object keeping a
+  generator of its own method in a field (`self.items = self.produce()`):
+  a suspended generator is plain data (its body is compiled to a state
+  machine), so dropping the object reclaims both.
+- **Every construct can suspend.** A `yield` may sit in any statement of
+  the body — nested loops (`break`, `continue`, loop `else`), `if` /
+  `elif`, `match`, `try` / `catch` / `else` / `finally`, `with`, `do` /
+  `catch` — and the body continues from it. An exception raised after a
+  resume is caught by the generator's own `catch` around it.
 - **Exceptions reach the consumer.** An exception raised in a generator
   body is raised where the next value was asked for: a `try` around the
   loop catches it.
 - **Concurrent consumers** (async tasks or Go goroutines sharing one
   generator value) each receive different values; the body runs for one of
   them at a time.
+
+Two limits come from Go's collector. The `finally` blocks of a dropped
+generator run with what they use: when that code itself uses an object
+holding the generator (`finally { self.close() }` in a method generator
+stored in a field of `self`), Go cannot run it once the object is
+unreachable, and the object and the generator stay alive — exhaust such
+a generator before dropping it, or keep its `finally` independent of
+`self`. And a body using `defer`, a `yield` as a
+value (`more = yield v`) or a `?` inside a `try` / `with` / `do` nested in a
+`do` block holding a `yield` is not compiled to a state machine: a
+suspended generator of that kind is held by a goroutine, so one dropped
+while an object it uses holds it is never collected (the compiler warns:
+"generator `name` uses `defer`, so it runs on a coroutine while
+suspended").
 
 `yield from src` yields every value of `src` in turn (another generator, a
 list, any iterable), like `for v in src { yield v }`; ending the outer

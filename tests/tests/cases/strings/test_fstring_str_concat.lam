@@ -1,0 +1,63 @@
+# expect: https://cdn.example/products/1/a.avif
+# expect: true
+# expect: []
+# expect: 100% https://cdn.example {braces} "quoted" 	 tab
+# expect: Zoë: Zoë greets Bob
+# expect: on-off
+# expect: https://cdn.example
+# expect: abPRODUCTS/1/A.AVIF
+# expect: https://cdn.example/products/1/a.avif!
+# expect: é漢字🙂 products/1/a.avif ü
+# expect: ab
+# expect: a, b
+# expect: v
+# expect: <nil>|none
+# expect: x
+# expect: products/1/a.avif 3
+
+# f-strings of ``str`` slots (members, calls, conditionals, nested
+# f-strings, optional strings, escapes, braces, ``%``): the text fmt's
+# ``%v`` gives, unchanged by the concatenation lowering of f-strings with
+# html / xml / json slots.
+
+class User {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func greet(self, other: str) -> str {
+        return f"{self.name} greets {other}"
+    }
+}
+
+func label(flag: bool) -> str {
+    return "on" if flag else "off"
+}
+
+func main() {
+    base: str = "https://cdn.example"
+    key: str = "products/1/a.avif"
+    empty: str = ""
+    u: User = User("Zoë")
+    print(f"{base}/{key}")
+    print(f"{empty}" == "")
+    print(f"[{empty}]")
+    print(f"100% {base} {{braces}} \"quoted\" \t tab")
+    print(f"{u.name}: {u.greet('Bob')}")
+    print(f"{label(true)}-{label(false)}")
+    print(f"{base if len(key) > 3 else key}")
+    print(f"{'a' + 'b'}{key.toUpper()}")
+    print(f"{f'{base}/{key}'}!")
+    print(f"é漢字🙂 {key} ü")
+    names: list[str] = ["a", "b"]
+    print(f"{names[0]}{names[1]}")
+    print(f"{', '.join(names)}")
+    m: dict[str, str] = {"k": "v"}
+    print(f"{m['k']}")
+    maybe: optional[str] = None
+    print(f"{maybe}|{maybe ?? 'none'}")
+    other: optional[str] = "x"
+    print(f"{other}")
+    n: int = 3
+    print(f"{key} {n}")
+}

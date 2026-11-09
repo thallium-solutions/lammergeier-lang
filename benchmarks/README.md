@@ -57,8 +57,10 @@ sh scripts/bench.sh runtime -f json --runs 9 --json out/runtime.json
 
 Groups: `language/` (calls, loops, lists, list indexing with a runtime
 index, dicts, strings, dispatch, f-strings, generators: full and early-left
-loops) and `stdlib/` (JSON, regex, hashing, sorting, splitting, composing and
-rendering `html`).
+loops, generator values resumed loop after loop) and `stdlib/` (JSON: encoding
+a document and building and encoding a 50-product API response, regex,
+hashing, sorting, splitting, composing and rendering `html` pages and `xml`
+feeds).
 
 A program may add the bytes it allocates per operation as a fifth field
 (`BENCH <name> <ops> <elapsed_ns> <bytes_per_op>`, measured with

@@ -67,28 +67,73 @@ def generator_go_elem(go_type: str) -> str | None:
 
 # The generator runtime, emitted once in the main file when some module uses
 # a generator. A generator is a handle on the body of a function using
-# ``yield``, lowered to a range-over-func body ``func(yield func(T) bool)``
-# whose every ``yield`` returns when ``yield`` reports that the consumer
-# stopped (running the body's ``finally`` blocks and ``with`` closes, like
-# Python's ``GeneratorExit``). Nothing runs before the first value is asked
-# for. ``for x in gen()`` (a generator the loop owns) runs the body in place,
-# in the loop's goroutine (``Consume``), unless a ``catch`` (or a ``finally``
+# ``yield``, compiled to a state machine (``compiler/visitors/generators.py``):
+# the body is a continuation ``k`` (a closure over the body's locals) that
+# runs to the next ``yield``, stores the value and the continuation of the
+# rest in the frame and returns. Nothing runs before the first value is
+# asked for, and a suspended generator is plain data (no goroutine holds
+# it), so a generator dropped in a cycle with what it uses is collected.
+# ``Next`` runs the continuations in a trampoline (``lamGenRun``), under the
+# handle's mutex (concurrent consumers share the values); an exception the
+# body raises outside its ``try`` regions ends the generator and reaches
+# the consumer, one inside a region goes to the region's handler (``h``).
+# Ending a generator before it is exhausted (``Stop``: a loop over a
+# generator call left early; the cleanup of a collected handle) runs the
+# close continuation ``c`` of the state it is suspended in: its pending
+# ``finally`` blocks and ``with`` closes, like Python's ``GeneratorExit`` (a
+# ``yield`` reached meanwhile ends the body). The cleanup holds only that
+# continuation (``lamGenClose``), never the handle.
+#
+# A body the state machine does not lower (see
+# ``_generator_sm_unsupported``) keeps the coroutine lowering: a
+# range-over-func body ``func(yield func(T) bool)`` run in place by a loop
+# over the generator call (``Consume``) unless a ``catch`` (or a ``finally``
 # that returns or jumps) around a ``yield`` could intercept an exception of
-# the loop body (``lamNewIsolatedGenerator``); every other use (a generator
-# held in a variable, a field or a parameter, resumable across loops) pulls
-# values from a coroutine (``iter.Pull``) started on the first ``Next``,
-# stopped when the generator is exhausted, raised an exception, a loop owning
-# it ends, or the handle is collected. An exception raised by the body
-# reaches the consumer.
+# the loop body (``lamNewIsolatedGenerator``), otherwise pulled from a
+# coroutine (``iter.Pull``) started on the first ``Next`` and stopped when
+# the generator ends or its handle is collected.
 GENERATOR_RUNTIME_GO = """
+const (
+\tlamGenJump  = 0
+\tlamGenYield = 1
+\tlamGenDone  = 2
+)
+
+// lamGenFrame holds the registers of a state machine generator: the
+// continuation to run next, the close continuation of the state it is
+// suspended in, the handler of the try region running, the value yielded.
+type lamGenFrame[T any] struct {
+\tk       func(*lamGenFrame[T]) int
+\tc       func(*lamGenFrame[T]) int
+\th       func(*lamGenFrame[T], any)
+\tv       T
+\tclosing bool
+}
+
+// lamGenClose is what the cleanup of a collected generator runs.
+type lamGenClose[T any] struct {
+\tc func(*lamGenFrame[T]) int
+}
+
 type lamGenerator[T any] struct {
 \tmu       sync.Mutex
+\tf        lamGenFrame[T]
+\tsm       bool
+\tpending  *lamGenClose[T]
 \tbody     func(yield func(T) bool)
 \tisolated bool
 \tnext     func() (T, bool)
 \tstop     func()
 \tcleanup  runtime.Cleanup
 \tdone     bool
+\t// owned: a loop owns the generator and ends it however it is left (no
+\t// cleanup needed); claimed: a loop over the call resumes it without the mutex.
+\towned   bool
+\tclaimed bool
+}
+
+func lamNewStateGenerator[T any](k func(*lamGenFrame[T]) int) *lamGenerator[T] {
+\treturn &lamGenerator[T]{f: lamGenFrame[T]{k: k}, sm: true}
 }
 
 func lamNewGenerator[T any](body func(yield func(T) bool)) *lamGenerator[T] {
@@ -99,17 +144,89 @@ func lamNewIsolatedGenerator[T any](body func(yield func(T) bool)) *lamGenerator
 \treturn &lamGenerator[T]{body: body, isolated: true}
 }
 
+// lamGenEnd is the continuation ending the body.
+func lamGenEnd[T any](*lamGenFrame[T]) int { return lamGenDone }
+
+// lamGenResume ends a finally block: it continues where the code leaving
+// the try region was going, or re-raises the exception that left it.
+func lamGenResume[T any](f *lamGenFrame[T], pend *func(*lamGenFrame[T]) int, exc *any) int {
+\tp, e := *pend, *exc
+\t*pend, *exc = nil, nil
+\tif p == nil {
+\t\tpanic(e)
+\t}
+\tf.k = p
+\treturn lamGenJump
+}
+
+// lamGenMapKeys snapshots the keys a loop holding a yield iterates over.
+func lamGenMapKeys[K comparable, V any](m map[K]V) []K {
+\tkeys := make([]K, 0, len(m))
+\tfor k := range m {
+\t\tkeys = append(keys, k)
+\t}
+\treturn keys
+}
+
+// lamGenRun runs continuations up to the next value or the end of the body.
+func lamGenRun[T any](f *lamGenFrame[T]) int {
+\tfor {
+\t\tif f.h == nil {
+\t\t\tif c := f.k(f); c != lamGenJump {
+\t\t\t\treturn c
+\t\t\t}
+\t\t} else if c, ok := lamGenGuarded(f); ok && c != lamGenJump {
+\t\t\treturn c
+\t\t}
+\t}
+}
+
+// lamGenGuarded runs a continuation of a try region: an exception goes to
+// the region's handler, which selects the continuation handling it.
+func lamGenGuarded[T any](f *lamGenFrame[T]) (c int, ok bool) {
+\tdefer func() {
+\t\tif !ok {
+\t\t\tif r := recover(); r != nil {
+\t\t\t\th := f.h
+\t\t\t\tif h == nil {
+\t\t\t\t\tpanic(r)
+\t\t\t\t}
+\t\t\t\th(f, r)
+\t\t\t}
+\t\t}
+\t}()
+\treturn f.k(f), true
+}
+
 // Next resumes the generator up to its next value.
-func (g *lamGenerator[T]) Next() (T, bool) {
-\tvar zero T
+func (g *lamGenerator[T]) Next() (v T, more bool) {
 \tif g == nil {
-\t\treturn zero, false
+\t\treturn v, false
 \t}
 \tg.mu.Lock()
-\tdefer g.mu.Unlock()
 \tif g.done {
-\t\treturn zero, false
+\t\tg.mu.Unlock()
+\t\treturn v, false
 \t}
+\tif !g.sm {
+\t\tdefer g.mu.Unlock()
+\t\treturn g.pull()
+\t}
+\tstepped := false
+\tdefer func() {
+\t\tif !stepped {
+\t\t\t// The body raised: the exception reaches the consumer.
+\t\t\tg.finish()
+\t\t}
+\t\tg.mu.Unlock()
+\t}()
+\tv, more = g.step()
+\tstepped = true
+\treturn v, more
+}
+
+// pull resumes a coroutine generator (with g.mu held).
+func (g *lamGenerator[T]) pull() (T, bool) {
 \tif g.next == nil {
 \t\tg.next, g.stop = iter.Pull(g.body)
 \t\tg.body = nil
@@ -126,10 +243,46 @@ func (g *lamGenerator[T]) Next() (T, bool) {
 \treturn v, more
 }
 
-// finish ends the generator (with g.mu held); a suspended body leaves its yield.
+// step runs the state machine to its next value (with g.mu held, or by
+// the loop owning the generator); the generator ends with its body. The
+// caller ends it when the body raises.
+func (g *lamGenerator[T]) step() (v T, more bool) {
+\tif lamGenRun(&g.f) != lamGenYield {
+\t\tg.finish()
+\t\treturn v, false
+\t}
+\tv = g.f.v
+\tif g.owned {
+\t\treturn v, true
+\t}
+\tvar zero T
+\tg.f.v = zero
+\tif c := g.f.c; c != nil {
+\t\tif g.pending == nil {
+\t\t\t// Dropped while suspended in a try region: closed once collected.
+\t\t\tg.pending = &lamGenClose[T]{}
+\t\t\tg.cleanup = runtime.AddCleanup(g, lamCloseCollectedGenerator[T], g.pending)
+\t\t}
+\t\tg.pending.c = c
+\t} else if g.pending != nil {
+\t\tg.pending.c = nil
+\t}
+\treturn v, true
+}
+
+// finish ends the generator (with g.mu held); a suspended coroutine body leaves its yield.
 func (g *lamGenerator[T]) finish() {
 \tg.done = true
 \tg.body = nil
+\tif g.sm {
+\t\tg.f = lamGenFrame[T]{}
+\t\tif g.pending != nil {
+\t\t\tg.cleanup.Stop()
+\t\t\tg.pending.c = nil
+\t\t\tg.pending = nil
+\t\t}
+\t\treturn
+\t}
 \tif stop := g.stop; stop != nil {
 \t\tg.cleanup.Stop()
 \t\tg.next, g.stop = nil, nil
@@ -137,15 +290,20 @@ func (g *lamGenerator[T]) finish() {
 \t}
 }
 
-// Stop ends the generator: a suspended body returns from its yield, running its finally blocks.
+// Stop ends the generator: a suspended body runs its pending finally blocks and with closes.
 func (g *lamGenerator[T]) Stop() {
 \tif g == nil {
 \t\treturn
 \t}
 \tg.mu.Lock()
 \tdefer g.mu.Unlock()
-\tif !g.done {
-\t\tg.finish()
+\tif g.done {
+\t\treturn
+\t}
+\tdefer g.finish()
+\tif c := g.f.c; g.sm && c != nil {
+\t\tg.f.k, g.f.c, g.f.h, g.f.closing = c, nil, nil, true
+\t\tlamGenRun(&g.f)
 \t}
 }
 
@@ -164,6 +322,10 @@ func (g *lamGenerator[T]) Resume(yield func(T) bool) {
 // leaving the loop in any way ends it.
 func (g *lamGenerator[T]) Consume(yield func(T) bool) {
 \tif g == nil {
+\t\treturn
+\t}
+\tif g.sm {
+\t\tg.consume(yield)
 \t\treturn
 \t}
 \tg.mu.Lock()
@@ -191,6 +353,47 @@ func (g *lamGenerator[T]) Consume(yield func(T) bool) {
 \t})
 }
 
+// own marks a generator call's handle as owned by the loop of a state
+// machine body iterating it, which stops it when the loop is left.
+func (g *lamGenerator[T]) own() *lamGenerator[T] {
+\tg.mu.Lock()
+\tg.owned = true
+\tg.mu.Unlock()
+\treturn g
+}
+
+// consume runs a state machine generator the loop owns: a generator call's
+// fresh handle, which nothing else can reach, resumed without its mutex.
+func (g *lamGenerator[T]) consume(yield func(T) bool) {
+\tg.mu.Lock()
+\towned := !g.done && !g.claimed
+\tg.claimed, g.owned = true, true
+\tg.mu.Unlock()
+\tif !owned {
+\t\tdefer g.Stop()
+\t\tg.Resume(yield)
+\t\treturn
+\t}
+\tinBody := false
+\tdefer func() {
+\t\tif inBody {
+\t\t\t// The body raised: the exception reaches the loop.
+\t\t\tg.finish()
+\t\t} else if !g.done {
+\t\t\t// The loop was left early.
+\t\t\tg.Stop()
+\t\t}
+\t}()
+\tfor {
+\t\tinBody = true
+\t\tv, more := g.step()
+\t\tinBody = false
+\t\tif !more || !yield(v) {
+\t\t\treturn
+\t\t}
+\t}
+}
+
 func lamStopCollectedGenerator(stop func()) {
 \tdefer func() {
 \t\tif r := recover(); r != nil {
@@ -198,6 +401,22 @@ func lamStopCollectedGenerator(stop func()) {
 \t\t}
 \t}()
 \tstop()
+}
+
+// lamCloseCollectedGenerator ends a generator collected while suspended in
+// a try region, on a fresh frame (the handle is gone).
+func lamCloseCollectedGenerator[T any](p *lamGenClose[T]) {
+\tc := p.c
+\tif c == nil {
+\t\treturn
+\t}
+\tp.c = nil
+\tdefer func() {
+\t\tif r := recover(); r != nil {
+\t\t\tfmt.Fprintf(os.Stderr, "Exception ignored in generator cleanup: %v\\n", r)
+\t\t}
+\t}()
+\tlamGenRun(&lamGenFrame[T]{k: c, closing: true})
 }
 """
 

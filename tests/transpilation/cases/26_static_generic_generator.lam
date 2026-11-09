@@ -1,11 +1,12 @@
 # Transpilation: generic static generators lower to generator handles on
-# their body (formerly channels fed by a goroutine) and calls range over
-# them, ending the generator with the loop. Also verifies inline list
+# their body compiled to a state machine (formerly channels fed by a
+# goroutine, then a range-over-func body) and calls range over them,
+# ending the generator with the loop. Also verifies inline list
 # literals use their inferred concrete type rather than leaking the callee's
 # generic T into caller Go.
 # expect-go: func Streams_iter[T any](values []T) *lamGenerator[T] {
-# expect-go: return lamNewGenerator[T](func(__lamYield func(T) bool) {
-# expect-go: if !__lamYield(value) {
+# expect-go: return lamNewStateGenerator[T](func(__lamF *lamGenFrame[T]) int {
+# expect-go: __lamF.v = value
 # expect-go: for value := range Streams_iter([]int{3, 1, 2}).Consume {
 
 class Streams {

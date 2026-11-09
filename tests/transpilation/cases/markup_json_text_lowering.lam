@@ -1,0 +1,51 @@
+# ``str()`` and f-string slots of html / xml / json are the value's own
+# text (``lamValueText``: its String(), rendered or encoded once) instead of
+# fmt.Sprintf("%v", ...); an f-string made of str and such values (no
+# format spec, at least one of them not a str) is a concatenation, an
+# f-string of str slots only stays fmt.Sprintf. json literals
+# are normalized in place (``lamJSONLiteral``), nested ones too, and ``in``
+# on a list of comparable elements compares with ``==``.
+#
+# expect-go: var text string = lamValueText(page)
+# expect-go: var feedText string = lamValueText(feed)
+# expect-go: var docText string = lamValueText(doc)
+# expect-go: var size int = len(lamValueText(page))
+# expect-go: var full string = "<!doctype html>" + lamValueText(page)
+# expect-go: var mixed string = lamValueText(title) + ": " + lamValueText(page) + " " + lamValueText(feed) + " " + lamValueText(doc)
+# expect-go: var url string = fmt.Sprintf("%v/%v", base, key)
+# expect-go: var only string = fmt.Sprintf("%v", base)
+# expect-go: var padded string = fmt.Sprintf("%10v", base)
+# expect-go: var counted string = fmt.Sprintf("%v %v", page, len(title))
+# expect-go: var rendered string = lamValueText(Layout(page))
+# expect-go: var doc LamJSON = lamJSONLiteral(map[string]interface{}{"title": title, "tags": tags, "nested": lamJSONLiteral(map[string]interface{}{"ok": true, "list": lamJSONLiteral([]interface{}{1, 2})})})
+# expect-go: var items LamJSON = lamJSONLiteral([]interface{}{lamJSONLiteral(map[string]interface{}{"a": 1}), doc})
+# expect-go: var wrapped LamJSON = lamJSONMust(tags)
+# expect-go: func() bool { for _, _v := range tags { if _v == title { return true } }; return false }()
+
+func layout(content: html) -> html {
+    return <><main>${content}</main></>
+}
+
+func main() {
+    title: str = "Home"
+    tags: list[str] = ["a", "b"]
+    page: html = <><h1>${title}</h1></>
+    feed: xml = <><rss><title>${title}</title></rss></>
+    doc: json = {"title": title, "tags": tags, "nested": {"ok": True, "list": [1, 2]}}
+    items: json = [{"a": 1}, doc]
+    wrapped: json = json(tags)
+    text: str = str(page)
+    feedText: str = str(feed)
+    docText: str = str(doc)
+    size: int = len(str(page))
+    full: str = f"<!doctype html>{page}"
+    mixed: str = f"{title}: {page} {feed} {doc}"
+    counted: str = f"{page} {len(title)}"
+    base: str = "https://cdn.example"
+    key: str = "a.avif"
+    url: str = f"{base}/{key}"
+    only: str = f"{base}"
+    padded: str = f"{base:>10}"
+    rendered: str = str(layout(page))
+    print(text, feedText, docText, size, full, mixed, counted, rendered, items, wrapped, title in tags, url, only, padded)
+}

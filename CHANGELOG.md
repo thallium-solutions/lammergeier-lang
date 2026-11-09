@@ -5,6 +5,90 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.9.0 — 2026-11-09
+
+### Changed
+
+- json values are encoded directly: `Json.encode`, `str(doc)`, f-strings,
+  markup slots, `MarshalJSON` (so `encoding/json`, HTTP frameworks) and
+  database parameters write the `encoding/json` bytes (sorted keys, `<` `>`
+  `&` and U+2028/U+2029 escaped, invalid UTF-8 as `\ufffd`, its number
+  format) into one pooled buffer, then allocate the text once, instead of
+  `encoding/json` reflecting over the tree, encoding a json value twice
+  (`MarshalJSON` and its caller) and copying the result. Values it would
+  treat specially go through `encoding/json` unchanged, so bytes and errors
+  never differ (a differential test checks 2,100 random nested values,
+  class instances and invalid ones against the 4.8.0 code). Encoding a
+  50-product API response: about 4.5x faster, 4.4x less allocated.
+- json values are shared, not copied, like Python objects (and like
+  `doc.key = value` already did): a json value put into a json literal,
+  returned by `__json__` and converted with `json(x)`, or converted again is
+  the same value, so nesting documents (`{"data": items}`, a class's
+  `__json__` using its parts' `__json__`) costs nothing per level; it used
+  to deep-copy the whole subtree at every level. Lam collections are still
+  converted (copied). New `Json.copy(doc)` makes an independent copy. A json
+  literal's own object or array is normalized in place (`lamJSONLiteral`),
+  not copied.
+- `str(x)` of an `html`, `xml` or `json` value is the value's own text
+  (`lamValueText`: its `String()`, rendered or encoded once) instead of
+  `fmt.Sprintf("%v", x)`, which copied the page again; an f-string whose
+  slots are all `str` / `html` / `xml` / `json` without format specs, one of
+  them not a `str`, is a string concatenation (`f"<!doctype html>{page}"`).
+  The text is the same.
+- `x in xs` on a list of strings, numbers or booleans compares with `==`
+  instead of `reflect.DeepEqual` (which boxed both sides on every
+  comparison): `HtmlPolicy.allowTags` and every `name in names` loop stop
+  allocating.
+- `Html.sanitize` compiles a policy once: the `HtmlPolicy` keeps its
+  compiled form, and a process-wide cache (64 entries) serves a policy built
+  again with the same content, so `Html.sanitize(text, HtmlPolicy.rich())`
+  per call no longer rebuilds the lookup tables (62 kB to 6 kB per call for
+  a rich policy). A policy that is no longer changed can be shared between
+  goroutines; changing its fields after a call takes effect on the next.
+  Sanitizing itself allocates less (no per-element maps or intermediate
+  node lists, URLs without control characters are not copied).
+- `Re` compiles each pattern once (a cache shared by goroutines, bounded to
+  512 patterns): `Re.match(pattern, text)` no longer compiles the pattern on
+  every call (4.8 kB to under 256 bytes per match).
+- `Db.first`, `scalar`, `firstJson` and `scalarJson` (and the `Tx` ones)
+  stop reading at the first row and close the rows, instead of reading and
+  keeping the whole result set (a 200,000-row query: 86 MB to under 200 kB
+  for `first`). `firstJson` decodes only that row. `Db.textArray` no longer
+  builds a `strings.Replacer` per element; rows are scanned through one
+  reused buffer into pre-sized maps; placeholders are rewritten with one
+  allocation (none without `?`) and parameters are passed without a copy.
+- `Schema` validation looks its compiled schema up before parsing the
+  schema text, which it parsed again on every validation.
+- Markup slots holding an `int` are written with `strconv` instead of
+  `fmt.Sprintf`.
+
+### Fixed
+
+- A generator kept in a field of the object it uses still leaked: an
+  object holding a partially iterated generator of its own method
+  (`self.items = self.produce()`), or a generator closure capturing the
+  object holding it, was never collected once dropped — the suspended
+  generator's goroutine referenced the object, which referenced the
+  generator — nor were its `finally` blocks run (1,000 such objects: 1,000
+  goroutines and 1,000 objects kept forever). Generator bodies are now
+  compiled to state machines: a suspended generator is data held by its
+  handle, not a goroutine, so the cycle is collected and the pending
+  `finally` blocks and `with` closes of the state it was suspended in run
+  when it is. Every construct may hold a `yield` (nested loops with
+  `break` / `continue` / `else`, `if`, `match`, `try` / `catch` / `else` /
+  `finally`, `with`, `do` / `catch`, `yield from`); a `yield` in a `do`
+  body no longer fails to build. A body using `defer`, a `yield` as a
+  value, or a `?` in a `try` nested in a `do` holding a `yield` keeps the
+  previous lowering, with a warning. Resuming a generator value is about
+  5.7x faster (`bench_generator_resume`, new: 94 to 16 ns per value), the
+  generator benchmark about 2.3x (`bench_generator`: 33 to 14 ns per
+  value); starting and stopping one costs a little more
+  (`bench_generator_break`: 186 to 238 ns per loop of 10 values).
+
+- `Db.scalar` (and `tx.scalar`) returned a random column of the first row
+  when the query selected several (it took the first member of the row's
+  map); it is the first column in select order.
+
 ## 4.8.0 — 2026-11-09
 
 ### Added

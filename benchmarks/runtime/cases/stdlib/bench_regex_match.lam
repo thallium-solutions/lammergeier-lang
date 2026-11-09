@@ -1,7 +1,6 @@
 # lamre — match a moderately complex pattern against many lines.
-# Today every call re-compiles via regexp.MustCompile on the fly;
-# an obvious future optimisation is caching by pattern. When that
-# lands this benchmark's running time should roughly halve.
+# ``Re`` compiles a pattern once and reuses it (a cache by pattern), so
+# this measures matching; before the cache every call compiled it again.
 #
 # ops: 50000
 

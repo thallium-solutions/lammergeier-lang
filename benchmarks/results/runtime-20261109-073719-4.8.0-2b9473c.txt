@@ -1,0 +1,17 @@
+# lamc 4.8.0 (2b9473c), 2026-11-09T07:37:19Z
+# command: sh scripts/bench.sh runtime -f generator --runs 7
+# host: Linux 6.12.10-76061203-generic x86_64; cpu: 13th Gen Intel(R) Core(TM) i9-13900HX; load: 2.88 3.13 2.72
+# go: go1.25.3
+
+  ran language/bench_generator.lam
+  ran language/bench_generator_break.lam
+  ran language/bench_generator_resume.lam
+
+benchmark                        ops      median      per op        best  spread   go per op  lam/go
+----------------------------------------------------------------------------------------------------
+[language]
+generator                    1000000    32.97 ms     33.0 ns    29.55 ms    1.1%     28.3 ns   1.17x
+generator_break                10000     1.86 ms    185.7 ns     1.79 ms    1.3%      7.6 ns  24.42x
+generator_resume             1000000    93.85 ms     93.9 ns    84.26 ms    3.0%     76.6 ns   1.22x
+
+geometric mean lam/go over 3 baselines: 3.27x

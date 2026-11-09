@@ -1,0 +1,72 @@
+# expect: matches: 1000
+# expect: match allocation: ok
+# expect: find: req_id=abc7 all: 2 split: 3 groups: [req_id=abc7 abc7]
+# expect: replace: x-[id]-y
+# expect: bad pattern: RegexError compile "a(" (twice: true)
+# expect: many patterns: 600
+# expect: concurrent: 8000
+
+# ``Re`` compiles each pattern once and reuses it (a bounded cache shared by
+# goroutines): a pattern used per request costs no compilation, results and
+# errors are unchanged, invalid patterns are never cached as valid.
+
+from lamre import Re
+
+go! {
+    import "runtime"
+}
+
+func allocated() -> int {
+    total: int = 0
+    go! {
+        var ms runtime.MemStats
+        runtime.ReadMemStats(&ms)
+        total = int(ms.TotalAlloc)
+    }
+    return total
+}
+
+async func matchMany(w: int) -> int {
+    count: int = 0
+    for i in range(1000) {
+        if Re.match(f"^w{w}-\\d+$", f"w{w}-{i}").unwrap() {
+            count += 1
+        }
+    }
+    return count
+}
+
+func main() {
+    pattern: str = "^req_id=(\\w+)$"
+    hits: int = 0
+    _ = Re.match(pattern, "req_id=warm")
+    before: int = allocated()
+    for i in range(1000) {
+        if Re.match(pattern, f"req_id=abc{i}").unwrap() {
+            hits += 1
+        }
+    }
+    perMatch: int = (allocated() - before) // 1000
+    print(f"matches: {hits}")
+    print(f"match allocation: {'ok' if perMatch < 256 else str(perMatch) + ' bytes per match'}")
+
+    groups: list[str] = Re.matchGroups(pattern, "req_id=abc7").unwrap()
+    print(f"find: {Re.find('req_id=\\w+', 'x req_id=abc7 y').unwrap()} all: {len(Re.findAll('\\d', 'a1b2').unwrap())} split: {len(Re.split(',', 'a,b,c').unwrap())} groups: {groups}")
+    print(f"replace: {Re.replaceAll('\\d+', 'x-42-y', '[id]').unwrap()}")
+
+    first: str = Re.match("a(", "a").error.message
+    second: str = Re.find("a(", "a").error.message
+    print(f"bad pattern: {Re.match('a(', 'a').error.kind} {first.split(':')[0]} (twice: {first == Re.match('a(', 'a').error.message and second.startsWith('compile')})")
+
+    distinct: int = 0
+    for i in range(600) {
+        if Re.match(f"^p{i}$", f"p{i}").unwrap() {
+            distinct += 1
+        }
+    }
+    print(f"many patterns: {distinct}")
+
+    tasks = [matchMany(w) for w in range(8)]
+    counts: list[int] = [await t for t in tasks]
+    print(f"concurrent: {counts.reduce(lambda a, b: a + b, 0)}")
+}

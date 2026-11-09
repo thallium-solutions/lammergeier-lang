@@ -1,0 +1,63 @@
+# Generator values — a million ints pulled one at a time from generators
+# kept in variables and fields and resumed by successive `for` loops (each
+# loop takes 100 values and breaks): the per-value cost of resuming a
+# suspended generator (`Next`), the case that does not run the body in
+# place.
+#
+# ops: 1000000
+
+from lamtime import Time
+
+func numbers(n: int) -> generator[int] {
+    i: int = 0
+    while i < n {
+        yield i
+        i += 1
+    }
+}
+
+class Source {
+    func init(self, n: int) {
+        self.n: int = n
+        self.values: generator[int] = self.produce()
+    }
+
+    func produce(self) -> generator[int] {
+        for i in range(self.n) {
+            yield i
+        }
+    }
+}
+
+func work() {
+    total: int = 0
+    g: generator[int] = numbers(500000)
+    for chunk in range(5000) {
+        for x in g {
+            total += x
+            if x % 100 == 99 {
+                break
+            }
+        }
+    }
+    src: Source = Source(500000)
+    for chunk in range(5000) {
+        for x in src.values {
+            total += x
+            if x % 100 == 99 {
+                break
+            }
+        }
+    }
+    if total != 249999500000 {
+        print(f"unexpected {total}")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH generator_resume 1000000 {elapsed}")
+}

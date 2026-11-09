@@ -1044,6 +1044,9 @@ class StatementVisitorMixin:
                 self._emit("__lamShouldReturn = true")
             self._emit("return")
             return
+        if val is None and not self._in_try_iife and self._sm_emit_return():
+            # A state machine generator: its pending ``finally`` blocks run.
+            return
         if val is None:
             if self._in_try_iife:
                 self._emit("__lamShouldReturn = true")
@@ -1108,6 +1111,8 @@ class StatementVisitorMixin:
             flag, leave = self._loop_jump
             self._emit(f"{flag} = {self._LOOP_JUMP_CODES[kind]}")
             self._emit(leave)
+            return
+        if self._sm_emit_loop_jump(kind):
             return
         self._emit(kind)
 
@@ -1510,7 +1515,7 @@ class StatementVisitorMixin:
             self.indent += 1
         self._push_scope()
         body_start, vars_at_start = self._scope_unused_tracking_start()
-        with self._scoped(_loop_break_flag=break_flag, _loop_jump=None):
+        with self._scoped(_loop_break_flag=break_flag, _loop_jump=None, _sm_leaf_loop=True):
             # ``while isinstance(x, T)``: the body sees ``x`` as a ``T``.
             self._nr_emit_region(
                 _narrowing.condition_facts(node.children[0], True),
@@ -1735,7 +1740,7 @@ class StatementVisitorMixin:
             # silenced in the loop body (``for i, x in enumerate(xs)``).
             for loop_name in loop_names:
                 self._declare_var(loop_name)
-            with self._scoped(_loop_break_flag=break_flag, _loop_jump=None):
+            with self._scoped(_loop_break_flag=break_flag, _loop_jump=None, _sm_leaf_loop=True):
                 self._visit_suite(suite_node)
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
@@ -1822,7 +1827,7 @@ class StatementVisitorMixin:
                     self._declare_var(target)
                     if elem_type:
                         self._var_go_types[target] = elem_type
-                with self._scoped(_loop_break_flag=break_flag, _loop_jump=None):
+                with self._scoped(_loop_break_flag=break_flag, _loop_jump=None, _sm_leaf_loop=True):
                     self._visit_suite(suite_node)
                 self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
                 self.indent -= 1
@@ -1878,7 +1883,7 @@ class StatementVisitorMixin:
             self._declare_var(val_name)
         else:
             self._declare_var(var_name)
-        with self._scoped(_loop_break_flag=break_flag, _loop_jump=None):
+        with self._scoped(_loop_break_flag=break_flag, _loop_jump=None, _sm_leaf_loop=True):
             self._visit_suite(suite_node)
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
@@ -2308,6 +2313,12 @@ class StatementVisitorMixin:
             # recorded return happens after the ``do`` IIFE; a ``?`` error
             # is the closure's result.
             self._emit(f"if __lamShouldReturn {{ return {self._do_q_target or 'nil'} }}")
+        elif self._sm is not None and not self._in_try_iife:
+            self._emit("if __lamShouldReturn {")
+            self.indent += 1
+            self._sm_emit_return()
+            self.indent -= 1
+            self._emit("}")
         else:
             self._emit("if __lamShouldReturn { return }")
         self._emit_loop_jump_dispatch(jump)
@@ -2573,7 +2584,7 @@ class StatementVisitorMixin:
         return exception_type
 
     def _emit_catch_clause(self, as_name: Optional[str], suite: Optional[Tree],
-                           exception_type: Optional[str] = None):
+                           exception_type: Optional[str] = None, visit_body=None):
 
         # Bind the caught panic value as-is (``interface{}``) rather
         # than stringifying it eagerly. This preserves the original
@@ -2626,7 +2637,7 @@ class StatementVisitorMixin:
                 self._declare_var(as_name)
             with self._scoped(_in_except_handler=True):
                 body_start, vars_at_start = self._scope_unused_tracking_start()
-                self._visit_suite(suite)
+                (visit_body or self._visit_suite)(suite)
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
 
     # ─── Match / Switch ────────────────────────────────────────
@@ -2740,29 +2751,7 @@ class StatementVisitorMixin:
         self._push_scope()
         body_start, vars_at_start = self._scope_unused_tracking_start()
         try:
-            error_class = self._do_catch_error_class()
-            if err_name == "_":
-                # ``catch _ { ... }``: the error is not bound (Go rejects
-                # ``_ := ...``, which declares no new variable).
-                pass
-            elif error_class:
-                # ``err`` is an ``Error`` (lamerrors): an ``Error`` (or a
-                # subclass, viewed as its ``Error``) as is, any other value
-                # wrapped with an empty kind and its text as the message.
-                self._need_import("fmt")
-                go_err = self._go_class_name(error_class)
-                self._emit(
-                    f"{err_name} := func(v interface{{}}) *{go_err} {{ "
-                    f"if e, ok := v.(*{go_err}); ok {{ return e }}; "
-                    f"if e, ok := v.(interface{{ _lamIs_{go_err}() *{go_err} }}); ok {{ return e._lamIs_{go_err}() }}; "
-                    f'return New{go_err}("", fmt.Sprint(v), v) }}({rdo}.Error)'
-                )
-                self._var_go_types[err_name] = f"*{go_err}"
-                self._var_types[err_name] = error_class
-            else:
-                self._emit(f"{err_name} := {rdo}.Error")
-            if err_name != "_":
-                self._declare_var(err_name)
+            self._emit_do_error_binding(err_name, rdo)
             if isinstance(handler_suite, Tree) and handler_suite.data == "suite":
                 for stmt in handler_suite.children:
                     if isinstance(stmt, Tree):
@@ -2776,6 +2765,32 @@ class StatementVisitorMixin:
             # Body and handler both return / raise: control never gets
             # here, and Go needs a terminating statement to see it.
             self._emit('panic("unreachable: do/catch")')
+
+    def _emit_do_error_binding(self, err_name: str, result: str) -> None:
+        """Bind the error of the failed ``*Result`` ``result`` to the
+        ``catch`` name of a ``do`` block."""
+        error_class = self._do_catch_error_class()
+        if err_name == "_":
+            # ``catch _ { ... }``: the error is not bound (Go rejects
+            # ``_ := ...``, which declares no new variable).
+            return
+        if error_class:
+            # ``err`` is an ``Error`` (lamerrors): an ``Error`` (or a
+            # subclass, viewed as its ``Error``) as is, any other value
+            # wrapped with an empty kind and its text as the message.
+            self._need_import("fmt")
+            go_err = self._go_class_name(error_class)
+            self._emit(
+                f"{err_name} := func(v interface{{}}) *{go_err} {{ "
+                f"if e, ok := v.(*{go_err}); ok {{ return e }}; "
+                f"if e, ok := v.(interface{{ _lamIs_{go_err}() *{go_err} }}); ok {{ return e._lamIs_{go_err}() }}; "
+                f'return New{go_err}("", fmt.Sprint(v), v) }}({result}.Error)'
+            )
+            self._var_go_types[err_name] = f"*{go_err}"
+            self._var_types[err_name] = error_class
+        else:
+            self._emit(f"{err_name} := {result}.Error")
+        self._declare_var(err_name)
 
     # ─── With ──────────────────────────────────────────────────
 

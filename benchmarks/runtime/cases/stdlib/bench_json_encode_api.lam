@@ -1,0 +1,80 @@
+# lamjson encode — a JSON API response: 50 products, each a class with
+# ``__json__`` (strings, numbers, a typed list of image URLs turned into
+# objects, a typed ``dict[str, str]``, nested json values), wrapped in a
+# page object and encoded, as a handler returning ``json`` does per
+# request. Measures building the json values plus encoding them.
+#
+# Also prints the bytes allocated per response (``runtime.ReadMemStats``)
+# as the fifth field of the BENCH line.
+#
+# ops: 2000
+
+from lamtime import Time
+from lamjson import Json
+
+go! {
+    import "runtime"
+}
+
+class Product {
+    func init(self, i: int) {
+        self.id: str = f"0190c3a2-7d4e-7000-8000-{i:012d}"
+        self.brand: str = ["Hermès", "Chanel", "Dior", "Prada"][i % 4]
+        self.title: str = f"Bag <{i}> in leather & gold"
+        self.price: float = 1000.0 + i * 12.5
+        self.discounted: bool = i % 3 == 0
+        self.images: list[str] = [f"products/{i}/{n}.avif" for n in range(4)]
+        self.fields: dict[str, str] = {"color": "black", "size": f"{20 + i % 10}", "material": "calfskin"}
+    }
+
+    func __json__(self) -> json {
+        images: list[json] = [{"card": "https://cdn.example/card/" + key, "full": "https://cdn.example/full/" + key} for key in self.images]
+        discounted: json = None
+        if self.discounted {
+            discounted = self.price * 0.8
+        }
+        return {
+            "id": self.id,
+            "brand": self.brand,
+            "title": self.title,
+            "price": self.price,
+            "discountedPrice": discounted,
+            "currency": "EUR",
+            "images": images,
+            "fields": self.fields,
+            "category": {"id": "bags", "name": "Bags"},
+            "soldOut": false
+        }
+    }
+}
+
+func response(products: list[Product]) -> str {
+    items: list[json] = [json(p) for p in products]
+    page: json = {"data": items, "page": 1, "pageSize": 50, "total": 1895}
+    return Json.encode(page).unwrap()
+}
+
+func allocated() -> int {
+    total: int = 0
+    go! {
+        var ms runtime.MemStats
+        runtime.ReadMemStats(&ms)
+        total = int(ms.TotalAlloc)
+    }
+    return total
+}
+
+func main() {
+    products: list[Product] = [Product(i) for i in range(50)]
+    size: int = len(response(products))
+    before: int = allocated()
+    start: int = Time.nowUnixNano()
+    for __i in range(2000) {
+        if len(response(products)) != size {
+            print("unreachable")
+        }
+    }
+    elapsed: int = Time.nowUnixNano() - start
+    perResponse: int = (allocated() - before) // 2000
+    print(f"BENCH json_encode_api 2000 {elapsed} {perResponse}")
+}

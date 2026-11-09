@@ -571,8 +571,13 @@ A `json` annotation triggers the compiler-managed `lamjson` support module and
 lowers to `LamJSON`, a wrapper around canonical Go JSON values
 (`map[string]interface{}`, `[]interface{}`, primitives, or nil). Contextual
 literal lowering emits string-keyed maps and interface slices, then
-`lamJSONMust(...)` recursively validates and normalizes the value. The builtin
-`json(value)` uses the same normalizer. A Lam `__json__()` method lowers to the
+`lamJSONLiteral(...)` validates and normalizes the members of the new object
+or array in place (it was just built and is referenced nowhere else); a
+nested literal is a `lamJSONLiteral` of its own, so no level is copied. The
+builtin `json(value)` and other non-literal values go through
+`lamJSONMust(...)`, which converts Lam collections (a copy) and shares json
+values (a `LamJSON`, also one returned by `__json__`): their tree is already
+normalized. A Lam `__json__()` method lowers to the
 stable internal Go protocol `LamJSON() LamJSON`; custom classes require the
 explicit `json(instance)` conversion.
 
@@ -585,7 +590,7 @@ payload["active"] = true
 Conceptually lowers to:
 
 ```go
-var payload LamJSON = lamJSONMust(map[string]interface{}{...})
+var payload LamJSON = lamJSONLiteral(map[string]interface{}{"user": lamJSONLiteral(map[string]interface{}{...}), ...})
 var name string = lamJSONRaw(lamJSONGet(lamJSONGet(payload, "user"), "name")).(string)
 lamJSONSet(payload, "active", lamJSONMust(true))
 ```
@@ -594,7 +599,12 @@ lamJSONSet(payload, "active", lamJSONMust(true))
 `driver.Valuer`, and `sql.Scanner`. This lets `encoding/json`, HTTP responses,
 Redis helpers, and JSON/JSONB database parameters consume the same native value
 without exposing ordinary dictionaries. `Json.toDict` / `toList` deliberately
-unwrap it when collection algorithms are desired.
+unwrap it when collection algorithms are desired. Its encoder
+(`lamJSONMarshal` / `lamJSONMarshalString`, also behind `MarshalJSON`,
+`String` and `Json.encode`) writes the `encoding/json` bytes for the shapes a
+json tree and Lam collections have into a pooled buffer, and hands any other
+value (and anything it cannot write the same way) to `encoding/json`, so bytes
+and errors never differ.
 
 ## Variable declarations
 
@@ -1703,7 +1713,7 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `x and y`, `x or y`                | `x && y`, `x \|\| y`                                                      |
 | `a if c else b`                    | Go ternary via IIFE typed by its branches (`func() string { ... }()`); joined with `+` to a `str`, it is a `string` closure even when one branch's type is not tracked |
 | `name := expr`                     | IIFE binding `name` locally and returning it (binding does *not* escape)  |
-| f-strings `f"x={x}"`               | `fmt.Sprintf("x=%v", x)` with method-call translation                     |
+| f-strings `f"x={x}"`               | `fmt.Sprintf("x=%v", x)` with method-call translation; when every slot is a `str`, `html`, `xml` or `json` without a format spec and one is not a `str`, a string concatenation of the slots' `lamValueText` (`f"<!doctype html>{page}"` → `"<!doctype html>" + lamValueText(page)`) |
 | `s[i]` / `s[a:b]`                  | Go string byte indexing / string slicing                                 |
 | `xs[-1]` (constant negative index) | `xs[len(xs)-1]` (an IIFE for a non-trivial receiver); still an `IndexError` when out of range |
 | `xs[i]` on a list / string / tuple, `i` not provably non-negative | `xs[i+len(xs)&(i>>63)]` (see "Runtime negative indexes") |
@@ -1721,7 +1731,8 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `[expr for a, b in pairs]`         | IIFE loop with typed positional unpacking; map targets lower directly to `for a, b := range` |
 | `{a, b, c}` (set literal)          | IIFE that inserts each element into a `map[K]bool` in typed contexts (deduplicates) |
 | `len(x)`                           | `len(x)`                                                                  |
-| `str(x)` / `repr(x)`               | `fmt.Sprintf("%v", x)` / `fmt.Sprintf("%#v", x)`                           |
+| `str(x)` / `repr(x)`               | `fmt.Sprintf("%v", x)` / `fmt.Sprintf("%#v", x)`; `str(x)` of an `html`, `xml` or `json` value is `lamValueText(x)` (lamjson: the value's own `String()`, rendered or encoded once, not copied again by fmt; a string as is, any other value through fmt, so a value the compiler typed wrongly still formats as before) |
+| `x in xs` on a list of strings, numbers or booleans | an IIFE comparing the elements with `==` (no `reflect.DeepEqual` boxing) |
 | `int(x)` / `float(x)`              | `int(x)` / `float64(x)`                                                   |
 | `print(...)`                       | `fmt.Println(...)`                                                        |
 | `input(prompt)`                    | `bufio.NewScanner(os.Stdin)` one-liner                                    |
@@ -2047,7 +2058,7 @@ User-facing examples and a good/bad cheatsheet live in
 | `del xs[a:b]` / `del xs[a:b:k]` | a closure clamping the bounds like Python and copying the kept items to a new slice (a step marks the removed positions) |
 | `pass`                | emits nothing; the empty block is legal Go                                 |
 | `with f as x: body`   | `try { body } finally { x.close() }`: an IIFE opening `x` then `defer x.Close()`, see [With](#with) |
-| `yield expr`          | `if !__lamYield(expr) { return }`; generators compile to a generator handle on their body, see [Generators](#generators) |
+| `yield expr`          | `__lamF.v = expr; __lamF.k = <continuation of the rest>; return lamGenYield`; generators compile to a state machine behind a generator handle, see [Generators](#generators) |
 
 ### With
 
@@ -2082,37 +2093,118 @@ A user `defer` statement keeps Go's function scope.
 ### Generators
 
 A generator function returns a generator handle, `*lamGenerator[T]`, on its
-body lowered to a range-over-func body `func(__lamYield func(T) bool)`.
-`yield v` is `if !__lamYield(v) { return }` (through the `try` / `with`
-IIFE plumbing when inside one): when the consumer has stopped, the body
-returns from the `yield` it is suspended at, running its `finally` defers
-and `with` closes on the way out (Python's `GeneratorExit`). The runtime
-(`lamGenerator`, `lamNewGenerator`, `lamNewIsolatedGenerator`; generic, in
-`compiler/constants.py`) is emitted once, in the main file, when a module of
-the program uses a generator.
+body compiled to a state machine (`compiler/visitors/generators.py`) in
+continuation-passing style: the body is a continuation, a closure
+`func(__lamF *lamGenFrame[T]) int`, and each `yield v` stores `v` and the
+continuation running the rest of the body in the frame and returns:
+
+```go
+func Count(n int) *lamGenerator[int] {
+	return lamNewStateGenerator[int](func(__lamF *lamGenFrame[int]) int {
+		var i int = 0
+		{
+			var __lamGLoop1 func(__lamF *lamGenFrame[int]) int
+			var __lamGResume2 func(__lamF *lamGenFrame[int]) int
+			__lamGLoop1 = func(__lamF *lamGenFrame[int]) int {
+				for {
+					if !(i < n) { break }
+					__lamF.v = i
+					__lamF.k = __lamGResume2
+					return lamGenYield
+				}
+				return lamGenDone
+			}
+			__lamGResume2 = func(__lamF *lamGenFrame[int]) int {
+				i += 1
+				return __lamGLoop1(__lamF)
+			}
+			return __lamGLoop1(__lamF)
+		}
+	})
+}
+```
+
+The locals are ordinary Go locals captured by the continuations created
+after them, so a suspended generator is data referenced by its handle (the
+continuation in `__lamF.k`), not a goroutine stack: a handle dropped in a
+cycle (`self.items = self.produce()`) is collected with the object. `Next`
+runs continuations in a trampoline (`lamGenRun`): `lamGenJump` runs the
+next `__lamF.k`, `lamGenYield` hands `__lamF.v` over, `lamGenDone` ends
+the generator. Structured statements holding a `yield`:
+
+- a statement list: the statements after a compound statement holding a
+  `yield` become a named continuation (`__lamGK<n>`) created before it,
+  which every path through the statement runs (`return __lamGK3(__lamF)`);
+- `while` / `for`: the loop is a closure running a native Go `for` up to a
+  `yield`; the continuation after the `yield` re-enters it. A `for` loop
+  evaluates its iterable once into a snapshot indexed by a counter outside
+  the closure (a slice, `lamGenMapKeys` of a dict, the runes of a string,
+  the indices of `range`, `enumerate`), a generator handle (`Next`) or a
+  channel, so the loop resumes at the next element. `break` runs the
+  continuation after the loop, `continue` is Go's `continue` in the loop's
+  `for` or re-enters the loop closure from a continuation. A continuation
+  in a loop body that uses no local of the body is created once with the
+  loop (`__lamGResume<n>`), not once per iteration;
+- `if` / `elif` / `else`, `match`: each branch (case body) ends with the
+  statement's continuation;
+- `try` / `catch` / `else` / `finally`: Go's `defer` / `recover` cannot
+  span a suspension, so the frame holds the handler of the region running
+  (`__lamF.h`), set when a region is entered (through the trampoline,
+  which runs continuations of a region under a `recover`,
+  `lamGenGuarded`). A `catch` handler (`__lamGHCatch<n>`) selects the
+  continuation of the matching clause (the exception classified like
+  `_emit_catch_dispatch`) or passes the exception on. A `finally` block is
+  a continuation (`__lamGFin<n>`) ended by `lamGenResume`: code leaving the
+  region records where it goes next in `__lamGPend<n>` (the code after the
+  `try`, the close path of the enclosing region for `return`, a loop's
+  continuation for `break` / `continue`, the `catch` handler of a `do`), an
+  exception records itself in `__lamGExc<n>` and is re-raised there;
+- `with a as x`: `x := a`, then a `finally` region running `x.Close()`;
+- a loop over a generator call (`for v in inner()`, `yield from inner()`):
+  the handle is owned (`inner().own()`) and the loop is a `finally` region
+  stopping it;
+- `do { } catch err { }`: a failing `?` in the body stores its `*Result`
+  and runs the handler continuation (through the `finally` regions it
+  leaves).
+
+`return` in the body runs the close path of the innermost `finally` region
+(`__lamGClose<n>`: its `finally` with `lamGenEnd` as what comes next, then
+the enclosing regions'), else returns `lamGenDone`. In a body with such
+regions each `yield` stores the close path of its state in `__lamF.c`; `Stop` (a loop over a generator call
+left early, `Consume`'s deferred call) runs it with `__lamF.closing` set — a
+`yield` reached meanwhile takes the close path again (Python's
+`GeneratorExit`). A generator value suspended in a region registers a
+`runtime.AddCleanup` on its handle whose argument (`lamGenClose`) holds only
+that close path, which runs on a fresh frame when the handle is collected
+(`lamCloseCollectedGenerator`; an exception there is printed, `Exception
+ignored in generator cleanup`). The close path captures what its `finally`
+blocks use: if they use an object holding the generator, that object keeps
+the cleanup's argument reachable and neither is collected.
 
 - `for x in gen()` / `[f(x) for x in gen()]` (a generator call: the loop
-  owns it) ranges over `gen().Consume`: a generator not started yet runs its
-  body in place, in the loop's goroutine — a `yield` is a function call, a
-  `break` / `return` / `?` / exception of the loop body ends the body at its
-  `yield`, and an exception of the body propagates to the loop unchanged.
+  owns it) ranges over `gen().Consume`, which resumes the fresh handle
+  without its mutex and stops it when the loop is left (`break`, `return`,
+  `?`, an exception of the loop body: the generator's `finally` blocks run
+  before the code after the loop); an exception of the body propagates to
+  the loop.
 - `for x in g` with `g` a generator value (variable, field, parameter)
-  ranges over `g.Resume`: values come from `Next`, which starts the body on
-  a coroutine (`iter.Pull`) the first time and leaves it suspended when the
-  loop is left, so the next loop over `g` continues. The coroutine ends when
-  the body is exhausted, raises (the exception is re-raised in the
-  consumer), is stopped, or — for a handle dropped before that — when the
-  handle is collected (`runtime.AddCleanup` stopping it). `Next` holds a
-  mutex, so concurrent consumers share the values.
-- A generator with a `catch` around a `yield` (or a `finally` that returns
-  or jumps, cancelling an exception) is created with
-  `lamNewIsolatedGenerator`: it always runs on its coroutine, so an
-  exception of a consumer's loop body cannot reach that `catch`.
-- `yield from src` lowers to the loop `for v in src { yield v }`.
+  ranges over `g.Resume`: values come from `Next`, which holds the handle's
+  mutex (concurrent consumers share the values) and leaves the generator
+  suspended when the loop is left, so the next loop over `g` continues.
 
-Nothing runs before the first value is asked for and no goroutine exists
-for a generator that is never iterated or that a loop owns; a generator held
-in a value has a coroutine only while it is suspended.
+A body using `defer`, a `yield` as a value or a `?` inside a `try` /
+`with` / `do` nested in a `do` holding a `yield` keeps the coroutine
+lowering (`coroutine_construct`, with a compiler warning): a range-over-func
+body `func(__lamYield func(T) bool)` whose `yield v` is
+`if !__lamYield(v) { return }`, run in place by `Consume`
+(`lamNewGenerator`; `lamNewIsolatedGenerator` when a `catch` or a `finally`
+that returns or jumps sits around a `yield`, so it always runs apart) and
+pulled from a coroutine (`iter.Pull`) by `Next` otherwise, stopped by a
+cleanup when its handle is collected — unless the suspended goroutine
+itself keeps the handle reachable. The runtime (`lamGenerator`,
+`lamGenFrame`, `lamNewStateGenerator`, `lamNewGenerator`, ...; generic, in
+`compiler/constants.py`) is emitted once, in the main file, when a module
+of the program uses a generator.
 
 Top-level, instance, and static generator functions share this lowering.
 Generic static generators preserve their type parameter and return a typed
@@ -2129,13 +2221,13 @@ for value in Streams.values([3, 1, 2]) { print(value) }
 ```
 
 The generated signature is `func Streams_values[T any]([]T) *lamGenerator[T]`
-(its body `return lamNewGenerator[T](func(__lamYield func(T) bool) { ... })`),
+(its body `return lamNewStateGenerator[T](func(__lamF *lamGenFrame[T]) int { ... })`),
 and the loop becomes `for value := range Streams_values([]int{3, 1, 2}).Consume`.
 The type `generator[T]` (and its other name `iterator[T]`) lowers to
 `*lamGenerator[T]` (`-> generator[Circle]` returns a `*lamGenerator[*Circle]`,
 a `g: generator[int]` parameter is a `*lamGenerator[int]`), and a generator
 nested in a function is a closure returning its handle
-(`inner := func() *lamGenerator[*Circle] { return lamNewGenerator[*Circle](func(__lamYield func(*Circle) bool) { ... }) }`).
+(`inner := func() *lamGenerator[*Circle] { return lamNewStateGenerator[*Circle](func(__lamF *lamGenFrame[*Circle]) int { ... }) }`).
 An instance-method generator is a method returning the handle, with the
 body using the receiver as `self`. The loop variable takes the
 generator's element type for the rest of the lowering: its Go type (a class

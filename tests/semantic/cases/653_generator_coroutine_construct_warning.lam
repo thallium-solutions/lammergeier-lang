@@ -1,0 +1,24 @@
+# expect-warning: generator `logged` uses `defer`, so it runs on a coroutine while suspended
+# expect-warning: generator `answers` uses `yield` as a value
+# A generator body with a construct the state machine does not lower keeps
+# the coroutine lowering: a suspended generator is then held by a
+# goroutine, so a cycle through it is never collected.
+
+func logged() -> generator[int] {
+    defer print("end")
+    yield 1
+}
+
+func answers() -> generator[int] {
+    more = yield 1
+    print(more)
+}
+
+func main() {
+    for v in logged() {
+        print(v)
+    }
+    for v in answers() {
+        print(v)
+    }
+}

@@ -1,0 +1,487 @@
+# expect: valid values: 1500
+# expect: valid mismatches: 0
+# expect: invalid values: 600
+# expect: invalid mismatches: 0
+# expect: literal mismatches: 0
+# expect: marshal mismatches: 0
+# expect: size mismatches: 0
+
+# Differential check of the JSON paths against the lamc 4.8.0 reference
+# (``goldenNormalize`` below is its ``lamJSONNormalize``, verbatim, and its
+# encoder was ``encoding/json.Marshal`` of the normalized value): over a
+# seeded corpus of nested Lam values (dicts and lists of every element type
+# the compiler emits, json values, class instances with ``__json__``,
+# unicode, HTML-sensitive text, invalid UTF-8, extreme numbers), the
+# conversion keeps the same tree and errors, and ``Json.encode``, ``str``,
+# f-strings, ``encodePretty``, markup slots and the Go marshaler produce the
+# same bytes.
+
+from lamjson import Json
+from lamerrors import Result
+
+go! {
+    import (
+        "encoding/json"
+        "fmt"
+        "math"
+        "math/rand"
+        "reflect"
+        "strconv"
+        "strings"
+    )
+
+    func goldenNormalize(value interface{}, depth int) (interface{}, error) {
+        if depth > 256 {
+            return nil, fmt.Errorf("json nesting exceeds 256 levels or contains a cycle")
+        }
+        value = lamDynamicValue(value)
+        switch v := value.(type) {
+        case LamJSON:
+            return goldenNormalize(v.value, depth+1)
+        case *LamJSON:
+            if v == nil { return nil, nil }
+            return goldenNormalize(v.value, depth+1)
+        case lamJSONMarshaler:
+            return goldenNormalize(v.LamJSON(), depth+1)
+        case nil, bool, string,
+             int, int8, int16, int32, int64,
+             uint, uint8, uint16, uint32, uint64:
+            return v, nil
+        case float32:
+            f := float64(v)
+            if math.IsNaN(f) || math.IsInf(f, 0) { return nil, fmt.Errorf("json numbers must be finite") }
+            return v, nil
+        case float64:
+            if math.IsNaN(v) || math.IsInf(v, 0) { return nil, fmt.Errorf("json numbers must be finite") }
+            return v, nil
+        case json.Number:
+            if i, err := strconv.ParseInt(string(v), 10, 64); err == nil {
+                if int64(int(i)) == i { return int(i), nil }
+                return i, nil
+            }
+            f, err := strconv.ParseFloat(string(v), 64)
+            if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+                return nil, fmt.Errorf("invalid json number %q", v)
+            }
+            return f, nil
+        }
+
+        rv := reflect.ValueOf(value)
+        if !rv.IsValid() { return nil, nil }
+        switch rv.Kind() {
+        case reflect.Map:
+            if rv.Type().Key().Kind() != reflect.String {
+                return nil, fmt.Errorf("json object keys must be strings, got %s", rv.Type().Key())
+            }
+            out := make(map[string]interface{}, rv.Len())
+            iter := rv.MapRange()
+            for iter.Next() {
+                normalized, err := goldenNormalize(iter.Value().Interface(), depth+1)
+                if err != nil { return nil, err }
+                out[iter.Key().String()] = normalized
+            }
+            return out, nil
+        case reflect.Slice, reflect.Array:
+            out := make([]interface{}, rv.Len())
+            for i := 0; i < rv.Len(); i++ {
+                normalized, err := goldenNormalize(rv.Index(i).Interface(), depth+1)
+                if err != nil { return nil, err }
+                out[i] = normalized
+            }
+            return out, nil
+        }
+        return nil, fmt.Errorf("value of type %T is not JSON-compatible; implement __json__", value)
+    }
+
+    var goldenStrings = []string{
+        "", "a", "hello world", "<b>&amp;</b>", "\"quoted\" \\ back/slash", "\u2028\u2029",
+        "\x00\x01\x1f\x7f", "\b\f\n\r\t", "é漢字🙂", "\xff\xfe bad", "a\xc3", "</script><!--",
+        "e\u0301", "\ufeffbom", strings.Repeat("xy<", 120), "line\u0085next", "\U0010ffff",
+    }
+
+    var goldenKeys = []string{"", "a", "aa", "b", "B", "Z", "_x", "1", "10", "2", "<", "&k", "é", "\u2028", "a b", "\xff"}
+
+    var goldenFloats = []float64{
+        0, math.Copysign(0, -1), 1.5, -2.25, 1e21, 1e20, 999999999999999999999.0, 1e-6, 1e-7, 123456789.125,
+        0.1, 100, 5e-324, math.MaxFloat64, 3.0, -1e-300, float64(1<<53) + 2, 2.5e-8, 1.0 / 3.0,
+    }
+
+    var goldenFloat32s = []float32{1.1, 1e21, 1e-7, 3.4e38, 0.5, -0, 16777216}
+
+    func goldenScalar(r *rand.Rand) interface{} {
+        switch r.Intn(22) {
+        case 0: return nil
+        case 1: return true
+        case 2: return false
+        case 3, 4, 5: return goldenStrings[r.Intn(len(goldenStrings))]
+        case 6: return r.Intn(2000) - 1000
+        case 7: return []int{math.MaxInt64, math.MinInt64, 1 << 53, 0, -1}[r.Intn(5)]
+        case 8: return int64(math.MinInt64)
+        case 9: return []interface{}{int8(-8), int16(300), int32(-70000), uint(7), uint8(255), uint16(65535), uint32(1 << 31)}[r.Intn(7)]
+        case 10: return uint64(math.MaxUint64)
+        case 11, 12, 13: return goldenFloats[r.Intn(len(goldenFloats))]
+        case 14: return goldenFloat32s[r.Intn(len(goldenFloat32s))]
+        case 15: return json.Number([]string{"12", "-3.25", "1e3", "9223372036854775808", "0", "-0", "1E-7"}[r.Intn(7)])
+        case 16: return r.Float64() * 1e6
+        case 17: return r.Int63()
+        default: return goldenStrings[r.Intn(len(goldenStrings))] + strconv.Itoa(r.Intn(100))
+        }
+    }
+
+    func goldenKey(r *rand.Rand) string { return goldenKeys[r.Intn(len(goldenKeys))] }
+
+    func goldenStrs(r *rand.Rand) []string {
+        out := make([]string, r.Intn(5))
+        for i := range out { out[i] = goldenStrings[r.Intn(len(goldenStrings))] }
+        return out
+    }
+
+    // goldenValue is a valid value (every leaf JSON-compatible).
+    func goldenValue(r *rand.Rand, depth int, classes []interface{}) interface{} {
+        if depth > 4 || r.Intn(4) == 0 {
+            if len(classes) > 0 && r.Intn(6) == 0 {
+                return classes[r.Intn(len(classes))]
+            }
+            return goldenScalar(r)
+        }
+        n := r.Intn(6)
+        switch r.Intn(20) {
+        case 0, 1, 2:
+            m := map[string]interface{}{}
+            for i := 0; i < n; i++ { m[goldenKey(r)] = goldenValue(r, depth+1, classes) }
+            return m
+        case 3, 4, 5:
+            out := make([]interface{}, n)
+            for i := range out { out[i] = goldenValue(r, depth+1, classes) }
+            return out
+        case 6:
+            return goldenStrs(r)
+        case 7:
+            out := make([]int, n)
+            for i := range out { out[i] = r.Intn(1 << 20) - 1000 }
+            return out
+        case 8:
+            out := make([]float64, n)
+            for i := range out { out[i] = goldenFloats[r.Intn(len(goldenFloats))] }
+            return out
+        case 9:
+            out := make([]bool, n)
+            for i := range out { out[i] = r.Intn(2) == 0 }
+            return out
+        case 10:
+            m := map[string]string{}
+            for i := 0; i < n; i++ { m[goldenKey(r)] = goldenStrings[r.Intn(len(goldenStrings))] }
+            return m
+        case 11:
+            m := map[string]int{}
+            for i := 0; i < n; i++ { m[goldenKey(r)] = r.Intn(100) }
+            return m
+        case 12:
+            m := map[string][]string{}
+            for i := 0; i < n; i++ { m[goldenKey(r)] = goldenStrs(r) }
+            return m
+        case 13:
+            if r.Intn(2) == 0 { return []byte(goldenStrings[r.Intn(len(goldenStrings))]) }
+            return [3]int{r.Intn(10), -1, 7}
+        case 14:
+            return []interface{}{[]interface{}(nil), map[string]interface{}(nil), []string(nil), map[string]int(nil)}[r.Intn(4)]
+        case 15:
+            out := make([]LamJSON, n)
+            for i := range out { out[i] = lamJSONMust(goldenValue(r, depth+1, classes)) }
+            return out
+        case 16:
+            m := map[string]LamJSON{}
+            for i := 0; i < n; i++ { m[goldenKey(r)] = lamJSONMust(goldenValue(r, depth+1, classes)) }
+            return m
+        case 17:
+            j := lamJSONMust(goldenValue(r, depth+1, classes))
+            switch r.Intn(3) {
+            case 0: return j
+            case 1: return &j
+            }
+            return (*LamJSON)(nil)
+        case 18:
+            out := make([]map[string]interface{}, n)
+            for i := range out {
+                out[i] = map[string]interface{}{goldenKey(r): goldenValue(r, depth+1, classes)}
+            }
+            return out
+        default:
+            m := map[string]map[string]interface{}{}
+            for i := 0; i < n; i++ {
+                m[goldenKey(r)] = map[string]interface{}{goldenKey(r): goldenValue(r, depth+1, classes)}
+            }
+            return m
+        }
+    }
+
+    type goldenStruct struct{ A int }
+
+    func goldenBad(r *rand.Rand) interface{} {
+        x := 3
+        switch r.Intn(13) {
+        case 0: return math.NaN()
+        case 1: return math.Inf(1)
+        case 2: return float32(math.Inf(-1))
+        case 3: return map[int]string{1: "a"}
+        case 4: return goldenStruct{1}
+        case 5: return &x
+        case 6: return json.Number("1e400")
+        case 7: return json.Number("abc")
+        case 8: return complex(1, 2)
+        case 9:
+            var deep interface{} = "leaf"
+            for i := 0; i < 300; i++ { deep = []interface{}{deep} }
+            return deep
+        case 10:
+            m := map[string]interface{}{"a": 1}
+            m["self"] = m
+            return m
+        case 11: return []float64{1, math.NaN()}
+        default: return map[string]float32{"x": float32(math.NaN())}
+        }
+    }
+
+    // goldenInvalid wraps one invalid leaf in valid containers, so the
+    // reported error does not depend on map iteration order.
+    func goldenInvalid(r *rand.Rand) interface{} {
+        var v interface{} = goldenBad(r)
+        for level := r.Intn(4); level > 0; level-- {
+            switch r.Intn(3) {
+            case 0:
+                m := map[string]interface{}{"bad": v}
+                for i := r.Intn(3); i > 0; i-- { m[goldenKey(r)+"_"] = goldenScalar(r) }
+                v = m
+            case 1:
+                out := []interface{}{}
+                for i := r.Intn(3); i > 0; i-- { out = append(out, goldenScalar(r)) }
+                v = append(out, v)
+            default:
+                v = map[string]interface{}{"wrap": []interface{}{v}}
+            }
+        }
+        return v
+    }
+
+    func goldenCorpus(seed int, n int, classes []interface{}, invalid bool) []interface{} {
+        r := rand.New(rand.NewSource(int64(seed)))
+        out := make([]interface{}, n)
+        for i := range out {
+            if invalid {
+                out[i] = goldenInvalid(r)
+            } else {
+                out[i] = goldenValue(r, 0, classes)
+            }
+        }
+        return out
+    }
+
+    // goldenReference: [encoded, pretty, error] the 4.8.0 way.
+    func goldenReference(value interface{}) []string {
+        normalized, err := goldenNormalize(value, 0)
+        if err != nil {
+            return []string{"", "", err.Error()}
+        }
+        encoded, err := json.Marshal(normalized)
+        if err != nil {
+            return []string{"", "", "marshal: " + err.Error()}
+        }
+        pretty, _ := json.MarshalIndent(normalized, "", "  ")
+        return []string{string(encoded), string(pretty), ""}
+    }
+
+    func goldenSameTree(value interface{}, converted LamJSON) bool {
+        normalized, err := goldenNormalize(value, 0)
+        return err == nil && reflect.DeepEqual(normalized, converted.value)
+    }
+
+    // goldenSizeMismatches: the measured length of an encoding is the
+    // length written (the text is allocated once, at that size), and a
+    // value is either measured and written or neither.
+    func goldenSizeMismatches(values []interface{}) int {
+        bad := 0
+        for _, value := range values {
+            candidates := []interface{}{value}
+            if converted, err := lamJSONFrom(value); err == nil {
+                candidates = append(candidates, converted)
+            }
+            for _, candidate := range candidates {
+                size, sized := lamJSONSize(candidate, 0)
+                written, ok := lamJSONAppend(nil, candidate, 0)
+                if sized != ok || (ok && size != len(written)) {
+                    bad++
+                }
+                if ok {
+                    want, err := json.Marshal(candidate)
+                    if err != nil || string(want) != string(written) {
+                        bad++
+                    }
+                }
+            }
+        }
+        return bad
+    }
+
+    // goldenMarshalMismatches compares the Go marshaler of json values
+    // nested in Go containers (what ``encoding/json`` callers such as web
+    // frameworks see) with the 4.8.0 result.
+    func goldenMarshalMismatches(values []interface{}) int {
+        bad := 0
+        for _, value := range values {
+            converted, err := lamJSONFrom(value)
+            if err != nil { continue }
+            normalized, _ := goldenNormalize(value, 0)
+            want, _ := json.Marshal(map[string]interface{}{"data": normalized, "list": []interface{}{normalized}})
+            got, gerr := json.Marshal(map[string]interface{}{"data": converted, "list": []LamJSON{converted}})
+            if gerr != nil || string(got) != string(want) {
+                bad++
+            }
+            raw, _ := json.Marshal(normalized)
+            if value, verr := converted.Value(); verr != nil || value != string(raw) {
+                bad++
+            }
+        }
+        return bad
+    }
+}
+
+class Point {
+    func init(self, x: int, y: float) {
+        self.x: int = x
+        self.y: float = y
+    }
+
+    func __json__(self) -> json {
+        return {"x": self.x, "y": self.y}
+    }
+}
+
+class Shape {
+    func init(self, name: str, points: list[Point], tags: list[str]) {
+        self.name: str = name
+        self.points: list[Point] = points
+        self.tags: list[str] = tags
+    }
+
+    func __json__(self) -> json {
+        points: list[json] = [json(p) for p in self.points]
+        return {"name": self.name, "points": points, "tags": self.tags, "meta": {"count": len(self.points), "first": json(self.points[0]) if len(self.points) > 0 else None}}
+    }
+}
+
+class Animal {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func __json__(self) -> json {
+        return {"kind": "animal", "name": self.name}
+    }
+}
+
+class Dog(Animal) {
+    func init(self, name: str) {
+        base.init(name)
+    }
+
+    func __json__(self) -> json {
+        return {"kind": "dog", "name": self.name, "sounds": ["woof", "<grr>"]}
+    }
+}
+
+func reference(value: any) -> list[str] {
+    out: list[str] = []
+    go! {
+        out = goldenReference(value)
+    }
+    return out
+}
+
+func sameTree(value: any, converted: json) -> bool {
+    out: bool = false
+    go! {
+        out = goldenSameTree(value, converted)
+    }
+    return out
+}
+
+func corpus(seed: int, n: int, classes: list[any], invalid: bool) -> list[any] {
+    out: list[any] = []
+    go! {
+        out = goldenCorpus(seed, n, classes, invalid)
+    }
+    return out
+}
+
+func checkValid(values: list[any]) -> int {
+    bad: int = 0
+    for value in values {
+        ref: list[str] = reference(value)
+        converted: Result[json] = Json.fromValue(value)
+        if not converted.ok() or ref[2] != "" {
+            bad += 1
+            continue
+        }
+        doc: json = converted.unwrap()
+        encoded: str = Json.encode(doc).unwrap()
+        pretty: str = Json.encodePretty(doc).unwrap()
+        script: str = str(<><script>${doc}</script></>)
+        if encoded != ref[0] or str(doc) != ref[0] or f"{doc}" != ref[0] or pretty != ref[1] or script != "<script>" + ref[0] + "</script>" or not sameTree(value, doc) {
+            bad += 1
+        }
+    }
+    return bad
+}
+
+func checkInvalid(values: list[any]) -> int {
+    bad: int = 0
+    for value in values {
+        ref: list[str] = reference(value)
+        converted: Result[json] = Json.fromValue(value)
+        if converted.ok() or ref[2] == "" or converted.error.message != "conversion failed: " + ref[2] {
+            bad += 1
+        }
+    }
+    return bad
+}
+
+func literalMismatches() -> int {
+    # json literals built from typed Lam values, nested literals and json
+    # values, against the same values converted the 4.8.0 way.
+    bad: int = 0
+    for i in range(60) {
+        p: Point = Point(i, i * 0.5)
+        tags: list[str] = [f"t{i}", "<&>", "é"]
+        scores: dict[str, int] = {"a": i, "b": -i}
+        inner: json = {"p": json(p), "tags": tags}
+        doc: json = {"id": i, "name": f"item {i}", "inner": inner, "list": [inner, json(p), None, True, 1.5, [tags, scores]], "scores": scores, "nested": {"deep": {"deeper": [1, {"x": tags}]}}}
+        raw: dict[str, any] = {"id": i, "name": f"item {i}", "inner": {"p": p, "tags": tags}, "list": [{"p": p, "tags": tags}, p, None, True, 1.5, [tags, scores]], "scores": scores, "nested": {"deep": {"deeper": [1, {"x": tags}]}}}
+        ref: list[str] = reference(raw)
+        if Json.encode(doc).unwrap() != ref[0] or str(doc) != ref[0] {
+            bad += 1
+        }
+    }
+    return bad
+}
+
+func main() {
+    pet: Animal = Dog("rex")
+    classes: list[any] = [Point(1, 2.5), Shape("tri", [Point(0, 0.0), Point(3, 1e21), Point(-2, 1e-7)], ["a", "<b>"]), Shape("empty", [], []), Animal("cat"), Dog("fido"), pet]
+    valid: list[any] = corpus(7, 1500, classes, false)
+    print(f"valid values: {len(valid)}")
+    print(f"valid mismatches: {checkValid(valid)}")
+    invalid: list[any] = corpus(11, 600, [], true)
+    print(f"invalid values: {len(invalid)}")
+    print(f"invalid mismatches: {checkInvalid(invalid)}")
+    print(f"literal mismatches: {literalMismatches()}")
+    marshal: int = 0
+    go! {
+        marshal = goldenMarshalMismatches(valid)
+    }
+    print(f"marshal mismatches: {marshal}")
+    sizes: int = 0
+    go! {
+        sizes = goldenSizeMismatches(append(valid, invalid...))
+    }
+    print(f"size mismatches: {sizes}")
+}

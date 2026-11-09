@@ -1,0 +1,123 @@
+# expect: first: {"n":1,"square":1}
+# expect: first allocation: ok
+# expect: scalar allocation: ok
+# expect: scalar first column: 20/20
+# expect: tx scalar first column: 20/20
+# expect: tx first: {"n":1,"square":1}
+# expect: empty first: {} scalar is None: true
+# expect: firstJson: {"doc":{"k":[1,2]}}
+# expect: scalarJson: {"k":[1,2]}
+# expect: textArray: {"a","b c","q\"uote","back\\slash",""}
+# expect: textArray round trip: true
+# expect: observed: 2 select
+# expect: query rows: 5000
+
+# ``first`` / ``scalar`` / ``firstJson`` (and their ``Tx`` twins) stop
+# reading after the first row instead of materialising the whole result set
+# (``firstJson`` decodes only that row: a later row with invalid JSON is not
+# read), ``scalar`` returns the first column in select order (not a random
+# member of the row), and they still go through the observer like ``query``.
+
+from lamdb import Db, Tx
+from lamcontext import Context
+from lamjson import Json
+
+go! {
+    import "runtime"
+}
+
+func allocated() -> int {
+    total: int = 0
+    go! {
+        var ms runtime.MemStats
+        runtime.ReadMemStats(&ms)
+        total = int(ms.TotalAlloc)
+    }
+    return total
+}
+
+class Recorder {
+    func init(self) {
+        self.statements: list[str] = []
+    }
+
+    func start(self, ctx: Context, statement: str) -> any {
+        self.statements.append(statement.split(" ")[0].toLower())
+        return None
+    }
+
+    func finish(self, ctx: Context, token: any, failure: str) {
+        pass
+    }
+}
+
+const Series: str = "WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 200000) SELECT n, n * n AS square FROM s"
+
+func main() {
+    db: Db = Db.connect("sqlite", ":memory:").unwrap()
+
+    row: dict[str, any] = db.first(Series).unwrap()
+    print(f"first: {Json.encode(Json.fromDict(row).unwrap()).unwrap()}")
+
+    before: int = allocated()
+    for __i in range(5) {
+        _ = db.first(Series).unwrap()
+    }
+    perFirst: int = (allocated() - before) // 5
+    print(f"first allocation: {'ok' if perFirst < 200000 else str(perFirst) + ' bytes'}")
+
+    before = allocated()
+    for __i in range(5) {
+        _ = db.scalar(Series).unwrap()
+    }
+    perScalar: int = (allocated() - before) // 5
+    print(f"scalar allocation: {'ok' if perScalar < 200000 else str(perScalar) + ' bytes'}")
+
+    hits: int = 0
+    for __i in range(20) {
+        value: any = db.scalar("SELECT 'first' AS zz, 'second' AS aa, 'third' AS mm").unwrap()
+        if str(value) == "first" {
+            hits += 1
+        }
+    }
+    print(f"scalar first column: {hits}/20")
+
+    tx: Tx = db.begin().unwrap()
+    txHits: int = 0
+    for __i in range(20) {
+        value: any = tx.scalar("SELECT 'first' AS zz, 'second' AS aa").unwrap()
+        if str(value) == "first" {
+            txHits += 1
+        }
+    }
+    print(f"tx scalar first column: {txHits}/20")
+    txRow: dict[str, any] = tx.first(Series).unwrap()
+    print(f"tx first: {Json.encode(Json.fromDict(txRow).unwrap()).unwrap()}")
+    tx.rollback().unwrap()
+
+    db.exec("CREATE TABLE docs (id INTEGER PRIMARY KEY, doc TEXT)").unwrap()
+    empty: dict[str, any] = db.first("SELECT * FROM docs").unwrap()
+    nothing: any = db.scalar("SELECT doc FROM docs").unwrap()
+    print(f"empty first: {Json.encode(Json.fromDict(empty).unwrap()).unwrap()} scalar is None: {nothing == None}")
+    doc: json = {"k": [1, 2]}
+    db.exec("INSERT INTO docs (id, doc) VALUES (?, ?)", [1, doc]).unwrap()
+    db.exec("INSERT INTO docs (id, doc) VALUES (?, ?)", [2, "not json"]).unwrap()
+    withJson: dict[str, any] = db.firstJson("SELECT doc FROM docs ORDER BY id", ["doc"]).unwrap()
+    print(f"firstJson: {Json.encode(Json.fromDict(withJson).unwrap()).unwrap()}")
+    print(f"scalarJson: {db.scalarJson('SELECT doc FROM docs ORDER BY id').unwrap()}")
+
+    values: list[str] = ["a", "b c", "q\"uote", "back\\slash", ""]
+    literal: str = Db.textArray(values)
+    print(f"textArray: {literal}")
+    print(f"textArray round trip: {Db.parseTextArray(literal).unwrap() == values}")
+
+    recorder: Recorder = Recorder()
+    db.setObserver(recorder)
+    _ = db.first("SELECT 1")
+    _ = db.scalar("SELECT 1")
+    print(f"observed: {len(recorder.statements)} {recorder.statements[0]}")
+    db.setObserver(None)
+
+    rows: list[dict[str, any]] = db.query("WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 5000) SELECT n FROM s").unwrap()
+    print(f"query rows: {len(rows)}")
+}
