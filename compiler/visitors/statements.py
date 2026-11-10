@@ -411,7 +411,10 @@ class StatementVisitorMixin:
     def _assign_target_to_go(self, target) -> str:
         """Go name of an assignment target. A plain name is a variable even
         when a function of the program has that name (``one: Server = ...``
-        next to ``func one()``): its declaration and its uses must agree."""
+        next to ``func one()``): its declaration and its uses must agree.
+        A field (``shelf.last``) and an indexed collection (``shelf.slots``
+        in ``shelf.slots[0] = x``) are the stored values, never the
+        converted copy of an ``optional[T]`` of generic code."""
         if isinstance(target, Tree) and target.data == "var" and target.children:
             name = self._get_name(target.children[0])
             go_name = self._go_binding_name(name)
@@ -420,7 +423,37 @@ class StatementVisitorMixin:
                 and name not in self._link_const_go_names and not self._parent_alias_expr(name)
             ):
                 return go_name
-        return self._expr_to_go(target)
+        raw_nodes = self.__dict__.setdefault("_optional_raw_nodes", set())
+        stored = [target]
+        if isinstance(target, Tree) and target.data == "getitem" and target.children:
+            stored.append(target.children[0])
+        added = [id(n) for n in stored if isinstance(n, Tree) and id(n) not in raw_nodes]
+        raw_nodes.update(added)
+        try:
+            return self._expr_to_go(target)
+        finally:
+            raw_nodes.difference_update(added)
+
+    def _raw_target_go_type(self, target) -> str:
+        """The Go type stored in ``target`` when it differs from its value's
+        (``**User`` for a generic class field ``optional[T]`` of ``T =
+        User``, the element of such a list / dict), else ``""``."""
+        if not (isinstance(target, Tree) and target.data in {"getattr", "getitem"}):
+            return ""
+        if target.data == "getitem":
+            collection = target.children[0] if target.children else None
+            raw = self._expr_go_type_hint_raw(collection) if isinstance(collection, Tree) else ""
+            canonical = self._canonical_optional_go(raw)
+            if not raw or raw == canonical:
+                return ""
+            if raw.startswith("[]"):
+                return raw[2:]
+            if raw.startswith("map["):
+                _key, value = self._split_go_map_type(raw)
+                return value
+            return ""
+        raw = self._expr_go_type_hint_raw(target)
+        return raw if raw and raw != self._canonical_optional_go(raw) else ""
 
     def _visit_assign(self, node: Tree):
         parts = [c for c in node.children if c is not None]
@@ -465,6 +498,13 @@ class StatementVisitorMixin:
                 )
             with self._scoped(_index_target=True):
                 target_str = self._assign_target_to_go(target_node)
+            stored_type = self._raw_target_go_type(target_node) if len(parts) == 2 else ""
+            if stored_type:
+                # ``shelf.last = user`` / ``shelf.slots[0] = None`` into
+                # generic code's ``optional[T]`` with ``T`` a class: the
+                # value as the program's ``*User``, boxed to ``**User``.
+                self._emit(f"{target_str} = {self._typed_value_to_go(value_node, stored_type)}")
+                return
             self._record_inferred_target_type(target_str, value_node)
             if self._emit_semantic_typed_assign(node, target_node, target_str, value_node):
                 return
@@ -712,10 +752,13 @@ class StatementVisitorMixin:
         if (
             isinstance(value_node, Tree) and value_node.data == "funccall" and value_node.children
             and isinstance(value_node.children[0], Tree) and value_node.children[0].data == "getattr_safe"
+            and (self._expr_go_type_hint(value_node) or "interface{}") == "interface{}"
         ):
-            # ``x = obj?.name()``: an ``interface{}`` holding the result or
-            # ``None`` (``_expr_go_type_hint``); declaring it with the
-            # payload type would assert ``None`` to it.
+            # ``x = obj?.name()`` on a receiver of unknown type: an
+            # ``interface{}`` holding the result or ``None``; declaring it
+            # with the checker's ``optional[str]`` (``*string``) would
+            # assert the ``interface{}`` to it. A typed receiver gives the
+            # optional itself (``_safe_call_plan``).
             return False
         type_node, go_type = inferred
         own = self._expr_go_type_hint(value_node) or self._infer_type_from_value(value_node) or ""

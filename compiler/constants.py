@@ -729,7 +729,8 @@ def lam_simple_expr_text(node) -> str:
     if data in {"getattr", "getattr_safe"} and len(children) >= 2:
         prefix = lam_simple_expr_text(children[0])
         attr = lam_simple_expr_text(children[1])
-        return f"{prefix}.{attr}" if prefix and attr else ""
+        sep = "?." if data == "getattr_safe" else "."
+        return f"{prefix}{sep}{attr}" if prefix and attr else ""
     if data == "string" and children:
         text = str(children[0])
         return text if len(text) <= 24 and "\n" not in text else ""

@@ -1,0 +1,22 @@
+# expect-error: line 18: error[type]: cannot add `optional[int]` and `int`
+# expect-error: line 19: error[type]: operator `*` is not defined for `optional[int]` and `int`
+# expect-error: line 21: error[type]: cannot add `optional[int]` and `int`
+# Arithmetic on `p?.count()` (an `optional[int]`) needs a default first:
+# `(p?.count() ?? 0) + 1`.
+
+class Pack {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func count(self) -> int {
+        return self.n
+    }
+}
+
+func show(p: optional[Pack]) {
+    print(p?.count() + 1)
+    print(p?.count() * 2)
+    c = p?.count()
+    print(c + 1)
+}

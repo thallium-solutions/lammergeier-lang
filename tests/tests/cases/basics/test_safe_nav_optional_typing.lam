@@ -1,0 +1,124 @@
+# `obj?.method()` / `obj?.field` are `optional` values of the result type:
+# a local assigned from them narrows after a `None` test, `??` falls back to
+# a plain value, they compare with `None` and with a payload value, fit an
+# `optional[str]` variable / parameter / return, and print as the payload or
+# `<nil>` (as before). Each line runs with a set and a `None` receiver.
+# expect: ABC|abc|true|abc|3|4
+# expect: abc abc 3 abc
+# expect: abc abc abc
+# expect: true false true true
+# expect: abc|3|abc|abc
+# expect: f=abc 3 abc
+# expect: s=abc 3
+# expect: chain a@b a@b a@b 2 4
+# expect: once 1 k
+# expect: bumped 2
+# expect: no name|d|d|0|d|d
+# expect: <nil> <nil> <nil> <nil>
+# expect: none none none
+# expect: false true true false
+# expect: none|0|none|none
+# expect: f=<nil> <nil> <nil>
+# expect: s=<nil> <nil>
+# expect: chain none none none 0 0
+# expect: once 2 none
+# expect: bumped -1
+
+class Profile {
+    func init(self, email: str) {
+        self.email: str = email
+    }
+
+    func mail(self) -> str {
+        return self.email
+    }
+}
+
+class Box[T] {
+    func init(self, v: T) {
+        self.v: T = v
+    }
+
+    func get(self) -> T {
+        return self.v
+    }
+}
+
+class Shop {
+    func init(self, name: str) {
+        self.name: str = name
+        self.profile: optional[Profile] = Profile("a@b")
+        self.bumps: int = 0
+    }
+
+    func title(self) -> str {
+        return self.name
+    }
+
+    func count(self) -> int {
+        return len(self.name)
+    }
+
+    func prof(self) -> optional[Profile] {
+        return self.profile
+    }
+
+    func bump(self) {
+        self.bumps += 1
+    }
+}
+
+class Finder {
+    func init(self) {
+        self.calls: int = 0
+    }
+
+    func make(self, k: str) -> optional[Shop] {
+        self.calls += 1
+        if k == "" {
+            return None
+        }
+        return Shop(k)
+    }
+}
+
+func maybe(x: optional[str]) -> str {
+    return x ?? "none"
+}
+
+func back(s: optional[Shop]) -> optional[str] {
+    return s?.title()
+}
+
+func show(s: optional[Shop], b: optional[Box[int]], f: Finder, key: str) {
+    x = s?.title()
+    if x != None {
+        c = s?.count()
+        n = s?.name
+        print(f"{x.toUpper()}|{x}|{x == 'abc'}|{n ?? ''}|{c ?? 0}|{(c ?? 0) + 1}")
+    } else {
+        print(f"no name|{x ?? 'd'}|{s?.title() ?? 'd'}|{s?.count() ?? 0}|{s?.name ?? 'd'}|{back(s) ?? 'd'}")
+    }
+    print(s?.title(), x, s?.count(), s?.name)
+    o: optional[str] = s?.title()
+    print(maybe(o), maybe(s?.title()), maybe(s?.name))
+    print(x != None, x == None, s?.title() == s?.name, s?.count() == 3 or x == None and false)
+    print(f"{s?.title() ?? 'none'}|{s?.count() ?? 0}|{back(s) ?? 'none'}|{o ?? 'none'}")
+    print(f"f={x} {s?.count()} {o}")
+    print("s=" + str(x), str(s?.count()))
+    m: str = s?.prof()?.mail() ?? "none"
+    e: str = s?.profile?.email ?? "none"
+    g: optional[str] = s?.prof()?.mail()
+    print("chain", m, e, g ?? "none", b?.get() ?? 0, (b?.get() ?? 0) * 2)
+    made = f.make(key)?.title()
+    print("once", f.calls, made ?? "none")
+    s?.bump()
+    s?.bump()
+    print("bumped", s?.bumps ?? -1)
+}
+
+func main() {
+    f: Finder = Finder()
+    show(Shop("abc"), Box[int](2), f, "k")
+    show(None, None, f, "")
+}

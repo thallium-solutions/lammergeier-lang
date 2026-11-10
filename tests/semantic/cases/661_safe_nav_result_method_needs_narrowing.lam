@@ -1,0 +1,29 @@
+# expect-error: line 25: error[member]: `x` is an `optional[str]` (it may be `None`): `toUpper` needs a `str`
+# expect-error: line 26: error[member]: `s?.title()` is an `optional[str]` (it may be `None`): `trim` needs a `str`
+# expect-error: line 28: error[member]: `t` is an `optional[str]` (it may be `None`): `split` needs a `str`
+# A method of the payload on an `optional[str]` (a local assigned from
+# `obj?.method()`, a declared optional) needs a `None` test or `??` first;
+# on a declared `optional[str]` it used to fail only in the Go build
+# (`o.ToUpper undefined (type *string ...)`).
+
+class Shop {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func title(self) -> str {
+        return self.name
+    }
+}
+
+func pick(flag: bool) -> optional[str] {
+    return "x" if flag else None
+}
+
+func show(s: optional[Shop]) {
+    x = s?.title()
+    print(x.toUpper())
+    print(s?.title().trim())
+    t: optional[str] = pick(true)
+    print(t.split(","))
+}

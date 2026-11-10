@@ -1,0 +1,60 @@
+# expect-pass
+# A local assigned from `obj?.method()` (an `optional[T]`) narrows like a
+# declared optional: after a `None` test, a guard, in `and`, a ternary.
+
+class Shop {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func title(self) -> str {
+        return self.name
+    }
+
+    func count(self) -> int {
+        return len(self.name)
+    }
+}
+
+func takes(x: str) -> str {
+    return x
+}
+
+func upper(s: optional[Shop]) -> str {
+    x = s?.title()
+    if x != None {
+        return x.toUpper()
+    }
+    return ""
+}
+
+func guarded(s: optional[Shop]) -> str {
+    x = s?.title()
+    if x == None {
+        return "none"
+    }
+    return takes(x.trim())
+}
+
+func both(s: optional[Shop]) -> bool {
+    x = s?.title()
+    return x is not None and x.startsWith("a")
+}
+
+func tern(s: optional[Shop]) -> int {
+    c = s?.count()
+    return c + 1 if c != None else 0
+}
+
+func field(s: optional[Shop]) -> str {
+    n = s?.name
+    if n != None {
+        return n.toLower()
+    }
+    return ""
+}
+
+func main() {
+    s: optional[Shop] = Shop("abc")
+    print(upper(s), guarded(s), both(s), tern(s), field(s))
+}

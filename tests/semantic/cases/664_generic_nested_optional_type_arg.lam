@@ -1,0 +1,48 @@
+# expect-error: line 42: error[type]: `Shelf.wrapFirst` returns `Box[optional[T]]`, a `Box[optional[P]]` here: an `optional[T]` inside a generic class's type arguments cannot hold a class or interface (`T` is `P`)
+# expect-error: line 44: error[type]: `wrap` returns `Box[optional[T]]`, a `Box[optional[Named]]` here
+# Generic code holds `optional[T]` as a Go `*T`: inside `Box[optional[T]]`
+# with `T = P` that is a `Box[**P]`, while the program's
+# `Box[optional[P]]` is a `Box[*P]` (an optional class is the reference
+# itself), and the two generic types cannot be converted. It failed only in
+# the Go build; `T = int` / `str` is fine.
+
+interface Named {
+    func name(self) -> str
+}
+
+class P {
+    func init(self, n: str) {
+        self.n: str = n
+    }
+
+    func name(self) -> str {
+        return self.n
+    }
+}
+
+class Box[T] {
+    func init(self, v: T) {
+        self.v: T = v
+    }
+}
+
+class Shelf[T] {
+    func wrapFirst(self, x: optional[T]) -> Box[optional[T]] {
+        b: Box[optional[T]] = Box(x)
+        return b
+    }
+}
+
+func wrap[T](x: optional[T]) -> Box[optional[T]] {
+    return Box(x)
+}
+
+func main() {
+    s: Shelf[P] = Shelf[P]()
+    print(s.wrapFirst(None).v == None)
+    n: optional[Named] = None
+    print(wrap(n).v == None)
+    i: Shelf[int] = Shelf[int]()
+    label: optional[str] = "x"
+    print(i.wrapFirst(None).v ?? 0, wrap(label).v ?? "")
+}

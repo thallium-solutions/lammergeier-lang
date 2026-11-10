@@ -1,0 +1,137 @@
+# `optional[T]` of generic code with `T` an interface (the program's
+# `optional[Named]` is the interface value itself, generic code's a
+# `*Named`), `str`, `int` and `list[int]` (the same `*T` either way):
+# results, fields, parameters, lists of optionals (printed as values or
+# `<nil>`), `??`, `== None`, comparisons with a payload value, narrowing,
+# `?.` and generic functions, with set and `None` values.
+# expect: n1 - false true n1
+# expect: narrowed n1
+# expect: true false - lo
+# expect: set
+# expect: 3 n1 true 2
+# expect: slot n1 oe
+# expect: x - false true true true
+# expect: narrowed X
+# expect: true false - lo
+# expect: set [x y <nil>] 2 x oe
+# expect: 3 5 true true 3 2 3
+# expect: [1 2] [0] true false [7] 1
+
+interface Named {
+    func name(self) -> str
+}
+
+class P {
+    func init(self, n: str) {
+        self.n: str = n
+    }
+
+    func name(self) -> str {
+        return self.n
+    }
+}
+
+class Shelf[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+        self.last: optional[T] = None
+        self.slots: list[optional[T]] = []
+        self.byKey: dict[str, optional[T]] = {}
+    }
+
+    func at(self, i: int) -> optional[T] {
+        if i < 0 or i >= len(self.items) {
+            return None
+        }
+        return self.items[i]
+    }
+
+    func put(self, x: optional[T]) -> bool {
+        self.last = x
+        self.slots.append(x)
+        return x != None
+    }
+
+    func all(self) -> list[optional[T]] {
+        out: list[optional[T]] = []
+        for x in self.items {
+            out.append(x)
+        }
+        out.append(None)
+        return out
+    }
+
+    func lastOr(self, d: T) -> T {
+        return self.last ?? d
+    }
+}
+
+func first[T](xs: list[T]) -> optional[T] {
+    if len(xs) == 0 {
+        return None
+    }
+    return xs[0]
+}
+
+func orElse[T](x: optional[T], d: T) -> T {
+    if x == None {
+        return d
+    }
+    return x
+}
+
+func count[T](xs: list[optional[T]]) -> int {
+    n: int = 0
+    for x in xs {
+        if x != None {
+            n += 1
+        }
+    }
+    return n
+}
+
+
+func showN(s: Shelf[Named]) {
+    a: optional[Named] = s.at(0)
+    b = s.at(9)
+    print(a?.name() ?? "-", b?.name() ?? "-", a == None, b == None, s.at(0)?.name() ?? "-")
+    if a != None {
+        print("narrowed", a.name())
+    }
+    print(s.put(a), s.put(None), s.last?.name() ?? "-", s.lastOr(P("lo")).name())
+    s.last = P("set")
+    print(s.last?.name() ?? "-")
+    xs: list[optional[Named]] = s.all()
+    print(len(xs), xs[0]?.name() ?? "-", xs[2] == None, count(xs))
+    s.slots[1] = P("slot")
+    print(s.slots[1]?.name() ?? "-", first(s.items)?.name() ?? "-", orElse(s.at(4), P("oe")).name())
+}
+
+func showS(s: Shelf[str]) {
+    a: optional[str] = s.at(0)
+    b = s.at(9)
+    print(a ?? "-", b ?? "-", a == None, b == None, a == "x", s.at(0) == "x")
+    if a != None {
+        print("narrowed", a.toUpper())
+    }
+    print(s.put(a), s.put(None), s.last ?? "-", s.lastOr("lo"))
+    s.last = "set"
+    print(s.last ?? "-", s.all(), count(s.all()), first(s.items) ?? "-", orElse(s.at(4), "oe"))
+}
+
+func showI(s: Shelf[int]) {
+    a: optional[int] = s.at(0)
+    print(a ?? -1, (s.at(1) ?? 0) + 1, s.at(9) == None, s.put(a), s.lastOr(0), count(s.all()), orElse(first(s.items), 0))
+}
+
+func showL(s: Shelf[list[int]]) {
+    a: optional[list[int]] = s.at(0)
+    print(a ?? [], s.at(9) ?? [0], s.at(9) == None, s.put(None), s.lastOr([7]), count(s.all()))
+}
+
+func main() {
+    showN(Shelf[Named]([P("n1"), P("n2")]))
+    showS(Shelf[str](["x", "y"]))
+    showI(Shelf[int]([3, 4]))
+    showL(Shelf[list[int]]([[1, 2]]))
+}

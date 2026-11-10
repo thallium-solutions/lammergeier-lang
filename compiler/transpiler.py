@@ -1831,6 +1831,16 @@ func lamSlotText[T any](v T) string {
                             )
                             if signature in own_signatures:
                                 continue
+                            canonical = (
+                                tuple(self._canonical_optional_go(t) for t in signature[0]),
+                                self._canonical_optional_go(signature[1]),
+                            )
+                            if canonical != signature and canonical in own_signatures:
+                                # ``-> optional[User]`` overriding the base's
+                                # ``optional[T]`` with ``T = User`` (the bound
+                                # ``**User`` is the program's ``*User``): an
+                                # override (with an adapter), not an overload.
+                                continue
                             if any(
                                 own_sig == signature[0] and self._local_covariant_return(own_ret, signature[1])
                                 for own_sig, own_ret in own_signatures

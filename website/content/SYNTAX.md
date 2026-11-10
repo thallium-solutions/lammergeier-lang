@@ -4062,9 +4062,10 @@ Two operators make working with nullable values less noisy:
 - `obj?.field` — if `obj` is `nil`, the whole expression evaluates to
   `nil` without dereferencing; otherwise it returns `obj.field`.
   Method calls use the same syntax (`obj?.method(args)`): `obj` is
-  evaluated once, and the call is an `any` holding the result or `None`
-  (`x = obj?.name()` makes `x` an `any`; `x ?? "default"` falls back when
-  it is `None`).
+  evaluated once, and the call is `None` when `obj` is, else the method's
+  result. Both are typed `optional[T]` with `T` the field's type or the
+  method's declared result (`x = obj?.name()` makes `x` an
+  `optional[str]`; see below).
 - `a ?? b` — returns `a` if it is non-`nil`, otherwise `b`. Chains
   fold left-to-right, e.g. `a ?? b ?? c`.
 
@@ -4091,11 +4092,46 @@ func main() {
 }
 ```
 
-On a class or `optional[...]` receiver `obj?.field` is typed: it is an
-`optional` of the field's type (`optional[str]` for a `str` field, the
-field's own type when it already holds `None`), so `?.` chains
-(`user?.profile?.email`). `print` and f-strings show an optional value's
-payload, or `<nil>`.
+On a class or `optional[...]` receiver `obj?.field` and
+`obj?.method(args)` are typed: an `optional` of the field's type or of the
+method's declared result (`optional[str]` for a `str`; a type that already
+holds `None` — an `optional[T]` result, `any`, `json` — stays as it is, and
+`optional[optional[T]]` is just `optional[T]`). A chain is optional as a
+whole (`user?.profile?.email`, `shop?.owner()?.contact()`), a void method
+called through `?.` is a statement (`job?.cancel()`), and on an
+`optional[str]` receiver `?.` calls the method on the text
+(`name?.toUpper()`). `print`, f-strings and `str()` show an optional
+value's payload, or `<nil>`.
+
+So the rules of `optional[T]` values apply: a `?.` value does not fit a
+parameter, variable, field or return of the payload type, its payload's
+methods and operators need a `None` test or a default first, and it
+compares with `None` and with a payload value (`s?.title() == "home"` is
+false when `s` is `None`). Earlier compilers typed it as the plain
+result, so `None` could reach a `str` parameter:
+
+```lammergeier
+func takes(x: str) { print(x) }
+
+func show(s: optional[Shop]) {
+    takes(s?.title())
+    # error[type]: argument `x` to `takes` has type `optional[str]`,
+    # expected `str`; `s?.title()` is `None` when `s` is `None`: give a
+    # default (`s?.title() ?? ...`) or test `s != None` and use `s.title()`
+    takes(s?.title() ?? "untitled")     # a default
+    t = s?.title()                      # an optional[str]
+    if t != None {
+        takes(t.toUpper())              # narrowed to str
+    }
+    print(t == None, t ?? "-", f"{t}", str(t))
+}
+```
+
+Lam has no `!`-style unwrap: use `??`, a `None` test (`if x != None`,
+`if x == None { return }`, `x is not None and ...`, a ternary), or call
+the method directly on a receiver you tested. On a `Result` receiver
+nothing changes: `load()?.title()` is propagation then a plain call, a
+`str`.
 
 `opt ?? fallback` on an `optional[T]` with a fallback of type `T` is a `T`,
 in an annotated target or not: `w = find(4) ?? 0` makes `w` an `int`, so
@@ -4115,7 +4151,7 @@ extracts its type: `name: str = doc.name ?? "anon"`, `x: float = doc.n ??
 0`). `d[key] ?? fallback` on a dict selects the fallback when the key is
 missing and has the value type. In other contexts (`None ?? 42`, a
 fallback of another type such as `find(1) ?? "none"`, receivers of
-unknown type, `?.method()` calls) both operators return `interface{}`;
+unknown type) both operators return `interface{}`;
 assign to an annotated variable when a concrete type is required
 downstream. `optional[User]` and
 `Option[User]` annotations retain `User` as the safe-navigation receiver
@@ -4530,6 +4566,24 @@ class Users(Registry[User]) {
     }
 }
 ```
+
+`optional[T]` works with any type argument: a class (`Shelf[User]`), an
+interface, `str`, `int`, a list. Results (`shelf.at(i)` with `-> optional[T]`
+is an `optional[User]`), parameters, fields (read, assigned, `None`),
+`list[optional[T]]` / `dict[K, optional[T]]` values (returned, passed,
+indexed, appended to), `Result[optional[T]]` through `?`, generic
+functions (`first(xs)`, `orElse(x, d)`) and overrides returning
+`optional[User]` behave as for a non-generic `optional[User]` (`??`,
+`== None`, narrowing, `?.`). A `list[optional[T]]` or `dict[K,
+optional[T]]` of generic code read outside it with `T` a class or interface
+is a converted copy (generic code holds the optional as a Go `*T`, the
+program as the reference itself): change it through the generic class's
+field (`shelf.slots.append(u)`, `shelf.slots[0] = None`) or its methods,
+not through a list you got from it. One shape is refused: an
+`optional[T]` inside the type arguments of another generic class
+(`-> Box[optional[T]]`) with `T` a class or interface is an
+`error[type]` at the call (`Box[optional[T]]` is fine with `T = int` or
+`str`); return `optional[T]` or a `Box[T]` instead.
 
 ---
 

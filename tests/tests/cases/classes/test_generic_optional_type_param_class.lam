@@ -1,0 +1,202 @@
+# Regression: `optional[T]` of a generic class or function with `T` bound
+# to a class. Generic code holds it as a Go `*T`, i.e. `**P` for `T = P`,
+# while the program's `optional[P]` is the class pointer `*P`: the results
+# (`shelf.at(i)`, `first(xs)`, `Result[optional[T]]` through `?`), fields
+# (`shelf.last`, `list[optional[T]]` / `dict[str, optional[T]]` fields, read,
+# assigned, appended to, popped), parameters (`put(x)`, `orElse(x, d)`),
+# lists returned by generic code, a generic method with its own type
+# parameter, a subclass of `Shelf[P]` reading and writing the inherited
+# field and overriding `at` with `-> optional[P]` (dispatched through
+# `Shelf[P]` values and the base's own calls) all failed to build ("cannot
+# use s.At(0) (value of type **P) as *P value"). Set and `None` values.
+# expect: a - false true a -
+# expect: narrowed a a
+# expect: a d2
+# expect: true false - lo
+# expect: set set
+# expect: true
+# expect: 3 a false 2 2
+# expect: item a
+# expect: item b
+# expect: item none
+# expect: 2 a true
+# expect: kv true
+# expect: a true oe a
+# expect: 2 true - true 1
+# expect: c - has
+# expect: c c
+# expect: bo nobody ANN has true
+# expect: ANN true ANN -
+# expect: - empty true
+
+from lamerrors import Result
+
+class P {
+    func init(self, n: str) {
+        self.n: str = n
+    }
+
+    func name(self) -> str {
+        return self.n
+    }
+}
+
+class Shelf[T] {
+    func init(self, items: list[T]) {
+        self.items: list[T] = items
+        self.last: optional[T] = None
+        self.slots: list[optional[T]] = []
+        self.byKey: dict[str, optional[T]] = {}
+    }
+
+    func at(self, i: int) -> optional[T] {
+        if i < 0 or i >= len(self.items) {
+            return None
+        }
+        return self.items[i]
+    }
+
+    func put(self, x: optional[T]) -> bool {
+        self.last = x
+        self.slots.append(x)
+        return x != None
+    }
+
+    func all(self) -> list[optional[T]] {
+        out: list[optional[T]] = []
+        for x in self.items {
+            out.append(x)
+        }
+        out.append(None)
+        return out
+    }
+
+    func lastOr(self, d: T) -> T {
+        return self.last ?? d
+    }
+
+    func load(self, i: int) -> Result[optional[T]] {
+        if i < 0 {
+            return Result.Err("negative")
+        }
+        return Result.Ok(self.at(i))
+    }
+
+    func pick[U](self, f: func(T) -> U) -> optional[U] {
+        if len(self.items) == 0 {
+            return None
+        }
+        return f(self.items[0])
+    }
+
+    func describe(self) -> str {
+        x: optional[T] = self.at(0)
+        return "has" if x != None else "empty"
+    }
+}
+
+func first[T](xs: list[T]) -> optional[T] {
+    if len(xs) == 0 {
+        return None
+    }
+    return xs[0]
+}
+
+func orElse[T](x: optional[T], d: T) -> T {
+    if x == None {
+        return d
+    }
+    return x
+}
+
+func count[T](xs: list[optional[T]]) -> int {
+    n: int = 0
+    for x in xs {
+        if x != None {
+            n += 1
+        }
+    }
+    return n
+}
+
+class People(Shelf[P]) {
+    func init(self, items: list[P]) {
+        base.init(items)
+    }
+
+    func at(self, i: int) -> optional[P] {
+        if i == 0 and len(self.items) > 0 {
+            return P(self.items[0].n.toUpper())
+        }
+        return None
+    }
+
+    func remember(self, p: optional[P]) -> str {
+        self.last = p
+        return self.last?.n ?? "nobody"
+    }
+
+    func firstName(self) -> str {
+        return self.at(0)?.n ?? "-"
+    }
+}
+
+func run(s: Shelf[P]) -> Result[str] {
+    x: optional[P] = s.load(0)?
+    y = s.load(9)?
+    return Result.Ok(f"{x?.n ?? '-'} {y?.n ?? '-'}")
+}
+
+func showP(s: Shelf[P]) {
+    a: optional[P] = s.at(0)
+    b = s.at(9)
+    print(a?.n ?? "-", b?.n ?? "-", a == None, b == None, s.at(0)?.name() ?? "-", s.at(7)?.n ?? "-")
+    if a != None {
+        print("narrowed", a.n, a.name())
+    }
+    c = s.at(0) ?? P("dflt")
+    print(c.n, (s.at(5) ?? P("d2")).n)
+    print(s.put(a), s.put(None), s.last?.n ?? "-", s.lastOr(P("lo")).n)
+    s.last = P("set")
+    print(s.last?.n ?? "-", s.lastOr(P("lo")).n)
+    s.last = None
+    print(s.last == None)
+    xs: list[optional[P]] = s.all()
+    print(len(xs), xs[0]?.n ?? "-", xs[1] == None, count(xs), count(s.all()))
+    for x in s.all() {
+        print("item", x?.n ?? "none")
+    }
+    print(len(s.slots), s.slots[0]?.n ?? "-", s.slots[1] == None)
+    s.byKey["k"] = P("kv")
+    s.byKey["n"] = None
+    print(s.byKey["k"]?.n ?? "-", s.byKey["n"] == None)
+    f: optional[P] = first(s.items)
+    e: list[P] = []
+    print(f?.n ?? "-", first(e) == None, orElse(first(e), P("oe")).n, orElse(f, P("x")).n)
+}
+
+func showMore(s: Shelf[P]) {
+    s.slots.append(P("ap"))
+    s.slots.append(None)
+    s.slots[0] = None
+    print(len(s.slots), s.slots[0] == None, s.slots[1]?.n ?? "-", s.slots.pop() == None, len(s.slots))
+    print(run(s).unwrap(), s.describe())
+    q: optional[P] = s.pick(lambda (p: P) -> P: p)
+    n: optional[str] = s.pick(lambda (p: P) -> str: p.n)
+    print(q?.n ?? "-", n ?? "-")
+}
+
+func showPeople() {
+    pp: People = People([P("ann")])
+    print(pp.remember(P("bo")), pp.remember(None), pp.firstName(), pp.describe(), pp.last == None)
+    sh: Shelf[P] = pp
+    print(sh.at(0)?.n ?? "-", sh.at(3) == None, run(sh).unwrap())
+    e: People = People([])
+    print(e.firstName(), e.describe(), e.at(0) == None)
+}
+
+func main() {
+    showP(Shelf[P]([P("a"), P("b")]))
+    showMore(Shelf[P]([P("c")]))
+    showPeople()
+}

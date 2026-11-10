@@ -1,0 +1,25 @@
+# expect-pass
+# Regression: `x if x != None else "?"` where a `str` is expected (an
+# argument, an annotated variable, `list.append`, a return) narrows `x` in
+# its branch, like the same ternary without an expected type.
+
+func pick(flag: bool) -> optional[str] {
+    return "x" if flag else None
+}
+
+func takes(x: str) -> str {
+    return x
+}
+
+func label(o: optional[str]) -> str {
+    return o if o != None else "?"
+}
+
+func main() {
+    o: optional[str] = pick(true)
+    labels: list[str] = []
+    labels.append(o if o != None else "?")
+    t: str = o if o is not None else "?"
+    u: str = "?" if o == None else o
+    print(takes(o if o != None else "?"), t, u, label(o), labels)
+}

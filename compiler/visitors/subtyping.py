@@ -257,9 +257,58 @@ class SubtypingMixin:
             return False
         return any(
             self._hier_covariant_sigkey(class_name, base_key, data["sigs"][cls].get(method) or "")
+            or self._hier_optional_override(class_name, cls, method)
             for cls in self._hier_descendants(class_name)
             if method in data["sigs"].get(cls, {})
         )
+
+    def _hier_bound_types(self, class_name: str, ancestor: str, go_types):
+        """``go_types`` of the generic ``ancestor`` with the type arguments
+        ``class_name`` (a descendant) binds, through the chain of bases;
+        ``None`` when a link is unknown."""
+        path = [class_name]
+        current = class_name
+        while current != ancestor:
+            parent = next((b for b in self._hier_bases(current) if b == ancestor or self._hier_is_subclass(b, ancestor)), None)
+            if parent is None:
+                return None
+            path.append(parent)
+            current = parent
+        types = list(go_types)
+        for child, parent in reversed(list(zip(path, path[1:]))):
+            types = self._subst_inherited_init_types(child, parent, types)
+        return types
+
+    def _canonical_sigkey(self, key: str) -> str:
+        """A dispatch key with generic code's ``optional[T]`` of a class /
+        interface in the program's representation (``**User`` -> ``*User``,
+        ``*Named`` -> ``Named``)."""
+        previous = None
+        while previous != key:
+            previous = key
+            key = key.replace("**", "*")
+        for name in self._interface_go_names():
+            key = re.sub(r"\*" + re.escape(name) + r"(?![\w\[])", name, key)
+        return key
+
+    def _hier_optional_override(self, ancestor: str, class_name: str, method: str) -> bool:
+        """``class_name`` overrides the generic ``ancestor``'s ``method``
+        whose ``optional[T]`` (``*T``) is, with ``T`` bound to a class or an
+        interface, a ``**User`` in the inherited Go signature but a ``*User``
+        in the override (``class Users(Shelf[User])`` with ``at(i) ->
+        optional[User]``): it dispatches through an adapter
+        (``_emit_covariant_adapters``)."""
+        if not self._class_type_param_names_of(ancestor):
+            return False
+        data = self._hier()
+        base_key = data["sigs"].get(ancestor, {}).get(method)
+        key = data["sigs"].get(class_name, {}).get(method)
+        if not base_key or not key:
+            return False
+        bound = self._hier_bound_types(class_name, ancestor, [base_key])
+        if not bound or bound[0] == key:
+            return False
+        return self._canonical_sigkey(bound[0]) == key
 
     def _hier_needs_virtual(self, static_class: str, method: str) -> bool:
         """``x.method()`` with ``x`` statically a ``static_class`` must
@@ -530,10 +579,33 @@ class SubtypingMixin:
                 (_p, _s, _a, _n, params_node, _r, _suite, _tp) = self._parse_funcdef(funcdefs[0])
                 go_method = self._go_method_name(class_name, method)
                 params = self._typed_params_to_go(params_node, skip_self=True)
-                call = f"s.{go_method}({', '.join(self._param_forward_names(params_node))})"
+                forward = self._param_forward_names(params_node)
+                optional_adapted = False
+                if self._class_type_param_names_of(ancestor):
+                    # ``Shelf[T].at(i) -> optional[T]`` overridden in ``class
+                    # Users(Shelf[User])`` by ``-> optional[User]``: the
+                    # interface wants the inherited ``**User``, the override
+                    # gives a ``*User`` (and the reverse for parameters).
+                    own_params = list(self._func_param_go_types.get(f"{class_name}.{method}", []))
+                    base_params = self._func_param_go_types.get(f"{ancestor}.{method}", [])
+                    bound = self._hier_bound_types(class_name, ancestor, list(base_params) + [base_ret])
+                    if bound and len(own_params) == len(base_params) == len(forward) and all(
+                        not name.endswith("...") for name in forward
+                    ):
+                        bound_params, base_ret = bound[:-1], bound[-1]
+                        if bound_params != own_params:
+                            params = ", ".join(f"{n} {t}" for n, t in zip(forward, bound_params))
+                            forward = [
+                                self._optional_bridge(n, t, own)
+                                for n, t, own in zip(forward, bound_params, own_params)
+                            ]
+                        optional_adapted = True
+                call = f"s.{go_method}({', '.join(forward)})"
                 adapter = f"_lamOv_{self._go_class_name(ancestor)}_{self._go_method_name(ancestor, method)}"
                 if base_ret:
                     value = self._hier_upcast_to_go(call, own_ret, base_ret) or call
+                    if optional_adapted:
+                        value = self._optional_bridge(call, own_ret, base_ret)
                     self._emit(f"func (s {recv}) {adapter}({params}) {base_ret} {{ return {value} }}")
                 else:
                     self._emit(f"func (s {recv}) {adapter}({params}) {{ {call} }}")

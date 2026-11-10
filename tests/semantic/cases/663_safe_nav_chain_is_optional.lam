@@ -1,0 +1,40 @@
+# expect-error: line 37: error[type]: argument `x` to `takes` has type `optional[str]`, expected `str`
+# expect-error: line 38: error[type]: argument `x` to `takes` has type `optional[str]`, expected `str`
+# expect-error: line 39: error[type]: argument `x` to `takes` has type `optional[str]`, expected `str`
+# A `?.` chain is optional as a whole: `a?.b?.c()` is `None` when any link
+# is; an `optional[T]` result of the method itself does not nest
+# (`optional[optional[str]]` is `optional[str]`).
+
+class Profile {
+    func init(self, email: str) {
+        self.email: str = email
+    }
+
+    func mail(self) -> str {
+        return self.email
+    }
+
+    func alias(self) -> optional[str] {
+        return None
+    }
+}
+
+class User {
+    func init(self) {
+        self.profile: optional[Profile] = Profile("a@b")
+    }
+
+    func prof(self) -> optional[Profile] {
+        return self.profile
+    }
+}
+
+func takes(x: str) -> str {
+    return x
+}
+
+func show(u: optional[User]) {
+    print(takes(u?.profile?.mail()))
+    print(takes(u?.prof()?.email))
+    print(takes(u?.prof()?.alias()))
+}

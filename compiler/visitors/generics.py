@@ -165,7 +165,8 @@ def render_go_type(node) -> str:
     return ""
 
 
-def unify_go_types(pattern: str, actual: str, names, out: Dict[str, str], bind_any: bool = True) -> None:
+def unify_go_types(pattern: str, actual: str, names, out: Dict[str, str], bind_any: bool = True,
+                   own_optional=None) -> None:
     """Bind the type parameters ``names`` appearing in ``pattern`` from the
     matching parts of ``actual`` (first binding wins). ``bind_any=False``
     leaves a parameter unbound when the actual part is ``interface{}``
@@ -174,10 +175,19 @@ def unify_go_types(pattern: str, actual: str, names, out: Dict[str, str], bind_a
     a = parse_go_type(actual)
     if p is None or a is None:
         return
-    _unify(p, a, set(names), out, bind_any)
+    _unify(p, a, set(names), out, bind_any, own_optional)
 
 
-def _unify(p, a, names, out, bind_any) -> None:
+def _unify(p, a, names, out, bind_any, own_optional=None) -> None:
+    if (
+        own_optional is not None and p[0] == "ptr" and p[1][0] == "name" and p[1][1] in names
+        and own_optional(a)
+    ):
+        # ``optional[T]`` (``*T``) given a ``*User`` / an interface: the
+        # program's optional of a class or interface is the value itself,
+        # so ``T`` is ``*User`` (``**User`` in generic code), not ``User``.
+        out.setdefault(p[1][1], render_go_type(a))
+        return
     if p[0] == "name" and p[1] in names:
         rendered = render_go_type(a)
         if not rendered or (rendered == "interface{}" and not bind_any):
@@ -187,20 +197,22 @@ def _unify(p, a, names, out, bind_any) -> None:
     if p[0] != a[0]:
         return
     if p[0] in {"ptr", "slice", "chan"}:
-        _unify(p[1], a[1], names, out, bind_any)
+        _unify(p[1], a[1], names, out, bind_any, own_optional)
     elif p[0] == "map":
-        _unify(p[1], a[1], names, out, bind_any)
-        _unify(p[2], a[2], names, out, bind_any)
+        _unify(p[1], a[1], names, out, bind_any, own_optional)
+        _unify(p[2], a[2], names, out, bind_any, own_optional)
     elif p[0] == "generic":
         if p[1] == a[1] and len(p[2]) == len(a[2]):
             for pa, aa in zip(p[2], a[2]):
+                # Type arguments keep their Go spelling (``Box[*T]`` given a
+                # ``Box[*User]`` is ``T = User``, as Go infers).
                 _unify(pa, aa, names, out, bind_any)
     elif p[0] == "func":
         if len(p[1]) == len(a[1]):
             for pa, aa in zip(p[1], a[1]):
-                _unify(pa, aa, names, out, bind_any)
+                _unify(pa, aa, names, out, bind_any, own_optional)
         if p[2] is not None and a[2] is not None:
-            _unify(p[2], a[2], names, out, bind_any)
+            _unify(p[2], a[2], names, out, bind_any, own_optional)
 
 
 def render_lam_type(type_) -> str:
@@ -363,7 +375,7 @@ class GenericCallMixin:
             literal = self._list_literal_index_type(node) if isinstance(node, Tree) and node.data == "list" else ""
             actual = literal or self._expr_go_type_hint(node) or self._infer_type_from_value(node)
             if actual:
-                unify_go_types(declared, actual, names, subst)
+                unify_go_types(declared, actual, names, subst, own_optional=self._go_type_is_own_optional)
         for declared, node in literals:
             actual = self._infer_type_from_value(node)
             if actual and actual != "interface{}":
@@ -376,7 +388,10 @@ class GenericCallMixin:
             if any(n not in subst for n in names):
                 actual = self._expr_go_type_hint(node) or self._infer_type_from_value(node)
                 if actual:
-                    unify_go_types(declared, actual, [n for n in names if n not in subst], subst)
+                    unify_go_types(
+                        declared, actual, [n for n in names if n not in subst], subst,
+                        own_optional=self._go_type_is_own_optional,
+                    )
         for declared, node in callables:
             pattern = substitute_go_type(declared, subst)
             parsed = parse_go_type(pattern)
@@ -863,7 +878,18 @@ class GenericCallMixin:
             return ""
         signature = " ".join(self._func_param_go_types.get(call_key, []))
         if all(base and name in base or mentions_names(signature, [name]) for name in order):
-            return ""
+            if not any(f"*{name}" in signature for name in order if not (base and name in base)):
+                return ""
+            # ``orElse(maybe, User("x"))`` with ``orElse[T](x: optional[T],
+            # d: T)`` and ``maybe: optional[Named]``: ``T`` is the interface,
+            # which Go would not infer from the ``*User`` argument.
+            subst = self._generic_call_subst(call_key, args_node, order, base)
+            interfaces = self._interface_go_names()
+            if not any(subst.get(name) in interfaces for name in order if not (base and name in base)):
+                return ""
+            if not all(subst.get(name) for name in order):
+                return ""
+            return "[" + ", ".join(subst[name] for name in order) + "]"
         subst = self._generic_call_subst(call_key, args_node, order, base)
         if not all(subst.get(name) for name in order):
             return ""
@@ -935,6 +961,16 @@ class GenericCallMixin:
                     deeper = [substitute_go_type(d, mapping) for d in deeper]
                 return deeper
         return []
+
+    def _go_type_is_own_optional(self, tree) -> bool:
+        """A parsed Go type that is its own ``optional`` outside generic
+        code: a class pointer (``*User``, ``*Box[int]``) or an interface."""
+        if tree[0] == "name":
+            return tree[1] in self._interface_go_names()
+        if tree[0] != "ptr" or tree[1][0] not in {"name", "generic"}:
+            return False
+        base = tree[1][1]
+        return any(base == self._go_class_name(c) for c in self._class_names)
 
     @staticmethod
     def _split_type_arg_list(args: str) -> List[str]:
@@ -1080,3 +1116,101 @@ class GenericCallMixin:
             result = self._list_callback_result_go_type(raw_args[0], [elem])
             return f"[]{result}" if result else ""
         return ""
+
+
+# ─── optional[T] with T bound to a class or an interface ─────────────────
+
+def _collapse_optional_tree(node, interfaces):
+    """``ptr(ptr(X))`` -> ``ptr(X)`` and ``ptr(I)`` -> ``I`` (``I`` an
+    interface), below slices, maps and pointers (not inside generic type
+    arguments or function types, whose Go types cannot be converted)."""
+    kind = node[0]
+    if kind == "ptr":
+        inner = _collapse_optional_tree(node[1], interfaces)
+        if inner[0] == "ptr" or (inner[0] == "name" and inner[1] in interfaces):
+            return inner
+        return ("ptr", inner)
+    if kind == "slice":
+        return ("slice", _collapse_optional_tree(node[1], interfaces))
+    if kind == "map":
+        return ("map", node[1], _collapse_optional_tree(node[2], interfaces))
+    return node
+
+
+def collapse_optional_go(text: str, interfaces) -> str:
+    """The Go type of a value whose type, written inside generic code, is
+    ``text`` once its type parameters are substituted (``substitute_go_type``):
+    ``optional[T]`` is a ``*T`` there, so ``T = *User`` gives ``**User``,
+    but outside generic code ``optional[User]`` is the class pointer itself
+    (``*User``) and ``optional[Sql]`` the interface (``Sql``). ``text``
+    unchanged when nothing collapses."""
+    if not text or "*" not in text:
+        return text
+    if "**" not in text and not any(f"*{name}" in text for name in interfaces):
+        return text
+    parsed = parse_go_type(text)
+    if parsed is None:
+        return text
+    collapsed = _collapse_optional_tree(parsed, interfaces)
+    return text if collapsed == parsed else render_go_type(collapsed)
+
+
+def _nilable_tree(node, interfaces) -> bool:
+    return node[0] == "ptr" or (node[0] == "name" and node[1] in interfaces)
+
+
+_BRIDGE_VARS = ("__lamB0", "__lamB1", "__lamB2", "__lamB3", "__lamB4", "__lamB5")
+
+
+def _bridge_tree(expr: str, src, dst, interfaces, depth: int = 0):
+    if src == dst:
+        return expr
+    if depth >= len(_BRIDGE_VARS) - 1:
+        return None
+    var = _BRIDGE_VARS[depth]
+    s, d = render_go_type(src), render_go_type(dst)
+    if src[0] == "ptr" and src[1] == dst and _nilable_tree(dst, interfaces):
+        # ``**User`` (generic code's ``optional[T]``) to ``*User``.
+        return f"func({var} {s}) {d} {{ if {var} == nil {{ return nil }}; return *{var} }}({expr})"
+    if dst[0] == "ptr" and dst[1] == src and _nilable_tree(src, interfaces):
+        # ``*User`` to the ``**User`` a generic ``optional[T]`` expects.
+        return f"func({var} {s}) {d} {{ if {var} == nil {{ return nil }}; return &{var} }}({expr})"
+    if src[0] == "ptr" and dst[0] == "ptr":
+        inner = _bridge_tree(f"*{var}", src[1], dst[1], interfaces, depth + 1)
+        if inner is None:
+            return None
+        return f"func({var} {s}) {d} {{ if {var} == nil {{ return nil }}; __lamV := {inner}; return &__lamV }}({expr})"
+    if src[0] == "slice" and dst[0] == "slice":
+        item = _BRIDGE_VARS[depth + 1]
+        inner = _bridge_tree(item, src[1], dst[1], interfaces, depth + 1)
+        if inner is None:
+            return None
+        return (
+            f"func({var} {s}) {d} {{ if {var} == nil {{ return nil }}; __lamOut := make({d}, len({var})); "
+            f"for __lamI, {item} := range {var} {{ __lamOut[__lamI] = {inner} }}; return __lamOut }}({expr})"
+        )
+    if src[0] == "map" and dst[0] == "map" and src[1] == dst[1]:
+        item = _BRIDGE_VARS[depth + 1]
+        inner = _bridge_tree(item, src[2], dst[2], interfaces, depth + 1)
+        if inner is None:
+            return None
+        return (
+            f"func({var} {s}) {d} {{ if {var} == nil {{ return nil }}; __lamOut := make({d}, len({var})); "
+            f"for __lamK, {item} := range {var} {{ __lamOut[__lamK] = {inner} }}; return __lamOut }}({expr})"
+        )
+    return None
+
+
+def optional_bridge_go(expr: str, src: str, dst: str, interfaces) -> Optional[str]:
+    """``expr`` (Go type ``src``) as a ``dst`` where the two differ only by
+    the representation of an ``optional`` of a class or interface (see
+    ``collapse_optional_go``): a nil-checked dereference (``**User`` to
+    ``*User``), a box (``*User`` to ``**User``), element by element for
+    lists, dicts and optionals of them (a converted copy). ``None`` when
+    the types differ otherwise."""
+    if src == dst:
+        return expr
+    s, d = parse_go_type(src), parse_go_type(dst)
+    if s is None or d is None:
+        return None
+    return _bridge_tree(expr, s, d, interfaces)

@@ -5,6 +5,88 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.11.0 — 2026-11-10
+
+### Changed
+
+- **Potentially breaking:** the checker types safe navigation as optional.
+  `obj?.field` is an `optional[F]` and `obj?.method(args)` an
+  `optional[R]` (`F` / `R` the declared field type / result; an
+  `optional[R]` result does not nest, `any` and `json` stay as they are, a
+  void method is a statement), `None` when `obj` is; a chain
+  `a?.b?.c()` is optional as a whole. It used to be typed as the plain
+  member, so `takes(s?.title())` with `takes(x: str)` passed the check and
+  handed `None` to `x`, `x = s?.title(); x.toUpper()` passed, and
+  `c = s?.title(); if c == None` was rejected (`cannot compare str and
+  None`). Now the optional rules apply: passing, assigning or returning it
+  where its payload type is expected is an error with a hint, and so is
+  its payload's methods and operators without a `None` test or a default.
+  Code passing `?.` results to non-optional parameters needs a fix:
+
+  ```
+  error[type]: argument `x` to `takes` has type `optional[str]`, expected
+  `str`; `s?.title()` is `None` when `s` is `None`: give a default
+  (`s?.title() ?? ...`) or test `s != None` and use `s.title()`
+  ```
+
+  `takes(s?.title() ?? "")`, or `t = s?.title()` then `if t != None {
+  takes(t) }` (a local assigned from `?.` narrows like any optional).
+  `load()?.title()` on a `Result` is unaffected (propagation, then a plain
+  call).
+- `obj?.method(args)` on a receiver of known type (a class, an interface,
+  an optional class, a generic class) lowers to that optional instead of
+  an `interface{}`: `func() *string { if __lamR := obj; __lamR != nil {
+  __lamV := __lamR.Title(); return &__lamV }; return nil }()` (the class
+  pointer for a class result, `*[]T` for a list, `*T` for a type
+  parameter), so `x = obj?.title()` is a `*string` local like `x:
+  optional[str] = ...`, `??`, narrowing and further `?.` stay typed, and the
+  call goes through the plain method-call lowering (typed arguments,
+  inherited methods). Output is unchanged (`print` / f-strings / `str()`
+  show the value or `<nil>`).
+
+### Fixed
+
+- A void method called through `?.` (`job?.cancel()`) no longer fails to
+  build (`__lamR.Cancel() (no value) used as value`).
+- `x == "abc"` / `x == y` with `x: optional[str]` (or another optional of
+  a comparable value) compares the values (`false` when `x` is `None`, true
+  for two `None`); it failed to build (`mismatched types *string and
+  untyped string`) or compared the pointers.
+- `str(x)` of an `optional[str]` (or `optional[int]`, ...) is the value or
+  `<nil>`, like `print`, instead of the pointer's address (`0xc000014070`).
+- `x.toUpper()` on an `optional[str]` local, parameter or field (and other
+  `str`, `bytes`, list, dict and set methods on an optional of them) is a
+  Lam error asking for a `None` test, `??` or `?.`; it failed only in the
+  Go build (`x.ToUpper undefined (type *string has no field or method
+  ToUpper)`). `x?.toUpper()` on an `optional[str]` works (it failed the same
+  way).
+- `x if x != None else "?"` where a `str` is expected (an argument, an
+  annotated variable, `list.append`) narrows `x` in the branch as the
+  untyped ternary already did, instead of reporting an `optional[str]`.
+- The type hint of a call of an inherited method (`p.label()` with
+  `label` declared in a base class) is the base's declared result.
+- `optional[T]` of a generic class or function with `T` a class or an
+  interface builds and behaves like any optional: `Shelf[User].at(i) ->
+  optional[T]` failed with `cannot use s.At(0) (value of type **User) as
+  *User value`, because generic code holds `optional[T]` as a Go `*T`
+  (`**User`) while an `optional[User]` is the class pointer itself (and an
+  `optional[Named]` the interface value). Results, parameters, fields
+  (read, assigned, `None`), `list[optional[T]]` / `dict[K, optional[T]]`
+  values and fields (appended to, indexed, popped), `Result[optional[T]]`
+  through `?`, generic functions (`first(xs)`, `orElse(x, d)`, which also
+  bound `T` to the class instead of its reference), a subclass of
+  `Shelf[User]` using the inherited field, and an override `-> optional[User]`
+  (which became a second overload, so calls through a `Shelf[User]` ran the
+  base) now convert at the boundary. A list or dict of such optionals read
+  outside generic code is a converted copy. `-> Box[optional[T]]` with `T` a
+  class or interface (two generic class types Go cannot convert) is now an
+  `error[type]` at the call instead of a Go build error.
+- A class instance (or an `optional` of it) fits an `optional[Named]`
+  variable, field, parameter or `optional[T]` with `T = Named` (`cannot
+  assign P to optional[Named]`).
+- `print`, f-strings and `str()` of a `list[optional[str]]` (or of another
+  optional value) show the values or `<nil>` instead of the pointers.
+
 ## 4.10.0 — 2026-11-09
 
 ### Added

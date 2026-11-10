@@ -3573,6 +3573,16 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return type_.args[0].name
         if (
             isinstance(type_, GenericType)
+            and type_.base in {"optional", "Option"}
+            and len(type_.args) == 1
+            and isinstance(type_.args[0], GenericType)
+            and type_.args[0].base in self._class_members
+            and self._class_type_params.get(type_.args[0].base)
+        ):
+            # ``b: optional[Box[int]]``: ``b?.get()`` is a method of ``Box``.
+            return type_.args[0].base
+        if (
+            isinstance(type_, GenericType)
             and type_.base in self._class_members
             and self._class_type_params.get(type_.base)
         ):
@@ -4507,7 +4517,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             value_node,
             "type",
             f"cannot assign `{render_type(actual)}` to `{render_type(expected)}` variable `{name}`"
-            + self._byte_for_str_hint(expected, actual, value_node),
+            + self._byte_for_str_hint(expected, actual, value_node)
+            + self._safe_nav_hint(actual, expected, value_node),
         )
 
     def _annassign_target_display(self, node: Tree) -> str:
@@ -6736,6 +6747,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         if isinstance(generator_type, GenericType) and generator_type.base in self._GENERATOR_TYPE_NAMES:
             self._check_generator_receiver_method(call, callee, generator_type, method)
             return
+        if self._check_optional_value_receiver_method(
+            callee, receiver, receiver_type, method, bool(self._call_positional_args(call)),
+        ):
+            return
         if self._check_markup_receiver_method(call, callee, receiver_type, method):
             return
         if self._is_named_type(receiver_type, "str") if receiver_type is not None else False:
@@ -6775,6 +6790,52 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 f"`{render_type(receiver_type)}` has no method `{method}`"
                 + self._scalar_receiver_hint(receiver, receiver_type, method, call),
             )
+
+    _OPTIONAL_METHOD_PAYLOAD_NAMES = frozenset({"str", "string", "bytes"})
+
+    def _check_optional_value_receiver_method(
+        self, callee: Tree, receiver: Tree, receiver_type, method: str, has_args: bool = False,
+    ) -> bool:
+        """``x.toUpper()`` with ``x: optional[str]`` (a local assigned from
+        ``obj?.name()``, an optional parameter or field): the value may be
+        ``None``, so the method needs a ``None`` test or ``??`` first. It
+        failed only in the Go build (``x.ToUpper undefined (type
+        *string ...)``)."""
+        if not (
+            isinstance(receiver_type, GenericType) and receiver_type.base in {"optional", "Option"}
+            and len(receiver_type.args) == 1
+        ):
+            return False
+        payload = receiver_type.args[0]
+        value_payload = (
+            (isinstance(payload, NamedType) and payload.name in self._OPTIONAL_METHOD_PAYLOAD_NAMES)
+            or isinstance(payload, (ListType, DictType))
+            or (isinstance(payload, GenericType) and payload.base == "set")
+        )
+        if not value_payload:
+            return False
+        from compiler.constants import lam_simple_expr_text
+        text = lam_simple_expr_text(receiver)
+        shown = f"`{text}`" if text else "this value"
+        payload_text = render_type(payload)
+        default = '""' if self._is_named_type(payload, "str") else {
+            "list": "[]", "dict": "{}",
+        }.get("list" if isinstance(payload, ListType) else "dict" if isinstance(payload, DictType) else "", "...")
+        call_text = f"{method}({'...' if has_args else ''})"
+        if text and receiver.data == "var":
+            fix = f"test `{text} != None` first, or use `({text} ?? {default}).{call_text}`"
+        elif text:
+            fix = f"use `({text} ?? {default}).{call_text}`, or bind it to a local and test it `!= None`"
+        else:
+            fix = f"use `(... ?? {default}).{call_text}` or test it `!= None` first"
+        if self._is_safe_nav_expr(receiver):
+            fix += f", or chain `?.{call_text}`"
+        self._error(
+            callee, "member",
+            f"{shown} is an `{render_type(receiver_type)}` (it may be `None`): `{method}` needs a "
+            f"`{payload_text}`; {fix}",
+        )
+        return True
 
     # Methods of a generator value (``g.close()``) and the spellings of other
     # languages for them.
@@ -6909,6 +6970,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                     self._error(call, "call", f"ambiguous call to `{target}` for dynamic argument types")
                     return
             self._check_call_arg_types(call, target, matching_sigs)
+            self._check_nested_optional_type_arg_result(call, target, viable_sigs or matching_sigs)
             return
         for sig in sigs:
             filled_by_pos = set(sig.params[:pos_count])
@@ -7041,6 +7103,67 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return f"{sources[0]}.{attr}"
         return ""
 
+    def _nested_optional_type_params(self, type_: Type, inside: bool = False) -> set[str]:
+        """Type parameters ``T`` written as ``optional[T]`` inside the type
+        arguments of a user generic class (``Box[optional[T]]``,
+        ``list[Box[optional[T]]]``)."""
+        out: set[str] = set()
+        if isinstance(type_, GenericType):
+            if type_.base in {"optional", "Option"} and len(type_.args) == 1:
+                arg = type_.args[0]
+                if inside and isinstance(arg, NamedType):
+                    out.add(arg.name)
+                return out | self._nested_optional_type_params(arg, inside)
+            user = type_.base in self._class_type_params
+            for arg in type_.args:
+                out |= self._nested_optional_type_params(arg, inside or user)
+        elif isinstance(type_, ListType):
+            out |= self._nested_optional_type_params(type_.item, inside)
+        elif isinstance(type_, DictType):
+            out |= self._nested_optional_type_params(type_.key, inside)
+            out |= self._nested_optional_type_params(type_.value, inside)
+        return out
+
+    def _is_reference_type(self, type_: Type | None) -> bool:
+        """A class (generic or not) or an interface: its ``optional`` is the
+        reference itself."""
+        if isinstance(type_, NamedType):
+            return type_.name in self._class_method_shapes or type_.name in self._interface_methods
+        return isinstance(type_, GenericType) and type_.base in self._class_type_params
+
+    def _check_nested_optional_type_arg_result(self, call: Tree, target: str, sigs) -> None:
+        """``shelf.wrap()`` returning ``Box[optional[T]]`` with ``T`` bound to
+        a class or an interface: generic code holds that ``optional[T]`` as
+        a Go ``*T`` (``Box[**User]``) where the program's
+        ``Box[optional[User]]`` holds the reference itself (``Box[*User]``);
+        the two generic class types cannot be converted. It failed only in
+        the Go build."""
+        for sig in sigs:
+            text = sig.return_type_text
+            if not text or "optional" not in text and "Option" not in text:
+                continue
+            try:
+                declared = parse_type(text)
+            except Exception:  # noqa: BLE001 - an unparsable result: nothing to check
+                continue
+            names = self._nested_optional_type_params(declared)
+            if not names:
+                continue
+            mapping = self._generic_type_mapping(call, sig)
+            bound = {name: mapping.get(name) for name in names}
+            offending = next((n for n, t in sorted(bound.items()) if self._is_reference_type(t)), None)
+            if offending is None:
+                continue
+            here = render_type(self._substitute_generic_type(declared, mapping))
+            self._error(
+                call, "type",
+                f"`{target}` returns `{text}`, a `{here}` here: an `optional[{offending}]` inside a generic "
+                f"class's type arguments cannot hold a class or interface (`{offending}` is "
+                f"`{render_type(bound[offending])}`) once it leaves generic code; return `optional[{offending}]` "
+                f"itself, or a `{text.replace(f'optional[{offending}]', offending)}` and test the value for `None`",
+            )
+            return
+
     def _check_call_arg_types(
         self,
         call: Tree,
@@ -7109,7 +7232,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             "type",
             f"argument `{param_name}` to `{target}` has type `{render_type(actual)}`, expected `{render_type(expected)}`"
             + self._defaults_hint(expected, node)
-            + self._byte_for_str_hint(expected, actual, node),
+            + self._byte_for_str_hint(expected, actual, node)
+            + self._safe_nav_hint(actual, expected, node),
         )
 
     def _defaults_hint(self, expected: Type, node) -> str:
@@ -7385,6 +7509,17 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             targeted = self._generic_constructor_for_expected(node, expected)
             if targeted is not None:
                 return targeted
+            if self._is_safe_nav_expr(node):
+                # ``obj?.method()``: an overload is chosen by the payload the
+                # optional is expected to hold; the call is ``None`` when
+                # ``obj`` is.
+                payload = expected
+                if isinstance(expected, GenericType) and expected.base in {"optional", "Option"} and len(expected.args) == 1:
+                    payload = expected.args[0]
+                selected = self._call_return_type_for_expected(self._safe_nav_plain_node(node), payload)
+                if selected is not None:
+                    return self._safe_nav_type(selected)
+                return self._expr_simple_type(node)
             selected = self._call_return_type_for_expected(node, expected)
             if selected is not None:
                 return selected
@@ -7409,8 +7544,13 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return expected
         if isinstance(node, Tree) and node.data == "test" and len(node.children) == 3:
             true_expr, _condition, false_expr = node.children
-            true_type = self._expr_type_for_expected(true_expr, expected)
-            false_type = self._expr_type_for_expected(false_expr, expected)
+            # ``x if x != None else "?"``: each branch with the condition's
+            # narrowing (``x`` is a ``str`` there), as ``_ternary_result_type``.
+            true_facts, false_facts = _narrowing.ternary_facts(node)
+            with self._narrowed(true_facts, [true_expr]):
+                true_type = self._expr_type_for_expected(true_expr, expected)
+            with self._narrowed(false_facts, [false_expr]):
+                false_type = self._expr_type_for_expected(false_expr, expected)
             if true_type is None or false_type is None:
                 return None
             if (
@@ -9581,6 +9721,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                     f"`{local} = {field_text}`, test and return `{local}`, or use `{field_text} ?? ...`)"
                 )
             hint = hint or self._byte_for_str_hint(expected_model, actual_model, value_node)
+            hint = hint or self._safe_nav_hint(actual_model, expected_model, value_node)
             self._error(
                 ret, "return",
                 f"function `{name}` returns `{actual_type}`, expected `{expected_name}`{hint}",
@@ -9816,7 +9957,105 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return result
         return self._expr_simple_type_uncached(node)
 
+    @staticmethod
+    def _is_safe_nav_expr(node) -> bool:
+        """``obj?.field`` or ``obj?.method(args)`` (a ``Result`` receiver was
+        already rewritten to ``propagate`` + ``getattr`` by
+        ``rewrite_result_safe_nav``)."""
+        if not isinstance(node, Tree):
+            return False
+        if node.data == "getattr_safe":
+            return True
+        return (
+            node.data == "funccall" and bool(node.children)
+            and isinstance(node.children[0], Tree) and node.children[0].data == "getattr_safe"
+        )
+
+    def _safe_nav_type(self, plain: Type | None) -> Type | None:
+        """The type of ``obj?.member`` whose plain ``obj.member`` is
+        ``plain``: ``None`` when ``obj`` is, so an ``optional[plain]``
+        (an optional result does not nest; ``any`` / ``json`` hold
+        ``None`` already and a void call stays void)."""
+        if plain is None or self._is_any_type(plain):
+            return plain
+        if isinstance(plain, NamedType) and plain.name in {"json", "None"}:
+            return plain
+        if isinstance(plain, GenericType) and plain.base in {"optional", "Option"}:
+            return plain
+        return GenericType("optional", (plain,))
+
+    def _safe_nav_hint(self, actual: Type | None, expected: Type | None, node) -> str:
+        """``; `s?.name()` is `None` when `s` is `None`: ...`` for a ``?.``
+        value used where its (non-optional) payload type is expected."""
+        node = self._unwrap_argvalue(node)
+        if not self._is_safe_nav_expr(node):
+            return ""
+        if not (isinstance(actual, GenericType) and actual.base in {"optional", "Option"}):
+            return ""
+        if isinstance(expected, GenericType) and expected.base in {"optional", "Option"}:
+            return ""
+        if expected is not None and len(actual.args) == 1 and not (
+            is_assignable(expected, actual.args[0]) or self._nominal_type_assignable(expected, actual.args[0])
+        ):
+            return ""  # the payload does not fit either: no default helps
+        from compiler.constants import lam_simple_expr_text
+        member = node if node.data == "getattr_safe" else node.children[0]
+        receiver = lam_simple_expr_text(member.children[0])
+        text = lam_simple_expr_text(node)
+        if not receiver or not text:
+            return (
+                "; a `?.` value is `None` when its receiver is `None`: give a default "
+                "(`... ?? default`) or test the receiver with `!= None` first"
+            )
+        plain = receiver + "." + text[len(receiver) + 2:] if text.startswith(receiver + "?.") else ""
+        simple_receiver = isinstance(member.children[0], Tree) and member.children[0].data in {"var", "getattr"}
+        if plain and simple_receiver:
+            test = f"test `{receiver} != None` and use `{plain}`"
+        else:
+            test = f"bind `{receiver}` to a local and test it `!= None`"
+        return (
+            f"; `{text}` is `None` when `{receiver}` is `None`: give a default "
+            f"(`{text} ?? ...`) or {test}"
+        )
+
+    def _safe_nav_plain_node(self, node) -> Tree:
+        """``obj.member`` / ``obj.method(args)`` for ``obj?.member`` /
+        ``obj?.method(args)`` (sharing the receiver and argument nodes, kept
+        per node so its memoized types stay valid): typed like the plain
+        access, then made optional by ``_safe_nav_type``."""
+        cache = self.__dict__.setdefault("_safe_nav_plain_nodes", {})
+        entry = cache.get(id(node))
+        if entry is not None and entry[0] is node:
+            return entry[1]
+        if node.data == "getattr_safe":
+            plain = Tree("getattr", list(node.children), meta=getattr(node, "_meta", None))
+        else:
+            callee = node.children[0]
+            plain_callee = Tree("getattr", list(callee.children), meta=getattr(callee, "_meta", None))
+            plain = Tree("funccall", [plain_callee] + list(node.children[1:]), meta=getattr(node, "_meta", None))
+        cache[id(node)] = (node, plain)
+        parents = self.__dict__.get("_parents")
+        if isinstance(parents, dict) and id(node) in parents:
+            # Context lookups (the expected type of a call) see the original
+            # position.
+            parents[id(plain)] = parents[id(node)]
+            if plain.data == "funccall":
+                parents[id(plain.children[0])] = plain
+        return plain
+
     def _expr_simple_type_uncached(self, node) -> Type | None:
+        if self._is_safe_nav_expr(node):
+            plain_node = self._safe_nav_plain_node(node)
+            plain = self._expr_simple_type(plain_node)
+            if plain is None and plain_node.data == "getattr":
+                plain = self._member_target_type(plain_node)
+            receiver_type = self._expr_simple_type(node.children[0] if node.data == "getattr_safe" else node.children[0].children[0])
+            if isinstance(receiver_type, NamedType) and receiver_type.name == "json":
+                return NamedType("json")
+            return self._safe_nav_type(plain)
+        return self._expr_simple_type_plain(node)
+
+    def _expr_simple_type_plain(self, node) -> Type | None:
         literal_type = self._literal_expr_type(node)
         if literal_type:
             return NamedType(literal_type)
@@ -11494,6 +11733,18 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         return isinstance(type_, NamedType) and type_.name == name
 
     def _nominal_type_assignable(self, expected: Type, actual: Type) -> bool:
+        if (
+            isinstance(expected, GenericType) and expected.base in {"optional", "Option"}
+            and len(expected.args) == 1 and isinstance(expected.args[0], NamedType)
+            and expected.args[0].name in self._interface_methods
+        ):
+            # ``o: optional[Named] = User(...)`` (or an ``optional[User]``):
+            # a class fits an interface, so it fits an optional of it.
+            payload = actual
+            if isinstance(actual, GenericType) and actual.base in {"optional", "Option"} and len(actual.args) == 1:
+                payload = actual.args[0]
+            if isinstance(payload, NamedType) and payload.name != "None":
+                return self._nominal_type_assignable(expected.args[0], payload)
         if not isinstance(expected, NamedType) or not isinstance(actual, NamedType):
             return self._identity_type_assignable(expected, actual)
         if expected.name == actual.name:

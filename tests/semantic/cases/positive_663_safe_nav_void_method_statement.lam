@@ -1,0 +1,28 @@
+# expect-pass
+# A void method called through `?.` is a statement; `self?.x` in a method
+# is the field (as an optional), usable with `??`.
+
+class Counter {
+    func init(self) {
+        self.n: int = 0
+    }
+
+    func bump(self) {
+        self.n += 1
+    }
+
+    func current(self) -> int {
+        return self?.n ?? 0
+    }
+}
+
+func touch(c: optional[Counter]) {
+    c?.bump()
+}
+
+func main() {
+    c: optional[Counter] = Counter()
+    touch(c)
+    touch(None)
+    print(c?.current() ?? -1)
+}

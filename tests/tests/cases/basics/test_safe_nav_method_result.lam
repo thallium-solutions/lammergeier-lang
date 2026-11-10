@@ -1,8 +1,10 @@
-# ``obj?.method()`` is an ``interface{}`` holding the result, or ``None``
+# ``obj?.method()`` is an optional of the result (``optional[str]``), ``None``
 # when ``obj`` is ``None`` (the type hint used to claim the method's declared
 # result, so an unannotated local assigned from it got a wrong type):
 # ``??`` falls back on ``None``, f-strings and ``print`` show ``<nil>``, a
-# ``str`` argument takes the result, and the receiver is evaluated once.
+# ``str`` argument takes the result with a ``??`` default (since the checker
+# types ``?.`` as optional, passing it bare is an error), and the receiver is
+# evaluated once.
 # expect: n1 <nil>
 # expect: n1|<nil>
 # expect: n1 dflt
@@ -52,7 +54,7 @@ func main() {
     print(f"{got}|{missing}")
     print(got ?? "dflt", missing ?? "dflt")
     other: Svc = Svc(2)
-    print(takes(got), takes(other?.name()))
+    print(takes(got ?? ""), takes(other?.name() ?? ""))
     f: Factory = Factory()
     made = f.make(7)?.name()
     print(f"made={f.made} {made}")

@@ -1,0 +1,51 @@
+# expect-error: line 39: error[type]: argument `x` to `takes` has type `optional[str]`, expected `str`
+# expect-error: `s?.title()` is `None` when `s` is `None`
+# expect-error: line 40: error[type]: argument `x` to `takes` has type `optional[str]`, expected `str`
+# expect-error: line 44: error[return]: function `label` returns `optional[str]`, expected `str`
+# expect-error: line 48: error[type]: cannot assign `optional[str]` to `str` variable `n`
+# expect-error: line 49: error[type]: cannot assign `optional[int]` to `int` variable `c`
+# `obj?.method()` is `None` when `obj` is `None`: it is an `optional` of
+# the method's result, so it does not fit a parameter, return or variable
+# of the payload type (it used to be typed as the plain result and passed
+# `None` along).
+
+class Shop {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func title(self) -> str {
+        return self.name
+    }
+
+    func count(self) -> int {
+        return len(self.name)
+    }
+}
+
+func find(key: str) -> optional[Shop] {
+    if key == "" {
+        return None
+    }
+    return Shop(key)
+}
+
+func takes(x: str) -> str {
+    return x
+}
+
+func main() {
+    s: optional[Shop] = find("a")
+    print(takes(s?.title()))
+    print(takes(find("b")?.title()))
+}
+
+func label(s: optional[Shop]) -> str {
+    return s?.title()
+}
+
+func assigned(s: optional[Shop]) {
+    n: str = s?.title()
+    c: int = s?.count()
+    print(n, c)
+}

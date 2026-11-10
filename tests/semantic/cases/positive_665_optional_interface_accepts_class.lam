@@ -1,0 +1,45 @@
+# expect-pass
+# A class fits an interface, so a class instance (or an optional of it) fits
+# an `optional[Named]` variable, field, parameter and generic `optional[T]`
+# with `T = Named`; it was "cannot assign `P` to `optional[Named]`".
+
+interface Named {
+    func name(self) -> str
+}
+
+class P {
+    func init(self, n: str) {
+        self.n: str = n
+    }
+
+    func name(self) -> str {
+        return self.n
+    }
+}
+
+class Holder {
+    func init(self) {
+        self.o: optional[Named] = None
+    }
+}
+
+class Shelf[T] {
+    func init(self) {
+        self.last: optional[T] = None
+    }
+}
+
+func take(n: optional[Named]) -> str {
+    return n?.name() ?? "-"
+}
+
+func main() {
+    x: optional[Named] = P("a")
+    h: Holder = Holder()
+    h.o = P("b")
+    p: optional[P] = P("c")
+    y: optional[Named] = p
+    s: Shelf[Named] = Shelf[Named]()
+    s.last = P("d")
+    print(take(x), take(h.o), take(P("e")), take(y), take(s.last), take(None))
+}
