@@ -5,6 +5,19 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.13.0 — 2026-11-11
+
+### Changed
+
+- **Renamed:** `Row.optionalStr` / `optionalInt` / `optionalFloat` /
+  `optionalBool` (`lamdb`) are `Row.nullableStr` / `nullableInt` /
+  `nullableFloat` / `nullableBool`: the language has no optional type since
+  4.12, and the functions return an `any` (the value, or `None` for SQL
+  NULL). The old names are an error suggesting the new one (``unknown member
+  `Row.optionalStr` on class `Row` — did you mean `Row.nullableStr`?``).
+  `Row.str(row, key, fallback)` & co. read a NULL as their fallback, and
+  `Row.isNull` tells NULL apart.
+
 ## 4.12.0 — 2026-11-11
 
 ### Removed

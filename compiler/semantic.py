@@ -3722,7 +3722,18 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         args_node = call.children[1] if len(call.children) > 1 else None
         self._visit_expr_subtree(args_node)
 
+    # Stdlib members renamed by a release: ``(class, old name) -> new name``.
+    _RENAMED_MEMBERS = {
+        ("Row", "optionalStr"): "nullableStr",
+        ("Row", "optionalInt"): "nullableInt",
+        ("Row", "optionalFloat"): "nullableFloat",
+        ("Row", "optionalBool"): "nullableBool",
+    }
+
     def _suggest_member(self, class_name: str, attr: str) -> Optional[str]:
+        renamed = self._RENAMED_MEMBERS.get((class_name, attr))
+        if renamed is not None:
+            return renamed
         members = self._class_exposed_members(class_name)
         matches = get_close_matches(attr, list(members), n=1, cutoff=0.75)
         return matches[0] if matches else None

@@ -3500,7 +3500,7 @@ active: bool = Row.bool(row, "active")
 created: DateTime = Row.time(row, "created_at")   # UTC DateTime, None for NULL
 createdUnix: int = Row.unix(row, "created_at")
 tags: list[str] = Row.strList(row, "tags")         # text[] "{a,\"b c\",NULL}"
-note: str = Row.optionalStr(row, "note") ?? ""   # an any: the text, or None for NULL
+note: str = Row.nullableStr(row, "note") ?? ""   # an any: the text, or None for NULL
 
 _ = db.exec("UPDATE products SET tags = ?::text[] WHERE id = ?", [Db.textArray(["bio", "local"]), id])?
 ```
@@ -3514,14 +3514,15 @@ _ = db.exec("UPDATE products SET tags = ?::text[] WHERE id = ?", [Db.textArray([
 | `Row.unix(row, key, fallback = 0)` | `int` | `time.Time`, Unix seconds, timestamp text (`2026-11-03 19:05:00+01`, RFC 3339, `2026-11-03`; no offset is UTC) |
 | `Row.time(row, key)` | `DateTime` (`None` for NULL) | as `unix`, in UTC (`inLocation` for another zone) |
 | `Row.timeText(row, key, layout = "2006-01-02T15:04:05Z07:00", location = "UTC", fallback = "")` | `str` | as `unix`, written with a Go layout: by default RFC 3339 in whole seconds (`2026-11-03T19:05:00Z`, where `Row.str` keeps the fraction); an unknown location throws a `LocationError` |
-| `Row.optionalStr` / `optionalInt` / `optionalFloat` / `optionalBool(row, key)` | `any` | as above, the `str` / `int` / `float` / `bool` value or `None` for NULL, a missing column, or a value that does not convert (`Row.optionalInt(row, "n") ?? 0`; a `None` converted to an `int` throws `TypeError`) |
+| `Row.nullableStr` / `nullableInt` / `nullableFloat` / `nullableBool(row, key)` | `any` | as above, the `str` / `int` / `float` / `bool` value or `None` for NULL, a missing column, or a value that does not convert (`Row.nullableInt(row, "n") ?? 0`; a `None` converted to an `int` throws `TypeError`) |
 | `Row.isNull(row, key)` | `bool` | NULL or a missing column |
 | `Row.strList(row, key)` / `Row.intList(row, key)` | `list[str]` / `list[int]` | a PostgreSQL array literal; NULL elements are dropped, NULL is `[]` |
 | `Db.textArray(values)` | `str` | writes `{"a","b c"}` (every element quoted, `"` and `\` escaped) for a `?::text[]` parameter |
 | `Db.parseTextArray(text)` | `Result[list[str]]` | parses an array literal; text that is not one is a `DbArrayError` |
 
 A missing column, NULL, or a value that does not convert gives `fallback`
-(the `optional*` variants give `None`); `Row.time` is `None` for instants outside
+(the `nullable*` variants give `None`; they were named `optional*` before
+4.13); `Row.time` is `None` for instants outside
 the years 1678–2261 (`DateTime` holds Unix nanoseconds), such as a `time`
 column's `0000-01-01` date.
 
@@ -4202,7 +4203,7 @@ Row.str(row: dict[str, any], key: str, fallback: str = "") -> str
 Row.bool(row: dict[str, any], key: str, fallback: bool = false) -> bool
 Row.unix(row: dict[str, any], key: str, fallback: int = 0) -> int
 Row.time(row: dict[str, any], key: str) -> DateTime
-Row.optionalStr/optionalInt/optionalFloat/optionalBool(row: dict[str, any], key: str) -> any
+Row.nullableStr/nullableInt/nullableFloat/nullableBool(row: dict[str, any], key: str) -> any
 Row.isNull(row: dict[str, any], key: str) -> bool
 Row.strList(row: dict[str, any], key: str) -> list[str]
 Row.intList(row: dict[str, any], key: str) -> list[int]

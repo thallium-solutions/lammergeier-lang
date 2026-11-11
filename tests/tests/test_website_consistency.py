@@ -926,7 +926,7 @@ def check_official_packages(report: Report) -> None:
                 f"catalog needs a current canonical import example for {package.name}",
             )
 
-    if compiler_target is not None and compiler_target != "4.12":
+    if compiler_target is not None and compiler_target != "4.13":
         report.add(
             "official packages",
             ROOT / "compiler" / "version.py",

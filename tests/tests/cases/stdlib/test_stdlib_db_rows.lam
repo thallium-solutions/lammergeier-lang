@@ -3,7 +3,7 @@
 # expect: sqlite-str Ada 7 2.5  none
 # expect: sqlite-bool true false true false true
 # expect: sqlite-null true true false
-# expect: sqlite-optional Ada <nil> 7 <nil> 2.5 true <nil>
+# expect: sqlite-nullable Ada <nil> 7 <nil> 2.5 true <nil>
 # expect: sqlite-time 2026-11-03T19:05:00Z 1793732700 1793732700 none
 # expect: sqlite-list a|b c|d,e 3 1,2,3
 # expect: pg-int 9007199254740993 1 0 123 1793732700 12
@@ -106,7 +106,7 @@ func main() {
     print("sqlite-str", Row.str(row, "s"), Row.str(row, "n"), Row.str(row, "f"), Row.str(row, "nothing"), Row.str(row, "missing", "none"))
     print("sqlite-bool", Row.bool(row, "b"), Row.bool(row, "nothing"), Row.bool(row, "yes"), Row.bool(row, "word"), Row.bool(row, "word", true))
     print("sqlite-null", Row.isNull(row, "nothing"), Row.isNull(row, "missing"), Row.isNull(row, "s"))
-    print("sqlite-optional", Row.optionalStr(row, "s"), Row.optionalStr(row, "nothing"), Row.optionalInt(row, "n"), Row.optionalInt(row, "word"), Row.optionalFloat(row, "f"), Row.optionalBool(row, "b"), Row.optionalBool(row, "word"))
+    print("sqlite-nullable", Row.nullableStr(row, "s"), Row.nullableStr(row, "nothing"), Row.nullableInt(row, "n"), Row.nullableInt(row, "word"), Row.nullableFloat(row, "f"), Row.nullableBool(row, "b"), Row.nullableBool(row, "word"))
     print("sqlite-time", timeText(row, "d"), Row.unix(row, "d"), Row.int(row, "d"), timeText(row, "nothing"))
     tags: list[str] = Row.strList(row, "tags")
     print("sqlite-list", "|".join(tags), len(Row.intList(row, "ints")), ",".join([str(n) for n in Row.intList(row, "ints")]))

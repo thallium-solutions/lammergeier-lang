@@ -1,0 +1,11 @@
+# expect-error: line 8: error[member]: unknown member `Row.optionalStr` on class `Row` — did you mean `Row.nullableStr`?
+# expect-error: line 9: error[member]: unknown member `Row.optionalInt` on class `Row` — did you mean `Row.nullableInt`?
+from lamdb import Row
+
+func main() {
+    row: dict[str, any] = {"name": "Ada", "n": 7}
+    # The `optional*` row helpers are `nullable*` since 4.13.
+    print(Row.optionalStr(row, "name"))
+    print(Row.optionalInt(row, "n"))
+    print(Row.nullableStr(row, "name") ?? "", Row.nullableInt(row, "n") ?? 0)
+}
