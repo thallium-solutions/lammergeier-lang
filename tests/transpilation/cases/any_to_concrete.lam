@@ -2,13 +2,13 @@
 # through one checked conversion, whatever produces it (here the results
 # of `-> any` callables, an `any` field and a `dict[int, any]` element): a
 # plain assertion for scalars, the int-widening converter for `float`.
-# expect-go: var n int = interface{}(Anyv(3)).(int)
-# expect-go: return interface{}(Anyv(x)).(string)
-# expect-go: Take(interface{}(s.Get(1)).(int))
-# expect-go: var f float64 = func(v interface{}) float64 { if n, ok := v.(int); ok { return float64(n) }; return v.(float64) }(Store_make(2))
-# expect-go: var r int = interface{}(s.Raw).(int)
-# expect-go: var k string = interface{}(byId[1]).(string)
-# expect-go: []int{interface{}(Anyv(4)).(int)}
+# expect-go: var n int = lamAs[int](Anyv(3), "an int")
+# expect-go: return lamAs[string](Anyv(x), "a str")
+# expect-go: Take(lamAs[int](s.Get(1), "an int"))
+# expect-go: var f float64 = func(v interface{}) float64 { if n, ok := v.(int); ok { return float64(n) }; return lamAs[float64](v, "a float") }(Store_make(2))
+# expect-go: var r int = lamAs[int](s.Raw, "an int")
+# expect-go: var k string = lamAs[string](byId[1], "a str")
+# expect-go: []int{lamAs[int](Anyv(4), "an int")}
 
 class Store {
     func init(self) {

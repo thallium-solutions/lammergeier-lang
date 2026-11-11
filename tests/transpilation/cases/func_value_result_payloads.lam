@@ -3,7 +3,7 @@
 # of `unwrap()` / `?` like a declared function's call.
 # expect-go: (s.Loader(2).Unwrap()))
 # expect-go: }(fn(2).Unwrap())) + xs[0])
-# expect-go: Strings_toUpper(fns[0]().Unwrap().(string))
+# expect-go: Strings_toUpper(lamAs[string](fns[0]().Unwrap(), "a str"))
 # expect-go: }(__q1.Value)
 
 from lamerrors import Result

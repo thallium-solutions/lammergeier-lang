@@ -142,7 +142,7 @@ _SEMANTIC_TOKEN_MODIFIERS = ("declaration", "readonly", "static", "async")
 _BUILTIN_TYPE_NAMES = {
     "any", "bool", "byte", "bytes", "dict", "error", "float", "float32",
     "float64", "func", "html", "int", "int8", "int16", "int32", "int64", "json",
-    "list", "object", "optional", "Option", "Result", "rune", "set", "str",
+    "list", "object", "Result", "rune", "set", "str",
     "string", "tuple", "uint", "uint8", "uint16", "uint32", "uint64", "xml",
 }
 

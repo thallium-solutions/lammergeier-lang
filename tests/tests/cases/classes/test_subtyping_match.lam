@@ -123,7 +123,7 @@ func anyBase(v: any) -> str {
     }
 }
 
-func optKind(m: optional[Shape]) -> str {
+func optKind(m: Shape) -> str {
     match m {
         case Circle() as c {
             return f"optional {c.name} {c.area()}"
@@ -157,7 +157,7 @@ func main() {
             print("deep other")
         }
     }
-    maybe: optional[Shape] = Circle(1)
+    maybe: Shape = Circle(1)
     print(optKind(maybe))
     print(optKind(None))
     print(anyBase(Square(2)))

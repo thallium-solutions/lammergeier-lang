@@ -2,15 +2,16 @@
 # expect: nobody
 # expect: 0
 # expect: none-list
-# Regression: `x: optional[User] = f()?` where f returns Result.Ok(None)
-# type-asserted the nil payload (`.(*User)`) and panicked.
+# Regression: `x: User = f()?` where f returns Result.Ok(None)
+# type-asserted the nil payload (`.(*User)`) and panicked. A `Result[any]`
+# payload may be `None` too (after 4.11: it was a `Result[optional[int]]`).
 from lamerrors import Result
 
 class User {
     func init(self, name: str) { self.name: str = name }
 }
 
-func find(name: str) -> Result[optional[User]] {
+func find(name: str) -> Result[User] {
     if name == "" {
         return Result.Ok(None)
     }
@@ -18,14 +19,14 @@ func find(name: str) -> Result[optional[User]] {
 }
 
 func lookup(name: str) -> Result[str] {
-    user: optional[User] = find(name)?
+    user: User = find(name)?
     if user == None {
         return Result.Ok("nobody")
     }
     return Result.Ok(user.name)
 }
 
-func maybeCount(flag: bool) -> Result[optional[int]] {
+func maybeCount(flag: bool) -> Result[any] {
     if flag {
         return Result.Ok(None)
     }
@@ -33,7 +34,7 @@ func maybeCount(flag: bool) -> Result[optional[int]] {
 }
 
 func countText(flag: bool) -> Result[str] {
-    n: optional[int] = maybeCount(flag)?
+    n: any = maybeCount(flag)?
     if n == None {
         return Result.Ok("none-list")
     }

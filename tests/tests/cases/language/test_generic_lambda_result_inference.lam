@@ -6,7 +6,7 @@
 # arguments (lambda annotations, named functions, static methods) and,
 # when nothing else determines them, from the annotated assignment target
 # (`r: Result[int] = make()`, `n: int = make()?`): `Result[T]`,
-# `optional[T]`, `list[T]` and `dict[K, V]` in parameter and result
+# `list[T]` and `dict[K, V]` in parameter and result
 # positions; top-level functions, static and instance methods of a
 # non-generic class.
 #
@@ -20,7 +20,7 @@
 # expect: propagated=false
 # expect: list=[a b]
 # expect: dict=[k]
-# expect: optional=5 9
+# expect: first=5 9
 # expect: params=12
 # expect: generic_caller=6
 # expect: explicit=3
@@ -73,12 +73,12 @@ func keysOf[K, V](fn: func() -> dict[K, V]) -> list[K] {
     return out
 }
 
-func firstOr[T](fn: func() -> optional[T], fallback: T) -> T {
-    v: optional[T] = fn()
-    if v == None {
+func firstOr[T](fn: func() -> Result[T], fallback: T) -> T {
+    do {
+        return fn()?
+    } catch _ {
         return fallback
     }
-    return v
 }
 
 func fold[T](fn: func(Result[T]) -> Result[T], start: int) -> Result[T] {
@@ -117,9 +117,9 @@ func main() {
     print(f"list={xs.unwrap()}")
     ks: list[str] = keysOf(lambda () -> dict[str, int]: {"k": 1})
     print(f"dict={ks}")
-    o1: int = firstOr(lambda () -> optional[int]: None, 5)
-    o2: int = firstOr(lambda () -> optional[int]: 9, 5)
-    print(f"optional={o1} {o2}")
+    o1: int = firstOr(lambda () -> Result[int]: Result.Err("none"), 5)
+    o2: int = firstOr(lambda () -> Result[int]: Result.Ok(9), 5)
+    print(f"first={o1} {o2}")
     p: Result[int] = fold(lambda (r: Result[int]) -> Result[int]: Result.Ok(12) if not r.ok() else r, 0)
     print(f"params={p.unwrap()}")
     g: Result[list[int]] = twiceCount(Conn("abc"), countRows)

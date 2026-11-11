@@ -8,7 +8,7 @@ class Problem {
         self.type_: str = "about:blank"
         self.tags: list[str] = []
         self.ratio: float = 0.5
-        self.extra: optional[str] = None
+        self.extra: str = "none"
     }
 }
 

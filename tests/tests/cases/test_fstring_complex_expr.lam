@@ -24,9 +24,9 @@ func main() {
         User(name="alice", profile=Profile(email="a@example.com")),
         User(name="bob"),
     ]
-    # Complex expression — indexing + safe nav + null coalesce.
-    print(f"user={users[0].profile?.email ?? 'none'}")
-    print(f"user={users[1].profile?.email ?? 'none'}")
+    # Complex expression — indexing + a `None` test in a ternary.
+    print(f"user={users[0].profile.email if users[0].profile != None else 'none'}")
+    print(f"user={users[1].profile.email if users[1].profile != None else 'none'}")
 
     items: list[int] = [10, 20, 30]
     print(f"second={items[1]}")

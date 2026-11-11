@@ -187,10 +187,6 @@ class PatternMatchMixin:
                 return f"map[{args[0]}]bool" if args else "map[interface{}]bool"
             if t.base == "tuple":
                 return "[]interface{}"
-            if t.base in {"optional", "Option"}:
-                if not args:
-                    return "interface{}"
-                return args[0] if args[0].startswith("*") or args[0] == "interface{}" else "*" + args[0]
             if t.base in self._generic_classes:
                 return f"*{self._go_class_name(t.base)}[{', '.join(args)}]"
             return "interface{}"
@@ -262,8 +258,6 @@ class PatternMatchMixin:
             return t.name
         if isinstance(t, GenericType) and t.base in self._class_names:
             return t.base
-        if isinstance(t, GenericType) and t.base in {"optional", "Option"} and t.args:
-            return self._pm_class_of(t.args[0])
         return ""
 
     def _pm_is_interface(self, t: Optional[Type]) -> bool:
@@ -624,7 +618,7 @@ class PatternMatchMixin:
         expr = callee.children[0] if isinstance(callee, Tree) and callee.data == "value_pattern" else callee
         if isinstance(expr, Tree) and expr.data == "var":
             return self._get_name(expr.children[0])
-        if isinstance(expr, Tree) and expr.data in {"getattr", "getattr_safe"}:
+        if isinstance(expr, Tree) and expr.data == "getattr":
             return self._get_name(expr.children[1])
         return ""
 
@@ -655,8 +649,6 @@ class PatternMatchMixin:
             if static_class == name:
                 obj = src.expr
                 result_type: Type = src.type
-                if isinstance(src.type, GenericType) and src.type.base in {"optional", "Option"}:
-                    result_type = NamedType(name)
             elif name in self._pm_ancestors(static_class):
                 obj = f"{src.expr}.{go_class}"
                 result_type = NamedType(name)

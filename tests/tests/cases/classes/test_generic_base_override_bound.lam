@@ -31,7 +31,7 @@ class Registry[T] {
         return len(xs)
     }
 
-    func find(self, _key: str) -> optional[T] {
+    func find(self, _key: str) -> T {
         return None
     }
 
@@ -57,7 +57,7 @@ class Users(Registry[User]) {
         return len(xs) * 10
     }
 
-    func find(self, key: str) -> optional[User] {
+    func find(self, key: str) -> User {
         for u in self.items {
             if u.name == key {
                 return u
@@ -96,7 +96,8 @@ func main() {
     print(u.row(u.items[0]), u.render(), u.first().name)
     print(show(u))
     found = u.find("bob")
-    print(found?.name ?? "-", u.find("zed")?.name ?? "-")
+    zed: User = u.find("zed")
+    print(found.name if found != None else "-", zed.name if zed != None else "-")
     c: Counts = Counts()
     c.add(3)
     c.add(4)

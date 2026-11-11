@@ -284,7 +284,7 @@ body calls, `_lambda_body_call_lam_type`: `lambda tx: addItem(tx, "d")` is
 `func(any) -> Result[int]`), a function, nested function (its signature is
 kept under its `<nested>.<name>` key while it is in scope) or static
 method passed by name its signature (`_func_ref_lam_type`), unified through
-`Result`, `optional`, `list`, `dict`, unions and function types
+`Result`, `list`, `dict`, unions and function types
 (`inTx(c, countRows)` emits `InTx[int](c, CountRows)`). When the arguments
 leave a parameter unbound, the type the call's value must have binds it
 (`_call_result_lam`, for that call only): the annotated variable it
@@ -409,7 +409,6 @@ The per-name type tables store both spellings of a renamed binding.
 | `dict[K, V]`     | `map[K]V`                   |
 | `set[T]`         | `map[T]bool`                |
 | `json`           | `LamJSON` (canonical recursive JSON wrapper) |
-| `optional[T]`, `Option[T]` | `*T` for value types; an existing class pointer is not doubled |
 | `Result[T]`      | `*Result` (payload metadata is compile-time only) |
 | `T \| None`      | `T` (pointer if applicable) |
 | `Callable[[A], B]` / `func(A) -> B` | `func(A) B` |
@@ -418,16 +417,36 @@ The per-name type tables store both spellings of a renamed binding.
 `[]interface{}`, `map[string]interface{}` and `map[interface{}]bool`
 respectively. See `TYPE_MAP` in `compiler/constants.py`.
 
-A `T` value where an `optional[T]` of a value type is expected (assigned,
-returned, passed) is boxed into a pointer to a fresh copy
-(`_optional_value_to_go`: `func() *string { __lamV := string(x); return
-&__lamV }()`), whatever produces it: a literal, a local, a function call,
-or a static or instance method call (also on `self`) whose declared result
-is that type — `html` (`LamHTML`), `xml` (`LamXML`), `str`, numbers, `bool`,
-lists and dicts. `optional[json]` is a `*LamJSON`: a `json` value or a JSON
-literal is boxed (`__lamV := lamJSONMust(...)`), and `??` on it takes any
-JSON fallback (`maybeDoc() ?? {}`). Class references are their own
-optional (no boxing).
+`None` lowers to the Go zero value of a reference type: `nil` for a class
+pointer, an interface, `any`, a function; `LamHTML{}` / `LamXML{}` (no
+fragment, `h.lamIsNone()`) for `html` / `xml`; a JSON null for `json`.
+`return None` in a `-> T` of generic code is `lamNoneOf[T]()`: that zero
+value for a reference type argument, a `TypeError` for a value type. Value
+types have no `None` (`optional[T]` / `Option[T]` were removed in 4.12, a
+semantic error).
+
+### `None` at run time
+
+A member of a class reference or an interface value that may be `None` goes
+through a small generic helper Go inlines, which raises `AttributeError:
+None has no attribute 'name'` (a `*lamNoneError` panic: `catch
+AttributeError` matches it through its `lamExcKind()`; a `do` / `catch`
+closure recovers nothing, so it goes on to the enclosing `try`):
+
+| Lam | Go |
+|---|---|
+| `u.name`, `u.name = v`, `u.greet()` (`u` a class reference) | `lamNN(u, "name").Name`, `lamNN(u, "greet").Greet()` |
+| `n.title()` (`n` an interface value) | `lamNNI(n, "title").Title()` |
+| `self.name`, `User().name`, `c.add(1)` with `c` only assigned constructor calls, `u.name` inside `if u != None` / after `if u == None { return }` / in `u != None and u.ok` / after `isinstance(u, T)` | `s.Name`, `NewUser().Name`, `c.Add(1)`, `u.Name` (no check) |
+| `s: str = v` (`v: any`), `n: int = load()?`, `name: str = row["name"]`, a JSON null into a `str` | `lamAs[string](v, "a str")`: the value, `TypeError: None is not a str` for `None`, Go's assertion error for another type |
+| `u: User = v` (`v: any`), `h: html = load()?` | `lamAsNil[*User](v)` / `lamAsNil[LamHTML](...)`: `None` is the zero value |
+| `load()? ?? "none"` | `func() string { if __lamL := __q1.Value; __lamL != nil { return lamAs[string](__lamL, "a str") }; return "none" }()` (the raw payload) |
+| `h ?? fallback` (`html`) | `func() LamHTML { if __lamL := h; !__lamL.lamIsNone() { return __lamL }; return fallback }()` |
+
+The helpers (`_NONE_RUNTIME_GO` in `compiler/transpiler.py`) are emitted
+once in the main file when some module uses them; the panics sit in
+`//go:noinline` functions so the checks stay within Go's inlining budget
+(a nil test and a branch).
 
 An item of type `any` or whose type is unknown makes an unannotated
 literal's items `any` (`[anyv(1), 2]` is `[]interface{}{...}`, `{"a":
@@ -626,8 +645,8 @@ Without a type annotation the compiler falls back to `:=` inference.
 Re-assignment (`x = 5`) always emits a plain `=`. The semantic checker hands
 the type it inferred for a first plain assignment to the transpiler (the
 `_lam_inferred_type` attribute on the `assign` node): a concrete type is
-recorded for the name (so `for ch in s`, `r.unwrap() > 1`, method dispatch
-and `?.` chains see it) and, when the value's own Go shape differs, the
+recorded for the name (so `for ch in s`, `r.unwrap() > 1` and method
+dispatch see it) and, when the value's own Go shape differs, the
 declaration is lowered like `name: T = value` (`var name T = ...`). Types
 mentioning `any`, unknown names or type parameters keep plain `:=`; values
 holding un-awaited async handles stay untyped (their element type is the
@@ -858,8 +877,7 @@ if func() bool { _, ok := x._lamDyn().(interface{ _lamIs_Square() *Square }); re
 | `any` to `int` / `float` / `str` / `bool` | `x, _ := interface{}(x).(int)` (`float64`, `string`, `bool`) |
 | `json` to a scalar | `x, _ := lamJSONRaw(x).(int)` |
 | `any` to `list` / `dict` | a `[]interface{}` / `map[string]interface{}` view (the value itself when it already has that Go type, else a reflection copy) |
-| `optional[int]` (a `*int`) to `int` | `x := *x` |
-| `optional[C]` to `C` | nothing (same Go pointer); only the Lam type changes |
+| a class / interface `x != None` (and the guard side of `x == None`) | nothing: `x` is marked non-`None` over the region (`_nonnil_names`), its members skip `lamNN` |
 
 - `if` / `elif` / `else` branches and `while` bodies bind the shadow at the
   top of their Go block; the statements after an early-exit guard are
@@ -1057,11 +1075,12 @@ each guard runs before later operands evaluate.
 The cast published by the statement applies to its own `?` value only: it
 stops at a member access, call, index, collection or comparison around the
 `?` (`a: str = (m.make()?).key` asserts the `Result`'s payload class, then
-reads `.Key`). The lexer reads `f()?.y` as safe navigation on `f()`; before
-each statement is checked and emitted, `compiler/safe_nav.py` rewrites a
-`getattr_safe` whose receiver is a `Result` (the semantic checker's type, or
-the transpiler's `*Result` hint for modules the checker does not see) into
-`getattr(propagate(receiver), y)`, receivers first, so chains
+reads `.Key`). The lexer reads `f()?.y` as the token `?.` (`getattr_safe`);
+before each statement is checked, `compiler/safe_nav.py` rewrites a
+`getattr_safe` whose receiver is a `Result` (the semantic checker's type)
+into `getattr(propagate(receiver), y)`, receivers first, and the checker
+reports any other `?.` (safe navigation was removed in 4.12); the
+transpiler, which only sees checked code, rewrites every `?.` that way, so chains
 `load()?.next()?.next()?` work link by link. F-string slots, parsed when
 the f-string is lowered, get the same rewrite on a copy of the slot tree
 (`f"{word()?.toUpper()}"`), and so does an expression-bodied lambda's body
@@ -1537,7 +1556,7 @@ var s *Shape = NewSquare()._lamUp_Shape()
 - **Representation.** A base-typed value stays a plain `*Shape`: field access
   is a direct (promoted) field read and needs no accessor. Where a `Square`
   flows into a `Shape` (argument, assignment, re-assignment, return, field,
-  `optional[Shape]`, list/dict literal element, `append` / `insert` /
+  list/dict literal element, `append` / `insert` /
   `extend([...])`, `d[k] = v`, `??`, ternary, `==` with a base-typed value)
   it is converted to its embedded parent with the nil-safe, inlinable
   `_lamUp_Shape()` (one method per ancestor; grandparents included). Lists
@@ -1718,14 +1737,8 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `xs[-1]` (constant negative index) | `xs[len(xs)-1]` (an IIFE for a non-trivial receiver); still an `IndexError` when out of range |
 | `xs[i]` on a list / string / tuple, `i` not provably non-negative | `xs[i+len(xs)&(i>>63)]` (see "Runtime negative indexes") |
 | `xs[a:b:c]` with negative / stepped bounds | typed IIFE keeping the receiver's Go type (`[]T` / `string`), reflection only for unknown receivers |
-| `obj?.field` on a pointer receiver | `func() *T { if o := obj; o != nil { v := o.F; return &v }; return nil }()` for a value field (`T` itself when nilable) |
-| `obj?.method(args)` on a receiver of known type | `func() *T { if __lamR := obj; __lamR != nil { __lamV := __lamR.M(args); return &__lamV }; return nil }()` (`_safe_call_plan` / `_typed_safe_call_to_go`): `obj` evaluated once, the call lowered as `obj.method(args)` on `__lamR` (`_reuse_lowering`: class-aware names, typed arguments, inherited and generic methods), a value result boxed like an `optional[T]` (`*string`, `*[]int`, `*T` for a type parameter), a class / interface / function result as is, a void method `func() { if ... { __lamR.M(args) } }()`; on an `optional[str]`-style `*T` receiver the method runs on `(*__lamR)`; an unknown receiver keeps `func() interface{} { ... }()` |
-| `a == b` with an `optional[T]` of a comparable value (`*string`, `*int`) | `func(__lamA *T, __lamB T) bool { return __lamA != nil && *__lamA == __lamB }(a, b)` against a value, both sides `nil` or equal values for two optionals (`_optional_equality_to_go`); `== None` stays a `nil` test; `!=` negates |
-| `str(opt)` of an `optional[T]` value | `fmt.Sprintf("%v", ...)` of the payload or `nil` (`<nil>`), like `print`, not the pointer |
-| `optional[T]` of generic code with `T` a class or interface | generic code keeps `*T` (`**User` once instantiated); the program's `optional[User]` is `*User` (`optional[Named]` is `Named`). Values crossing are converted (`collapse_optional_go` / `optional_bridge_go`, compiler/visitors/generics.py): a call result or field read `func(__lamB0 **User) *User { if __lamB0 == nil { return nil }; return *__lamB0 }(s.At(0))`, an argument / field store / list append the reverse box, lists and dicts element by element (a copy; `len` and mutating list methods use the stored list); type parameters bound from a class pointer through `*T` are the pointer (`T = *User`); an override returning `optional[User]` gets a `_lamOv_<Base>_<M>` adapter |
-| `print(xs)` / f-string / `str()` of a `list[optional[str]]` | the values or `<nil>` (`[]interface{}` built from the `[]*string`), not the pointers |
 | `d[k] ?? fallback` on a map        | comma-ok lookup: the fallback for a missing key                            |
-| `opt ?? fallback` on an `optional[T]` | `func() T { if __lamL := opt; __lamL != nil { return *__lamL }; return fallback }()` typed `T` (`float64` for an int payload with a float fallback, the pointer for two optionals, a class pointer as is); `a ?? b ?? c` nests as `a ?? (b ?? c)` |
+| `ref ?? fallback` on a class reference / interface value | `func() T { if __lamL := ref; __lamL != nil { return __lamL }; return fallback }()` typed as the reference; `load()? ?? d` tests the raw payload (see "`None` at run time"); `a ?? b ?? c` nests as `a ?? (b ?? c)` |
 | a `list[T]` / `dict[K, T]` where `list[any]` / `dict[K, any]` (or `list[float]` for ints) is expected | `_container_widening_go`: an IIFE copying the elements into a new `[]interface{}` / `map[K]interface{}` (element-wise for nested lists, `float64(e)` for ints; `nil` stays `nil`) |
 | `1.5 * n` with `n: int`            | `1.5 * float64(n)` (int operands of a mixed int/float expression)          |
 | an `int` where a `float` is expected | `float64(n)`: `_typed_value_to_go` widens an int-typed value for a `float` target (arguments, returns, collection elements, declarations, fields, `+=` / `-=` / `*=`), and calls of `func(float)` values convert their int arguments |
@@ -1751,14 +1764,14 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `xs.any(fn)` / `xs.all(fn)`        | IIFE with early return                                                    |
 | `xs.foreach(fn)`                   | IIFE with no result                                                       |
 | `xs.sort([compare][, inplace])`    | `sort.Slice` copy by default; when `inplace=true`, sorts and returns `xs` |
-| `xs.sort(key=f)` / `xs.sort(f)` with a one-parameter `f` | `sort.SliceStable` comparing `f(x)` (ordered keys natively, `any` / `json` / type-parameter / `optional` keys by kind, others by `%v`) |
+| `xs.sort(key=f)` / `xs.sort(f)` with a one-parameter `f` | `sort.SliceStable` comparing `f(x)` (ordered keys natively, `any` / `json` / type-parameter keys by kind, others by `%v`) |
 | `sorted(xs, key=f, reverse=b)`     | `sort.SliceStable` copy preserving the receiver/context element type; `key` compares `f(x)` |
-| `sorted` / `xs.sort()` / `min(xs)` / `max(xs)` of `list[any]`, `list[json]`, `list[T]`, `list[optional[int]]` | an inline `func(a, b interface{}) int` comparing by kind (`reflect`): numbers numerically, strings by bytes, `false < true`, `None` < bool < number < str < other (by `%v`); `min` / `max` loop over the list (`slices.Min` needs `cmp.Ordered`) |
+| `sorted` / `xs.sort()` / `min(xs)` / `max(xs)` of `list[any]`, `list[json]`, `list[T]` | an inline `func(a, b interface{}) int` comparing by kind (`reflect`): numbers numerically, strings by bytes, `false < true`, `None` < bool < number < str < other (by `%v`); `min` / `max` loop over the list (`slices.Min` needs `cmp.Ordered`) |
 | `min(a, b)` / `max(a, b, c)` | Go's builtin `min` / `max`: as is for same-typed ints, strings and operands of one type parameter (`T: ordered`), with `float64(...)` conversions when a float is mixed in |
 | `min(xs, key=fn)` / `max(a, b, key=fn)` | an inline `func(xs []T) T` keeping the first value with the smallest / largest `key(v)` (keys compared like `sorted`'s; an empty list panics with `ValueError`) |
 | `reversed(xs)` / `reversed(s)`     | `func(src []T) []T` filling a new slice back to front (same slice type); for a `str`, `[]rune(src)` read back to front into a `[]string` |
 | `enumerate(xs)`                    | IIFE materializing index/value pairs as `[]interface{}` tuples            |
-| `isinstance(x, T)`                 | Type-specific runtime check: assertion, nil test, or `reflect.Kind` (`lamJSONRaw(x)` first on `json`, `x != nil` on an optional value type) |
+| `isinstance(x, T)`                 | Type-specific runtime check: assertion, nil test, or `reflect.Kind` (`lamJSONRaw(x)` first on `json`; `isinstance(x, None)` is `false` for a value type) |
 
 **Grouping.** The parser drops parentheses (`(b + c)` is just the
 `arith_expr` node), and Go's precedence differs from Python's (`<<`, `>>`
@@ -2441,7 +2454,7 @@ specs and of one of these kinds, chosen per slot:
 | type hint `string` (`_expr_go_type_hint`), not certain    | `lamSlotText(x)`      |
 | `html` / `xml` / `json`                                   | `lamValueText(x)` (lamjson) |
 
-Any other slot (float, `optional[...]`, `?.` call, generic `T`, `any`,
+Any other slot (float, generic `T`, `any`,
 collections, objects, a format spec) keeps `fmt.Sprintf` for the whole
 f-string. The literal parts are copied as they are in the `fmt.Sprintf`
 format string, without the `%%` escaping (an f-string without slots is a
@@ -2458,7 +2471,7 @@ a local hoisted before a branch or loop — tracked in `_typed_decls`, which
 `_pop_scope` scope like `declared_vars`; a field of `self` or of such a
 variable (the struct field's type); a call of a function, static method or
 method (of `self` or such a variable) declared `-> str` / `int` / `bool` in
-every overload (not async, not generic, not `optional`); `str(x)` and
+every overload (not async, not generic); `str(x)` and
 `len(x)`; a `str` method on a certain `str` (`lamstrings`); a slice of a
 certain `str`; `+` of certain `str` values; a ternary of two certain values
 of one type. `str(x)` uses the same rule.

@@ -1,6 +1,6 @@
 # A static method used as a function value has its declared parameter and
 # result types in full (`list[Item]`, not `list`), so it fits a callback
-# typed with element types: lists, dicts, sets, optionals, `Result`,
+# typed with element types: lists, dicts, sets, `Result`,
 # tuples and nested callbacks; also generic callbacks, local and imported
 # classes, typed locals and lists of callbacks. Bound instance methods
 # keep their full types too.
@@ -32,13 +32,13 @@ func applyDict(fn: func(dict[str, Item]) -> list[Item]) -> int {
     return len(fn({"a": Item(1)}))
 }
 
-func applySet(fn: func(set[int], optional[Item]) -> Result[list[int]]) -> int {
+func applySet(fn: func(set[int], Item) -> Result[list[int]]) -> int {
     ids: list[int] = fn({1, 2}, None).unwrap()
     return len(ids)
 }
 
-func applyPairs(fn: func(list[tuple[str, int]]) -> optional[dict[str, int]]) -> int {
-    found: dict[str, int] = fn([("a", 1), ("b", 2)]) ?? {}
+func applyPairs(fn: func(list[tuple[str, int]]) -> dict[str, int]) -> int {
+    found: dict[str, int] = fn([("a", 1), ("b", 2)])
     return found["a"] + found["b"]
 }
 
@@ -71,11 +71,11 @@ class Handlers {
         return [v for _k, v in m]
     }
 
-    static func ids(s: set[int], _it: optional[Item]) -> Result[list[int]] {
+    static func ids(s: set[int], _it: Item) -> Result[list[int]] {
         return Result.Ok([x for x in s])
     }
 
-    static func pairs(xs: list[tuple[str, int]]) -> optional[dict[str, int]] {
+    static func pairs(xs: list[tuple[str, int]]) -> dict[str, int] {
         out: dict[str, int] = {}
         for key, value in xs {
             out[key] = value

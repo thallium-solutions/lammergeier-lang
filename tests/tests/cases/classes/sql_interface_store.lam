@@ -38,7 +38,7 @@ func allDbs() -> list[Sql] {
     return [requestDb("a", 1), requestDb("b", 3)]
 }
 
-func findDb(label: str) -> optional[Sql] {
+func findDb(label: str) -> Sql {
     if label == "" {
         return None
     }

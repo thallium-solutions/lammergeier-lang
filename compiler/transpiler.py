@@ -34,7 +34,7 @@ from compiler.visitors.markup import MarkupTranspilerMixin
 from compiler import narrowing as _narrowing
 from compiler.index_bounds import mark_nonnegative_locals
 from compiler.comparable_params import comparable_type_params
-from compiler.safe_nav import rewrite_result_safe_nav
+from compiler.safe_nav import rewrite_safe_nav_as_propagation
 from compiler.visitors.helpers import HelpersMixin
 from compiler.visitors.statements import StatementVisitorMixin
 from compiler.visitors.expressions import ExpressionVisitorMixin
@@ -43,6 +43,7 @@ from compiler.visitors.patterns import PatternMatchMixin
 from compiler.visitors.subtyping import SubtypingMixin
 from compiler.visitors.generics import GenericCallMixin
 from compiler.visitors.narrowing import NarrowingLowerMixin
+from compiler.visitors.none_checks import NoneCheckMixin
 from compiler.visitors.generators import GeneratorStateMachineMixin
 
 
@@ -53,6 +54,13 @@ from compiler.visitors.generators import GeneratorStateMachineMixin
 # flags have block-scope semantics vs global lifetime.
 SCOPED_CONTEXT_ATTRS: tuple[str, ...] = (
     "_in_funccall_head",
+    # ``load()? ?? fallback``: the ``?`` gives its payload as ``interface{}``.
+    "_propagate_raw_payload",
+    # Locals known not to be ``None`` (``visitors/narrowing.py``) and the
+    # current function's locals only assigned constructor calls
+    # (``visitors/none_checks.py``).
+    "_nonnil_names",
+    "_fresh_locals",
     # Lowering an f-string slot parsed on its own (positions are not
     # module positions; ``_report_lam_error`` uses the statement line).
     "_synthetic_positions",
@@ -214,6 +222,7 @@ class GoTranspiler(
     SubtypingMixin,
     GenericCallMixin,
     NarrowingLowerMixin,
+    NoneCheckMixin,
     GeneratorStateMachineMixin,
     StatementVisitorMixin,
     ExpressionVisitorMixin,
@@ -282,6 +291,116 @@ func lamSlotText[T any](v T) string {
 \t\treturn s
 \t}
 \treturn fmt.Sprint(v)
+}
+"""
+
+    # ``None`` at run time (``compiler/semantic_none.py``): a member of
+    # ``None`` raises ``AttributeError: None has no attribute 'name'``
+    # (``lamNN`` for a class reference, ``lamNNI`` for an interface value,
+    # emitted only where the receiver is not provably non-``None``); a
+    # dynamic ``None`` converted to a value type raises ``TypeError: None
+    # is not a str`` (``lamAs``); ``lamAsNil`` converts to a reference type,
+    # ``None`` giving its ``None``. The panics sit in functions of their own
+    # so the checks stay small enough for Go to inline.
+    _NONE_RUNTIME_GO = """
+// A ``None`` error: an exception (``catch AttributeError`` /
+// ``catch TypeError``). ``do/catch`` never sees it: it handles the errors
+// ``?`` propagates.
+type lamNoneError struct{ kind, message string }
+
+func (e *lamNoneError) Error() string     { return e.kind + ": " + e.message }
+func (e *lamNoneError) lamExcKind() string { return e.kind }
+
+//go:noinline
+func lamNoneMember(name string) {
+\tpanic(&lamNoneError{"AttributeError", "None has no attribute '" + name + "'"})
+}
+
+func lamNN[T any](p *T, name string) *T {
+\tif p == nil {
+\t\tlamNoneMember(name)
+\t}
+\treturn p
+}
+
+func lamNNI[T any](v T, name string) T {
+\tif any(v) == nil {
+\t\tlamNoneMember(name)
+\t}
+\treturn v
+}
+
+//go:noinline
+func lamNoneIsNot(kind string) {
+\tpanic(&lamNoneError{"TypeError", "None is not " + kind})
+}
+
+func lamAs[T any](v interface{}, kind string) T {
+\tif x, ok := v.(T); ok {
+\t\treturn x
+\t}
+\tif v == nil {
+\t\tlamNoneIsNot(kind)
+\t}
+\treturn v.(T)
+}
+
+func lamAsNil[T any](v interface{}) T {
+\tif v == nil {
+\t\tvar zero T
+\t\treturn zero
+\t}
+\treturn v.(T)
+}
+"""
+    _NONE_RUNTIME_RE = re.compile(r"\b(?:lamNN|lamNNI|lamAs|lamAsNil|lamNoneIsNot|lamNoneMember|lamNoneOf)[\[(]")
+
+    # ``return None`` in a ``-> T`` of generic code: ``None`` of a reference
+    # type argument (a class, an interface, ``html`` / ``xml`` / ``json``),
+    # ``TypeError: None is not an int`` for a value type.
+    _NONE_OF_RUNTIME_GO = """
+func lamNoneOf[T any]() T {
+\tvar zero T
+\tt := reflect.TypeOf(&zero).Elem()
+\tswitch t.Kind() {
+\tcase reflect.Pointer, reflect.Interface, reflect.Func, reflect.Chan:
+\t\treturn zero
+\t}
+\tswitch t.Name() {
+\tcase "LamHTML", "LamXML", "LamJSON":
+\t\treturn zero
+\t}
+\tname := lamGoTypeLamName(t)
+\tif strings.IndexByte("aeiou", name[0]) >= 0 {
+\t\tlamNoneIsNot("an " + name)
+\t}
+\tlamNoneIsNot("a " + name)
+\treturn zero
+}
+
+func lamGoTypeLamName(t reflect.Type) string {
+\tswitch t.Kind() {
+\tcase reflect.String:
+\t\treturn "str"
+\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+\t\treflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+\t\treturn "int"
+\tcase reflect.Float32, reflect.Float64:
+\t\treturn "float"
+\tcase reflect.Bool:
+\t\treturn "bool"
+\tcase reflect.Slice:
+\t\tif t.Elem().Kind() == reflect.Uint8 {
+\t\t\treturn "bytes"
+\t\t}
+\t\treturn "list[" + lamGoTypeLamName(t.Elem()) + "]"
+\tcase reflect.Map:
+\t\tif t.Elem().Kind() == reflect.Bool {
+\t\t\treturn "set[" + lamGoTypeLamName(t.Key()) + "]"
+\t\t}
+\t\treturn "dict[" + lamGoTypeLamName(t.Key()) + ", " + lamGoTypeLamName(t.Elem()) + "]"
+\t}
+\treturn t.String()
 }
 """
 
@@ -392,6 +511,10 @@ func lamSlotText[T any](v T) string {
         self._lib_uses_generators: bool = False
         # A library calls ``lamSlotText`` (``_SLOT_TEXT_RUNTIME_GO``).
         self._lib_uses_slot_text: bool = False
+        # A library uses the ``None`` checks (``_NONE_RUNTIME_GO``,
+        # ``_NONE_OF_RUNTIME_GO``).
+        self._lib_uses_none_runtime: bool = False
+        self._lib_uses_none_of: bool = False
         self._class_member_level: bool = False
         self._do_q_target: str = ""
         self._comp_q_return: str = ""
@@ -638,6 +761,13 @@ func lamSlotText[T any](v T) string {
         # untyped ``interface{}`` rvalue Go's compiler can't accept.
         self._q_temp_counter: int = 0
         self._propagate_cast_hint: str = ""
+        # Set by ``load()? ?? fallback``: that ``?`` gives the raw payload.
+        self._propagate_raw_payload: bool = False
+        # Go names of class / interface locals known not to be ``None``
+        # while the current region is lowered (``if u != None { ... }``,
+        # see ``visitors/narrowing.py``): their members skip ``lamNN``.
+        self._nonnil_names: set = set()
+        self._fresh_locals: frozenset = frozenset()
 
         # Go return type of the currently-emitted Lam function (set by
         # the funcdef visitor before walking the body). Empty string
@@ -712,7 +842,7 @@ func lamSlotText[T any](v T) string {
             self._emit_line_directive(node)
             if node.data not in ("funcdef", "classdef"):
                 # ``f()?.method()`` on a ``Result``: ``(f()?).method()``.
-                rewrite_result_safe_nav(node, lambda recv: self._expr_go_type_hint(recv) == "*Result")
+                rewrite_safe_nav_as_propagation(node)
         handler = getattr(self, f"_visit_{node.data}", None)
         if handler:
             return handler(node)
@@ -848,6 +978,17 @@ func lamSlotText[T any](v T) string {
         ):
             body_lines.extend(self._SLOT_TEXT_RUNTIME_GO.splitlines())
             self._need_import("fmt")
+        # Some module checks for ``None`` at run time: the main file defines
+        # the helpers (``_NONE_RUNTIME_GO``).
+        scanned = body_lines + self._hoisted_nested_generic_funcs
+        if not self._omit_main and (
+            self._lib_uses_none_runtime or any(self._NONE_RUNTIME_RE.search(line) for line in scanned)
+        ):
+            body_lines.extend(self._NONE_RUNTIME_GO.splitlines())
+            if self._lib_uses_none_of or any("lamNoneOf[" in line for line in scanned):
+                body_lines.extend(self._NONE_OF_RUNTIME_GO.splitlines())
+                self._need_import("reflect")
+                self._need_import("strings")
         # Some module uses a generator: the main file (not a library, whose
         # Go joins the same package) defines the generator runtime.
         if not self._omit_main and (
@@ -1259,7 +1400,7 @@ func lamSlotText[T any](v T) string {
                 for child in node.children
                 if isinstance(child, Tree)
             )
-        if node.data in {"getattr", "getattr_safe"} and len(node.children) >= 2:
+        if node.data == "getattr" and len(node.children) >= 2:
             prefix = self._class_base_name(node.children[0])
             attr = self._get_name(node.children[1])
             return f"{prefix}.{attr}" if prefix and attr else ""
@@ -1830,16 +1971,6 @@ func lamSlotText[T any](v T) string {
                                 str(variant.get("return_key") or variant.get("return") or ""),
                             )
                             if signature in own_signatures:
-                                continue
-                            canonical = (
-                                tuple(self._canonical_optional_go(t) for t in signature[0]),
-                                self._canonical_optional_go(signature[1]),
-                            )
-                            if canonical != signature and canonical in own_signatures:
-                                # ``-> optional[User]`` overriding the base's
-                                # ``optional[T]`` with ``T = User`` (the bound
-                                # ``**User`` is the program's ``*User``): an
-                                # override (with an adapter), not an overload.
                                 continue
                             if any(
                                 own_sig == signature[0] and self._local_covariant_return(own_ret, signature[1])

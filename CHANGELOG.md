@@ -5,6 +5,76 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.12.0 — 2026-11-11
+
+### Removed
+
+- **Potentially breaking:** the optional type and safe navigation are
+  removed from the language. `?` is for errors; `None` is an ordinary
+  value that references can hold, and checking for it is the program's
+  duty. Writing `optional[T]` / `Option[T]` anywhere (annotations,
+  generic arguments, casts, `Result[optional[T]]`, `list[optional[T]]`...)
+  is a compile error with the migration:
+
+  ```
+  error[type]: `optional[Shop]` was removed: write `Shop` (a class
+  reference can be `None`; test `x != None` before using it)
+  error[type]: `optional[str]` was removed: a `str` cannot be `None`;
+  return a `Result[str]` (an error when there is no value), use a default
+  value, or `any`
+  ```
+
+  For a class, an interface, `html`, `xml`, `json` or `any` payload write
+  the type itself (`optional[Shop]` -> `Shop`, `Result[optional[html]]` ->
+  `Result[html]`); for a value payload (`str`, numbers, `bool`, `bytes`,
+  lists, dicts, sets, tuples) return a `Result[T]`, use a default or `any`
+  (a markup attribute `role: optional[str] = "alert" if failed else None`
+  becomes `role = "alert" if failed else None`). `obj?.field` /
+  `obj?.method()` on anything but a `Result` is a compile error
+  (``?.` was removed: test `obj != None` first (`None.field` throws), or
+  use `?` on a `Result```); `f()?.m()` on a `Result` is still propagation
+  then a member. Removed with them: the boxing of value payloads (`*string`,
+  `*int`), the `optional[T]` bridging of generic code with class type
+  arguments and its override adapters, the `Box[optional[T]]` error,
+  optional equality, optional narrowing of value types, `str()` / `print`
+  of optionals and of `list[optional[str]]`.
+- `Row.optionalStr` / `optionalInt` / `optionalFloat` / `optionalBool`
+  (`lamdb`) return `any` (the value, or `None` for NULL: `Row.optionalStr(row,
+  "x") ?? ""`), `Row.time` a `DateTime` (`None` for NULL).
+
+### Changed
+
+- What can be `None`: class references (also of generic classes),
+  interface values, `html`, `xml` (now: `h: html = None`, `return None` in
+  a `-> html`, `h == None`, `h ?? fallback`; a `None` fragment renders
+  nothing), `json` (null), `any` and `Result` payloads. Value types never
+  hold `None`: a literal `None` assigned, passed, returned, as a default,
+  in a ternary branch or in `Result.Ok(None)` for a `Result[str]` is a
+  compile error; a dynamic `None` converted to a value type (an `any`, a
+  `Result` payload built from one, a `dict[str, any]` lookup, a JSON null,
+  `return None` in a `-> T` with `T = int`) throws a catchable `TypeError:
+  None is not a str` instead of Go's `interface conversion` panic.
+- A member of `None` throws `AttributeError: None has no attribute 'name'`:
+  a field read or write, a method call (also of a method that never uses
+  `self`, which used to run on the nil receiver), an interface method. It
+  is an exception like the `TypeError` of a `None` conversion: `try` /
+  `catch AttributeError` catches it; a `do` / `catch` handler, which handles
+  the errors `?` propagates from a `Result`, does not (the exception goes on
+  to the enclosing `try`); uncaught it ends the program with exit status 2.
+  The check is an inlined nil test, skipped for `self`, constructor calls,
+  locals only assigned constructor calls and locals narrowed by `!= None`
+  (or `isinstance`): the runtime benchmarks are unchanged within noise, and
+  the new `none_checks` one (a linked list walked through a reassigned
+  local, three checked members per node) takes 1.1 ns per node instead of
+  0.9 ns.
+- `x if c else None` with `x` a value type is an `any` (it was an
+  `optional[str]`, an error in a new unannotated variable); a `None`
+  markup attribute value still omits the attribute.
+- `??`: `load()? ?? "none"` with `load() -> Result[str]` is a `str` (the
+  payload stays dynamic until `??` tests it); `??` on a value type, never
+  `None`, is a warning (``warning[type]: `name` is a `str`, never `None`:
+  `?? "anon"` has no effect``).
+
 ## 4.11.0 — 2026-11-10
 
 ### Changed

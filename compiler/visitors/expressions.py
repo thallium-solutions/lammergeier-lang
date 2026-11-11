@@ -11,9 +11,7 @@ from compiler.constants import (
     OP_TO_DUNDER, CMP_TO_DUNDER, generator_go_elem,
 )
 from compiler.typesys import DictType, GenericType
-from compiler.visitors.generics import (
-    collapse_optional_go, mentions_names, optional_bridge_go, substitute_go_type,
-)
+from compiler.visitors.generics import mentions_names, substitute_go_type
 from compiler.index_bounds import index_nonneg, lower_bound
 from compiler.fstrings import SOURCE_NEWLINE, fstring_body, fstring_spec_to_go, parse_slot, split_fstring
 from compiler import narrowing
@@ -124,7 +122,7 @@ class ExpressionVisitorMixin:
     # Nodes whose value type is not the type of a ``?`` operand inside them:
     # the enclosing statement's ``_propagate_cast_hint`` stops there.
     _CAST_HINT_OPAQUE_NODES = frozenset({
-        "getattr", "getattr_safe", "getitem", "funccall", "list", "dict", "set", "tuple",
+        "getattr", "getitem", "funccall", "list", "dict", "set", "tuple",
         "list_comprehension", "dict_comprehension", "set_comprehension", "tuple_comprehension",
         "comparison", "not_test", "and_test", "or_test", "lambdef", "fstring", "string_concat",
         "cast_expr",
@@ -210,13 +208,6 @@ class ExpressionVisitorMixin:
         Go sees them.
         """
         go_type = (go_type or "").strip()
-        canonical = self._canonical_optional_go(go_type)
-        if canonical != go_type:
-            # A parameter / field of generic code typed ``optional[T]`` with
-            # ``T`` a class (``**User``): the value is shaped as the
-            # program's ``*User``, then boxed.
-            value = self._typed_value_to_go(node, canonical, type_key)
-            return self._optional_bridge(value, canonical, go_type)
         if (
             isinstance(node, Tree)
             and node.data == "lambdef"
@@ -235,9 +226,13 @@ class ExpressionVisitorMixin:
         shaped_ok = self._typed_result_ok_to_go(node, go_type, type_key)
         if shaped_ok:
             return shaped_ok
-        boxed = self._optional_value_to_go(node, go_type)
-        if boxed:
-            return boxed
+        if go_type in self._generic_names and self._is_none_literal(node):
+            # ``return None`` in a ``-> T``: ``None`` of a reference type
+            # argument, a ``TypeError`` for a value type (``lamNoneOf``).
+            return f"lamNoneOf[{go_type}]()"
+        if go_type in {"LamHTML", "LamXML"} and self._is_none_literal(node):
+            # ``None`` of ``html`` / ``xml``: the zero value (no fragment).
+            return f"{go_type}{{}}"
         if go_type in {"LamHTML", "LamXML"} and self._is_markup_marker_node(node):
             return self._markup_call_to_go(node, "html" if go_type == "LamHTML" else "xml")
         if go_type == "LamJSON":
@@ -348,9 +343,11 @@ class ExpressionVisitorMixin:
                 # is an ``int`` in the json value; widen it.
                 return (
                     f"func(v interface{{}}) {go_type} {{ if n, ok := v.(int); ok {{ return {go_type}(n) }}; "
-                    f"if f, ok := v.(float64); ok {{ return {go_type}(f) }}; return v.({go_type}) }}(lamJSONRaw({raw}))"
+                    f"if f, ok := v.(float64); ok {{ return {go_type}(f) }}; "
+                    f"return lamAs[{go_type}](v, {self._none_is_not_text(go_type)}) }}(lamJSONRaw({raw}))"
                 )
-            return f"lamJSONRaw({raw}).({go_type})"
+            # (a JSON null into a value type: ``TypeError: None is not a str``)
+            return self._result_payload_assert_go(f"lamJSONRaw({raw})", go_type)
         if (
             go_type.startswith("[]")
             and go_type != "[]interface{}"
@@ -364,7 +361,7 @@ class ExpressionVisitorMixin:
             elem = self._slice_elem_go_type(go_type)
             return (
                 f"func(src []interface{{}}) {go_type} {{ out := make({go_type}, len(src)); "
-                f"for i, v := range src {{ out[i] = v.({elem}) }}; return out }}({raw})"
+                f"for i, v := range src {{ out[i] = {self._result_payload_assert_go('v', elem)} }}; return out }}({raw})"
             )
         if (
             go_type.startswith(("[]", "map["))
@@ -435,20 +432,21 @@ class ExpressionVisitorMixin:
                     if hint == go_type:
                         return raw
                     if not hint or hint == "interface{}":
-                        return f"{raw}.({go_type})"
+                        return f"lamAsNil[{go_type}]({raw})"
                 if node.data == "var":
                     var_name = self._get_name(node.children[0])
                     if self._var_go_types.get(var_name) == "interface{}":
-                        return f"{raw}.({go_type})"
+                        return f"lamAsNil[{go_type}]({raw})"
         if go_type not in {"", "interface{}"} and isinstance(node, Tree) and node.data == "getitem":
             class_name = self._infer_expr_class(node.children[0])
             if self._method_return_types.get(f"{class_name}.__getitem__") in {"any", "object"}:
-                return f"{raw}.({go_type})"
+                return self._result_payload_assert_go(raw, go_type)
         return raw
 
-    _OPTIONAL_VALUE_GO_TYPES = frozenset({
+    # Go types of Lam value types that never hold ``None`` (scalars).
+    _VALUE_GO_TYPES = frozenset({
         "int", "int8", "int16", "int32", "int64", "uint", "float64", "float32",
-        "string", "bool", "byte", "rune", "LamHTML", "LamXML", "LamJSON",
+        "string", "bool", "byte", "rune",
     })
 
     def _container_widening_go(self, raw: str, source: str, target: str) -> str:
@@ -504,17 +502,6 @@ class ExpressionVisitorMixin:
                 f"return __lamO{depth} }}({expr})"
             )
         return None
-
-    def _is_optional_value_go(self, inner: str) -> bool:
-        """``optional[T]`` lowers to the pointer ``*inner``, boxed on
-        assignment and unwrapped by ``??``: value types, lists, dicts and
-        type parameters (class references are their own optional)."""
-        inner = (inner or "").strip()
-        return (
-            inner in self._OPTIONAL_VALUE_GO_TYPES
-            or inner.startswith(("[]", "map["))
-            or inner in self._generic_names
-        )
 
     # ─── Native sets (``map[T]bool``) ──────────────────────────
 
@@ -609,58 +596,6 @@ class ExpressionVisitorMixin:
         if self._in_async_func and self._async_chan_name:
             return f"{self._async_chan_name} <- func() *Result {{ return {value} }}; return"
         return f"return {value}"
-
-    def _optional_value_to_go(self, node, go_type: str) -> str:
-        """Box a plain value into an ``optional[int]``-style ``*int`` target.
-
-        ``optional[T]`` of a value type lowers to ``*T``; a ``T`` value
-        (literal, arithmetic, call returning ``T``) assigned or returned
-        there becomes a pointer to a fresh copy. ``None`` stays ``nil``.
-        """
-        if not go_type.startswith("*") or not self._is_optional_value_go(go_type[1:]):
-            return ""
-        if not isinstance(node, Tree) or node.data == "const_none":
-            return ""
-        if node.data == "var" and node.children and self._get_name(node.children[0]) in {"None", "nil"}:
-            return ""
-        inner = go_type[1:]
-        hint = self._expr_go_type_hint(node) or ""
-        if hint == go_type:
-            return ""
-        if inner.startswith(("[]", "map[")):
-            # ``optional[list[int]]`` (a ``*[]int``): a list / dict value or
-            # literal is boxed (``return [1, 2]``, ``maybe = xs``).
-            kind = "list" if inner.startswith("[]") else "dict"
-            literal_kinds = {"list": {"list", "list_comprehension"}, "dict": {"dict", "dict_comprehension"}}[kind]
-            if node.data not in literal_kinds and hint != inner and not self._container_widening_go("", hint, inner):
-                return ""
-            value = self._typed_value_to_go(node, inner)
-            return f"func() {go_type} {{ __lamV := {value}; return &__lamV }}()"
-        if inner == "LamJSON":
-            # ``optional[json]`` (a ``*LamJSON``): a ``json`` value (a call,
-            # local or field of type ``json``) or a JSON literal is boxed.
-            json_literals = {
-                "dict", "list", "number", "string", "const_true", "const_false",
-                "factor", "arith_expr", "term",
-            }
-            if hint != inner and node.data not in json_literals:
-                return ""
-            value = self._typed_value_to_go(node, inner)
-            return f"func() {go_type} {{ __lamV := {value}; return &__lamV }}()"
-        if not hint and node.data == "funccall" and isinstance(node.children[0], Tree) and node.children[0].data == "var":
-            callee = self._get_name(node.children[0].children[0])
-            if callee == "len" and callee not in self._user_functions:
-                hint = "int"
-            else:
-                hint = self._func_return_go_types.get(callee, "")
-        if not hint:
-            inferred = self._infer_type_from_value(node)
-            hint = inferred if inferred != "interface{}" else ""
-        literal = node.data in {"number", "string", "const_true", "const_false", "factor", "arith_expr", "term"}
-        if hint != inner and not (literal and hint in {"", "int", "float64"}):
-            return ""
-        value = self._typed_value_to_go(node, inner)
-        return f"func() {go_type} {{ __lamV := {inner}({value}); return &__lamV }}()"
 
     _JSON_LITERAL_NODES = frozenset({"dict", "list", "list_comprehension", "tuple_comprehension", "dict_comprehension"})
 
@@ -864,12 +799,6 @@ class ExpressionVisitorMixin:
         "snakeCase": "string", "kebabCase": "string",
     }
 
-    def _expr_go_type_hint_plain_field(self, node) -> str:
-        """Go type of the field read by ``obj?.field`` (as if ``obj.field``)."""
-        if not (isinstance(node, Tree) and node.data == "getattr_safe" and len(node.children) >= 2):
-            return ""
-        return self._expr_go_type_hint(Tree("getattr", list(node.children))) or ""
-
     def _coalesce_fallback_node(self, node, operands: list):
         """The right side of ``operands[0] ?? ...``: the second operand, or
         for a chain ``a ?? b ?? c`` the (cached) sub-chain ``b ?? c``."""
@@ -887,10 +816,10 @@ class ExpressionVisitorMixin:
         """How ``left ?? fallback`` lowers and the Go type it produces:
         ``("json", T)`` a JSON value (``T`` from the expected type),
         ``("none", T)`` ``x ?? None``, ``("map", V)`` a map lookup,
-        ``("value", T)`` an ``optional[T]`` unwrapped to ``T`` (an int
-        payload with a float fallback widens to ``float64``),
-        ``("optional", *T)`` two optionals of the same type, ``("class",
-        *C)`` an optional class reference, or ``("", "")`` untyped."""
+        ``("propagate", T)`` a ``Result`` payload (``load()? ?? x``),
+        ``("plain", T)`` a value type (never ``None``), ``("markup", T)`` an
+        ``html`` / ``xml`` value, ``("class", T)`` a class reference or an
+        interface value, or ``("", "")`` untyped."""
         if not isinstance(left, Tree):
             return "", ""
         left_hint = self._expr_go_type_hint(left) or ""
@@ -914,10 +843,23 @@ class ExpressionVisitorMixin:
                 if value_type != "interface{}" and fallback_type not in {"", "interface{}", value_type}:
                     result_type = "interface{}"
                 return "map", result_type
-        if count == 2 and left_hint in self._OPTIONAL_VALUE_GO_TYPES:
-            # ``n ?? -1`` where ``n`` is a value (an optional narrowed by
-            # ``if n == None { return }``): never ``None``, it is ``n``
-            # (an int with a float fallback widens).
+        if count == 2 and left.data == "propagate" and left.children:
+            # ``load()? ?? "none"``: the ``Result`` payload stays dynamic
+            # until ``??`` tests it for ``None`` (``Result.Ok(None)`` built
+            # from an ``any``); a non-``None`` payload converts to the
+            # declared payload type.
+            payload = self._propagated_payload_go_type(left.children[0]) or ""
+            if payload in {"", "interface{}"}:
+                return "propagate", "interface{}"
+            fb = ""
+            if isinstance(fallback, Tree):
+                fb = self._expr_go_type_hint(fallback) or self._infer_type_from_value(fallback) or ""
+            if payload in _GO_INT_TYPES and fb in {"float64", "float32"}:
+                return "propagate", fb
+            return "propagate", payload
+        if count == 2 and left_hint in self._VALUE_GO_TYPES:
+            # ``n ?? -1`` with ``n`` a value type: never ``None``, it is
+            # ``n`` (the checker warns; an int with a float fallback widens).
             fb = ""
             if isinstance(fallback, Tree):
                 fb = self._expr_go_type_hint(fallback) or self._infer_type_from_value(fallback) or ""
@@ -927,193 +869,17 @@ class ExpressionVisitorMixin:
                 return "plain", left_hint
             if left_hint in _GO_INT_TYPES and fb in {"float64", "float32"}:
                 return "plain", fb
+        if left_hint in {"LamHTML", "LamXML"}:
+            # ``h ?? html"..."``: a ``None`` markup value is the zero value.
+            return "markup", left_hint
+        if left_hint in self._interface_go_names():
+            return "class", left_hint
         if not left_hint.startswith("*") or left_hint == "*Result":
             return "", ""
         inner = left_hint[1:]
-        if self._is_optional_value_go(inner):
-            fb = ""
-            if isinstance(fallback, Tree):
-                fb = self._expr_go_type_hint(fallback) or self._infer_type_from_value(fallback) or ""
-            if fb == left_hint:
-                return "optional", left_hint
-            if fb in {"", "interface{}", inner} or inner == "LamJSON":
-                # (an ``optional[json]``'s fallback is any JSON value)
-                return "value", inner
-            if fb in _GO_INT_TYPES and inner in {"float64", "float32"}:
-                return "value", inner
-            if inner in _GO_INT_TYPES and fb in {"float64", "float32"}:
-                return "value", fb
-            if inner.startswith(("[]", "map[")) and (
-                self._is_empty_collection_literal(fallback) or self._container_widening_go("", fb, inner)
-            ):
-                return "value", inner
-            return "", ""
         if inner.split("[", 1)[0] in {self._go_class_name(c) for c in self._class_names}:
             return "class", left_hint
-        inner_class = self._hier_class_from_go_type(inner)
-        if inner_class:
-            # ``cheapest(items, key) ?? book`` with ``cheapest[T](...) ->
-            # optional[T]`` and ``T`` a class: the ``**Item`` result is
-            # unwrapped to the ``*Item`` (a subclass fallback is upcast).
-            fb = self._expr_go_type_hint(fallback) or "" if isinstance(fallback, Tree) else ""
-            fb_class = self._hier_class_from_go_type(fb)
-            if fb in {"", "interface{}", inner} or (fb_class and self._hier_is_subclass(fb_class, inner_class)):
-                return "value", inner
         return "", ""
-
-    _SAFE_VALUE_RECEIVER = "__lamS"
-
-    def _safe_call_plain_node(self, node, value_receiver: bool = False):
-        """``obj.method(args)`` for ``obj?.method(args)`` (or
-        ``__lamS.method(args)`` for a receiver holding a value, an
-        ``optional[str]``), sharing the argument nodes; kept per node so the
-        hint memos stay valid."""
-        cache = self.__dict__.setdefault("_safe_call_plain_cache", {})
-        key = (id(node), value_receiver)
-        entry = cache.get(key)
-        if entry is not None and entry[0] is node:
-            return entry[1]
-        callee = node.children[0]
-        receiver = callee.children[0]
-        if value_receiver:
-            receiver = Tree("var", [Tree("name", [Token("NAME", self._SAFE_VALUE_RECEIVER)])])
-        plain = Tree("funccall", [Tree("getattr", [receiver, callee.children[1]])] + list(node.children[1:]))
-        cache[key] = (node, plain)
-        return plain
-
-    def _with_safe_value_receiver(self, go_type: str, fn):
-        """Run ``fn`` with ``__lamS`` (the stand-in for the value a ``*T``
-        receiver points to, lowered as ``(*__lamR)``) typed ``go_type``."""
-        name = self._SAFE_VALUE_RECEIVER
-        had = name in self._var_go_types
-        saved = self._var_go_types.get(name)
-        self._var_go_types[name] = go_type
-        try:
-            return fn()
-        finally:
-            if had:
-                self._var_go_types[name] = saved
-            else:
-                self._var_go_types.pop(name, None)
-
-    def _safe_call_is_void(self, receiver, method: str) -> bool:
-        """``obj?.method()`` of a method declared without a result (every
-        overload, in the receiver's class or the nearest ancestor defining
-        it)."""
-        class_name = self._infer_receiver_class(receiver)
-        if not class_name:
-            return False
-        for owner in [class_name, *self._hier_ancestors(class_name)]:
-            variants = self._overload_variants.get(f"{owner}.{method}")
-            if variants:
-                return all(not v.get("return") for v in variants)
-        return False
-
-    def _safe_call_plan(self, node) -> tuple[str, str, str]:
-        """How ``obj?.method(args)`` lowers: ``(kind, result, payload)``.
-        ``kind`` is ``"pointer"`` for a nil-able receiver (a class or
-        interface value, an ``optional`` class), ``"value"`` for an
-        ``optional[str]``-style ``*T`` receiver (the method is called on the
-        pointed-to value), ``""`` when the receiver's type is unknown (an
-        ``interface{}`` call, as before). ``payload`` is the Go type of the
-        plain call; ``result`` the Go type of the whole call: ``""`` for a
-        void method, the optional of the payload (``*string`` for a
-        ``string``, ``*[]int`` for a ``[]int``, a pointer / interface /
-        function result as is), else ``interface{}``."""
-        callee = node.children[0]
-        receiver = callee.children[0]
-        method = self._get_name(callee.children[1])
-        recv_type = (self._expr_go_type_hint(receiver) or "").strip()
-        if not recv_type or recv_type == "LamJSON":
-            return "", "", ""
-        if recv_type.startswith("*") and recv_type[1:] in self._OPTIONAL_VALUE_GO_TYPES and recv_type[1:] != "LamJSON":
-            kind = "value"
-            plain = self._safe_call_plain_node(node, value_receiver=True)
-            payload = self._with_safe_value_receiver(
-                recv_type[1:], lambda: self._expr_go_type_hint(plain) or "",
-            )
-        elif (recv_type.startswith("*") and not self._is_optional_value_go(recv_type[1:])) or any(
-            recv_type == self._go_class_name(iface) for iface in self._interfaces
-        ):
-            kind = "pointer"
-            if self._safe_call_is_void(receiver, method):
-                return kind, "", ""
-            payload = self._expr_go_type_hint(self._safe_call_plain_node(node)) or ""
-        else:
-            return "", "", ""
-        payload = payload.strip()
-        if payload in self._OPTIONAL_VALUE_GO_TYPES and payload != "LamJSON":
-            result = "*" + payload
-        elif payload.startswith(("[]", "map[")) or payload in self._generic_names:
-            # ``optional[list[int]]`` is a ``*[]int``, ``optional[T]`` a ``*T``.
-            result = "*" + payload
-        elif payload.startswith(("*", "func(")) or any(
-            payload == self._go_class_name(iface) for iface in self._interfaces
-        ):
-            result = payload
-        else:
-            result = "interface{}"
-        return kind, result, payload
-
-    def _typed_safe_call_to_go(self, node) -> str | None:
-        """``obj?.method(args)`` on a receiver of known type: ``obj`` is
-        evaluated once into ``__lamR``; when it is not ``nil`` the method is
-        called like ``obj.method(args)`` (argument shaping, overloads,
-        private names, generic receivers), its result boxed as an optional
-        (``__lamV := ...; return &__lamV`` for a value). A void method is a
-        guarded statement. ``None`` when the receiver's type is unknown."""
-        kind, result, payload = self._safe_call_plan(node)
-        if not kind:
-            return None
-        receiver = node.children[0].children[0]
-        obj = self._expr_to_go(receiver)
-        if kind == "value":
-            # The method of the value the ``*T`` points to: the plain call's
-            # receiver is a ``T`` local standing for ``*__lamR``.
-            plain = self._safe_call_plain_node(node, value_receiver=True)
-            stand_in, lowered = plain.children[0].children[0], "(*__lamR)"
-            recv_type = (self._expr_go_type_hint(receiver) or "").strip()
-        else:
-            plain = self._safe_call_plain_node(node)
-            stand_in, lowered = receiver, "__lamR"
-            recv_type = ""
-        reuse = self.__dict__.setdefault("_reuse_lowering", {})
-        previous = reuse.get(id(stand_in))
-        reuse[id(stand_in)] = (stand_in, lowered)
-        try:
-            if kind == "value":
-                call_go = self._with_safe_value_receiver(recv_type[1:], lambda: self._expr_to_go(plain))
-            else:
-                call_go = self._expr_to_go(plain)
-        finally:
-            if previous is not None:
-                reuse[id(stand_in)] = previous
-            else:
-                reuse.pop(id(stand_in), None)
-        guard = f"if __lamR := {obj}; __lamR != nil"
-        if not result:
-            return f"func() {{ {guard} {{ {call_go} }} }}()"
-        if result == "*" + payload:
-            body = f"__lamV := {call_go}; return &__lamV"
-        else:
-            body = f"return {call_go}"
-        return f"func() {result} {{ {guard} {{ {body} }}; return nil }}()"
-
-    def _safe_getattr_result_go_type(self, node) -> str:
-        """Go type of ``obj?.field`` on a pointer (``optional``/class)
-        receiver: the field type when it is nilable, else a pointer to it
-        (``optional[str]`` -> ``*string``). ``""`` when unknown."""
-        obj_type = self._expr_go_type_hint(node.children[0]) or ""
-        if not obj_type.startswith("*"):
-            return ""
-        field_type = self._expr_go_type_hint_plain_field(node)
-        if not field_type or field_type == "interface{}":
-            return ""
-        if field_type in self._OPTIONAL_VALUE_GO_TYPES:
-            return "*" + field_type
-        if field_type.startswith(("*", "[]", "map[", "func(")):
-            return field_type
-        return ""
 
     def _hint_free_names(self, node) -> tuple:
         """Names read below ``node`` (cached per node), the state a call's
@@ -1134,8 +900,6 @@ class ExpressionVisitorMixin:
         cache[id(node)] = (node, result)
         return result
 
-    _OPTIONAL_BRIDGED_NODES = frozenset({"funccall", "getattr", "propagate"})
-
     def _interface_go_names(self) -> frozenset:
         cache = self.__dict__.get("_interface_go_names_cache")
         if cache is None or cache[0] != len(self._interfaces):
@@ -1143,48 +907,7 @@ class ExpressionVisitorMixin:
             self._interface_go_names_cache = cache
         return cache[1]
 
-    def _canonical_optional_go(self, go_type: str) -> str:
-        """``go_type`` with generic code's ``optional[T]`` (a ``*T``) of a
-        class / interface ``T`` in the representation the rest of the
-        program uses (``**User`` -> ``*User``, ``*Sql`` -> ``Sql``)."""
-        return collapse_optional_go(go_type, self._interface_go_names())
-
-    def _optional_bridge(self, value_go: str, src: str, dst: str) -> str:
-        """``value_go`` converted from ``src`` to ``dst`` when they differ
-        only by that representation (``optional_bridge_go``), else as is."""
-        if not src or not dst or src == dst:
-            return value_go
-        bridged = optional_bridge_go(value_go, src, dst, self._interface_go_names())
-        return bridged if bridged is not None else value_go
-
-    _STORED_LIST_METHODS = frozenset({"append", "insert", "extend", "pop", "remove", "clear", "sort", "reverse"})
-
-    def _stored_optional_list_go(self, receiver, method: str) -> str:
-        """The stored Go type (``[]**User``) of a list ``receiver`` whose
-        value is converted (a generic class field ``list[optional[T]]``
-        with ``T`` a class / interface) when ``method`` changes the list;
-        ``""`` otherwise."""
-        if method not in self._STORED_LIST_METHODS or not isinstance(receiver, Tree):
-            return ""
-        if receiver.data not in self._OPTIONAL_BRIDGED_NODES:
-            return ""
-        raw = self._expr_go_type_hint_raw(receiver) or ""
-        if not raw.startswith("[]") or raw == self._canonical_optional_go(raw):
-            return ""
-        return raw
-
     def _expr_go_type_hint(self, node) -> str:
-        """Best-effort Go type for an expression that can be assigned to: a
-        call of generic code or a field of a generic class returning an
-        ``optional[T]`` of a class / interface ``T`` has the program's
-        representation (``*User``); its lowering converts the ``**User``
-        (``_expr_go_type_hint_raw``)."""
-        raw = self._expr_go_type_hint_raw(node)
-        if raw and isinstance(node, Tree) and node.data in self._OPTIONAL_BRIDGED_NODES:
-            return self._canonical_optional_go(raw)
-        return raw
-
-    def _expr_go_type_hint_raw(self, node) -> str:
         """Best-effort Go type for an expression that can be assigned to."""
         if isinstance(node, Tree) and node.data == "funccall":
             # Chained generic calls type their receiver several times per
@@ -1225,8 +948,8 @@ class ExpressionVisitorMixin:
             payload = self._propagated_payload_go_type(node.children[0])
             return payload if payload != "interface{}" else ""
         if node.data == "null_coalesce":
-            # The type the ``??`` lowering produces (``find(4) ?? 0`` over an
-            # ``optional[int]`` is an ``int``); untyped forms stay unknown.
+            # The type the ``??`` lowering produces (``load()? ?? 0`` over a
+            # ``Result[int]`` is an ``int``); untyped forms stay unknown.
             operands = [c for c in node.children if c is not None]
             if len(operands) >= 2:
                 _kind, result_type = self._coalesce_plan(
@@ -1234,10 +957,6 @@ class ExpressionVisitorMixin:
                 )
                 if result_type:
                     return result_type
-        if node.data == "getattr_safe" and len(node.children) >= 2:
-            if self._expr_go_type_hint(node.children[0]) == "LamJSON":
-                return "LamJSON"
-            return self._safe_getattr_result_go_type(node)
         if node.data == "test" and len(node.children) == 3:
             return self._ternary_common_go_type(node)
         if node.data == "list_comprehension":
@@ -1297,16 +1016,8 @@ class ExpressionVisitorMixin:
             return found
         if node.data == "funccall" and node.children:
             callee = node.children[0]
-            if isinstance(callee, Tree) and callee.data == "getattr_safe":
-                # ``obj?.method(args)`` lowers to a nil-guarded call: an
-                # optional of the method's result (``*string`` for a ``str``,
-                # the class pointer for a class, ``None`` when ``obj`` is
-                # ``None``), or an ``interface{}`` when either type is
-                # unknown (``_safe_call_plan``).
-                kind, result, _payload = self._safe_call_plan(node)
-                return result if kind else "interface{}"
             if (
-                isinstance(callee, Tree) and callee.data in {"getattr", "getattr_safe", "getitem"}
+                isinstance(callee, Tree) and callee.data in {"getattr", "getitem"}
                 and self._func_value_lam_type(callee) is not None
             ):
                 # ``self.loader(2)`` / ``fns[0](x)``: a function value's
@@ -1365,9 +1076,8 @@ class ExpressionVisitorMixin:
                     and len(self._overload_variants.get(name, ())) <= 1
                     and not ret.startswith(("*Result", "("))
                 ):
-                    # ``first([1, 2])`` with ``first[T](xs: list[T]) ->
-                    # optional[T]``: the result with this call's type
-                    # arguments (``*int``), so ``first(xs) ?? 0`` is an ``int``.
+                    # ``first([1, 2])`` with ``first[T](xs: list[T]) -> T``:
+                    # the result with this call's type arguments (``int``).
                     args_node = node.children[1] if len(node.children) > 1 else None
                     subst = self._generic_call_subst(name, args_node, generic_params)
                     bound = substitute_go_type(ret, subst)
@@ -1375,13 +1085,13 @@ class ExpressionVisitorMixin:
                         return bound
                     return ""
                 if (
-                    ret.startswith("*")
+                    (ret.startswith("*") or ret in self._interface_go_names())
                     and len(self._overload_variants.get(name, ())) <= 1
                     and name not in self._class_names
                     and not ret.startswith("*Result")
                 ):
-                    # ``lookup(id) ?? fallback`` where ``lookup`` returns
-                    # ``optional[User]`` / a class pointer.
+                    # ``lookup(id) ?? fallback`` where ``lookup`` returns a
+                    # class pointer (or an interface value).
                     return ret
                 if ret.startswith("func(") and name not in self._class_names:
                     return ret
@@ -1422,7 +1132,7 @@ class ExpressionVisitorMixin:
                     type_args = self._type_arg_list(callee.children[1])
                     if type_args and all(type_args):
                         return f"*{self._go_class_name(base_name)}[{', '.join(type_args)}]"
-            if isinstance(callee, Tree) and callee.data in {"getattr", "getattr_safe"} and len(callee.children) >= 2:
+            if isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2:
                 receiver = callee.children[0]
                 method = self._get_name(callee.children[1])
                 string_result = self._STRING_METHOD_RESULT_GO_TYPES.get(method)
@@ -1452,8 +1162,8 @@ class ExpressionVisitorMixin:
                     if candidate in self._class_names:
                         class_name = candidate
                     elif candidate == "self" and self.current_class:
-                        # ``return self.label()`` in a ``-> optional[str]``
-                        # method: the call's declared result boxes.
+                        # ``return self.label()`` in a method: the call's
+                        # declared result.
                         class_name = self.current_class
                 async_handle = self._async_method_handle_go_type(class_name, method) if class_name else ""
                 if async_handle:
@@ -1507,10 +1217,6 @@ class ExpressionVisitorMixin:
                         )
                     raw_return = self._method_return_types.get(f"{owner}.{method}", "")
                     go_return = self._method_return_types.get(f"go:{owner}.{method}", "")
-                    if go_return.startswith("*") and self._is_optional_value_go(go_return[1:]):
-                        # ``print(Row.optionalStr(r, k))``: an ``optional[str]``
-                        # is a ``*string`` (the raw name is just ``str``).
-                        return go_return
                     scalar = {
                         "str": "string", "int": "int", "float": "float64", "bool": "bool",
                         "bytes": "[]byte", "json": "LamJSON", "html": "LamHTML", "xml": "LamXML",
@@ -1534,7 +1240,7 @@ class ExpressionVisitorMixin:
                 _key, value = self._split_go_map_type(receiver_type)
                 return value
             return ""
-        if node.data in {"getattr", "getattr_safe"} and len(node.children) >= 2:
+        if node.data == "getattr" and len(node.children) >= 2:
             obj = node.children[0]
             if self._expr_go_type_hint(obj) == "LamJSON":
                 return "LamJSON"
@@ -1557,7 +1263,7 @@ class ExpressionVisitorMixin:
                         obj_go_type = self._var_go_types.get(obj_name, "")
                         if obj_go_type.startswith("*") and "[" not in obj_go_type:
                             class_name = self._hier_class_from_go_type(obj_go_type) or ""
-            elif isinstance(obj, Tree) and obj.data in {"funccall", "getattr", "getattr_safe", "getitem", "propagate"}:
+            elif isinstance(obj, Tree) and obj.data in {"funccall", "getattr", "getitem", "propagate"}:
                 # ``current().box`` / ``holder.inner.box`` / ``docs[0].body`` /
                 # ``load()?.body``: the receiver's class from call return
                 # types, field types and container element types.
@@ -1592,34 +1298,6 @@ class ExpressionVisitorMixin:
     # ─── Main expression dispatcher ───────────────────────────
 
     def _expr_to_go(self, node) -> str:
-        if not (isinstance(node, Tree) and node.data in self._OPTIONAL_BRIDGED_NODES):
-            return self._expr_to_go_raw(node)
-        reuse = self.__dict__.get("_reuse_lowering")
-        if reuse:
-            reused = reuse.get(id(node))
-            if reused is not None and reused[0] is node:
-                # Already lowered (and converted) into a temporary.
-                return reused[1]
-        raw_nodes = self.__dict__.setdefault("_optional_raw_nodes", set())
-        if id(node) in raw_nodes:
-            # Lowered again from inside its own lowering, or wanted as is
-            # (an assignment target): no conversion.
-            return self._expr_to_go_raw(node)
-        raw_nodes.add(id(node))
-        try:
-            go = self._expr_to_go_raw(node)
-        finally:
-            raw_nodes.discard(id(node))
-        raw = self._expr_go_type_hint_raw(node)
-        if raw and "*" in raw:
-            canonical = self._canonical_optional_go(raw)
-            if canonical != raw:
-                # ``shelf.at(0)`` with ``-> optional[T]`` and ``T = User``:
-                # generic code's ``**User`` as the program's ``*User``.
-                return self._optional_bridge(go, raw, canonical)
-        return go
-
-    def _expr_to_go_raw(self, node) -> str:
         if node is None:
             return ""
         if isinstance(node, Token):
@@ -1787,6 +1465,9 @@ class ExpressionVisitorMixin:
                 obj = self._expr_to_go(obj_node)
             if obj in LOWER_PKGS and not self._is_lam_local_node(obj_node):
                 return f"{obj}.{attr}"
+            if not error_view:
+                # ``None.name`` raises ``AttributeError`` (``none_checks.py``).
+                obj = self._nn_receiver_go(obj, obj_node, attr)
             if class_name:
                 field_names = {name for name, _type in self.class_fields.get(class_name, [])}
                 field_names.update(self._external_field_names.get(class_name, set()))
@@ -1797,48 +1478,6 @@ class ExpressionVisitorMixin:
             if self._is_private_method_name(attr):
                 return f"{obj}.{self._go_private_name(attr)}"
             return f"{obj}.{self._go_public_name(attr)}"
-
-        if d == "getattr_safe":
-            # ``obj?.field`` — guard the access with a nil-check and
-            # return ``nil`` when the receiver is ``nil``. The result
-            # type is ``interface{}`` because we can't statically
-            # guarantee the field's concrete type in every context; a
-            # caller that needs a typed value can assign to an
-            # annotated variable (the assignment site will unbox).
-            obj_node = node.children[0]
-            obj = self._expr_to_go(obj_node)
-            attr = self._get_name(node.children[1])
-            if self._expr_go_type_hint(obj_node) == "LamJSON":
-                return f'lamJSONGet({obj}, "{attr}")'
-            class_name = self._infer_receiver_class(obj_node)
-            field_names = {name for name, _type in self.class_fields.get(class_name, [])}
-            field_names.update(self._external_field_names.get(class_name, set()))
-            if class_name and attr in field_names:
-                field = self._go_field_name(class_name, attr)
-            elif class_name and attr in self._instance_methods.get(class_name, set()):
-                field = self._go_method_name(class_name, attr)
-            elif self._is_private_method_name(attr):
-                field = self._go_private_name(attr)
-            else:
-                field = self._go_public_name(attr)
-            obj_type = self._expr_go_type_hint(obj_node) or ""
-            result_type = self._safe_getattr_result_go_type(node)
-            if obj_type.startswith("*") and result_type:
-                # Typed ``optional`` chain: a nil receiver yields ``None``;
-                # a value-typed field is boxed (``optional[str]`` is
-                # ``*string``) so ``??`` and further ``?.`` stay typed.
-                if result_type == "*" + (self._expr_go_type_hint_plain_field(node) or ""):
-                    value = f"__lamV := __lamO.{field}; return &__lamV"
-                else:
-                    value = f"return __lamO.{field}"
-                return (
-                    f"func() {result_type} {{ if __lamO := {obj}; __lamO != nil {{ "
-                    f"{value} }}; return nil }}()"
-                )
-            return (
-                f"func() interface{{}} {{ if {obj} != nil {{ "
-                f"return {obj}.{field} }}; return nil }}()"
-            )
 
         if d == "propagate":
             reused = self.__dict__.get("_reuse_lowering", {}).get(id(node))
@@ -1871,13 +1510,17 @@ class ExpressionVisitorMixin:
             # "too many return values" build failure.
             # The enclosing statement's cast applies to this ``?`` only, not
             # to ``?`` nested in its operand (``outer(inner()?)?``).
-            with self._scoped(_propagate_cast_hint=""):
+            raw_payload = getattr(self, "_propagate_raw_payload", False)
+            with self._scoped(_propagate_cast_hint="", _propagate_raw_payload=False):
                 inner_str = self._expr_to_go(node.children[0])
             self._q_temp_counter += 1
             tmp = f"__q{self._q_temp_counter}"
             self._emit(f"{tmp} := {inner_str}")
             self._emit_q_guard(tmp)
             self._declare_var(tmp)
+            if raw_payload:
+                # ``load()? ?? fallback``: ``??`` tests the payload itself.
+                return f"{tmp}.Value"
             # The operand's own payload type wins over the enclosing
             # context's hint: the hint is the type of the whole expression
             # (``Result.Ok(parse(s)? * 2)`` publishes ``interface{}``,
@@ -1939,20 +1582,27 @@ class ExpressionVisitorMixin:
                     f"func() {result_type} {{ if __lamV, ok := {receiver}[{key}]; {present} {{ return __lamV }}; "
                     f"return {fallback} }}()"
                 )
-            if kind == "value":
-                # ``opt ?? fallback`` on an ``optional[T]`` (a Go pointer):
-                # a nil pointer selects the fallback (boxing it in
-                # ``interface{}`` first would make a typed nil non-nil);
-                # an ``optional[int]`` yields the pointed-to ``int`` (a
-                # ``float`` fallback widens it).
-                left = self._expr_to_go(left_node)
-                inner = (self._expr_go_type_hint(left_node) or "")[1:]
-                value = "*__lamL" if inner == result_type else f"{result_type}(*__lamL)"
+            if kind == "propagate":
+                # ``load()? ?? fallback``: the payload read as ``interface{}``
+                # (an ``Err`` returns as for any ``?``); ``None`` selects the
+                # fallback, another value converts to the payload type.
+                with self._scoped(_propagate_raw_payload=True):
+                    left = self._expr_to_go(left_node)
                 fallback = self._typed_value_to_go(fallback_node, result_type)
+                if result_type == "interface{}":
+                    value = "__lamL"
+                else:
+                    value = self._result_payload_assert_go("__lamL", result_type)
                 return f"func() {result_type} {{ if __lamL := {left}; __lamL != nil {{ return {value} }}; return {fallback} }}()"
-            if kind in {"optional", "class"}:
-                # ``opt ?? other`` of the same optional type, or an optional
-                # class reference: the first non-nil pointer.
+            if kind == "markup":
+                # ``h ?? html"..."``: a ``None`` markup value (the zero
+                # ``LamHTML``) selects the fallback.
+                left = self._expr_to_go(left_node)
+                fallback = self._typed_value_to_go(fallback_node, result_type)
+                return f"func() {result_type} {{ if __lamL := {left}; !__lamL.lamIsNone() {{ return __lamL }}; return {fallback} }}()"
+            if kind == "class":
+                # A class reference or an interface value: the first
+                # non-``nil`` one.
                 left = self._expr_to_go(left_node)
                 fallback = self._typed_value_to_go(fallback_node, result_type)
                 return f"func() {result_type} {{ if __lamL := {left}; __lamL != nil {{ return __lamL }}; return {fallback} }}()"
@@ -1968,7 +1618,7 @@ class ExpressionVisitorMixin:
                 if hint.startswith("*"):
                     # A typed nil pointer boxed in ``interface{}`` is not
                     # ``nil``: test the pointer itself.
-                    value = "*__lamP" if self._is_optional_value_go(hint[1:]) else "__lamP"
+                    value = "__lamP"
                     expr = (
                         f"func() interface{{}} {{ if __lamP := {left}; __lamP != nil {{ return {value} }}; "
                         f"return {expr} }}()"
@@ -2701,28 +2351,6 @@ class ExpressionVisitorMixin:
         if generic_call is not None:
             return generic_call
 
-        # ``obj?.method(args)`` — safe-navigation followed by a call.
-        # We don't want the ``getattr_safe`` IIFE (which returns
-        # ``interface{}``) as a callee, so rewrite the whole thing as
-        # a nil-guarded call at this layer.
-        if isinstance(func, Tree) and func.data == "getattr_safe":
-            typed = self._typed_safe_call_to_go(node)
-            if typed is not None:
-                return typed
-            args, kwargs = plain_call_args()
-            obj = self._expr_to_go(func.children[0])
-            attr = self._get_name(func.children[1])
-            if self._is_private_method_name(attr):
-                method = self._go_private_name(attr)
-            else:
-                method = self._go_public_name(attr)
-            args_str = ", ".join(args)
-            # The receiver is evaluated once (``make()?.name()``).
-            return (
-                f"func() interface{{}} {{ if __lamR := {obj}; __lamR != nil {{ "
-                f"return __lamR.{method}({args_str}) }}; return nil }}()"
-            )
-
         if isinstance(func, Tree) and func.data == "getitem":
             # ``handlers[0](x)`` / ``table["inc"](x)``: call the function
             # value stored in a collection element, shaping the arguments
@@ -2751,22 +2379,9 @@ class ExpressionVisitorMixin:
 
         raw_method = None
         raw_obj = None
-        stored_list_go = ""
         if isinstance(func, Tree) and func.data == "getattr":
             raw_method = self._get_name(func.children[1])
-            stored_list_go = self._stored_optional_list_go(func.children[0], raw_method)
-            if stored_list_go:
-                # ``shelf.slots.append(user)`` on a generic class field
-                # ``list[optional[T]]`` (``[]**User``): the stored list, not
-                # its converted copy.
-                raw_nodes = self.__dict__.setdefault("_optional_raw_nodes", set())
-                raw_nodes.add(id(func.children[0]))
-                try:
-                    raw_obj = self._expr_to_go(func.children[0])
-                finally:
-                    raw_nodes.discard(id(func.children[0]))
-            else:
-                raw_obj = self._expr_to_go(func.children[0])
+            raw_obj = self._expr_to_go(func.children[0])
             markup_method = self._markup_method_to_go(func, args_node, raw_obj)
             if markup_method is not None:
                 return markup_method
@@ -2854,28 +2469,13 @@ class ExpressionVisitorMixin:
             self._need_import("fmt")
             raw_args = self._get_raw_call_args(args_node)
             if len(raw_args) == len(args):
-                args = [self._optional_display_go(a, r) for a, r in zip(args, raw_args)]
+                args = [self._display_go(a, r) for a, r in zip(args, raw_args)]
             return f'fmt.Println({", ".join(args)})'
 
         if func_str == "len":
             raw_args = self._get_raw_call_args(args_node)
             if raw_args and self._expr_go_type_hint(raw_args[0]) == "LamJSON":
                 return f"lamJSONLen({args[0]})"
-            if (
-                len(raw_args) == 1 and isinstance(raw_args[0], Tree)
-                and raw_args[0].data in self._OPTIONAL_BRIDGED_NODES
-                and not any(True for _ in raw_args[0].find_data("propagate"))
-            ):
-                raw = self._expr_go_type_hint_raw(raw_args[0]) or ""
-                if raw.startswith(("[]", "map[")) and raw != self._canonical_optional_go(raw):
-                    # ``len(shelf.slots)`` of a ``list[optional[T]]`` field:
-                    # the stored list's length, without converting it.
-                    raw_nodes = self.__dict__.setdefault("_optional_raw_nodes", set())
-                    raw_nodes.add(id(raw_args[0]))
-                    try:
-                        return f"len({self._expr_to_go(raw_args[0])})"
-                    finally:
-                        raw_nodes.discard(id(raw_args[0]))
             return f"len({args[0]})" if args else "0"
 
         if func_str == "str":
@@ -2900,9 +2500,7 @@ class ExpressionVisitorMixin:
                     return f"strconv.{'Itoa' if certain == 'int' else 'FormatBool'}({args[0]})"
                 if certain not in {"string", "int", "bool"} and self._expr_go_type_hint(raw_args[0]) == "string":
                     return f"lamSlotText({args[0]})"
-                # ``str(x)`` of an ``optional[str]`` (a ``*string``): the
-                # value or ``<nil>``, like ``print`` (not the pointer).
-                args = [self._optional_display_go(args[0], raw_args[0])] + list(args[1:])
+                args = [self._display_go(args[0], raw_args[0])] + list(args[1:])
             self._need_import("fmt")
             return f'fmt.Sprintf("%v", {args[0]})' if args else '""'
 
@@ -3079,7 +2677,7 @@ class ExpressionVisitorMixin:
                 static = self._expr_go_type_hint(raw[0]) or ""
                 if self._isinstance_name(raw[1]) == "None":
                     static = static or self._infer_type_from_value(raw[0]) or ""
-                    if static in self._OPTIONAL_VALUE_GO_TYPES:
+                    if static in self._VALUE_GO_TYPES:
                         # A value-typed operand is never ``None``.
                         return "false"
                 if static == "LamJSON":
@@ -3088,13 +2686,6 @@ class ExpressionVisitorMixin:
                     if self._isinstance_name(raw[1]) == "json":
                         return "true"
                     return self._isinstance_test_go(f"lamJSONRaw({obj_go})", raw[1])
-                if (
-                    static.startswith("*") and static[1:] in self._OPTIONAL_VALUE_GO_TYPES
-                    and self._isinstance_name(raw[1]) not in {None, "None"}
-                ):
-                    # ``optional[int]`` (a ``*int``): set and of the tested type.
-                    wanted = self._ISINSTANCE_PRIMITIVES.get(self._isinstance_name(raw[1]) or "")
-                    return f"({obj_go} != nil)" if wanted == static[1:] else "false"
                 static_class = self._hier_class_from_go_type(self._hier_expr_go_type(raw[0]))
                 return self._isinstance_test_go(obj_go, raw[1], static_class)
             return "false"
@@ -3234,8 +2825,7 @@ class ExpressionVisitorMixin:
             inferred_obj_go = ""
             if isinstance(raw_obj_node, Tree):
                 candidate_obj_go = (
-                    stored_list_go
-                    or self._expr_go_type_hint(raw_obj_node)
+                    self._expr_go_type_hint(raw_obj_node)
                     or self._infer_type_from_value(raw_obj_node)
                 )
                 if candidate_obj_go and candidate_obj_go != "interface{}":
@@ -3360,8 +2950,6 @@ class ExpressionVisitorMixin:
                         )
                     else:
                         popped = f"func() {result_type} {{ last := {raw_obj}[len({raw_obj})-1]; {raw_obj} = {raw_obj}[:len({raw_obj})-1]; return last }}()"
-                    if stored_list_go:
-                        popped = self._optional_bridge(popped, result_type, self._canonical_optional_go(result_type))
                     return popped
                 if raw_method == "extend" and args:
                     typed_arg = (
@@ -3873,7 +3461,7 @@ class ExpressionVisitorMixin:
                 return None
             cached = self._fstring_slot_result_nav(cached)
             with self._scoped(_synthetic_positions=True):
-                return self._optional_display_go(self._expr_to_go(cached), cached)
+                return self._display_go(self._expr_to_go(cached), cached)
         rhs = self._fstring_slot_tree(expr)
         if rhs is None:
             return None
@@ -3881,7 +3469,7 @@ class ExpressionVisitorMixin:
         try:
             rhs = self._fstring_slot_result_nav(rhs)
             with self._scoped(_synthetic_positions=True):
-                return self._optional_display_go(self._expr_to_go(rhs), rhs)
+                return self._display_go(self._expr_to_go(rhs), rhs)
         except Exception:
             cache[expr] = None
             return None
@@ -3894,9 +3482,9 @@ class ExpressionVisitorMixin:
         if not isinstance(slot, Tree) or not any(True for _ in slot.find_data("getattr_safe")):
             return slot
         import copy
-        from compiler.safe_nav import rewrite_result_safe_nav
+        from compiler.safe_nav import rewrite_safe_nav_as_propagation
         slot = copy.deepcopy(slot)
-        rewrite_result_safe_nav(slot, lambda recv: self._expr_go_type_hint(recv) == "*Result")
+        rewrite_safe_nav_as_propagation(slot)
         return slot
 
     def _transform_fstring_expr(self, expr: str) -> str:
@@ -4035,7 +3623,7 @@ class ExpressionVisitorMixin:
         """Go result of the method ``cls.method`` (or an ancestor's) declared
         ``-> str`` / ``int`` / ``bool`` (``string`` / ``int`` / ``bool``) or
         ``-> SomeClass`` (``*SomeClass``) in every overload; ``""`` otherwise
-        (async, generic, ``Result``, ``optional`` scalar, containers,
+        (async, generic, ``Result``, containers,
         unknown)."""
         for owner in [cls, *self._hier_ancestors(cls)]:
             key = f"{owner}.{method}"
@@ -4044,8 +3632,7 @@ class ExpressionVisitorMixin:
                 continue
             go_type = self._CERTAIN_LAM_SCALARS.get(raw, "")
             if not go_type and raw in self._class_names and not self._generic_classes.get(raw):
-                # ``AppConfig.current() -> AppConfig``: a ``*AppConfig`` (an
-                # ``optional[AppConfig]`` too).
+                # ``AppConfig.current() -> AppConfig``: a ``*AppConfig``.
                 go_type = f"*{self._go_class_name(raw)}"
                 if self._method_return_types.get(f"go:{key}", go_type) != go_type:
                     return ""
@@ -4357,7 +3944,7 @@ class ExpressionVisitorMixin:
     })
 
     # Ordering of values whose static type is not an ordered Go type
-    # (``any``, ``json``, a type parameter, ``optional[int]``): by kind at
+    # (``any``, ``json``, a type parameter): by kind at
     # run time. Numbers compare numerically (ints exactly, a float with
     # anything numerically, NaN first), strings by bytes, ``false <
     # true``; values of different kinds order as None < bool < number <
@@ -4431,12 +4018,10 @@ class ExpressionVisitorMixin:
 
     def _orders_dynamically(self, go_type: str) -> bool:
         """Values of ``go_type`` are ordered by kind at run time: ``any``,
-        ``json``, a type parameter, a pointer to an ordered type
-        (``optional[int]``) or a type the compiler could not determine."""
+        ``json``, a type parameter or a type the compiler could not
+        determine."""
         t = (go_type or "").strip()
         if t in ("", "interface{}", "any", "LamJSON"):
-            return True
-        if t.startswith("*") and (t[1:] in self._ORDERED_GO_TYPES or t[1:] == "bool"):
             return True
         return t in (getattr(self, "_generic_names", None) or ())
 
@@ -4494,7 +4079,9 @@ class ExpressionVisitorMixin:
                       contextual: bool = False) -> str:
         # A lambda's parameters and locals are narrowable even inside
         # module-level statements.
-        with self._scoped(_nr_module_code=False):
+        # A lambda may run after the region that narrowed a captured
+        # reference to non-``None``: its members are checked again.
+        with self._scoped(_nr_module_code=False, _nonnil_names=set()):
             return self._lambda_to_go_body(node, param_types, return_type, contextual)
 
     def _lambda_to_go_body(self, node: Tree, param_types=None, return_type=None,
@@ -4581,8 +4168,8 @@ class ExpressionVisitorMixin:
         if not is_block_body and isinstance(body_node, Tree):
             # ``f()?.size()`` in an expression body (no statement, so not
             # rewritten by ``_visit``): propagation, then member access.
-            from compiler.safe_nav import rewrite_result_safe_nav
-            rewrite_result_safe_nav(body_node, lambda recv: self._expr_go_type_hint(recv) == "*Result")
+            from compiler.safe_nav import rewrite_safe_nav_as_propagation
+            rewrite_safe_nav_as_propagation(body_node)
 
         # The default return type stays ``interface{}`` for
         # compatibility: existing callers rely on the lambda result
@@ -4700,24 +4287,12 @@ class ExpressionVisitorMixin:
             and str(node.children[0].children[0] if isinstance(node.children[0], Tree) else node.children[0]) in {"None", "nil"}
         )
 
-    def _optional_display_go(self, value_go: str, node) -> str:
-        """An ``optional[str]``-style value (a Go ``*string``) shown by
-        ``print`` / f-strings: the pointed-to value, or ``<nil>``."""
+    def _display_go(self, value_go: str, node) -> str:
+        """A value shown by ``print`` / f-strings: ``bytes`` show their text,
+        like ``str(data)``."""
         hint = self._expr_go_type_hint(node) if isinstance(node, Tree) else ""
         if hint == "[]byte":
-            # ``print(data)`` / ``f"{data}"`` show the text, like ``str(data)``.
             return f"string({value_go})"
-        if hint and hint.startswith("*") and self._is_optional_value_go(hint[1:]):
-            return f"func() interface{{}} {{ if __lamP := {value_go}; __lamP != nil {{ return *__lamP }}; return nil }}()"
-        if hint and hint.startswith("[]*") and self._is_optional_value_go(hint[3:]):
-            # ``list[optional[str]]`` (a ``[]*string``): the values or
-            # ``<nil>``, not the pointers.
-            return (
-                f"func(__lamXs {hint}) []interface{{}} {{ if __lamXs == nil {{ return nil }}; "
-                "__lamOut := make([]interface{}, len(__lamXs)); for __lamI, __lamP := range __lamXs { "
-                "if __lamP != nil { __lamOut[__lamI] = *__lamP } }; return __lamOut }"
-                f"({value_go})"
-            )
         return value_go
 
     def _is_void_call_expr(self, node) -> bool:
@@ -5081,6 +4656,15 @@ class ExpressionVisitorMixin:
             return False
         if node.data == "getattr":
             return (self._expr_go_type_hint(node) or "").strip() == "interface{}"
+        if node.data == "null_coalesce":
+            # ``n ?? -1`` with ``n: any``: an ``interface{}`` either way.
+            operands = [c for c in node.children if c is not None]
+            if len(operands) < 2:
+                return False
+            kind, result_type = self._coalesce_plan(
+                operands[0], self._coalesce_fallback_node(node, operands), len(operands),
+            )
+            return kind != "json" and result_type in {"", "interface{}"}
         if node.data == "funccall":
             if self._consumes_result_call(node):
                 return False
@@ -5129,7 +4713,7 @@ class ExpressionVisitorMixin:
         return False
 
     _CAST_PRIMARY_NODES = frozenset({
-        "var", "getattr", "getattr_safe", "getitem", "funccall", "number", "string",
+        "var", "getattr", "getitem", "funccall", "number", "string",
         "const_none", "const_true", "const_false", "list", "dict", "set", "tuple", "cast_expr", "propagate",
     })
 
@@ -5211,24 +4795,24 @@ class ExpressionVisitorMixin:
     def _dynamic_to_go(self, raw: str, go_type: str) -> str:
         """The checked conversion of the ``interface{}`` value ``raw`` to
         ``go_type`` (see ``_result_payload_assert_go``)."""
-        marker = "__lamDynValue"
-        if self._result_payload_assert_go(marker, go_type) == f"{marker}.({go_type})":
-            # ``interface{}(...)`` keeps a plain assertion valid when the
-            # value's Go type is already concrete (stale name tracking).
-            return f"interface{{}}({raw}).({go_type})"
+        # (every form takes an ``interface{}``: a value whose Go type is
+        # already concrete, from stale name tracking, converts too)
         return self._result_payload_assert_go(raw, go_type)
 
     def _result_payload_assert_go(self, value: str, payload: str) -> str:
         """``value`` (a ``Result`` payload read as ``interface{}`` by
-        ``unwrap()`` / ``unwrapOr`` / ``?``) asserted to ``payload``. A
-        ``float`` payload also accepts an int and a base-class payload a
-        subclass instance (viewed as the base class), so a ``Result`` built
-        outside a typed context (``f(Result.Ok(1))`` with a ``Result[float]``
-        parameter) unwraps instead of panicking."""
+        ``unwrap()`` / ``unwrapOr`` / ``?``, an ``any``) asserted to
+        ``payload``. A ``float`` payload also accepts an int and a base-class
+        payload a subclass instance (viewed as the base class), so a
+        ``Result`` built outside a typed context (``f(Result.Ok(1))`` with a
+        ``Result[float]`` parameter) unwraps instead of panicking. ``None``
+        is ``None`` of a reference payload (a class, an interface, ``html``,
+        ``json``...) and raises ``TypeError: None is not a str`` for a value
+        type, which cannot hold it (``lamAs``, ``NONE_RUNTIME_GO``)."""
         if payload == "float64":
             return (
                 "func(v interface{}) float64 { if n, ok := v.(int); ok { return float64(n) }; "
-                f"return v.(float64) }}({value})"
+                f'return lamAs[float64](v, "a float") }}({value})'
             )
         payload_class = self._hier_class_from_go_type(payload) if payload.startswith("*") else ""
         if (
@@ -5242,35 +4826,45 @@ class ExpressionVisitorMixin:
                 f"func(v interface{{}}) {payload} {{ if x, ok := v.({payload}); ok || v == nil {{ return x }}; "
                 f"return v.(interface{{ {up}() {payload} }}).{up}() }}({value})"
             )
+        if self._go_type_holds_none(payload):
+            return f"lamAsNil[{payload}]({value})"
+        none_is_not = self._none_is_not_text(payload)
         elem = self._slice_elem_go_type(payload)
-        if elem and elem != "interface{}":
+        if elem and elem != "interface{}" and payload != "[]byte":
             # ``Result.Ok([Item("a")])`` built outside a typed context holds a
             # ``[]interface{}``: convert it element by element.
             return (
-                f"func(v interface{{}}) {payload} {{ if x, ok := v.({payload}); ok || v == nil {{ return x }}; "
+                f"func(v interface{{}}) {payload} {{ if x, ok := v.({payload}); ok {{ return x }}; "
+                f"if v == nil {{ lamNoneIsNot({none_is_not}) }}; "
                 f"src := v.([]interface{{}}); out := make({payload}, len(src)); "
                 f"for i, e := range src {{ out[i] = {self._result_payload_assert_go('e', elem)} }}; return out }}({value})"
             )
         key, map_value = self._split_go_map_type(payload)
-        if key == "string" and map_value and map_value != "interface{}":
+        if key == "string" and map_value and map_value != "interface{}" and not self._is_go_set_type(payload):
             return (
-                f"func(v interface{{}}) {payload} {{ if x, ok := v.({payload}); ok || v == nil {{ return x }}; "
+                f"func(v interface{{}}) {payload} {{ if x, ok := v.({payload}); ok {{ return x }}; "
+                f"if v == nil {{ lamNoneIsNot({none_is_not}) }}; "
                 f"src := v.(map[string]interface{{}}); out := make({payload}, len(src)); "
                 f"for k, e := range src {{ out[k] = {self._result_payload_assert_go('e', map_value)} }}; return out }}({value})"
             )
-        if payload.startswith("*") and self._is_optional_value_go(payload[1:]):
-            # ``Result[optional[int]]``: ``Result.Ok(0)`` holds an ``int``,
-            # ``Result.Ok(None)`` nothing.
-            inner = payload[1:]
-            return (
-                f"func(v interface{{}}) {payload} {{ switch x := v.(type) {{ case nil: return nil; "
-                f"case {payload}: return x; case {inner}: return &x }}; return v.({payload}) }}({value})"
-            )
-        if payload.startswith("*") and payload != "*Result":
-            # ``Result[optional[User]]`` holding ``Result.Ok(None)``: the nil
-            # payload is a nil pointer (asserting it to ``*User`` panicked).
-            return f"func(v interface{{}}) {payload} {{ if v == nil {{ return nil }}; return v.({payload}) }}({value})"
-        return f"{value}.({payload})"
+        return f"lamAs[{payload}]({value}, {none_is_not})"
+
+    def _go_type_holds_none(self, go_type: str) -> bool:
+        """A value of the Go type ``go_type`` may be Lam's ``None``: a class
+        pointer, an interface, ``html`` / ``xml`` / ``json`` (their zero
+        value), ``any``, a function. Value types (scalars, lists, dicts,
+        sets) cannot."""
+        go_type = (go_type or "").strip()
+        if go_type.startswith(("*", "func(", "chan ")) or go_type in {"interface{}", "any", "LamHTML", "LamXML", "LamJSON"}:
+            return True
+        return go_type in self._interface_go_names()
+
+    def _none_is_not_text(self, go_type: str) -> str:
+        """The quoted Go string ``"a str"`` / ``"an int"`` / ``"a
+        list[int]"`` of ``TypeError: None is not ...`` for ``go_type``."""
+        name = self._go_type_lam_text(go_type) or go_type
+        article = "an" if name[:1] in "aeiou" else "a"
+        return '"' + f"{article} {name}".replace('"', "'") + '"'
 
     def _result_ok_payload_conversion(self, value: Tree, payload: str) -> str:
         """The Go for ``value`` stored as a ``payload`` when it fits it only
@@ -5469,6 +5063,32 @@ class ExpressionVisitorMixin:
             return ""
         return literal_type
 
+    def _none_ternary_go_type(self, node) -> str:
+        """Go type of ``x if c else None`` (either branch ``None``): the other
+        branch's type when it holds ``None`` (a class, an interface,
+        ``html``...), else ``interface{}`` (a ``str`` cannot be ``None``:
+        ``"alert" if c else None`` is an ``any``); ``""`` for another
+        ternary or an untyped branch."""
+        if not (isinstance(node, Tree) and node.data == "test" and len(node.children) == 3):
+            return ""
+        true_branch, false_branch = node.children[0], node.children[2]
+        nested = [self._none_ternary_go_type(b) for b in (true_branch, false_branch)]
+        if "interface{}" in nested:
+            # ``"a" if x else ("b" if y else None)``: an ``any`` as a whole.
+            return "interface{}"
+        if self._is_none_literal(true_branch) or nested[0]:
+            other = false_branch
+        elif self._is_none_literal(false_branch) or nested[1]:
+            other = true_branch
+        else:
+            return ""
+        if self._is_none_literal(other):
+            return "interface{}"
+        go_type = self._expr_go_type_hint(other) or self._infer_type_from_value(other) or ""
+        if not go_type:
+            return ""
+        return go_type if self._go_type_holds_none(go_type) else "interface{}"
+
     def _ternary_common_go_type(self, node) -> str:
         """Common Go type of ``a if c else b`` branches; ``""`` when unknown.
 
@@ -5483,6 +5103,9 @@ class ExpressionVisitorMixin:
 
         # ``x.side if isinstance(x, Square) else 0``: each branch is typed
         # with its narrowing.
+        none_type = self._none_ternary_go_type(node)
+        if none_type:
+            return none_type
         true_plan, false_plan = self._nr_ternary_plans(node)
         left = branch_type(node.children[0], true_plan)
         right = branch_type(node.children[2], false_plan)
@@ -5541,7 +5164,7 @@ class ExpressionVisitorMixin:
             name = self._get_name(callee.children[0])
             if (self._var_go_types.get(name) or "").startswith("func("):
                 found = getattr(self, "_var_lam_types", {}).get(name)
-        elif callee.data in {"getattr", "getattr_safe"} and len(callee.children) >= 2:
+        elif callee.data == "getattr" and len(callee.children) >= 2:
             obj = callee.children[0]
             attr = self._get_name(callee.children[1])
             own = (
@@ -5579,7 +5202,7 @@ class ExpressionVisitorMixin:
             return None
         if node.data == "var" and node.children:
             return getattr(self, "_var_lam_types", {}).get(self._get_name(node.children[0]))
-        if node.data in {"getattr", "getattr_safe"} and len(node.children) >= 2:
+        if node.data == "getattr" and len(node.children) >= 2:
             obj = node.children[0]
             attr = self._get_name(node.children[1])
             own = (
@@ -5657,7 +5280,7 @@ class ExpressionVisitorMixin:
         ``-> list[Result[T]]`` or a variable annotated so."""
         if isinstance(iterable, Tree) and iterable.data == "var" and iterable.children:
             return self._var_result_payloads.get(f"{self._get_name(iterable.children[0])}[]", "")
-        if isinstance(iterable, Tree) and iterable.data in {"getattr", "getattr_safe"} and len(iterable.children) >= 2:
+        if isinstance(iterable, Tree) and iterable.data == "getattr" and len(iterable.children) >= 2:
             # ``self.cached`` with a field ``cached: list[Result[int]]``.
             receiver = iterable.children[0]
             class_name = self.current_class if (
@@ -5689,7 +5312,7 @@ class ExpressionVisitorMixin:
             return through_value
         if callee.data == "var" and callee.children:
             return self._payload_go_type_for_call(self._get_name(callee.children[0]) + suffix, operand)
-        if callee.data not in {"getattr", "getattr_safe"} or len(callee.children) < 2:
+        if callee.data != "getattr" or len(callee.children) < 2:
             return ""
         receiver = callee.children[0]
         method = self._get_name(callee.children[1])
@@ -5723,7 +5346,7 @@ class ExpressionVisitorMixin:
                 # ``Result[int]`` here.
                 class_name, _dot, method = key.rpartition(".")
                 callee = call_node.children[0] if call_node.children else None
-                receiver = callee.children[0] if isinstance(callee, Tree) and callee.data in {"getattr", "getattr_safe"} else None
+                receiver = callee.children[0] if isinstance(callee, Tree) and callee.data == "getattr" else None
                 static = (
                     isinstance(receiver, Tree) and receiver.data == "var" and receiver.children
                     and self._get_name(receiver.children[0]) == class_name
@@ -5824,7 +5447,7 @@ class ExpressionVisitorMixin:
                 # ``[Square(), Shape()][0].area()``: the literal's item class.
                 return self._hier_class_from_go_type(literal_type[2:])
             return self._hier_class_from_go_type(self._expr_go_type_hint(obj_node))
-        if obj_node.data in {"getattr", "getattr_safe"}:
+        if obj_node.data == "getattr":
             go_type = self._expr_go_type_hint(obj_node)
             class_name = go_type.removeprefix("*").split("[", 1)[0]
             if class_name in self._class_names:
@@ -5834,7 +5457,7 @@ class ExpressionVisitorMixin:
             class_name = go_type.removeprefix("*").split("[", 1)[0]
             return class_name if class_name in self._class_names else ""
         if obj_node.data == "null_coalesce":
-            # ``(lookup() ?? User("g")).greet()``: the optional's class.
+            # ``(lookup() ?? User("g")).greet()``: the class of the result.
             go_type = self._expr_go_type_hint(obj_node) or ""
             class_name = go_type.removeprefix("*").split("[", 1)[0]
             return class_name if go_type.startswith("*") and class_name in self._class_names else ""
@@ -5874,19 +5497,10 @@ class ExpressionVisitorMixin:
                             self._generic_method_owner(inner_class, inner_method)
                         ):
                             # ``self.at(0).name`` of a method inherited from
-                            # a generic base (``-> optional[T]``, ``T =
-                            # User``): the class of the call's Go type.
+                            # a generic base (``-> T``, ``T = User``): the
+                            # class of the call's Go type.
                             return self._hier_class_from_go_type(self._expr_go_type_hint(obj_node) or "")
                         return ""
-                elif inner_func.data == "getattr_safe":
-                    # ``a?.owner().name()``: the class the method returns
-                    # (``None`` when ``a`` is, a nil-able class pointer).
-                    inner_class = self._infer_receiver_class(inner_func.children[0])
-                    if inner_class:
-                        returned = self._method_return_types.get(
-                            f"{inner_class}.{self._get_name(inner_func.children[1])}", ""
-                        )
-                        return returned if returned in self._class_names or returned in self._interfaces else ""
                 elif inner_func.data == "var":
                     # Bare ``Class()`` constructor.
                     receiver_name = self._get_name(inner_func.children[0])
@@ -6993,7 +6607,7 @@ class ExpressionVisitorMixin:
 
         if len(comp_ops) == 1 and len(exprs) == 2:
             if comp_ops[0] in {"==", "!="} and (self._is_none_literal(exprs[0]) or self._is_none_literal(exprs[1])):
-                # ``value == None`` on an ``optional[Cls]``: a nil test, not
+                # ``value == None`` on a class reference: a nil test, not
                 # ``__eq__`` (which would run on a nil receiver).
                 return ""
             dunder = CMP_TO_DUNDER.get(comp_ops[0], "")
@@ -7318,8 +6932,8 @@ class ExpressionVisitorMixin:
         def branch(value_node) -> str:
             known = self._expr_go_type_hint(value_node) or self._infer_type_from_value(value_node) or ""
             value = self._typed_value_to_go(value_node, "string")
-            if known == "interface{}" and not value.endswith(".(string)"):
-                value = f"interface{{}}({value}).(string)"
+            if known == "interface{}" and not value.endswith(".(string)") and not value.startswith("lamAs[string]("):
+                value = self._result_payload_assert_go(value, "string")
             return value
 
         narrowed = self._nr_ternary_to_go(node, "string", branch)
@@ -7479,9 +7093,6 @@ class ExpressionVisitorMixin:
             equal = self._collection_equality_to_go(left, right)
             if equal:
                 return f"!{equal}" if op == "!=" else equal
-            equal = self._optional_equality_to_go(left, right, left_go, right_go)
-            if equal:
-                return f"!{equal}" if op == "!=" else equal
         if op in {"==", "!=", "is", "is not"}:
             # Identity of a subclass instance and a base-typed value:
             # compare both as the base (the subclass's embedded parent).
@@ -7501,58 +7112,6 @@ class ExpressionVisitorMixin:
         if op == "is":
             return f"{left_go} == {right_go}"
         return f"{left_go} {op} {right_go}"
-
-    def _optional_equality_to_go(self, left, right, left_go: str, right_go: str) -> str:
-        """``x == "abc"`` / ``s?.count() == 3`` / ``a?.name() == b?.name()``
-        with an ``optional[T]`` of a comparable value (a Go ``*string``,
-        ``*int``): equal when both hold equal values, or both are ``None``
-        (like Python); Go compared the pointer itself, or refused a pointer
-        and a value. ``""`` for other operands (``x == None`` stays a nil
-        test)."""
-        if self._is_none_literal(left) or self._is_none_literal(right):
-            return ""
-
-        def optional_value(node) -> str:
-            hint = (self._expr_go_type_hint(node) or "").strip() if isinstance(node, Tree) else ""
-            if hint.startswith("*") and hint[1:] in self._COMPARABLE_ELEM_GO_TYPES:
-                return hint[1:]
-            return ""
-
-        def plain_value(node) -> str:
-            if isinstance(node, Token):
-                return ""
-            hint = (self._expr_go_type_hint(node) or self._infer_type_from_value(node) or "").strip()
-            return hint if hint in self._COMPARABLE_ELEM_GO_TYPES else ""
-
-        left_opt, right_opt = optional_value(left), optional_value(right)
-        if not left_opt and not right_opt:
-            return ""
-        if left_opt and right_opt:
-            if left_opt != right_opt:
-                return ""
-            return (
-                f"func(__lamA, __lamB *{left_opt}) bool {{ if __lamA == nil || __lamB == nil "
-                f"{{ return __lamA == __lamB }}; return *__lamA == *__lamB }}({left_go}, {right_go})"
-            )
-        value_type = left_opt or right_opt
-        other = right if left_opt else left
-        other_go = right_go if left_opt else left_go
-        other_type = plain_value(other)
-        if other_type and other_type != value_type:
-            if {other_type, value_type} <= {"int", "float64"}:
-                other_go = f"{value_type}({other_go})"
-            else:
-                return ""
-        opt_go = left_go if left_opt else right_go
-        if left_opt:
-            return (
-                f"func(__lamA *{value_type}, __lamB {value_type}) bool {{ return __lamA != nil && *__lamA == __lamB }}"
-                f"({opt_go}, {other_go})"
-            )
-        return (
-            f"func(__lamB {value_type}, __lamA *{value_type}) bool {{ return __lamA != nil && *__lamA == __lamB }}"
-            f"({other_go}, {opt_go})"
-        )
 
     _COMPARABLE_ELEM_GO_TYPES = frozenset({
         "string", "bool", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",

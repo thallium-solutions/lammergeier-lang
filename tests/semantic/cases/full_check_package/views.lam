@@ -71,8 +71,8 @@ func names(page: Page) -> list[str] {
     return ui.columnNames(page.columns())
 }
 
-func optionalLabel(on: bool) -> optional[str] {
-    wrap: optional[str] = "on" if on else None
+func optionalLabel(on: bool) -> any {
+    wrap = "on" if on else None
     return wrap
 }
 

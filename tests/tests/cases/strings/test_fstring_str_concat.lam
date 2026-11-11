@@ -54,9 +54,9 @@ func main() {
     print(f"{', '.join(names)}")
     m: dict[str, str] = {"k": "v"}
     print(f"{m['k']}")
-    maybe: optional[str] = None
+    maybe: any = None
     print(f"{maybe}|{maybe ?? 'none'}")
-    other: optional[str] = "x"
+    other: any = "x"
     print(f"{other}")
     n: int = 3
     print(f"{key} {n}")

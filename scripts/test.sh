@@ -84,6 +84,7 @@ run_suite() {
             "$PYTHON" tests/tests/test_operator_precedence.py
             "$PYTHON" tests/tests/test_cast_expr.py
             "$PYTHON" tests/tests/test_async_unretrieved.py
+            "$PYTHON" tests/tests/test_none_uncaught.py
             "$PYTHON" tests/tests/test_formatter.py
             "$PYTHON" tests/tests/test_formatter_roundtrip.py
             "$PYTHON" tests/tests/test_doc_comments.py

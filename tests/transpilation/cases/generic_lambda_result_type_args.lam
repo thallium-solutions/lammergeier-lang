@@ -6,7 +6,7 @@
 # expect-go: var a *Result = InTx[int](c, func(tx *Conn) *Result { return CountRows(tx) })
 # expect-go: var b *Result = InTx[int](c, CountRows)
 # expect-go: var e *Result = Make[string]()
-# expect-go: var n int = __q1.Value.(int)
+# expect-go: var n int = lamAs[int](__q1.Value, "an int")
 # expect-go: __q1 := Make[int]()
 # expect-go: return max(a, b)
 # expect-go: box := NewBox[int](5)

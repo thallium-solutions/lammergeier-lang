@@ -92,7 +92,7 @@ func main() {
     print(f"f-string {sq}")
     view: Shape = sq
     print(f"base view {view}")
-    nothing: optional[Shape] = None
+    nothing: Shape = None
     print(nothing)
     shapes: list[Shape] = [Shape("x"), Square(2)]
     print(shapes)

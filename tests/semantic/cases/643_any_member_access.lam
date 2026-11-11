@@ -5,18 +5,19 @@
 # local, parameter or field, `unwrap()` of an untyped `Result`. The
 # message names the expression and the fixes (an inline cast, an
 # annotation, a conversion, a narrowing).
-# expect-error: line 39: error[any]: `row["name"]` has type `any`, so method `toUpper()` needs a concrete type
+# expect-error: line 40: error[any]: `row["name"]` has type `any`, so method `toUpper()` needs a concrete type
 # expect-error: cast it inline (`row["name"] as str`)
 # expect-error: annotate a variable (`value: str = row["name"]`)
 # expect-error: convert between kinds (`int(x)`, `float(x)`, `str(x)`)
 # expect-error: narrow it with `isinstance` / `match`
-# expect-error: line 40: error[any]: `lookup("user")` has type `any`, so member `name` needs a concrete type; cast it inline (`lookup("user") as User`)
-# expect-error: line 41: error[any]: `items[0]` has type `any`, so member `name` needs a concrete type
-# expect-error: line 42: error[any]: `v` has type `any`, so member `name` needs a concrete type
-# expect-error: line 43: error[any]: `box.raw` has type `any`, so method `area()` needs a concrete type
-# expect-error: line 44: error[any]: `r.unwrap()` has type `any`, so member `name` needs a concrete type
-# expect-error: line 45: error[any]: `v` has type `any`, so member `name` needs a concrete type
-# expect-error: line 46: error[any]: `items[1]` has type `any`, so method `append()` needs a concrete type; cast it inline (`items[1] as list[any]`)
+# expect-error: line 41: error[any]: `lookup("user")` has type `any`, so member `name` needs a concrete type; cast it inline (`lookup("user") as User`)
+# expect-error: line 42: error[any]: `items[0]` has type `any`, so member `name` needs a concrete type
+# expect-error: line 43: error[any]: `v` has type `any`, so member `name` needs a concrete type
+# expect-error: line 44: error[any]: `box.raw` has type `any`, so method `area()` needs a concrete type
+# expect-error: line 45: error[any]: `r.unwrap()` has type `any`, so member `name` needs a concrete type
+# expect-error: line 46: error[any]: `v` has type `any`, so member `name` needs a concrete type
+# expect-error: line 46: error[syntax]: `?.` was removed: test `v != None` first
+# expect-error: line 47: error[any]: `items[1]` has type `any`, so method `append()` needs a concrete type; cast it inline (`items[1] as list[any]`)
 
 from lamerrors import Result
 

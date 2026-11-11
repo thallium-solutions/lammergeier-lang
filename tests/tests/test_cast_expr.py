@@ -94,7 +94,7 @@ PRECEDENCE = {
     "v as any as int": "((v as any) as int)",
     "v as list[str]": "(v as list[str])",
     "v as dict[str, list[int]]": "(v as dict[str, list[int]])",
-    "v as optional[User]": "(v as optional[User])",
+    "v as Box[User]": "(v as Box[User])",
     "v as pkg.User": "(v as pkg.User)",
     "f(x) as User": "(f(x) as User)",
     "a.b[0] as int": "(a.b[0] as int)",

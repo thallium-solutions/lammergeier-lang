@@ -3,7 +3,7 @@
 Lammergeier keeps general-purpose building blocks in the standard library and
 ships service clients, fast-moving protocols, and vendor integrations as
 independently versioned packages. The official packages below target
-`lamc` 4.11; each uses a scoped `@lam/...` import and carries its own tests,
+`lamc` 4.12; each uses a scoped `@lam/...` import and carries its own tests,
 release notes, and pinned Go dependencies. The libraries that existed before
 3.0 declare `>=1.18, <5`; the five added in October 2026 declare `>=3.0, <5`;
 `@lam/vulture` 3.0.0 and its plugins declare `>=4.0, <5` (native `html` /

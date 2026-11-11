@@ -13,7 +13,7 @@
 # expect: 135 165 163 463
 # expect: <div class="card">a&lt;b</div>|{"title":"é \u0026 漢"}
 # expect: true true true
-# expect: safe: <b>&lt;w&gt;</b> | <nil> | <b>&lt;w&gt;</b> | <nil> | <w><b>&lt;w&gt;</b>
+# expect: safe: <b>&lt;w&gt;</b> |  | <b>&lt;w&gt;</b> |  | <w><b>&lt;w&gt;</b>
 # expect: t:<div class="card">a&lt;b</div>:{"title":"a\u003cb"}:<item><title>one</title></item>
 
 # ``str()``, f-strings, ``print`` and string concatenation of html, xml and
@@ -89,9 +89,9 @@ func main() {
     print(f"{str(h) == f'{h}'} {str(j) == Json.encode(j).unwrap()} {str(x) == f'{x}'}")
     w: Widget = Widget("<w>")
     none: Widget = None
-    safe = w?.render()
-    missing = none?.render()
-    safeName = w?.name()
+    safe = w.render() if w != None else None
+    missing = none.render() if none != None else None
+    safeName = w.name() if w != None else None
     print(f"safe: {safe} | {missing} | {str(safe)} | {str(missing)} | {safeName}{safe}")
     title: str = "t"
     print(f"{title}:{h.first('div')}:{j.cards[0]}:{x.first('item')}")

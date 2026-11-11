@@ -13,7 +13,7 @@ func main() {
     count: int = 3
     size: str = "big" if count > 2 else "small"
     print(<><span data-count="${count}" class="badge ${size}">${count}</span></>)
-    title: optional[str] = None
+    title: any = None
     print(<><a title="${title}">no title</a></>)
     current: str = "it"
     print(<><option value="${current}" selected=${current == "it"}>Italiano</option></>)

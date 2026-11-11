@@ -11,7 +11,7 @@
 # expect-go: if e, ok := v.(*Error); ok { return e }
 # expect-go: }(r.Error).Kind
 # expect-go: fmt.Sprintf("%v", d["k"])
-# expect-go: func() string { if len(xs) > 0 { return interface{}(Label(names)).(string) }; return "none" }() + "!"
+# expect-go: func() string { if len(xs) > 0 { return lamAs[string](Label(names), "a str") }; return "none" }() + "!"
 
 from lamerrors import Result, Error
 

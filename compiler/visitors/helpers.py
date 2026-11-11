@@ -510,7 +510,7 @@ class HelpersMixin:
                 return f"{classes[0]}[{', '.join(self._go_type_lam_text(p) for p in parts)}]" if parts else classes[0]
             if inner == "Result":
                 return "Result"
-            return f"optional[{self._go_type_lam_text(inner)}]"
+            return self._go_type_lam_text(inner)
         return go_type
 
     def _literal_lam_type_text(self, node, kind: str) -> str:
@@ -1078,15 +1078,6 @@ class HelpersMixin:
                 # way. Keeping a single representation simplifies
                 # interop across compiler features.
                 return "[]interface{}"
-            if base in {"optional", "Option"}:
-                if not type_args:
-                    return "interface{}"
-                if self._get_raw_type_name(node) in self._interfaces:
-                    # ``optional[Sql]`` with ``Sql`` an interface: the Go
-                    # interface value is already nil-able (``*Sql`` would be
-                    # a pointer to an interface, which has no methods).
-                    return type_args[0]
-                return type_args[0] if type_args[0].startswith("*") else f"*{type_args[0]}"
             if base == "chan":
                 return f"chan {type_args[0]}" if type_args else "chan interface{}"
             if base in GENERATOR_TYPE_NAMES:
@@ -1228,8 +1219,6 @@ class HelpersMixin:
         if d == "type_generic" and type_node.children:
             base = self._dotted_name_to_str(type_node.children[0])
             args = [child for child in type_node.children[1:] if isinstance(child, Tree)]
-            if base in {"optional", "Option"} and len(args) == 1:
-                return self._get_raw_type_name(args[0])
             # Generic user classes retain the same nominal receiver identity
             # as their unspecialised class (``Vault[str]`` -> ``Vault``), while
             # builtin containers still have no class receiver identity.
@@ -1445,7 +1434,7 @@ class HelpersMixin:
         if node.data == "var":
             var_name = self._get_name(node.children[0])
             return self._var_types.get(var_name, "")
-        if node.data in {"getattr", "getattr_safe"}:
+        if node.data == "getattr":
             go_type = self._expr_go_type_hint(node)
             class_name = go_type.removeprefix("*").split("[", 1)[0]
             if class_name in self._class_names:

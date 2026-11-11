@@ -1,7 +1,7 @@
 # Regression (4.1.2): a concretely typed list / dict widens implicitly where
 # a `list[any]` / `dict[str, any]` is expected: annotated assignments and
 # reassignments, arguments, returns, `Result.Ok` payloads, `?` results,
-# class fields, optional targets, nested lists and dict / list literal
+# class fields, `any` targets, nested lists and dict / list literal
 # elements. `xs: list[any] = ys` with `ys: list[int]` used to fail
 # `go build` ("cannot use ys (variable of type []int) as []interface{}").
 # The widened value is a copy: element writes and appends through it do not
@@ -115,7 +115,7 @@ func main() {
     m: dict[str, list[any]] = {"nums": ys, "strs": names}
     pair: list[list[any]] = [ys, names]
     print(len(m["nums"]), pair)
-    maybe: optional[list[any]] = ys
+    maybe: any = ys
     print(maybe ?? [], maybe == None)
     mixed = [n * 2 for n in ys]
     print(count(mixed) + size(e))

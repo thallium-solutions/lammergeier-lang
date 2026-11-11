@@ -1,0 +1,120 @@
+# `??` on the payload of `?` (after 4.11): `Foo()? ?? "none"` with `Foo() ->
+# Result[str]` is a `str`; the payload stays dynamic until `??` tests it, so
+# a `Result.Ok(None)` built from an `any` selects the fallback, and an `Err`
+# still propagates (to the function's caller, or the `do` / `catch`
+# handler). The owner's three examples, then `??` on references (a class,
+# an interface, `html`, `any`, a `dict` lookup) and on a `Result[int]`
+# payload with a `float` fallback.
+#
+# expect: Hello
+# expect: none
+# expect: caught: nope
+# expect: chained: Hello!
+# expect: in function: none
+# expect: err returned: false nope
+# expect: class: guest
+# expect: interface: anonymous
+# expect: html: <p>empty</p>
+# expect: any: fallback
+# expect: dict: 0 2
+# expect: float: 2.5 1
+# expect: done
+
+from lamerrors import Result, Error
+
+func Foo() -> Result[str] {
+    return Result.Ok("Hello")
+}
+
+func FooNone() -> Result[str] {
+    nothing: any = None
+    return Result.Ok(nothing)
+}
+
+func FooErr() -> Result[str] {
+    return Result.Err(Error("Missing", "nope"))
+}
+
+func label(load: func() -> Result[str]) -> Result[str] {
+    text: str = load()? ?? "none"
+    return Result.Ok(text)
+}
+
+class User {
+    name: str = "guest"
+}
+
+interface Named {
+    func name(self) -> str
+}
+
+class Anonymous {
+    func name(self) -> str {
+        return "anonymous"
+    }
+}
+
+func lookup(_id: int) -> User {
+    return None
+}
+
+func someone() -> Named {
+    return None
+}
+
+func page() -> html {
+    return None
+}
+
+func half(n: int) -> Result[int] {
+    if n < 0 {
+        nothing: any = None
+        return Result.Ok(nothing)
+    }
+    return Result.Ok(n // 2)
+}
+
+func ratios() -> Result[str] {
+    a: float = half(-1)? ?? 2.5
+    b = half(2)? ?? 0.5
+    return Result.Ok(f"{a} {b}")
+}
+
+func main() {
+    do {
+        x = Foo()? ?? "none"
+        print(x)
+    } catch err {
+        print(f"unexpected {err}")
+    }
+    do {
+        y = FooNone()? ?? "none"
+        print(y)
+    } catch err {
+        print(f"unexpected {err}")
+    }
+    do {
+        z = FooErr()? ?? "none"
+        print(z)
+    } catch err {
+        print(f"caught: {err.message}")
+    }
+    do {
+        print(f"chained: {Foo()? ?? "none"}!")
+    } catch err {
+        print(f"unexpected {err}")
+    }
+    print(f"in function: {label(FooNone).unwrap()}")
+    r = label(FooErr)
+    print(f"err returned: {r.ok()} {r.error.message}")
+    print(f"class: {(lookup(1) ?? User()).name}")
+    print(f"interface: {(someone() ?? Anonymous()).name()}")
+    shown: html = page() ?? <><p>empty</p></>
+    print(f"html: {shown}")
+    value: any = None
+    print(f"any: {value ?? "fallback"}")
+    counts: dict[str, int] = {"b": 2}
+    print(f"dict: {counts["a"] ?? 0} {counts["b"] ?? 0}")
+    print(f"float: {ratios().unwrap()}")
+    print("done")
+}

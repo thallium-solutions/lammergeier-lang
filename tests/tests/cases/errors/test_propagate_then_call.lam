@@ -1,5 +1,6 @@
 # `x()?.y()` on a Result means `(x()?).y()`: propagate the error, then use
-# the payload. `?.` on an optional value keeps its safe-navigation meaning.
+# the payload. (Safe navigation on a class reference was removed after 4.11:
+# the `None` test is explicit.)
 # expect: 3
 # expect: 4 4
 # expect: box 2
@@ -38,7 +39,7 @@ func load(k: int) -> Result[Box] {
     return Result.Ok(Box(k))
 }
 
-func find(name: str) -> optional[User] {
+func find(name: str) -> User {
     if name == "" {
         return None
     }
@@ -82,9 +83,10 @@ func main() {
         print(f"err: {t.error}")
     }
     print(keyed().unwrap())
-    print(find("Ann")?.name ?? "nobody")
-    u: optional[User] = find("")
-    print(u?.name ?? "None")
+    ann: User = find("Ann")
+    print(ann.name if ann != None else "nobody")
+    u: User = find("")
+    print(u.name if u != None else "None")
     do {
         total: int = load(1)?.v + load(5)?.v
         print(f"ok {total}")

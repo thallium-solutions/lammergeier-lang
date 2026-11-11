@@ -132,7 +132,7 @@
 						</dict>
 					</dict>
 					<key>match</key>
-					<string>\b(as)[\t ]+\(?[\t ]*((?:[A-Z][A-Za-z0-9_]*|int|float|str|bool|bytes|any|list|dict|set|tuple|json|html|xml|optional|func|None)\b)</string>
+					<string>\b(as)[\t ]+\(?[\t ]*((?:[A-Z][A-Za-z0-9_]*|int|float|str|bool|bytes|any|list|dict|set|tuple|json|html|xml|func|None)\b)</string>
 				</dict>
 			</array>
 		</dict>
@@ -1136,7 +1136,7 @@
 			<array>
 				<dict>
 					<key>match</key>
-					<string>\b(int|int8|int16|int32|int64|uint|uint8|uint16|uint32|uint64|float|float32|float64|string|str|bool|byte|rune|bytes|any|error|list|dict|set|tuple|json|html|xml|func|object|optional|Option|Result|None)\b</string>
+					<string>\b(int|int8|int16|int32|int64|uint|uint8|uint16|uint32|uint64|float|float32|float64|string|str|bool|byte|rune|bytes|any|error|list|dict|set|tuple|json|html|xml|func|object|Result|None)\b</string>
 					<key>name</key>
 					<string>support.type.lammergeier</string>
 				</dict>

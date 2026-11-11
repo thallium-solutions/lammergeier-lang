@@ -14,7 +14,7 @@ class User {
     }
 }
 
-func lookup() -> optional[User] {
+func lookup() -> User {
     return None
 }
 

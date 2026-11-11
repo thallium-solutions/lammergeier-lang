@@ -1,6 +1,6 @@
 # expect-pass
 # Regression (4.1.2): overrides of a generic base's methods with the bound
-# type argument (parameters, returns, `list[T]`, `optional[T]`, a generic
+# type argument (parameters, returns, `list[T]`, a generic
 # intermediate class and two subclasses binding different types).
 
 class User {
@@ -26,7 +26,7 @@ class Registry[T] {
         return len(xs)
     }
 
-    func find(self, _key: str) -> optional[T] {
+    func find(self, _key: str) -> T {
         return None
     }
 }
@@ -44,7 +44,7 @@ class Users(Registry[User]) {
         return len(xs) + 1
     }
 
-    func find(self, _key: str) -> optional[User] {
+    func find(self, _key: str) -> User {
         return None
     }
 }

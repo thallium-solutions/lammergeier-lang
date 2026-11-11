@@ -181,6 +181,12 @@ class MarkupTranspilerMixin:
             return None
         if not (self._markup_go_kind(left_node) or self._markup_go_kind(right_node)):
             return None
+        for value_node, other in ((left_node, right_node), (right_node, left_node)):
+            if self._is_none_literal(other) and self._markup_go_kind(value_node):
+                # ``page == None``: ``None`` of ``html`` / ``xml`` is the zero
+                # value.
+                test = f"{self._expr_to_go(value_node)}.lamIsNone()"
+                return test if op == "==" else f"!{test}"
         left = self._markup_operand_to_go(left_node, self._markup_go_kind(left_node) or self._markup_go_kind(right_node))
         right = self._markup_operand_to_go(right_node, self._markup_go_kind(right_node) or self._markup_go_kind(left_node))
         test = f"lamMEqual({left}, {right})"

@@ -7,6 +7,6 @@ class Document {
     }
 }
 
-func inspect(document: optional[Document]) {
-    print(document?.rendr())
+func inspect(document: Document) {
+    print(document.rendr())
 }

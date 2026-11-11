@@ -117,7 +117,7 @@ func areaOf(v: any) -> str {
     }
 }
 
-func maybe(p: optional[Point]) -> str {
+func maybe(p: Point) -> str {
     match p {
         case Point(x=x) { return f"optional point {x}" }
         case None { return "optional none" }

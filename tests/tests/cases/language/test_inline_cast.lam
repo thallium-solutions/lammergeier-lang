@@ -2,7 +2,7 @@
 # annotated assignment to `T` and has the static type `T`: scalars,
 # int-to-float widening, classes (a subclass instance becomes the base
 # view, `None` stays `None`), typed lists / dicts from `list[any]` /
-# `dict[str, any]`, optionals and `any`. A mismatch throws the same
+# `dict[str, any]` and `any`. A mismatch throws the same
 # catchable `TypeError`. From a concrete type: identity, widening, upcast,
 # and a downcast checked at run time (like an `isinstance` narrowing).
 # `as` binds tighter than the binary operators and looser than unary
@@ -11,7 +11,7 @@
 # expect: widen 3.0 1.5
 # expect: classes ada Sq 4 none
 # expect: lists X,Y 3 map[a:1 b:2]
-# expect: optional 7 none
+# expect: dynamic 7 none
 # expect: precedence 43 -6 true 7 3
 # expect: chain 5 5
 # expect: identity 3 3 Sq
@@ -69,7 +69,7 @@ func main() {
     print("widen", f"{row["n"] as float:.1f}", half(row["n"] as float))
 
     sq: Shape = lookup("square") as Shape
-    missing: optional[User] = lookup("none") as User
+    missing: User = lookup("none") as User
     print("classes", (lookup("user") as User).name, sq.name(), (lookup("square") as Square).side * 2,
         "none" if missing == None else "set")
 
@@ -83,10 +83,10 @@ func main() {
     }
     print("lists", ",".join(words), total, row["counts"] as dict[str, int])
 
-    maybe: optional[int] = row["count"] as optional[int]
-    gone: optional[int] = None
+    maybe: any = row["count"] as any
+    gone: any = None
     if maybe != None {
-        print("optional", maybe - 34, "none" if gone == None else "set")
+        print("dynamic", maybe as int - 34, "none" if gone == None else "set")
     }
 
     n: int = 3

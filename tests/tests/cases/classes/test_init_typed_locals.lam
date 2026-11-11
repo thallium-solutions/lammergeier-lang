@@ -33,7 +33,7 @@ class Shadow {
 class Mixed {
     func init(self, n: int, flag: bool) {
         origin: Point = Point(n)
-        maybe: optional[Point] = None
+        maybe: Point = None
         if flag {
             maybe = Point(n * 3)
         }

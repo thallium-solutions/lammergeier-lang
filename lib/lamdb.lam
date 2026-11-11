@@ -67,8 +67,9 @@
 # arrive as text), date/time columns as Go ``time.Time`` and NULL as
 # ``None``. The static ``Row`` helpers read them typed — ``Row.int(row,
 # "id")``, ``Row.str``, ``Row.float``, ``Row.bool``, ``Row.unix`` /
-# ``Row.time`` (a ``DateTime``), ``Row.optionalStr`` & co. for nullable
-# columns, ``Row.strList`` for PostgreSQL ``text[]``, ``Row.timeText`` for a
+# ``Row.time`` (a ``DateTime``, ``None`` for NULL), ``Row.optionalStr`` &
+# co. for nullable columns (an ``any``, the value or ``None``: read it with
+# ``Row.optionalStr(row, "x") ?? ""``), ``Row.strList`` for PostgreSQL ``text[]``, ``Row.timeText`` for a
 # timestamp in a Go layout (whole seconds by default) — and
 # ``Db.textArray(values)`` writes a ``text[]`` parameter (``?::text[]``).
 #
@@ -1059,7 +1060,7 @@ class Row {
     #- Typed reads of a ``dict[str, any]`` row. A missing column, NULL or a
        value that does not convert gives ``fallback`` (``Row.int``,
        ``Row.float``, ``Row.str``, ``Row.bool``, ``Row.unix``) or ``None``
-       (``Row.optional*``, ``Row.time``). Numbers convert from any integer
+       (``Row.optional*``, an ``any``; ``Row.time``). Numbers convert from any integer
        or float kind, numeric text (NUMERIC arrives as text: ``"123.45"``)
        and big numbers; booleans from ``bool``, numbers and ``t`` / ``true``
        / ``yes`` / ``on`` / ``1`` (and their negatives); times from
@@ -1129,7 +1130,7 @@ class Row {
         return out
     }
 
-    static func time(row: dict[str, any], key: str) -> optional[DateTime] {
+    static func time(row: dict[str, any], key: str) -> DateTime {
         #- A date/time column as a ``DateTime`` in UTC (``inLocation`` for
            another zone), or ``None`` for NULL, a missing column or a value
            that is not a time. -#
@@ -1169,15 +1170,16 @@ class Row {
         return out
     }
 
-    static func optionalStr(row: dict[str, any], key: str) -> optional[str] {
-        #- ``Row.str``, or ``None`` for NULL or a missing column. -#
+    static func optionalStr(row: dict[str, any], key: str) -> any {
+        #- ``Row.str``, or ``None`` for NULL or a missing column (an ``any``:
+           ``Row.optionalStr(row, "x") ?? ""``). -#
         if Row.isNull(row, key) {
             return None
         }
         return Row.str(row, key)
     }
 
-    static func optionalInt(row: dict[str, any], key: str) -> optional[int] {
+    static func optionalInt(row: dict[str, any], key: str) -> any {
         #- ``Row.int``, or ``None`` for NULL, a missing column or a value
            that is not a number. -#
         value: any = row[key] if key in row else None
@@ -1192,7 +1194,7 @@ class Row {
         return out
     }
 
-    static func optionalFloat(row: dict[str, any], key: str) -> optional[float] {
+    static func optionalFloat(row: dict[str, any], key: str) -> any {
         #- ``Row.float``, or ``None`` for NULL, a missing column or a value
            that is not a number. -#
         value: any = row[key] if key in row else None
@@ -1207,7 +1209,7 @@ class Row {
         return out
     }
 
-    static func optionalBool(row: dict[str, any], key: str) -> optional[bool] {
+    static func optionalBool(row: dict[str, any], key: str) -> any {
         #- ``Row.bool``, or ``None`` for NULL, a missing column or a value
            that is not a boolean. -#
         value: any = row[key] if key in row else None

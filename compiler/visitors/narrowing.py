@@ -15,8 +15,10 @@ is lowered (the same registries a ``match`` binding uses)::
 The view is a hierarchy downcast through the most-derived object
 (``_lamDyn()`` / ``_lamIs_<T>()``, so overrides keep dispatching), a type
 assertion for ``any`` and interfaces (``lamJSONRaw(x)`` first for
-``json``), a dereference for an ``optional`` value type, or nothing at all
-when the Go type does not change (``optional[C]`` to ``C``). The right
+``json``). ``x != None`` (and the guard side of ``x == None``) on a class
+reference or an interface value binds nothing: it marks ``x`` non-``None``
+over the region, so member accesses on it skip the ``None`` check
+(``lamNN``). The right
 operand of ``and`` / ``or`` and the branches of a ternary bind the shadow
 inside a closure; the statements after an early-exit guard are wrapped in
 ``{ ... }``. A local the region assigns is not narrowed (the shadow would
@@ -72,8 +74,6 @@ class NarrowingLowerMixin:
         if isinstance(t, DictType):
             return "dict"
         if isinstance(t, GenericType):
-            if t.base in {"optional", "Option"}:
-                return "optional"
             if self._nr_class_known(t.base):
                 return "class"
             return "other"
@@ -100,8 +100,6 @@ class NarrowingLowerMixin:
     def _nr_class_of(self, t: Optional[Type]) -> str:
         if isinstance(t, NamedType) and self._nr_class_known(t.name):
             return t.name
-        if isinstance(t, GenericType) and t.base in {"optional", "Option"} and t.args:
-            return self._nr_class_of(t.args[0])
         if isinstance(t, GenericType) and self._nr_class_known(t.base):
             return t.base
         return ""
@@ -114,9 +112,7 @@ class NarrowingLowerMixin:
 
     def _nr_narrowed_type(self, current: Optional[Type], target) -> Optional[Type]:
         if target is narrowing.NOT_NONE:
-            if isinstance(current, GenericType) and current.base in {"optional", "Option"} and current.args:
-                return current.args[0]
-            return None
+            return None  # (``_nr_plan`` marks a reference non-``None``)
         results = [self._nr_narrow_one(current, alt) for alt in narrowing.type_alternatives(target)]
         if not results or any(r is None for r in results):
             return None
@@ -141,18 +137,6 @@ class NarrowingLowerMixin:
         if not name or name == "None":
             return None
         kind = self._nr_kind(current)
-        if kind == "optional":
-            inner = current.args[0] if current.args else None
-            if inner is None:
-                return None
-            inner_name = render_type(inner)
-            if name == inner_name or (name in _BUILTIN_TARGETS and render_type(_BUILTIN_TARGETS[name]) == inner_name):
-                return inner
-            inner_class = self._nr_class_of(inner)
-            if inner_class and self._nr_class_known(name) and not self._nr_generic(name) \
-                    and self._nr_strict_subclass(name, inner_class):
-                return NamedType(name)
-            return None
         is_user_type = self._nr_class_known(name) or name in self._interfaces
         if not is_user_type and name in {"int", "float", "str", "bool", "list", "dict"}:
             if kind == "dynamic":
@@ -207,10 +191,11 @@ class NarrowingLowerMixin:
             current = types.get(name)
             if current is None:
                 current = self._pm_subject_type(Tree("var", [Tree("name", [name])]))
-            if current is None and target is narrowing.NOT_NONE:
-                # ``for v in values`` over a ``list[optional[int]]``: the
-                # loop variable is only known by its Go type (``*int``).
-                current = self._nr_optional_from_go(self._var_go_types.get(go_name, "") or "")
+            if target is narrowing.NOT_NONE:
+                if self._nr_kind(current) in {"class", "interface"} or self._nr_nilable_go(go_name):
+                    # ``if u != None { u.name }``: no ``None`` check inside.
+                    plan.append((name, go_name, current, []))
+                continue
             narrowed = self._nr_narrowed_type(current, target)
             if narrowed is None or (current is not None and render_type(narrowed) == render_type(current)):
                 continue
@@ -223,19 +208,15 @@ class NarrowingLowerMixin:
             plan.append((name, go_name, narrowed, lines))
         return plan
 
-    def _nr_optional_from_go(self, go: str) -> Optional[Type]:
-        """``optional[T]`` for the Go pointer to a value type ``T`` (``*int``,
-        ``*string``, ``*LamHTML``, ``*[]T``, ...); ``None`` otherwise."""
-        if not go.startswith("*"):
-            return None
-        inner_go = go[1:]
-        if inner_go == "LamHTML":
-            inner: Optional[Type] = NamedType("html")
-        elif inner_go.startswith(("[]", "map[")) or inner_go in TYPE_MAP.values():
-            inner = self._pm_type_from_go(inner_go)
-        else:
-            return None
-        return GenericType("optional", (inner,)) if inner is not None else None
+    def _nr_nilable_go(self, go_name: str) -> bool:
+        """The local ``go_name`` is a class pointer or an interface value
+        (by its Go type)."""
+        go = (self._var_go_types.get(go_name, "") or "").strip()
+        if go.startswith("*") and go != "*Result":
+            return bool(self._hier_class_from_go_type(go)) or go[1:].split("[", 1)[0] in {
+                self._go_class_name(c) for c in self._class_names
+            }
+        return go in self._interface_go_names()
 
     def _nr_bind_lines(self, go_name: str, current: Optional[Type], narrowed: Type) -> Optional[List[str]]:
         """Go statements rebinding ``go_name`` as its narrowed view."""
@@ -243,16 +224,6 @@ class NarrowingLowerMixin:
         current_go = self._pm_go_type(current) if current is not None else "interface{}"
         narrowed_go = self._pm_go_type(narrowed)
         x = go_name
-        if kind == "optional":
-            if narrowed_go == current_go:
-                return []  # ``optional[C]`` -> ``C``: same Go pointer
-            if current_go == "*" + narrowed_go:
-                return [f"{x} := *{x}", f"_ = {x}"]
-            cls = narrowed.name if isinstance(narrowed, NamedType) else ""
-            if cls and self._hier_dynamic_target(cls):
-                inner = self._nr_class_of(current)
-                return [f"{x}, _ := {self._hier_downcast_go(x, inner, cls)}", f"_ = {x}"]
-            return None
         if isinstance(narrowed, NamedType) and self._nr_class_known(narrowed.name):
             cls = narrowed.name
             static = self._nr_class_of(current) if kind == "class" else ""
@@ -290,15 +261,23 @@ class NarrowingLowerMixin:
 
     @contextmanager
     def _nr_registered(self, plan: list):
-        """Type the narrowed names while the region is lowered."""
+        """Type the narrowed names while the region is lowered; every
+        narrowed name is non-``None`` there (a binding without statements
+        only marks a reference non-``None``)."""
         if not plan:
             yield
             return
-        saved = self._pm_register_bindings([(name, go, narrowed) for name, go, narrowed, _l in plan])
+        typed = [(name, go, narrowed) for name, go, narrowed, lines in plan if lines]
+        # (``isinstance(s, Square)`` holds: ``s`` is not ``None`` either)
+        nonnil = {go for _name, go, _narrowed, _lines in plan} - self._nonnil_names
+        saved = self._pm_register_bindings(typed) if typed else None
+        self._nonnil_names |= nonnil
         try:
             yield
         finally:
-            self._pm_restore_bindings(saved)
+            self._nonnil_names -= nonnil
+            if saved is not None:
+                self._pm_restore_bindings(saved)
 
     def _nr_emit_region(self, facts: Sequence, region: Sequence, emit_body) -> None:
         """Bind the shadows of ``facts`` and run ``emit_body`` with them."""
@@ -323,6 +302,8 @@ class NarrowingLowerMixin:
         finally:
             self.output_lines = outer
         body = self._nr_inline_binds(plan) + "".join(f"{line}; " for line in prologue)
+        if not body:
+            return expr  # (only non-``None`` marks)
         return f"func() {go_type} {{ {body}return {expr} }}()"
 
     # ─── Hooks ─────────────────────────────────────────────────
@@ -356,7 +337,8 @@ class NarrowingLowerMixin:
         parts = []
         for child, plan in zip(operands, plans):
             part = self._nr_closure_expr(plan, "bool", lambda child=child: self._expr_to_go(child))
-            if not plan and node.data == "and_test" and child.data in ("or_test", "test", "null_coalesce"):
+            closure = part.startswith("func() bool {") and any(lines for _n, _g, _t, lines in plan)
+            if not closure and node.data == "and_test" and child.data in ("or_test", "test", "null_coalesce"):
                 part = f"({part})"
             parts.append(part)
         return f" {op} ".join(parts)

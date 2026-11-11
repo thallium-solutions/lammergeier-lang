@@ -1,7 +1,7 @@
 # Cross-feature fixture (4.1.2): an order-pricing pipeline where `?`
 # results are used directly as operands everywhere: parsing with
 # `Result[int]` / `Result[float]`, an interface price source, a generic
-# lookup, an `optional` discount, comprehensions, ternaries, f-strings,
+# lookup, a discount that may be `None` (`?` then `??`), comprehensions, ternaries, f-strings,
 # `do/catch` and early returns on the first bad line.
 #
 # expect: order A: 2 x apple @ 1.5 = 3 (discount 0)
@@ -15,7 +15,7 @@ from lamerrors import Result, Error
 
 interface PriceSource {
     func price(self, item: str) -> Result[float]
-    func discount(self, item: str) -> Result[optional[int]]
+    func discount(self, item: str) -> Result[any]
 }
 
 class Catalog {
@@ -30,7 +30,7 @@ class Catalog {
         return Result.Ok(self.prices[item])
     }
 
-    func discount(self, item: str) -> Result[optional[int]] {
+    func discount(self, item: str) -> Result[any] {
         if item == "pear" {
             return Result.Ok(10)
         }

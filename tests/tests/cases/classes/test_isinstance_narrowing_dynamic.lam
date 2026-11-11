@@ -2,9 +2,8 @@
 # to the builtin type it is tested against (`int`, `float`, `str`, `bool`,
 # `list` as `list[any]`, `dict` as `dict[str, any]`), to a class (also a
 # class of a hierarchy, through the most-derived object) or to an
-# interface; an interface value narrows to a class implementing it; an
-# `optional[T]` narrows to `T` once `isinstance(x, None)` is ruled out
-# (or after `isinstance(x, T)`); a `json` value narrows to the scalar kind
+# interface; an interface value narrows to a class implementing it; a class
+# reference is tested with `isinstance(x, None)`; a `json` value narrows to the scalar kind
 # it holds (`isinstance` tests the JSON value).
 #
 # expect: int: 42 43
@@ -19,9 +18,6 @@
 # expect: iface from any: 7
 # expect: optional guard: 6 9
 # expect: optional none: none
-# expect: optional value: 15
-# expect: optional value none: 0
-# expect: optional isinstance: 4
 # expect: json: 7 8 true
 # expect: json str: hi!
 # expect: json kinds: true true true true false
@@ -83,14 +79,14 @@ func area2(a: HasArea) -> int {
     return a.area()
 }
 
-func boxSize(b: optional[Box]) -> int {
+func boxSize(b: Box) -> int {
     if isinstance(b, None) {
         return -1
     }
     return b.size
 }
 
-func maybeBox(make: bool) -> optional[Box] {
+func maybeBox(make: bool) -> Box {
     if make {
         return Box(6)
     }
@@ -162,31 +158,19 @@ func main() {
         print(f"iface from any: {area2(q)}")
     }
 
-    box: optional[Box] = maybeBox(true)
+    box: Box = maybeBox(true)
     if isinstance(box, None) {
         print("unreachable")
         return
     }
     print(f"optional guard: {box.size} {boxSize(Box(9))}")
-    none: optional[Box] = maybeBox(false)
+    none: Box = maybeBox(false)
     if not isinstance(none, None) {
         print("unreachable")
     } else {
         print("optional none: none")
     }
 
-    count: optional[int] = 5
-    if not isinstance(count, None) {
-        total: int = count * 3
-        print(f"optional value: {total}")
-    }
-    missing: optional[int] = None
-    got: int = missing * 2 if not isinstance(missing, None) else 0
-    print(f"optional value none: {got}")
-    four: optional[int] = 4
-    if isinstance(four, int) {
-        print(f"optional isinstance: {four}")
-    }
 
     j: json = {"n": 7, "m": 8, "ok": true, "s": "hi", "items": [1], "obj": {}}
     n7: json = j.n

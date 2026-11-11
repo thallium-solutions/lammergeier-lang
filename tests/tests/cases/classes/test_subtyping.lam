@@ -96,7 +96,7 @@ class ColoredSquare(Square) {
 class Holder {
     func init(self, shape: Shape) {
         self.shape: Shape = shape
-        self.maybe: optional[Shape] = None
+        self.maybe: Shape = None
     }
 }
 
@@ -111,7 +111,7 @@ func pick(big: bool) -> Shape {
     return Circle(1)
 }
 
-func find(name: str) -> optional[Shape] {
+func find(name: str) -> Shape {
     if name == "sq" {
         return Square(2)
     }
@@ -145,7 +145,7 @@ func main() {
     h.shape = Circle(1)
     print(f"field reassign: {h.shape.label()} {h.shape.area()}")
 
-    o: optional[Shape] = Square(1)
+    o: Shape = Square(1)
     if o != None {
         print(f"optional: {o.label()} {o.area()}")
     }
@@ -186,7 +186,7 @@ func main() {
     print(f"method on base field: {s.describe()}")
 
     print(f"isinstance: {isinstance(s, Square)} {isinstance(s, Shape)} {isinstance(s, Circle)} {isinstance(sq, Shape)}")
-    nothing: optional[Shape] = None
+    nothing: Shape = None
     print(f"isinstance none: {isinstance(nothing, Square)}")
 
     cs: ColoredSquare = ColoredSquare(7, "red")

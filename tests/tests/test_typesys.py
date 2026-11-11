@@ -73,9 +73,6 @@ def test_parse_text_function_and_union_types() -> None:
 
 
 def test_go_lowering_preserves_current_generic_rules() -> None:
-    assert type_to_go(parse_type("optional[int]")) == "*int"
-    assert type_to_go(parse_type("optional[Document]")) == "*Document"
-    assert type_to_go(parse_type("Option[Document]")) == "*Document"
     assert type_to_go(parse_type("chan[str]")) == "chan string"
     assert type_to_go(parse_type("tuple[int, str]")) == "[]interface{}"
     assert type_to_go(parse_type("Box[int]")) == "interface{}"

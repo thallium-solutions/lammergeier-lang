@@ -27,5 +27,5 @@ func resolved() -> Result[str] {
 func main() {
     print(resolved().unwrap())
     missing: User = None
-    print(missing?.name ?? "fallback")
+    print(missing.name if missing != None else "fallback")
 }

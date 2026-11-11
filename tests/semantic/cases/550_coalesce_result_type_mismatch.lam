@@ -1,25 +1,34 @@
 # expect-error: cannot assign `int` to `str` variable `q`
 # expect-error: cannot assign `int` to `str` variable `t`
 # expect-error: cannot assign `str` to `int` variable `n`
-# Regression (4.1.2): `find(1) ?? 0` over an `optional[int]` is an `int`
+# Regression (4.1.2): `find(1)? ?? 0` over a `Result[int]` is an `int`
 # (directly or through an unannotated local), so assigning it to a `str`
-# is a Lam error instead of a `go build` failure.
+# is a Lam error instead of a `go build` failure. (after 4.11: the payload of
+# `?` replaced the removed `optional[int]` result.)
 
-func find(n: int) -> optional[int] {
+from lamerrors import Result
+
+func find(n: int) -> Result[int] {
     if n > 0 {
-        return n
+        return Result.Ok(n)
     }
-    return None
+    nothing: any = None
+    return Result.Ok(nothing)
 }
 
-func name() -> optional[str] {
-    return None
+func name() -> Result[str] {
+    return Result.Ok("ada")
+}
+
+func run() -> Result[int] {
+    q: str = find(1)? ?? 0
+    w = find(2)? ?? 0
+    t: str = w
+    n: int = name()? ?? "x"
+    print(q, t, n)
+    return Result.Ok(0)
 }
 
 func main() {
-    q: str = find(1) ?? 0
-    w = find(2) ?? 0
-    t: str = w
-    n: int = name() ?? "x"
-    print(q, t, n)
+    _ = run()
 }

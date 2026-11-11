@@ -6,14 +6,14 @@
 # a subclass instance (upcast), and a checked `_lamIs_<C>` downcast of a
 # base-typed value (nil stays nil). Casts are Go primary expressions, so
 # `row["count"] as int + 1` needs no parentheses.
-# expect-go: var a int = interface{}(row["count"]).(int) + 1
-# expect-go: var b float64 = func(v interface{}) float64 { if n, ok := v.(int); ok { return float64(n) }; return v.(float64) }(row["ratio"]) * 2.0
-# expect-go: func(v interface{}) *User { if v == nil { return nil }; return v.(*User) }(Lookup("user")).Name
+# expect-go: var a int = lamAs[int](row["count"], "an int") + 1
+# expect-go: var b float64 = func(v interface{}) float64 { if n, ok := v.(int); ok { return float64(n) }; return lamAs[float64](v, "a float") }(row["ratio"]) * 2.0
+# expect-go: lamNN(lamAsNil[*User](Lookup("user")), "name").Name
 # expect-go: src := v.([]interface{}); out := make([]string, len(src))
 # expect-go: var d float64 = float64(n) / 2.0
 # expect-go: var e int = (n + 1) * 2
 # expect-go: Describe(sq._lamUp_Shape())
-# expect-go: func(v interface{}) *Square { if v == nil { return nil }; return v.(interface{ _lamIs_Square() *Square })._lamIs_Square() }(s._lamDyn()).Side
+# expect-go: lamNN(func(v interface{}) *Square { if v == nil { return nil }; return v.(interface{ _lamIs_Square() *Square })._lamIs_Square() }(s._lamDyn()), "side").Side
 # expect-go: var g interface{} = n
 
 class User {

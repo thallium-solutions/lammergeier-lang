@@ -1,5 +1,4 @@
 # expect-error: cannot assign `list[any]` to `dict[str, int]` variable `counts`
-# expect-error: cannot assign `list[any]` to `optional[dict[str, int]]` variable `maybe`
 # expect-error: cannot assign `list[any]` to `Item` variable `self.item`
 # expect-error: argument `name` to `label` has type `list[any]`, expected `str`
 # expect-error: argument `tags` to `tagged` has type `list[any]`, expected `set[str]`
@@ -54,8 +53,7 @@ func firstOf[T](xs: list[T] = {}) -> int { return len(xs) }
 
 func main() {
     counts: dict[str, int] = []
-    maybe: optional[dict[str, int]] = []
-    print(counts, maybe, Holder().item.name)
+    print(counts, Holder().item.name)
     print(label([]), tagged([]), Box({}).items, count({}), size([]))
     print(table(), one().name)
     byName: dict[str, Item] = {}

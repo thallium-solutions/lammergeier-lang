@@ -2,7 +2,7 @@
 # the start of the region where the test holds (a Go block scope, so the
 # outer variable keeps its type): a hierarchy downcast through the
 # most-derived object for a base-typed value, a type assertion for `any`
-# and interfaces, a dereference for `optional[int]`. The right operand of
+# and interfaces. The right operand of
 # `and` and the branches of a ternary bind it in a closure; an early-exit
 # guard wraps the rest of the block in `{ ... }`. Calls on the narrowed
 # value keep dispatching through the virtual wrapper.
@@ -10,7 +10,6 @@
 # expect-go: _ = x
 # expect-go: fmt.Println(x.Side, x._lamVirt_Area())
 # expect-go: v, _ := interface{}(v).(int)
-# expect-go: o := *o
 # expect-go: && func() bool { s, _ := func(v interface{}) (*Square, bool)
 # expect-go: return s.Side > 2 }()
 
@@ -55,10 +54,6 @@ func main() {
     v: any = 3
     if isinstance(v, int) {
         print(v + 1)
-    }
-    o: optional[int] = 4
-    if not isinstance(o, None) {
-        print(o + 1)
     }
     print(big(BigSquare(1)), side(Square(2)))
 }

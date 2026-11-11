@@ -1,0 +1,184 @@
+# Integration (after 4.11, no optional type): a small catalog where lookups
+# return a class reference that may be `None` -- a generic repository, an
+# interface, a subclass, lambdas and comprehensions over the results,
+# `Result` loaders whose payload may be `None` (`?` then `??`), `do` /
+# `catch` handling the `Err` a `?` propagates while the `AttributeError` of
+# a `None` member raised in a callee goes through it to the enclosing `try`
+# / `catch AttributeError`, markup with `None` attributes and
+# `None` fragments, and narrowing by `!= None` in loops and guards.
+#
+# expect: found: Lamp 30
+# expect: missing: true
+# expect: names: Lamp, Desk, -
+# expect: priced: 30 120 0
+# expect: in stock: Lamp
+# expect: owner: ada / nobody
+# expect: load: Lamp / unknown / err: Missing
+# expect: total: 150
+# expect: do: Missing
+# expect: through do: AttributeError: None has no attribute 'price'
+# expect: try: None has no attribute 'owner'
+# expect: card: <li class="sale">Lamp</li>
+# expect: card: <li>Desk</li>
+# expect: card: <li>-</li>
+# expect: sale: Desk
+# expect: done
+
+from lamerrors import Result, Error
+
+interface Priced {
+    func price(self) -> int
+}
+
+class Owner {
+    name: str = ""
+
+    func init(self, name: str) {
+        self.name = name
+    }
+}
+
+class Product {
+    name: str = ""
+    cents: int = 0
+    stock: int = 0
+    owner: Owner = None
+
+    func init(self, name: str, cents: int, stock: int) {
+        self.name = name
+        self.cents = cents
+        self.stock = stock
+    }
+
+    func price(self) -> int {
+        return self.cents
+    }
+
+    func onSale(self) -> bool {
+        return false
+    }
+}
+
+class SaleProduct(Product) {
+    func onSale(self) -> bool {
+        return true
+    }
+}
+
+class Repo[T] {
+    items: dict[str, T] = {}
+
+    func put(self, key: str, item: T) {
+        self.items[key] = item
+    }
+
+    func find(self, key: str) -> T {
+        if key in self.items {
+            return self.items[key]
+        }
+        return None
+    }
+}
+
+func priceOf(p: Priced) -> int {
+    if p == None {
+        return 0
+    }
+    return p.price()
+}
+
+func ownerName(p: Product) -> str {
+    if p == None or p.owner == None {
+        return "nobody"
+    }
+    return p.owner.name
+}
+
+func load(repo: Repo[Product], key: str) -> Result[Product] {
+    if key == "boom" {
+        return Result.Err(Error("Missing", "no such key"))
+    }
+    return Result.Ok(repo.find(key))
+}
+
+func describe(repo: Repo[Product], key: str) -> Result[str] {
+    p: Product = load(repo, key)?
+    if p == None {
+        return Result.Ok("unknown")
+    }
+    return Result.Ok(p.name)
+}
+
+func unitPrice(p: Product) -> int {
+    return p.price()
+}
+
+func card(p: Product) -> html {
+    cls = "sale" if p != None and p.onSale() else None
+    name: str = p.name if p != None else "-"
+    return <><li class=${cls}>${name}</li></>
+}
+
+func main() {
+    repo: Repo[Product] = Repo[Product]()
+    lamp: Product = SaleProduct("Lamp", 30, 2)
+    lamp.owner = Owner("ada")
+    repo.put("lamp", lamp)
+    repo.put("desk", Product("Desk", 120, 0))
+    found: Product = repo.find("lamp")
+    if found != None {
+        print(f"found: {found.name} {found.price()}")
+    }
+    print(f"missing: {repo.find("chair") == None}")
+    keys: list[str] = ["lamp", "desk", "chair"]
+    products: list[Product] = [repo.find(k) for k in keys]
+    print("names: " + ", ".join([p.name if p != None else "-" for p in products]))
+    prices: list[int] = products.map(lambda (p: Product) -> int: priceOf(p))
+    print(f"priced: {prices[0]} {prices[1]} {prices[2]}")
+    stocked = [p.name for p in products if p != None and p.stock > 0]
+    print(f"in stock: {", ".join(stocked)}")
+    print(f"owner: {ownerName(found)} / {ownerName(repo.find("desk"))}")
+    first: str = describe(repo, "lamp").unwrap()
+    second: str = describe(repo, "chair").unwrap()
+    failed = describe(repo, "boom")
+    print(f"load: {first} / {second} / err: {failed.error.kind}")
+    total: int = 0
+    for p in products {
+        if p == None {
+            continue
+        }
+        total += p.price()
+    }
+    print(f"total: {total}")
+    try {
+        do {
+            d: str = describe(repo, "boom")?
+            print(d)
+        } catch err {
+            print(f"do: {err.kind}")
+        }
+        do {
+            sum: int = 0
+            for p in products {
+                sum += unitPrice(p)
+            }
+            print(sum)
+        } catch err {
+            print(f"unexpected do catch: {err}")
+        }
+    } catch AttributeError as e {
+        print(f"through do: {e}")
+    }
+    try {
+        print(repo.find("chair").owner.name)
+    } catch AttributeError as e {
+        print(f"try: {str(e).replace("AttributeError: ", "")}")
+    }
+    for p in products {
+        print(f"card: {card(p)}")
+    }
+    sale: Product = repo.find("desk")
+    best = (repo.find("sofa") ?? sale).name
+    print(f"sale: {best}")
+    print("done")
+}

@@ -5,10 +5,9 @@
 # through strconv); a slot hinted str whose type is only inferred (an
 # unannotated local, a lambda parameter) goes through ``lamSlotText`` (a
 # string as is, fmt's %v of anything else), defined once in the main file;
-# any other slot (float, optional, ``?.`` call, generic, ``any``) keeps
-# fmt.Sprintf. ``x = obj?.name()`` is an optional local (a ``*string``: the
-# checker types it ``optional[str]``; it used to be an interface{}), the
-# receiver evaluated once; the slot shows the value or ``<nil>``.
+# any other slot (float, generic, ``any``) keeps fmt.Sprintf. ``x =
+# obj.name() if obj != None else None`` is an ``any`` (a ``str`` cannot be
+# ``None``); the slot shows the value or ``<nil>``.
 #
 # expect-go: return entry + "_" + size + ".avif"
 # expect-go: return ImageKeys_base + "/" + ImageKeys_key(entry, size)
@@ -22,8 +21,8 @@
 # expect-go: var empty string = ""
 # expect-go: var alone string = name
 # expect-go: var converted string = strconv.Itoa(len(words)) + name
-# expect-go: got := func() *string { if __lamR := svc; __lamR != nil { __lamV := __lamR.Title(); return &__lamV }; return nil }()
-# expect-go: var shown string = fmt.Sprintf("%v!", func() interface{} { if __lamP := got; __lamP != nil { return *__lamP }; return nil }())
+# expect-go: got := func() interface{} { if svc != nil { return svc.Title() }; return nil }()
+# expect-go: var shown string = fmt.Sprintf("%v!", got)
 # expect-go: func lamSlotText[T any](v T) string {
 
 const PREFIX: str = "lam"
@@ -75,7 +74,7 @@ func main() {
     alone: str = f"{name}"
     converted: str = f"{str(len(words))}{str(name)}"
     svc: Person = Person("Bob", 3, true)
-    got = svc?.title()
+    got = svc.title() if svc != None else None
     shown: str = f"{got}!"
     print(ImageKeys.url("e", "s"), svc.describe(), greeting, picked, fallback, mixed, unicode, plain, empty, alone, converted, shown)
 }

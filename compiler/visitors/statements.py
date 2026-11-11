@@ -380,6 +380,8 @@ class StatementVisitorMixin:
             self._declare_var(target_str)
 
     _GO_SELECTOR_RE = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*")
+    # A field of a receiver that may be ``None`` (``lamNN(f, "items").Items``).
+    _GO_FIELD_TARGET_RE = re.compile(r"(lamNN\([A-Za-z_][\w.]*, \"\w+\"\)|[A-Za-z_]\w*)(\.[A-Za-z_]\w*)+")
 
     def _emit_generator_field_store(self, target_node, value_node, go_type: str = "", expected=None) -> bool:
         """``obj.f = <generator>`` into a field of a class instance:
@@ -401,7 +403,7 @@ class StatementVisitorMixin:
             return False
         with self._scoped(_index_target=True):
             target_str = self._assign_target_to_go(target_node)
-        if not self._GO_SELECTOR_RE.fullmatch(target_str):
+        if not self._GO_FIELD_TARGET_RE.fullmatch(target_str):
             return False
         with self._scoped(_propagate_cast_hint=go_type, _expected_value_lam=expected):
             value_str = self._typed_value_to_go(value_node, go_type)
@@ -411,10 +413,7 @@ class StatementVisitorMixin:
     def _assign_target_to_go(self, target) -> str:
         """Go name of an assignment target. A plain name is a variable even
         when a function of the program has that name (``one: Server = ...``
-        next to ``func one()``): its declaration and its uses must agree.
-        A field (``shelf.last``) and an indexed collection (``shelf.slots``
-        in ``shelf.slots[0] = x``) are the stored values, never the
-        converted copy of an ``optional[T]`` of generic code."""
+        next to ``func one()``): its declaration and its uses must agree."""
         if isinstance(target, Tree) and target.data == "var" and target.children:
             name = self._get_name(target.children[0])
             go_name = self._go_binding_name(name)
@@ -423,37 +422,7 @@ class StatementVisitorMixin:
                 and name not in self._link_const_go_names and not self._parent_alias_expr(name)
             ):
                 return go_name
-        raw_nodes = self.__dict__.setdefault("_optional_raw_nodes", set())
-        stored = [target]
-        if isinstance(target, Tree) and target.data == "getitem" and target.children:
-            stored.append(target.children[0])
-        added = [id(n) for n in stored if isinstance(n, Tree) and id(n) not in raw_nodes]
-        raw_nodes.update(added)
-        try:
-            return self._expr_to_go(target)
-        finally:
-            raw_nodes.difference_update(added)
-
-    def _raw_target_go_type(self, target) -> str:
-        """The Go type stored in ``target`` when it differs from its value's
-        (``**User`` for a generic class field ``optional[T]`` of ``T =
-        User``, the element of such a list / dict), else ``""``."""
-        if not (isinstance(target, Tree) and target.data in {"getattr", "getitem"}):
-            return ""
-        if target.data == "getitem":
-            collection = target.children[0] if target.children else None
-            raw = self._expr_go_type_hint_raw(collection) if isinstance(collection, Tree) else ""
-            canonical = self._canonical_optional_go(raw)
-            if not raw or raw == canonical:
-                return ""
-            if raw.startswith("[]"):
-                return raw[2:]
-            if raw.startswith("map["):
-                _key, value = self._split_go_map_type(raw)
-                return value
-            return ""
-        raw = self._expr_go_type_hint_raw(target)
-        return raw if raw and raw != self._canonical_optional_go(raw) else ""
+        return self._expr_to_go(target)
 
     def _visit_assign(self, node: Tree):
         parts = [c for c in node.children if c is not None]
@@ -498,13 +467,6 @@ class StatementVisitorMixin:
                 )
             with self._scoped(_index_target=True):
                 target_str = self._assign_target_to_go(target_node)
-            stored_type = self._raw_target_go_type(target_node) if len(parts) == 2 else ""
-            if stored_type:
-                # ``shelf.last = user`` / ``shelf.slots[0] = None`` into
-                # generic code's ``optional[T]`` with ``T`` a class: the
-                # value as the program's ``*User``, boxed to ``**User``.
-                self._emit(f"{target_str} = {self._typed_value_to_go(value_node, stored_type)}")
-                return
             self._record_inferred_target_type(target_str, value_node)
             if self._emit_semantic_typed_assign(node, target_node, target_str, value_node):
                 return
@@ -528,6 +490,13 @@ class StatementVisitorMixin:
                         target_go_type = common
                         self._var_go_types[target_str] = common
                         self._var_types[target_str] = common_class
+                    else:
+                        none_type = self._none_ternary_go_type(value_node)
+                        if none_type:
+                            # ``role = "alert" if c else None``: a value type
+                            # cannot be ``None``, the variable is an ``any``.
+                            target_go_type = none_type
+                            self._var_go_types[target_str] = none_type
                 if target_go_type:
                     true_val = self._typed_value_to_go(value_node.children[0], target_go_type)
                     false_val = self._typed_value_to_go(value_node.children[2], target_go_type)
@@ -541,7 +510,10 @@ class StatementVisitorMixin:
                     and "[" not in target_str
                     and not self._is_static_var_go_name(target_str)
                 ):
-                    self._emit(f"var {target_str} = {true_val}")
+                    if target_go_type and self._var_go_types.get(target_str) == target_go_type:
+                        self._emit(f"var {target_str} {target_go_type} = {true_val}")
+                    else:
+                        self._emit(f"var {target_str} = {true_val}")
                     self._declare_var(target_str)
                     self._emit(f"if !({cond}) {{")
                     self.indent += 1
@@ -748,17 +720,6 @@ class StatementVisitorMixin:
                     self._var_result_payloads[target_str] = payload
             return False
         if self._contains_async_handle_call(value_node):
-            return False
-        if (
-            isinstance(value_node, Tree) and value_node.data == "funccall" and value_node.children
-            and isinstance(value_node.children[0], Tree) and value_node.children[0].data == "getattr_safe"
-            and (self._expr_go_type_hint(value_node) or "interface{}") == "interface{}"
-        ):
-            # ``x = obj?.name()`` on a receiver of unknown type: an
-            # ``interface{}`` holding the result or ``None``; declaring it
-            # with the checker's ``optional[str]`` (``*string``) would
-            # assert the ``interface{}`` to it. A typed receiver gives the
-            # optional itself (``_safe_call_plan``).
             return False
         type_node, go_type = inferred
         own = self._expr_go_type_hint(value_node) or self._infer_type_from_value(value_node) or ""
@@ -2604,6 +2565,8 @@ class StatementVisitorMixin:
         self._emit("__lamExcKind := func(v interface{}) string {")
         self.indent += 1
         self._emit("switch x := v.(type) {")
+        self._emit("case interface{ lamExcKind() string }:")
+        self._emit("\treturn x.lamExcKind()")
         self._emit("case string:")
         self._emit("\tif i := strings.IndexByte(x, ':'); i >= 0 { return x[:i] }")
         self._emit("\treturn x")

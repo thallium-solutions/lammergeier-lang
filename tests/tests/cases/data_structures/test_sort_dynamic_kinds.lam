@@ -1,7 +1,7 @@
 # Regression (4.2.1): `sorted()`, `.sort()` and `min` / `max` of a list
 # whose element type is not an ordered Go type (`list[any]`, `list[json]`,
-# a type parameter, `list[optional[int]]`) compared the values' text
-# (`[10, 9]` sorted as `[10 9]`, optionals by address) or did not build
+# a type parameter) compared the values' text
+# (`[10, 9]` sorted as `[10 9]`) or did not build
 # (`min(xs)` on a `list[any]`). They compare by kind at run time: numbers
 # numerically (ints and floats mixed), strings by bytes, false < true, and
 # values of different kinds in the order None < bool < number < str <
@@ -16,7 +16,7 @@
 # expect: json-any=[-3 1.5 9 10 100]
 # expect: json=[9 10 100] [9 10 100] min=9 max=100
 # expect: minmax=1 100 2.5 b
-# expect: optional=[-1 9 10]
+# expect: with-none=[-1 9 10]
 # expect: big=[-5 99999999999 100000000000]
 # expect: dict=[9 10 100]
 # expect: empty=[] caught=true
@@ -59,8 +59,8 @@ func main() {
     js: list[json] = Json.getList(Json.decode("{\"k\": [10, 9, 100]}").unwrap(), "k")
     print(f"json={sorted(js)} {js.sort()} min={min(js)} max={max(js)}")
     print(f"minmax={min(a)} {max(a)} {min(scores())} {max(mixed)}")
-    opt: list[optional[int]] = [10, None, 9]
-    print(f"optional={[x ?? -1 for x in sorted(opt)]}")
+    opt: list[any] = [10, None, 9]
+    print(f"with-none={[x ?? -1 for x in sorted(opt)]}")
     big: list[any] = [100000000000, 99999999999, -5]
     print(f"big={sorted(big)}")
     counts: dict[str, any] = {"a": 10, "b": 9, "c": 100}

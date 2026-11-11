@@ -5,7 +5,7 @@
 # ``parseInt(s)?`` in ``n: int = parseInt(s)?`` becomes:
 #   __q1 := ParseInt(s)
 #   if !__q1.Ok() { return __q1 }
-#   var n int = __q1.Value.(int)
+#   var n int = lamAs[int](__q1.Value, "an int")
 #
 # Multiple ``?`` in one function get successive ``__q1``, ``__q2``, …
 # names. Untyped contexts (``return`` of a Result, function args of
@@ -13,7 +13,7 @@
 
 # expect-go: __q1 := ParseInt(s)
 # expect-go: if !__q1.Ok() { return __q1 }
-# expect-go: var n int = __q1.Value.(int)
+# expect-go: var n int = lamAs[int](__q1.Value, "an int")
 # expect-go: __q2 := ParseInt(a)
 # expect-go: __q3 := ParseInt(b)
 

@@ -1,5 +1,5 @@
 # f-string slots whose ``str`` type is only inferred (unannotated locals,
-# ``?.`` results, ``optional[str]``, generic ``T``, lambda results,
+# ternaries mixing a ``str`` and ``None`` (an ``any``), generic ``T``, lambda results,
 # ``any`` values) and slots with side effects: the text is the one fmt's
 # ``%v`` gave, each slot evaluated once, calls left to right. Covers
 # f-strings in defaults, consts, class fields, lambdas, generators and
@@ -49,9 +49,9 @@ class Counter {
 }
 
 class Person {
-    func init(self, name: str, nick: optional[str]) {
+    func init(self, name: str, nick: any) {
         self.name: str = name
-        self.nick: optional[str] = nick
+        self.nick: any = nick
     }
 }
 
@@ -82,10 +82,10 @@ func main() {
     joined = f"{a}-b"
     print(f"{b} | {joined}{'!'}")
     s: Svc = Svc(1)
-    m: optional[Svc] = None
-    got = s?.name()
-    missing = m?.name()
-    print(f"{got} {missing} | {s?.name()} {m?.name()}")
+    m: Svc = None
+    got = s.name() if s != None else None
+    missing = m.name() if m != None else None
+    print(f"{got} {missing} | {s.name() if s != None else None} {m.name() if m != None else None}")
     print(f"{missing ?? 'dflt'} {got ?? 'dflt'}")
     p: Person = Person("Ada", None)
     print(f"{p.name} {p.nick}")

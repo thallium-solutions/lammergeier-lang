@@ -35,7 +35,7 @@ class BigBlob(Blob) {
 class Holder {
     func init(self, shape: Shape) {
         self.shape: Shape = shape
-        self.maybe: optional[Shape] = None
+        self.maybe: Shape = None
     }
 }
 
@@ -50,7 +50,7 @@ func pick(flag: bool) -> Shape {
     return Blob("blob")
 }
 
-func find(flag: bool) -> optional[Shape] {
+func find(flag: bool) -> Shape {
     if flag {
         return Square(1)
     }

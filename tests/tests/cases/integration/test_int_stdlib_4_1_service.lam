@@ -39,7 +39,7 @@ class Invoice {
         self.id: int = Row.int(row, "id")
         self.customer: str = Row.str(row, "customer")
         self.amount: float = Row.float(row, "amount")
-        self.issued: optional[DateTime] = Row.time(row, "issued")
+        self.issued: DateTime = Row.time(row, "issued")
         self.tags: list[str] = Row.strList(row, "tags")
         self.paid: bool = Row.bool(row, "paid")
     }

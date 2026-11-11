@@ -1,8 +1,8 @@
 # Stress (4.1.2): a pricing report composing typed `??` results and
 # implicit `list[T]` / `dict[str, T]` -> `list[any]` / `dict[str, any]`
 # widening with interfaces, inheritance, generics, lambdas,
-# comprehensions, `Result` / `?`, `do/catch`, `match`, optional fields
-# and f-strings.
+# comprehensions, `Result` / `?`, `do/catch`, `match`, fields that may be
+# `None` (`any`; After 4.11: they were optionals) and f-strings.
 #
 # expect: prices: 15 4.5 9
 # expect: labels: [BOOK pen mug]
@@ -25,16 +25,16 @@ class Item {
     func init(self, name: str, cents: int) {
         self.name: str = name
         self.cents: int = cents
-        self.discount: optional[float] = None
-        self.tags: optional[list[str]] = None
-        self.stock: optional[int] = None
+        self.discount: any = None
+        self.tags: list[str] = []
+        self.stock: any = None
     }
 
     func price(self) -> float {
         return self.cents / 100
     }
 
-    func label(self) -> optional[str] {
+    func label(self) -> any {
         return None
     }
 }
@@ -44,12 +44,12 @@ class Featured(Item) {
         base.init(name, cents)
     }
 
-    func label(self) -> optional[str] {
+    func label(self) -> any {
         return self.name.toUpper()
     }
 }
 
-func cheapest[T](xs: list[T], key: func(T) -> float) -> optional[T] {
+func cheapest[T](xs: list[T], key: func(T) -> float) -> T {
     if len(xs) == 0 {
         return None
     }
@@ -71,7 +71,7 @@ func summary(meta: dict[str, any]) -> str {
     return f"{meta['count']} items, {meta['tagged']} tagged"
 }
 
-func stockOf(item: Item) -> Result[optional[int]] {
+func stockOf(item: Item) -> Result[any] {
     if item.name == "ghost" {
         return Result.Err(f"no stock for {item.name}")
     }
@@ -80,7 +80,7 @@ func stockOf(item: Item) -> Result[optional[int]] {
 
 func reserve(item: Item) -> Result[int] {
     do {
-        left = stockOf(item)? ?? 10
+        left: int = stockOf(item)? ?? 10
         return Result.Ok(left - 1)
     } catch e {
         return Result.Err(e)
@@ -118,14 +118,14 @@ func main() {
     print(f"prices: {prices[0]} {prices[1]} {prices[2]}")
     labels = [(i.label() ?? i.name) for i in items]
     print(f"labels: {labels}")
-    rate: func(Item) -> float = lambda i: i.price() * (1 - (i.discount ?? 0.1))
+    rate: func(Item) -> float = lambda i: i.price() * (1 - (i.discount ?? 0.1) as float)
     print("discounted:", rate(items[0]), rate(pen), rate(mug))
 
     names: list[str] = [i.name for i in items]
     audited: list[any] = names
     audited.append(len(names))
     print("audit:", audit(audited))
-    counts: dict[str, int] = {"count": len(items), "tagged": len([i for i in items if (i.tags ?? []) != []])}
+    counts: dict[str, int] = {"count": len(items), "tagged": len([i for i in items if i.tags != []])}
     print("meta:", summary(counts))
 
     tally: dict[str, int] = {}
@@ -135,8 +135,8 @@ func main() {
     }
     print(f"buckets: cheap={tally['cheap']} mid={tally['mid']} dear={tally['dear']}")
 
-    firstTag = ((pen.tags ?? ["none"])[0]).toUpper()
-    print(f"first tag: {firstTag} / {(book.tags ?? ['none'])[0]}")
+    firstTag = (pen.tags[0] if len(pen.tags) > 0 else "none").toUpper()
+    print(f"first tag: {firstTag} / {book.tags[0] if len(book.tags) > 0 else 'none'}")
 
     rows: list[any] = prices
     low = cheapest(items, lambda i: i.price()) ?? book

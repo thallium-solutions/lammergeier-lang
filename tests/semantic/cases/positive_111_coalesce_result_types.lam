@@ -1,43 +1,44 @@
 # expect-pass
-# `??` results are typed by the optional's payload: int results widen into
-# floats, chains and `?` compose, and an optional fallback keeps the
-# optional type.
+# `??` results are typed: a `Result` payload through `?` has the payload's
+# type (an int widens into a float fallback), chains compose, and a class
+# reference with a fallback of its class is the class. (after 4.11: the removed
+# `optional[int]` results became `Result[int]` payloads.)
 from lamerrors import Result
 
 class User {
     func init(self, name: str) {
         self.name: str = name
-        self.age: optional[int] = None
+        self.age: int = 0
     }
 }
 
-func find(n: int) -> optional[int] {
+func find(n: int) -> Result[int] {
     if n > 0 {
-        return n
+        return Result.Ok(n)
     }
-    return None
+    nothing: any = None
+    return Result.Ok(nothing)
 }
 
-func lookup() -> optional[User] {
+func lookup() -> User {
     return None
-}
-
-func load() -> Result[optional[int]] {
-    return Result.Ok(find(1))
 }
 
 func ratio() -> Result[float] {
-    w = load()? ?? 0
+    w = find(1)? ?? 0
     return Result.Ok(1.5 * (100 - w))
 }
 
+func values() -> Result[float] {
+    w = find(4)? ?? 0
+    x: float = find(1)? ?? 2
+    y = find(0)? ?? 3
+    return Result.Ok(1.5 * (100 - w) + x + float(y + 1))
+}
+
 func main() {
-    w = find(4) ?? 0
-    x: float = find(1) ?? 2
-    y = find(1) ?? find(2) ?? 3
-    z: optional[int] = find(1) ?? find(2)
     u = lookup() ?? User("x")
-    a: int = u.age ?? 0
+    a: int = u.age
     s: str = (lookup() ?? u).name
-    print(1.5 * (100 - w), x, y + 1, z, a, s, ratio().unwrap())
+    print(a, s, ratio().unwrap(), values().unwrap())
 }

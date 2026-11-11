@@ -6,7 +6,7 @@
 # expect-go: func (s *Square) _lamUp_Shape() *Shape { if s == nil { return nil }; return s.Shape }
 # expect-go: func (s *Square) _lamIs_Square() *Square { return s }
 # expect-go: var s *Shape = sq._lamUp_Shape()
-# expect-go: return s._lamVirt_Area() + s.Base()
+# expect-go: return lamNN(s, "area")._lamVirt_Area() + lamNN(s, "base").Base()
 # expect-go: Total([]*Shape{NewSquare(2)._lamUp_Shape(), NewShape()})
 # expect-go: _, ok := s._lamDyn().(interface{ _lamIs_Square() *Square }); return ok
 # expect-go: c.Add(1)

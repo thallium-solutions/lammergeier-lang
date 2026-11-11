@@ -1,0 +1,38 @@
+# expect-error: line 22: error[type]: `optional[str]` was removed: a `str` cannot be `None`; return a `Result[str]` (an error when there is no value), use a default value, or `any`
+# expect-error: line 23: error[type]: `optional[int]` was removed: an `int` cannot be `None`; return a `Result[int]`
+# expect-error: line 24: error[type]: `Option[float]` was removed: a `float` cannot be `None`
+# expect-error: line 25: error[type]: `optional[bool]` was removed: a `bool` cannot be `None`
+# expect-error: line 26: error[type]: `optional[bytes]` was removed: a `bytes` cannot be `None`
+# expect-error: line 27: error[type]: `optional[list[int]]` was removed: a `list[int]` cannot be `None`
+# expect-error: line 28: error[type]: `optional[dict[str, int]]` was removed: a `dict[str, int]` cannot be `None`
+# expect-error: line 29: error[type]: `optional[set[str]]` was removed: a `set[str]` cannot be `None`
+# expect-error: line 30: error[type]: `optional[T]` was removed: a `T` cannot be `None`
+# expect-error: line 31: error[type]: `optional[int]` was removed: an `int` cannot be `None`
+# expect-error: line 33: error[type]: `optional[str]` was removed: a `str` cannot be `None`
+# expect-error: line 36: error[type]: `optional` was removed
+# A value type (`str`, numbers, `bool`, `bytes`, lists, dicts, sets, tuples)
+# cannot hold `None`: `optional[...]` of one is a migration error pointing to
+# a `Result`, a default value or `any` (after 4.11). A type parameter may be a
+# value type too.
+
+from lamerrors import Result
+
+class Holder {}
+
+func a() -> optional[str] { return None }
+func b(n: optional[int]) -> int { return 0 }
+func c() -> Option[float] { return None }
+func d() -> optional[bool] { return None }
+func e() -> optional[bytes] { return None }
+func f() -> optional[list[int]] { return None }
+func g() -> optional[dict[str, int]] { return None }
+func h() -> optional[set[str]] { return None }
+func first[T](xs: list[T]) -> optional[T] { return None }
+func r() -> Result[optional[int]] { return Result.Ok(0) }
+func main() {
+    role: optional[str] = "alert" if true else None
+    print(role, a(), b(1), c(), d(), e(), f(), g(), h(), r())
+    print(first([1]))
+    x: optional = None
+    print(x)
+}

@@ -43,7 +43,7 @@ func open(name: str) -> Sql {
     return MemSql(name)
 }
 
-func maybe(name: str) -> optional[Sql] {
+func maybe(name: str) -> Sql {
     if name == "" {
         return None
     }

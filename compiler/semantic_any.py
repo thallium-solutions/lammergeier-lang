@@ -40,7 +40,7 @@ from compiler.typesys import (
 # to ``any``): an operation on them is reported. Other nodes typed ``any``
 # by inference (a mixed literal, a ternary) are left alone.
 _ANY_OPERAND_NODES = frozenset({
-    "var", "getitem", "getattr", "getattr_safe", "funccall", "propagate", "cast_expr",
+    "var", "getitem", "getattr", "funccall", "propagate", "cast_expr",
 })
 
 # Builtins whose argument must have a concrete type.
@@ -101,16 +101,15 @@ class AnyCastSemanticMixin:
             # ``doc.name as str``: the run-time extraction of an annotated
             # ``json`` assignment.
             return isinstance(target, NamedType) and target.name in _SCALARS - {"bytes"} | {"json"}
-        source_inner = self._cast_optional_inner(source)
-        target_inner = self._cast_optional_inner(target) or target
+        source_inner = self._cast_none_union_inner(source)
+        target_inner = self._cast_none_union_inner(target) or target
         if source_inner is not None and self._cast_downcast_allowed(source_inner, target_inner):
             return True
         return self._cast_downcast_allowed(source, target_inner)
 
     @staticmethod
-    def _cast_optional_inner(type_: Type) -> Type | None:
-        if isinstance(type_, GenericType) and type_.base in {"optional", "Option"} and len(type_.args) == 1:
-            return type_.args[0]
+    def _cast_none_union_inner(type_: Type) -> Type | None:
+        """``T`` of a union ``T | None``."""
         if isinstance(type_, UnionType):
             others = [t for t in type_.options if not (isinstance(t, NamedType) and t.name == "None")]
             if len(others) == 1 and len(others) != len(type_.options):
@@ -136,7 +135,7 @@ class AnyCastSemanticMixin:
 
     def _cast_error_message(self, source: Type, target: Type) -> str:
         head = f"cannot cast `{render_type(source)}` to `{render_type(target)}` with `as`"
-        inner = self._cast_optional_inner(source)
+        inner = self._cast_none_union_inner(source)
         if inner is not None and (is_assignable(target, inner) or self._nominal_type_assignable(target, inner)):
             return f"{head}: the value may be `None`; test `x != None` first (it narrows `x`) or use `x ?? fallback`"
         if isinstance(target, NamedType) and target.name in _SCALARS:

@@ -337,7 +337,6 @@ class UserAccount(Account) {
 func main() {
     user: UserAccount = UserAccount("alice")
     print(user.label())
-    print(user?.label())
     print(user.owner)
 }
 """
@@ -1232,20 +1231,6 @@ def run_tests() -> int:
             print("PASS: completion resolves instance and inherited members")
         except AssertionError as e:
             failures.append(f"instance member completion: {e}")
-
-        safe_line = next(i for i, l in enumerate(instance_lines) if "user?.label()" in l)
-        safe_dot = instance_lines[safe_line].index("user?.") + len("user?.")
-        resp = client.request("textDocument/completion", {
-            "textDocument": {"uri": instance_uri},
-            "position": {"line": safe_line, "character": safe_dot},
-        })
-        safe_labels = {it.get("label") for it in (resp.get("result") or {}).get("items", [])}
-        try:
-            assert_true("safe-navigation completion includes members", "label" in safe_labels)
-            assert_true("safe-navigation completion includes inherited fields", "owner" in safe_labels)
-            print("PASS: completion resolves members after safe navigation")
-        except AssertionError as e:
-            failures.append(f"safe-navigation completion: {e}")
 
         owner_line = next(i for i, l in enumerate(instance_lines) if "user.owner" in l)
         owner_col = instance_lines[owner_line].index("owner") + 1

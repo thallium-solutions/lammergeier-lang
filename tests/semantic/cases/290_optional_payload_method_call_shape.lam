@@ -6,6 +6,6 @@ class Document {
     }
 }
 
-func inspect(document: optional[Document]) {
-    print(document?.render(1))
+func inspect(document: Document) {
+    print(document.render(1))
 }

@@ -1,0 +1,36 @@
+# expect-error: line 27: error[type]: cannot assign `None` to `str` variable `s` (a `str` cannot be `None`
+# expect-error: line 28: error[type]: cannot assign `None` to `int` variable `n`
+# expect-error: line 29: error[type]: cannot assign `None` to `list[int]` variable `xs`
+# expect-error: line 30: error[type]: cannot assign `None` to `str` variable `t` (a `str` cannot be `None`
+# expect-error: line 31: error[type]: argument `name` to `greet` has type `None`, expected `str` (a `str` cannot be `None`
+# expect-error: line 32: error[type]: `Result.Ok(...)` wraps a value of type `None`, but `r` is declared `Result[str]` (payload `str`): a `str` cannot be `None` (return an `Err`, or use `Result[any]`)
+# expect-error: line 17: error[return]: function `count` returns `None`, expected `int`
+# expect-error: line 20: error[return]: `Result.Ok(...)` wraps a value of type `None`, but `load` returns `Result[int]` (payload `int`): an `int` cannot be `None`
+# expect-error: line 22: error[type]: default value of parameter `label` is `None`, but `str` cannot be `None` (use a default value of that type, or `any`)
+# expect-error: line 34: error[type]: cannot assign `None` to `str` variable `deep`
+# A value type never holds `None` (after 4.11): a literal `None` assigned,
+# passed, returned, used as a default or wrapped in `Result.Ok` for one is a
+# compile error, also through a ternary branch.
+from lamerrors import Result
+
+func count() -> int {
+    return None
+}
+func load() -> Result[int] {
+    return Result.Ok(None)
+}
+func tag(label: str = None) -> str { return label }
+func greet(name: str) -> str { return name }
+
+func main(on: bool) {
+    print(count(), load(), tag())
+    s: str = None
+    n: int = None
+    xs: list[int] = None
+    t: str = "a" if on else None
+    print(greet("b" if on else None))
+    r: Result[str] = Result.Ok(None)
+    print(s, n, xs, t, r)
+    deep: str = "a" if on else ("b" if not on else None)
+    print(deep)
+}

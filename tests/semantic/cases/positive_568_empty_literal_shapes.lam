@@ -1,8 +1,8 @@
 # expect-pass
-# Empty literals where they fit: `[]` for lists, optional lists, json
-# arrays, bytes, tuples and generic lists; `{}` for dicts, sets, optional
-# dicts and json objects; defaults of the parameter's type, including
-# `None` for nilable types (lists, dicts, classes, optionals).
+# Empty literals where they fit: `[]` for lists, json arrays, bytes, tuples
+# and generic lists; `{}` for dicts, sets and json objects; defaults of the
+# parameter's type, including `None` for nilable parameter defaults (lists,
+# dicts, classes).
 
 class Item {
     func init(self, name: str) {
@@ -22,7 +22,7 @@ func names(items: list[Item] = [], index: dict[str, Item] = {}, seen: set[str] =
     return len(items) + len(index) + len(seen)
 }
 func doc(body: json = {}, rows: json = [], raw: bytes = []) -> int { return len(raw) }
-func optionalOnes(xs: optional[list[int]] = [], m: optional[dict[str, int]] = {}, o: optional[Item] = None) -> bool {
+func optionalOnes(xs: list[int] = [], m: dict[str, int] = {}, o: Item = None) -> bool {
     return o == None
 }
 func nilable(xs: list[int] = None, m: dict[str, int] = None, item: Item = None) -> int {
@@ -50,7 +50,7 @@ func main() {
     m: dict[str, int] = {}
     s: set[int] = {}
     j: json = []
-    o: optional[list[str]] = []
+    o: list[str] = []
     b: bytes = []
     print(xs, m, s, j, o, b)
     print(count([]), size({}), Box([1]).items, names(), names([], {}, {}))

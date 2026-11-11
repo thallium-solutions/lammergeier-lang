@@ -1,6 +1,6 @@
 # A cast whose source type is concrete is checked statically: the same
-# type is the identity, an upcast (subclass as base), `x as any` and
-# `x as optional[T]` are allowed, a downcast (base as subclass) is checked
+# type is the identity, an upcast (subclass as base) and `x as any` are
+# allowed, a downcast (base as subclass) is checked
 # at run time; a conversion between kinds or unrelated classes is a Lam
 # error that points to the conversion functions.
 # expect-error: line 33: error[type]: cannot cast `str` to `int` with `as`: `as` checks the type, it does not convert between kinds; use `int(...)` to parse or convert
@@ -11,7 +11,7 @@
 # expect-error: line 38: error[type]: cannot cast `float` to `int` with `as`; use `int(...)` to convert
 # expect-error: line 39: error[type]: cannot assign `int` to `str` variable `s`
 # expect-error: line 40: error[member]
-# expect-error: line 41: error[type]: cannot cast `optional[int]` to `int` with `as`: the value may be `None`; test `x != None` first (it narrows `x`) or use `x ?? fallback`
+# expect-error: line 41: error[type]: cannot cast `int | None` to `int` with `as`: the value may be `None`; test `x != None` first (it narrows `x`) or use `x ?? fallback`
 # expect-error: line 42: error[type]: unknown type `Usr`
 
 class User {
@@ -29,7 +29,7 @@ class Invoice {
 func main() {
     u: User = User("a")
     xs: list[int] = [1]
-    maybe: optional[int] = None
+    maybe: int | None = None
     a = "a" as int
     b = u as Invoice
     c = xs as str

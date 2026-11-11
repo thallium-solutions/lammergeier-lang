@@ -2,7 +2,7 @@
 # expect-no-warning: cannot cast
 # Casts that are statically fine: identity, int as float (widening), an
 # upcast, a downcast (checked at run time, like an `isinstance`
-# narrowing), `as any`, `as optional[T]`, `None as` a class, a typed list
+# narrowing), `as any`, `None as` a class, a typed list
 # as `list[any]`, and casts chained or combined with other operators.
 
 class Shape {
@@ -24,8 +24,8 @@ func main() {
     c: Shape = sq as Shape
     d: int = (s as Square).side
     e: any = n as any
-    f: optional[int] = n as optional[int]
-    g: optional[Square] = None as Square
+    f: any = n as any
+    g: Square = None as Square
     h: list[any] = xs as list[any]
     i: int = n as any as int
     j: float = -n as float * 2.0

@@ -189,8 +189,8 @@ func main() {
     print(f"comprehension={[a + 1 for a in Iter.fromList(shapes).map(lambda s: s.area()).toList()]}")
 
     lookup: dict[str, Shape] = {s.name: s for s in Iter.fromList(shapes).filter(lambda s: s.sides() == 0).toList()}
-    maybe: optional[Shape] = lookup["circle"] if "circle" in lookup else None
-    nothing: optional[Shape] = lookup["hexagon"] if "hexagon" in lookup else None
-    print(f"optional={maybe?.name ?? 'none'} missing={nothing?.name ?? 'none'}")
+    maybe: Shape = lookup["circle"] if "circle" in lookup else None
+    nothing: Shape = lookup["hexagon"] if "hexagon" in lookup else None
+    print(f"optional={maybe.name if maybe != None else 'none'} missing={nothing.name if nothing != None else 'none'}")
     print("iter_pipeline_ok")
 }

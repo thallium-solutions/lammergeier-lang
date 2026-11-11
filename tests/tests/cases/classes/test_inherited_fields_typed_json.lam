@@ -66,7 +66,7 @@ class Local(Coded) {
 
 class WithExtra(Problem) {
     func __json__(self) -> json {
-        return {"title": self.title, "extra": self.extra ?? "none"}
+        return {"title": self.title, "extra": self.extra}
     }
 
     func half(self) -> float {

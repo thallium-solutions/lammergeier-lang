@@ -75,7 +75,7 @@ func first(s: Shape) -> int {
     return s.side
 }
 
-func kinds(s: Shape, v: any, n: Named, o: optional[Square], j: json) -> str {
+func kinds(s: Shape, v: any, n: Named, o: Square, j: json) -> str {
     a: int = s.side if isinstance(s, Square) else 0
     b: bool = isinstance(s, Circle) and s.r > 0
     c: bool = not isinstance(s, Circle) or s.r > 0

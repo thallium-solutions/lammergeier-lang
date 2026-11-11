@@ -1,14 +1,16 @@
 # Transpilation: a static method whose body has a `try` declares the named
 # `retval` result(s) like a function (its catch can rethrow, its try body
 # can return); a private static used as a value is the unexported Go
-# function its calls use; a method call's `html` / `str` result is boxed
-# into an `optional`; `optional[json]` boxes a JSON value.
+# function its calls use; a method call's `html` / `str` / `json` result is
+# returned as is (after 4.11: no `optional` boxing; an `html` / `json` can be
+# `None`, and `??` tests it).
 # expect-go: func Runner_run[T any](n int, fn func(int) *Result) (retval *Result) {
 # expect-go: func Runner_pair(n int) (retval0 int, retval1 string) {
 # expect-go: return Hooks_run(hooks_double)
-# expect-go: return func() *LamHTML { __lamV := LamHTML(hooks_page()); return &__lamV }()
-# expect-go: return func() *string { __lamV := string(s.Name()); return &__lamV }()
-# expect-go: return func() *LamJSON { __lamV := Hooks_doc(); return &__lamV }()
+# expect-go: return hooks_page()
+# expect-go: return s.Name()
+# expect-go: return Hooks_doc()
+# expect-go: if __lamL := Hooks_maybePage(); !__lamL.lamIsNone() { return __lamL }
 
 from lamerrors import Result
 
@@ -53,7 +55,7 @@ class Hooks {
         return <><p>x</p></>
     }
 
-    static func maybePage() -> optional[html] {
+    static func maybePage() -> html {
         return Hooks.page()
     }
 
@@ -61,7 +63,7 @@ class Hooks {
         return "n"
     }
 
-    func maybeName(self) -> optional[str] {
+    func maybeName(self) -> str {
         return self.name()
     }
 
@@ -69,7 +71,7 @@ class Hooks {
         return {"a": 1}
     }
 
-    static func maybeDoc() -> optional[json] {
+    static func maybeDoc() -> json {
         return Hooks.doc()
     }
 }
@@ -77,5 +79,5 @@ class Hooks {
 func main() {
     r: Result[int] = Runner.run(1, lambda (n: int) -> Result[int]: Result.Ok(n))
     a, b = Runner.pair(1)
-    print(r.unwrap(), a, b, Hooks.usePrivate(), str(Hooks.maybePage() ?? <></>), Hooks().maybeName() ?? "-", Hooks.maybeDoc() ?? {})
+    print(r.unwrap(), a, b, Hooks.usePrivate(), str(Hooks.maybePage() ?? <></>), Hooks().maybeName(), Hooks.maybeDoc() ?? {})
 }

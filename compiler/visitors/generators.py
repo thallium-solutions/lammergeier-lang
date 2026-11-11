@@ -66,7 +66,7 @@ from lark import Token, Tree
 
 from compiler import narrowing as _narrowing
 from compiler.constants import generator_go_elem
-from compiler.safe_nav import rewrite_result_safe_nav
+from compiler.safe_nav import rewrite_safe_nav_as_propagation
 
 
 class _K:
@@ -603,7 +603,7 @@ class GeneratorStateMachineMixin:
                         return
                 continue
             self._emit_line_directive(stmt)
-            rewrite_result_safe_nav(stmt, lambda recv: self._expr_go_type_hint(recv) == "*Result")
+            rewrite_safe_nav_as_propagation(stmt)
             if stmt.data == "yield_stmt":
                 self._sm_yield(stmt, rest, k)
                 return

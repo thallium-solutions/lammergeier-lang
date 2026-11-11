@@ -604,7 +604,7 @@ Any value can be stored where `any` is expected (`a: any = 3`). A list or a
 dict of a concrete type is accepted where a `list[any]` / `dict[K, any]` is
 expected, as in Python: annotated assignments and reassignments, arguments,
 returns, `Result.Ok(...)` payloads, `?` results (`xs: list[any] = rows()?`),
-fields, `optional[list[any]]` targets, `extend` / `+=`, and nested lists
+fields, `any` targets, `extend` / `+=`, and nested lists
 (`list[list[int]]` to `list[list[any]]` or `list[any]`); likewise
 `list[int]` where a `list[float]` is expected. In Go a `[]int` is not a
 `[]interface{}`, so the widened value is a **copy**: element writes and
@@ -687,7 +687,7 @@ take(row["count"] as float)                   # 41 -> 41.0
 From an `any` value every conversion of
 [From `any` to a concrete type](#from-any-to-a-concrete-type) applies: an
 `int` is accepted (and widened) as a `float`, a subclass instance as its
-base class, `None` as a class (and as an `optional[T]`), a `list[any]` /
+base class, `None` as a reference (a class, an interface, `html`, `json`...; as a value type it throws `TypeError: None is not a str`), a `list[any]` /
 `dict[str, any]` holding values of the item type as a typed list / dict;
 anything else throws a catchable `TypeError`. From a value whose type is
 already concrete the cast is checked statically:
@@ -695,7 +695,7 @@ already concrete the cast is checked statically:
 | Cast | Result |
 |---|---|
 | same type (`n as int` with `n: int`) | the value itself |
-| widening (`n as float`, `xs as list[any]`), upcast (`square as Shape`), `x as optional[T]`, `x as any` | the conversion an annotated assignment does |
+| widening (`n as float`, `xs as list[any]`), upcast (`square as Shape`), `x as any` | the conversion an annotated assignment does |
 | downcast: a base class or an interface as a subclass / implementing class (`shape as Square`, `priced as Order`) | checked at run time, like an `isinstance` narrowing: another class throws `TypeError`, `None` stays `None` (an annotated assignment never downcasts implicitly) |
 | `json` as `int` / `float` / `str` / `bool` | the run-time extraction of an annotated `json` assignment (`doc.name as str`) |
 | impossible (`"a" as int`, `2.5 as int`, `xs as str`, unrelated classes) | compile error: ``cannot cast `str` to `int` with `as`: `as` checks the type, it does not convert between kinds; use `int(...)` to parse or convert`` |
@@ -718,7 +718,7 @@ bitwise, comparisons, `??`, `and` / `or`) and looser than unary operators,
 | `(v as User).name`, `(v as list[int])[0]` | a member or an index of the cast value needs parentheses |
 
 The target is one type, possibly generic (`list[str]`, `dict[str, int]`,
-`optional[User]`) or dotted (`pkg.User`); a union needs parentheses
+`Box[User]`) or dotted (`pkg.User`); a union needs parentheses
 (`v as (int | str)`), since a bare `|` after the type is the bitwise
 operator. The other uses of `as` keep their meaning: `import x as y`,
 `from m import a as b`, `catch E as e`, `with open(p) as f` and
@@ -983,17 +983,19 @@ func classify(age: int) -> str {
 print("even" if x % 2 == 0 else "odd")
 ```
 
-Both branches must have compatible types. A `None` branch next to a value
-(`"x" if c else None`) makes an `optional[str]`: it is valid where an
-optional fits (an `optional[...]` or `any` variable, field, parameter or
-result, a list item, a JSON value, an f-string slot, a markup attribute,
-where `None` omits the attribute), and an error for a new unannotated
-variable (`v = "x" if c else None`: nothing gives the optional a type) or
-where a plain `str` is expected:
+Both branches must have compatible types. A `None` branch next to a
+reference (a class, an interface, `html`...) has the reference's type
+(`u if ok else None` is a `User`). Next to a value type, which cannot be
+`None` ([What can be `None`](#what-can-be-none)), it makes an `any`
+(`"x" if c else None`): valid in a new unannotated variable, an `any`
+variable, field, parameter or result, a list item, a JSON value, an
+f-string slot and a markup attribute (where `None` omits the attribute),
+and a compile error where a `str` is expected (``cannot assign `None` to
+`str` variable `s` (a `str` cannot be `None`: ...)``):
 
 ```lammergeier
-wrap: optional[str] = cls if cls != "" else None
-link: html = <><a href="${url}" target="${'_blank' if external else None}">go</a></>
+wrap = cls if cls != "" else None        # an any: the class, or None
+link: html = <><a href="${url}" target="${'_blank' if external else None}" class=${wrap}>go</a></>
 ```
 
 ---
@@ -1195,7 +1197,7 @@ print(dog.speak())
 
 A subclass instance is usable wherever its base class is expected: function
 and method parameters, variables and re-assignments, returns, fields,
-`optional[Base]`, elements of `list[Base]` / `dict[str, Base]` (literals,
+elements of `list[Base]` / `dict[str, Base]` (literals,
 `append`, `insert`, `extend([...])`, `d[k] = v`), `??`, ternaries and `==` /
 `!=` comparisons (with `None` or another value). Calls on a base-typed value
 run the override of the object's actual class, field access reads the
@@ -1450,9 +1452,9 @@ class Config {
 Static methods behave like module functions in every other respect: they
 may be generic (`static func run[T](fn: func(int) -> Result[T]) ->
 Result[T]`), use `try` / `catch` with a `throw` in the handler and a
-`return` inside the body, and return a value where an `optional` of its
-type is expected (`return Hooks.page()` in a `-> optional[html]`; the same
-holds for instance-method calls such as `return self.title()`).
+`return` inside the body, and return a value of their result type
+(`return Hooks.page()` in a `-> html`; the same holds for instance-method
+calls such as `return self.title()`).
 `Class.method` without a call is the method as a function value, private
 statics included (`Hooks.run(Hooks.double)` inside the module declaring
 `private static func double`); its type has the declared parameter and
@@ -1636,7 +1638,7 @@ if x > 0 {
 
 Conditions of `if`, `elif` and `while` must be `bool`: Lam has no
 truthiness, so `if xs { }` on a list is a compile error (write
-`if len(xs) > 0`), as are numbers (`n != 0`), optionals (`opt != None`)
+`if len(xs) > 0`), as are numbers (`n != 0`), references (`u != None`)
 and `json` values (`if bool(payload.ok)`).
 
 ### Single-Statement Blocks
@@ -2027,8 +2029,8 @@ descending order. Values whose type is not an ordered type (`int`,
 compared by kind at run time — in `sorted`, `xs.sort()`, `min(xs)` /
 `max(xs)` of one list, and with a `key` returning such a value: the
 elements of a `list[any]` (also from `Json.toList`, a function result or a
-comprehension), of a `list[json]`, of a `list[T]` in a generic function and
-of a `list[optional[int]]`. Numbers compare numerically (ints and floats
+comprehension), of a `list[json]` and of a `list[T]` in a generic function.
+Numbers compare numerically (ints and floats
 mixed, `[10, 9, 2.5]` sorts as `[2.5 9 10]`), strings by bytes, `false <
 true`, and values of different kinds order as `None` < `bool` < number <
 `str` < other values (those by their text); `min` / `max` of an empty
@@ -2085,8 +2087,8 @@ for n in reversed(nums) {
 
 Formatted string literals embed any Lam expression inside `{...}`.
 The interpolation slot is fed back through the regular expression
-parser, so chained method calls, indexing, safe navigation, null
-coalescing, and arithmetic all compose:
+parser, so chained method calls, indexing, ternaries, null coalescing,
+and arithmetic all compose:
 
 ```lammergeier
 name: str = "Alice"
@@ -2101,8 +2103,8 @@ items: list[int] = [10, 20, 30]
 print(f"second={items[1]}")             # 20
 print(f"hyp²={3*3 + 4*4}")              # 25
 
-# Safe nav + null-coalesce
-print(f"email={user?.profile?.email ?? 'none'}")
+# A None test + null-coalesce
+print(f"email={user.email if user != None else 'none'} {nick ?? 'anon'}")
 ```
 
 The `:fmt` suffix maps directly to a Go `fmt` verb — `{x:.2f}`
@@ -2132,8 +2134,8 @@ of two of them); an `int` / `bool` slot of a declared type is converted
 with `strconv` (the text `%v` gives). A slot that is a `str` only by
 inference (`x = a + b`, a lambda parameter) goes through a small generic
 helper that returns a string without allocating and formats any other
-value as `%v` would. Slots of other types (`float`, `optional[...]`, a
-`?.` call, a generic `T`, `any`, lists, objects) and slots with a format
+value as `%v` would. Slots of other types (`float`, a generic `T`, `any`,
+lists, objects) and slots with a format
 spec keep `fmt.Sprintf`. Each slot is evaluated once, calls left to right.
 An f-string without slots is a plain string (`f"100%"` is `100%`).
 
@@ -2199,7 +2201,7 @@ stands:
 | element content | `html` / `xml` of the literal's kind | inserted as markup (a copy) |
 | element content | class with `__html__` / `__xml__` | its markup |
 | element content | `list[...]` of the above | each item in order |
-| element content | `None` / empty optional | nothing |
+| element content | `None` (a `None` `html`, class reference, `any`...) | nothing |
 | element content | `json` | its JSON text |
 | attribute value | `str`, numbers, part of a value (`class="a ${b}"`) | text, escaped |
 | whole attribute value | `true` / `false` / `None` | bare attribute (`disabled`) / left out |
@@ -2391,8 +2393,8 @@ print(isinstance(None, None))          # true
 
 On a `json` value, `isinstance` tests the JSON value it holds (`int` /
 `float` / `str` / `bool`, `list` for an array, `dict` for an object, `None`
-for `null`); on an `optional[int]` (or another optional value type),
-`isinstance(x, int)` is true when it is set.
+for `null`). `isinstance(x, None)` is `x == None`: always false for a value
+type (a `str`, an `int`... is never `None`).
 
 ### Narrowing
 
@@ -2434,24 +2436,20 @@ The test holds in:
 Conditions combine with `not`, `and` (every test of a true `and` holds) and
 `or` (every negated test of a false `or` holds).
 
-A `None` comparison is the same test as `isinstance(x, None)`: after
-`if h == None { return ... }` an `optional[html]` parameter is an `html`,
-in functions, methods, static methods and lambdas alike; returned (or
-passed) where an `optional[html]` is expected it is an optional again:
+A `None` comparison is the same test as `isinstance(x, None)`. A
+reference keeps its type (there is no optional type to narrow from), but
+after `if u != None`, `if u == None { return ... }` or in the right operand
+of `u != None and ...` the local is known not to be `None`, so its members
+are used without the run-time `None` check
+([What can be `None`](#what-can-be-none)), in functions, methods, static
+methods and lambdas alike:
 
 ```lammergeier
-func page(h: optional[html]) -> html {
-    if h == None {
-        return <><i>empty</i></>
+func label(u: User) -> str {
+    if u == None {
+        return "nobody"
     }
-    return h                              # an `html` here
-}
-
-func bump(n: optional[int]) -> optional[int] {
-    if n is None {
-        return None
-    }
-    return n + 1                          # `int` arithmetic, boxed again
+    return u.name                         # no `None` check here
 }
 ```
 
@@ -2463,7 +2461,7 @@ What a value narrows to:
 | `any`, a type parameter | `int` / `float` / `str` / `bool` | that type |
 | `any` | `list` / `dict` | `list[any]` / `dict[str, any]` |
 | `any`, an interface | a class or an interface | that class / interface |
-| `optional[T]` | `not isinstance(x, None)`, `isinstance(x, T)`, `x != None`, `x is not None` (and the `else` / guard side of `x == None`, `x is None`; `None` may be on either side) | `T` |
+| a class, an interface | `not isinstance(x, None)`, `x != None`, `x is not None` (and the `else` / guard side of `x == None`, `x is None`; `None` may be on either side) | the same type, known not to be `None` (members skip the `None` check) |
 | `json` | `int` / `float` / `str` / `bool` | that type (a JSON array or object stays `json`) |
 | any | a tuple of classes `(Square, BigSquare)` | their nearest common class, when narrower than the declared type; a tuple mixing builtins narrows nothing |
 
@@ -2474,10 +2472,9 @@ Narrowing never applies to:
   declared type there; bind the narrowed value to a new name instead;
 - fields (`self.shape`, `holder.shape`): another call could change them
   between the test and the use; copy the field to a local first
-  (`s: Shape = self.shape` then `if isinstance(s, Square)`). An optional
-  field stays optional after `if self.cached == None { return ... }`, so
-  `return self.cached` where an `html` is expected is a Lam error (in
-  methods as in functions) whose help suggests the local copy or `??`;
+  (`s: Shape = self.shape` then `if isinstance(s, Square)`; after `if
+  self.owner == None { return ... }`, `self.owner.name` is still checked
+  for `None` at run time);
 - module globals, and locals a nested function rebinds (`nonlocal x`), for
   the same reason;
 - a `list` / `dict` narrowed from `any` that the region changes in place
@@ -3140,15 +3137,23 @@ func lastStep() -> Result[int] {
 }
 ```
 
-On an `optional[T]` value `?.` keeps its safe-navigation meaning
-(`find(name)?.email` is `None` when `find` returns `None`; see
-[Safe Navigation](#safe-navigation--null-coalescing)). A `?` inside a
-`try` body or `catch` handler also propagates to the enclosing function
-(or `do` block); a `catch` clause never sees it.
+On anything that is not a `Result`, `?.` is a compile error: safe
+navigation was removed in 4.12 (``?.` was removed: test `obj != None`
+first (`None.field` throws), or use `?` on a `Result```; see
+[What can be `None`](#what-can-be-none)). A `?` inside a `try` body or
+`catch` handler also propagates to the enclosing function (or `do` block);
+a `catch` clause never sees it.
+
+The payload of `?` stays dynamic until `??` tests it: `load()? ?? "none"`
+with `load() -> Result[str]` is a `str`, `"none"` when the payload is
+`None` (a `Result.Ok(v)` with `v` an `any` holding `None`; a literal
+`Result.Ok(None)` for a `Result[str]` is a compile error). Without `??`, a
+`None` payload converted to a value type throws `TypeError: None is not a
+str`.
 
 `?` only accepts a known `Result` value and only propagates normally from
 a function whose return type is bare `Result` or `Result[T]`. A known
-`int`, `str`, `Option[T]`, or other non-`Result` operand is a Lam
+`int`, `str`, class, or other non-`Result` operand is a Lam
 `error[type]`; unknown and `any` values keep the dynamic escape hatch.
 The semantic checker warns when `?` is used outside a `Result`-returning
 function or `do/catch` body.
@@ -3209,6 +3214,26 @@ func main() {
     } catch err {
         print(f"failed: {err}")   # only runs if a ? short-circuited
     }
+}
+```
+
+The handler only receives the errors `?` propagates. An exception raised
+in the body — `raise` / `throw`, a member of `None` (`AttributeError`), a
+`None` converted to a value type (`TypeError`), a Go runtime fault — is
+not caught by the `do`'s `catch`: the rest of the body is skipped and the
+exception goes on to the enclosing `try` / `catch` (or ends the program),
+as if the `do` were not there:
+
+```lammergeier
+try {
+    do {
+        n: int = parseInt(text)?          # an Err: handled below
+        print(user.name)                  # user is None: an exception
+    } catch err {
+        print(f"bad number: {err}")       # not for the AttributeError
+    }
+} catch AttributeError as e {
+    print(e)                              # AttributeError: None has no attribute 'name'
 }
 ```
 
@@ -3757,7 +3782,7 @@ for label in Shelf(["a", "b"]).labels(1) {
 
 `generator[T]` is also a type for parameters, variables and fields holding
 a generator (a value read once, element by element), with any element type
-(a class, a generic class, `optional[T]`, a list, a dict, a tuple):
+(a class, a generic class, a list, a dict, a tuple):
 
 ```lammergeier
 func circles() -> generator[Circle] {
@@ -4055,158 +4080,178 @@ func main() {
 
 ---
 
-## Safe Navigation & Null Coalescing
+## What can be `None`
 
-Two operators make working with nullable values less noisy:
+Lam has no optional type and no safe navigation (`optional[T]`,
+`Option[T]` and `obj?.member` were removed in 4.12). Whether a value can
+be `None` depends on its type:
 
-- `obj?.field` — if `obj` is `nil`, the whole expression evaluates to
-  `nil` without dereferencing; otherwise it returns `obj.field`.
-  Method calls use the same syntax (`obj?.method(args)`): `obj` is
-  evaluated once, and the call is `None` when `obj` is, else the method's
-  result. Both are typed `optional[T]` with `T` the field's type or the
-  method's declared result (`x = obj?.name()` makes `x` an
-  `optional[str]`; see below).
-- `a ?? b` — returns `a` if it is non-`nil`, otherwise `b`. Chains
-  fold left-to-right, e.g. `a ?? b ?? c`.
+| Can be `None` | Never `None` |
+|---|---|
+| class references (also generic classes: `Box[int]`), interface values, `html`, `xml`, `json` (null), `any`, `Result` payloads (dynamic, see `?` below) | the value types `str`, `int`, `float`, `bool`, `bytes`, lists, dicts, sets, tuples |
 
-On a `Result` receiver `?.` is not safe navigation: `load()?.name` is
-`(load()?).name`, the [`?` propagation operator](#the--propagation-operator)
-followed by a member access.
+A reference holds `None` when it is assigned, passed, returned or stored
+as `None` (`func find(id: int) -> User { ... return None }`, `h: html =
+None`, `Result.Ok(None)` in a `Result[User]`). A literal `None` where a
+value type is expected is a compile error (``cannot assign `None` to `str`
+variable `s` (a `str` cannot be `None`: use a default value, a `Result`,
+or `any`)``), also through a ternary branch (`s: str = "a" if c else None`)
+and in `Result.Ok(None)` for a `Result[str]`. A `None` that reaches a value
+type at run time — an `any`, the payload of a `Result` built from an `any`,
+a `dict[str, any]` lookup, a JSON null, `return None` in a `-> T` of
+generic code with `T = int` — throws a catchable `TypeError: None is not a
+str` (`an int`, `a list[int]`...) where it is converted.
+
+**Checking for `None` is the program's duty.** A member of `None` throws
+`AttributeError: None has no attribute 'name'`: a field read or write, a
+method call (also of a method that never uses `self`), an interface method.
+Test the reference first (`if u != None`, `if u == None { return }`, `u !=
+None and u.ok`, `u.name if u != None else "-"`); a narrowed local is used
+without the run-time check. It is an exception like any other: `try` /
+`catch AttributeError` (or `TypeError`, or a catch-all) catches it, and it
+goes on through a `do` / `catch`, whose handler only receives the errors
+`?` propagates from a `Result` (see
+[The `do { } catch err { }` block](#the-do---catch-err---block)):
 
 ```lammergeier
+from lamerrors import Result
+
 class User {
-    func init(self, email: str) {
-        self.email: str = email
+    name: str = ""
+}
+
+func find(name: str) -> User {
+    if name == "ada" {
+        u: User = User()
+        u.name = "ada"
+        return u
     }
+    return None                         # a class reference can be None
 }
 
 func main() {
-    active: User = User("ada@example.com")
-    missing: User = None
-
-    print(active?.email)                    # ada@example.com
-    print(missing?.email)                   # <nil>
-    print(missing?.email ?? "default")      # default
-    print(None ?? 42)                       # 42
-    print(None ?? None ?? "fallback")       # fallback
+    u: User = find("bob")
+    if u != None {
+        print(u.name)                   # not reached
+    }
+    try {
+        print(u.name)
+    } catch AttributeError as e {
+        print(e)                        # AttributeError: None has no attribute 'name'
+    }
+    try {
+        do {
+            print(find("eve").name)     # an exception: not for the do's catch
+        } catch err {
+            print(f"do: {err}")         # not reached
+        }
+    } catch AttributeError as e {
+        print(f"try: {e}")              # try: AttributeError: None has no attribute 'name'
+    }
 }
 ```
 
-On a class or `optional[...]` receiver `obj?.field` and
-`obj?.method(args)` are typed: an `optional` of the field's type or of the
-method's declared result (`optional[str]` for a `str`; a type that already
-holds `None` — an `optional[T]` result, `any`, `json` — stays as it is, and
-`optional[optional[T]]` is just `optional[T]`). A chain is optional as a
-whole (`user?.profile?.email`, `shop?.owner()?.contact()`), a void method
-called through `?.` is a statement (`job?.cancel()`), and on an
-`optional[str]` receiver `?.` calls the method on the text
-(`name?.toUpper()`). `print`, f-strings and `str()` show an optional
-value's payload, or `<nil>`.
+An uncaught `None` error ends the program like any uncaught exception
+(exit status 2, `panic: AttributeError: None has no attribute 'name'` and
+the Lam line on stderr), also inside a `do` body.
 
-So the rules of `optional[T]` values apply: a `?.` value does not fit a
-parameter, variable, field or return of the payload type, its payload's
-methods and operators need a `None` test or a default first, and it
-compares with `None` and with a payload value (`s?.title() == "home"` is
-false when `s` is `None`). Earlier compilers typed it as the plain
-result, so `None` could reach a `str` parameter:
+### Null coalescing `??`
 
-```lammergeier
-func takes(x: str) { print(x) }
+`a ?? b` is `a` unless it is `None`, otherwise `b`; chains fold from the
+right (`a ?? b ?? c` is `a ?? (b ?? c)`) and stop at the first value that
+is not `None`. It is meaningful for what can be `None`:
 
-func show(s: optional[Shop]) {
-    takes(s?.title())
-    # error[type]: argument `x` to `takes` has type `optional[str]`,
-    # expected `str`; `s?.title()` is `None` when `s` is `None`: give a
-    # default (`s?.title() ?? ...`) or test `s != None` and use `s.title()`
-    takes(s?.title() ?? "untitled")     # a default
-    t = s?.title()                      # an optional[str]
-    if t != None {
-        takes(t.toUpper())              # narrowed to str
-    }
-    print(t == None, t ?? "-", f"{t}", str(t))
-}
-```
+- a class reference or an interface value: `(lookup(id) ?? guest).name`,
+  typed as the reference (a subclass fallback is fine: `lookup() ??
+  Admin("root")` is a `User`);
+- `html` / `xml`: `page() ?? <><p>empty</p></>`;
+- `any`: `row["note"] ?? ""` (an `any`; annotate the target, `note: str =
+  row["note"] ?? ""`, to convert);
+- a `Result` payload through `?`: the payload stays dynamic until `??`
+  tests it, so `load()? ?? "none"` with `load() -> Result[str]` is a `str`
+  (an `Err` still propagates; an `int` payload with a `float` fallback is
+  a `float`);
+- a dict lookup: `d[key] ?? fallback` selects the fallback when the key is
+  missing and has the value type;
+- `json`: `doc.key ?? "x"` is a `json` (an annotated target extracts its
+  type: `name: str = doc.name ?? "anon"`).
 
-Lam has no `!`-style unwrap: use `??`, a `None` test (`if x != None`,
-`if x == None { return }`, `x is not None and ...`, a ternary), or call
-the method directly on a receiver you tested. On a `Result` receiver
-nothing changes: `load()?.title()` is propagation then a plain call, a
-`str`.
+On a value type, which is never `None`, `??` has no effect and is a
+warning (``warning[type]: `name` is a `str`, never `None`: `?? "anon"` has
+no effect``). `x ?? None` is `x`.
 
-`opt ?? fallback` on an `optional[T]` with a fallback of type `T` is a `T`,
-in an annotated target or not: `w = find(4) ?? 0` makes `w` an `int`, so
-`1.5 * (100 - w)`, `(name() ?? "x").toUpper()`, `f"{find(1) ?? 0}"`,
-comparisons, arguments, `return`, `Result.Ok(...)`, ternaries and
-comprehensions see that type. This holds for value payloads, classes (a
-subclass fallback is fine: `lookup() ?? Admin("root")` is a `User`),
-optional fields (`obj.maybe ?? d`), `optional[list[T]]` /
-`optional[dict[K, V]]` (an empty `[]` / `{}` fallback takes the payload
-type), generic functions returning `optional[T]` (`first(xs) ?? 0`),
-`?` on a `Result[optional[T]]` (`load()? ?? 0`) and functions of other
-modules. An `int` payload with a `float` fallback (or the reverse) is a
-`float`; `a ?? b ?? c` is `a ?? (b ?? c)`, so `a(1) ?? a(2) ?? 3` is an
-`int` and `opt ?? other` with two `optional[T]` stays an `optional[T]`.
-On a `json` value, `doc.key ?? "x"` is a `json` (an annotated target
-extracts its type: `name: str = doc.name ?? "anon"`, `x: float = doc.n ??
-0`). `d[key] ?? fallback` on a dict selects the fallback when the key is
-missing and has the value type. In other contexts (`None ?? 42`, a
-fallback of another type such as `find(1) ?? "none"`, receivers of
-unknown type) both operators return `interface{}`;
-assign to an annotated variable when a concrete type is required
-downstream. `optional[User]` and
-`Option[User]` annotations retain `User` as the safe-navigation receiver
-for member suggestions and call-shape checks, and lower to one `*User`
-pointer rather than a pointer-to-pointer. `optional[any]` stays dynamic.
-
-An `optional[T]` (or `Option[T]`) variable, field, parameter or return
-accepts `None` and any `T`, compares with `None` (`n == None`,
-`n != None`), and an optional class reference can be assigned back to the
-class type (class-typed variables already hold `None`). A value payload
-(`optional[int]` is a Go `*int`; `optional[list[int]]` a `*[]int`,
-`optional[dict[str, int]]` a `*map[string]int`) is boxed automatically when
-an `int` (a list, a dict) is assigned or returned, and `opt ?? fallback`
-unwraps it to an `int`; it does not convert to a plain `int` implicitly.
-The `int` may come from a literal, a local, a function call or a static or
-instance method call declared `-> int` (`return Hooks.page()` in a `->
-optional[html]`, `n: optional[str] = self.name()`). `optional[json]` holds
-a `json` value or `None`: `json` calls and JSON literals are boxed
-(`return {"a": 1}` in a `-> optional[json]`) and `doc ?? {}` takes any
-JSON fallback.
+Three cases of `Foo()? ?? "none"` with `Foo() -> Result[str]`: a payload,
+a `None` payload, an error:
 
 ```lammergeier
-class Node {
-    func init(self, v: int) {
-        self.v: int = v
-        self.next: optional[Node] = None
-    }
+from lamerrors import Result
+
+func lower(s: str) -> str {
+    return s.toLower()
 }
 
-func find(v: int) -> optional[Node] {
-    if v > 0 {
-        return Node(v)
-    }
-    return None
+# 1. A payload: `??` keeps it.
+func Foo() -> Result[str] {
+    return Result.Ok("Hello")
 }
 
-func count(s: str) -> optional[int] {
-    if s == "" {
-        return None
+func example1() -> Result[str] {
+    x = Foo()? ?? "none"
+    return Result.Ok(x)                 # Hello
+}
+
+# 2. A `None` payload (built from an `any`): `??` gives the fallback, no
+#    exception; converted to a `str`, it throws `TypeError`.
+func FooNone() -> Result[str] {
+    nothing: any = None
+    return Result.Ok(nothing)
+}
+
+func example2() -> Result[str] {
+    print(FooNone()? ?? "none")         # none
+    try {
+        print(lower(FooNone()?))        # not reached
+    } catch TypeError as e {
+        print(e)                        # TypeError: None is not a str
     }
-    return len(s)
+    return Result.Ok("done")
+}
+
+# 3. An error: `?` jumps to the `do` / `catch` handler.
+func FooErr() -> Result[str] {
+    return Result.Err("nope")
 }
 
 func main() {
-    head: optional[Node] = None
-    print(head == None)                 # true
-    a: Node = Node(1)
-    a.next = Node(2)
-    head = a
-    m: Option[Node] = find(3)
-    print(m?.v)                         # 3
-    n: int = count("abc") ?? 0          # 3
-    print(n)
+    print(example1().unwrap())          # Hello
+    _ = example2()
+    do {
+        print(FooErr()? ?? "none")      # not reached
+    } catch err {
+        print(f"caught: {err}")         # caught: nope
+    }
 }
 ```
+
+**`?` is for errors, `try` for exceptions.** `expr?` on a `Result` gives
+the payload, or returns the error from the enclosing `Result` function
+(jumps to the `do` / `catch` handler; raises where there is no `Result` to
+return). A `None` error (`AttributeError`, `TypeError`) is an exception:
+`try` / `catch` handles it, a `do` / `catch` does not. A `?`
+followed by `.` on a `Result` is propagation then a member access
+(`load()?.name` is `(load()?).name`). On anything else `?.` is a compile
+error: ``?.` was removed: test `obj != None` first (`None.field` throws),
+or use `?` on a `Result```.
+
+**Migrating from 4.11 and earlier.** `optional[Shop]` (also `Option[Shop]`,
+`Result[optional[html]]`, `list[optional[Shop]]`) is a compile error
+pointing to `Shop`: write the reference type itself. `optional[str]` (a
+value payload) is an error pointing to a `Result[str]` (an error when there
+is no value), a default value or `any`; a markup attribute written
+`role: optional[str] = "alert" if failed else None` becomes `role =
+"alert" if failed else None` (an `any`; a `None` attribute value still
+omits the attribute). `obj?.field` becomes a `None` test (`obj.field if
+obj != None else d`).
 
 ---
 
@@ -4331,7 +4376,7 @@ argument is `any` or otherwise unknown, the checker keeps the conservative
 fallback instead of guessing.
 
 The annotations of a lambda argument bind type parameters too, also inside
-`Result[T]`, `optional[T]`, `list[T]` and `dict[K, V]`:
+`Result[T]`, `list[T]` and `dict[K, V]`:
 `inTx(conn, lambda (tx: Conn) -> Result[int]: count(tx))` with `func
 inTx[T](conn: Conn, fn: func(Conn) -> Result[T]) -> Result[T]` gives
 `T = int` (as does `inTx(conn, count)` with `count(c: Conn) ->
@@ -4535,8 +4580,8 @@ func main() {
 
 An override of a generic parent's method is written with the bound types:
 in `class Users(Registry[User])`, the parent's `row(self, item: T) -> str`
-is overridden by `row(self, item: User) -> str` (and `-> T`, `list[T]`,
-`optional[T]` become `-> User`, `list[User]`, `optional[User]`); another
+is overridden by `row(self, item: User) -> str` (and `-> T`, `list[T]`
+become `-> User`, `list[User]`); another
 type is an `error[inheritance]` naming the bound type (`expected (User)`).
 The parent's own methods and calls through a `Registry[User]` value run the
 override, also when the parent is declared in another module and through a
@@ -4567,23 +4612,11 @@ class Users(Registry[User]) {
 }
 ```
 
-`optional[T]` works with any type argument: a class (`Shelf[User]`), an
-interface, `str`, `int`, a list. Results (`shelf.at(i)` with `-> optional[T]`
-is an `optional[User]`), parameters, fields (read, assigned, `None`),
-`list[optional[T]]` / `dict[K, optional[T]]` values (returned, passed,
-indexed, appended to), `Result[optional[T]]` through `?`, generic
-functions (`first(xs)`, `orElse(x, d)`) and overrides returning
-`optional[User]` behave as for a non-generic `optional[User]` (`??`,
-`== None`, narrowing, `?.`). A `list[optional[T]]` or `dict[K,
-optional[T]]` of generic code read outside it with `T` a class or interface
-is a converted copy (generic code holds the optional as a Go `*T`, the
-program as the reference itself): change it through the generic class's
-field (`shelf.slots.append(u)`, `shelf.slots[0] = None`) or its methods,
-not through a list you got from it. One shape is refused: an
-`optional[T]` inside the type arguments of another generic class
-(`-> Box[optional[T]]`) with `T` a class or interface is an
-`error[type]` at the call (`Box[optional[T]]` is fine with `T = int` or
-`str`); return `optional[T]` or a `Box[T]` instead.
+`return None` in a `-> T` (or a `T` field set to `None`) is `None` of the
+type argument: a class reference, an interface value, `html` / `xml` /
+`json` with a class / interface / markup `T`, and a `TypeError: None is not
+an int` at run time with a value type `T` (`Shelf[int]`), which cannot be
+`None`: return a `Result[T]` from generic code that may find nothing.
 
 ---
 
@@ -5084,8 +5117,9 @@ imported constant used as a default (`from cfg import Size as S` then
 
 A default is a value of the parameter's type, checked like an assignment:
 `errors: list[FieldError] = {}` or `limit: int = "10"` is a Lam error, and
-`None` is a default only for types that can hold it (lists, dicts, sets,
-classes, `optional[T]`; `name: str = None` needs `optional[str]`).
+`None` is a default only for references and for the empty value of a
+collection (lists, dicts, sets, classes, interfaces, `html`, `json`, `any`;
+`name: str = None` is an error: use a default `str` or `any`).
 
 > **Note:** Variadic functions (`*args`) are excluded from default filling.
 
@@ -5673,10 +5707,10 @@ The pipeline runs in three layers:
    Declared return types are checked for method calls, ternaries,
    comprehensions, inferred generic/operator results, and propagated `?`
    payloads. Dropping a known non-void local/imported/static/inferred-instance
-   call emits a warning; `Result`/`Option` wording asks the caller to handle it
+   call emits a warning; `Result` wording asks the caller to handle it
    or assign to `_`. A fluent builder step is not a dropped value: an instance
    method whose declared return type is the receiver's class or one of its
-   bases (type arguments aside, not `optional` / `Result`), such as
+   bases (type arguments aside, not `Result`), such as
    `w.addIf(...)` or `form.file(...)`, may stand alone as a statement; static
    factories and other results still warn. `lamtest` assertions are meant
    to be statements too: `Test.assertTrue(...)`, `Test.assertEqual(...)`

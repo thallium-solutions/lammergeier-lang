@@ -1,0 +1,173 @@
+# What can be `None` (after 4.11): class references, interface values, `html`,
+# `xml`, `json` (null), `any` and `Result` payloads. They are assigned,
+# passed, returned, stored in fields and lists, compared with `None`,
+# narrowed (`if x != None`, `if x == None { return }`) and given a default
+# with `??`. A `None` markup value renders nothing, and a markup attribute
+# whose value is `None` (`"alert" if failed else None`, an `any`) is
+# omitted.
+#
+# expect: user: ada
+# expect: missing: true
+# expect: field: none
+# expect: list: ada, <none>
+# expect: interface: square / none
+# expect: html: [<p>body</p>] []
+# expect: html none: true false
+# expect: xml: [] true
+# expect: json: true null
+# expect: any: true
+# expect: result payloads: ada true true
+# expect: attribute: <div role="alert">failed</div>
+# expect: attribute: <div>fine</div>
+# expect: class attribute: <p class="note">x</p> <p>x</p>
+# expect: nested: <p role="alert">error</p> <p role="status">success</p> <p>info</p>
+# expect: generic: true 3
+# expect: ternary ref: true
+# expect: done
+
+from lamerrors import Result
+from lamjson import Json
+
+class User {
+    name: str = ""
+    manager: User = None
+
+    func init(self, name: str) {
+        self.name = name
+    }
+}
+
+interface Shape {
+    func label(self) -> str
+}
+
+class Square {
+    func label(self) -> str {
+        return "square"
+    }
+}
+
+class Box[T] {
+    value: T
+
+    func init(self, value: T) {
+        self.value = value
+    }
+}
+
+func find(name: str) -> User {
+    if name == "ada" {
+        return User("ada")
+    }
+    return None
+}
+
+func shape(square: bool) -> Shape {
+    if square {
+        return Square()
+    }
+    return None
+}
+
+func body(show: bool) -> html {
+    if show {
+        return <><p>body</p></>
+    }
+    return None
+}
+
+func feed() -> xml {
+    return None
+}
+
+func loadUser(name: str) -> Result[User] {
+    return Result.Ok(find(name))
+}
+
+func loadPage() -> Result[html] {
+    return Result.Ok(None)
+}
+
+func loadAny() -> Result[any] {
+    return Result.Ok(None)
+}
+
+func managerName(u: User) -> str {
+    if u.manager == None {
+        return "none"
+    }
+    return u.manager.name
+}
+
+func names(users: list[User]) -> str {
+    out: list[str] = []
+    for u in users {
+        if u == None {
+            out.append("<none>")
+            continue
+        }
+        out.append(u.name)
+    }
+    return ", ".join(out)
+}
+
+func label(s: Shape) -> str {
+    if s != None {
+        return s.label()
+    }
+    return "none"
+}
+
+func alert(failed: bool) -> html {
+    role = "alert" if failed else None
+    text: str = "failed" if failed else "fine"
+    return <><div role=${role}>${text}</div></>
+}
+
+func note(cls: str) -> html {
+    wrap = cls if cls != "" else None
+    return <><p class=${wrap}>x</p></>
+}
+
+func toned(tone: str) -> html {
+    role = "alert" if tone == "error" else ("status" if tone == "success" else None)
+    return <><p role="${role}">${tone}</p></>
+}
+
+func payloads() -> Result[str] {
+    u: User = loadUser("ada")?
+    page: html = loadPage()?
+    a: any = loadAny()?
+    return Result.Ok(f"{u.name} {page == None} {a == None}")
+}
+
+func main() {
+    u: User = find("ada")
+    if u != None {
+        print(f"user: {u.name}")
+    }
+    nobody: User = find("bob")
+    print(f"missing: {nobody == None}")
+    print(f"field: {managerName(u)}")
+    print(f"list: {names([u, nobody])}")
+    print(f"interface: {label(shape(true))} / {label(shape(false))}")
+    print(f"html: [{body(true)}] [{body(false)}]")
+    print(f"html none: {body(false) == None} {body(true) == None}")
+    f: xml = feed()
+    print(f"xml: [{f}] {f == None}")
+    doc: json = Json.decode("{\"a\": null}").unwrap()
+    print(f"json: {doc["a"] == None} {doc["a"]}")
+    nothing: any = None
+    print(f"any: {nothing == None}")
+    print(f"result payloads: {payloads().unwrap()}")
+    print(f"attribute: {alert(true)}")
+    print(f"attribute: {alert(false)}")
+    print(f"class attribute: {note("note")} {note("")}")
+    print(f"nested: {toned("error")} {toned("success")} {toned("info")}")
+    empty: Box[int] = None
+    full: Box[int] = Box[int](3)
+    print(f"generic: {empty == None} {full.value}")
+    pick: User = u if len(u.name) > 5 else None
+    print(f"ternary ref: {pick == None}")
+    print("done")
+}

@@ -51,8 +51,8 @@ class Square(Shape) {
     }
 }
 
-func largest(shapes: list[Shape]) -> optional[Shape] {
-    best: optional[Shape] = None
+func largest(shapes: list[Shape]) -> Shape {
+    best: Shape = None
     for s in shapes {
         if best == None {
             best = s

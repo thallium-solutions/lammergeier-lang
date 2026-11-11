@@ -728,7 +728,7 @@ def test_formatter_unary_minus_and_literals_after_operators() -> None:
     after any binary operator or keyword keeps its spacing, while the
     postfix ``?`` (``r? - 1``, ``f()?[0]``) and ``?.`` stay as they are."""
     expected = (
-        "func pick(n: optional[int], xs: optional[list[int]], r: Result[int]) -> Result[int] {\n"
+        "func pick(n: any, xs: any, r: Result[int]) -> Result[int] {\n"
         "    a: int = n ?? -1\n"
         "    b: list[int] = xs ?? []\n"
         "    c: dict[str, int] = {\"k\": n ?? -2} ?? {}\n"
@@ -748,7 +748,7 @@ def test_formatter_unary_minus_and_literals_after_operators() -> None:
         "    u: int = n ?? h ?? -4\n"
         "    v: dict[str, int] = {\"a\": -1}\n"
         "    x: list[int] = [i[0] ?? -1 for _z in (xs ?? [])]\n"
-        "    y: optional[str] = None\n"
+        "    y: Result[str] = Result.Ok(\"\")\n"
         "    w: int = len(y?.upper() ?? \"\") + (y?.length() ?? -1)\n"
         "    print(a, b, c, d, e, f, g, i, j, k, m, p, q, s, t, u, v, x, w)\n"
         "    return Result.Ok(-1)\n"

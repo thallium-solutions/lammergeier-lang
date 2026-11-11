@@ -13,7 +13,7 @@
 # expect-go: func (s *Section) _lamOv_Node_Add(child string) *Node { return s.Add(child)._lamUp_Node() }
 # expect-go: func Node_make() *Node {
 # expect-go: func Section_make(count int) *Section {
-# expect-go: return n._lamVirt_Add(child)
+# expect-go: return lamNN(n, "add")._lamVirt_Add(child)
 
 class Node {
     func init(self) {

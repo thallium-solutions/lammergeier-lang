@@ -3459,6 +3459,11 @@ def _compile_lam(
     # Some library has an f-string slot through ``lamSlotText``: the main
     # file defines it.
     transpiler._lib_uses_slot_text = any("lamSlotText(" in src for src in lib_sources.values())
+    # Some library checks for ``None`` at run time (``_NONE_RUNTIME_GO``).
+    transpiler._lib_uses_none_runtime = any(
+        transpiler._NONE_RUNTIME_RE.search(src) for src in lib_sources.values()
+    )
+    transpiler._lib_uses_none_of = any("lamNoneOf[" in src for src in lib_sources.values())
     # Inject library class/static info
     transpiler._class_names.update(lib_class_names)
     transpiler._interfaces.update(lib_pre_interfaces)

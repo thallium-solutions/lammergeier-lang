@@ -1,0 +1,40 @@
+# expect-error: line 32: error[syntax]: `?.` was removed: test `u != None` first (`None.name` throws), or use `?` on a `Result`
+# expect-error: line 33: error[syntax]: `?.` was removed: test `u != None` first (`None.greet` throws)
+# expect-error: line 34: error[syntax]: `?.` was removed: test `u.friend != None` first (`None.name` throws)
+# expect-error: line 34: error[syntax]: `?.` was removed: test `u != None` first (`None.friend` throws)
+# expect-error: line 35: error[syntax]: `?.` was removed: test `v != None` first (`None.anything` throws)
+# expect-error: line 36: error[syntax]: `?.` was removed: test `u != None` first (`None.greet` throws)
+# expect-error: line 37: error[syntax]: `?.` was removed: test `x != None` first (`None.name` throws)
+# expect-error: line 38: error[syntax]: `?.` was removed: test `find() != None` first (`None.name` throws)
+# expect-no-warning: optional
+# Safe navigation was removed (after 4.11): `obj?.field`, `obj?.method()` and
+# chains on a class, interface or `any` receiver are errors pointing to a
+# `None` test; on a `Result` receiver `f()?.m()` is still `?` propagation
+# then a member (see positive_666).
+
+
+class User {
+    name: str = ""
+    friend: User = None
+
+    func greet(self) -> str {
+        return "hi"
+    }
+}
+
+func find() -> User {
+    return None
+}
+
+func main() {
+    u: User = find()
+    v: any = None
+    print(u?.name)
+    print(u?.greet())
+    print(u?.friend?.name)
+    print(v?.anything)
+    print(f"{u?.greet()}")
+    f = lambda (x: User) -> str: x?.name
+    print(find()?.name)
+    print(f(u))
+}

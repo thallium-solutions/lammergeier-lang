@@ -10,14 +10,14 @@
 # expect: members item34item5
 # expect: list 6
 # expect: dict 4
-# expect: optional 9
+# expect: reference 9
 # expect: field 1
 # expect: q-members item5:6
 # expect: generic 42
 # expect: returned 2 4
 # expect: elements 2 8 item2
 # expect: list of results 3
-# expect: safe nav 3 -1
+# expect: none test 3 -1
 # expect: imported field 3 4 33
 # expect: bound field 3
 # expect: nested 3 A0
@@ -69,7 +69,7 @@ func dictParam(fn: func() -> dict[str, int]) -> int {
     return fn()["a"] + len(fn())
 }
 
-func optParam(fn: func() -> optional[Item]) -> int {
+func optParam(fn: func() -> Item) -> int {
     return (fn() ?? Item(0)).n
 }
 
@@ -89,8 +89,9 @@ func results(fn: func() -> list[Result[int]]) -> int {
     return total
 }
 
-func maybe(fn: func() -> optional[Item]) -> int {
-    return fn()?.n ?? -1
+func maybe(fn: func() -> Item) -> int {
+    item: Item = fn()
+    return item.n if item != None else -1
 }
 
 class Holder {
@@ -111,7 +112,7 @@ func main() {
     print("members", viaItem(lambda (n: int) -> Result[Item]: Result.Ok(Item(n))))
     print("list", listParam(lambda () -> list[Item]: [Item(1), Item(2)]))
     print("dict", dictParam(lambda () -> dict[str, int]: {"a": 3}))
-    print("optional", optParam(lambda () -> optional[Item]: Item(9)))
+    print("reference", optParam(lambda () -> Item: Item(9)))
     h: Holder = Holder(lambda (n: int) -> Result[list[int]]: Result.Ok([n, n]))
     print("field", h.count())
     print("q-members", viaQ(lambda (n: int) -> Result[Item]: Result.Ok(Item(n))).unwrap())
@@ -122,7 +123,7 @@ func main() {
     table: dict[str, func() -> Result[Item]] = {"a": lambda () -> Result[Item]: Result.Ok(Item(2))}
     print("elements", len(fns[0]().unwrap()), fns[0]().unwrap()[1], table["a"]().unwrap().label())
     print("list of results", results(lambda () -> list[Result[int]]: [Result.Ok(1), Result.Ok(2)]))
-    print("safe nav", maybe(lambda () -> optional[Item]: Item(3)), maybe(lambda () -> optional[Item]: None))
+    print("none test", maybe(lambda () -> Item: Item(3)), maybe(lambda () -> Item: None))
     loader: Loader = makeLoader()
     total: int = 0
     for x in loader.fetch(10).unwrap() {

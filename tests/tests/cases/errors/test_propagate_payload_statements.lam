@@ -1,7 +1,7 @@
 # Regression (4.1.2): `?` operands in statement positions: augmented
 # assignment, `if` / `while` / `for range` / `match` heads, `print` in a
 # `do` block of a non-`Result` function, and annotated targets whose type
-# differs from the payload (`x: float = parse(s)?`, `o: optional[int] =
+# differs from the payload (`x: float = parse(s)?`, `o: any =
 # parse(s)?`, `y: any = parse(s)? * 2`).
 #
 # expect: loops: 10700
@@ -44,7 +44,7 @@ func matched(s: str) -> Result[str] {
 func annotated() -> Result[str] {
     x: float = parse("abc")?
     y: any = parse("ab")? * 2
-    o: optional[int] = parse("a")?
+    o: any = parse("a")?
     z: float = parse("abc")? / 2
     w: int = parse("ab")? * parse("abcde")?
     return Result.Ok(f"{x} {y} {o} {z} {w}")

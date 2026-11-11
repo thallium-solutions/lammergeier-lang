@@ -1,0 +1,102 @@
+# expect-pass
+# expect-no-warning: never `None`
+# expect-no-warning: was removed
+# What can be `None` (after 4.11): class references (also generic ones),
+# interface values, `html`, `xml`, `json`, `any` and `Result` payloads take
+# a literal `None` (assigned, returned, passed, as a default, a field, in
+# `Result.Ok`), compare with `None`, narrow (`if u != None`, `if u == None {
+# return }`) and take `??`; a ternary mixing a `str` and `None` is an `any`
+# (also as a markup attribute); `f()?.m()` / `f()?.field` on a `Result` is
+# propagation then a member, not the removed `?.`.
+from lamerrors import Result
+
+class Shop {
+    name: str = "shop"
+    owner: Shop = None
+
+    func title(self) -> str {
+        return self.name
+    }
+}
+
+interface Named {
+    func title(self) -> str
+}
+
+class Box[T] {
+    value: T
+}
+
+func find(name: str = "", fallback: Shop = None) -> Shop {
+    if name == "" {
+        return fallback
+    }
+    return None
+}
+
+func named() -> Named { return None }
+func page() -> html { return None }
+func feed() -> xml { return None }
+func doc() -> json { return None }
+func dyn() -> any { return None }
+func loadNone() -> Result[Shop] { return Result.Ok(None) }
+func loadShop() -> Result[Shop] { return Result.Ok(Shop()) }
+func loadPage() -> Result[html] { return Result.Ok(None) }
+func loadAny() -> Result[any] { return Result.Ok(None) }
+func loadText() -> Result[str] { return Result.Ok("x") }
+
+func run() -> Result[str] {
+    s: Shop = loadNone()?
+    title: str = loadShop()?.title()
+    name = loadShop()?.name
+    upper: str = loadText()?.toUpper()
+    label: str = loadText()? ?? "none"
+    h: html = loadPage()? ?? <><p>empty</p></>
+    print(s == None, title, name, upper, label, h, loadAny()? ?? 1)
+    return Result.Ok(f"{loadText()?.toUpper()}")
+}
+
+func describe(s: Shop) -> str {
+    if s != None {
+        return s.name
+    }
+    if s == None {
+        return "none"
+    }
+    return s.title()
+}
+
+func guard(s: Shop) -> str {
+    if s == None {
+        return "none"
+    }
+    return s.title()
+}
+
+func show(flag: bool) {
+    s: Shop = None
+    b: Box[int] = None
+    n: Named = named()
+    h: html = None
+    x: xml = None
+    j: json = None
+    a: any = None
+    shops: list[Shop] = [None, Shop()]
+    byName: dict[str, Shop] = {"x": None}
+    s = find("a", None) ?? Shop()
+    role = "alert" if flag else None
+    nested = "a" if flag else ("b" if not flag else None)
+    cls = None if flag else "note"
+    picked: Shop = Shop() if flag else None
+    print(<><div role=${role} class=${cls}>${page() ?? h}</div></>)
+    print(s.name, b == None, n == None, h == None, x == None, j == None, a == None)
+    print(shops[0] == None, byName["x"] == None, picked != None, describe(s), guard(s))
+    print((named() ?? n) == None, feed(), doc(), dyn() ?? "d", run().ok())
+    t = (find() ?? Shop()).title()
+    print(t, role, cls, nested)
+}
+
+func main() {
+    show(true)
+    show(false)
+}

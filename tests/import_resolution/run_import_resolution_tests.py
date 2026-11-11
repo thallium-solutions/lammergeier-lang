@@ -1406,8 +1406,8 @@ def test_package_stress_412_regressions() -> None:
         ),
         "lib/shop/report.lam": (
             "from lamerrors import Result\nfrom .items import Item, Featured, Catalog, load\nimport .kit as k\n\n"
-            "func cheapest(page: k.Page[Item], rate: func(Item) -> float) -> optional[str] {\n"
-            "    best: optional[Item] = None\n    for it in page.items {\n"
+            "func cheapest(page: k.Page[Item], rate: func(Item) -> float) -> any {\n"
+            "    best: Item = None\n    for it in page.items {\n"
             "        if best == None or rate(it) < rate(best) {\n            best = it\n        }\n    }\n"
             "    if best == None {\n        return None\n    }\n    return best.name\n}\n\n"
             "func report() -> Result[str] {\n    page = load()?\n"
@@ -1646,7 +1646,7 @@ def test_import_cycle_module_as_entry() -> None:
 def test_static_refactor_cross_feature_fixture() -> None:
     """The core fixture ``integration/test_int_static_refactor.lam``: statics
     across an import cycle composed with generics, ``try``/rethrow, lambdas,
-    ``Result``, private statics as values, optional ``html`` results, typed
+    ``Result``, private statics as values, ``html`` results that may be ``None``, typed
     callbacks and ``lamtest`` assertions as statements, built here to check
     that it raises no warning (the core runner checks only its output)."""
     cases = PROJECT_ROOT / "tests" / "tests" / "cases" / "integration"

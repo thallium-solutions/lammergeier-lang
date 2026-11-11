@@ -3,12 +3,12 @@
 # guard); `catch _` binds nothing; `make()?.size()` evaluates `make()` once.
 # expect-go: var r *Result = Apply(func() *Result {
 # expect-go: if !__q4.Ok() { return __q4 }
-# expect-go: return Result_Ok(__q4.Value.(int) + 1)
-# expect-go: __lamDoRetV1 = __q1.Value.(int)
+# expect-go: return Result_Ok(lamAs[int](__q4.Value, "an int") + 1)
+# expect-go: __lamDoRetV1 = lamAs[int](__q1.Value, "an int")
 # expect-go: if __rdo1.Error != nil {
 # expect-go: __q2 := Thing__lam2(n)
 # expect-go: if !__q2.Ok() { return __q2 }
-# expect-go: return Result_Ok(func(v interface{}) *Thing { if v == nil { return nil }; return v.(*Thing) }(__q2.Value).Size())
+# expect-go: return Result_Ok(lamNN(lamAsNil[*Thing](__q2.Value), "size").Size())
 
 from lamerrors import Result, Error
 

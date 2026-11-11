@@ -124,26 +124,12 @@ def _is_json_assignable_type(type_: Type) -> bool:
     return False
 
 
-_VALUE_TYPE_NAMES = frozenset({
-    "bool", "str", "string", "int", "int8", "int16", "int32", "int64",
-    "uint", "uint8", "uint16", "uint32", "uint64", "float", "float32", "float64",
-    "byte", "rune", "json", "html", "xml", "bytes",
-})
-
-
-def _optional_inner(type_: Type) -> Type | None:
-    """Payload of ``optional[T]`` / ``Option[T]`` (``None`` otherwise)."""
-    if isinstance(type_, GenericType) and type_.base in {"optional", "Option"} and len(type_.args) == 1:
-        return type_.args[0]
-    return None
-
-
 # Nominal subtyping hook: ``hook(expected, actual)`` is True when the class
 # ``actual`` derives from ``expected`` (a subclass instance is usable where
 # its base class is expected). The semantic checker installs it while it
 # runs; collection elements stay invariant (``list[Square]`` is not a
 # ``list[Shape]``: the list could then receive a ``Circle``), so the hook
-# only applies at the top level, through ``optional[...]`` and unions.
+# only applies at the top level and through unions.
 _SUBCLASS_HOOK: ContextVar[Optional[Callable[[Type, Type], bool]]] = ContextVar(
     "lam_subclass_hook", default=None,
 )
@@ -166,10 +152,6 @@ def is_assignable(expected: Type, actual: Type) -> bool:
     hook = _SUBCLASS_HOOK.get()
     if hook is None:
         return False
-    expected_inner = _optional_inner(expected)
-    if expected_inner is not None:
-        actual_inner = _optional_inner(actual)
-        return _subclass_assignable(hook, expected_inner, actual_inner if actual_inner is not None else actual)
     return _subclass_assignable(hook, expected, actual)
 
 
@@ -181,9 +163,6 @@ def _subclass_assignable(hook, expected: Type, actual: Type) -> bool:
             _is_assignable(expected, option) or _subclass_assignable(hook, expected, option)
             for option in actual.options
         )
-    actual_inner = _optional_inner(actual)
-    if actual_inner is not None:
-        return _subclass_assignable(hook, expected, actual_inner)
     if isinstance(expected, (NamedType, GenericType)) and isinstance(actual, (NamedType, GenericType)):
         return bool(hook(expected, actual))
     return False
@@ -194,23 +173,6 @@ def _is_dynamic_name(type_: Type) -> bool:
 
 
 def _is_assignable(expected: Type, actual: Type) -> bool:
-    expected_inner = _optional_inner(expected)
-    actual_inner = _optional_inner(actual)
-    if expected_inner is not None:
-        # ``optional[T]`` / ``Option[T]`` accepts ``None``, a ``T`` and any
-        # other optional of an assignable payload.
-        if isinstance(actual, NamedType) and actual.name in {"None", "any", "object"}:
-            return True
-        return _is_assignable(expected_inner, actual_inner if actual_inner is not None else actual)
-    if actual_inner is not None:
-        # An optional class reference may flow into the class type itself
-        # (class-typed variables already hold ``None``); value payloads
-        # (``optional[int]`` is ``*int``) may not.
-        if isinstance(expected, NamedType) and expected.name in {"any", "object"}:
-            return True
-        if isinstance(actual_inner, NamedType) and actual_inner.name in _VALUE_TYPE_NAMES:
-            return False
-        return _is_assignable(expected, actual_inner)
     if isinstance(expected, NamedType) and expected.name == "json":
         return _is_json_assignable_type(actual)
     if isinstance(actual, NamedType) and actual.name == "json" and isinstance(expected, NamedType):
@@ -226,7 +188,9 @@ def _is_assignable(expected: Type, actual: Type) -> bool:
         return True
     if isinstance(actual, NamedType) and actual.name == "None":
         if isinstance(expected, NamedType):
-            return expected.name in {"None", "any", "object"}
+            # References hold ``None`` (classes are checked by the semantic
+            # checker's nominal rules); value types never do.
+            return expected.name in {"None", "any", "object", "html", "xml"}
         if isinstance(expected, UnionType):
             return any(_is_assignable(option, actual) for option in expected.options)
         # A function value is a Go func: ``None`` is the unset callback
@@ -339,10 +303,6 @@ def _type_to_go(
             return f"map[{args[0]}]bool" if args else "map[interface{}]bool"
         if type_.base == "tuple":
             return "[]interface{}"
-        if type_.base in {"optional", "Option"}:
-            if not args:
-                return "interface{}"
-            return args[0] if args[0].startswith("*") else f"*{args[0]}"
         if type_.base == "chan":
             return f"chan {args[0]}" if args else "chan interface{}"
         if type_.base in {"generator", "iterator", "Generator", "Iterator"}:
@@ -421,6 +381,12 @@ def _generic_type(base: str, args: Sequence[Type]) -> Type:
     if base == "iterator" and len(args) == 1:
         # ``iterator[T]`` is another name of ``generator[T]``.
         base = "generator"
+    if base in {"optional", "Option"} and len(args) == 1:
+        # The removed optional type: the semantic checker reports it where
+        # it is written (``compiler/semantic_none.py``); everywhere else
+        # (signatures of imported modules) it reads as its payload, so one
+        # migration does not cascade into errors at every use.
+        return args[0]
     return GenericType(base, tuple(args))
 
 

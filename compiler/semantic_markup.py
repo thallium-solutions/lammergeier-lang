@@ -61,7 +61,7 @@ class MarkupSemanticMixin:
     @staticmethod
     def _markup_kind_of_type(type_) -> str | None:
         """``html``/``xml`` when a (possibly wrapped) type is markup:
-        ``xml``, ``list[xml]``, ``optional[xml]``, ``Result[xml]``..."""
+        ``xml``, ``list[xml]``, ``Result[xml]``..."""
         if type_ is None:
             return None
         text = type_ if isinstance(type_, str) else render_type(type_)
@@ -234,8 +234,6 @@ class MarkupSemanticMixin:
             return type_.name in MARKUP_KINDS
         if isinstance(type_, ListType):
             return MarkupSemanticMixin._markup_is_markup_type(type_.item)
-        if isinstance(type_, GenericType) and type_.base in {"optional", "Option"} and type_.args:
-            return MarkupSemanticMixin._markup_is_markup_type(type_.args[0])
         return False
 
     def _markup_value_issue(self, type_, kind: str) -> str | None:
@@ -264,8 +262,6 @@ class MarkupSemanticMixin:
             return None
         if isinstance(type_, ListType):
             return self._markup_value_issue(type_.item, kind)
-        if isinstance(type_, GenericType) and type_.base in {"optional", "Option"} and type_.args:
-            return self._markup_value_issue(type_.args[0], kind)
         if isinstance(type_, UnionType):
             for option in type_.options:
                 issue = self._markup_value_issue(option, kind)

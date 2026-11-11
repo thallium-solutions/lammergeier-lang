@@ -7,6 +7,6 @@ class Document {
     }
 }
 
-func inspect(document: Option[Document]) {
-    print(document?.titel)
+func inspect(document: Document) {
+    print(document.titel)
 }

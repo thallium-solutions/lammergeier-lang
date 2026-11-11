@@ -10,7 +10,7 @@ func feed(items: list[str]) -> xml {
     return <><?xml version="1.0"?><feed>${[<><entry>${i}</entry></> for i in items]}</feed></>
 }
 
-func page(title: optional[str], count: int, ready: bool, data: json) -> html {
+func page(title: str, count: int, ready: bool, data: json) -> html {
     body: html = <><h1 data-count="${count}" hidden=${not ready}>${title}</h1>${Badge("new")}</>
     body += " & more"
     body += <><script>const data = ${data}; if (data) { run() }</script></>

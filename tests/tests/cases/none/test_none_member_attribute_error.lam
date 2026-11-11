@@ -1,0 +1,213 @@
+# A member of `None` raises `AttributeError: None has no attribute 'x'`
+# (after 4.11): a field read or write, a method call (also of a method that never
+# touches `self`, which Go would have run on a nil receiver), an interface
+# method, a member of a chain or of a list element / call result. The
+# exception is caught by `try` / `catch AttributeError` and a catch-all; a
+# `do` / `catch` handler (for the errors `?` propagates) never sees it: it
+# goes on to the enclosing `try` (also when raised in a called function). A
+# reference narrowed by `!= None` is used without a check.
+#
+# expect: read: AttributeError: None has no attribute 'name'
+# expect: write: AttributeError: None has no attribute 'name'
+# expect: method: AttributeError: None has no attribute 'greet'
+# expect: no self: AttributeError: None has no attribute 'constant'
+# expect: interface: AttributeError: None has no attribute 'title'
+# expect: chain: AttributeError: None has no attribute 'name'
+# expect: ada
+# expect: element: AttributeError: None has no attribute 'name'
+# expect: call result: AttributeError: None has no attribute 'greet'
+# expect: catch all: AttributeError: None has no attribute 'name'
+# expect: through do: AttributeError: None has no attribute 'name'
+# expect: through do nested: AttributeError: None has no attribute 'constant'
+# expect: ada
+# expect: do ok: ada
+# expect: narrowed: ada / skipped
+# expect: guard: ada
+# expect: guard: none
+# expect: and: true false
+# expect: generic: AttributeError: None has no attribute 'get'
+# expect: comprehension: AttributeError: None has no attribute 'name'
+# expect: self chain: AttributeError: None has no attribute 'name'
+# expect: done
+
+from lamerrors import Result
+
+class User {
+    name: str = ""
+    friend: User = None
+
+    func init(self, name: str) {
+        self.name = name
+    }
+
+    func greet(self) -> str {
+        return f"hi {self.name}"
+    }
+
+    func constant(self) -> int {
+        return 42
+    }
+
+    func friendName(self) -> str {
+        return self.friend.name
+    }
+}
+
+interface Titled {
+    func title(self) -> str
+}
+
+class Page {
+    heading: str = "home"
+
+    func title(self) -> str {
+        return self.heading
+    }
+}
+
+class Box[T] {
+    value: T
+
+    func init(self, value: T) {
+        self.value = value
+    }
+
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+func find(name: str) -> User {
+    if name == "ada" {
+        return User("ada")
+    }
+    return None
+}
+
+func noTitle() -> Titled {
+    return None
+}
+
+func noBox() -> Box[int] {
+    return None
+}
+
+func constantOf(u: User) -> int {
+    return u.constant()
+}
+
+func describe(u: User) -> str {
+    if u != None {
+        return u.name
+    }
+    return "skipped"
+}
+
+func guarded(u: User) -> str {
+    if u == None {
+        return "none"
+    }
+    return u.name
+}
+
+func main() {
+    missing: User = find("bob")
+    try {
+        print(missing.name)
+    } catch AttributeError as e {
+        print(f"read: {e}")
+    }
+    try {
+        missing.name = "x"
+    } catch AttributeError as e {
+        print(f"write: {e}")
+    }
+    try {
+        print(missing.greet())
+    } catch AttributeError as e {
+        print(f"method: {e}")
+    }
+    try {
+        print(constantOf(missing))
+    } catch AttributeError as e {
+        print(f"no self: {e}")
+    }
+    try {
+        t: Titled = noTitle()
+        print(t.title())
+    } catch AttributeError as e {
+        print(f"interface: {e}")
+    }
+    try {
+        ada: User = find("ada")
+        print(ada.friend.name)
+    } catch AttributeError as e {
+        print(f"chain: {e}")
+    }
+    try {
+        users: list[User] = [find("ada"), find("bob")]
+        for u in users {
+            print(u.name)
+        }
+    } catch AttributeError as e {
+        print(f"element: {e}")
+    }
+    try {
+        print(find("eve").greet())
+    } catch AttributeError as e {
+        print(f"call result: {e}")
+    }
+    try {
+        print(missing.name)
+    } catch e {
+        print(f"catch all: {e}")
+    }
+    try {
+        do {
+            print(missing.name)
+        } catch err {
+            print(f"unexpected do catch: {err}")
+        }
+    } catch AttributeError as e {
+        print(f"through do: {e}")
+    }
+    try {
+        do {
+            print(constantOf(missing))
+        } catch err {
+            print(f"unexpected do catch: {err}")
+        }
+    } catch AttributeError as e {
+        print(f"through do nested: {e}")
+    }
+    do {
+        print(find("ada").name)
+    } catch err {
+        print(f"unexpected {err}")
+    }
+    print(f"do ok: ada")
+    print(f"narrowed: {describe(find("ada"))} / {describe(missing)}")
+    print(f"guard: {guarded(find("ada"))}")
+    print(f"guard: {guarded(missing)}")
+    ok: bool = missing != None and missing.name == "ada"
+    found: User = find("ada")
+    print("and:", found != None and found.name == "ada", ok)
+    try {
+        b: Box[int] = noBox()
+        print(b.get())
+    } catch AttributeError as e {
+        print(f"generic: {e}")
+    }
+    try {
+        names = [u.name for u in [find("ada"), missing]]
+        print(names)
+    } catch AttributeError as e {
+        print(f"comprehension: {e}")
+    }
+    try {
+        print(find("ada").friendName())
+    } catch AttributeError as e {
+        print(f"self chain: {e}")
+    }
+    print("done")
+}

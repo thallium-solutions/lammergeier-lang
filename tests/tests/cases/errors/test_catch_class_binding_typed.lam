@@ -64,7 +64,7 @@ func main() {
     } catch AppError as outer {
         print(f"rethrown: {outer.message} (code {outer.code()})")
     }
-    saved: optional[AppError] = None
+    saved: AppError = None
     try {
         lookup(3)
     } catch AppError as e {

@@ -1,0 +1,58 @@
+# Members of class references that may be `None`: a linked list walked
+# through a reassigned local (the `while n != None` test does not narrow a
+# local the loop reassigns), so every field read and method call goes
+# through the `None` check (`lamNN`). The Go baseline has no check: the
+# `lam/go` ratio is its cost.
+#
+# ops: 2000000
+
+from lamtime import Time
+
+class Node {
+    value: int = 0
+    next: Node = None
+
+    func val(self) -> int {
+        return self.value
+    }
+}
+
+func build(n: int) -> Node {
+    head: Node = None
+    for i in range(n) {
+        node: Node = Node()
+        node.value = i
+        node.next = head
+        head = node
+    }
+    return head
+}
+
+func total(head: Node) -> int {
+    sum: int = 0
+    n: Node = head
+    while n != None {
+        sum += n.val() + n.value
+        n = n.next
+    }
+    return sum
+}
+
+func work() {
+    head: Node = build(1000)
+    acc: int = 0
+    for _r in range(2000) {
+        acc += total(head)
+    }
+    if acc != 2000 * 999000 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH none_checks 2000000 {elapsed}")
+}

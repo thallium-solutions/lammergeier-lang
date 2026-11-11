@@ -25,11 +25,11 @@ class Page[T] {
 }
 
 interface Store {
-    func get(name: str) -> optional[Product]
+    func get(name: str) -> Product
 }
 
 interface WritableStore {
-    func get(name: str) -> optional[Product]
+    func get(name: str) -> Product
     func put(p: Product) -> int
 }
 
@@ -40,7 +40,7 @@ class Catalog {
         self.onChange: func(str) = None
     }
 
-    func get(self, name: str) -> optional[Product] {
+    func get(self, name: str) -> Product {
         if name in self.byName {
             return self.byName[name]
         }

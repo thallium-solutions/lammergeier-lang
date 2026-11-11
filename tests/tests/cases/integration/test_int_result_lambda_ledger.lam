@@ -6,7 +6,7 @@
 # unannotated locals (`accounts = Repo[Account]()`) and rankings use
 # `max` / `min` over an ordered type parameter. Composes the fixes for
 # `?` in lambdas, `catch _`, generic inference from `Result[T]` /
-# `list[T]` / `optional[T]` annotations and the expected type, ordered
+# `list[T]` annotations and the expected type, ordered
 # `max` / `min`, generic local instantiation and single evaluation of
 # `f()?.method()` receivers.
 #
@@ -108,12 +108,12 @@ func worst[T: ordered](values: list[T]) -> T {
     return low
 }
 
-func firstOr[T](fn: func() -> optional[T], fallback: T) -> T {
-    v: optional[T] = fn()
-    if v == None {
+func firstOr[T](fn: func() -> Result[T], fallback: T) -> T {
+    do {
+        return fn()?
+    } catch _ {
         return fallback
     }
-    return v
 }
 
 func balanceOf(store: Store, name: str) -> int {
@@ -163,7 +163,7 @@ func main() {
     })
     print(f"count={len(listed.unwrap())} names={listed.unwrap()}")
 
-    bob: int = firstOr(lambda () -> optional[int]: store.accounts["bob"].balance, -1)
+    bob: int = firstOr(lambda () -> Result[int]: Result.Ok(store.accounts["bob"].balance), -1)
     print(f"lookup=bob:{bob} fallback={balanceOf(store, "nobody")}")
 
     failed = 0

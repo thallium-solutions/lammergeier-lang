@@ -2,7 +2,7 @@
 # expect-no-warning: has type `func(
 # A static method used as a function value keeps its full parameter and
 # result types (`list[Item]`, `dict[str, Item]`, `set[int]`,
-# `optional[Item]`, `Result[list[int]]`), so it fits callbacks typed
+# `Item`, `Result[list[int]]`), so it fits callbacks typed
 # with element types.
 
 from lamerrors import Result
@@ -21,7 +21,7 @@ func applyDict(fn: func(dict[str, Item]) -> list[Item]) -> int {
     return len(fn({"a": Item(1)}))
 }
 
-func applySet(fn: func(set[int], optional[Item]) -> Result[list[int]]) -> bool {
+func applySet(fn: func(set[int], Item) -> Result[list[int]]) -> bool {
     return fn({1}, None).ok()
 }
 
@@ -34,7 +34,7 @@ class Handlers {
         return [v for _k, v in m]
     }
 
-    static func ids(s: set[int], _it: optional[Item]) -> Result[list[int]] {
+    static func ids(s: set[int], _it: Item) -> Result[list[int]] {
         return Result.Ok([x for x in s])
     }
 }

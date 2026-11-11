@@ -1,0 +1,38 @@
+# expect-warning: line 26: warning[type]: `name` is a `str`, never `None`: `?? "anon"` has no effect
+# expect-warning: line 27: warning[type]: `u.age` is an `int`, never `None`: `?? 0` has no effect
+# expect-warning: line 28: warning[type]: `xs` is a `list[int]`, never `None`: `?? ...` has no effect
+# expect-warning: line 29: warning[type]: `label()` is a `str`, never `None`: `?? "x"` has no effect
+# expect-no-warning: `u` is a
+# expect-no-warning: `v` is a
+# expect-no-warning: `load()?` is a
+# expect-no-warning: `d["k"]` is a
+# `??` on a value type (it is never `None`) is a warning (after 4.11); on a
+# reference, an `any`, a `Result` payload (`load()?`) or a dict lookup it is
+# the `None` test.
+from lamerrors import Result
+
+class User {
+    age: int = 0
+}
+
+func label() -> str { return "l" }
+func load() -> Result[str] { return Result.Ok("x") }
+
+func run() -> Result[str] {
+    name: str = "ada"
+    u: User = None
+    xs: list[int] = [1]
+    v: any = None
+    print(name ?? "anon")
+    print(u.age ?? 0)
+    print(xs ?? [])
+    print(label() ?? "x")
+    w = u ?? User()
+    d: dict[str, int] = {}
+    print(w.age, v ?? 1, load()? ?? "none", d["k"] ?? 0)
+    return Result.Ok(name)
+}
+
+func main() {
+    _ = run()
+}

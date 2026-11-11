@@ -1,6 +1,6 @@
 # Stress: an order report built from contextually typed lambdas,
 # comprehensions (tuple targets, enumerate, generators, dicts) and typed
-# `?.` / `??` chains over optional profiles, with inferred locals,
+# `None` tests and `??` over profiles that may be `None`, with inferred locals,
 # negative indexes, sorted keys, string iteration and Result payloads.
 #
 # expect: customers: ada(it) bob(?) cy(fr)
@@ -22,8 +22,8 @@ from lamerrors import Result
 
 class Profile {
     email: str
-    country: optional[str]
-    func init(self, email: str, country: optional[str]) {
+    country: any
+    func init(self, email: str, country: any) {
         self.email = email
         self.country = country
     }
@@ -31,8 +31,8 @@ class Profile {
 
 class Customer {
     name: str
-    profile: optional[Profile]
-    func init(self, name: str, profile: optional[Profile]) {
+    profile: Profile
+    func init(self, name: str, profile: Profile) {
         self.name = name
         self.profile = profile
     }
@@ -84,9 +84,9 @@ func main() {
     cy = Customer("cy", Profile("cy@x.io", "fr"))
     orders: list[Order] = [Order(ada, [10, 20]), Order(bob, [5]), Order(cy, [4, 8])]
 
-    labels = [f"{o.customer.name}({o.customer.profile?.country ?? '?'})" for o in orders]
+    labels = [f"{o.customer.name}({o.customer.profile.country ?? '?' if o.customer.profile != None else '?'})" for o in orders]
     print("customers:", " ".join(labels))
-    emails: list[str] = [o.customer.profile?.email ?? "none" for o in orders]
+    emails: list[str] = [o.customer.profile.email if o.customer.profile != None else "none" for o in orders]
     emails[-1] = "none"
     print("emails:", " ".join(emails))
 

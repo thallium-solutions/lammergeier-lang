@@ -1,12 +1,13 @@
 """``x()?.y`` on a ``Result``: propagation, then member access.
 
-The lexer reads ``f()?.method()`` as ``f()`` followed by the safe-navigation
-operator ``?.``. Safe navigation only makes sense on an optional value; on a
+The lexer reads ``f()?.method()`` as ``f()`` followed by the token ``?.``
+(``getattr_safe``). Lam has no safe navigation (removed after 4.11): on a
 ``Result`` the author means ``(f()?).method()`` (propagate the error, then use
-the payload). Both the semantic checker and the transpiler call
-``rewrite_result_safe_nav`` on each statement before analysing it, with their
-own type oracle, so the rest of the pipeline only sees the ``propagate`` +
-``getattr`` shape. ``?.`` on anything that is not a ``Result`` is unchanged.
+the payload). The semantic checker calls ``rewrite_result_safe_nav`` on each
+statement before analysing it, with its type oracle, and reports every
+``?.`` left (a receiver that is not a ``Result``); the transpiler, which only
+sees checked code, rewrites every ``?.`` (``rewrite_safe_nav_as_propagation``),
+so the rest of the pipeline only sees the ``propagate`` + ``getattr`` shape.
 """
 
 from __future__ import annotations
@@ -42,3 +43,9 @@ def rewrite_result_safe_nav(node, is_result: Callable[[Tree], bool]) -> None:
         if isinstance(receiver, Tree) and is_result(receiver):
             cur.data = "getattr"
             cur.children[0] = Tree("propagate", [receiver], meta=getattr(receiver, "_meta", None))
+
+
+def rewrite_safe_nav_as_propagation(node) -> None:
+    """Every ``getattr_safe`` below ``node`` as ``getattr(propagate(recv),
+    name)`` (the checker rejected the others)."""
+    rewrite_result_safe_nav(node, lambda _recv: True)

@@ -1,0 +1,48 @@
+# expect-error: line 33: error[type]: `optional[Shop]` was removed: write `Shop` (a class reference can be `None`; test `x != None` before using it)
+# expect-error: line 33: error[type]: `Option[Shop]` was removed: write `Shop`
+# expect-error: line 34: error[type]: `optional[Named]` was removed: write `Named` (an interface value can be `None`
+# expect-error: line 35: error[type]: `optional[html]` was removed: write `html` (an `html` value can be `None`
+# expect-error: line 37: error[type]: `optional[xml]` was removed: write `xml`
+# expect-error: line 38: error[type]: `optional[json]` was removed: write `json` (a `json` value can be `None`
+# expect-error: line 39: error[type]: `optional[any]` was removed: write `any`
+# expect-error: line 40: error[type]: `optional[Shop]` was removed: write `Shop`
+# expect-error: line 41: error[type]: `optional[Box[int]]` was removed: write `Box[int]`
+# expect-error: line 43: error[type]: `optional[Shop]` was removed: write `Shop`
+# expect-error: line 45: error[type]: `optional[Shop]` was removed: write `Shop`
+# expect-error: line 46: error[type]: `optional[html]` was removed: write `html`
+# after 4.11 removed the optional type: a reference payload (a class, an
+# interface, `html`, `xml`, `json`, `any`) already holds `None`, so
+# `optional[X]` / `Option[X]` anywhere (parameters, results, fields,
+# `Result[...]`, lists, dicts, generic arguments, casts) is a migration
+# error pointing to `X`.
+
+from lamerrors import Result
+
+class Shop {
+    name: str = ""
+}
+
+interface Named {
+    func name(self) -> str
+}
+
+class Box[T] {
+    value: T
+}
+
+func find(a: optional[Shop], b: Option[Shop]) -> Shop { return None }
+func named() -> optional[Named] { return None }
+func page() -> Result[optional[html]] { return Result.Ok(None) }
+
+func feed(x: optional[xml]) -> xml { return x }
+func doc(j: optional[json]) -> json { return j }
+func dyn(v: optional[any]) -> any { return v }
+func shops() -> list[optional[Shop]] { return [] }
+func boxes() -> dict[str, optional[Box[int]]] { return {} }
+class Cart {
+    owner: optional[Shop] = None
+}
+func cast(v: any) -> Shop { return v as optional[Shop] }
+func pages() -> Result[list[optional[html]]] { return Result.Ok([]) }
+
+func main() {}

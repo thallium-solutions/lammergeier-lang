@@ -47,7 +47,7 @@ class Atlas {
         }
     }
 
-    func maybe(self) -> generator[optional[Circle]] {
+    func maybe(self) -> generator[Circle] {
         for n in self.names {
             if len(n) > 1 {
                 yield Circle(n, len(n))

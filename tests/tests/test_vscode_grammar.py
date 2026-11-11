@@ -277,7 +277,7 @@ def test_casts(grammar: dict[str, Any], repository: dict[str, Any]) -> None:
         ('row["n"] as int + 1', "int"),
         ("(lookup(k) as User).name", "User"),
         ("data as list[str]", "list"),
-        ("v as optional[Order]", "optional"),
+        ("v as html", "html"),
         ("v as any", "any"),
     ):
         assert assert_search(pattern["match"], sample).group(2) == target, sample

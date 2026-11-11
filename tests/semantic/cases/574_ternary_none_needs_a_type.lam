@@ -1,8 +1,9 @@
-# expect-error: line 11: error[type]: ternary branches must have compatible types: got `str` and `None`
-# expect-error: line 12: error[type]: cannot assign `optional[str]` to `str` variable `s`
-# expect-error: line 13: error[type]: argument `name` to `greet` has type `optional[str]`, expected `str`
-# A `None` branch makes an `optional`: a new variable without annotation has
-# no type to hold it, and a `str` variable or parameter does not take it.
+# expect-error: line 13: error[type]: cannot assign `None` to `str` variable `s` (a `str` cannot be `None`: use a default value, a `Result`, or `any`)
+# expect-error: line 14: error[type]: argument `name` to `greet` has type `None`, expected `str` (a `str` cannot be `None`
+# expect-no-warning: ternary branches must have compatible types
+# After 4.11: `"x" if c else None` is an `any` (a `str` cannot be `None`): a new
+# variable without annotation takes it (it was an error, then an
+# `optional[str]`), but a `str` variable or parameter does not.
 func greet(name: str) -> str {
     return "hi " + name
 }

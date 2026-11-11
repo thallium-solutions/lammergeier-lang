@@ -1,6 +1,6 @@
-# Regression (4.1.2): an `optional` payload (`Result[optional[int]]`) kept
-# its `*int` shape under `??` (`x: int = maybe(4)? ?? 0` asserted `int` and
-# the fallback closure stayed `interface{}`), and an `any` payload used
+# Regression (4.1.2): a payload that may be `None` (a `Result[int]` built
+# from an `any`; After 4.11: it was a `Result[optional[int]]`) is typed under
+# `??` (`x: int = maybe(4)? ?? 0` is an `int`), and an `any` payload used
 # with an operator takes the type of its inline cast
 # (`x: int = anyVal()? as int * 2`; the operator alone is a Lam error).
 #
@@ -10,18 +10,27 @@
 
 from lamerrors import Result
 
-func maybe(n: int) -> Result[optional[int]] {
+func maybe(n: int) -> Result[int] {
     if n < 0 {
-        return Result.Ok(None)
+        nothing: any = None
+        return Result.Ok(nothing)
     }
     return Result.Ok(n)
 }
 
-func maybeName(n: int) -> Result[optional[str]] {
+func maybeName(n: int) -> Result[str] {
+    if n < 0 {
+        nothing: any = None
+        return Result.Ok(nothing)
+    }
+    return Result.Ok(f"n{n}")
+}
+
+func maybeAny(n: int) -> Result[any] {
     if n < 0 {
         return Result.Ok(None)
     }
-    return Result.Ok(f"n{n}")
+    return Result.Ok(n)
 }
 
 func anyVal() -> Result[any] {
@@ -38,7 +47,7 @@ func optionals() -> Result[str] {
     z = maybe(2)? ?? 1
     s: str = maybeName(3)? ?? "none"
     w = (maybeName(-1)? ?? "anon") + "!"
-    v = maybe(-1)?
+    v = maybeAny(-1)?
     return Result.Ok(f"{x} {y} {z * 3} {s} {w} {v == None} {maybe(5)?}")
 }
 

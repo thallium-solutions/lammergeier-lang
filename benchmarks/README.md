@@ -57,7 +57,8 @@ sh scripts/bench.sh runtime -f json --runs 9 --json out/runtime.json
 
 Groups: `language/` (calls, loops, lists, list indexing with a runtime
 index, dicts, strings, dispatch, f-strings, generators: full and early-left
-loops, generator values resumed loop after loop) and `stdlib/` (JSON: encoding
+loops, generator values resumed loop after loop, members of class references
+checked for `None`) and `stdlib/` (JSON: encoding
 a document and building and encoding a 50-product API response, regex,
 hashing, sorting, splitting, composing and rendering `html` pages and `xml`
 feeds).

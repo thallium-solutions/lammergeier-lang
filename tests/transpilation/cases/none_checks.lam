@@ -1,0 +1,95 @@
+# Transpilation (after 4.11): a member of a class reference or an interface value
+# that may be `None` goes through `lamNN` / `lamNNI` (AttributeError with
+# the member's name); `self`, a constructor call, a local only assigned
+# constructor calls and a local narrowed by `!= None` (also after an
+# early-return guard and in `and`) skip the check. A dynamic value converted
+# to a value type goes through `lamAs` (`TypeError: None is not a str`), to
+# a class through `lamAsNil`; `load()? ?? "none"` tests the raw payload. The
+# `None` exceptions are `*lamNoneError` panics, classified by `catch
+# TypeError` / `catch AttributeError` (`do` / `catch` never recovers them).
+#
+# expect-go: return lamNN(u, "name").Name
+# expect-go: return lamNN(u, "greet").Greet()
+# expect-go: return lamNNI(n, "title").Title()
+# expect-go:
+#   s := _lamS
+#   return s.Name
+# expect-go: fmt.Println(c.Greet())
+# expect-go: fmt.Println(NewUser().Name)
+# expect-go: return u.Name
+# expect-go: return lamNN(lamNN(u, "friend").Friend, "name").Name
+# expect-go: var text string = lamAs[string](v, "a str")
+# expect-go: var count int = lamAs[int](v, "an int")
+# expect-go: var who *User = lamAsNil[*User](v)
+# expect-go: if __lamL := __q1.Value; __lamL != nil { return lamAs[string](__lamL, "a str") }; return "none"
+# expect-go: func lamNN[T any](p *T, name string) *T {
+# expect-go: panic(&lamNoneError{"AttributeError", "None has no attribute '" + name + "'"})
+# expect-go: case interface{ lamExcKind() string }:
+
+from lamerrors import Result
+
+class User {
+    name: str = ""
+    friend: User = None
+
+    func greet(self) -> str {
+        return self.name
+    }
+
+    func own(self) -> str {
+        s = self
+        return s.name
+    }
+}
+
+interface Named {
+    func title(self) -> str
+}
+
+func nameOf(u: User) -> str {
+    return u.name
+}
+
+func greetOf(u: User) -> str {
+    return u.greet()
+}
+
+func titleOf(n: Named) -> str {
+    return n.title()
+}
+
+func narrowed(u: User) -> str {
+    if u == None {
+        return ""
+    }
+    return u.name
+}
+
+func chain(u: User) -> str {
+    return u.friend.name
+}
+
+func load() -> Result[str] {
+    return Result.Ok("x")
+}
+
+func label() -> Result[str] {
+    t: str = load()? ?? "none"
+    return Result.Ok(t)
+}
+
+func main() {
+    c: User = User()
+    print(c.greet())
+    print(User().name)
+    v: any = None
+    try {
+        text: str = v
+        count: int = v
+        who: User = v
+        print(text, count, who)
+    } catch TypeError as err {
+        print(err)
+    }
+    print(nameOf(c), greetOf(c), narrowed(c), chain(c), label().ok())
+}

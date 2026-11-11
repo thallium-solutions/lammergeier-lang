@@ -123,12 +123,12 @@ func main() {
     joined: str = " | ".join(parts)
     print(f"describe: {joined}")
 
-    best: optional[Shape] = largest(shapes)
+    best: Shape = largest(shapes)
     if best != None {
         print(f"largest: {best.name} {best.area()}")
     }
     empty: list[Shape] = []
-    nothing: optional[Shape] = largest(empty)
+    nothing: Shape = largest(empty)
     emptyLabel: str = "none" if nothing == None else "some"
     print(f"largest empty: {emptyLabel}")
 

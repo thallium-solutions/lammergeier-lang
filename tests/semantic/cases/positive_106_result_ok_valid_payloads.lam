@@ -2,7 +2,7 @@
 # expect-no-warning: wraps a value of type
 # `Result.Ok(x)` stays valid whenever `x` fits the declared payload: `?`
 # unwrapping, `Result[any]`, a bare `Result`, `Result[Result[T]]`, generic
-# payloads, json, optional, subclass, list and dict payloads, and functions
+# payloads, json, `None` of an `any`, subclass, list and dict payloads, and functions
 # that return the inner `Result` directly.
 
 from lamerrors import Result, Error
@@ -44,7 +44,7 @@ func doc() -> Result[json] {
     return Result.Ok({"a": 1})
 }
 
-func maybe(flag: bool) -> Result[optional[str]] {
+func maybe(flag: bool) -> Result[any] {
     if flag {
         return Result.Ok("yes")
     }

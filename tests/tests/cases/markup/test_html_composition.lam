@@ -11,7 +11,7 @@ func item(label: str) -> html {
     return <><li>${label}</li></>
 }
 
-func optionalNote(show: bool) -> optional[html] {
+func optionalNote(show: bool) -> html {
     if show {
         return <><em>shown</em></>
     }

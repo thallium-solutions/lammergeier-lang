@@ -257,6 +257,12 @@ go! {
     type LamHTML struct{ f *lamFrag }
     type LamXML struct{ f *lamFrag }
 
+    // ``None`` of ``html`` / ``xml`` is the zero value (no fragment); every
+    // markup value the runtime builds has one (``html""`` is empty, not
+    // ``None``). A ``None`` value renders nothing.
+    func (h LamHTML) lamIsNone() bool { return h.f == nil }
+    func (x LamXML) lamIsNone() bool  { return x.f == nil }
+
     type lamHTMLMarshaler interface{ LamHTML() LamHTML }
     type lamXMLMarshaler interface{ LamXML() LamXML }
 

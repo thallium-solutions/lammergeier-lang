@@ -1,0 +1,200 @@
+# A value type (`str`, `int`, `float`, `bool`, lists, dicts) never holds
+# `None` (after 4.11): a dynamic `None` converted to one raises `TypeError: None
+# is not a str` at the conversion (an `any` local or parameter, a `Result`
+# payload through `?` or `unwrap()`, a `dict[str, any]` lookup, a JSON null,
+# a `list[any]` element, an `as` cast, `return None` in a `-> T` with `T` a
+# value type). A non-`None` value of another type
+# keeps its run-time conversion error. `try` / `catch TypeError` catches it
+# (a `do` / `catch` handler does not: it handles the errors `?` propagates,
+# the exception goes on to the enclosing `try`), and the reference types (a
+# class, `html`, `json`, `any`) take the `None` as is.
+#
+# expect: str: TypeError: None is not a str
+# expect: int: TypeError: None is not an int
+# expect: float: TypeError: None is not a float
+# expect: bool: TypeError: None is not a bool
+# expect: list: TypeError: None is not a list[int]
+# expect: dict: TypeError: None is not a dict[str, int]
+# expect: payload ?: TypeError: None is not a str
+# expect: payload unwrap: TypeError: None is not an int
+# expect: row: TypeError: None is not a str
+# expect: json null: TypeError: None is not a str
+# expect: element: TypeError: None is not an int
+# expect: cast: TypeError: None is not a str
+# expect: param: TypeError: None is not a str
+# expect: wrong type: TypeError
+# expect: through do: TypeError: None is not a str
+# expect: generic: TypeError: None is not an int / true
+# expect: refs: true true true true
+# expect: values: ada 3 1.5 true [1 2] 7
+# expect: done
+
+from lamerrors import Result
+from lamjson import Json
+
+class User {
+    name: str = "ada"
+}
+
+func nothing() -> any {
+    return None
+}
+
+func dynamic() -> Result[str] {
+    v: any = None
+    return Result.Ok(v)
+}
+
+func dynamicInt() -> Result[int] {
+    v: any = nothing()
+    return Result.Ok(v)
+}
+
+func payload() -> Result[str] {
+    s: str = dynamic()?
+    return Result.Ok(s)
+}
+
+class Shelf[T] {
+    items: list[T] = []
+
+    func first(self) -> T {
+        if len(self.items) == 0 {
+            return None
+        }
+        return self.items[0]
+    }
+}
+
+func takes(s: str) -> str {
+    return s
+}
+
+func main() {
+    v: any = nothing()
+    try {
+        s: str = v
+        print(s)
+    } catch TypeError as e {
+        print(f"str: {e}")
+    }
+    try {
+        n: int = v
+        print(n)
+    } catch TypeError as e {
+        print(f"int: {e}")
+    }
+    try {
+        f: float = v
+        print(f)
+    } catch TypeError as e {
+        print(f"float: {e}")
+    }
+    try {
+        b: bool = v
+        print(b)
+    } catch TypeError as e {
+        print(f"bool: {e}")
+    }
+    try {
+        xs: list[int] = v
+        print(xs)
+    } catch TypeError as e {
+        print(f"list: {e}")
+    }
+    try {
+        d: dict[str, int] = v
+        print(d)
+    } catch TypeError as e {
+        print(f"dict: {e}")
+    }
+    try {
+        r = payload()
+        print(r.ok())
+    } catch TypeError as e {
+        print(f"payload ?: {e}")
+    }
+    try {
+        n: int = dynamicInt().unwrap()
+        print(n)
+    } catch TypeError as e {
+        print(f"payload unwrap: {e}")
+    }
+    row: dict[str, any] = {"name": None, "n": 3}
+    try {
+        name: str = row["name"]
+        print(name)
+    } catch TypeError as e {
+        print(f"row: {e}")
+    }
+    doc: json = Json.decode("{\"title\": null}").unwrap()
+    try {
+        title: str = doc["title"]
+        print(title)
+    } catch TypeError as e {
+        print(f"json null: {e}")
+    }
+    items: list[any] = [1, None]
+    try {
+        total: int = 0
+        for i in range(len(items)) {
+            k: int = items[i]
+            total += k
+        }
+        print(total)
+    } catch TypeError as e {
+        print(f"element: {e}")
+    }
+    try {
+        print((v as str).toUpper())
+    } catch TypeError as e {
+        print(f"cast: {e}")
+    }
+    try {
+        print(takes(v))
+    } catch TypeError as e {
+        print(f"param: {e}")
+    }
+    try {
+        w: any = 5
+        s: str = w
+        print(s)
+    } catch TypeError as _e {
+        print("wrong type: TypeError")
+    }
+    try {
+        do {
+            s: str = payload()?
+            print(s)
+        } catch err {
+            print(f"unexpected do catch: {err}")
+        }
+    } catch TypeError as e {
+        print(f"through do: {e}")
+    }
+    try {
+        ints: Shelf[int] = Shelf[int]()
+        print(ints.first())
+    } catch TypeError as e {
+        users: Shelf[User] = Shelf[User]()
+        print(f"generic: {e} / {users.first() == None}")
+    }
+    u: User = v
+    h: html = v
+    j: json = Json.fromValue(v).unwrap()
+    a: any = v
+    print("refs:", u == None, h == None, j == None, a == None)
+    good: any = "ada"
+    three: any = 3
+    ratio: any = 1.5
+    yes: any = true
+    pair: any = [1, 2]
+    s: str = good
+    n: int = three
+    f: float = ratio
+    b: bool = yes
+    xs: list[int] = pair
+    seven: int = row["n"] as int + 4
+    print("values:", s, n, f, b, xs, seven)
+    print("done")
+}

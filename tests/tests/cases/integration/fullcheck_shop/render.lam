@@ -7,7 +7,7 @@ from .catalog import Product, Page, Store, WritableStore, Catalog, MaxItems, Sec
 import .catalog as cat
 
 func price(store: Store, name: str) -> Result[int] {
-    found: optional[Product] = store.get(name)
+    found: Product = store.get(name)
     if found == None {
         return Result.Err(Error("NotFound", name))
     }
@@ -18,7 +18,7 @@ func priceOf(store: WritableStore, name: str) -> Result[int] {
     return price(store, name)
 }
 
-func label(p: Product) -> optional[str] {
+func label(p: Product) -> any {
     return p.tags[0] if len(p.tags) > 0 else None
 }
 
@@ -31,7 +31,7 @@ func document(c: Catalog) -> json {
     p: Page[Product] = page(c)
     rows: list[json] = []
     for item in p.items {
-        rows.append({"product": json(item), "label": label(item) ?? "-", "tags": item.tags})
+        rows.append({"product": json(item), "label": str(label(item) ?? "-"), "tags": item.tags})
     }
     return {
         "currency": cat.CurrencyCode,

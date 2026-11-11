@@ -2,7 +2,7 @@
 # import each other (a cycle). `Scope` groups its helpers as static
 # methods: `any`-argument statics called from instance methods, a generic
 # static transaction whose `catch` rethrows, a private static passed as a
-# value and statics returning `html` / `str` into optionals.
+# value and statics returning `html` (`None` included) and `str` into `any`.
 
 from lamerrors import Result, Error
 from .conn import Sq
@@ -56,14 +56,14 @@ class Scope {
         return <><h1>scope</h1></>
     }
 
-    static func maybeBanner(show: bool) -> optional[html] {
+    static func maybeBanner(show: bool) -> html {
         if show {
             return Scope.banner()
         }
         return None
     }
 
-    func maybeTitle(self) -> optional[str] {
+    func maybeTitle(self) -> any {
         return self.title()
     }
 

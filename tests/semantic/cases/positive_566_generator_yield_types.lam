@@ -23,7 +23,7 @@ func shapes() -> generator[Shape] {
     yield Square(2)
 }
 
-func maybe() -> generator[optional[Shape]] {
+func maybe() -> generator[Shape] {
     yield None
     yield Shape("b")
 }

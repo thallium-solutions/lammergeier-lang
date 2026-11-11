@@ -39,9 +39,7 @@ class NarrowingCheckMixin:
         """The type of a ``current``-typed local where ``target`` holds, or
         ``None`` when the fact narrows nothing."""
         if target is narrowing.NOT_NONE:
-            if isinstance(current, GenericType) and current.base in {"optional", "Option"} and current.args:
-                return current.args[0]
-            return None
+            return None  # a reference stays its type (it may not be ``None`` there)
         results = [self._narrow_one(current, alt) for alt in narrowing.type_alternatives(target)]
         if not results or any(r is None for r in results):
             return None
@@ -66,18 +64,6 @@ class NarrowingCheckMixin:
     def _narrow_one(self, current: Optional[Type], alt) -> Optional[Type]:
         name = narrowing.type_target_name(alt)
         if not name or name == "None":
-            return None
-        if isinstance(current, GenericType) and current.base in {"optional", "Option"} and current.args:
-            inner = current.args[0]
-            inner_name = render_type(inner)
-            if name == inner_name or (name in _BUILTIN_TARGETS and render_type(_BUILTIN_TARGETS[name]) == inner_name):
-                return inner
-            inner_class = self._receiver_class_from_type(inner)
-            if (
-                inner_class and self._narrow_class_known(name) and not self._class_type_params.get(name)
-                and inner_class in self._all_base_names(name)
-            ):
-                return NamedType(name)
             return None
         kind = self._pattern_subject_kind(current)
         is_user_type = self._narrow_class_known(name) or name in self._interface_methods

@@ -72,7 +72,7 @@ class Shop {
         self.products: int = Row.int(row, "products")
         self.tags: list[str] = Row.strList(row, "tags")
         self.open: bool = Row.bool(row, "open")
-        self.since: optional[DateTime] = Row.time(row, "since")
+        self.since: DateTime = Row.time(row, "since")
     }
 
     func describe(self) -> str {
@@ -85,7 +85,7 @@ class Shop {
 }
 
 func timeText(row: dict[str, any], key: str) -> str {
-    value: optional[DateTime] = Row.time(row, key)
+    value: DateTime = Row.time(row, key)
     if value == None {
         return "none"
     }

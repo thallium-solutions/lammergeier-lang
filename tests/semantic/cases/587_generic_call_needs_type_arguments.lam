@@ -22,14 +22,14 @@ class Box[T] {
 }
 
 class Pair[K, V] {
-    func init(self, key: optional[K] = None, value: optional[V] = None) {
-        self.key: optional[K] = key
-        self.value: optional[V] = value
+    func init(self, key: K = None, value: V = None) {
+        self.key: K = key
+        self.value: V = value
     }
 }
 
 func firstOf[T](xs: list[T] = []) -> int { return len(xs) }
-func ident[T](x: optional[T]) -> optional[T] { return x }
+func ident[T](x: T) -> T { return x }
 func merge[T](xs: list[T], extra: list[T] = []) -> list[T] { return xs + extra }
 
 func main() {

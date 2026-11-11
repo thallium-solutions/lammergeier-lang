@@ -5,10 +5,10 @@
 # `float64` where the expression needs it). An `any` payload is cast
 # explicitly (an operator on it is a Lam error) and takes the cast's type.
 
-# expect-go: return Result_Ok(__q1.Value.(int) * 2)
-# expect-go: var x float64 = float64(__q2.Value.(int) * 2)
-# expect-go: * 4.0) + float64(__q4.Value.(int)))
-# expect-go: var y int = __q5.Value.(int) * 2
+# expect-go: return Result_Ok(lamAs[int](__q1.Value, "an int") * 2)
+# expect-go: var x float64 = float64(lamAs[int](__q2.Value, "an int") * 2)
+# expect-go: * 4.0) + float64(lamAs[int](__q4.Value, "an int")))
+# expect-go: var y int = lamAs[int](__q5.Value, "an int") * 2
 
 from lamerrors import Result
 

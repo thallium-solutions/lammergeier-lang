@@ -1,0 +1,132 @@
+# `do` / `catch` handles the errors `?` propagates from a `Result`; a `None`
+# exception (`AttributeError` of a member of `None`, `TypeError` of a `None`
+# converted to a value type) is an exception like any other: the `do`'s
+# `catch` never sees it, the rest of the `do` body does not run, and it goes
+# on to the enclosing `try` / `catch` -- also out of a function holding the
+# `do`, out of a loop, and from a callee. A `try` inside the `do` body
+# catches it there; a `?` error in the same `do` still reaches its `catch`.
+# (Uncaught, it ends the program: tests/tests/test_none_uncaught.py.)
+#
+# expect: member: AttributeError: None has no attribute 'name'
+# expect: conversion: TypeError: None is not a str
+# expect: from a function: AttributeError: None has no attribute 'greet'
+# expect: loop 0
+# expect: loop 1
+# expect: loop: AttributeError: None has no attribute 'name' after 1
+# expect: inner try: AttributeError: None has no attribute 'name'
+# expect: inner try then do ok
+# expect: result error: Missing nope
+# expect: generic catch: AttributeError: None has no attribute 'name'
+# expect: done
+
+from lamerrors import Result, Error
+
+class User {
+    name: str = "ada"
+
+    func greet(self) -> str {
+        return "hi"
+    }
+}
+
+func find(found: bool) -> User {
+    if found {
+        return User()
+    }
+    return None
+}
+
+func FooNone() -> Result[str] {
+    nothing: any = None
+    return Result.Ok(nothing)
+}
+
+func FooErr() -> Result[str] {
+    return Result.Err(Error("Missing", "nope"))
+}
+
+func lower(s: str) -> str {
+    return s.toLower()
+}
+
+func greeting(u: User) -> str {
+    do {
+        return u.greet()
+    } catch err {
+        return f"do catch: {err}"
+    }
+}
+
+func main() {
+    missing: User = find(false)
+    try {
+        do {
+            print(missing.name)
+            print("unreachable: rest of the do body")
+        } catch err {
+            print(f"unexpected do catch: {err}")
+        }
+        print("unreachable: after the do")
+    } catch AttributeError as e {
+        print(f"member: {e}")
+    }
+    try {
+        do {
+            print(lower(FooNone()?))
+        } catch err {
+            print(f"unexpected do catch: {err}")
+        }
+    } catch TypeError as e {
+        print(f"conversion: {e}")
+    }
+    try {
+        print(greeting(missing))
+    } catch AttributeError as e {
+        print(f"from a function: {e}")
+    }
+    count: int = 0
+    try {
+        for u in [find(true), find(false), find(true)] {
+            do {
+                print(f"loop {count}")
+                count += 1
+                n: str = u.name
+                _ = n
+            } catch err {
+                print(f"unexpected do catch: {err}")
+            }
+        }
+    } catch AttributeError as e {
+        print(f"loop: {e} after {count - 1}")
+    }
+    do {
+        try {
+            print(missing.name)
+        } catch AttributeError as e {
+            print(f"inner try: {e}")
+        }
+        print("inner try then do ok")
+    } catch err {
+        print(f"unexpected do catch: {err}")
+    }
+    try {
+        do {
+            print(lower(FooErr()?))
+            print(missing.name)
+        } catch err {
+            print(f"result error: {err.kind} {err.message}")
+        }
+    } catch AttributeError as e {
+        print(f"unexpected try catch: {e}")
+    }
+    try {
+        do {
+            print(missing.name)
+        } catch err {
+            print(f"unexpected do catch: {err}")
+        }
+    } catch e {
+        print(f"generic catch: {e}")
+    }
+    print("done")
+}

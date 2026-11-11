@@ -25,6 +25,8 @@ class DefinitionVisitorMixin:
             with self._scoped(
                 _nr_module_code=False,
                 _index_bounds=getattr(node, "_lam_index_bounds", self._index_bounds),
+                _fresh_locals=self._nn_fresh_locals(node),
+                _nonnil_names=set(),
             ):
                 self._visit_funcdef_inner(node)
         finally:
