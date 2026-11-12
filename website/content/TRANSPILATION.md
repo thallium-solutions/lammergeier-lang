@@ -349,7 +349,7 @@ still sees the underlying Go diagnostic under Lammergeier's
 |---------------------------|--------------------------|-----------------------------------------|
 | `my_func` (top-level)     | `My_func`                | Title-cased first letter; rest verbatim.|
 | `_helper`                 | `_helper`                | Leading underscore kept, no rename.     |
-| `init` / `__init__`       | `Init` / `NewX`          | `init` is preferred; both constructors become `NewClass`. |
+| `init` / `__init__`       | `Init` / `NewX`          | `init` is preferred; both constructors become `NewClass` (`NewClass__ctor` when `NewClass` names another definition). |
 | `__str__`, `__repr__`     | `String`                 | Satisfies `fmt.Stringer`.               |
 | Other dunder ops          | `Add`, `Sub`, `Eq`, ...  | See `DUNDER_OPS` in `constants.py`.     |
 | `self`                    | `s`                      | Fixed receiver name in all methods.     |
@@ -1961,6 +1961,18 @@ from lamos import Os
     collected (`Config` in `one` → `Config__one`), so the Go type, the
     `NewConfig__one` constructor, static members (`Config__one_make`) and every
     compiler table follow.
+- A class constructor `New<Class>` that is the Go name of another definition
+  of the program (after the renames above), in the same module or another
+  one — a class or interface `NewSite` next to `class Site`, a function
+  `newSite()` — is renamed instead of the definition: `NewSite__ctor` (then
+  `NewSite__ctor2`, ... while taken), recorded in every module's namespace
+  plan (`constructor_go_names`, part of its cache key) so the declaration,
+  every call, base-class construction in subclasses, the compiler's `Error`
+  wrappers and `LAMMERGEIER.Site(...)` agree. A const or variable with that
+  name gives way instead (module-qualified Go name). Raw `go!` code of a
+  module that cannot see the other `NewSite` has `NewSite` rewritten to the
+  new constructor (so the stdlib's `NewError(...)` keeps working next to a
+  user `class NewError`).
 - Imports are resolved before transpilation: `from m import x as y` and
   `import m as a` / `a.x` (including inside f-string placeholders) are
   rewritten in the AST to `x` (or its renamed form) when that name is free in
@@ -1983,9 +1995,7 @@ from lamos import Os
   diagnostic listing each module, its source location and a three-line
   snippet, instead of Go's `redeclared in this block` cascade: a clash between
   two definitions that cannot be renamed (the main module and a
-  compiler-referenced class, or two of those), raw `go!` declarations, and
-  cross-kind collisions such as a class `Thing` (constructor `NewThing`) next
-  to a function `newThing`.
+  compiler-referenced class, or two of those) and raw `go!` declarations.
 
   ```text
   error: top-level symbol clash while linking main.lam

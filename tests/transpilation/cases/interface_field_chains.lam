@@ -1,0 +1,50 @@
+# Transpilation: a member chain on a field typed by an interface resolves
+# against the interface's declared methods: the defaults of a method of the
+# chain's result are filled, and ``?`` on an interface method's
+# ``Result[list[T]]`` yields the typed slice (a for loop ranges over it).
+# expect-go: __q1 := lamNNI(s.Source, "child").Child("x").Names("")
+# expect-go: for _, name := range func(v interface{}) []string {
+# expect-go: lamNNI(s.Source, "child").Child("y").Label("!")
+
+from lamerrors import Result
+
+interface Source {
+    func child(name: str) -> Source
+    func label(suffix: str = "!") -> str
+    func names(prefix: str = "") -> Result[list[str]]
+}
+
+class Leaf {
+    func init(self) {
+    }
+
+    func child(self, _name: str) -> Source {
+        return self
+    }
+
+    func label(self, suffix: str = "!") -> str {
+        return "leaf" + suffix
+    }
+
+    func names(self, prefix: str = "") -> Result[list[str]] {
+        return Result.Ok([prefix + "a", prefix + "b"])
+    }
+}
+
+class Holder {
+    func init(self, source: Source) {
+        self.source: Source = source
+    }
+
+    func describe(self) -> Result[str] {
+        out: list[str] = []
+        for name in self.source.child("x").names()? {
+            out.append(name)
+        }
+        return Result.Ok(self.source.child("y").label() + " " + ",".join(out))
+    }
+}
+
+func main() {
+    print(Holder(Leaf()).describe().unwrap())
+}

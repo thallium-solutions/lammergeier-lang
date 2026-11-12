@@ -1,0 +1,77 @@
+# Regression (4.13.1): a user class ``NewError`` (or ``NewResult``) is the
+# Go identifier of the constructor of lamerrors' ``Error`` (``Result``). The
+# stdlib constructor becomes ``NewError__ctor`` and every stdlib module's raw
+# ``go!`` code follows, so errors built by the compiler, by the stdlib and by
+# ``LAMMERGEIER.Error(...)`` keep working next to the user classes.
+#
+# expect: err: Boom it broke | reason:x
+# expect: stdlib: false JsonDecodeError
+# expect: thrown: Thrown t
+# expect: go-block: GoKind from-go
+# expect: result: 5 true | result-class:7
+# expect: wrapped: str-error
+# expect: subclass: AppError sub
+
+from lamerrors import Result, Error
+from lamjson import Json
+
+class NewError {
+    func init(self, reason: str) {
+        self.reason: str = reason
+    }
+}
+
+class NewResult {
+    func init(self, value: int) {
+        self.value: int = value
+    }
+}
+
+class AppError(Error) {
+    func init(self, message: str) {
+        base.init("AppError", message)
+    }
+}
+
+func fail() -> Result[int] {
+    return Result.Err(Error("Boom", "it broke"))
+}
+
+func fromGo() -> Error {
+    out: Error = None
+    go! {
+        out = LAMMERGEIER.Error("GoKind", "from-go", nil)
+    }
+    return out
+}
+
+func wrapped() -> str {
+    r: Result[int] = Result.Err("str-error")
+    if r.ok() {
+        return "ok"
+    }
+    return r.error.message
+}
+
+func main() {
+    e: Error = fail().error
+    print(f"err: {e.kind} {e.message} | reason:{NewError('x').reason}")
+    src: str = "{" + ""
+    bad = Json.decode(src)
+    print(f"stdlib: {bad.ok()} {bad.error.kind}")
+    try {
+        throw Error("Thrown", "t")
+    } catch Error as err {
+        print(f"thrown: {err.kind} {err.message}")
+    }
+    g: Error = fromGo()
+    print(f"go-block: {g.kind} {g.message}")
+    ok: Result[int] = Result.Ok(5)
+    print(f"result: {ok.unwrap()} {ok.ok()} | result-class:{NewResult(7).value}")
+    print(f"wrapped: {wrapped()}")
+    try {
+        throw AppError("sub")
+    } catch AppError as app {
+        print(f"subclass: {app.kind} {app.message}")
+    }
+}

@@ -1093,7 +1093,7 @@ class DefinitionVisitorMixin:
         class_args = self._class_type_args(cls)
 
         recv = self._receiver_name_for(params_node, suite_node)
-        self._emit(f"func New{go_cls}{class_clause}({params_str}) *{go_cls}{class_args} {{")
+        self._emit(f"func {self._go_ctor_name(cls)}{class_clause}({params_str}) *{go_cls}{class_args} {{")
         self.indent += 1
         self._push_scope()
         self._emit(f"{recv} := &{go_cls}{class_args}{{}}")
@@ -1305,7 +1305,7 @@ class DefinitionVisitorMixin:
                     pass
                 elif not has_init:
                     class_args = self._class_type_args(class_name)
-                    self._emit(f"func New{go_cls}{tp_clause}() *{go_cls}{class_args} {{")
+                    self._emit(f"func {self._go_ctor_name(class_name)}{tp_clause}() *{go_cls}{class_args} {{")
                     self.indent += 1
                     self._emit(f"s := &{go_cls}{class_args}{{}}")
                     self._emit_ancestor_init(class_name, receiver="s")

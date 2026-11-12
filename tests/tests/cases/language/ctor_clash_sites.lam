@@ -1,0 +1,50 @@
+# Companion of test_constructor_name_clash.lam: ``Site`` (whose Go
+# constructor would be ``NewSite``) and the generic ``Holder`` (``NewHolder``)
+# are imported by a module that declares classes ``NewSite`` and
+# ``NewHolder``. Raw ``go!`` code here still calls the constructor by its
+# usual name.
+
+class Site {
+    static count: int = 0
+
+    func init(self, name: str, port: int = 80) {
+        self.name: str = name
+        self.port: int = port
+        Site.count += 1
+    }
+
+    static func local(name: str) -> Site {
+        return Site(name, 8080)
+    }
+
+    func url(self) -> str {
+        return f"http://{self.name}:{self.port}"
+    }
+}
+
+class Holder[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+func rawSite(name: str) -> str {
+    out: str = ""
+    go! {
+        s := NewSite(name, 1)
+        out = s.Url()
+    }
+    return out
+}
+
+func defaultSite() -> Site {
+    return Site("default")
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

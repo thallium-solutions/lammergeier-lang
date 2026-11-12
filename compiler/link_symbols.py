@@ -274,7 +274,6 @@ def render_symbol_clashes(clashes: list[list[GoTopLevelSymbol]], program_path: s
         "package; same-name functions, constants, variables, classes and interfaces are "
         "namespaced per module automatically, except definitions in the main module and the "
         "compiler-referenced classes (`lamerrors.Result`/`Error`, `lamstrings.Strings`); raw "
-        "`go!` declarations and a class constructor next to a same-named function must also be "
-        "unique across modules."
+        "`go!` declarations must also be unique across modules."
     )
     return "\n".join(out)

@@ -562,6 +562,9 @@ func lamGoTypeLamName(t reflect.Type) string {
         self._namespace_rewrites: Dict[str, str] = {}
         self._namespace_module_access: Dict[str, Dict[str, str]] = {}
         self._namespace_declarations: Dict[str, str] = {}
+        # Lam class -> Go constructor, for the constructors whose
+        # ``New<Class>`` is another definition's Go name (``_go_ctor_name``).
+        self._ctor_go_names: Dict[str, str] = {}
         self._private_methods: Dict[str, Set[str]] = {}
 
         # Functions imported from libraries — survive the per-transpile

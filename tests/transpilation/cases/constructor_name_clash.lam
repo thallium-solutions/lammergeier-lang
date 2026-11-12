@@ -1,0 +1,41 @@
+# Transpilation: a class's Go constructor is ``New<Class>``; when that is
+# the Go name of another definition (here the class ``NewSite``), the
+# constructor is ``New<Class>__ctor`` at its declaration, at every call, in
+# a subclass's base construction and for ``LAMMERGEIER.<Class>(...)``.
+# expect-go: type NewSite struct
+# expect-go: func NewNewSite(url string) *NewSite {
+# expect-go: func NewSite__ctor(name string) *Site {
+# expect-go: s.Site = NewSite__ctor(name + "!")
+# expect-go: out = NewSite__ctor("raw").Name
+# expect-go: NewSite__ctor("a").Name
+# expect-go: NewNewSite("b").Url
+
+class Site {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class NewSite {
+    func init(self, url: str) {
+        self.url: str = url
+    }
+}
+
+class LoudSite(Site) {
+    func init(self, name: str) {
+        base.init(name + "!")
+    }
+}
+
+func raw() -> str {
+    out: str = ""
+    go! {
+        out = LAMMERGEIER.Site("raw").Name
+    }
+    return out
+}
+
+func main() {
+    print(Site("a").name, NewSite("b").url, LoudSite("c").name, raw())
+}

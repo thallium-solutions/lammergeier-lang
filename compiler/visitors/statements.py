@@ -2840,7 +2840,7 @@ class StatementVisitorMixin:
                 f"{err_name} := func(v interface{{}}) *{go_err} {{ "
                 f"if e, ok := v.(*{go_err}); ok {{ return e }}; "
                 f"if e, ok := v.(interface{{ _lamIs_{go_err}() *{go_err} }}); ok {{ return e._lamIs_{go_err}() }}; "
-                f'return New{go_err}("", fmt.Sprint(v), v) }}({result}.Error)'
+                f'return {self._go_ctor_name(error_class)}("", fmt.Sprint(v), v) }}({result}.Error)'
             )
             self._var_go_types[err_name] = f"*{go_err}"
             self._var_types[err_name] = error_class

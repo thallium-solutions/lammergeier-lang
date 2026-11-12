@@ -1,0 +1,160 @@
+# Regression (4.13.1): a class's Go constructor is ``New<Class>``, so a
+# class ``Site`` and a class ``NewSite`` (or a function ``newSite``, a const
+# ``NewSite``) declared the same Go identifier and the Go build failed with
+# ``NewSite redeclared``. The constructor of ``Site`` now becomes
+# ``NewSite__ctor`` when ``NewSite`` names another definition (a const gives
+# way instead), in one module and across modules.
+#
+# expect: same-module: page:home new-page:/home 2 static:page:made
+# expect: generic: box:7 new-box:x 3 int-box:5
+# expect: function: item:a fn:b item:c
+# expect: const: tag:t NewTag-const
+# expect: isinstance: true false true false
+# expect: imported: http://a:80 http://b:8080 new-site:c http://raw:1 http://default:80 count=4
+# expect: imported-generic: 9 holder:hi
+# expect: inherited: http://big:443 big=true
+# expect: alias: http://alias:80 count=6
+# expect: go-block: page:raw page:raw2
+
+from ctor_clash_sites import Site, Holder, rawSite, defaultSite
+import ctor_clash_sites as cs
+
+# ── Both classes in this module ────────────────────────────────
+class Page {
+    func init(self, title: str) {
+        self.title: str = title
+    }
+
+    static func made() -> Page {
+        return Page("made")
+    }
+
+    func describe(self) -> str {
+        return "page:" + self.title
+    }
+}
+
+class NewPage {
+    func init(self, path: str) {
+        self.path: str = path
+    }
+
+    func describe(self) -> str {
+        return "new-page:" + self.path
+    }
+
+    static func count(pages: list[NewPage]) -> int {
+        return len(pages) + 1
+    }
+}
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func describe(self) -> str {
+        return f"box:{self.value}"
+    }
+}
+
+class NewBox {
+    func init(self, label: str) {
+        self.label: str = label
+    }
+
+    func describe(self) -> str {
+        return "new-box:" + self.label
+    }
+}
+
+# ── A class and a function ``newItem`` (Go ``NewItem``) ────────
+class Item {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func describe(self) -> str {
+        return "item:" + self.name
+    }
+}
+
+func newItem(name: str) -> str {
+    return "fn:" + name
+}
+
+func makeItem(name: str) -> Item {
+    return Item(name)
+}
+
+# ── A class and a const ``NewTag`` ─────────────────────────────
+const NewTag: str = "NewTag-const"
+
+class Tag {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+# ── Imported ``Site`` / ``Holder`` next to local ``NewSite`` / ``NewHolder``
+class NewSite {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func describe(self) -> str {
+        return "new-site:" + self.name
+    }
+}
+
+class NewHolder {
+    func init(self, text: str) {
+        self.text: str = text
+    }
+
+    func describe(self) -> str {
+        return "holder:" + self.text
+    }
+}
+
+class BigSite(Site) {
+    func init(self, name: str) {
+        base.init(name, 443)
+    }
+
+    func big(self) -> bool {
+        return self.port > 400
+    }
+}
+
+func pageFromGo(title: str) -> str {
+    out: str = ""
+    go! {
+        p := LAMMERGEIER.Page(title)
+        out = p.Describe()
+    }
+    return out
+}
+
+func main() {
+    pages: list[NewPage] = [NewPage("/a")]
+    print(f"same-module: {Page('home').describe()} {NewPage('/home').describe()} {NewPage.count(pages)} static:{Page.made().describe()}")
+
+    ints: Box[int] = Box[int](5)
+    print(f"generic: {Box(7).describe()} {NewBox('x').describe()} {len([Box('a'), Box('b'), Box('c')])} int-{ints.describe()}")
+
+    print(f"function: {Item('a').describe()} {newItem('b')} {makeItem('c').describe()}")
+    print(f"const: tag:{Tag('t').name} {NewTag}")
+
+    values: list[any] = [Page("p"), NewPage("q")]
+    print(f"isinstance: {isinstance(values[0], Page)} {isinstance(values[0], NewPage)} {isinstance(values[1], NewPage)} {isinstance(values[1], Page)}")
+
+    print(f"imported: {Site('a').url()} {Site.local('b').url()} {NewSite('c').describe()} {rawSite('raw')} {defaultSite().url()} count={Site.count}")
+    held: Holder[int] = Holder(9)
+    print(f"imported-generic: {held.get()} {NewHolder('hi').describe()}")
+
+    big: BigSite = BigSite("big")
+    print(f"inherited: {big.url()} big={big.big()}")
+    print(f"alias: {cs.Site('alias').url()} count={cs.Site.count}")
+    print(f"go-block: {pageFromGo('raw')} {pageFromGo('raw2')}")
+}

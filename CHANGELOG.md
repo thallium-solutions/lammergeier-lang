@@ -5,6 +5,38 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.13.1 — 2026-11-12
+
+### Fixed
+
+- A member chain through a value typed by an interface that is a field
+  (`self.db: DbConn`), an element of a list (`self.conns[0]`, `conns[0]`) or
+  a loop / comprehension variable over a `list[DbConn]` keeps the
+  interface's declared return types: `self.db.table("t").whereRaw("x")`
+  fills `whereRaw`'s default argument (it failed to build with `not enough
+  arguments in call to ...WhereRaw`), `.count().unwrap()` is an `int`, and
+  `for row in self.db.query(q, [])? { ... }` / `rows = self.db.query(q)?` /
+  `self.db.first(q)?` / `self.db.scalar(q)?` have the payload types of the
+  interface methods (it failed with `cannot range over ... (variable of type
+  interface{})`). The same for user-defined interfaces (a method with a
+  default argument, a method returning `Result[list[T]]` iterated after
+  `?`, a method returning the interface itself).
+- A class `Site` and a class (or interface) `NewSite` — or a function
+  `newSite()` — in one module or in different modules of a program no
+  longer clash in the Go build (`NewSite redeclared in this block`, or the
+  link-time `Go func NewSite is declared by modules ...` error): the Go
+  constructor of `Site`, normally `NewSite`, is `NewSite__ctor` when
+  `NewSite` names another definition; a const or variable named like a
+  constructor gets a module-qualified Go name instead. Lam code is
+  unchanged (constructors, statics, subclasses, generics, `isinstance`,
+  imports); raw `go!` code of a module that does not see the other
+  `NewSite` keeps calling `NewSite(...)`, and `LAMMERGEIER.Site(...)` is the
+  constructor everywhere. A user class `NewError` or `NewResult` next to
+  lamerrors' `Error` / `Result` works the same way (the stdlib's `go!` code
+  follows). The import-resolution test of the former link-clash
+  diagnostic for a constructor next to a same-named function of another
+  module now checks that the program builds and runs.
+
 ## 4.13.0 — 2026-11-11
 
 ### Changed

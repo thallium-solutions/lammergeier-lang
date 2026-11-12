@@ -2209,7 +2209,6 @@ class ExpressionVisitorMixin:
             return self._nested_generic_call_to_go(base_name, args, type_args)
         if base_name in self._class_names and base_name in self._generic_classes:
             type_args = self._type_arg_list(func.children[1])
-            go_cls = self._go_class_name(base_name)
             init_key = f"{base_name}.init"
             # ``Queue[str](lambda items: len(items))``: the class's type
             # parameters take the explicit type arguments in the parameter
@@ -2224,7 +2223,7 @@ class ExpressionVisitorMixin:
             }
             with self._scoped(_call_type_subst={**self._call_type_subst, **subst}):
                 call_args = self._planned_call_args(init_key, args_node)
-            return f"New{go_cls}[{self._args_to_go(type_args)}]({self._args_to_go(call_args)})"
+            return f"{self._go_ctor_name(base_name)}[{self._args_to_go(type_args)}]({self._args_to_go(call_args)})"
         if base_name in self._user_functions:
             type_args = self._type_arg_list(func.children[1])
             return self._user_function_call_to_go(
@@ -2391,7 +2390,6 @@ class ExpressionVisitorMixin:
                 method_key = f"{parent_base}.init" if raw_method in {"init", "__init__"} else f"{parent_base}.{raw_method}"
                 call_args = self._planned_call_args(method_key, args_node)
                 if raw_method in {"init", "__init__"}:
-                    go_base = self._go_class_name(parent_base)
                     # The fresh parent (and its ancestors) must dispatch
                     # ``self.m()`` back to this object, not to itself.
                     binds = self._virtual_bind_stmts(
@@ -2402,14 +2400,14 @@ class ExpressionVisitorMixin:
                         self.current_class, parent_base, self._self_replacement,
                     ) if self.current_class and self._self_replacement else []
                     return "; ".join(
-                        [f"{parent_receiver} = New{go_base}{type_args}({', '.join(call_args)})"] + binds + defaults
+                        [f"{parent_receiver} = {self._go_ctor_name(parent_base)}{type_args}({', '.join(call_args)})"] + binds + defaults
                     )
             if raw_obj == "LAMMERGEIER" and raw_method:
                 if raw_method in self._user_functions:
                     return self._user_function_call_to_go(raw_method, [], {}, args_node)
                 if raw_method in self._class_names:
                     call_args = self._planned_call_args(f"{raw_method}.init", args_node)
-                    return f"New{self._go_class_name(raw_method)}({', '.join(call_args)})"
+                    return f"{self._go_ctor_name(raw_method)}({', '.join(call_args)})"
             if raw_obj and raw_obj.startswith("LAMMERGEIER.") and raw_method:
                 class_name = raw_obj.split(".", 1)[1]
                 static_call = self._known_static_method_call_to_go(class_name, raw_method, args_node)
@@ -3383,7 +3381,6 @@ class ExpressionVisitorMixin:
 
         # ── Constructor ──
         if func_str in self._class_names:
-            go_cls = self._go_class_name(func_str)
             init_key = f"{func_str}.init"
             class_params = self._class_type_param_names_of(func_str)
             if class_params:
@@ -3394,10 +3391,10 @@ class ExpressionVisitorMixin:
                 # ``r: Reg[int] = Reg()``: a type parameter no constructor
                 # parameter mentions is spelled from the expected type.
                 explicit = self._uninferable_type_args(init_key, args_node, list(class_params))
-                return f"New{go_cls}{explicit}({', '.join(call_args)})"
+                return f"{self._go_ctor_name(func_str)}{explicit}({', '.join(call_args)})"
             else:
                 call_args = self._planned_call_args(init_key, args_node)
-            return f"New{go_cls}({', '.join(call_args)})"
+            return f"{self._go_ctor_name(func_str)}({', '.join(call_args)})"
         if func_str and func_str[0].isupper() and "." not in func_str:
             return f"New{func_str}({', '.join(args)})"
 
@@ -5402,7 +5399,7 @@ class ExpressionVisitorMixin:
             f"func(v interface{{}}) *{go_err} {{ if v == nil {{ return nil }}; "
             f"if e, ok := v.(*{go_err}); ok {{ return e }}; "
             f"if e, ok := v.(interface{{ _lamIs_{go_err}() *{go_err} }}); ok {{ return e._lamIs_{go_err}() }}; "
-            f'return New{go_err}("", fmt.Sprint(v), v) }}({value_go})'
+            f'return {self._go_ctor_name(error_class)}("", fmt.Sprint(v), v) }}({value_go})'
         )
 
     def _infer_receiver_class(self, obj_node) -> str:
@@ -5437,21 +5434,27 @@ class ExpressionVisitorMixin:
                 return known
             if name == "self" and self.current_class and name not in self._var_go_types:
                 return self.current_class
-            # Loop variables over ``list[Shape]`` and similar only record
-            # their Go type.
-            return self._hier_class_from_go_type(self._var_go_types.get(name, ""))
+            # Loop variables over ``list[Shape]`` (or ``list[DbConn]``) and
+            # similar only record their Go type.
+            return self._receiver_type_from_go_type(self._var_go_types.get(name, ""))
         if obj_node.data == "getitem":
             # ``shapes[0].area()`` over a ``list[Shape]`` / ``dict[str, Shape]``.
             literal_type = self._list_literal_index_type(obj_node.children[0]) if obj_node.children else ""
             if literal_type:
                 # ``[Square(), Shape()][0].area()``: the literal's item class.
-                return self._hier_class_from_go_type(literal_type[2:])
-            return self._hier_class_from_go_type(self._expr_go_type_hint(obj_node))
+                return self._receiver_type_from_go_type(literal_type[2:])
+            return self._receiver_type_from_go_type(self._expr_go_type_hint(obj_node))
         if obj_node.data == "getattr":
             go_type = self._expr_go_type_hint(obj_node)
             class_name = go_type.removeprefix("*").split("[", 1)[0]
             if class_name in self._class_names:
                 return class_name
+            # ``self.db.table(name).whereRaw(...)`` with a field ``db:
+            # DbConn``: the chain resolves against the interface's method
+            # signatures and return types (defaults, ``?`` payloads).
+            interface_name = self._interface_from_go_type(go_type)
+            if interface_name:
+                return interface_name
         if obj_node.data == "propagate" and obj_node.children:
             go_type = self._propagated_payload_go_type(obj_node.children[0])
             class_name = go_type.removeprefix("*").split("[", 1)[0]

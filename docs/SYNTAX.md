@@ -1504,7 +1504,11 @@ interface receiver.
 An interface method may declare default values. A call through the interface
 (a parameter, local, field, list element or lambda parameter typed by it)
 fills the interface's declared defaults and accepts keyword arguments, also
-when the interface and the implementing class live in other modules:
+when the interface and the implementing class live in other modules. A member
+chain through such a value keeps the interface's declared return types:
+`self.db.table("t").whereRaw("x")` with a field `db: DbConn` fills
+`whereRaw`'s default, and `for row in self.db.query(q)? { ... }` ranges over
+the typed rows:
 
 ```lammergeier
 interface Named {
@@ -4778,6 +4782,19 @@ names it imports without an alias (`from one import Config` → `NewConfig()` in
 only indirectly: there, use the generated Go name (`NewConfig__one`, `Tag__alpha`;
 see [Transpilation](TRANSPILATION.md)).
 
+A class's Go constructor is `New<Class>`. When that is also the Go name of
+another definition anywhere in the program — a class or interface `NewSite`
+next to `class Site`, a function `newSite()` (`NewSite`) — the definition keeps
+its name and the constructor of `Site` becomes `NewSite__ctor` (a const or
+variable named `NewSite` gives way instead and gets a module-qualified Go
+name). Lam code is unaffected: `Site(...)`, `Site.make()`, subclasses,
+`isinstance` and imports work as usual, in one module and across modules.
+Raw `go!` code of a module that does not see the other `NewSite` keeps calling
+`NewSite(...)` (it is rewritten, like the stdlib's `NewError(...)` next to a
+user class `NewError`); where both are visible, `NewSite` is the other
+definition and the constructor is `LAMMERGEIER.Site(...)` (or
+`NewSite__ctor(...)`).
+
 Library files are resolved in three layers, in this order:
 
 1. **Stdlib** — `<compiler>/lib/`. Always wins, so users can't
@@ -5450,7 +5467,11 @@ compatible. Two layers cooperate behind the scenes:
 The displayed Go names are preferred spellings. If two Lam declarations would
 collide after casing/operator/static/overload lowering, the compiler assigns a
 readable `__lamN` suffix and routes both ordinary and `LAMMERGEIER` calls
-through that same internal mapping.
+through that same internal mapping. A class constructor whose `New<Class>`
+is the Go name of another definition of the program (`class Site` next to
+`class NewSite` or `func newSite()`) is `New<Class>__ctor` (`NewSite__ctor`);
+`LAMMERGEIER.Site(...)` lowers to it, see
+[Module imports and namespaces](#module-imports-and-namespaces).
 
 Stdlib classes participate in the dispatcher only when they're
 imported (directly or transitively): `from lamerrors import Result`

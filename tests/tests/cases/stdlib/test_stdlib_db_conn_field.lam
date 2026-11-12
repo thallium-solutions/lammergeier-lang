@@ -1,0 +1,215 @@
+# expect: db-field: active=2 ordered=a,b names=a,b plain=a,b first=a total=2 nested=2
+# expect: db-field: elems=2,2 loop=4 qb=1 desc=b,a
+# expect: tx-field: active=3 ordered=a,b,c names=a,b,c plain=a,b,c first=a total=3 nested=3
+# expect: tx-field: elems=3,3 loop=6 qb=1 desc=c,b,a
+# expect: after-rollback: 2
+# expect: conn-list: 4 [2 2] 2
+# expect: catalog: none ?! [apple apricot] [banana] [apple apricot banana] 3
+# expect: catalog-nested: none [apple apricot] ?
+# expect: catalog-entries: apple=1 apricot=2 banana=3 | APPLE
+# expect: conn_field_ok
+#
+# Member chains on a field typed by an interface (lamdb's ``DbConn``, held
+# by a ``Db`` and by a ``Tx``, and a user-defined interface) keep their
+# static types: the builder methods of ``self.db.table(...)`` fill their
+# default arguments, and ``self.db.query(...)?`` / ``.first(...)?`` /
+# ``.get()?`` have the payload types of the interface methods (a for loop
+# ranges over the rows). The same through a field of a field, an element of
+# a ``list[DbConn]`` field or local and a loop / comprehension variable
+# over it.
+from lamdb import Db, DbConn, Tx
+from lamerrors import Result
+from lamos import Os
+from lamcontext import Context
+
+class Repo {
+    func init(self, db: DbConn) {
+        self.db: DbConn = db
+        self.conns: list[DbConn] = [db, db]
+    }
+
+    func active(self) -> int {
+        return self.db.table("items").whereRaw("name <> ''").count().unwrap()
+    }
+
+    func ordered(self) -> Result[str] {
+        out: list[str] = []
+        for row in self.db.table("items").whereRaw("id > ?", [0]).orderBy("name").get()? {
+            out.append(str(row["name"]))
+        }
+        return Result.Ok(",".join(out))
+    }
+
+    func descending(self) -> Result[str] {
+        out: list[str] = []
+        for row in self.db.table("items").whereRaw("1 = 1").orderBy("name", "desc").get()? {
+            out.append(str(row["name"]))
+        }
+        return Result.Ok(",".join(out))
+    }
+
+    func names(self) -> Result[str] {
+        out: list[str] = []
+        for row in self.db.query("SELECT name FROM items ORDER BY id", [])? {
+            out.append(str(row["name"]))
+        }
+        return Result.Ok(",".join(out))
+    }
+
+    func plainNames(self) -> Result[str] {
+        rows = self.db.query("SELECT name FROM items ORDER BY id")?
+        return Result.Ok(",".join([str(r["name"]) for r in rows]))
+    }
+
+    func firstName(self) -> Result[str] {
+        row = self.db.first("SELECT name FROM items ORDER BY id LIMIT 1")?
+        return Result.Ok(str(row["name"]))
+    }
+
+    func total(self) -> Result[int] {
+        count = self.db.scalar("SELECT COUNT(*) FROM items")?
+        return Result.Ok(int(count))
+    }
+
+    func elems(self) -> str {
+        first: int = self.conns[0].table("items").whereRaw("name <> ''").count().unwrap()
+        second: int = self.conns[1].table("items").whereRaw("name <> ''").count().unwrap()
+        return f"{first},{second}"
+    }
+
+    func loop(self) -> int {
+        sum: int = 0
+        for conn in self.conns {
+            sum += conn.table("items").whereRaw("name <> ''").count().unwrap()
+        }
+        return sum
+    }
+
+    func builderOnly(self) -> int {
+        return self.db.table("items").whereRaw("name = ?", ["a"]).whereRaw("id > 0").count().unwrap()
+    }
+}
+
+class Service {
+    func init(self, repo: Repo) {
+        self.repo: Repo = repo
+    }
+
+    func nested(self) -> int {
+        return self.repo.db.table("items").whereRaw("name <> ''").count().unwrap()
+    }
+}
+
+func report(label: str, repo: Repo) {
+    service: Service = Service(repo)
+    print(f"{label}: active={repo.active()} ordered={repo.ordered().unwrap()} names={repo.names().unwrap()} plain={repo.plainNames().unwrap()} first={repo.firstName().unwrap()} total={repo.total().unwrap()} nested={service.nested()}")
+    print(f"{label}: elems={repo.elems()} loop={repo.loop()} qb={repo.builderOnly()} desc={repo.descending().unwrap()}")
+}
+
+func countAll(conns: list[DbConn]) -> str {
+    total: int = 0
+    for conn in conns {
+        total += conn.table("items").whereRaw("name <> ''").count().unwrap()
+    }
+    each: list[int] = [c.table("items").whereRaw("1 = 1").count().unwrap() for c in conns]
+    return f"{total} {each} {conns[0].table('items').whereRaw('id > 0').count().unwrap()}"
+}
+
+# ── A user-defined interface ────────────────────────────────────
+class Entry {
+    func init(self, key: str, value: str) {
+        self.key: str = key
+        self.value: str = value
+    }
+
+    func shout(self) -> str {
+        return self.key.toUpper()
+    }
+}
+
+interface Catalog {
+    func entries() -> Result[list[Entry]]
+    func lookup(key: str, fallback: str = "none") -> str
+    func keys(prefix: str = "") -> Result[list[str]]
+    func scoped(name: str) -> Catalog
+}
+
+class MemCatalog {
+    func init(self, entries: dict[str, str]) {
+        self.data: dict[str, str] = entries
+    }
+
+    func lookup(self, key: str, fallback: str = "none") -> str {
+        return self.data[key] if key in self.data else fallback
+    }
+
+    func keys(self, prefix: str = "") -> Result[list[str]] {
+        return Result.Ok(sorted([k for k, _v in self.data if k.startsWith(prefix)]))
+    }
+
+    func entries(self) -> Result[list[Entry]] {
+        return Result.Ok([Entry(k, self.data[k]) for k in sorted([k for k, _v in self.data])])
+    }
+
+    func scoped(self, _name: str) -> Catalog {
+        return self
+    }
+}
+
+class Shelf {
+    func init(self, catalog: Catalog) {
+        self.catalog: Catalog = catalog
+    }
+
+    func summary(self) -> Result[str] {
+        found: list[str] = []
+        for key in self.catalog.keys("ap")? {
+            found.append(key)
+        }
+        others: list[str] = []
+        for key in self.catalog.scoped("x").keys("b")? {
+            others.append(key)
+        }
+        every = self.catalog.keys()?
+        return Result.Ok(f"{self.catalog.lookup('missing')} {self.catalog.lookup('fresh', '?')}! {found} {others} {every} {len(every)}")
+    }
+
+    func listing(self) -> Result[str] {
+        parts: list[str] = []
+        for entry in self.catalog.entries()? {
+            parts.append(f"{entry.key}={entry.value}")
+        }
+        firstEntry = self.catalog.scoped("x").entries()?[0]
+        return Result.Ok(" ".join(parts) + " | " + firstEntry.shout())
+    }
+
+    func nested(self) -> Result[str] {
+        found = self.catalog.scoped("x").keys("ap")?
+        return Result.Ok(f"{self.catalog.scoped('y').lookup('missing')} {found} {self.catalog.scoped('z').lookup('fresh', fallback='?')}")
+    }
+}
+
+func main() {
+    path: str = Os.tempFile("lam-db-conn-field-", ".db").unwrap()
+    db: Db = Db.connect("sqlite", path).unwrap()
+    db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)").unwrap()
+    db.exec("INSERT INTO items (name) VALUES (?), (?)", ["a", "b"]).unwrap()
+
+    report("db-field", Repo(db))
+
+    tx: Tx = db.begin().unwrap()
+    tx.exec("INSERT INTO items (name) VALUES (?)", ["c"]).unwrap()
+    report("tx-field", Repo(tx))
+    tx.rollback().unwrap()
+    print(f"after-rollback: {Repo(db).active()}")
+    print(f"conn-list: {countAll([db, db.withContext(Context.simple())])}")
+
+    shelf: Shelf = Shelf(MemCatalog({"apple": "1", "apricot": "2", "banana": "3"}))
+    print(f"catalog: {shelf.summary().unwrap()}")
+    print(f"catalog-nested: {shelf.nested().unwrap()}")
+    print(f"catalog-entries: {shelf.listing().unwrap()}")
+
+    _ = db.close()
+    _ = Os.remove(path)
+    print("conn_field_ok")
+}

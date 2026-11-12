@@ -624,6 +624,13 @@ class HelpersMixin:
     def _go_class_name(self, class_name: str) -> str:
         return self._class_go_names.get(class_name, self._go_public_name(class_name))
 
+    def _go_ctor_name(self, class_name: str) -> str:
+        """The Go constructor of ``class_name``: ``New<GoClass>``, or
+        ``New<GoClass>__ctor`` when ``New<GoClass>`` is the Go name of
+        another top-level definition of the program (``class Site`` next to
+        ``class NewSite``; see ``namespacing.constructor_renames``)."""
+        return self._ctor_go_names.get(class_name) or f"New{self._go_class_name(class_name)}"
+
     def _go_method_name(self, class_name: str, method_name: str) -> str:
         return self._method_go_names.get(
             (class_name, method_name),
@@ -825,7 +832,7 @@ class HelpersMixin:
                     # Call form ``LAMMERGEIER.MyClass(args)`` instantiates;
                     # bare form is the type itself.
                     if paren:
-                        return f"New{go_cls}{paren}"
+                        return f"{self._go_ctor_name(head)}{paren}"
                     return go_cls
                 return m.group(0)
             if len(parts) == 2:

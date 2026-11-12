@@ -380,6 +380,12 @@ class SubtypingMixin:
                 return name
         return ""
 
+    def _receiver_type_from_go_type(self, go_type: str) -> str:
+        """The Lam class (``*Square``) or interface (``DbConn``) a receiver
+        of Go type ``go_type`` has, for its member calls (``""`` when
+        neither)."""
+        return self._hier_class_from_go_type(go_type) or self._interface_from_go_type(go_type)
+
     def _generic_receiver_subst(self, class_name: str, func) -> Dict[str, str]:
         """``{T: *Shape}`` for a method called on ``reg: Registry[Shape]``."""
         params = self._class_type_param_names_of(class_name) if class_name else []
@@ -788,7 +794,7 @@ class SubtypingMixin:
         go_cls = self._go_class_name(class_name)
         class_args = self._class_type_args(class_name)
         params = ", ".join(f"{n} {t}" for n, t in zip(go_names, types))
-        self._emit(f"func New{go_cls}{tp_clause}({params}) *{go_cls}{class_args} {{")
+        self._emit(f"func {self._go_ctor_name(class_name)}{tp_clause}({params}) *{go_cls}{class_args} {{")
         self.indent += 1
         self._emit(f"{recv} := &{go_cls}{class_args}{{}}")
         self._emit_ancestor_init(class_name, receiver=recv)
@@ -796,7 +802,7 @@ class SubtypingMixin:
         self._emit_virtual_binds(class_name, receiver=recv)
         go_source = self._go_class_name(source)
         path = f"{recv}.{go_source}"
-        self._emit(f"{path} = New{go_source}{self._base_type_args(class_name, source)}({', '.join(go_names)})")
+        self._emit(f"{path} = {self._go_ctor_name(source)}{self._base_type_args(class_name, source)}({', '.join(go_names)})")
         for stmt in self._virtual_bind_stmts(source, path, recv):
             self._emit(stmt)
         for stmt in self._hier_parent_field_default_stmts(class_name, source, recv):

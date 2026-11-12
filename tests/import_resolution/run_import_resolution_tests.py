@@ -366,16 +366,56 @@ def test_namespaced_user_class_and_library_class() -> None:
     print("PASS: user class and library class with the same name are namespaced")
 
 
-def test_link_clash_constructor_vs_function() -> None:
-    _assert_link_clash(
-        "from shapes import Thing\nfrom factory import newThing\n\nfunc main() {\n    print(Thing().size + newThing())\n}\n",
+def test_constructor_vs_function() -> None:
+    """Formerly a link clash (until 4.13.0): the constructor of ``Thing``
+    (``NewThing``) and a function ``newThing`` of another module; the
+    constructor is now ``NewThing__ctor``, also for raw ``go!`` code of the
+    class's module."""
+    _assert_builds_and_prints(
+        "from shapes import Thing, rawThing\nfrom factory import newThing\n\nfunc main() {\n    print(Thing().size + newThing() + rawThing())\n}\n",
         {
-            "shapes.lam": "class Thing {\n    func init(self) {\n        self.size: int = 1\n    }\n}\n",
+            "shapes.lam": (
+                "class Thing {\n    func init(self) {\n        self.size: int = 1\n    }\n}\n\n"
+                "func rawThing() -> int {\n    out: int = 0\n    go! {\n        out = NewThing().Size * 10\n    }\n    return out\n}\n"
+            ),
             "factory.lam": "func newThing() -> int {\n    return 2\n}\n",
         },
-        ["Go `func NewThing` is declared by modules `factory` and `shapes`"],
+        "13",
     )
-    print("PASS: link clash between a constructor and a function")
+    print("PASS: a constructor next to a same-Go-name function of another module")
+
+
+def test_constructor_vs_class_in_package() -> None:
+    """Regression (4.13.1): ``from .a import Site`` next to a local ``class
+    NewSite`` in a package module (and in the main module) used to fail
+    with ``NewSite redeclared``; the constructor of ``Site`` is now
+    ``NewSite__ctor``. Raw ``go!`` code of ``Site``'s module keeps calling
+    ``NewSite(...)``; the module declaring ``NewSite`` reaches the
+    constructor as ``LAMMERGEIER.Site(...)``."""
+    site = (
+        "class Site {\n    func init(self, name: str) {\n        self.name: str = name\n    }\n\n"
+        "    static func home() -> Site {\n        return Site(\"home\")\n    }\n}\n\n"
+        "func rawSite(name: str) -> str {\n    out: str = \"\"\n    go! {\n        out = NewSite(name).Name\n    }\n    return out\n}\n"
+    )
+    pages = (
+        "from .a import Site, rawSite\n\n"
+        "class NewSite {\n    func init(self, url: str) {\n        self.url: str = url\n    }\n}\n\n"
+        "func viaGo(name: str) -> str {\n    out: str = \"\"\n    go! {\n        out = LAMMERGEIER.Site(name).Name + \"/\" + NewSite{Url: \"raw\"}.Url\n    }\n    return out\n}\n\n"
+        "func render() -> str {\n    return Site(\"a\").name + \" \" + NewSite(\"b\").url + \" \" + Site.home().name + \" \" + rawSite(\"c\") + \" \" + viaGo(\"d\")\n}\n"
+    )
+    _expect_output(
+        {"web/__init__.lam": "from .pages import render\n", "web/a.lam": site, "web/pages.lam": pages},
+        "from web import render\n\nfunc main() {\n    print(render())\n}\n",
+        "a b home c d/raw",
+        "`from .a import Site` next to a local `class NewSite` in a package",
+    )
+    _expect_output(
+        {"a.lam": site},
+        "from a import Site, rawSite\n\nclass NewSite {\n    func init(self, url: str) {\n        self.url: str = url\n    }\n}\n\n"
+        "func main() {\n    s: Site = Site(\"x\")\n    n: NewSite = NewSite(\"y\")\n    print(s.name, n.url, isinstance(s, Site), rawSite(\"z\"))\n}\n",
+        "x y true z",
+        "an imported `Site` next to a main-module `class NewSite`",
+    )
 
 
 def test_link_clash_raw_go_functions() -> None:
@@ -1704,7 +1744,8 @@ def main() -> None:
         test_missing_nested_submodule_lists_nested_paths,
         test_namespaced_library_functions,
         test_namespaced_user_class_and_library_class,
-        test_link_clash_constructor_vs_function,
+        test_constructor_vs_function,
+        test_constructor_vs_class_in_package,
         test_link_clash_raw_go_functions,
         test_namespaced_constants,
         test_namespaced_private_functions,

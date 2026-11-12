@@ -86,6 +86,10 @@ class NamespacePlan:
     # Imported consts / variables -> their Go type (builtin types only), so
     # expressions of the importing module type them (``Codes + ["fr"]``).
     imported_value_types: dict[str, str] = field(default_factory=dict)
+    # Lam class (its final name) -> Go constructor, for the constructors
+    # whose ``New<Class>`` is the Go name of another top-level definition
+    # (``class Site`` next to ``class NewSite``): ``NewSite__ctor``.
+    constructor_go_names: dict[str, str] = field(default_factory=dict)
 
     def cache_key(self) -> str:
         parts = [
@@ -103,6 +107,7 @@ class NamespacePlan:
             "dc:" + ",".join(f"{k}>{v}" for k, v in sorted(self.declaration_renames.items())),
             "fa:" + ",".join(f"{k}>{v}" for k, v in sorted(self.function_aliases.items())),
             "vt:" + ",".join(f"{k}>{v}" for k, v in sorted(self.imported_value_types.items())),
+            "ct:" + ",".join(f"{k}>{v}" for k, v in sorted(self.constructor_go_names.items())),
         ]
         return "|".join(parts)
 
@@ -111,6 +116,7 @@ class NamespacePlan:
             self.rewrites or self.module_access or self.function_go_names
             or self.const_go_names or self.metadata_from or self.hidden or self.go_renames
             or self.declaration_renames or self.function_aliases or self.imported_value_types
+            or self.constructor_go_names
         )
 
 
@@ -526,6 +532,62 @@ def _go_public_name(name: str) -> str:
     return name[0].upper() + name[1:]
 
 
+def constructor_renames(
+    modules: dict[Path, "ModuleInfo"],
+    renamed: dict[tuple[Path, str], str],
+    default_go: Callable[[str, str], str],
+) -> tuple[dict[str, str], dict[str, set[tuple[Path, str]]]]:
+    """Constructors whose Go name ``New<Class>`` is another definition's.
+
+    A class's Go constructor is ``New<Class>``; the class ``NewSite`` (or a
+    function ``newSite``, an interface ``NewSite``) of any linked module is
+    the same Go identifier as the constructor of ``Site``. The definition
+    keeps its name and the constructor becomes ``New<Class>__ctor``
+    (``NewSite__ctor``; a further ``2``, ``3``... while taken). A const or
+    variable named like a constructor gives way instead: it gets a
+    module-qualified Go name in ``renamed`` (``NewSite__app``), as for its
+    other clashes. ``renamed`` holds the definitions already renamed (classes
+    by their new Lam name, the others by their new Go name).
+
+    Returns the constructor renames (final Lam class name -> Go constructor)
+    and, per renamed ``New<Class>``, the definitions owning that Go name.
+    """
+    def final_go(path: Path, name: str, kind: str) -> str:
+        new = renamed.get((path, name))
+        if kind in TYPE_KINDS:
+            return _go_public_name(new or name)
+        return new or default_go(name, kind)
+
+    go_ids: dict[str, list[tuple[Path, str, str]]] = {}
+    for path, info in modules.items():
+        for name, kind in info.symbols.items():
+            go_ids.setdefault(final_go(path, name, kind), []).append((path, name, kind))
+    ctor_go_names: dict[str, str] = {}
+    ctor_owners: dict[str, set[tuple[Path, str]]] = {}
+    for path in sorted(modules, key=str):
+        info = modules[path]
+        for name in sorted(info.symbols):
+            if info.symbols[name] != "class":
+                continue
+            ctor = "New" + final_go(path, name, "class")
+            owners = go_ids.get(ctor, [])
+            for owner_path, owner_name, owner_kind in owners:
+                if owner_kind in VALUE_KINDS and (owner_path, owner_name) not in renamed:
+                    renamed[(owner_path, owner_name)] = (
+                        f"{default_go(owner_name, owner_kind)}__{module_tag(modules[owner_path].name)}"
+                    )
+            definitions = {(p, n) for p, n, k in owners if k not in VALUE_KINDS}
+            if not definitions:
+                continue
+            candidate, index = f"{ctor}__ctor", 2
+            while candidate in go_ids:
+                candidate = f"{ctor}__ctor{index}"
+                index += 1
+            ctor_go_names[renamed.get((path, name), name)] = candidate
+            ctor_owners.setdefault(ctor, set()).update(definitions)
+    return ctor_go_names, ctor_owners
+
+
 def module_tag(module_name: str) -> str:
     tag = re.sub(r"[^0-9A-Za-z]+", "_", module_name).strip("_")
     return tag or "mod"
@@ -630,9 +692,11 @@ def build_plans(
             kind = modules[path].symbols[name]
             renamed[(path, name)] = f"{default_go(name, kind)}__{module_tag(modules[path].name)}"
 
+    ctor_go_names, ctor_owners = constructor_renames(modules, renamed, default_go)
+
     def go_renames_for(name: str, kind: str, new: str) -> dict[str, str]:
         if kind in TYPE_KINDS:
-            return {name: new, f"New{name}": f"New{new}", f"{name}_": f"{new}_"}
+            return {name: new, f"New{name}": ctor_go_names.get(new, f"New{new}"), f"{name}_": f"{new}_"}
         return {default_go(name, kind): new}
 
     def resolve_symbol(path: Path, name: str, depth: int = 0) -> Optional[tuple[Path, str, str]]:
@@ -763,6 +827,17 @@ def build_plans(
                 seen.add(value)
                 value = plan.rewrites[value]
             plan.rewrites[key] = value
+
+        plan.constructor_go_names.update(ctor_go_names)
+        # Raw ``go!`` code calling a renamed constructor by its usual name
+        # (``NewSite(...)`` in the module of ``class Site``) follows the
+        # rename, unless the definition now owning that Go name is visible
+        # here (then ``NewSite`` is that definition).
+        visible = {(p, n) for p, n, _k in claimed.values()}
+        for lam_class, new_ctor in ctor_go_names.items():
+            old_ctor = "New" + _go_public_name(lam_class)
+            if old_ctor not in plan.go_renames and not (ctor_owners.get(old_ctor, set()) & visible):
+                plan.go_renames[old_ctor] = new_ctor
 
         for name in colliding:
             if name not in claimed:
