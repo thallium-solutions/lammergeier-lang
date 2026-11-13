@@ -5295,6 +5295,13 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return True
         return False
 
+    def _is_scalar_or_class_type(self, type_: Type) -> bool:
+        """A type no list, dict or set literal can be: the scalars and the
+        program's classes (not ``any``, ``json``, type parameters, unions)."""
+        return isinstance(type_, NamedType) and (
+            type_.name in {"int", "float", "str", "bool", "bytes"} or type_.name in self._class_members
+        )
+
     def _check_sequence_literal_items(
         self,
         node: Tree,
@@ -5322,8 +5329,14 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return not self._check_json_expr(item, f"invalid {label} for {binding_kind}")
         actual = self._expr_type_for_expected(item, expected)
         if actual is None:
-            return False
-        if is_assignable(expected, actual) or self._nominal_type_assignable(expected, actual):
+            # A nested literal whose element types cannot be inferred
+            # (``[[[]]]``) is still a list, dict or set: it never fits a
+            # scalar or a class.
+            kind = {"list": "list", "dict": "dict", "set": "set"}.get(item.data)
+            if kind is None or not self._is_scalar_or_class_type(expected):
+                return False
+            actual = NamedType(kind)
+        elif is_assignable(expected, actual) or self._nominal_type_assignable(expected, actual):
             return False
         name = (
             self._const_target_name(node)
@@ -13783,6 +13796,17 @@ def check_source(
             err for err in errors
             if not (getattr(err, "severity", "") == "warning" and err.message.startswith("unused import"))
         ]
+    # Constant expressions Go would reject (overflow, negative shift,
+    # duplicate dict keys): Lam errors, not Go build failures.
+    from compiler import semantic_consts as _consts
+
+    def _const_error(node, msg: str) -> None:
+        meta = getattr(node, "meta", None)
+        line = getattr(meta, "line", 0) if meta is not None and not getattr(meta, "empty", True) else 0
+        col = getattr(meta, "column", 0) if line else 0
+        errors.append(SemanticError(line, col, msg, "type"))
+
+    _consts.check_tree(tree, _const_error)
     if module_index is not None and source_path is not None:
         _suggest_defining_imports(errors, module_index=module_index, source_path=source_path)
         errors.extend(_check_imported_exports(

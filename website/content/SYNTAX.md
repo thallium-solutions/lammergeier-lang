@@ -2,6 +2,8 @@
 
 A typed programming language that compiles to Go. Combines Python-like readability with Go's performance and type safety. Uses C-style `{}` blocks and the `func` keyword. File extension: `.lam`.
 
+What the compiler guarantees about the programs it accepts, which run-time faults are Lam exceptions and the deliberate limits (64-bit wrapping ints, a missing typed-dict key read as zero, `go!` blocks) are in [Safety](#/docs/safety).
+
 ---
 
 ## Start Here: Guided Tour

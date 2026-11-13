@@ -83,3 +83,4 @@ __pycache__/
 
 # bunny.net API key for website/publish.sh (never commit)
 website/.bunny-token
+fuzz-failures/

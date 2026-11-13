@@ -1706,7 +1706,9 @@ def _module_init_calls(
     visit(main_path, main_imports)
     if not order:
         return ""
-    lines = ["", "// Top-level statements of every module, in import order.", "func init() {"]
+    # An uncaught exception in a top-level statement gets the Lam report
+    # (``lamUncaught``) like one in ``main``.
+    lines = ["", "// Top-level statements of every module, in import order.", "func init() {", "\tdefer lamUncaught()"]
     lines.extend(f"\t{name}()" for name in order)
     lines.append("}")
     return "\n".join(lines) + "\n"
@@ -1734,7 +1736,13 @@ def _retarget_line_directives(go_src: str, lam_path: str) -> str:
     A transpiled library only ever maps back to its own source file, so all
     of its directives share one path.
     """
-    return _LINE_DIRECTIVE_RE.sub(lambda m: f"{m.group(1)}//line {lam_path}:{m.group(2)}", go_src)
+    def rewrite(m) -> str:
+        if m.group(0).strip().startswith("//line lamc-runtime.go:"):
+            # The compiler's runtime helpers, not Lam code (transpiler.py).
+            return m.group(0)
+        return f"{m.group(1)}//line {lam_path}:{m.group(2)}"
+
+    return _LINE_DIRECTIVE_RE.sub(rewrite, go_src)
 
 
 def _render_transpile_diagnostics(err, display_path: str, source: str | None = None) -> str:
@@ -2423,6 +2431,17 @@ def _compile_lam(
         warning_block = _semantic.render_warnings(sem_diags, source, str(source_path))
         if warning_block:
             print(warning_block, file=sys.stderr)
+        if not (transpile_only or emit_go or emit_ast) and not any(
+            isinstance(stmt, Tree) and stmt.data == "funcdef"
+            and _semantic.SemanticChecker._funcdef_name(stmt) == "main"
+            for stmt in tree.children
+        ):
+            # A program needs an entry point: without it ``go build`` fails
+            # with "function main is undeclared" (a library module is
+            # imported, not built).
+            sem_diags.append(_semantic.SemanticError(
+                1, 1, "the program has no `func main()`: add one (a library module is imported by a program, not built)", "main",
+            ))
         if _semantic.has_errors(sem_diags):
             print(_semantic.render_errors(sem_diags, source, str(source_path)),
                   file=sys.stderr)
@@ -3712,8 +3731,16 @@ def _compile_lam(
             )
 
         if result.returncode != 0:
-            print(f"error: Go build failed for {source_path}", file=sys.stderr)
             import re as _re3
+            # A Go error in a raw ``go!`` block is the user's Go; any other
+            # one is Go the compiler generated for a program its checker
+            # accepted: an internal compiler error.
+            generated = _go_errors_in_generated_code(result.stderr, source_file, source)
+            if generated:
+                from compiler import ice as _ice
+                _ice.generated_go_failed(str(source_path))
+            else:
+                print(f"error: Go build failed for {source_path}", file=sys.stderr)
             # Cache: map absolute .lam path → list of source lines. The
             # error may reference the main file or any imported library
             # file, and each needs its own context lookup.
@@ -3766,6 +3793,8 @@ def _compile_lam(
                         print(f"  Go line {go_line}: {go_msg}", file=sys.stderr)
                     else:
                         print(f"  {err_line}", file=sys.stderr)
+            if generated:
+                _ice.generated_go_hint()
             if verbose:
                 # Dump annotated Go source with line numbers for debugging
                 print("\n  Generated Go source:", file=sys.stderr)
@@ -3788,6 +3817,61 @@ def _compile_lam(
 
     finally:
         work.release(keep=keep_go)
+
+
+_GO_BLOCK_RE = _re.compile(r"\bgo!\s*[{(]")
+
+
+def _go_block_lines(text: str) -> set:
+    """1-based lines of ``text`` inside raw ``go! { ... }`` / ``go!(...)``
+    code (brace / parenthesis matching from the ``go!`` token)."""
+    lines: set = set()
+    for m in _GO_BLOCK_RE.finditer(text):
+        open_ch = text[m.end() - 1]
+        close_ch = "}" if open_ch == "{" else ")"
+        depth = 0
+        end = len(text)
+        for i in range(m.end() - 1, len(text)):
+            ch = text[i]
+            if ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        first = text.count("\n", 0, m.start()) + 1
+        last = text.count("\n", 0, end) + 1
+        lines.update(range(first, last + 1))
+    return lines
+
+
+def _go_errors_in_generated_code(stderr: str, source_file, source: str) -> bool:
+    """Whether a failed ``go build`` reports errors only in generated code:
+    every error maps (``//line``) to a Lam line outside raw ``go!`` code of
+    a ``.lam`` file. An unmapped error (a ``.go`` file, a module problem) or
+    one inside a ``go!`` block is the user's Go."""
+    found = False
+    texts: dict = {str(source_file): source}
+    for err_line in (stderr or "").splitlines():
+        text = err_line.strip()
+        if not text or text.startswith("#"):
+            continue
+        m = _re.search(r"(\S*?\.lam):(\d+)(?::\d+)?:", text)
+        if not m:
+            if _re.match(r"^(\S+\.go):\d+", text) or "go: " in text or "cannot find" in text:
+                return False
+            continue
+        path = m.group(1)
+        if path not in texts:
+            try:
+                texts[path] = Path(path).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                return False
+        if int(m.group(2)) in _go_block_lines(texts[path]):
+            return False
+        found = True
+    return found
 
 
 # Set of known top-level subcommand verbs. Anything in this list
@@ -4625,6 +4709,15 @@ compile_tpy = compile_lam
 
 
 def main():
+    """``lamc``: ``_main`` behind the crash guard (``compiler/ice.py``): any
+    exception inside the compiler ends with a clean report, never a raw
+    Python traceback."""
+    from compiler import ice as _ice
+    argv_source = next((a for a in sys.argv[1:] if a.endswith(".lam")), "")
+    _ice.guard(_main, argv_source)
+
+
+def _main():
     """Top-level ``lamc`` entry point.
 
     Dispatches on the first positional token:

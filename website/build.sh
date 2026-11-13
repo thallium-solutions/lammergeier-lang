@@ -42,6 +42,7 @@ copy_doc() {
 # ── Copy source docs verbatim ───────────────────────────────
 copy_doc "${DOCS}/SYNTAX.md"                "${CONTENT}/SYNTAX.md"
 copy_doc "${DOCS}/TRANSPILATION.md"         "${CONTENT}/TRANSPILATION.md"
+copy_doc "${DOCS}/SAFETY.md"                "${CONTENT}/SAFETY.md"
 copy_doc "${DOCS}/stdlib.md"                "${CONTENT}/stdlib.md"
 copy_doc "${DOCS}/libraries.md"             "${CONTENT}/libraries.md"
 copy_doc "${DOCS}/server_plugins.md"        "${CONTENT}/server_plugins.md"
@@ -71,6 +72,8 @@ rewrite_file() {
         -e 's|](SYNTAX\.md)|](#/docs/syntax)|g' \
         -e 's|](SYNTAX\.md#|](#/docs/syntax?h=|g' \
         -e 's|](TRANSPILATION\.md)|](#/docs/transpilation)|g' \
+        -e 's|](SAFETY\.md)|](#/docs/safety)|g' \
+        -e 's|](SAFETY\.md#|](#/docs/safety?h=|g' \
         -e 's|](TRANSPILATION\.md#|](#/docs/transpilation?h=|g' \
         -e 's|](stdlib\.md)|](#/docs/stdlib)|g' \
         -e 's|](stdlib\.md#|](#/docs/stdlib?h=|g' \
@@ -89,6 +92,8 @@ rewrite_file() {
         -e 's|](docs/SYNTAX\.md)|](#/docs/syntax)|g' \
         -e 's|](docs/SYNTAX\.md#|](#/docs/syntax?h=|g' \
         -e 's|](docs/TRANSPILATION\.md)|](#/docs/transpilation)|g' \
+        -e 's|](docs/SAFETY\.md)|](#/docs/safety)|g' \
+        -e 's|](docs/SAFETY\.md#|](#/docs/safety?h=|g' \
         -e 's|](docs/TRANSPILATION\.md#|](#/docs/transpilation?h=|g' \
         -e 's|](docs/stdlib\.md)|](#/docs/stdlib)|g' \
         -e 's|](docs/stdlib\.md#|](#/docs/stdlib?h=|g' \
@@ -112,6 +117,7 @@ rewrite_file() {
         -e 's|href="docs/installation\.md"|href="#/docs/installation"|g' \
         -e 's|href="docs/package_manager\.md"|href="#/docs/package_manager"|g' \
         -e 's|href="docs/TRANSPILATION\.md"|href="#/docs/transpilation"|g' \
+        -e 's|href="docs/SAFETY\.md"|href="#/docs/safety"|g' \
         -e 's|href="CONTRIBUTING\.md"|href="#/docs/contributing"|g' \
         "${f}"
 

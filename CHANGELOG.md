@@ -5,6 +5,58 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.13.3 — 2026-11-13
+
+### Safety (docs/SAFETY.md)
+
+- **The contract:** a program the checker accepts builds, the compiler never
+  crashes on input, and run-time faults are Lam exceptions. The new
+  `docs/SAFETY.md` describes the guarantees, the run-time exceptions, the
+  deliberate semantics (64-bit wrapping ints, a missing typed-dict key read as
+  the zero value, floats as IEEE 754) and the limits (`go!` blocks, stack
+  overflow, concurrent dict writes, out of memory).
+- **Internal compiler errors instead of tracebacks** (`compiler/ice.py`): any
+  crash inside `lamc` is reported as `internal compiler error` with the Lam
+  location and a link to report it (exit status 70; `LAMC_TRACEBACK=1` adds
+  the Python traceback). Invalid UTF-8 and nesting beyond the compiler's depth
+  are Lam errors. A Go build failure of generated code is an internal compiler
+  error at the Lam line the Go error maps to; a Go error inside a `go!` block
+  stays the user's Go build error.
+- **Run-time faults are Lam exceptions with the Lam line:** index out of
+  range → `IndexError`, integer division by zero → `ZeroDivisionError`,
+  `int()` of NaN → `ValueError`, of an infinite or out-of-range float →
+  `OverflowError`, a failed conversion → `TypeError` naming Lam types,
+  writing to a `None` dict → `AttributeError`, a negative run-time shift
+  count → `ValueError`; they reach `await` and generator loops. An uncaught
+  exception prints `panic: <Exception>: <message> (at file.lam:LINE)` and the
+  Lam frames (exit status 2); `LAM_TRACEBACK=go` keeps Go's report.
+  **Possibly breaking:** code that compared Go's panic texts sees the Lam
+  messages.
+- **Compile-time errors for what Go would reject:**
+  - constant expressions that overflow `int`, `float` or `byte`, including
+    integer literals of any length;
+  - negative constant shift counts;
+  - duplicate constant keys in a dict literal;
+  - a program without `func main()`;
+  - nested list, dict or set literals of the wrong kind (`x: list[int] =
+    [[[]]]`).
+- **Fixed:**
+  - a dict comprehension used without an annotated variable (indexed,
+    iterated, passed to a function) was a `map[interface{}]interface{}`, so
+    `{f"k{x}": x for x in xs}["k1"]` into an `int` did not build;
+  - iterating a dict comprehension inside a list comprehension gave its
+    values instead of its keys;
+  - a list comprehension over a generator used directly (`[g for g in
+    gen(3)][1]`, in arithmetic, with `.filter()`) was a `[]interface{}`;
+  - the counter of a comprehension over `range()` was untyped, so
+    `[max(7, i) for i in range(4)]` and dict literals holding it did not
+    build.
+- **Fuzzing** (`tests/fuzz/lamfuzz.py`, `sh scripts/fuzz.sh`): well-typed
+  generated programs checked against a Python twin, mutations of them and
+  hostile inputs; failures are shrunk to regression tests.
+  `tests/tests/test_compiler_crash_guard.py` and
+  `tests/tests/test_runtime_panics.py` run in the gate.
+
 ## 4.13.2 — 2026-11-13
 
 ### Fixed

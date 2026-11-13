@@ -15,6 +15,7 @@
   <a href="docs/installation.md">Install</a> ·
   <a href="docs/package_manager.md">Package manager</a> ·
   <a href="docs/TRANSPILATION.md">Transpilation</a> ·
+  <a href="docs/SAFETY.md">Safety</a> ·
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
@@ -121,7 +122,9 @@ area: 78.53981633974483
   (`Html.sanitize`), SQLSTATE-based constraint checks, crypto with PBKDF2 and
   bcrypt passwords, a CLI flag parser, and testing.
 
-See [`docs/SYNTAX.md`](docs/SYNTAX.md) for the complete language reference, and
+See [`docs/SYNTAX.md`](docs/SYNTAX.md) for the complete language reference,
+[`docs/SAFETY.md`](docs/SAFETY.md) for what the compiler guarantees about the programs it
+accepts (run-time faults as Lam exceptions, the limits), and
 [`docs/TRANSPILATION.md`](docs/TRANSPILATION.md) for the authoritative Lam → Go
 mapping used by the compiler.
 

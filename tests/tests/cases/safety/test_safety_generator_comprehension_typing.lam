@@ -1,0 +1,34 @@
+# List comprehensions over a generator used directly, without an annotated
+# variable (found by tests/fuzz/lamfuzz.py): indexed, in arithmetic, in a
+# ternary or chained with filter(), they were []interface{} and the
+# generated Go did not build.
+# expect: 5
+# expect: 4
+# expect: 4
+# expect: [1 2]
+# expect: 6 [HELLO WORLD]
+
+func gen1(n: int, k: int) -> generator[int] {
+    for i in range(n) {
+        yield i * k
+    }
+}
+
+func words() -> generator[str] {
+    yield "hello"
+    yield "world"
+}
+
+func pick(c: bool) -> int {
+    return ([g for g in gen1(3, 5)][1] if c else 0)
+}
+
+func main() {
+    print(pick(true))
+    v: int = [g for g in gen1(3, 2)][2]
+    print(v)
+    print(1 + [g for g in gen1(2, 3)][1])
+    xs: list[int] = [g for g in gen1(3, 1)].filter(lambda f: f > 0)
+    print(xs)
+    print([g * 2 for g in gen1(3, 1)].reduce(lambda a, b: a + b, 0), [w.toUpper() for w in words()])
+}

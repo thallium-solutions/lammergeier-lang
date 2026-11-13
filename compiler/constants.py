@@ -287,6 +287,7 @@ func lamGenGuarded[T any](f *lamGenFrame[T]) (c int, ok bool) {
 \tdefer func() {
 \t\tif !ok {
 \t\t\tif r := recover(); r != nil {
+\t\t\t\tr = lamExc(r)
 \t\t\t\th := f.h
 \t\t\t\tif h == nil {
 \t\t\t\t\tpanic(r)
@@ -649,6 +650,10 @@ COMPILER_GO_PACKAGES = frozenset({
 # generated names (function-reference aliases, module initialisers, the
 # virtual-dispatch interfaces).
 COMPILER_RUNTIME_HELPERS = frozenset({
+    # Run-time faults and the uncaught-exception report (docs/SAFETY.md).
+    "lamExc", "lamFault", "lamFaultArticle", "lamFaultConversion", "lamFaultFrames",
+    "lamFaultGoType", "lamFaultText", "lamFloatToInt", "lamRangeStep", "lamStdlibDir",
+    "lamUncaught",
     "lamAs", "lamAsNil", "lamAsyncFailure", "lamAsyncFailureIDs", "lamAsyncFailures",
     "lamAsyncReportFailure", "lamAsyncReportUnretrieved", "lamAsyncTaskFailed",
     "lamAsyncTaskRetrieved", "lamAsyncTaskUnpublished", "lamCloseCollectedGenerator",

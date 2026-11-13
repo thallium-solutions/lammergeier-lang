@@ -251,6 +251,11 @@ class ExpressionVisitorMixin:
             # instance is viewed as its base, ``None`` fits a class).
             return self._dynamic_to_go(self._expr_to_go(node), go_type)
         if isinstance(node, Tree):
+            if go_type in ("interface{}", "any") and node.data in ("list", "dict"):
+                # A literal stored in an ``any`` stays untyped (``[]interface{}``,
+                # ``map[string]interface{}``), so it converts back to the
+                # ``list[any]`` / ``dict[str, any]`` the program reads it as.
+                return self._untyped_literal_to_go(node)
             if node.data == "list" and go_type.startswith("[]"):
                 return self._typed_list_literal_to_go(node, go_type)
             if node.data == "tuple" and go_type == "[]interface{}":
@@ -796,7 +801,7 @@ class ExpressionVisitorMixin:
         "capitalize": "string", "reverse": "string", "center": "string", "zfill": "string",
         "padLeft": "string", "padRight": "string", "replaceFirst": "string", "indent": "string",
         "dedent": "string", "format": "string", "camelCase": "string", "pascalCase": "string",
-        "snakeCase": "string", "kebabCase": "string",
+        "snakeCase": "string", "kebabCase": "string", "join": "string",
     }
 
     def _coalesce_fallback_node(self, node, operands: list):
@@ -962,6 +967,17 @@ class ExpressionVisitorMixin:
         if node.data == "list_comprehension":
             elem = self._list_comp_static_elem_go_type(node)
             return f"[]{elem}" if elem else ""
+        if node.data in ("string", "fstring", "string_concat"):
+            return "string"
+        if node.data == "set_comprehension":
+            elem = self._list_comp_static_elem_go_type(node)
+            return f"map[{elem}]bool" if elem in ("int", "string", "float64", "bool") else ""
+        if node.data in ("list", "dict", "set") and node.children:
+            # ``{"a": 1}[k]`` / ``[1, 2][0:1]`` / ``for x in {n, 3}``: a
+            # literal with uniformly typed items has their type.
+            literal = self._infer_type_from_value(node) or ""
+            if literal and "interface{}" not in literal:
+                return literal
         if (
             node.data == "power" and len(node.children) > 1 and node.children[1] is not None
             and not self._infer_expr_class(node.children[0])
@@ -1001,6 +1017,11 @@ class ExpressionVisitorMixin:
             if kinds and all(k in {"int", "float64"} for k in kinds) and "float64" in kinds and ops <= {"+", "-", "*", "/", "//", "%"}:
                 return "float64"
             if kinds and all(k == "string" for k in kinds) and ops == {"+"}:
+                return "string"
+            if node.data == "term" and ops == {"*"} and kinds.count("string") == 1 and all(
+                k in ("string", "int") for k in kinds
+            ):
+                # ``("ab" * 2).split("b")``: string repetition is a string.
                 return "string"
             return ""
         if node.data == "var" and node.children:
@@ -1777,8 +1798,10 @@ class ExpressionVisitorMixin:
                     try:
                         exp_val = int(exp)
                         if exp_val > 63:
-                            self._need_import("math/big")
-                            return f'new(big.Int).Exp(big.NewInt({base}), big.NewInt({exp}), nil)'
+                            # Only 0, 1 and -1 have a power this large that
+                            # fits an ``int``; the checker rejects the others
+                            # (``compiler/semantic_consts.py``).
+                            return str(int(base) ** exp_val) if int(base) in (0, 1, -1) else base
                     except ValueError:
                         pass
                 self._need_import("math")
@@ -1822,6 +1845,12 @@ class ExpressionVisitorMixin:
             return ", ".join(elems)
 
         if d == "list":
+            literal = self._infer_type_from_value(node) if node.children else ""
+            if literal.startswith("[]") and "interface{}" not in literal and self._uniform_literal_items(node):
+                # ``[1, 2][0:1]`` / ``[3, 4] + xs``: a literal whose items all
+                # have one type is a list of that type, also where no
+                # annotation gives it one.
+                return self._typed_value_to_go(node, literal)
             elems = [self._expr_to_go(c) for c in node.children if c is not None]
             return f"[]interface{{}}{{{', '.join(elems)}}}"
 
@@ -1835,7 +1864,11 @@ class ExpressionVisitorMixin:
             return self._dict_to_go(node)
 
         if d == "dict_comprehension":
-            return self._dict_comp_to_go(node)
+            # ``{k: v for ...}["x"]``, ``for k, v in {...}``: a typed map when
+            # its key and value types are known (``interface{}`` values
+            # would not convert to the int the context expects).
+            inferred = self._dict_comp_static_go_type(node)
+            return self._dict_comp_to_go(node, map_type=inferred or None)
 
         if d == "set":
             # Build the set inside an IIFE so duplicate literals
@@ -1844,8 +1877,12 @@ class ExpressionVisitorMixin:
             elems = [self._expr_to_go(c) for c in node.children if c is not None]
             if not elems:
                 return "map[interface{}]bool{}"
-            lines = ["func() map[interface{}]bool {",
-                     "\t_s := map[interface{}]bool{}"]
+            # ``for x in {n, 3}``: uniformly typed items give a typed set.
+            set_type = self._infer_type_from_value(node) or ""
+            if not (set_type.startswith("map[") and "interface{}" not in set_type and self._uniform_literal_items(node)):
+                set_type = "map[interface{}]bool"
+            lines = [f"func() {set_type} {{",
+                     f"\t_s := {set_type}{{}}"]
             for e in elems:
                 lines.append(f"\t_s[{e}] = true")
             lines.append("\treturn _s")
@@ -1853,6 +1890,11 @@ class ExpressionVisitorMixin:
             return self._pin_multiline_to(node, "\n".join(lines))
 
         if d == "set_comprehension":
+            # ``for x in {f(y) for y in ys}``: typed by its element, like a
+            # list comprehension, also outside a typed context.
+            elem = self._list_comp_static_elem_go_type(node)
+            if elem in ("int", "string", "float64", "bool"):
+                return self._set_comp_to_go(node, f"map[{elem}]bool")
             return self._set_comp_to_go(node)
 
         if d == "tuple_comprehension":
@@ -2728,17 +2770,17 @@ class ExpressionVisitorMixin:
             return f'fmt.Sprintf({", ".join(args)})'
 
         # ── math module ──
-        if func_str.startswith("math."):
+        if func_str.startswith("math.") and "(" not in func_str:
             self._need_import("math")
             method = func_str[5:]
             go_method = method[0].upper() + method[1:]
             return f"math.{go_method}({', '.join(args)})"
 
-        if func_str.startswith("os."):
+        if func_str.startswith("os.") and "(" not in func_str:
             self._need_import("os")
             return f"{func_str}({', '.join(args)})"
 
-        if func_str.startswith("strings."):
+        if func_str.startswith("strings.") and "(" not in func_str:
             self._need_import("strings")
             return f"{func_str}({', '.join(args)})"
 
@@ -4958,10 +5000,12 @@ class ExpressionVisitorMixin:
             return self._unknown_conversion_to_go(name, value)
         if name == "bool":
             return f"({value} != 0)"
-        if name == "int" and source in {"float64", "float32"} and re.fullmatch(r"[-+0-9.eE()\s*/]+", value):
-            # ``int(3.7)`` truncates (3); Go rejects converting a float
-            # constant with a fractional part, so convert at run time.
-            return f"func(v float64) int {{ return int(v) }}({value})"
+        if name == "int" and source in {"float64", "float32"}:
+            # ``int(3.7)`` truncates (3) at run time (Go rejects converting a
+            # float constant with a fractional part); NaN, infinities and
+            # out-of-range values raise (``lamFloatToInt``) instead of Go's
+            # undefined result.
+            return f"lamFloatToInt(float64({value}))"
         return f"{go_target}({value})"
 
     def _unknown_conversion_to_go(self, name: str, value: str) -> str:
@@ -4975,7 +5019,7 @@ class ExpressionVisitorMixin:
                 f"case int: return n; case int8: return int(n); case int16: return int(n); case int32: return int(n); "
                 f"case int64: return int(n); case uint: return int(n); case uint8: return int(n); case uint16: return int(n); "
                 f"case uint32: return int(n); case uint64: return int(n); case uintptr: return int(n); "
-                f"case float64: return int(n); case float32: return int(n); "
+                f"case float64: return lamFloatToInt(n); case float32: return lamFloatToInt(float64(n)); "
                 f"case bool: if n {{ return 1 }}; return 0; "
                 f"case string: out, err := strconv.Atoi(n); if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as int: %v\", n, err)) }}; return out; "
             )
@@ -5648,6 +5692,10 @@ class ExpressionVisitorMixin:
             start_go = self._expr_to_go(start_node) if start_node is not None else ""
             end_go = self._expr_to_go(end_node) if end_node is not None else ""
             obj_type = (self._expr_go_type_hint(obj_node) or "") if obj_node is not None else ""
+            if not obj_type and isinstance(obj_node, Tree) and obj_node.data in ("string", "fstring", "string_concat"):
+                # ``"k"[2:0]``: Go rejects constant out-of-range bounds of a
+                # constant string; the clamping form keeps Python's result.
+                obj_type = "string"
             if (start_go or end_go) and (obj_type == "string" or (obj_type.startswith("[]") and "func(" not in obj_type)):
                 # Python semantics: out-of-range bounds clamp instead of
                 # panicking (``s[i:i + 2]`` near the end, ``xs[5:]`` on a
@@ -5839,6 +5887,12 @@ class ExpressionVisitorMixin:
                     if not (bind(targets[0], "int") and bind(targets[1], src_type[2:])):
                         return ""
                     continue
+                if not targets and (self._is_generator_call(iter_expr) or self._is_chan_iterable(iter_expr)):
+                    # ``[g for g in gen(3)][1]``: the generator's element type.
+                    elem = self._generator_iter_elem_go_type(iter_expr) or self._generator_call_elem_go_type(iter_expr)
+                    if not bind(var_expr, elem):
+                        return ""
+                    continue
                 iter_type = (self._expr_go_type_hint(iter_expr) or self._infer_type_from_value(iter_expr) or "").strip()
                 if targets:
                     key_type, value_type = self._split_go_map_type(iter_type)
@@ -5863,6 +5917,25 @@ class ExpressionVisitorMixin:
         if not result or result == "interface{}" or result.startswith("("):
             return ""
         return result
+
+    def _dict_comp_static_go_type(self, node) -> str:
+        """Go map type of ``{k: v for x in xs ...}`` from the iterables'
+        types (as ``_list_comp_static_elem_go_type`` for the key and the
+        value); ``""`` when either is unknown or ``interface{}``."""
+        comp = node.children[0] if isinstance(node, Tree) and node.children else None
+        if not (isinstance(comp, Tree) and comp.data == "comprehension" and len(comp.children) >= 2):
+            return ""
+        kv = comp.children[0]
+        if not (isinstance(kv, Tree) and kv.data == "key_value" and len(kv.children) >= 2):
+            return ""
+        rest = list(comp.children[1:])
+        parts = []
+        for expr in kv.children[:2]:
+            probe = Tree("list_comprehension", [Tree("comprehension", [expr] + rest)])
+            parts.append(self._list_comp_static_elem_go_type(probe))
+        if not all(parts):
+            return ""
+        return f"map[{parts[0]}]{parts[1]}"
 
     def _comprehension_tuple_raw_targets(self, target) -> list:
         if not isinstance(target, Tree):
@@ -5901,7 +5974,23 @@ class ExpressionVisitorMixin:
             if var_str == "_":
                 # Go has no ``_`` loop counter; the value is unused anyway.
                 var_str = f"_lamCompIndex{depth}"
-            lines.append(f"{tabs}for {var_str} := {start}; {var_str} < {end}; {var_str} += {step} {{")
+            else:
+                # ``[max(7, i) for i in range(4)]``: the counter is an int
+                # (not the type of a same-named local outside).
+                self._var_go_types[var_str] = "int"
+                self._var_types.pop(var_str, None)
+            if self._is_int_literal_go(step) and step.strip("() ") not in ("0", "-0"):
+                # A literal step: its sign picks the comparison.
+                cmp = ">" if step.strip().lstrip("(").lstrip().startswith("-") else "<"
+                lines.append(f"{tabs}for {var_str} := {start}; {var_str} {cmp} {end}; {var_str} += {step} {{")
+            else:
+                # ``range(a, b, s)`` with ``s`` known at run time: checked
+                # (``ValueError`` for 0) and evaluated once, like the bound.
+                end_v, step_v = f"_lamCompEnd{depth}", f"_lamCompStep{depth}"
+                lines.append(
+                    f"{tabs}for {var_str}, {end_v}, {step_v} := {start}, {end}, lamRangeStep({step}); "
+                    f"({step_v} > 0 && {var_str} < {end_v}) || ({step_v} < 0 && {var_str} > {end_v}); {var_str} += {step_v} {{"
+                )
             return
         bind_tabs = "\t" * (depth + 2)
 
@@ -6061,13 +6150,17 @@ class ExpressionVisitorMixin:
             lines.append(f"{tabs}for range {iter_str} {{")
         elif self._range_single_target_uses_key(iter_expr):
             lines.append(f"{tabs}for {var_str} := range {iter_str} {{")
+            silence([var_str])
         elif self._iterates_string(iter_expr):
             # Lam yields one-character strings, Go ranges over runes.
             lines.append(f"{tabs}for _, {var_str}Rune := range {iter_str} {{")
             lines.append(f"{chr(9) * (depth + 2)}{var_str} := string({var_str}Rune)")
             self._var_go_types[var_str] = "string"
+            silence([var_str])
         else:
             lines.append(f"{tabs}for _, {var_str} := range {iter_str} {{")
+            # ``[0 for x in xs]``: the element is unused.
+            silence([var_str])
 
     @staticmethod
     def _positional_raw_args(args_node) -> list:
@@ -7281,16 +7374,54 @@ class ExpressionVisitorMixin:
         )
 
     def _range_single_target_uses_key(self, iterable_node) -> bool:
+        if isinstance(iterable_node, Tree) and iterable_node.data in ("dict", "dict_comprehension"):
+            # A dict literal or comprehension is a map whatever its types
+            # (``[k for k in {f"k{i}": i for i in xs}]`` iterates the keys).
+            return True
         iterable_type = self._expr_go_type_hint(iterable_node) or self._infer_type_from_value(iterable_node)
         return (iterable_type or "").strip().startswith("map[")
 
+    def _uniform_literal_items(self, node: Tree) -> bool:
+        """Whether every item (every key and value of a dict) of a literal
+        has a statically known Go type, so the literal can be typed by them."""
+        items = []
+        for child in node.children:
+            if isinstance(child, Tree) and child.data == "key_value":
+                items.extend(child.children[:2])
+            elif child is not None:
+                items.append(child)
+        for item in items:
+            if not isinstance(item, Tree):
+                return False
+            known = self._expr_go_type_hint(item) or self._infer_type_from_value(item) or ""
+            if not known or "interface{}" in known:
+                return False
+            if any(re.search(rf"\b{re.escape(name)}\b(?!\[)", known) for name in self._generic_classes):
+                # ``[Box("a"), Box("b")]`` of a generic class: its Go type
+                # needs type arguments the literal does not state.
+                return False
+        return True
+
     def _dict_to_go(self, node: Tree) -> str:
+        literal = self._infer_type_from_value(node) if node.children else ""
+        if literal.startswith("map[") and "interface{}" not in literal and self._uniform_literal_items(node):
+            # ``{"a": 1}[k]``: typed by its keys and values (a missing key
+            # reads the value type's zero, as for any typed dict).
+            return self._typed_value_to_go(node, literal)
+        return self._untyped_literal_to_go(node)
+
+    def _untyped_literal_to_go(self, node: Tree) -> str:
+        """A list or dict literal with ``interface{}`` items (nested literals
+        too): the lowering of a literal stored in an ``any``."""
+        if node.data == "list":
+            elems = [self._typed_value_to_go(c, "interface{}") for c in node.children if c is not None]
+            return f"[]interface{{}}{{{', '.join(elems)}}}"
         entries = []
         has_non_string_key = False
         for child in node.children:
             if isinstance(child, Tree) and child.data == "key_value":
                 k = self._expr_to_go(child.children[0])
-                v = self._expr_to_go(child.children[1])
+                v = self._typed_value_to_go(child.children[1], "interface{}")
                 if not (k.startswith('"') or k.startswith("'")):
                     has_non_string_key = True
                 entries.append(f"{k}: {v}")

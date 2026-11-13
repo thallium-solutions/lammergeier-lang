@@ -1,0 +1,13 @@
+# expect-error: line 8: error[type]: list element for variable `x` must be `int`, got `list`
+# expect-error: line 9: error[type]: list element for variable `y` must be `str`, got `list`
+# expect-error: line 10: error[type]: dict value for variable `z` must be `int`, got `dict
+# expect-error: line 11: error[type]: list element for variable `w` must be `int`, got `set`
+# Nested empty literals whose element types cannot be inferred (the fuzzer's
+# `[[[[]]]]` into a `list[int]`) are still lists, dicts or sets.
+func main() {
+    x: list[int] = [[[[[]]]]]
+    y: list[str] = [[[]]]
+    z: dict[str, int] = {"a": {"b": {}}}
+    w: list[int] = [{[]}]
+    print(x, y, z, w)
+}

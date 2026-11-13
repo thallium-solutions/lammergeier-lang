@@ -318,7 +318,9 @@ def test_lammergeier_rejects_transitive_private_symbols() -> None:
 def test_lambda_membership_imports_match_emitted_code() -> None:
     # A list-method lambda is lowered once untyped (its ``in`` test then
     # asks for ``reflect`` and ``strings``) and again with the element
-    # type; the import block must only list packages the code uses.
+    # type; the import block must only list packages the code uses
+    # (``os``, ``path/filepath``, ``runtime`` and ``strconv`` are the
+    # uncaught-exception report every ``main`` installs: docs/SAFETY.md).
     go = _emit_go(
         """
         func main() {
@@ -331,7 +333,7 @@ def test_lambda_membership_imports_match_emitted_code() -> None:
         "lambda_membership_imports",
     )
     imports = go.split("import (", 1)[1].split(")", 1)[0].split()
-    assert imports == ['"fmt"', '"strings"'], go
+    assert imports == ['"fmt"', '"os"', '"path/filepath"', '"runtime"', '"strconv"', '"strings"'], go
     _compile_go(go, "lambda_membership_imports")
     print("PASS: lambda membership imports match the emitted code")
 

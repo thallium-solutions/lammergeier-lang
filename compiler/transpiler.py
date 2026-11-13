@@ -13,6 +13,8 @@ Constants (TYPE_MAP, PYTHON_EXCEPTIONS, etc.) live in compiler.constants.
 """
 
 from __future__ import annotations
+import json
+import os
 import re
 from lark import Tree, Token
 from typing import List, Optional, Tuple, Dict, Set, Any
@@ -353,6 +355,200 @@ func lamAsNil[T any](v interface{}) T {
 \treturn v.(T)
 }
 """
+    # Go runtime faults as Lam exceptions (docs/SAFETY.md): every
+    # ``recover`` site passes the recovered value through ``lamExc``, which
+    # turns a ``runtime.Error`` (index out of range, nil map write, failed
+    # type assertion, ...) into the Lam exception it is, with the Lam line of
+    # the fault in its message. ``lamUncaught`` (deferred first in ``main``
+    # and in the top-level ``init``) ends the program on an uncaught
+    # exception: ``panic: <exception>`` and the Lam frames on stderr, exit
+    # status 2; ``LAM_TRACEBACK=go`` keeps Go's own panic report.
+    _FAULT_RUNTIME_GO = """
+// A Go runtime fault raised as a Lam exception (``catch IndexError``...).
+type lamFault struct {
+\tkind, message, where string
+\tcause                error
+}
+
+func (e *lamFault) Error() string {
+\tif e.where == "" {
+\t\treturn e.kind + ": " + e.message
+\t}
+\treturn e.kind + ": " + e.message + " (at " + e.where + ")"
+}
+func (e *lamFault) lamExcKind() string { return e.kind }
+func (e *lamFault) Unwrap() error      { return e.cause }
+
+// lamExc is the Lam exception of a recovered value (called by the
+// deferred handler while the fault's frames are still on the stack).
+func lamExc(r interface{}) interface{} {
+\terr, ok := r.(runtime.Error)
+\tif !ok {
+\t\treturn r
+\t}
+\tkind, message := lamFaultText(err.Error())
+\twhere := ""
+\tif frames := lamFaultFrames(1); len(frames) > 0 {
+\t\twhere = frames[0]
+\t}
+\treturn &lamFault{kind, message, where, err}
+}
+
+func lamFaultText(m string) (string, string) {
+\tm = strings.TrimPrefix(m, "runtime error: ")
+\tswitch {
+\tcase strings.Contains(m, "divide by zero"):
+\t\treturn "ZeroDivisionError", "integer division or modulo by zero"
+\tcase strings.HasPrefix(m, "index out of range"), strings.HasPrefix(m, "slice bounds out of range"):
+\t\treturn "IndexError", m
+\tcase strings.Contains(m, "nil map"):
+\t\treturn "AttributeError", "assignment to an entry of a None dict"
+\tcase strings.Contains(m, "nil pointer"):
+\t\treturn "AttributeError", "None has no attributes (a None reference was used)"
+\tcase strings.HasPrefix(m, "interface conversion: "):
+\t\treturn "TypeError", lamFaultConversion(strings.TrimPrefix(m, "interface conversion: "))
+\tcase strings.Contains(m, "negative shift amount"):
+\t\treturn "ValueError", "negative shift count"
+\tcase strings.Contains(m, "makeslice"), strings.Contains(m, "makemap"), strings.Contains(m, "makechan"):
+\t\treturn "ValueError", m
+\tcase strings.Contains(m, "unhashable"), strings.Contains(m, "uncomparable"):
+\t\treturn "TypeError", m
+\t}
+\treturn "RuntimeError", m
+}
+
+// "interface {} is string, not int" -> "a str is not an int".
+func lamFaultConversion(m string) string {
+\tif i := strings.Index(m, " is "); i >= 0 {
+\t\tif j := strings.LastIndex(m, ", not "); j > i {
+\t\t\tgot, want := m[i+4:j], m[j+6:]
+\t\t\tif got == "nil" {
+\t\t\t\treturn "None is not " + lamFaultArticle(lamFaultGoType(want))
+\t\t\t}
+\t\t\treturn lamFaultArticle(lamFaultGoType(got)) + " is not " + lamFaultArticle(lamFaultGoType(want))
+\t\t}
+\t}
+\treturn m
+}
+
+func lamFaultArticle(name string) string {
+\tif name != "" && strings.IndexByte("aeiou", name[0]) >= 0 {
+\t\treturn "an " + name
+\t}
+\treturn "a " + name
+}
+
+func lamFaultGoType(t string) string {
+\tswitch {
+\tcase t == "string":
+\t\treturn "str"
+\tcase t == "float64":
+\t\treturn "float"
+\tcase t == "interface {}":
+\t\treturn "any"
+\tcase strings.HasPrefix(t, "[]"):
+\t\treturn "list[" + lamFaultGoType(t[2:]) + "]"
+\tcase strings.HasPrefix(t, "map["):
+\t\tdepth := 0
+\t\tfor i := 4; i < len(t); i++ {
+\t\t\tswitch t[i] {
+\t\t\tcase '[':
+\t\t\t\tdepth++
+\t\t\tcase ']':
+\t\t\t\tif depth == 0 {
+\t\t\t\t\tk, v := lamFaultGoType(t[4:i]), lamFaultGoType(t[i+1:])
+\t\t\t\t\tif v == "bool" {
+\t\t\t\t\t\treturn "set[" + k + "] or dict[" + k + ", bool]"
+\t\t\t\t\t}
+\t\t\t\t\treturn "dict[" + k + ", " + v + "]"
+\t\t\t\t}
+\t\t\t\tdepth--
+\t\t\t}
+\t\t}
+\tcase strings.HasPrefix(t, "*main."):
+\t\treturn t[6:]
+\tcase strings.HasPrefix(t, "main."):
+\t\treturn t[5:]
+\t}
+\treturn t
+}
+
+// lamFaultFrames lists the Lam source positions of the panicking stack,
+// innermost first: the frames below the runtime's panic machinery whose
+// file is a ``.lam`` source (``//line`` directives), the standard
+// library's after the program's own.
+func lamFaultFrames(limit int) []string {
+\tpcs := make([]uintptr, 64)
+\tn := runtime.Callers(2, pcs)
+\tframes := runtime.CallersFrames(pcs[:n])
+\tvar user, lib []string
+\tpanicking := false
+\tfor {
+\t\tf, more := frames.Next()
+\t\tif strings.HasPrefix(f.Function, "runtime.") {
+\t\t\tpanicking = true
+\t\t} else if panicking && strings.HasSuffix(f.File, ".lam") {
+\t\t\tpos := filepath.Base(f.File) + ":" + strconv.Itoa(f.Line)
+\t\t\tif lamStdlibDir != "" && strings.HasPrefix(f.File, lamStdlibDir) {
+\t\t\t\tlib = append(lib, pos)
+\t\t\t} else if len(user) == 0 || user[len(user)-1] != pos {
+\t\t\t\tuser = append(user, pos)
+\t\t\t}
+\t\t}
+\t\tif !more || (limit > 0 && len(user) >= limit) {
+\t\t\tbreak
+\t\t}
+\t}
+\tif len(user) == 0 {
+\t\tuser = lib
+\t}
+\tif limit > 0 && len(user) > limit {
+\t\tuser = user[:limit]
+\t}
+\treturn user
+}
+
+// lamRangeStep is a ``range()`` step known only at run time.
+func lamRangeStep(step int) int {
+\tif step == 0 {
+\t\tpanic("ValueError: range() arg 3 must not be zero")
+\t}
+\treturn step
+}
+
+// lamFloatToInt is ``int(x)`` of a float: truncation, like Python, and a
+// ValueError / OverflowError where Go's conversion has no defined result.
+func lamFloatToInt(v float64) int {
+\tif v != v {
+\t\tpanic("ValueError: cannot convert float NaN to integer")
+\t}
+\tif v >= 9223372036854775808.0 || v < -9223372036854775808.0 {
+\t\tif v > 1.7976931348623157e308 || v < -1.7976931348623157e308 {
+\t\t\tpanic("OverflowError: cannot convert float infinity to integer")
+\t\t}
+\t\tpanic(fmt.Sprintf("OverflowError: float %v does not fit in an int", v))
+\t}
+\treturn int(v)
+}
+
+func lamUncaught() {
+\tif os.Getenv("LAM_TRACEBACK") == "go" {
+\t\treturn
+\t}
+\tr := recover()
+\tif r == nil {
+\t\treturn
+\t}
+\tframes := lamFaultFrames(20)
+\tr = lamExc(r)
+\tfmt.Fprintf(os.Stderr, "panic: %v\\n", r)
+\tfor _, pos := range frames {
+\t\tfmt.Fprintf(os.Stderr, "    at %s\\n", pos)
+\t}
+\tos.Exit(2)
+}
+"""
+
     _NONE_RUNTIME_RE = re.compile(r"\b(?:lamNN|lamNNI|lamAs|lamAsNil|lamNoneIsNot|lamNoneMember|lamNoneOf)[\[(]")
 
     # ``return None`` in a ``-> T`` of generic code: ``None`` of a reference
@@ -972,6 +1168,9 @@ func lamGoTypeLamName(t reflect.Type) string {
         self._at_top_level = True
 
         self._emit_top_level(tree)
+        # The runtime helpers below are not Lam code: their frames must not
+        # carry the last ``//line`` position (``lamFaultFrames``).
+        body_lines.append("//line lamc-runtime.go:1")
         if self._emit_async_runtime:
             body_lines.extend(self._ASYNC_RUNTIME_GO.splitlines())
             for pkg in ("fmt", "os", "runtime", "sync", "sync/atomic"):
@@ -995,6 +1194,14 @@ func lamGoTypeLamName(t reflect.Type) string {
                 body_lines.extend(self._NONE_OF_RUNTIME_GO.splitlines())
                 self._need_import("reflect")
                 self._need_import("strings")
+        if not self._omit_main:
+            # The main file defines the runtime-fault helpers every module's
+            # ``recover`` sites call (``_FAULT_RUNTIME_GO``).
+            body_lines.extend(self._FAULT_RUNTIME_GO.splitlines())
+            stdlib_dir = os.path.join(os.path.realpath(self.stdlib_path), "") if self.stdlib_path else ""
+            body_lines.append(f"const lamStdlibDir = {json.dumps(stdlib_dir)}")
+            for pkg in ("fmt", "os", "path/filepath", "runtime", "strconv", "strings"):
+                self._need_import(pkg)
         # Some module uses a generator: the main file (not a library, whose
         # Go joins the same package) defines the generator runtime.
         if not self._omit_main and (

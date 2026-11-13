@@ -1063,11 +1063,16 @@ class GeneratorStateMachineMixin:
             negative = step.lstrip().startswith(("-", "(−", "(-"))
             self._emit(f"{idx} := {start}")
             self._emit(f"{it} := {end}")
+            cond = f"{idx} {'>' if negative else '<'} {it}"
             if step.strip() != "1":
                 step_var = f"__lamGStep{n}"
-                self._emit(f"{step_var} := {step}")
+                literal = self._is_int_literal_go(step) and step.strip("() ") not in ("0", "-0")
+                # A step known only at run time is checked (``ValueError``
+                # for 0) and its sign picks the comparison.
+                self._emit(f"{step_var} := {step if literal else f'lamRangeStep({step})'}")
                 advance = f"{idx} += {step_var}"
-            cond = f"{idx} {'>' if negative else '<'} {it}"
+                if not literal:
+                    cond = f"(({step_var} > 0 && {idx} < {it}) || ({step_var} < 0 && {idx} > {it}))"
             # The target is bound before the counter advances.
             bind(var_name, idx)
         else:

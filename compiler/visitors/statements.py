@@ -1138,9 +1138,10 @@ class StatementVisitorMixin:
         if val is None or not return_type:
             self._emit(f"{ch} <- func() {{}}")
             return
-        self._emit("{")
+        # The value is computed on the line the statement's ``//line``
+        # directive maps (a fault there names the Lam line of the return).
+        self._emit(f"{{ var __lamAsyncV {return_type} = {val}")
         self.indent += 1
-        self._emit(f"var __lamAsyncV {return_type} = {val}")
         self._emit(f"{ch} <- func() {return_type} {{ return __lamAsyncV }}")
         self.indent -= 1
         self._emit("}")
@@ -1821,7 +1822,35 @@ class StatementVisitorMixin:
                 self._q_temp_counter += 1
                 var_name = f"_lamRangeIndex{self._q_temp_counter}"
                 assign_op = ":="
-            self._emit(f"for {var_name} {assign_op} {start}; {var_name} {cmp_op} {end}; {var_name} += {step} {{")
+            # ``range(...)`` is evaluated once, as in Python: a bound that is
+            # not a literal is held in a temporary (the body may change the
+            # variable it reads), a step that is not a literal is checked
+            # (``ValueError`` for 0, instead of an endless loop) and its sign
+            # picks the comparison at run time.
+            if not self._is_int_literal_go(end):
+                self._q_temp_counter += 1
+                end_var = f"__lamRangeEnd{self._q_temp_counter}"
+                self._emit(f"{end_var} := {end}")
+                end = end_var
+            cond = f"{var_name} {cmp_op} {end}"
+            if not self._is_int_literal_go(step) or step.strip("() ") in ("0", "-0"):
+                self._q_temp_counter += 1
+                step_var = f"__lamRangeStep{self._q_temp_counter}"
+                self._emit(f"{step_var} := lamRangeStep({step})")
+                step = step_var
+                cond = f"({step_var} > 0 && {var_name} < {end}) || ({step_var} < 0 && {var_name} > {end})"
+            body_var = ""
+            if self._suite_assigns_name(suite_node, var_name):
+                # The body rebinds the loop variable: in Python that does not
+                # change the iteration, so the loop counts in a hidden index.
+                self._q_temp_counter += 1
+                body_var, var_name = var_name, f"__lamRangeIndex{self._q_temp_counter}"
+                body_op, assign_op = assign_op, ":="
+                cond = cond.replace(f"{body_var} ", f"{var_name} ")
+            self._emit(f"for {var_name} {assign_op} {start}; {cond}; {var_name} += {step} {{")
+            if body_var:
+                self._emit(f"\t{body_var} {body_op} {var_name}")
+                var_name = body_var
         else:
             dict_literal_type = self._uniform_dict_literal_type(iterable_node)
             if (
@@ -2054,6 +2083,34 @@ class StatementVisitorMixin:
             # without a known shape yield ``interface{}`` positions.
             return targets, []
         return None
+
+    @staticmethod
+    def _is_int_literal_go(text: str) -> bool:
+        return bool(re.fullmatch(r"\(?\s*-?\s*\d+\s*\)?", (text or "").strip()))
+
+    @staticmethod
+    def _suite_assigns_name(suite, name: str) -> bool:
+        """Whether ``suite`` assigns ``name`` (``=``, ``+=``, ``++``...) outside
+        nested functions and lambdas."""
+        if not isinstance(suite, Tree) or not name:
+            return False
+        stack = [suite]
+        while stack:
+            node = stack.pop()
+            if not isinstance(node, Tree):
+                continue
+            if node.data in ("funcdef", "lambdef", "classdef"):
+                continue
+            if node.data in ("assign", "augassign", "inc_stmt", "dec_stmt") and node.children:
+                targets = node.children[:-1] if node.data == "assign" else node.children[:1]
+                for target in targets:
+                    for tok in (target.scan_values(lambda v: isinstance(v, Token)) if isinstance(target, Tree) else [target]):
+                        if str(tok) == name:
+                            # A plain name target (not ``name.field`` / ``name[i]``).
+                            if isinstance(target, Tree) and target.data in ("var", "name", "testlist_star_expr", "exprlist", "tuple"):
+                                return True
+            stack.extend(c for c in node.children if isinstance(c, Tree))
+        return False
 
     def _check_range_call(self, node) -> Optional[Tuple[str, str, str]]:
         if not isinstance(node, Tree) or node.data != "funccall":
@@ -2314,6 +2371,9 @@ class StatementVisitorMixin:
             self.indent += 1
             self._emit("if r := recover(); r != nil {")
             self.indent += 1
+            # A Go runtime fault becomes its Lam exception here, while
+            # the faulting frames are still on the stack.
+            self._emit("r = lamExc(r)")
             self._emit("__lamPanicked = true")
             if caught:
                 self._emit(f"{caught} = true")
@@ -2434,7 +2494,7 @@ class StatementVisitorMixin:
         self._push_scope()
         finally_body_start, finally_vars_at_start = self._scope_unused_tracking_start()
         if exits:
-            self._emit(f"__lamFinExc{n} := recover()")
+            self._emit(f"__lamFinExc{n} := lamExc(recover())")
         if nested_try:
             self._emit(f"__lamFinRet{n} := __lamShouldReturn")
         leave = "__lamShouldReturn = false; return"

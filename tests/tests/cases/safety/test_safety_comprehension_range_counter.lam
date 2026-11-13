@@ -1,0 +1,24 @@
+# The counter of a comprehension over range() is an int (found by
+# tests/fuzz/lamfuzz.py): it was untyped, so max(7, i) became a float and a
+# dict literal holding it an untyped map, and the generated Go did not build.
+# expect: [7 7 7 7]
+# expect: [0 1 2]
+# expect: true
+# expect: false
+# expect: [0 2 4] [a b]
+
+func f() -> list[int] {
+    return [max(7, i9) for i9 in range(4)]
+}
+
+func main() {
+    print(f())
+    s8: int = 3
+    print([{"A-B": 2, "": s8, "go": i29}["go"] for i29 in range(3)])
+    for it3 in [1, 2] {
+        print({"go": 9, "Lam": it3}["Lam"] <= 1)
+    }
+    i: str = "outer"
+    print([i * 2 for i in range(3)], [c for c in ["a", "b"]])
+    _ = i
+}

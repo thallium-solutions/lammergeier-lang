@@ -1,0 +1,11 @@
+# expect-error: duplicate key "ab" in dict literal (first given on line 6)
+# expect-error: duplicate key 1 in dict literal
+
+func main() {
+    d: dict[str, int] = {
+        "ab": 1,
+        "ab": 2,
+    }
+    e: dict[int, str] = {1: "x", 2: "y", 1: "z"}
+    print(d, e)
+}

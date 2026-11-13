@@ -15,6 +15,9 @@ const DOCS = [
     { id: "transpilation",   file: "content/TRANSPILATION.md",
       title: "Transpilation rules",
       summary: "How every Lam construct lowers to Go. Authoritative mapping used by the compiler pipeline." },
+    { id: "safety",          file: "content/SAFETY.md",
+      title: "Safety",
+      summary: "What the compiler guarantees about accepted programs, run-time faults as Lam exceptions, the deliberate limits (go!, wrapping ints), and the fuzzer that checks it." },
     { id: "stdlib",          file: "content/stdlib.md",
       title: "Compiler-bundled standard library",
       summary: "Reference for the lam* modules bundled with the compiler — classes, Result APIs, examples, and the public API index." },
@@ -690,7 +693,7 @@ function installLibraryFilter(root) {
 function renderDocsShell(activePage) {
     const sections = [
         ["Get started", ["readme", "installation"]],
-        ["Language", ["syntax", "transpilation"]],
+        ["Language", ["syntax", "transpilation", "safety"]],
         ["Compiler-bundled stdlib", ["stdlib"]],
         ["Official & third-party packages", ["libraries", "server_plugins", "package_manager", "third_party"]],
         ["Project", ["contributing"]],

@@ -1,0 +1,19 @@
+# expect-pass
+# Constant expressions that fit: the 64-bit extremes (an intermediate
+# beyond them is fine, the result is what counts), an int literal widened to
+# a float, the powers of 0 / 1 / -1, shifts, sets with repeated variables and
+# dict literals with distinct keys.
+
+func main() {
+    lo: int = -9223372036854775808
+    hi: int = 9223372036854775807 + 1 - 1
+    f: float = 99999999999999999999
+    one: int = 1 ** 100
+    zero: int = 0 ** 70
+    mask: int = (1 << 62) | (1 << 3)
+    b: byte = 255
+    n: int = 2
+    s: set[int] = {n, n, 3}
+    d: dict[str, int] = {"a": 1, "b": 2}
+    print(lo, hi, f, one, zero, mask, b, s, d, n >> 1)
+}

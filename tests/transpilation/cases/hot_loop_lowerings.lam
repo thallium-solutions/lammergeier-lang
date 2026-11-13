@@ -2,7 +2,7 @@
 # `enumerate` and a dict range directly (no copies, no interface{} boxing),
 # a comprehension appends into a typed slice / map, `in` on a dict is a map
 # lookup and on a typed list a typed loop, a stepped `range` is a C-style
-# loop, `//=` / `%` by a power of two on ints are shifts / masks (same
+# loop (its bound evaluated once, as in Python), `//=` / `%` by a power of two on ints are shifts / masks (same
 # results as Python's floor semantics), `xs[-1]` indexes `len(xs)-1`, and
 # `+=` on a string appends in place.
 # expect-go: for _, x := range xs {
@@ -15,7 +15,8 @@
 # expect-go: for _, _v := range xs { if _v == 3 { return true } }
 # expect-go: _, _ok := names["a"]; return _ok
 # expect-go: out += w
-# expect-go: for i := 0; i < len(xs); i += 2 {
+# expect-go: __lamRangeEnd1 := len(xs)
+# expect-go: for i := 0; i < __lamRangeEnd1; i += 2 {
 # expect-go: total = total >> 1
 # expect-go: xs[len(xs)-1]
 

@@ -1,0 +1,61 @@
+# ``range(...)`` is evaluated once and its step checked, as in Python:
+# a body that changes the bound's variable or rebinds the loop variable
+# does not change the iteration, a step known only at run time may be
+# negative, and a zero step raises ValueError instead of looping forever.
+# expect: 0 1 2
+# expect: 10 11 12
+# expect: 3 2 1
+# expect: [6 4 2]
+# expect: [5 4 3 2 1]
+# expect: 5 3 1
+# expect: ValueError: range() arg 3 must not be zero
+# expect: ValueError: range() arg 3 must not be zero
+# expect: [5 5] [0 0 0]
+# expect: done 6
+
+func countdown(n: int, step: int) -> generator[int] {
+    for i in range(n, 0, step) {
+        yield i
+    }
+}
+
+func main() {
+    n: int = 3
+    seen: list[str] = []
+    for i in range(n) {
+        n += 1
+        seen.append(str(i))
+    }
+    print(" ".join(seen))
+    shifted: list[str] = []
+    for j in range(3) {
+        j += 10
+        shifted.append(str(j))
+    }
+    print(" ".join(shifted))
+    down: int = -1
+    back: list[str] = []
+    for q in range(3, 0, down) {
+        back.append(str(q))
+    }
+    print(" ".join(back))
+    two: int = -2
+    print([v for v in range(6, 0, two)])
+    print([v for v in range(5, 0, -1)])
+    print(" ".join([str(v) for v in countdown(5, two)]))
+    zero: int = 0
+    try {
+        for w in range(0, 3, zero) {
+            print(w)
+        }
+    } catch ValueError as e {
+        print(e)
+    }
+    try {
+        print([w for w in range(0, 3, zero)])
+    } catch ValueError as e {
+        print(e)
+    }
+    print([5 for x in [1, 2]], [0 for c in "abc"])
+    print("done", n)
+}

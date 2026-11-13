@@ -7,7 +7,7 @@
 # expect-go: __lamCaught1 = true
 # expect-go: if __lamShouldReturn { return }
 # expect-go: if !__lamCaught1 {
-# expect-go: __lamFinExc3 := recover()
+# expect-go: __lamFinExc3 := lamExc(recover())
 # expect-go: if __lamFinExc3 != nil { panic(__lamFinExc3) }
 
 func work(n: int) -> int {

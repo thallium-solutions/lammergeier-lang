@@ -26,6 +26,7 @@ APP = ROOT / "website" / "assets" / "js" / "app.js"
 DOC_SOURCES = {
     "SYNTAX.md": ROOT / "docs" / "SYNTAX.md",
     "TRANSPILATION.md": ROOT / "docs" / "TRANSPILATION.md",
+    "SAFETY.md": ROOT / "docs" / "SAFETY.md",
     "stdlib.md": ROOT / "docs" / "stdlib.md",
     "libraries.md": ROOT / "docs" / "libraries.md",
     "server_plugins.md": ROOT / "docs" / "server_plugins.md",
@@ -39,6 +40,7 @@ DOC_SOURCES = {
 CONTENT_ROUTES = {
     "SYNTAX.md": "syntax",
     "TRANSPILATION.md": "transpilation",
+    "SAFETY.md": "safety",
     "stdlib.md": "stdlib",
     "libraries.md": "libraries",
     "server_plugins.md": "server_plugins",

@@ -1,0 +1,39 @@
+# Dict comprehensions used directly, without an annotated variable (found by
+# tests/fuzz/lamfuzz.py): indexed, iterated and passed to functions, they
+# were lowered to map[interface{}]interface{} and the generated Go did not
+# build (an interface{} value where an int or a string was expected).
+# expect: 20
+# expect: 20
+# expect: 5
+# expect: 5
+# expect: 7
+# expect: 3
+# expect: 42 k1
+# expect: s4
+# expect: [1 2 3]
+
+func double(n: int) -> int {
+    return n * 2
+}
+
+func main() {
+    n: int = {f"k{x}": x * 10 for x in [1, 2]}["k2"]
+    print(n)
+    m: int = {x: x * 10 for x in [1, 2]}[2]
+    print(m)
+    for k, v in {f"k{x}": 3 for x in [1, 2].filter(lambda f: f > 0)} {
+        print(len(k) + v)
+    }
+    total: int = 0
+    for k2, v2 in {s: len(s) for s in ["ab", "cde"]} {
+        total += v2 + len(k2) - len(k2)
+    }
+    print(total + 2)
+    print(len({c: 1 for c in ["a", "b", "c"]}))
+    print(double({w: 21 for w in ["x"]}["x"]), [k3 for k3 in {f"k{i}": i for i in [1]}][0])
+    # A dict comprehension iterates its keys (it used to give the values).
+    for k4 in {f"s{i}": i for i in [4]} {
+        print(k4)
+    }
+    print(sorted([k5 for k5 in {x: 1 for x in [3, 1, 2]}]))
+}

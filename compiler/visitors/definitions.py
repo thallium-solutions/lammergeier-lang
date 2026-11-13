@@ -566,6 +566,7 @@ class DefinitionVisitorMixin:
         # when its handle is collected or when ``main`` ends.
         self._emit("defer func() {")
         self._emit("\tif r := recover(); r != nil {")
+        self._emit("\t\tr = lamExc(r)")
         self._emit("\t\t__lamTask := lamAsyncTaskFailed(r)")
         self._emit(
             f"\t\tselect {{ case {async_ch} <- {thunk_type} {{ lamAsyncTaskRetrieved(__lamTask); panic(r) }}: "
@@ -823,6 +824,10 @@ class DefinitionVisitorMixin:
             self._emit(f"func {go_name}{tp_clause}({params_str}) {{")
 
         body_start, params_at_start = self._begin_scoped_body(params_node)
+        if go_name == "main" and not self.current_class and not self._omit_main:
+            # An uncaught exception ends the program with the Lam report
+            # (``_FAULT_RUNTIME_GO``); deferred first, so it runs last.
+            self._emit("defer lamUncaught()")
         if go_name == "main" and not self.current_class and self._emit_async_runtime:
             self._emit("defer lamAsyncReportUnretrieved()")
         with self._scoped(

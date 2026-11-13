@@ -1,0 +1,11 @@
+# expect-error: float constant overflows `float`
+# expect-error: constant 300 overflows `byte` (0..255)
+# expect-error: negative shift count `-1` in `>>`
+# expect-error: integer constant 2 ** 64 overflows `int`
+
+func main() {
+    f: float = 1e400
+    b: byte = 300
+    x: int = 5
+    print(f, b, x >> -1, 2 ** 64)
+}

@@ -1,0 +1,133 @@
+# Go runtime faults surface as Lam exceptions (docs/SAFETY.md): the typed
+# clause catches them, and the message names the Lam line of the fault.
+# expect: IndexError: index out of range [5] with length 3 (at test_safety_runtime_faults.lam:47)
+# expect: IndexError: index out of range [4] with length 3 (at test_safety_runtime_faults.lam:26)
+# expect: LookupError IndexError
+# expect: TypeError: a str is not an int (at test_safety_runtime_faults.lam:62)
+# expect: ValueError: cannot convert float NaN to integer
+# expect: OverflowError: cannot convert float infinity to integer
+# expect: OverflowError: float -1e+30 does not fit in an int
+# expect: ArithmeticError OverflowError
+# expect: 3 -3
+# expect: ValueError: negative shift count (at test_safety_runtime_faults.lam:93)
+# expect: AttributeError: assignment to an entry of a None dict (at test_safety_runtime_faults.lam:99)
+# expect: IndexError: index out of range [-1] (at test_safety_runtime_faults.lam:105)
+# expect: caught in finally path
+# expect: finally ran
+# expect: async IndexError
+# expect: generator IndexError
+# expect: after
+
+class Bag {
+    items: dict[str, int]
+}
+
+func third(xs: list[int]) -> int {
+    return xs[2] + xs[7 - len(xs)]
+}
+
+func boxed() -> any {
+    return "text"
+}
+
+async func pickAsync(xs: list[int], i: int) -> int {
+    return xs[i]
+}
+
+func items(xs: list[int]) -> generator[int] {
+    for i in range(4) {
+        yield xs[i]
+    }
+}
+
+func main() {
+    xs: list[int] = [1, 2, 3]
+    i: int = 5
+    try {
+        print(xs[i])
+    } catch IndexError as e {
+        print(e)
+    }
+    try {
+        print(third([1, 2, 3]))
+    } catch e {
+        print(e)
+    }
+    try {
+        print("abc"[i])
+    } catch LookupError as e {
+        print("LookupError", str(e)[:10])
+    }
+    try {
+        n: int = boxed() as int
+        print(n)
+    } catch TypeError as e {
+        print(e)
+    }
+    nan: float = float("nan")
+    inf: float = float("inf")
+    big: float = -1e30
+    try {
+        print(int(nan))
+    } catch ValueError as e {
+        print(e)
+    }
+    try {
+        print(int(inf))
+    } catch OverflowError as e {
+        print(e)
+    }
+    try {
+        print(int(big))
+    } catch OverflowError as e {
+        print(e)
+    }
+    try {
+        print(int(inf * -1.0))
+    } catch ArithmeticError {
+        print("ArithmeticError OverflowError")
+    }
+    print(int(3.9), int(-3.9))
+    shift: int = -1
+    try {
+        print(8 << shift)
+    } catch ValueError as e {
+        print(e)
+    }
+    b: Bag = Bag()
+    try {
+        b.items["x"] = 1
+    } catch AttributeError as e {
+        print(e)
+    }
+    empty: list[int] = []
+    try {
+        print(empty.pop())
+    } catch IndexError as e {
+        print(e)
+    } finally {
+        print("caught in finally path")
+    }
+    try {
+        try {
+            print(xs[i])
+        } finally {
+            print("finally ran")
+        }
+    } catch IndexError {
+        pending = pickAsync(xs, 9)
+        try {
+            print(await pending)
+        } catch IndexError {
+            print("async IndexError")
+        }
+    }
+    try {
+        for v in items(xs) {
+            _ = v
+        }
+    } catch IndexError {
+        print("generator IndexError")
+    }
+    print("after")
+}

@@ -1,0 +1,12 @@
+# expect-error: integer constant 9223372036854775808 overflows `int`
+# expect-error: integer constant 1180591620717411303424 overflows `int`
+# expect-error: integer constant 18446744073709551614 overflows `int`
+# A constant expression is evaluated exactly at compile time: a result
+# outside the 64-bit range is a Lam error (Go would refuse to build it).
+
+func main() {
+    a: int = 9223372036854775807 + 1
+    b: int = 1 << 70
+    n: int = 3
+    print(a, b, n + 9223372036854775807 * 2)
+}
