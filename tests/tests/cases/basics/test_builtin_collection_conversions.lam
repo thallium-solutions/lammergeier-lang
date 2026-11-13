@@ -1,0 +1,37 @@
+# Coverage (4.13.2): the collection builtins pinned on typed and literal
+# arguments: `set(...)` of a list (duplicates dropped) and of a set (a
+# copy), `sorted` of a set, of bools, with a `key` lambda and a `reverse`
+# flag held in a variable, `reversed`, `enumerate` with a start, `min` /
+# `max` with a key, `len` of every container, and `sum`-like folds.
+#
+# expect: set: 3 true false copy=2/3
+# expect: sorted-set: [1 2 5]
+# expect: sorted-bools: [false false true]
+# expect: by-len: [b cc aaa] desc=[aaa cc b] asc=[b cc aaa]
+# expect: reversed: [3 2 1] [c b a]
+# expect: enumerate: 1:a 2:b 3:c
+# expect: minmax: b aaa 1 9
+# expect: lens: 3 2 2 5 0
+# expect: fold: 15 [4 4]
+
+func main() {
+    values: list[int] = [5, 1, 5, 2, 1]
+    unique: set[int] = set(values)
+    copied: set[int] = set(unique)
+    copied.remove(5)
+    print(f"set: {len(unique)} {5 in unique} {7 in unique} copy={len(copied)}/{len(unique)}")
+    print(f"sorted-set: {sorted(unique)}")
+    print(f"sorted-bools: {sorted([true, false, false])}")
+
+    words: list[str] = ["aaa", "b", "cc"]
+    descending: bool = true
+    print(f"by-len: {sorted(words, key=lambda w: len(w))} desc={sorted(words, key=lambda w: len(w), reverse=descending)} asc={sorted(words, key=lambda w: len(w), reverse=not descending)}")
+    print(f"reversed: {reversed([1, 2, 3])} {reversed(['a', 'b', 'c'])}")
+    parts: list[str] = [f"{i}:{w}" for i, w in enumerate(["a", "b", "c"], 1)]
+    print(f"enumerate: {' '.join(parts)}")
+    print(f"minmax: {min(words, key=lambda w: len(w))} {max(words, key=lambda w: len(w))} {min([4, 1, 9])} {max([4, 1, 9])}")
+    counts: dict[str, int] = {"a": 1, "b": 2}
+    print(f"lens: {len(words)} {len(counts)} {len(copied)} {len('hello')} {len([])}")
+    total: int = values.reduce(lambda acc, v: acc + v, 0) + 1
+    print(f"fold: {total} {[v * 2 for v in values if v < 3 and v > 1] + [4]}")
+}

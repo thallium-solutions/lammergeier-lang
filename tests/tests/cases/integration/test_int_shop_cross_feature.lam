@@ -1,0 +1,339 @@
+# Cross-feature integration fixture (4.13.2): a small shop service shaped
+# like the downstream applications. It composes classes with statics (a
+# counter, a private static, a static factory, a static used as a value),
+# an interface implemented by a class and its subclass, an operator
+# overload on static-call results, a generic page class, Result / `?`
+# chains, do/catch, try/catch with a custom exception class and finally, a
+# generator method, `with` over a closeable resource, fire-and-forget async
+# tasks (never awaited) synchronised by a WaitGroup and a Mutex in a class
+# field, awaited async tasks, f-strings with format specs, html markup
+# (__html__, attributes, lists, conditionals), lamjson encoding and
+# decoding, lamdatetime, lamenv and lamdb over sqlite (DbConn fields,
+# query-builder chains, Db.atomic rolled back by an exception).
+#
+# expect: env: EUR limit=3 debug=false tags=[new sale]
+# expect: catalog: 4 products, 0 money values
+# expect: priced: Bag (B1)=EUR 120.00 Belt (B2)=EUR 35.50 Kit (K1)=EUR 140.50 Scarf (S1)=EUR 9.99
+# expect: page: 2/2 [Kit (K1) Scarf (S1)] more=false
+# expect: generator: [Bag Kit]
+# expect: json: {"currency":"EUR","items":[{"name":"Bag","sku":"B1"},{"name":"Belt","sku":"B2"}],"total":15550}
+# expect: decoded: 2 Belt 155.5
+# expect: db: stored=4 expensive=[Kit Bag] cheap=1 total=30599
+# expect: atomic: ok=2 failed=OutOfStock stock=[B1:1 B2:4]
+# expect: do-catch: UnknownSku:X9
+# expect: try: rejected Scarf (closed=true)
+# expect: async: done=3 sold=B1 B2 S1 awaited=[B1 B2]
+# expect: date: 2026-11-13 friday-ish=Fri +30d=2026-12-13
+# expect: html: <ul class="cart"><li data-sku="B1">Bag — EUR 120.00</li><li data-sku="K1" class="bundle">Kit — EUR 140.50</li></ul><p>2 items</p>
+# expect: statics: money=9 via-value=EUR 1.00 created>0=true
+
+from lamdb import Db, DbConn, Row, Tx
+from lamerrors import Result, Error
+from lamjson import Json
+from lamdatetime import DateTime
+from lamenv import Env
+from lamos import Os
+from lamconcurrency import Mutex, WaitGroup
+
+interface Priced {
+    func price(self) -> int
+    func label(self) -> str
+}
+
+class Money {
+    static currency: str = "EUR"
+    private static created: int = 0
+
+    func init(self, cents: int) {
+        self.cents: int = cents
+        Money.created += 1
+    }
+
+    static func of(cents: int) -> Money {
+        return Money(cents)
+    }
+
+    static func created_count() -> int {
+        return Money.created
+    }
+
+    func __add__(self, other: Money) -> Money {
+        return Money(self.cents + other.cents)
+    }
+
+    func __str__(self) -> str {
+        return f"{Money.currency} {self.cents // 100}.{self.cents % 100:02d}"
+    }
+}
+
+class Product {
+    func init(self, sku: str, name: str, cents: int) {
+        self.sku: str = sku
+        self.name: str = name
+        self.cents: int = cents
+    }
+
+    func price(self) -> int {
+        return self.cents
+    }
+
+    func label(self) -> str {
+        return f"{self.name} ({self.sku})"
+    }
+
+    func __html__(self) -> html {
+        return <><li data-sku="${self.sku}">${self.name} — ${str(Money(self.price()))}</li></>
+    }
+}
+
+class Bundle(Product) {
+    func init(self, sku: str, name: str, items: list[Product], discount: int) {
+        base.init(sku, name, 0)
+        self.items: list[Product] = items
+        self.discount: int = discount
+    }
+
+    func price(self) -> int {
+        return [p.price() for p in self.items].reduce(lambda a, b: a + b, 0) - self.discount
+    }
+
+    func __html__(self) -> html {
+        return <><li data-sku="${self.sku}" class="bundle">${self.name} — ${str(Money(self.price()))}</li></>
+    }
+}
+
+class Page[T] {
+    func init(self, items: list[T], number: int, pages: int) {
+        self.items: list[T] = items
+        self.number: int = number
+        self.pages: int = pages
+    }
+
+    func more(self) -> bool {
+        return self.number < self.pages
+    }
+}
+
+class OutOfStock {
+    func init(self, sku: str) {
+        self.sku: str = sku
+    }
+
+    func __str__(self) -> str {
+        return f"out of stock: {self.sku}"
+    }
+}
+
+class Ticket {
+    func init(self, label: str) {
+        self.label: str = label
+        self.closed: bool = false
+    }
+
+    func close(self) {
+        self.closed = true
+    }
+}
+
+class Catalog {
+    func init(self) {
+        self.products: list[Product] = []
+    }
+
+    func add(self, product: Product) -> Catalog {
+        self.products.append(product)
+        return self
+    }
+
+    func find(self, sku: str) -> Result[Product] {
+        for p in self.products {
+            if p.sku == sku {
+                return Result.Ok(p)
+            }
+        }
+        return Result.Err(Error("UnknownSku", sku))
+    }
+
+    func page(self, number: int, size: int) -> Page[Product] {
+        ordered: list[Product] = sorted(self.products, key=lambda p: p.sku)
+        start: int = (number - 1) * size
+        pages: int = (len(ordered) + size - 1) // size
+        return Page(ordered[start:start + size], number, pages)
+    }
+
+    func over(self, cents: int) -> Product {
+        for p in self.products {
+            if p.price() > cents {
+                yield p
+            }
+        }
+    }
+}
+
+class Stock {
+    func init(self, conn: DbConn) {
+        self.conn: DbConn = conn
+    }
+
+    func store(self, products: list[Product]) -> Result[int] {
+        for p in products {
+            _ = self.conn.table("products").insert({"sku": p.sku, "name": p.name, "cents": p.price(), "stock": 2 if p.sku != "B2" else 5})?
+        }
+        return self.conn.table("products").count()
+    }
+
+    func take(self, conn: DbConn, sku: str) -> Result[int] {
+        row: dict[str, any] = conn.table("products").whereEq("sku", sku).first()?
+        if Row.int(row, "stock") <= 0 {
+            throw OutOfStock(sku)
+        }
+        return conn.table("products").whereEq("sku", sku).decrement("stock")
+    }
+}
+
+class Ledger {
+    func init(self) {
+        self.sold: list[str] = []
+        self.mu: Mutex = Mutex()
+    }
+
+    func record(self, sku: str) {
+        self.mu.lock()
+        self.sold.append(sku)
+        self.mu.unlock()
+    }
+}
+
+async func sell(ledger: Ledger, sku: str, group: WaitGroup) -> bool {
+    ledger.record(sku)
+    group.done()
+    return true
+}
+
+async func price_of(catalog: Catalog, sku: str) -> str {
+    return catalog.find(sku).unwrap().sku
+}
+
+func describe(items: list[Priced]) -> str {
+    return " ".join([f"{i.label()}={Money(i.price())}" for i in items])
+}
+
+func cart(items: list[Product]) -> html {
+    return <><ul class="cart">${items}</ul><p>${len(items)} item${"s" if len(items) != 1 else ""}</p></>
+}
+
+func applyAll(f: func(int) -> Money, values: list[int]) -> list[str] {
+    return [str(f(v)) for v in values]
+}
+
+func main() {
+    Env.set("SHOP_CURRENCY", "EUR").unwrap()
+    Env.set("SHOP_LIMIT", "3").unwrap()
+    Env.set("SHOP_TAGS", "new,sale").unwrap()
+    Money.currency = Env.getOr("SHOP_CURRENCY", "USD")
+    limit: int = Env.get("SHOP_LIMIT", 10).unwrap()
+    print(f"env: {Money.currency} limit={limit} debug={Env.flag('SHOP_DEBUG', false)} tags={Env.list('SHOP_TAGS')}")
+
+    bag: Product = Product("B1", "Bag", 12000)
+    belt: Product = Product("B2", "Belt", 3550)
+    kit: Bundle = Bundle("K1", "Kit", [bag, belt], 1500)
+    scarf: Product = Product("S1", "Scarf", 999)
+    catalog: Catalog = Catalog().add(bag).add(belt).add(kit).add(scarf)
+    print(f"catalog: {len(catalog.products)} products, {Money.created_count()} money values")
+
+    priced: list[Priced] = [bag, belt, kit, scarf]
+    print(f"priced: {describe(priced)}")
+
+    second: Page[Product] = catalog.page(2, 2)
+    print(f"page: {second.number}/{second.pages} [{' '.join([p.label() for p in second.items])}] more={second.more()}")
+
+    print(f"generator: [{' '.join([p.name for p in catalog.over(10000)])}]")
+
+    total: Money = Money.of(bag.price()) + Money.of(belt.price())
+    doc: json = {"currency": Money.currency, "total": total.cents, "items": [{"sku": p.sku, "name": p.name} for p in [bag, belt]]}
+    encoded: str = Json.encode(doc).unwrap()
+    print(f"json: {encoded}")
+    back: json = Json.decode(encoded).unwrap()
+    secondName: str = back.items[1].name
+    totalCents: float = back.total
+    print(f"decoded: {len(back['items'])} {secondName} {totalCents / 100.0}")
+
+    path: str = Os.tempFile("lam-int-shop-", ".db").unwrap()
+    db: Db = Db.connect("sqlite", f"file:{path}?_pragma=busy_timeout(10000)").unwrap()
+    db.exec("CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, sku TEXT UNIQUE, name TEXT, cents INTEGER, stock INTEGER)").unwrap()
+    stock: Stock = Stock(db)
+    stored: int = stock.store(catalog.products).unwrap()
+    expensive: list[dict[str, any]] = db.table("products").where("cents", ">", 10000).orderBy("cents", "desc").get().unwrap()
+    cheap: int = db.table("products").whereRaw("cents < ?", [1000]).count().unwrap()
+    cents: int = int(db.table("products").sum("cents").unwrap())
+    print(f"db: stored={stored} expensive=[{' '.join([Row.str(r, 'name') for r in expensive])}] cheap={cheap} total={cents}")
+
+    func order(tx: Tx) -> Result[int] {
+        _ = stock.take(tx, "B1")?
+        _ = stock.take(tx, "B2")?
+        return Result.Ok(2)
+    }
+    okCount: int = Db.atomic(db, order).unwrap()
+    failed: str = ""
+    func greedy(tx: Tx) -> Result[int] {
+        _ = stock.take(tx, "B2")?
+        _ = stock.take(tx, "B1")?
+        _ = stock.take(tx, "B1")?
+        return Result.Ok(3)
+    }
+    try {
+        _ = Db.atomic(db, greedy)
+    } catch OutOfStock as e {
+        failed = "OutOfStock" if e.sku == "B1" else "?"
+    }
+    left: list[dict[str, any]] = db.table("products").whereIn("sku", ["B1", "B2"]).orderBy("sku").get().unwrap()
+    print(f"atomic: ok={okCount} failed={failed} stock=[{' '.join([Row.str(r, 'sku') + ':' + str(Row.int(r, 'stock')) for r in left])}]")
+
+    do {
+        missing: Product = catalog.find("X9")?
+        print(f"unexpected {missing.name}")
+    } catch err {
+        print(f"do-catch: {err.kind}:{err.message}")
+    }
+
+    ticket: Ticket = Ticket("t1")
+    outcome: str = ""
+    try {
+        with ticket as t {
+            if scarf.price() < 1000 {
+                throw OutOfStock(scarf.name)
+            }
+            outcome = t.label
+        }
+    } catch OutOfStock as rejected {
+        outcome = f"rejected {rejected.sku}"
+    } finally {
+        outcome += f" (closed={ticket.closed})"
+    }
+    print(f"try: {outcome}")
+
+    ledger: Ledger = Ledger()
+    group: WaitGroup = WaitGroup()
+    skus: list[str] = ["B1", "B2", "S1"]
+    group.add(len(skus))
+    for sku in skus {
+        _ = sell(ledger, sku, group)
+    }
+    group.wait()
+    tasks = [price_of(catalog, "B1"), price_of(catalog, "B2")]
+    awaited: list[str] = []
+    for task in tasks {
+        awaited.append(await task)
+    }
+    print(f"async: done={len(ledger.sold)} sold={' '.join(sorted(ledger.sold))} awaited=[{' '.join(awaited)}]")
+
+    day: DateTime = DateTime.parse("2006-01-02", "2026-11-13").unwrap()
+    print(f"date: {day.date()} friday-ish={day.format('Mon')} +30d={day.addDays(30).date()}")
+
+    print(f"html: {cart([bag, kit])}")
+
+    toMoney: func(int) -> Money = Money.of
+    before: int = Money.created_count()
+    viaValue: list[str] = applyAll(toMoney, [100])
+    print(f"statics: money={before} via-value={viaValue[0]} created>0={Money.created_count() > before}")
+}

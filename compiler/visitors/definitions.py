@@ -638,7 +638,7 @@ class DefinitionVisitorMixin:
             method_sig = self._param_types_sig(params_node, skip_self=not is_static) if params_node else ()
             method_suffix = self._overload_suffix_for_sig(method_key, method_sig, return_type_key)
             if is_static:
-                go_name = self._go_class_name(self.current_class) + "_" + func_name + method_suffix
+                go_name = self._go_static_base(self.current_class, func_name) + method_suffix
                 if is_private:
                     go_name = self._go_private_name(go_name)
                 else:
@@ -1286,6 +1286,7 @@ class DefinitionVisitorMixin:
             if subclassed:
                 self._emit_virtual_dispatch(class_name, tp_clause, virtual_specs)
             self._emit_hierarchy_support(class_name)
+            self._emit_fmt_guard(class_name)
 
             self._emit_static_fields(class_name)
 

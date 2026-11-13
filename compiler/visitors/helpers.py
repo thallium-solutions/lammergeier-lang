@@ -631,6 +631,14 @@ class HelpersMixin:
         ``class NewSite``; see ``namespacing.constructor_renames``)."""
         return self._ctor_go_names.get(class_name) or f"New{self._go_class_name(class_name)}"
 
+    def _go_static_base(self, class_name: str, member: str) -> str:
+        """The Go name of a static method / field before its overload
+        suffix and private casing: ``<GoClass>_<member>``, or
+        ``<GoClass>_<member>__static`` when that is the Go name of another
+        definition of the program (``Site.make`` next to ``class Site_make``;
+        see ``namespacing.static_renames``)."""
+        return self._static_go_names.get(f"{class_name}.{member}") or f"{self._go_class_name(class_name)}_{member}"
+
     def _go_method_name(self, class_name: str, method_name: str) -> str:
         return self._method_go_names.get(
             (class_name, method_name),
@@ -842,7 +850,7 @@ class HelpersMixin:
                     and cls in getattr(self, "_static_methods", {})
                     and method in self._static_methods[cls]
                 ):
-                    return f"{self._go_class_name(cls)}_{method}{paren}"
+                    return f"{self._go_static_base(cls, method)}{paren}"
                 if (
                     cls in self._class_names
                     and cls in getattr(self, "_static_vars", {})
@@ -1452,6 +1460,11 @@ class HelpersMixin:
                 name = self._get_name(func.children[0])
                 if name in self._class_names:
                     return name
+        if node.data in {"funccall", "getitem", "propagate", "paren_expr", "atom_paren"}:
+            # ``make(1) + make(2)``, ``Money.of(1) + x``, ``a.plus() + b``,
+            # ``wallet[0] + wallet[1]``, ``load(a)? + load(b)?``: the class
+            # of the call result / element / payload.
+            return self._hier_class_from_go_type(self._expr_go_type_hint(node) or "")
         return ""
 
     def _get_dunder_method(self, class_name: str, dunder: str) -> str:

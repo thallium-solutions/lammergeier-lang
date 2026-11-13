@@ -57,7 +57,10 @@ from lark import Tree, Token
 
 from compiler.ast_builder import build_module
 from compiler.ast_nodes import ClassDecl, FuncDecl, ImportDecl, InterfaceDecl, Module, VarDecl
-from compiler.constants import CMP_TO_DUNDER, DUNDER_OPS, OP_TO_DUNDER, PYTHON_EXCEPTIONS, lam_simple_expr_text
+from compiler.constants import (
+    CMP_TO_DUNDER, COMPILER_RUNTIME_HELPER_PREFIXES, COMPILER_RUNTIME_HELPERS, DUNDER_OPS, OP_TO_DUNDER,
+    PYTHON_EXCEPTIONS, lam_simple_expr_text,
+)
 from compiler.diagnostics import (
     Diagnostic,
     DiagnosticSeverity,
@@ -160,6 +163,13 @@ GO_ONLY_KEYWORDS: Set[str] = {
 }
 
 COMPILER_RESERVED_PREFIXES: tuple[str, ...] = ("__lam", "__q")
+
+# Python container conversions Lam does not have -> what to write instead.
+_PYTHON_CONTAINER_CONVERSIONS: dict[str, str] = {
+    "list": "a list literal or a comprehension (`[x for x in items]`; `reversed(xs)`, `sorted(xs)` and `xs[:]` already return lists)",
+    "dict": "a dict literal or a comprehension (`{k: v for k, v in pairs}`)",
+    "tuple": "a tuple literal (`(a, b)`)",
+}
 
 BUILTIN_TYPES: Set[str] = {
     "None", "any", "bool", "str", "string", "bytes", "int", "int8",
@@ -1734,6 +1744,81 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return False
         return any(self._suite_uses_self(child) for child in node.children)
 
+    def _field_method_clash(self, class_name: str, name: str, field_node, method_node) -> None:
+        """A class with a field and a method of one name: Go gives a struct's
+        fields and methods one namespace (``Entries is a field, not a
+        method``). Reported at the later of the two declarations."""
+        field_line = self._loc(field_node)[0]
+        method_line = self._loc(method_node)[0]
+        if field_line <= method_line:
+            first, second, at = ("field", field_line), ("method", method_line), method_node
+        else:
+            first, second, at = ("method", method_line), ("field", field_line), field_node
+        self._error(
+            at, "duplicate",
+            f"duplicate class member `{name}`: class `{class_name}` has a {first[0]} `{name}` "
+            f"(line {first[1]}) and a {second[0]} `{name}` (line {second[1]}); a field and a method "
+            f"cannot share a name — rename one of them (e.g. the field `_{name}`, or the method "
+            f"`get{name[:1].upper()}{name[1:]}()`)",
+        )
+
+    def _class_member_nodes(self, suite_node: Tree) -> tuple[dict, dict]:
+        """``(fields, methods)`` of a class body: each name -> the node of its
+        first declaration. Fields are the class-level declarations and the
+        ``self.x`` assignments at the top of ``init`` (the struct fields);
+        methods map to ``(funcdef, is_static)``."""
+        fields: dict = {}
+        methods: dict = {}
+        for stmt in self._suite_stmts(suite_node):
+            if not isinstance(stmt, Tree):
+                continue
+            target = stmt
+            if target.data == "decorated":
+                target = next((c for c in target.children if isinstance(c, Tree) and c.data == "funcdef"), target)
+            if target.data == "funcdef":
+                name = self._funcdef_name(target)
+                if not name:
+                    continue
+                methods.setdefault(name, (target, self._funcdef_is_static(target)))
+                if name in {"__init__", "init"}:
+                    init_suite = self._suite_node(target)
+                    for init_stmt in self._suite_stmts(init_suite) if init_suite is not None else []:
+                        if isinstance(init_stmt, Tree):
+                            for field_name in self._self_field_assignments(init_stmt):
+                                fields.setdefault(field_name, init_stmt)
+            elif target.data in {"annassign", "assign_stmt", "assign"}:
+                for field_name in self._class_field_names_from_stmt(target):
+                    fields.setdefault(field_name, target)
+        return fields, methods
+
+    def _class_static_field_names(self, suite_node: Tree) -> Set[str]:
+        out: Set[str] = set()
+        for stmt in self._suite_stmts(suite_node):
+            if not isinstance(stmt, Tree) or stmt.data not in {"annassign", "assign_stmt", "assign"}:
+                continue
+            parts = [stmt] + [c for c in stmt.children if isinstance(c, Tree) and c.data == "annassign"]
+            if any(isinstance(c, Token) and str(c) == "static" for part in parts for c in part.children):
+                out.update(self._class_field_names_from_stmt(stmt))
+        return out
+
+    def _check_init_field_method_clashes(self, class_name: str, suite_node: Tree) -> None:
+        """A field assigned in ``init`` (``self.entries = ...``) and an
+        instance method ``entries()``: one Go namespace. (Class-level field
+        declarations are checked with the other duplicate members; a static
+        method is the package-level ``Class_name`` and does not clash.)"""
+        class_level: Set[str] = set()
+        for stmt in self._suite_stmts(suite_node):
+            if isinstance(stmt, Tree) and stmt.data in {"annassign", "assign_stmt", "assign"}:
+                class_level.update(self._class_field_names_from_stmt(stmt))
+        fields, methods = self._class_member_nodes(suite_node)
+        for name in sorted(fields):
+            if name in class_level or name not in methods:
+                continue
+            method_node, is_static = methods[name]
+            if is_static or self._is_constructor_method(name):
+                continue
+            self._field_method_clash(class_name, name, fields[name], method_node)
+
     def _visit_classdef(self, node: Tree) -> None:
         # Class scope is mostly a holder for nested method visits — the
         # method-name space is checked separately for duplicates.
@@ -1744,11 +1829,13 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         ast_class = self._ast_classes.get(class_name)
         if ast_class is not None:
             field_names: Set[str] = set()
+            field_spans: dict = {}
             for field in ast_class.fields:
                 if field.name and field.name in field_names:
                     self._error(field.span, "duplicate", f"duplicate class member `{field.name}`")
                 if field.name:
                     field_names.add(field.name)
+                    field_spans.setdefault(field.name, field.span)
             method_sigs: dict[str, set[tuple[str, ...]]] = {}
             method_kinds: dict[str, bool] = {}
             for method in ast_class.methods:
@@ -1756,7 +1843,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 if not name:
                     continue
                 if name in field_names:
-                    self._error(method.span, "duplicate", f"duplicate class member `{name}`")
+                    self._field_method_clash(class_name, name, field_spans[name], method.span)
                 kind = method.is_static
                 if name in method_kinds and method_kinds[name] != kind:
                     self._error(method.span, "duplicate", f"class method `{name}` cannot mix static and instance overloads")
@@ -1776,15 +1863,18 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 seen.add(signature)
         elif suite_node is not None:
             field_names: Set[str] = set()
+            field_nodes: dict = {}
             method_sigs: dict[str, set[tuple[str, ...]]] = {}
             method_kinds: dict[str, bool] = {}
+            method_nodes: dict = {}
             for stmt in self._suite_stmts(suite_node):
                 if not isinstance(stmt, Tree):
                     continue
                 if stmt.data == "funcdef":
                     name = self._funcdef_name(stmt)
+                    method_nodes.setdefault(name, stmt)
                     if name in field_names:
-                        self._error(stmt, "duplicate", f"duplicate class member `{name}`")
+                        self._field_method_clash(class_name, name, field_nodes[name], stmt)
                     kind = self._funcdef_is_static(stmt)
                     if name in method_kinds and method_kinds[name] != kind:
                         self._error(stmt, "duplicate", f"class method `{name}` cannot mix static and instance overloads")
@@ -1806,10 +1896,15 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 elif stmt.data in ("annassign", "assign_stmt", "assign"):
                     targets = self._assign_targets(stmt)
                     name = targets[0] if targets else ""
-                    if name and (name in field_names or name in method_sigs):
+                    if name and name in method_nodes and name not in field_names:
+                        self._field_method_clash(class_name, name, stmt, method_nodes[name])
+                    elif name and (name in field_names or name in method_sigs):
                         self._error(stmt, "duplicate", f"duplicate class member `{name}`")
                     if name:
                         field_names.add(name)
+                        field_nodes.setdefault(name, stmt)
+        if class_name and suite_node is not None:
+            self._check_init_field_method_clashes(class_name, suite_node)
 
         if class_name:
             self._check_inherited_class_shape(node, class_name)
@@ -2990,6 +3085,30 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 )
                 self._visit_call_args(node)
                 return
+            if (
+                target == "print"
+                and isinstance(node.children[0], Tree) and node.children[0].data == "var"
+                and not self._is_user_callable(target)
+            ):
+                keywords = self._call_keyword_names(node)
+                if keywords:
+                    # ``print("a", end="")`` dropped the keyword silently.
+                    self._error(
+                        node, "call",
+                        f"`print` takes no keyword arguments (`{keywords[0]}=`); build the text with an "
+                        f"f-string or `sep.join(parts)` (each `print` ends the line)",
+                    )
+            if (
+                target in _PYTHON_CONTAINER_CONVERSIONS
+                and isinstance(node.children[0], Tree) and node.children[0].data == "var"
+                and not self._is_user_callable(target)
+            ):
+                # ``list(xs)`` / ``dict(d)`` / ``tuple(xs)`` failed in ``go
+                # build`` (``undefined: List``).
+                self._error(
+                    node, "call",
+                    f"Lam has no `{target}(...)` conversion; use {_PYTHON_CONTAINER_CONVERSIONS[target]}",
+                )
             if self._check_method_kind_call(node):
                 self._visit_call_args(node)
                 return
@@ -3869,6 +3988,29 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             | self._class_static_methods.get(class_name, set())
         )
 
+        class_suite = self._suite_node(node)
+        member_fields, member_methods = (
+            self._class_member_nodes(class_suite) if class_suite is not None else ({}, {})
+        )
+        # A direct base is embedded as the Go field ``Shape``: an instance
+        # method or field ``shape`` (Go ``Shape``) cannot sit next to it.
+        private_methods = self._class_private_methods.get(class_name, set())
+        static_fields = self._class_static_field_names(class_suite) if class_suite is not None else set()
+        for base in unique_bases:
+            embedded = self._go_public_name(base)
+            for member, member_node, kind in sorted(
+                [(m, entry[0], "method") for m, entry in member_methods.items()
+                 if not entry[1] and m not in private_methods and not self._is_constructor_method(m)]
+                + [(f, n, "field") for f, n in member_fields.items() if f not in static_fields],
+                key=lambda item: (item[0], item[2]),
+            ):
+                if self._go_public_name(member) == embedded:
+                    self._error(
+                        member_node, "inheritance",
+                        f"class `{class_name}` {kind} `{member}` has the Go name of its base class "
+                        f"`{base}` (`{embedded}`, the embedded parent) — rename the {kind}",
+                    )
+
         inherited_member_sources: dict[str, list[str]] = {}
         for base in unique_bases:
             for member in self._class_exposed_members(base):
@@ -3897,20 +4039,23 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
 
             for field_name in sorted(child_fields & base_method_names):
                 self._error(
-                    node,
+                    member_fields.get(field_name, node),
                     "inheritance",
                     f"class `{class_name}` field `{field_name}` conflicts with "
-                    f"inherited method `{base}.{field_name}`",
+                    f"inherited method `{base}.{field_name}` — rename the field or the method "
+                    f"(a subclass embeds its base: their fields and methods share one Go namespace)",
                 )
 
             for method_name in sorted(child_method_names & base_fields):
                 if self._is_constructor_method(method_name):
                     continue
+                method_entry = member_methods.get(method_name)
                 self._error(
-                    node,
+                    method_entry[0] if method_entry else node,
                     "inheritance",
                     f"class `{class_name}` method `{method_name}` conflicts with "
-                    f"inherited field `{base}.{method_name}`",
+                    f"inherited field `{base}.{method_name}` — rename the method or the field "
+                    f"(a subclass embeds its base: their fields and methods share one Go namespace)",
                 )
 
         if not self._has_explicit_base_aliases(class_name):
@@ -4618,6 +4763,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             else:
                 receiver_text = self._var_type(receiver) or ""
                 class_name = self._receiver_class_from_type_text(receiver_text)
+                if not class_name and not receiver_text and receiver in self._class_members:
+                    # ``Money.currency``: a static field read through its
+                    # class has its declared type.
+                    class_name = receiver
+                    own_receiver = True
         elif isinstance(obj, Tree) and obj.data == "getattr":
             # ``env.cfg.endpoint``: the receiver is itself a typed field.
             inner = self._member_target_type(obj)
@@ -5206,6 +5356,31 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 if value_type:
                     self._check_class_satisfies_interface(value_type, iface_name, arg_nodes[idx])
 
+    def _is_user_callable(self, name: str) -> bool:
+        """``name`` is bound by the program (a function, class or local in
+        some enclosing scope), not only a builtin."""
+        if getattr(self, "_module_seen", {}).get(name) is not None:
+            return True
+        return any(name in scope.names for scope in self._scopes if scope.kind != "module")
+
+    def _field_not_method_hint(self, class_name: str, member: str) -> str:
+        """`` (`C.m` is a field, not a method ...)`` when the missing
+        interface method is a field of the class or of an ancestor."""
+        if member in self._class_fields.get(class_name, set()):
+            owner = ""
+        else:
+            owner = next(
+                (base for base in self._all_base_names(class_name) if member in self._class_fields.get(base, set())),
+                None,
+            )
+            if owner is None:
+                return ""
+        inherited = f" (inherited from `{owner}`)" if owner else ""
+        return (
+            f" (`{class_name}.{member}` is a field{inherited}, not a method: define a method "
+            f"`{member}()` returning it and rename the field, e.g. `_{member}`)"
+        )
+
     def _check_class_satisfies_interface(self, class_name: str, iface_name: str, node: Tree) -> None:
         if class_name not in self._class_method_shapes:
             return
@@ -5241,7 +5416,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             if class_shape is None:
                 self._error(
                     node, "interface",
-                    f"class `{class_name}` does not satisfy interface `{iface_name}`: missing method `{method_name}`",
+                    f"class `{class_name}` does not satisfy interface `{iface_name}`: missing method `{method_name}`"
+                    + self._field_not_method_hint(class_name, method_name),
                 )
                 continue
             if len(class_shape.param_types) != len(iface_shape.param_types):
@@ -8014,6 +8190,24 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return False
         return returned == class_name or returned in self._all_base_names(class_name)
 
+    def _call_keyword_names(self, call: Tree) -> list[str]:
+        """The keyword names of ``f(a, key=v, ...)`` in order."""
+        args_node = call.children[1] if len(call.children) > 1 else None
+        pending = [args_node]
+        names: list[str] = []
+        while pending:
+            node = pending.pop(0)
+            if not isinstance(node, Tree):
+                continue
+            if node.data == "argvalue" and len(node.children) == 2:
+                name = self._call_keyword_name(node.children[0])
+                if name:
+                    names.append(name)
+                continue
+            if node.data in {"arguments", "starargs"}:
+                pending.extend(node.children)
+        return names
+
     def _call_has_true_keyword(self, call: Tree, keyword: str) -> bool:
         """``f(..., keyword=true)`` or a single trailing ``true`` positional."""
         args_node = call.children[1] if len(call.children) > 1 else None
@@ -8548,8 +8742,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         needs to change.
         """
         self._check_compiler_reserved_prefix(node, name)
+        self._check_runtime_helper_name(node, name)
 
     def _check_go_reserved_funcdef(self, node: Tree, name: str) -> None:
+        if self._funcdef_emits_raw_go_name(node) and not self._current_class_stack:
+            self._check_runtime_helper_name(node, name)
         if name not in GO_ONLY_KEYWORDS:
             self._check_compiler_reserved_prefix(node, name)
             return
@@ -8557,6 +8754,24 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             self._check_go_reserved(node, name)
             return
         self._check_compiler_reserved_prefix(node, name)
+
+    def _check_runtime_helper_name(self, node: Tree, name: str) -> None:
+        """A name that keeps its Lam spelling in Go (private function,
+        const, variable, local, parameter) must not be a package-level Go
+        name the compiler emits (``lamNN``, ``lamGenRun``...): it failed in
+        ``go build`` with ``lamNN redeclared in this block``."""
+        if not name.startswith("lam"):
+            return
+        reserved = name in COMPILER_RUNTIME_HELPERS or any(
+            name.startswith(prefix) and len(name) > len(prefix) and not name[len(prefix)].islower()
+            for prefix in COMPILER_RUNTIME_HELPER_PREFIXES
+        )
+        if reserved:
+            self._error(
+                node, "name",
+                f"`{name}` is the Go name of a compiler runtime helper; rename it "
+                f"(`{name}` keeps its spelling in Go and would redeclare the helper)",
+            )
 
     def _check_go_reserved_type_decl(self, node: Tree, name: str) -> None:
         # Classes and interfaces lower through Go public-name casing
@@ -8708,6 +8923,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 self._visit_expr_subtree(c)
         if not name:
             return
+        self._check_runtime_helper_name(node, name)
         if self._is_const(name):
             self._error(
                 node, "const",

@@ -1,0 +1,52 @@
+# expect-error: line 36: error[member]: unknown member `self.shape.side` on class `Shape`
+# expect-error: line 43: error[member]: unknown member `self.shape.r` on class `Shape`
+# expect-error: attributes are not narrowed by `isinstance`; bind `self.shape` to a local first
+# isinstance on a field of `self` (declared on the class or inherited from
+# its base) does not narrow the field either.
+
+class Shape {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Square(Shape) {
+    func init(self, side: int) {
+        base.init("square")
+        self.side: int = side
+    }
+}
+
+class Circle(Shape) {
+    func init(self, r: int) {
+        base.init("circle")
+        self.r: int = r
+    }
+}
+
+class Holder {
+    func init(self, shape: Shape) {
+        self.shape: Shape = shape
+    }
+}
+
+class Frame(Holder) {
+    func side(self) -> int {
+        if isinstance(self.shape, Square) {
+            return self.shape.side
+        }
+        return 0
+    }
+
+    func radius(self) -> int {
+        if isinstance(self.shape, Circle) {
+            return self.shape.r
+        }
+        return 0
+    }
+}
+
+func main() {
+    f: Frame = Frame(Square(2))
+    print(f.side(), f.radius())
+}

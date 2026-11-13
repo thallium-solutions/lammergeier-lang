@@ -1,0 +1,174 @@
+# Coverage (4.13.2): the static-member shapes of the downstream services —
+# handler classes registering static methods as function values in a
+# router (`static func routes(router)`), a lazily created singleton held in
+# a private static, static counters and lists mutated from instances, a
+# static method calling a private static helper, a generic static factory,
+# static async methods (awaited and fire-and-forget), static fields read
+# in default arguments and f-strings, and a subclass reaching its base's
+# statics through the base class.
+#
+# expect: routes: GET /a -> list:2 | POST /a -> create:x | GET /h -> health:ok
+# expect: singleton: same=true created=1 name=app
+# expect: counters: 3 [a b c] next=4
+# expect: helper: <x> <y>
+# expect: generic: 5 hi
+# expect: async: 42 tasks=2
+# expect: defaults: 10/page limit=10 page 2 of 10
+# expect: inherited: base-count=3 sub=sub:3
+
+class Router {
+    func init(self) {
+        self.handlers: dict[str, func(str) -> str] = {}
+        self.order: list[str] = []
+    }
+
+    func add(self, method: str, path: str, handler: func(str) -> str) {
+        key: str = f"{method} {path}"
+        self.handlers[key] = handler
+        self.order.append(key)
+    }
+
+    func dispatch(self, key: str, arg: str) -> str {
+        return f"{key} -> {self.handlers[key](arg)}"
+    }
+}
+
+class ItemPages {
+    static func list(arg: str) -> str {
+        return f"list:{len(arg)}"
+    }
+
+    static func create(arg: str) -> str {
+        return f"create:{arg}"
+    }
+
+    static func routes(router: Router) {
+        router.add("GET", "/a", ItemPages.list)
+        router.add("POST", "/a", ItemPages.create)
+    }
+}
+
+class SitePages {
+    private static func health(arg: str) -> str {
+        return f"health:{arg}"
+    }
+
+    static func routes(router: Router) {
+        router.add("GET", "/h", SitePages.health)
+    }
+}
+
+class App {
+    private static instance: App
+    static created: int = 0
+
+    func init(self, name: str) {
+        self.name: str = name
+        App.created += 1
+    }
+
+    static func get() -> App {
+        if App.instance == None {
+            App.instance = App("app")
+        }
+        return App.instance
+    }
+}
+
+class Ids {
+    static next: int = 1
+    static issued: list[str] = []
+
+    func init(self, label: str) {
+        self.id: int = Ids.next
+        Ids.next += 1
+        Ids.issued.append(label)
+    }
+}
+
+class Fmt {
+    private static func wrap(text: str) -> str {
+        return f"<{text}>"
+    }
+
+    static func both(a: str, b: str) -> str {
+        return f"{Fmt.wrap(a)} {Fmt.wrap(b)}"
+    }
+}
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    static func of(value: T) -> Box[T] {
+        return Box(value)
+    }
+}
+
+class Jobs {
+    static started: int = 0
+
+    static async func compute(n: int) -> int {
+        return n * 2
+    }
+
+    static async func touch() -> bool {
+        return true
+    }
+}
+
+class Paging {
+    static perPage: int = 10
+
+    static func describe(page: int, size: int = Paging.perPage) -> str {
+        return f"page {page} of {size}"
+    }
+}
+
+class Counter {
+    static count: int = 0
+
+    func init(self) {
+        Counter.count += 1
+    }
+}
+
+class SubCounter(Counter) {
+    func label(self) -> str {
+        return f"sub:{Counter.count}"
+    }
+}
+
+func main() {
+    router: Router = Router()
+    ItemPages.routes(router)
+    SitePages.routes(router)
+    args: list[str] = ["ab", "x", "ok"]
+    print(f"routes: {' | '.join([router.dispatch(k, args[i]) for i, k in enumerate(router.order)])}")
+
+    first: App = App.get()
+    second: App = App.get()
+    print(f"singleton: same={first == second} created={App.created} name={second.name}")
+
+    _ = [Ids("a"), Ids("b"), Ids("c")]
+    print(f"counters: {len(Ids.issued)} {Ids.issued} next={Ids.next}")
+    print(f"helper: {Fmt.both('x', 'y')}")
+    ints: Box[int] = Box.of(5)
+    strs: Box[str] = Box.of("hi")
+    print(f"generic: {ints.value} {strs.value}")
+
+    pending = Jobs.compute(21)
+    _ = Jobs.touch()
+    handles = [Jobs.touch(), Jobs.touch()]
+    print(f"async: {await pending} tasks={len(handles)}")
+    for h in handles {
+        _ = await h
+    }
+
+    print(f"defaults: {Paging.perPage}/page limit={Paging.perPage} {Paging.describe(2)}")
+    _ = SubCounter()
+    _ = Counter()
+    last: SubCounter = SubCounter()
+    print(f"inherited: base-count={Counter.count} sub={last.label()}")
+}

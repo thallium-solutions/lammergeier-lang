@@ -1,0 +1,145 @@
+# Coverage (4.13.2): `for ... else` on every loop shape the lowering
+# distinguishes — tuple destructuring over a list of tuples, `enumerate`,
+# a dict's key/value pairs, a string's characters, a generator and a
+# stepped range — each with a `break` (the else block is skipped), without
+# one (it always runs) and with a `return` in the else block.
+#
+# expect: tuples: found b | none
+# expect: enumerate: at 1 | missing
+# expect: dict: has-two | no-big
+# expect: chars: vowel e | no-vowel
+# expect: generator: first-even 4 | no-even
+# expect: range: hit 6 | no-hit
+# expect: else-return: -1 | 3 | -3
+
+func evens(limit: int) -> int {
+    n: int = 1
+    while n <= limit {
+        if n % 2 == 0 {
+            yield n
+        }
+        n += 3
+    }
+}
+
+func pick(values: list[int], wanted: int) -> int {
+    for i, v in enumerate(values) {
+        if v == wanted {
+            return i
+        }
+    } else {
+        return -len(values) - 1
+    }
+}
+
+func main() {
+    pairs: list[tuple[str, int]] = [("a", 1), ("b", 2), ("c", 3)]
+    out: list[str] = []
+    for name, n in pairs {
+        if n == 2 {
+            out.append(f"found {name}")
+            break
+        }
+    } else {
+        out.append("none")
+    }
+    for name, n in pairs {
+        if n > 9 {
+            break
+        }
+    } else {
+        out.append("none")
+    }
+    print(f"tuples: {' | '.join(out)}")
+
+    words: list[str] = ["x", "y"]
+    out = []
+    for i, w in enumerate(words) {
+        if w == "y" {
+            out.append(f"at {i}")
+            break
+        }
+    } else {
+        out.append("missing")
+    }
+    for i, w in enumerate(words) {
+        if w == "z" {
+            break
+        }
+    } else {
+        out.append("missing")
+    }
+    print(f"enumerate: {' | '.join(out)}")
+
+    counts: dict[str, int] = {"one": 1, "two": 2}
+    out = []
+    for k, v in counts {
+        if v == 2 {
+            out.append(f"has-{k}")
+            break
+        }
+    } else {
+        out.append("no-two")
+    }
+    for k, v in counts {
+        if v > 5 {
+            break
+        }
+    } else {
+        out.append("no-big")
+    }
+    print(f"dict: {' | '.join(out)}")
+
+    out = []
+    for ch in "hello" {
+        if ch in ["a", "e", "i", "o", "u"] {
+            out.append(f"vowel {ch}")
+            break
+        }
+    } else {
+        out.append("no-vowel")
+    }
+    for ch in "rhythm" {
+        if ch == "a" {
+            break
+        }
+    } else {
+        out.append("no-vowel")
+    }
+    print(f"chars: {' | '.join(out)}")
+
+    out = []
+    for e in evens(20) {
+        out.append(f"first-even {e}")
+        break
+    } else {
+        out.append("no-even")
+    }
+    for e in evens(1) {
+        out.append(f"unexpected {e}")
+        break
+    } else {
+        out.append("no-even")
+    }
+    print(f"generator: {' | '.join(out)}")
+
+    out = []
+    for i in range(0, 10, 3) {
+        if i == 6 {
+            out.append(f"hit {i}")
+            break
+        }
+    } else {
+        out.append("no-hit")
+    }
+    for i in range(1, 10, 3) {
+        if i == 6 {
+            break
+        }
+    } else {
+        out.append("no-hit")
+    }
+    print(f"range: {' | '.join(out)}")
+
+    print(f"else-return: {pick([], 1)} | {pick([5, 6, 7, 8], 8)} | {pick([5, 6], 9)}")
+}

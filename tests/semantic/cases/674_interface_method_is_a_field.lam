@@ -1,0 +1,20 @@
+# expect-error: class `Catalog` does not satisfy interface `Listing`: missing method `entries`
+# expect-error: `Catalog.entries` is a field, not a method
+
+interface Listing {
+    func entries(self) -> list[str]
+}
+
+class Catalog {
+    func init(self) {
+        self.entries: list[str] = ["a"]
+    }
+}
+
+func show(l: Listing) {
+    print(len(l.entries()))
+}
+
+func main() {
+    show(Catalog())
+}

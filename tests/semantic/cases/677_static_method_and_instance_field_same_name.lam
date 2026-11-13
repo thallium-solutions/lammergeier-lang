@@ -1,0 +1,18 @@
+# expect-pass
+# A static method lowers to the package-level Go function `Catalog_size`, so
+# it may share its name with an instance field (no Go clash).
+
+class Catalog {
+    func init(self) {
+        self.size: int = 2
+    }
+
+    static func size() -> int {
+        return 7
+    }
+}
+
+func main() {
+    c = Catalog()
+    print(Catalog.size(), c.size)
+}

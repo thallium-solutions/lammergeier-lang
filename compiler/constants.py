@@ -640,6 +640,26 @@ COMPILER_GO_PACKAGES = frozenset({
     "runtime", "maps", "bufio", "weak",
 })
 
+# Package-level Go functions, types and variables the compiler itself emits
+# into generated programs (the runtime of generators, async tasks, ``None``
+# checks, ``as`` casts and markup slots). A Lam name that keeps its spelling
+# in Go (a private function, a const, a variable, a local or a parameter)
+# must not be one of them (semantic error); ``tests/tests/test_go_names.py``
+# checks the list against the compiler's sources. The prefixes are those of
+# generated names (function-reference aliases, module initialisers, the
+# virtual-dispatch interfaces).
+COMPILER_RUNTIME_HELPERS = frozenset({
+    "lamAs", "lamAsNil", "lamAsyncFailure", "lamAsyncFailureIDs", "lamAsyncFailures",
+    "lamAsyncReportFailure", "lamAsyncReportUnretrieved", "lamAsyncTaskFailed",
+    "lamAsyncTaskRetrieved", "lamAsyncTaskUnpublished", "lamCloseCollectedGenerator",
+    "lamGenClose", "lamGenDone", "lamGenDyn", "lamGenEnd", "lamGenerator", "lamGenFrame", "lamGenGuarded",
+    "lamGenJump", "lamGenMapKeys", "lamGenRecv", "lamGenResume", "lamGenRun", "lamGenSelf", "lamGenStore",
+    "lamGenYield", "lamGoTypeLamName", "lamNewGenerator", "lamNewIsolatedGenerator",
+    "lamNewMethodGenerator", "lamNewStateGenerator", "lamNN", "lamNNI", "lamNoneError",
+    "lamNoneIsNot", "lamNoneMember", "lamNoneOf", "lamSlotText", "lamStopCollectedGenerator",
+})
+COMPILER_RUNTIME_HELPER_PREFIXES: tuple[str, ...] = ("lamFuncRef_", "lamModuleInit_", "lamVirtual")
+
 # Go builtins that should not be CamelCased
 GO_BINDING_KEYWORDS = frozenset({
     "break", "default", "func", "interface", "select", "case", "defer",

@@ -1,0 +1,25 @@
+# Regression (4.13.2): `set([...])` of a list literal emitted the literal as
+# a `[]interface{}` passed to a `[]int` parameter and failed in `go build`
+# (`cannot use []interface{}{...} as []int value`), and `sorted(set(xs))`
+# (also of a typed list) did not know `set(...)` is a set (`cannot use
+# map[int]bool as []interface{} value in argument to append`). `set(xs)`
+# of a typed list, `set(s)` of a set and the empty `set()` already worked.
+#
+# expect: 3 true false
+# expect: 2 true
+# expect: 1 true
+# expect: [1 2 3]
+# expect: [1 2 3] 3
+
+func main() {
+    ints: set[int] = set([3, 1, 2, 3])
+    print(len(ints), 2 in ints, 7 in ints)
+    words = set(["a", "b", "a"])
+    print(len(words), "b" in words)
+    empty: set[str] = set()
+    empty.add("x")
+    print(len(empty), "x" in empty)
+    print(sorted(set([2, 3, 1, 3])))
+    xs: list[int] = [3, 2, 1, 2]
+    print(sorted(set(xs)), len(set(xs)))
+}

@@ -1,0 +1,80 @@
+# Regression (4.13.2): an instance method ``error(self) -> str`` lowered to
+# the Go method ``Error() string`` and ``string(self) -> str`` to
+# ``String() string``, so the class silently became a Go ``error`` /
+# ``fmt.Stringer``: ``print(obj)``, f-strings and the message of a thrown
+# object used that method (``error()`` even won over ``__str__``). Only
+# ``__str__`` / ``__repr__`` define the text of an object now (the class
+# gets a Go ``Format`` method, as classes of a hierarchy already had); the
+# methods keep working as ordinary methods, also through an interface.
+#
+# expect: job: Job(a) Job(a) job-error
+# expect: tag: plain=true tag-string
+# expect: list: [Job(a)]
+# expect: thrown: Job(t)
+# expect: interface: job-error tag-string
+# expect: args: Warn:disk Text:x
+
+interface Failing {
+    func error(self) -> str
+}
+
+class Job {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func error(self) -> str {
+        return "job-error"
+    }
+
+    func __str__(self) -> str {
+        return f"Job({self.name})"
+    }
+}
+
+class Tag {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func string(self) -> str {
+        return "tag-string"
+    }
+}
+
+class Plain {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+}
+
+class Logger {
+    func error(self, message: str) -> str {
+        return "Warn:" + message
+    }
+
+    func string(self, text: str) -> str {
+        return "Text:" + text
+    }
+}
+
+func describe(f: Failing) -> str {
+    return f.error()
+}
+
+func main() {
+    j = Job("a")
+    print(f"job: {j} {str(j)} {j.error()}")
+    t = Tag("b")
+    plain = f"{Plain('b')}"
+    print(f"tag: plain={f'{t}'[:2] == plain[:2]} {t.string()}")
+    print(f"list: {[j]}")
+    try {
+        throw Job("t")
+    } catch e {
+        print(f"thrown: {e}")
+    }
+    print(f"interface: {describe(j)} {t.string()}")
+    log = Logger()
+    print(f"args: {log.error('disk')} {log.string('x')}")
+}

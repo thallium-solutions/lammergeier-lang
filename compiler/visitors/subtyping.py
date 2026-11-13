@@ -580,6 +580,30 @@ class SubtypingMixin:
                     self._emit(f"func (s {recv}) {adapter}({params}) {{ {call} }}")
                 self._emit("")
 
+    # Go method names ``fmt`` (and ``errors``) treat as protocols.
+    _FMT_PROTOCOL_METHODS = ("Error", "String", "GoString")
+
+    def _emit_fmt_guard(self, class_name: str) -> None:
+        """A method ``error(self) -> str`` / ``string(self) -> str`` (or
+        ``goString``) lowers to Go ``Error()`` / ``String()``, which made
+        the class a Go ``error`` / ``fmt.Stringer``: ``print(obj)``,
+        f-strings and the message of a thrown object used it. Such a class
+        (outside a hierarchy, whose classes always get one) gets the
+        ``Format`` method of ``_emit_hierarchy_format``, so only
+        ``__str__`` / ``__repr__`` define its text."""
+        if self._hier_member(class_name) or self._hier_user_format_method(class_name):
+            return
+        for method in sorted(self._instance_methods.get(class_name, set())):
+            if method in {"__str__", "__repr__"}:
+                continue
+            if (
+                self._go_method_name(class_name, method) in self._FMT_PROTOCOL_METHODS
+                and self._func_param_counts.get(f"{class_name}.{method}", 0) == 0
+            ):
+                recv = f"*{self._go_class_name(class_name)}{self._class_type_args(class_name)}"
+                self._emit_hierarchy_format(class_name, recv, False)
+                return
+
     def _emit_hierarchy_format(self, class_name: str, recv: str, subclassed: bool) -> None:
         if self._hier_user_format_method(class_name):
             return

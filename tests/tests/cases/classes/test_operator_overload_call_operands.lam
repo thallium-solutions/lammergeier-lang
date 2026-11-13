@@ -1,0 +1,76 @@
+# Regression (4.13.2): an overloaded operator whose left operand is a call
+# result — a function (`make(1) + make(2)`), a static method
+# (`Money.of(1) + Money.of(2)`), a method (`a.plus() + b`), a list element or
+# a `?` payload — was emitted as a Go `+` on two pointers and failed in
+# `go build` (`operator + not defined on Money_of(1)`). Only constructor
+# calls and variables dispatched to `__add__`.
+#
+# expect: ctor=3 func=3 static=3 method=7 chain=10
+# expect: element=5 propagate=11 compare=true sub=1
+# expect: generic=6
+
+from lamerrors import Result
+
+class Money {
+    func init(self, cents: int) {
+        self.cents: int = cents
+    }
+
+    static func of(cents: int) -> Money {
+        return Money(cents)
+    }
+
+    func plus(self) -> Money {
+        return self
+    }
+
+    func __add__(self, other: Money) -> Money {
+        return Money(self.cents + other.cents)
+    }
+
+    func __sub__(self, other: Money) -> Money {
+        return Money(self.cents - other.cents)
+    }
+
+    func __lt__(self, other: Money) -> bool {
+        return self.cents < other.cents
+    }
+}
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+func make(c: int) -> Money {
+    return Money(c)
+}
+
+func load(c: int) -> Result[Money] {
+    return Result.Ok(Money(c))
+}
+
+func total(a: int, b: int) -> Result[int] {
+    m: Money = load(a)? + load(b)?
+    return Result.Ok(m.cents)
+}
+
+func main() {
+    a: Money = Money(1) + Money(2)
+    b: Money = make(1) + make(2)
+    c: Money = Money.of(1) + Money.of(2)
+    d: Money = a.plus() + Money.of(4)
+    e: Money = Money.of(1) + make(2) + d.plus()
+    print(f"ctor={a.cents} func={b.cents} static={c.cents} method={d.cents} chain={e.cents}")
+    wallet: list[Money] = [Money(2), Money(3)]
+    f: Money = wallet[0] + wallet[1]
+    print(f"element={f.cents} propagate={total(5, 6).unwrap()} compare={make(1) < Money.of(2)} sub={(Money.of(3) - make(2)).cents}")
+    box: Box[Money] = Box(Money(4))
+    g: Money = box.get() + make(2)
+    print(f"generic={g.cents}")
+}

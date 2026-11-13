@@ -2861,6 +2861,7 @@ def _compile_lam(
             bindings=sub_scan.bindings,
             locally_bound=sub_scan.locally_bound,
             member_accesses=sub_scan.member_accesses,
+            statics=sub_scan.statics,
         )
 
     # Every module is parsed: no more front-end work for the workers.

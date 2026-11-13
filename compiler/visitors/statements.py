@@ -2677,6 +2677,15 @@ class StatementVisitorMixin:
             self._emit(f'_ = {as_name}')
             self._var_go_types[as_name] = f"*{go_cls}"
             self._var_types[as_name] = binding_class
+        elif as_name and exception_type and exception_type in self._interfaces and exception_type not in PYTHON_EXCEPTIONS:
+            # ``catch Notifiable as n``: the clause matched the interface,
+            # so ``n`` is that interface (``n.notice()`` works).
+            as_name = self._go_binding_name(as_name)
+            go_iface = self._go_class_name(exception_type)
+            self._emit(f"{as_name}, _ := r.({go_iface})")
+            self._emit(f'_ = {as_name}')
+            self._var_go_types[as_name] = go_iface
+            self._var_types.pop(as_name, None)
         elif as_name:
             as_name = self._go_binding_name(as_name)
             self._emit(f'{as_name} := r')

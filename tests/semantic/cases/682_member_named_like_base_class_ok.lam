@@ -1,0 +1,30 @@
+# expect-pass
+# Only a direct base is embedded under its name: a private method (Go
+# `shape`), a static method (`Square_shape`) and a member named like an
+# unrelated class are fine.
+
+class Shape {
+    n: int = 1
+}
+
+class Other {
+    v: int = 0
+}
+
+class Square(Shape) {
+    private func shape(self) -> str {
+        return "sq"
+    }
+
+    static func shapeOf() -> str {
+        return "static"
+    }
+
+    func other(self) -> str {
+        return self.shape()
+    }
+}
+
+func main() {
+    print(Square().other(), Square.shapeOf(), Other().v)
+}

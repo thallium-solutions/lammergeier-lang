@@ -1,0 +1,12 @@
+# expect-error: unsupported f-string format spec ` =8d`: `=` alignment has no Go verb; use `0` padding (`05d`)
+# expect-error: unsupported f-string format spec `z.1f`: `z` has no Go verb
+# expect-error: unsupported f-string format spec `.1%`: type `%` has no Go verb
+# expect-error: unsupported f-string format spec `n`: type `n` has no Go verb
+# The Python format specs without a Go `fmt` equivalent that 565 does not
+# list: each names the alternative.
+
+func main() {
+    n: int = 5
+    ratio: float = 0.25
+    print(f"{n: =8d} {ratio:z.1f} {ratio:.1%} {n:n}")
+}

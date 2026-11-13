@@ -1,0 +1,60 @@
+# Transpilation: the hot-loop lowerings stay native Go. A loop over a list,
+# `enumerate` and a dict range directly (no copies, no interface{} boxing),
+# a comprehension appends into a typed slice / map, `in` on a dict is a map
+# lookup and on a typed list a typed loop, a stepped `range` is a C-style
+# loop, `//=` / `%` by a power of two on ints are shifts / masks (same
+# results as Python's floor semantics), `xs[-1]` indexes `len(xs)-1`, and
+# `+=` on a string appends in place.
+# expect-go: for _, x := range xs {
+# expect-go: for i, w := range words {
+# expect-go: for k, v := range names {
+# expect-go: _result := []int{}
+# expect-go: _result = append(_result, x * x)
+# expect-go: _r := map[int]bool{}
+# expect-go: _r[x] = x & 1 == 0
+# expect-go: for _, _v := range xs { if _v == 3 { return true } }
+# expect-go: _, _ok := names["a"]; return _ok
+# expect-go: out += w
+# expect-go: for i := 0; i < len(xs); i += 2 {
+# expect-go: total = total >> 1
+# expect-go: xs[len(xs)-1]
+
+func scan(xs: list[int], names: dict[str, int], words: list[str]) -> int {
+    total: int = 0
+    for x in xs {
+        total += x
+    }
+    for i, w in enumerate(words) {
+        total += i + len(w)
+    }
+    for k, v in names {
+        total += len(k) + v
+    }
+    squares: list[int] = [x * x for x in xs if x > 1]
+    evens: dict[int, bool] = {x: x % 2 == 0 for x in xs}
+    if 3 in xs {
+        total += 1
+    }
+    if "a" in names {
+        total += 1
+    }
+    code: str = "b"
+    if code in ["a", "b", "c"] {
+        total += len(squares) + len(evens)
+    }
+    out: str = ""
+    for w in words {
+        out += w
+    }
+    for i in range(0, len(xs), 2) {
+        total += xs[i]
+    }
+    while total > 1000 {
+        total //= 2
+    }
+    return total + len(out) + xs[-1]
+}
+
+func main() {
+    print(scan([1, 2, 3], {"a": 1}, ["x", "yy"]))
+}

@@ -1,0 +1,28 @@
+# expect-error: line 13: error[inheritance]: class `Square` method `shape` has the Go name of its base class `Shape`
+# expect-error: line 22: error[inheritance]: class `Tile` field `shape` has the Go name of its base class `Shape`
+# expect-error: rename the
+# A subclass embeds its base as the Go field `Shape`, so a method or field
+# `shape` (Go `Shape`) failed in `go build` (`field and method with the same
+# name Shape`, `cannot use "field" as *Shape value`).
+
+class Shape {
+    n: int = 1
+}
+
+class Square(Shape) {
+    func shape(self) -> str {
+        return "sq"
+    }
+}
+
+class Tile(Shape) {
+    func init(self) {
+        base.init()
+        self.size: int = 2
+        self.shape: str = "field"
+    }
+}
+
+func main() {
+    print(Square().shape(), Tile().shape)
+}

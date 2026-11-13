@@ -60,6 +60,8 @@ class ModuleScan:
     # and ``alias.member`` accesses of every ``import module [as alias]``.
     locally_bound: set = field(default_factory=set)
     member_accesses: dict = field(default_factory=dict)
+    # Static members of the module's classes (``class_static_members``).
+    statics: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -187,6 +189,7 @@ def scan_tree(driver, tree, preprocessed: str) -> ModuleScan:
         symbols=namespacing.top_level_symbols(tree),
         bindings=bindings,
         locally_bound=namespacing.locally_bound_names(tree),
+        statics=namespacing.class_static_members(tree),
         member_accesses={
             binding.local: namespacing.module_member_accesses(tree, binding.local)
             for binding in bindings

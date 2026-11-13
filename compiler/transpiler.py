@@ -565,6 +565,9 @@ func lamGoTypeLamName(t reflect.Type) string {
         # Lam class -> Go constructor, for the constructors whose
         # ``New<Class>`` is another definition's Go name (``_go_ctor_name``).
         self._ctor_go_names: Dict[str, str] = {}
+        # ``Class.member`` -> Go base name of the statics whose
+        # ``<Class>_<member>`` is another definition's (``_go_static_base``).
+        self._static_go_names: Dict[str, str] = {}
         self._private_methods: Dict[str, Set[str]] = {}
 
         # Functions imported from libraries — survive the per-transpile
@@ -1805,9 +1808,8 @@ func lamGoTypeLamName(t reflect.Type) string {
             for name, go_name in self._class_go_names.items()
         }
         for class_name, methods in self._static_methods.items():
-            go_class = self._go_class_name(class_name)
             for method in methods:
-                preferred = f"{go_class}_{method}"
+                preferred = self._go_static_base(class_name, method)
                 if method in self._private_methods.get(class_name, set()):
                     preferred = self._go_binding_name(self._go_private_name(preferred))
                 claimed[preferred] = f"static-method:{class_name}.{method}"
@@ -2531,7 +2533,7 @@ func lamGoTypeLamName(t reflect.Type) string {
             )
 
     def _static_var_go_name(self, class_name: str, var_name: str) -> str:
-        base = f"{self._go_class_name(class_name)}_{var_name}"
+        base = self._go_static_base(class_name, var_name)
         is_private = self._static_vars.get(class_name, {}).get(var_name, False)
         if is_private:
             return self._go_binding_name(self._go_private_name(base))

@@ -1609,7 +1609,11 @@ var s *Shape = NewSquare()._lamUp_Shape()
   nested `{...}` (`&{{sq} 3}` for a `Square` with `side = 3` whose `Shape`
   part has `name = "sq"`), the internal `_lamSelf` never shows, a base-typed
   value prints its most-derived object, and `__str__` (own or inherited)
-  still wins. Classes outside any hierarchy keep Go's default formatting.
+  still wins. Classes outside any hierarchy keep Go's default formatting,
+  except a class with a parameterless method lowering to Go `Error()`,
+  `String()` or `GoString()` (`func error(self) -> str`): it gets the same
+  `Format` method, so that method does not make `print`, f-strings or the
+  message of a thrown object use it (only `__str__` / `__repr__` do).
   The unexported field is also skipped by `encoding/json`.
 - `self.m()` called from inside a parent's *constructor* while that parent is
   being built by `base.init(...)` still runs the parent's own method: the
@@ -1972,7 +1976,21 @@ from lamos import Os
   name gives way instead (module-qualified Go name). Raw `go!` code of a
   module that cannot see the other `NewSite` has `NewSite` rewritten to the
   new constructor (so the stdlib's `NewError(...)` keeps working next to a
-  user `class NewError`).
+  user `class NewError`). Classes of one module whose names differ only in
+  the case of their first letter (`site`, `Site`) are the Go types `Site` and
+  `Site__lam2` here too (`namespacing.type_go_names`), so only `NewSite` can
+  clash.
+- A static member `<GoClass>_<member>` (static method or field) that is the
+  Go name of another definition of the program — a class `Site_make` next to
+  `Site.make`, a function `site_list()`, a constructor, or another class's
+  static (`A_b.c` next to `A.b_c`; the first in module path / class / member
+  order keeps the name) — is renamed: `Site_make__static` (then
+  `__static2`, ...), recorded in every module's namespace plan
+  (`static_go_names`, part of its cache key) and used by the declaration,
+  every call, method values and `LAMMERGEIER.Site.make()`
+  (`_go_static_base`). A const or variable with that name gives way instead
+  (module-qualified Go name). Raw `go!` code of a module that cannot see the
+  other definition has `Site_make` rewritten to the renamed static.
 - Imports are resolved before transpilation: `from m import x as y` and
   `import m as a` / `a.x` (including inside f-string placeholders) are
   rewritten in the AST to `x` (or its renamed form) when that name is free in

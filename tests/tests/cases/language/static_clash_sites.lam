@@ -1,0 +1,56 @@
+# Companion of test_static_name_clash.lam: the statics of ``Registry`` are
+# the Go functions / variables ``Registry_make``, ``Registry_count`` and
+# ``Registry_label``; the importing module declares a class
+# ``Registry_make``, a const ``Registry_count`` and a function
+# ``registry_label`` (Go ``Registry_label``). Raw ``go!`` code here still
+# names the statics by their usual Go names.
+
+class Registry {
+    static count: int = 0
+
+    func init(self, name: str) {
+        self.name: str = name
+        Registry.count += 1
+    }
+
+    static func make(name: str) -> Registry {
+        return Registry(name)
+    }
+
+    static func label() -> str {
+        return "static-label"
+    }
+
+    func describe(self) -> str {
+        return "reg:" + self.name
+    }
+}
+
+func rawMake(name: str) -> str {
+    out: str = ""
+    go! {
+        r := Registry_make(name)
+        out = r.Describe()
+    }
+    return out
+}
+
+func rawCount() -> int {
+    out: int = 0
+    go! {
+        out = Registry_count
+    }
+    return out
+}
+
+func rawLabel() -> str {
+    out: str = ""
+    go! {
+        out = Registry_label()
+    }
+    return out
+}
+
+# Built standalone by the test runner; dropped when imported.
+func main() {
+}

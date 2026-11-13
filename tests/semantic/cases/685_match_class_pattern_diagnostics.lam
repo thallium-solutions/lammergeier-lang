@@ -1,0 +1,69 @@
+# expect-error: line 31: error[match]: class pattern `int()` takes no keyword sub-patterns
+# expect-error: line 32: error[match]: class pattern `str()` takes at most one positional sub-pattern
+# expect-error: line 39: error[match]: class pattern `str()` can never match a value of type `int`
+# expect-error: line 46: error[match]: interface pattern `Shape()` takes no sub-patterns
+# expect-error: line 47: error[match]: `helper` is not a class and cannot be used as a class pattern
+# expect-error: line 48: error[undefined]: unknown class `Missing` in class pattern
+# expect-error: line 55: error[match]: class pattern `Dot()` can never match a value of type `Box`
+# expect-error: line 62: error[match]: positional sub-patterns must come before keyword sub-patterns
+
+interface Shape {
+    func area(self) -> int
+}
+
+class Box {
+    func init(self, w: int) {
+        self.w: int = w
+    }
+}
+
+class Dot {
+    x: int = 0
+    y: int = 0
+}
+
+func helper() -> int {
+    return 1
+}
+
+func builtins(value: any) -> str {
+    match value {
+        case int(real=r) { return "kw" }
+        case str(a, b) { return "two" }
+        case _ { return "other" }
+    }
+}
+
+func neverStr(n: int) -> str {
+    match n {
+        case str(s) { return s }
+        case _ { return "int" }
+    }
+}
+
+func users(value: any) -> str {
+    match value {
+        case Shape(x) { return "shape" }
+        case helper() { return "fn" }
+        case Missing() { return "missing" }
+        case _ { return "other" }
+    }
+}
+
+func unrelated(b: Box) -> str {
+    match b {
+        case Dot() { return "dot" }
+        case _ { return "box" }
+    }
+}
+
+func ordering(value: any) -> str {
+    match value {
+        case Dot(x=1, 2) { return "mixed" }
+        case _ { return "other" }
+    }
+}
+
+func main() {
+    print(builtins(1), neverStr(2), users(3), unrelated(Box(1)), ordering(4), helper())
+}

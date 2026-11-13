@@ -1,0 +1,73 @@
+# Regression (4.13.2): classes whose names differ only in the case of their
+# first letter (``site`` and ``Site``) are the Go types ``Site`` and
+# ``Site__lam2``, with the constructors ``NewSite`` and ``NewSite__lam2``.
+# Next to a class ``NewSite`` (whose Go name is the constructor of ``Site``)
+# both constructors were renamed to ``NewSite__ctor`` and the Go build
+# failed with ``NewSite__ctor redeclared in this block``. Only the
+# constructor of ``Site`` is renamed now; ``site`` keeps ``NewSite__lam2``,
+# and the statics of both classes keep their own names.
+#
+# expect: ctor: lower:1 upper:a new:u
+# expect: statics: lower-make:2 upper-make:b count=1 lower-count=5
+# expect: sub: lower-sub:3 upper-sub:c!
+# expect: go-block: upper:raw lower:9
+
+class site {
+    static total: int = 5
+
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    static func make(n: int) -> site {
+        return site(n)
+    }
+}
+
+class Site {
+    static count: int = 0
+
+    func init(self, name: str) {
+        self.name: str = name
+        Site.count += 1
+    }
+
+    static func make(name: str) -> Site {
+        return Site(name)
+    }
+}
+
+class NewSite {
+    func init(self, url: str) {
+        self.url: str = url
+    }
+}
+
+class lowerSub(site) {
+    func init(self, n: int) {
+        base.init(n)
+    }
+}
+
+class UpperSub(Site) {
+    func init(self, name: str) {
+        base.init(name + "!")
+    }
+}
+
+func raw() -> str {
+    out: str = ""
+    go! {
+        s := LAMMERGEIER.Site("raw")
+        l := LAMMERGEIER.site(9)
+        out = "upper:" + s.Name + " lower:" + fmt.Sprint(l.N)
+    }
+    return out
+}
+
+func main() {
+    print(f"ctor: lower:{site(1).n} upper:{Site('a').name} new:{NewSite('u').url}")
+    print(f"statics: lower-make:{site.make(2).n} upper-make:{Site.make('b').name} count={Site.count - 1} lower-count={site.total}")
+    print(f"sub: lower-sub:{lowerSub(3).n} upper-sub:{UpperSub('c').name}")
+    print(f"go-block: {raw()}")
+}

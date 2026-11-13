@@ -1,0 +1,19 @@
+# expect-pass
+# expect-no-warning: compiler runtime helper
+# A public function, a class or a method is spelt with a capital letter in Go
+# (`LamNN`, `LamGenRun`), and `lamport` is not a helper name: no clash.
+
+func lamNN(x: int) -> int {
+    return x + 1
+}
+
+class lamGenRun {
+    func lamAs(self) -> int {
+        return 2
+    }
+}
+
+func main() {
+    lamport: int = 3
+    print(lamNN(1), lamGenRun().lamAs(), lamport)
+}

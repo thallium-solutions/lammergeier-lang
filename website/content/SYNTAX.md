@@ -1066,6 +1066,25 @@ class Counter {
 print(Counter(3).name)       # anon
 ```
 
+A field and a method of a class cannot share a name (Go gives a struct's
+fields and methods one namespace): `self.entries` assigned in `init` (or a
+class-body `entries` field) next to `func entries(self)` is an error at the
+later of the two declarations, ``duplicate class member `entries`: class
+`Catalog` has a field `entries` (line 3) and a method `entries` (line 6)``;
+rename one of them (`_entries` and `entries()` is the usual getter shape). A
+static method is a package-level function and may share its name with an
+instance field. The same holds across inheritance (a subclass method named
+like an inherited field, or the reverse, see [Inheritance](#inheritance)),
+and an interface method is not satisfied by a field: ``class `Catalog` does
+not satisfy interface `Listing`: missing method `entries` (`Catalog.entries`
+is a field, not a method ...)``.
+
+Only `__str__` / `__repr__` define how an object prints. An ordinary method
+`error(self) -> str` or `string(self) -> str` (Go `Error()` / `String()`)
+does not turn the class into a Go `error` or `fmt.Stringer`: `print(obj)`,
+f-strings and the message of a thrown object still use `__str__` or the
+fields.
+
 ---
 
 ## Constructors
@@ -1182,7 +1201,14 @@ so). Static methods do not override: `AppProblem.validation` and
 `Problem.validation` are two functions, each called through its class, so a
 subclass may declare a static method of a base static's name with any
 signature (a static method may not replace an instance method, nor the
-reverse).
+reverse). A subclass method may not take the name of an inherited field, nor a
+subclass field the name of an inherited method (``class `Catalog` method
+`entries` conflicts with inherited field `Base.entries` — rename the method or
+the field``, reported at the subclass's declaration). A subclass embeds each
+direct base as a Go field named after it, so its instance methods and fields
+may not be spelt like a base class either (`func shape(self)` in
+`class Square(Shape)`: ``method `shape` has the Go name of its base class
+`Shape` ``); private and static methods are fine.
 
 When a method or field is not declared on the child, ordinary access through
 `self` or an instance can use the inherited member:
@@ -1374,7 +1400,10 @@ take none; `__setitem__` takes key and value. Comparison and containment
 methods return `bool`. The semantic checker uses those signatures at operator
 sites, so `vec + 1` is rejected when `__add__` expects another `Vec`, while the
 declared return type flows into assignments and chained expressions. Unknown
-or `any` operands retain the dynamic fallback.
+or `any` operands retain the dynamic fallback. The left operand may be any
+expression of the class: a variable, a constructor or function call
+(`make(1) + make(2)`), a static or instance method call
+(`Money.of(1) + a.plus()`), a list element or a `?` payload.
 
 ### Postfix `++` / `--`
 
@@ -1461,6 +1490,19 @@ statics included (`Hooks.run(Hooks.double)` inside the module declaring
 result types in full, so `Handlers.count` with `count(where: str, items:
 list[Item]) -> int` fits a `func(str, list[Item]) -> int` parameter. A
 private static is visible only in its module, as a value too.
+
+A static member lowers to the Go package-level function or variable
+`<Class>_<member>` (`MathHelper_square`, `MathHelper_calls`). When that is
+also the Go name of another definition anywhere in the program — a class
+`Site_make` next to `Site.make`, a function `site_list()` (Go `Site_list`)
+next to `Site.list`, another class's static (`A_b.c` next to `A.b_c`) — the
+definition keeps its name and the static becomes `Site_make__static`; a const
+or variable named like a static (`const Site_count` next to `static count`)
+gives way instead and gets a module-qualified Go name. Lam code is unaffected,
+in one module and across modules. Raw `go!` code of a module that does not see
+the other definition keeps calling `Site_make()`; where both are visible,
+`Site_make` is the other definition and the static is
+`LAMMERGEIER.Site.make()` (or `Site_make__static()`).
 
 ---
 
@@ -2752,7 +2794,8 @@ Matching rules:
   a `TypeError`.
 - A class name matches instances of that class and of its subclasses
   (declared in any module); an interface name matches any value
-  implementing it.
+  implementing it, and its `as` binding is typed by the interface
+  (`catch Notifiable as n { print(n.notice()) }`).
 
 The binding (`as e`) is the raised value itself, as described below.
 
@@ -5471,7 +5514,21 @@ through that same internal mapping. A class constructor whose `New<Class>`
 is the Go name of another definition of the program (`class Site` next to
 `class NewSite` or `func newSite()`) is `New<Class>__ctor` (`NewSite__ctor`);
 `LAMMERGEIER.Site(...)` lowers to it, see
-[Module imports and namespaces](#module-imports-and-namespaces).
+[Module imports and namespaces](#module-imports-and-namespaces). Likewise a
+static whose `<Class>_<member>` is another definition's Go name (`Site.make`
+next to `class Site_make`) is `Site_make__static`, and
+`LAMMERGEIER.Site.make()` lowers to it (see [Static Members](#static-members)).
+Classes of one module whose names differ only in the case of their first
+letter (`site` and `Site`) are the Go types `Site` and `Site__lam2`, with the
+constructors `NewSite` and `NewSite__lam2`.
+
+The compiler's own runtime declares a few package-level Go helpers (`lamNN`,
+`lamAs`, `lamGenRun`, ...; `COMPILER_RUNTIME_HELPERS` in
+`compiler/constants.py`). A Lam name that keeps its spelling in Go — a
+private function, a const, a variable, a local or a parameter — must not be
+one of them: ``error[name]: `lamNN` is the Go name of a compiler runtime
+helper; rename it``. Public functions, classes and methods are capitalised
+in Go (`LamNN`) and are not affected.
 
 Stdlib classes participate in the dispatcher only when they're
 imported (directly or transitively): `from lamerrors import Result`
@@ -5651,6 +5708,8 @@ parse-compatible placeholders, not supported language features:
 | `@decorator func f() { ... }` / `@decorator class C { ... }` | The decorator node is parsed, then rejected by the semantic checker because decorator semantics are not implemented yet. | Use explicit Lam keywords or ordinary wrapper/helper functions. |
 | `@private func f() { ... }` | Rejected by the semantic checker so it cannot silently emit a public `F`. | `private func f() { ... }` |
 | `nonlocal name` | Resolves the nearest unambiguous enclosing-function binding and validates outer writes before Go emission. | Use it when a nested function intentionally reassigns an outer local. |
+| `list(xs)` / `dict(d)` / `tuple(xs)` | Parsed as calls, then rejected by the semantic checker (``Lam has no `list(...)` conversion``): Lam has no such conversions. | A literal or a comprehension (`[x for x in items]`, `{k: v for k, v in pairs}`, `(a, b)`); `reversed(xs)`, `sorted(xs)`, `xs[:]` and `set(xs)` already return new containers. |
+| `print(a, end="")` / `print(a, b, sep="-")` | Rejected by the semantic checker (``print` takes no keyword arguments``); each `print` writes its arguments separated by spaces and ends the line. | Build the text first: an f-string or `"-".join(parts)`. |
 
 Decorators are only parse-compatible on the same logical line as the
 definition today, because the semicolon insertion pass may terminate a

@@ -1,0 +1,62 @@
+# Coverage (4.13.2): the lamdatetime and lamenv calls the downstream
+# services use, pinned — DateTime from unix seconds / milliseconds, zone
+# conversion (Europe/Rome summer and winter offsets), layouts, `date()` /
+# `dateTime()` / `rfc3339()`, day / month arithmetic (a month added to
+# January 31st clamps), comparisons and `-` giving a `Time`, an unknown
+# zone as an `Err`; Env typed reads with fallbacks, invalid numbers as
+# `Err`, flags, lists with a custom separator, has / unset, and Dotenv.parse.
+#
+# expect: unix: 2026-11-13T09:30:00Z 2026-11-13 09:30:00 ms=2026-11-13T09:30:00Z
+# expect: rome: 2026-11-13 10:30 +3600 | 2026-07-01 14:00 +7200
+# expect: layouts: 13/11/2026 Fri Nov 13 2026 09:30
+# expect: arith: 2026-12-13 2026-02-28 2027-01-31 before=true after=false equal=true
+# expect: elapsed: 30 days 720 hours
+# expect: zone-error: LocationError
+# expect: env: port=8080 ratio=0.5 debug=true fallback=7 bad=Err
+# expect: env-list: [a b c] [] has=true unset=false
+# expect: dotenv: 3 db=postgres://x quoted=hello world empty=
+
+from lamdatetime import DateTime
+from lamtime import Time
+from lamenv import Env, Dotenv
+
+func main() {
+    at: DateTime = DateTime.fromUnix(1794562200).unwrap()
+    fromMs: DateTime = DateTime.fromUnixMilli(1794562200000).unwrap()
+    print(f"unix: {at.rfc3339()} {at.dateTime()} ms={fromMs}")
+
+    rome: DateTime = at.inLocation("Europe/Rome").unwrap()
+    summer: DateTime = DateTime.parse("2006-01-02 15:04", "2026-07-01 12:00").unwrap().inLocation("Europe/Rome").unwrap()
+    print(f"rome: {rome.format('2006-01-02 15:04')} +{rome.offsetSeconds()} | {summer.format('2006-01-02 15:04')} +{summer.offsetSeconds()}")
+    print(f"layouts: {at.format('02/01/2006')} {at.format('Mon Jan 2 2006 15:04')}")
+
+    endOfJan: DateTime = DateTime.parse("2006-01-02", "2026-01-31").unwrap()
+    later: DateTime = at.addDays(30)
+    same: DateTime = DateTime.fromUnix(1794562200).unwrap()
+    print(f"arith: {later.date()} {endOfJan.addMonths(1).date()} {endOfJan.addYears(1).date()} before={at.before(later)} after={at.after(later)} equal={at == same}")
+    gap: Time = later - at
+    print(f"elapsed: {gap.inDays()} days {gap.inHours()} hours")
+
+    bad: Result[DateTime] = DateTime.fromUnix(0, "Mars/Olympus")
+    print(f"zone-error: {bad.error.kind}")
+
+    Env.set("APP_PORT", "8080").unwrap()
+    Env.set("APP_RATIO", "0.5").unwrap()
+    Env.set("APP_DEBUG", "yes").unwrap()
+    Env.set("APP_BAD_INT", "eighty").unwrap()
+    port: int = Env.get("APP_PORT", 80).unwrap()
+    ratio: float = Env.get("APP_RATIO", 1.0).unwrap()
+    fallback: int = Env.get("APP_MISSING_INT", 7).unwrap()
+    badInt: Result[int] = Env.get("APP_BAD_INT", 1)
+    print(f"env: port={port} ratio={ratio} debug={Env.flag('APP_DEBUG', false)} fallback={fallback} bad={'Ok' if badInt.ok() else 'Err'}")
+
+    Env.set("APP_LIST", "a;b;c").unwrap()
+    Env.unset("APP_LIST_EMPTY").unwrap()
+    has: bool = Env.has("APP_LIST")
+    Env.unset("APP_LIST").unwrap()
+    Env.set("APP_LIST", "a;b;c").unwrap()
+    print(f"env-list: {Env.list('APP_LIST', ';')} {Env.list('APP_LIST_EMPTY')} has={has} unset={Env.has('APP_LIST_EMPTY')}")
+
+    parsed: dict[str, any] = Dotenv.parse("DB=postgres://x\nQUOTED=\"hello world\"\n# comment\nEMPTY=\n")
+    print(f"dotenv: {len(parsed)} db={parsed['DB']} quoted={parsed['QUOTED']} empty={parsed['EMPTY']}")
+}

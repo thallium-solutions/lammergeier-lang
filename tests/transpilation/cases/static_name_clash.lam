@@ -1,0 +1,77 @@
+# Transpilation: a static member lowers to ``<Class>_<member>``; when that
+# is the Go name of another definition (the class ``Site_make``, the
+# function ``site_list``, another class's static), the static is
+# ``<Class>_<member>__static`` at its declaration, at every call, as a value
+# and for ``LAMMERGEIER.<Class>.<member>``; a const named like a static field
+# gives way (module-qualified Go name). Statics without a clash keep their
+# names.
+# expect-go: type Site_make struct
+# expect-go: func Site_make__static() *Site {
+# expect-go: func Site_list__static() int {
+# expect-go: func Site_ok() int {
+# expect-go: func Site_list() string {
+# expect-go: var Site_count int = 0
+# expect-go: var Site_count__main int = 7
+# expect-go: Site_count += 1
+# expect-go: func A_b_c() string {
+# expect-go: func A_b_c__static() string {
+# expect-go: out = Site_make__static().Name
+# expect-go: NewSite_make("w").Label, Site_list__static(), Site_list(), Site_ok(), Site_count, Site_count__main, A_b_c__static(), A_b_c())
+
+class Site_make {
+    func init(self, label: str) {
+        self.label: str = label
+    }
+}
+
+class Site {
+    static count: int = 0
+
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    static func make() -> Site {
+        Site.count += 1
+        return Site("made")
+    }
+
+    static func list() -> int {
+        return 2
+    }
+
+    static func ok() -> int {
+        return 3
+    }
+}
+
+const Site_count: int = 7
+
+func site_list() -> str {
+    return "fn"
+}
+
+class A_b {
+    static func c() -> str {
+        return "ab"
+    }
+}
+
+class A {
+    static func b_c() -> str {
+        return "a"
+    }
+}
+
+func raw() -> str {
+    out: str = ""
+    go! {
+        out = LAMMERGEIER.Site.make().Name
+    }
+    return out
+}
+
+func main() {
+    print(Site.make().name, Site_make("w").label, Site.list(), site_list(), Site.ok(), Site.count, Site_count, A_b.c(), A.b_c())
+    print(raw())
+}

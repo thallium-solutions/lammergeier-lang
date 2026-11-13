@@ -1,0 +1,82 @@
+# Coverage (4.13.2): async tasks nobody awaits, as the downstream workers
+# start them (`_ = runInBackground(...)`): top-level async functions, async
+# instance methods and static async methods started in a loop and joined
+# with a WaitGroup, an Atomic counter and a Mutex-guarded field updated by
+# the tasks, a task whose `Result` is dropped, and an awaited task started
+# after them.
+#
+# expect: background: started=6 counted=6 total=21
+# expect: worker: 3 [w1 w2 w3]
+# expect: dropped-result: ok
+# expect: awaited: 42
+
+from lamconcurrency import Atomic, Mutex, WaitGroup
+from lamerrors import Result, Error
+
+class Worker {
+    func init(self, group: WaitGroup) {
+        self.group: WaitGroup = group
+        self.mu: Mutex = Mutex()
+        self.names: list[str] = []
+    }
+
+    async func run(self, name: str) -> bool {
+        self.mu.lock()
+        self.names.append(name)
+        self.mu.unlock()
+        self.group.done()
+        return true
+    }
+
+    static async func tick(counter: Atomic, group: WaitGroup) -> bool {
+        _ = counter.increment()
+        group.done()
+        return true
+    }
+}
+
+async func addInBackground(counter: Atomic, total: Atomic, n: int, group: WaitGroup) -> bool {
+    _ = counter.increment()
+    _ = total.add(n)
+    group.done()
+    return true
+}
+
+async func mayFail(n: int) -> Result[int] {
+    if n < 0 {
+        return Result.Err(Error("Negative", str(n)))
+    }
+    return Result.Ok(n)
+}
+
+async func answer() -> int {
+    return 42
+}
+
+func main() {
+    counter: Atomic = Atomic(0)
+    total: Atomic = Atomic(0)
+    group: WaitGroup = WaitGroup()
+    group.add(6)
+    for n in range(1, 7) {
+        _ = addInBackground(counter, total, n, group)
+    }
+    group.wait()
+    print(f"background: started=6 counted={counter.get()} total={total.get()}")
+
+    workers: WaitGroup = WaitGroup()
+    worker: Worker = Worker(workers)
+    ticks: Atomic = Atomic(0)
+    workers.add(6)
+    for name in ["w1", "w2", "w3"] {
+        _ = worker.run(name)
+        _ = Worker.tick(ticks, workers)
+    }
+    workers.wait()
+    print(f"worker: {ticks.get()} {sorted(worker.names)}")
+
+    _ = mayFail(-1)
+    _ = mayFail(1)
+    print("dropped-result: ok")
+    print(f"awaited: {await answer()}")
+}

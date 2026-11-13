@@ -1,0 +1,26 @@
+# expect-error: line 15: error[duplicate]: duplicate class member `entries`: class `Catalog` has a field `entries` (line 12) and a method `entries` (line 15)
+# The class conforms to `Listing` through `entries()`, but Go cannot give a
+# struct a field and a method of one name (it failed in `go build` with
+# `*Catalog.Entries is a field, not a method`).
+
+interface Listing {
+    func entries(self) -> list[str]
+}
+
+class Catalog {
+    func init(self) {
+        self.entries: list[str] = ["a"]
+    }
+
+    func entries(self) -> list[str] {
+        return ["b"]
+    }
+}
+
+func show(l: Listing) {
+    print(len(l.entries()))
+}
+
+func main() {
+    show(Catalog())
+}

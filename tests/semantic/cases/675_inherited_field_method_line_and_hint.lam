@@ -1,0 +1,23 @@
+# expect-error: line 15: error[inheritance]: class `Catalog` method `entries` conflicts with inherited field `Base.entries`
+# expect-error: rename the method or the field
+
+class Base {
+    func init(self) {
+        self.entries: list[str] = ["a"]
+    }
+}
+
+class Catalog(Base) {
+    func size(self) -> int {
+        return 1
+    }
+
+    func entries(self) -> int {
+        return 3
+    }
+}
+
+func main() {
+    c = Catalog()
+    print(c.entries())
+}

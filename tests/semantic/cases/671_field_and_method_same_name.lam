@@ -1,0 +1,17 @@
+# expect-error: line 9: error[duplicate]: duplicate class member `entries`: class `Catalog` has a field `entries` (line 6) and a method `entries` (line 9)
+# expect-error: rename one of them
+
+class Catalog {
+    func init(self) {
+        self.entries: list[str] = ["a"]
+    }
+
+    func entries(self) -> list[str] {
+        return self.entries
+    }
+}
+
+func main() {
+    c = Catalog()
+    print(len(c.entries()))
+}

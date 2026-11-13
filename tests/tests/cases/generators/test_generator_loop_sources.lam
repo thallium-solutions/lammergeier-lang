@@ -1,0 +1,146 @@
+# Coverage (4.13.2): `for` loops inside a generator body (the state-machine
+# lowering) over every kind of source — a string's characters,
+# `enumerate` of a string, a dict literal, a list of tuples destructured, a
+# typed dict's pairs, another generator, a `Result` payload after `?` (in a
+# generator returning `Result` values), a stepped range and a list built by
+# a comprehension — with `break`, `continue`, a `yield` inside `try` /
+# `finally` and an early `return`.
+#
+# expect: chars: H-I-!
+# expect: enum-str: 0a 1b 2c
+# expect: dict-literal: x=1 y=2
+# expect: tuples: a:1 c:3
+# expect: dict-pairs: k1 k3
+# expect: nested: 0 2 4 6
+# expect: payload: 10 20 err:Empty
+# expect: stepped: 9 6 3
+# expect: try-finally: 1 2 cleanup:2
+# expect: early: 5 6
+
+from lamerrors import Result, Error
+
+func chars(text: str) -> str {
+    for ch in text {
+        if ch == " " {
+            continue
+        }
+        yield ch.toUpper()
+    }
+    yield "!"
+}
+
+func indexed(text: str) -> str {
+    for i, ch in enumerate(text) {
+        yield f"{i}{ch}"
+    }
+}
+
+func literalPairs() -> str {
+    for k, v in {"x": 1, "y": 2} {
+        yield f"{k}={v}"
+    }
+}
+
+func oddTuples(pairs: list[tuple[str, int]]) -> str {
+    for name, n in pairs {
+        if n % 2 == 0 {
+            continue
+        }
+        yield f"{name}:{n}"
+    }
+}
+
+func oddKeys(scores: dict[str, int]) -> str {
+    for k, v in scores {
+        if v % 2 == 1 {
+            yield k
+        }
+    }
+}
+
+func upTo(n: int) -> int {
+    for i in range(n) {
+        yield i
+    }
+}
+
+func doubled(n: int) -> int {
+    for v in upTo(n) {
+        yield v * 2
+    }
+}
+
+func load(values: list[int]) -> Result[list[int]] {
+    if len(values) == 0 {
+        return Result.Err(Error("Empty", "no values"))
+    }
+    return Result.Ok(values)
+}
+
+func scaled(batches: list[list[int]]) -> Result[int] {
+    for batch in batches {
+        do {
+            for v in load(batch)? {
+                yield Result.Ok(v * 10)
+            }
+        } catch err {
+            yield Result.Err(err)
+        }
+    }
+}
+
+func countdown(start: int) -> int {
+    for i in range(start, 0, -3) {
+        yield i
+    }
+}
+
+class Log {
+    func init(self) {
+        self.lines: list[str] = []
+    }
+}
+
+func guarded(log: Log) -> int {
+    count: int = 0
+    try {
+        for v in [x for x in [1, 2, 3] if x < 3] {
+            count += 1
+            yield v
+        }
+    } finally {
+        log.lines.append(f"cleanup:{count}")
+    }
+}
+
+func early(limit: int) -> int {
+    for v in [5, 6, 7, 8] {
+        if v > limit {
+            return
+        }
+        yield v
+    }
+}
+
+func main() {
+    print(f"chars: {'-'.join([c for c in chars('h i')])}")
+    print(f"enum-str: {' '.join([s for s in indexed('abc')])}")
+    print(f"dict-literal: {' '.join(sorted([s for s in literalPairs()]))}")
+    print(f"tuples: {' '.join([s for s in oddTuples([('a', 1), ('b', 2), ('c', 3)])])}")
+    print(f"dict-pairs: {' '.join(sorted([k for k in oddKeys({'k1': 1, 'k2': 2, 'k3': 3})]))}")
+    print(f"nested: {' '.join([str(v) for v in doubled(4)])}")
+    parts: list[str] = []
+    for r in scaled([[1, 2], []]) {
+        if r.ok() {
+            parts.append(str(r.unwrap()))
+        } else {
+            parts.append(f"err:{r.error.kind}")
+        }
+    }
+    print(f"payload: {' '.join(parts)}")
+    print(f"stepped: {' '.join([str(v) for v in countdown(9)])}")
+    log: Log = Log()
+    values: list[int] = [v for v in guarded(log)]
+    print(f"try-finally: {' '.join([str(v) for v in values])} {' '.join(log.lines)}")
+    print(f"early: {' '.join([str(v) for v in early(6)])}")
+}

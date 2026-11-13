@@ -90,6 +90,10 @@ class NamespacePlan:
     # whose ``New<Class>`` is the Go name of another top-level definition
     # (``class Site`` next to ``class NewSite``): ``NewSite__ctor``.
     constructor_go_names: dict[str, str] = field(default_factory=dict)
+    # ``Class.member`` (final Lam class name) -> Go base name of a static
+    # member whose ``<Class>_<member>`` is the Go name of another definition
+    # (``Site.make`` next to ``class Site_make``): ``Site_make__static``.
+    static_go_names: dict[str, str] = field(default_factory=dict)
 
     def cache_key(self) -> str:
         parts = [
@@ -108,6 +112,7 @@ class NamespacePlan:
             "fa:" + ",".join(f"{k}>{v}" for k, v in sorted(self.function_aliases.items())),
             "vt:" + ",".join(f"{k}>{v}" for k, v in sorted(self.imported_value_types.items())),
             "ct:" + ",".join(f"{k}>{v}" for k, v in sorted(self.constructor_go_names.items())),
+            "st:" + ",".join(f"{k}>{v}" for k, v in sorted(self.static_go_names.items())),
         ]
         return "|".join(parts)
 
@@ -116,7 +121,7 @@ class NamespacePlan:
             self.rewrites or self.module_access or self.function_go_names
             or self.const_go_names or self.metadata_from or self.hidden or self.go_renames
             or self.declaration_renames or self.function_aliases or self.imported_value_types
-            or self.constructor_go_names
+            or self.constructor_go_names or self.static_go_names
         )
 
 
@@ -213,6 +218,50 @@ def top_level_symbols(tree: Tree) -> dict[str, str]:
                     )
                     if target is not None:
                         out.setdefault(_name_text(target), "var")
+    return out
+
+
+def class_static_members(tree: Tree) -> dict[str, dict[str, str]]:
+    """Static members of a module's top-level classes: class -> member ->
+    ``"func"`` / ``"private func"`` (static methods) or ``"var"`` /
+    ``"private var"`` (static fields). Each lowers to a package-level Go
+    function or variable ``<Class>_<member>``."""
+    out: dict[str, dict[str, str]] = {}
+    for stmt in _top_level_statements(tree):
+        if stmt.data != "classdef":
+            continue
+        class_name = _funcdef_name(stmt)
+        suite = next((c for c in reversed(stmt.children) if isinstance(c, Tree) and c.data == "suite"), None)
+        if not class_name or suite is None:
+            continue
+        members: dict[str, str] = {}
+        for item in _top_level_statements(suite):
+            if item.data == "assign_stmt":
+                parts = [c for c in item.children if isinstance(c, Tree) and c.data == "annassign"]
+            else:
+                parts = [item]
+            for part in parts:
+                tokens = {str(c) for c in part.children if isinstance(c, Token)}
+                private = "private" in tokens or any(
+                    isinstance(c, Token) and c.type == "PRIVATE_FUNC" for c in part.children
+                )
+                if part.data == "funcdef":
+                    if not any(isinstance(c, Token) and c.type == "STATIC_FUNC" for c in part.children):
+                        continue
+                    name = _funcdef_name(part)
+                    kind = "private func" if private else "func"
+                elif part.data == "annassign" and "static" in tokens:
+                    target = next((c for c in part.children if isinstance(c, Tree)), None)
+                    if not (isinstance(target, Tree) and target.data == "var"):
+                        continue
+                    name = _name_text(target)
+                    kind = "private var" if private else "var"
+                else:
+                    continue
+                if name:
+                    members.setdefault(name, kind)
+        if members:
+            out[class_name] = members
     return out
 
 
@@ -549,43 +598,165 @@ def constructor_renames(
     other clashes. ``renamed`` holds the definitions already renamed (classes
     by their new Lam name, the others by their new Go name).
 
+    Classes of one module whose names differ only in the case of their first
+    letter (``site`` and ``Site``) are the Go types ``Site`` and
+    ``Site__lam2`` (``type_go_names``), so only ``NewSite`` can clash; and a
+    renamed constructor never takes a name another one already took.
+
     Returns the constructor renames (final Lam class name -> Go constructor)
     and, per renamed ``New<Class>``, the definitions owning that Go name.
     """
-    def final_go(path: Path, name: str, kind: str) -> str:
-        new = renamed.get((path, name))
-        if kind in TYPE_KINDS:
-            return _go_public_name(new or name)
-        return new or default_go(name, kind)
-
-    go_ids: dict[str, list[tuple[Path, str, str]]] = {}
-    for path, info in modules.items():
-        for name, kind in info.symbols.items():
-            go_ids.setdefault(final_go(path, name, kind), []).append((path, name, kind))
+    type_names = type_go_names(modules, renamed)
+    go_ids = _definition_go_ids(modules, renamed, default_go, type_names)
     ctor_go_names: dict[str, str] = {}
     ctor_owners: dict[str, set[tuple[Path, str]]] = {}
+    taken: set[str] = set()
     for path in sorted(modules, key=str):
         info = modules[path]
         for name in sorted(info.symbols):
             if info.symbols[name] != "class":
                 continue
-            ctor = "New" + final_go(path, name, "class")
+            ctor = "New" + type_names[(path, name)]
             owners = go_ids.get(ctor, [])
-            for owner_path, owner_name, owner_kind in owners:
-                if owner_kind in VALUE_KINDS and (owner_path, owner_name) not in renamed:
-                    renamed[(owner_path, owner_name)] = (
-                        f"{default_go(owner_name, owner_kind)}__{module_tag(modules[owner_path].name)}"
-                    )
+            _give_way(owners, renamed, default_go, modules)
             definitions = {(p, n) for p, n, k in owners if k not in VALUE_KINDS}
             if not definitions:
                 continue
             candidate, index = f"{ctor}__ctor", 2
-            while candidate in go_ids:
+            while candidate in go_ids or candidate in taken:
                 candidate = f"{ctor}__ctor{index}"
                 index += 1
+            taken.add(candidate)
             ctor_go_names[renamed.get((path, name), name)] = candidate
             ctor_owners.setdefault(ctor, set()).update(definitions)
     return ctor_go_names, ctor_owners
+
+
+def type_go_names(
+    modules: dict[Path, "ModuleInfo"],
+    renamed: dict[tuple[Path, str], str],
+) -> dict[tuple[Path, str], str]:
+    """The Go type of every class and interface, as the transpiler names it
+    (``_finalize_class_go_names``): the exported spelling of its final Lam
+    name; within a module, names differing only in their first letter's
+    case get ``__lam2``, ``__lam3``... (capitalised names first)."""
+    out: dict[tuple[Path, str], str] = {}
+    for path, info in modules.items():
+        finals = {
+            name: renamed.get((path, name), name)
+            for name, kind in info.symbols.items() if kind in TYPE_KINDS
+        }
+        claimed: set[str] = set()
+        for name in sorted(finals, key=lambda n: (not finals[n][:1].isupper(), finals[n])):
+            preferred = _go_public_name(finals[name])
+            candidate, index = preferred, 2
+            while candidate in claimed:
+                candidate = f"{preferred}__lam{index}"
+                index += 1
+            claimed.add(candidate)
+            out[(path, name)] = candidate
+    return out
+
+
+def _definition_go_ids(
+    modules: dict[Path, "ModuleInfo"],
+    renamed: dict[tuple[Path, str], str],
+    default_go: Callable[[str, str], str],
+    type_names: dict[tuple[Path, str], str],
+) -> dict[str, list[tuple[Path, str, str]]]:
+    """Go identifier -> the top-level definitions declaring it."""
+    go_ids: dict[str, list[tuple[Path, str, str]]] = {}
+    for path, info in modules.items():
+        for name, kind in info.symbols.items():
+            if kind in TYPE_KINDS:
+                go = type_names[(path, name)]
+            else:
+                go = renamed.get((path, name)) or default_go(name, kind)
+            go_ids.setdefault(go, []).append((path, name, kind))
+    return go_ids
+
+
+def _give_way(owners, renamed, default_go, modules) -> None:
+    """A const or variable whose Go name a generated declaration needs gets
+    a module-qualified Go name (``NewSite__app``, ``Site_count__app``)."""
+    for owner_path, owner_name, owner_kind in owners:
+        if owner_kind in VALUE_KINDS and (owner_path, owner_name) not in renamed:
+            renamed[(owner_path, owner_name)] = (
+                f"{default_go(owner_name, owner_kind)}__{module_tag(modules[owner_path].name)}"
+            )
+
+
+def _static_go_id(base: str, kind: str) -> str:
+    """The Go identifier of a static member whose base name (``<GoClass>_
+    <member>``) is ``base``, as the transpiler spells it: exported, or with a
+    lower-case first letter for a private one."""
+    if kind.startswith("private"):
+        return base[:1].lower() + base[1:]
+    return _go_public_name(base)
+
+
+def static_renames(
+    modules: dict[Path, "ModuleInfo"],
+    renamed: dict[tuple[Path, str], str],
+    default_go: Callable[[str, str], str],
+    ctor_go_names: dict[str, str],
+) -> tuple[dict[str, str], dict[str, set[tuple[Path, str]]]]:
+    """Static members whose Go name ``<Class>_<member>`` is another's.
+
+    A static method or field lowers to the package-level Go function or
+    variable ``<GoClass>_<member>``; the class ``Site_make`` (or a function
+    ``site_make``, an interface, another class's static ``A.b_c`` next to
+    ``A_b.c``, a constructor) of any linked module can be the same Go
+    identifier. As for constructors, the definition keeps its name and the
+    static becomes ``<Class>_<member>__static`` (then ``__static2``...); a
+    const or variable gives way instead (module-qualified Go name in
+    ``renamed``). Between two statics, the first in (module path, class,
+    member) order keeps the name.
+
+    Returns the static renames (``Class.member`` with the final Lam class
+    name -> Go base name) and, per renamed Go identifier, the definitions
+    owning it (for the raw ``go!`` renames).
+    """
+    type_names = type_go_names(modules, renamed)
+    go_ids = _definition_go_ids(modules, renamed, default_go, type_names)
+    # Generated Go identifiers -> the class they belong to: constructors,
+    # then the statics as they are assigned.
+    generated: dict[str, tuple[Path, str]] = {}
+    for path, info in modules.items():
+        for name, kind in info.symbols.items():
+            if kind == "class":
+                final = renamed.get((path, name), name)
+                generated[ctor_go_names.get(final) or "New" + type_names[(path, name)]] = (path, name)
+    static_go_names: dict[str, str] = {}
+    static_owners: dict[str, set[tuple[Path, str]]] = {}
+    for path in sorted(modules, key=str):
+        info = modules[path]
+        statics = info.static_members()
+        for class_name in sorted(statics):
+            if info.symbols.get(class_name) != "class":
+                continue
+            go_class = type_names[(path, class_name)]
+            final_class = renamed.get((path, class_name), class_name)
+            for member in sorted(statics[class_name]):
+                kind = statics[class_name][member]
+                base = f"{go_class}_{member}"
+                go_id = _static_go_id(base, kind)
+                owners = go_ids.get(go_id, [])
+                _give_way(owners, renamed, default_go, modules)
+                definitions = {(p, n) for p, n, k in owners if k not in VALUE_KINDS}
+                if go_id in generated:
+                    definitions.add(generated[go_id])
+                if not definitions:
+                    generated[go_id] = (path, class_name)
+                    continue
+                candidate, index = f"{base}__static", 2
+                while _static_go_id(candidate, kind) in go_ids or _static_go_id(candidate, kind) in generated:
+                    candidate = f"{base}__static{index}"
+                    index += 1
+                generated[_static_go_id(candidate, kind)] = (path, class_name)
+                static_go_names[f"{final_class}.{member}"] = candidate
+                static_owners.setdefault(go_id, set()).update(definitions)
+    return static_go_names, static_owners
 
 
 def module_tag(module_name: str) -> str:
@@ -609,10 +780,17 @@ class ModuleInfo:
     # ``module_member_accesses`` per ``import module [as alias]``.
     locally_bound: Optional[set] = None
     member_accesses: Optional[dict] = None
+    # ``class_static_members`` of the module (computed when not given).
+    statics: Optional[dict] = None
 
     def module_tree(self) -> Tree:
         from compiler.frontend import resolve_tree
         return resolve_tree(self.tree)
+
+    def static_members(self) -> dict[str, dict[str, str]]:
+        if self.statics is None:
+            self.statics = class_static_members(self.module_tree())
+        return self.statics
 
 
 def build_plans(
@@ -693,6 +871,20 @@ def build_plans(
             renamed[(path, name)] = f"{default_go(name, kind)}__{module_tag(modules[path].name)}"
 
     ctor_go_names, ctor_owners = constructor_renames(modules, renamed, default_go)
+    static_go_names, static_owners = static_renames(modules, renamed, default_go, ctor_go_names)
+    # Raw ``go!`` spelling of each renamed static: old Go id -> new Go id.
+    static_go_ids: dict[str, str] = {}
+    static_kinds = {
+        (renamed.get((path, cls), cls), member): kind
+        for path, info in modules.items()
+        for cls, members in info.static_members().items()
+        for member, kind in members.items()
+    }
+    for key, new_base in static_go_names.items():
+        cls, member = key.rsplit(".", 1)
+        kind = static_kinds.get((cls, member), "func")
+        old_base = new_base.rsplit("__static", 1)[0]
+        static_go_ids[_static_go_id(old_base, kind)] = _static_go_id(new_base, kind)
 
     def go_renames_for(name: str, kind: str, new: str) -> dict[str, str]:
         if kind in TYPE_KINDS:
@@ -838,6 +1030,12 @@ def build_plans(
             old_ctor = "New" + _go_public_name(lam_class)
             if old_ctor not in plan.go_renames and not (ctor_owners.get(old_ctor, set()) & visible):
                 plan.go_renames[old_ctor] = new_ctor
+        # The same for a renamed static (``Site_make()`` in the module of
+        # ``class Site``, which cannot see the class ``Site_make``).
+        plan.static_go_names.update(static_go_names)
+        for old_id, new_id in static_go_ids.items():
+            if old_id not in plan.go_renames and not (static_owners.get(old_id, set()) & visible):
+                plan.go_renames[old_id] = new_id
 
         for name in colliding:
             if name not in claimed:

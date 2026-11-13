@@ -1,0 +1,140 @@
+# Coverage (4.13.2): typed catch clauses pinned — builtin exception families
+# (`LookupError` catches a thrown `KeyError` and an out-of-range index, `ArithmeticError` a
+# division by zero, `ValueError` a `ParseError`), a catch on an interface
+# (any thrown class implementing it), a class hierarchy (a subclass caught
+# by its base, the first matching clause wins), `Exception` as the
+# catch-all, a rethrow from a handler to an outer `try`, and `finally`
+# running on every path in order. Regression (4.13.2): the name bound by
+# `catch Notifiable as n` was an untyped `interface{}`, so `n.notice()`
+# failed in `go build` (`n.Notice undefined`).
+#
+# expect: lookup: KeyError IndexError
+# expect: arith: ZeroDivisionError
+# expect: value: ValueError
+# expect: interface: notify:disk full
+# expect: hierarchy: base-caught NotFound(/x) | sub-first NotFound(/y)
+# expect: catch-all: Exception: TypeError
+# expect: rethrow: inner-finally outer:AppError(retry)
+# expect: order: try finally after
+
+interface Notifiable {
+    func notice(self) -> str
+}
+
+class DiskFull {
+    func init(self, what: str) {
+        self.what: str = what
+    }
+
+    func notice(self) -> str {
+        return f"notify:{self.what}"
+    }
+}
+
+class AppError {
+    func init(self, reason: str) {
+        self.reason: str = reason
+    }
+
+    func __str__(self) -> str {
+        return f"AppError({self.reason})"
+    }
+}
+
+class NotFound(AppError) {
+    func init(self, path: str) {
+        base.init(path)
+    }
+
+    func __str__(self) -> str {
+        return f"NotFound({self.reason})"
+    }
+}
+
+func kindOf(action: int) -> str {
+    try {
+        if action == 0 {
+            throw KeyError("missing")
+        } else {
+            items: list[int] = []
+            print(items[3])
+        }
+    } catch LookupError as e {
+        if action == 0 {
+            return str(e).split(":")[0]
+        }
+        return "IndexError" if "index out of range" in str(e) else str(e)
+    }
+    return "none"
+}
+
+func divide(a: int, b: int) -> str {
+    try {
+        return str(a // b)
+    } catch ArithmeticError as e {
+        return str(e).split(":")[0]
+    }
+}
+
+func main() {
+    print(f"lookup: {kindOf(0)} {kindOf(1)}")
+    print(f"arith: {divide(1, 0)}")
+
+    try {
+        throw ValueError("bad")
+    } catch ValueError as e {
+        print(f"value: {str(e).split(':')[0]}")
+    }
+
+    try {
+        throw DiskFull("disk full")
+    } catch Notifiable as n {
+        print(f"interface: {n.notice()}")
+    }
+
+    parts: list[str] = []
+    try {
+        throw NotFound("/x")
+    } catch AppError as e {
+        parts.append(f"base-caught {e}")
+    }
+    try {
+        throw NotFound("/y")
+    } catch NotFound as e {
+        parts.append(f"sub-first {e}")
+    } catch AppError as e {
+        parts.append(f"base {e}")
+    }
+    print(f"hierarchy: {' | '.join(parts)}")
+
+    try {
+        throw TypeError("boom")
+    } catch KeyError as e {
+        print(f"wrong {e}")
+    } catch Exception as e {
+        print(f"catch-all: Exception: {str(e).split(':')[0]}")
+    }
+
+    steps: list[str] = []
+    try {
+        try {
+            throw AppError("retry")
+        } catch AppError as e {
+            throw e
+        } finally {
+            steps.append("inner-finally")
+        }
+    } catch AppError as outer {
+        steps.append(f"outer:{outer}")
+    }
+    print(f"rethrow: {' '.join(steps)}")
+
+    order: list[str] = []
+    try {
+        order.append("try")
+    } finally {
+        order.append("finally")
+    }
+    order.append("after")
+    print(f"order: {' '.join(order)}")
+}

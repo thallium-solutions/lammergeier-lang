@@ -5,6 +5,85 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.13.2 — 2026-11-13
+
+### Fixed
+
+- A static member lowers to the Go function / variable `<Class>_<member>`,
+  so a class `Site_make` next to the static method `Site.make`, a function
+  `site_list()` (Go `Site_list`) next to `Site.list`, a const or variable
+  `Site_count` next to the static field `Site.count`, or two statics such
+  as `A_b.c` and `A.b_c` failed in the Go build (`Site_make redeclared in
+  this block`, or the link-time clash diagnostic across modules). As for
+  constructors (4.13.1) the other definition keeps its name and the static
+  becomes `Site_make__static` (the first static in module / class / member
+  order keeps a contested name); a const or variable gives way instead
+  (module-qualified Go name). The decision is program-wide (part of every
+  module's namespace plan and cache key); Lam code, method values,
+  `LAMMERGEIER.Site.make()` and raw `go!` code of a module that does not
+  see the other definition (`Site_make()`) keep working.
+- Classes of one module whose names differ only in the case of their first
+  letter (`site`, `Site`) next to a class `NewSite` both got the
+  constructor `NewSite__ctor` (`NewSite__ctor redeclared in this block`):
+  the 4.13.1 constructor renaming did not know that `site` is the Go type
+  `Site__lam2` (constructor `NewSite__lam2`). Only the constructor of
+  `Site` is renamed now, and a renamed constructor never takes a name
+  another one took.
+- A class with a field and a method of one name (`self.entries` in `init`
+  or a class-body `entries` field, and `func entries(self)`) failed in the
+  Go build (`*Catalog does not implement Listing (Entries is a field, not
+  a method)`, `cannot call c.Entries`): it is a semantic error at the later
+  declaration naming both lines, ``duplicate class member `entries`: class
+  `Catalog` has a field `entries` (line 3) and a method `entries` (line 6);
+  a field and a method cannot share a name — rename one of them``. The
+  inherited conflicts (a subclass method named like a base field and the
+  reverse) are reported at the subclass's declaration with the same hint,
+  and a missing interface method that is a field (own or inherited) says
+  so. A static method may still share its name with an instance field.
+- An instance method or field of a subclass spelt like its direct base
+  class (`func shape(self)` in `class Square(Shape)`, Go `Shape`, the
+  embedded parent) failed in the Go build; it is a semantic error now.
+- A private function, const, variable, local or parameter named like one
+  of the compiler's runtime helpers (`lamNN`, `lamAs`, `lamGenRun`, ...)
+  redeclared it in the Go package; it is a semantic error
+  (``error[name]: `lamNN` is the Go name of a compiler runtime helper``).
+- A parameterless method `error(self) -> str` / `string(self) -> str`
+  (Go `Error()` / `String()`) made the class a Go `error` / `fmt.Stringer`:
+  `print(obj)`, f-strings, lists and the message of a thrown object used
+  that method, and `error()` even won over `__str__`. Such a class gets the
+  `Format` method hierarchy classes already had, so only `__str__` /
+  `__repr__` define its text (the stdlib's `DataFrame.error()` included).
+- A static field read through its class (`Money.currency`) in a json
+  literal or `json(...)` was ``value of type `unknown` is not
+  JSON-compatible``; it has its declared type.
+- An overloaded operator whose left operand is a call result
+  (`make(1) + make(2)`, `Money.of(1) + Money.of(2)`, `a.plus() + b`), a list
+  element or a `?` payload failed in the Go build (`operator + not defined
+  on Money_of(1)`); it dispatches to `__add__` & co. like a variable.
+- `min([4, 1, 9])` / `max([...])` of a list literal and `set([3, 1, 2])`
+  emitted the literal as a `[]interface{}` and failed in the Go build;
+  `sorted(set(xs))` / `len(set(xs))` did not know `set(...)` is a set.
+- `catch Notifiable as n` with an interface bound `n` as an untyped value,
+  so `n.notice()` failed in the Go build; `n` is the interface.
+- `list(...)`, `dict(...)` and `tuple(...)` (Python conversions Lam does
+  not have) failed in the Go build with `undefined: List`; they are
+  semantic errors naming the Lam spelling. `print(..., end="")` /
+  `sep=` dropped the keyword silently; `print` keyword arguments are a
+  semantic error.
+
+### Tests
+
+- Regression tests for each fix above (core, semantic, transpilation and
+  `tests/tests/test_go_names.py` unit tests of the namespace planning), and
+  new coverage tests pinning current behaviour: the collection builtins,
+  `for ... else` on every loop shape, typed catch families and interfaces,
+  generator loops over every source kind, match class-pattern diagnostics,
+  f-string format verbs, statics in service shapes, lamdatetime / lamenv,
+  fire-and-forget async tasks, the hot-loop Go lowerings (snapshot) and a
+  cross-feature shop service fixture (classes, statics, interfaces,
+  generics, Result / `?`, do/catch, try/finally, generators, `with`, async,
+  f-strings, html, lamjson, lamdatetime, lamenv, lamdb over sqlite).
+
 ## 4.13.1 — 2026-11-12
 
 ### Fixed

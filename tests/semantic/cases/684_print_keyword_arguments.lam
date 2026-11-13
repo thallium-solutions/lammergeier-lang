@@ -1,0 +1,10 @@
+# expect-error: line 8: error[call]: `print` takes no keyword arguments (`end=`)
+# expect-error: line 9: error[call]: `print` takes no keyword arguments (`sep=`)
+# expect-error: f-string
+# Python's `end=` / `sep=` were silently dropped: `print("a", end="")`
+# still ended the line.
+
+func main() {
+    print("a", end="")
+    print("a", "b", sep="-")
+}

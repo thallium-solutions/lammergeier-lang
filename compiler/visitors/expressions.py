@@ -1048,6 +1048,18 @@ class ExpressionVisitorMixin:
                         if map_key:
                             # A set's / dict's sorted keys (``[]K``).
                             return f"[]{map_key}"
+                if name == "set" and name not in self._user_functions and name not in self._var_go_types:
+                    # ``sorted(set(xs))`` / ``len(set(xs))``: ``set(iterable)``
+                    # is a ``map[E]bool`` of the iterable's elements.
+                    args_node = node.children[1] if len(node.children) > 1 else None
+                    raw_args = self._get_raw_call_args(args_node) if isinstance(args_node, Tree) else []
+                    if len(raw_args) == 1:
+                        source = self._expr_go_type_hint(raw_args[0]) or self._infer_type_from_value(raw_args[0]) or ""
+                        if self._is_go_set_type(source):
+                            return source
+                        elem = self._slice_elem_go_type(source) if source.startswith("[]") else ""
+                        if elem:
+                            return f"map[{elem}]bool"
                 if name == "reversed" and name not in self._user_functions and name not in self._var_go_types:
                     args_node = node.children[1] if len(node.children) > 1 else None
                     raw_args = self._get_raw_call_args(args_node) if isinstance(args_node, Tree) else []
@@ -1436,7 +1448,7 @@ class ExpressionVisitorMixin:
                     # ``apply(K.twice)``: a static method used as a value is
                     # the generated package-level function, spelled like a
                     # call of it (a private one is unexported).
-                    go_name = f"{self._go_class_name(raw_obj)}_{attr}"
+                    go_name = self._go_static_base(raw_obj, attr)
                     if attr in self._private_methods.get(raw_obj, set()):
                         go_name = self._go_private_name(go_name)
                     return go_name
@@ -2024,7 +2036,6 @@ class ExpressionVisitorMixin:
             or method_name not in self._static_methods.get(class_name, set())
         ):
             return None
-        go_cls = self._go_class_name(class_name)
         method_key = f"{class_name}.{method_name}"
         suffix = ""
         call_key = method_key
@@ -2034,7 +2045,7 @@ class ExpressionVisitorMixin:
             suffix = self._overload_suffix_for_sig(method_key, call_sig)
             if variant is not None:
                 call_key = str(variant.get("meta_key") or method_key)
-        go_name = f"{go_cls}_{method_name}{suffix}"
+        go_name = f"{self._go_static_base(class_name, method_name)}{suffix}"
         if method_name in self._private_methods.get(class_name, set()):
             go_name = self._go_private_name(go_name)
         call_args = self._planned_call_args_inferred(call_key, args_node)
@@ -2550,7 +2561,11 @@ class ExpressionVisitorMixin:
                 elem = self._split_go_map_type(source_type)[0]
             if not set_type:
                 set_type = f"map[{elem or 'interface{}'}]bool"
-            source = self._expr_to_go(raw_args[0])
+            if isinstance(raw_args[0], Tree) and raw_args[0].data == "list" and source_type.startswith("[]"):
+                # ``set([3, 1, 2])``: the literal typed like its elements.
+                source = self._typed_value_to_go(raw_args[0], source_type)
+            else:
+                source = self._expr_to_go(raw_args[0])
             loop = "for k := range src" if self._is_go_set_type(source_type) else "for _, k := range src"
             return (
                 f"func(src {source_type or 'interface{}'}) {set_type} {{ out := {set_type}{{}}; "
@@ -3529,8 +3544,7 @@ class ExpressionVisitorMixin:
                 )
                 if obj_part in self._class_names and obj_part in self._static_methods:
                     if method_name in self._static_methods[obj_part]:
-                        go_cls = self._go_class_name(obj_part)
-                        go_name = f"{go_cls}_{method_name}"
+                        go_name = self._go_static_base(obj_part, method_name)
                         return f"{go_name}({inner_args_go})"
                 go_method = self._go_public_name(method_name)
                 return f"{obj_go}.{go_method}({inner_args_go})"
@@ -6203,7 +6217,12 @@ class ExpressionVisitorMixin:
                     f"for _, v := range xs[1:] {{ if _c(v, best) {better} {{ best = v }} }}; return best }}({args[0]})"
                 )
             self._need_import("slices")
-            return f"slices.{name.capitalize()}({args[0]})"
+            source = args[0]
+            if isinstance(raw[0], Tree) and raw[0].data == "list":
+                # ``min([4, 1, 9])``: the literal typed like its elements
+                # (a ``[]interface{}`` is not ``cmp.Ordered``).
+                source = self._typed_value_to_go(raw[0], types[0])
+            return f"slices.{name.capitalize()}({source})"
         if types and all(t in ints for t in types) and len(set(types)) == 1:
             return f"{name}({', '.join(args)})"
         if types and all(t in ints | {"float64", "float32"} for t in types):

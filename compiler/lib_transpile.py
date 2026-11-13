@@ -146,6 +146,7 @@ def apply_namespace_plan(target, plan, sources) -> None:
     target._namespace_module_access.update(plan.module_access)
     target._namespace_declarations.update(plan.declaration_renames)
     target._ctor_go_names.update(plan.constructor_go_names)
+    target._static_go_names.update(plan.static_go_names)
     for value_name, value_type in plan.imported_value_types.items():
         target._var_go_types.setdefault(value_name, value_type)
         # The defining module declares it ``var Name T``.

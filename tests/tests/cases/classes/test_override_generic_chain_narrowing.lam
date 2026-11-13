@@ -1,0 +1,125 @@
+# Coverage (4.13.2): an override of a method of a generic grandparent
+# reached through an intermediate generic class binds the grandparent's
+# type parameter through the chain (`Shelter[T]` <- `Middle[T]` <-
+# `DogShelter(Middle[int])`, `adopt(key: T)` overridden by `adopt(key:
+# int)`), and a call through a grandparent- or middle-typed reference
+# dispatches to it; isinstance narrowing on subjects of every kind (`any`,
+# `json`, a base class, an interface, list elements).
+#
+# expect: direct: rex woof
+# expect: via-base: rex woof
+# expect: via-middle: rex woof 3
+# expect: plain: generic animal
+# expect: narrow: int:4 str:hi float:2.5 bool:true list:2 other
+# expect: narrow-json: num 3 | text x | list 2
+# expect: narrow-class: dog rex | animal generic
+# expect: narrow-iface: speaker woof | silent
+
+class Animal {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func sound(self) -> str {
+        return "..."
+    }
+}
+
+class Dog(Animal) {
+    func sound(self) -> str {
+        return "woof"
+    }
+}
+
+interface Speaker {
+    func sound(self) -> str
+}
+
+class Shelter[T] {
+    func init(self, key: T) {
+        self.key: T = key
+    }
+
+    func adopt(self, key: T) -> Animal {
+        _ = key
+        return Animal("generic")
+    }
+}
+
+class Middle[T](Shelter[T]) {
+    func size(self) -> int {
+        return 3
+    }
+}
+
+class DogShelter(Middle[int]) {
+    func adopt(self, key: int) -> Animal {
+        return Dog("rex" if key > 0 else "pup")
+    }
+}
+
+func kind(value: any) -> str {
+    if isinstance(value, int) {
+        return f"int:{value + 1}"
+    }
+    if isinstance(value, str) {
+        return f"str:{value}"
+    }
+    if isinstance(value, float) {
+        return f"float:{value}"
+    }
+    if isinstance(value, bool) {
+        return f"bool:{value}"
+    }
+    if isinstance(value, list) {
+        return f"list:{len(value)}"
+    }
+    return "other"
+}
+
+func jsonKind(doc: json) -> str {
+    if isinstance(doc, int) {
+        return f"num {doc}"
+    }
+    if isinstance(doc, str) {
+        return f"text {doc}"
+    }
+    if isinstance(doc, list) {
+        return f"list {len(doc)}"
+    }
+    return "other"
+}
+
+func classKind(a: Animal) -> str {
+    if isinstance(a, Dog) {
+        return f"dog {a.name}"
+    }
+    return f"animal {a.name}"
+}
+
+func speakerKind(value: any) -> str {
+    if isinstance(value, Speaker) {
+        return f"speaker {value.sound()}"
+    }
+    return "silent"
+}
+
+func main() {
+    shelter: DogShelter = DogShelter(1)
+    d: Animal = shelter.adopt(1)
+    print(f"direct: {d.name} {d.sound()}")
+    base: Shelter[int] = shelter
+    viaBase: Animal = base.adopt(2)
+    print(f"via-base: {viaBase.name} {viaBase.sound()}")
+    middle: Middle[int] = shelter
+    print(f"via-middle: {middle.adopt(3).name} {middle.adopt(3).sound()} {middle.size()}")
+    plain: Shelter[str] = Shelter("k")
+    print(f"plain: {plain.adopt('k').name} {'animal' if plain.adopt('k').sound() == '...' else 'dog'}")
+
+    values: list[any] = [3, "hi", 2.5, true, [1, 2], None]
+    print(f"narrow: {' '.join([kind(v) for v in values])}")
+    docs: list[json] = [3, "x", [1, 2]]
+    print(f"narrow-json: {' | '.join([jsonKind(j) for j in docs])}")
+    print(f"narrow-class: {classKind(Dog('rex'))} | {classKind(Animal('generic'))}")
+    print(f"narrow-iface: {speakerKind(Dog('rex'))} | {speakerKind(5)}")
+}

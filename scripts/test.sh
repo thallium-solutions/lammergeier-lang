@@ -102,6 +102,7 @@ run_suite() {
             "$PYTHON" tests/tests/test_generator_lowering_fuzz.py
             "$PYTHON" tests/tests/test_go_library_filenames.py
             "$PYTHON" tests/tests/test_link_symbols.py
+            "$PYTHON" tests/tests/test_go_names.py
             "$PYTHON" tests/tests/test_apidiff.py
             "$PYTHON" tests/tests/test_doctor.py
             "$PYTHON" tests/tests/test_lib_run.py

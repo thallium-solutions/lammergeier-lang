@@ -1,0 +1,39 @@
+# Regression (4.13.2): a static field read through its class
+# (`Money.currency`) inside a json literal or `json(...)` was an unknown
+# type for the JSON check (``value of type `unknown` is not JSON-compatible``)
+# although its declared type is a plain `str` / `int` / `list[str]` / ...
+#
+# expect: {"code":"EUR","digits":2,"tags":["a","b"]}
+# expect: {"rates":{"usd":1.1}} 2
+# expect: {"name":"Bag","shop":"EUR"}
+
+from lamjson import Json
+
+class Money {
+    static currency: str = "EUR"
+    static digits: int = 2
+    static tags: list[str] = ["a", "b"]
+    static rates: dict[str, float] = {"usd": 1.1}
+    private static secret: str = "s"
+
+    static func describe() -> json {
+        return json({"code": Money.currency, "digits": Money.digits, "tags": Money.tags})
+    }
+}
+
+class Item {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func doc(self) -> json {
+        return {"name": self.name, "shop": Money.currency}
+    }
+}
+
+func main() {
+    print(Json.encode(Money.describe()).unwrap())
+    rates: json = {"rates": Money.rates}
+    print(Json.encode(rates).unwrap(), Money.digits)
+    print(Json.encode(Item("Bag").doc()).unwrap())
+}

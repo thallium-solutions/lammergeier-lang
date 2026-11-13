@@ -1,0 +1,17 @@
+# expect-error: line 8: error[name]: `lamNN` is the Go name of a compiler runtime helper
+# expect-error: line 12: error[name]: `lamGenRun` is the Go name of a compiler runtime helper
+# expect-error: line 15: error[name]: `lamAs` is the Go name of a compiler runtime helper
+# expect-error: rename it
+# A private function, a const or a local keeps its Lam spelling in Go, so
+# these failed in `go build` with `lamNN redeclared in this block`.
+
+private func lamNN(x: int) -> int {
+    return x + 1
+}
+
+const lamGenRun: int = 3
+
+func main() {
+    lamAs: int = 2
+    print(lamNN(1), lamGenRun, lamAs)
+}

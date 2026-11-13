@@ -1,0 +1,16 @@
+# expect-pass
+# The supported spellings: literals, comprehensions, slicing, `set(...)`,
+# and a user function that happens to be called `tuple` is a function.
+
+func tuple(a: int, b: int) -> int {
+    return a + b
+}
+
+func main() {
+    xs: list[int] = [3, 1]
+    a: list[int] = [x for x in reversed(xs)]
+    b: dict[str, int] = {"k": 1}
+    c: tuple[int, int] = (xs[0], xs[1])
+    d: set[int] = set(xs)
+    print(a, b, c, d, xs[:], tuple(1, 2))
+}

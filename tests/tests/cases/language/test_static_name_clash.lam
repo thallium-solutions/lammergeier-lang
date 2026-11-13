@@ -1,0 +1,142 @@
+# Regression (4.13.2): a static member ``Site.make`` / ``Site.count`` lowers
+# to the Go function / variable ``Site_make`` / ``Site_count``, so a class
+# ``Site_make``, a function ``site_list()`` (Go ``Site_list``), a const or
+# variable ``Site_count`` or a static of another class (``A.b_c`` next to
+# ``A_b.c``) declared the same Go identifier and the Go build failed with
+# ``Site_make redeclared in this block``. The static is renamed
+# (``Site_make__static``) when a class, interface, function or other static
+# owns its Go name, and a const or variable gives way (module-qualified Go
+# name), in one module and across modules.
+#
+# expect: same-module: made count=1 class:widget const:7
+# expect: function: fn:list static:2
+# expect: var: total=3 static-total=4
+# expect: private: private-fn hidden
+# expect: static-static: ab.c a.b_c
+# expect: value: made count=2
+# expect: generic: box:5 class:x
+# expect: fstring: made
+# expect: imported: reg:a count=1 class:local const:local-const fn:local
+# expect: imported-raw: reg:raw count=2 static-label
+# expect: imported-static: static-label reg:b
+# expect: go-block: widget:go made:made
+
+from static_clash_sites import Registry, rawMake, rawCount, rawLabel
+
+# ── Both in this module ────────────────────────────────────────
+class Site_make {
+    func init(self, label: str) {
+        self.label: str = label
+    }
+}
+
+class Site {
+    static count: int = 0
+    static total: int = 4
+
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    static func make() -> Site {
+        Site.count += 1
+        return Site("made")
+    }
+
+    static func list() -> int {
+        return 2
+    }
+
+    private static func hidden() -> str {
+        return "hidden"
+    }
+
+    static func reveal() -> str {
+        return Site.hidden()
+    }
+}
+
+const Site_count: int = 7
+Site_total: int = 3
+
+func site_list() -> str {
+    return "fn:list"
+}
+
+private func site_hidden() -> str {
+    return "private-fn"
+}
+
+# ``A_b.c`` and ``A.b_c`` are both ``A_b_c``.
+class A_b {
+    static func c() -> str {
+        return "ab.c"
+    }
+}
+
+class A {
+    static func b_c() -> str {
+        return "a.b_c"
+    }
+}
+
+class Box[T] {
+    func init(self, value: T) {
+        self.value: T = value
+    }
+
+    static func of(value: T) -> Box[T] {
+        return Box(value)
+    }
+}
+
+class Box_of {
+    func init(self, text: str) {
+        self.text: str = text
+    }
+}
+
+func build(f: func() -> Site) -> Site {
+    return f()
+}
+
+# ── Imported ``Registry`` next to local ``Registry_make`` & co. ──
+class Registry_make {
+    func init(self, label: str) {
+        self.label: str = label
+    }
+}
+
+const Registry_count: str = "local-const"
+
+func registry_label() -> str {
+    return "fn:local"
+}
+
+func fromGo() -> str {
+    out: str = ""
+    go! {
+        w := NewSite_make("go")
+        s := LAMMERGEIER.Site.make()
+        out = "widget:" + w.Label + " made:" + s.Name
+    }
+    return out
+}
+
+func main() {
+    made = Site.make()
+    print(f"same-module: {made.name} count={Site.count} class:{Site_make('widget').label} const:{Site_count}")
+    print(f"function: {site_list()} static:{Site.list()}")
+    print(f"var: total={Site_total} static-total={Site.total}")
+    print(f"private: {site_hidden()} {Site.reveal()}")
+    print(f"static-static: {A_b.c()} {A.b_c()}")
+    viaValue = build(Site.make)
+    print(f"value: {viaValue.name} count={Site.count}")
+    box: Box[int] = Box.of(5)
+    print(f"generic: box:{box.value} class:{Box_of('x').text}")
+    print(f"fstring: {Site.make().name}")
+    print(f"imported: {Registry('a').describe()} count={Registry.count} class:{Registry_make('local').label} const:{Registry_count} fn:{registry_label()[3:]}")
+    print(f"imported-raw: {rawMake('raw')} count={rawCount()} {rawLabel()}")
+    print(f"imported-static: {Registry.label()} {Registry.make('b').describe()}")
+    print(f"go-block: {fromGo()}")
+}

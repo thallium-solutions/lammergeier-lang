@@ -1,0 +1,13 @@
+# expect-error: line 9: error[call]: Lam has no `list(...)` conversion; use a list literal or a comprehension
+# expect-error: line 10: error[call]: Lam has no `dict(...)` conversion
+# expect-error: line 11: error[call]: Lam has no `tuple(...)` conversion
+# These Python conversions passed the checker and failed in `go build` with
+# `undefined: List` / `undefined: Dict` / `undefined: Tuple`.
+
+func main() {
+    xs: list[int] = [3, 1]
+    a = list(reversed(xs))
+    b = dict({"k": 1})
+    c = tuple(xs)
+    print(a, b, c)
+}
