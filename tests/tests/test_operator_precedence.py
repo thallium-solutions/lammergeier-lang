@@ -49,8 +49,9 @@ def _arith_type(op: str, left: str, right: str) -> str | None:
         return None
     if op in BIT_OPS:
         return "int" if left == right == "int" else None
-    if op in {"/", "**"}:
+    if op == "/":
         return "float"
+    # ``**`` like ``+``: two ints give an exact int (docs/SYNTAX.md).
     return "int" if left == right == "int" else "float"
 
 
@@ -206,6 +207,19 @@ def lam_type(node, env_types: dict) -> str | None:
     return None
 
 
+def _negative_int_power(tree, env, env_types) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            if lam_type(node.left, env_types) == "int" and lam_type(node.right, env_types) == "int":
+                try:
+                    exponent = eval(compile(ast.Expression(node.right), "<pow>", "eval"), {}, dict(env))  # noqa: S307
+                except (ArithmeticError, ValueError, TypeError):
+                    continue
+                if exponent < 0:
+                    return True
+    return False
+
+
 def build_cases() -> list[tuple[str, str, object]]:
     env = {**INT_VARS, **FLOAT_VARS, **BOOL_VARS, **STR_VARS}
     env_types = {name: type(value).__name__ for name, value in env.items()}
@@ -222,6 +236,10 @@ def build_cases() -> list[tuple[str, str, object]]:
         except (ArithmeticError, ValueError, TypeError):
             continue
         if isinstance(value, complex):
+            continue
+        if _negative_int_power(ast.parse(expr, mode="eval"), env, env_types):
+            # An int power with a negative exponent: a float in Python, a
+            # ValueError in Lam (tests/tests/cases/safety/test_safety_int_power.lam).
             continue
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             if abs(value) > 2 ** 52 or not math.isfinite(value):

@@ -164,10 +164,16 @@ class _Folder:
         if len(children) != 2:
             return
         base, exp = self.fold(children[0]), self.fold(children[1])
-        if isinstance(base, int) and isinstance(exp, int) and 63 < exp <= 100000:
+        if not (isinstance(base, int) and isinstance(exp, int)) or isinstance(base, bool) or isinstance(exp, bool):
+            return
+        if 63 < exp <= 100000:
             if base in (0, 1, -1):
                 return
             self.report(node, f"integer constant {base} ** {exp} overflows `int` (64-bit)")
+        elif 0 <= exp <= 63 and not INT_MIN <= base ** exp <= INT_MAX:
+            self.report(node, f"integer constant {base} ** {exp} overflows `int` (64-bit)")
+        elif exp < 0:
+            self.report(node, f"negative exponent in the int power {base} ** {exp}: use a float base ({base}.0 ** {exp})")
 
     def _check_dict_keys(self, node) -> None:
         seen: dict = {}

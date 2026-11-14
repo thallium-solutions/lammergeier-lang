@@ -1,0 +1,10 @@
+# expect-error: line 7: error[type]: integer constant 10 ** 19 overflows `int` (64-bit)
+# expect-error: line 8: error[type]: negative exponent in the int power 2 ** -1: use a float base (2.0 ** -1)
+# Constant int powers that overflow 64 bits or have a negative exponent
+# (an int power has no fractional result) are rejected at compile time.
+func main() {
+    ok: int = 10 ** 18
+    big: int = 10 ** 19
+    half: int = 2 ** -1
+    print(ok, big, half)
+}

@@ -213,6 +213,8 @@ func main() {
     }
     print(addOffset[int](7))
 }
+# Output:
+# 10
 ```
 
 ```go
@@ -538,7 +540,7 @@ container writes, slice replacement, default arguments, function/method/static
 method/constructor call arguments, variadic splats, explicit lambda returns,
 and list helpers such as `map`, `pop`, and `sorted`.
 
-```lam
+```lam fragment
 func sum(values: list[int]) -> int { ... }
 func size(ids: set[int]) -> int { return len(ids) }
 
@@ -660,7 +662,7 @@ assignment-target visitor (`_visit_assign` in
 `compiler/visitors/statements.py`) detects a single bare `_` LHS
 and emits `_ = expr` instead of the usual `:= / =` choice:
 
-```lam
+```lam fragment
 _ = side_effect()
 ```
 
@@ -708,7 +710,7 @@ The protection is on the *binding*, not the value: `arr[0] = 1` and
 
 ## Function types
 
-```lam
+```lam fragment
 op: func(int, int) -> int = add
 ops: list[func(int, int) -> int] = [add, mul]
 cb: func()                = noop
@@ -790,6 +792,8 @@ and `unwrap()` / `unwrapOr(...)` on payload-unknown or `any` results retain
 the dynamic fallback:
 
 ```lam
+from lamerrors import Result
+
 err: Result = Result.Err({"code": 400})
 raw: any = err.error
 ```
@@ -798,7 +802,7 @@ raw: any = err.error
 
 ### `if` / `elif` / `else`
 
-```lam
+```lam fragment
 if x > 0 {
     print("pos")
 } elif x == 0 {
@@ -835,7 +839,7 @@ is lowered with `x` typed as `T` (`compiler/visitors/narrowing.py`; the
 analysis of where a test holds, `compiler/narrowing.py`, is shared with the
 semantic checker so both narrow the same names):
 
-```lam
+```lam fragment
 func side(s: Shape) -> int {
     if not isinstance(s, Square) {
         return 0
@@ -917,7 +921,7 @@ or early-exit loops keep conservative assignment state.
 `try`/`catch`/`finally` blocks compile to a Go closure with `defer
 recover()` (the keyword is `catch`, not `except`):
 
-```lam
+```lam fragment
 try {
     do_thing()
 } catch ValueError as e {
@@ -1008,7 +1012,7 @@ The postfix `?` operator desugars to a temp + early-return inside the
 enclosing function. Each `?` allocates a fresh `__qN` from the
 transpiler-global counter:
 
-```lam
+```lam fragment
 from lamerrors import Result
 
 func double(s: str) -> Result {
@@ -1127,7 +1131,7 @@ if !__lamCompErr2.Ok() { return __lamCompErr2 }
 A `do`/`catch` block lowers to a Go IIFE with return type `*Result`,
 followed by a check on the IIFE's `.Error` field:
 
-```lam
+```lam fragment
 from lamerrors import Result
 
 do {
@@ -1462,7 +1466,7 @@ site.
 Inside a child with exactly one unnamed parent, `base` is a compile-time alias
 for the embedded parent field. A parent initializer call:
 
-```lam
+```lam fragment
 class Child(Parent) {
     func init(self, name: str) {
         base.init(name, "internal")
@@ -1493,7 +1497,7 @@ The compiler knows the whole program's class hierarchy (the driver collects
 every module's classes, so a library knows which of its classes the program
 subclasses) and adds a little machinery to the classes that need it:
 
-```lam
+```lam fragment
 class Shape {
     func area(self) -> int { return 0 }
     func describe(self) -> str { return f"area {self.area()}" }
@@ -1675,7 +1679,7 @@ itself.
 
 Multiple inheritance embeds each parent pointer:
 
-```lam
+```lam fragment
 class ServiceAccount(account: Account, flags: Flags) {
     func init(self, owner: str) {
         account.init(owner, "service")
@@ -1728,7 +1732,7 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `a // b`, `a % b` (a float operand) | a closure over `math.Mod` / `math.Floor` (CPython's algorithm)            |
 | `xs + ys` (lists)                  | `append(append([]T{}, xs...), ys...)`: a fresh slice (operands untouched), list literals typed `[]T`; mixed element types build a `[]interface{}` (other slices converted element by element) |
 | `xs += ys` (list)                  | `xs = append(xs, ys...)`                                                  |
-| `a ** b`                           | `math.Pow(float64(a), float64(b))` (a `float64` operand: `a + b ** c` converts `a`); typed non-`float64` numeric contexts cast the result |
+| `a ** b`                           | two ints: `lamIPow(a, b)` (exact, wrapping; a negative exponent panics with `ValueError`), two literals fold to a constant; otherwise `math.Pow(float64(a), float64(b))` (a `float64` operand: `a + b ** c` converts `a`) |
 | `a in xs`, `a not in xs`           | Container-aware membership test for strings, lists, dicts, and sets          |
 | `expr as T`                        | The conversion of an annotated assignment to `T` (`_typed_value_to_go`), or a checked `_lamIs_<C>` downcast; see [Inline casts](#inline-casts-expr-as-t) |
 | `xs == ys`, `d == {...}` (lists, dicts, sets) | `slices.Equal` / `maps.Equal` for comparable element types (a literal side typed by the other side), `slices.EqualFunc` through an element class's `__eq__`, `reflect.DeepEqual` otherwise (nested collections, `any` elements, different element types); `!=` negates |

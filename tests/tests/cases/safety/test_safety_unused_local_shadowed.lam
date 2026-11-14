@@ -1,0 +1,23 @@
+# An unused local named like a local of a compiler-generated helper (`out`,
+# `src`, `v`...) was taken as used, so its `_ = name` silencer was missing
+# and Go rejected the program ("declared and not used"; found by the
+# documentation examples test). A closure that captures the local still
+# counts as a use.
+# expect: [x]
+# expect: [y] 3
+# expect: s
+
+func main() {
+    out: str = "s"
+    a: any = ["x"]
+    b: list[str] = a
+    print(b)
+    src: int = 1
+    v: int = 2
+    c: any = ["y"]
+    d: list[str] = c
+    print(d, len([1, 2, 3]))
+    kept: str = "s"
+    show = lambda: kept
+    print(show())
+}

@@ -10095,6 +10095,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return self._binary_expr_result_type(node)
         if node.data == "factor":
             return self._factor_result_type(node)
+        if node.data == "power":
+            return self._power_result_type(node)
         if node.data == "not_test":
             return NamedType("bool")
         if node.data in {"and_test", "or_test"}:
@@ -10554,6 +10556,26 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             self._check_comparison_types(node)
         elif node.data == "getitem":
             self._check_getitem_types(node)
+
+    def _power_result_type(self, node: Tree) -> Type | None:
+        """``a ** b``: an ``int`` for two ints (exact, wrapping like every int
+        operation; a negative exponent raises ``ValueError``), a ``float``
+        when an operand is a float; unknown otherwise (``__pow__``, ``any``)."""
+        children = list(node.children)
+        if not children or not isinstance(children[0], Tree):
+            return None
+        if len(children) < 2 or children[1] is None:
+            return self._expr_simple_type(children[0])
+        if not isinstance(children[1], Tree):
+            return None
+        base, exp = self._expr_simple_type(children[0]), self._expr_simple_type(children[1])
+        if not (isinstance(base, NamedType) and isinstance(exp, NamedType)):
+            return None
+        if base.name == "int" and exp.name == "int":
+            return NamedType("int")
+        if {base.name, exp.name} <= {"int", "float"}:
+            return NamedType("float")
+        return None
 
     def _check_factor_type(self, node: Tree) -> None:
         if len(node.children) != 2:
@@ -11218,10 +11240,21 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 names = self._for_target_names(cf.children[0])
                 scope.names.update(names)
                 scope.definite_names.update(names)
-                iterable_type = self._iterable_type(cf.children[1])
+                iterable = cf.children[1]
+                if (
+                    len(names) == 1 and isinstance(iterable, Tree) and iterable.data == "funccall"
+                    and iterable.children and isinstance(iterable.children[0], Tree)
+                    and iterable.children[0].data == "var" and iterable.children[0].children
+                    and self._name_text(iterable.children[0].children[0]) == "range"
+                    and "range" not in self._func_sigs
+                ):
+                    # ``{"xs": [i for i in range(5)]}``: the counter is an int.
+                    scope.var_types[names[0]] = "int"
+                    continue
+                iterable_type = self._iterable_type(iterable)
                 elements = self._iteration_element_types(iterable_type, len(names))
                 if elements is None:
-                    elements = self._generator_call_element_types(cf.children[1], iterable_type, len(names))
+                    elements = self._generator_call_element_types(iterable, iterable_type, len(names))
                 if elements is not None and len(elements) == len(names):
                     for name, type_ in zip(names, elements):
                         scope.var_types[name] = render_type(type_)

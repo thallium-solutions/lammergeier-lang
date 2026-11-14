@@ -29,6 +29,10 @@ func main() {
         print(f"{i}: hello, {name}")
     }
 }
+# Output:
+# 0: hello, Lammergeier
+# 1: hello, Lammergeier
+# 2: hello, Lammergeier
 ```
 
 Compile and run it with:
@@ -140,6 +144,9 @@ func main() {
     print(int(price), float(price), bool(price))   # 1250 12.5 true
     print(int("42") + int(true))                   # 43
 }
+# Output:
+# 1250 12.5 true
+# 43
 ```
 
 `str(x)` formats any value and never fails, including `any`; `str(data)` of a
@@ -582,12 +589,18 @@ a comparison with a float (`n < x`). Division follows Python:
 | `7 % -2`   | `-1`   | |
 | `-7.5 // 2` | `-4.0` | a `float` operand gives a `float` |
 | `-7.5 % 2` | `0.5`  | floats too |
+| `2 ** 10`  | `1024` | `**` of two ints is an exact `int` |
+| `2 ** 0.5` | `1.4142135623730951` | a `float` operand gives a `float` |
+| `2.0 ** -1` | `0.5` | negative exponents need a `float` base |
 
-`a == (a // b) * b + a % b` always holds. A zero divisor raises
+`a == (a // b) * b + a % b` always holds. `int ** int` wraps on overflow
+like every int operation, and a negative exponent raises `ValueError` (an
+`int` cannot hold `2 ** -1`); constant powers that overflow 64 bits or have
+a negative exponent are compile-time errors. A zero divisor raises
 `ZeroDivisionError` for every form (`/`, `//`, `%`, ints and floats; never
 an infinity), and a constant `0` divisor is a compile-time error.
 
-```lammergeier
+```lammergeier fragment
 n: int = 7
 half: float = n / 2      # 3.5
 middle: int = n // 2     # 3
@@ -644,7 +657,7 @@ the base-class view), `None` where a class is expected, and a `list[any]` /
 is expected; anything else throws a `TypeError` (catchable like any
 exception):
 
-```lammergeier
+```lammergeier fragment
 func lookup(key: str) -> any { ... }
 
 row: dict[str, any] = {"name": "Ann", "age": 41}
@@ -673,7 +686,7 @@ annotated assignment `value: T = expr` (the same conversion, the same
 `TypeError` on a mismatch) and its static type is `T`, so it can be used
 in place, without a temporary variable:
 
-```lammergeier
+```lammergeier fragment
 func lookup(key: str) -> any { ... }
 
 row: dict[str, any] = {"count": 41, "name": "ada", "items": ["a", "b"]}
@@ -887,6 +900,10 @@ func main() {
     cb: func() = greet                     # void function type
     cb()                                   # hello
 }
+# Output:
+# 5
+# 20
+# hello
 ```
 
 The compiler lowers `func(T, U) -> V` to Go's `func(T, U) V`, so
@@ -973,7 +990,7 @@ list and is not warned about.
 
 Inline conditional expressions:
 
-```lammergeier
+```lammergeier fragment
 label: str = "big" if x > 5 else "small"
 
 # In return statements
@@ -995,7 +1012,7 @@ f-string slot and a markup attribute (where `None` omits the attribute),
 and a compile error where a `str` is expected (``cannot assign `None` to
 `str` variable `s` (a `str` cannot be `None`: ...)``):
 
-```lammergeier
+```lammergeier fragment
 wrap = cls if cls != "" else None        # an any: the class, or None
 link: html = <><a href="${url}" target="${'_blank' if external else None}" class=${wrap}>go</a></>
 ```
@@ -1180,7 +1197,7 @@ the parent's or, when the parent returns a class, a subclass of that class
 subclass keep its methods while calls through the parent type still get a
 parent and still run the override:
 
-```lammergeier
+```lammergeier fragment
 class Problem {
     func withError(self, field: str, message: str) -> Problem { ...; return self }
     static func validation(where: str) -> Problem { ... }
@@ -1215,7 +1232,7 @@ may not be spelt like a base class either (`func shape(self)` in
 When a method or field is not declared on the child, ordinary access through
 `self` or an instance can use the inherited member:
 
-```lammergeier
+```lammergeier fragment
 dog: Dog = Dog("Rex", "labrador")
 print(dog.name)
 print(dog.speak())
@@ -1231,7 +1248,7 @@ elements of `list[Base]` / `dict[str, Base]` (literals,
 run the override of the object's actual class, field access reads the
 shared base fields, and `isinstance` tests the actual class:
 
-```lammergeier
+```lammergeier fragment
 class Circle(Shape) {
     func init(self, r: int) { self.r: int = r }
     func area(self) -> int { return 3 * self.r * self.r }
@@ -1259,7 +1276,7 @@ The other direction is explicit. `sq: Square = shape` is a compile error;
 narrow a base-typed value with a class pattern, which binds the subclass
 view (`as`) and its fields:
 
-```lammergeier
+```lammergeier fragment
 func describe(s: Shape) -> str {
     match s {
         case Square() as sq { return f"square {sq.area()}" }
@@ -1459,6 +1476,10 @@ func main() {
     print(MathHelper.calls)      # 1
     print(MathHelper.label())    # math-1
 }
+# Output:
+# 25
+# 1
+# math-1
 ```
 
 Static variables are accessed as `ClassName.field`. Public static
@@ -1646,6 +1667,8 @@ func main() {
         print(f"failed: {e}")    # failed: ValueError: bad id -1
     }
 }
+# Output:
+# failed: ValueError: bad id -1
 ```
 
 An exception in a task that is never awaited is not lost: it is printed to
@@ -1674,7 +1697,7 @@ and `offer` / `poll` decide immediately. All six operations preserve explicit
 
 ### If / Elif / Else
 
-```lammergeier
+```lammergeier fragment
 if x > 0 {
     print("positive")
 } elif x == 0 {
@@ -1693,7 +1716,7 @@ and `json` values (`if bool(payload.ok)`).
 
 For concise one-liners, braces can be omitted:
 
-```lammergeier
+```lammergeier fragment
 if x > 0 print("positive")
 for i in range(3) print(i)
 while running doWork()
@@ -1706,7 +1729,7 @@ These are automatically expanded to braced blocks by the preprocessor.
 
 ### For Loop
 
-```lammergeier
+```lammergeier fragment
 for i in range(10) {
     print(i)
 }
@@ -1736,7 +1759,7 @@ for id in ids {
 
 Use a tuple target when you want both dict keys and values:
 
-```lammergeier
+```lammergeier fragment
 for key, value in counts {
     print(key + "=" + str(value))
 }
@@ -1754,7 +1777,7 @@ for name, score in pairs {
 
 ### While Loop
 
-```lammergeier
+```lammergeier fragment
 while x > 0 {
     x -= 1
 }
@@ -1766,7 +1789,7 @@ while x > 0 {
 
 The `else` block runs only if the loop completes without `break`:
 
-```lammergeier
+```lammergeier fragment
 # For-else: check if number is prime
 for i in range(2, n) {
     if n % i == 0 {
@@ -1795,7 +1818,7 @@ while i < 10 {
 
 Pattern matching on values, sequences, mappings and class instances:
 
-```lammergeier
+```lammergeier fragment
 match command {
     case "start" {
         print("starting")
@@ -1813,7 +1836,7 @@ A case may carry a guard: `case <pattern> if <condition>` matches only when
 the pattern matches **and** the condition is true; otherwise the next case is
 tried. A capture pattern is bound before its guard is evaluated:
 
-```lammergeier
+```lammergeier fragment
 match n {
     case 0 { print("zero") }
     case x if x < 10 { print(f"small {x}") }
@@ -1894,7 +1917,7 @@ unless the subject is typed `Box[...]`.
 
 Create lists with inline expressions and optional filters:
 
-```lammergeier
+```lammergeier fragment
 # Basic
 squares: list[int] = [x * x for x in range(10)]
 
@@ -2058,7 +2081,7 @@ labels: list[str] = [f"{i}:{f}" for i, f in enumerate(fruits)]
 `enumerate(xs, start)` (or `enumerate(xs, start=1)`) numbers from `start`
 instead of 0; `start` is evaluated once, before the loop:
 
-```lammergeier
+```lammergeier fragment
 for n, fruit in enumerate(fruits, 1) {
     print(f"{n}. {fruit}")             # 1. apple, 2. banana, ...
 }
@@ -2111,6 +2134,11 @@ for name in sorted(ages) {                                 # amy, then bob
     print(name, ages[name])
 }
 print(sorted(ages, key=lambda n: -ages[n]))                # [bob amy]
+# Output:
+# API,DB,WEB
+# amy 27
+# bob 31
+# [bob amy]
 ```
 
 `reversed(xs)` returns a reversed copy of a list (the same list type; `xs`
@@ -2127,6 +2155,12 @@ print("".join(reversed("héllo")))    # olléh
 for n in reversed(nums) {
     print(n)                         # 3, 2, 1
 }
+# Output:
+# [3 2 1] [1 2 3]
+# olléh
+# 3
+# 2
+# 1
 ```
 
 ---
@@ -2138,7 +2172,7 @@ The interpolation slot is fed back through the regular expression
 parser, so chained method calls, indexing, ternaries, null coalescing,
 and arithmetic all compose:
 
-```lammergeier
+```lammergeier fragment
 name: str = "Alice"
 age: int = 30
 print(f"Name: {name}, Age: {age}")
@@ -2300,6 +2334,8 @@ func main() {
     feed: xml = <><?xml version="1.0"?><catalog>${items}</catalog></>
     print(menu, feed)
 }
+# Output:
+# <ul><li>Bag</li><li>Shoes</li></ul> <?xml version="1.0"?><catalog><product>Bag</product><product>Shoes</product></catalog>
 ```
 
 **Operators.** `+` and `+=` join markup like strings: `html + html`,
@@ -2343,7 +2379,7 @@ pages built and rendered by concurrent tasks; changing either value later
 never shows in the other. A query (`select`, `first`, `children`) on a
 composed value makes its tree its own first, as a deep copy would.
 
-```lammergeier
+```lammergeier fragment
 for a in page.select("a[href^=\"https://\"]") {
     a.setAttr("rel", "noopener")
 }
@@ -2367,7 +2403,7 @@ clearly opening a literal (after `=`, `,`, `(`, `[`, `:`, or an
 operator) suspends automatic statement termination until its matching
 closer, and trailing commas are tolerated:
 
-```lammergeier
+```lammergeier fragment
 total: int = add(
     1,
     2,
@@ -2450,7 +2486,7 @@ Where `isinstance(x, T)` is known to hold, a local or parameter `x` *is* a
 `T`: its fields and methods are reachable and it is accepted where a `T`
 is expected, with no cast or `match`:
 
-```lammergeier
+```lammergeier fragment
 func describe(s: Shape) -> str {
     if isinstance(s, Circle) {
         return f"circle r={s.r}"          # `s` is a Circle here
@@ -2492,7 +2528,7 @@ are used without the run-time `None` check
 ([What can be `None`](#what-can-be-none)), in functions, methods, static
 methods and lambdas alike:
 
-```lammergeier
+```lammergeier fragment
 func label(u: User) -> str {
     if u == None {
         return "nobody"
@@ -2606,7 +2642,7 @@ that happens to define a method with the same name — say a
 `Counter` with its own `.count()` — the built-in rewrite steps out
 of the way and the user method wins.
 
-```lammergeier
+```lammergeier fragment
 # Strings — lower to lamstrings.Strings static methods.
 s: str = "  hello, WORLD  "
 print(s.toUpper())                 # Strings_toUpper(s)
@@ -2770,7 +2806,7 @@ order and **only the first matching clause runs**; `catch e` (or a bare
 `catch`) matches anything. An exception that no clause matches keeps
 propagating to the enclosing `try` (the `finally` block still runs first):
 
-```lammergeier
+```lammergeier fragment
 try {
     lookup(key)
 } catch KeyError as e {
@@ -2836,6 +2872,10 @@ func main() {
         print(ve.reason)             # missing @
     }
 }
+# Output:
+# email: missing @
+# email
+# missing @
 ```
 
 Under the hood a catch-all binding (`catch err`) is the live panic
@@ -2890,6 +2930,8 @@ func main() {
         print(f"caught at top: {e}")   # caught at top: something broke
     }
 }
+# Output:
+# caught at top: something broke
 ```
 
 `Result` errors do *not* auto-propagate: the intermediate
@@ -2955,7 +2997,7 @@ normally, the pending exception, `return` or jump goes on. The compiler
 warns about such a jump (Python linters and PEP 765 do too): write it after
 the `try` statement when the cancellation is not intended.
 
-```lammergeier
+```lammergeier fragment
 func load(path: str) -> int {
     try {
         return parse(path)          # 1. returns n (finally still runs)
@@ -2967,7 +3009,7 @@ func load(path: str) -> int {
 }
 ```
 
-```lammergeier
+```lammergeier fragment
 for path in paths {
     try {
         if path == "" {
@@ -3123,6 +3165,8 @@ func main() {
         print(r.error)
     }
 }
+# Output:
+# map[kind:MissingConfig name:DATABASE_URL]
 ```
 
 A payload annotation plus typed assignment gives `unwrap()` the concrete
@@ -3144,7 +3188,7 @@ A postfix `?` after a `Result`-typed expression returns early from the
 *enclosing function* if the result is an error, otherwise it unwraps
 to the value. The two snippets below are equivalent:
 
-```lammergeier
+```lammergeier fragment
 from lamerrors import Result
 
 # With ?
@@ -3179,7 +3223,7 @@ directly: `(m.make()?).key`, `len(words()?)`. A `?` followed by `.` on a
 `Result` is propagation then member access (`x()?.y()` means
 `(x()?).y()`), so a chain of fallible calls reads left to right:
 
-```lammergeier
+```lammergeier fragment
 func lastStep() -> Result[int] {
     b: Box = load(1)?.next()?.next()?   # each Err returns early
     return Result.Ok(b.v)
@@ -3211,7 +3255,7 @@ A lambda declared `-> Result` / `-> Result[T]` is such a function: `?` in
 its body (block or expression) returns the `Err` from the **lambda**, not
 from the function around it, so a callback can use `?` like any helper:
 
-```lammergeier
+```lammergeier fragment
 func apply(fn: func() -> Result[int]) -> Result[int] {
     return fn()
 }
@@ -3252,7 +3296,7 @@ the caller. `do/catch` is the structured-error counterpart of `try/catch`:
 inside the body, `?` returns from the **block**, and the bound
 variable in `catch` receives whatever error was propagated:
 
-```lammergeier
+```lammergeier fragment
 from lamerrors import Result
 
 func main() {
@@ -3273,7 +3317,7 @@ not caught by the `do`'s `catch`: the rest of the body is skipped and the
 exception goes on to the enclosing `try` / `catch` (or ends the program),
 as if the `do` were not there:
 
-```lammergeier
+```lammergeier fragment
 try {
     do {
         n: int = parseInt(text)?          # an Err: handled below
@@ -3309,7 +3353,7 @@ enclosing function, exactly as it would outside the block, and `break` /
 and the handler end in `return` / `raise`, the `do/catch` block ends the
 function (no trailing `return` is needed):
 
-```lammergeier
+```lammergeier fragment
 func parseOr(s: str, fallback: int) -> int {
     do {
         return parseInt(s)?
@@ -3319,7 +3363,7 @@ func parseOr(s: str, fallback: int) -> int {
 }
 ```
 
-```lammergeier
+```lammergeier fragment
 from lamerrors import Result
 
 func firstValid(inputs: list[str]) -> int {
@@ -3370,7 +3414,7 @@ the `with` sees the resource already closed). Several items open left to
 right and close in reverse order; an item without `as` is closed too, and
 the `as` name lives in the block:
 
-```lammergeier
+```lammergeier fragment
 func firstLine(path: str) -> str {
     with File.open(path).unwrap() as f {
         return f.readline().unwrap()   # f is closed, then the line returned
@@ -3451,7 +3495,7 @@ message instead. Useful for invariants and quick test harnesses;
 production code should prefer explicit `raise` so the error type
 is part of the API:
 
-```lammergeier
+```lammergeier fragment
 func sqrt(n: float) -> float {
     assert n >= 0.0, "sqrt: negative input"
     ...
@@ -3516,6 +3560,9 @@ total: int = len(names)       # declared after a statement: sees 3
 func main() {
     print(total)              # 3
 }
+# Output:
+# 1 plugin
+# 3
 ```
 
 Rules:
@@ -3572,7 +3619,7 @@ sees:
   this helper do?"* at a glance. The full `func` shape also lets
   you attach typed parameters, a return type, and a docstring:
 
-  ```lammergeier
+  ```lammergeier fragment
   func settle(orders: list[Order]) -> int {
       # The helper gets a name (``total``) and an explicit
       # signature, so a reader scanning the outer function sees
@@ -3592,7 +3639,7 @@ sees:
   when the closure is a one-off passed directly into another
   call — naming it would only add noise:
 
-  ```lammergeier
+  ```lammergeier fragment
   # The lambda is never referred to again; inlining it keeps
   # the reader's eyes on the data flow, not on a helper name.
   doubled: list[int] = nums.map(lambda x: x * 2)
@@ -3602,7 +3649,7 @@ Rule of thumb: if the helper gets referenced more than once, or
 needs a type signature or docstring, write it as a nested `func`;
 otherwise use `lambda`.
 
-```lammergeier
+```lammergeier fragment
 func adder(base: int) -> int {
     func add(x: int) -> int {
         return base + x        # closes over `base`
@@ -3683,6 +3730,20 @@ s: str = "hello world"
 print(s[6:])       # world
 print(s[-5:])      # world
 print(s[::-1])     # dlrow olleh
+# Output:
+# [20 30]
+# [10 20 30]
+# [30 40 50]
+# [10 20 30 40 50]
+# [40 50]
+# [10 20 30 40]
+# [30 40]
+# [10 30 50]
+# [20 40]
+# [50 40 30 20 10]
+# world
+# world
+# dlrow olleh
 ```
 
 A negative index counts from the end like Python, whether it is a constant
@@ -3723,7 +3784,7 @@ errors naming the conversion (`string(s[0]).toUpper()`; a one-character
 slice `s[0:1]` is a `str` too). Iterating a string (`for ch in s`,
 `enumerate(s)`) yields one-character `str` values instead.
 
-```lammergeier
+```lammergeier error
 w: str = "hello"
 print(string(w[0]).toUpper() + w[1:])   # Hello
 print(w[0] == 104, int(w[-1]))          # true 111
@@ -3781,6 +3842,17 @@ func main() {
         print(val)
     }
 }
+# Output:
+# 0
+# 1
+# 1
+# 2
+# 3
+# 5
+# 8
+# 13
+# 21
+# 34
 ```
 
 Generators may also be generic static methods, including methods imported from
@@ -3833,7 +3905,7 @@ for label in Shelf(["a", "b"]).labels(1) {
 a generator (a value read once, element by element), with any element type
 (a class, a generic class, a list, a dict, a tuple):
 
-```lammergeier
+```lammergeier fragment
 func circles() -> generator[Circle] {
     yield Circle("north", 1)
 }
@@ -3920,6 +3992,9 @@ for line in feed.lines {
     break
 }
 feed.close()                  # closed a.txt
+# Output:
+# first line of a.txt
+# closed a.txt
 ```
 
 A dropped generator's `finally` blocks run with what they use. A method
@@ -3958,14 +4033,14 @@ suspended"); `close()` it, or exhaust it, before dropping it.
 list, any iterable), like `for v in src { yield v }`; ending the outer
 generator ends a generator call it is delegating to:
 
-```lammergeier
+```lammergeier fragment
 func both() -> generator[int] {
     yield from count(2)       # 0 1
     yield from [7, 8]         # 7 8
 }
 ```
 
-```lammergeier
+```lammergeier fragment
 func lines(path: str) -> generator[str] {
     f: File = File.open(path).unwrap()
     try {
@@ -4036,7 +4111,7 @@ These methods also work with lambdas. Two forms are supported:
 the receiver's element type into each lambda parameter (and infers the
 return type for predicates and arithmetic bodies):
 
-```lammergeier
+```lammergeier fragment
 doubled: list[int] = nums.map(lambda x: x * 2)
 evens: list[int]  = nums.filter(lambda x: x % 2 == 0)
 total: int        = nums.reduce(lambda a, b: a + b, 0)
@@ -4046,7 +4121,7 @@ total: int        = nums.reduce(lambda a, b: a + b, 0)
 group; type annotations are optional per-param. Use this form for
 stand-alone lambdas or when the caller context can't supply a hint:
 
-```lammergeier
+```lammergeier fragment
 doubler = lambda (x: int): x * 2
 adder   = lambda (a: int, b: int): a + b
 result: list[int] = nums.map(doubler)
@@ -4095,7 +4170,7 @@ expected (a parameter, an annotated variable, a `return` from a function
 returning a `func` type, a `func`-typed field) takes its parameter and
 return types from that type, so bare parameter names are enough:
 
-```lammergeier
+```lammergeier fragment
 func apply(f: func(int) -> bool, x: int) -> bool { return f(x) }
 func run(f: func()) { f() }
 func maker() -> func() -> Shape { return lambda: Square(1) }
@@ -4198,6 +4273,9 @@ func main() {
         print(f"try: {e}")              # try: AttributeError: None has no attribute 'name'
     }
 }
+# Output:
+# AttributeError: None has no attribute 'name'
+# try: AttributeError: None has no attribute 'name'
 ```
 
 An uncaught `None` error ends the program like any uncaught exception
@@ -4280,6 +4358,11 @@ func main() {
         print(f"caught: {err}")         # caught: nope
     }
 }
+# Output:
+# Hello
+# none
+# TypeError: None is not a str
+# caught: nope
 ```
 
 **`?` is for errors, `try` for exceptions.** `expr?` on a `Result` gives
@@ -4332,7 +4415,7 @@ dict; it is evaluated **once** into a synthetic temporary, so
 introduced names are plain locals — annotate them on a follow-up
 line if you need a specific Lam type:
 
-```lammergeier
+```lammergeier fragment
 {name, age} = user
 n: str = name        # tighten the inferred ``any`` type
 a: int = age
@@ -4341,7 +4424,7 @@ a: int = age
 Defaults use `key = expression`, and combine with aliases as
 `key: localName = expression`:
 
-```lammergeier
+```lammergeier fragment
 {name, role = "reader", age: years = 0} = payload
 ```
 
@@ -4379,6 +4462,9 @@ func main() {
     print(midpoint((4, 10)))          # 7
     print(greet(("Ada", "Lovelace"))) # Hello, Ada Lovelace
 }
+# Output:
+# 7
+# Hello, Ada Lovelace
 ```
 
 At the call site the tuple literal `(x, y)` is wrapped as a Go
@@ -4433,7 +4519,7 @@ Result[int]`). A type parameter that only appears in the result is bound by
 the type the call's value must have where it is written, with `func
 make[T]() -> Result[T]`:
 
-```lammergeier
+```lammergeier fragment
 r: Result[int] = make()          # the annotated variable it initializes
 n: int = make()?                 # through `?`: a `Result[int]` is expected
 
@@ -4483,7 +4569,7 @@ literals, and last lambdas and function references (builtins included:
 callback of the wrong type (an annotated parameter, the body's result or
 the parameter count) is a Lam error:
 
-```lammergeier
+```lammergeier fragment
 func mapList[T, U](xs: list[T], fn: func(T) -> U) -> list[U] { ... }
 func fold[T, A](xs: list[T], initial: A, fn: func(A, T) -> A) -> A { ... }
 
@@ -4625,6 +4711,8 @@ func main() {
     n: int = b.get()
     print(n, b.doubled())             # 21 42
 }
+# Output:
+# 21 42
 ```
 
 An override of a generic parent's method is written with the bound types:
@@ -4637,7 +4725,7 @@ override, also when the parent is declared in another module and through a
 generic intermediate class (`class Named[U](Registry[U])`, `class
 Tags(Named[str])`):
 
-```lammergeier
+```lammergeier fragment
 class Registry[T] {
     func init(self) {
         self.items: list[T] = []
@@ -4687,7 +4775,7 @@ func main() {
 
 **`main.lam`:**
 
-```lammergeier
+```lammergeier fragment
 from myhelper import double
 
 func main() {
@@ -4721,7 +4809,7 @@ reached with `X.name` / `Y.name` — functions, constants, classes, static
 methods and type annotations alike. Scoped packages (`@scope/pkg`) cannot be
 written as qualifiers, so they must be imported with an alias:
 
-```lammergeier
+```lammergeier fragment
 import helpers
 import @lam/jwt as jwt
 
@@ -4742,7 +4830,7 @@ from the importing file only (never through the stdlib / extlibs / project
 search). The alias is required (a relative path cannot be written as a
 qualifier): `import .kit` alone is an error suggesting `import .kit as kit`.
 
-```lammergeier
+```lammergeier fragment
 # lib/shop/views.lam
 import .kit as ui           # lib/shop/kit.lam
 import ..common.text as tx  # lib/common/text.lam
@@ -4792,7 +4880,7 @@ module-level variables, classes and interfaces**: two libraries may both
 define `tag()`, `Version`, `counter` or `class Config`, and each keeps using
 its own. A name only has to be unique where it is used:
 
-```lammergeier
+```lammergeier fragment
 from alpha import tag              # alpha's tag()
 import beta as b                   # b.tag() is beta's tag()
 from gamma import tag as gammaTag  # aliased because `tag` is already bound
@@ -4863,7 +4951,7 @@ lamwebp/
     └── files.lam
 ```
 
-```lammergeier
+```lammergeier fragment
 from lamwebp.codec import Decoder
 from lamwebp.io.files import readWebp
 ```
@@ -4972,6 +5060,11 @@ func main() {
     parsed: int = result.unwrap()
     print(parsed)                # 123
 }
+# Output:
+# 5
+# 3.141592653589793
+# 2a
+# 123
 ```
 
 ---
@@ -5088,7 +5181,7 @@ parameter (or what a surrounding top-level `go!` block declared as a
 package-level Go var) is visible. There is **no compiler magic** that
 binds `s` or `srv` for you.
 
-```lammergeier
+```lammergeier fragment
 # GOOD — `srv` is a Lam parameter, so it's a Go local in the emitted
 # function and can be referenced inside `go!` directly.
 func myPlugin(srv: Server) {
@@ -5100,12 +5193,12 @@ func myPlugin(srv: Server) {
 }
 ```
 
-```lammergeier
+```lammergeier error
 # BAD — `s` is not a parameter and there's no class method context.
 # The compiler rejects it: `s` is only the receiver alias inside class methods.
 func brokenPlugin() {
     go! {
-        s.OnRequestHooks = append(s.OnRequestHooks, ...)   # error
+        s.OnRequestHooks = append(s.OnRequestHooks, ...)   // error
     }
 }
 ```
@@ -5118,7 +5211,7 @@ is to declare a Go-level package var (or a `sync.Mutex`-protected
 struct) in a **top-level** `go!` block and capture it from inside the
 handler's own `go!` block:
 
-```lammergeier
+```lammergeier fragment
 # GOOD — a package-level Go var declared at module top, shared safely
 # across all handlers via `sync/atomic`.
 go! {
@@ -5139,12 +5232,12 @@ func readHits() -> int {
 }
 ```
 
-```lammergeier
+```lammergeier fragment
 # BAD — declaring the counter inside the handler resets it on every
 # request, and `srv` doesn't carry it for you either.
 func incrementHits(req: Request, res: Response) {
     go! {
-        var hits int64       # NEW VARIABLE EVERY REQUEST
+        var hits int64       // NEW VARIABLE EVERY REQUEST
         atomic.AddInt64(&hits, 1)
     }
 }
@@ -5203,6 +5296,14 @@ greet()                                   # hello, world.
 greet(name="alice")                       # hello, alice.
 greet(times=3, suffix="!")                # 3× hello, world!
 greet("bob", suffix="?", times=2)         # 2× hello, bob?
+# Output:
+# hello, world.
+# hello, alice.
+# hello, world!
+# hello, world!
+# hello, world!
+# hello, bob?
+# hello, bob?
 ```
 
 Named arguments work with constructors and methods exactly the
@@ -5574,7 +5675,7 @@ func main() {
 
 The same alias table inside an unsuffixed Result-returning stdlib helper still works:
 
-```lammergeier
+```lammergeier fragment
 static func decode(xmlStr: str) -> Result {
     go! {
         v, err := decoder.DecodeOne()

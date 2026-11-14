@@ -173,7 +173,7 @@ Only imported modules and their transitive imports are bundled.
 
 Package roots may re-export a submodule symbol with a normal import:
 
-```lammergeier
+```lammergeier fragment
 # lamwebp/__init__.lam
 from lamwebp.codec import Decoder
 ```
@@ -214,13 +214,13 @@ code it wraps.
 
 Prefer one obvious import:
 
-```lammergeier
+```lammergeier fragment
 from lamwebp import Encoder, DecodeOptions
 ```
 
 For small utility libraries, expose top-level functions:
 
-```lammergeier
+```lammergeier fragment
 func encode(data: bytes, quality: int = 90) -> bytes {
     # ...
 }
@@ -267,13 +267,13 @@ public boundary is where users learn what is stable.
 
 Good:
 
-```lammergeier
+```lammergeier fragment
 func thumbnail(input: bytes, width: int, height: int) -> Result
 ```
 
 Too vague for most users:
 
-```lammergeier
+```lammergeier fragment
 func thumbnail(input: any, options: any) -> any
 ```
 
@@ -340,7 +340,7 @@ A good library README has three runnable examples:
 
 Example:
 
-```lammergeier
+```lammergeier fragment
 from lamwebp import Encoder
 from lamerrors import Result
 
@@ -363,7 +363,7 @@ after `lamc install <name>` and see it compile.
 Library-local tests should compile through the same import path
 that users will use:
 
-```lammergeier
+```lammergeier fragment
 from lamtest import Test
 from lamwebp import Encoder
 
@@ -619,7 +619,7 @@ name    = "@alice/lamwebp"
 version = "1.2.0"
 ```
 
-```lammergeier
+```lammergeier fragment
 from @alice/lamwebp import Encoder
 from @lam/vulture/ws-plugin import WebSocket
 ```

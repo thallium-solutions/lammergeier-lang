@@ -149,7 +149,7 @@ lamc install @lam/vulture@2.0.2
 lamc install @lam/vulture/std-plugin@2.0.3
 ```
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import InjectResponse, Request, Response, RouteOptions, Server, HttpError
 from @lam/vulture/std-plugin import helmet, metricsPlugin, requestIdPlugin, requestLogPlugin
 from lamerrors import Result
@@ -213,7 +213,7 @@ func main() {
 Test the same API without binding a port. `inject` returns a typed
 `InjectResponse`, not a dictionary:
 
-```lammergeier
+```lammergeier fragment
 headers: dict[str, str] = {"Content-Type": "application/json"}
 out: InjectResponse = srv.inject("POST", "/users", "{\"name\":\"Grace\"}", headers)
 print(out.status)          # 201
@@ -294,6 +294,9 @@ func main() {
         print(f"database error: {err}")
     }
 }
+# Output:
+# [map[age:36 id:1 name:Ada] map[age:30 id:2 name:Grace]]
+# 1
 ```
 
 The primary `connect`, execution, query, transaction, and query-builder
@@ -307,7 +310,7 @@ separate `Db.withContext(ctx)` handle from the shared pool; see
 `LruCache`, `TtlCache`, `Retry`, and `CircuitBreaker` cover the most
 common resilience patterns.
 
-```lammergeier
+```lammergeier fragment
 from lamcache import TtlCache
 from lamretry import Retry
 from @lam/vulture/std-plugin import CircuitBreaker
@@ -358,6 +361,11 @@ func main() {
     Test.assertTrue(Strings.hasSuffix(got, "world"), "suffix")
     Test.summary()
 }
+# Output:
+# slug normalization
+# PASS lowercase hyphen slug
+# PASS suffix
+# 2 passed, 0 failed, 2 total
 ```
 
 Embed expected output at the top of the `.lam` file when you want it
@@ -416,6 +424,13 @@ func main() {
     print("42".padLeft(5, "0"))          # 00042
     print("a\nb".indent("> "))
 }
+# Output:
+# hello-lam
+# a/b/c
+# true
+# 00042
+# > a
+# > b
 ```
 
 The Lam-side method names match the static-method names exactly:
@@ -446,6 +461,12 @@ print("purchased-products-limit".camelCase())  # purchasedProductsLimit
 print("userID".snakeCase())                    # user_id
 print("HTTPServer".kebabCase())                # http-server
 print("user name".pascalCase())                # UserName
+# Output:
+# slotsTotal
+# purchasedProductsLimit
+# user_id
+# http-server
+# UserName
 ```
 
 Any rune that is not a letter or a digit separates words (`_`, `-`,
@@ -530,12 +551,21 @@ Go's `strconv.FormatFloat(f, 'f', -1, 64)`: `formatFloat(1234567.5)` is
 the integer digits in groups of three, for an `int` or a `float`:
 
 ```lammergeier
-Fmt.grouped(1234567)                    # "1,234,567"
-Fmt.grouped(1234567.5)                  # "1,234,567.5"
-Fmt.grouped(1360.0, ".", 2, ",")        # "1.360,00"   (Italian, German...)
-Fmt.grouped(136000 / 100.0, ",", 2)     # "1,360.00"   (English)
-Fmt.grouped(1234567, " ")               # "1 234 567"
-Fmt.grouped(5, decimals=2)              # "5.00"
+from lamfmt import Fmt
+
+print(Fmt.grouped(1234567))
+print(Fmt.grouped(1234567.5))
+print(Fmt.grouped(1360.0, ".", 2, ","))       # Italian, German...
+print(Fmt.grouped(136000 / 100.0, ",", 2))    # English
+print(Fmt.grouped(1234567, " "))
+print(Fmt.grouped(5, decimals=2))
+# Output:
+# 1,234,567
+# 1,234,567.5
+# 1.360,00
+# 1,360.00
+# 1 234 567
+# 5.00
 ```
 
 For a `float`, `decimals` digits are written after the point, rounded like
@@ -554,6 +584,7 @@ from lamerrors import Result
 
 rows: list[list[str]] = Csv.parseAll("a,b\n1,2\n3,4")?
 out: str = Csv.formatAll([["x", "y"], ["1", "2"]])
+print(len(rows), out)
 
 for rowResult in Csv.rows("large.csv") {
     row: list[str] = rowResult?
@@ -578,6 +609,9 @@ than `"`, `\r`, `\n` and the Unicode replacement character (another value
 throws a `CsvDelimiterError`):
 
 ```lammergeier
+from lamcsv import Csv
+from lamerrors import Result
+
 out: str = Csv.formatAll([["name", "price"], ["Borsa; pelle", "1.200,50"]], ";")
 # name;price
 # "Borsa; pelle";1.200,50
@@ -643,7 +677,7 @@ Typed member reads are tolerant, for request bodies and stored documents:
 the member comes back when it has the requested kind, `fallback` otherwise
 — a missing member, null, another kind, or a `doc` that is not an object.
 
-```lammergeier
+```lammergeier fragment
 body: json = Json.decode(req.body)?
 name: str = Json.getStr(body, "name")                  # "" when absent
 page: int = Json.getInt(body, "page", 1)
@@ -1091,7 +1125,7 @@ values, without the `_` separators of Go literals: `"NaN"`, `"inf"`, `"1e400"`
 (overflow) and `"1_000"` are a `ParseError`. Use it for numbers typed by people
 or read from files; surrounding spaces are not accepted (`s.trim()` first).
 
-```lammergeier
+```lammergeier fragment
 price: float = Conv.parseFinite(form.get("price").trim())?
 ```
 
@@ -1175,7 +1209,7 @@ Goroutine-safe in-memory caches. Public synchronization uses
 `lamconcurrency.Mutex`; raw Go remains only around the unavoidable
 `container/list`, map, and clock operations.
 
-```lammergeier
+```lammergeier fragment
 from lamcache import LruCache, TtlCache
 
 lru: LruCache = LruCache(100)        # capacity
@@ -1196,7 +1230,7 @@ ttl.putForever("config", cfg)
 Typed lazy iterator combinators: values flow through the chain one at a
 time when a terminal operation runs (`take` / `takeWhile` stop pulling).
 
-```lammergeier
+```lammergeier fragment
 from lamiter import Iter
 
 evens: list[int] = Iter.range_(0, 100).filter(lambda x: x % 2 == 0).map(lambda x: x * x).toList()
@@ -1258,6 +1292,12 @@ if Sort.isSortedWith(byPriority, lambda a, b: a.priority - b.priority) {
 for value in Sort.iterSorted([3, 1, 2]) {
     print(value)
 }
+# Output:
+# ordered
+# custom order
+# 1
+# 2
+# 3
 ```
 
 A comparator returns a negative number when `left` precedes `right`, zero when
@@ -1365,6 +1405,11 @@ func main() {
     Test.assertAlmostEqual(0.1 + 0.2, 0.3)
     Test.summary()
 }
+# Output:
+# math operations
+# PASS
+# PASS
+# 2 passed, 0 failed, 2 total
 ```
 
 `assertTrue`, `assertFalse`, `assertEqual`, `assertNotEqual`,
@@ -1508,7 +1553,7 @@ the `SIG` prefix and case are optional, unknown names throw `ValueError`).
 After the first signal, or an explicit `cancel`, the signals have their default
 effect again, so a second Ctrl-C ends a slow shutdown.
 
-```lammergeier
+```lammergeier fragment
 from lamcontext import Context
 
 shutdown: Context = Context.onSignals()
@@ -1623,6 +1668,8 @@ rome: DateTime = utc.inLocation("Europe/Rome")?
 later: DateTime = rome + Time.Hours(2)
 elapsed: Time = later - rome
 print(rome.format("2006-01-02 15:04 MST"))
+# Output:
+# 2026-09-25 14:00 CEST
 ```
 
 Construct with `current(location = "UTC")`, `fromUnix`, `fromUnixMilli`,
@@ -1638,7 +1685,7 @@ location; the others read the text in `location`. No layout matching (or an
 empty list) is a `ParseError` naming the last layout's failure, an unknown
 zone a `LocationError`.
 
-```lammergeier
+```lammergeier fragment
 const Layouts: list[str] = ["2006-01-02 15:04:05.999999999-07", "2006-01-02T15:04:05Z07:00", "02/01/2006"]
 when: DateTime = DateTime.parseAny(text.trim(), Layouts, "Europe/Rome")?
 ```
@@ -1742,7 +1789,7 @@ throws `ValueError`. The signals are caught only while waiting. For a
 non-blocking shape — workers that poll or wait with a timeout — use
 `Context.onSignals(names)` from `lamcontext`.
 
-```lammergeier
+```lammergeier fragment
 from lamos import Os
 
 server.startInBackground()
@@ -1919,7 +1966,7 @@ handler (a function, or a lambda typed from it:
 sends a form with file inputs, for `HttpRequestOptions.multipart(form)` /
 `HttpRequest.multipart(form)` or for tests that need the raw body:
 
-```lammergeier
+```lammergeier fragment
 from lamhttp import HttpClient, HttpRequestOptions, Multipart
 
 form: Multipart = Multipart().field("title", "Jackie").field("tag", "a").field("tag", "b")
@@ -1958,7 +2005,7 @@ based validation, decorators, plugin encapsulation, content-type
 parsers, a trie router, app-lifecycle hooks, OpenAPI generation,
 streaming, SSE, signed cookies, an in-process test harness, and TLS.
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import Server, Request, Response, HttpError
 
 func helloHandler(req: Request, res: Response) {
@@ -1980,7 +2027,7 @@ and response serialization. `Server.inject` runs the same dispatcher in-process
 and returns an `InjectResponse`, which makes server examples and tests
 deterministic:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import InjectResponse, Request, Response, RouteOptions, Server
 from lamerrors import Result
 
@@ -2063,7 +2110,7 @@ func main() {
 
 The typical startup flow is:
 
-```lammergeier
+```lammergeier fragment
 func main() {
     srv: Server = Server()
 
@@ -2093,7 +2140,7 @@ Use the verb helpers for normal routes and the `route` overload when the method
 is dynamic. Each helper has overloads for a plain handler, typed `RouteOptions`,
 and a body schema plus explicit schema format:
 
-```lammergeier
+```lammergeier fragment
 srv.get("/users", listUsers)
 srv.post("/users", createUser)
 srv.put("/users/:id", replaceUser)
@@ -2108,7 +2155,7 @@ read as `req.params[":id"]`, while a trailing wildcard is `req.params["*"]`.
 Parameter JSON Schemas use the unmarked property name (`"id"`), because Vulture
 strips the leading colon only for schema validation and OpenAPI output:
 
-```lammergeier
+```lammergeier fragment
 func getUser(req: Request, res: Response) {
     id: str = req.params[":id"]
     res.json({"id": id})
@@ -2131,7 +2178,7 @@ route table rather than inventing a hidden `GET` fallback.
 
 Request helpers normalize common HTTP access:
 
-```lammergeier
+```lammergeier fragment
 from lamerrors import Result
 
 func inspect(req: Request, res: Response) {
@@ -2160,7 +2207,7 @@ errors; an empty cookie value remains a successful `Ok("")`.
 Response methods are chainable, so handlers can read like Fastify
 reply code:
 
-```lammergeier
+```lammergeier fragment
 func created(req: Request, res: Response) {
     res.code(201)
        .type_("application/json")
@@ -2183,7 +2230,7 @@ Use a typed `RouteOptions` value when behavior belongs to one endpoint rather
 than the whole server, then pass it to the ordinary `route`, `get`, `post`,
 `put`, `del`, `patch`, `head`, `options`, or `all` overload.
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import RequestBodyReader, RouteOptions
 from lamerrors import Result
 
@@ -2232,7 +2279,7 @@ family, then `default`.
 format; invalid documents short-circuit with HTTP 400 before `preHandler` and
 the handler. Select JSON, YAML, or XML/XSD as appropriate:
 
-```lammergeier
+```lammergeier fragment
 srv.post("/users", createUser, userSchema, "json")
 srv.post("/events", ingestYaml, yamlSchema, "yaml")
 srv.post("/legacy", ingestXml, xsdSchema, "xml")
@@ -2242,7 +2289,7 @@ srv.post("/legacy", ingestXml, xsdSchema, "xml")
 response schemas as well as body schemas. Its typed fields carry OpenAPI
 metadata; request media types follow the selected schema format.
 
-```lammergeier
+```lammergeier fragment
 func createOrderOptions() -> RouteOptions {
     options: RouteOptions = RouteOptions()
     options.operationId = "createOrder"
@@ -2280,7 +2327,7 @@ func createOrderOptions() -> RouteOptions {
 
 Register shared schemas once and reference them with `$ref`:
 
-```lammergeier
+```lammergeier fragment
 srv.addSchema({
     "$id": "PaginationQuery",
     "type": "object",
@@ -2299,7 +2346,7 @@ srv.get("/orders", listOrders, listOptions)
 
 Export an OpenAPI document from the route table:
 
-```lammergeier
+```lammergeier fragment
 spec: str = srv.openapi({
     "title": "Orders API",
     "version": "1.0.0",
@@ -2314,7 +2361,7 @@ bodies. The typed parser is `func(Request) -> any`, so it can inspect headers as
 well as `req.body`. Handlers read the cached value through the Result-returning
 `req.parsedBody()`.
 
-```lammergeier
+```lammergeier fragment
 from lamerrors import Result
 from lamjson import Json
 from lamstrings import Strings
@@ -2350,7 +2397,7 @@ media types. Keep parsers small; expensive validation belongs in
 Decorators are per-server storage for values a plugin or route needs
 later. They are split across server, request, and response scopes:
 
-```lammergeier
+```lammergeier fragment
 srv.decorate("serviceName", "orders")
 srv.decorateRequest("user", None)
 srv.decorateResponse("view", "public")
@@ -2378,7 +2425,7 @@ Throw `HttpError` when a hook or handler needs to abort with an HTTP
 status. Plain panics are converted to a 500 envelope; `HttpError`
 keeps the intended status and optional data.
 
-```lammergeier
+```lammergeier fragment
 func requireAdmin(req: Request, res: Response) {
     if req.header("X-Admin") != "1" {
         throw HttpError.forbidden("admin required", {"route": req.routerPath()})
@@ -2406,7 +2453,7 @@ panic, the built-in fallback takes over.
 a case-insensitive `header(name)` helper. Request headers are passed as
 `dict[str, str]`.
 
-```lammergeier
+```lammergeier fragment
 func testCreateOrder() {
     srv: Server = Server()
     srv.post("/orders", createOrder, createOrderOptions())
@@ -2421,7 +2468,7 @@ func testCreateOrder() {
 Use `printRoutes()` for human-readable startup output and
 `listRoutes()` for tooling:
 
-```lammergeier
+```lammergeier fragment
 print(srv.printRoutes())
 routes: list[any] = srv.listRoutes()
 ```
@@ -2690,7 +2737,7 @@ Factories are `requestLogPlugin`, `rateLimitPlugin`, `compressPlugin`,
 `requestIdPlugin`, `basicAuthPlugin`, `bearerAuthPlugin`, `ipFilterPlugin`,
 `cacheControlPlugin`, `sessionPlugin`, and `csrfPlugin`. For example:
 
-```lammergeier
+```lammergeier fragment
 srv.register(requestIdPlugin())
 srv.register(rateLimitPlugin(max=60, windowMs=60000))
 srv.register(helmet)
@@ -2699,7 +2746,7 @@ srv.register(helmet)
 The module also exports a `CircuitBreaker` class for downstream-call
 protection:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture/std-plugin import CircuitBreaker
 from lamerrors import Result
 
@@ -2726,7 +2773,7 @@ The plugin uses `github.com/gorilla/websocket` and supports subprotocols plus
 RFC 7692 permessage-deflate compression. v2 uses overloaded `wsRoute` calls
 for both default and configured routes.
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import Request, RouteOptions
 from @lam/vulture/ws-plugin import WebSocket, wsRoute
 from lamerrors import Result
@@ -2771,7 +2818,7 @@ Install the independent package with
 It implements [tus 1.0.0](https://tus.io) Creation, Creation With Upload,
 `HEAD`, `PATCH`, Termination, Concatenation, and Checksum on top of Vulture.
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture/tus-plugin import tusUploads, tusGc
 
 _mounted: bool = tusUploads(
@@ -2843,7 +2890,7 @@ Sends plain-text, HTML, and attachment-bearing mail to any SMTP
 server (MailHog / Mailpit for dev, SES / SendGrid / a bare-metal
 relay for prod).
 
-```lammergeier
+```lammergeier fragment
 from lamsmtp import Smtp, Mail
 from lamerrors import Result
 
@@ -2957,7 +3004,7 @@ and asymmetric keys stay in PEM format so applications do not need Go key
 objects.
 
 ```lammergeier
-from lamcrypto import Crypto
+from lamcrypto import Crypto, CryptoKeyPair
 from lamerrors import Result
 
 key: list[int] = Crypto.randomBytes(32)?
@@ -2970,6 +3017,9 @@ print(Crypto.verifyPassword("correct horse battery staple", stored)?)
 pair: CryptoKeyPair = Crypto.generateEd25519KeyPair()?
 signature: str = Crypto.sign("release manifest", pair.privateKey)?
 print(Crypto.verify("release manifest", signature, pair.publicKey)?)
+# Output:
+# true
+# true
 ```
 
 AES-GCM envelopes carry a fresh nonce and a `lamcrypto:v1:` version prefix.
@@ -3016,7 +3066,7 @@ func login(password: str, stored: str) -> Result[any] {
 
 Hashing + HMAC + constant-time comparison.
 
-```lammergeier
+```lammergeier fragment
 from lamhash import Hash
 
 sig: str = Hash.hmacSha256("secret", "payload")
@@ -3066,10 +3116,10 @@ from lamerrors import Result
 from lamjson import Json
 
 db: Db = Db.connect("sqlite", ":memory:")?
-_ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER)")?
+_ = db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, age INTEGER, country TEXT)")?
 
 # Raw SQL — positional params, driver-agnostic ``?``.
-n: int = db.exec("INSERT INTO users (name, age) VALUES (?, ?)", ["alice", 30])?
+n: int = db.exec("INSERT INTO users (name, age, country) VALUES (?, ?, ?)", ["alice", 30, "IT"])?
 
 # Knex-style query builder.
 rows: list[dict[str, any]] = db.table("users")
@@ -3098,6 +3148,14 @@ jsonRows: list[dict[str, any]] = db.queryJson(
     "SELECT payload FROM configs WHERE id = ?", ["payload"], [1]
 )?
 restored: json = Json.fromValue(jsonRows[0]["payload"])?
+
+print(rows)
+print(total, page["total"])
+print(restored)
+# Output:
+# [map[id:1 name:alice]]
+# 30 1
+# {"features":["api","jobs"],"theme":"dark"}
 ```
 
 `Db.connect(driver, dsn) -> Result[Db]`. `setPool`, `ping`, `close`, `exec`,
@@ -3140,7 +3198,7 @@ transactions](#connections-and-typed-transactions--dbconn-dbatomic-pool)).
 
 Transactions give you three patterns:
 
-```lammergeier
+```lammergeier fragment
 # Typed — Db.atomic returns the callback's own Result: commits on Ok, rolls
 # back on Err or a throw (re-thrown); on a Tx it is a nested savepoint.
 func work(tx: Tx) -> Result[int] {
@@ -3177,7 +3235,7 @@ uncommitted writes, use its context and are reported to its observer as one
 statement each. Code written against `DbConn` (the interface `Db` and `Tx`
 share, below) accepts a `Db` or a `Tx` unchanged:
 
-```lammergeier
+```lammergeier fragment
 from lamdb import Db, DbConn, Row, Tx
 
 func userName(conn: DbConn, id: int) -> Result[str] {
@@ -3197,7 +3255,7 @@ _ = tx.rollback()?
 `DbConn` is the type services should take. A `Db` (the pool), a
 `db.withContext(ctx)` view and a `Tx` all satisfy it structurally:
 
-```lammergeier
+```lammergeier fragment
 interface DbConn {
     func exec(query: str, params: list[any] = []) -> Result[int]
     func query(query: str, params: list[any] = []) -> Result[list[dict[str, any]]]
@@ -3267,7 +3325,7 @@ and works on any `DbConn`.
 
 A service taking a `DbConn` and composing units:
 
-```lammergeier
+```lammergeier fragment
 from lamdb import Db, DbConn, Row, Tx
 from lamerrors import Result, Error
 
@@ -3417,7 +3475,7 @@ request IDs or observer tokens.
 A driver failure keeps the driver's error as the `Error.cause`, so its code
 can be read without matching messages:
 
-```lammergeier
+```lammergeier fragment
 inserted: Result[int] = db.exec("INSERT INTO users (email) VALUES (?)", [email])
 if Db.isUniqueViolation(inserted) {
     return Result.Err(Error("SignupError", f"{email} is already registered"))
@@ -3448,7 +3506,7 @@ unchanged: an `Error` whose cause reads as its message does not repeat it.
 `Where` collects conditions and their `?` parameters in order, for SQL that
 the query builder does not express:
 
-```lammergeier
+```lammergeier fragment
 from lamdb import Db, Row, Where
 
 w: Where = Where().add("shop_id = ?", [shopId]).addIf(onlyActive, "disabled = ?", [false])
@@ -3488,7 +3546,7 @@ Rows are `dict[str, any]` holding the drivers' values: `int64`, `float64`,
 text too), date/time columns as Go `time.Time`, and `None` for NULL. `Row`
 reads them typed, so applications need no conversion helpers:
 
-```lammergeier
+```lammergeier fragment
 from lamdb import Db, Row
 from lamdatetime import DateTime
 
@@ -3582,7 +3640,7 @@ specific casts. It was called `Schema` before 2026-10-15; the old name
 clashed with lamschema's `Schema`, so the two modules could not be linked
 into one program (for example together with Vulture):
 
-```lammergeier
+```lammergeier fragment
 schema: SchemaBuilder = SchemaBuilder(db.driverName())
 db.exec(schema.createTableIfNotExists("widgets", [
     {"name": "id", "type": "id"},                          # auto-incrementing PK
@@ -3743,7 +3801,7 @@ you do not trust (user comments, rich-text editor output, admin-authored
 snippets, an `html` value built from them) into an `html` value that keeps
 only what the policy allows:
 
-```lammergeier
+```lammergeier fragment
 from lamhtml import Html, HtmlPolicy
 
 clean: html = Html.sanitize(comment.body)          # basic formatting and links
@@ -3819,7 +3877,7 @@ Frames stay removed unless a policy opts in with `allowFrames(hosts)`, for
 markup whose author you trust with embeds (admin-authored ads, editorial
 pages) and only for the hosts listed:
 
-```lammergeier
+```lammergeier fragment
 adPolicy: HtmlPolicy = HtmlPolicy.rich().allowFrames(HtmlPolicy.videoHosts())
 ad: html = Html.sanitize(admin.body, adPolicy)
 # <iframe src="https://www.youtube.com/embed/x" width="560" height="315" allowfullscreen
@@ -3970,7 +4028,7 @@ Both template classes expose `parse`, `parseFile`, `parseFiles`, `render`, and
 
 ### `lamretry.Retry` — exponential backoff with jitter
 
-```lammergeier
+```lammergeier fragment
 from lamretry import Retry
 
 # Fn that returns Result; Err triggers retry. Panics caught and
@@ -3987,7 +4045,7 @@ value counts as `Ok(value)`, and `until` stops at the first `true`.
 
 ### `lamratelimit.TokenBucket` — client-side throttling
 
-```lammergeier
+```lammergeier fragment
 from lamratelimit import TokenBucket
 
 bucket: TokenBucket = TokenBucket(10, 5)   # capacity=10, refill=5/s
@@ -4114,7 +4172,7 @@ These are the signatures most often needed while writing application
 code. They duplicate the guide sections intentionally so you can skim
 without jumping around.
 
-```lammergeier
+```lammergeier fragment
 # lamerrors
 Error(kind: str, message: str, cause: any = None)
 Result.Ok(v: any) -> Result

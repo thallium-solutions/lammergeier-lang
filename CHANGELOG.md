@@ -5,6 +5,54 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.13.4 — 2026-11-14
+
+### Changed
+
+- **`int ** int` is an exact `int`** (it was always a `float` computed with
+  `math.Pow`, so `print(41 ** 4)` showed `2.825761e+06`, and the checker
+  gave `**` no type: `s: str = 2 ** b` passed it and failed in `go build`).
+  Two ints give an int that wraps on overflow like every int operation; a
+  float operand still gives a float. **Breaking:** an int power with a
+  negative exponent raises `ValueError` (use a float base: `2.0 ** -1`);
+  constant powers that overflow 64 bits or have a negative exponent are
+  compile-time errors.
+
+### Fixed
+
+Found by the fuzzer, the documentation examples test or the int power
+change, each with a regression test:
+
+- a `for` loop over a slice of a comprehension or over a list
+  concatenation left its variable untyped, so a dict literal or lambda
+  using it did not build;
+- `n -= x ** 4` on an `int` kept the float power;
+- a comprehension over `range()` inside a `json` literal was reported as
+  an "unknown" value;
+- an unused local named like a local of a generated helper (`out`, `src`,
+  `v`) lost the `_ = name` that keeps Go from rejecting it;
+- an f-string float format spec of an `int` (`f"{n:.1f}"`) printed Go's
+  `%!f(int=23)` instead of `23.0`.
+
+### Safety checks
+
+- **Documentation examples are tests** (`tests/tests/test_doc_examples.py`,
+  in the unit suite): every Lam block of `docs/` and the README is built,
+  and the 34 with an `# Output:` section are run and compared. Blocks marked
+  `fragment` are skipped, and `error` blocks must be rejected with their
+  `# error:` messages (CONTRIBUTING.md). Several examples were fixed (a
+  `lamdb` example querying columns its table lacked, missing imports, `#`
+  comments in `go!` blocks).
+- **Canary builds** (`sh scripts/test.sh canaries`): Luxyt,
+  managed-file-transfer and every `lam-*` package are built with the
+  working-tree compiler, leaving those repositories untouched.
+- **Race detector** (`sh scripts/race.sh`, `run_tests.py --race`): runs core
+  tests built with `-race`; the whole core suite runs clean.
+- **Fuzzer:** an uncaught exception of the Python twin the safety contract
+  maps (`ZeroDivisionError`, `IndexError`, ...) must be raised by the Lam
+  program too, after the same output (`panic: <Exception>`, status 2). A twin
+  that doesn't finish is discarded, and shrinking keeps the original error.
+
 ## 4.13.3 — 2026-11-13
 
 ### Safety (docs/SAFETY.md)

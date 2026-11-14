@@ -364,7 +364,7 @@ class HelpersMixin:
                 rf"(?<![.\w])(?<!var ){_re.escape(name)}\b"
                 rf"(?!(?:\s*,\s*[\w.]+)*\s*(?::|[-+*/%&|^]|<<|>>|&\^)?=(?!=))(?!\s*(?:\+\+|--))"
             )
-            if not pat.findall(scrubbed):
+            if not pat.findall(_without_shadowing_closures(scrubbed, name)):
                 silencers.append(f"{self._indent_str()}_ = {name}")
         if not silencers:
             return
@@ -2333,3 +2333,53 @@ class HelpersMixin:
                     if type_go:
                         self._var_go_types[synth] = type_go
                     tuple_idx += 1
+
+
+def _matching(text: str, start: int, open_ch: str, close_ch: str) -> int:
+    """Index of the bracket closing the one at ``start`` (-1 if none)."""
+    depth = 0
+    for i in range(start, len(text)):
+        c = text[i]
+        if c == open_ch:
+            depth += 1
+        elif c == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+_FUNC_LITERAL_RE = _re.compile(r"(?<![\w.])func\s*\(")
+
+
+def _without_shadowing_closures(text: str, name: str) -> str:
+    """``text`` (Go with literals masked) without the function literals that
+    declare their own ``name`` (a parameter, ``name :=``, ``var name``): a
+    use inside one is not a use of the outer local (Go scoping). A literal
+    that only captures ``name`` stays (``func() { return out }``)."""
+    if name not in text:
+        return text
+    word = _re.escape(name)
+    declares = _re.compile(
+        rf"(?<![.\w]){word}(?:\s*,\s*\w+)*\s*:=|(?<![.\w])\w+\s*,\s*{word}\s*:=|\bvar\s+{word}\b"
+    )
+    param = _re.compile(rf"(?:^|[(,])\s*{word}\s+[^\s,)]")
+    chars = list(text)
+    for m in _FUNC_LITERAL_RE.finditer(text):
+        params_open = m.end() - 1
+        params_close = _matching(text, params_open, "(", ")")
+        if params_close < 0:
+            continue
+        body_open = text.find("{", params_close)
+        if body_open < 0:
+            continue
+        body_close = _matching(text, body_open, "{", "}")
+        if body_close < 0:
+            continue
+        params = text[params_open + 1:params_close]
+        body = text[body_open + 1:body_close]
+        if param.search(params) or declares.search(body):
+            for i in range(m.start(), body_close + 1):
+                if chars[i] != "\n":
+                    chars[i] = " "
+    return "".join(chars)

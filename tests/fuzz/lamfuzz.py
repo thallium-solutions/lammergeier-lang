@@ -1673,6 +1673,12 @@ def classify_build(proc: subprocess.CompletedProcess) -> str:
     return "diag"
 
 
+# Uncaught Python exceptions whose Lam counterpart the program must raise
+# too (docs/SAFETY.md "Run-time exceptions"); any other twin failure is a
+# fuzzer bug.
+UNCAUGHT_RE = re.compile(r"^(ZeroDivisionError|IndexError|ValueError|OverflowError|TypeError|AttributeError)\b")
+
+
 def run_python(src: str, timeout: int = 30) -> tuple[int, str, str]:
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
         f.write(src)
@@ -1701,12 +1707,24 @@ def check_program(prog: Program, work: Path, defs=None, main=None, run_oracle=Tr
     """Build and run one program: (status, reason, detail)."""
     lam_src = prog.lam_source(defs, main)
     py_src = prog.py_source(defs, main)
+    expected_exc = ""
     if run_oracle:
         rc, expected, perr = run_python(py_src)
         if rc == 99:
             return "discard", "int64", ""
+        if rc == -9:
+            # The twin does not finish in time (a generated loop that runs
+            # too long): no oracle, regenerate.
+            return "discard", "timeout", ""
         if rc != 0:
-            return "fail", "oracle", perr[-3000:]
+            # An uncaught exception the safety contract maps to a Lam
+            # exception (docs/SAFETY.md): the Lam program must print the
+            # same output, then end with ``panic: <Exception>`` (status 2).
+            last = perr.strip().splitlines()[-1] if perr.strip() else ""
+            m = UNCAUGHT_RE.match(last)
+            if not m:
+                return "fail", "oracle", perr[-3000:]
+            expected_exc = m.group(1)
     work.mkdir(parents=True, exist_ok=True)
     src = work / "prog.lam"
     src.write_text(lam_src, encoding="utf-8")
@@ -1727,6 +1745,14 @@ def check_program(prog: Program, work: Path, defs=None, main=None, run_oracle=Tr
             binary.unlink()
         except OSError:
             pass
+    if expected_exc:
+        if run.returncode != 2 or not run.stderr.startswith(f"panic: {expected_exc}"):
+            return "fail", "uncaught", (
+                f"expected an uncaught {expected_exc} (exit 2), got exit {run.returncode}: {run.stderr[:500]!r}"
+            )
+        if run.stdout != expected:
+            return "fail", "output", _first_diff(expected, run.stdout)
+        return "pass", "", ""
     if run.returncode != 0:
         return "fail", f"run-exit-{run.returncode}", run.stderr[-3000:]
     if not run_oracle:
@@ -1747,13 +1773,18 @@ def _first_diff(expected: str, actual: str) -> str:
     return "trailing newline difference"
 
 
-def shrink_program(prog: Program, work: Path, reason: str) -> tuple[list, list]:
-    """Drop whole units while the failure keeps its reason."""
+def shrink_program(prog: Program, work: Path, reason: str, detail: str = "") -> tuple[list, list]:
+    """Drop whole units while the failure keeps its reason and its first
+    error (``signature``): dropping a definition must not turn the bug into
+    an unrelated "undefined name"."""
     defs, main = list(prog.defs), list(prog.main)
+    wanted = signature(detail) if reason.startswith(("build-", "gofail")) and detail else ""
 
     def still(d, m) -> bool:
-        status, r, _ = check_program(prog, work / "shrink", d, m)
-        return status == "fail" and r == reason
+        status, r, det = check_program(prog, work / "shrink", d, m)
+        if status != "fail" or r != reason:
+            return False
+        return not wanted or signature(det) == wanted
 
     changed = True
     rounds = 0
@@ -1786,7 +1817,7 @@ def gen_case(seed: int, out_dir: str | None, shrink: bool = True) -> CaseResult:
                 continue
             res = CaseResult(seed, status, reason, detail, secs=time.time() - t0)
             if status == "fail":
-                defs, main = (shrink_program(prog, Path(tmp), reason) if shrink and reason != "lamc-timeout"
+                defs, main = (shrink_program(prog, Path(tmp), reason, detail) if shrink and reason != "lamc-timeout"
                               else (prog.defs, prog.main))
                 res.lam = prog.lam_source(defs, main)
                 res.py = prog.py_source(defs, main)
@@ -1920,7 +1951,13 @@ def _check_hostile(seed: int, tag: str, src: str | bytes, out_dir: str | None, t
         res = CaseResult(seed, "pass" if kind in ("ok", "diag") else "fail", kind, secs=time.time() - t0)
         if res.status == "fail":
             if shrink and isinstance(src, str) and kind != "timeout":
-                src = _shrink_lines(src, lambda s: probe(s)[0] == kind)
+                wanted = signature(detail)
+
+                def same_failure(s: str) -> bool:
+                    k, d = probe(s)
+                    return k == kind and signature(d) == wanted
+
+                src = _shrink_lines(src, same_failure)
                 kind, detail = probe(src)
             res.detail = detail
             res.lam = src if isinstance(src, str) else src.decode("utf-8", "replace")

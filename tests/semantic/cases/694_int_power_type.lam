@@ -1,0 +1,8 @@
+# expect-error: line 6: error[type]: cannot assign `int` to `str` variable `s`
+# `int ** int` is an int (it had no static type, so the assignment passed the
+# checker and failed in go build).
+func main() {
+    b: int = 4
+    s: str = 2 ** b
+    print(s)
+}

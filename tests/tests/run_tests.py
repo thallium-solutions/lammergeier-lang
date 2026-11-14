@@ -38,13 +38,23 @@ COMPILER = PROJECT_ROOT / "compiler" / "lammergeier.py"
 PYTHON = sys.executable
 
 
-def find_test_files(directory: Path, filt: str | None = None) -> list[Path]:
-    """Find all .lam files in the given directory tree."""
+def find_test_files(directory: Path, filt: str | list[str] | None = None) -> list[Path]:
+    """Find all .lam files in the given directory tree (those matching one
+    of the filters, when given)."""
     files = sorted(directory.rglob("*.lam"))
     if filt:
+        filters = [filt] if isinstance(filt, str) else filt
         # Matches the path below cases/ too (``core rosetta`` = one folder).
-        files = [f for f in files if filt.lower() in str(f.relative_to(directory)).lower()]
+        files = [f for f in files
+                 if any(x.lower() in str(f.relative_to(directory)).lower() for x in filters)]
     return files
+
+
+# ``--race``: the tests are built with the Go race detector (``lamc
+# --go-race``) and a reported data race fails the test. Read from the
+# environment so the worker processes see it.
+RACE_ENV = "LAM_TEST_RACE"
+DATA_RACE = "WARNING: DATA RACE"
 
 
 def extract_expected(source: str) -> str | None:
@@ -154,14 +164,15 @@ def run_test(lam_file: Path, verbose: bool = False) -> tuple[bool, str]:
     if missing:
         return True, f"{SKIPPED}: set {' '.join(missing)}"
     expected = extract_expected(source)
+    race = os.environ.get(RACE_ENV) == "1"
 
     with tempfile.TemporaryDirectory(prefix="lammergeier_test_") as tmpdir:
         binary = os.path.join(tmpdir, "test_binary")
 
         # Compile
         result = subprocess.run(
-            [PYTHON, str(COMPILER), str(lam_file), "-o", binary],
-            capture_output=True, text=True, timeout=30,
+            [PYTHON, str(COMPILER), str(lam_file), "-o", binary] + (["--go-race"] if race else []),
+            capture_output=True, text=True, timeout=600 if race else 30,
         )
 
         if result.returncode != 0:
@@ -173,10 +184,14 @@ def run_test(lam_file: Path, verbose: bool = False) -> tuple[bool, str]:
         # Run
         try:
             run_result = subprocess.run(
-                [binary], capture_output=True, text=True, timeout=10,
+                [binary], capture_output=True, text=True, timeout=120 if race else 10,
+                env={**os.environ, "GORACE": "halt_on_error=1"} if race else None,
             )
         except subprocess.TimeoutExpired:
             return False, "RUN FAIL: timeout"
+
+        if race and DATA_RACE in run_result.stderr:
+            return False, f"DATA RACE (exit {run_result.returncode}):\n{run_result.stderr[-6000:]}"
 
         actual = run_result.stdout.rstrip("\n")
 
@@ -212,11 +227,16 @@ def _run_test_wrapper(lam_file_str: str) -> tuple[str, bool, str]:
 def main():
     ap = argparse.ArgumentParser(description="lammergeier test runner")
     ap.add_argument("--verbose", "-v", action="store_true")
-    ap.add_argument("--filter", "-f", default=None, help="Filter test files by name")
+    ap.add_argument("--filter", "-f", action="append", default=None,
+                    help="Filter test files by name (repeatable: a file matching any of them)")
     ap.add_argument("--dir", "-d", default=None, help="Test directory (default: examples/)")
     ap.add_argument("--jobs", "-j", type=int, default=None,
                     help="Number of parallel workers (default: CPU count)")
+    ap.add_argument("--race", action="store_true",
+                    help="Build with the Go race detector (lamc --go-race); a data race fails the test")
     args = ap.parse_args()
+    if args.race:
+        os.environ[RACE_ENV] = "1"
 
     test_dirs = []
     if args.dir:

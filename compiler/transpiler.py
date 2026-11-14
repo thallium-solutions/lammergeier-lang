@@ -531,6 +531,23 @@ func lamFloatToInt(v float64) int {
 \treturn int(v)
 }
 
+// lamIPow is ``a ** b`` of two ints: exact, wrapping on overflow like every
+// int operation; a negative exponent has no int result.
+func lamIPow(b, e int) int {
+\tif e < 0 {
+\t\tpanic("ValueError: negative exponent in an int power (use a float base: 2.0 ** -1)")
+\t}
+\tr := 1
+\tfor e > 0 {
+\t\tif e&1 == 1 {
+\t\t\tr *= b
+\t\t}
+\t\te >>= 1
+\t\tb *= b
+\t}
+\treturn r
+}
+
 func lamUncaught() {
 \tif os.Getenv("LAM_TRACEBACK") == "go" {
 \t\treturn

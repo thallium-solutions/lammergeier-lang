@@ -836,13 +836,30 @@ class StatementVisitorMixin:
         if target_type in {"float64", "float32"} and op in {"+=", "-=", "*="}:
             # ``total += n`` with ``n: int``: the int widens.
             value_str = self._typed_value_to_go(node.children[2], target_type)
+        elif (
+            target_type in self._NUMERIC_GO_TYPES
+            and target_type not in {"float64", "float32"}
+            and isinstance(node.children[2], Tree)
+            and self._expr_go_type_hint(node.children[2]) == "float64"
+        ):
+            # ``n -= x ** 4`` on an int: the power lowers to ``math.Pow`` (a
+            # float) and converts back, as in ``n = n - x ** 4``.
+            value_str = self._typed_value_to_go(node.children[2], target_type)
         elif target_type and target_type != "interface{}":
             with self._scoped(_propagate_cast_hint=target_type):
                 value_str = self._expr_to_go(node.children[2])
         else:
             value_str = self._expr_to_go(node.children[2])
 
-        if op == "**=":
+        value_node = node.children[2]
+        value_is_int = isinstance(value_node, Tree) and (
+            (value_node.data == "number" and not any(c in str(value_node.children[0]).lower() for c in ".e"))
+            or (self._expr_go_type_hint(value_node) or self._infer_type_from_value(value_node) or "") == "int"
+        )
+        if op == "**=" and target_type == "int" and value_is_int:
+            # ``x **= 2`` on an int: the exact int power (``lamIPow``).
+            self._emit(f"{target_str} = lamIPow({target_str}, {value_str})")
+        elif op == "**=":
             self._need_import("math")
             if target_type in self._NUMERIC_GO_TYPES and target_type != "float64":
                 # ``x **= 2`` on an int stays an int.
@@ -1711,6 +1728,15 @@ class StatementVisitorMixin:
         iterable_type = hint if hint and hint != "interface{}" else self._infer_type_from_value(iterable_node)
         if iterable_type in {"", "interface{}"} and isinstance(iterable_node, Tree) and iterable_node.data in {"funccall", "getattr"}:
             # ``for it in Bag().all()`` / ``for it in self.items``.
+            iterable_type = self._expr_go_type_hint(iterable_node) or iterable_type
+        elif (
+            iterable_type in {"", "interface{}", "[]interface{}"}
+            and isinstance(iterable_node, Tree)
+            and iterable_node.data in {"getitem", "list_comprehension", "arith_expr", "term"}
+        ):
+            # ``for v in [x for x in xs if c][1:3]`` / ``for v in [4, n] + ys``:
+            # the typed slice the lowering produces, so ``v`` is not an
+            # ``interface{}``.
             iterable_type = self._expr_go_type_hint(iterable_node) or iterable_type
         if isinstance(iterable_node, Tree) and iterable_node.data == "list":
             # ``for q in [Queue.make(), other.queue()]``: elements whose

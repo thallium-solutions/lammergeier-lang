@@ -652,7 +652,7 @@ COMPILER_GO_PACKAGES = frozenset({
 COMPILER_RUNTIME_HELPERS = frozenset({
     # Run-time faults and the uncaught-exception report (docs/SAFETY.md).
     "lamExc", "lamFault", "lamFaultArticle", "lamFaultConversion", "lamFaultFrames",
-    "lamFaultGoType", "lamFaultText", "lamFloatToInt", "lamRangeStep", "lamStdlibDir",
+    "lamFaultGoType", "lamFaultText", "lamFloatToInt", "lamIPow", "lamRangeStep", "lamStdlibDir",
     "lamUncaught",
     "lamAs", "lamAsNil", "lamAsyncFailure", "lamAsyncFailureIDs", "lamAsyncFailures",
     "lamAsyncReportFailure", "lamAsyncReportUnretrieved", "lamAsyncTaskFailed",

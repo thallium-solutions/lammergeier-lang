@@ -74,7 +74,7 @@ route-level `timeoutMs` deadline wins the race.
 
 The value accepted by `register` is exactly `func(Server)`:
 
-```lammergeier
+```lammergeier fragment
 func myPlugin(srv: Server) {
     # Install hooks, routes, schemas, decorators, or state on `srv`.
 }
@@ -82,7 +82,7 @@ func myPlugin(srv: Server) {
 
 Register a parameterless plugin directly:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import Server
 from my_plugins import myPlugin
 
@@ -97,7 +97,7 @@ For configurable plugins, keep the direct installer if useful and expose a
 typed factory. Lam 1.18 closures preserve the captured configuration while
 satisfying `func(Server)`:
 
-```lammergeier
+```lammergeier fragment
 func installMyPlugin(srv: Server, label: str) {
     # Install configured hooks or routes.
 }
@@ -129,7 +129,7 @@ Keep a plugin focused. A plugin named `auth` should not also install
 metrics, static files, and CORS. Compose small plugins in `main()` or
 inside a feature router:
 
-```lammergeier
+```lammergeier fragment
 func apiPlugins(srv: Server) {
     requestId(srv)
     requestLog(srv, "[api]")
@@ -152,7 +152,7 @@ Use ordinary parameters for small plugins and a `dict[str, any]` for
 large option sets. Prefer typed parameters for required values because
 they are self-documenting and checked at compile time.
 
-```lammergeier
+```lammergeier fragment
 func cacheHeaders(srv: Server, directive: str = "no-store", ifMissing: bool = true) {
     func apply(req: Request, res: Response) {
         if ifMissing and res.hasHeader("Cache-Control") {
@@ -166,7 +166,7 @@ func cacheHeaders(srv: Server, directive: str = "no-store", ifMissing: bool = tr
 
 For larger options, normalize once at install time:
 
-```lammergeier
+```lammergeier fragment
 func audit(srv: Server, opts: dict[str, any] = {}) {
     header: str = "X-Audit-Id"
     if "header" in opts {
@@ -191,7 +191,7 @@ hold the resolved setting. Hook closures capture the local value.
 
 The whole plugin in 14 lines:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import Server, Request, Response
 
 func bearerAuth(srv: Server, secret: str) {
@@ -231,7 +231,7 @@ A production auth plugin usually does three things:
 3. Stores the authenticated principal on `req.ctx` for downstream
    handlers.
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import Server, Request, Response
 
 func tokenAuth(srv: Server, verify: func(str) -> any, header: str = "Authorization") {
@@ -268,7 +268,7 @@ empty-string sentinel. If you want this auth to apply only to one mounted
 feature, register the feature with encapsulation and install the direct auth
 installer inside it:
 
-```lammergeier
+```lammergeier fragment
 func privateApi(srv: Server) {
     tokenAuth(srv, verifyToken)
     srv.get("/me", meHandler)
@@ -287,7 +287,7 @@ Every `Request` has a context-backed `ctx` that preserves dictionary indexing.
 deadline, reason, and wait methods are available on the same object. Use it to
 thread state from `onRequest` to the handler to `onResponse`:
 
-```lammergeier
+```lammergeier fragment
 func tracePlugin(srv: Server) {
     func start(req: Request, res: Response) {
         req.ctx["traceId"] = randomTraceId()
@@ -322,7 +322,7 @@ Use decorators for defaults and server-wide values:
 - default request/reply fields;
 - pointers to plugin-owned state.
 
-```lammergeier
+```lammergeier fragment
 func serviceInfo(srv: Server, name: str, version: str) {
     srv.decorate("serviceName", name)
     srv.decorate("serviceVersion", version)
@@ -338,7 +338,7 @@ func serviceInfo(srv: Server, name: str, version: str) {
 For request decorators, install a default and then override it during
 the request:
 
-```lammergeier
+```lammergeier fragment
 func userSlot(srv: Server) {
     srv.decorateRequest("user", None)
     func load(req: Request, res: Response) {
@@ -354,7 +354,7 @@ func userSlot(srv: Server) {
 
 Mount a plugin's routes under a path prefix:
 
-```lammergeier
+```lammergeier fragment
 func adminRoutes(srv: Server) {
     srv.get("/users", listUsers)
     srv.post("/users", createUser)
@@ -377,7 +377,7 @@ one for the duration of the plugin, then restores. Nested
 the plugin private to the routes the plugin adds. This is the closest
 match to Fastify's plugin encapsulation.
 
-```lammergeier
+```lammergeier fragment
 func adminAuth(req: Request, res: Response) {
     if req.header("X-Admin") != "1" {
         res.code(403).text("admin only")
@@ -409,7 +409,7 @@ affected.
 
 Nested prefixes compose:
 
-```lammergeier
+```lammergeier fragment
 func v1Users(srv: Server) {
     srv.get("/", listUsers)
     srv.get("/:id", getUser)
@@ -434,7 +434,7 @@ named value is `req.params[":id"]`; Vulture preserves the colon in
 The `rateLimit` plugin is the canonical recipe for "plugin needs a
 mutex and a map":
 
-```lammergeier
+```lammergeier fragment
 go! {
     type counterState struct {
         mu  sync.Mutex
@@ -489,7 +489,7 @@ If a plugin needs state that survives between requests **and** outlives
 a single function call, declare a package-level Go var in a top-level
 `go!` block:
 
-```lammergeier
+```lammergeier fragment
 # GOOD — package-level Go var, atomic-protected, shared by every
 # handler/test in the binary.
 go! {
@@ -506,23 +506,24 @@ func myCounter(srv: Server) {
 }
 ```
 
-```lammergeier
+```lammergeier fragment
 # BAD — Top-level handler tries to use ``s`` (the class receiver name)
-# but no method context exists. Go reports "undefined: s".
+# but no method context exists. lamc rejects it: `s` is only the
+# receiver alias inside class methods.
 func brokenHandler(req: Request, res: Response) {
     go! {
-        s.Routes = append(s.Routes, ...)   # error: undefined: s
+        s.Routes = append(s.Routes, ...)   // error
     }
 }
 ```
 
-```lammergeier
+```lammergeier fragment
 # BAD — counter is local to the handler closure, so it resets every
 # call instead of accumulating across requests.
 func brokenCounter(srv: Server) {
     go! {
         srv.OnRequestHooks = append(srv.OnRequestHooks, func(req *Request, res *Response) {
-            var calls int64           # NEW VARIABLE EVERY REQUEST
+            var calls int64           // NEW VARIABLE EVERY REQUEST
             atomic.AddInt64(&calls, 1)
         })
     }
@@ -532,7 +533,7 @@ func brokenCounter(srv: Server) {
 For *per-server* (rather than *process-global*) state, use the
 `Server` instance directly:
 
-```lammergeier
+```lammergeier fragment
 # GOOD — state lives on the Server, not in module-level memory; two
 # instances of the same plugin won't share the counter.
 func myCounter(srv: Server) {
@@ -568,7 +569,7 @@ previous test case.
 If state does not need locks or Go-only types, pure Lam fields are
 enough:
 
-```lammergeier
+```lammergeier fragment
 func hitHeader(srv: Server) {
     hits: dict[str, int] = {}
 
@@ -599,7 +600,7 @@ listeners run handlers concurrently.
 hooks, so plugins can still inspect streaming responses to (for example) skip
 compression — the maintained `compress` plugin does exactly that:
 
-```lammergeier
+```lammergeier fragment
 if res.streamHandler != None or res.sseHandler != None or res.hijacked {
     return  # Don't try to gzip a stream.
 }
@@ -609,7 +610,7 @@ Use `@lam/vulture/ws-plugin` rather than implementing the native upgrade
 boundary in an application plugin. Its `wsRoute` function has default and typed
 `RouteOptions` overloads, both returning `Result[bool]`:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import Request, RouteOptions
 from @lam/vulture/ws-plugin import WebSocket, wsRoute
 from lamerrors import Result
@@ -641,7 +642,7 @@ returns true, and closes the emitter, once the client disconnected or the server
 began `shutdown()` / `close()`, so open streams never hold a graceful shutdown
 for its drain timeout:
 
-```lammergeier
+```lammergeier fragment
 func events(emitter: SseEmitter) {
     while not emitter.wait(15000) {
         emitter.comment("ping")
@@ -655,7 +656,7 @@ func events(emitter: SseEmitter) {
 `LAMC_DEV=1`. `@lam/vulture/dev-plugin` turns that into browser live reload and
 does nothing outside `lamc dev`, so it can be registered unconditionally:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture/dev-plugin import liveReloadPlugin
 
 srv.register(liveReloadPlugin(["assets/build", "assets/js"]))
@@ -673,7 +674,7 @@ swapped in place. Before reloading, the page dispatches a cancelable
 `@lam/vulture/tus-plugin` owns the protocol routes and filesystem store. Both
 public operations use v2 Result contracts:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture/tus-plugin import tusGc, tusUploads
 
 _mounted: bool = tusUploads(
@@ -694,7 +695,7 @@ routes, and keep completion work behind `srv.ctx["__tusComplete"]` short.
 
 Plugins can teach the server about vendor media types:
 
-```lammergeier
+```lammergeier fragment
 from lamerrors import Result
 from lamstrings import Strings
 from lamjson import Json
@@ -736,7 +737,7 @@ expensive validation to schemas or `preValidation` hooks.
 This plugin wraps JSON responses in a standard envelope unless the
 handler has already set an opt-out flag:
 
-```lammergeier
+```lammergeier fragment
 from lamstrings import Strings
 
 func envelope(srv: Server) {
@@ -764,7 +765,7 @@ Use `Server.inject` — it runs the full hook + route pipeline against
 a synthetic request without binding a port, so tests stay
 deterministic in CI:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import InjectResponse, Server, Request, Response
 
 func main() {
@@ -820,7 +821,7 @@ For stateful plugins:
 
 ### Encapsulation test pattern
 
-```lammergeier
+```lammergeier fragment
 func privateHeader(req: Request, res: Response) {
     res.header("X-Private", "1")
 }
@@ -854,7 +855,7 @@ external Go module, import it inside `go!` and declare the Go pin in
 the library manifest's `[go-deps]` section so users get reproducible
 builds.
 
-```lammergeier
+```lammergeier fragment
 go! {
     import "github.com/my-org/some-go-lib"
 }
@@ -878,7 +879,7 @@ Plugin README checklist:
 For behavior that should apply to one endpoint rather than the whole server,
 pass a typed `RouteOptions` value to the ordinary route or verb overload:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import RouteOptions
 
 createUserOptions: RouteOptions = RouteOptions(bodyLimit = 8192)
@@ -906,7 +907,7 @@ stores intentionally heterogeneous application or protocol data.
 Route helpers accept a schema directly and validate the request body before
 `preHandler` and the handler:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import Server
 
 userCreateSchema: json = {
@@ -940,7 +941,7 @@ If you run behind a reverse proxy, enable trust-proxy *once* at
 startup so plugins keyed on client IP (rate-limit, audit logs)
 follow the original-client logic:
 
-```lammergeier
+```lammergeier fragment
 srv: Server = Server()
 srv.trustProxy(["X-Forwarded-For"], 1)  # 1 hop = closest proxy
 
@@ -965,7 +966,7 @@ spoof any IP via the `X-Forwarded-For` header.
 `rateLimit` from `@lam/vulture/std-plugin` is global. To rate-limit a
 single endpoint, call it inside a registered prefix:
 
-```lammergeier
+```lammergeier fragment
 func limitedAuth(srv: Server) {
     rateLimit(srv, 5, 60000, "auth too noisy")
     srv.post("/login", loginHandler)
@@ -981,7 +982,7 @@ The `@lam/vulture/std-plugin` package already ships `requestId` and the
 variant (different header name, custom ID format, and so on), and choose a
 unique plugin name:
 
-```lammergeier
+```lammergeier fragment
 from lamerrors import Result
 from lamuuid import Uuid
 
@@ -1002,7 +1003,7 @@ func uuidRequestId(srv: Server) {
 
 ### Mirror a header from request to response
 
-```lammergeier
+```lammergeier fragment
 func mirrorHeader(srv: Server, name: str) {
     func mirror(req: Request, res: Response) {
         v: str = req.header(name)
@@ -1019,7 +1020,7 @@ func mirrorHeader(srv: Server, name: str) {
 `Request.header(name)` returns `""` for missing headers, so a
 non-empty result is the cue to strip:
 
-```lammergeier
+```lammergeier fragment
 func stripForwarded(srv: Server) {
     func strip(req: Request, res: Response) {
         if req.header("X-Forwarded-For") != "" {
@@ -1101,7 +1102,7 @@ Configurable installers have matching factories for `Server.register`:
 `sessionPlugin`, and `csrfPlugin`. Parameterless `helmet`, `etag`, and
 `serverTiming` can be registered directly.
 
-```lammergeier
+```lammergeier fragment
 srv.register(requestLogPlugin("[api]"))
 srv.register(rateLimitPlugin(max=100, windowMs=60000))
 srv.register(bearerAuthPlugin(verifyToken))

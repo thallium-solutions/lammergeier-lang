@@ -982,9 +982,9 @@ class ExpressionVisitorMixin:
             node.data == "power" and len(node.children) > 1 and node.children[1] is not None
             and not self._infer_expr_class(node.children[0])
         ):
-            # ``a ** b`` lowers to ``math.Pow``: a ``float`` (an int target
-            # converts it back), so ``a + b ** c`` widens ``a``.
-            return "float64"
+            # ``int ** int`` is an int (``lamIPow``); otherwise ``a ** b``
+            # lowers to ``math.Pow``, a ``float``, so ``a + b ** c`` widens ``a``.
+            return "int" if self._int_power_operands(node) else "float64"
         if node.data in ("arith_expr", "term") and len(node.children) >= 3:
             if node.data == "arith_expr" and {str(c) for c in node.children[1::2]} == {"+"}:
                 list_operands = list(node.children[0::2])
@@ -1259,6 +1259,9 @@ class ExpressionVisitorMixin:
                     container = self._method_return_types.get(f"go:{owner}.{method}", "")
                     if container:
                         return container
+        if node.data == "dict_comprehension":
+            # ``{k: v for ...}["x"]``: the map type its lowering gives it.
+            return self._dict_comp_static_go_type(node)
         if node.data == "getitem" and len(node.children) >= 2:
             receiver_type = self._expr_go_type_hint(node.children[0])
             index = node.children[1]
@@ -1792,18 +1795,21 @@ class ExpressionVisitorMixin:
                     return f"{left}.{method}({right})"
                 base = self._expr_to_go(base_node)
                 exp = self._expr_to_go(node.children[1])
-                base_is_int = isinstance(node.children[0], Tree) and node.children[0].data == "number" and "." not in str(node.children[0].children[0])
-                exp_is_int = isinstance(node.children[1], Tree) and node.children[1].data == "number" and "." not in str(node.children[1].children[0])
-                if base_is_int and exp_is_int:
+                if self._int_power_operands(node):
+                    # ``int ** int`` is an int, exact (``lamIPow`` wraps on
+                    # overflow like every int operation and raises
+                    # ``ValueError`` for a negative exponent); two literals
+                    # fold (the checker rejects an overflowing constant,
+                    # ``compiler/semantic_consts.py``).
                     try:
-                        exp_val = int(exp)
-                        if exp_val > 63:
-                            # Only 0, 1 and -1 have a power this large that
-                            # fits an ``int``; the checker rejects the others
-                            # (``compiler/semantic_consts.py``).
-                            return str(int(base) ** exp_val) if int(base) in (0, 1, -1) else base
+                        base_val, exp_val = int(base, 0), int(exp, 0)
+                        if 0 <= exp_val <= 4096:
+                            value = base_val ** exp_val
+                            if -(1 << 63) <= value < (1 << 63):
+                                return str(value)
                     except ValueError:
                         pass
+                    return f"lamIPow({base}, {exp})"
                 self._need_import("math")
                 return f"math.Pow(float64({base}), float64({exp}))"
             return base
@@ -3908,7 +3914,15 @@ class ExpressionVisitorMixin:
                 if verb and (not part.has_spec or self._fstring_expr_parses(part.expr)):
                     # ``{x:.2f}`` / ``{x:>5}`` / ``{x:}``: the Go verb.
                     fmt_str += verb
-                    go_args.append(self._transform_fstring_expr(part.expr))
+                    arg = self._transform_fstring_expr(part.expr)
+                    if part.has_spec and verb[-1:] in ("f", "F", "e", "E", "g", "G"):
+                        # ``{n:.1f}`` of an int formats it as a float, as in
+                        # Python (Go prints ``%!f(int=23)``).
+                        slot = self._fstring_slot_tree(part.expr.strip())
+                        slot_type = (self._expr_go_type_hint(slot) or self._infer_type_from_value(slot) or "") if slot is not None else ""
+                        if slot_type in self._NUMERIC_GO_TYPES and slot_type not in ("float64", "float32"):
+                            arg = f"float64({arg})"
+                    go_args.append(arg)
                 elif part.has_spec and spec and (spec[-1] in self._FSTRING_SPEC_VERBS or spec.startswith('.')):
                     fmt_str += f"%{spec}"
                     go_args.append(self._transform_fstring_expr(part.expr))
@@ -5917,6 +5931,23 @@ class ExpressionVisitorMixin:
         if not result or result == "interface{}" or result.startswith("("):
             return ""
         return result
+
+    def _int_power_operands(self, node) -> bool:
+        """Whether both operands of ``a ** b`` are ints (literals without a
+        fraction or exponent, or int-typed expressions)."""
+        if not isinstance(node, Tree) or len(node.children) < 2 or node.children[1] is None:
+            return False
+
+        def is_int(operand) -> bool:
+            if not isinstance(operand, Tree):
+                return False
+            if operand.data == "number" and operand.children:
+                text = str(operand.children[0]).lower().replace("_", "")
+                return text.startswith(("0x", "0o", "0b")) or not any(c in text for c in ".e")
+            known = self._expr_go_type_hint(operand) or self._infer_type_from_value(operand) or ""
+            return known == "int"
+
+        return is_int(node.children[0]) and is_int(node.children[1])
 
     def _dict_comp_static_go_type(self, node) -> str:
         """Go map type of ``{k: v for x in xs ...}`` from the iterables'

@@ -15,6 +15,8 @@ Usage:
   sh scripts/test.sh lsp
   sh scripts/test.sh import
   sh scripts/test.sh unit
+  sh scripts/test.sh canaries [project]  Opt-in: build the downstream projects
+  sh scripts/test.sh race [filter]       Opt-in: runtime tests under the Go race detector
 EOF
 }
 
@@ -90,6 +92,7 @@ run_suite() {
             "$PYTHON" tests/tests/test_formatter.py
             "$PYTHON" tests/tests/test_formatter_roundtrip.py
             "$PYTHON" tests/tests/test_doc_comments.py
+            "$PYTHON" tests/tests/test_doc_examples.py
             "$PYTHON" tests/tests/test_website_consistency.py
             "$PYTHON" tests/tests/test_vscode_grammar.py
             "$PYTHON" tests/tests/test_multiline_calls.py
@@ -127,6 +130,16 @@ run_suite() {
             "$PYTHON" tests/tests/test_cache_prune.py
             "$PYTHON" tests/tests/test_narrowing_and_index_bounds.py
             "$PYTHON" -m pytest tests/tests/test_collection_context_fuzz.py tests/tests/test_random_program_fuzz.py -q
+            ;;
+        canaries)
+            if [ -n "$filter" ]; then
+                "$PYTHON" tests/tests/test_canaries.py --only "$filter"
+            else
+                "$PYTHON" tests/tests/test_canaries.py
+            fi
+            ;;
+        race)
+            PYTHON="$PYTHON" sh scripts/race.sh ${filter:+"$filter"}
             ;;
         *)
             echo "error: unknown test suite '$suite'" >&2

@@ -403,6 +403,10 @@ PYTHON=/usr/bin/python3 sh scripts/test.sh import
 PYTHON=/usr/bin/python3 sh scripts/test.sh unit
 PYTHON=/usr/bin/python3 sh scripts/test.sh core rosetta
 
+# Opt-in (docs/SAFETY.md "How the contract is checked")
+PYTHON=/usr/bin/python3 sh scripts/test.sh race       # core runtime cases under the Go race detector
+PYTHON=/usr/bin/python3 sh scripts/test.sh canaries   # build Luxyt, managed-file-transfer, the lam-* packages
+
 # Benchmarks (benchmarks/README.md)
 sh scripts/bench.sh compiler --front-end
 sh scripts/bench.sh runtime
@@ -664,6 +668,43 @@ will bounce PRs that don't match.
 | Benchmark suites | `benchmarks/README.md` |
 | Test format | The README of the suite you touched |
 | VS Code grammar | `vs-code-extension/.../package.json` bump + README note |
+
+### Documentation examples are tests
+
+`tests/tests/test_doc_examples.py` (in the `unit` suite) builds every Lam
+code block of `docs/*.md` and `README.md` — a fence whose info string starts
+with `lammergeier` or `lam` — with the working-tree compiler:
+
+- A block with a top-level `func main` is built as is. Any other block is
+  completed into a program: its top-level declarations (`from` / `import`,
+  `func`, `class`, `interface`, decorators, `const`, `go!`) stay at the top
+  level and its other top-level lines become the body of `func main()`.
+- **Expected output.** A `# Output:` comment line followed by comment lines
+  (`# ` stripped; a bare `#` is an empty line) is the exact standard output:
+  the program is run and compared. A ```` ```text ```` block right after the
+  Lam block whose first line runs it (`$ lamc main.lam --run`) is read the
+  same way. Keep the output deterministic (no time, randomness, network or
+  files the block does not create).
+- **Markers** after the language name:
+  - ```` ```lammergeier fragment ```` — not checked: an excerpt that needs
+    code from elsewhere (`srv`, `db`, a class defined in another block), a
+    placeholder (`{ ... }`), an external package (`@lam/vulture`) or a
+    signature listing. Prefer a complete example when it stays short.
+  - ```` ```lammergeier error ```` — must be rejected by `lamc` with a Lam
+    diagnostic (not an internal compiler error). Each `# error: <message>`
+    (or `// error: ...` in a `go!` block) comment must appear in the
+    diagnostics; a trailing `...` elides the rest of the message.
+
+```bash
+python3 tests/tests/test_doc_examples.py                        # every block (about 20 s)
+python3 tests/tests/test_doc_examples.py --filter SYNTAX.md:127 -v
+python3 tests/tests/test_doc_examples.py --list                 # how each block is checked
+python3 tests/tests/test_doc_examples.py --show stdlib.md:443   # the program built for a block
+```
+
+A failing block is a documentation bug (fix the example) or a compiler bug
+(report it with the block as the reproducer); mark a block `fragment` only
+when it cannot be made complete.
 
 ---
 

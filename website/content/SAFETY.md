@@ -40,7 +40,8 @@ shift counts, duplicate constant keys in a dict literal, a program without
 | Fault | Lam exception | Message |
 |---|---|---|
 | `xs[i]`, `s[i]`, slices out of range, `pop()` of an empty list | `IndexError` (a `LookupError`) | `index out of range [5] with length 3 (at main.lam:7)` |
-| integer `//` or `%` by zero | `ZeroDivisionError` (an `ArithmeticError`) | `integer division or modulo by zero` |
+| `/`, `//` or `%` by zero (ints and floats) | `ZeroDivisionError` (an `ArithmeticError`) | `division by zero`, `integer division or modulo by zero` |
+| `int ** int` with a negative exponent | `ValueError` | `negative exponent in an int power (use a float base: 2.0 ** -1)` |
 | `int(x)` of a NaN float | `ValueError` | `cannot convert float NaN to integer` |
 | `int(x)` of an infinite float or one outside the int range | `OverflowError` (an `ArithmeticError`) | `float -1e+30 does not fit in an int` |
 | `x as int` (or an annotated assignment from `any`) of another type | `TypeError` | `a str is not an int` |
@@ -57,14 +58,17 @@ shift counts, duplicate constant keys in a dict literal, a program without
 These behave as documented and raise nothing:
 
 - **Integers are 64-bit and wrap on overflow** (`int` is Go's `int64`, as in
-  Go and Java): `9223372036854775807 + 1` is `-9223372036854775808`. Only
-  constant expressions are checked (they overflow at compile time).
+  Go and Java): `9223372036854775807 + 1` is `-9223372036854775808`, and
+  `3 ** 41` wraps too. Only constant expressions are checked (they overflow
+  at compile time).
 - **A missing key of a typed dict reads as the value type's zero**:
   `d["missing"]` on a `dict[str, int]` is `0` (`""` for strings, `false` for
   booleans, `None` for references). Test with `k in d` or use `d.get(k,
   default)` when the difference matters.
-- **Floats are IEEE 754 doubles**: `1.0 / 0.0` is `+Inf`, `0.0 / 0.0` is
-  NaN; only converting them to `int` raises.
+- **Floats are IEEE 754 doubles**: a zero divisor still raises
+  `ZeroDivisionError` (never an infinity), but overflow gives `+Inf`
+  (`1e308 * 10.0`) and `float("nan")` is NaN; converting those to `int`
+  raises.
 
 ## Limits
 
@@ -107,5 +111,25 @@ These behave as documented and raise nothing:
   compiler errors, Go build failures of generated code and of `go!` blocks.
 - `tests/tests/test_runtime_panics.py` and `tests/tests/cases/safety/`: the
   exceptions above, uncaught reports, async tasks, generators.
+- `tests/tests/test_doc_examples.py` (in the `unit` suite): every Lam example
+  of `docs/` and `README.md` builds, and the examples that show their output
+  (`# Output:`) print exactly that (CONTRIBUTING.md, "Documentation examples
+  are tests").
+- The race detector: `sh scripts/race.sh` (or `sh scripts/test.sh race`)
+  builds a subset of the core cases with `lamc --go-race` and runs them (async
+  tasks, generators, channels and locks, markup sharing, run-time faults, the
+  stdlib modules with shared state, the HTTP client and server, `lamdb` on
+  SQLite); a reported data race fails the test. `sh scripts/race.sh NAME`
+  runs instead the core cases whose path contains `NAME` (`python3
+  tests/tests/run_tests.py --race` all of them). It needs cgo and a C
+  compiler.
+- Canary builds: `sh scripts/canaries.sh` (or `sh scripts/test.sh canaries
+  [project]`) builds, without running them, the downstream projects with the
+  working-tree compiler: Luxyt (`cmd/*.lam`), managed-file-transfer
+  (`main.lam`) and the test programs of every official `lam-*` package
+  (against a copy of the local package checkouts). It is opt-in (minutes, and
+  the checkouts are outside this repository: `LAM_CANARY_LUXYT`,
+  `LAM_CANARY_MFT`, `LAM_CANARY_PACKAGES`; an absent one is skipped), and it
+  checks that no build changes a project's `git status`.
 - Every bug the fuzzer finds gets a minimal regression test (a semantic case
   or a `tests/tests/cases/safety/` program) before it is fixed.

@@ -282,6 +282,9 @@ func main() {
     print(Fmt.sprintf("top = %d (size=%d)", s.peek().unwrap(), s.size()))
     print(Strings.toUpper("lammergeier"))
 }
+# Output:
+# top = 20 (size=2)
+# LAMMERGEIER
 ```
 
 - A **comprehensive reference** for every stdlib module — classes,

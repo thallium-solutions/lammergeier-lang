@@ -1,0 +1,38 @@
+# `int ** int` is an int, computed exactly (found by tests/fuzz/lamfuzz.py:
+# it was a float, so print showed 2.825761e+06 for 41 ** 4). Like every int
+# operation it wraps on overflow (docs/SAFETY.md); a negative exponent
+# raises ValueError (an int cannot hold 2 ** -1). A float operand gives a
+# float.
+# expect: 2825761 2825761 1024
+# expect: 1024 8 81
+# expect: -420491770248316829
+# expect: 8 1.4142135623730951 9.5 0.25
+# expect: ValueError: negative exponent
+# expect: true 1 1
+# expect: 23.0 24.00 2.300000e+01 23 1024.0
+
+func square(n: int) -> int {
+    return n ** 2
+}
+
+func main() {
+    a: int = 9
+    b: int = 10
+    print(41 ** 4, (-a % 50) ** 4, f"{2 ** b}")
+    c: int = 3
+    c **= 4
+    print(2 ** b, square(2) * 2, c)
+    e: int = 41
+    print(3 ** e)
+    half: float = 0.5
+    print(2.0 ** 3, 2 ** half, 1.5 + 2 ** 3, 2.0 ** (0 - 2))
+    try {
+        print(2 ** (a - b))
+    } catch ValueError as err {
+        print(str(err)[:29])
+    }
+    print(a ** 2 <= 81, 1 ** 100, (0 - 1) ** 64)
+    # A float format spec of an int formats it as a float, as in Python.
+    n: int = 23
+    print(f"{n:.1f} {n + 1:.2f} {n:e} {n:g} {2 ** b:.1f}")
+}

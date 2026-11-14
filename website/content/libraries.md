@@ -77,7 +77,7 @@ lamc install ../lam-redis
 
 All forms install to `extlibs/@lam/<name>` and use the same import:
 
-```lammergeier
+```lammergeier fragment
 from @lam/redis import PubSub, Redis, RedisCommand, RedisScanPage, RedisZMember
 from lamerrors import Result
 
@@ -105,7 +105,7 @@ and `close` contract; the other package families follow the same policy.
 
 ### Memcached
 
-```lammergeier
+```lammergeier fragment
 from @lam/memcached import Memcached
 from lamerrors import Result
 
@@ -124,7 +124,7 @@ for their normal negative outcomes.
 
 ### JWT and Protocol Buffers
 
-```lammergeier
+```lammergeier fragment
 from @lam/jwt import Jwt
 from lamerrors import Result
 
@@ -141,7 +141,7 @@ The v2 JWT Result surface covers `Jwt.signHS256`, `Jwt.decodeHS256`,
 legacy algorithm-specific operations that cannot report details retain their
 documented direct return types.
 
-```lammergeier
+```lammergeier fragment
 from @lam/protobuf import Pb
 from lamerrors import Result
 
@@ -167,7 +167,7 @@ package.
 
 ### S3
 
-```lammergeier
+```lammergeier fragment
 from @lam/s3 import S3Client, S3Object
 from lamerrors import Result
 
@@ -195,7 +195,7 @@ to HTTPS.
 
 ### SFTP and SSH
 
-```lammergeier
+```lammergeier fragment
 from @lam/sftp import SftpConfig, SftpServer
 from lamerrors import Result
 
@@ -216,7 +216,7 @@ also Result-returning. High-throughput backends should register
 which receive packet payloads as `bytes` without the per-byte `list[int]`
 conversion of `onReadAt`/`onWriteAt`.
 
-```lammergeier
+```lammergeier fragment
 from @lam/ssh import SshClient, SshCommandResult, SshConfig, SshKeyPair, SshSession
 from lamerrors import Result
 
@@ -318,7 +318,7 @@ lamc install @lam/vulture/tus-plugin@3.0.2
 
 The standard plugin package's canonical direct-installer imports are:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import Server
 from @lam/vulture/std-plugin import CircuitBreaker, compress, helmet, metrics, rateLimit, requestLog
 
@@ -364,7 +364,7 @@ and `@lam/vulture/dev-plugin` all depend on `@lam/vulture`. The development
 plugin pairs with `lamc dev` and is inert outside it, so servers register it
 unconditionally:
 
-```lammergeier
+```lammergeier fragment
 from @lam/vulture import Server
 from @lam/vulture/dev-plugin import liveReloadPlugin
 

@@ -9,7 +9,7 @@
 # expect-go: fmt.Println(a << (b + 1))
 # expect-go: fmt.Println(a * (b << c))
 # expect-go: fmt.Println(x - (2.0 + 3.0))
-# expect-go: fmt.Println(float64(c) < math.Pow(float64(a), float64(b)))
+# expect-go: fmt.Println(c < lamIPow(a, b))
 
 func main() {
     a: int = 10
