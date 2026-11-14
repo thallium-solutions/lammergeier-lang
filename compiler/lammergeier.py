@@ -2347,6 +2347,13 @@ def _compile_lam(
         inputs_recorder.attach(module_index, source_file, project_root, [stdlib_dir, *all_extlibs])
 
     source = source_file.read_text(encoding="utf-8")
+    if "\x00" in source:
+        # Python rejects NUL bytes in source too; in a markup tag or a raw
+        # ``go!`` block one reached the Go source ("invalid NUL character").
+        line = source.count("\n", 0, source.index("\x00")) + 1
+        print(f"error: {source_path}: line {line}: the source contains a NUL byte (\\x00)", file=sys.stderr)
+        print("  help: remove it; write \"\\x00\" inside a string for a NUL character", file=sys.stderr)
+        sys.exit(1)
 
     # ── LAMMERGEIER.* compiler-alias rewrite ──
     # Lower every recognised compiler-emitted alias (``Result.Ok`` →

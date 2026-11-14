@@ -1,0 +1,25 @@
+# expect-error: line 19: error[type]: `with` calls `close()` with no argument, but `Res.close` requires 1
+# expect-error: line 22: error[type]: `with` needs a resource with a `close()` method: `NoClose` has none
+# `with r as x` calls `x.close()` when the block ends (found by lamfuzz: both
+# programs passed the checker and failed in go build).
+class Res {
+    func init(self, name: str) {
+        self.name: str = name
+    }
+
+    func close(self, force: bool) {
+        print(force)
+    }
+}
+
+class NoClose {
+}
+
+func main() {
+    with Res("a") as r {
+        print(r.name)
+    }
+    with NoClose() as q {
+        print("in")
+    }
+}

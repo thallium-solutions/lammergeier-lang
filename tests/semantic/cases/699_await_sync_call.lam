@@ -1,0 +1,25 @@
+# expect-error: line 21: error[type]: `await` of `Worker.run()`, which is not `async`: call it without `await` (or declare it `async func`)
+# expect-error: line 22: error[type]: `await` of `plain()`, which is not `async`
+# `await` of a call that is not async (found by lamfuzz: it failed in go
+# build with "cannot receive from non-channel"); an async call stays valid.
+class Worker {
+    func run(self, kind: str) -> str {
+        return kind
+    }
+}
+
+func plain() -> int {
+    return 1
+}
+
+async func later() -> int {
+    return 2
+}
+
+func main() {
+    w: Worker = Worker()
+    r: str = await w.run("bad")
+    n: int = await plain()
+    m: int = await later()
+    print(r, n, m)
+}

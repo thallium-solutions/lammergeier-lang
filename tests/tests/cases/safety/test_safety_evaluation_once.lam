@@ -1,0 +1,57 @@
+# Found by tests/fuzz/lamfuzz.py, with the Python semantics they now follow:
+# - the middle operand of a chained comparison (`a < f() <= b`) is evaluated
+#   once, and a false link stops the chain (it was evaluated twice);
+# - the left operand of `in` / `not in` is evaluated once, before the
+#   container (it was evaluated once per element, or never for an empty one);
+# - isinstance with a built-in exception class tests a caught exception (it
+#   was always false);
+# - a name alone on a line builds (a warning; Go rejected it).
+# expect: false
+# expect: true 8
+# expect: called
+# expect: false
+# expect: called
+# expect: true
+# expect: called
+# expect: true 3
+# expect: true false true
+# expect: true true false
+# expect: done
+
+class Reg {
+    static count: int = 0
+
+    static func bump(n: int) -> int {
+        Reg.count += n
+        return Reg.count
+    }
+}
+
+func f(n: int) -> int {
+    print("called")
+    return n
+}
+
+func main() {
+    print(4 < Reg.bump(4) <= 11)
+    print(4 < Reg.bump(4) <= 11, Reg.count)
+    xs: list[int] = [1, 2]
+    print(f(1) in xs[-3:0])
+    print(f(3) not in xs[5:])
+    print(f(2) in [1, 2, 2], len(xs) + 1)
+    try {
+        throw ValueError("x")
+    } catch e {
+        print(isinstance(e, ValueError), isinstance(e, IndexError), isinstance(e, Exception))
+    }
+    try {
+        print(xs[3])
+    } catch e {
+        print(isinstance(e, IndexError), isinstance(e, LookupError), isinstance(e, ValueError))
+    }
+    n: int = 3
+    n
+    (-5)
+    n + 1
+    print("done")
+}

@@ -1,0 +1,13 @@
+# expect-error: line 6: error[type]: `ValueError` is an exception class, not a value: raise it with `throw ValueError("...")`
+# A built-in exception class is not a value (found by lamfuzz: `[ValueError]`
+# failed in go build with "undefined: ValueError"). Raising, catching and
+# isinstance stay valid.
+func main() {
+    xs: list[any] = [ValueError]
+    try {
+        throw ValueError("x")
+    } catch ValueError as e {
+        print(e, isinstance(e, ValueError))
+    }
+    print(xs)
+}

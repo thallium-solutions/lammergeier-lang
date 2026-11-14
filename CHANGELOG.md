@@ -5,6 +5,47 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.13.5 — 2026-11-14
+
+### Fixed
+
+Found by the fuzzer, each with a regression test:
+
+- **Evaluated once, in Python's order:** the middle operand of a chained
+  comparison (`a < f() <= b`) was evaluated twice. The left operand of
+  `in` / `not in` was evaluated once per element of the container, or never
+  for an empty one.
+- `isinstance(e, ValueError)` of a caught built-in exception was always
+  `false`. It now tests the exception's class with the same families as
+  `catch` (`LookupError` covers `IndexError`...).
+
+### New diagnostics
+
+Each of these programs passed the checker and then failed in `go build`:
+
+- a `with` resource without a `close()` callable with no argument;
+- a built-in exception class used as a value (`[ValueError]`);
+- `await` of a call that is not `async`;
+- a NUL byte in the source;
+- calling a constant (`false(20, 10)`).
+
+A value alone on a line (a name, a literal, `(-5)`, `n + 1`) is a warning
+("has no effect"); the program builds.
+
+### Known limitations
+
+- A dict literal right after `else`, or as the first element of a set,
+  reads as a block: parenthesise it (docs/SYNTAX.md, "Ternary Operators").
+- A constant-folded `-0.0` prints `0`, because Go constants have no negative
+  zero.
+
+### Safety checks
+
+- **Fuzzer:**
+  - its Python twin evaluates an async call's argument at the call;
+  - an uncaught exception of the program's own class must end the Lam
+    program with `panic: <its __str__>`.
+
 ## 4.13.4 — 2026-11-14
 
 ### Changed

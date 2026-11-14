@@ -593,6 +593,16 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
 
     def check(self, tree: Tree, *, ast_module: Module | None = None) -> List[SemanticError]:
         """Run all checks against the parse tree and return any errors."""
+        # Top-level functions of this module that are not ``async``
+        # (``await plain()`` is reported).
+        self._sync_module_funcs = {
+            self._funcdef_name(stmt)
+            for stmt in tree.children
+            if isinstance(stmt, Tree) and stmt.data == "funcdef" and not any(
+                (isinstance(c, Token) and str(c) == "async") or (isinstance(c, Tree) and c.data == "async")
+                for c in stmt.children
+            )
+        }
         token = set_subclass_hook(self._subclass_hook)
         self._narrow_module_vars = _narrowing.module_variable_names(tree)
         self._narrow_nonlocal_names = _narrowing.nonlocal_names(tree)
@@ -1311,6 +1321,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             # ``_ = fn(x)`` (handled as ``assign_stmt``, never reaches
             # this branch).
             self._check_dropped_return(node)
+            self._check_no_effect_statement(node)
             self._visit_expr_subtree(node)
             return
 
@@ -2368,6 +2379,19 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             f"variant you mean (`lambda x: {name}(x)`)",
         )
 
+    def _check_exception_class_value(self, node: Tree, name: str) -> None:
+        """A built-in exception class is not a value (``[ValueError]`` failed
+        in ``go build`` with "undefined: ValueError"): it is raised as
+        ``throw ValueError("...")``, caught and tested with ``isinstance``."""
+        if name not in PYTHON_EXCEPTIONS or id(node) in self.__dict__.get("_callee_var_ids", ()):
+            return
+        if any(name in scope.names for scope in self._scopes[1:]) or name in self._class_method_shapes:
+            return
+        self._error(
+            node, "type",
+            f"`{name}` is an exception class, not a value: raise it with `throw {name}(\"...\")`",
+        )
+
     def _check_generic_function_shadowed(self, node: Tree, name: str) -> None:
         """A top-level function is capitalised in Go (``t`` is ``T``); inside
         a declaration with a type parameter of that name (``func f[T]``,
@@ -2890,6 +2914,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 # ``e.title``).
                 scope.var_types[alias] = caught
         if type_test is not None:
+            for sub in type_test.iter_subtrees():
+                if sub.data == "var":
+                    # ``catch ValueError``: a type position, not a value.
+                    self.__dict__.setdefault("_callee_var_ids", set()).add(id(sub))
             self._visit_expr_subtree(type_test)
         self._scopes.append(scope)
         try:
@@ -2927,6 +2955,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                         # Also scan the resource expression.
                         if item.children:
                             self._visit_expr_subtree(item.children[0])
+                            if isinstance(item.children[0], Tree):
+                                self._check_with_resource(item.children[0])
         if suite_node is not None:
             self._collect_block_defs(suite_node, scope)
         self._scopes.append(scope)
@@ -2936,6 +2966,83 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             self._emit_unused_local_warnings(scope)
         finally:
             self._scopes.pop()
+
+    def _check_no_effect_statement(self, node: Tree) -> None:
+        """``pending`` / ``n`` / ``box.value`` alone on a line evaluates a
+        value nobody uses (often a forgotten ``await`` or assignment)."""
+        expr = node.children[0] if node.children else None
+        if _no_effect_expr(expr):
+            from compiler.constants import lam_simple_expr_text
+            text = lam_simple_expr_text(expr)
+            what = f"statement `{text}`" if text else "this statement"
+            self._warning(
+                node, "unused",
+                f"{what} has no effect (a missing `await`, assignment or call?)",
+            )
+
+    # Return types that are never awaitable (a plain value of a sync call).
+    _PLAIN_RETURN_ROOTS = frozenset({
+        "", "None", "str", "int", "float", "bool", "bytes", "json", "html", "xml",
+        "list", "dict", "set", "tuple", "Result",
+    })
+
+    def _check_await_of_sync_call(self, node: Tree, operand) -> None:
+        """``await plain()`` / ``await w.run()`` of a function or method that
+        is not ``async`` and returns a plain value: nothing to wait for (it
+        failed in go build with "cannot receive from non-channel")."""
+        if not (isinstance(operand, Tree) and operand.data == "funccall" and operand.children):
+            return
+        callee = operand.children[0]
+        if not isinstance(callee, Tree):
+            return
+        label, return_text = "", None
+        if callee.data == "var" and callee.children:
+            name = self._name_text(callee.children[0])
+            if name not in self.__dict__.get("_sync_module_funcs", ()) or any(name in sc.names for sc in self._scopes[1:]):
+                return
+            sigs = self._func_sigs.get(name) or []
+            if not sigs:
+                return
+            label, return_text = f"`{name}()`", sigs[0].return_type_text or ""
+        elif callee.data == "getattr" and len(callee.children) >= 2:
+            receiver = self._expr_simple_type(callee.children[0])
+            method = self._name_text(callee.children[1])
+            if not isinstance(receiver, NamedType) or receiver.name not in self._class_method_shapes:
+                return
+            shape = self._class_method_shape(receiver.name, method)
+            if shape is None or shape.is_async:
+                return
+            label, return_text = f"`{receiver.name}.{method}()`", shape.return_type_text or shape.return_type or ""
+        else:
+            return
+        root = return_text.split("[", 1)[0].strip()
+        if root not in self._PLAIN_RETURN_ROOTS:
+            return
+        self._error(
+            node, "type",
+            f"`await` of {label}, which is not `async`: call it without `await` (or declare it `async func`)",
+        )
+
+    def _check_with_resource(self, expr: Tree) -> None:
+        """``with r as x { ... }`` calls ``x.close()`` when the block ends: a
+        resource of a known class needs a ``close()`` taking no argument."""
+        resource = self._expr_simple_type(expr)
+        if not isinstance(resource, NamedType) or resource.name not in self._class_method_shapes:
+            return
+        cls = resource.name
+        # ``close`` and ``Close`` are both Go's ``Close`` (what the block's
+        # end calls).
+        method = next((m for m in ("close", "Close") if self._class_method_shape(cls, m) is not None), "")
+        if not method:
+            self._error(expr, "type", f"`with` needs a resource with a `close()` method: `{cls}` has none")
+            return
+        sigs = self._method_sigs_for_target(f"{cls}.{method}")
+        if sigs and not any(sig.required_pos == 0 for sig in sigs):
+            needed = min(sig.required_pos for sig in sigs)
+            self._error(
+                expr, "type",
+                f"`with` calls `close()` with no argument, but `{cls}.close` requires {needed}",
+            )
 
     def _enter_block_and_visit(self, suite: Tree) -> None:
         scope = _Scope(kind="block")
@@ -2995,6 +3102,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 self._check_top_level_read_order(node, name)
                 self._check_generic_function_shadowed(node, name)
                 self._check_overloaded_function_value(node, name)
+                self._check_exception_class_value(node, name)
             elif name:
                 from compiler.constants import PYTHON_BUILTIN_IDIOMS
                 suggestion = self._suggest_name(name)
@@ -3058,6 +3166,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             if operand_type is not None and self._is_any_type(operand_type):
                 from compiler.constants import await_any_message, lam_simple_expr_text
                 self._error(node, "type", await_any_message(lam_simple_expr_text(node.children[0])))
+            else:
+                self._check_await_of_sync_call(node, node.children[0])
 
         if d == "lambdef":
             self._visit_lambda(node)
@@ -3069,6 +3179,17 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         if d == "funccall":
             if node.children and isinstance(node.children[0], Tree) and node.children[0].data == "var":
                 self.__dict__.setdefault("_callee_var_ids", set()).add(id(node.children[0]))
+                callee_name = self._name_text(node.children[0].children[0]) if node.children[0].children else ""
+                if callee_name in {"true", "false", "None"} and not any(
+                    callee_name in sc.names for sc in self._scopes[1:]
+                ):
+                    # ``false(20, 10)`` failed in go build ("undefined: False").
+                    self._error(node, "type", f"`{callee_name}` is a constant, not a function: it cannot be called")
+                if self._name_text(node.children[0].children[0]) == "isinstance" and len(node.children) > 1:
+                    # ``isinstance(e, ValueError)``: a type position.
+                    for arg in node.children[1].iter_subtrees() if isinstance(node.children[1], Tree) else ():
+                        if arg.data == "var":
+                            self.__dict__.setdefault("_callee_var_ids", set()).add(id(arg))
             if node.children and isinstance(node.children[0], Tree) and node.children[0].data == "getattr":
                 # ``v.name()`` on an ``any`` receiver is reported as a method.
                 self.__dict__.setdefault("_callee_getattr_ids", set()).add(id(node.children[0]))
@@ -13851,3 +13972,20 @@ def check_source(
             report_missing=imported_module,
         ))
     return errors
+
+
+def _no_effect_expr(expr) -> bool:
+    """A value computed without a call, an index or an assignment: a name, a
+    literal, a field of one, and arithmetic, comparisons and unary operators
+    of those (``n``, ``(-5)``, ``a + 1``). Evaluating it alone does nothing.
+    ``compiler/visitors/statements.py`` lowers such a statement to ``_ = x``."""
+    if not isinstance(expr, Tree):
+        return False
+    if expr.data in {"var", "number", "string", "const_true", "const_false", "const_none"}:
+        return True
+    if expr.data == "getattr" and expr.children:
+        return _no_effect_expr(expr.children[0])
+    if expr.data in {"factor", "arith_expr", "term", "comparison", "not_test", "and_test", "or_test"}:
+        operands = [c for c in expr.children if isinstance(c, Tree) and c.data != "comp_op"]
+        return bool(operands) and all(_no_effect_expr(c) for c in operands)
+    return False

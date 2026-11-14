@@ -1,0 +1,18 @@
+# expect-warning: statement `pending` has no effect (a missing `await`, assignment or call?)
+# expect-warning: statement `n` has no effect
+# expect-warning: statement `-5` has no effect
+# expect-warning: this statement has no effect
+# A name alone on a line is a value nobody uses: a warning, and the program
+# still builds (found by lamfuzz: Go rejected it with "is not used").
+async func side() {
+}
+
+func main() {
+    pending = side()
+    pending
+    n: int = 3
+    n
+    (-5)
+    n + 1
+    await pending
+}

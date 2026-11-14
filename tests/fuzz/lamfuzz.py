@@ -605,7 +605,11 @@ class Gen:
         if c == "dget":
             dd = self.dict_expr(DSI, scope, d + 1, risky)
             k = self.str_expr(scope, d + 2, risky, False)
-            return f"{dd[0]}[{k[0]}]", f"{dd[1]}.get({k[1]}, 0)"
+            # A dict literal right after `else` or as a set's first element
+            # reads as a block (a known grammar limitation, docs/SYNTAX.md):
+            # the literal is parenthesised, as a program would write it.
+            lam_dict = f"({dd[0]})" if dd[0].startswith("{") else dd[0]
+            return f"{lam_dict}[{k[0]}]", f"{dd[1]}.get({k[1]}, 0)"
         if c == "field":
             obj = self.pick_obj(scope, d, risky)
             if obj:
@@ -1512,8 +1516,10 @@ class Gen:
                 x = self.int_expr(inner, 1, False)
                 y = self.int_expr(inner, 1, False)
                 h2 = self.fresh("h")
-                out.emit(f"{h} = work({x[0]})", f"{h} = _Task(lambda: work({x[1]}))")
-                out.emit(f"{h2} = work({y[0]})", f"{h2} = _Task(lambda: work({y[1]}))")
+                # The argument is evaluated at the call, in the caller (an
+                # exception there is not the task's): a lambda default.
+                out.emit(f"{h} = work({x[0]})", f"{h} = _Task(lambda _a=({x[1]}): work(_a))")
+                out.emit(f"{h2} = work({y[0]})", f"{h2} = _Task(lambda _a=({y[1]}): work(_a))")
                 out.emit(f"print(await {h2})", f"_p({h2}.get())")
                 out.emit(f"print(await {h})", f"_p({h}.get())")
             return self.guarded(scope, body)
@@ -1679,6 +1685,11 @@ def classify_build(proc: subprocess.CompletedProcess) -> str:
 UNCAUGHT_RE = re.compile(r"^(ZeroDivisionError|IndexError|ValueError|OverflowError|TypeError|AttributeError)\b")
 
 
+# An uncaught exception of a class the program declares (``AppErr``): the
+# Lam program ends with ``panic: <its __str__>``.
+USER_UNCAUGHT_RE = re.compile(r"^__main__\.(\w+): (.*)$")
+
+
 def run_python(src: str, timeout: int = 30) -> tuple[int, str, str]:
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
         f.write(src)
@@ -1722,9 +1733,15 @@ def check_program(prog: Program, work: Path, defs=None, main=None, run_oracle=Tr
             # same output, then end with ``panic: <Exception>`` (status 2).
             last = perr.strip().splitlines()[-1] if perr.strip() else ""
             m = UNCAUGHT_RE.match(last)
-            if not m:
+            user = USER_UNCAUGHT_RE.match(last)
+            if m:
+                expected_exc = m.group(1)
+            elif user:
+                # A program's own exception class: Lam reports its
+                # ``__str__`` (``panic: AppErr(11)``).
+                expected_exc = user.group(2)
+            else:
                 return "fail", "oracle", perr[-3000:]
-            expected_exc = m.group(1)
     work.mkdir(parents=True, exist_ok=True)
     src = work / "prog.lam"
     src.write_text(lam_src, encoding="utf-8")

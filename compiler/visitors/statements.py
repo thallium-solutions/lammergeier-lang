@@ -938,8 +938,19 @@ class StatementVisitorMixin:
         # expression has no use and Go rejects it ("is not used").
         if isinstance(expr, Tree) and expr.data == "propagate":
             return
+        if expr_str and isinstance(expr, Tree) and self._no_effect_expr(expr):
+            # ``pending`` / ``n`` / ``box.value`` alone on a line: a value
+            # nobody uses (the checker warns); Go rejects it ("is not used").
+            self._emit(f"_ = {expr_str}")
+            return
         if expr_str:
             self._emit(expr_str)
+
+    @staticmethod
+    def _no_effect_expr(expr) -> bool:
+        """A value computed without a call (the checker's rule, which warns)."""
+        from compiler.semantic import _no_effect_expr
+        return _no_effect_expr(expr)
 
     # ─── Return ────────────────────────────────────────────────
 

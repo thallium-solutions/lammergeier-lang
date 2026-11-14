@@ -1,0 +1,6 @@
+# expect-error: line 5: error[type]: `false` is a constant, not a function: it cannot be called
+# A constant is not callable (found by lamfuzz: `false(20, 10)` failed in go
+# build with "undefined: False").
+func main() {
+    print(false(20, 10))
+}

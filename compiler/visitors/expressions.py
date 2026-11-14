@@ -7205,6 +7205,8 @@ class ExpressionVisitorMixin:
                 if isinstance(child, Tree)
             )
 
+        if len(ops) > 1 and any(not self._pure_comparison_operand(o) for o in operands[1:-1]):
+            return self._chained_comparison_once_to_go(operands, ops)
         comparisons = []
         left = operands[0]
         for op, right in zip(ops, operands[1:]):
@@ -7214,11 +7216,89 @@ class ExpressionVisitorMixin:
             return comparisons[0]
         return " && ".join(f"({comparison})" for comparison in comparisons)
 
+    def _pure_comparison_operand(self, node) -> bool:
+        """An operand that can be evaluated twice: a name, a literal, a field
+        of a name (no call, no index)."""
+        if not isinstance(node, Tree):
+            return True
+        if node.data in {"var", "number", "string", "const_true", "const_false", "const_none"}:
+            return True
+        if node.data == "getattr" and len(node.children) >= 2:
+            return self._pure_comparison_operand(node.children[0])
+        return False
+
+    def _with_comparison_temps(self, nodes: list, build) -> str:
+        """``func() bool { _lamCmpN := <node>; return <build(temp)> }()``: one
+        node evaluated once into a typed temporary."""
+        saved_go = dict(self._var_go_types)
+        saved_cls = dict(self._var_types)
+        saved_declared = set(self.declared_vars)
+        try:
+            node = nodes[0]
+            self._cmp_temp_counter = getattr(self, "_cmp_temp_counter", 0) + 1
+            name = f"_lamCmp{self._cmp_temp_counter}"
+            go_type = (self._expr_go_type_hint(node) or self._infer_type_from_value(node) or "").strip()
+            class_name = self._infer_expr_class(node)
+            value = self._expr_to_go(node)
+            self.declared_vars.add(name)
+            if go_type:
+                self._var_go_types[name] = go_type
+            if class_name:
+                self._var_types[name] = class_name
+            result = build(Tree("var", [Tree("name", [Token("NAME", name)])]))
+        finally:
+            self._var_go_types = saved_go
+            self._var_types = saved_cls
+            self.declared_vars = saved_declared
+        return f"func() bool {{ {name} := {value}; _ = {name}; return {result} }}()"
+
+    def _chained_comparison_once_to_go(self, operands: list, ops: list) -> str:
+        """``a < f() <= b`` evaluates ``f()`` once, as in Python: the operands
+        that are not pure go into temporaries, in order, and a false link
+        stops the chain before the next operand is evaluated."""
+        body: list[str] = []
+        saved_go = dict(self._var_go_types)
+        saved_cls = dict(self._var_types)
+        saved_declared = set(self.declared_vars)
+
+        def bind(node):
+            self._cmp_temp_counter = getattr(self, "_cmp_temp_counter", 0) + 1
+            name = f"_lamCmp{self._cmp_temp_counter}"
+            go_type = (self._expr_go_type_hint(node) or self._infer_type_from_value(node) or "").strip()
+            class_name = self._infer_expr_class(node)
+            body.append(f"{name} := {self._expr_to_go(node)}")
+            self.declared_vars.add(name)
+            if go_type:
+                self._var_go_types[name] = go_type
+            if class_name:
+                self._var_types[name] = class_name
+            return Tree("var", [Tree("name", [Token("NAME", name)])])
+
+        try:
+            left = operands[0] if self._pure_comparison_operand(operands[0]) else bind(operands[0])
+            for index, (op, right) in enumerate(zip(ops, operands[1:])):
+                last = index == len(ops) - 1
+                if not last and not self._pure_comparison_operand(right):
+                    right = bind(right)
+                comparison = self._single_comparison_to_go(left, op, right)
+                body.append(f"return {comparison}" if last else f"if !({comparison}) {{ return false }}")
+                left = right
+        finally:
+            self._var_go_types = saved_go
+            self._var_types = saved_cls
+            self.declared_vars = saved_declared
+        return "func() bool { " + "; ".join(body) + " }()"
+
     @staticmethod
     def _comparison_op_text(node: Tree) -> str:
         return " ".join(str(t) for t in node.children if isinstance(t, Token))
 
     def _single_comparison_to_go(self, left, op: str, right) -> str:
+        if op in ("in", "not in") and not self._pure_comparison_operand(left):
+            # ``f(x) in xs``: the needle is evaluated once, before the
+            # haystack, as in Python (the membership loops compare each
+            # element with it).
+            return self._with_comparison_temps([left], lambda temp: self._single_comparison_to_go(temp, op, right))
         if op == "in":
             return self._membership_to_go(left, right)
         if op == "not in":
@@ -7554,9 +7634,14 @@ class ExpressionVisitorMixin:
                 f"func() bool {{ _, ok := interface{{}}({obj_go}).(error); return ok }}()"
             )
         if name in PYTHON_EXCEPTIONS:
-            # Exceptions are represented as panics; runtime type is a
-            # string, so we can't reliably identify them from a value.
-            return "false"
+            # A caught built-in exception (a ``"ValueError: ..."`` panic, a
+            # typed fault, a Go runtime error): its class, with the families
+            # ``catch`` uses (``LookupError`` covers ``IndexError``...).
+            if name in self._CATCH_ALL_EXCEPTIONS:
+                return f'(lamExcKindOf({obj_go}) != "")'
+            names = self._BUILTIN_EXCEPTION_FAMILIES.get(name, (name,))
+            cond = " || ".join(f'_k == "{n}"' for n in names)
+            return f"func(_k string) bool {{ return {cond} }}(lamExcKindOf({obj_go}))"
         if name in self._interfaces:
             go_name = self._go_class_name(name)
             return (

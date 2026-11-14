@@ -531,6 +531,25 @@ func lamFloatToInt(v float64) int {
 \treturn int(v)
 }
 
+// lamExcKindOf is the built-in exception class of a raised value
+// (``isinstance(e, ValueError)``): a typed fault's kind, the name before
+// the colon of a ``"ValueError: message"`` panic, a Go runtime error's Lam
+// exception; "" for anything else.
+func lamExcKindOf(v interface{}) string {
+\tswitch x := v.(type) {
+\tcase interface{ lamExcKind() string }:
+\t\treturn x.lamExcKind()
+\tcase string:
+\t\tif i := strings.IndexByte(x, ':'); i > 0 && !strings.ContainsAny(x[:i], " \\t") {
+\t\t\treturn x[:i]
+\t\t}
+\tcase runtime.Error:
+\t\tkind, _ := lamFaultText(x.Error())
+\t\treturn kind
+\t}
+\treturn ""
+}
+
 // lamIPow is ``a ** b`` of two ints: exact, wrapping on overflow like every
 // int operation; a negative exponent has no int result.
 func lamIPow(b, e int) int {

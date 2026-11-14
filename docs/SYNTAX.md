@@ -1002,6 +1002,11 @@ func classify(age: int) -> str {
 print("even" if x % 2 == 0 else "odd")
 ```
 
+A dict literal right after `else`, or as the first element of a set, reads
+as the start of a block: parenthesise it (`x if c else ({"a": 1}[k])`,
+`{({"a": 1}[k]) for k in keys}`). Without the parentheses it is a syntax
+error.
+
 Both branches must have compatible types. A `None` branch next to a
 reference (a class, an interface, `html`...) has the reference's type
 (`u if ok else None` is a `User`). Next to a value type, which cannot be

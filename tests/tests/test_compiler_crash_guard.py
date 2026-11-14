@@ -190,6 +190,17 @@ def test_program_without_main() -> None:
     print("PASS: a program without main is a Lam error")
 
 
+def test_nul_byte_is_a_lam_error() -> None:
+    """Found by the fuzzer: a NUL byte in a markup tag reached the Go source
+    ("invalid NUL character")."""
+    proc = lamc_bytes(b'func main() {\n    h: html = <><p\x00 class="a">x</p></>\n    print(h)\n}\n')
+    no_traceback(proc)
+    assert proc.returncode == 1, proc.returncode
+    assert "line 2: the source contains a NUL byte" in proc.stderr, proc.stderr
+    assert "internal compiler error" not in proc.stderr and "Go build failed" not in proc.stderr, proc.stderr
+    print("PASS: a NUL byte in the source is a Lam error")
+
+
 def main() -> int:
     tests = [
         test_invalid_utf8,
@@ -201,6 +212,7 @@ def main() -> int:
         test_generated_go_failure_is_internal_error,
         test_go_block_failure_stays_user_error,
         test_program_without_main,
+        test_nul_byte_is_a_lam_error,
     ]
     failed = 0
     for test in tests:
