@@ -5,9 +5,9 @@
 # f-strings in defaults, consts, class fields, lambdas, generators and
 # async functions.
 # expect: a-b | a-b!
-# expect: n1 <nil> | n1 <nil>
+# expect: n1 None | n1 None
 # expect: dflt n1
-# expect: Ada <nil>
+# expect: Ada None
 # expect: 7 x true
 # expect: call1 call2 call3 | 3
 # expect: [outer [inner Ada] 2]

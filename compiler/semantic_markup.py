@@ -14,7 +14,7 @@ from lark import Token, Tree
 
 from compiler.markup import (
     ATTRIBUTE, INVALID, MARKER, MARKUP_METHODS, RAW,
-    decode_lam_string_literal, markup_method_return, slot_contexts, xml_template_error,
+    decode_lam_string_literal, markup_method_return, slot_contexts, slot_owners, xml_template_error,
 )
 from compiler.typesys import DictType, GenericType, ListType, NamedType, Type, UnionType, parse_type, render_type
 
@@ -200,6 +200,7 @@ class MarkupSemanticMixin:
         template = self._markup_template(node)
         slots = self._markup_args(node)[1:]
         contexts = slot_contexts(template, kind == "xml")
+        owners = slot_owners(template, kind == "xml") if kind == "html" else {}
         for index, arg in enumerate(slots):
             context = contexts.get(index, "text")
             target = arg if isinstance(arg, Tree) else node
@@ -209,6 +210,8 @@ class MarkupSemanticMixin:
             if not isinstance(arg, Tree):
                 continue
             value_type = self._markup_slot_type(arg, kind)
+            if index in owners:
+                self._warn_unsafe_markup_slot(target, arg, value_type, *owners[index])
             if context in {ATTRIBUTE, RAW}:
                 inner = self._markup_kind_of_type(value_type) if value_type is not None and self._markup_is_markup_type(value_type) else None
                 if inner:
@@ -222,6 +225,175 @@ class MarkupSemanticMixin:
             problem = xml_template_error(template)
             if problem:
                 self._error(node, "markup", f"malformed XML literal: {problem}")
+
+    # Attributes whose value is a URL (a ``javascript:`` URL runs code).
+    _URL_ATTRIBUTES = frozenset({
+        "href", "src", "action", "formaction", "xlink:href", "poster", "cite", "background", "data",
+        "srcset", "ping", "manifest", "codebase", "longdesc", "usemap", "icon", "lowsrc", "dynsrc",
+    })
+
+    def _warn_unsafe_markup_slot(self, target, arg, value_type, owner: str, starts: bool) -> None:
+        """A text value in a place where HTML escaping does not make it safe:
+        the start of a URL attribute, an event handler, a ``style``, the
+        content of ``<script>`` / ``<style>``. The warning names the
+        sanitizer that silences it (``Html.safeUrl`` / ``jsValue`` /
+        ``safeCss``)."""
+        if isinstance(value_type, NamedType) and value_type.name in {"int", "float", "bool"}:
+            return
+        if owner in self._URL_ATTRIBUTES:
+            if not starts or self._markup_value_trusted(arg, "safeUrl"):
+                return
+            message = (
+                f"dynamic URL in `{owner}`: a `javascript:` URL in it runs code; "
+                f"pass the value through `Html.safeUrl(...)` (lamhtml), which blocks unsafe schemes"
+            )
+        elif owner.startswith("on") and owner != "on":
+            if self._markup_value_trusted(arg, "jsValue"):
+                return
+            message = (
+                f"a value in the event handler `{owner}` is HTML-escaped, not JavaScript-escaped: "
+                f"insert it with `Html.jsValue(...)` (a JavaScript literal, no quotes around it) or use a `data-*` attribute"
+            )
+        elif owner == "<script>":
+            if self._markup_value_trusted(arg, "jsValue"):
+                return
+            message = (
+                "a value inside <script> is not JavaScript-escaped: insert it with `Html.jsValue(...)` "
+                "(a JavaScript literal, no quotes around it) or pass it in a `data-*` attribute"
+            )
+        elif owner in ("style", "<style>"):
+            if self._markup_value_trusted(arg, "safeCss"):
+                return
+            where = "a `style` attribute" if owner == "style" else "<style>"
+            message = (
+                f"a dynamic value in {where} can load URLs or scripts (`url(...)`, `expression(...)`): "
+                f"pass it through `Html.safeCss(...)` (lamhtml)"
+            )
+        else:
+            return
+        self._warning(target, "security", message)
+
+    def _markup_value_trusted(self, expr, kind: str, depth: int = 0) -> bool:
+        """A value that needs no sanitizer of ``kind`` (``safeUrl`` /
+        ``jsValue`` / ``safeCss``): a string literal (written by the
+        developer), that sanitizer's output (also through a function whose
+        every return is), for URLs a static safe start (``f"/p/{id}"``), a
+        ternary of trusted values, or a name whose every assignment in the
+        function (or the module) is trusted."""
+        if not isinstance(expr, Tree) or depth > 4:
+            return False
+        if expr.data == "string":
+            return True
+        if expr.data == "fstring" and expr.children and "{" not in str(expr.children[0]).replace("{{", ""):
+            return True
+        if kind == "safeUrl":
+            from compiler.semantic import static_safe_url
+            if static_safe_url(expr):
+                return True
+        if expr.data == "funccall":
+            return (self._markup_sanitizer_of(expr) or self._sanitized_call_kind(expr)) == kind
+        if expr.data in ("test", "ternary", "conditional") or (expr.data.endswith("_test") and len(expr.children) == 3 and expr.data not in ("and_test", "or_test", "not_test")):
+            branches = [c for c in expr.children if isinstance(c, Tree)]
+            if len(branches) == 3:
+                return self._markup_value_trusted(branches[0], kind, depth + 1) and self._markup_value_trusted(branches[2], kind, depth + 1)
+        if expr.data == "var" and expr.children:
+            name = self._name_text(expr.children[0])
+            stack = self.__dict__.get("_funcdef_stack") or []
+            values = self._assigned_values(stack[-1], name) if stack else []
+            if not values and not any(name in sc.names for sc in self._scopes[1:]):
+                tree = self.__dict__.get("_module_tree")
+                values = self._assigned_values(tree, name, top_level=True) if tree is not None else []
+            return bool(values) and all(self._markup_value_trusted(v, kind, depth + 1) for v in values)
+        return False
+
+    @staticmethod
+    def _assigned_values(root, name: str, top_level: bool = False) -> list:
+        """The right-hand sides of ``name = v`` / ``name: T = v`` /
+        ``const name: T = v`` in ``root`` (outside nested functions and
+        classes when ``top_level``); empty when ``name`` is also bound
+        otherwise (a parameter, a loop variable)."""
+        def walk(node):
+            for child in node.children:
+                if not isinstance(child, Tree):
+                    continue
+                if top_level and child.data in ("funcdef", "classdef"):
+                    continue
+                yield child
+                yield from walk(child)
+
+        def head_name(node) -> str:
+            if isinstance(node, Tree) and node.data == "var" and node.children:
+                node = node.children[0]
+            if isinstance(node, Tree) and node.data == "name" and node.children:
+                return str(node.children[0])
+            return ""
+
+        values: list = []
+        for sub in walk(root):
+            if sub.data in ("assign", "annassign", "const_stmt"):
+                trees = [c for c in sub.children if isinstance(c, Tree)]
+                if len(trees) >= 2 and head_name(trees[0]) == name:
+                    values.append(trees[-1])
+            elif not top_level and sub.data in ("for_stmt", "typed_paramvalue", "lambdef", "with_item", "catch_clause"):
+                if any(isinstance(t, Token) and str(t) == name for t in sub.scan_values(lambda v: isinstance(v, Token))) and sub.data != "for_stmt":
+                    if sub.data == "typed_paramvalue":
+                        return []
+                if sub.data == "for_stmt" and sub.children and isinstance(sub.children[0], Tree) and any(
+                    str(t) == name for t in sub.children[0].scan_values(lambda v: isinstance(v, Token))
+                ):
+                    return []
+        if not top_level:
+            params = next((c for c in root.children if isinstance(c, Tree) and c.data in ("parameters", "typedargslist", "params")), None)
+            if params is not None and any(str(t) == name for t in params.scan_values(lambda v: isinstance(v, Token))):
+                return []
+        return values
+
+    def _sanitized_call_kind(self, arg) -> str:
+        """The sanitizer whose output a call gives: a function or method
+        (also of an imported module) whose every return is
+        ``Html.safeUrl(...)`` (``jsValue``, ``safeCss``) or, for URLs, a
+        string with a static safe start (``Ctx.url``: ``f"/{lang}{path}"``)."""
+        if not (isinstance(arg, Tree) and arg.data == "funccall" and arg.children):
+            return ""
+        callee = arg.children[0]
+        if isinstance(callee, Tree) and callee.data == "var" and callee.children:
+            name = self._name_text(callee.children[0])
+            if any(name in scope.names for scope in self._scopes[1:]):
+                return ""
+            sigs = self._func_sigs.get(name) or []
+            kinds = {getattr(sig, "sanitized", "") for sig in sigs}
+            return kinds.pop() if len(kinds) == 1 else ""
+        if isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2:
+            receiver, method = callee.children[0], self._name_text(callee.children[1])
+            cls = ""
+            if isinstance(receiver, Tree) and receiver.data == "var" and receiver.children:
+                head = self._name_text(receiver.children[0])
+                if head in self._class_method_shapes and not any(head in sc.names for sc in self._scopes[1:]):
+                    cls = head
+            if not cls:
+                kind = self._expr_simple_type(receiver)
+                cls = kind.name if isinstance(kind, NamedType) else ""
+            shape = self._class_method_shape(cls, method) if cls else None
+            return getattr(shape, "sanitized", "") if shape is not None else ""
+        return ""
+
+    @staticmethod
+    def _markup_sanitizer_of(arg) -> str:
+        """``safeUrl`` for ``Html.safeUrl(x)`` (``jsValue``, ``safeCss``...),
+        ``""`` otherwise."""
+        if not (isinstance(arg, Tree) and arg.data == "funccall" and arg.children):
+            return ""
+        callee = arg.children[0]
+        if not (isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2):
+            return ""
+        receiver = callee.children[0]
+        if not (isinstance(receiver, Tree) and receiver.data == "var" and receiver.children):
+            return ""
+        if str(receiver.children[0].children[0] if isinstance(receiver.children[0], Tree) else receiver.children[0]) != "Html":
+            return ""
+        method = callee.children[1]
+        name = str(method.children[0]) if isinstance(method, Tree) and method.children else str(method)
+        return name if name in {"safeUrl", "jsValue", "safeCss"} else ""
 
     def _markup_slot_type(self, arg, kind: str):
         if self._is_markup_marker(arg):

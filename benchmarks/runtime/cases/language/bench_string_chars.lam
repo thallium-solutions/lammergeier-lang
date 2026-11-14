@@ -1,0 +1,36 @@
+# Character access on an ASCII string: ``len(s)``, ``s[i]`` with runtime
+# indexes (from both ends), short slices, a negative-bound slice and a
+# reversal per round. ``str`` indexes characters (code points): this is the
+# ASCII fast path; the Go baseline indexes bytes (the same result on ASCII).
+#
+# ops: 2000000
+
+from lamtime import Time
+
+func work() {
+    text: str = "The quick brown fox jumps over the lazy dog; pack my box with five dozen liquor jugs!!!!"
+    total: int = 0
+    for r in range(25000) {
+        n: int = len(text)
+        for i in range(80) {
+            if text[i] == text[n - 1 - i] {
+                total += 1
+            }
+            if text[i:i + 2] == "o " {
+                total += 2
+            }
+        }
+        total += len(text[3:20]) + len(text[-5:]) + len(text[::-1])
+    }
+    if total == 0 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH string_chars 2000000 {elapsed}")
+}

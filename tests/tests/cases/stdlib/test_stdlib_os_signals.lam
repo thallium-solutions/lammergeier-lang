@@ -1,7 +1,7 @@
 # expect: wait SIGHUP
 # expect: wait-default SIGTERM
 # expect: alias SIGQUIT
-# expect: live false <nil>
+# expect: live false None
 # expect: cancelled true SIGINT true SIGINT
 # expect: child true SIGINT
 # expect: values worker true

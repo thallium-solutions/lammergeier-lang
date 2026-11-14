@@ -3486,6 +3486,11 @@ def _compile_lam(
     # Some library has an f-string slot through ``lamSlotText``: the main
     # file defines it.
     transpiler._lib_uses_slot_text = any("lamSlotText(" in src for src in lib_sources.values())
+    # Some library indexes, slices or measures a ``str`` by character: the
+    # main file defines the helpers (``_STR_RUNTIME_GO``).
+    transpiler._lib_uses_str_runtime = any(
+        transpiler._STR_RUNTIME_RE.search(src) for src in lib_sources.values()
+    )
     # Some library checks for ``None`` at run time (``_NONE_RUNTIME_GO``).
     transpiler._lib_uses_none_runtime = any(
         transpiler._NONE_RUNTIME_RE.search(src) for src in lib_sources.values()

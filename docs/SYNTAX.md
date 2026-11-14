@@ -288,7 +288,10 @@ checks because their values are not knowable from source.
 `html` and `xml` are native markup values, written between `<>` and `</>`
 with `${expr}` slots. Text inserted anywhere is escaped, markup values are
 inserted as markup, `<script>`/`<style>` content stays JavaScript/CSS, and
-classes opt in with `__html__` / `__xml__`. Values support `+`, `+=`, `==`
+classes opt in with `__html__` / `__xml__`. Escaping does not make a value a
+safe URL, script or style: the checker warns about dynamic values in URL
+attributes, `on*` handlers, `<script>` and `style`, and lamhtml's
+`Html.safeUrl`, `Html.jsValue` and `Html.safeCss` silence it (stdlib.md). Values support `+`, `+=`, `==`
 and DOM-style methods (`select`, `first`, `setAttr`, `append`...). See
 [Markup: html and xml](#markup-html-and-xml).
 
@@ -783,7 +786,7 @@ none: bytes = bytes()               # empty (so is `[]`)
 shifted: bytes = [b + 1 for b in codes]     # comprehensions build bytes
 header: bytes = [len(data), 0]              # int expressions too
 
-first: byte = data[0]               # 104, like `str` indexing
+first: byte = data[0]               # 104 (a `str` index is a one-character `str`)
 code: int = int(data[-1])
 part: bytes = data[1:3]             # Python slicing (clamped, negative, steps)
 joined: bytes = data + bytes("!")   # a new value; `+=` too
@@ -2120,7 +2123,7 @@ words: list[str] = ["ccc", "a", "bb"]
 byLength: list[str] = sorted(words, key=lambda w: len(w))   # [a bb ccc]
 desc: list[str] = sorted(words, reverse=true)               # [ccc bb a]
 mixed: list[any] = [10, "b", 9, None, 2.5]
-print(sorted(mixed))                                        # [<nil> 2.5 9 10 b]
+print(sorted(mixed))                                        # [None 2.5 9 10 b]
 ```
 
 As in Python, `sorted(s)` of a `set[T]` (a variable, literal, set
@@ -3705,6 +3708,55 @@ func report(n: int) -> str {
 
 ---
 
+## Strings are sequences of characters
+
+A `str` is Unicode text (stored as UTF-8). Like Python 3, indexing, slicing
+and `len` count **characters** (code points), never bytes: `s[i]` is a
+one-character `str`, `len(s)` is the number of characters, and a slice cuts
+between characters, so it never splits one. Loops (`for c in s`,
+`enumerate(s)`), `reversed(s)`, `sorted(s)` and comprehensions give the same
+characters. Binary data is `bytes`, which indexes and measures bytes
+([Bytes](#bytes)).
+
+```lammergeier
+s: str = "naïve 日本"
+print(len(s), s[2], s[-1], s[2:5], s[::-1])
+first: str = s[0]                 # a one-character str
+print(first.toUpper() + s[1:], s[2] == "ï")
+print(ord(s[2]), chr(26085), len(bytes(s)))
+# Output:
+# 8 ï 本 ïve 本日 evïan
+# Naïve 日本 true
+# 239 日 13
+```
+
+- `ord(c)` is the code point (`int`) of a one-character `str` (a
+  `TypeError` for another length) and `chr(n)` the one-character `str` of a
+  code point (a `ValueError` outside 0..0x10FFFF). `int(c)` of a character
+  parses it as a number, like Python (`int("7")` is 7).
+- An index out of range raises `IndexError` with character positions
+  (`index out of range [3] with length 3`); slices clamp, as for lists. A
+  constant index outside a string literal is a compile error (`"é"[1]`).
+- The positions of `index` / `lastIndex` and the widths of `center`,
+  `zfill`, `padLeft`, `padRight` and of f-string specs (`{s:>10}`,
+  `{s:.3}`) count characters too, so `s[s.index(sub):]` starts at `sub`.
+- `in`, comparisons (code point order), `+`, `*` and the other string
+  methods work on whole strings and are unaffected.
+- `bytes(s)` is the UTF-8 encoding (one item per byte) and `str(data)` the
+  text of UTF-8 bytes. The size in bytes of a `str` (a `Content-Length`, a
+  byte limit) is `len(bytes(s))`, computed without copying the string. A `str` holding invalid UTF-8 (from such bytes)
+  counts each invalid byte as one character.
+
+**Performance.** ASCII text takes a fast path (its bytes are its
+characters). On other text, `s[i]` and slices walk the characters of a short
+string; a long one (more than 64 bytes) gets a character index the first
+time it is indexed, kept for a few recently used strings (it holds them in
+memory until replaced), so that a scanner loop (`while i < len(s) { c = s[i]
+... }`) stays linear. Iterating with
+`for c in s` or `enumerate(s)` is still the fastest way through a string.
+
+---
+
 ## Slicing
 
 Lam supports the full Python slicing surface — negative indices,
@@ -3780,28 +3832,23 @@ values, `i % n` with a non-negative `n` (whatever `i`: `%` takes the sign of
 the divisor), and `i - k` when `i` is known to be at least `k`
 (`for i in range(1, len(xs)) { xs[i - 1] }`).
 
-Indexing a string with a single integer follows Go's native behavior and
-returns the byte at that position. Use `string(s[i])` when you want a
-one-character string, or `int(s[i])` when you want the code value.
-A `byte` has no methods and is not a `str`, so `s[i].toUpper()`, passing
-`s[i]` to a `str` parameter, `s[i] == "h"` and `"x" + s[i]` are compile
-errors naming the conversion (`string(s[0]).toUpper()`; a one-character
-slice `s[0:1]` is a `str` too). Iterating a string (`for ch in s`,
-`enumerate(s)`) yields one-character `str` values instead.
+Indexing a string with a single integer gives the one-character `str` at
+that character position ([Strings are sequences of
+characters](#strings-are-sequences-of-characters)), so string methods,
+comparisons and `+` apply to it directly; `ord(s[i])` is its code point.
+`string(s[i])`, the conversion older programs used when indexing gave a
+byte, is still accepted (a no-op).
 
-```lammergeier error
+```lammergeier
 w: str = "hello"
-print(string(w[0]).toUpper() + w[1:])   # Hello
-print(w[0] == 104, int(w[-1]))          # true 111
-w[0].toUpper()   # error: `byte` has no method `toUpper`; indexing a `str` gives a `byte`: ...
+print(w[0].toUpper() + w[1:])   # Hello
+print(w[0] == "h", ord(w[-1]))  # true 111
 ```
 
-The cheap `[a:b]` form (with non-negative bounds and no step) is
-lowered to Go's native slice syntax. Negative indices or a stride
-trigger a small runtime IIFE that uses `reflect` to support
-arrays, slices, and strings uniformly. Strings round-trip back to
-`string`; sliced lists come back as `list[any]` — annotate the
-target if you need a tighter element type.
+The cheap `[a:b]` form of a list (with non-negative bounds and no step)
+is lowered to Go's native slice syntax; other list slices to a small
+typed function keeping the list's type. Strings are sliced by character
+by runtime helpers (docs/TRANSPILATION.md).
 
 ## Slice Assignment
 
@@ -4230,6 +4277,10 @@ type at run time — an `any`, the payload of a `Result` built from an `any`,
 a `dict[str, any]` lookup, a JSON null, `return None` in a `-> T` of
 generic code with `T = int` — throws a catchable `TypeError: None is not a
 str` (`an int`, `a list[int]`...) where it is converted.
+
+`print`, `str()` and f-strings show a `None` as `None`, also inside lists
+and dicts (`[1 None]`, `map[k:None]`), and so do SQL NULLs read as `any`
+and missing cache entries.
 
 **Checking for `None` is the program's duty.** A member of `None` throws
 `AttributeError: None has no attribute 'name'`: a field read or write, a

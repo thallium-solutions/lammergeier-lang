@@ -5,6 +5,94 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.14.0 — 2026-11-14
+
+**Upgrading:** two breaking changes. `str` counts characters, so code that
+measures or cuts binary data or wire formats held in a `str` must use
+`bytes` or `len(bytes(s))`, which gives the byte size under both 4.13 and
+4.14. `None` prints as `None`. Packages already released for it:
+lam-vulture-dev-plugin 1.2.2 and lam-otel 1.1.2 (byte limits), and the
+packages listed in their own CHANGELOGs.
+
+### Breaking: strings are sequences of characters (safety program, phase 2)
+
+- **`str` indexes, slices and measures characters (code points), like
+  Python 3**, never bytes: `len("é")` is 1 (it was 2), `"日本語"[1]` is `本`,
+  and a slice never cuts a character in half (`"naïve"[:3]` is `naï`; it
+  could end inside `ï`). Negative indexes, steps (`s[::-1]` reverses
+  characters), clamping and `IndexError` (with character positions:
+  `index out of range [3] with length 3`) work as for lists.
+- **`s[i]` is a one-character `str`** (it was a `byte`): `s[0].toUpper()`,
+  `s[i] == "a"`, `"x" + s[-1]` and `first: str = s[0]` are valid, and
+  `s[i] == 104` is now a type error. `string(s[i])` is still accepted (a
+  no-op). `int(s[i])` now parses the character as a number, like Python
+  (`int("7")`), instead of giving its byte value: use the new built-ins
+  **`ord(c)`** (the code point; `TypeError` unless `c` is one character) and
+  **`chr(n)`** (the character; `ValueError` outside 0..0x10FFFF).
+- The positions returned by `index` / `lastIndex` and the widths of
+  `center` / `zfill` / `padLeft` / `padRight` count characters, consistently
+  with slicing (`s[s.index(sub):]`); `length()` is `len`. F-string widths
+  already counted characters.
+- **Binary data is `bytes`**, which keeps byte semantics (`data[i]` is a
+  `byte`, `len(data)` counts bytes). Code that kept binary data in a `str`
+  and measured or cut it must convert it (`len(bytes(s))` is the byte size
+  of a `str`, a `Content-Length` for instance, without a copy); `lamcrypto` did
+  so (AES-GCM envelopes whose nonce looked like UTF-8, PBKDF2 salt lengths
+  and bcrypt's 72-byte limit are measured in bytes).
+- `sorted(s)` of a `str` gives its characters (it failed in the Go build).
+- Checker: the `byte` hints of string indexes are gone (a `str` index is a
+  `str`); a constant index outside a string literal counts characters
+  (`"é"[1]` is a compile error).
+- Performance: ASCII text takes a fast path (its bytes are its characters);
+  other text is walked, and a long string (over 64 bytes) indexed past its
+  ASCII prefix gets a cached character index, so scanning loops
+  (`while i < len(s) { s[i] }`) stay linear. `len(s) == 0` / `> 0` keep the
+  byte length. See docs/SYNTAX.md, "Strings are sequences of characters".
+- Benchmarks (`benchmarks/results/runtime-20261114-142353-4.13.6-6ea9b09.txt`
+  before, `runtime-20261114-160308-4.13.6-3ca4c48.txt` after; new
+  `string_chars`, `string_scan` cases and their non-ASCII twins): indexing
+  and slicing a short ASCII string in a loop costs 14.3 ns per iteration
+  (8.2 ns with bytes); the same on non-ASCII text 40.7 ns (bytes gave wrong
+  characters in 8.7 ns); a scanner over 22 kB is faster than before (6.5 ns
+  per character, was 11.9; 13.2 ns on non-ASCII text, was 18.5);
+  `fstring_str` (slices at an `index` position, `len` of the results)
+  183.5 ns, was 158.1 ns.
+
+### Changed
+
+- **`None` prints as `None`:** `print`, `str()` and f-strings showed a
+  `None` reference as Go's `<nil>`. It now shows Lam's spelling, also inside
+  lists and dicts (`[1 None]`, `map[k:None]`), for SQL NULLs read as `any`
+  and for missing cache entries. **Breaking** for output compared against
+  `<nil>`.
+
+### Fixed
+
+- `catch SomeUnknownName` (a capitalised name that is not an exception
+  class) is a Lam error with a suggestion; it failed in `go build`.
+- The element of a tuple read with a constant index has its declared type:
+  `pair[0].toUpper()` of a `tuple[str, int]` failed in `go build`.
+- `x = None` binding a new name without a type is a Lam error asking for a
+  declaration (`x: User = None`); it failed in `go build` ("use of untyped
+  nil").
+
+### Added
+
+- **Markup security warnings and sanitizers (safety program, phase 3):** in
+  `html` literals, a value from outside the template that starts a URL
+  attribute, or sits in an `on*` handler, `<script>` or a `style`, gets a
+  `warning[security]` naming its sanitizer. Escaping alone does not stop a
+  `javascript:` URL, a JavaScript string break-out or `url(...)` in CSS.
+  The new lamhtml helpers `Html.safeUrl`, `Html.jsValue` and `Html.safeCss`
+  silence it; so does a function whose every return is a sanitizer's output
+  (for URLs also a string with a static safe start). String literals,
+  numbers and static safe URL starts are never warned about.
+  docs/SAFETY.md, "Security of generated markup".
+- **`warning[concurrency]`:** an `async func` that modifies a list, dict or
+  set it doesn't own (a parameter, a field of `self`, a module variable)
+  without taking a lock. Two tasks writing one dict at once crash the
+  program (Go's fatal `concurrent map writes`); docs/SAFETY.md.
+
 ## 4.13.6 — 2026-11-14
 
 ### Runtime semantics (safety program, phase 2)

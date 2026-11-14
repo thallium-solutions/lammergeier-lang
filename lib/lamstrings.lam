@@ -4,6 +4,12 @@
 # Every ``Strings.name(s, ...)`` helper is also a method on ``str`` values
 # (``s.name(...)``), lowered to the same function.
 #
+# Positions and widths count characters (code points), like ``len(s)`` and
+# ``s[i]``: ``"naïve café".index("café")`` is 6, ``length`` is ``len``,
+# ``center`` / ``zfill`` / ``padLeft`` / ``padRight`` pad to a number of
+# characters. They count with ``lamStrLen``, the compiler's ``len(s)``
+# helper (ASCII fast path).
+#
 # Case conversion (``camelCase``, ``pascalCase``, ``snakeCase``,
 # ``kebabCase``) splits ``s`` into words first: any rune that is not a
 # letter or a digit separates words (``_``, ``-``, spaces, ``.``...), and a
@@ -76,8 +82,9 @@ go! {
 
 class Strings {
     static func length(s: str) -> int {
+        #- The number of characters (code points), like `len(s)`. -#
         go! {
-            return len(s)
+            return lamStrLen(s)
         }
     }
     
@@ -160,14 +167,24 @@ class Strings {
     }
 
     static func index(s: str, sub: str) -> int {
+        #- The character position of the first `sub` in `s`, or -1. -#
         go! {
-            return strings.Index(s, sub)
+            i := strings.Index(s, sub)
+            if i <= 0 {
+                return i
+            }
+            return lamStrLen(s[:i])
         }
     }
 
     static func lastIndex(s: str, sub: str) -> int {
+        #- The character position of the last `sub` in `s`, or -1. -#
         go! {
-            return strings.LastIndex(s, sub)
+            i := strings.LastIndex(s, sub)
+            if i <= 0 {
+                return i
+            }
+            return lamStrLen(s[:i])
         }
     }
 
@@ -246,9 +263,11 @@ class Strings {
     }
 
     static func center(s: str, width: int, fill: str = " ") -> str {
+        #- Center `s` between `fill`s until it has at least `width` characters. -#
         go! {
-            if len(s) >= width { return s }
-            pad := width - len(s)
+            n := lamStrLen(s)
+            if n >= width { return s }
+            pad := width - n
             left := pad / 2
             right := pad - left
             f := []rune(fill)
@@ -258,29 +277,31 @@ class Strings {
     }
 
     static func zfill(s: str, width: int) -> str {
+        #- Left-pad `s` with zeros until it has at least `width` characters. -#
         go! {
-            if len(s) >= width { return s }
-            return strings.Repeat("0", width-len(s)) + s
+            n := lamStrLen(s)
+            if n >= width { return s }
+            return strings.Repeat("0", width-n) + s
         }
     }
 
     static func padLeft(s: str, width: int, fill: str = " ") -> str {
-        #- Left-pad `s` with `fill` until it has at least `width` runes. -#
+        #- Left-pad `s` with `fill` until it has at least `width` characters. -#
         go! {
             if fill == "" { fill = " " }
-            runes := []rune(s)
-            if len(runes) >= width { return s }
-            return strings.Repeat(fill, width-len(runes)) + s
+            n := lamStrLen(s)
+            if n >= width { return s }
+            return strings.Repeat(fill, width-n) + s
         }
     }
 
     static func padRight(s: str, width: int, fill: str = " ") -> str {
-        #- Right-pad `s` with `fill` until it has at least `width` runes. -#
+        #- Right-pad `s` with `fill` until it has at least `width` characters. -#
         go! {
             if fill == "" { fill = " " }
-            runes := []rune(s)
-            if len(runes) >= width { return s }
-            return s + strings.Repeat(fill, width-len(runes))
+            n := lamStrLen(s)
+            if n >= width { return s }
+            return s + strings.Repeat(fill, width-n)
         }
     }
 

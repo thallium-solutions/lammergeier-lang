@@ -1,14 +1,14 @@
-# Indexing a `str` with one integer gives a `byte` (docs/SYNTAX.md); the
-# documented `string(s[i])` conversion gives a one-character `str` that
-# composes with str methods, `str` parameters, comparisons, `+`,
-# f-strings, comprehensions, lambdas, generics, classes and imported
-# modules, with constant, negative and computed indexes. `s[i].toUpper()`
-# itself is now a Lam error (611_str_index_byte_method) instead of a
-# `go build` failure.
+# Indexing a `str` with one integer gives a one-character `str`
+# (docs/SYNTAX.md, "Strings are sequences of characters"); the
+# `string(s[i])` conversion of older programs is a no-op that keeps
+# working. Both compose with str methods, `str` parameters, comparisons,
+# `+`, f-strings, comprehensions, lambdas, generics, classes and imported
+# modules, with constant, negative and computed indexes; `ord` gives the
+# code point.
 #
 # expect: upper=H last=O mid=L
 # expect: concat=hO cmp=true false
-# expect: byte=104 code=111 eq=true
+# expect: char=h code=111 eq=true
 # expect: comp=[A C] lambda=[X Y]
 # expect: fstring=[h|o]
 # expect: param=HELLO
@@ -48,7 +48,7 @@ func main() {
     print(f"upper={string(w[0]).toUpper()} last={string(w[-1]).toUpper()} mid={string(w[i]).toUpper()}")
     first: str = string(w[0])
     print(f"concat={first + string(w[-1]).toUpper()} cmp={string(w[0]) == "h"} {string(w[1]) == "h"}")
-    print(f"byte={w[0]} code={int(w[-1])} eq={w[0] == 104}")
+    print(f"char={w[0]} code={ord(w[-1])} eq={w[0] == "h"}")
     initials: list[str] = [string(x[0]).toUpper() for x in ["ab", "cd"]]
     words: list[str] = ["xa", "yb"]
     ups: list[str] = words.map(lambda s: string(s[0]).toUpper())

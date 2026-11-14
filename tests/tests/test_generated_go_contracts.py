@@ -333,7 +333,7 @@ def test_lambda_membership_imports_match_emitted_code() -> None:
         "lambda_membership_imports",
     )
     imports = go.split("import (", 1)[1].split(")", 1)[0].split()
-    assert imports == ['"fmt"', '"os"', '"path/filepath"', '"runtime"', '"strconv"', '"strings"'], go
+    assert imports == ['"fmt"', '"os"', '"path/filepath"', '"reflect"', '"runtime"', '"strconv"', '"strings"'], go
     _compile_go(go, "lambda_membership_imports")
     print("PASS: lambda membership imports match the emitted code")
 

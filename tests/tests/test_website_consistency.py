@@ -66,14 +66,14 @@ class OfficialPackage:
 OFFICIAL_PACKAGES = (
     OfficialPackage("@lam/jwt", "lam-jwt", ("Jwt", "JwtKeySet"), "3.1.3"),
     OfficialPackage("@lam/memcached", "lam-memcached", ("Memcached",), "2.0.3"),
-    OfficialPackage("@lam/protobuf", "lam-protobuf", ("Pb",), "3.0.3"),
+    OfficialPackage("@lam/protobuf", "lam-protobuf", ("Pb",), "3.0.4"),
     OfficialPackage(
         "@lam/redis",
         "lam-redis",
         ("PubSub", "Redis", "RedisCommand", "RedisScanPage", "RedisZMember"),
         "2.0.3",
     ),
-    OfficialPackage("@lam/s3", "lam-s3", ("S3", "S3Client", "S3Config", "S3Object"), "2.5.1"),
+    OfficialPackage("@lam/s3", "lam-s3", ("S3", "S3Client", "S3Config", "S3Object"), "2.5.2"),
     OfficialPackage(
         "@lam/sftp",
         "lam-sftp",
@@ -99,7 +99,7 @@ OFFICIAL_PACKAGES = (
             "Server",
             "SseEmitter",
         ),
-        "3.7.0",
+        "3.7.1",
     ),
     OfficialPackage(
         "@lam/vulture/std-plugin",
@@ -117,7 +117,7 @@ OFFICIAL_PACKAGES = (
         "@lam/vulture/dev-plugin",
         "lam-vulture-dev-plugin",
         ("LiveReload", "liveReload", "liveReloadPlugin"),
-        "1.2.1",
+        "1.2.2",
     ),
     OfficialPackage(
         "@lam/vulture/ws-plugin",
@@ -126,7 +126,7 @@ OFFICIAL_PACKAGES = (
         "2.0.4",
     ),
     OfficialPackage("@lam/stripe", "lam-stripe", ("StripeClient", "StripeConfig", "StripeWebhook"), "1.0.2"),
-    OfficialPackage("@lam/otel", "lam-otel", ("Otel", "OtelConfig", "OtelTracer"), "1.1.1"),
+    OfficialPackage("@lam/otel", "lam-otel", ("Otel", "OtelConfig", "OtelTracer"), "1.1.2"),
     OfficialPackage("@lam/keyring", "lam-keyring", ("KeyRing", "KeyDerivation", "Resealer"), "1.0.2"),
     OfficialPackage("@lam/totp", "lam-totp", ("Totp", "Hotp", "QrCode", "RecoveryCodes"), "1.0.2"),
     OfficialPackage("@lam/jobs", "lam-jobs", ("JobScheduler", "JobQueue", "JobWorkers"), "1.0.2"),
@@ -928,7 +928,7 @@ def check_official_packages(report: Report) -> None:
                 f"catalog needs a current canonical import example for {package.name}",
             )
 
-    if compiler_target is not None and compiler_target != "4.13":
+    if compiler_target is not None and compiler_target != "4.14":
         report.add(
             "official packages",
             ROOT / "compiler" / "version.py",

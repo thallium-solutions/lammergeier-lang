@@ -1,0 +1,26 @@
+# Html.safeUrl, Html.safeCss and Html.jsValue (lamhtml): the sanitizers the
+# markup security warnings point to.
+# expect: /p/1 #top ?q=a ./x https://e.it/a?b=1 mailto:a@b.it tel:+39
+# expect: about:invalid#lam-blocked about:invalid#lam-blocked about:invalid#lam-blocked about:invalid#lam-blocked
+# expect: data:image/png;base64,iVBORw0KGgo= about:invalid#lam-blocked
+# expect: color: red; margin: 0 4px | lam-blocked lam-blocked lam-blocked lam-blocked
+# expect: "\"; alert(1); //" 42 [1,2] {"a":"\u003c/script\u003e"} null true
+# expect: <a href="about:invalid#lam-blocked" onclick="go(&quot;\&quot;; x&quot;)">a</a>
+# expect: <script>var who = "\u003c/script\u003e\u003cscript\u003e";</script>
+
+from lamhtml import Html
+
+func link(url: str, name: str) -> html {
+    return <><a href="${Html.safeUrl(url)}" onclick="go(${Html.jsValue(name)})">a</a></>
+}
+
+func main() {
+    print(Html.safeUrl("/p/1"), Html.safeUrl("#top"), Html.safeUrl("?q=a"), Html.safeUrl("./x"), Html.safeUrl("https://e.it/a?b=1"), Html.safeUrl("mailto:a@b.it"), Html.safeUrl("tel:+39"))
+    print(Html.safeUrl("javascript:alert(1)"), Html.safeUrl(" JaVaScRiPt:alert(1)"), Html.safeUrl("java\tscript:alert(1)"), Html.safeUrl("data:text/html,<b>x</b>"))
+    print(Html.safeUrl("data:image/png;base64,iVBORw0KGgo="), Html.safeUrl("vbscript:x"))
+    print(Html.safeCss("color: red; margin: 0 4px"), "|", Html.safeCss("background: url(javascript:x)"), Html.safeCss("width: expression(alert(1))"), Html.safeCss("color: red; } body { x"), Html.safeCss("font-family: \"a\""))
+    print(Html.jsValue("\"; alert(1); //"), Html.jsValue(42), Html.jsValue([1, 2]), Html.jsValue({"a": "</script>"}), Html.jsValue(None), Html.jsValue(true))
+    print(str(link("javascript:x", "\"; x")))
+    who: str = "</script><script>"
+    print(str(<><script>var who = ${Html.jsValue(who)};</script></>))
+}

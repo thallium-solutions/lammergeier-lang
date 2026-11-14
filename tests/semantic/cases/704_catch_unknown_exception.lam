@@ -1,0 +1,16 @@
+# expect-error: line 8: error[undefined]: unknown exception class `OverflowErroandr` — did you mean `OverflowError`?
+# A capitalised name in `catch` is an exception class: an unknown one is a
+# Lam error (found by lamfuzz: it failed in go build with "undefined").
+# A lowercase name is still a catch-all binding.
+func main() {
+    try {
+        print(1)
+    } catch OverflowErroandr {
+        print("x")
+    }
+    try {
+        print(2)
+    } catch e {
+        print(e)
+    }
+}

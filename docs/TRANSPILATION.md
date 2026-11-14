@@ -586,6 +586,44 @@ the typed slice lowering (a fresh slice for `+`), `==` is `slices.Equal`,
 `x in data` is `slices.Contains` for a byte value (false outside 0..255) and
 `strings.Contains(string(data), string(sub))` for a sub-sequence.
 
+### `str` by character
+
+A `str` is a Go `string` (UTF-8) indexed, sliced and measured by
+character (code point), like Python, through helpers the main file defines
+when some module uses them (`_STR_RUNTIME_GO` in `compiler/transpiler.py`,
+libraries' Go joining the same package):
+
+| Lam | Go |
+|---|---|
+| `len(s)` | `lamStrLen(s)` |
+| `s[i]`, `s[-1]` | `lamStrAt(s, i)`, `lamStrAt(s, -1)` (a one-character `string`); `s[len(s) - k]` of a side-effect-free `s` is `lamStrAt(s, -k)` |
+| `s[a:b]`, `s[:b]`, `s[a:]`, `s[:]` | `lamStrSlice(s, a, b)`, `lamStrSlice(s, 0, b)`, `lamStrFrom(s, a)`, `s` |
+| `s[a:b:c]` | `lamStrStep(s, a, b, c, aGiven, bGiven)` |
+| `ord(c)`, `chr(n)` | `lamOrd(c)`, `lamChr(n)` |
+| `sorted(s)` | the characters as a `[]string`, sorted |
+
+The leading ASCII run of a string is byte-indexed as is (its bytes are its
+characters). A string of up to 64 bytes is checked (8 bytes at a time) and
+walked past that run (`for range`; `utf8.DecodeLastRuneInString` from the
+end for a negative index or bound). A longer one indexed past its first 4
+characters gets a `lamStrIndex`: its ASCII run, its character count and the
+byte offset of every 4th character after the run (`uint32`), built in one
+pass and cached in 16 slots (`atomic.Pointer`, keyed by the string's data
+pointer and length; an entry keeps its string alive, so the pair identifies
+the string), so a scanner loop over a long string stays linear and an index
+inside the ASCII run costs a cache lookup. `lamStrLen` uses a cached index
+when there is one and otherwise counts (`utf8.RuneCountInString` past the
+ASCII run) without building one; `len(s) == 0` (and `!= 0`, `> 0`, `<= 0`)
+stays Go's `len(s)`, and `len(bytes(s))` is Go's `len([]byte(s))`, which Go
+computes without a copy. A stepped slice works on the bytes of an ASCII
+string and on `[]rune(s)` otherwise. An index out of range panics with
+`lamStrIndexError`, a `runtime.Error` (`index out of range [i] with length
+n`, character positions), so `lamExc` raises it as `IndexError` at the Lam
+line like Go's own index faults. Loops (`for c in s`, `enumerate(s)`),
+`reversed(s)` and comprehensions range over the runes. `lamstrings` counts
+characters (with `lamStrLen`) in `length`, the positions of `index` /
+`lastIndex` and the padding widths.
+
 ### Native JSON lowering
 
 A `json` annotation triggers the compiler-managed `lamjson` support module and
@@ -1741,10 +1779,10 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `a if c else b`                    | Go ternary via IIFE typed by its branches (`func() string { ... }()`); joined with `+` to a `str`, it is a `string` closure even when one branch's type is not tracked |
 | `name := expr`                     | IIFE binding `name` locally and returning it (binding does *not* escape)  |
 | f-strings `f"x={x}"`               | `fmt.Sprintf("x=%v", x)` with method-call translation; when every slot is a `str`, `int`, `bool`, `html`, `xml` or `json` without a format spec, a string concatenation (see [F-string concatenation](#f-string-concatenation)): `f"{entry}_{size}.avif"` with declared `str` slots → `entry + "_" + size + ".avif"`, an `int` of a declared type → `strconv.Itoa(n)`, a slot hinted `str` without a declared type → `lamSlotText(x)`, html / xml / json → `lamValueText(page)`; an f-string without slots is a Go string literal |
-| `s[i]` / `s[a:b]`                  | Go string byte indexing / string slicing                                 |
+| `s[i]` / `s[a:b]` / `len(s)` on a `str` | by character: `lamStrAt` / `lamStrSlice` / `lamStrLen` (see [`str` by character](#str-by-character)) |
 | `xs[-1]` (constant negative index) | `xs[len(xs)-1]` (an IIFE for a non-trivial receiver); still an `IndexError` when out of range |
-| `xs[i]` on a list / string / tuple, `i` not provably non-negative | `xs[i+len(xs)&(i>>63)]` (see "Runtime negative indexes") |
-| `xs[a:b:c]` with negative / stepped bounds | typed IIFE keeping the receiver's Go type (`[]T` / `string`), reflection only for unknown receivers |
+| `xs[i]` on a list / tuple, `i` not provably non-negative | `xs[i+len(xs)&(i>>63)]` (see "Runtime negative indexes") |
+| `xs[a:b:c]` with negative / stepped bounds | typed IIFE keeping the receiver's Go type (`[]T`), reflection only for unknown receivers (a string there is sliced by `lamStrStep`) |
 | `d[k] ?? fallback` on a map        | comma-ok lookup: the fallback for a missing key                            |
 | `ref ?? fallback` on a class reference / interface value | `func() T { if __lamL := ref; __lamL != nil { return __lamL }; return fallback }()` typed as the reference; `load()? ?? d` tests the raw payload (see "`None` at run time"); `a ?? b ?? c` nests as `a ?? (b ?? c)` |
 | a `list[T]` / `dict[K, T]` where `list[any]` / `dict[K, any]` (or `list[float]` for ints) is expected | `_container_widening_go`: an IIFE copying the elements into a new `[]interface{}` / `map[K]interface{}` (element-wise for nested lists, `float64(e)` for ints; `nil` stays `nil`) |
@@ -1858,8 +1896,9 @@ is reported with a hint to use `//`.
 
 ### Runtime negative indexes
 
-`xs[i]` on a list, string or tuple counts from the end when `i < 0`
-(Python semantics). Unless the index is provably non-negative, the index
+`xs[i]` on a list or tuple counts from the end when `i < 0` (Python
+semantics; a `str` index is `lamStrAt`, see [`str` by
+character](#str-by-character)). Unless the index is provably non-negative, the index
 gets a branch-free adjustment: `i>>63` is `-1` (all bits set) for a
 negative `int` and `0` otherwise, so `i + len(xs)&(i>>63)` adds the length
 only to a negative index. It stays inlined, costs no branch misprediction
@@ -2652,8 +2691,9 @@ inputs and forward to the underlying Go API.
 - **Lam `int(s)` is a Go type-conversion, not a parser:** parse a whole string
   with an explicitly typed Result, for example `parsed: Result[int] =
   Conv.parse(s)`, or call `strconv.Atoi(s)` from a `go!` block. `Conv.parse`
-  reports malformed input rather than silently defaulting. `int(s[i])` is
-  different: string indexing yields a byte-like numeric value.
+  reports malformed input rather than silently defaulting. `s[i]` is a
+  one-character `str`, so `int(s[i])` parses that character; its code point
+  is `ord(s[i])`.
 - **Walrus (`name := expr`) binds locally:** the lowering wraps the
   binding in an IIFE, so the introduced name is *not* visible in the
   surrounding scope. Use `:=` only when the value of the expression

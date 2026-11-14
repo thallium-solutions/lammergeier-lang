@@ -42,7 +42,10 @@
 # expect: PASS 40 certificate fingerprint
 # expect: PASS 41 certificate date metadata
 # expect: PASS 42 invalid certificate result
-# expect: 42 passed, 0 failed, 42 total
+# expect: PASS 43 AES envelope with a UTF-8-shaped nonce
+# expect: PASS 44 PBKDF2 salt measured in bytes
+# expect: PASS 45 bcrypt limit measured in bytes
+# expect: 45 passed, 0 failed, 45 total
 
 from lamcrypto import Crypto, CryptoKeyPair, CryptoCertificate
 from lamtest import Test
@@ -164,6 +167,15 @@ qcGwcxqh6wxbONkCIotUhXIjGkr1CGj8QwCUuXcW7tJYVtgN0VI=
     Test.assertTrue(len(certificate.fingerprintSha256) == 64, "40 certificate fingerprint")
     Test.assertTrue(certificate.notBefore.startsWith("2026-") and certificate.notAfter.startsWith("2036-"), "41 certificate date metadata")
     Test.assertFalse(Crypto.parseCertificate("not a certificate").ok(), "42 invalid certificate result")
+    # Binary data is measured and cut in bytes, not characters: a nonce
+    # starting with the UTF-8 bytes of "é日", a salt of four "é" (8 bytes),
+    # and 40 "é" (80 bytes) over bcrypt's 72-byte limit.
+    asciiKey: list[int] = [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102]
+    fixedEnvelope: str = "lamcrypto:v1:w6nml6Vub25jZSEh0zsYCdUr6+Js2snZNW/bXTku4xcD9lrhIzj8/Yg="
+    Test.assertEqual(resultString(Crypto.decrypt(fixedEnvelope, asciiKey, "ctx")), "naïve 日本", "43 AES envelope with a UTF-8-shaped nonce")
+    utf8Salt: str = "pbkdf2-sha256$1000$w6nDqcOpw6k=$1136f8aacdc6606230a4d531cb99710ff6e4ba302d1383b7a3b8434453fb09e7"
+    Test.assertTrue(resultBool(Crypto.verifyPassword("secret", utf8Salt)), "44 PBKDF2 salt measured in bytes")
+    Test.assertFalse(Crypto.bcryptHash("é" * 40, 4).ok(), "45 bcrypt limit measured in bytes")
 
     Test.summary()
 }

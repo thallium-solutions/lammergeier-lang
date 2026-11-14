@@ -213,6 +213,8 @@ BUILTIN_FUNCS: Set[str] = {
     "list", "dict", "set", "tuple",
     # Reflection / runtime
     "type", "isinstance", "repr", "abs", "max", "min",
+    # Characters and code points
+    "ord", "chr",
     # Go-flavoured passthroughs
     "panic", "recover", "make", "new", "cap", "copy", "delete", "close",
     # Internal sentinels (transpiler-injected)
@@ -382,6 +384,9 @@ class _CallableSig:
     param_types: tuple[str, ...] = ()
     generic_names: tuple[str, ...] = ()
     return_type_text: str = ""
+    # ``safeUrl`` / ``jsValue`` / ``safeCss`` when every return of the
+    # function is that sanitizer's output (compiler/semantic_markup.py).
+    sanitized: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
@@ -392,6 +397,7 @@ class _MethodShape:
     param_type_texts: tuple[str, ...] = ()
     return_type_text: str = ""
     is_async: bool = field(default=False, compare=False)
+    sanitized: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
@@ -604,6 +610,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             )
         }
         token = set_subclass_hook(self._subclass_hook)
+        self._module_tree = tree
         self._narrow_module_vars = _narrowing.module_variable_names(tree)
         self._narrow_nonlocal_names = _narrowing.nonlocal_names(tree)
         try:
@@ -1409,6 +1416,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         if nested:
             self._warn_loop_captures(node, suite_node, scope.names, "nested function")
         self._scopes.append(scope)
+        self.__dict__.setdefault("_funcdef_stack", []).append(node)
         try:
             self._check_param_defaults(params_node)
             if not nested:
@@ -1424,10 +1432,131 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 self._walk_suite_stmts(self._suite_stmts(suite_node))
                 self._check_function_returns(node, suite_node)
                 self._warn_list_param_resizes(params_node, suite_node)
+                self._warn_async_shared_writes(node, params_node, suite_node, scope)
             self._emit_unused_param_warnings(scope, params_node)
             self._emit_unused_local_warnings(scope)
         finally:
             self._scopes.pop()
+            self._funcdef_stack.pop()
+
+    # Methods that modify a list, dict or set in place.
+    _COLLECTION_MUTATORS = frozenset({
+        "append", "extend", "insert", "pop", "remove", "clear", "update", "add", "discard", "popitem", "setdefault",
+    })
+
+    def _warn_async_shared_writes(self, node: Tree, params_node, suite_node: Tree, scope) -> None:
+        """An ``async func`` that modifies a list, dict or set it does not own
+        (a parameter, a field of ``self``, a module variable): tasks run at
+        the same time, and two of them writing one dict or list crash the
+        program (Go's fatal "concurrent map writes", not catchable). Quiet
+        when the function takes a lock (a ``.lock()`` / ``.withLock`` call)."""
+        if not any(
+            (isinstance(c, Token) and str(c) == "async") or (isinstance(c, Tree) and c.data == "async")
+            for c in node.children
+        ):
+            return
+        params = set(self._param_names(params_node)) - {"self", "cls"}
+        module_vars = set()
+        if self._scopes:
+            seen = getattr(self, "_module_seen", {})
+            module_vars = {
+                name for name in self._scopes[0].names if seen.get(name) not in ("func", "class", "import")
+            }
+        warned: set[str] = set()
+
+        def root_of(expr):
+            """The owner of ``a.b[k].c``: ``("a", node)``, ``("self.b", node)``."""
+            while isinstance(expr, Tree) and expr.data in ("getitem", "getattr") and expr.children:
+                inner = expr.children[0]
+                if (
+                    expr.data == "getattr" and isinstance(inner, Tree) and inner.data == "var"
+                    and inner.children and self._name_text(inner.children[0]) == "self"
+                ):
+                    return f"self.{self._name_text(expr.children[1])}"
+                expr = inner
+            if isinstance(expr, Tree) and expr.data == "var" and expr.children:
+                return self._name_text(expr.children[0])
+            return ""
+
+        def shared(owner: str) -> bool:
+            if owner.startswith("self."):
+                return True
+            if owner in params:
+                return True
+            return owner in module_vars and owner not in scope.var_types and not any(
+                owner in sc.names for sc in self._scopes[1:-1]
+            ) and owner not in self._local_assigned_names(suite_node)
+
+        def is_collection(target) -> bool:
+            kind = self._expr_simple_type(target) if isinstance(target, Tree) else None
+            if kind is None and isinstance(target, Tree) and target.data == "getattr":
+                kind = self._member_target_type(target)
+            return isinstance(kind, (ListType, DictType)) or (isinstance(kind, GenericType) and kind.base == "set")
+
+        def report(site, owner: str) -> None:
+            if owner in warned:
+                return
+            warned.add(owner)
+            self._warning(
+                site, "concurrency",
+                f"async function `{self._funcdef_name(node)}` modifies `{owner}`, which other tasks may share: "
+                "two tasks writing one dict or list at once crash the program; take a `Mutex` "
+                "(lamconcurrency) around the write or return the result instead",
+            )
+
+        uses_lock = False
+        sites = []
+        stack = [suite_node]
+        while stack:
+            cur = stack.pop()
+            if not isinstance(cur, Tree):
+                continue
+            if cur.data in ("funcdef", "classdef"):
+                continue
+            if cur.data == "funccall" and cur.children and isinstance(cur.children[0], Tree) and cur.children[0].data == "getattr":
+                method = self._name_text(cur.children[0].children[1]) if len(cur.children[0].children) > 1 else ""
+                if method in ("lock", "rLock", "withLock", "acquire"):
+                    uses_lock = True
+                elif method in self._COLLECTION_MUTATORS:
+                    sites.append((cur, cur.children[0].children[0]))
+            if cur.data in ("assign", "augassign") and cur.children:
+                targets = cur.children[:-1] if cur.data == "assign" else cur.children[:1]
+                for target in targets:
+                    if isinstance(target, Tree) and target.data == "getitem" and target.children:
+                        sites.append((cur, target.children[0]))
+            if cur.data == "del_stmt":
+                for target in cur.iter_subtrees():
+                    if target.data == "getitem" and target.children:
+                        sites.append((cur, target.children[0]))
+            stack.extend(c for c in cur.children if isinstance(c, Tree))
+        if uses_lock:
+            return
+        for site, target in sites:
+            owner = root_of(target)
+            if owner and shared(owner) and is_collection(target):
+                report(site, owner)
+
+    def _local_assigned_names(self, suite_node: Tree) -> set[str]:
+        """Names a body binds itself (``x = ...``, ``x: T = ...``, loop
+        targets): its own values, not shared ones."""
+        cache = self.__dict__.setdefault("_local_assigned_cache", {})
+        key = id(suite_node)
+        if key in cache:
+            return cache[key]
+        names: set[str] = set()
+        for sub in suite_node.iter_subtrees():
+            if sub.data in ("assign", "annassign") and sub.children:
+                first = sub.children[0]
+                if isinstance(first, Tree) and first.data == "var" and first.children:
+                    names.add(self._name_text(first.children[0]))
+                elif isinstance(first, Tree) and first.data == "name":
+                    names.add(self._name_text(first))
+            if sub.data in ("for_stmt",) and sub.children:
+                for t in sub.children[0].iter_subtrees() if isinstance(sub.children[0], Tree) else ():
+                    if t.data == "name":
+                        names.add(self._name_text(t))
+        cache[key] = names
+        return names
 
     # List methods that change a list's length; on a parameter the change
     # stays local (``xs = append(xs, v)`` on the callee's slice header).
@@ -2896,7 +3025,18 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 type_test = c
         if alias is None and type_test is not None and type_test.data == "var":
             test_name = self._name_text(type_test.children[0]) if type_test.children else ""
-            if test_name and test_name not in PYTHON_EXCEPTIONS:
+            if (
+                test_name and test_name[0].isupper() and test_name not in PYTHON_EXCEPTIONS
+                and test_name not in self._class_method_shapes and not self._is_resolved(test_name)
+            ):
+                # ``catch OverflowErorr``: a capitalised name is an exception
+                # class (the code generator tests for that type), never a
+                # binding; an unknown one failed in go build.
+                suggestion = self._suggest_name(test_name)
+                hint = f" — did you mean `{suggestion}`?" if suggestion else ""
+                self._error(type_test, "undefined", f"unknown exception class `{test_name}`{hint}")
+                type_test = None
+            elif test_name and test_name not in PYTHON_EXCEPTIONS:
                 alias = test_name
                 alias_node = type_test
                 type_test = None
@@ -3239,6 +3379,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                         f"`print` takes no keyword arguments (`{keywords[0]}=`); build the text with an "
                         f"f-string or `sep.join(parts)` (each `print` ends the line)",
                     )
+            if (
+                target in {"ord", "chr"}
+                and isinstance(node.children[0], Tree) and node.children[0].data == "var"
+                and not self._is_user_callable(target)
+            ):
+                self._check_ord_chr_call(node, target)
             if (
                 target in _PYTHON_CONTAINER_CONVERSIONS
                 and isinstance(node.children[0], Tree) and node.children[0].data == "var"
@@ -4803,7 +4949,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             value_node,
             "type",
             f"cannot assign `{render_type(actual)}` to `{render_type(expected)}` variable `{name}`"
-            + self._byte_for_str_hint(expected, actual, value_node)
+            + self._none_value_hint(expected, actual)
         )
 
     def _annassign_target_display(self, node: Tree) -> str:
@@ -5628,7 +5774,20 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             # A plain assignment keeps the declared type of an existing
             # variable (``payload: json`` reassigned inside an ``if``).
             names = [name for name in names if not self._var_type(name)]
-            value_type = self._expr_simple_type(self._assign_value(node))
+            value_node = self._assign_value(node)
+            if (
+                names and isinstance(value_node, Tree) and value_node.data == "const_none"
+                and not any(self._is_resolved_quietly(name) for name in names)
+            ):
+                # ``x = None`` binds a new name with no type (the generated
+                # Go failed: "use of untyped nil").
+                shown = names[0]
+                self._error(
+                    node, "type",
+                    f"`{shown} = None` gives `{shown}` no type: declare it (`{shown}: User = None`, `{shown}: any = None`)",
+                )
+                return
+            value_type = self._expr_simple_type(value_node)
             type_name = render_type(value_type) if value_type is not None else ""
             if (
                 type_name
@@ -5676,6 +5835,13 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 mixed[name] = ("collection", classes)
             else:
                 mixed.pop(name, None)
+
+    def _is_resolved_quietly(self, name: str) -> bool:
+        """``name`` already bound in an enclosing scope (a parameter, an
+        outer local, a module variable): ``x = None`` then reassigns it."""
+        return any(name in scope.names for scope in self._scopes[:-1]) and any(
+            name in scope.var_types or name in getattr(scope, "param_nodes", {}) for scope in self._scopes
+        )
 
     def _enclosing_blocks(self, node: Tree) -> list[int]:
         """Ids of the blocks around ``node``, innermost first, up to the
@@ -7113,7 +7279,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             self._error(
                 callee, "member",
                 f"`{render_type(receiver_type)}` has no method `{method}`"
-                + self._scalar_receiver_hint(receiver, receiver_type, method, call),
+                + self._scalar_receiver_hint(receiver, receiver_type),
             )
 
     # Methods of a generator value (``g.close()``) and the spellings of other
@@ -7146,59 +7312,20 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         "float", "float32", "float64", "bool", "byte", "rune",
     })
 
-    def _str_index_byte_hint(self, node, method: str = "", call: Tree | None = None) -> str:
-        """``w[0]`` is a ``byte`` (indexing a ``str`` with one integer):
-        the suffix naming the one-character ``str`` conversion, or ``""``
-        when ``node`` is not such an index."""
-        if not (isinstance(node, Tree) and node.data == "getitem" and len(node.children) == 2):
-            return ""
-        receiver, index = node.children
-        if not isinstance(receiver, Tree) or (isinstance(index, Tree) and index.data == "slice"):
-            return ""
-        receiver_type = self._expr_simple_type(receiver)
-        if receiver_type is None and receiver.data == "getattr":
-            receiver_type = self._member_target_type(receiver)
-        if not (receiver_type is not None and self._is_named_type(receiver_type, "str")):
-            return ""
-        from compiler.constants import lam_simple_expr_text, str_index_byte_hint
-        has_args = call is not None and bool(self._call_positional_args(call))
-        return str_index_byte_hint(lam_simple_expr_text(node), method, has_args)
-
-    def _byte_for_str_hint(self, expected: Type | None, actual: Type | None, node) -> str:
-        """``first: str = w[0]``: the ``_str_index_byte_hint`` of a ``byte``
-        value where a ``str`` is expected (and the reason a ``None`` does
-        not fit a value type)."""
+    def _none_value_hint(self, expected: Type | None, actual: Type | None) -> str:
+        """The reason a ``None`` does not fit a value type."""
         if self._is_named_type(actual, "None") and self._is_value_type(expected):
             text = render_type(expected)
             return (
                 f" ({'an' if text[:1] in 'aeiou' else 'a'} `{text}` cannot be `None`: use a default value, "
                 "a `Result`, or `any`)"
             )
-        if (
-            expected is not None and actual is not None
-            and self._is_named_type(expected, "str") and self._is_named_type(actual, "byte")
-        ):
-            return self._str_index_byte_hint(node)
         return ""
 
-    def _byte_str_operands_hint(self, operands: list, types: list) -> str:
-        """``w[0] == "h"`` / ``"x" + w[-1]``: the hint for the ``byte``
-        operand of a ``byte`` / ``str`` pair."""
-        if not any(t is not None and self._is_named_type(t, "str") for t in types):
-            return ""
-        for operand, operand_type in zip(operands, types):
-            if operand_type is not None and self._is_named_type(operand_type, "byte"):
-                hint = self._str_index_byte_hint(operand)
-                if hint:
-                    return hint
-        return ""
-
-    def _scalar_receiver_hint(self, receiver: Tree, receiver_type: Type, method: str, call: Tree) -> str:
+    def _scalar_receiver_hint(self, receiver: Tree, receiver_type: Type) -> str:
+        """``data[0].toUpper()`` of a ``bytes``: a ``byte`` has no methods."""
         if not self._is_named_type(receiver_type, "byte"):
             return ""
-        hint = self._str_index_byte_hint(receiver, method, call)
-        if hint:
-            return hint
         from compiler.constants import lam_simple_expr_text
         text = lam_simple_expr_text(receiver) or "b"
         return f"; convert it with `string({text})` or `int({text})`"
@@ -7456,7 +7583,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             "type",
             f"argument `{param_name}` to `{target}` has type `{render_type(actual)}`, expected `{render_type(expected)}`"
             + self._defaults_hint(expected, node)
-            + self._byte_for_str_hint(expected, actual, node)
+            + self._none_value_hint(expected, actual)
         )
 
     def _defaults_hint(self, expected: Type, node) -> str:
@@ -9583,6 +9710,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 (isinstance(c, Token) and str(c) == "async") or (isinstance(c, Tree) and c.data == "async")
                 for c in node.children
             ),
+            returns_sanitized(node),
         )
 
     def _collect_constructor_sigs(self, class_name: str, classdef: Tree) -> None:
@@ -9964,8 +10092,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 and not is_assignable(expected_model, actual_model)
                 and not self._nominal_type_assignable(expected_model, actual_model)
                 and not self._numeric_constant_fits_type_param(expected_model, value_node)):
-            hint = ""
-            hint = hint or self._byte_for_str_hint(expected_model, actual_model, value_node)
+            hint = self._none_value_hint(expected_model, actual_model)
             self._error(
                 ret, "return",
                 f"function `{name}` returns `{actual_type}`, expected `{expected_name}`{hint}",
@@ -10487,6 +10614,25 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 f"`?? {fallback or '...'}` has no effect",
             )
 
+    def _check_ord_chr_call(self, call: Tree, name: str) -> None:
+        """``ord(c)`` takes one ``str`` (a character), ``chr(n)`` one ``int``
+        (a code point)."""
+        expected = "str" if name == "ord" else "int"
+        args = self._call_positional_args(call)
+        if len(args) != 1 or self._call_keyword_names(call):
+            self._error(
+                call, "call",
+                f"`{name}` takes one argument, {'a one-character `str`' if name == 'ord' else 'an `int` code point'}",
+            )
+            return
+        arg_type = self._expr_simple_type(args[0]) if isinstance(args[0], Tree) else None
+        if arg_type is None or self._is_named_type(arg_type, "any") or self._is_named_type(arg_type, expected):
+            return
+        self._error(
+            args[0], "type",
+            f"argument of `{name}` has type `{render_type(arg_type)}`, expected `{expected}`",
+        )
+
     def _numeric_builtin_result_type(self, name: str, call: Tree) -> Type | None:
         """``min``/``max``/``abs`` overloads: ints give int, any float gives
         float, strings give str (``min``/``max``); one list argument gives
@@ -10519,6 +10665,9 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return ListType(source_type.args[0])
         if isinstance(source_type, DictType):
             return ListType(source_type.key)
+        if self._is_named_type(source_type, "str"):
+            # ``sorted(s)``: its characters.
+            return ListType(NamedType("str"))
         return source_type
 
     def _collection_call_result_type(self, call: Tree) -> Type | None:
@@ -10540,6 +10689,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 return None
             if name == "len" and name not in self._func_return_types:
                 return NamedType("int")
+            if name in {"ord", "chr"} and name not in self._func_return_types:
+                return NamedType("int" if name == "ord" else "str")
             if name in {"min", "max", "abs"} and name not in self._func_return_types:
                 return self._numeric_builtin_result_type(name, call)
             return None
@@ -10901,10 +11052,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             right_type = self._expr_simple_type(right)
             if left_type is not None and right_type is not None:
                 if not self._binary_operator_allowed(op, left_type, right_type):
-                    hint = self._byte_str_operands_hint(
-                        [operands[index], right], [left_type, right_type],
-                    ) if op == "+" else ""
-                    self._report_binary_type_error(node, op, left_type, right_type, hint)
+                    self._report_binary_type_error(node, op, left_type, right_type, "")
                     return
                 left_type = self._binary_operator_result_type(op, left_type, right_type)
             else:
@@ -11004,8 +11152,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                         self._error(
                             node,
                             "type",
-                            f"cannot compare `{render_type(left_type)}` and `{render_type(right_type)}`"
-                            + self._byte_str_operands_hint([operands[index], right], [left_type, right_type]),
+                            f"cannot compare `{render_type(left_type)}` and `{render_type(right_type)}`",
                         )
                         return
             left_type = right_type
@@ -11748,7 +11895,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return receiver_type.item
         if isinstance(receiver_type, DictType):
             return receiver_type.value
-        if self._is_named_type(receiver_type, "str") or self._is_named_type(receiver_type, "bytes"):
+        if self._is_named_type(receiver_type, "str"):
+            # ``s[i]``: the one-character ``str`` at character ``i``.
+            return NamedType("str")
+        if self._is_named_type(receiver_type, "bytes"):
             return NamedType("byte")
         if isinstance(receiver_type, GenericType) and receiver_type.base == "tuple" and receiver_type.args:
             # ``t[1]``: that element; ``t[k]``: the common element type.
@@ -12189,6 +12339,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             sig.param_types,
             sig.generic_names,
             self._funcdef_return_type_text(node),
+            returns_sanitized(node),
         )
 
     def _callable_signature_from_params(
@@ -13335,6 +13486,7 @@ def _imported_call_metadata(
             tuple(remap_type_text(type_text, class_aliases) for type_text in sig.param_types),
             sig.generic_names,
             remap_type_text(sig.return_type_text, class_aliases),
+            sig.sanitized,
         )
 
     def remap_base_name(base: str, class_aliases: dict[str, str]) -> str:
@@ -13403,6 +13555,7 @@ def _imported_call_metadata(
                     tuple(remap_type_text(type_text, aliases) for type_text in shape.param_type_texts),
                     remap_type_text(shape.return_type_text, aliases),
                     shape.is_async,
+                    shape.sanitized,
                 )
                 for method_name, shape in class_helper._class_method_shapes[local].items()
             }
@@ -14013,3 +14166,69 @@ def _no_effect_expr(expr) -> bool:
         operands = [c for c in expr.children if isinstance(c, Tree) and c.data != "comp_op"]
         return bool(operands) and all(_no_effect_expr(c) for c in operands)
     return False
+
+
+# Static starts of a URL that fix its scheme to a harmless one.
+_SAFE_URL_PREFIXES = ("/", "#", "?", "./", "../", "http://", "https://", "mailto:", "tel:")
+
+
+def static_safe_url(expr) -> bool:
+    """A string literal, an f-string or a ``+`` concatenation whose static
+    start is a relative URL or an http(s) / mailto / tel URL: whatever
+    follows cannot make it a ``javascript:`` URL."""
+    if not isinstance(expr, Tree):
+        return False
+    if expr.data == "arith_expr" and expr.children:
+        return static_safe_url(expr.children[0])
+    if expr.data in ("string", "fstring") and expr.children:
+        raw = str(expr.children[0])
+        start = 0
+        while start < len(raw) and raw[start] in "fFrRbB":
+            start += 1
+        body = raw[start:].lstrip("\"'")
+        if expr.data == "fstring" and body.startswith("{") and not body.startswith("{{"):
+            return False
+        return body.lower().startswith(_SAFE_URL_PREFIXES)
+    return False
+
+
+def _sanitizer_call(expr) -> str:
+    if not (isinstance(expr, Tree) and expr.data == "funccall" and expr.children):
+        return ""
+    callee = expr.children[0]
+    if not (isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2):
+        return ""
+    receiver = callee.children[0]
+    if not (isinstance(receiver, Tree) and receiver.data == "var" and receiver.children):
+        return ""
+    head = receiver.children[0]
+    if (str(head.children[0]) if isinstance(head, Tree) and head.children else str(head)) != "Html":
+        return ""
+    method = callee.children[1]
+    name = str(method.children[0]) if isinstance(method, Tree) and method.children else str(method)
+    return name if name in {"safeUrl", "jsValue", "safeCss"} else ""
+
+
+def returns_sanitized(funcdef) -> str:
+    """``safeUrl`` (``jsValue``, ``safeCss``) when every ``return`` of
+    ``funcdef`` gives that sanitizer's output (for ``safeUrl`` also a string
+    with a static safe start, ``f"/{lang}{path}"``); ``""`` otherwise."""
+    if not isinstance(funcdef, Tree):
+        return ""
+    found: set[str] = set()
+    stack = [c for c in funcdef.children if isinstance(c, Tree) and c.data == "suite"]
+    if not stack:
+        return ""
+    while stack:
+        cur = stack.pop()
+        if cur.data in ("funcdef", "lambdef", "classdef"):
+            continue
+        if cur.data == "return_stmt":
+            value = next((c for c in cur.children if isinstance(c, Tree)), None)
+            kind = _sanitizer_call(value) or ("safeUrl" if static_safe_url(value) else "")
+            if not kind:
+                return ""
+            found.add(kind)
+            continue
+        stack.extend(c for c in cur.children if isinstance(c, Tree))
+    return found.pop() if len(found) == 1 else ""

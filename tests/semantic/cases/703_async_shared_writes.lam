@@ -1,0 +1,46 @@
+# expect-warning: async function `add` modifies `self.items`, which other tasks may share
+# expect-warning: async function `record` modifies `counts`, which other tasks may share
+# expect-warning: async function `record` modifies `cache`, which other tasks may share
+# expect-no-warning: async function `addLocked`
+# expect-no-warning: modifies `own`
+# An async function writing a list or dict it does not own (a parameter, a
+# field, a module variable) races with other tasks: Go crashes the program
+# on concurrent dict writes. A function that takes a lock, and its own
+# locals, are quiet.
+from lamconcurrency import Mutex
+
+cache: dict[str, int] = {}
+
+class Store {
+    func init(self) {
+        self.items: list[int] = []
+        self.lock: Mutex = Mutex()
+    }
+
+    async func add(self, n: int) {
+        self.items.append(n)
+    }
+
+    async func addLocked(self, n: int) {
+        self.lock.lock()
+        self.items.append(n)
+        self.lock.unlock()
+    }
+}
+
+async func record(key: str, counts: dict[str, int]) {
+    counts[key] = 1
+    cache[key] = 2
+    own: list[int] = []
+    own.append(1)
+}
+
+func main() {
+    s: Store = Store()
+    t = s.add(1)
+    await t
+    c: dict[str, int] = {}
+    r = record("a", c)
+    await r
+    print(len(c), len(cache), len(s.items))
+}

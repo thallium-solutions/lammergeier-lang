@@ -3,7 +3,7 @@
 # expect: sqlite-str Ada 7 2.5  none
 # expect: sqlite-bool true false true false true
 # expect: sqlite-null true true false
-# expect: sqlite-nullable Ada <nil> 7 <nil> 2.5 true <nil>
+# expect: sqlite-nullable Ada None 7 None 2.5 true None
 # expect: sqlite-time 2026-11-03T19:05:00Z 1793732700 1793732700 none
 # expect: sqlite-list a|b c|d,e 3 1,2,3
 # expect: pg-int 9007199254740993 1 0 123 1793732700 12

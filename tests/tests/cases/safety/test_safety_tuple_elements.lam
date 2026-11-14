@@ -1,0 +1,22 @@
+# The element of a tuple read with a constant index has its declared type
+# (a tuple is a []interface{} underneath): `pair[0].toUpper()` of a
+# `tuple[str, int]` failed in go build.
+# expect: AB 2 true
+# expect: 3.5 Box(7)
+
+class Box {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    func __str__(self) -> str {
+        return f"Box({self.n})"
+    }
+}
+
+func main() {
+    pair: tuple[str, int] = ("ab", 1)
+    print(pair[0].toUpper(), pair[1] + 1, pair[0].startsWith("a"))
+    mixed: tuple[float, Box] = (2.5, Box(7))
+    print(mixed[0] + 1.0, mixed[1])
+}

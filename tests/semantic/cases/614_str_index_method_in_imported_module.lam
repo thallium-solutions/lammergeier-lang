@@ -1,0 +1,11 @@
+# expect-pass
+# `name[0].toUpper()` in an imported module: indexing a `str` gives a
+# one-character `str`, so the method is valid there too (it was a `byte`
+# error, reported in the library file, while strings were indexed by
+# byte).
+
+from str_index_module_helper import initial
+
+func main() {
+    print(initial("bob"))
+}

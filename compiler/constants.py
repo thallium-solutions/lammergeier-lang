@@ -651,7 +651,7 @@ COMPILER_GO_PACKAGES = frozenset({
 # virtual-dispatch interfaces).
 COMPILER_RUNTIME_HELPERS = frozenset({
     # Run-time faults and the uncaught-exception report (docs/SAFETY.md).
-    "lamExc", "lamExcKindOf", "lamFault", "lamFaultArticle", "lamFaultConversion", "lamFaultFrames",
+    "lamExc", "lamExcKindOf", "lamNoneShown", "lamShow", "lamFault", "lamFaultArticle", "lamFaultConversion", "lamFaultFrames",
     "lamFaultGoType", "lamFaultText", "lamFloatToInt", "lamIPow", "lamRangeStep", "lamStdlibDir",
     "lamUncaught",
     "lamAs", "lamAsNil", "lamAsyncFailure", "lamAsyncFailureIDs", "lamAsyncFailures",
@@ -662,6 +662,12 @@ COMPILER_RUNTIME_HELPERS = frozenset({
     "lamGenYield", "lamGoTypeLamName", "lamNewGenerator", "lamNewIsolatedGenerator",
     "lamNewMethodGenerator", "lamNewStateGenerator", "lamNN", "lamNNI", "lamNoneError",
     "lamNoneIsNot", "lamNoneMember", "lamNoneOf", "lamSlotText", "lamStopCollectedGenerator",
+    # Character semantics of ``str`` (``_STR_RUNTIME_GO``).
+    "lamChr", "lamOrd", "lamStrASCII", "lamStrAt", "lamStrAtAny", "lamStrBound", "lamStrChar", "lamStrFrom", "lamStrIndex",
+    "lamStrIndexError", "lamStrIndexFault", "lamStrIndexFind", "lamStrIndexNew", "lamStrIndexOf", "lamStrIndexSlot",
+    "lamStrIndexes", "lamStrLen",
+    "lamStrPos", "lamStrPosEnd", "lamStrShort", "lamStrSlice", "lamStrSpan", "lamStrStep", "lamStrStepBounds",
+    "lamStrStepCount",
 })
 COMPILER_RUNTIME_HELPER_PREFIXES: tuple[str, ...] = ("lamFuncRef_", "lamModuleInit_", "lamVirtual")
 
@@ -783,17 +789,6 @@ def lam_simple_expr_text(node) -> str:
             return ""
         return f"{callee}({', '.join(arg_texts)})"
     return ""
-
-
-def str_index_byte_hint(index_text: str, method: str = "", has_args: bool = False) -> str:
-    """Suffix for a ``byte`` from indexing a ``str`` (``w[0]``) used as a
-    ``str``: the documented ``string(w[0])`` conversion to a one-character
-    ``str`` (with the method call for ``w[0].toUpper()``). Shared by the
-    semantic checker and the transpiler (imported modules)."""
-    converted = f"string({index_text or 's[i]'})"
-    if method:
-        converted += f".{method}({'...' if has_args else ''})"
-    return f"; indexing a `str` gives a `byte`: use `{converted}` for a one-character `str`"
 
 
 def str_method_idiom(method: str, receiver: str = "", args=None) -> str:

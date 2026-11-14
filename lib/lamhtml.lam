@@ -58,6 +58,8 @@ from lammarkup import Markup
 
 go! {
     import (
+        "bytes"
+        "encoding/json"
         "hash/maphash"
         "strings"
         "sync"
@@ -431,6 +433,69 @@ go! {
             }
         }
         return true
+    }
+
+    // lamHtmlSafeURL is a URL safe in any URL attribute: relative, or with
+    // the http, https, mailto or tel scheme, or a base64 image; anything
+    // else (javascript:, vbscript:, data:text/html, unknown schemes) is
+    // replaced by an inert URL.
+    func lamHtmlSafeURL(value string) string {
+        compact := lamSanCompactURL(value)
+        end := strings.IndexAny(compact, ":/?#")
+        if end < 0 || compact[end] != ':' {
+            return value
+        }
+        scheme := strings.ToLower(compact[:end])
+        switch scheme {
+        case "http", "https", "mailto", "tel":
+            return value
+        case "data":
+            if lamSanDataImage(compact) {
+                return value
+            }
+        }
+        return "about:invalid#lam-blocked"
+    }
+
+    // lamHtmlSafeCSS is a style value (one or more ``property: value``
+    // declarations) whose values hold only plain CSS: no url(), expression,
+    // javascript:, comments, escapes or quotes. Anything else is replaced.
+    func lamHtmlSafeCSS(value string) string {
+        lower := strings.ToLower(value)
+        for _, banned := range []string{"javascript", "vbscript", "expression", "url(", "@import", "behavior", "-moz-binding", "\\", "<", "/*", "*/"} {
+            if strings.Contains(lower, banned) {
+                return "lam-blocked"
+            }
+        }
+        for _, decl := range strings.Split(value, ";") {
+            decl = strings.TrimSpace(decl)
+            if decl == "" {
+                continue
+            }
+            name, val, ok := strings.Cut(decl, ":")
+            if !ok {
+                if !lamSanStyleValue(decl) {
+                    return "lam-blocked"
+                }
+                continue
+            }
+            if _, ok := lamSanName(strings.TrimSpace(name), ""); !ok || !lamSanStyleValue(strings.TrimSpace(val)) {
+                return "lam-blocked"
+            }
+        }
+        return value
+    }
+
+    // lamHtmlJSValue is ``v`` as a JavaScript literal (JSON), with <, > and &
+    // escaped so that it cannot close a <script> element or an attribute.
+    func lamHtmlJSValue(v interface{}) string {
+        var buf bytes.Buffer
+        enc := json.NewEncoder(&buf)
+        enc.SetEscapeHTML(true)
+        if err := enc.Encode(v); err != nil {
+            return "null"
+        }
+        return strings.TrimRight(buf.String(), "\n")
     }
 
     func lamSanStyleValue(value string) bool {
@@ -940,6 +1005,43 @@ class Html {
     static func escape(text: str) -> str {
         #- ``text`` escaped for HTML content and attribute values. -#
         return Markup.escape(text)
+    }
+
+    static func safeUrl(url: str) -> str {
+        #- ``url`` for a URL attribute (``href``, ``src``, ``action``...):
+           relative URLs and the http, https, mailto and tel schemes pass,
+           and base64 images (``data:image/png;base64,...``); any other
+           scheme (``javascript:``, ``vbscript:``, ``data:text/html``) gives
+           ``about:invalid#lam-blocked``. -#
+        out: str = ""
+        go! {
+            out = lamHtmlSafeURL(url)
+        }
+        return out
+    }
+
+    static func safeCss(style: str) -> str {
+        #- ``style`` (``color: red; margin: 0 4px``) for a ``style``
+           attribute or ``<style>``, when its values are plain CSS; one with
+           ``url(``, ``expression``, ``javascript``, comments, quotes or
+           escapes gives ``lam-blocked``. -#
+        out: str = ""
+        go! {
+            out = lamHtmlSafeCSS(style)
+        }
+        return out
+    }
+
+    static func jsValue(value: any) -> str {
+        #- ``value`` as a JavaScript literal (its JSON: ``"text"``, ``42``,
+           ``[1, 2]``, ``{"a": 1}``), safe inside ``<script>`` and event
+           handler attributes: insert it without quotes around it
+           (``var name = ${Html.jsValue(name)};``). -#
+        out: str = ""
+        go! {
+            out = lamHtmlJSValue(value)
+        }
+        return out
     }
 
     static func sanitize(markup: str) -> html {

@@ -1,0 +1,41 @@
+# A hand-written scanner over a long non-ASCII string (22 010 characters,
+# 23 870 bytes): ``while pos < len(src)`` reading ``src[pos]`` one character
+# at a time, the shape of a lexer or a parser written in Lam. ``str``
+# indexes characters: on a long string the position of a character must not
+# cost a walk from the start (the scan would be quadratic). The Go baseline
+# ranges over the runes. (``string(...)`` keeps the program valid for lamc
+# 4.13 and older, where ``s[i]`` was a byte.)
+#
+# ops: 2201000
+
+from lamtime import Time
+
+func work() {
+    src: str = "alpha bêta, gamma délta; epsilon zêta eta thêta iota kappa lambda mü.\n" * 310
+    words: int = 0
+    for r in range(100) {
+        pos: int = 0
+        inWord: bool = false
+        while pos < len(src) {
+            c: str = string(src[pos])
+            if c == " " or c == "," or c == ";" or c == "." or c == "\n" {
+                inWord = false
+            } elif not inWord {
+                inWord = true
+                words += 1
+            }
+            pos += 1
+        }
+    }
+    if words == 0 {
+        print("unreachable")
+    }
+}
+
+# Times only the workload: no process start, runtime or import costs.
+func main() {
+    start: int = Time.nowUnixNano()
+    work()
+    elapsed: int = Time.nowUnixNano() - start
+    print(f"BENCH string_scan_unicode 2201000 {elapsed}")
+}

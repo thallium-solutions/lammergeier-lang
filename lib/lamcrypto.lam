@@ -332,17 +332,18 @@ class Crypto {
             return Result.Err(Error("CryptoEnvelopeError", "unsupported or malformed encrypted envelope", None))
         }
         encoded: str = envelope[13:]
-        payload: str = Base64.decode(encoded)?
+        # Binary data: bytes (a ``str`` would count characters).
+        payload: bytes = bytes(Base64.decode(encoded)?)
         if len(payload) < 28 {
             return Result.Err(Error("CryptoEnvelopeError", "encrypted envelope payload is malformed", None))
         }
         keyRaw: str = Bytes.fromBytes(key)
-        nonceRaw: str = payload[:12]
-        ciphertextRaw: str = payload[12:]
+        nonceRaw: bytes = payload[:12]
+        ciphertextRaw: bytes = payload[12:]
         plaintext: str = ""
         decryptError: str = ""
         go! {
-            opened, err := lamCryptoAESGCMOpen([]byte(keyRaw), []byte(nonceRaw), []byte(ciphertextRaw), []byte(aad))
+            opened, err := lamCryptoAESGCMOpen([]byte(keyRaw), nonceRaw, ciphertextRaw, []byte(aad))
             if err != nil { decryptError = err.Error() } else { plaintext = string(opened) }
         }
         if decryptError != "" {
@@ -397,11 +398,11 @@ class Crypto {
             return Result.Err(Error("CryptoPasswordHashError", "PBKDF2 iterations are invalid or outside the safe range", None))
         }
         saltRaw: str = Base64.decode(parts[2])?
-        if len(saltRaw) < 8 or len(saltRaw) > 1024 {
+        if len(bytes(saltRaw)) < 8 or len(bytes(saltRaw)) > 1024 {
             return Result.Err(Error("CryptoPasswordHashError", "PBKDF2 salt is malformed or outside the safe range", None))
         }
         expectedRaw: str = Bytes.hexDecode(parts[3])?
-        if len(parts[3]) != 64 or len(expectedRaw) != 32 {
+        if len(parts[3]) != 64 or len(bytes(expectedRaw)) != 32 {
             return Result.Err(Error("CryptoPasswordHashError", "PBKDF2 digest must be 32 bytes of hexadecimal", None))
         }
         actualRaw: str = ""
@@ -419,7 +420,7 @@ class Crypto {
         if cost < 4 or cost > 31 {
             return Result.Err(Error("CryptoValueError", "bcrypt cost must be between 4 and 31", None))
         }
-        if len(password) > 72 {
+        if len(bytes(password)) > 72 {
             return Result.Err(Error("CryptoValueError", "bcrypt passwords are limited to 72 bytes", None))
         }
         out: str = ""

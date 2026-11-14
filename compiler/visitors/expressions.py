@@ -1055,8 +1055,10 @@ class ExpressionVisitorMixin:
                     return "LamJSON"
                 if name in {"int", "float", "bool", "str", "bytes"} and name not in self._function_go_names:
                     return {"int": "int", "float": "float64", "bool": "bool", "str": "string", "bytes": "[]byte"}[name]
-                if name == "len" and name not in self._user_functions:
+                if name in {"len", "ord"} and name not in self._user_functions:
                     return "int"
+                if name == "chr" and name not in self._user_functions:
+                    return "string"
                 if name == "sorted" and name not in self._user_functions and name not in self._var_go_types:
                     # ``for x in sorted(opt)``: a copy of the argument's list type.
                     args_node = node.children[1] if len(node.children) > 1 else None
@@ -1065,6 +1067,8 @@ class ExpressionVisitorMixin:
                         source = self._sorted_source_go_type(raw_args[0])
                         if source.startswith("[]"):
                             return source
+                        if source == "string":
+                            return "[]string"
                         map_key = self._sorted_map_key_go_type(source)
                         if map_key:
                             # A set's / dict's sorted keys (``[]K``).
@@ -1263,12 +1267,22 @@ class ExpressionVisitorMixin:
             # ``{k: v for ...}["x"]``: the map type its lowering gives it.
             return self._dict_comp_static_go_type(node)
         if node.data == "getitem" and len(node.children) >= 2:
+            tuple_elem = self._tuple_element_go_type(node)
+            if tuple_elem:
+                return tuple_elem
             receiver_type = self._expr_go_type_hint(node.children[0])
             index = node.children[1]
             if receiver_type == "LamJSON":
                 return "LamJSON"
+            if not receiver_type and isinstance(node.children[0], Tree) and node.children[0].data in (
+                "string", "fstring", "string_concat",
+            ):
+                receiver_type = "string"
             if isinstance(index, Tree) and index.data == "slice":
                 return receiver_type
+            if receiver_type == "string":
+                # ``s[i]``: a one-character ``str``.
+                return "string"
             elem_type = self._slice_elem_go_type(receiver_type)
             if elem_type:
                 return elem_type
@@ -1690,16 +1704,19 @@ class ExpressionVisitorMixin:
                 obj = self._expr_to_go(node.children[0])
             negative = self._negative_int_constant(inner)
             receiver_type = literal_type or self._expr_go_type_hint(node.children[0]) or ""
+            if self._is_str_receiver(node.children[0], receiver_type):
+                # ``s[i]``: the one-character ``str`` at character ``i``.
+                return self._str_index_to_go(obj, node.children[0], inner)
             if negative is not None and not receiver_type.startswith("map[") and receiver_type not in {"interface{}"}:
                 # ``xs[-1]``: Python semantics, counted from the end (an
                 # index still out of range raises ``IndexError``).
                 if re.fullmatch(r"[A-Za-z_][\w.]*", obj):
                     return f"{obj}[len({obj})-{negative}]"
-                if receiver_type == "string" or receiver_type.startswith("[]"):
-                    elem = "byte" if receiver_type == "string" else self._slice_elem_go_type(receiver_type)
+                if receiver_type.startswith("[]"):
+                    elem = self._slice_elem_go_type(receiver_type)
                     return f"func(_s {receiver_type}) {elem} {{ return _s[len(_s)-{negative}] }}({obj})"
             if (
-                (receiver_type == "string" or receiver_type.startswith("[]"))
+                receiver_type.startswith("[]")
                 and negative is None
                 and not self._nonneg_int_literal(inner)
                 and not index_nonneg(inner, self._index_bounds, self._nonneg_shadowed)
@@ -1708,6 +1725,11 @@ class ExpressionVisitorMixin:
                 # ``xs[i]`` with a runtime ``i``: Python semantics.
                 return self._dynamic_index_to_go(obj, node.children[0], inner, receiver_type)
             idx = self._expr_to_go(inner)
+            elem = self._tuple_element_go_type(node)
+            if elem:
+                # ``pair[0]`` of a ``tuple[str, int]`` (a ``[]interface{}``):
+                # the element with its declared type.
+                return f"{obj}[{idx}].({elem})"
             return f"{obj}[{idx}]"
 
         if d == "slice":
@@ -2304,21 +2326,6 @@ class ExpressionVisitorMixin:
         receiver = func.children[0]
         if not isinstance(receiver, Tree):
             return
-        if (
-            receiver.data == "getitem" and len(receiver.children) == 2
-            and not (isinstance(receiver.children[1], Tree) and receiver.children[1].data == "slice")
-            and self._expr_go_type_hint(receiver.children[0]) == "string"
-        ):
-            # ``name[0].toUpper()``: indexing a ``str`` gives a ``byte``.
-            from compiler.constants import str_index_byte_hint
-            self._report_lam_error(
-                func, "member",
-                f"`byte` has no method `{method}`"
-                + str_index_byte_hint(
-                    lam_simple_expr_text(receiver), method, bool(self._get_raw_call_args(args_node)),
-                ),
-            )
-            return
         if receiver.data not in {"string", "fstring", "string_concat"} and self._expr_go_type_hint(receiver) != "string":
             return
         if method in STR_METHODS:
@@ -2533,7 +2540,18 @@ class ExpressionVisitorMixin:
             raw_args = self._get_raw_call_args(args_node)
             if raw_args and self._expr_go_type_hint(raw_args[0]) == "LamJSON":
                 return f"lamJSONLen({args[0]})"
+            if args and raw_args and self._is_str_receiver(raw_args[0]):
+                # ``len(s)``: the number of characters.
+                return f"lamStrLen({args[0]})"
             return f"len({args[0]})" if args else "0"
+
+        if func_str in {"ord", "chr"} and func_str not in self._user_functions and len(args) == 1:
+            # ``ord(c)``: the code point of a one-character ``str``;
+            # ``chr(n)``: the one-character ``str`` of a code point.
+            raw_args = self._get_raw_call_args(args_node)
+            if func_str == "ord":
+                return f"lamOrd({self._typed_value_to_go(raw_args[0], 'string') if raw_args else args[0]})"
+            return f"lamChr({self._str_int_arg_go(raw_args[0]) if raw_args else args[0]})"
 
         if func_str == "str":
             raw_args = self._get_raw_call_args(args_node)
@@ -2638,6 +2656,13 @@ class ExpressionVisitorMixin:
                     map_arg = self._typed_value_to_go(raw_args[0], arg_type)
                     target_expr = f"make({slice_type}, 0, len(lamSrc))"
                     collect = "for k := range lamSrc { tmp = append(tmp, k) }; "
+                elif arg_type == "string":
+                    # ``sorted(s)``: its characters, a new ``list[str]``.
+                    slice_type, elem_type = "[]string", "string"
+                    map_param = "lamSrc string"
+                    map_arg = self._typed_value_to_go(raw_args[0], "string")
+                    target_expr = "make([]string, 0, len(lamSrc))"
+                    collect = "for _, r := range lamSrc { tmp = append(tmp, string(r)) }; "
                 else:
                     map_param = map_arg = ""
                     slice_type = expected_type if expected_type.startswith("[]") else arg_type
@@ -3765,7 +3790,8 @@ class ExpressionVisitorMixin:
             return ""
         if d == "getitem" and len(node.children) >= 2:
             index = node.children[1]
-            if isinstance(index, Tree) and index.data == "slice" and self._certain_go_type(node.children[0]) == "string":
+            if self._certain_go_type(node.children[0]) == "string":
+                # ``s[a:b]`` and ``s[i]`` (one character) are ``str``s.
                 return "string"
             return ""
         if d == "arith_expr" and len(node.children) >= 3:
@@ -3793,8 +3819,8 @@ class ExpressionVisitorMixin:
                 or self._go_binding_name(name) in self.declared_vars
             ):
                 return ""  # a local holding a function value
-            if name in {"str", "len"} and name not in self._user_functions and name not in self._function_go_names:
-                return ("string" if name == "str" else "int") if len(raw_args) == 1 and positional else ""
+            if name in {"str", "len", "ord", "chr"} and name not in self._user_functions and name not in self._function_go_names:
+                return ("string" if name in {"str", "chr"} else "int") if len(raw_args) == 1 and positional else ""
             if (
                 name in self._user_functions and name not in self._class_names
                 and name not in self._async_functions and name not in self._result_payload_go_types
@@ -4360,7 +4386,44 @@ class ExpressionVisitorMixin:
         hint = self._expr_go_type_hint(node) if isinstance(node, Tree) else ""
         if hint == "[]byte":
             return f"string({value_go})"
+        if isinstance(node, Tree) and self._display_may_hold_none(node, hint):
+            # A nil reference shows as ``None`` (Go prints ``<nil>``).
+            return f"lamShow({value_go})"
         return value_go
+
+    _DISPLAY_SCALARS = frozenset({
+        "string", "int", "int64", "int32", "int16", "int8", "uint", "uint64", "uint32", "uint16", "uint8",
+        "float64", "float32", "bool", "LamJSON", "LamHTML", "LamXML", "[]byte",
+    })
+
+    def _display_may_hold_none(self, node, hint: str) -> bool:
+        """A displayed value that can be or contain a nil reference: ``None``
+        itself, ``any``, a class or interface reference, a list or dict of
+        those; never a scalar, a string or a list of scalars."""
+        if node.data == "const_none":
+            return True
+        if node.data in {
+            "string", "fstring", "number", "const_true", "const_false",
+            # Operators give numbers, booleans or strings.
+            "arith_expr", "term", "factor", "power", "shift_expr", "and_expr", "or_expr", "xor_expr",
+            "comparison", "not_test", "and_test", "or_test",
+        }:
+            return False
+        certain = self._certain_go_type(node) or hint or (self._infer_type_from_value(node) or "")
+        if certain in self._DISPLAY_SCALARS:
+            return False
+        if not certain or certain == "interface{}" or certain.startswith("*"):
+            return True
+        if certain.startswith("[]"):
+            elem = certain[2:]
+            return elem == "interface{}" or elem.startswith(("*", "[]", "map["))
+        if certain.startswith("map["):
+            _key, value = self._split_go_map_type(certain)
+            return value == "interface{}" or value.startswith(("*", "[]", "map["))
+        return certain in self._interfaces or self._go_type_is_interface_name(certain)
+
+    def _go_type_is_interface_name(self, go_type: str) -> bool:
+        return any(self._go_class_name(name) == go_type for name in self._interfaces)
 
     def _is_void_call_expr(self, node) -> bool:
         """``print(...)`` or a call to a user function declared without a
@@ -5672,6 +5735,9 @@ class ExpressionVisitorMixin:
     def _slice_to_go(self, obj_go: str, slice_node: Tree, obj_node) -> str:
         """Lower a ``getitem(obj, slice(...))`` to Go.
 
+        A ``str`` is sliced by character (``lamStrSlice``, ``lamStrFrom``,
+        ``lamStrStep``: ``_STR_RUNTIME_GO``).
+
         Cheap path: when start / stop are non-negative integer literals
         (or absent) and there is no step, emit the native ``obj[a:b]``
         form so Go can keep the slice header trick.
@@ -5679,10 +5745,8 @@ class ExpressionVisitorMixin:
         Full Python semantics path: emit a runtime IIFE that resolves
         negative indices against ``len(obj)`` and supports a stride
         (including a negative one for reversed iteration). The IIFE
-        uses ``reflect`` so it handles slices, arrays, and strings
-        uniformly. Strings round-trip back to a ``string`` rather
-        than a ``[]interface{}`` — slicing a string in Lam should
-        feel like Python's slicing, not Go's.
+        uses ``reflect`` for receivers of unknown type (a string there is
+        sliced by character too).
         """
         # Parse the slice node into start / end / step subtrees.
         start_node = None
@@ -5700,6 +5764,24 @@ class ExpressionVisitorMixin:
                     if sc is not None:
                         step_node = sc
 
+        if obj_node is not None and self._is_str_receiver(obj_node):
+            # ``s[a:b]`` / ``s[a:b:c]``: by character (``_STR_RUNTIME_GO``),
+            # Python's clamping and negative bounds.
+            if step_node is None:
+                if start_node is None and end_node is None:
+                    return obj_go
+                if end_node is None:
+                    return f"lamStrFrom({obj_go}, {self._str_int_arg_go(start_node)})"
+                lo = self._str_int_arg_go(start_node) if start_node is not None else "0"
+                return f"lamStrSlice({obj_go}, {lo}, {self._str_int_arg_go(end_node)})"
+            return (
+                f"lamStrStep({obj_go}, "
+                f"{self._str_int_arg_go(start_node) if start_node is not None else '0'}, "
+                f"{self._str_int_arg_go(end_node) if end_node is not None else '0'}, "
+                f"{self._str_int_arg_go(step_node)}, "
+                f"{'true' if start_node is not None else 'false'}, {'true' if end_node is not None else 'false'})"
+            )
+
         cheap = (
             step_node is None
             and self._slice_bound_is_native(start_node)
@@ -5709,11 +5791,7 @@ class ExpressionVisitorMixin:
             start_go = self._expr_to_go(start_node) if start_node is not None else ""
             end_go = self._expr_to_go(end_node) if end_node is not None else ""
             obj_type = (self._expr_go_type_hint(obj_node) or "") if obj_node is not None else ""
-            if not obj_type and isinstance(obj_node, Tree) and obj_node.data in ("string", "fstring", "string_concat"):
-                # ``"k"[2:0]``: Go rejects constant out-of-range bounds of a
-                # constant string; the clamping form keeps Python's result.
-                obj_type = "string"
-            if (start_go or end_go) and (obj_type == "string" or (obj_type.startswith("[]") and "func(" not in obj_type)):
+            if (start_go or end_go) and obj_type.startswith("[]") and "func(" not in obj_type:
                 # Python semantics: out-of-range bounds clamp instead of
                 # panicking (``s[i:i + 2]`` near the end, ``xs[5:]`` on a
                 # short list). Go inlines the immediately-called literal.
@@ -5741,15 +5819,11 @@ class ExpressionVisitorMixin:
         end_provided = "true" if end_node is not None else "false"
 
         obj_type = (self._expr_go_type_hint(obj_node) or "") if obj_node is not None else ""
-        if obj_type == "string" or (obj_type.startswith("[]") and "func(" not in obj_type):
+        if obj_type.startswith("[]") and "func(" not in obj_type:
             # Statically typed receiver: the same Python semantics without
             # reflection, keeping the receiver's type (``a[-2:]`` of a
             # ``list[int]`` is a ``list[int]``).
-            if obj_type == "string":
-                self._need_import("strings")
-                init, add, done = "var _sb strings.Builder", "_sb.WriteByte(_s[_i])", "return _sb.String()"
-            else:
-                init, add, done = f"_r := {obj_type}{{}}", "_r = append(_r, _s[_i])", "return _r"
+            init, add, done = f"_r := {obj_type}{{}}", "_r = append(_r, _s[_i])", "return _r"
             body = (
                 f"func(_s {obj_type}, _start int, _end int, _step int, _sp bool, _ep bool) {obj_type} {{ "
                 "_n := len(_s); if _step == 0 { panic(\"ValueError: slice step cannot be zero\") }; "
@@ -5765,20 +5839,20 @@ class ExpressionVisitorMixin:
             return body
 
         self._need_import("reflect")
-        self._need_import("strings")
         lines = [
             "func() interface{} {",
             f"\t_o := interface{{}}({obj_go})",
             "\t_v := reflect.ValueOf(_o)",
-            "\t_isStr := _v.Kind() == reflect.String",
-            "\t_n := 0",
-            "\tif _isStr { _n = len(_o.(string)) } else if _v.IsValid() && (_v.Kind() == reflect.Slice || _v.Kind() == reflect.Array) { _n = _v.Len() }",
             f"\t_step := int({step_go})",
-            "\tif _step == 0 { panic(\"ValueError: slice step cannot be zero\") }",
             f"\t_startProvided := {start_provided}",
             f"\t_start := int({start_go})",
             f"\t_endProvided := {end_provided}",
             f"\t_end := int({end_go})",
+            # A string: by character.
+            "\tif _v.Kind() == reflect.String { return lamStrStep(_v.String(), _start, _end, _step, _startProvided, _endProvided) }",
+            "\t_n := 0",
+            "\tif _v.IsValid() && (_v.Kind() == reflect.Slice || _v.Kind() == reflect.Array) { _n = _v.Len() }",
+            "\tif _step == 0 { panic(\"ValueError: slice step cannot be zero\") }",
             "\tif _startProvided && _start < 0 { _start += _n }",
             "\tif _endProvided && _end < 0 { _end += _n }",
             "\tif _step > 0 {",
@@ -5795,16 +5869,6 @@ class ExpressionVisitorMixin:
             "\t\tif !_endProvided { _end = -1 }",
             "\t\tif _end >= _n { _end = _n - 1 }",
             "\t\tif _end < -1 { _end = -1 }",
-            "\t}",
-            "\tif _isStr {",
-            "\t\t_s := _o.(string)",
-            "\t\tvar _sb strings.Builder",
-            "\t\tif _step > 0 {",
-            "\t\t\tfor _i := _start; _i < _end; _i += _step { _sb.WriteByte(_s[_i]) }",
-            "\t\t} else {",
-            "\t\t\tfor _i := _start; _i > _end; _i += _step { _sb.WriteByte(_s[_i]) }",
-            "\t\t}",
-            "\t\treturn _sb.String()",
             "\t}",
             "\t_r := []interface{}{}",
             "\tif _step > 0 {",
@@ -5951,6 +6015,30 @@ class ExpressionVisitorMixin:
             return known == "int"
 
         return is_int(node.children[0]) and is_int(node.children[1])
+
+    def _tuple_element_go_type(self, node) -> str:
+        """The Go type of ``t[k]`` for a name declared as a tuple and a
+        constant ``k`` in range: the declared element type (the tuple itself
+        is a ``[]interface{}``); ``""`` otherwise."""
+        if not (isinstance(node, Tree) and node.data == "getitem" and len(node.children) >= 2):
+            return ""
+        receiver, index = node.children[0], node.children[1]
+        if not (isinstance(receiver, Tree) and receiver.data == "var" and receiver.children):
+            return ""
+        lam_type = getattr(self, "_var_lam_types", {}).get(self._get_name(receiver.children[0]))
+        from compiler.typesys import GenericType, type_to_go
+        if not (isinstance(lam_type, GenericType) and lam_type.base == "tuple" and lam_type.args):
+            return ""
+        if not (isinstance(index, Tree) and index.data == "number" and index.children):
+            return ""
+        try:
+            k = int(str(index.children[0]), 0)
+        except ValueError:
+            return ""
+        if not 0 <= k < len(lam_type.args):
+            return ""
+        elem = type_to_go(lam_type.args[k]) or ""
+        return "" if not elem or elem == "interface{}" else elem
 
     def _dict_comp_static_go_type(self, node) -> str:
         """Go map type of ``{k: v for x in xs ...}`` from the iterables'
@@ -7146,6 +7234,46 @@ class ExpressionVisitorMixin:
             return simple_index and self._pure_index_receiver(node.children[0])
         return False
 
+    def _is_str_receiver(self, node, go_type: str = "") -> bool:
+        """``node`` (Go type ``go_type`` when known) is a ``str``: indexed,
+        sliced and measured by character (``_STR_RUNTIME_GO``)."""
+        if go_type:
+            return go_type == "string"
+        if isinstance(node, Tree) and node.data in ("string", "fstring", "string_concat"):
+            return True
+        return (self._expr_go_type_hint(node) or self._infer_type_from_value(node) or "") == "string"
+
+    def _str_int_arg_go(self, node) -> str:
+        """An index or a slice bound of a ``str`` as a Go ``int``."""
+        negative = self._negative_int_constant(node)
+        if negative is not None:
+            return f"-{negative}"
+        value = self._expr_to_go(node)
+        kind = self._expr_go_type_hint(node) or self._infer_type_from_value(node) or ""
+        return value if kind in {"int", ""} or self._nonneg_int_literal(node) else f"int({value})"
+
+    def _str_index_to_go(self, obj: str, obj_node, index_node) -> str:
+        """``s[i]``: ``lamStrAt`` (``s[len(s) - k]`` of a side-effect-free
+        ``s`` is ``s[-k]``: no second pass to count the characters)."""
+        if (
+            isinstance(index_node, Tree) and index_node.data == "arith_expr" and len(index_node.children) == 3
+            and str(index_node.children[1]) == "-" and isinstance(index_node.children[2], Tree)
+            and index_node.children[2].data == "number" and self._nonneg_int_literal(index_node.children[2])
+            and int(str(index_node.children[2].children[0]).replace("_", ""), 0) > 0
+        ):
+            call = index_node.children[0]
+            if (
+                isinstance(call, Tree) and call.data == "funccall" and len(call.children) >= 2
+                and self._get_name(call.children[0]) == "len" and "len" not in self._nonneg_shadowed
+                and "len" not in self._user_functions
+            ):
+                args = call.children[1]
+                arg = args.children[0] if isinstance(args, Tree) and args.data == "arguments" and len(args.children) == 1 else args
+                if arg == obj_node and self._pure_index_receiver(obj_node):
+                    k = int(str(index_node.children[2].children[0]).replace("_", ""), 0)
+                    return f"lamStrAt({obj}, -{k})"
+        return f"lamStrAt({obj}, {self._str_int_arg_go(index_node)})"
+
     def _dynamic_index_to_go(self, obj: str, obj_node, index_node, receiver_type: str) -> str:
         """``xs[i]`` where ``i`` may be negative: ``i + len(xs)&(i>>63)``
         adds the length only when ``i < 0`` (an arithmetic shift of a
@@ -7163,8 +7291,8 @@ class ExpressionVisitorMixin:
             if idx_type == "int" and self._PURE_GO_RE.fullmatch(idx):
                 return f"{obj}[{idx}+len({obj})&({idx}>>63)]"
             return f"{obj}[func(i, n int) int {{ return i + n&(i>>63) }}({idx_int}, len({obj}))]"
-        elem = "byte" if receiver_type == "string" else self._slice_elem_go_type(receiver_type)
-        if self._index_target and receiver_type != "string":
+        elem = self._slice_elem_go_type(receiver_type)
+        if self._index_target:
             return (
                 f"(*func(s {receiver_type}, i int) *{elem} {{ return &s[i+len(s)&(i>>63)] }}"
                 f"({obj}, {idx_int}))"
@@ -7215,6 +7343,10 @@ class ExpressionVisitorMixin:
 
         if len(ops) > 1 and any(not self._pure_comparison_operand(o) for o in operands[1:-1]):
             return self._chained_comparison_once_to_go(operands, ops)
+        if len(ops) == 1 and ops[0] in {"==", "!=", ">", "<="}:
+            emptiness = self._str_len_zero_to_go(operands[0], ops[0], operands[1])
+            if emptiness:
+                return emptiness
         comparisons = []
         left = operands[0]
         for op, right in zip(ops, operands[1:]):
@@ -7223,6 +7355,22 @@ class ExpressionVisitorMixin:
         if len(comparisons) == 1:
             return comparisons[0]
         return " && ".join(f"({comparison})" for comparison in comparisons)
+
+    def _str_len_zero_to_go(self, left, op: str, right) -> str:
+        """``len(s) == 0`` / ``!= 0`` / ``> 0`` / ``<= 0`` of a ``str``: a
+        string has characters exactly when it has bytes, so its byte length
+        answers without counting (``lamStrLen`` would)."""
+        if not (isinstance(right, Tree) and right.data == "number" and str(right.children[0]) == "0"):
+            return ""
+        if not (
+            isinstance(left, Tree) and left.data == "funccall" and len(left.children) >= 2
+            and self._get_name(left.children[0]) == "len" and "len" not in self._user_functions
+        ):
+            return ""
+        raw_args = self._get_raw_call_args(left.children[1])
+        if len(raw_args) != 1 or not self._is_str_receiver(raw_args[0]):
+            return ""
+        return f"len({self._expr_to_go(raw_args[0])}) {op} 0"
 
     def _pure_comparison_operand(self, node) -> bool:
         """An operand that can be evaluated twice: a name, a literal, a field

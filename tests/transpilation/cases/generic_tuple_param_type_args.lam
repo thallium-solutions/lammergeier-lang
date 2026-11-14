@@ -4,7 +4,7 @@
 # reported `cannot infer K`. Calls whose type parameters Go can infer keep
 # the plain spelling.
 # expect-go: d := ToDict[string, int](pairs)
-# expect-go: fmt.Println(Tools_swap[string, int](pairs))
+# expect-go: fmt.Println(lamShow(Tools_swap[string, int](pairs)))
 # expect-go: fmt.Println(First(xs))
 
 func toDict[K: comparable, V](pairs: list[tuple[K, V]]) -> dict[K, V] {

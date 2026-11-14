@@ -1,7 +1,13 @@
-# expect-error: index 9 is out of range for the 3-byte string "abc"
-# expect-error: index -4 is out of range for the 3-byte string "abc"
+# expect-error: index 9 is out of range for the 3-character string "abc"
+# expect-error: index -4 is out of range for the 3-character string "abc"
+# expect-error: index 1 is out of range for the 1-character string "é"
+# expect-error: index 3 is out of range for the 3-character string "日本語"
+# expect-error: index -4 is out of range for the 3-character string "日本語"
 # A constant index out of the range of a string literal (it failed in go
-# build: Go checks constant indexes of constant strings). Strings index bytes.
+# build: Go checks constant indexes of constant strings). Strings index
+# characters (code points), not bytes: `"é"[1]` and `"日本語"[3]` are out of
+# range, `"日本語"[2]` and `"日本語"[-3]` are not.
 func main() {
-    print("abc"[9], "abc"[-4], "abc"[2], "é"[1])
+    print("abc"[9], "abc"[-4], "abc"[2], "é"[1], "é"[0], "é"[-1])
+    print("日本語"[2], "日本語"[-3], "日本語"[3], "日本語"[-4])
 }

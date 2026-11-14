@@ -1,0 +1,20 @@
+# expect-error: argument of `ord` has type `int`, expected `str`
+# expect-error: argument of `chr` has type `str`, expected `int`
+# expect-error: `ord` takes one argument, a one-character `str`
+# expect-error: `chr` takes one argument, an `int` code point
+# expect-error: cannot compare `str` and `int`
+# expect-error: cannot assign `str` to `int` variable `code`
+# `ord(c)` takes a one-character `str` and gives its code point (`int`),
+# `chr(n)` takes a code point and gives a `str`. Indexing a `str` gives a
+# `str`, not a byte value: `w[0] == 104` and `code: int = w[0]` are type
+# errors (use `ord(w[0])`).
+
+func main() {
+    w: str = "hello"
+    n: int = 104
+    print(ord(n), chr(w))
+    print(ord(), chr(1, 2))
+    print(w[0] == 104)
+    code: int = w[0]
+    print(code)
+}

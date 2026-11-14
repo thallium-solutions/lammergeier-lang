@@ -3,8 +3,8 @@
 # unwrap() success, unwrapOr() fallback, unwrap() panic on error,
 # and Error rendering with and without a cause.
 #
-# expect: ok=true err=<nil> val=10
-# expect: ok=false val=<nil>
+# expect: ok=true err=None val=10
+# expect: ok=false val=None
 # expect: bad-error-render: DivByZero: denominator was 0
 # expect: unwrapOr_ok=42
 # expect: unwrapOr_err=-1

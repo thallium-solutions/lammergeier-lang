@@ -329,7 +329,7 @@ def test_context_on_signals_stops_listening_when_cancelled() -> None:
         )
         proc = subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         assert proc.stdout is not None
-        assert proc.stdout.readline().strip() == "false <nil>"
+        assert proc.stdout.readline().strip() == "false None"
         assert proc.stdout.readline().strip() == "true done"
         assert proc.stdout.readline().strip() == "ready"
         time.sleep(0.3)

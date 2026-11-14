@@ -1,0 +1,47 @@
+# expect-error: `byte` has no method `toUpper`; convert it with `string(data[0])` or `int(data[0])`
+# expect-error: `byte` has no method `toUpper`; convert it with `string(b)` or `int(b)`
+# expect-error: `int` has no method `toUpper`
+# expect-error: `float` has no method `round`
+# expect-error: `bool` has no method `toString`
+# Indexing a `bytes` gives a `byte`, which has no methods (with the
+# conversions in the message): `data[0].toUpper()` failed only in `go
+# build`. Methods on `int`, `float` and `bool` values failed the same way
+# (`n.ToUpper undefined`). Indexing a `str` gives a one-character `str`
+# (docs/SYNTAX.md, "Strings are sequences of characters"), so the `str`
+# methods of `w[0]`, `x[0]` in a comprehension, a field's `self.code[1]` and
+# a computed `w[i]` are valid (they were `byte` errors before strings were
+# indexed by character).
+
+class Card {
+    func init(self, code: str) {
+        self.code: str = code
+    }
+
+    func valid(self) -> bool {
+        return self.code[1].isDigit()
+    }
+}
+
+func initial(name: str) -> str {
+    return name[0].toUpper()
+}
+
+func main() {
+    w: str = "hello"
+    i: int = 1
+    print(w[0].toUpper())
+    print(w[-1].toLower())
+    print([x[0].toUpper() for x in ["ab", "cd"]])
+    print(w[i].repeat(2))
+    data: bytes = bytes("hi")
+    print(data[0].toUpper())
+    b: byte = data[1]
+    print(b.toUpper())
+    n: int = 3
+    print(n.toUpper())
+    f: float = 1.5
+    print(f.round())
+    ok: bool = true
+    print(ok.toString())
+    print(Card("a1").valid(), initial("bob"))
+}

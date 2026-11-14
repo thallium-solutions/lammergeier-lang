@@ -55,7 +55,7 @@ func at(xs: list[int], i: int) -> int {
 }
 
 func code(s: str, i: int) -> int {
-    return int(s[i])
+    return ord(s[i])
 }
 
 func fresh(c: Counter) -> list[int] {

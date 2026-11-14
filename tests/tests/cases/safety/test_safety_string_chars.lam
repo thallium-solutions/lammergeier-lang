@@ -1,0 +1,144 @@
+# `str` indexes, slices and measures characters (code points), like Python
+# (docs/SYNTAX.md, "Strings are sequences of characters"): `s[i]` is a
+# one-character `str`, `len(s)` counts characters, slices cut between
+# characters (never inside one), on ASCII and non-ASCII text alike; the
+# positions of `index` / `lastIndex` and the widths of padding methods and
+# f-string specs are characters too. `bytes` keeps byte semantics.
+# expect: naïve len=5 first=n last=e mid=ï
+# expect: 日本語 len=3 first=日 last=語 mid=本
+# expect: a😀b len=3 first=a last=b mid=😀
+# expect: plain len=5 first=p last=n mid=a
+# expect: len=0
+# expect: aïv|ïve|naïv|evïan|nïe|na||e
+# expect: 本語|語本日|b😀a|😀😀|日本
+# expect: at=ï,e,n back=v,a
+# expect: loop=n-a-ï-v-e
+# expect: while=語本日
+# expect: enumerate=true
+# expect: reversed=[日 é a] sorted=[a b c é] comp=[a 😀]
+# expect: index=6 last=7 missing=-1 cjk=2 from=café length=10
+# expect: center=[**é**] zfill=00é pad=[***é|é***]
+# expect: fstring=[   日本語|日本語   |日本]
+# expect: upper=NAÏVE concat=ne eq=true true key=2
+# expect: ord=239 26085 128512 chr=日é😀 back=true
+# expect: IndexError: index out of range [3] with length 3 (at test_safety_string_chars.lam:99)
+# expect: IndexError: index out of range [-4] with length 3 (at test_safety_string_chars.lam:35)
+# expect: TypeError: ord() expected a character, but string of length 2 found
+# expect: ValueError: chr() arg not in range(0x110000)
+# expect: ValueError: slice step cannot be zero
+# expect: bytes len=2 first=195 tail=1 text=é
+# expect: invalid len=2 second=A
+# expect: long len=3001 at=a,b,c,é last=c slice=bca|abc count=1000
+# expect: tasks=[true true true true]
+
+func at(s: str, i: int) -> str {
+    return s[i]
+}
+
+func halves(s: str) -> list[str] {
+    mid: int = len(s) // 2
+    return [s[:mid], s[mid:]]
+}
+
+async func scan(s: str, k: int) -> bool {
+    # Several tasks index long strings at the same time.
+    n: int = 0
+    for i in range(len(s)) {
+        if s[i] == "é" {
+            n += 1
+        }
+    }
+    return n == k and s[-1] == "!" and len(s) == 3 * k + 1
+}
+
+func main() {
+    words: list[str] = ["naïve", "日本語", "a😀b", "plain"]
+    for w in words {
+        print(f"{w} len={len(w)} first={w[0]} last={w[-1]} mid={w[len(w) // 2]}")
+    }
+    empty: str = ""
+    print(f"len={len(empty)}")
+    s: str = "naïve"
+    print("|".join([s[1:4], s[-3:], s[:-1], s[::-1], s[::2], s[-10:2], s[5:10], s[len(s) - 1]]))
+    cjk: str = "日本語"
+    emoji: str = "a😀b😀c"
+    print("|".join([cjk[1:], cjk[::-1], "a😀b"[::-1], emoji[1::2], halves("日本語本")[0]]))
+    j: int = -2
+    print(f"at={at(s, 2)},{at(s, 4)},{at(s, -5)} back={s[j]},{s[j - 2]}")
+    parts: list[str] = []
+    for i in range(len(s)) {
+        parts.append(s[i])
+    }
+    print(f"loop={"-".join(parts)}")
+    k: int = len(cjk) - 1
+    out: str = ""
+    while k >= 0 {
+        out += cjk[k]
+        k -= 1
+    }
+    print(f"while={out}")
+    same: bool = true
+    for i, c in enumerate("a😀日é") {
+        same = same and "a😀日é"[i] == c
+    }
+    print(f"enumerate={same}")
+    print(f"reversed={reversed("aé日")} sorted={sorted("bcaé")} comp={[c for c in "a😀"]}")
+    text: str = "naïve café"
+    print(f"index={text.index("café")} last={text.lastIndex("a")} missing={text.index("z")} cjk={cjk.index("語")} from={text[text.index("café"):]} length={text.length()}")
+    e: str = "é"
+    print(f"center=[{e.center(5, "*")}] zfill={e.zfill(3)} pad=[{e.padLeft(4, "*")}|{e.padRight(4, "*")}]")
+    print(f"fstring=[{cjk:>6}|{cjk:<6}|{cjk:.2}]")
+    counts: dict[str, int] = {}
+    for c in "naïveïa" {
+        counts[c] += 1
+    }
+    print(f"upper={s.toUpper()} concat={s[0] + s[-1]} eq={s[2] == "ï"} {s[0].toUpper() == "N"} key={counts[s[2]]}")
+    print(f"ord={ord(s[2])} {ord(cjk[0])} {ord("😀")} chr={chr(26085)}{chr(233)}{chr(128512)} back={chr(ord(s[2])) == s[2]}")
+    i: int = 3
+    try {
+        print(cjk[i])
+    } catch IndexError as err {
+        print(err)
+    }
+    try {
+        print(at(cjk, -4))
+    } catch LookupError as err {
+        print(err)
+    }
+    try {
+        print(ord("ab"))
+    } catch TypeError as err {
+        print(err)
+    }
+    try {
+        print(chr(1114112))
+    } catch ValueError as err {
+        print(err)
+    }
+    zero: int = 0
+    try {
+        print(s[::zero])
+    } catch ValueError as err {
+        print(err)
+    }
+    data: bytes = bytes("é")
+    print(f"bytes len={len(data)} first={data[0]} tail={len(data[1:])} text={str(data)}")
+    odd: str = str(bytes([255, 65]))
+    print(f"invalid len={len(odd)} second={odd[1]}")
+    long: str = "é" + "abc" * 1000
+    found: int = 0
+    pos: int = 0
+    while pos < len(long) {
+        if long[pos] == "a" {
+            found += 1
+        }
+        pos += 1
+    }
+    print(f"long len={len(long)} at={long[1]},{long[2999]},{long[3000]},{long[0]} last={long[-1]} slice={long[2:5]}|{long[-3:]} count={found}")
+    tasks: list[bool] = []
+    handles = [scan("é" * n + "xy" * n + "!", n) for n in [100, 2000, 3000, 5000]]
+    for h in handles {
+        tasks.append(await h)
+    }
+    print(f"tasks={tasks}")
+}

@@ -107,7 +107,7 @@
 			<array>
 				<dict>
 					<key>match</key>
-					<string>\b(print|input|open|exit|len|range|enumerate|sorted|reversed|append|format|type|isinstance|repr|abs|max|min|panic|recover|make|new|cap|copy|delete|close)\b(?=[\t ]*\()</string>
+					<string>\b(print|input|open|exit|len|range|enumerate|sorted|reversed|append|format|type|isinstance|repr|abs|max|min|ord|chr|panic|recover|make|new|cap|copy|delete|close)\b(?=[\t ]*\()</string>
 					<key>name</key>
 					<string>support.function.builtin.lammergeier</string>
 				</dict>

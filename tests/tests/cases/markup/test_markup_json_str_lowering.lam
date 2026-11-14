@@ -10,7 +10,7 @@
 # expect: {"big":12345678901234567,"cards":[{"title":"a\u003cb"},{"title":"é \u0026 漢"},{"title":"100%"}],"html":"\u003cscript\u003e","n":1.5e-7,"none":null,"u":"\u2028"}
 # expect: e:||null
 # expect: <!-- <!doctype html><html><body><div class="card">a&lt;b</div><div class="card">é &amp; 漢</div><div class="card">100%</div></body></html> --><?xml version="1.0"?><rss><channel><item><title>one</title></item><item><title>&lt;two&gt;</title></item><item><title>three &amp; four</title></item></channel></rss>{"big":12345678901234567,"cards":[{"title":"a\u003cb"},{"title":"é \u0026 漢"},{"title":"100%"}],"html":"\u003cscript\u003e","n":1.5e-7,"none":null,"u":"\u2028"}
-# expect: 135 165 163 463
+# expect: 132 165 160 457
 # expect: <div class="card">a&lt;b</div>|{"title":"é \u0026 漢"}
 # expect: true true true
 # expect: safe: <b>&lt;w&gt;</b> |  | <b>&lt;w&gt;</b> |  | <w><b>&lt;w&gt;</b>
@@ -84,6 +84,7 @@ func main() {
     print("e:" + str(empty) + "|" + str(emptyX) + "|" + str(nothing))
     joined: str = "<!-- " + str(h) + " -->" + str(x) + str(j)
     print(joined)
+    # Characters, not bytes: "é" and "漢" count one each.
     print(len(str(h)), len(str(x)), len(str(j)), len(f"{h}{x}{j}"))
     print(str(html(cards[0])) + "|" + str(json(cards[1])))
     print(f"{str(h) == f'{h}'} {str(j) == Json.encode(j).unwrap()} {str(x) == f'{x}'}")

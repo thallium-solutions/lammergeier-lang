@@ -3,7 +3,7 @@
 Lammergeier keeps general-purpose building blocks in the standard library and
 ships service clients, fast-moving protocols, and vendor integrations as
 independently versioned packages. The official packages below target
-`lamc` 4.13; each uses a scoped `@lam/...` import and carries its own tests,
+`lamc` 4.14; each uses a scoped `@lam/...` import and carries its own tests,
 release notes, and pinned Go dependencies. The libraries that existed before
 3.0 declare `>=1.18, <5`; the five added in October 2026 declare `>=3.0, <5`;
 `@lam/vulture` 3.0.0 and its plugins declare `>=4.0, <5` (native `html` /
@@ -12,19 +12,19 @@ Current releases:
 
 | Release | Notes |
 |---|---|
-| `@lam/vulture@3.7.0` | a `json` body is encoded once (3.7.0); `SseEmitter.wait` ends event streams when the client leaves or a graceful shutdown starts (3.6.0); `HEAD` answered by GET routes, `req.queryAll` (3.1.0); handlers may return `html`, `xml`, `json` or `str` (sent with the type's default Content-Type unless one is set); `res.send(html|xml)`, `res.html(html)`, `res.xml(...)`; requires lamc 4.0 |
-| `@lam/vulture/dev-plugin@1.2.1` | requires lamc 4.8 (`Os.modTime`); pins `@lam/vulture` 3.7.0; browser live reload for `lamc dev` (4.5); every tab of a browser shares one live-reload stream (1.1.0: plain HTTP/1.1 allows 6 connections per host); a watched asset is read again only when its size or modification time changed (1.2.0) |
+| `@lam/vulture@3.7.1` | streamed body sizes counted in bytes in its docs and tests (3.7.1, for lamc 4.14 character strings); a `json` body is encoded once (3.7.0); `SseEmitter.wait` ends event streams when the client leaves or a graceful shutdown starts (3.6.0); `HEAD` answered by GET routes, `req.queryAll` (3.1.0); handlers may return `html`, `xml`, `json` or `str` (sent with the type's default Content-Type unless one is set); `res.send(html|xml)`, `res.html(html)`, `res.xml(...)`; requires lamc 4.0 |
+| `@lam/vulture/dev-plugin@1.2.2` | `Content-Length` of injected pages in bytes (1.2.2); requires lamc 4.8 (`Os.modTime`); pins `@lam/vulture` 3.7.0; browser live reload for `lamc dev` (4.5); every tab of a browser shares one live-reload stream (1.1.0: plain HTTP/1.1 allows 6 connections per host); a watched asset is read again only when its size or modification time changed (1.2.0) |
 | `@lam/vulture/std-plugin@2.0.5` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0 |
 | `@lam/vulture/tus-plugin@3.0.4` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0; root `tag()` removed (3.0.0) |
 | `@lam/vulture/ws-plugin@2.0.4` | lamc 4.x compatible; pins `@lam/vulture` 3.0.0 |
 | `@lam/jwt@3.1.3` | lamc 4.x compatible; ES256/ES384/ES512, EC keys in `JwtKeySet` and JWKS, `JwtKeySet.decode` for any RS*/PS*/ES* token (root `tag()` removed in 3.0.0) |
 | `@lam/ssh@3.0.4` | lamc 4.x compatible; `golang.org/x/crypto` v0.58.0 (SSH channel denial-of-service fixes; Go 1.26) |
-| `@lam/protobuf@3.0.3` | lamc 4.x compatible; root `tag()` removed |
+| `@lam/protobuf@3.0.4` | lamc 4.x compatible; measure a wire with `len(bytes(wire))` (3.0.4); root `tag()` removed |
 | `@lam/sftp@3.7.1` | lamc 4.x compatible; pins `@lam/ssh` 3.0.4; host keys per destination address (3.7.0); host key rotation (`announceHostKey`, OpenSSH hostkeys-00/prove), OpenSSH user certificates (`withUserCertificates`), `fsync@openssh.com` (`onFsync`), `SftpKey.fingerprint`/`publicKey`; PROXY protocol v1/v2 from trusted load balancers (`withProxyProtocol`); per-address authentication limits (`withAddressAuthRateLimit`, `withAddressLockout`, `SftpAddressLimiter`); adaptive ciphers (`withAdaptiveCiphers`), `onOpenWrite`, live session listing and targeted disconnect (`activeSessions`, `disconnectWhere`) |
-| `@lam/s3@2.5.1` | lamc 4.x compatible; `blockPrivateNetworks` (SSRF-safe clients for user-supplied endpoints, checked after DNS resolution); S3 Object Lock (`setRetention`, `setLegalHold`, `objectLockConfig`, `createBucketWithObjectLock`) and versioned buckets (`versions`, `deleteVersion`); multipart parts streamed from files and readers (`uploadPartFile`, `uploadPartReader`); SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
+| `@lam/s3@2.5.2` | lamc 4.x compatible; SSE-C customer keys measured in bytes (2.5.2); `blockPrivateNetworks` (SSRF-safe clients for user-supplied endpoints, checked after DNS resolution); S3 Object Lock (`setRetention`, `setLegalHold`, `objectLockConfig`, `createBucketWithObjectLock`) and versioned buckets (`versions`, `deleteVersion`); multipart parts streamed from files and readers (`uploadPartFile`, `uploadPartReader`); SSE-C customer keys (`withCustomerKey`), cross-key and large server-side copies (`copyFrom`, `copyLarge`); multipart uploads, ranged/streaming reads, bucket helpers |
 | `@lam/redis@2.0.3`, `@lam/memcached@2.0.3` | lamc 4.x compatible |
 | `@lam/stripe@1.0.2` | lamc 4.x compatible; moved from `third_party/lamstripe` 0.2.0: typed Results, retries with idempotency keys, pagination, billing meters and meter events, subscriptions, portal, webhook verification (`StripeWebhook`) |
-| `@lam/otel@1.1.1` | lamc 4.x compatible; moved from `third_party/lamotel` 0.2.1: OpenTelemetry traces, metrics and logs over OTLP/HTTP JSON, W3C propagation, sampling, batching, in-memory exporters |
+| `@lam/otel@1.1.2` | lamc 4.x compatible; baggage limits in bytes (1.1.2); moved from `third_party/lamotel` 0.2.1: OpenTelemetry traces, metrics and logs over OTLP/HTTP JSON, W3C propagation, sampling, batching, in-memory exporters |
 | `@lam/keyring@1.0.2` | lamc 4.x compatible; sealing secrets at rest: key rings with rotation and resealing, HKDF/PBKDF2 derivation, associated data, purpose subkeys, envelope keys |
 | `@lam/totp@1.0.2` | lamc 4.x compatible; RFC 4226/6238 one-time passwords, otpauth URIs, dependency-free QR codes (SVG / data URI), recovery codes |
 | `@lam/jobs@1.0.2` | lamc 4.x compatible; PostgreSQL leases, periodic and cron jobs across replicas, job health, instance heartbeats, durable queues with retries and dead letters, worker pools |
@@ -177,7 +177,7 @@ func archiveReport() -> Result[bool] {
     body: str = client.get("reports/daily.txt")?
     objects: list[S3Object] = client.list("reports/")?
     _ = client.copy("reports/daily.txt", "archive/daily.txt")?
-    print(f"{len(body)} bytes across {len(objects)} report objects")
+    print(f"{len(bytes(body))} bytes across {len(objects)} report objects")
     return client.delete("reports/daily.txt")
 }
 ```

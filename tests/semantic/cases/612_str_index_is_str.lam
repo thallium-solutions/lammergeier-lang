@@ -1,0 +1,24 @@
+# expect-pass
+# Indexing a `str` gives a one-character `str` (docs/SYNTAX.md, "Strings
+# are sequences of characters"): assigned to a `str`, compared with a `str`,
+# joined with `+`, passed to a `str` parameter and returned as a `str`. Each
+# of these was a `byte` / `str` mismatch while strings were indexed by
+# byte.
+
+func shout(s: str) -> str {
+    return s.toUpper()
+}
+
+func head(s: str) -> str {
+    return s[0]
+}
+
+func main() {
+    w: str = "héllo"
+    first: str = w[0]
+    print(w[0] == "h")
+    print("o" != w[-1])
+    print("x" + w[-1] + w[1])
+    print(shout(w[1]))
+    print(first, head(w), w[len(w) - 1], ord(w[1]), chr(233) == w[1])
+}

@@ -356,13 +356,29 @@ def slot_contexts(template: str, xml_mode: bool) -> dict[int, str]:
     """Where each slot of ``template`` lands: element content, an attribute
     value, raw ``<script>``/``<style>`` text, or a place where a value
     cannot go (tag or attribute names, comments, doctype, instructions)."""
+    return _scan_slots(template, xml_mode)[0]
+
+
+def slot_owners(template: str, xml_mode: bool) -> dict[int, tuple[str, bool]]:
+    """For a slot in an attribute value: ``(attribute name, starts the
+    value)`` (``href="${u}"`` starts it, ``href="/p/${id}"`` does not); for a
+    slot in raw text: ``("<script>", True)`` / ``("<style>", True)``."""
+    return _scan_slots(template, xml_mode)[1]
+
+
+def _scan_slots(template: str, xml_mode: bool) -> tuple[dict[int, str], dict[int, tuple[str, bool]]]:
     contexts: dict[int, str] = {}
+    owners: dict[int, tuple[str, bool]] = {}
     i = 0
     n = len(template)
 
     def mark(segment: str, context: str) -> None:
         for m in _SLOT_RE.finditer(segment):
             contexts[int(m.group(1))] = context
+
+    def own(segment: str, owner: str, raw: bool = False) -> None:
+        for m in _SLOT_RE.finditer(segment):
+            owners[int(m.group(1))] = (owner, raw or not segment[:m.start()].strip())
 
     while i < n:
         lt = template.find("<", i)
@@ -421,6 +437,7 @@ def slot_contexts(template: str, xml_mode: bool) -> dict[int, str]:
                 while k < n and template[k] not in " \t\r\n=>" and not template.startswith("/>", k):
                     k += 1
                 mark(template[j:k], INVALID)
+                attr_name = template[j:k].lower()
                 j = k
                 while j < n and template[j] in " \t\r\n":
                     j += 1
@@ -433,12 +450,14 @@ def slot_contexts(template: str, xml_mode: bool) -> dict[int, str]:
                         end = template.find(q, j + 1)
                         end = n if end < 0 else end
                         mark(template[j + 1:end], ATTRIBUTE)
+                        own(template[j + 1:end], attr_name)
                         j = end + 1
                     else:
                         k = j
                         while k < n and template[k] not in " \t\r\n>":
                             k += 1
                         mark(template[j:k], ATTRIBUTE)
+                        own(template[j:k], attr_name)
                         j = k
             i = j
             lname = name.lower()
@@ -446,11 +465,13 @@ def slot_contexts(template: str, xml_mode: bool) -> dict[int, str]:
                 end = template.lower().find("</" + lname, i)
                 end = n if end < 0 else end
                 mark(template[i:end], RAW if lname in _RAW_TEXT else TEXT)
+                if lname in _RAW_TEXT:
+                    own(template[i:end], f"<{lname}>", raw=True)
                 i = end
             continue
         mark(template[i:i + 1], TEXT)
         i += 1
-    return contexts
+    return contexts, owners
 
 
 def xml_template_error(template: str) -> str | None:

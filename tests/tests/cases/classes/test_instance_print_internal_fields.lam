@@ -12,7 +12,7 @@
 # expect: &{{sq} 5}
 # expect: f-string &{{sq} 5}
 # expect: base view &{{sq} 5}
-# expect: <nil>
+# expect: None
 # expect: [&{x} &{{sq} 2}]
 # expect: Labeled(a)
 # expect: Labeled(b)

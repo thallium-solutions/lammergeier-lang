@@ -7,13 +7,13 @@
 # string as is, fmt's %v of anything else), defined once in the main file;
 # any other slot (float, generic, ``any``) keeps fmt.Sprintf. ``x =
 # obj.name() if obj != None else None`` is an ``any`` (a ``str`` cannot be
-# ``None``); the slot shows the value or ``<nil>``.
+# ``None``); the slot shows the value or ``None``.
 #
 # expect-go: return entry + "_" + size + ".avif"
 # expect-go: return ImageKeys_base + "/" + ImageKeys_key(entry, size)
 # expect-go: return "{" + s.Name + "} 100% " + strconv.Itoa(s.Age) + " " + strconv.FormatBool(s.Active)
 # expect-go: var greeting string = PREFIX + ": " + Strings_toUpper(name) + Strings_join(words, ",") + name + "!"
-# expect-go: var picked string = func() string { if len(name) > 2 { return name }; return "x" }() + "|" + Label(true)
+# expect-go: var picked string = func() string { if lamStrLen(name) > 2 { return name }; return "x" }() + "|" + Label(true)
 # expect-go: var fallback string = lamSlotText(inferred) + "/" + name
 # expect-go: var mixed string = fmt.Sprintf("%v %v", name, ratio)
 # expect-go: var unicode string = "Zoë 🙂 " + name + " \"q\" \\ 50%"
@@ -22,7 +22,7 @@
 # expect-go: var alone string = name
 # expect-go: var converted string = strconv.Itoa(len(words)) + name
 # expect-go: got := func() interface{} { if svc != nil { return svc.Title() }; return nil }()
-# expect-go: var shown string = fmt.Sprintf("%v!", got)
+# expect-go: var shown string = fmt.Sprintf("%v!", lamShow(got))
 # expect-go: func lamSlotText[T any](v T) string {
 
 const PREFIX: str = "lam"

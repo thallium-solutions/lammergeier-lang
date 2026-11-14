@@ -1,8 +1,9 @@
 # expect-pass
-# Regression neighbours of 611/612: a `str` index converted with
-# `string(...)`, a one-character slice, byte comparisons with ints and
-# `int(...)`, iteration (one-character strs) and `list[str]` / `dict` /
-# `tuple` indexing (a `str`, so methods work) stay valid.
+# Regression neighbours of 611/612: a `str` index (a one-character `str`)
+# also converted with `string(...)` (a no-op), a one-character slice,
+# comparisons with `str`s, `ord(...)` / `int(...)` of a character,
+# iteration (one-character strs) and `list[str]` / `dict` / `tuple`
+# indexing (a `str`, so methods work) stay valid.
 
 class Word {
     func init(self, text: str) {
@@ -21,7 +22,7 @@ func cap(s: str) -> str {
 func main() {
     w: str = "hello"
     print(string(w[0]).toUpper(), w[0:1].toUpper(), w[-1:].toUpper())
-    print(w[0] == 104, int(w[-1]), string(w[1]) == "e")
+    print(w[0] == "h", ord(w[-1]), string(w[1]) == "e", w[1].toUpper(), int("7"[0]))
     print([string(x[0]).toUpper() for x in ["ab", "cd"]])
     for ch in w {
         print(ch.toUpper())

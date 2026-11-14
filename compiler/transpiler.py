@@ -296,6 +296,384 @@ func lamSlotText[T any](v T) string {
 }
 """
 
+    # ``str`` indexes, slices and measures characters (code points), like
+    # Python (docs/SYNTAX.md, "Strings are sequences of characters"): ``s[i]``
+    # is ``lamStrAt``, ``len(s)`` ``lamStrLen``, ``s[a:b]`` ``lamStrSlice`` /
+    # ``lamStrFrom``, a stepped slice ``lamStrStep``; ``ord`` / ``chr`` are
+    # ``lamOrd`` / ``lamChr``. Emitted by the main file when some module uses
+    # them (libraries' Go joins the same package).
+    _STR_RUNTIME_GO = """
+// Character (code point) semantics of ``str``: ``len(s)``, ``s[i]`` and
+// slices count characters. The leading ASCII run of a string is
+// byte-indexed as is; past it a short string is walked, and a long one gets
+// a character index (``lamStrIndex``), cached so that ``while i < len(s) {
+// s[i] ... }`` stays linear.
+const (
+\tlamStrShort = 64 // bytes up to which a string is walked, never indexed
+\tlamStrSpan  = 4  // characters between two marks of a lamStrIndex
+)
+
+// lamStrIndex locates the characters of a long string: marks[k] is the byte
+// offset of character head + k*lamStrSpan. Never modified once published.
+type lamStrIndex struct {
+\ts     string
+\thead  int // the leading ASCII run (bytes, so characters)
+\tn     int // characters
+\tmarks []uint32
+}
+
+// A few recently indexed strings. An entry keeps its string alive, so a
+// string with the same data pointer and length is the same string.
+var lamStrIndexes [16]atomic.Pointer[lamStrIndex]
+
+func lamStrIndexSlot(s string) *atomic.Pointer[lamStrIndex] {
+\treturn &lamStrIndexes[(uintptr(unsafe.Pointer(unsafe.StringData(s)))>>4^uintptr(len(s)))&15]
+}
+
+// lamStrIndexFind is the cached index of s (len(s) > 0) or nil.
+func lamStrIndexFind(s string) *lamStrIndex {
+\tif x := lamStrIndexSlot(s).Load(); x != nil && len(x.s) == len(s) && unsafe.StringData(x.s) == unsafe.StringData(s) {
+\t\treturn x
+\t}
+\treturn nil
+}
+
+// lamStrIndexOf is the index of s (len(s) > 0), built and cached on a miss.
+func lamStrIndexOf(s string) *lamStrIndex {
+\tif x := lamStrIndexFind(s); x != nil {
+\t\treturn x
+\t}
+\treturn lamStrIndexNew(s)
+}
+
+func lamStrIndexNew(s string) *lamStrIndex {
+\th := lamStrASCII(s)
+\tx := &lamStrIndex{s: s, head: h, n: h}
+\tif h < len(s) {
+\t\tx.marks = make([]uint32, 0, (len(s)-h)/lamStrSpan+1)
+\t\tnext := 0
+\t\tfor b := range s[h:] {
+\t\t\tif next == 0 {
+\t\t\t\tx.marks = append(x.marks, uint32(h+b))
+\t\t\t\tnext = lamStrSpan
+\t\t\t}
+\t\t\tnext--
+\t\t\tx.n++
+\t\t}
+\t}
+\tlamStrIndexSlot(s).Store(x)
+\treturn x
+}
+
+// pos is the byte offset of character i (0 <= i < x.n).
+func (x *lamStrIndex) pos(i int) int {
+\tif i < x.head {
+\t\treturn i
+\t}
+\tk := (i - x.head) / lamStrSpan
+\tb := int(x.marks[k])
+\tfor c := x.head + k*lamStrSpan; c < i; c++ {
+\t\tif x.s[b] < utf8.RuneSelf {
+\t\t\tb++
+\t\t} else {
+\t\t\t_, w := utf8.DecodeRuneInString(x.s[b:])
+\t\t\tb += w
+\t\t}
+\t}
+\treturn b
+}
+
+// lamStrASCII is the length of the leading ASCII run of s (8 bytes at a
+// time: the 8-byte window lets Go combine the loads).
+func lamStrASCII(s string) int {
+\ti := 0
+\tfor len(s)-i >= 8 {
+\t\tt := s[i : i+8]
+\t\tif (uint64(t[0])|uint64(t[1])<<8|uint64(t[2])<<16|uint64(t[3])<<24|
+\t\t\tuint64(t[4])<<32|uint64(t[5])<<40|uint64(t[6])<<48|uint64(t[7])<<56)&0x8080808080808080 != 0 {
+\t\t\tbreak
+\t\t}
+\t\ti += 8
+\t}
+\tfor i < len(s) && s[i] < utf8.RuneSelf {
+\t\ti++
+\t}
+\treturn i
+}
+
+// lamStrLen is ``len(s)``: the number of characters (a long string's
+// cached index knows it; counting builds none: binary data held in a
+// string would pay for an index it never uses).
+func lamStrLen(s string) int {
+\tif len(s) > lamStrShort {
+\t\tif x := lamStrIndexFind(s); x != nil {
+\t\t\treturn x.n
+\t\t}
+\t}
+\th := lamStrASCII(s)
+\tif h == len(s) {
+\t\treturn h
+\t}
+\treturn h + utf8.RuneCountInString(s[h:])
+}
+
+// lamStrPos is the byte offset of character i >= 0; past the last
+// character, len(s) and false.
+func lamStrPos(s string, i int) (int, bool) {
+\tif i >= len(s) {
+\t\treturn len(s), false
+\t}
+\tif len(s) > lamStrShort && i >= lamStrSpan && uint64(len(s)) < 1<<32 {
+\t\tx := lamStrIndexOf(s)
+\t\tif i >= x.n {
+\t\t\treturn len(s), false
+\t\t}
+\t\treturn x.pos(i), true
+\t}
+\th := lamStrASCII(s[:i+1])
+\tif h > i {
+\t\treturn i, true
+\t}
+\tc := h
+\tfor b := range s[h:] {
+\t\tif c == i {
+\t\t\treturn h + b, true
+\t\t}
+\t\tc++
+\t}
+\treturn len(s), false
+}
+
+// lamStrPosEnd is the byte offset of the k-th character from the end
+// (k >= 1); before the first character, 0 and false.
+func lamStrPosEnd(s string, k int) (int, bool) {
+\tif k <= 0 || k > len(s) {
+\t\treturn 0, false
+\t}
+\tif len(s) <= lamStrShort || k <= lamStrSpan || uint64(len(s)) >= 1<<32 {
+\t\tb := len(s)
+\t\tfor ; k > 0; k-- {
+\t\t\tif b == 0 {
+\t\t\t\treturn 0, false
+\t\t\t}
+\t\t\tif s[b-1] < utf8.RuneSelf {
+\t\t\t\tb--
+\t\t\t} else {
+\t\t\t\t_, w := utf8.DecodeLastRuneInString(s[:b])
+\t\t\t\tb -= w
+\t\t\t}
+\t\t}
+\t\treturn b, true
+\t}
+\tx := lamStrIndexOf(s)
+\tif k > x.n {
+\t\treturn 0, false
+\t}
+\treturn x.pos(x.n - k), true
+}
+
+// lamStrAt is ``s[i]``: the one-character string at character i (i < 0
+// counts from the end).
+func lamStrAt(s string, i int) string {
+\tif uint(i) < uint(len(s)) {
+\t\tif len(s) > lamStrShort && i >= lamStrSpan && uint64(len(s)) < 1<<32 {
+\t\t\tx := lamStrIndexOf(s)
+\t\t\tif i < x.head {
+\t\t\t\treturn s[i : i+1]
+\t\t\t}
+\t\t\tif i < x.n {
+\t\t\t\treturn lamStrChar(s, x.pos(i))
+\t\t\t}
+\t\t} else if s[i] < utf8.RuneSelf && lamStrASCII(s[:i]) == i {
+\t\t\t// The ASCII fast path: the bytes before i are ASCII.
+\t\t\treturn s[i : i+1]
+\t\t}
+\t}
+\treturn lamStrAtAny(s, i)
+}
+
+func lamStrAtAny(s string, i int) string {
+\tvar b int
+\tvar ok bool
+\tif i >= 0 {
+\t\tb, ok = lamStrPos(s, i)
+\t} else {
+\t\tb, ok = lamStrPosEnd(s, -i)
+\t}
+\tif !ok {
+\t\tlamStrIndexFault(s, i)
+\t}
+\treturn lamStrChar(s, b)
+}
+
+// lamStrChar is the character starting at byte b of s.
+func lamStrChar(s string, b int) string {
+\tif s[b] < utf8.RuneSelf {
+\t\treturn s[b : b+1]
+\t}
+\t_, w := utf8.DecodeRuneInString(s[b:])
+\treturn s[b : b+w]
+}
+
+// lamStrIndexError is the IndexError of ``s[i]``: a runtime.Error, so it is
+// reported like Go's own index faults (at the Lam line).
+type lamStrIndexError string
+
+func (e lamStrIndexError) Error() string { return "runtime error: " + string(e) }
+func (e lamStrIndexError) RuntimeError() {}
+
+//go:noinline
+func lamStrIndexFault(s string, i int) {
+\tpanic(lamStrIndexError("index out of range [" + strconv.Itoa(i) + "] with length " + strconv.Itoa(lamStrLen(s))))
+}
+
+// lamStrBound is the byte offset of the slice bound i (Python: negative
+// counts from the end, out of range clamps).
+func lamStrBound(s string, i int) int {
+\tif i >= 0 {
+\t\tb, _ := lamStrPos(s, i)
+\t\treturn b
+\t}
+\tb, _ := lamStrPosEnd(s, -i)
+\treturn b
+}
+
+// lamStrSlice is ``s[a:b]`` by character.
+func lamStrSlice(s string, a, b int) string {
+\tvar lo, hi int
+\tif len(s) > lamStrShort && (a >= lamStrSpan || b >= lamStrSpan) && uint64(len(s)) < 1<<32 {
+\t\tx := lamStrIndexOf(s)
+\t\tif 0 <= a && a <= b && b <= x.head {
+\t\t\treturn s[a:b]
+\t\t}
+\t\tlo, hi = x.bound(a), x.bound(b)
+\t} else if 0 <= a && a <= b && b <= len(s) && lamStrASCII(s[:b]) == b {
+\t\treturn s[a:b]
+\t} else {
+\t\tlo, hi = lamStrBound(s, a), lamStrBound(s, b)
+\t}
+\tif hi <= lo {
+\t\treturn ""
+\t}
+\treturn s[lo:hi]
+}
+
+// lamStrFrom is ``s[a:]`` by character.
+func lamStrFrom(s string, a int) string {
+\tif len(s) > lamStrShort && a >= lamStrSpan && uint64(len(s)) < 1<<32 {
+\t\treturn s[lamStrIndexOf(s).bound(a):]
+\t}
+\tif 0 <= a && a <= len(s) && lamStrASCII(s[:a]) == a {
+\t\treturn s[a:]
+\t}
+\treturn s[lamStrBound(s, a):]
+}
+
+// bound is the byte offset of the slice bound i (negative: from the end;
+// out of range: clamped).
+func (x *lamStrIndex) bound(i int) int {
+\tif i < 0 {
+\t\ti += x.n
+\t\tif i < 0 {
+\t\t\treturn 0
+\t\t}
+\t}
+\tif i >= x.n {
+\t\treturn len(x.s)
+\t}
+\treturn x.pos(i)
+}
+
+// lamStrStep is ``s[start:end:step]`` by character (sp / ep: the bound is
+// given).
+func lamStrStep(s string, start, end, step int, sp, ep bool) string {
+\tif step == 0 {
+\t\tpanic("ValueError: slice step cannot be zero")
+\t}
+\tif lamStrASCII(s) == len(s) {
+\t\tstart, end = lamStrStepBounds(len(s), start, end, step, sp, ep)
+\t\tout := make([]byte, lamStrStepCount(start, end, step))
+\t\tfor k, i := 0, start; k < len(out); k, i = k+1, i+step {
+\t\t\tout[k] = s[i]
+\t\t}
+\t\treturn string(out)
+\t}
+\trs := []rune(s)
+\tstart, end = lamStrStepBounds(len(rs), start, end, step, sp, ep)
+\tout := make([]rune, lamStrStepCount(start, end, step))
+\tfor k, i := 0, start; k < len(out); k, i = k+1, i+step {
+\t\tout[k] = rs[i]
+\t}
+\treturn string(out)
+}
+
+func lamStrStepCount(start, end, step int) int {
+\tif step > 0 && end > start {
+\t\treturn (end-start-1)/step + 1
+\t}
+\tif step < 0 && start > end {
+\t\treturn int(uint(start-end-1)/uint(-step)) + 1
+\t}
+\treturn 0
+}
+
+// lamOrd is ``ord(c)``: the code point of a one-character string.
+func lamOrd(c string) int {
+\tr, w := utf8.DecodeRuneInString(c)
+\tif w == 0 || w != len(c) {
+\t\tpanic("TypeError: ord() expected a character, but string of length " + strconv.Itoa(lamStrLen(c)) + " found")
+\t}
+\treturn int(r)
+}
+
+// lamChr is ``chr(n)``: the one-character string of the code point n.
+func lamChr(n int) string {
+\tif n < 0 || n > utf8.MaxRune {
+\t\tpanic("ValueError: chr() arg not in range(0x110000)")
+\t}
+\treturn string(rune(n))
+}
+
+// lamStrStepBounds resolves Python's slice bounds for n items.
+func lamStrStepBounds(n, start, end, step int, sp, ep bool) (int, int) {
+\tif sp && start < 0 {
+\t\tstart += n
+\t}
+\tif ep && end < 0 {
+\t\tend += n
+\t}
+\tif step > 0 {
+\t\tif !sp || start < 0 {
+\t\t\tstart = 0
+\t\t}
+\t\tif start > n {
+\t\t\tstart = n
+\t\t}
+\t\tif !ep || end > n {
+\t\t\tend = n
+\t\t}
+\t\tif end < 0 {
+\t\t\tend = 0
+\t\t}
+\t} else {
+\t\tif !sp || start >= n {
+\t\t\tstart = n - 1
+\t\t}
+\t\tif start < -1 {
+\t\t\tstart = -1
+\t\t}
+\t\tif !ep || end < -1 {
+\t\t\tend = -1
+\t\t}
+\t\tif end >= n {
+\t\t\tend = n - 1
+\t\t}
+\t}
+\treturn start, end
+}
+"""
+    _STR_RUNTIME_RE = re.compile(r"\blam(?:StrLen|StrAt|StrSlice|StrFrom|StrStep|Ord|Chr)\(")
+
     # ``None`` at run time (``compiler/semantic_none.py``): a member of
     # ``None`` raises ``AttributeError: None has no attribute 'name'``
     # (``lamNN`` for a class reference, ``lamNNI`` for an interface value,
@@ -531,6 +909,45 @@ func lamFloatToInt(v float64) int {
 \treturn int(v)
 }
 
+// lamNoneShown prints as Lam's ``None`` (Go prints a nil value as <nil>).
+type lamNoneShown struct{}
+
+func (lamNoneShown) String() string { return "None" }
+
+// lamShow is a value as ``print`` / ``str`` / f-strings show it: a nil
+// reference is ``None``, also inside lists and dicts of references or
+// ``any`` (copied with the nils replaced; everything else is unchanged).
+func lamShow(v interface{}) interface{} {
+\tif v == nil {
+\t\treturn lamNoneShown{}
+\t}
+\trv := reflect.ValueOf(v)
+\tswitch rv.Kind() {
+\tcase reflect.Ptr, reflect.Interface, reflect.Func, reflect.Chan:
+\t\tif rv.IsNil() {
+\t\t\treturn lamNoneShown{}
+\t\t}
+\tcase reflect.Slice:
+\t\tif k := rv.Type().Elem().Kind(); (k == reflect.Interface || k == reflect.Ptr) && !rv.IsNil() {
+\t\t\tout := make([]any, rv.Len())
+\t\t\tfor i := range out {
+\t\t\t\tout[i] = lamShow(rv.Index(i).Interface())
+\t\t\t}
+\t\t\treturn out
+\t\t}
+\tcase reflect.Map:
+\t\tif k := rv.Type().Elem().Kind(); (k == reflect.Interface || k == reflect.Ptr) && !rv.IsNil() {
+\t\t\tout := reflect.MakeMapWithSize(reflect.MapOf(rv.Type().Key(), reflect.TypeOf((*interface{})(nil)).Elem()), rv.Len())
+\t\t\tit := rv.MapRange()
+\t\t\tfor it.Next() {
+\t\t\t\tout.SetMapIndex(it.Key(), reflect.ValueOf(lamShow(it.Value().Interface())))
+\t\t\t}
+\t\t\treturn out.Interface()
+\t\t}
+\t}
+\treturn v
+}
+
 // lamExcKindOf is the built-in exception class of a raised value
 // (``isinstance(e, ValueError)``): a typed fault's kind, the name before
 // the colon of a ``"ValueError: message"`` panic, a Go runtime error's Lam
@@ -743,6 +1160,8 @@ func lamGoTypeLamName(t reflect.Type) string {
         self._lib_uses_generators: bool = False
         # A library calls ``lamSlotText`` (``_SLOT_TEXT_RUNTIME_GO``).
         self._lib_uses_slot_text: bool = False
+        # A library indexes a ``str`` by character (``_STR_RUNTIME_GO``).
+        self._lib_uses_str_runtime: bool = False
         # A library uses the ``None`` checks (``_NONE_RUNTIME_GO``,
         # ``_NONE_OF_RUNTIME_GO``).
         self._lib_uses_none_runtime: bool = False
@@ -1222,6 +1641,14 @@ func lamGoTypeLamName(t reflect.Type) string {
         # Some module checks for ``None`` at run time: the main file defines
         # the helpers (``_NONE_RUNTIME_GO``).
         scanned = body_lines + self._hoisted_nested_generic_funcs
+        # Some module indexes, slices or measures a ``str`` by character
+        # (``_STR_RUNTIME_GO``).
+        if not self._omit_main and (
+            self._lib_uses_str_runtime or any(self._STR_RUNTIME_RE.search(line) for line in scanned)
+        ):
+            body_lines.extend(self._STR_RUNTIME_GO.splitlines())
+            for pkg in ("strconv", "sync/atomic", "unicode/utf8", "unsafe"):
+                self._need_import(pkg)
         if not self._omit_main and (
             self._lib_uses_none_runtime or any(self._NONE_RUNTIME_RE.search(line) for line in scanned)
         ):
@@ -1236,7 +1663,7 @@ func lamGoTypeLamName(t reflect.Type) string {
             body_lines.extend(self._FAULT_RUNTIME_GO.splitlines())
             stdlib_dir = os.path.join(os.path.realpath(self.stdlib_path), "") if self.stdlib_path else ""
             body_lines.append(f"const lamStdlibDir = {json.dumps(stdlib_dir)}")
-            for pkg in ("fmt", "os", "path/filepath", "runtime", "strconv", "strings"):
+            for pkg in ("fmt", "os", "path/filepath", "reflect", "runtime", "strconv", "strings"):
                 self._need_import(pkg)
         # Some module uses a generator: the main file (not a library, whose
         # Go joins the same package) defines the generator runtime.

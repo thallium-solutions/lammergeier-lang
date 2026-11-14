@@ -1,7 +1,7 @@
 # Test: lamcache — LruCache (fixed capacity, LRU eviction) and
 # TtlCache (per-entry expiry).
 #
-# expect: lru_a=<nil>
+# expect: lru_a=None
 # expect: lru_b=2
 # expect: lru_c=3
 # expect: lru_size=2
@@ -10,7 +10,7 @@
 # expect: lru_remove_b=true
 # expect: lru_remove_again=false
 # expect: ttl_get1=v
-# expect: ttl_get2=<nil>
+# expect: ttl_get2=None
 # expect: ttl_forever=eternal
 # expect: mixed_cache_size=3
 # expect: mixed_cache_bool=true

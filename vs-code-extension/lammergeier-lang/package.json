@@ -2,7 +2,7 @@
   "name": "lammergeier-lang",
   "displayName": "Lammergeier Lang",
   "description": "Syntax highlighting and rich LSP support for Lammergeier (.lam), a typed Python-like language that compiles to Go.",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "publisher": "lammergeier",
   "icon": "icon.png",
   "repository": {

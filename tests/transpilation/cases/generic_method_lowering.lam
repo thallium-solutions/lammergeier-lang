@@ -10,7 +10,7 @@
 #   - call sites: ``Box_Map(b, func(x int) string { ... })``, chained
 #   - inherited generic method on a subclass: the embedded parent is passed
 #   - generic function with a lambda: ``MapList(xs, func(x int) int { ... })``
-#   - ``map(len)``: ``func(_lamArg string) int { return len(_lamArg) }``
+#   - ``map(len)``: ``func(_lamArg string) int { return lamStrLen(_lamArg) }`` (characters)
 
 # expect-go: func Box_Map[T any, U any](s *Box[T], fn func(T) U) *Box[U] {
 # expect-go: func Picker_Pick[T any](s *Picker, items []T) T {
@@ -19,7 +19,7 @@
 # expect-go: Picker_Pick(p, []float64{1.5, 2.5})
 # expect-go: Box_Map(ib.Box, func(v int) int { return v * 3 })
 # expect-go: MapList([]int{1, 2}, func(x int) int { return x * 2 })
-# expect-go: MapList(words, func(_lamArg string) int { return len(_lamArg) })
+# expect-go: MapList(words, func(_lamArg string) int { return lamStrLen(_lamArg) })
 
 class Box[T] {
     func init(self, value: T) {

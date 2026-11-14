@@ -11,7 +11,7 @@
 # expect: ab
 # expect: a, b
 # expect: v
-# expect: <nil>|none
+# expect: None|none
 # expect: x
 # expect: products/1/a.avif 3
 

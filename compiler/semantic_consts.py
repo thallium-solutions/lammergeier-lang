@@ -178,8 +178,9 @@ class _Folder:
             self.report(node, f"negative exponent in the int power {base} ** {exp}: use a float base ({base}.0 ** {exp})")
 
     def _check_literal_string_index(self, node) -> None:
-        """``"abc"[9]``: Go rejects a constant index out of the range of a
-        constant string (Lam strings index bytes)."""
+        """``"abc"[9]``: a constant index out of the range of a string
+        literal (``str`` indexes characters) is a compile error, like an
+        out-of-range constant list index."""
         if len(node.children) < 2:
             return
         receiver, index = node.children[0], node.children[1]
@@ -197,9 +198,9 @@ class _Folder:
         value = self.fold(index)
         if not isinstance(value, int) or isinstance(value, bool):
             return
-        size = len(text.encode("utf-8"))
+        size = len(text)
         if not -size <= value < size:
-            self.report(node, f"index {value} is out of range for the {size}-byte string {raw}")
+            self.report(node, f"index {value} is out of range for the {size}-character string {raw}")
 
     def _check_dict_keys(self, node) -> None:
         seen: dict = {}

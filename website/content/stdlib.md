@@ -383,7 +383,9 @@ covered by the repository runner:
 ### `lamstrings` — `Strings`
 
 UTF-8-safe string utilities. Like Python's `str` methods plus a few
-Go-flavoured helpers.
+Go-flavoured helpers. Positions and widths count characters (code points),
+like `len(s)` and `s[i]`: `"naïve café".index("café")` is 6, and
+`center` / `padLeft` / `padRight` / `zfill` pad to a number of characters.
 
 ```lammergeier
 from lamstrings import Strings
@@ -485,7 +487,7 @@ Rune-level operations.
 ```lammergeier
 from lamunicode import Unicode
 
-n: int = Unicode.runeCount("héllo")    # 5, not 6
+n: int = Unicode.runeCount("héllo")    # 5, like len("héllo")
 runes: list[int] = Unicode.toRunes("ab")
 ```
 
@@ -3785,6 +3787,9 @@ func main() {
 | --- | --- |
 | `Html.parse(text) -> html` | lenient HTML reading (never fails); only for trusted text |
 | `Html.escape(text) -> str` / `Xml.escape(text) -> str` | text escaped for content and attribute values |
+| `Html.safeUrl(url) -> str` | `url` for a URL attribute (`href`, `src`, `action`...): relative URLs, `http`, `https`, `mailto`, `tel` and base64 images pass; any other scheme (`javascript:`, `vbscript:`, `data:text/html`) gives `about:invalid#lam-blocked` |
+| `Html.safeCss(style) -> str` | `style` (`color: red; margin: 0 4px`) when its values are plain CSS; `url(`, `expression`, `javascript`, comments, quotes or escapes give `lam-blocked` |
+| `Html.jsValue(value) -> str` | `value` as a JavaScript literal (its JSON, with `<`, `>`, `&` escaped), safe in `<script>` and `on*` attributes: insert it without quotes (`var who = ${Html.jsValue(name)};`) |
 | `Xml.parse(text) -> Result[xml]` | well-formed XML or an `XmlError` |
 | `Xml.encode(value, root="root") -> xml` | maps become one child per key, lists repeated `<item>`, scalars text |
 | `Xml.decode(text) -> Result[any]` | the shape-shifted form: `dict[str, any]` (attributes under `@name`), repeated tags as `list[any]`, leaf text as `str` |
@@ -3793,6 +3798,26 @@ The DOM-style methods of the values (`select`, `first`, `text`, `attr`,
 `setAttr`, `addClass`, `append`, `remove`, `replaceWith`, `clone`...) are
 listed in SYNTAX.md. `XmlNode` was removed in 4.0.0: `Xml.parse` returns the
 native `xml` value.
+
+Escaping makes text safe in element content and quoted attributes, not where
+the browser reads the value as a URL, JavaScript or CSS. In an `html`
+literal, the checker warns (`warning[security]`) about a value from outside
+the template that starts a URL attribute, or sits in an `on*` handler,
+`<script>` or a `style`. Pass it through the matching sanitizer and the
+warning goes away:
+
+```lammergeier fragment
+<a href="${Html.safeUrl(shop.website)}">site</a>
+<button onclick="pick(${Html.jsValue(product.id)})">pick</button>
+<div style="${Html.safeCss(theme.style)}">...</div>
+```
+
+A function or method whose every `return` is a sanitizer's output counts as
+sanitized, and so, for URLs, does one returning a string with a static safe
+start (`func url(self, path: str) -> str { return f"/{self.lang}{path}" }`).
+String literals, numbers, a URL written with a static safe start
+(`"/p/" + id`, `f"/p/{id}"`) and names assigned only such values are
+never warned about.
 
 #### Sanitizing untrusted HTML — `Html.sanitize`, `HtmlPolicy`
 

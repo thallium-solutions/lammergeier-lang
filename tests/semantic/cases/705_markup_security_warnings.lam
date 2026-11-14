@@ -1,0 +1,51 @@
+# expect-warning: line 37: warning[security]: dynamic URL in `href`
+# expect-warning: line 38: warning[security]: a value in the event handler `onclick` is HTML-escaped, not JavaScript-escaped
+# expect-warning: line 39: warning[security]: a value inside <script> is not JavaScript-escaped
+# expect-warning: line 40: warning[security]: a dynamic value in a `style` attribute can load URLs or scripts
+# expect-no-warning: line 41:
+# expect-no-warning: line 42:
+# expect-no-warning: line 43:
+# expect-no-warning: line 44:
+# expect-no-warning: line 45:
+# A value from outside the template (a parameter here) in a URL attribute,
+# an event handler, <script> or a style attribute is only HTML-escaped: a
+# warning names the lamhtml sanitizer that makes it safe. Quiet: the
+# sanitizers, functions whose every return is one (or, for URLs, a string
+# with a static safe start like `f"/{lang}{path}"`), string literals, a
+# static safe start, numbers, and a slot after a static URL start.
+from lamhtml import Html
+
+const Shadow: str = "box-shadow: 0 1px 2px #000"
+
+class Ctx {
+    func init(self, lang: str) {
+        self.lang: str = lang
+    }
+
+    func url(self, path: str) -> str {
+        return f"/{self.lang}{path}"
+    }
+}
+
+func cleanStyle(raw: str) -> str {
+    return Html.safeCss(raw)
+}
+
+func view(c: Ctx, link: str, name: str, css: str, n: int) -> html {
+    home: str = c.url("/")
+    return <>
+        <a href="${link}">a</a>
+        <button onclick="go('${name}')">b</button>
+        <script>var who = "${name}";</script>
+        <div style="${css}">c</div>
+        <p>${name}</p>
+        <a href="${Html.safeUrl(link)}" onclick="go(${Html.jsValue(name)})">d</a>
+        <a href="${c.url('/x')}">e</a><a href="${home}">f</a><a href="/p/${link}">g</a><a href="${f'/q/{n}'}">h</a>
+        <div style="${Html.safeCss(css)}">i</div><div style="${cleanStyle(css)}">j</div><div style="${Shadow}">k</div>
+        <script>var count = ${n}; var who = ${Html.jsValue(name)};</script>
+    </>
+}
+
+func main() {
+    print(str(view(Ctx("it"), "javascript:x", "n", "color: red", 3)))
+}

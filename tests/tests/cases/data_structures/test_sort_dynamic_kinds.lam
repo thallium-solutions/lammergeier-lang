@@ -12,7 +12,7 @@
 # expect: result=[2.5 9 10 100] other-module=[2.5 9 10 100]
 # expect: generic=[1 9 10 100] [10 a b] [-1 2.5 10] [false true]
 # expect: generic-desc=[100 10 9 1]
-# expect: mixed=[<nil> true 2.5 9 10 a b]
+# expect: mixed=[None true 2.5 9 10 a b]
 # expect: json-any=[-3 1.5 9 10 100]
 # expect: json=[9 10 100] [9 10 100] min=9 max=100
 # expect: minmax=1 100 2.5 b

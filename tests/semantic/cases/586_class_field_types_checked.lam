@@ -1,14 +1,14 @@
-# expect-error: line 12: error[return]: function `charAt` returns `byte`, expected `str`
+# expect-error: line 12: error[return]: function `code` returns `str`, expected `int`
 # expect-error: line 16: error[type]: cannot assign `str` to `int` variable `n`
 # A field's declared type is checked where it is used (indexing a `str`
-# field gives a `byte`; a slice `self.raw[i:i + 1]` is a `str`).
+# field gives a one-character `str`, like a slice `self.raw[i:i + 1]`).
 
 class Text {
     func init(self, raw: str) {
         self.raw: str = raw
     }
 
-    func charAt(self, i: int) -> str {
+    func code(self, i: int) -> int {
         return self.raw[i]
     }
 
@@ -20,5 +20,5 @@ class Text {
 
 func main() {
     t: Text = Text("abc")
-    print(t.charAt(0), t.width())
+    print(t.code(0), t.width())
 }

@@ -1,0 +1,44 @@
+# Transpilation: a `str` is indexed, sliced and measured by character
+# through the `lamStr*` runtime helpers (docs/TRANSPILATION.md, "`str` by
+# character"): `s[len(s) - k]` of a name reads from the end without
+# counting, `len(s) == 0` / `> 0` keep Go's byte length (a string has
+# characters exactly when it has bytes), `ord` / `chr` are `lamOrd` /
+# `lamChr`, and `bytes` keeps byte indexing.
+# expect-go: return lamStrAt(s, i)
+# expect-go: var first string = lamStrAt(s, 0)
+# expect-go: var last string = lamStrAt(s, -1)
+# expect-go: var end string = lamStrAt(s, -2)
+# expect-go: var n int = lamStrLen(s)
+# expect-go: var empty bool = len(s) == 0
+# expect-go: var head string = lamStrSlice(s, 0, 3)
+# expect-go: var tail string = lamStrFrom(s, -3)
+# expect-go: var mid string = lamStrSlice(s, 1, n - 1)
+# expect-go: var back string = lamStrStep(s, 0, 0, -1, false, false)
+# expect-go: var code int = lamOrd(lamStrAt(s, 0))
+# expect-go: var letter string = lamChr(code + 1)
+# expect-go: var b byte = data[0]
+# expect-go: var size int = len(data)
+# expect-go: func lamStrAt(s string, i int) string {
+
+func at(s: str, i: int) -> str {
+    return s[i]
+}
+
+func main() {
+    s: str = "naïve"
+    first: str = s[0]
+    last: str = s[-1]
+    end: str = s[len(s) - 2]
+    n: int = len(s)
+    empty: bool = len(s) == 0
+    head: str = s[:3]
+    tail: str = s[-3:]
+    mid: str = s[1:n - 1]
+    back: str = s[::-1]
+    code: int = ord(s[0])
+    letter: str = chr(code + 1)
+    data: bytes = bytes(s)
+    b: byte = data[0]
+    size: int = len(data)
+    print(at(s, 2), first, last, end, n, empty, head, tail, mid, back, code, letter, b, size)
+}

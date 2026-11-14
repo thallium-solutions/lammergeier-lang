@@ -39,11 +39,12 @@ shift counts, duplicate constant keys in a dict literal, a program without
 
 | Fault | Lam exception | Message |
 |---|---|---|
-| `xs[i]`, `s[i]`, slices out of range, `pop()` of an empty list | `IndexError` (a `LookupError`) | `index out of range [5] with length 3 (at main.lam:7)` |
+| `xs[i]`, `s[i]` (character positions), slices out of range, `pop()` of an empty list | `IndexError` (a `LookupError`) | `index out of range [5] with length 3 (at main.lam:7)` |
 | `/`, `//` or `%` by zero (ints and floats) | `ZeroDivisionError` (an `ArithmeticError`) | `division by zero`, `integer division or modulo by zero` |
 | `int(s)`, `float(s)`, `bool(s)` of malformed text | `ParseError` (a `ValueError`) | `cannot parse "abc" as int` |
 | `min(xs)`, `max(xs)` of an empty list | `ValueError` | `min() of an empty list` |
 | a slice step of zero (`xs[::0]`) | `ValueError` | `slice step cannot be zero` |
+| `ord(c)` of a string that is not one character, `chr(n)` outside 0..0x10FFFF | `TypeError`, `ValueError` | `ord() expected a character, but string of length 2 found`, `chr() arg not in range(0x110000)` |
 | `int ** int` with a negative exponent | `ValueError` | `negative exponent in an int power (use a float base: 2.0 ** -1)` |
 | `int(x)` of a NaN float | `ValueError` | `cannot convert float NaN to integer` |
 | `int(x)` of an infinite float or one outside the int range | `OverflowError` (an `ArithmeticError`) | `float -1e+30 does not fit in an int` |
@@ -68,6 +69,10 @@ These behave as documented and raise nothing:
   `d["missing"]` on a `dict[str, int]` is `0` (`""` for strings, `false` for
   booleans, `None` for references). Test with `k in d` or use `d.get(k,
   default)` when the difference matters.
+- **Strings are sequences of characters** (code points), like Python 3:
+  `s[i]` is a one-character `str`, `len(s)` counts characters and a slice
+  never cuts a character in half (docs/SYNTAX.md, "Strings are sequences of
+  characters"). Bytes are `bytes`.
 - **Floats are IEEE 754 doubles**: a zero divisor still raises
   `ZeroDivisionError` (never an infinity), but overflow gives `+Inf`
   (`1e308 * 10.0`) and `float("nan")` is NaN; converting those to `int`
@@ -86,8 +91,31 @@ These behave as documented and raise nothing:
 - **Concurrent writes to one dict from several async tasks are fatal** (Go's
   `concurrent map writes`, not recoverable). Share data between tasks
   through their results (`await`), a `Mutex` (`lamconcurrency`) or a
-  `Channel`.
+  `Channel`. The checker warns (`warning[concurrency]`) when an
+  `async func` modifies a list, dict or set it doesn't own (a parameter, a
+  field of `self`, a module variable) without taking a lock (`.lock()`,
+  `.rLock()`).
 - **Running out of memory is fatal**, as in Go.
+
+## Security of generated markup
+
+`html` literals escape every inserted text value for element content and
+attribute values. Escaping is not enough where the browser reads a value as a
+URL, JavaScript or CSS, so the checker warns (`warning[security]`) about a
+value from outside the template that:
+
+| Place | Risk | Sanitizer (lamhtml) |
+|---|---|---|
+| starts a URL attribute (`href`, `src`, `action`, `formaction`, `srcset`...) | a `javascript:` URL runs code | `Html.safeUrl(x)` |
+| an `on*` event handler | the value breaks out of a JavaScript string | `Html.jsValue(x)`, or a `data-*` attribute |
+| `<script>` content | the same | `Html.jsValue(x)` |
+| a `style` attribute or `<style>` | `url(...)` / `expression(...)` load URLs or scripts | `Html.safeCss(x)` |
+
+The output is not changed (warnings, by the owner's decision); the warning
+disappears once the value goes through the sanitizer. A function whose every
+return is a sanitizer's output, a URL with a static safe start
+(`"/p/" + id`, `f"/{lang}{path}"`), string literals and numbers are
+trusted. `Html.sanitize` (with an `HtmlPolicy`) cleans untrusted *markup*.
 
 ## How the contract is checked
 

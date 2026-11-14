@@ -1,0 +1,18 @@
+# expect-error: line 14: error[type]: `x = None` gives `x` no type: declare it (`x: User = None`, `x: any = None`)
+# `x = None` binding a new name has no type (the generated Go failed with
+# "use of untyped nil"); reassigning a typed variable or a parameter to
+# None stays valid.
+class User {
+}
+
+func clear(u: User) -> User {
+    u = None
+    return u
+}
+
+func main() {
+    x = None
+    a: User = User()
+    a = None
+    print(x, a, clear(User()))
+}

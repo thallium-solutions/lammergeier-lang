@@ -36,6 +36,7 @@
 | Variadic    | `func sum(*args: int) -> int { }`       |
 | Match       | `match value { case 1 { ... } }`        |
 | Casts       | `row["n"] as int + 1`, `(v as User).name` (`as` and the target type are highlighted) |
+| Built-ins   | `len(s)`, `ord(c)`, `chr(n)`, `sorted(xs)` (highlighted before a call) |
 
 ## Installation
 
@@ -81,7 +82,7 @@ silently failing to load).
 ```bash
 # From the project root:
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.vscode/extensions/lammergeier.lammergeier-lang-1.5.0
+        ~/.vscode/extensions/lammergeier.lammergeier-lang-1.5.1
 ```
 
 #### Windsurf
@@ -92,7 +93,7 @@ target-platform suffix on the folder name:
 ```bash
 # From the project root:
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.5.0-universal
+        ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.5.1-universal
 ```
 
 #### Devin
@@ -103,14 +104,14 @@ target-platform suffix on the folder name:
 ```bash
 # From the project root:
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.devin/extensions/lammergeier.lammergeier-lang-1.5.0-universal
+        ~/.devin/extensions/lammergeier.lammergeier-lang-1.5.1-universal
 ```
 
 #### Cursor (same mechanism)
 
 ```bash
 ln -sfn "$(pwd)/vs-code-extension/lammergeier-lang" \
-        ~/.cursor/extensions/lammergeier.lammergeier-lang-1.5.0
+        ~/.cursor/extensions/lammergeier.lammergeier-lang-1.5.1
 ```
 
 After creating the symlink, reload the editor window (command palette →
@@ -119,7 +120,7 @@ activate automatically.
 
 > **Note:** The folder name inside the extensions directory **must**
 > follow the `<publisher>.<name>-<version>` convention
-> (`lammergeier.lammergeier-lang-1.5.0`). Using a bare `lammergeier-lang`
+> (`lammergeier.lammergeier-lang-1.5.1`). Using a bare `lammergeier-lang`
 > folder name is the most common reason the extension silently fails to
 > load on both VS Code and Windsurf.
 
@@ -198,8 +199,8 @@ npm run watch            # rebuilds out/extension.js on change
 ## Uninstall
 
 ```bash
-rm ~/.vscode/extensions/lammergeier.lammergeier-lang-1.5.0
-rm ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.5.0-universal
-rm ~/.devin/extensions/lammergeier.lammergeier-lang-1.5.0-universal
-rm ~/.cursor/extensions/lammergeier.lammergeier-lang-1.5.0
+rm ~/.vscode/extensions/lammergeier.lammergeier-lang-1.5.1
+rm ~/.windsurf/extensions/lammergeier.lammergeier-lang-1.5.1-universal
+rm ~/.devin/extensions/lammergeier.lammergeier-lang-1.5.1-universal
+rm ~/.cursor/extensions/lammergeier.lammergeier-lang-1.5.1
 ```

@@ -1,0 +1,25 @@
+# expect-pass
+# expect-no-warning: unused
+# Character semantics of `str` in the checker: `s[i]` and slices are `str`,
+# `len(s)` / `ord(c)` are `int`, `chr(n)` and `sorted(s)` / `reversed(s)`
+# elements are `str`; a user function may still be called `ord`.
+
+func initials(names: list[str]) -> str {
+    return "".join([n[0].toUpper() for n in names])
+}
+
+func codes(s: str) -> list[int] {
+    return [ord(c) for c in s]
+}
+
+func main() {
+    s: str = "naïve"
+    c: str = s[2]
+    tail: str = s[-3:]
+    n: int = len(s) + ord(c)
+    letters: list[str] = sorted(s)
+    back: list[str] = reversed(s)
+    e: str = chr(233) + s[::-1]
+    print(c, tail, n, letters, back, e, initials(["ada", "bob"]), codes("日本"))
+    print(s[0] in "aeiou", s[1:].index("ï"), f"{s[0]:>3}")
+}

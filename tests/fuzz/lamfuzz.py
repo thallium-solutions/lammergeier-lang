@@ -5,7 +5,7 @@
 Python *twin* of every program: the same statements rendered as Python with a
 small runtime (``PRELUDE``) that reproduces the documented Lam semantics where
 they differ from Python (Go value formatting, 64-bit ints, a missing dict key
-read as the zero value, byte-indexed strings, ...).  For each program:
+read as the zero value, ...).  For each program:
 
 * ``lamc build`` must succeed (the generator only writes valid programs), so
   a semantic diagnostic is a generator bug or a checker false positive, and a
@@ -37,8 +37,9 @@ leaves the int64 range is discarded and regenerated), float constants (Go
 folds constant expressions exactly, so float literals are never combined
 with each other), dict and set iteration order (unspecified: only consumed
 by order-insensitive folds), a missing typed-dict key (the zero value),
-strings (indexing gives a byte, ``len`` counts bytes; slicing and indexing
-only on ASCII strings), list aliasing (a Go slice: lists are never mutated
+strings (none: indexing, slicing and ``len`` count characters as in Python,
+on ASCII and non-ASCII text; only case conversion stays ASCII), list
+aliasing (a Go slice: lists are never mutated
 after being shared), closures over loop variables (per-iteration in Go:
 not generated), async bodies (run concurrently: pure, no output), exception
 messages of runtime faults (only the exception kind is printed).
@@ -157,12 +158,6 @@ def _int(x):
             raise OverflowError("float out of range")
         return r
     return int(x)
-
-def _blen(s):
-    return len(s.encode("utf-8"))
-
-def _sidx(s, i):
-    return s.encode("utf-8")[i]
 
 def _srep(s, n):
     return s * n
@@ -579,8 +574,6 @@ class Gen:
         if c == "len":
             t = self.pick([LINT, LSTR, STR, DSI, SINT] if self.has("set") else [LINT, LSTR, STR, DSI])
             a = self.expr(t, scope, d + 1, risky)
-            if t == STR:
-                return f"len({a[0]})", f"_blen({a[1]})"
             return f"len({a[0]})", f"len({a[1]})"
         if c == "minmax":
             fn = self.pick(["min", "max"])
@@ -702,7 +695,7 @@ class Gen:
             choices += ["fstr", "fstr"]
         if self.has("float"):
             choices.append("of_float")
-        choices += ["slice", "join"]
+        choices += ["slice", "slice", "index", "join"]
         if self.has("class") and self.classes:
             choices += ["describe"]
         if self.has("generic") and "Box" in self.classes:
@@ -751,15 +744,28 @@ class Gen:
                 parts_p.append(txt + "{_show(" + a[1] + ")}")
             return 'f"' + "".join(parts_l) + '"', 'f"' + "".join(parts_p) + '"'
         if c == "slice":
-            a = self.str_expr(scope, d + 1, risky, True)
+            # By character, like Python (non-ASCII text too).
+            a = self.str_expr(scope, d + 1, risky, ascii)
             lo = self.rng.randint(-3, 3)
             hi = self.rng.randint(-2, 5)
-            form = self.pick(["lo", "hi", "both"])
+            form = self.pick(["lo", "hi", "both", "step"])
             if form == "lo":
                 return f"{a[0]}[{lo}:]", f"{a[1]}[{lo}:]"
             if form == "hi":
                 return f"{a[0]}[:{hi}]", f"{a[1]}[:{hi}]"
+            if form == "step":
+                st = self.pick([-2, -1, 2, 3])
+                b = self.pick(["", str(lo)])
+                e = self.pick(["", str(hi)])
+                return f"{a[0]}[{b}:{e}:{st}]", f"{a[1]}[{b}:{e}:{st}]"
             return f"{a[0]}[{lo}:{hi}]", f"{a[1]}[{lo}:{hi}]"
+        if c == "index":
+            # ``s[i]`` is a one-character str; the receiver has at least
+            # two characters, so the index is in range.
+            a = self.str_expr(scope, d + 1, risky, ascii)
+            pad = self.pick(["xy", "éz", "日本", "🦅!"] if not ascii else ["xy", "ab"])
+            k = self.rng.randint(-2, 1)
+            return f"({a[0]} + \"{pad}\")[{k}]", f"({a[1]} + \"{pad}\")[{k}]"
         if c == "join":
             xs = self.list_expr(LSTR, scope, d + 1, risky, ascii=ascii)
             sep = self.pick([",", "", " ", "-"])
@@ -1329,7 +1335,7 @@ class Gen:
                 kk = self.fresh("key")
                 out.open(f"for {kk}, {x} in {dd[0]}", f"for {kk}, {x} in ({dd[1]}).items()")
                 inner.vars[x] = Var(x, INT, mutable=False, loop=True)
-                out.emit(f"{acc} += len({kk})", f"{acc} = _ck({acc} + _blen({kk}))")
+                out.emit(f"{acc} += len({kk})", f"{acc} = _ck({acc} + len({kk}))")
                 out.emit(f"{acc} += {x}", f"{acc} = _ck({acc} + {x})")
                 out.close()
                 out.emit(f"print({acc})", f"_p({acc})")
