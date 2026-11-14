@@ -278,7 +278,9 @@ def _expand_compact_layout(lines: list[str]) -> list[str]:
             expanded.extend(block)
             i = next_i
             continue
-        expanded.extend(_split_compact_line(lines[i], layout_stack))
+        # ``go!([]byte{})``: braces of inline raw Go are not Lam layout.
+        protected, inline_go = _protect_inline_go(lines[i])
+        expanded.extend(_restore_inline_go(part, inline_go) for part in _split_compact_line(protected, layout_stack))
         i += 1
     return expanded
 

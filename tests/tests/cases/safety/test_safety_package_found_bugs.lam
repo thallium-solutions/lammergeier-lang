@@ -1,0 +1,96 @@
+# Compiler bugs found by the official packages' tests (each built before
+# with an internal compiler error):
+# - `for _ in xs` over a list, a string or a dict;
+# - an untyped lambda whose body is `xs.append(...)`, and a block lambda
+#   without `-> R` and without `return value` (no result);
+# - `(await task).unwrap()` of an `async func -> Result[T]`, through a task
+#   variable and a list of tasks;
+# - a comprehension of async method calls (task handles);
+# - a comprehension over a member of a `json` value;
+# - `[k for k, _ in d]` of a `dict[str, any]`.
+# expect: 9
+# expect: 1 [a b]
+# expect: [a-0 a-1] a-2 a-3
+# expect: [2 4 6] [2 4 6]
+# expect: 2 "a","b"
+# expect: 0 0
+
+from lamerrors import Result
+
+class Worker {
+    func init(self, n: int) {
+        self.n: int = n
+    }
+
+    async func double(self) -> int {
+        return self.n * 2
+    }
+}
+
+async func double(n: int) -> int {
+    return n * 2
+}
+
+async func label(i: int) -> Result[str] {
+    return Result.Ok(f"a-{i}")
+}
+
+func main() {
+    n: int = 0
+    for _ in [1, 2, 3] {
+        n += 1
+    }
+    for _ in "héllo" {
+        n += 1
+    }
+    seen: dict[str, int] = {"a": 1}
+    for _ in seen {
+        n += 1
+    }
+    print(n)
+
+    calls: list[str] = []
+    handlers: dict[str, any] = {}
+    handlers["cb"] = lambda upload: calls.append(str(upload))
+    add = lambda (x: str) { calls.append(x) }
+    add("a")
+    more = lambda x: calls.append(x)
+    more("b")
+    print(len(handlers), calls)
+
+    tasks = [label(i) for i in range(2)]
+    labels: list[str] = []
+    for task in tasks {
+        labels.append((await task).unwrap())
+    }
+    pending = label(2)
+    one: str = (await pending).unwrap()
+    print(labels, one, (await label(3)).unwrap())
+
+    workers: list[Worker] = [Worker(i) for i in [1, 2, 3]]
+    plain = [double(w.n) for w in workers]
+    doubled: list[int] = []
+    for task in plain {
+        doubled.append(await task)
+    }
+    methods = [w.double() for w in workers]
+    results: list[int] = []
+    for task in methods {
+        results.append(await task)
+    }
+    print(doubled, results)
+
+    doc: json = {"tags": ["a", "b"]}
+    tags: list[str] = [str(t) for t in doc.tags]
+    print(len(tags), ",".join(tags))
+
+    counts: dict[str, int] = {"a": 1, "b": 2}
+    for key in [k for k, _ in counts] {
+        del counts[key]
+    }
+    data: dict[str, any] = {"user": "zoe", "visits": 2}
+    for key in [k for k, _ in data] {
+        del data[key]
+    }
+    print(len(counts), len(data))
+}

@@ -1,0 +1,92 @@
+# `while x != None { ... x = x.next }`: every iteration starts with the test
+# holding, so the statements before the body rebinds `x` (and the right
+# side of a plain `x = value`) read its members without the `None` check
+# (docs/TRANSPILATION.md, "`None` at run time"); after the rebinding, in a branch
+# rebinding it, after a guard, in a lambda, the check stays: a member of
+# `None` is still an AttributeError at its Lam line.
+# expect: 20 0
+# expect: 4-3,3-2,2-1,1-0,end(AttributeError: None has no attribute 'value')
+# expect: 4
+# expect: lambda: AttributeError: None has no attribute 'value'
+# expect: -1
+class Node {
+    value: int = 0
+    next: Node = None
+
+    func val(self) -> int {
+        return self.value
+    }
+}
+
+func build(n: int) -> Node {
+    head: Node = None
+    for i in range(n) {
+        node: Node = Node()
+        node.value = i
+        node.next = head
+        head = node
+    }
+    return head
+}
+
+func total(head: Node) -> int {
+    sum: int = 0
+    n: Node = head
+    while n != None {
+        sum += n.val() + n.value
+        n = n.next
+    }
+    return sum
+}
+
+func pairs(head: Node) -> str {
+    out: list[str] = []
+    n: Node = head
+    while n != None {
+        first: int = n.value
+        n = n.next
+        try {
+            out.append(f"{first}-{n.value}")
+        } catch AttributeError as e {
+            out.append(f"end({e})")
+        }
+    }
+    return ",".join(out)
+}
+
+func skipping(head: Node) -> int {
+    sum: int = 0
+    n: Node = head
+    while n != None and n.value >= 0 {
+        if n.value % 2 == 0 {
+            n = n.next
+            continue
+        }
+        sum += n.value
+        n = n.next
+    }
+    return sum
+}
+
+func deferredRead(head: Node) -> int {
+    fs: list[func() -> int] = []
+    n: Node = head
+    while n != None {
+        fs.append(lambda: n.value)
+        n = n.next
+    }
+    try {
+        return fs[0]()
+    } catch AttributeError as e {
+        print(f"lambda: {e}")
+        return -1
+    }
+}
+
+func main() {
+    head: Node = build(5)
+    print(total(head), total(None))
+    print(pairs(head))
+    print(skipping(head))
+    print(deferredRead(head))
+}

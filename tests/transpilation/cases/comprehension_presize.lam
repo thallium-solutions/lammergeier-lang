@@ -1,0 +1,32 @@
+# Transpilation: a comprehension with one unfiltered `for` over a list or
+# dict held in a name, or over `range(...)`, pre-sizes its result
+# (docs/TRANSPILATION.md, "Expressions"); a filtered one does not;
+# `enumerate(s)` of a `str` counts positions while ranging over it.
+# expect-go: _result := make([]int, 0, len(xs))
+# expect-go: _result := make([]string, 0, len(d))
+# expect-go: _result := make([]int, 0, min(max(n, 0), 65536))
+# expect-go: _result := make([]int, 0, min(max(len(xs) - 1, 0), 65536))
+# expect-go: _r := make(map[string]int, len(d))
+# expect-go: _result := []int{}
+# expect-go: for _, chRune := range s {
+# expect-go: __lamCharPos1++
+# expect-go: _lamCompPos0++
+
+func shapes(xs: list[int], d: dict[str, int], n: int, s: str) -> int {
+    a: list[int] = [x * 2 for x in xs]
+    b: list[str] = [k for k in d]
+    c: list[int] = [i for i in range(n)]
+    e: list[int] = [i for i in range(1, len(xs))]
+    f: dict[str, int] = {k: v + 1 for k, v in d}
+    g: list[int] = [x for x in xs if x > 1]
+    total: int = 0
+    for i, ch in enumerate(s) {
+        total += i + len(ch)
+    }
+    h: list[str] = [f"{i}{ch}" for i, ch in enumerate(s)]
+    return len(a) + len(b) + len(c) + len(e) + len(f) + len(g) + len(h) + total
+}
+
+func main() {
+    print(shapes([1, 2, 3], {"a": 1}, 4, "hé"))
+}

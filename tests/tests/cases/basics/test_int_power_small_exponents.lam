@@ -1,0 +1,28 @@
+# `x ** k` of ints with a small literal exponent multiplies (the wrapping
+# product of `lamIPow`); other exponents still raise for negatives.
+# expect: 1 7 49 343 2401 16807
+# expect: -9223372036709301616 441805193841096000 -343 64
+# expect: 9 1 2
+# expect: caught ValueError: negative exponent in an int power (use a float base: 2.0 ** -1)
+# expect: 1024 9223372036854775807
+calls: list[int] = []
+
+func f(v: int) -> int {
+    calls.append(v)
+    return v
+}
+
+func main() {
+    x: int = 7
+    big: int = 3037000500
+    print(x ** 0, x ** 1, x ** 2, x ** 3, x ** 4, x ** 5)
+    print(big ** 2, big ** 3, (-x) ** 3, (x + 1) ** 2)
+    print(f(3) ** 2, f(2) ** 0, len(calls))
+    e: int = -1
+    try {
+        print(x ** e)
+    } catch ValueError as err {
+        print(f"caught {err}")
+    }
+    print(2 ** 10, 9223372036854775807 ** 1)
+}

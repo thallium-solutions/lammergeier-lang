@@ -64,27 +64,27 @@ class OfficialPackage:
 # official repositories.  Changing a package release intentionally requires a
 # one-line update here and corresponding catalog/documentation changes.
 OFFICIAL_PACKAGES = (
-    OfficialPackage("@lam/jwt", "lam-jwt", ("Jwt", "JwtKeySet"), "3.1.3"),
-    OfficialPackage("@lam/memcached", "lam-memcached", ("Memcached",), "2.0.3"),
-    OfficialPackage("@lam/protobuf", "lam-protobuf", ("Pb",), "3.0.4"),
+    OfficialPackage("@lam/jwt", "lam-jwt", ("Jwt", "JwtKeySet"), "3.1.4"),
+    OfficialPackage("@lam/memcached", "lam-memcached", ("Memcached",), "2.0.4"),
+    OfficialPackage("@lam/protobuf", "lam-protobuf", ("Pb",), "3.0.5"),
     OfficialPackage(
         "@lam/redis",
         "lam-redis",
         ("PubSub", "Redis", "RedisCommand", "RedisScanPage", "RedisZMember"),
-        "2.0.3",
+        "2.0.4",
     ),
-    OfficialPackage("@lam/s3", "lam-s3", ("S3", "S3Client", "S3Config", "S3Object"), "2.5.2"),
+    OfficialPackage("@lam/s3", "lam-s3", ("S3", "S3Client", "S3Config", "S3Object"), "2.5.3"),
     OfficialPackage(
         "@lam/sftp",
         "lam-sftp",
         ("SftpConfig", "SftpHandlers", "SftpRequest", "SftpServer"),
-        "3.7.1",
+        "3.7.2",
     ),
     OfficialPackage(
         "@lam/ssh",
         "lam-ssh",
         ("SshClient", "SshCommandResult", "SshConfig", "SshKeyPair", "SshSession"),
-        "3.0.4",
+        "3.0.5",
     ),
     OfficialPackage(
         "@lam/vulture",
@@ -99,37 +99,37 @@ OFFICIAL_PACKAGES = (
             "Server",
             "SseEmitter",
         ),
-        "3.7.1",
+        "3.7.2",
     ),
     OfficialPackage(
         "@lam/vulture/std-plugin",
         "lam-vulture-std-plugin",
         ("CircuitBreaker", "compress", "helmet", "metrics", "rateLimit", "requestLog"),
-        "2.0.5",
+        "2.0.6",
     ),
     OfficialPackage(
         "@lam/vulture/tus-plugin",
         "lam-vulture-tus-plugin",
         ("tusGc", "tusUploads"),
-        "3.0.4",
+        "3.0.5",
     ),
     OfficialPackage(
         "@lam/vulture/dev-plugin",
         "lam-vulture-dev-plugin",
         ("LiveReload", "liveReload", "liveReloadPlugin"),
-        "1.2.2",
+        "1.2.3",
     ),
     OfficialPackage(
         "@lam/vulture/ws-plugin",
         "lam-vulture-ws-plugin",
         ("WebSocket", "wsRoute", "wsUpgrade"),
-        "2.0.4",
+        "2.0.5",
     ),
-    OfficialPackage("@lam/stripe", "lam-stripe", ("StripeClient", "StripeConfig", "StripeWebhook"), "1.0.2"),
-    OfficialPackage("@lam/otel", "lam-otel", ("Otel", "OtelConfig", "OtelTracer"), "1.1.2"),
-    OfficialPackage("@lam/keyring", "lam-keyring", ("KeyRing", "KeyDerivation", "Resealer"), "1.0.2"),
-    OfficialPackage("@lam/totp", "lam-totp", ("Totp", "Hotp", "QrCode", "RecoveryCodes"), "1.0.2"),
-    OfficialPackage("@lam/jobs", "lam-jobs", ("JobScheduler", "JobQueue", "JobWorkers"), "1.0.2"),
+    OfficialPackage("@lam/stripe", "lam-stripe", ("StripeClient", "StripeConfig", "StripeWebhook"), "1.0.3"),
+    OfficialPackage("@lam/otel", "lam-otel", ("Otel", "OtelConfig", "OtelTracer"), "1.1.3"),
+    OfficialPackage("@lam/keyring", "lam-keyring", ("KeyRing", "KeyDerivation", "Resealer"), "1.0.3"),
+    OfficialPackage("@lam/totp", "lam-totp", ("Totp", "Hotp", "QrCode", "RecoveryCodes"), "1.0.3"),
+    OfficialPackage("@lam/jobs", "lam-jobs", ("JobScheduler", "JobQueue", "JobWorkers"), "1.0.3"),
 )
 
 
@@ -928,7 +928,7 @@ def check_official_packages(report: Report) -> None:
                 f"catalog needs a current canonical import example for {package.name}",
             )
 
-    if compiler_target is not None and compiler_target != "4.14":
+    if compiler_target is not None and compiler_target != "4.15":
         report.add(
             "official packages",
             ROOT / "compiler" / "version.py",

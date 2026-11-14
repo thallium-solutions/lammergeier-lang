@@ -2455,7 +2455,9 @@ func load_config(path: str) -> Result[str] {
 ```
 
 Bare values are wrapped in an anonymous closure; function calls are
-emitted as Go's native `defer call()`.
+emitted as Go's native `defer call()`, which evaluates the call's arguments at
+the `defer`. A call that lowers to a statement (`defer out.append(x)`)
+runs in a closure and reads its arguments when it runs.
 
 ---
 
@@ -5924,7 +5926,32 @@ The pipeline runs in three layers:
      `try`/`catch` and `do`/`catch` handlers, and project-level unused
      manifest dependencies (a
      `[dependencies]` entry in `lamlib.toml` that no `.lam` in
-     the project tree imports).
+     the project tree imports). Lint checks (4.15): an assignment of a
+     value to itself (`x = x`), an `elif` repeating an earlier condition of
+     the chain, a comparison of an expression with itself (`n == n`; the NaN
+     test `x != x` of a float is quiet), a `for` variable overwriting a
+     parameter, a `private` function or method nothing in its module uses,
+     an `async` call whose task is never awaited, a value alone on a line,
+     and the security warnings: SQL built with an f-string or `+` from
+     values that are not constants (`db.query(f"... '{name}'")`: pass
+     values as `?` parameters; constants and numbers are quiet), a command
+     built from values for `Exec.run` / `runSilent` (split on spaces: use
+     `Exec.command(name, [args])`), dynamic values in markup URL
+     attributes, event handlers, `<script>` and `style` (stdlib.md,
+     lamhtml), and `async` writes to shared collections.
+
+   **Strict mode** makes the warnings errors: `lamc --strict` (any build,
+   run or `lamc dev` command), `LAMC_STRICT=1`, or in `lamlib.toml`:
+
+   ```toml
+   [build]
+   strict = true
+   ```
+
+   It covers the compiled file and every module of the project, not the
+   stdlib or installed packages (`extlibs/`), whose warnings stay hidden.
+   A module remembered as checked clean by a build without strict mode is
+   checked again.
 
    A function with a return type whose every path raises needs no `return`.
    Definite-assignment tracking joins continuing `if`/`match`/`try`

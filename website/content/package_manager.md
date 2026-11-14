@@ -285,6 +285,17 @@ Authentication: set `LAMC_TOKEN` in the environment to attach a
 `Bearer …` header to every registry request (used at publish
 time too).
 
+### 2.2a Strict builds: `[build]`
+
+```toml
+[build]
+strict = true
+```
+
+makes every build of the project treat warnings of its own modules as
+errors, like `lamc --strict` or `LAMC_STRICT=1` (SYNTAX.md, "Compiler
+diagnostics").
+
 ### 2.3 Manifest scripts
 
 `lamlib.toml` can carry a `[scripts]` table for project or library

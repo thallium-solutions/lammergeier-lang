@@ -1,0 +1,15 @@
+# Transpilation: `x ** k` of ints with a literal exponent 1 to 4 is the
+# product itself (the same wrapping result as `lamIPow`), the operand
+# evaluated once (docs/TRANSPILATION.md, "Expressions").
+# expect-go: var sq int = int((x * x))
+# expect-go: var cube int = int(func(b int) int { return b * b * b }(x + 1))
+# expect-go: var other int = int(lamIPow(x, n))
+
+func main() {
+    x: int = 3
+    n: int = 5
+    sq: int = x ** 2
+    cube: int = (x + 1) ** 3
+    other: int = x ** n
+    print(sq, cube, other)
+}

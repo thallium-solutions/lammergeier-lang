@@ -718,8 +718,18 @@ class StatementVisitorMixin:
                 payload = self._propagated_payload_go_type(value_node)
                 if payload and payload != "interface{}":
                     self._var_result_payloads[target_str] = payload
+            self._note_task_list_payload(target_str, value_node)
             return False
         if self._contains_async_handle_call(value_node):
+            # ``pending = label(2)`` of an ``async func -> Result[str]``: the
+            # task keeps the payload for ``(await pending).unwrap()``.
+            self._var_result_payloads.pop(target_str, None)
+            self._var_result_payloads.pop(f"{target_str}[]", None)
+            if isinstance(value_node, Tree) and value_node.data == "funccall":
+                payload = self._propagated_payload_go_type(value_node)
+                if payload and payload != "interface{}":
+                    self._var_result_payloads[target_str] = payload
+            self._note_task_list_payload(target_str, value_node)
             return False
         type_node, go_type = inferred
         own = self._expr_go_type_hint(value_node) or self._infer_type_from_value(value_node) or ""
@@ -784,7 +794,13 @@ class StatementVisitorMixin:
                 if not class_name and isinstance(receiver, Tree) and receiver.data == "var" and receiver.children:
                     candidate = self._get_name(receiver.children[0])
                     class_name = candidate if candidate in self._class_names else ""
-                if class_name and self._async_method_handle_go_type(class_name, self._get_name(callee.children[1])):
+                method = self._get_name(callee.children[1])
+                if class_name and self._async_method_handle_go_type(class_name, method):
+                    return True
+                if not class_name and any(self._async_method_handle_go_type(c, method) for c in self._class_names):
+                    # ``[w.double() for w in workers]``: the comprehension
+                    # variable is not bound here; a method that is async in
+                    # a class of the program yields handles.
                     return True
         return any(self._contains_async_handle_call(c) for c in node.children)
 
@@ -1426,6 +1442,10 @@ class StatementVisitorMixin:
         # Wrap non-call expressions so Go doesn't complain.
         if not (isinstance(expr_node, Tree) and expr_node.data == "funccall"):
             self._emit(f"defer func() {{ _ = {go_expr} }}()")
+        elif re.match(r"^[A-Za-z_][\w.\[\]\"]* = ", go_expr) or "\n" in go_expr:
+            # ``defer out.append(x)``: the call lowers to a statement
+            # (``out = append(out, x)``), which runs in a closure.
+            self._emit(f"defer func() {{ {go_expr} }}()")
         else:
             self._emit(f"defer {go_expr}")
 
@@ -1580,7 +1600,95 @@ class StatementVisitorMixin:
             return False
         return any(StatementVisitorMixin._contains_propagate(child) for child in node.children)
 
+    # ─── Loop-invariant str heads ──────────────────────────────
+    #
+    # ``while i < len(s) { s[i] ... }`` on a ``str`` local the loop never
+    # rebinds: a view of ``s`` (``lamStrViewOf``: its leading ASCII run, its
+    # character count, a long string's index marks) is computed once before
+    # the loop, and inside it ``len(s)``, ``s[i]``, ``s[a:b]`` and ``s[a:]``
+    # lower to ``lamStrLenV`` / ``lamStrAtV`` / ``lamStrSliceV`` /
+    # ``lamStrFromV``: inlined byte operations within the run, the marks
+    # past it (``_STR_RUNTIME_GO``). Uses inside
+    # a lambda, a nested function or class, or a ``defer`` are left as they
+    # are (they may run after the loop, once ``s`` is rebound).
+
+    _STR_HEAD_DEFERRED = frozenset({"lambdef", "funcdef", "classdef", "defer_stmt"})
+
+    def _str_head_uses(self, node: Tree) -> dict:
+        """``{name: [var nodes]}``: the ``str``-candidate names read in
+        ``node`` as ``x[...]`` or ``len(x)`` (outside deferred code)."""
+        uses: dict = {}
+        len_builtin = "len" not in self._user_functions and "len" not in self._nonneg_shadowed
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if not isinstance(n, Tree) or n.data in self._STR_HEAD_DEFERRED:
+                continue
+            target = None
+            if n.data == "getitem" and len(n.children) >= 2:
+                target = n.children[0]
+            elif (
+                len_builtin and n.data == "funccall" and len(n.children) >= 2
+                and isinstance(n.children[0], Tree) and n.children[0].data == "var"
+                and self._get_name(n.children[0].children[0]) == "len"
+            ):
+                args = self._get_raw_call_args(n.children[1])
+                target = args[0] if len(args) == 1 else None
+            if (
+                isinstance(target, Tree) and target.data == "var"
+                and getattr(target, "_lam_str_head", None) is None
+            ):
+                uses.setdefault(self._get_name(target.children[0]), []).append(target)
+            stack.extend(c for c in n.children if isinstance(c, Tree))
+        return uses
+
+    def _declare_str_heads(self, node: Tree) -> list:
+        """Emit the heads of the ``str`` locals ``node`` (a loop) reads by
+        character and never rebinds; mark their uses. Returns the marked
+        nodes (``_clear_str_heads`` unmarks them after the loop)."""
+        if getattr(self, "_nr_module_code", False):
+            return []  # module variables: any call may rebind them
+        uses = self._str_head_uses(node)
+        if not uses:
+            return []
+        module_vars = self._nr_module_variables()
+        blocked = None
+        marked: list = []
+        for name in sorted(uses):
+            if not name or name in module_vars:
+                continue
+            go_name = self._go_binding_name(name)
+            if go_name not in self.declared_vars or (self._var_go_types.get(go_name) or "").strip() != "string":
+                continue
+            if blocked is None:
+                blocked = _narrowing.blocked_names([node], self.go_blocks)
+            if name in blocked:
+                continue
+            self._str_head_counter = getattr(self, "_str_head_counter", 0) + 1
+            head = f"__lamStrV{self._str_head_counter}"
+            self._emit(f"{head} := lamStrViewOf({go_name})")
+            self._emit(f"_ = {head}")
+            for var_node in uses[name]:
+                var_node._lam_str_head = (head, go_name)
+                marked.append(var_node)
+        return marked
+
+    @staticmethod
+    def _clear_str_heads(marked: list) -> None:
+        for var_node in marked:
+            try:
+                del var_node._lam_str_head
+            except AttributeError:
+                pass
+
     def _visit_while_stmt(self, node: Tree):
+        marked = self._declare_str_heads(node)
+        try:
+            self._visit_while_stmt_inner(node)
+        finally:
+            self._clear_str_heads(marked)
+
+    def _visit_while_stmt_inner(self, node: Tree):
         has_else = len(node.children) > 2 and node.children[2] is not None
         break_flag = self._new_loop_break_flag() if has_else else ""
         if has_else:
@@ -1600,10 +1708,11 @@ class StatementVisitorMixin:
         body_start, vars_at_start = self._scope_unused_tracking_start()
         with self._scoped(_loop_break_flag=break_flag, _loop_jump=None, _sm_leaf_loop=True):
             # ``while isinstance(x, T)``: the body sees ``x`` as a ``T``.
+            facts = _narrowing.condition_facts(node.children[0], True)
             self._nr_emit_region(
-                _narrowing.condition_facts(node.children[0], True),
+                facts,
                 [node.children[1], node.children[0]],
-                lambda: self._visit_suite(node.children[1]),
+                lambda: self._visit_while_body(node, facts),
             )
         self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
         self.indent -= 1
@@ -1617,6 +1726,70 @@ class StatementVisitorMixin:
             self._pop_scope_with_unused_local_silencers(body_start, vars_at_start)
             self.indent -= 1
             self._emit("}")
+
+    def _visit_while_body(self, node: Tree, facts) -> None:
+        """The body of ``while x != None { ... x = x.next }``: a local the
+        body rebinds is not narrowed over the whole body, but every
+        iteration starts with the test holding, so the statements before
+        the first rebinding (and the right side of a plain ``x = value``
+        doing it) read its members without the ``None`` check."""
+        suite, cond = node.children[1], node.children[0]
+        plan, units, upto = self._while_prefix_plan(suite, cond, facts)
+        if not plan:
+            self._visit_suite(suite)
+            return
+        with self._nr_registered(plan):
+            for unit in units[:upto]:
+                self._visit(unit)
+        self._visit_stmt_list(units[upto:])
+
+    def _while_prefix_plan(self, suite, cond, facts):
+        """``(plan, units, upto)``: the ``None`` marks holding over the
+        first ``upto`` statements of ``suite`` (simple statements one by
+        one), for the ``x != None`` facts of the test whose name the body
+        rebinds; ``([], [], 0)`` when none applies."""
+        names = [name for name, target in facts if target is _narrowing.NOT_NONE]
+        if not names or not isinstance(suite, Tree) or suite.data != "suite" or getattr(self, "_nr_module_code", False):
+            return [], [], 0
+        if any(name in self._nonnil_names or self._go_binding_name(name) in self._nonnil_names for name in names):
+            return [], [], 0  # (already narrowed over the whole body)
+        units: list = []
+        for child in suite.children:
+            if isinstance(child, Tree) and child.data == "simple_stmt":
+                units.extend(c for c in child.children if isinstance(c, Tree))
+            elif isinstance(child, Tree):
+                units.append(child)
+        if _narrowing.assigned_names([cond]) & set(names):
+            return [], [], 0
+        upto = 0
+        for unit in units:
+            if unit.data == "if_stmt" and _narrowing.guard_facts(unit):
+                break  # (its guard narrows the statements after it)
+            touched = _narrowing.blocked_names([unit], self.go_blocks) & set(names)
+            if touched:
+                if self._plain_rebinding(unit, touched):
+                    upto += 1
+                break
+            upto += 1
+        # The marks are those the checker-mirroring plan grants over the
+        # statements before the rebinding (and the test).
+        region = units[:upto]
+        if upto and self._plain_rebinding(units[upto - 1], set(names)):
+            region = units[:upto - 1]
+        plan = self._nr_plan([(name, _narrowing.NOT_NONE) for name in names], region + [cond]) if upto else []
+        return plan, units, upto
+
+    @staticmethod
+    def _plain_rebinding(unit, names: set) -> bool:
+        """``unit`` is ``x = value`` with ``x`` in ``names`` (the value is
+        evaluated before ``x`` changes) and no other binding."""
+        node = unit.children[0] if isinstance(unit, Tree) and unit.data == "assign_stmt" and unit.children else unit
+        if not (isinstance(node, Tree) and node.data == "assign" and len(node.children) == 2):
+            return False
+        target, value = node.children
+        if not (isinstance(target, Tree) and target.data == "var" and _narrowing.target_names(target) & names):
+            return False
+        return not (_narrowing.blocked_names([value], None) or _narrowing.contains_propagate(value))
 
     # ─── For ───────────────────────────────────────────────────
 
@@ -1687,6 +1860,13 @@ class StatementVisitorMixin:
     _NO_TYPE = object()
 
     def _visit_for_stmt(self, node: Tree):
+        marked = self._declare_str_heads(node)
+        try:
+            self._visit_for_stmt_typed(node)
+        finally:
+            self._clear_str_heads(marked)
+
+    def _visit_for_stmt_typed(self, node: Tree):
         # A loop variable the loop declares (``for _, c := range``) lives
         # in the loop: it starts without the type of an earlier same-named
         # binding (``for c in rows`` before ``for c in text.split(",")``)
@@ -1802,8 +1982,17 @@ class StatementVisitorMixin:
             loop_names: list = []
             start_bind = f"\t{idx_name} := {range_idx} + {start_go}" if start_go else ""
             if idx_name and val_name and src_type == "string" and val_name != "_":
-                # ``enumerate(text)``: character positions and one-character strs.
-                self._emit(f"for {range_idx}, {val_name}Rune := range []rune({iter_str}) {{")
+                # ``enumerate(text)``: character positions and one-character
+                # strs (counted while ranging over the string: no []rune copy).
+                if range_idx == "_":
+                    self._emit(f"for _, {val_name}Rune := range {iter_str} {{")
+                else:
+                    self._loop_jump_counter = getattr(self, "_loop_jump_counter", 0) + 1
+                    counter = f"__lamCharPos{self._loop_jump_counter}"
+                    self._emit(f"{counter} := -1")
+                    self._emit(f"for _, {val_name}Rune := range {iter_str} {{")
+                    self._emit(f"\t{counter}++")
+                    self._emit(f"\t{range_idx} := {counter}")
                 if start_bind:
                     self._emit(start_bind)
                 self._emit(f"\t{val_name} := string({val_name}Rune)")
@@ -1823,7 +2012,7 @@ class StatementVisitorMixin:
                 if val_name != "_" and src_type.startswith("[]"):
                     self._var_go_types[val_name] = src_type[2:]
             else:
-                self._emit(f"for {var_name} := range {iter_str} {{")
+                self._emit(f"for range {iter_str} {{" if var_name == "_" else f"for {var_name} := range {iter_str} {{")
                 loop_names.append(var_name)
             self.indent += 1
             self._push_scope()
@@ -1957,7 +2146,7 @@ class StatementVisitorMixin:
             if is_chan:
                 assign_op = "=" if already_declared else ":="
                 self._bind_generator_loop_target(var_name, iterable_node)
-                self._emit(f"for {var_name} {assign_op} range {iter_str} {{")
+                self._emit(f"for range {iter_str} {{" if var_name == "_" else f"for {var_name} {assign_op} range {iter_str} {{")
             elif key_name and val_name:
                 k_decl = key_name in self.declared_vars
                 v_decl = val_name in self.declared_vars
@@ -1977,12 +2166,16 @@ class StatementVisitorMixin:
                 if key_type and key_type != "interface{}":
                     self._var_go_types[var_name] = key_type
                 assign_op = "=" if already_declared else ":="
-                self._emit(f"for {var_name} {assign_op} range {iter_str} {{")
+                self._emit(f"for range {iter_str} {{" if var_name == "_" else f"for {var_name} {assign_op} range {iter_str} {{")
             elif self._expr_go_type_hint(iterable_node) == "LamJSON":
                 # ``for v in payload.tags``: a JSON array yields ``json`` items.
                 self._emit(f"for _, {var_name}Raw := range lamJSONToList({iter_str}) {{")
                 string_char_bind = f"{var_name} {'=' if already_declared else ':='} lamJSONWrapRaw({var_name}Raw)"
                 self._var_go_types[var_name] = "LamJSON"
+            elif var_name == "_":
+                # ``for _ in xs``: the elements are not bound (Go rejects
+                # ``for _, _ := range``).
+                self._emit(f"for range {iter_str} {{")
             elif self._iterates_string(iterable_node):
                 # Lam yields one-character strings, Go ranges over runes.
                 self._emit(f"for _, {var_name}Rune := range {iter_str} {{")
@@ -1992,6 +2185,11 @@ class StatementVisitorMixin:
                 self._emit(f"for _, {var_name} = range {iter_str} {{")
             else:
                 self._emit(f"for _, {var_name} := range {iter_str} {{")
+            if isinstance(iterable_node, Tree) and iterable_node.data == "var" and iterable_node.children:
+                # ``for task in tasks`` over async calls of ``-> Result[T]``.
+                task_payload = self._var_result_payloads.get(f"{self._get_name(iterable_node.children[0])}[]", "")
+                if task_payload and (self._var_go_types.get(var_name) or "").startswith("chan "):
+                    self._var_result_payloads[var_name] = task_payload
 
         self.indent += 1
         if string_char_bind:
@@ -2206,6 +2404,24 @@ class StatementVisitorMixin:
             payload = self._propagated_payload_go_type(iterable_node)
             if payload and payload != "interface{}":
                 self._var_result_payloads[var_name] = payload
+        elif elem_payload and elem.startswith("chan "):
+            # ``for task in tasks`` over async calls returning ``Result[T]``.
+            self._var_result_payloads[var_name] = elem_payload
+
+    def _note_task_list_payload(self, target: str, value_node) -> None:
+        """``tasks = [label(i) for i in ...]`` of an ``async func ->
+        Result[T]``: the payload of each task (``for task in tasks`` ...
+        ``(await task).unwrap()``)."""
+        self._var_result_payloads.pop(f"{target}[]", None)
+        if not (isinstance(value_node, Tree) and value_node.data == "list_comprehension" and value_node.children):
+            return
+        element = value_node.children[0]
+        if isinstance(element, Tree) and element.data == "comprehension" and element.children:
+            element = element.children[0]
+        if isinstance(element, Tree) and element.data == "funccall" and self._contains_async_handle_call(element):
+            payload = self._propagated_payload_go_type(element)
+            if payload and payload != "interface{}":
+                self._var_result_payloads[f"{target}[]"] = payload
 
     def _is_chan_iterable(self, node) -> bool:
         """``for c in g`` with ``g: generator[Circle]`` (a

@@ -1,0 +1,27 @@
+# Found while optimising: `defer out.append(x)` (the call lowers to an
+# assignment, which Go cannot defer; it runs in a closure) and
+# `[x for x in []]` assigned to a
+# typed list both built with an internal compiler error.
+# expect: before 0
+# expect: after [1]
+# expect: [] []
+
+func collect() -> list[int] {
+    out: list[int] = [1]
+    run(out)
+    return out
+}
+
+func run(start: list[int]) {
+    items: list[int] = start
+    defer print(f"after {items}")
+    defer items.append(2)
+    print(f"before {len(items) - 1}")
+}
+
+func main() {
+    _ = collect()
+    empty: list[int] = [x for x in []]
+    names: list[str] = [str(x) for x in []]
+    print(empty, names)
+}

@@ -440,6 +440,7 @@ closure recovers nothing, so it goes on to the enclosing `try`):
 | `u.name`, `u.name = v`, `u.greet()` (`u` a class reference) | `lamNN(u, "name").Name`, `lamNN(u, "greet").Greet()` |
 | `n.title()` (`n` an interface value) | `lamNNI(n, "title").Title()` |
 | `self.name`, `User().name`, `c.add(1)` with `c` only assigned constructor calls, `u.name` inside `if u != None` / after `if u == None { return }` / in `u != None and u.ok` / after `isinstance(u, T)` | `s.Name`, `NewUser().Name`, `c.Add(1)`, `u.Name` (no check) |
+| `while n != None { sum += n.value; n = n.next }` (the body rebinds `n`) | `sum += n.Value; n = n.Next`: every iteration starts with the test holding, so the statements before the first rebinding of `n` (simple statements one by one, stopping at a guard `if` or any statement touching `n`) and the right side of a plain `n = value` doing it skip the check; after it, and in lambdas, it stays (`_visit_while_body`) |
 | `s: str = v` (`v: any`), `n: int = load()?`, `name: str = row["name"]`, a JSON null into a `str` | `lamAs[string](v, "a str")`: the value, `TypeError: None is not a str` for `None`, Go's assertion error for another type |
 | `u: User = v` (`v: any`), `h: html = load()?` | `lamAsNil[*User](v)` / `lamAsNil[LamHTML](...)`: `None` is the zero value |
 | `load()? ?? "none"` | `func() string { if __lamL := __q1.Value; __lamL != nil { return lamAs[string](__lamL, "a str") }; return "none" }()` (the raw payload) |
@@ -603,7 +604,7 @@ libraries' Go joining the same package):
 | `sorted(s)` | the characters as a `[]string`, sorted |
 
 The leading ASCII run of a string is byte-indexed as is (its bytes are its
-characters). A string of up to 64 bytes is checked (8 bytes at a time) and
+characters). A string of up to 64 bytes is checked (32, then 8 bytes at a time) and
 walked past that run (`for range`; `utf8.DecodeLastRuneInString` from the
 end for a negative index or bound). A longer one indexed past its first 4
 characters gets a `lamStrIndex`: its ASCII run, its character count and the
@@ -620,9 +621,45 @@ string and on `[]rune(s)` otherwise. An index out of range panics with
 `lamStrIndexError`, a `runtime.Error` (`index out of range [i] with length
 n`, character positions), so `lamExc` raises it as `IndexError` at the Lam
 line like Go's own index faults. Loops (`for c in s`, `enumerate(s)`),
-`reversed(s)` and comprehensions range over the runes. `lamstrings` counts
+`reversed(s)` and comprehensions range over the runes; `enumerate(s)` counts
+the positions while ranging over the string (`__lamCharPosN`, no `[]rune`
+copy). `lamstrings` counts
 characters (with `lamStrLen`) in `length`, the positions of `index` /
 `lastIndex` and the padding widths.
+
+#### Loop-invariant `str` views
+
+A `for` / `while` loop reading a `str` local or parameter as `s[i]`,
+`s[a:b]`, `s[a:]` or `len(s)` that the loop never rebinds (no assignment,
+loop target, `go!` block or nested function with `nonlocal s` touching it;
+a module variable never qualifies) computes a view of the string once,
+before the loop: its leading ASCII run, its character count and, for a long
+string, the marks of its cached `lamStrIndex` (`lamStrViewOf` returns a
+copy of the index; a string of up to 64 bytes is counted, without marks).
+The reads inside the loop take it along:
+
+```go
+__lamStrV1 := lamStrViewOf(src)
+_ = __lamStrV1
+for pos < lamStrLenV(&__lamStrV1) {
+	c = lamStrAtV(src, pos, &__lamStrV1)
+	...
+}
+```
+
+`lamStrAtV` / `lamStrLenV` / `lamStrSliceV` (given the view's `.head`
+too, which keeps it within Go's inlining budget) / `lamStrFromV` are
+inlined:
+inside the ASCII run an index or a slice is a byte slice and the length a
+field; past it they read the marks (no cache lookup), and fall back to
+`lamStrAt` / `lamStrSlice` / `lamStrFrom` for a short non-ASCII string and
+for a fault, so results and `IndexError`s are the same. A nested loop
+uses the outermost loop's view. Reads in a lambda, a nested function or
+class, or a `defer` inside the loop keep the plain helpers (they may run
+once `s` has been rebound), and so do f-string slots.
+`tests/tests/test_str_runtime.py` checks every helper against Go's own
+character walk (ASCII, mixed, invalid UTF-8, short and indexed strings,
+every index and bound, concurrently).
 
 ### Native JSON lowering
 
@@ -823,7 +860,10 @@ base-class payload as its upcast (`NewCircle()._lamUp_Shape()`)
 with subclasses, any descendant through its `_lamUp_<Base>()` view, and, for
 a `[]T` / `map[string]T` payload, a `[]interface{}` / `map[string]interface{}`
 converted element by element (each element through the same assertion), so a
-`Result` built outside a typed context unwraps too. A lambda's `-> Result[T]`
+`Result` built outside a typed context unwraps too. The assertions are
+idempotent, so a value already converted (`lamAs[int](r.Unwrap(), "an
+int")` from the call, then an `int` declaration) is not boxed and converted
+again. A lambda's `-> Result[T]`
 annotation is its return key like a function's, so its `Result.Ok(...)`
 argument is typed by `T`. Direct `.value`, `.error`,
 and `unwrap()` / `unwrapOr(...)` on payload-unknown or `any` results retain
@@ -1770,7 +1810,7 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | `a // b`, `a % b` (a float operand) | a closure over `math.Mod` / `math.Floor` (CPython's algorithm)            |
 | `xs + ys` (lists)                  | `append(append([]T{}, xs...), ys...)`: a fresh slice (operands untouched), list literals typed `[]T`; mixed element types build a `[]interface{}` (other slices converted element by element) |
 | `xs += ys` (list)                  | `xs = append(xs, ys...)`                                                  |
-| `a ** b`                           | two ints: `lamIPow(a, b)` (exact, wrapping; a negative exponent panics with `ValueError`), two literals fold to a constant; otherwise `math.Pow(float64(a), float64(b))` (a `float64` operand: `a + b ** c` converts `a`) |
+| `a ** b`                           | two ints: `lamIPow(a, b)` (exact, wrapping; a negative exponent panics with `ValueError`), two literals fold to a constant, a literal exponent 1 to 4 is the product itself (`(x * x)`, `func(b int) int { return b * b }(f())` for an operand that is not a name: the same wrapping result); otherwise `math.Pow(float64(a), float64(b))` (a `float64` operand: `a + b ** c` converts `a`) |
 | `a in xs`, `a not in xs`           | Container-aware membership test for strings, lists, dicts, and sets          |
 | `expr as T`                        | The conversion of an annotated assignment to `T` (`_typed_value_to_go`), or a checked `_lamIs_<C>` downcast; see [Inline casts](#inline-casts-expr-as-t) |
 | `xs == ys`, `d == {...}` (lists, dicts, sets) | `slices.Equal` / `maps.Equal` for comparable element types (a literal side typed by the other side), `slices.EqualFunc` through an element class's `__eq__`, `reflect.DeepEqual` otherwise (nested collections, `any` elements, different element types); `!=` negates |
@@ -1788,15 +1828,15 @@ reordered, so `n.name()` with `func name(suffix: str = "") -> str` emits
 | a `list[T]` / `dict[K, T]` where `list[any]` / `dict[K, any]` (or `list[float]` for ints) is expected | `_container_widening_go`: an IIFE copying the elements into a new `[]interface{}` / `map[K]interface{}` (element-wise for nested lists, `float64(e)` for ints; `nil` stays `nil`) |
 | `1.5 * n` with `n: int`            | `1.5 * float64(n)` (int operands of a mixed int/float expression)          |
 | an `int` where a `float` is expected | `float64(n)`: `_typed_value_to_go` widens an int-typed value for a `float` target (arguments, returns, collection elements, declarations, fields, `+=` / `-=` / `*=`), and calls of `func(float)` values convert their int arguments |
-| `[expr for x in xs if c]`          | IIFE building a `[]T` slice: `T` from the typed context, else from `expr` with the loop variables typed by their iterables (lists, strings, dicts, `range`, `enumerate`), else `interface{}` |
-| `{k: v for x in xs}`               | IIFE building a `map[K]V`                                                  |
+| `[expr for x in xs if c]`          | IIFE building a `[]T` slice: `T` from the typed context, else from `expr` with the loop variables typed by their iterables (lists, strings, dicts, `range`, `enumerate`), else `interface{}`; one unfiltered `for` over a list or dict held in a name pre-sizes it (`make([]T, 0, len(xs))`), over `range(a, b)` by its count capped at 65536 (a hint: a huge range left by an exception at its first item allocates nothing more) |
+| `{k: v for x in xs}`               | IIFE building a `map[K]V` (pre-sized like a list comprehension: `make(map[K]V, len(xs))`) |
 | `{expr for x in xs}`               | IIFE building a `map[K]bool` in a typed set context, otherwise `map[interface{}]bool` |
 | `(expr for x in xs)`               | Same eager slice lowering as the list comprehension form                   |
 | `[expr for a, b in pairs]`         | IIFE loop with typed positional unpacking; map targets lower directly to `for a, b := range` |
 | `{a, b, c}` (set literal)          | IIFE that inserts each element into a `map[K]bool` in typed contexts (deduplicates) |
 | `len(x)`                           | `len(x)`                                                                  |
 | `str(x)` / `repr(x)`               | `fmt.Sprintf("%v", x)` / `fmt.Sprintf("%#v", x)`; `str(x)` of an `html`, `xml` or `json` value is `lamValueText(x)` (lamjson: the value's own `String()`, rendered or encoded once, not copied again by fmt; a string as is, any other value through fmt, so a value the compiler typed wrongly still formats as before); of a declared `str` the value itself, of a declared `int` / `bool` `strconv.Itoa(x)` / `strconv.FormatBool(x)`, of a value hinted `str` without a declared type `lamSlotText(x)` |
-| `x in xs` on a list of strings, numbers or booleans | an IIFE comparing the elements with `==` (no `reflect.DeepEqual` boxing) |
+| `x in xs` on a list of strings, numbers or booleans | an IIFE comparing the elements with `==` (no `reflect.DeepEqual` boxing), the item its argument (evaluated once, before the list); on a literal list of `str` or `int` constants a `switch` on the distinct constants (`func(_v string) bool { switch _v { case "r", "w": return true }; return false }(mode)`), which Go compiles to a search |
 | `int(x)` / `float(x)`              | `int(x)` / `float64(x)`                                                   |
 | `print(...)`                       | `fmt.Println(...)`                                                        |
 | `input(prompt)`                    | `bufio.NewScanner(os.Stdin)` one-liner                                    |
@@ -1854,9 +1894,11 @@ the next link of a chain. A builtin passed by name (`words.map(len)`) is
 wrapped in a function literal.
 
 Membership lowering follows the container shape: strings use
-`strings.Contains`, maps and sets emit a key-presence lookup, and lists emit a
-small loop using `reflect.DeepEqual` so nested collection elements can be
-tested without triggering Go's non-comparable-slice errors. Chained comparisons
+`strings.Contains`, maps and sets emit a key-presence lookup, literal lists of
+`str` / `int` constants a `switch`, lists of comparable elements a loop with
+`==`, and other lists a small loop using `reflect.DeepEqual` so nested
+collection elements can be tested without triggering Go's
+non-comparable-slice errors. Chained comparisons
 such as `1 < x < 10` are lowered pairwise with `&&`.
 
 ### Python division
@@ -2659,6 +2701,46 @@ through:
 When debugging a stdlib module, that field is a good first place to
 inspect — the Lam method bodies usually do little more than typecheck
 inputs and forward to the underlying Go API.
+
+## Profile-guided optimisation
+
+`lamc build --go-pgo cpu.pprof` passes the CPU profile to `go build -pgo`
+(an absolute path: the build runs in its own work directory), which inlines
+and devirtualizes the hot calls the profile shows (Go's PGO; typically a
+few percent). A program writes its profile with `runtime/pprof` in a `go!`
+block (a server can also serve `net/http/pprof`):
+
+```lammergeier
+go! {
+    import "os"
+    import "runtime/pprof"
+}
+
+func work() -> int {
+    total: int = 0
+    for i in range(1000000) {
+        total += i % 7
+    }
+    return total
+}
+
+func main() {
+    go! {
+        if path := os.Getenv("CPU_PROFILE"); path != "" {
+            if f, err := os.Create(path); err == nil {
+                pprof.StartCPUProfile(f)
+                defer pprof.StopCPUProfile()
+            }
+        }
+    }
+    print(work())
+}
+```
+
+```text
+$ lamc build main.lam -o app && CPU_PROFILE=cpu.pprof ./app
+$ lamc build main.lam -o app --go-pgo cpu.pprof
+```
 
 ## Limitations and pitfalls
 

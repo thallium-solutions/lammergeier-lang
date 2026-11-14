@@ -5,6 +5,106 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.15.0 — 2026-11-14
+
+**Upgrading:** strict mode is opt-in; the new warnings only warn. The
+official packages were all re-released with broader tests (17 patch
+releases, docs/libraries.md); several fix bugs those tests found.
+
+### Added (safety program, phase 4: developer experience)
+
+- **Strict mode:** `lamc --strict`, `LAMC_STRICT=1` or `[build] strict = true`
+  in `lamlib.toml` make the warnings of the program and of its project
+  modules errors. The stdlib and installed packages are not covered. A
+  module cached as checked clean by a non-strict build is checked again.
+  Warnings of imported project modules, hidden in normal builds, are shown
+  then.
+- **Lint warnings:**
+  - an assignment of a value to itself;
+  - an `elif` repeating an earlier condition;
+  - a comparison of an expression with itself (the NaN test of a float
+    excepted);
+  - a `for` variable overwriting a parameter;
+  - a `private` function or method never used in its module;
+  - an `async` call whose task is never awaited (its exception was lost
+    silently).
+- **Message:** the warning for `?` outside a `-> Result` function now
+  points to `.unwrap()` for a panic that is intended.
+
+### Fixed
+
+Found by the official packages' new tests. Each of these built with an
+internal compiler error, except the `lamc fmt` one, which reported a
+syntax error:
+
+- `for _ in xs` over a list, a string or a dict;
+- a lambda whose body is `xs.append(...)` where its type is unknown, and a
+  block lambda without `-> R` and without a `return value`, which now has
+  no result (it failed with "missing return");
+- `(await task).unwrap()` of an `async func -> Result[T]`: directly,
+  through a task variable, or through a list of tasks;
+- a comprehension of async method calls (`[w.double() for w in workers]`
+  gives task handles);
+- a comprehension over a member of a `json` value;
+- `[k for k, _ in d]` of a `dict[str, any]`;
+- `lamc fmt` split the braces of inline raw Go (`go!([]byte{})`).
+- `defer out.append(x)` (the call lowers to a statement: it runs in a
+  closure) and `[x for x in []]` assigned to a typed list (found while
+  optimising).
+
+### Added: security warnings
+
+- **Security warnings:**
+  - SQL built with an f-string or `+` from values that are not constants,
+    passed to lamdb (`query`, `exec`, `first`, `scalar`, `whereRaw`,
+    `selectRaw`...); constants, numbers and `?` parameters are quiet;
+  - a command built from values for `Exec.run` / `Exec.runSilent`, which
+    split it on spaces.
+
+### Performance (generated code; behaviour unchanged)
+
+- **`str` loops read a view of the string computed once.** A `for` /
+  `while` loop reading a `str` local or parameter it never rebinds
+  (`while i < len(s) { s[i] ... }`, `s[a:b]`, `s[a:]`) computes the
+  string's ASCII run, character count and (long strings) index marks
+  before the loop (`lamStrViewOf`); inside it `len(s)` is a field and an
+  index or slice in the ASCII run a byte operation Go inlines, past it a
+  read of the marks without a cache lookup. Reads in lambdas, nested
+  functions and `defer` keep the plain helpers. The ASCII scan behind
+  every `str` operation takes 32 bytes per step. docs/TRANSPILATION.md,
+  "Loop-invariant `str` views".
+- **`while x != None { ...; x = x.next }`** reads the members of `x` before
+  its rebinding without the `None` check (each iteration starts with the
+  test holding); after it the check stays.
+- **Comprehensions pre-size their result** (one unfiltered `for` over a
+  list or dict held in a name, or over `range`), and `enumerate(s)` of a
+  `str` counts positions while ranging instead of copying to `[]rune`.
+- **`x in [...]` of `str` / `int` constants is a `switch`**; `x ** 2`
+  (to `** 4`) of ints is the product itself; a `Result` payload read in a
+  typed context is converted once (`lamAs[int](lamAs[int](...))` boxed
+  the int again: an allocation per read).
+- **lammarkup renderers** look element names up with switches (no map
+  lookups, one lower-casing per element).
+- Same-machine interleaved A/B (9 runs each, medians, 4.14.0 vs this
+  branch; the machine is a hybrid CPU and was busy, so differences under
+  ~10% on cases whose generated Go is identical are noise): `string_scan`
+  6.2 -> 2.4 ns per character, `string_scan_unicode` 11.0 -> 6.7,
+  `string_chars` 12.7 -> 6.4 ns, `string_chars_unicode` 40.0 -> 35.2,
+  `none_checks` 1.3 -> 1.0 ns per node, `markup_compose` 156 -> 132 us per
+  page; the other cases unchanged. `sh scripts/bench.sh runtime`
+  (`benchmarks/results/runtime-20261114-192252-4.14.0-6edda38.txt` before,
+  `runtime-20261114-210137-4.14.0-5e72a1f.txt` after): lam/go geometric
+  mean 1.57x -> 1.44x, `string_scan` 5.30x -> 2.50x of Go (7.7 -> 2.6 ns
+  per character). Compile time unchanged
+  (`compiler-20261114-203805-4.14.0-b7bea74.txt`, `...-203934-...-d0e267c.txt`).
+
+### Added: profile-guided optimisation
+
+- **`lamc build --go-pgo PROFILE`:** profile-guided optimisation (`go build
+  -pgo` with a CPU profile of the program; docs/TRANSPILATION.md,
+  "Profile-guided optimisation", shows a `go!` block writing one with
+  `runtime/pprof`). A missing profile is an error.
+
 ## 4.14.0 — 2026-11-14
 
 **Upgrading:** two breaking changes. `str` counts characters, so code that

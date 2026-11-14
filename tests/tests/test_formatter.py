@@ -118,6 +118,16 @@ def test_formatter_keeps_raw_go_and_inline_go() -> None:
     print("PASS: formatter keeps raw go! code and inline go verbatim")
 
 
+def test_formatter_keeps_inline_go_composite_literal() -> None:
+    """``go!([]byte{})``: the braces of inline raw Go are not a Lam block
+    (the compact-layout pass split them; found by lam-sftp's tests)."""
+    source = "func main() {\n    empty: bytes = go!([]byte{})\n    pairs: any = go!(map[string]int{\"a\": 1})\n    print(len(empty), pairs)\n}\n"
+    result = format_lam_source(source)
+    assert result.text == source, result.text
+    assert not result.changed
+    print("PASS: formatter keeps inline go! composite literals")
+
+
 def test_formatter_expands_compact_blocks_and_collapses_blank_lines() -> None:
     result = format_lam_source(MESSY_COMPACT_SOURCE)
     assert result.changed
@@ -770,6 +780,7 @@ def main() -> int:
         test_formatter_snapshot,
         test_formatter_is_idempotent,
         test_formatter_keeps_raw_go_and_inline_go,
+        test_formatter_keeps_inline_go_composite_literal,
         test_formatter_expands_compact_blocks_and_collapses_blank_lines,
         test_lamc_fmt_stdout_and_check,
         test_lamc_fmt_directory_recurses_lam_files,

@@ -1,0 +1,53 @@
+# `x in [...]` evaluates `x` once, before the list (as Python), and gives
+# the same answers through the constant-list `switch` (str and int
+# literals, duplicates, negative and hex ints, escapes) and the typed loop.
+# expect: TNIS TNIS TNIS TNS IS IS IS S TNIS TNIS TNIS TNS NIES NIES NIES NES NIS NIS NIS NS NIES NIES NIES NES NIS NIS NIS NS
+# expect: true false true false
+# expect: r,z,3,9
+# expect: false 5
+calls: list[str] = []
+
+func probe(v: str) -> str {
+    calls.append(v)
+    return v
+}
+
+func num(v: int) -> int {
+    calls.append(f"{v}")
+    return v
+}
+
+func classify(s: str, n: int) -> str {
+    out: str = ""
+    if s in ["1", "true", "yes", "on", "true"] {
+        out += "T"
+    }
+    if s not in ["0", "false", "no", "off"] {
+        out += "N"
+    }
+    if n in [1, 2, 3, -4, 0x10, 2] {
+        out += "I"
+    }
+    if s in ["a\\b", "é"] {
+        out += "E"
+    }
+    if s in [s, "x"] {
+        out += "S"
+    }
+    return out
+}
+
+func main() {
+    rows: list[str] = []
+    for s in ["1", "0", "on", "é", "zz", "a\\b", ""] {
+        for n in [1, -4, 16, 5] {
+            rows.append(classify(s, n))
+        }
+    }
+    print(" ".join(rows))
+    tags: list[str] = ["p", "q", "r"]
+    print(probe("r") in ["p", "q", "r"], probe("z") in tags, num(3) in [1, 2, 3], num(9) in [1, 2])
+    print(",".join(calls))
+    empty: list[str] = []
+    print(probe("e") in empty, len(calls))
+}

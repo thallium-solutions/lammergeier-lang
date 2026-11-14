@@ -1,0 +1,89 @@
+# expect-warning: line 56: warning[unused]: assigning `x` to itself has no effect
+# expect-warning: line 59: warning[flow]: this `elif` repeats the condition on line
+# expect-warning: line 62: warning[security]: SQL built from values is an injection risk
+# expect-warning: line 64: warning[security]: SQL built from values is an injection risk
+# expect-warning: line 66: warning[security]: `Exec.run` splits the command on spaces
+# expect-warning: line 67: warning[flow]: comparing `n` with itself is always true
+# expect-warning: line 71: warning[shadow]: the loop variable `n` overwrites the parameter `n`
+# expect-warning: line 33: warning[unused]: private method `unusedMethod` is never used in its module
+# expect-warning: line 46: warning[unused]: private function `unusedFn` is never used in its module
+# expect-warning: line 86: warning[unused]: the task of async `side()` is never awaited
+# expect-no-warning: line 63:
+# expect-no-warning: line 65:
+# expect-no-warning: line 70:
+# expect-no-warning: line 37:
+# expect-no-warning: line 50:
+# expect-no-warning: line 87:
+# The developer-experience lint checks (warnings; errors under `lamc --strict`):
+# self-assignment, a repeated `elif` condition, SQL and `Exec.run` commands
+# built from values, a self-comparison, a loop variable overwriting a
+# parameter, unused private functions and methods, an async task never
+# awaited. Quiet: constants and numbers in SQL, `?` parameters, the NaN test
+# `x != x` of a float, used private members, a kept task.
+from lamdb import Db
+from lamexec import Exec
+
+const Columns: str = "id, name"
+
+class Box {
+    func init(self) {
+        self.v: int = 1
+    }
+
+    private func unusedMethod(self) -> int {
+        return 1
+    }
+
+    private func usedMethod(self) -> int {
+        return 2
+    }
+
+    func get(self) -> int {
+        return self.usedMethod()
+    }
+}
+
+private func unusedFn() -> int {
+    return 1
+}
+
+private func usedFn() -> int {
+    return 2
+}
+
+func run(db: Db, name: str, n: int, ratio: float) {
+    x: int = n
+    x = x
+    if n > 1 {
+        print("a")
+    } elif n > 1 {
+        print("b")
+    }
+    rows = db.query(f"SELECT {Columns} FROM users WHERE name = '{name}'")
+    ok = db.query(f"SELECT {Columns} FROM users WHERE id = ?", [n])
+    count = db.query("SELECT * FROM t WHERE a = " + name)
+    lim = db.query(f"SELECT * FROM t LIMIT {n}")
+    print(rows, ok, count, lim, Exec.run(f"ls {name}"), Exec.run("ls -l"))
+    if n == n {
+        print("same")
+    }
+    print(ratio != ratio)
+    for n in [1, 2] {
+        print(n)
+    }
+    print(usedFn(), Box().get())
+}
+
+func main() {
+    print(1)
+}
+
+async func side() {
+    print("s")
+}
+
+func tasks() {
+    side()
+    t = side()
+    await t
+}

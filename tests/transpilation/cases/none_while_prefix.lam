@@ -1,0 +1,35 @@
+# Transpilation: `while n != None` on a local the body rebinds: the
+# statements before the rebinding, and the right side of a plain `n = ...`
+# doing it, read members of `n` without `lamNN` (every iteration starts with
+# the test holding); after it the check stays (docs/TRANSPILATION.md, "`None`
+# at run time").
+# expect-go: sum += n.Val() + n.Value
+# expect-go: n = n.Next
+# expect-go: last = lamNN(n, "value").Value
+class Node {
+    value: int = 0
+    next: Node = None
+
+    func val(self) -> int {
+        return self.value
+    }
+}
+
+func walk(head: Node) -> int {
+    sum: int = 0
+    last: int = 0
+    n: Node = head
+    while n != None {
+        sum += n.val() + n.value
+        n = n.next
+        if n != None {
+            continue
+        }
+        last = n.value
+    }
+    return sum + last
+}
+
+func main() {
+    print(walk(None))
+}

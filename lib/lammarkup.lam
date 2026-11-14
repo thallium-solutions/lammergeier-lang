@@ -273,6 +273,20 @@ go! {
     var lamHTMLRawText = map[string]bool{"script": true, "style": true}
     var lamHTMLEscapableRaw = map[string]bool{"textarea": true, "title": true}
 
+    // lamHTMLIsVoid / lamHTMLIsRawText are lamHTMLVoid[name] /
+    // lamHTMLRawText[name] as switches (the same names): the renderers ask
+    // for every element, twice per render (size, then write).
+    func lamHTMLIsVoid(name string) bool {
+        switch name {
+        case "area", "base", "br", "col", "embed", "hr", "img",
+            "input", "link", "meta", "param", "source", "track", "wbr":
+            return true
+        }
+        return false
+    }
+
+    func lamHTMLIsRawText(name string) bool { return name == "script" || name == "style" }
+
     func lamMLower(s string) string { return strings.ToLower(s) }
 
     func lamMNameEq(xmlMode bool, a, b string) bool {
@@ -323,9 +337,11 @@ go! {
     var lamMAttrEscaper = strings.NewReplacer("&", "&amp;", "\"", "&quot;", "<", "&lt;", ">", "&gt;")
 
     func lamMIsForeign(name string) bool {
-        l := lamMLower(name)
-        return l == "svg" || l == "math"
+        return lamMForeignLower(lamMLower(name))
     }
+
+    // lamMForeignLower is lamMIsForeign of an already lower-cased name.
+    func lamMForeignLower(l string) bool { return l == "svg" || l == "math" }
 
     // Appends ``s`` escaped for element content (``attr``: for a quoted
     // attribute value); the same replacements as the escapers above.
@@ -413,19 +429,19 @@ go! {
                 b = append(b, n.name...)
                 return append(b, '>')
             }
-            isForeign := foreign || lamMIsForeign(n.name)
             lname := lamMLower(n.name)
+            isForeign := foreign || lamMForeignLower(lname)
             if isForeign && n.selfClosing && len(n.children) == 0 {
                 return append(b, "/>"...)
             }
-            if !isForeign && lamHTMLVoid[lname] {
+            if !isForeign && lamHTMLIsVoid(lname) {
                 if n.selfClosing {
                     return append(b, "/>"...)
                 }
                 return append(b, '>')
             }
             b = append(b, '>')
-            if !isForeign && lamHTMLRawText[lname] {
+            if !isForeign && lamHTMLIsRawText(lname) {
                 // Only text is written (refs always stand for elements).
                 for _, ch := range n.children {
                     if ch.kind == lamMText {
@@ -496,19 +512,19 @@ go! {
                 }
                 return size + 4 + len(n.name)
             }
-            isForeign := foreign || lamMIsForeign(n.name)
             lname := lamMLower(n.name)
+            isForeign := foreign || lamMForeignLower(lname)
             if isForeign && n.selfClosing && len(n.children) == 0 {
                 return size + 2
             }
-            if !isForeign && lamHTMLVoid[lname] {
+            if !isForeign && lamHTMLIsVoid(lname) {
                 if n.selfClosing {
                     return size + 2
                 }
                 return size + 1
             }
             size += 4 + len(n.name)
-            if !isForeign && lamHTMLRawText[lname] {
+            if !isForeign && lamHTMLIsRawText(lname) {
                 for _, ch := range n.children {
                     if ch.kind == lamMText {
                         size += len(ch.data)

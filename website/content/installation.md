@@ -149,6 +149,7 @@ and `lamc doctor --strict` when CI should fail on missing required pieces.
 |------|-----------|
 | `-o PATH` | Override the output binary path. |
 | `--go-ldflags FLAGS` | Forward `FLAGS` straight to `go build` (`-X main.version=...` etc.). |
+| `--go-pgo PROFILE` | Profile-guided optimisation: build with a CPU profile of the program (`go build -pgo`; recipe in [`TRANSPILATION.md`](#/docs/transpilation?h=profile-guided-optimisation)). |
 | `--extlibs DIR` | Add an extra search root for third-party libraries (repeatable; first wins). |
 | `--workers N` | Worker processes for the per-module work (parsing, checking and transpiling the imported modules). Default: `LAMC_WORKERS`, else the number of CPUs, at most 16; `1` keeps everything in the `lamc` process. The generated Go is the same for every `N`. |
 | `--timings` | Print one `LAMC_TIMINGS {...}` JSON line with the milliseconds of every compile phase. |

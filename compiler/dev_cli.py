@@ -114,6 +114,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--go-tags", help="Passed to `lamc build`")
     ap.add_argument("--go-ldflags", help="Passed to `lamc build`")
     ap.add_argument("--go-race", action="store_true", help="Passed to `lamc build`")
+    ap.add_argument("--strict", action="store_true",
+                    help="Passed to `lamc build`: warnings of the project's modules fail the build")
     ap.add_argument("--rebuild", action="store_true",
                     help="Build at start even when a cached build of the same inputs "
                          "exists (the new build is cached)")
@@ -186,6 +188,10 @@ def build_config_key(args: argparse.Namespace) -> str:
         "go_tags": args.go_tags,
         "go_ldflags": args.go_ldflags,
         "go_race": bool(args.go_race),
+        # A binary cached by a build that did not fail on warnings must not
+        # stand in for a strict one.
+        "strict": bool(getattr(args, "strict", False))
+        or os.environ.get("LAMC_STRICT", "").strip().lower() in ("1", "true", "yes", "on"),
         "no_semantic_check": bool(args.no_semantic_check),
     }
     return _sha256(json.dumps(config, sort_keys=True))
@@ -536,7 +542,7 @@ class DevRunner:
             value = getattr(self.args, flag)
             if value:
                 cmd += ["--" + flag.replace("_", "-"), value]
-        for flag in ("go_race", "no_cache", "no_semantic_check"):
+        for flag in ("go_race", "no_cache", "no_semantic_check", "strict"):
             if getattr(self.args, flag):
                 cmd.append("--" + flag.replace("_", "-"))
         if getattr(self.args, "workers", None) is not None:

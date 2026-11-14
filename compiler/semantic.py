@@ -72,6 +72,7 @@ from compiler import namespacing as _namespacing
 from compiler import narrowing as _narrowing
 from compiler.fstrings import decode_placeholders, fstring_body, fstring_source_position, fstring_spec_to_go, parse_slot, split_fstring
 from compiler.semantic_narrowing import NarrowingCheckMixin
+from compiler.semantic_lint import LintChecksMixin
 from compiler.semantic_markup import MarkupSemanticMixin
 from compiler.semantic_any import AnyCastSemanticMixin
 from compiler.semantic_none import NoneSemanticMixin
@@ -439,9 +440,11 @@ class _ImportedCallMetadata:
     # Imported top-level constants / variables (``Prefix``, ``c.Limit``) ->
     # their type text in the importing module.
     var_types: dict[str, str] = field(default_factory=dict)
+    # Imported names (``Prefix``, ``c.Limit``) that are ``const``s.
+    const_names: set[str] = field(default_factory=set)
 
 
-class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticMixin, NoneSemanticMixin):
+class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticMixin, NoneSemanticMixin, LintChecksMixin):
     """Walks a parsed Lam tree and accumulates :class:`SemanticError`."""
 
     def __init__(
@@ -468,10 +471,12 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         imported_class_identity: Optional[dict[str, str]] = None,
         imported_class_private_methods: Optional[dict[str, set[str]]] = None,
         imported_var_types: Optional[dict[str, str]] = None,
+        imported_const_names: Optional[Iterable[str]] = None,
     ):
         # Imported top-level values: ``Prefix`` (module scope types) and
         # ``c.Limit`` (members of a module alias).
         self._imported_var_types: dict[str, str] = dict(imported_var_types or {})
+        self._imported_const_names: set[str] = set(imported_const_names or ())
         # Names provided externally — typically from imported libraries
         # whose own top-level definitions the caller has already parsed.
         self._extra_known: Set[str] = set(extra_known_names or ())
@@ -609,6 +614,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 for c in stmt.children
             )
         }
+        self._async_module_funcs = {
+            self._funcdef_name(stmt)
+            for stmt in tree.children
+            if isinstance(stmt, Tree) and stmt.data == "funcdef" and self._funcdef_name(stmt) not in self._sync_module_funcs
+        }
         token = set_subclass_hook(self._subclass_hook)
         self._module_tree = tree
         self._narrow_module_vars = _narrowing.module_variable_names(tree)
@@ -682,6 +692,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             # underscore (``from x import _``) are an explicit
             # opt-out so we never warn on them.
             self._emit_unused_import_warnings(module)
+            self._lint_unused_private(tree)
         finally:
             self._scopes = []
         return self.errors
@@ -1244,6 +1255,8 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         # so the same line ``x = x + 1`` is accepted (forward use of
         # ``x`` from an enclosing scope).
         if d in ("assign_stmt", "annassign", "assign", "augassign"):
+            if d in ("assign_stmt", "assign"):
+                self._lint_assignment(node)
             self._check_generator_stored_in_own_object(node)
             self._check_assignment_interface_conformance(node)
             self._check_type_annotations(node)
@@ -1278,6 +1291,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return
 
         if d == "for_stmt":
+            self._lint_for(node)
             self._visit_for(node)
             return
         if d == "while_stmt":
@@ -1288,6 +1302,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             self._visit_try(node)
             return
         if d == "if_stmt":
+            self._lint_if(node)
             self._visit_if(node)
             return
         if d == "match_stmt":
@@ -3313,7 +3328,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                     "`?` operator used outside a `-> Result` function; "
                     "an `Err` will panic at runtime "
                     "(change the signature to return `Result` "
-                    "or handle the error explicitly)",
+                    "or handle the error explicitly; `.unwrap()` says that a panic is intended)",
                 )
             # Fall through so the inner expression is still walked.
 
@@ -3336,7 +3351,11 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         if d == "cast_expr" and len(node.children) == 2:
             self._check_cast_expr(node)
 
+        if d == "comparison":
+            self._lint_comparison(node)
+
         if d == "funccall":
+            self._lint_call(node)
             if node.children and isinstance(node.children[0], Tree) and node.children[0].data == "var":
                 self.__dict__.setdefault("_callee_var_ids", set()).add(id(node.children[0]))
                 callee_name = self._name_text(node.children[0].children[0]) if node.children[0].children else ""
@@ -8379,6 +8398,17 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
         # Top-level function call: ``foo(...)``.
         if callee.data == "var":
             name = self._name_text(callee.children[0]) if callee.children else ""
+            if name and name in self.__dict__.get("_async_module_funcs", ()) and not any(
+                name in scope.names for scope in self._scopes[1:]
+            ):
+                # The task runs, but nothing waits for it: the program can
+                # end first, and its exception is lost.
+                self._warning(
+                    expr_stmt, "unused",
+                    f"the task of async `{name}()` is never awaited: its exception is lost and the program "
+                    f"may end first; `await` it, or keep it (`t = {name}()`, later `await t`)",
+                )
+                return
             if name and name in self._nonvoid_funcs:
                 self._warning(
                     expr_stmt,
@@ -13889,6 +13919,8 @@ def _imported_call_metadata(
                 for interfacedef in collect_interfacedefs(origin_tree, export.name):
                     collect_imported_interface(interfacedef, local)
             elif export.kind in {"const", "variable"}:
+                if export.kind == "const":
+                    metadata.const_names.add(local)
                 value_type = top_level_value_type(origin_tree, export.name)
                 if value_type:
                     metadata.var_types[local] = remap_type_text(value_type, aliases)
@@ -13917,6 +13949,8 @@ def _imported_call_metadata(
                 for interfacedef in collect_interfacedefs(origin_tree, export.name):
                     collect_imported_interface(interfacedef, target)
             elif export.kind in {"const", "variable"}:
+                if export.kind == "const":
+                    metadata.const_names.add(target)
                 value_type = top_level_value_type(origin_tree, export.name)
                 if value_type:
                     metadata.var_types[target] = remap_type_text(value_type, aliases)
@@ -14114,6 +14148,7 @@ def check_source(
         imported_class_identity=imported_calls.class_identity,
         imported_class_private_methods=imported_calls.class_private_methods,
         imported_var_types=imported_calls.var_types,
+        imported_const_names=imported_calls.const_names,
     ).check(
         tree,
         ast_module=ast_module,

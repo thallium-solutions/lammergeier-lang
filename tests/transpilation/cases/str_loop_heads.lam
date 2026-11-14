@@ -1,0 +1,53 @@
+# Transpilation: a loop reading a `str` local it never rebinds computes a
+# view of it once (`lamStrViewOf`: its ASCII run, its length, a long
+# string's index marks; docs/TRANSPILATION.md, "Loop-invariant `str`
+# views"); inside it `len(s)`, `s[i]`, `s[a:b]` and `s[a:]` are the inlined
+# `...V` helpers, nested loops sharing the outer loop's view and a `for`
+# variable getting one per iteration.
+# expect-go: __lamStrV1 := lamStrViewOf(src)
+# expect-go: for pos < lamStrLenV(&__lamStrV1) {
+# expect-go: var c string = lamStrAtV(src, pos, &__lamStrV1)
+# expect-go: for pos < lamStrLenV(&__lamStrV1) && lamStrAtV(src, pos, &__lamStrV1) != " " {
+# expect-go: words = append(words, lamStrSliceV(src, start, pos, __lamStrV1.head, &__lamStrV1))
+# expect-go: var rest string = lamStrFromV(src, pos, &__lamStrV1)
+# expect-go: __lamStrV2 := lamStrViewOf(line)
+# expect-go: if lamStrAtV(line, i, &__lamStrV2) == "#" {
+
+func words(src: str) -> list[str] {
+    words: list[str] = []
+    pos: int = 0
+    while pos < len(src) {
+        c: str = src[pos]
+        if c == " " {
+            pos += 1
+            continue
+        }
+        start: int = pos
+        while pos < len(src) and src[pos] != " " {
+            pos += 1
+        }
+        words.append(src[start:pos])
+        rest: str = src[pos:]
+        if rest == "" {
+            break
+        }
+    }
+    return words
+}
+
+func comments(lines: list[str]) -> int {
+    n: int = 0
+    for line in lines {
+        for i in range(len(line)) {
+            if line[i] == "#" {
+                n += 1
+                break
+            }
+        }
+    }
+    return n
+}
+
+func main() {
+    print(words("a bc  déf"), comments(["x # y", "z", "# w"]))
+}

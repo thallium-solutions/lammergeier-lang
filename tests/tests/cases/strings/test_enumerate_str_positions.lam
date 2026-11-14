@@ -1,0 +1,48 @@
+# `enumerate(s)` of a `str` counts character positions while ranging over
+# the string (docs/TRANSPILATION.md, "`str` by character"), in loops and comprehensions,
+# with a start, `continue` / `break`, nested clauses and invalid UTF-8 (one
+# character per invalid byte, read as U+FFFD), without a []rune copy.
+# expect: 0h,1é,4o,5 ,6w,7ö,8r,10d
+# expect: 10 h
+# expect: 11 é
+# expect: 12 l
+# expect: a
+# expect: b
+# expect: [0:a 1:é 2:€]
+# expect: [5:x 6:y 7:z]
+# expect: [00a 01b 10é]
+# expect: 0 1 104
+# expect: 1 1 65533
+# expect: 2 1 105
+# expect: [104 65533 105]
+
+func main() {
+    s: str = "héllo wörld"
+    out: list[str] = []
+    for i, c in enumerate(s) {
+        if c == "l" {
+            continue
+        }
+        out.append(f"{i}{c}")
+    }
+    print(",".join(out))
+    for i, c in enumerate(s, 10) {
+        if i > 12 { break }
+        print(i, c)
+    }
+    for _, c in enumerate("ab") {
+        print(c)
+    }
+    pairs: list[str] = [f"{i}:{c}" for i, c in enumerate("aé€")]
+    print(pairs)
+    starts: list[str] = [f"{i}:{c}" for i, c in enumerate("xyz", 5)]
+    print(starts)
+    nested: list[str] = [f"{i}{j}{c}" for i, w in enumerate(["ab", "é"]) for j, c in enumerate(w)]
+    print(nested)
+    b: bytes = bytes([104, 255, 105])
+    t: str = str(b)
+    for i, c in enumerate(t) {
+        print(i, len(c), ord(c))
+    }
+    print([ord(c) for i, c in enumerate(t)])
+}

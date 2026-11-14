@@ -383,14 +383,19 @@ func (x *lamStrIndex) pos(i int) int {
 \treturn b
 }
 
-// lamStrASCII is the length of the leading ASCII run of s (8 bytes at a
-// time: the 8-byte window lets Go combine the loads).
+// lamStrASCII is the length of the leading ASCII run of s (32 bytes at a
+// time, then 8: the 8-byte windows let Go combine the loads).
 func lamStrASCII(s string) int {
 \ti := 0
+\tfor len(s)-i >= 32 {
+\t\tt := s[i : i+32]
+\t\tif (lamStrWord(t[0:8])|lamStrWord(t[8:16])|lamStrWord(t[16:24])|lamStrWord(t[24:32]))&0x8080808080808080 != 0 {
+\t\t\tbreak
+\t\t}
+\t\ti += 32
+\t}
 \tfor len(s)-i >= 8 {
-\t\tt := s[i : i+8]
-\t\tif (uint64(t[0])|uint64(t[1])<<8|uint64(t[2])<<16|uint64(t[3])<<24|
-\t\t\tuint64(t[4])<<32|uint64(t[5])<<40|uint64(t[6])<<48|uint64(t[7])<<56)&0x8080808080808080 != 0 {
+\t\tif lamStrWord(s[i:i+8])&0x8080808080808080 != 0 {
 \t\t\tbreak
 \t\t}
 \t\ti += 8
@@ -399,6 +404,91 @@ func lamStrASCII(s string) int {
 \t\ti++
 \t}
 \treturn i
+}
+
+// lamStrWord is the 8 bytes of t (len(t) >= 8) as one little-endian word.
+func lamStrWord(t string) uint64 {
+\treturn uint64(t[0]) | uint64(t[1])<<8 | uint64(t[2])<<16 | uint64(t[3])<<24 |
+\t\tuint64(t[4])<<32 | uint64(t[5])<<40 | uint64(t[6])<<48 | uint64(t[7])<<56
+}
+
+// lamStrViewOf is the view of s a loop reading it by character and never
+// rebinding it computes once, before the loop: s's leading ASCII run, its
+// character count and, for a long string, the marks of its cached index (a
+// copy of the index itself). The ...V helpers below are then inlined byte
+// operations inside the run, and past it read the marks without looking the
+// index up again.
+func lamStrViewOf(s string) lamStrIndex {
+	if len(s) > lamStrShort && uint64(len(s)) < 1<<32 {
+		return *lamStrIndexOf(s)
+	}
+	h := lamStrASCII(s)
+	n := h
+	if h < len(s) {
+		n += utf8.RuneCountInString(s[h:])
+	}
+	return lamStrIndex{s: s, head: h, n: n}
+}
+
+// located: every character's byte offset is known (x.pos / x.bound).
+func (x *lamStrIndex) located() bool { return x.head == x.n || x.marks != nil }
+
+// lamStrAtV is lamStrAt(s, i) through the view x of s.
+func lamStrAtV(s string, i int, x *lamStrIndex) string {
+	if uint(i) < uint(x.head) {
+		return s[i : i+1]
+	}
+	return lamStrAtVPast(s, i, x)
+}
+
+func lamStrAtVPast(s string, i int, x *lamStrIndex) string {
+	j := i
+	if j < 0 {
+		j += x.n
+	}
+	if uint(j) < uint(x.n) && x.located() {
+		return lamStrChar(s, x.pos(j))
+	}
+	return lamStrAt(s, i)
+}
+
+// lamStrLenV is lamStrLen(s) of the view x of s.
+func lamStrLenV(x *lamStrIndex) int { return x.n }
+
+// lamStrSliceV is lamStrSlice(s, a, b) through the view x of s, h being
+// x.head (read by the caller: that keeps it within Go's inlining budget).
+func lamStrSliceV(s string, a, b, h int, x *lamStrIndex) string {
+	if uint(a) <= uint(b) && uint(b) <= uint(h) {
+		return s[a:b]
+	}
+	return lamStrSliceVPast(a, b, x)
+}
+
+// (x.s is s.)
+func lamStrSliceVPast(a, b int, x *lamStrIndex) string {
+	if !x.located() {
+		return lamStrSlice(x.s, a, b)
+	}
+	lo, hi := x.bound(a), x.bound(b)
+	if hi <= lo {
+		return ""
+	}
+	return x.s[lo:hi]
+}
+
+// lamStrFromV is lamStrFrom(s, a) through the view x of s.
+func lamStrFromV(s string, a int, x *lamStrIndex) string {
+	if uint(a) <= uint(x.head) {
+		return s[a:]
+	}
+	return lamStrFromVPast(s, a, x)
+}
+
+func lamStrFromVPast(s string, a int, x *lamStrIndex) string {
+	if !x.located() {
+		return lamStrFrom(s, a)
+	}
+	return s[x.bound(a):]
 }
 
 // lamStrLen is ``len(s)``: the number of characters (a long string's
@@ -672,7 +762,7 @@ func lamStrStepBounds(n, start, end, step int, sp, ep bool) (int, int) {
 \treturn start, end
 }
 """
-    _STR_RUNTIME_RE = re.compile(r"\blam(?:StrLen|StrAt|StrSlice|StrFrom|StrStep|Ord|Chr)\(")
+    _STR_RUNTIME_RE = re.compile(r"\blam(?:StrLen|StrAt|StrSlice|StrFrom|StrStep|StrViewOf|Ord|Chr)\(")
 
     # ``None`` at run time (``compiler/semantic_none.py``): a member of
     # ``None`` raises ``AttributeError: None has no attribute 'name'``

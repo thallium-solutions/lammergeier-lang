@@ -663,11 +663,12 @@ COMPILER_RUNTIME_HELPERS = frozenset({
     "lamNewMethodGenerator", "lamNewStateGenerator", "lamNN", "lamNNI", "lamNoneError",
     "lamNoneIsNot", "lamNoneMember", "lamNoneOf", "lamSlotText", "lamStopCollectedGenerator",
     # Character semantics of ``str`` (``_STR_RUNTIME_GO``).
-    "lamChr", "lamOrd", "lamStrASCII", "lamStrAt", "lamStrAtAny", "lamStrBound", "lamStrChar", "lamStrFrom", "lamStrIndex",
+    "lamChr", "lamOrd", "lamStrASCII", "lamStrAt", "lamStrAtAny", "lamStrAtV", "lamStrAtVPast", "lamStrBound", "lamStrChar",
+    "lamStrFrom", "lamStrFromV", "lamStrFromVPast", "lamStrIndex",
     "lamStrIndexError", "lamStrIndexFault", "lamStrIndexFind", "lamStrIndexNew", "lamStrIndexOf", "lamStrIndexSlot",
-    "lamStrIndexes", "lamStrLen",
-    "lamStrPos", "lamStrPosEnd", "lamStrShort", "lamStrSlice", "lamStrSpan", "lamStrStep", "lamStrStepBounds",
-    "lamStrStepCount",
+    "lamStrIndexes", "lamStrLen", "lamStrLenV",
+    "lamStrPos", "lamStrPosEnd", "lamStrShort", "lamStrSlice", "lamStrSliceV", "lamStrSliceVPast", "lamStrSpan", "lamStrStep", "lamStrStepBounds",
+    "lamStrStepCount", "lamStrViewOf", "lamStrWord",
 })
 COMPILER_RUNTIME_HELPER_PREFIXES: tuple[str, ...] = ("lamFuncRef_", "lamModuleInit_", "lamVirtual")
 

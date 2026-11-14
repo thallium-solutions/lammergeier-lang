@@ -1,0 +1,62 @@
+# A `Result` payload read in a typed context is converted once
+# (docs/TRANSPILATION.md, "`Result[T]` payloads") with the same checks: `None`
+# of a value payload raises TypeError, an int payload reads as a float, a
+# list payload built outside a typed context converts element by element,
+# a subclass payload reads as its base class.
+# expect: 42 42 -1
+# expect: caught TypeError: None is not a str
+# expect: text
+# expect: 1.5
+# expect: [1 2] 2
+# expect: dog
+from lamconv import Conv
+from lamerrors import Result
+
+class Animal {
+    func name(self) -> str {
+        return "animal"
+    }
+}
+
+class Dog(Animal) {
+    func name(self) -> str {
+        return "dog"
+    }
+}
+
+func pick(flag: bool) -> Result[any] {
+    if flag {
+        return Result.Ok(None)
+    }
+    return Result.Ok("text")
+}
+
+func half(r: Result[float]) -> float {
+    return r.unwrap() / 2.0
+}
+
+func pet() -> Result[Animal] {
+    return Result.Ok(Dog())
+}
+
+func main() {
+    r: Result[int] = Conv.parse("42")
+    v: int = r.unwrapOr(7)
+    w: int = r.unwrap()
+    bad: Result[int] = Conv.parse("x")
+    print(v, w, bad.unwrapOr(-1))
+    try {
+        x: str = pick(true).unwrap()
+        print(x)
+    } catch TypeError as e {
+        print(f"caught {e}")
+    }
+    y: str = pick(false).unwrap()
+    print(y)
+    print(half(Result.Ok(3)))
+    l: Result[list[int]] = Result.Ok([1, 2])
+    xs: list[int] = l.unwrap()
+    print(xs, len(xs))
+    a: Animal = pet().unwrap()
+    print(a.name())
+}

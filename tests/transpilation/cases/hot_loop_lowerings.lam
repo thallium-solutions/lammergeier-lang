@@ -1,7 +1,7 @@
 # Transpilation: the hot-loop lowerings stay native Go. A loop over a list,
 # `enumerate` and a dict range directly (no copies, no interface{} boxing),
-# a comprehension appends into a typed slice / map, `in` on a dict is a map
-# lookup and on a typed list a typed loop, a stepped `range` is a C-style
+# a comprehension appends into a typed slice / map (pre-sized when unfiltered), `in` on a dict is a map
+# lookup and on a typed list a typed loop (the item evaluated once), a stepped `range` is a C-style
 # loop (its bound evaluated once, as in Python), `//=` / `%` by a power of two on ints are shifts / masks (same
 # results as Python's floor semantics), `xs[-1]` indexes `len(xs)-1`, and
 # `+=` on a string appends in place.
@@ -10,9 +10,9 @@
 # expect-go: for k, v := range names {
 # expect-go: _result := []int{}
 # expect-go: _result = append(_result, x * x)
-# expect-go: _r := map[int]bool{}
+# expect-go: _r := make(map[int]bool, len(xs))
 # expect-go: _r[x] = x & 1 == 0
-# expect-go: for _, _v := range xs { if _v == 3 { return true } }
+# expect-go: if func(_x int) bool { for _, _v := range xs { if _v == _x { return true } }; return false }(3) {
 # expect-go: _, _ok := names["a"]; return _ok
 # expect-go: out += w
 # expect-go: __lamRangeEnd1 := len(xs)

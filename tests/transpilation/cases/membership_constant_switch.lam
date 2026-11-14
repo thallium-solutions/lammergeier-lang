@@ -1,0 +1,25 @@
+# Transpilation: `x in [...]` on a literal list of `str` or `int` constants
+# is a `switch` on them (duplicates dropped; docs/TRANSPILATION.md,
+# "Expressions"); another typed list is a loop comparing an item evaluated
+# once, before the list.
+# expect-go: if func(_v string) bool { switch _v { case "1", "true", "yes": return true }; return false }(s) {
+# expect-go: if func(_v int) bool { switch _v { case 1, -4, 16: return true }; return false }(n) {
+# expect-go: if func(_x string) bool { for _, _v := range tags { if _v == _x { return true } }; return false }(s) {
+
+func check(s: str, n: int, tags: list[str]) -> int {
+    total: int = 0
+    if s in ["1", "true", "yes", "true"] {
+        total += 1
+    }
+    if n in [1, -4, 0x10] {
+        total += 2
+    }
+    if s in tags {
+        total += 4
+    }
+    return total
+}
+
+func main() {
+    print(check("yes", 16, ["yes"]))
+}

@@ -1,0 +1,25 @@
+# Transpilation: a `Result` payload read in a typed context is converted
+# once (docs/TRANSPILATION.md, "`Result[T]` payloads"): `unwrap()` / `unwrapOr`
+# of a `Result[int]` asserted by the call is not boxed and asserted again by
+# the declaration, nor a float or list payload's conversion closure applied
+# twice.
+# expect-go: var v int = lamAs[int](r.UnwrapOr(7), "an int")
+# expect-go: var w int = lamAs[int](r.Unwrap(), "an int")
+# expect-go: var s string = lamAs[string](rs.Unwrap(), "a str")
+# expect-go: return lamAs[float64](v, "a float") }(f.Unwrap())
+# expect-go: return out }(l.Unwrap())
+from lamconv import Conv
+from lamerrors import Result
+
+func main() {
+    r: Result[int] = Conv.parse("42")
+    v: int = r.unwrapOr(7)
+    w: int = r.unwrap()
+    rs: Result[str] = Result.Ok("hi")
+    s: str = rs.unwrap()
+    f: Result[float] = Result.Ok(2.5)
+    x: float = f.unwrap()
+    l: Result[list[int]] = Result.Ok([1, 2])
+    xs: list[int] = l.unwrap()
+    print(v, w, s, x, xs)
+}

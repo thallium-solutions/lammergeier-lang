@@ -89,6 +89,7 @@ run_suite() {
             "$PYTHON" tests/tests/test_none_uncaught.py
             "$PYTHON" tests/tests/test_runtime_panics.py
             "$PYTHON" tests/tests/test_compiler_crash_guard.py
+            "$PYTHON" tests/tests/test_strict_mode.py
             "$PYTHON" tests/tests/test_formatter.py
             "$PYTHON" tests/tests/test_formatter_roundtrip.py
             "$PYTHON" tests/tests/test_doc_comments.py
@@ -129,6 +130,9 @@ run_suite() {
             "$PYTHON" tests/tests/test_parallel_build.py
             "$PYTHON" tests/tests/test_cache_prune.py
             "$PYTHON" tests/tests/test_narrowing_and_index_bounds.py
+            "$PYTHON" tests/tests/test_str_runtime.py
+            "$PYTHON" tests/tests/test_markup_tables.py
+            "$PYTHON" tests/tests/test_go_pgo.py
             "$PYTHON" -m pytest tests/tests/test_collection_context_fuzz.py tests/tests/test_random_program_fuzz.py -q
             ;;
         canaries)

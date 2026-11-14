@@ -1800,6 +1800,7 @@ def _check_imported_modules(
     workers: int = 1,
     frontend=None,
     inputs_recorder=None,
+    strict_modules=None,
 ) -> None:
     """Full semantic check of every imported module of the program
     (``modules``: ``(path, source, go_blocks, tree)``: project modules,
@@ -1848,6 +1849,9 @@ def _check_imported_modules(
             _imported_check_cache_extra(Path(mod_file).resolve(), import_graph or {}, sources, source_digests)
             if use_cache else None
         )
+        if cache_extra is not None and strict_modules is not None and strict_modules(Path(mod_file)):
+            # A module checked clean without strict mode may have warnings.
+            cache_extra += b":strict"
         if cache_extra is not None and _cache.has_clean_check(mod_source.encode("utf-8"), cache_extra):
             continue
         todo.append((mod_file, mod_source, mod_go_blocks, mod_tree, cache_extra))
@@ -1937,7 +1941,10 @@ def _check_imported_modules(
                         inputs_recorder.replay(module_index, Path(from_path), module, Path(found) if found else None)
             if diags is None:
                 continue
-            _report_imported_check(diags, mod_source, mod_file, cache_extra, blocks)
+            _report_imported_check(
+                diags, mod_source, mod_file, cache_extra, blocks,
+                strict=strict_modules is not None and strict_modules(Path(mod_file)),
+            )
     finally:
         if pool is not None:
             pool.shutdown(wait=True, cancel_futures=True)
@@ -1946,13 +1953,54 @@ def _check_imported_modules(
         sys.exit(1)
 
 
-def _report_imported_check(diags, mod_source, mod_file, cache_extra, blocks) -> None:
+def _strict_requested(source_dir: Path) -> bool:
+    """Strict mode from the environment (``LAMC_STRICT=1``) or the project's
+    ``lamlib.toml`` (``[build] strict = true``)."""
+    if os.environ.get("LAMC_STRICT", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    manifest = _find_project_manifest(source_dir)
+    if manifest is None:
+        return False
+    try:
+        from compiler.manifest import _parse_toml
+        build = _parse_toml(manifest.read_text(encoding="utf-8")).get("build")
+    except Exception:  # noqa: BLE001 - a broken manifest is reported where it is read
+        return False
+    return isinstance(build, dict) and build.get("strict") is True
+
+
+def _strict_module_filter(project_root: Path, library_dirs: list):
+    """The modules strict mode covers: the project's own, not the stdlib or
+    installed packages (``extlibs``)."""
+    root = Path(project_root).resolve()
+    libraries = [Path(d).resolve() for d in library_dirs if d]
+
+    def covered(path: Path) -> bool:
+        resolved = Path(path).resolve()
+        if any(resolved == lib or lib in resolved.parents for lib in libraries):
+            return False
+        return resolved == root or root in resolved.parents
+
+    return covered
+
+
+def _strict_failure_text(count: int, path: str) -> str:
+    noun = "warning" if count == 1 else "warnings"
+    return (
+        f"error: strict mode: {count} {noun} in {path} (above) fail the build\n"
+        "  help: fix them, or build without --strict / LAMC_STRICT / [build] strict"
+    )
+
+
+def _report_imported_check(diags, mod_source, mod_file, cache_extra, blocks, strict: bool = False) -> None:
     """Print an imported module's warnings, collect its errors in ``blocks``
-    and remember a clean check."""
+    and remember a clean check. In strict mode (a project module) every
+    warning is reported and fails the build."""
     from compiler import cache as _cache
     from compiler import semantic as _semantic
 
-    diags = [d for d in diags if not d.is_warning or d.kind == "import"]
+    if not strict:
+        diags = [d for d in diags if not d.is_warning or d.kind == "import"]
     if not diags:
         if cache_extra is not None:
             _cache.mark_clean_check(mod_source.encode("utf-8"), cache_extra)
@@ -1963,6 +2011,8 @@ def _report_imported_check(diags, mod_source, mod_file, cache_extra, blocks) -> 
         print(warnings_text, file=sys.stderr)
     if _semantic.has_errors(diags):
         blocks.append(_semantic.render_errors(diags, mod_source, str(mod_file)))
+    elif strict and any(d.is_warning for d in diags):
+        blocks.append(_strict_failure_text(sum(1 for d in diags if d.is_warning), str(mod_file)))
 
 
 def _project_root_for(source_dir: Path) -> Path:
@@ -2297,6 +2347,7 @@ def _compile_lam(
     *,
     worker_count: int = 1,
     frontend=None,
+    strict: bool = False,
 ):
     """Full compilation pipeline.
 
@@ -2438,6 +2489,8 @@ def _compile_lam(
         warning_block = _semantic.render_warnings(sem_diags, source, str(source_path))
         if warning_block:
             print(warning_block, file=sys.stderr)
+        strict = strict or _strict_requested(source_file.parent)
+        strict_count = sum(1 for d in sem_diags if d.is_warning) if strict else 0
         if not (transpile_only or emit_go or emit_ast) and not any(
             isinstance(stmt, Tree) and stmt.data == "funcdef"
             and _semantic.SemanticChecker._funcdef_name(stmt) == "main"
@@ -2452,6 +2505,11 @@ def _compile_lam(
         if _semantic.has_errors(sem_diags):
             print(_semantic.render_errors(sem_diags, source, str(source_path)),
                   file=sys.stderr)
+            sys.exit(1)
+        if strict_count:
+            # Strict mode (``--strict``, ``LAMC_STRICT=1``, ``[build] strict =
+            # true``): the warnings are errors.
+            print(_strict_failure_text(strict_count, str(source_path)), file=sys.stderr)
             sys.exit(1)
         # Project-level: declared-but-unused manifest dependencies.
         # Operates on the regex-scanned import graph of every ``.lam``
@@ -2899,6 +2957,12 @@ def _compile_lam(
             name_check_modules, module_index, program_check_cache,
             import_graph=module_import_files, use_cache=use_cache,
             workers=worker_count, frontend=frontend, inputs_recorder=inputs_recorder,
+            strict_modules=(
+                _strict_module_filter(
+                    project_root,
+                    [stdlib_dir, *_effective_extlibs_dirs(source_dir, extlibs_paths, project_root, include_missing=True)],
+                ) if strict else None
+            ),
         )
 
     main_module_path = source_file.resolve()
@@ -3949,10 +4013,17 @@ def _build_build_parser() -> "argparse.ArgumentParser":
                     help="Pass -gcflags to go build")
     ap.add_argument("--go-race", action="store_true",
                     help="Enable Go race detector")
+    ap.add_argument("--strict", action="store_true",
+                    help="Treat warnings of the program and its project modules as errors "
+                         "(also LAMC_STRICT=1 or [build] strict = true in lamlib.toml)")
     ap.add_argument("--go-trimpath", action="store_true",
                     help="Remove file system paths from binary")
     ap.add_argument("--go-extra", nargs="*", default=[],
                     help="Extra flags to pass to go build")
+    ap.add_argument("--go-pgo", metavar="PROFILE",
+                    help="Profile-guided optimisation: build with the CPU profile "
+                         "PROFILE (pprof format, e.g. from runtime/pprof or "
+                         "net/http/pprof) as go build -pgo")
 
     ap.add_argument("--no-cache", action="store_true",
                     help="Skip the on-disk library cache for this build")
@@ -4020,9 +4091,22 @@ def _cmd_build(argv: list) -> int:
     return 0
 
 
+def _go_pgo_flags(profile: str | None) -> list[str]:
+    """``-pgo=<absolute path>`` for ``--go-pgo`` (the build runs in its own
+    directory); a missing profile is an error before anything is built."""
+    if not profile:
+        return []
+    path = os.path.abspath(os.path.expanduser(profile))
+    if not os.path.isfile(path):
+        print(f"error: --go-pgo profile not found: {profile}", file=sys.stderr)
+        sys.exit(1)
+    return [f"-pgo={path}"]
+
+
 def _run_compile(args, stdlib) -> None:
     record_to = getattr(args, "record_inputs", None)
     recorder = BuildInputsRecorder() if record_to else None
+    go_extra = list(args.go_extra or []) + _go_pgo_flags(getattr(args, "go_pgo", None))
     compile_lam(
         source_path=args.source,
         output_path=args.output,
@@ -4037,8 +4121,9 @@ def _run_compile(args, stdlib) -> None:
         go_gcflags=args.go_gcflags,
         go_race=args.go_race,
         go_trimpath=args.go_trimpath,
-        go_extra_flags=args.go_extra,
+        go_extra_flags=go_extra,
         keep_go=args.keep_go,
+        strict=args.strict,
         stdlib_path=stdlib,
         extlibs_paths=args.extlibs,
         use_cache=not args.no_cache,

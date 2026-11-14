@@ -1,0 +1,58 @@
+# A comprehension with one unfiltered `for` over a list or dict held in a
+# name, or over `range(a, b)`, pre-sizes its result (docs/TRANSPILATION.md,
+# "Expressions"): the items, their order and the result's behaviour
+# (appending to it, copies, empty and negative ranges, huge ranges left by an
+# exception at the first item) are those of the plain lowering.
+# expect: [6 2 4] 3 [0 1 4 9 16] [2 3 4 5] [0 1 2]
+# expect: 30 [pen ink] [] [] [] 9 4
+# expect: [6 2 4 7 8] 5
+# expect: 6 99 5
+# expect: caught ValueError: first item
+class Item {
+    name: str = ""
+    price: int = 0
+
+    func init(self, name: str, price: int) {
+        self.name = name
+        self.price = price
+    }
+}
+
+func boom(i: int) -> int {
+    if i == 0 {
+        raise ValueError("first item")
+    }
+    return i
+}
+
+func main() {
+    xs: list[int] = [3, 1, 2]
+    d: dict[str, int] = {"a": 1, "b": 2, "c": 3}
+    items: list[Item] = [Item("pen", 2), Item("ink", 5)]
+    doubled: list[int] = [x * 2 for x in xs]
+    keys: list[str] = [k for k in d]
+    squares: list[int] = [i * i for i in range(5)]
+    window: list[int] = [i for i in range(2, 6)]
+    positions: list[int] = [i for i in range(len(xs))]
+    tenfold: dict[str, int] = {k: v * 10 for k, v in d}
+    names: list[str] = [it.name for it in items]
+    nothing: list[int] = []
+    empty: list[int] = [x for x in nothing]
+    none: list[int] = [i for i in range(-3)]
+    backwards: list[int] = [i for i in range(10, 2)]
+    byIndex: dict[int, int] = {i: i * i for i in range(4)}
+    print(f"{doubled} {len(keys)} {squares} {window} {positions}")
+    print(f"{tenfold["c"]} {names} {empty} {none} {backwards} {byIndex[3]} {len(byIndex)}")
+    doubled.append(7)
+    doubled.append(8)
+    print(f"{doubled} {len(doubled)}")
+    copy: list[int] = [x for x in doubled]
+    copy[0] = 99
+    print(f"{doubled[0]} {copy[0]} {len(copy)}")
+    try {
+        huge: list[int] = [boom(i) for i in range(4000000000000000000)]
+        print(len(huge))
+    } catch ValueError as e {
+        print(f"caught {e}")
+    }
+}

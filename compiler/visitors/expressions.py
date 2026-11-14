@@ -1831,6 +1831,13 @@ class ExpressionVisitorMixin:
                                 return str(value)
                     except ValueError:
                         pass
+                    small = self._nonneg_int_literal(node.children[1]) and exp.isdigit() and int(exp) <= 4
+                    if small and int(exp) >= 1:
+                        # ``x ** 2``: the multiplications themselves (the
+                        # same wrapping product as ``lamIPow``).
+                        if self._PURE_GO_RE.fullmatch(base):
+                            return "(" + " * ".join([base] * int(exp)) + ")"
+                        return f"func(b int) int {{ return {' * '.join(['b'] * int(exp))} }}({base})"
                     return f"lamIPow({base}, {exp})"
                 self._need_import("math")
                 return f"math.Pow(float64({base}), float64({exp}))"
@@ -2542,6 +2549,9 @@ class ExpressionVisitorMixin:
                 return f"lamJSONLen({args[0]})"
             if args and raw_args and self._is_str_receiver(raw_args[0]):
                 # ``len(s)``: the number of characters.
+                head = self._str_head_of(raw_args[0], args[0])
+                if head:
+                    return f"lamStrLenV(&{head})"
                 return f"lamStrLen({args[0]})"
             return f"len({args[0]})" if args else "0"
 
@@ -4279,6 +4289,11 @@ class ExpressionVisitorMixin:
             # ``lambda: print("tick")``: the body has no value, so the
             # lambda is a ``func(...)`` without a result.
             resolved_return = ""
+        elif is_block_body and not self._suite_returns_value(body_node):
+            # ``lambda (x: str) { calls.append(x) }``: no ``return value``,
+            # so no result (an ``interface{}`` result had no ``return``:
+            # "missing return").
+            resolved_return = ""
         elif is_block_body:
             # Block bodies always need an explicit return type from the
             # caller or the user. We default to interface{} so callers
@@ -4339,6 +4354,16 @@ class ExpressionVisitorMixin:
             if try_result:
                 return f"func({params_str}) {self._try_result_sig(resolved_return)} {{\n{body_src}\n\treturn\n}}"
             return f"func({params_str}){ret_part} {{\n{body_src}\n}}"
+        if not void_body and re.match(r"^[A-Za-z_][\w.\[\]\"]* = ", body_src):
+            # ``lambda u: calls.append(u)`` where the lambda's type is unknown:
+            # the body lowers to a statement (``calls = append(calls, u)``),
+            # and the lambda gives the zero value of its result.
+            zero = "nil" if resolved_return in ("", "interface{}") or resolved_return.startswith(("*", "[]", "map[", "func(")) else f"*new({resolved_return})"
+            tail = f"{body_src}; return {zero}" if resolved_return else body_src
+            if prelude:
+                lines = "\n".join("\t" + line for line in prelude)
+                return f"func({params_str}){ret_part} {{\n{lines}\n\t{tail}\n}}"
+            return f"func({params_str}){ret_part} {{ {tail} }}"
         if prelude:
             lines = "\n".join("\t" + line for line in prelude)
             if void_body:
@@ -4351,6 +4376,20 @@ class ExpressionVisitorMixin:
                 return f"func({params_str}) {{ {body_src} }}"
             return f"func({params_str}) {{ _ = {body_src} }}"
         return f"func({params_str}){ret_part} {{ return {body_src} }}"
+
+    @staticmethod
+    def _suite_returns_value(suite) -> bool:
+        """Whether a block body has a ``return <value>`` of its own (not of
+        a nested lambda or function)."""
+        stack = [suite]
+        while stack:
+            cur = stack.pop()
+            if not isinstance(cur, Tree) or cur.data in ("lambdef", "funcdef", "classdef"):
+                continue
+            if cur.data == "return_stmt" and any(isinstance(c, Tree) for c in cur.children):
+                return True
+            stack.extend(c for c in cur.children if isinstance(c, Tree))
+        return False
 
     def _raw_call_kwargs(self, args_node) -> dict:
         """``{name: value_node}`` for the keyword arguments of a call."""
@@ -4929,6 +4968,34 @@ class ExpressionVisitorMixin:
         # already concrete, from stale name tracking, converts too)
         return self._result_payload_assert_go(raw, go_type)
 
+    @staticmethod
+    def _is_single_call(go: str, prefixes) -> bool:
+        """``go`` is one call starting with one of ``prefixes`` (an opening
+        parenthesis) and ending with its closing parenthesis."""
+        prefix = next((p for p in prefixes if go.startswith(p)), None)
+        if prefix is None or not go.endswith(")"):
+            return False
+        depth, quote, escaped = 0, "", False
+        for index in range(len(prefix) - 1, len(go)):
+            ch = go[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif ch == "\\" and quote != "`":
+                    escaped = True
+                elif ch == quote:
+                    quote = ""
+                continue
+            if ch in "\"'`":
+                quote = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return index == len(go) - 1
+        return False
+
     def _result_payload_assert_go(self, value: str, payload: str) -> str:
         """``value`` (a ``Result`` payload read as ``interface{}`` by
         ``unwrap()`` / ``unwrapOr`` / ``?``, an ``any``) asserted to
@@ -4939,6 +5006,18 @@ class ExpressionVisitorMixin:
         is ``None`` of a reference payload (a class, an interface, ``html``,
         ``json``...) and raises ``TypeError: None is not a str`` for a value
         type, which cannot hold it (``lamAs``, ``NONE_RUNTIME_GO``)."""
+        if self._is_single_call(value, (f"lamAs[{payload}](", f"lamAsNil[{payload}](")):
+            # Already converted (``x.unwrap()`` asserted by the call, then by
+            # its typed context): boxing it again would allocate.
+            return value
+        converted = self._result_payload_convert_go(value, payload)
+        if value.endswith(")") and converted.endswith(f"({value})"):
+            prefix = converted[: -len(value) - 1]  # ``func(v interface{}) T { ... }(``
+            if prefix.startswith("func(") and self._is_single_call(value, (prefix,)):
+                return value  # the same conversion closure, already applied
+        return converted
+
+    def _result_payload_convert_go(self, value: str, payload: str) -> str:
         if payload == "float64":
             return (
                 "func(v interface{}) float64 { if n, ok := v.(int); ok { return float64(n) }; "
@@ -5283,6 +5362,14 @@ class ExpressionVisitorMixin:
             return ""
         if node.data == "funccall":
             return self._propagated_payload_go_type(node)
+        if node.data == "await_call" and node.children:
+            # ``(await task).unwrap()``: the payload of the awaited async
+            # call's ``Result`` (a task variable keeps the call's payload).
+            inner = node.children[0]
+            if isinstance(inner, Tree) and inner.data == "var" and inner.children:
+                return self._var_result_payloads.get(self._get_name(inner.children[0]), "")
+            if isinstance(inner, Tree) and inner.data == "funccall":
+                return self._propagated_payload_go_type(inner)
         return ""
 
     def _func_value_lam_type(self, callee):
@@ -5770,9 +5857,14 @@ class ExpressionVisitorMixin:
             if step_node is None:
                 if start_node is None and end_node is None:
                     return obj_go
+                head = self._str_head_of(obj_node, obj_go)
                 if end_node is None:
+                    if head:
+                        return f"lamStrFromV({obj_go}, {self._str_int_arg_go(start_node)}, &{head})"
                     return f"lamStrFrom({obj_go}, {self._str_int_arg_go(start_node)})"
                 lo = self._str_int_arg_go(start_node) if start_node is not None else "0"
+                if head:
+                    return f"lamStrSliceV({obj_go}, {lo}, {self._str_int_arg_go(end_node)}, {head}.head, &{head})"
                 return f"lamStrSlice({obj_go}, {lo}, {self._str_int_arg_go(end_node)})"
             return (
                 f"lamStrStep({obj_go}, "
@@ -5936,8 +6028,15 @@ class ExpressionVisitorMixin:
             names = sorted(narrowing.target_names(name_node))
             if not names and isinstance(name_node, Tree) and name_node.data == "var" and self._get_name(name_node.children[0]) == "_":
                 return True
-            if len(names) != 1 or not go_type or go_type == "interface{}":
+            if len(names) != 1:
                 return False
+            if not go_type or go_type == "interface{}":
+                # ``[k for k, _ in data]`` of a ``dict[str, any]``: this target
+                # is untyped (a result built from it stays unknown).
+                if names[0] != "_":
+                    self._var_go_types.pop(names[0], None)
+                    self._var_types.pop(names[0], None)
+                return True
             if names[0] != "_":
                 self._var_go_types[names[0]] = go_type
                 elem_class = self._hier_class_from_go_type(go_type) if go_type.startswith("*") else ""
@@ -6165,7 +6264,16 @@ class ExpressionVisitorMixin:
             if val != "_" and src_type.startswith("[]"):
                 self._var_go_types[val] = src_type[2:]
             elif val != "_" and src_type == "string":
-                lines[-1] = f"{tabs}for {idx}, {val}Rune := range []rune({enumerate_src}) {{"
+                # Character positions counted while ranging over the string
+                # (no []rune copy).
+                if idx == "_":
+                    lines[-1] = f"{tabs}for _, {val}Rune := range {enumerate_src} {{"
+                else:
+                    counter = f"_lamCompPos{depth}"
+                    lines[-1] = f"{tabs}{counter} := -1"
+                    lines.append(f"{tabs}for _, {val}Rune := range {enumerate_src} {{")
+                    lines.append(f"{bind_tabs}{counter}++")
+                    lines.append(f"{bind_tabs}{idx} := {counter}")
                 lines.append(f"{bind_tabs}{val} := string({val}Rune)")
                 self._var_go_types[val] = "string"
             if start_go:
@@ -6278,6 +6386,13 @@ class ExpressionVisitorMixin:
             lines.append(f"{tabs}for _, {var_str}Rune := range {iter_str} {{")
             lines.append(f"{chr(9) * (depth + 2)}{var_str} := string({var_str}Rune)")
             self._var_go_types[var_str] = "string"
+            silence([var_str])
+        elif not targets and (self._expr_go_type_hint(iter_expr) or "") == "LamJSON":
+            # ``[str(t) for t in doc.tags]``: the items of a JSON array, each
+            # a ``json`` value (as in a ``for`` loop over it).
+            lines.append(f"{tabs}for _, {var_str}Raw := range lamJSONToList({iter_str}) {{")
+            lines.append(f"{chr(9) * (depth + 2)}{var_str} := lamJSONWrapRaw({var_str}Raw)")
+            self._var_go_types[var_str] = "LamJSON"
             silence([var_str])
         else:
             lines.append(f"{tabs}for _, {var_str} := range {iter_str} {{")
@@ -6543,6 +6658,19 @@ class ExpressionVisitorMixin:
         return value
 
     def _list_comp_to_go(self, node: Tree, elem_type: str = None) -> str:
+        comp = node.children[0] if isinstance(node, Tree) and node.children else None
+        clauses = [
+            c for c in getattr(comp.children[1] if isinstance(comp, Tree) and len(comp.children) > 1 else None, "children", [])
+            if isinstance(c, Tree) and c.data == "comp_for"
+        ]
+        if (
+            elem_type and elem_type.startswith("[]") and clauses
+            and isinstance(clauses[0].children[1], Tree) and clauses[0].children[1].data == "list"
+            and not any(isinstance(c, Tree) for c in clauses[0].children[1].children)
+        ):
+            # ``[x for x in []]``: no element (an untyped ``x`` would not
+            # convert to the list's element type).
+            return f"{elem_type}{{}}"
         # Comprehension variables are declared only inside the closure.
         saved = set(self.declared_vars)
         saved_types = self._save_local_types()
@@ -6551,6 +6679,29 @@ class ExpressionVisitorMixin:
         finally:
             self.declared_vars = saved
             self._restore_local_types(saved_types)
+
+    _COMP_RANGE_LOOP_RE = re.compile(r"\tfor (\w+) := ([\w.]+); \1 < ([\w.]+|len\([A-Za-z_][\w.]*\)); \1 \+= 1 \{")
+    _COMP_RANGE_OVER_RE = re.compile(r"\tfor (?:\w+, )?\w+ := range ([A-Za-z_][\w.]*) \{")
+
+    def _comprehension_capacity(self, lines: list, clause: Tree) -> str:
+        """The number of items of a single unfiltered ``for`` clause, as a Go
+        expression evaluated once before the loop (``""`` when unknown):
+        ``len(xs)`` for a list or dict held in a name, ``range(a, b)``'s
+        count (at most 65536: a hint, never an allocation the loop would
+        not make). The result is pre-sized with it."""
+        loop = next((line for line in lines[1:] if line.startswith("\tfor ")), "")
+        match = self._COMP_RANGE_LOOP_RE.fullmatch(loop)
+        if match:
+            start, end = match.group(2), match.group(3)
+            count = end if start == "0" else f"{end} - {start}"
+            return f"min(max({count}, 0), 65536)"
+        match = self._COMP_RANGE_OVER_RE.fullmatch(loop)
+        if match:
+            iter_expr = clause.children[1]
+            go_type = (self._expr_go_type_hint(iter_expr) or self._infer_type_from_value(iter_expr) or "").strip()
+            if go_type.startswith(("[]", "map[")) and "func(" not in go_type:
+                return f"len({match.group(1)})"
+        return ""
 
     def _list_comp_to_go_body(self, node: Tree, elem_type: str = None) -> str:
         comp = node.children[0]
@@ -6578,6 +6729,9 @@ class ExpressionVisitorMixin:
         for fc in for_clauses:
             self._append_comprehension_loop(lines, fc, depth)
             depth += 1
+        capacity = self._comprehension_capacity(lines, for_clauses[0]) if depth == 1 and comp_if is None else ""
+        if capacity and f"\t_result := {slice_type}{{}}" in lines:
+            lines[lines.index(f"\t_result := {slice_type}{{}}")] = f"\t_result := make({slice_type}, 0, {capacity})"
 
         # The loop variables are typed now (``_append_comprehension_loop``).
         result_type = self._slice_elem_go_type(slice_type)
@@ -6750,6 +6904,9 @@ class ExpressionVisitorMixin:
         for clause in for_clauses:
             self._append_comprehension_loop(lines, clause, depth)
             depth += 1
+        capacity = self._comprehension_capacity(lines, for_clauses[0]) if depth == 1 and comp_if is None else ""
+        if capacity and f"\t_r := {mtype}{{}}" in lines:
+            lines[lines.index(f"\t_r := {mtype}{{}}")] = f"\t_r := make({mtype}, {capacity})"
 
         key_type, value_type = self._split_go_map_type(mtype)
         plan = self._nr_comprehension_plan(comp_if, [kv], for_clauses)
@@ -7252,9 +7409,21 @@ class ExpressionVisitorMixin:
         kind = self._expr_go_type_hint(node) or self._infer_type_from_value(node) or ""
         return value if kind in {"int", ""} or self._nonneg_int_literal(node) else f"int({value})"
 
+    @staticmethod
+    def _str_head_of(obj_node, obj: str) -> str:
+        """The loop-invariant view variable of the ``str`` local ``obj_node``
+        lowered as ``obj`` (``_declare_str_heads``), ``""`` when none."""
+        mark = getattr(obj_node, "_lam_str_head", None)
+        if mark and mark[1] == obj:
+            return mark[0]
+        return ""
+
     def _str_index_to_go(self, obj: str, obj_node, index_node) -> str:
         """``s[i]``: ``lamStrAt`` (``s[len(s) - k]`` of a side-effect-free
         ``s`` is ``s[-k]``: no second pass to count the characters)."""
+        head = self._str_head_of(obj_node, obj)
+        if head:
+            return f"lamStrAtV({obj}, {self._str_int_arg_go(index_node)}, &{head})"
         if (
             isinstance(index_node, Tree) and index_node.data == "arith_expr" and len(index_node.children) == 3
             and str(index_node.children[1]) == "-" and isinstance(index_node.children[2], Tree)
@@ -7561,6 +7730,34 @@ class ExpressionVisitorMixin:
             return f"({go})"
         return go_operand(go, _GO_BINARY_PREC["=="], right=True)
 
+    def _constant_switch_cases(self, container_node, elem_type: str) -> list:
+        """The distinct Go constants of a list / tuple literal of ``str`` or
+        ``int`` literals (``[]`` when it is anything else)."""
+        if elem_type not in {"string", "int"} or not (
+            isinstance(container_node, Tree) and container_node.data in {"list", "tuple"} and container_node.children
+        ):
+            return []
+        cases: list = []
+        for child in container_node.children:
+            if not isinstance(child, Tree):
+                return []
+            if elem_type == "int":
+                value = self._numeric_literal_value(child)
+                if not isinstance(value, int) or isinstance(value, bool):
+                    return []
+                go = str(value)
+            else:
+                if child.data != "string":
+                    return []
+                go = self._expr_to_go(child)
+                # Plain literals only: two spellings of one value would be a
+                # duplicate case.
+                if not (len(go) >= 2 and go[0] == go[-1] == '"' and "\\" not in go):
+                    return []
+            if go not in cases:
+                cases.append(go)
+        return cases
+
     def _membership_to_go(self, item_node, container_node) -> str:
         container_go = self._expr_to_go(container_node)
         container_type = self._expr_go_type_hint(container_node) or self._infer_type_from_value(container_node)
@@ -7604,15 +7801,24 @@ class ExpressionVisitorMixin:
         if container_type.startswith("[]"):
             elem_type = self._slice_elem_go_type(container_type) or "interface{}"
             item_go = self._typed_value_to_go(item_node, elem_type)
+            cases = self._constant_switch_cases(container_node, elem_type)
+            if cases:
+                # ``mode in ["r", "w", "a"]``: a ``switch`` on the constants
+                # (Go compiles it to a search, not a slice walk).
+                return (
+                    f"func(_v {elem_type}) bool {{ switch _v {{ case {', '.join(cases)}: return true }}; "
+                    f"return false }}({item_go})"
+                )
             if elem_type in self._COMPARABLE_ELEM_GO_TYPES:
                 # ``name in tags`` with ``tags: list[str]``: ``==`` on the
                 # elements, what DeepEqual does for them, without boxing
                 # (also right when the list was lowered as ``[]interface{}``:
                 # an interface equals the item when it holds that value).
+                # The item is evaluated once, before the list (Python's order).
                 return (
-                    f"func() bool {{ for _, _v := range {container_go} {{ "
-                    f"if _v == {item_go} {{ return true }} }}; "
-                    f"return false }}()"
+                    f"func(_x {elem_type}) bool {{ for _, _v := range {container_go} {{ "
+                    f"if _v == _x {{ return true }} }}; "
+                    f"return false }}({item_go})"
                 )
             self._need_import("reflect")
             return (

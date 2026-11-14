@@ -117,6 +117,17 @@ return is a sanitizer's output, a URL with a static safe start
 (`"/p/" + id`, `f"/{lang}{path}"`), string literals and numbers are
 trusted. `Html.sanitize` (with an `HtmlPolicy`) cleans untrusted *markup*.
 
+## Strict mode
+
+`lamc --strict`, `LAMC_STRICT=1` or `[build] strict = true` in
+`lamlib.toml` turn every warning of the program and of its project modules
+into a build failure: unused values and imports, lint checks (`x = x`,
+repeated `elif` conditions, self-comparisons, loop variables overwriting
+parameters, unused private members, tasks never awaited) and the security
+warnings (markup contexts, SQL and commands built from values, `async`
+writes to shared collections). Recommended for CI. SYNTAX.md, "Compiler
+diagnostics", lists them.
+
 ## How the contract is checked
 
 - `tests/fuzz/lamfuzz.py`, a type-aware program fuzzer. Each case is

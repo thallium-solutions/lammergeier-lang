@@ -21,7 +21,7 @@
 # expect-go: var doc LamJSON = lamJSONLiteral(map[string]interface{}{"title": title, "tags": tags, "nested": lamJSONLiteral(map[string]interface{}{"ok": true, "list": lamJSONLiteral([]interface{}{1, 2})})})
 # expect-go: var items LamJSON = lamJSONLiteral([]interface{}{lamJSONLiteral(map[string]interface{}{"a": 1}), doc})
 # expect-go: var wrapped LamJSON = lamJSONMust(tags)
-# expect-go: func() bool { for _, _v := range tags { if _v == title { return true } }; return false }()
+# expect-go: func(_x string) bool { for _, _v := range tags { if _v == _x { return true } }; return false }(title)
 
 func layout(content: html) -> html {
     return <><main>${content}</main></>
