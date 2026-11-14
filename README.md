@@ -73,6 +73,17 @@ area: 78.53981633974483
   validation, and Go-name collision diagnostics run before Go generation, on
   every module of the program (project modules, installed packages and the
   stdlib), so mistakes in an imported module are reported at its own line.
+  A program the checker accepts builds; run-time faults become Lam
+  exceptions ([`docs/SAFETY.md`](docs/SAFETY.md)).
+- **Strict mode and lint checks** — `lamc --strict` (or `[build] strict =
+  true`) turns warnings into errors for CI: unused values, self-comparisons,
+  repeated `elif` conditions, unawaited tasks, async writes to shared
+  collections, and security warnings for SQL or commands built from values
+  and dynamic URLs, scripts and styles in markup (with the `Html.safeUrl` /
+  `jsValue` / `safeCss` sanitizers).
+- **Text as characters** — `str` indexes, slices and measures Unicode
+  characters like Python; `bytes` keeps byte semantics (`len(bytes(s))` is
+  the byte size).
 - **Native JSON** — `json` recursively enforces real JSON values and string
   object keys, supports JavaScript-style property/index access, converts classes
   through `json(value)` / `__json__()`, converts cleanly to/from dict/list, and
@@ -95,9 +106,9 @@ area: 78.53981633974483
   while `Conv` owns parsing and `Fmt` owns presentation.
 - **Official external libraries** — independently versioned scoped packages for
   JWT, Protobuf, Redis, Memcached, S3, SFTP, SSH, and the Vulture HTTP server
-  with its standard, tus, and WebSocket plugins. They are tested with `lamc`
-  1.19 and support 1.18 and newer. Browse the [Libraries catalog](docs/libraries.md) and
-  install them with `lamc install`.
+  with its standard, tus, and WebSocket plugins, plus Stripe, OpenTelemetry,
+  key rings, TOTP and PostgreSQL jobs. They target `lamc` 4.15. Browse the
+  [Libraries catalog](docs/libraries.md) and install them with `lamc install`.
 - **Numerics & web stack** — `Array` / `Matrix` backed by **gonum**
   (BLAS-accelerated matmul, LU solve, inverse, det, trace, SVD-flavoured
   helpers), pandas-style `DataFrame` / `Series` / `DataFrameGroups`
@@ -177,6 +188,9 @@ verifying the install, uninstalling): [`docs/installation.md`](docs/installation
 | `--emit-go`          | Print the generated Go source and exit.                      |
 | `--emit-ast`         | Print the parsed Lark AST and exit.                          |
 | `--go-ldflags FLAGS` | Forward `FLAGS` to `go build`.                               |
+| `--strict`           | Treat the warnings of the program and its project modules as errors (also `LAMC_STRICT=1` or `[build] strict = true` in `lamlib.toml`). |
+| `--go-pgo PROFILE`   | Build with Go's profile-guided optimisation from a CPU profile of the program. |
+| `--go-race`          | Build with Go's race detector.                               |
 
 Useful subcommands:
 
