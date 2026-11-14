@@ -133,6 +133,8 @@ class _Folder:
                 self._check_power(cur)
             if cur.data == "dict":
                 self._check_dict_keys(cur)
+            if cur.data == "getitem":
+                self._check_literal_string_index(cur)
             stack.extend((c, "int") for c in cur.children if isinstance(c, Tree))
 
     def _check_value(self, node, value, ctx: str) -> None:
@@ -174,6 +176,30 @@ class _Folder:
             self.report(node, f"integer constant {base} ** {exp} overflows `int` (64-bit)")
         elif exp < 0:
             self.report(node, f"negative exponent in the int power {base} ** {exp}: use a float base ({base}.0 ** {exp})")
+
+    def _check_literal_string_index(self, node) -> None:
+        """``"abc"[9]``: Go rejects a constant index out of the range of a
+        constant string (Lam strings index bytes)."""
+        if len(node.children) < 2:
+            return
+        receiver, index = node.children[0], node.children[1]
+        if not (isinstance(receiver, Tree) and receiver.data == "string" and receiver.children):
+            return
+        raw = str(receiver.children[0])
+        if raw.startswith(("'" * 3, '"' * 3)):
+            return
+        try:
+            text = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            return
+        if not isinstance(text, str):
+            return
+        value = self.fold(index)
+        if not isinstance(value, int) or isinstance(value, bool):
+            return
+        size = len(text.encode("utf-8"))
+        if not -size <= value < size:
+            self.report(node, f"index {value} is out of range for the {size}-byte string {raw}")
 
     def _check_dict_keys(self, node) -> None:
         seen: dict = {}

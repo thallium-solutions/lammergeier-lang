@@ -1,0 +1,11 @@
+# expect-error: format spec `d` needs an int, got `float` (use `.0f` to show a float without decimals)
+# expect-error: format spec `.2f` needs a number, got `str`
+# expect-error: format spec `s` needs a str, got `int` (convert it with `str(...)`)
+# A format spec must fit the value (Python raises ValueError; Go printed
+# `%!d(float64=3.7)`). An int with a float spec is fine (`{n:.1f}`).
+func main() {
+    f: float = 3.7
+    n: int = 3
+    s: str = "a"
+    print(f"{f:d}", f"{s:.2f}", f"{n:s}", f"{n:05d}", f"{n:.1f}", f"{n:x}", f"{s:>4}")
+}

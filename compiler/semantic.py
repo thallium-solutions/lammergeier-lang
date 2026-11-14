@@ -3023,6 +3023,26 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             f"`await` of {label}, which is not `async`: call it without `await` (or declare it `async func`)",
         )
 
+    def _fstring_spec_type_mismatch(self, spec: str, tree) -> str:
+        """``{x:d}`` of a float, ``{n:.2f}`` of a str, ``{n:s}`` of an int:
+        Python raises ValueError, Go printed ``%!d(float64=3.7)``. The message,
+        or "" when the spec fits (or the type is unknown)."""
+        letter = spec.strip()[-1:] if spec.strip() else ""
+        if not letter or letter not in "dxXobcfFeEgG%s":
+            return ""
+        actual = self._expr_simple_type(tree) if isinstance(tree, Tree) else None
+        if not isinstance(actual, NamedType) or actual.name not in {"int", "float", "str", "bool"}:
+            return ""
+        name = actual.name
+        if letter in "dxXobc" and name not in {"int", "bool"}:
+            hint = " (use `.0f` to show a float without decimals)" if name == "float" else ""
+            return f"format spec `{spec}` needs an int, got `{name}`{hint}"
+        if letter in "fFeEgG%" and name not in {"int", "float"}:
+            return f"format spec `{spec}` needs a number, got `{name}`"
+        if letter == "s" and name != "str":
+            return f"format spec `{spec}` needs a str, got `{name}` (convert it with `str(...)`)"
+        return ""
+
     def _check_with_resource(self, expr: Tree) -> None:
         """``with r as x { ... }`` calls ``x.close()`` when the block ends: a
         resource of a known class needs a ``close()`` taking no argument."""
@@ -8414,6 +8434,10 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                         "fstring",
                         f"unsupported f-string format spec `{part.spec}`: {reason}",
                     )
+                else:
+                    mismatch = self._fstring_spec_type_mismatch(part.spec, tree)
+                    if mismatch:
+                        self._error(self._fstring_slot_span(node, raw, decoded, part.start), "fstring", mismatch)
             if tree is None and part.has_spec:
                 text = f"{part.expr}:{part.spec}"
                 tree = self._fstring_slot_tree(text)

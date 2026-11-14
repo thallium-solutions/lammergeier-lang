@@ -1,0 +1,54 @@
+# Run-time failures of the built-ins raise the documented Lam exceptions
+# (docs/SAFETY.md), with messages free of Go internals:
+# - int()/float()/bool() of malformed text: ParseError (a ValueError);
+#   surrounding whitespace is accepted, as in Python;
+# - min()/max() of an empty list: ValueError (it was Go's "slices.Min: empty
+#   list", not a Lam exception);
+# - a slice step of zero: ValueError (it silently became 1).
+# expect: 7 2.5 true 12
+# expect: ParseError: cannot parse "abc" as int
+# expect: caught as ValueError
+# expect: ValueError: min() of an empty list
+# expect: ValueError: max() of an empty list
+# expect: ValueError: slice step cannot be zero
+# expect: ValueError: slice step cannot be zero
+# expect: 1 [3 2 1]
+
+func main() {
+    print(int(" 7 "), float("2.5\n"), bool(" true"), int("12"))
+    try {
+        print(int("abc"))
+    } catch e {
+        print(e)
+    }
+    try {
+        print(float("1.2.3"))
+    } catch ValueError {
+        print("caught as ValueError")
+    }
+    xs: list[int] = []
+    try {
+        print(min(xs))
+    } catch ValueError as e {
+        print(e)
+    }
+    try {
+        print(max(xs))
+    } catch ValueError as e {
+        print(e)
+    }
+    ys: list[int] = [1, 2, 3]
+    step: int = 0
+    try {
+        print(ys[::step])
+    } catch ValueError as e {
+        print(e)
+    }
+    s: str = "abc"
+    try {
+        print(s[::step])
+    } catch ValueError as e {
+        print(e)
+    }
+    print(min(ys), ys[::-1])
+}

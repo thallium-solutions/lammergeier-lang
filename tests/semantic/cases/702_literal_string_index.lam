@@ -1,0 +1,7 @@
+# expect-error: index 9 is out of range for the 3-byte string "abc"
+# expect-error: index -4 is out of range for the 3-byte string "abc"
+# A constant index out of the range of a string literal (it failed in go
+# build: Go checks constant indexes of constant strings). Strings index bytes.
+func main() {
+    print("abc"[9], "abc"[-4], "abc"[2], "é"[1])
+}

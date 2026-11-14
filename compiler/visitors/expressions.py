@@ -4992,14 +4992,16 @@ class ExpressionVisitorMixin:
         if source == "string":
             self._need_import("strconv")
             self._need_import("fmt")
+            self._need_import("strings")
             parse = {
-                "int": "strconv.Atoi(v)",
-                "float": "strconv.ParseFloat(v, 64)",
-                "bool": "strconv.ParseBool(v)",
+                "int": "strconv.Atoi(strings.TrimSpace(v))",
+                "float": "strconv.ParseFloat(strings.TrimSpace(v), 64)",
+                "bool": "strconv.ParseBool(strings.TrimSpace(v))",
             }[name]
+            # Surrounding whitespace is accepted, as in Python (``int(" 7 ")``).
             return (
                 f"func(v string) {go_target} {{ out, err := {parse}; "
-                f"if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as {name}: %v\", v, err)) }}; "
+                f"if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as {name}\", v)) }}; "
                 f"return out }}({value})"
             )
         if source == "bool":
@@ -5027,6 +5029,7 @@ class ExpressionVisitorMixin:
         are parsed, numbers converted, booleans become 0/1."""
         self._need_import("strconv")
         self._need_import("fmt")
+        self._need_import("strings")
         go_target = {"int": "int", "float": "float64", "bool": "bool"}[name]
         if name == "int":
             cases = (
@@ -5035,7 +5038,7 @@ class ExpressionVisitorMixin:
                 f"case uint32: return int(n); case uint64: return int(n); case uintptr: return int(n); "
                 f"case float64: return lamFloatToInt(n); case float32: return lamFloatToInt(float64(n)); "
                 f"case bool: if n {{ return 1 }}; return 0; "
-                f"case string: out, err := strconv.Atoi(n); if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as int: %v\", n, err)) }}; return out; "
+                f"case string: out, err := strconv.Atoi(strings.TrimSpace(n)); if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as int\", n)) }}; return out; "
             )
         elif name == "float":
             cases = (
@@ -5044,14 +5047,14 @@ class ExpressionVisitorMixin:
                 f"case int64: return float64(n); case uint: return float64(n); case uint8: return float64(n); case uint16: return float64(n); "
                 f"case uint32: return float64(n); case uint64: return float64(n); "
                 f"case bool: if n {{ return 1 }}; return 0; "
-                f"case string: out, err := strconv.ParseFloat(n, 64); if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as float: %v\", n, err)) }}; return out; "
+                f"case string: out, err := strconv.ParseFloat(strings.TrimSpace(n), 64); if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as float\", n)) }}; return out; "
             )
         else:
             cases = (
                 f"case bool: return n; "
                 f"case int: return n != 0; case int64: return n != 0; case int32: return n != 0; case uint: return n != 0; "
                 f"case uint64: return n != 0; case uint8: return n != 0; case float64: return n != 0; case float32: return n != 0; "
-                f"case string: out, err := strconv.ParseBool(n); if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as bool: %v\", n, err)) }}; return out; "
+                f"case string: out, err := strconv.ParseBool(strings.TrimSpace(n)); if err != nil {{ panic(fmt.Sprintf(\"ParseError: cannot parse %q as bool\", n)) }}; return out; "
             )
         return (
             f"func(v interface{{}}) {go_target} {{ switch n := v.(type) {{ {cases}}}; "
@@ -5749,7 +5752,7 @@ class ExpressionVisitorMixin:
                 init, add, done = f"_r := {obj_type}{{}}", "_r = append(_r, _s[_i])", "return _r"
             body = (
                 f"func(_s {obj_type}, _start int, _end int, _step int, _sp bool, _ep bool) {obj_type} {{ "
-                "_n := len(_s); if _step == 0 { _step = 1 }; "
+                "_n := len(_s); if _step == 0 { panic(\"ValueError: slice step cannot be zero\") }; "
                 "if _sp && _start < 0 { _start += _n }; if _ep && _end < 0 { _end += _n }; "
                 "if _step > 0 { if !_sp || _start < 0 { _start = 0 }; if _start > _n { _start = _n }; "
                 "if !_ep || _end > _n { _end = _n }; if _end < 0 { _end = 0 } } else { "
@@ -5771,7 +5774,7 @@ class ExpressionVisitorMixin:
             "\t_n := 0",
             "\tif _isStr { _n = len(_o.(string)) } else if _v.IsValid() && (_v.Kind() == reflect.Slice || _v.Kind() == reflect.Array) { _n = _v.Len() }",
             f"\t_step := int({step_go})",
-            "\tif _step == 0 { _step = 1 }",
+            "\tif _step == 0 { panic(\"ValueError: slice step cannot be zero\") }",
             f"\t_startProvided := {start_provided}",
             f"\t_start := int({start_go})",
             f"\t_endProvided := {end_provided}",
@@ -6346,7 +6349,12 @@ class ExpressionVisitorMixin:
                 # ``min([4, 1, 9])``: the literal typed like its elements
                 # (a ``[]interface{}`` is not ``cmp.Ordered``).
                 source = self._typed_value_to_go(raw[0], types[0])
-            return f"slices.{name.capitalize()}({source})"
+            # An empty list raises ValueError, as in Python (``slices.Min``
+            # panics with Go's own text).
+            return (
+                f"func(xs {types[0]}) {elem} {{ if len(xs) == 0 {{ "
+                f"panic(\"ValueError: {name}() of an empty list\") }}; return slices.{name.capitalize()}(xs) }}({source})"
+            )
         if types and all(t in ints for t in types) and len(set(types)) == 1:
             return f"{name}({', '.join(args)})"
         if types and all(t in ints | {"float64", "float32"} for t in types):

@@ -41,6 +41,9 @@ shift counts, duplicate constant keys in a dict literal, a program without
 |---|---|---|
 | `xs[i]`, `s[i]`, slices out of range, `pop()` of an empty list | `IndexError` (a `LookupError`) | `index out of range [5] with length 3 (at main.lam:7)` |
 | `/`, `//` or `%` by zero (ints and floats) | `ZeroDivisionError` (an `ArithmeticError`) | `division by zero`, `integer division or modulo by zero` |
+| `int(s)`, `float(s)`, `bool(s)` of malformed text | `ParseError` (a `ValueError`) | `cannot parse "abc" as int` |
+| `min(xs)`, `max(xs)` of an empty list | `ValueError` | `min() of an empty list` |
+| a slice step of zero (`xs[::0]`) | `ValueError` | `slice step cannot be zero` |
 | `int ** int` with a negative exponent | `ValueError` | `negative exponent in an int power (use a float base: 2.0 ** -1)` |
 | `int(x)` of a NaN float | `ValueError` | `cannot convert float NaN to integer` |
 | `int(x)` of an infinite float or one outside the int range | `OverflowError` (an `ArithmeticError`) | `float -1e+30 does not fit in an int` |

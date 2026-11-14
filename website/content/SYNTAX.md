@@ -118,7 +118,7 @@ func main() {
 |---|---|
 | `int`, `float` and other numerics | converted (`int(3.7)` truncates to `3`; `bool(n)` is `n != 0`) |
 | `bool` | `1` / `0` (`1.0` / `0.0`) |
-| `str` | parsed; malformed text throws `ParseError` (`int("42")`, `float("2.5")`, `bool("true")`) |
+| `str` | parsed, surrounding whitespace ignored; malformed text throws `ParseError`, a `ValueError` (`int("42")`, `int(" 7 ")`, `float("2.5")`, `bool("true")`) |
 | `json` | JSON numbers and booleans convert, JSON strings are parsed (`ParseError`), arrays/objects/null throw `TypeError` |
 | class instance | calls `__int__` / `__float__` / `__bool__` (inherited methods included); compile error when the class does not define it |
 | `any` | compile-time **warning**; checked at runtime: `int` accepts every integer kind (`int64` database values, `uint16`, …), `float` every floating kind (`float32`, `float64`), `bool` a bool; anything else throws `TypeError` |

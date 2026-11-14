@@ -5,6 +5,27 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.13.6 — 2026-11-14
+
+### Runtime semantics (safety program, phase 2)
+
+These were audited case by case; each now raises the documented Lam
+exception (docs/SAFETY.md), or is a compile-time error where Go used to
+reject the generated code:
+
+- **Empty `min` / `max`:** `min(xs)` / `max(xs)` of an empty list raise
+  `ValueError` (it was a raw Go panic text, not a Lam exception).
+- **Slice step of zero:** `xs[::0]` raises `ValueError` (the step silently
+  became 1).
+- **Conversions:** `int(s)` / `float(s)` / `bool(s)` accept surrounding
+  whitespace, as in Python (`int(" 7 ")`). The `ParseError` message no
+  longer includes Go's `strconv` text.
+- **f-string specs:** a format spec that doesn't fit the value is a
+  compile-time error. `{x:d}` of a float, `{s:.2f}` of a str and `{n:s}`
+  of an int printed Go's `%!d(float64=3.7)`.
+- **String literal indexes:** a constant index out of the range of a
+  string literal (`"abc"[9]`) is a compile-time error (Go rejected it).
+
 ## 4.13.5 — 2026-11-14
 
 ### Fixed
