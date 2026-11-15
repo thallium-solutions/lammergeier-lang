@@ -1,0 +1,21 @@
+# expect-error: line 11: error[type]: unknown type `Gizmo42`: declare a class or interface `Gizmo42` or import it
+# expect-no-warning: unknown type `Tx`
+from lamerrors import Result
+from lamdb import Db, DbConn
+
+# A lambda parameter or return annotation naming a type no module of the
+# program declares is an unknown type, as in a function signature (it
+# failed in go build). `Tx`, declared by lamdb (a module of the program),
+# still resolves without an import, as before lambda annotations were checked.
+func run(db: Db) -> Result[int] {
+    _g = lambda (n: int) -> Gizmo42: None
+    return Db.atomic(db, lambda (tx: Tx) -> Result[int]: count(tx))
+}
+
+func count(_conn: DbConn) -> Result[int] {
+    return Result.Ok(1)
+}
+
+func main() {
+    print("ok")
+}

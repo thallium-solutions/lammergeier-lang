@@ -1801,6 +1801,7 @@ def _check_imported_modules(
     frontend=None,
     inputs_recorder=None,
     strict_modules=None,
+    importers=None,
 ) -> None:
     """Full semantic check of every imported module of the program
     (``modules``: ``(path, source, go_blocks, tree)``: project modules,
@@ -1842,6 +1843,7 @@ def _check_imported_modules(
         loaded_trees = LazyTrees(lambda p: lazy_trees[p].load_tree() if p in lazy_trees else _MISSING)
         loaded_trees.update(shared.trees)
         shared.trees = loaded_trees
+    reexported = _reexported_names([*(Path(m[0]) for m in modules), *(importers or ())], module_index)
     todo = []
     source_digests: dict = {}
     for mod_file, mod_source, mod_go_blocks, mod_tree in modules:
@@ -1852,6 +1854,11 @@ def _check_imported_modules(
         if cache_extra is not None and strict_modules is not None and strict_modules(Path(mod_file)):
             # A module checked clean without strict mode may have warnings.
             cache_extra += b":strict"
+        names = reexported.get(Path(mod_file).resolve())
+        if cache_extra is not None and names:
+            # Whether an import is used depends on the modules importing it
+            # from this one.
+            cache_extra += b":reexports:" + ",".join(sorted(names)).encode("utf-8")
         if cache_extra is not None and _cache.has_clean_check(mod_source.encode("utf-8"), cache_extra):
             continue
         todo.append((mod_file, mod_source, mod_go_blocks, mod_tree, cache_extra))
@@ -1941,6 +1948,9 @@ def _check_imported_modules(
                         inputs_recorder.replay(module_index, Path(from_path), module, Path(found) if found else None)
             if diags is None:
                 continue
+            names = reexported.get(Path(mod_file).resolve())
+            if names:
+                diags = [d for d in diags if not _is_reexported_import_warning(d, names)]
             _report_imported_check(
                 diags, mod_source, mod_file, cache_extra, blocks,
                 strict=strict_modules is not None and strict_modules(Path(mod_file)),
@@ -1951,6 +1961,36 @@ def _check_imported_modules(
     if blocks:
         print("\n".join(blocks), file=sys.stderr)
         sys.exit(1)
+
+
+def _reexported_names(paths, module_index) -> dict:
+    """``{module path: names}``: the names the modules ``paths`` import
+    from each module (``from app.slots import Modes`` adds ``Modes`` to
+    ``app/slots.lam``). A module's import that another module imports from
+    it is a re-export, not an unused import."""
+    found: dict = {}
+    if module_index is None:
+        return found
+    for path in paths:
+        try:
+            facts = module_index.facts_for(Path(path))
+        except Exception:  # noqa: BLE001 - an unreadable module is reported elsewhere
+            facts = None
+        if facts is None:
+            continue
+        for edge in facts.imports:
+            if edge.imported is None:
+                continue
+            target = module_index.resolve_module(facts.path, edge.module)
+            if target is not None:
+                found.setdefault(Path(target).resolve(), set()).add(edge.imported)
+    return found
+
+
+def _is_reexported_import_warning(diag, names) -> bool:
+    if not (getattr(diag, "is_warning", False) and diag.message.startswith("unused import `")):
+        return False
+    return diag.message[len("unused import `"):].split("`", 1)[0] in names
 
 
 def _strict_requested(source_dir: Path) -> bool:
@@ -1973,7 +2013,19 @@ def _strict_module_filter(project_root: Path, library_dirs: list):
     """The modules strict mode covers: the project's own, not the stdlib or
     installed packages (``extlibs``)."""
     root = Path(project_root).resolve()
-    libraries = [Path(d).resolve() for d in library_dirs if d]
+    # Installed packages are the stdlib, the project's ``extlibs/`` and
+    # directories outside the project. A directory of the project given
+    # with ``--extlibs`` (``--extlibs lib``) is the project's own code and
+    # stays covered (it was exempted silently).
+    libraries = []
+    for d in library_dirs:
+        if not d:
+            continue
+        resolved = Path(d).resolve()
+        inside = resolved == root or root in resolved.parents
+        if inside and resolved != root / "extlibs" and root / "extlibs" not in resolved.parents:
+            continue
+        libraries.append(resolved)
 
     def covered(path: Path) -> bool:
         resolved = Path(path).resolve()
@@ -2957,6 +3009,7 @@ def _compile_lam(
             name_check_modules, module_index, program_check_cache,
             import_graph=module_import_files, use_cache=use_cache,
             workers=worker_count, frontend=frontend, inputs_recorder=inputs_recorder,
+            importers=[source_file],
             strict_modules=(
                 _strict_module_filter(
                     project_root,

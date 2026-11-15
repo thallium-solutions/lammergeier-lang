@@ -1,0 +1,143 @@
+# expect-warning: line 96: warning[security]: SQL built from values is an injection risk (they are not escaped): pass them as `?` parameters (`.add("name = ?", [name])`); a column or table name chosen at run time: index a `const` table (`Columns[key]`)
+# expect-warning: line 101: warning[security]: SQL built from values
+# expect-warning: line 107: warning[security]: SQL built from values
+# expect-warning: line 115: warning[security]: SQL built from values
+# expect-warning: line 120: warning[security]: SQL built from values
+# expect-warning: line 129: warning[security]: SQL built from values
+# expect-warning: line 138: warning[security]: SQL built from values
+# expect-no-warning: line 51:
+# expect-no-warning: line 60:
+# expect-no-warning: line 69:
+# expect-no-warning: line 75:
+# expect-no-warning: line 81:
+# expect-no-warning: line 86:
+# expect-no-warning: line 92:
+from lamdb import DbConn, Where
+from lamerrors import Result
+
+# The SQL check (4.16.0): f-string appends of constants are constants —
+# whatever the depth and the scope of the locals in their slots (a local of
+# the loop body, a static call of booleans) — and so are placeholders built
+# in a loop or a comprehension and an operator chosen by a ternary of
+# literals. Still warned: a parameter in the clause (callers are not seen),
+# and an append of a value.
+
+const Columns: dict[str, str] = {"name": "name", "city": "city"}
+const Fields: list[str] = ["name", "city"]
+const Keys: list[str] = ["t.created_at", "t.id"]
+
+class Input {
+    func init(self) {
+        self.values: dict[str, str] = {}
+        self.local: bool = false
+    }
+
+    func has(self, k: str) -> bool {
+        return k in self.values
+    }
+
+    static func timeSql(blank: bool, local: bool) -> str {
+        return "NULL" if blank else ("?::timestamp" if local else "?::timestamptz")
+    }
+}
+
+func byTable(conn: DbConn, fields: dict[str, str]) -> Result[int] {
+    sets: list[str] = ["updated_at = now()"]
+    for field in Fields {
+        if field in fields {
+            sets.append(f"{Columns[field]} = ?")
+        }
+    }
+    return conn.exec(f"UPDATE t SET {', '.join(sets)}", [])
+}
+
+func byLoopLocal(conn: DbConn, input: Input) -> Result[int] {
+    sets: list[str] = ["updated_at = now()"]
+    for key in ["a", "b"] {
+        column: str = "col_a" if key == "a" else "col_b"
+        sets.append(f"{column} = {Input.timeSql(input.has(key), input.local)}")
+    }
+    return conn.exec(f"UPDATE t SET {', '.join(sets)}", [])
+}
+
+func placeholders(conn: DbConn, values: list[any], desc: bool) -> Result[int] {
+    params: list[str] = []
+    for _v in values {
+        params.append("?")
+    }
+    op: str = "<" if desc else ">"
+    return conn.exec(f"DELETE FROM t WHERE ({', '.join(Keys)}) {op} ({', '.join(params)})", values)
+}
+
+func cursor(values: list[any], desc: bool) -> Where {
+    params: list[str] = ["?::bigint" if k.endsWith("_at") else "?" for k in Keys]
+    op: str = "<" if desc else ">"
+    return Where().add(f"({', '.join(Keys)}) {op} ({', '.join(params)})", values)
+}
+
+func extended(conn: DbConn) -> Result[int] {
+    parts: list[str] = []
+    parts.extend(["a = 1", "b = 2"])
+    return conn.exec(f"UPDATE t SET {', '.join(parts)}", [])
+}
+
+func approved(where: Where, kind: str) {
+    column: str = Columns[kind]
+    where.add(f"COALESCE({column}, false) = true")
+}
+
+const ApprovedColumns: dict[str, str] = {"ads": "a.approved", "shops": "s.approved"}
+
+func approvedByTable(where: Where, table: str) {
+    where.add(f"COALESCE({ApprovedColumns[table]}, false) = true")
+}
+
+func approvedParam(where: Where, approvedColumn: str) {
+    where.add(f"COALESCE({approvedColumn}, false) = true")
+}
+
+func cursorOf(exprs: list[str], values: list[any]) -> Where {
+    params: list[str] = ["?" for _e in exprs]
+    return Where().add(f"({', '.join(exprs)}) > ({', '.join(params)})", values)
+}
+
+func appendsValue(conn: DbConn, name: str) -> Result[int] {
+    sets: list[str] = []
+    sets.append(f"name = '{name}'")
+    return conn.exec(f"UPDATE t SET {', '.join(sets)}", [])
+}
+
+func loopOverValues(conn: DbConn, names: list[str]) -> Result[int] {
+    sets: list[str] = []
+    for n in names {
+        sets.append(f"{n} = ?")
+    }
+    return conn.exec(f"UPDATE t SET {', '.join(sets)}", [])
+}
+
+func comprehensionOfValues(names: list[str]) -> Where {
+    exprs: list[str] = [n for n in names]
+    return Where().add(f"({', '.join(exprs)}) IS NOT NULL")
+}
+
+func loopLocalValue(conn: DbConn, names: list[str]) -> Result[int] {
+    sets: list[str] = []
+    for key in Fields {
+        column: str = names[0] if key == "name" else "city"
+        sets.append(f"{column} = ?")
+    }
+    return conn.exec(f"UPDATE t SET {', '.join(sets)}", [])
+}
+
+func loopVarReassigned(conn: DbConn, name: str) -> Result[int] {
+    sets: list[str] = []
+    for key in Fields {
+        key = name
+        sets.append(f"{key} = ?")
+    }
+    return conn.exec(f"UPDATE t SET {', '.join(sets)}", [])
+}
+
+func main() {
+    pass
+}

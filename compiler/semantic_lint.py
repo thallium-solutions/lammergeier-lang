@@ -29,7 +29,15 @@ _SQL_METHODS = frozenset({
     "whereRaw", "selectRaw", "orderByRaw", "groupByRaw", "havingRaw", "joinRaw",
 })
 _SQL_RECEIVERS = frozenset({"Db", "Tx", "DbConn", "QueryBuilder", "Where"})
+# ``Where`` methods taking SQL text, and the position of that argument.
+_WHERE_SQL_ARGS = {"add": 0, "addIf": 1, "addIn": 0}
 _SHELL_METHODS = frozenset({"run", "runSilent"})
+# A column or table name cannot be a ``?`` parameter: the warning says how
+# to choose one at run time.
+_SQL_NAMES_HINT = (
+    "; a column or table name chosen at run time: index a `const` table "
+    "(`Columns[key]`)"
+)
 
 # Expressions without calls, indexes or assignments: evaluating them twice
 # gives the same value.
@@ -147,6 +155,12 @@ class LintChecksMixin:
                 used_names.add(self._name_text(sub.children[0]))
             elif sub.data == "getattr" and len(sub.children) >= 2:
                 used_members.add(self._name_text(sub.children[1]))
+            elif sub.data == "fstring" and sub.children:
+                # ``f"{Report.isoCol('at')}"``: slots are not parsed into the
+                # tree; their words count as uses.
+                words = set(re.findall(r"[A-Za-z_]\w*", str(sub.children[0])))
+                used_names |= words
+                used_members |= words
         go_text = " ".join(str(v) for v in (getattr(self, "_go_blocks", None) or {}).values())
         go_words = set(re.findall(r"[A-Za-z_]\w*", go_text))
         for stmt in tree.children:
@@ -177,15 +191,34 @@ class LintChecksMixin:
         if len(callee.children) < 2:
             return
         method = self._name_text(callee.children[1])
-        if method not in _SQL_METHODS and method not in _SHELL_METHODS:
+        receiver = callee.children[0]
+        position = 0
+        if method in _WHERE_SQL_ARGS and method not in _SQL_METHODS:
+            if getattr(self._expr_simple_type(receiver), "name", "") != "Where" and not (
+                isinstance(receiver, Tree) and receiver.data == "funccall" and receiver.children
+                and isinstance(receiver.children[0], Tree) and receiver.children[0].data == "var"
+                and self._name_text(receiver.children[0].children[0]) == "Where"
+            ) and not self._lint_is_query_chain(receiver):
+                return
+            position = _WHERE_SQL_ARGS[method]
+        elif method not in _SQL_METHODS and method not in _SHELL_METHODS:
             return
         args = node.children[1] if len(node.children) > 1 and isinstance(node.children[1], Tree) else None
-        first = next((c for c in args.children if isinstance(c, Tree)), None) if args is not None else None
+        values = [c for c in args.children if isinstance(c, Tree)] if args is not None else []
+        first = values[position] if position < len(values) else None
         if isinstance(first, Tree) and first.data == "argvalue" and first.children:
             first = first.children[0]
-        if not isinstance(first, Tree) or not self._lint_built_from_values(first):
+        if not isinstance(first, Tree) or not (
+            self._lint_built_from_values(first) or self._lint_local_built_from_values(first)
+        ):
             return
-        receiver = callee.children[0]
+        if method in _WHERE_SQL_ARGS and method not in _SQL_METHODS:
+            self._warning(
+                first, "security",
+                f"SQL built from values is an injection risk (they are not escaped): pass them as `?` parameters "
+                f"(`.{method}({'condition, ' if method == 'addIf' else ''}\"name = ?\", [name])`){_SQL_NAMES_HINT}",
+            )
+            return
         if method in _SHELL_METHODS:
             if isinstance(receiver, Tree) and receiver.data == "var" and self._name_text(receiver.children[0]) == "Exec":
                 self._warning(
@@ -200,7 +233,7 @@ class LintChecksMixin:
         self._warning(
             first, "security",
             "SQL built from values is an injection risk (they are not escaped): pass them as `?` parameters "
-            f"(`.{method}(\"... WHERE id = ?\", [id])`)",
+            f"(`.{method}(\"... WHERE id = ?\", [id])`){_SQL_NAMES_HINT}",
         )
 
     def _lint_is_query_chain(self, receiver) -> bool:
@@ -215,7 +248,7 @@ class LintChecksMixin:
                 return True
         return False
 
-    def _lint_built_from_values(self, expr, depth: int = 0) -> bool:
+    def _lint_built_from_values(self, expr, depth: int = 0, checking: frozenset | set = frozenset()) -> bool:
         """An f-string with a slot, or a ``+`` concatenation, holding a value
         that is not a constant (literals, names assigned only literals and
         numbers are constants)."""
@@ -229,28 +262,46 @@ class LintChecksMixin:
                 if isinstance(part, str):
                     continue
                 slot = self._fstring_slot_tree(part.expr) if part.expr.strip() else None
-                if slot is None or not self._lint_constant_value(slot, depth + 1):
+                if slot is None or not self._lint_constant_value(slot, depth + 1, checking):
                     return True
             return False
         if expr.data == "arith_expr":
             operands = [c for c in expr.children if isinstance(c, Tree)]
             return any(
-                self._lint_built_from_values(c, depth + 1) if c.data in ("fstring", "arith_expr") else not self._lint_constant_value(c, depth + 1)
+                self._lint_built_from_values(c, depth + 1, checking) if c.data in ("fstring", "arith_expr") else not self._lint_constant_value(c, depth + 1, checking)
                 for c in operands
             )
         return False
 
-    def _lint_constant_value(self, expr, depth: int = 0) -> bool:
+    def _lint_local_built_from_values(self, expr) -> bool:
+        """``sql = f"... {v}"`` then ``conn.exec(sql)``: a local assigned SQL
+        built from values in the function."""
+        if not (isinstance(expr, Tree) and expr.data == "var" and expr.children):
+            return False
+        stack = self.__dict__.get("_funcdef_stack") or []
+        if not stack:
+            return False
+        name = self._name_text(expr.children[0])
+        return any(
+            isinstance(v, Tree) and v.data in ("fstring", "arith_expr") and self._lint_built_from_values(v, 1, {name})
+            for v in self._assigned_values(stack[-1], name)
+        )
+
+    def _lint_constant_value(self, expr, depth: int = 0, checking: frozenset | set = frozenset()) -> bool:
         """A value that cannot carry user input into SQL: a literal, a
         number, a ``const`` (also an imported one: ``UnixParamSql``,
         ``db.Columns``), an f-string or ``+`` of those, a call whose arguments
         are all such values (``SlotSql.epoch("t.at")``: SQL written by the
         program), the SQL of a lamdb builder (``where.sql()``), or a local
         assigned only such values."""
-        if not isinstance(expr, Tree) or depth > 4:
+        if not isinstance(expr, Tree) or depth > 12:
             return False
         if expr.data in ("fstring", "arith_expr"):
-            return not self._lint_built_from_values(expr, depth + 1)
+            return not self._lint_built_from_values(expr, depth + 1, checking)
+        if expr.data in ("funccall", "getattr") and getattr(self._expr_simple_type(expr), "name", "") in ("int", "float", "bool"):
+            # ``Input.timeSql(input.has(key), input.local)``: a number or a
+            # boolean, whatever the call.
+            return True
         if expr.data == "funccall" and expr.children:
             callee = expr.children[0]
             args = expr.children[1] if len(expr.children) > 1 and isinstance(expr.children[1], Tree) else None
@@ -271,13 +322,36 @@ class LintChecksMixin:
             return all(self._lint_constant_value(v, depth + 1) for v in values)
         if expr.data == "var" and expr.children:
             name = self._name_text(expr.children[0])
+            if name in checking:
+                # ``where = where + " AND x = ?"``: the name's own value, being
+                # proven constant from its other assignments.
+                return True
             stack = self.__dict__.get("_funcdef_stack") or []
-            if stack and any(name in sc.names for sc in self._scopes[1:]):
+            if stack and self._lint_is_local(stack[-1], name):
+                # A local, also one of a block the check is past (``column``
+                # assigned in a loop body, read through an appended f-string).
                 values = self._assigned_values(stack[-1], name)
-                if values and all(self._lint_constant_value(v, depth + 1) for v in values) and self._lint_appends_constant(stack[-1], name, depth):
+                inner = set(checking) | {name}
+                if values and all(self._lint_constant_value(v, depth + 1, inner) for v in values) and self._lint_appends_constant(stack[-1], name, depth):
                     return True
-        if expr.data == "list":
-            return all(self._lint_constant_value(c, depth + 1) for c in expr.children if isinstance(c, Tree))
+                # ``for key in Keys``: an element of a constant collection.
+                iterables = self._loop_iterables(stack[-1], name)
+                if iterables and all(self._lint_constant_value(v, depth + 1, inner) for v in iterables):
+                    return True
+        if expr.data in ("list", "tuple", "set"):
+            return all(self._lint_constant_value(c, depth + 1, checking) for c in expr.children if isinstance(c, Tree))
+        if expr.data == "dict":
+            return all(
+                isinstance(c, Tree) and c.data == "key_value" and len(c.children) == 2
+                and self._lint_constant_value(c.children[1], depth + 1, checking)
+                for c in expr.children
+            )
+        if expr.data in ("list_comprehension", "set_comprehension") and expr.children:
+            # ``["?" for _ in values]``: the elements are written by the
+            # program (the loop variables of constant collections count).
+            comp = expr.children[0]
+            if isinstance(comp, Tree) and comp.data == "comprehension" and comp.children:
+                return self._lint_constant_value(comp.children[0], depth + 1, checking)
         if expr.data == "getitem" and expr.children:
             # ``Sorts[listing.sort]``: whatever the key, the value is one of a
             # constant table's.
@@ -298,6 +372,13 @@ class LintChecksMixin:
                     return True
         return self._markup_value_trusted(expr, "sql")
 
+    def _lint_is_local(self, funcdef, name: str) -> bool:
+        """``name`` is a local of the function: in scope here, or bound in a
+        block of it the check is no longer in."""
+        if any(name in sc.names for sc in self._scopes[1:]):
+            return True
+        return bool(self._assigned_values(funcdef, name) or self._loop_iterables(funcdef, name))
+
     def _lint_static_receiver(self, receiver) -> bool:
         """``SlotSql`` in ``SlotSql.epoch(...)``: a class name (a static call)."""
         if isinstance(receiver, Tree) and receiver.data == "var" and receiver.children:
@@ -306,26 +387,10 @@ class LintChecksMixin:
         return False
 
     def _lint_appends_constant(self, funcdef, name: str, depth: int) -> bool:
-        """Every ``name.append(x)`` / ``name += x`` in the function adds a
-        constant value (a list of SQL fragments built by the program)."""
-        for sub in funcdef.iter_subtrees():
-            if sub.data == "funccall" and sub.children and isinstance(sub.children[0], Tree) and sub.children[0].data == "getattr":
-                callee = sub.children[0]
-                head = callee.children[0]
-                if (
-                    isinstance(head, Tree) and head.data == "var" and head.children
-                    and self._name_text(head.children[0]) == name
-                    and self._name_text(callee.children[1]) in ("append", "extend", "insert")
-                ):
-                    args = sub.children[1] if len(sub.children) > 1 and isinstance(sub.children[1], Tree) else None
-                    for arg in (args.children if args is not None else ()):
-                        value = arg.children[0] if isinstance(arg, Tree) and arg.data == "argvalue" and arg.children else arg
-                        if isinstance(value, Tree) and not self._lint_constant_value(value, depth + 1):
-                            return False
-            if sub.data == "augassign" and sub.children:
-                target = sub.children[0]
-                if isinstance(target, Tree) and target.data == "var" and target.children and self._name_text(target.children[0]) == name:
-                    value = sub.children[-1]
-                    if isinstance(value, Tree) and not self._lint_constant_value(value, depth + 1):
-                        return False
-        return True
+        """Every value the function writes into ``name`` (``name.append(x)``,
+        ``name += x``, ``name[k] = x``...) is a constant (a list of SQL
+        fragments built by the program)."""
+        return all(
+            not isinstance(value, Tree) or self._lint_constant_value(value, depth + 1, {name})
+            for value in self._written_values(funcdef, name)
+        )

@@ -1,0 +1,79 @@
+# expect-warning: line 59: warning[security]: dynamic URL in `href`
+# expect-warning: line 60: warning[security]: a value inside <script> is not JavaScript-escaped
+# expect-warning: line 61: warning[security]: a dynamic value in a `style` attribute
+# expect-warning: line 62: warning[security]: dynamic URL in `src`
+# expect-warning: line 65: warning[security]: dynamic URL in `href`
+# expect-warning: line 73: warning[security]: a value inside <script> is not JavaScript-escaped
+# expect-warning: line 73: warning[security]: dynamic URL in `href`
+# expect-no-warning: line 36:
+# expect-no-warning: line 37:
+# expect-no-warning: line 38:
+# expect-no-warning: line 39:
+# expect-no-warning: line 40:
+# expect-no-warning: line 41:
+# expect-no-warning: line 44:
+# expect-no-warning: line 47:
+# expect-no-warning: line 50:
+from lamhtml import Html
+
+# Markup slots the security warnings trust (4.16.0): a `json` value (also
+# int / float / bool) in <script> and event handlers (rendered as JSON with
+# `<`, `>`, `&` escaped, like `Html.jsValue`), a `None` branch (no
+# attribute), an index into a constant table of literals, and the loop
+# variable of a literal or constant collection. Still warned: `json` in a
+# URL, a `str` / `any` in <script>, a table written with values, a loop over
+# a parameter, a ternary whose other branch is not sanitized.
+
+const Colors: dict[str, str] = {"a": "#ec4899", "b": "#f59e0b"}
+const Links: list[list[str]] = [["https://example.com/a", "A"], ["/b", "B"]]
+
+func doc() -> json {
+    return {"name": "a </script>"}
+}
+
+func quiet(d: json, kind: str, url: str, n: float) -> html {
+    out: html = <>
+        <script type="application/ld+json">${d}</script>
+        <script>var data = ${doc()}; var n = ${n};</script>
+        <button onclick="show(${d})">a</button>
+        <img src=${Html.safeUrl(url) if url != '' else None} alt="">
+        <a href=${None}>b</a>
+        <span style="background-color: ${Colors[kind]}"></span>
+    </>
+    for link in [["https://example.com/a", "A"], ["/b", "B"]] {
+        out += <><a href="${link[0]}">${link[1]}</a></>
+    }
+    for pair in Links {
+        out += <><a href="${pair[0]}">${pair[1]}</a></>
+    }
+    for color in ["red", "blue"] {
+        out += <><i style="color: ${color}"></i></>
+    }
+    return out
+}
+
+func warned(d: json, kind: str, url: str, name: str, v: any, links: list[str]) -> html {
+    colors: dict[str, str] = {"a": "#fff"}
+    colors[kind] = name
+    out: html = <>
+        <a href="${d}">c</a>
+        <script>var who = ${name}; var v = ${v};</script>
+        <span style="color: ${colors[kind]}"></span>
+        <img src=${url if url != '' else None} alt="">
+    </>
+    for link in links {
+        out += <><a href="${link}">d</a></>
+    }
+    return out
+}
+
+func warnedWrites(name: str, url: str) -> html {
+    js: str = "1"
+    js += name
+    return <><script>var x = ${js};</script><a href="${Html.safeUrl(url)[2:]}">e</a></>
+}
+
+func main() {
+    print(str(quiet(doc(), "a", "", 1.5)))
+    print(str(warned(doc(), "a", "", "n", 1, [])))
+}

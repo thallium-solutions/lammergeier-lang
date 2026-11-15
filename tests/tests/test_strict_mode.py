@@ -90,12 +90,65 @@ def test_manifest_strict_and_clean_project() -> None:
         print("PASS: [build] strict = true fails on warnings; a clean project builds")
 
 
+def test_project_lib_given_as_extlibs_stays_covered() -> None:
+    """``--extlibs lib`` (a directory of the project) is the project's own
+    code: strict mode covers it (it was exempted silently, as installed
+    packages are; found by managed-file-transfer)."""
+    with tempfile.TemporaryDirectory() as td:
+        project = make_project(Path(td))
+        (project / "lib" / "pkg").mkdir(parents=True)
+        (project / "lib" / "pkg" / "mod.lam").write_text("func libHelper(extra: int) -> int {\n    return 3\n}\n")
+        (project / "main.lam").write_text(
+            "from pkg.mod import libHelper\n\nfunc main() {\n    print(libHelper(1))\n}\n"
+        )
+        proc = lamc(project, "--strict", "--extlibs", "lib")
+        assert proc.returncode == 1, proc.stderr
+        assert "unused parameter `extra`" in proc.stderr and "mod.lam" in proc.stderr, proc.stderr
+        print("PASS: a project directory given with --extlibs stays covered by strict mode")
+
+
+def test_import_reexported_to_another_module_is_used() -> None:
+    """An import a module keeps for other modules to import from it (a
+    facade: Luxyt's ``slots.lam`` re-exporting ``ComplimentaryModes``) is
+    used; one nothing imports stays an unused import, also once another
+    module stops importing it (the cached clean check is not reused)."""
+    with tempfile.TemporaryDirectory() as td:
+        project = make_project(Path(td), manifest_strict=True, module_warning=False)
+        (project / "app" / "rules.lam").write_text(
+            'const Modes: list[str] = ["a", "b"]\nconst Other: list[str] = ["c"]\n'
+        )
+        (project / "app" / "slots.lam").write_text(
+            "from app.rules import Modes, Other\n\nfunc slotCount() -> int {\n    return 2\n}\n"
+        )
+        (project / "main.lam").write_text(
+            "from app.slots import Modes, slotCount\n\nfunc main() {\n    print(len(Modes) + slotCount())\n}\n"
+        )
+        proc = lamc(project)
+        assert proc.returncode == 1, proc.stderr
+        assert "unused import `Other`" in proc.stderr and "slots.lam" in proc.stderr, proc.stderr
+        assert "unused import `Modes`" not in proc.stderr, proc.stderr
+        (project / "app" / "slots.lam").write_text(
+            "from app.rules import Modes\n\nfunc slotCount() -> int {\n    return 2\n}\n"
+        )
+        proc = lamc(project)
+        assert proc.returncode == 0, proc.stderr
+        (project / "main.lam").write_text(
+            "from app.slots import slotCount\n\nfunc main() {\n    print(slotCount())\n}\n"
+        )
+        proc = lamc(project)
+        assert proc.returncode == 1, proc.stderr
+        assert "unused import `Modes`" in proc.stderr and "slots.lam" in proc.stderr, proc.stderr
+        print("PASS: an import other modules import from the module is a re-export, not unused")
+
+
 def main() -> int:
     tests = [
         test_default_build_only_warns,
         test_strict_flag_fails_on_project_module_warning,
         test_strict_environment_and_main_file,
         test_manifest_strict_and_clean_project,
+        test_project_lib_given_as_extlibs_stays_covered,
+        test_import_reexported_to_another_module_is_used,
     ]
     failed = 0
     for test in tests:

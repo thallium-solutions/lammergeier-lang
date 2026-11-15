@@ -1,0 +1,26 @@
+# expect-no-warning: unused import
+# expect-pass
+from lamerrors import Result
+from lamdb import Db, DbConn, Tx
+
+# A type named only in a lambda's parameter or return annotation uses its
+# import, as in a function signature (it was reported unused: Luxyt's
+# `Db.atomic(db, lambda (tx: Tx) -> Result[T]: ...)`).
+
+func run(db: Db) -> Result[int] {
+    return Db.atomic(db, lambda (tx: Tx) -> Result[int]: count(tx))
+}
+
+func block(db: Db) -> Result[int] {
+    return Db.atomic(db, lambda (tx: Tx) -> Result[int] {
+        return count(tx)
+    })
+}
+
+func count(_conn: DbConn) -> Result[int] {
+    return Result.Ok(1)
+}
+
+func main() {
+    print("ok")
+}

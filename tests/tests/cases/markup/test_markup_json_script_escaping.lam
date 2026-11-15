@@ -1,0 +1,50 @@
+# expect: <script type="application/ld+json">{"name":"a \u003c/script\u003e \u0026 é"}</script>
+# expect: same as jsValue: true
+# expect: <button onclick="show({&quot;n&quot;:1,&quot;s&quot;:&quot;\u003cb\u003e&quot;})">x</button>
+# expect: onclick same as jsValue: true
+# expect: <script>var n = 3; var ok = true; var ids = [1,2];</script>
+# expect: <a href="/a">A</a><a href="/b">B</a>
+# expect: <span style="color: #ec4899"></span>
+# expect: <img alt="">
+# expect: <img src="https://example.com/a.webp" alt="">
+from lamhtml import Html
+
+# A `json` value in <script> and in an event handler is JSON text with `<`,
+# `>` and `&` escaped: the same bytes as `Html.jsValue(...)`, so the checker
+# trusts it there (4.16.0). Also trusted, and rendered as written: `None`
+# (no attribute), constant tables and loops over literal collections.
+
+const Colors: dict[str, str] = {"a": "#ec4899", "b": "#f59e0b"}
+const Links: list[list[str]] = [["/a", "A"], ["/b", "B"]]
+
+func doc() -> json {
+    return {"name": "a </script> & é"}
+}
+
+func image(url: str) -> html {
+    return <><img src=${Html.safeUrl(url) if url != '' else None} alt=""></>
+}
+
+func main() {
+    d: json = doc()
+    a: html = <><script type="application/ld+json">${d}</script></>
+    b: html = <><script type="application/ld+json">${Html.jsValue(d)}</script></>
+    print(str(a))
+    print(f"same as jsValue: {str(a) == str(b)}")
+    j: json = {"n": 1, "s": "<b>"}
+    c: html = <><button onclick="show(${j})">x</button></>
+    e: html = <><button onclick="show(${Html.jsValue(j)})">x</button></>
+    print(str(c))
+    print(f"onclick same as jsValue: {str(c) == str(e)}")
+    ids: json = [1, 2]
+    n: int = 3
+    print(str(<><script>var n = ${n}; var ok = ${true}; var ids = ${ids};</script></>))
+    out: html = <></>
+    for link in Links {
+        out += <><a href="${link[0]}">${link[1]}</a></>
+    }
+    print(str(out))
+    print(str(<><span style="color: ${Colors['a']}"></span></>))
+    print(str(image("")))
+    print(str(image("https://example.com/a.webp")))
+}

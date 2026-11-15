@@ -1,0 +1,19 @@
+# expect-error: line 11: error[type]: `json` values have no methods: `.append` reads the JSON member `append`, which cannot be called; build a `list[json]` and convert it with `json(items)`
+# expect-error: line 12: error[type]: `json` values have no methods: `.len` reads the JSON member `len`
+# expect-error: line 13: error[type]: `json` values have no methods: `.trim` reads the JSON member `trim`
+# expect-no-warning: line 16:
+# expect-no-warning: line 17:
+# A method call on a `json` value reads a JSON member and calls it: an error
+# with the idiom (it failed in go build).
+
+func main() {
+    j: json = [1]
+    j.append(2)
+    n: int = j.len()
+    t: json = j[0].name.trim()
+    items: list[json] = [j[0]]
+    items.append(json(2))
+    k: json = json(items)
+    print(len(k))
+    print(n, t)
+}

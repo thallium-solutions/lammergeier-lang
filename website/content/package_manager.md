@@ -277,7 +277,7 @@ lamwebp = { git = "https://github.com/alice/lamwebp.git", ref = "v1.2.0" }
 | `--offline` | off | Refuse all network access — cache hits proceed, misses fail loudly. Implies `--frozen` because resolving range specs without the network is impossible. |
 | `--registry URL` | `http://localhost:8765` | Override the registry base. The default is the dev registry shipped under `tools/registry/`. Production deployments should set `LAMC_REGISTRY` once in their environment. |
 | `--extlibs-dir DIR` | *(derived)* | Force a specific install root. Mostly used by the test suite. |
-| `--force` | off | Re-install even if the same version is already on disk. |
+| `--force` | off | Re-install even if the same version is already on disk. A bare `lamc install --force` also removes the lock pins and `extlibs/` copies of packages `lamlib.toml` no longer requires (directly or through another package); a bare `lamc install` only warns about them. |
 | `--allow-breaking` | off | Bypass the SemVer / API-diff gate. See §6. |
 | `-q` / `--quiet` | off | Suppress the per-step status lines. |
 
@@ -553,6 +553,22 @@ project requires lamshared = ">=1.5 <2"
 lamone@1.0.0 requires lamshared = "^1.0"
 → resolved: lamshared@1.7.0     (latest in the intersection)
 ```
+
+### 3.3 The project's own git and path dependencies win
+
+A package the project itself depends on by git or path is installed at the
+project's ref, also when a library asks for another one: the library gets
+the project's copy (as with `[replace]`, §10c), and the install says so:
+
+```text
+$ lamc install
+[lamc] @lam/vulture: the project's own dependency is used (@lam/vulture@3.7.2, ref 3.7.2); @lam/vulture/dev-plugin@1.2.3 asks for ref 3.7.0
+```
+
+A library's registry range that the project's pin does not satisfy is a
+version conflict (§3.1). Before 4.16.0 the library's ref was installed over
+the project's (a silent downgrade); a `[replace]` entry repeating the
+project's git URL and ref was the workaround and can be removed.
 
 ---
 

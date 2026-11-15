@@ -907,6 +907,7 @@ PYTHON_BUILTIN_IDIOMS: Dict[str, str] = {
     "all": "the list method `xs.all(lambda x: x > 0)` (`flags.all(lambda b: b)` on a `list[bool]`)",
     "any": "the list method `xs.any(lambda x: x > 0)` (`flags.any(lambda b: b)` on a `list[bool]`)",
     "sum": "`xs.reduce(lambda a, b: a + b, 0)`",
+    "type": "`isinstance(x, T)` or a `match` with class patterns (`case Circle() { ... }`)",
 }
 LIST_METHOD_HINTS: Dict[str, str] = {
     "add": "append", "push": "append", "size": "length", "len": "length",

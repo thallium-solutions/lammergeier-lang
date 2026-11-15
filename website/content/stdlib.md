@@ -3815,9 +3815,17 @@ warning goes away:
 A function or method whose every `return` is a sanitizer's output counts as
 sanitized, and so, for URLs, does one returning a string with a static safe
 start (`func url(self, path: str) -> str { return f"/{self.lang}{path}" }`).
-String literals, numbers, a URL written with a static safe start
-(`"/p/" + id`, `f"/p/{id}"`) and names assigned only such values are
-never warned about.
+String literals, numbers, booleans, `None` (it writes no attribute), a URL
+written with a static safe start (`"/p/" + id`, `f"/p/{id}"`), a ternary of
+such values (`src=${Html.safeUrl(u) if u != "" else None}`), an index into a
+constant table of literals (`Colors[kind]` with
+`const Colors: dict[str, str] = {...}`), the loop variable of a literal or
+constant collection (`for link in [["/a", "A"], ["/b", "B"]]`, then
+`${link[0]}` in a URL attribute) and names assigned only such values (a later `+=`,
+`append` or `x[k] = v` of another value counts) are never warned about. In
+`<script>` and `on*` handlers a `json` value is trusted too: it renders as its
+JSON text with `<`, `>` and `&` escaped, the same bytes as `Html.jsValue`
+(`<script type="application/ld+json">${productJsonLd(product)}</script>`).
 
 #### Sanitizing untrusted HTML — `Html.sanitize`, `HtmlPolicy`
 

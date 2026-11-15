@@ -112,6 +112,15 @@ func main() {
 }
 ```
 
+A call of a function-typed value is checked against its `func(...)` type
+like a call of a named function: `f("a")` with `f: func(int) -> int` is a
+type error (``argument `1` to `f` has type `str`, expected `int` ``), and so
+are a missing or extra argument and a keyword argument (the parameters of a
+function type have no names).
+
+Lam has no `type(x)`: test a type with `isinstance(x, T)` or a `match` with
+class patterns.
+
 ### Conversions: `int()`, `float()`, `bool()`
 
 | Argument | Result |
@@ -276,7 +285,9 @@ compilation: non-string object keys; tuple/set arrays; incompatible nested
 values; direct `any`; missing or malformed `__json__` declarations; implicit
 class conversion; invalid `json(value)` arguments; invalid boolean/class/etc.
 indices (only `str` or `int` are allowed); slices (`value[1:]`: convert an array
-with `Json.toList` first); incompatible assignments/returns/call
+with `Json.toList` first); method calls (a `json` value has no methods:
+`j.append(x)` would call the member `append`; build a `list[json]` and
+convert it with `json(items)`); incompatible assignments/returns/call
 arguments; and malformed literal strings passed to `Json.decode`,
 `Json.decodeInto`, or `Schema.validate`.
 Dynamic `Json.fromValue(any)` data, decoded wire shapes, object-vs-array access,
@@ -5933,12 +5944,51 @@ The pipeline runs in three layers:
      parameter, a `private` function or method nothing in its module uses,
      an `async` call whose task is never awaited, a value alone on a line,
      and the security warnings: SQL built with an f-string or `+` from
-     values that are not constants (`db.query(f"... '{name}'")`: pass
-     values as `?` parameters; constants and numbers are quiet), a command
+     values that are not constants, at the call or in a local passed by
+     name, also in `Where.add` / `addIf` / `addIn` clauses
+     (`db.query(f"... '{name}'")`: pass values as `?` parameters), a command
      built from values for `Exec.run` / `runSilent` (split on spaces: use
      `Exec.command(name, [args])`), dynamic values in markup URL
      attributes, event handlers, `<script>` and `style` (stdlib.md,
      lamhtml), and `async` writes to shared collections.
+
+     **What the SQL check trusts** (SQL the program writes): literals,
+     numbers and booleans (also a call returning one), `None`, `const`s
+     (also imported ones), a ternary of those (`op = "<" if desc else ">"`),
+     an index into a constant table whatever the key (`Columns[field]`), the
+     SQL of a lamdb builder (`where.sql()`), a call whose arguments are all
+     constants (`SlotSql.epoch("t.at")`), `", ".join(parts)` of a constant
+     list, and a local (also one of a loop body) whose every assignment and
+     write (`append`, `extend`, `+=`, `parts[i] = v`) is one of those — so
+     fragments built in a loop (`sets.append(f"{Columns[field]} = ?")`,
+     `params.append("?")`, `["?" for _ in values]`) are quiet, and so is the
+     loop variable of a constant collection. A parameter is not trusted: the
+     checker does not see the callers. A column or table name chosen at run
+     time goes through a constant table indexed by a key:
+
+     ```lammergeier fragment
+     const ApprovedColumns: dict[str, str] = {"ads": "a.approved", "shops": "s.approved"}
+
+     func filterApproved(where: Where, table: str) {
+         where.add(f"COALESCE({ApprovedColumns[table]}, false) = true")
+     }
+     ```
+
+     **What the markup check trusts:** the sanitizers' output (also
+     through a function whose every return is one), string literals,
+     numbers, booleans, `None`, a static safe URL start, a ternary of
+     trusted values, an index into a constant table of literals, the loop
+     variable of a literal or constant collection, a local whose every
+     assignment and write is trusted, and in `<script>` / `on*` handlers a
+     `json` value (rendered as JSON with `<`, `>`, `&` escaped, as
+     `Html.jsValue` does). See stdlib.md, lamhtml.
+
+     An import is used when the module uses the name — also in a lambda's
+     parameter or return annotation — or when another module of the
+     program imports that name from it (a re-export); a package
+     `__init__.lam` and a module made only of imports never warn. A lambda
+     annotation naming a type no module of the program declares is an
+     unknown-type error, as in a function signature.
 
    **Strict mode** makes the warnings errors: `lamc --strict` (any build,
    run or `lamc dev` command), `LAMC_STRICT=1`, or in `lamlib.toml`:
@@ -5952,6 +6002,8 @@ The pipeline runs in three layers:
    stdlib or installed packages (`extlibs/`), whose warnings stay hidden.
    A module remembered as checked clean by a build without strict mode is
    checked again.
+   A directory of the project given with `--extlibs` (`--extlibs lib`)
+   is the project's own code and stays covered.
 
    A function with a return type whose every path raises needs no `return`.
    Definite-assignment tracking joins continuing `if`/`match`/`try`

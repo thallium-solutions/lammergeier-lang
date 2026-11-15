@@ -1,0 +1,21 @@
+# expect-error: line 16: error[type]: argument `1` to `f` has type `str`, expected `int`
+# expect-error: line 17: error[call]: missing required argument `1` in call to `f`
+# expect-error: line 18: error[call]: too many positional arguments in call to `f`: expected at most 1, got 2
+# expect-error: line 19: error[call]: unknown keyword argument `x` in call to `f`
+# expect-error: line 11: error[type]: argument `2` to `cb` has type `int`, expected `str`
+# expect-no-warning: line 20:
+
+# Calling a function-typed value checks its arguments against the declared
+# `func(...)` type, as for a named function (they failed in go build).
+func apply(cb: func(int, str) -> int) -> int {
+    return cb(1, 2)
+}
+
+func main() {
+    f: func(int) -> int = lambda (x: int) -> int: x + 1
+    print(f("a"))
+    print(f())
+    print(f(1, 2))
+    print(f(x=1))
+    print(f(3), apply(lambda (a: int, b: str) -> int: a + len(b)))
+}

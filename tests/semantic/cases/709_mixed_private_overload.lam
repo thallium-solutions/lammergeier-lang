@@ -1,0 +1,17 @@
+# expect-error: line 10: error[method]: a `private` overload of the public `Api.replay` is not supported: give the helper its own name (overloads share their visibility)
+# Overloads share one Go name and so one visibility: a private overload of
+# a public method failed in go build (`undefined: api_replay_2`; found by
+# managed-file-transfer).
+class Api {
+    static func replay(req: str, res: str) -> str {
+        return "handler " + req + res
+    }
+
+    private static func replay(a: int) -> str {
+        return f"helper {a}"
+    }
+}
+
+func main() {
+    print(Api.replay("a", "b"))
+}

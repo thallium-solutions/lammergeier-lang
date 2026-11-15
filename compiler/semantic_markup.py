@@ -240,6 +240,13 @@ class MarkupSemanticMixin:
         ``safeCss``)."""
         if isinstance(value_type, NamedType) and value_type.name in {"int", "float", "bool"}:
             return
+        if (
+            isinstance(value_type, NamedType) and value_type.name == "json"
+            and (owner == "<script>" or (owner.startswith("on") and owner != "on"))
+        ):
+            # A ``json`` value renders as its JSON text with ``<``, ``>``,
+            # ``&`` (and U+2028/9) escaped: the bytes of ``Html.jsValue``.
+            return
         if owner in self._URL_ATTRIBUTES:
             if not starts or self._markup_value_trusted(arg, "safeUrl"):
                 return
@@ -278,12 +285,29 @@ class MarkupSemanticMixin:
         ``jsValue`` / ``safeCss``): a string literal (written by the
         developer), that sanitizer's output (also through a function whose
         every return is), for URLs a static safe start (``f"/p/{id}"``), a
-        ternary of trusted values, or a name whose every assignment in the
-        function (or the module) is trusted."""
-        if not isinstance(expr, Tree) or depth > 4:
+        ternary of trusted values, ``None`` (no attribute), a collection
+        literal of trusted values and an index into one (a constant table:
+        ``Colors[kind]``), or a name whose every assignment and write in the
+        function (or the module) is trusted, also a loop variable over a
+        trusted collection."""
+        if not isinstance(expr, Tree) or depth > 10:
             return False
-        if expr.data == "string":
+        if expr.data in ("string", "number", "const_none", "const_true", "const_false"):
             return True
+        if expr.data in ("list", "tuple", "set"):
+            return all(self._markup_value_trusted(c, kind, depth + 1) for c in expr.children if isinstance(c, Tree))
+        if expr.data == "dict":
+            return all(
+                isinstance(c, Tree) and c.data == "key_value" and len(c.children) == 2
+                and self._markup_value_trusted(c.children[1], kind, depth + 1)
+                for c in expr.children
+            )
+        if expr.data == "getitem" and len(expr.children) == 2 and not (
+            isinstance(expr.children[1], Tree) and expr.children[1].data == "slice"
+        ):
+            # Whatever the key, the value is one the table was written with
+            # (not a slice: part of a sanitized URL may not be safe).
+            return self._markup_value_trusted(expr.children[0], kind, depth + 1)
         if expr.data == "fstring" and expr.children and "{" not in str(expr.children[0]).replace("{{", ""):
             return True
         if kind == "safeUrl":
@@ -299,12 +323,62 @@ class MarkupSemanticMixin:
         if expr.data == "var" and expr.children:
             name = self._name_text(expr.children[0])
             stack = self.__dict__.get("_funcdef_stack") or []
-            values = self._assigned_values(stack[-1], name) if stack else []
+            root = stack[-1] if stack else None
+            values = self._assigned_values(root, name) if root is not None else []
+            if not values and root is not None:
+                # ``for link in [["/a", "A"], ...]``: an element of a trusted
+                # collection.
+                values = self._loop_iterables(root, name)
             if not values and not any(name in sc.names for sc in self._scopes[1:]):
-                tree = self.__dict__.get("_module_tree")
-                values = self._assigned_values(tree, name, top_level=True) if tree is not None else []
-            return bool(values) and all(self._markup_value_trusted(v, kind, depth + 1) for v in values)
+                root = self.__dict__.get("_module_tree")
+                values = self._assigned_values(root, name, top_level=True) if root is not None else []
+            if not values:
+                return False
+            # ``colors[kind] = v``, ``links.append(v)``, ``s += v``: written
+            # values must be trusted too.
+            values = values + self._written_values(root, name)
+            return all(self._markup_value_trusted(v, kind, depth + 1) for v in values)
         return False
+
+    @staticmethod
+    def _written_values(root, name: str) -> list:
+        """The values ``root`` writes into ``name`` besides assigning it:
+        ``name[k] = v``, ``name += v``, ``name.append(v)`` / ``extend`` /
+        ``insert`` / ``add`` / ``update`` / ``setdefault``."""
+        def is_name(node) -> bool:
+            return (
+                isinstance(node, Tree) and node.data == "var" and bool(node.children)
+                and isinstance(node.children[0], Tree) and bool(node.children[0].children)
+                and str(node.children[0].children[0]) == name
+            )
+
+        values: list = []
+        for sub in root.iter_subtrees():
+            if sub.data == "assign" and len(sub.children) == 2:
+                target = sub.children[0]
+                if isinstance(target, Tree) and target.data == "getitem" and target.children and is_name(target.children[0]):
+                    values.append(sub.children[1])
+            elif sub.data == "augassign" and sub.children:
+                if is_name(sub.children[0]) and isinstance(sub.children[-1], Tree):
+                    values.append(sub.children[-1])
+            elif sub.data == "funccall" and sub.children and isinstance(sub.children[0], Tree) and sub.children[0].data == "getattr":
+                callee = sub.children[0]
+                if len(callee.children) < 2 or not is_name(callee.children[0]):
+                    continue
+                method = callee.children[1]
+                method = str(method.children[0]) if isinstance(method, Tree) and method.children else str(method)
+                if method not in ("append", "extend", "insert", "add", "update", "setdefault"):
+                    continue
+                args = sub.children[1] if len(sub.children) > 1 and isinstance(sub.children[1], Tree) else None
+                written = [
+                    a.children[0] if a.data == "argvalue" and a.children else a
+                    for a in (args.children if args is not None and args.data == "arguments" else [args] if args is not None else [])
+                    if isinstance(a, Tree)
+                ]
+                if method in ("insert", "setdefault"):
+                    written = written[-1:]
+                values.extend(written)
+        return values
 
     @staticmethod
     def _assigned_values(root, name: str, top_level: bool = False) -> list:
@@ -347,6 +421,60 @@ class MarkupSemanticMixin:
             if params is not None and any(str(t) == name for t in params.scan_values(lambda v: isinstance(v, Token))):
                 return []
         return values
+
+    @staticmethod
+    def _loop_iterables(root, name: str) -> list:
+        """The collections ``name`` loops over in ``root`` (``for name in
+        xs``, ``[... for name in xs]``, also unpacked: ``for a, name in
+        xs``); empty when ``name`` is also bound otherwise (assigned, a
+        parameter, a lambda parameter, a ``catch`` or ``with`` name)."""
+        def binds(target) -> bool:
+            if not isinstance(target, Tree):
+                return False
+            if target.data == "typed_for_target":
+                target = target.children[0] if target.children else None
+            elif target.data == "untyped_for_target":
+                target = target.children[0] if target.children else None
+            if not isinstance(target, Tree):
+                return False
+            if target.data == "var":
+                return bool(target.children) and _name_of(target.children[0]) == name
+            return any(
+                sub.data == "var" and sub.children and _name_of(sub.children[0]) == name
+                for sub in target.iter_subtrees()
+            )
+
+        def _name_of(node) -> str:
+            if isinstance(node, Tree) and node.data == "name" and node.children:
+                return str(node.children[0])
+            return str(node) if isinstance(node, Token) else ""
+
+        iterables: list = []
+        for sub in root.iter_subtrees():
+            if sub.data == "for_stmt" and len(sub.children) >= 2:
+                if binds(sub.children[0]):
+                    iterables.append(sub.children[1])
+            elif sub.data == "comp_for" and len(sub.children) >= 2:
+                if binds(sub.children[0]):
+                    iterables.append(sub.children[1])
+            elif sub.data in ("assign", "annassign", "augassign"):
+                trees = [c for c in sub.children if isinstance(c, Tree)]
+                if trees and binds(trees[0]):
+                    return []
+            elif sub.data in ("typed_paramvalue", "typed_lambda_param", "inline_lambda_param", "with_item"):
+                if any(isinstance(t, Token) and str(t) == name for t in sub.scan_values(lambda v: isinstance(v, Token))):
+                    return []
+            elif sub.data in ("catch_clause", "do_stmt"):
+                if any(
+                    isinstance(c, Tree) and ((c.data == "name" and _name_of(c) == name) or binds(c))
+                    for c in sub.children if not (isinstance(c, Tree) and c.data == "suite")
+                ):
+                    return []
+        if iterables:
+            params = next((c for c in root.children if isinstance(c, Tree) and c.data in ("typed_parameters", "parameters", "typedargslist", "params")), None)
+            if params is not None and any(str(t) == name for t in params.scan_values(lambda v: isinstance(v, Token))):
+                return []
+        return iterables
 
     def _sanitized_call_kind(self, arg) -> str:
         """The sanitizer whose output a call gives: a function or method

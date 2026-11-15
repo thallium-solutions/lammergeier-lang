@@ -451,6 +451,42 @@ def test_bare_install_reads_project_manifest() -> None:
     print("PASS: bare lamc install reads project manifest")
 
 
+def test_force_install_prunes_dependencies_removed_from_manifest() -> None:
+    """A dependency removed from ``lamlib.toml``: a bare ``lamc install``
+    warns about its lock pin, ``lamc install --force`` removes the pin and
+    its ``extlibs/`` copy (it kept both)."""
+    with tempfile.TemporaryDirectory() as tmp, registry() as url:
+        tmp_p = Path(tmp)
+        _publish(url, _make_lib(tmp_p, "lamkeep_a", "1.0.0"))
+        _publish(url, _make_lib(tmp_p, "lamdrop_b", "1.0.0"))
+        proj = tmp_p / "proj"; proj.mkdir()
+        manifest = textwrap.dedent("""
+            [library]
+            name    = "myapp"
+            version = "0.1.0"
+
+            [dependencies]
+            lamkeep_a = "^1.0"
+            lamdrop_b = "^1.0"
+        """).lstrip()
+        (proj / "lamlib.toml").write_text(manifest, encoding="utf-8")
+        proc = subprocess.run(LAMC + ["install", "--registry", url], cwd=str(proj), capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        assert (proj / "extlibs" / "lamdrop_b").exists()
+        (proj / "lamlib.toml").write_text(manifest.replace('lamdrop_b = "^1.0"\n', ""), encoding="utf-8")
+        proc = subprocess.run(LAMC + ["install", "--registry", url], cwd=str(proj), capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        assert "lamdrop_b, which lamlib.toml no longer requires" in proc.stderr, proc.stderr
+        assert (proj / "extlibs" / "lamdrop_b").exists(), "a plain install only warns"
+        proc = subprocess.run(LAMC + ["install", "--force", "--registry", url], cwd=str(proj), capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        assert not (proj / "extlibs" / "lamdrop_b").exists(), proc.stdout
+        lock = (proj / "lamlib.lock.toml").read_text()
+        assert "lamdrop_b" not in lock and "lamkeep_a" in lock, lock
+        assert (proj / "extlibs" / "lamkeep_a" / "__init__.lam").exists()
+    print("PASS: install --force prunes dependencies removed from lamlib.toml")
+
+
 def test_install_spec_writes_manifest_dependency() -> None:
     """``lamc install foo`` (with an explicit spec) appends ``foo``
     to ``[dependencies]`` after the install succeeds. The version
@@ -998,6 +1034,67 @@ def test_requested_by_registry_dependent_declared_first() -> None:
 
 # ── Driver ───────────────────────────────────────────────────
 
+def test_project_git_pin_wins_over_transitive_git_pin() -> None:
+    """Regression (found by Luxyt): a library's git dependency on an older
+    ref of a package the project pins itself (``@lam/vulture`` ref 3.7.2,
+    the dev plugin asking for 3.7.0) replaced the project's pin silently:
+    the extlibs copy and the lock held 3.7.0. The project's direct
+    dependency wins, in both declaration orders, and the install says so."""
+    for plugin_first in (False, True):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            core = _make_git_lib(tmp_p, "vultcore", "3.7.0", tag="3.7.0")
+            (core / "lamlib.toml").write_text(
+                (core / "lamlib.toml").read_text().replace('"3.7.0"', '"3.7.2"'))
+            subprocess.run(["git", "commit", "--quiet", "-am", "3.7.2"], cwd=str(core), check=True)
+            subprocess.run(["git", "tag", "3.7.2"], cwd=str(core), check=True)
+            plugin = _make_git_lib(tmp_p, "vultplugin", "1.2.3")
+            (plugin / "lamlib.toml").write_text(
+                (plugin / "lamlib.toml").read_text()
+                + f'\n[dependencies]\nvultcore = {{ git = "{core.as_uri()}", ref = "3.7.0" }}\n')
+            subprocess.run(["git", "commit", "--quiet", "-am", "deps"], cwd=str(plugin), check=True)
+            subprocess.run(["git", "tag", "1.2.3"], cwd=str(plugin), check=True)
+            proj = tmp_p / "proj"; proj.mkdir()
+            lines = [
+                f'vultcore = {{ git = "{core.as_uri()}", ref = "3.7.2" }}',
+                f'vultplugin = {{ git = "{plugin.as_uri()}", ref = "1.2.3" }}',
+            ]
+            if plugin_first:
+                lines.reverse()
+            (proj / "lamlib.toml").write_text(
+                '[library]\nname = "myapp"\nversion = "0.1.0"\n\n[dependencies]\n' + "\n".join(lines) + "\n",
+                encoding="utf-8")
+            ok = subprocess.run(LAMC + ["install"], cwd=str(proj), capture_output=True, text=True)
+            assert ok.returncode == 0, ok.stderr
+            installed = (proj / "extlibs" / "vultcore" / "lamlib.toml").read_text()
+            assert 'version = "3.7.2"' in installed, (plugin_first, ok.stderr, installed)
+            lock = (proj / "lamlib.lock.toml").read_text()
+            pin = lock.split('[pins.vultcore]', 1)[1].split("[pins.", 1)[0]
+            assert 'version = "3.7.2"' in pin and 'requested_ref = "3.7.2"' in pin, (plugin_first, lock)
+            assert 'version = "3.7.0"' not in pin and 'requested_ref = "3.7.0"' not in pin, (plugin_first, lock)
+            assert "project's own" in ok.stderr and "3.7.0" in ok.stderr, ok.stderr
+    # A library's registry range the project's git pin does not satisfy is
+    # a version conflict, not a silent replacement.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_p = Path(tmp)
+        core = _make_git_lib(tmp_p, "vultcore", "3.7.2", tag="3.7.2")
+        plugin = _make_git_lib(tmp_p, "vultplugin", "2.0.0")
+        (plugin / "lamlib.toml").write_text(
+            (plugin / "lamlib.toml").read_text() + '\n[dependencies]\nvultcore = "^4.0"\n')
+        subprocess.run(["git", "commit", "--quiet", "-am", "deps"], cwd=str(plugin), check=True)
+        subprocess.run(["git", "tag", "2.0.0"], cwd=str(plugin), check=True)
+        proj = tmp_p / "proj"; proj.mkdir()
+        (proj / "lamlib.toml").write_text(
+            '[library]\nname = "myapp"\nversion = "0.1.0"\n\n[dependencies]\n'
+            f'vultcore = {{ git = "{core.as_uri()}", ref = "3.7.2" }}\n'
+            f'vultplugin = {{ git = "{plugin.as_uri()}", ref = "2.0.0" }}\n',
+            encoding="utf-8")
+        bad = subprocess.run(LAMC + ["install"], cwd=str(proj), capture_output=True, text=True)
+        assert bad.returncode != 0, bad.stderr
+        assert "version conflict" in bad.stderr and "vultcore" in bad.stderr and "^4.0" in bad.stderr, bad.stderr
+    print("PASS: the project's direct git pin wins over a library's older transitive pin")
+
+
 def main() -> int:
     tests = [
         test_git_branch_ref_follows_new_commits,
@@ -1006,6 +1103,7 @@ def main() -> int:
         test_install_pinned_version,
         test_lockfile_written_in_default_project_mode,
         test_uninstall_removes_tree_and_lock_pin,
+        test_force_install_prunes_dependencies_removed_from_manifest,
         test_semver_gate_blocks_silent_break,
         test_path_install_works_offline,
         test_nested_scoped_install_survives_parent_upgrade,
@@ -1024,6 +1122,7 @@ def main() -> int:
         test_lockfile_v0_loads_and_upgrades_on_write,
         test_requested_by_keeps_root_for_direct_and_transitive_dep,
         test_requested_by_registry_dependent_declared_first,
+        test_project_git_pin_wins_over_transitive_git_pin,
     ]
     failures = 0
     for t in tests:

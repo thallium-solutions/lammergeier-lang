@@ -1177,6 +1177,41 @@ def _walk_dependencies(root_plan: InstallPlan,
             go_demands.setdefault(path, []).append(
                 (ver, f"<installed>:{mf.name}@{mf.version}"))
 
+    # The project's own git / path dependencies win over a library's
+    # request for the same package (another ref, a registry range): the
+    # library gets the project's pin, as with ``[replace]``. Installing
+    # the library's ref replaced the project's pin silently (found by
+    # Luxyt: ``@lam/vulture`` 3.7.2 downgraded to a plugin's 3.7.0).
+    project_plans: Dict[str, InstallPlan] = {}
+
+    def project_direct(n: str, wanted, requested_by: str) -> Optional[InstallPlan]:
+        if project_mf is None or project_mf.source_path is None or n == root_plan.name:
+            return None
+        own = project_mf.dependencies.get(n)
+        if own is None or own.range or not (own.git or own.path):
+            return None
+        if n not in project_plans:
+            spec = _dep_install_spec(n, own, project_mf.source_path.parent)
+            if not spec:
+                return None
+            project_plans[n] = _resolve_plan(
+                _apply_replace(spec, project_mf, n), registry,
+                work=work / f"dep-{_safe_segment(n)}")
+        plan = project_plans[n]
+        same = (
+            (wanted.git or None, wanted.ref or None, wanted.path or None)
+            == (own.git or None, own.ref or None, own.path or None)
+        )
+        if not same and not quiet:
+            asked = (
+                f"ref {wanted.ref}" if wanted.git and wanted.ref
+                else wanted.git or wanted.path or wanted.range or "another source"
+            )
+            mine = f"ref {own.ref}" if own.git and own.ref else own.git or own.path
+            print(f"[lamc] {n}: the project's own dependency is used ({n}@{plan.version}, {mine}); "
+                  f"{requested_by} asks for {asked}", file=sys.stderr)
+        return plan
+
     # Start with the root manifest's own deps.
     resolved: Dict[str, ResolvedDep] = {}
     queue: List[Tuple[Manifest, str]] = [(root_plan.manifest, "<requested>")]
@@ -1196,12 +1231,14 @@ def _walk_dependencies(root_plan: InstallPlan,
             lam_demands.setdefault(n, []).append(
                 (ds.range, f"{root_plan.name}@{root_plan.version}"))
         elif (ds.path or ds.git) and root_plan.manifest.source_path is not None:
+            seen_label = f"{root_plan.name}@{root_plan.version}"
+            sub_plan = project_direct(n, ds, seen_label)
             spec = _dep_install_spec(n, ds, root_plan.manifest.source_path.parent)
-            if spec:
+            if sub_plan is None and spec:
                 sub_plan = _resolve_plan(
                     _apply_replace(spec, project_mf, n), registry,
                     work=work / f"dep-{_safe_segment(n)}")
-                seen_label = f"{root_plan.name}@{root_plan.version}"
+            if sub_plan is not None:
                 entry = ResolvedDep(
                     name=n, version=sub_plan.version, plan=sub_plan,
                     requested_by=[seen_label])
@@ -1229,12 +1266,14 @@ def _walk_dependencies(root_plan: InstallPlan,
             if n in seen_descended:
                 continue
             if ds.git:
-                spec = _dep_install_spec(n, ds, mf.source_path.parent if mf.source_path else None)
-                if not spec:
-                    continue
-                sub_plan = _resolve_plan(
-                    _apply_replace(spec, project_mf, n), registry,
-                    work=work / f"dep-{_safe_segment(n)}")
+                sub_plan = project_direct(n, ds, requested_by)
+                if sub_plan is None:
+                    spec = _dep_install_spec(n, ds, mf.source_path.parent if mf.source_path else None)
+                    if not spec:
+                        continue
+                    sub_plan = _resolve_plan(
+                        _apply_replace(spec, project_mf, n), registry,
+                        work=work / f"dep-{_safe_segment(n)}")
                 seen_descended.add(n)
                 entry = ResolvedDep(
                     name=n, version=sub_plan.version, plan=sub_plan,
@@ -1255,18 +1294,23 @@ def _walk_dependencies(root_plan: InstallPlan,
             # Any such later demand has to be re-checked against the
             # already-pinned version below, and triggers a conflict
             # if no overlap exists.
-            chosen = _pick_version(n, registry, ds.range,
-                                   lam_demands[n])
-            # Project-level ``[replace]`` overrides apply
-            # transitively too: if the user replaces ``lamhttp``
-            # with a local checkout, every lib that pulls in
-            # ``lamhttp`` resolves to that checkout, matching
-            # Go's ``go.mod replace`` semantics.
-            sub_spec = _apply_replace(
-                f"{n}@{chosen.version}", project_mf, n)
-            sub_plan = _resolve_plan(
-                sub_spec, registry,
-                work=work / f"dep-{_safe_segment(n)}")
+            # The project's own git / path dependency is the version
+            # installed; the final sweep below reports a range it does
+            # not satisfy as a conflict.
+            sub_plan = project_direct(n, ds, requested_by)
+            if sub_plan is None:
+                chosen = _pick_version(n, registry, ds.range,
+                                       lam_demands[n])
+                # Project-level ``[replace]`` overrides apply
+                # transitively too: if the user replaces ``lamhttp``
+                # with a local checkout, every lib that pulls in
+                # ``lamhttp`` resolves to that checkout, matching
+                # Go's ``go.mod replace`` semantics.
+                sub_spec = _apply_replace(
+                    f"{n}@{chosen.version}", project_mf, n)
+                sub_plan = _resolve_plan(
+                    sub_spec, registry,
+                    work=work / f"dep-{_safe_segment(n)}")
             seen_descended.add(n)
             entry = ResolvedDep(
                 name=n, version=sub_plan.version, plan=sub_plan,
@@ -2053,6 +2097,7 @@ def _cmd_install(args) -> int:
             return 0
 
     failures = 0
+    installed: List[str] = []
     for spec in user_specs:
         try:
             plan = install_one(
@@ -2068,6 +2113,7 @@ def _cmd_install(args) -> int:
             print(f"[lamc] error installing {spec}: {e}", file=sys.stderr)
             failures += 1
             continue
+        installed.append(plan.name)
 
         # Only sync the manifest when the user explicitly asked us to
         # add a dep (i.e. supplied a positional spec). Bare
@@ -2075,7 +2121,56 @@ def _cmd_install(args) -> int:
         if project and not bare:
             _maybe_write_manifest_entry(plan, spec, args.quiet)
 
+    if bare and failures == 0:
+        _prune_unrequired(installed, override, prune=bool(args.force), quiet=args.quiet)
     return 0 if failures == 0 else 1
+
+
+def _prune_unrequired(direct: List[str], override: Optional[Path], *, prune: bool, quiet: bool) -> List[str]:
+    """After a full ``lamc install``: the lock pins (and ``extlibs/`` copies)
+    of packages ``lamlib.toml`` no longer requires, directly or through
+    another package. ``--force`` removes them; otherwise they are
+    reported. Returns their names."""
+    extlibs = _extlibs_dir(True, override)
+    proj_lock = Path.cwd() / LOCKFILE_NAME
+    if not proj_lock.exists():
+        return []
+    lock = _load_lockfile(proj_lock)
+    keep: set = set()
+    pending = list(direct)
+    while pending:
+        name = pending.pop()
+        if name in keep:
+            continue
+        keep.add(name)
+        manifest = _installed_manifest(extlibs, name)
+        if manifest is not None:
+            pending.extend(manifest.dependencies.keys())
+    stale = sorted(name for name in lock["pins"] if name not in keep)
+    if not stale:
+        return []
+    if not prune:
+        print(
+            "[lamc] warning: lamlib.lock.toml pins " + ", ".join(stale)
+            + ", which lamlib.toml no longer requires: `lamc install --force` removes them",
+            file=sys.stderr,
+        )
+        return stale
+    for name in stale:
+        dst = _lib_dir(extlibs, name)
+        if dst.exists():
+            uninstall_one(name, project=True, extlibs_override=override, quiet=quiet)
+        else:
+            lock = _load_lockfile(proj_lock)
+            lock["pins"].pop(name, None)
+            project_mf = _project_manifest(Path.cwd())
+            _reconcile_requesters(lock["pins"], project_mf, extlibs)
+            go_pins: Dict[str, Dict] = dict(lock.get("go_pins") or {})
+            _reconcile_go_requesters(go_pins, lock["pins"], project_mf, extlibs)
+            _write_lockfile(proj_lock, lock["pins"], go_pins=go_pins or None)
+            if not quiet:
+                print(f"[lamc] removed the pin of {name}")
+    return stale
 
 
 def _cmd_uninstall(args) -> int:

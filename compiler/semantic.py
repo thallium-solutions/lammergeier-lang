@@ -213,7 +213,8 @@ BUILTIN_FUNCS: Set[str] = {
     "uint32", "uint64", "float32", "float64", "byte", "rune",
     "list", "dict", "set", "tuple",
     # Reflection / runtime
-    "type", "isinstance", "repr", "abs", "max", "min",
+    # (no ``type``: Lam has no ``type(x)``, see PYTHON_BUILTIN_IDIOMS)
+    "isinstance", "repr", "abs", "max", "min",
     # Characters and code points
     "ord", "chr",
     # Go-flavoured passthroughs
@@ -1974,6 +1975,28 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 continue
             self._field_method_clash(class_name, name, fields[name], method_node)
 
+    def _check_mixed_private_overloads(self, class_name: str, suite_node) -> None:
+        """Overloads of one method name must all be ``private`` or none:
+        privacy is a property of the Go name, which the variants share (a
+        private variant of a public method failed in go build)."""
+        if suite_node is None:
+            return
+        variants: dict[str, list] = {}
+        for stmt in self._suite_stmts(suite_node):
+            target = stmt
+            if isinstance(stmt, Tree) and stmt.data == "decorated":
+                target = next((c for c in stmt.children if isinstance(c, Tree) and c.data == "funcdef"), None)
+            if isinstance(target, Tree) and target.data == "funcdef":
+                variants.setdefault(self._funcdef_name(target), []).append(target)
+        for name, defs in variants.items():
+            private = [d for d in defs if self._funcdef_is_private(d)]
+            if private and len(private) < len(defs):
+                self._error(
+                    private[0], "method",
+                    f"a `private` overload of the public `{class_name}.{name}` is not supported: "
+                    "give the helper its own name (overloads share their visibility)",
+                )
+
     def _visit_classdef(self, node: Tree) -> None:
         # Class scope is mostly a holder for nested method visits — the
         # method-name space is checked separately for duplicates.
@@ -1981,6 +2004,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
 
         # Duplicate-member check.
         class_name = self._classdef_name(node)
+        self._check_mixed_private_overloads(class_name, suite_node)
         ast_class = self._ast_classes.get(class_name)
         if ast_class is not None:
             field_names: Set[str] = set()
@@ -3356,6 +3380,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
 
         if d == "funccall":
             self._lint_call(node)
+            self._check_json_method_call(node)
             if node.children and isinstance(node.children[0], Tree) and node.children[0].data == "var":
                 self.__dict__.setdefault("_callee_var_ids", set()).add(id(node.children[0]))
                 callee_name = self._name_text(node.children[0].children[0]) if node.children[0].children else ""
@@ -3481,10 +3506,38 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 return False
         return False
 
+    def _check_json_method_call(self, node: Tree) -> None:
+        """``j.append(2)`` on a ``json`` value: ``j.append`` reads the
+        member ``append`` (a ``json`` value), which cannot be called (it
+        failed in go build)."""
+        callee = node.children[0] if node.children else None
+        if not (isinstance(callee, Tree) and callee.data == "getattr" and len(callee.children) >= 2):
+            return
+        receiver = callee.children[0]
+        if not isinstance(receiver, Tree) or receiver.data == "var" and self._name_text(receiver.children[0]) in self._class_method_shapes:
+            return
+        kind = self._expr_simple_type(receiver)
+        if not (isinstance(kind, NamedType) and kind.name == "json"):
+            return
+        method = self._name_text(callee.children[1])
+        if method in ("append", "extend", "insert", "push"):
+            hint = "build a `list[json]` and convert it with `json(items)`"
+        else:
+            hint = "use `len(j)` or the `Json` helpers (`Json.toList(j)`, `Json.toDict(j)`)"
+        self._error(
+            node, "type",
+            f"`json` values have no methods: `.{method}` reads the JSON member `{method}`, which cannot be called; {hint}",
+        )
+
     def _visit_lambda(self, node: Tree) -> None:
         scope = _Scope(kind="function")
         body = None
         return_anno = None
+        for c in node.children:
+            if isinstance(c, Tree) and c.data in ("paren_lambda_params", "lambda_return_anno"):
+                # ``lambda (tx: Tx) -> Result[int]: ...``: the annotations
+                # name types (and use imports) as a function signature does.
+                self._check_type_annotations(c, lambda_annotation=True)
         for c in node.children:
             if isinstance(c, Tree):
                 if c.data == "typed_parameters":
@@ -4676,7 +4729,7 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
             return actual
         return None
 
-    def _check_type_annotations(self, node: Tree) -> None:
+    def _check_type_annotations(self, node: Tree, lambda_annotation: bool = False) -> None:
         if not isinstance(node, Tree):
             return
         seen: set[int] = set()
@@ -4706,14 +4759,18 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 if not root or self._is_known_type(root):
                     continue
                 suggestion = self._suggest_type(root)
+                # A lambda annotation is settled by ``check_source``
+                # (``_settle_lambda_annotation_types``): a type a module of
+                # the program declares still resolves there without import.
+                kind = "lambda_type" if lambda_annotation else "type"
                 if suggestion:
                     self._error(
-                        type_expr, "type",
+                        type_expr, kind,
                         f"unknown type `{root}` — did you mean `{suggestion}`?",
                     )
                 else:
                     self._error(
-                        type_expr, "type",
+                        type_expr, kind,
                         f"unknown type `{root}`: declare a class or interface `{root}` or import it",
                     )
 
@@ -7452,12 +7509,18 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 return "", []
         if callee.data == "var":
             name = self._name_text(callee.children[0]) if callee.children else ""
+            local = False
             for scope in reversed(self._scopes):
                 if name in scope.names and scope.kind != "module":
                     nested = scope.__dict__.get("nested_sigs", {}).get(name)
                     if nested is not None:
                         return name, [nested]
+                    local = True
                     break
+            if local or (name not in self._func_sigs and name not in self._class_method_shapes):
+                value_sig = self._func_value_sig(name)
+                if value_sig is not None:
+                    return name, [value_sig]
             if name in self._class_method_shapes:
                 return name, self._ctor_sigs_for(name)
             return name, self._func_sigs.get(name, [])
@@ -7473,6 +7536,30 @@ class SemanticChecker(NarrowingCheckMixin, MarkupSemanticMixin, AnyCastSemanticM
                 return target, self._ctor_sigs_for(target)
             return target, self._method_sigs_for_target(target)
         return "", []
+
+    def _func_value_sig(self, name: str) -> _CallableSig | None:
+        """The call shape of a function-typed value (``f: func(int) -> int``):
+        its parameters, positional only (named ``1``, ``2``... in messages),
+        checked like a declared function's (a mismatch failed in go
+        build)."""
+        text = self._var_type(name)
+        if not text or not text.startswith("func("):
+            return None
+        try:
+            func_type = parse_type(text)
+        except Exception:
+            return None
+        if not isinstance(func_type, FuncType):
+            return None
+        count = len(func_type.params)
+        return _CallableSig(
+            name=name,
+            required_pos=count,
+            max_pos=count,
+            params=tuple(str(i + 1) for i in range(count)),
+            param_types=tuple(render_type(p) for p in func_type.params),
+            return_type_text=render_type(func_type.ret),
+        )
 
     def _method_sigs_for_target(self, target: str) -> list[_CallableSig]:
         direct = list(self._method_sigs.get(target, []))
@@ -14017,6 +14104,41 @@ def _suggest_defining_imports(
         )
 
 
+def _settle_lambda_annotation_types(
+    errors: List[SemanticError],
+    module_index: WorkspaceIndex | None,
+    source_path: Path | None,
+) -> List[SemanticError]:
+    """An unknown type in a lambda annotation (``lambda (tx: Tx) -> ...``)
+    that a module of the program declares resolves in the generated Go
+    (one package) and was accepted before lambda annotations were checked:
+    it stays accepted. One no module of the program declares is an unknown
+    type (it failed in go build)."""
+    out: List[SemanticError] = []
+    for err in errors:
+        if err.kind != "lambda_type":
+            out.append(err)
+            continue
+        match = _UNKNOWN_TYPE_RE.match(err.message)
+        if match is not None and module_index is not None and _declared_in_program(
+            module_index, source_path, match.group(1),
+        ):
+            continue
+        out.append(SemanticError(err.line, err.col, err.message, "type", severity=err.severity))
+    return out
+
+
+def _declared_in_program(module_index: WorkspaceIndex, source_path: Path | None, name: str) -> bool:
+    own = Path(source_path).resolve() if source_path is not None else None
+    for path, facts in module_index.facts_by_path.items():
+        if path == own:
+            continue
+        export = facts.exports.get(name)
+        if export is not None and export.kind != "import" and not _export_is_private(export):
+            return True
+    return False
+
+
 def _defining_modules(module_index: WorkspaceIndex, source_path: Path, name: str) -> list[str]:
     """Import names of the indexed modules declaring a public ``name``."""
     out: list[str] = []
@@ -14173,6 +14295,7 @@ def check_source(
         errors.append(SemanticError(line, col, msg, "type"))
 
     _consts.check_tree(tree, _const_error)
+    errors = _settle_lambda_annotation_types(errors, module_index, source_path)
     if module_index is not None and source_path is not None:
         _suggest_defining_imports(errors, module_index=module_index, source_path=source_path)
         errors.extend(_check_imported_exports(

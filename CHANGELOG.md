@@ -5,6 +5,82 @@ All notable changes to Lammergeier Lang are documented here.
 Releases are tagged with plain versions (`2.0.0`); older entries are grouped
 by commit date.
 
+## 4.16.0 — 2026-11-15
+
+**Upgrading:** a minor release because the checker reports more: SQL built
+from values in a local or in `Where.add` / `addIf` / `addIn` clauses is
+warned (an error in strict mode), and programs that failed in `go build`
+are now Lam errors (a function-typed value called with wrong arguments, a
+method call on a `json` value, `type(x)`, a lambda annotation naming a type
+no module declares). The official packages build unchanged and target
+`lamc` 4.16.
+
+Fixes found by adopting strict mode in managed-file-transfer:
+
+- **Strict mode covers a project directory given with `--extlibs`**
+  (`--extlibs lib`): it was exempted silently, like installed packages.
+  Only the stdlib, the project's `extlibs/` and directories outside the
+  project are not covered.
+- **SQL check:**
+  - quiet for program-written SQL nested more than four levels deep;
+  - quiet for a clause accumulated from constants
+    (`where = where + " AND x = ?"`);
+  - now warns for SQL built from values in a local passed by name
+    (`sql = f"...{v}"`, then `conn.exec(sql)`);
+  - now warns for `Where.add` / `addIf` / `addIn` clauses built from
+    values.
+- **Unused-private lint:** a private function or method used only in
+  f-string slots was reported unused.
+- **Private overloads:** a `private` overload of a public method is a Lam
+  error asking for another name; it failed in `go build`.
+- **`lamc install --force`** (bare) removes the lock pins and `extlibs/`
+  copies of packages `lamlib.toml` no longer requires. A bare
+  `lamc install` warns about them.
+
+Found by updating Luxyt (and its strict build):
+
+- **SQL check** (quiet for SQL the program writes):
+  - an f-string appended to a list of fragments is checked like the
+    f-string written in the call, also when its slot is a local of the
+    loop body (`column`) or a call returning a `bool` / number
+    (`Input.timeSql(input.has(key), input.local)`);
+  - placeholders built in a loop (`params.append("?")`) or a
+    comprehension (`["?" for _ in values]`), the loop variable of a
+    constant collection and an operator chosen by a ternary of literals
+    are constants; a clause with a parameter (a column name passed by the
+    caller) stays warned, and the warning now says to index a `const`
+    table (`Columns[key]`) for a column chosen at run time;
+  - a value written into a fragment list with `parts[i] = v` counts like
+    an `append`.
+- **Markup security warnings** (quiet for safe values):
+  - a `json` value in `<script>` and `on*` handlers (rendered as JSON with
+    `<`, `>`, `&` escaped, the bytes of `Html.jsValue`);
+  - a `None` branch (`src=${Html.safeUrl(u) if u != '' else None}`: no
+    attribute);
+  - an index into a constant table of literals (`Colors[kind]`) and the
+    loop variable of a literal or constant collection
+    (`for link in [["/a", "A"], ...] { href="${link[0]}" }`);
+  - now warned: a local trusted from its literal value but extended with
+    `+=` / `append` / `x[k] = v` by a value (it was trusted).
+- **Unused imports:** an import other modules of the program import from
+  the module (a re-export from a facade module) is used; a type used only
+  in a lambda parameter or return annotation (`lambda (tx: Tx) -> ...`)
+  uses its import. Such an annotation naming a type no module of the
+  program declares is now an unknown-type error (it failed in `go build`);
+  one a module of the program declares still resolves without an import,
+  as before.
+- **Internal compiler errors, now Lam errors:** calling a function-typed
+  value (`f: func(int) -> int`) checks its arguments against the `func`
+  type; a method call on a `json` value (`j.append(x)`: build a
+  `list[json]` and convert it with `json(items)`); `type(x)` (Lam has no
+  `type()`: use `isinstance` or `match`).
+- **`lamc install`:** a project's own git or path dependency wins over a
+  library's request for another ref of it (the library's older ref
+  replaced the project's pin silently: `@lam/vulture` 3.7.2 became a
+  plugin's 3.7.0); the install says which ref the library asked for, and
+  a library's registry range the project's pin does not satisfy is a
+  version conflict.
+
 ## 4.15.0 — 2026-11-14
 
 **Upgrading:** strict mode is opt-in; the new warnings only warn. The

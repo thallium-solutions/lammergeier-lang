@@ -107,7 +107,7 @@ area: 78.53981633974483
 - **Official external libraries** — independently versioned scoped packages for
   JWT, Protobuf, Redis, Memcached, S3, SFTP, SSH, and the Vulture HTTP server
   with its standard, tus, and WebSocket plugins, plus Stripe, OpenTelemetry,
-  key rings, TOTP and PostgreSQL jobs. They target `lamc` 4.15. Browse the
+  key rings, TOTP and PostgreSQL jobs. They target `lamc` 4.16. Browse the
   [Libraries catalog](#/docs/libraries) and install them with `lamc install`.
 - **Numerics & web stack** — `Array` / `Matrix` backed by **gonum**
   (BLAS-accelerated matmul, LU solve, inverse, det, trace, SVD-flavoured

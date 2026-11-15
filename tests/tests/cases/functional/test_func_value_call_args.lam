@@ -1,0 +1,33 @@
+# expect: 4
+# expect: 2
+# expect: 2
+# expect: 0
+# expect: 2
+# expect: 4
+
+# Calls of function-typed values whose arguments the checker now checks
+# against the `func(...)` type (4.16.0): valid calls still build and run,
+# also with an int for a float parameter, `any`, an optional and a class.
+
+class Box {
+    func init(self, v: int) {
+        self.v: int = v
+    }
+}
+
+func run(cb: func(Box) -> int, b: Box) -> int {
+    return cb(b)
+}
+
+func main() {
+    n: int = 2
+    h: func(float) -> float = lambda (x: float) -> float: x * 2.0
+    print(h(n))
+    print(h(1))
+    g: func(any) -> str = lambda (x: any) -> str: f"{x}"
+    print(g(n))
+    o: func(int | None) -> int = lambda (x: int | None) -> int: x ?? 0
+    print(o(None))
+    print(o(n))
+    print(run(lambda (b: Box) -> int: b.v, Box(4)))
+}

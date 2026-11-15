@@ -1,0 +1,15 @@
+# expect-error: line 9: error[undefined]: undefined name `type`; Lam has no `type()` builtin, use `isinstance(x, T)`
+# expect-error: line 13: error[undefined]: undefined name `type` in f-string; Lam has no `type()` builtin
+
+# `type(x)` passed the checker and failed in go build (`undefined:
+# Type__lam`): Lam has no `type()`; the error names the Lam idioms.
+
+func main() {
+    n: int = 5
+    print(type(n))
+    try {
+        throw ValueError("x")
+    } catch e {
+        print(f"{type(e)}")
+    }
+}

@@ -1,0 +1,65 @@
+# expect-warning: line 54: warning[security]: SQL built from values
+# expect-warning: line 58: warning[security]: SQL built from values is an injection risk (they are not escaped): pass them as `?` parameters (`.add("name = ?", [name])`)
+# expect-warning: line 58: warning[security]: SQL built from values is an injection risk (they are not escaped): pass them as `?` parameters (`.addIf(condition, "name = ?", [name])`)
+# expect-no-warning: line 28:
+# expect-no-warning: line 39:
+# expect-no-warning: line 49:
+# expect-no-warning: line 59:
+from lamdb import DbConn, Where
+from lamerrors import Result
+
+# The SQL check and the unused-private lint, as fixed in 4.16.0 (found by
+# managed-file-transfer): quiet past four levels of program-written SQL, for
+# a clause accumulated from constants and for a private method used only in
+# f-string slots; warned: SQL built in a local and passed by name, and
+# `Where.add` / `addIf` clauses built from values.
+
+func sortKey(column: str) -> str {
+    return f"(EXTRACT(EPOCH FROM {column}) * 1000000)::bigint"
+}
+
+class Pager {
+    static func orderBy(exprs: list[str], desc: bool) -> str {
+        return " ORDER BY " + ", ".join(exprs) + (" DESC" if desc else "")
+    }
+}
+
+class Report {
+    private static func isoCol(column: str) -> str {
+        return f"to_char({column}, 'YYYY') AS {column}"
+    }
+
+    static func list(conn: DbConn) -> Result[list[dict[str, any]]] {
+        return conn.query(f"SELECT {Report.isoCol('created_at')} FROM t", [])
+    }
+}
+
+func newest(conn: DbConn) -> Result[list[dict[str, any]]] {
+    keys: list[str] = [sortKey("t.created_at"), "t.id"]
+    return conn.query(f"SELECT * FROM t{Pager.orderBy(keys, true)}", [])
+}
+
+func count(conn: DbConn, tenantId: str, email: str) -> Result[dict[str, any]] {
+    where: str = "a.tenant_id = ?"
+    args: list[any] = [tenantId]
+    if email != "" {
+        where = where + " AND a.email = ?"
+        args.append(email)
+    }
+    return conn.first(f"SELECT COUNT(*) AS n FROM accounts a WHERE {where}", args)
+}
+
+func laundered(conn: DbConn, userInput: str) -> Result[int] {
+    sql: str = f"UPDATE t SET x = 1 WHERE name = '{userInput}'"
+    return conn.exec(sql, [])
+}
+
+func viaWhere(conn: DbConn, userInput: str, on: bool) -> Result[int] {
+    w: Where = Where().add(f"name = '{userInput}'").addIf(on, f"tag = '{userInput}'")
+    ok: Where = Where().add("name = ?", [userInput])
+    return conn.exec(f"DELETE FROM t {w.sql()} {ok.sql()}", w.params())
+}
+
+func main() {
+    pass
+}
